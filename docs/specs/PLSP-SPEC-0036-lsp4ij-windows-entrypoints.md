@@ -53,11 +53,19 @@ hard links, junctions, or mutable mirrors. A source-only unit may omit the DAP
 selector only when the installer’s existing product-unit contract says that the
 unit is source-only; an LSP+DAP unit must expose both selectors.
 
-### C2 — Canonical LSP4IJ Windows invocation
+### C2 — Proposed LSP4IJ Windows wire semantics
 
 The LSP4IJ projection must use an explicit command vector, not a bare command
-resolved through `PATH`. After LSP4IJ substitutes `${BASE_DIR}` with the
-absolute installation directory, the canonical vector is:
+resolved through `PATH`. The following is the proposed wire-level semantics for
+the future projection; it is not a claim about the canonical LSP4IJ schema or
+serialization. Before implementation, the lane must pin the current LSP4IJ
+schema authority (release or commit, exact path, and digest) and establish
+whether the relevant field is string-valued or an argument array. A current
+schema/serialization oracle must then confirm that the representation preserves
+this vector and its quoting semantics.
+
+After LSP4IJ substitutes `${BASE_DIR}` with the absolute installation directory,
+the proposed effective vector is:
 
 ```text
 cmd.exe
@@ -86,10 +94,19 @@ If the LSP4IJ field is string-valued, its unescaped value must render as:
 cmd.exe /d /s /c ""${BASE_DIR}\perllsp.cmd" --stdio"
 ```
 
-### C3 — Canonical DAP Windows invocation
+Until the pinned schema and string-vs-argv oracle have confirmed this mapping,
+the LSP4IJ projection is `NOT_PROVEN`; these examples are design input, not
+permission to edit a template.
+
+### C3 — Proposed LSP4IJ DAP wire semantics
 
 The DAP projection uses the same selector and shell boundary, with no implicit
 PATH lookup or independent executable:
+
+This is proposed wire-level semantics, not an assertion of the canonical LSP4IJ
+schema or serialization. The implementation lane must use the same pinned schema
+authority and string-vs-argv oracle required by C2, and must review the LSP and
+DAP representations together.
 
 ```text
 cmd.exe
@@ -108,12 +125,16 @@ cmd.exe /d /s /c ""C:\Program Files\perl-lsp\perl-dap.cmd""
 
 The exact LSP4IJ field encoding may be a command string or a structured argument
 projection; the implementation must preserve the vector and quoting semantics
-above. The corresponding LSP and DAP template values must be reviewed together.
+above only after the current schema oracle confirms the encoding. The
+corresponding LSP and DAP template values must be reviewed together.
 If the DAP field is string-valued, its unescaped value must render as:
 
 ```text
 cmd.exe /d /s /c ""<<insert base directory>>\perl-dap.cmd""
 ```
+
+Until that schema and serialization confirmation exists, the DAP projection is
+also `NOT_PROVEN`.
 
 ### C4 — Mirror, patch, and provenance authority
 
@@ -122,17 +143,26 @@ be conflated. A future implementation PR must:
 
 1. keep the pinned upstream repository, release/tag, resolved commit, and source
    blob identities in the existing fixture manifest;
-2. apply the corrected template through the repository’s established mirror or
-   patch mechanism, without silently editing the released-evidence namespace;
+2. apply the corrected template through a mirror or patch mechanism only after
+   that mechanism is established and its owner is identified, without silently
+   editing the released-evidence namespace;
 3. record the source path, upstream identity, patch/delta identity, and resulting
    file digest for every changed LSP and DAP template or mirrored installer
    catalog; and
 4. make refresh/check and repeated delta preparation deterministic, failing
    closed when the upstream subject or checksum does not match.
 
-The existing LSP4IJ maintenance runbook and `integrations/lsp4ij/upstream/0.20.1/manifest.json`
-remain the starting authorities. This spec does not edit generated policy or
-invent a second checksum ledger.
+The mirror/patch mechanism is currently `NOT_PROVEN` for this claim. Future
+ownership belongs to [#7772](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/7772),
+which must provide or name the producer that takes a pinned upstream subject and
+emits a deterministic delta, and the checker that verifies source identity,
+patch applicability, resulting digests, and repeatability. [#7706](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/7706)
+owns the separate released-template and process-evidence proof surface. The
+implementation lane must not infer an existing producer or checker from the
+maintenance runbook. The runbook and
+`integrations/lsp4ij/upstream/0.20.1/manifest.json` remain starting evidence
+only. This spec does not edit generated policy or invent a second checksum
+ledger.
 
 ### C5 — Promoted-install proof
 
@@ -157,7 +187,7 @@ An LSP4IJ/JetBrains launch receipt is required before making a released-client
 support claim. A local imported template can prove the proposed projection, but
 cannot prove what an unmodified released LSP4IJ build ships.
 
-### C6 — Atomic promotion and rollback invariants
+### C6 — Atomic promotion and selection rollback invariants
 
 This compatibility change preserves the installer’s existing safety boundary:
 
@@ -167,13 +197,17 @@ This compatibility change preserves the installer’s existing safety boundary:
 3. selectors are prepared before the current selection changes and do not expose
    a mixed pair or a missing selector during promotion;
 4. the previous complete candidate remains available for rollback; and
-5. a failed checksum, incomplete pair, failed promotion, or failed startup does
-   not advance `current`.
+5. a failed checksum, incomplete pair, or failed promotion does not advance
+   `current`.
 
-Rollback for an implementation failure is to leave the previous candidate
-   selected, restore the last known-good repository-owned template projection,
-   and revert the implementation PR if necessary. This spec alone authorizes no
-   installer migration, binary deletion, upstream submission, or release action.
+Rollback for a promotion implementation failure is to leave the previous
+candidate selected, restore the last known-good repository-owned template
+projection, and revert the implementation PR if necessary. Health-driven startup
+validation or rollback is deliberately outside this contract: #13289 is the
+explicit prerequisite and boundary for that durability behavior. Until #13289
+lands and is independently verified, this spec makes no claim that a failed
+startup changes or rolls back `current`. This spec alone authorizes no installer
+migration, binary deletion, upstream submission, or release action.
 
 ## Acceptance
 
@@ -182,10 +216,12 @@ A future implementation PR satisfies this spec only when it:
 - uses the immutable-candidate/install-root-selector topology in C1;
 - renders both C2 and C3 command vectors with the stated placeholder and quoting
   semantics;
-- updates mirror/patch/checksum provenance through the existing LSP4IJ authority;
+- updates mirror/patch/checksum provenance through the producer/checker owned by
+  the future #7772 boundary, once that authority is established;
 - supplies promoted-install evidence for both LSP and DAP, including ambient-PATH
   and stale-binary negative controls; and
-- preserves C6 atomic promotion, checksum, and rollback behavior.
+- preserves C6 atomic promotion, checksum, and selection-rollback behavior; any
+  health-driven startup recovery remains a separately proven #13289 concern.
 
 This docs-only PR satisfies only the narrower claim that these obligations and
 boundaries are recorded. It does not satisfy the implementation acceptance above.
@@ -208,17 +244,24 @@ contract checks, followed by a real promoted-install LSP and DAP launch receipt.
 
 These questions are intentionally preserved for the implementation lane:
 
-- At preparation time, PR #12815 reports live base `46a3db8…` while this checkout
-  reports `origin/main` at `7fbcc04…`; the implementation lane must rederive the
-  live base and relevant protection before editing or proving anything.
-- PR #12815 is still open at head `045e34c…`; its proposed `.cmd` topology is
-  not current-main behavior until it lands and is revalidated.
-- Issue #13289 is open and may change durability/flush/startup recovery details;
-  this spec consumes those details only after the implementation lane verifies
-  the landed or current authority.
+- A live GitHub refresh on 2026-08-28 reports PR #12815 open at head
+  `045e34c4c88372cd2d53cb0702acbbf82e6f576d`, based on
+  `46a3db8dadbd23493a3ca00ec3053bb64521b819`. The same refresh reports
+  `origin/main` through GitHub, and PR #13291’s base, at
+  `0fac6d848048113b4d3e3886e874fd32ff8dd8ee`; PR #13291’s current head is
+  `f96072a9490653c8e1d61749bdff1bc81c797967`. These are refresh-time facts,
+  not durable authority: every implementation or proof lane must query GitHub
+  again and use the then-current head/base and protection state.
+- PR #12815 remains open; its proposed `.cmd` topology is not current-main
+  behavior until it lands and is revalidated.
+- Issue #13289 remains open and may change durability/flush/startup recovery
+  details; this spec consumes those details only after the implementation lane
+  verifies the landed or current authority.
 - The authoritative LSP4IJ schema/encoding for command strings versus argument
-  arrays, and the upstream mirror/patch acceptance path, must be confirmed from
-  the current #7706/#7772-related artifacts before changing templates.
+  arrays must be confirmed from a pinned current artifact before changing
+  templates. The mirror/patch acceptance path is `NOT_PROVEN` pending the
+  producer/checker boundary named by #7772; #7706 remains the separate evidence
+  subject. Issue states and this snapshot do not substitute for those artifacts.
 - The pinned 0.20.1 fixture proves released file content only. It does not prove
   actual IntelliJ behavior, managed installation, or a released corrected
   template.
