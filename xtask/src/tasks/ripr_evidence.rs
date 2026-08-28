@@ -39,6 +39,36 @@ const PR_SUMMARY_MD: &str = "target/ripr/pr/summary.md";
 const IMPACTED_JSON: &str = "target/xtask/impacted-evidence/latest.json";
 const IMPACTED_MD: &str = "target/xtask/impacted-evidence/latest.md";
 const DEFAULT_RIPR_SUPPRESSIONS: &str = "policy/ripr-suppressions.toml";
+const REVIEWED_RIPR_CHECK_SCHEMA_VERSION: &str = "0.2";
+const REVIEWED_RIPR_BADGE_SCHEMA_VERSION: &str = "0.6";
+const REVIEWED_RIPR_SEAMS_SCHEMA_VERSION: &str = "0.1";
+const REQUIRED_RIPR_CHECK_SUMMARY_COUNTS: &[&str] = &[
+    "changed_rust_files",
+    "probes",
+    "findings",
+    "exposed",
+    "weakly_exposed",
+    "reachable_unrevealed",
+    "no_static_path",
+    "infection_unknown",
+    "propagation_unknown",
+    "static_unknown",
+];
+const RIPR_CHECK_CLASSIFICATION_BUCKETS: &[&str] = &[
+    "exposed",
+    "weakly_exposed",
+    "reachable_unrevealed",
+    "no_static_path",
+    "infection_unknown",
+    "propagation_unknown",
+    "static_unknown",
+];
+const REQUIRED_RIPR_BADGE_COUNTS: &[&str] = &[
+    "unsuppressed_exposure_gaps",
+    "unsuppressed_test_efficiency_findings",
+    "suppressed_exposure_gaps",
+    "suppressed_test_efficiency_findings",
+];
 
 pub fn ripr_pr(
     root: &str,
@@ -239,7 +269,7 @@ fn ripr_plus_packet(repo: &Path, options: &RiprPlusOptions) -> Result<Value> {
     let seams_raw = run_ripr(&[
         "check".to_string(),
         "--root".to_string(),
-        root,
+        root.clone(),
         "--format".to_string(),
         "repo-seams-json".to_string(),
     ])?;
@@ -259,14 +289,87 @@ fn ripr_plus_packet_from_raw(
 ) -> Result<Value> {
     let badge: Value =
         serde_json::from_str(badge_raw).context("ripr repo-badge-json was invalid JSON")?;
+    validate_ripr_repo_badge_output(&badge)?;
     let seams_value: Value =
         serde_json::from_str(seams_raw).context("ripr repo-seams-json was invalid JSON")?;
+    validate_ripr_repo_seams_output(&seams_value)?;
     let seams = seams_value
         .get("seams")
         .and_then(Value::as_array)
         .ok_or_else(|| eyre!("ripr repo-seams-json output did not include seams[]"))?;
     let seam_summary = ripr_plus_seam_summary(seams, suppressions, 10);
     Ok(ripr_plus_receipt_packet(options, head, suppressions, &badge, seam_summary))
+}
+
+fn validate_ripr_repo_badge_output(badge: &Value) -> Result<()> {
+    let badge =
+        badge.as_object().ok_or_else(|| eyre!("ripr repo-badge-json output was not an object"))?;
+    for (key, expected) in [
+        ("schema_version", REVIEWED_RIPR_BADGE_SCHEMA_VERSION),
+        ("kind", "ripr"),
+        ("scope", "repo"),
+        ("basis", "canonical_actionable_gap"),
+    ] {
+        match badge.get(key).and_then(Value::as_str) {
+            Some(actual) if actual == expected => {}
+            Some(actual) => {
+                bail!("ripr repo-badge-json {key} was {actual:?}, expected {expected:?}")
+            }
+            None => bail!("ripr repo-badge-json {key} was missing or not a string"),
+        }
+    }
+    let counts = badge
+        .get("counts")
+        .and_then(Value::as_object)
+        .ok_or_else(|| eyre!("ripr repo-badge-json counts was missing or not an object"))?;
+    for key in REQUIRED_RIPR_BADGE_COUNTS {
+        if !counts.get(*key).is_some_and(Value::is_u64) {
+            bail!("ripr repo-badge-json counts.{key} was missing or not a non-negative integer");
+        }
+    }
+    if !badge.get("reason_counts").is_some_and(Value::is_object) {
+        bail!("ripr repo-badge-json reason_counts was missing or not an object");
+    }
+    let preview_skipped = badge
+        .get("preview_skipped")
+        .and_then(Value::as_array)
+        .ok_or_else(|| eyre!("ripr repo-badge-json preview_skipped was missing or not an array"))?;
+    if !preview_skipped.is_empty() {
+        bail!("ripr repo-badge-json reported preview languages that were not analyzed");
+    }
+    Ok(())
+}
+
+fn validate_ripr_repo_seams_output(output: &Value) -> Result<()> {
+    let output =
+        output.as_object().ok_or_else(|| eyre!("ripr repo-seams-json output was not an object"))?;
+    for (key, expected) in
+        [("schema_version", REVIEWED_RIPR_SEAMS_SCHEMA_VERSION), ("scope", "repo")]
+    {
+        match output.get(key).and_then(Value::as_str) {
+            Some(actual) if actual == expected => {}
+            Some(actual) => {
+                bail!("ripr repo-seams-json {key} was {actual:?}, expected {expected:?}")
+            }
+            None => bail!("ripr repo-seams-json {key} was missing or not a string"),
+        }
+    }
+    let seams = output
+        .get("seams")
+        .and_then(Value::as_array)
+        .ok_or_else(|| eyre!("ripr repo-seams-json seams was missing or not an array"))?;
+    for (index, seam) in seams.iter().enumerate() {
+        let seam = seam
+            .as_object()
+            .ok_or_else(|| eyre!("ripr repo-seams-json seams[{index}] was not an object"))?;
+        if !seam.get("file").is_some_and(Value::is_string) {
+            bail!("ripr repo-seams-json seams[{index}].file was missing or not a string");
+        }
+        if !seam.get("kind").is_some_and(Value::is_string) {
+            bail!("ripr repo-seams-json seams[{index}].kind was missing or not a string");
+        }
+    }
+    Ok(())
 }
 
 fn ripr_plus_receipt_packet(
@@ -704,9 +807,10 @@ fn write_pr_evidence(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
     let diff_receipt = resolve_committed_diff(repo, &options.base, &options.head)?;
     let changed_file_count = diff_receipt.entries.len();
     write_pr_diff(repo, &diff_receipt)?;
-    let check_json = run_ripr_check(repo, options)?;
+    let (check_json, invocation) = run_ripr_check(repo, options)?;
     let check_value: Value =
         serde_json::from_str(&check_json).context("ripr check output was not valid JSON")?;
+    validate_ripr_check_output(&check_value, &invocation.expected_root, &invocation.expected_mode)?;
     // Write raw check output for offline diagnostics (#1346): repo-exposure.json only contains
     // per-bucket counts; the findings[] array (which carries per-finding classification and path)
     // is required to diagnose suppression mismatches.  This file is included in the
@@ -748,6 +852,106 @@ fn write_pr_evidence(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
     Ok(())
 }
 
+fn validate_ripr_check_output(
+    check: &Value,
+    expected_root: &str,
+    expected_mode: &str,
+) -> Result<()> {
+    let check =
+        check.as_object().ok_or_else(|| eyre!("ripr check output was not a JSON object"))?;
+    match check.get("schema_version").and_then(Value::as_str) {
+        Some(actual) if actual == REVIEWED_RIPR_CHECK_SCHEMA_VERSION => {}
+        Some(actual) => bail!(
+            "ripr check schema_version was {actual:?}, expected reviewed RIPR 0.10 schema \
+             {REVIEWED_RIPR_CHECK_SCHEMA_VERSION:?}"
+        ),
+        None => bail!("ripr check schema_version was missing or not a string"),
+    }
+    match check.get("tool").and_then(Value::as_str) {
+        Some("ripr") => {}
+        Some(actual) => bail!("ripr check tool was {actual:?}, expected \"ripr\""),
+        None => bail!("ripr check tool was missing or not a string"),
+    }
+    match check.get("mode").and_then(Value::as_str) {
+        Some(actual) if actual == expected_mode => {}
+        Some(actual) => bail!("ripr check mode was {actual:?}, expected {expected_mode:?}"),
+        None => bail!("ripr check mode was missing or not a string"),
+    }
+    let actual_root = check
+        .get("root")
+        .and_then(Value::as_str)
+        .ok_or_else(|| eyre!("ripr check root was missing or not a string"))?;
+    let normalized_actual_root = normalize_path_text(actual_root);
+    let normalized_expected_root = normalize_path_text(expected_root);
+    if normalized_actual_root.trim_end_matches('/')
+        != normalized_expected_root.trim_end_matches('/')
+    {
+        bail!("ripr check root was {actual_root:?}, expected invoked root {expected_root:?}");
+    }
+    if let Some(disclosures) = check.get("scope_disclosures") {
+        let disclosures = disclosures
+            .as_array()
+            .ok_or_else(|| eyre!("ripr check scope_disclosures was not an array"))?;
+        if !disclosures.is_empty() {
+            bail!(
+                "ripr check reported scope_disclosures despite the required explicit --diff scope"
+            );
+        }
+    }
+    let summary = check
+        .get("summary")
+        .and_then(Value::as_object)
+        .ok_or_else(|| eyre!("ripr check summary was missing or not an object"))?;
+    for key in REQUIRED_RIPR_CHECK_SUMMARY_COUNTS {
+        if !summary.get(*key).is_some_and(Value::is_u64) {
+            bail!("ripr check summary.{key} was missing or not a non-negative integer");
+        }
+    }
+    let findings = check
+        .get("findings")
+        .and_then(Value::as_array)
+        .ok_or_else(|| eyre!("ripr check findings was missing or not an array"))?;
+    let reported_findings = summary
+        .get("findings")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| eyre!("ripr check summary.findings was missing or not an integer"))?;
+    if reported_findings != findings.len() as u64 {
+        bail!(
+            "ripr check summary.findings was {reported_findings}, but findings[] contained {} entries",
+            findings.len()
+        );
+    }
+    for bucket in RIPR_CHECK_CLASSIFICATION_BUCKETS {
+        let actual = findings
+            .iter()
+            .filter(|finding| {
+                finding.get("classification").and_then(Value::as_str) == Some(*bucket)
+            })
+            .count() as u64;
+        let reported = summary
+            .get(*bucket)
+            .and_then(Value::as_u64)
+            .ok_or_else(|| eyre!("ripr check summary.{bucket} was missing or not an integer"))?;
+        if reported != actual {
+            bail!(
+                "ripr check summary.{bucket} was {reported}, but findings[] contained {actual} matching classifications"
+            );
+        }
+    }
+    for (index, finding) in findings.iter().enumerate() {
+        let classification =
+            finding.get("classification").and_then(Value::as_str).ok_or_else(|| {
+                eyre!("ripr check findings[{index}].classification was missing or not a string")
+            })?;
+        if !RIPR_CHECK_CLASSIFICATION_BUCKETS.contains(&classification) {
+            bail!(
+                "ripr check findings[{index}].classification {classification:?} had no reviewed summary bucket"
+            );
+        }
+    }
+    Ok(())
+}
+
 fn check_pr_evidence(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
     verify_revision(repo, &options.base)?;
     verify_revision(repo, &options.head)?;
@@ -781,18 +985,51 @@ fn check_pr_evidence(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
     Ok(())
 }
 
-fn run_ripr_check(repo: &Path, options: &PrEvidenceOptions) -> Result<String> {
+#[derive(Debug, Eq, PartialEq)]
+struct RiprCheckInvocation {
+    args: Vec<String>,
+    expected_root: String,
+    expected_mode: String,
+}
+
+fn ripr_check_invocation(repo: &Path, options: &PrEvidenceOptions) -> Result<RiprCheckInvocation> {
     let diff = repo.join(PR_DIFF).display().to_string();
     let root = command_root_arg(repo, &options.root)?;
-    run_ripr(&[
+    let config_path = repo.join("ripr.toml");
+    let config_text = fs::read_to_string(&config_path)
+        .with_context(|| format!("failed to read {}", config_path.display()))?;
+    let config: toml::Value = toml::from_str(&config_text)
+        .with_context(|| format!("failed to parse {}", config_path.display()))?;
+    let expected_mode = config
+        .get("analysis")
+        .and_then(toml::Value::as_table)
+        .and_then(|analysis| analysis.get("mode"))
+        .and_then(toml::Value::as_str)
+        .ok_or_else(|| {
+            eyre!("{} analysis.mode was missing or not a string", config_path.display())
+        })?
+        .to_string();
+    let args = vec![
         "check".to_string(),
         "--root".to_string(),
-        root,
+        root.clone(),
         "--diff".to_string(),
         diff,
+        "--mode".to_string(),
+        expected_mode.clone(),
         "--format".to_string(),
         "json".to_string(),
-    ])
+    ];
+    Ok(RiprCheckInvocation { args, expected_root: root, expected_mode })
+}
+
+fn run_ripr_check(
+    repo: &Path,
+    options: &PrEvidenceOptions,
+) -> Result<(String, RiprCheckInvocation)> {
+    let invocation = ripr_check_invocation(repo, options)?;
+    let output = run_ripr(&invocation.args)?;
+    Ok((output, invocation))
 }
 
 #[derive(Debug, Default)]
@@ -3627,6 +3864,287 @@ fn bullet_list(values: &[String]) -> String {
 mod tests {
     use super::*;
 
+    const RIPR_010_BOUNDARY_GAP_CHECK: &str =
+        include_str!("../../tests/fixtures/ripr-0.10/boundary-gap-check.json");
+    const RIPR_010_COMMENT_ONLY_CHECK: &str =
+        include_str!("../../tests/fixtures/ripr-0.10/comment-only-check.json");
+
+    fn valid_repo_badge_raw() -> String {
+        json!({
+            "schema_version": "0.6",
+            "kind": "ripr",
+            "scope": "repo",
+            "basis": "canonical_actionable_gap",
+            "counts": {
+                "unsuppressed_exposure_gaps": 2,
+                "unsuppressed_test_efficiency_findings": 0,
+                "suppressed_exposure_gaps": 1,
+                "suppressed_test_efficiency_findings": 0
+            },
+            "reason_counts": {},
+            "preview_skipped": []
+        })
+        .to_string()
+    }
+
+    fn valid_repo_seams_raw() -> String {
+        json!({
+            "schema_version": "0.1",
+            "scope": "repo",
+            "seams": []
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn ripr_010_golden_checks_validate_and_preserve_suppression_teeth() -> Result<()> {
+        let clean: Value = serde_json::from_str(RIPR_010_COMMENT_ONLY_CHECK)?;
+        validate_ripr_check_output(&clean, "fixtures/comment_only_diff/input", "fast")?;
+
+        let finding: Value = serde_json::from_str(RIPR_010_BOUNDARY_GAP_CHECK)?;
+        validate_ripr_check_output(&finding, "fixtures/boundary_gap/input", "fast")?;
+        let options = PrEvidenceOptions {
+            root: ".".to_string(),
+            base: "origin/main".to_string(),
+            head: "HEAD".to_string(),
+            pr_head_sha: None,
+        };
+        let unsuppressed = pr_evidence_packet(
+            &options,
+            &["fixtures/boundary_gap/input/src/lib.rs".to_string()],
+            &finding,
+            "base-sha",
+            "head-sha",
+            &RiprSuppressionRules::default(),
+        );
+        if unsuppressed.pointer("/summary/severe_gaps") != Some(&json!(1)) {
+            bail!("real RIPR 0.10 actionable fixture must remain visible when unsuppressed");
+        }
+
+        let suppression = RiprSuppressionRules {
+            display_patterns: vec!["fixtures/boundary_gap/input/src/lib.rs".to_string()],
+            path_patterns: vec![Pattern::new("fixtures/boundary_gap/input/src/lib.rs")?],
+            classification_patterns: vec![vec!["weakly_exposed".to_string()]],
+            invalid_patterns: Vec::new(),
+            suppression_reasons: Vec::new(),
+        };
+        let suppressed = pr_evidence_packet(
+            &options,
+            &["fixtures/boundary_gap/input/src/lib.rs".to_string()],
+            &finding,
+            "base-sha",
+            "head-sha",
+            &suppression,
+        );
+        if suppressed.pointer("/summary/suppressed_by_policy") != Some(&json!(1))
+            || suppressed.pointer("/summary/severe_gaps") != Some(&json!(0))
+        {
+            bail!("real RIPR 0.10 finding must be suppressed only by its matching policy rule");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn ripr_010_check_contract_rejects_stale_or_incomplete_output() -> Result<()> {
+        let fixture: Value = serde_json::from_str(RIPR_010_BOUNDARY_GAP_CHECK)?;
+        let mut cases = Vec::new();
+
+        let mut stale_schema = fixture.clone();
+        stale_schema
+            .as_object_mut()
+            .ok_or_else(|| eyre!("fixture must be an object"))?
+            .insert("schema_version".to_string(), json!("0.1"));
+        cases.push(("stale schema", stale_schema));
+
+        let mut missing_count = fixture.clone();
+        missing_count
+            .get_mut("summary")
+            .and_then(Value::as_object_mut)
+            .ok_or_else(|| eyre!("fixture summary must be an object"))?
+            .remove("weakly_exposed");
+        cases.push(("missing summary count", missing_count));
+
+        let mut malformed_count = fixture.clone();
+        malformed_count
+            .get_mut("summary")
+            .and_then(Value::as_object_mut)
+            .ok_or_else(|| eyre!("fixture summary must be an object"))?
+            .insert("reachable_unrevealed".to_string(), json!(false));
+        cases.push(("malformed summary count", malformed_count));
+
+        let mut missing_findings = fixture.clone();
+        missing_findings
+            .as_object_mut()
+            .ok_or_else(|| eyre!("fixture must be an object"))?
+            .remove("findings");
+        cases.push(("missing findings", missing_findings));
+
+        let mut mismatched_findings = fixture;
+        mismatched_findings
+            .get_mut("summary")
+            .and_then(Value::as_object_mut)
+            .ok_or_else(|| eyre!("fixture summary must be an object"))?
+            .insert("findings".to_string(), json!(0));
+        cases.push(("mismatched findings count", mismatched_findings));
+
+        for (label, candidate) in cases {
+            if validate_ripr_check_output(&candidate, "fixtures/boundary_gap/input", "fast").is_ok()
+            {
+                bail!("{label} must fail the reviewed RIPR 0.10 check-output contract");
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn ripr_010_check_contract_rejects_scope_and_classification_count_drift() -> Result<()> {
+        let fixture: Value = serde_json::from_str(RIPR_010_BOUNDARY_GAP_CHECK)?;
+        let mut cases = Vec::new();
+
+        for bucket in RIPR_CHECK_CLASSIFICATION_BUCKETS {
+            let mut zero_reported_bucket = fixture.clone();
+            zero_reported_bucket
+                .get_mut("summary")
+                .and_then(Value::as_object_mut)
+                .ok_or_else(|| eyre!("fixture summary must be an object"))?
+                .insert("weakly_exposed".to_string(), json!(0));
+            zero_reported_bucket
+                .get_mut("findings")
+                .and_then(Value::as_array_mut)
+                .and_then(|findings| findings.first_mut())
+                .and_then(Value::as_object_mut)
+                .ok_or_else(|| eyre!("fixture must contain an object finding"))?
+                .insert("classification".to_string(), json!(bucket));
+            if validate_ripr_check_output(
+                &zero_reported_bucket,
+                "fixtures/boundary_gap/input",
+                "fast",
+            )
+            .is_ok()
+            {
+                bail!(
+                    "a {bucket} finding must not pass with every exposure summary bucket at zero"
+                );
+            }
+        }
+
+        let mut wrong_mode = fixture.clone();
+        wrong_mode
+            .as_object_mut()
+            .ok_or_else(|| eyre!("fixture must be an object"))?
+            .insert("mode".to_string(), json!("deep"));
+        cases.push(("wrong mode", wrong_mode, "fixtures/boundary_gap/input"));
+
+        for status in ["no_scope_provided", "no_scope"] {
+            let mut no_scope = fixture.clone();
+            no_scope
+                .as_object_mut()
+                .ok_or_else(|| eyre!("fixture must be an object"))?
+                .insert("scope_disclosures".to_string(), json!([{"scope_status": status}]));
+            cases.push(("nonempty scope disclosure", no_scope, "fixtures/boundary_gap/input"));
+        }
+
+        cases.push(("wrong root", fixture, "fixtures/a_different_input"));
+
+        for (label, candidate, expected_root) in cases {
+            if validate_ripr_check_output(&candidate, expected_root, "fast").is_ok() {
+                bail!("{label} must fail the scoped RIPR 0.10 production validator");
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn ripr_pr_command_explicitly_binds_the_reviewed_draft_mode() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path();
+        fs::write(repo.join("ripr.toml"), "[analysis]\nmode = \"draft\"\n")?;
+        let options = PrEvidenceOptions {
+            root: ".".to_string(),
+            base: "origin/main".to_string(),
+            head: "HEAD".to_string(),
+            pr_head_sha: None,
+        };
+        let invocation = ripr_check_invocation(repo, &options)?;
+        let expected_root = command_root_arg(repo, ".")?;
+        let expected_args = vec![
+            "check".to_string(),
+            "--root".to_string(),
+            expected_root.clone(),
+            "--diff".to_string(),
+            repo.join(PR_DIFF).display().to_string(),
+            "--mode".to_string(),
+            "draft".to_string(),
+            "--format".to_string(),
+            "json".to_string(),
+        ];
+        if invocation.args != expected_args
+            || invocation.expected_root != expected_root
+            || invocation.expected_mode != "draft"
+        {
+            bail!("ripr-pr production invocation must explicitly bind --mode draft");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn ripr_repo_badge_contract_rejects_missing_or_malformed_counts() -> Result<()> {
+        let valid: Value = serde_json::from_str(&valid_repo_badge_raw())?;
+        validate_ripr_repo_badge_output(&valid)?;
+
+        for key in REQUIRED_RIPR_BADGE_COUNTS {
+            let mut missing = valid.clone();
+            missing
+                .get_mut("counts")
+                .and_then(Value::as_object_mut)
+                .ok_or_else(|| eyre!("fixture counts must be an object"))?
+                .remove(*key);
+            if validate_ripr_repo_badge_output(&missing).is_ok() {
+                bail!("missing repo-badge count {key} must fail closed");
+            }
+        }
+
+        let mut boolean_count = valid;
+        boolean_count
+            .get_mut("counts")
+            .and_then(Value::as_object_mut)
+            .ok_or_else(|| eyre!("fixture counts must be an object"))?
+            .insert("unsuppressed_exposure_gaps".to_string(), json!(true));
+        if validate_ripr_repo_badge_output(&boolean_count).is_ok() {
+            bail!("boolean repo-badge counts must fail closed");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn ripr_plus_contract_rejects_identity_preview_and_seam_drift() -> Result<()> {
+        for (key, value) in [
+            ("schema_version", json!("0.5")),
+            ("scope", json!("diff")),
+            ("basis", json!("seam_native")),
+            ("preview_skipped", json!(["typescript"])),
+        ] {
+            let mut candidate: Value = serde_json::from_str(&valid_repo_badge_raw())?;
+            candidate
+                .as_object_mut()
+                .ok_or_else(|| eyre!("badge fixture must be an object"))?
+                .insert(key.to_string(), value);
+            if validate_ripr_repo_badge_output(&candidate).is_ok() {
+                bail!("repo-badge drift in {key} must fail closed");
+            }
+        }
+
+        for candidate in [
+            json!({"schema_version": "0.0", "scope": "repo", "seams": []}),
+            json!({"schema_version": "0.1", "scope": "repo", "seams": [{}]}),
+        ] {
+            if validate_ripr_repo_seams_output(&candidate).is_ok() {
+                bail!("repo-seams schema or record drift must fail closed");
+            }
+        }
+        Ok(())
+    }
+
     #[test]
     fn command_root_arg_allows_repo_relative_root() -> Result<()> {
         let temp = tempfile::tempdir()?;
@@ -4004,15 +4522,22 @@ mod tests {
             suppressions: PathBuf::from("policy/ripr-suppressions.toml"),
         };
         let badge_raw = json!({
+            "schema_version": "0.6",
+            "kind": "ripr",
+            "scope": "repo",
             "basis": "canonical_actionable_gap",
             "counts": {
                 "unsuppressed_exposure_gaps": 2722,
                 "unsuppressed_test_efficiency_findings": 0,
+                "suppressed_exposure_gaps": 0,
+                "suppressed_test_efficiency_findings": 0,
                 "analyzed_seams": 120408
-            }
+            },
+            "reason_counts": {},
+            "preview_skipped": []
         })
         .to_string();
-        let seams_raw = json!({"seams": []}).to_string();
+        let seams_raw = valid_repo_seams_raw();
 
         let packet = ripr_plus_packet_from_raw(
             &options,
@@ -4095,7 +4620,7 @@ reason = "Archived source is not active workspace behavior."
             "head-sha",
             &RiprSuppressionRules::default(),
             "this is not json",
-            r#"{"seams":[]}"#,
+            &valid_repo_seams_raw(),
         );
         assert!(result.is_err(), "invalid repo-badge-json must be rejected");
     }
@@ -4110,7 +4635,7 @@ reason = "Archived source is not active workspace behavior."
             &options,
             "head-sha",
             &RiprSuppressionRules::default(),
-            r#"{"basis":"canonical_actionable_gap","counts":{}}"#,
+            &valid_repo_badge_raw(),
             "this is not json",
         );
         assert!(result.is_err(), "invalid repo-seams-json must be rejected");
@@ -4126,8 +4651,8 @@ reason = "Archived source is not active workspace behavior."
             &options,
             "head-sha",
             &RiprSuppressionRules::default(),
-            r#"{"basis":"canonical_actionable_gap","counts":{}}"#,
-            r#"{"not_seams": []}"#,
+            &valid_repo_badge_raw(),
+            r#"{"schema_version":"0.1","scope":"repo","not_seams":[]}"#,
         );
         assert!(result.is_err(), "seams-json without seams[] key must be rejected");
     }
@@ -6820,8 +7345,8 @@ paths = ["archive/["]
     }
 
     fn write_fake_ripr_binary(dir: &Path) -> Result<PathBuf> {
-        let badge_json = r#"{"basis":"canonical_actionable_gap","counts":{"unsuppressed_exposure_gaps":7,"unsuppressed_test_efficiency_findings":2,"suppressed_exposure_gaps":1,"suppressed_test_efficiency_findings":3},"reason_counts":{"no_assertion_detected":7}}"#;
-        let seams_json = r#"{"seams":[{"file":"xtask/src/tasks/ripr_evidence.rs","gap_kind":"receipt parsing"},{"file":"archive/old.rs","gap_kind":"archived"}]}"#;
+        let badge_json = r#"{"schema_version":"0.6","kind":"ripr","scope":"repo","basis":"canonical_actionable_gap","counts":{"unsuppressed_exposure_gaps":7,"unsuppressed_test_efficiency_findings":2,"suppressed_exposure_gaps":1,"suppressed_test_efficiency_findings":3},"reason_counts":{"no_assertion_detected":7},"preview_skipped":[]}"#;
+        let seams_json = r#"{"schema_version":"0.1","scope":"repo","seams":[{"file":"xtask/src/tasks/ripr_evidence.rs","kind":"receipt parsing"},{"file":"archive/old.rs","kind":"archived"}]}"#;
 
         #[cfg(windows)]
         {

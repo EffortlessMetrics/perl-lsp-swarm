@@ -20,6 +20,12 @@ EXPECTED_COUNT_FIELDS = (
     "unsuppressed_exposure_gaps",
     "unsuppressed_test_efficiency_findings",
 )
+EXPECTED_RIPR_BADGE_IDENTITY = {
+    "schema_version": "0.6",
+    "kind": "ripr",
+    "scope": "repo",
+    "basis": "canonical_actionable_gap",
+}
 
 
 def bounded_stderr(stderr: str) -> str:
@@ -97,6 +103,15 @@ def run_ripr(root: Path, timeout_seconds: float = RIPR_TIMEOUT_SECONDS) -> str:
 def badge_from_ripr(payload: object) -> dict[str, object]:
     if not isinstance(payload, dict):
         raise ValueError("ripr emitted a non-object repo-badge-json payload")
+    for name, expected in EXPECTED_RIPR_BADGE_IDENTITY.items():
+        actual = payload.get(name)
+        if actual != expected:
+            raise ValueError(f"ripr {name} must be {expected!r}, got {actual!r}")
+    preview_skipped = payload.get("preview_skipped")
+    if not isinstance(preview_skipped, list):
+        raise ValueError("ripr preview_skipped must be an array")
+    if preview_skipped:
+        raise ValueError("ripr repo badge cannot be clean when preview languages were skipped")
     counts = payload.get("counts")
     if not isinstance(counts, dict):
         raise ValueError("ripr repo-badge-json payload must contain an object `counts` field")

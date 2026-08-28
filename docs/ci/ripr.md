@@ -209,15 +209,21 @@ burn-down closes.
 
 ## Toolchain
 
-`rust-toolchain.toml` pins `1.95.0`. The workflow installs `ripr` `0.9.0` as
-the current advisory version for this lane.
+`rust-toolchain.toml` pins `1.95.0`. The workflow installs `ripr` `0.10.0` as
+the current advisory version for this lane. Its `check --format json` consumer
+requires the published 0.10 `schema_version = "0.2"` shape and fails closed when
+required summary counts or `findings[]` are missing or malformed. Producer-shaped
+goldens and provenance are retained under `xtask/tests/fixtures/ripr-0.10/`. The
+PR evidence command explicitly passes the repository's governed `draft` mode from
+`ripr.toml` and rejects output reporting a different mode, root, or scoped-analysis
+disclosure.
 
 ---
 
 ## Running locally
 
 ```bash
-cargo install ripr --version 0.9.0 --locked
+cargo install ripr --version 0.10.0 --locked
 ripr doctor
 cargo xtask ripr-pr --base origin/HEAD --head HEAD --pr-head "$PR_HEAD_SHA"
 cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json

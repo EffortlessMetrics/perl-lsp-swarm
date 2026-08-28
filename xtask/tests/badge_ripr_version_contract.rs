@@ -10,6 +10,7 @@ use serde_yaml_ng::Value;
 const EXPECTED_RIPR_EXECUTION_JOBS: &[&str] =
     &["ripr-cx53", "ripr-cx43", "ripr-github", "ripr-fallback", "seed-cache"];
 const VARIABLE_INSTALL_COMMAND: &str = "cargo install ripr --version \"$RIPR_VERSION\" --locked";
+const REVIEWED_RIPR_COMPATIBILITY_BASELINE: &str = "0.10.0";
 
 fn project_root() -> PathBuf {
     let mut root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -119,6 +120,13 @@ fn badge_installer_matches_the_reviewed_ripr_workflow_release()
         .first()
         .copied()
         .ok_or("the routed RIPR workflow declared no reviewed release")?;
+    if reviewed_version != REVIEWED_RIPR_COMPATIBILITY_BASELINE {
+        return Err(format!(
+            "reviewed workflow release {reviewed_version:?} does not match the output-schema \
+             compatibility baseline {REVIEWED_RIPR_COMPATIBILITY_BASELINE:?}"
+        )
+        .into());
+    }
 
     let mut badge_run_steps = Vec::new();
     collect_named_strings(&badge_workflow, "run", &mut badge_run_steps)?;

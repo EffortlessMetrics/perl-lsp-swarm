@@ -23,6 +23,17 @@ VALID_COUNTS = {
     "unsuppressed_test_efficiency_findings": 0,
 }
 
+
+def valid_ripr_payload(counts=None):
+    return {
+        "schema_version": "0.6",
+        "kind": "ripr",
+        "scope": "repo",
+        "basis": "canonical_actionable_gap",
+        "counts": dict(VALID_COUNTS if counts is None else counts),
+        "preview_skipped": [],
+    }
+
 FAKE_RIPR = r'''#!/usr/bin/env python3
 import json
 import os
@@ -184,19 +195,19 @@ class GenerateBadgesTests(unittest.TestCase):
 
     def test_nonzero_counts_are_yellow(self):
         result, output = self.run_generator(
-            {
-                "counts": {
+            valid_ripr_payload(
+                {
                     "unsuppressed_exposure_gaps": 3,
                     "unsuppressed_test_efficiency_findings": 2,
                 }
-            }
+            )
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         badge = json.loads(output)
         self.assertEqual((badge["message"], badge["color"]), ("5", "yellow"))
 
     def test_zero_counts_are_brightgreen(self):
-        result, output = self.run_generator({"counts": VALID_COUNTS})
+        result, output = self.run_generator(valid_ripr_payload())
         self.assertEqual(result.returncode, 0, result.stderr)
         badge = json.loads(output)
         self.assertEqual((badge["message"], badge["color"]), ("0", "brightgreen"))
@@ -205,20 +216,38 @@ class GenerateBadgesTests(unittest.TestCase):
         invalid_payloads = [
             [],
             {},
-            {"counts": []},
-            {"counts": {}},
-            {"counts": {"unexpected": 7}},
-            {"counts": {**VALID_COUNTS, "unsuppressed_exposure_gaps": True}},
-            {"counts": {**VALID_COUNTS, "unsuppressed_exposure_gaps": -1}},
-            {"counts": {**VALID_COUNTS, "unsuppressed_test_efficiency_findings": 1.5}},
+            valid_ripr_payload([]),
+            valid_ripr_payload({}),
+            valid_ripr_payload({"unexpected": 7}),
+            valid_ripr_payload({**VALID_COUNTS, "unsuppressed_exposure_gaps": True}),
+            valid_ripr_payload({**VALID_COUNTS, "unsuppressed_exposure_gaps": -1}),
+            valid_ripr_payload(
+                {**VALID_COUNTS, "unsuppressed_test_efficiency_findings": 1.5}
+            ),
         ]
+        for payload in invalid_payloads:
+            with self.subTest(payload=payload):
+                self.assertNotEqual(self.run_generator(payload)[0].returncode, 0)
+
+    def test_wrong_schema_scope_basis_or_preview_skip_fails_closed(self):
+        invalid_payloads = []
+        for key, value in [
+            ("schema_version", "0.5"),
+            ("kind", "ripr+"),
+            ("scope", "diff"),
+            ("basis", "seam_native"),
+            ("preview_skipped", ["typescript"]),
+        ]:
+            payload = valid_ripr_payload()
+            payload[key] = value
+            invalid_payloads.append(payload)
         for payload in invalid_payloads:
             with self.subTest(payload=payload):
                 self.assertNotEqual(self.run_generator(payload)[0].returncode, 0)
 
     def test_process_failure_has_bounded_stderr(self):
         result, _ = self.run_generator(
-            {"counts": VALID_COUNTS}, exit_code=7, stderr="x" * 10_000
+            valid_ripr_payload(), exit_code=7, stderr="x" * 10_000
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("[truncated]", result.stderr)
@@ -227,12 +256,12 @@ class GenerateBadgesTests(unittest.TestCase):
     def test_check_detects_drift(self):
         self.assertNotEqual(
             self.run_generator(
-                {
-                    "counts": {
+                valid_ripr_payload(
+                    {
                         "unsuppressed_exposure_gaps": 1,
                         "unsuppressed_test_efficiency_findings": 0,
                     }
-                },
+                ),
                 check=True,
             )[0].returncode,
             0,
@@ -241,7 +270,7 @@ class GenerateBadgesTests(unittest.TestCase):
     def test_fake_rejects_command_and_scope_drift(self):
         with tempfile.TemporaryDirectory() as directory:
             root, _, fake, fake_source = self.make_fixture(directory)
-            env = self.fake_env(root, fake, {"counts": VALID_COUNTS})
+            env = self.fake_env(root, fake, valid_ripr_payload())
             valid = ["check", "--root", str(root), "--format", "repo-badge-json"]
             cases = [
                 (valid[1:], root),
@@ -265,7 +294,7 @@ class GenerateBadgesTests(unittest.TestCase):
     def test_timeout_terminates_fake_ripr_process_tree(self):
         with tempfile.TemporaryDirectory() as directory:
             root, _, fake, _ = self.make_fixture(directory)
-            env = self.fake_env(root, fake, {"counts": VALID_COUNTS})
+            env = self.fake_env(root, fake, valid_ripr_payload())
             env["FAKE_RIPR_HANG"] = "1"
             previous = os.environ.copy()
             os.environ.update(env)

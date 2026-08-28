@@ -41,7 +41,7 @@ jobs:
           persist-credentials: false
 
       - name: Install reviewed ripr release
-        run: cargo install ripr --version 0.9.0 --locked
+        run: cargo install ripr --version 0.10.0 --locked
 
       - name: Refresh badge endpoints
         run: python3 scripts/generate-badges.py
