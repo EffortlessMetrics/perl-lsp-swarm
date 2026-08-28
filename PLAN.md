@@ -40,7 +40,10 @@ must stop at `provisional(human-pending)` for the selection surface.
 - Dependency map: **#10333 owns the route schema/validation boundary and
   explicitly excludes route population** and is currently open and blocked by
   #11164; **#10334 owns catalog composition and sequencing/fan-in** under that
-  schema contract; **#11434 owns the canonical route denominator**; and
+  schema contract; **#11548 is the current-v2 catalog assembly train under
+  #10334**, not an independent schema authority; **#11443 owns the E07
+  cross-cutting PATH/transition/publication closure fan-in under #10334**;
+  **#11434 owns the canonical route denominator**; and
   **#11432 plus the other named producers own evidence inputs**. #11549 starts
   only after those authorities publish a validated contract. The closed,
   superseded #12858 attempt is historical context only and cannot supply route
@@ -62,8 +65,10 @@ The generated inventory delta is part of this plan only because adding tracked
 added by that regeneration describe `scripts/generate-badges.py` and
 `scripts/tests/test-generate-badges.py`, which already exist on `origin/main` and
 were absent from the base report; this PR does not add or modify those sources.
-The count changes therefore reconcile a stale generated report rather than expand
-the implementation scope.
+The inventory's +2 Rust-family entries likewise describe the pre-existing
+`xtask/src/tasks/ci_route.rs` and `xtask/tests/ci_route_cli.rs` files, not files
+introduced by this PR. The count changes therefore reconcile a stale generated
+report rather than expand the implementation scope.
 
 Derived from `docs/distribution/INSTALL_CLAIM_SURFACES.md`
 (`git show origin/main:docs/distribution/INSTALL_CLAIM_SURFACES.md`):
@@ -268,6 +273,13 @@ ALLOWED_EXCLUSIONS = {
     "diagnostic_surface", "verification_metadata", "channel_rule",
     "volatile_metadata", "adjacent_product", "non_install_dependency",
 }
+CLAIM_DISPOSITION_RULES = {
+    "C1205": {
+        "kind": "exclude",
+        "reason": "non_install_dependency",
+        "rationale": "internal deployment guidance",
+    },
+}
 def fixture_catalog():
     rows = []
     for item_id in EXPECTED_CLAIMS:
@@ -321,6 +333,11 @@ def require_open_vsx_route(catalog_rows, route_id, projection_context):
         raise ValueError("route is not compatible with the Open VSX registry")
     return route
 
+def require_claim_disposition(row):
+    expected = CLAIM_DISPOSITION_RULES.get(row["id"])
+    if expected and any(row.get(key) != value for key, value in expected.items()):
+        raise ValueError(f"{row['id']}: incompatible claim disposition")
+
 def assert_rejected(catalog_rows, route_id, projection_context):
     try:
         require_open_vsx_route(catalog_rows, route_id, projection_context)
@@ -342,6 +359,12 @@ def fixture_ledger():
                 "id": item_id, "kind": "project",
                 "exact_catalog_route_id": "r_4f8c2a",
                 "exact_projection_context": "Open_VSX_compatible_marketplace_context",
+            })
+        elif item_id == "C1205":
+            rows.append({
+                "id": item_id, "kind": "exclude",
+                "reason": "non_install_dependency",
+                "rationale": "internal deployment guidance",
             })
         else:
             rows.append({
@@ -370,6 +393,7 @@ def validate_closure(inventory_rows, ledger_rows, catalog_rows):
     if Counter(ledger_ids) != expected_counts:
         raise ValueError("missing, duplicate, or unknown ledger ID")
     for row in ledger_rows:
+        require_claim_disposition(row)
         if row["kind"] == "project":
             if not row.get("exact_catalog_route_id") or not row.get("exact_projection_context"):
                 raise ValueError(f"{row['id']}: incomplete projection")
@@ -409,12 +433,23 @@ assert validate_closure(
 )
 assert assert_rejected(
     WRONG_REGISTRY_CATALOG,
-    "r_wrong_registry",
-    "VS_Marketplace_compatible_marketplace_context",
+    "r_4f8c2a",
+    "Open_VSX_compatible_marketplace_context",
 )
 assert assert_rejected(FIXTURE_CATALOG, "r_unknown", "Open_VSX_compatible_marketplace_context")
 assert assert_rejected(DUPLICATE_ID_CATALOG, "r_4f8c2a", "Open_VSX_compatible_marketplace_context")
 assert assert_rejected(FIXTURE_CATALOG, "r_4f8c2a", "VS_Marketplace_compatible_marketplace_context")
+try:
+    require_claim_disposition({
+        "id": "C1205",
+        "kind": "project",
+        "exact_catalog_route_id": "fixture-route-C1205",
+        "exact_projection_context": "fixture-context-C1205",
+    })
+except ValueError:
+    pass
+else:
+    raise AssertionError("out-of-scope C1205 disposition was accepted")
 ```
 
 The fixture rejects missing, duplicate, unknown, and incompatible IDs before
@@ -426,6 +461,9 @@ before route classification exists; only exact catalog route IDs and projection
 contexts remain gated on #10334's catalog and #10333's contract. A prose manifest or count without this
 set-equality and compatibility check does not satisfy closure. Every project row
 also resolves its exact route ID and projection context through the fixture catalog.
+The claim-to-disposition rule independently requires out-of-scope C1205 to remain
+the declared `non_install_dependency` exclusion; a project or other exclusion
+disposition is rejected.
 The C1208 assertion
 also proves that its opaque ID resolves to exactly one catalog row whose registry is
 Open VSX and whose projection context is compatible; an ID that resolves to the
@@ -534,7 +572,9 @@ schema-closed:
   is NOT derived here** (§3).
 - Composition note: #10334 composes and fans in the catalog under #10333's
   schema/validation authority; #10333 excludes route population. #11434
-  supplies denominator closure and #11432 supplies its named evidence producer.
+  supplies denominator closure, #11432 supplies its named evidence producer,
+  #11548 is the catalog assembly outcome, and #11443 owns cross-cutting E07
+  closure. Neither issue supplies route-selection authority.
   Do not build against the closed #12858
   branch or any artifact/API from that attempt. Re-derive exact route joins, projection contexts, and falsifier
   fixtures if the validated input contract changes.
@@ -879,8 +919,8 @@ table. Do NOT pull FND-7/FND-11 doc syncs or #10342 linting into this claim.
 
 **Hard prerequisite check at build time:** require explicit rulings for H1–H7 in
 addition to the validated route
-schema/validation contract from #10333 and catalog composition/fan-in from #10334,
-with #11434's canonical
+schema/validation contract from #10333 and catalog composition/fan-in from #10334
+(including #11548's catalog assembly and #11443's E07 closure), with #11434's canonical
 denominator, and the relevant #11432/evidence-producer revisions. Require exact
 route IDs, projection contexts, producer joins, publication/channel bindings,
 and fail-closed route states. If any authority is absent or structurally
