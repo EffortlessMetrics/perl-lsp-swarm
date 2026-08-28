@@ -9,7 +9,7 @@ from pathlib import Path
 
 def insert_variant(anchor: str, variant: str, minimum: int) -> int:
     pattern = re.compile(
-        rf"^(?P<indent>\s*)(?P<prefix>\|\s+)?TokenKind::{anchor},$",
+        rf"^(?P<indent>\s*)(?P<prefix>\|\s+)?TokenKind::{anchor}(?P<comma>,?)$",
         re.MULTILINE,
     )
     total = 0
@@ -21,20 +21,30 @@ def insert_variant(anchor: str, variant: str, minimum: int) -> int:
             total += 1
             indent = match.group("indent")
             prefix = match.group("prefix") or ""
+            comma = match.group("comma")
 
             if prefix:
-                # A `|` prefix means this is one alternative in a Rust
-                # pattern, not an element in a comma-separated collection.
-                # The original comma was the pattern terminator; move that
-                # terminator after the newly inserted final alternative.
+                # OR-pattern alternatives may be either intermediate lines
+                # without punctuation or the final, comma-terminated line.
+                # Preserve that shape while inserting the new alternative.
+                if comma:
+                    return (
+                        f"{indent}{prefix}TokenKind::{anchor}\n"
+                        f"{indent}{prefix}TokenKind::{variant},"
+                    )
                 return (
                     f"{indent}{prefix}TokenKind::{anchor}\n"
-                    f"{indent}{prefix}TokenKind::{variant},"
+                    f"{indent}{prefix}TokenKind::{variant}"
                 )
 
-            return (
-                f"{indent}TokenKind::{anchor},\n"
-                f"{indent}TokenKind::{variant},"
+            if comma:
+                return (
+                    f"{indent}TokenKind::{anchor},\n"
+                    f"{indent}TokenKind::{variant},"
+                )
+
+            raise SystemExit(
+                f"{path}: TokenKind::{anchor} table entry has neither OR-pattern prefix nor comma"
             )
 
         updated = pattern.sub(replacement, text)
