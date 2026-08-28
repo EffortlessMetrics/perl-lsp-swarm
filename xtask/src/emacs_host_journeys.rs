@@ -56,6 +56,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
+use std::path::Path;
 
 use crate::client_compat_fixture::{CANONICAL_EXPECTATION_IDS, CANONICAL_EXPECTATION_SET_ID};
 use crate::editor_client_compat::EvidenceStage;
@@ -147,6 +148,12 @@ pub const LIMITATION_VOCABULARY: &[&str] = &[
 /// mapping). A cell records which mapping may consume its receipts; the
 /// mapping machinery itself lives in #11360/#11361 and is not defined here.
 pub const PRODUCER_MAPPING_PREFIX: &str = "11361.";
+
+/// The registered `#11361` observation → receipt mappings a cell may cite.
+/// Namespace syntax alone is not ownership: an invented `11361.<token>` row
+/// must fail closed so no cell can cite a mapping no `#11361`-owned producer
+/// can consume.
+pub const PRODUCER_MAPPINGS: &[&str] = &["11361.observation_to_receipt.v1"];
 
 // ---------------------------------------------------------------------------
 // Model
@@ -731,8 +738,7 @@ pub fn registry() -> Vec<JourneyCell> {
             surfaces: &[StaleResultRejection],
             evidence_kind: HostVisible,
             discriminator:
-                "a result bound to a prior document/root/config/process/session generation was \
-                 rejected",
+                "a result bound to a prior document or process generation was rejected",
             controls: &[
                 "prior_generation_stale_result",
                 "partial_multi_file_edit_or_result",
@@ -911,7 +917,31 @@ pub fn registry() -> Vec<JourneyCell> {
 /// Validate the compiled registry of current main: shared cell laws, then the
 /// registry-level coverage laws (baseline classes covered by core cells only,
 /// optional cells confined to optional classes).
+///
+/// The advertised fail-closed command also resolves the landed subject
+/// authority from disk before emitting the summary: a deleted, malformed, or
+/// sparse-checkout-omitted `.ci/editor-clients/emacs-subjects.v1.json` must
+/// fail here, not only in a contract test.
 pub fn validate_compiled_registry() -> Result<RegistrySummary> {
+    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .context("xtask must live below the repository root")?;
+    validate_compiled_registry_against(repo_root)
+}
+
+/// [`validate_compiled_registry`] against an explicit repository root, so the
+/// fail-closed subject-authority path is executable-proof without mutating the
+/// real checkout.
+pub fn validate_compiled_registry_against(repo_root: &Path) -> Result<RegistrySummary> {
+    crate::emacs_subject_manifest::SubjectManifest::load(repo_root)?;
+    for fixture in SUBJECT_FIXTURE_SUBSTRATE {
+        let path = repo_root.join(".ci/editor-clients").join(format!("{fixture}.json"));
+        ensure!(
+            path.is_file(),
+            "registry binds fixture authority {fixture} that is absent from the tree: {}",
+            path.display()
+        );
+    }
     validate_registry(&registry())
 }
 
@@ -1113,6 +1143,15 @@ fn validate_cell(cell: &JourneyCell, classes: &[&str]) -> Result<()> {
     }
 
     // Root sensitivity: reference-only tokens, never material duplication.
+    // A cell whose receipts require a discovery-generation distinction must
+    // bind the `root_11366.<role>` it claims, so dropping the reference can
+    // never silently un-govern a root-sensitive cell.
+    ensure!(
+        !cell.dimensions.iter().any(|d| d == "root.discovery_generation")
+            || cell.root_reference.is_some(),
+        "cell {} requires root.discovery_generation but binds no root_11366 role reference",
+        cell.cell_id
+    );
     if let Some(root) = &cell.root_reference {
         let Some(role) = root.role_token.strip_prefix("root_11366.") else {
             bail!(
@@ -1230,6 +1269,12 @@ fn validate_cell(cell: &JourneyCell, classes: &[&str]) -> Result<()> {
     ensure!(
         is_reason_token(producer),
         "producer mapping token must be a stable reason token: {producer}"
+    );
+    ensure!(
+        PRODUCER_MAPPINGS.contains(&cell.producer_mapping.as_str()),
+        "cell {} cites unregistered #11361 producer mapping {}",
+        cell.cell_id,
+        cell.producer_mapping
     );
     Ok(())
 }

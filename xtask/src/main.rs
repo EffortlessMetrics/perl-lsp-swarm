@@ -5345,18 +5345,18 @@ fn run_cli(cli: Cli) -> Result<()> {
                 EmacsIntegrationCommand::Journeys { command } => match command {
                     EmacsJourneysCommand::Check => {
                         let summary = xtask::emacs_host_journeys::validate_compiled_registry()
-                            .map_err(|error| eyre!(error.to_string()))?;
+                            .map_err(|error| eyre!("{error:#}"))?;
                         println!(
                             "{}",
                             serde_json::to_string_pretty(&summary)
-                                .map_err(|error| eyre!(error.to_string()))?
+                                .map_err(|error| eyre!("{error:#}"))?
                         );
                         Ok(())
                     }
                     EmacsJourneysCommand::Explain { subject } => {
                         let cells = xtask::emacs_host_journeys::registry();
                         let (class, matched) = xtask::emacs_host_journeys::lookup(&cells, &subject)
-                            .map_err(|error| eyre!(error.to_string()))?;
+                            .map_err(|error| eyre!("{error:#}"))?;
                         let mut explained = serde_json::json!({
                             "schema_version": xtask::emacs_host_journeys::MANIFEST_SCHEMA_VERSION,
                             "subject": subject,
@@ -5367,7 +5367,7 @@ fn run_cli(cli: Cli) -> Result<()> {
                         let mut rows = Vec::new();
                         for cell in matched {
                             let digest = xtask::emacs_host_journeys::cell_digest(cell)
-                                .map_err(|error| eyre!(error.to_string()))?;
+                                .map_err(|error| eyre!("{error:#}"))?;
                             rows.push(serde_json::json!({
                                 "cell": cell,
                                 "digest": digest,
@@ -5377,7 +5377,7 @@ fn run_cli(cli: Cli) -> Result<()> {
                         println!(
                             "{}",
                             serde_json::to_string_pretty(&explained)
-                                .map_err(|error| eyre!(error.to_string()))?
+                                .map_err(|error| eyre!("{error:#}"))?
                         );
                         Ok(())
                     }

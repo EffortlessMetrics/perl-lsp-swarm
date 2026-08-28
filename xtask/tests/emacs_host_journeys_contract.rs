@@ -116,14 +116,25 @@ fn protocol_membership_can_never_present_host_visible_semantics() -> Result<()> 
     ensure!(error.contains("protocol"), "unexpected rejection text: {error}");
 
     // The inverse lie: a host-visible cell claiming only a protocol surface.
+    // Mutate one published row in place (and confine it to the pull cohort so
+    // the pull-cohort law passes) so the rejection can only come from the
+    // host-visible surface law at `validate_cell`, never from a
+    // baseline-coverage law triggered by removing rows.
     let mut cells = compiled();
-    cells.retain(|cell| cell.evidence_kind == EvidenceKind::HostVisibleObservation);
-    for cell in &mut cells {
-        cell.host_surfaces = vec![HostSurface::DiagnosticsPollProtocol];
-    }
+    let host_visible = "emacs.eldoc_hover_observation.hover_rendered";
+    let position = cells
+        .iter()
+        .position(|cell| cell.cell_id == host_visible)
+        .ok_or_else(|| anyhow::anyhow!("hover cell vanished from the registry"))?;
+    cells[position].host_surfaces = vec![HostSurface::DiagnosticsPollProtocol];
+    cells[position].cohorts = vec![DiagnosticCohort::StandaloneEglotPull];
+    let error = match emacs_host_journeys::validate_registry(&cells) {
+        Err(error) => error.to_string(),
+        Ok(_) => bail!("host-visible row accepted with protocol-only surfaces"),
+    };
     ensure!(
-        emacs_host_journeys::validate_registry(&cells).is_err(),
-        "host-visible row accepted with protocol-only surfaces"
+        error.contains("requires at least one host-visible surface"),
+        "unexpected rejection for protocol-only host-visible row: {error}"
     );
     Ok(())
 }
@@ -360,5 +371,93 @@ fn lookup_resolves_cells_classes_and_rejects_unknown_subjects() -> Result<()> {
         emacs_host_journeys::lookup(&cells, "emacs.nope.unknown").is_err(),
         "lookup accepted an unknown cell"
     );
+    Ok(())
+}
+
+#[test]
+fn root_sensitive_cells_fail_closed_without_a_root_reference() -> Result<()> {
+    let mut cells = compiled();
+    let stock_root = "emacs.workspace_readiness.stock_root_ready";
+    let position = cells
+        .iter()
+        .position(|cell| cell.cell_id == stock_root)
+        .ok_or_else(|| anyhow::anyhow!("stock-root cell vanished from the registry"))?;
+    // Removing the reference must be a rejection, not a silent loss of root
+    // governance: the cell requires a discovery-generation distinction.
+    cells[position].root_reference = None;
+    let error = match emacs_host_journeys::validate_registry(&cells) {
+        Err(error) => error.to_string(),
+        Ok(_) => bail!("root-sensitive row accepted without a root_11366 reference"),
+    };
+    ensure!(
+        error.contains("root.discovery_generation"),
+        "unexpected rejection for reference-less root-sensitive row: {error}"
+    );
+    Ok(())
+}
+
+#[test]
+fn unknown_producer_mappings_fail_closed() -> Result<()> {
+    let mut cells = compiled();
+    let hover = "emacs.eldoc_hover_observation.hover_rendered";
+    let position = cells
+        .iter()
+        .position(|cell| cell.cell_id == hover)
+        .ok_or_else(|| anyhow::anyhow!("hover cell vanished from the registry"))?;
+    // Namespace syntax alone must not bless an invented mapping: only the
+    // registered #11361 observation → receipt vocabulary is citable.
+    cells[position].producer_mapping = "11361.unowned_mapping".to_string();
+    let error = match emacs_host_journeys::validate_registry(&cells) {
+        Err(error) => error.to_string(),
+        Ok(_) => bail!("cell cited an unregistered #11361 producer mapping"),
+    };
+    ensure!(
+        error.contains("unregistered #11361 producer mapping"),
+        "unexpected rejection for invented producer mapping: {error}"
+    );
+    Ok(())
+}
+
+#[test]
+fn production_check_fails_closed_without_landed_subject_authority() -> Result<()> {
+    use xtask::emacs_host_journeys::validate_compiled_registry_against;
+
+    let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("xtask must live below the repository root"))?;
+    let manifest_bytes = std::fs::read(repo_root.join(".ci/editor-clients/emacs-subjects.v1.json"))
+        .map_err(|error| anyhow::anyhow!("subject authority vanished from the tree: {error}"))?;
+
+    // Missing manifest: the production path must reject, not bless.
+    let empty = tempfile::tempdir()?;
+    let error = match validate_compiled_registry_against(empty.path()) {
+        Err(error) => error.to_string(),
+        Ok(_) => bail!("production check succeeded with the subject manifest deleted"),
+    };
+    ensure!(
+        error.contains("missing or unreadable"),
+        "unexpected rejection for a deleted subject manifest: {error}"
+    );
+
+    // Malformed manifest: the production path must reject, not bless.
+    let malformed = tempfile::tempdir()?;
+    let clients = malformed.path().join(".ci/editor-clients");
+    std::fs::create_dir_all(&clients)?;
+    std::fs::write(clients.join("emacs-subjects.v1.json"), b"{ not json")?;
+    let error = match validate_compiled_registry_against(malformed.path()) {
+        Err(error) => error.to_string(),
+        Ok(_) => bail!("production check succeeded with a malformed subject manifest"),
+    };
+    ensure!(
+        error.contains("not valid JSON"),
+        "unexpected rejection for a malformed subject manifest: {error}"
+    );
+
+    // The landed authority itself still validates end to end.
+    let landed = tempfile::tempdir()?;
+    let clients = landed.path().join(".ci/editor-clients");
+    std::fs::create_dir_all(&clients)?;
+    std::fs::write(clients.join("emacs-subjects.v1.json"), &manifest_bytes)?;
+    validate_compiled_registry_against(landed.path())?;
     Ok(())
 }
