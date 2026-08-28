@@ -3,10 +3,7 @@ mod cpan_test_helpers;
 use cpan_test_helpers::*;
 use perl_parser_core::{Node, NodeKind};
 
-fn collect_indirect_calls<'a>(
-    node: &'a Node,
-    calls: &mut Vec<(&'a str, &'a Node, &'a [Node])>,
-) {
+fn collect_indirect_calls<'a>(node: &'a Node, calls: &mut Vec<(&'a str, &'a Node, &'a [Node])>) {
     if let NodeKind::IndirectCall { method, object, args } = &node.kind {
         calls.push((method.as_str(), object.as_ref(), args.as_slice()));
     }
