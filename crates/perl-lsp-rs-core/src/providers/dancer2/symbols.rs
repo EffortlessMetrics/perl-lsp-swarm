@@ -151,10 +151,11 @@ mod tests {
     use crate::providers::dancer2::facts::canonical_file_facts;
     use perl_semantic_analyzer::Parser;
     use perl_semantic_facts::{FileId, SourceGeneration};
+    use perl_test_must::must_with;
 
     fn file_facts(source: &'static str) -> CanonicalDancer2FileFacts {
         let mut parser = Parser::new(source);
-        let ast = parser.parse().expect("fixture must parse");
+        let ast = must_with(parser.parse(), "fixture must parse");
         let module = RuntimeDancer2Module::new("lib/Dancer2.pm", "1.1.1");
         let activations =
             file_activations(&ast, FileId(1), Some(&module), &SourceGeneration::known("g1"));
