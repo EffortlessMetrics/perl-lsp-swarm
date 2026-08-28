@@ -51,6 +51,11 @@ export interface StepDefinitionScan {
   ambiguous: boolean;
 }
 
+export interface WorkspaceStepDefinitionScan {
+  sources: string[];
+  complete: boolean;
+}
+
 interface CreateStepDefinitionArgs {
   featureUri: string;
   line: number;
@@ -280,8 +285,12 @@ async function provideGherkinStepDefinitionActions(
     return [];
   }
 
-  const sources = await collectWorkspaceStepDefinitionSources(workspaceFolder);
-  const status = classifyStepDefinitionStatus(step, sources);
+  const scan = await collectWorkspaceStepDefinitionSources(workspaceFolder);
+  if (!scan.complete) {
+    return [];
+  }
+
+  const status = classifyStepDefinitionStatus(step, scan.sources);
   if (status !== 'undefined') {
     return [];
   }
@@ -317,8 +326,15 @@ async function createStepDefinitionFromFeature(args: CreateStepDefinitionArgs): 
     return;
   }
 
-  const sources = await collectWorkspaceStepDefinitionSources(workspaceFolder);
-  const status = classifyStepDefinitionStatus(step, sources);
+  const scan = await collectWorkspaceStepDefinitionSources(workspaceFolder);
+  if (!scan.complete) {
+    void vscode.window.showWarningMessage(
+      'Step definition generation is unavailable because the workspace scan was incomplete.',
+    );
+    return;
+  }
+
+  const status = classifyStepDefinitionStatus(step, scan.sources);
   if (status === 'defined') {
     void vscode.window.showInformationMessage(
       `A matching step definition already exists for "${step.text}".`,
@@ -358,16 +374,27 @@ async function createStepDefinitionFromFeature(args: CreateStepDefinitionArgs): 
 // the code-action provider.
 export async function collectWorkspaceStepDefinitionSources(
   workspaceFolder: vscode.WorkspaceFolder,
-): Promise<string[]> {
-  const files = await vscode.workspace.findFiles(
-    DEFAULT_STEP_DEFINITION_GLOB,
-    DEFAULT_EXCLUDE_GLOB,
-    MAX_STEP_DEFINITION_FILES,
-  );
+): Promise<WorkspaceStepDefinitionScan> {
+  let files: vscode.Uri[];
+  try {
+    files = await vscode.workspace.findFiles(
+      DEFAULT_STEP_DEFINITION_GLOB,
+      DEFAULT_EXCLUDE_GLOB,
+      MAX_STEP_DEFINITION_FILES,
+    );
+  } catch {
+    return { sources: [], complete: false };
+  }
   const workspacePrefix = ensureTrailingSeparator(workspaceFolder.uri.fsPath);
   const candidateFiles = files.filter((uri) =>
     ensureTrailingSeparator(uri.fsPath).startsWith(workspacePrefix),
   );
+
+  // findFiles returns at most maxResults, so reaching the cap means that the
+  // workspace population may have been truncated. Treat the result as
+  // incomplete even if every returned file can be read; otherwise a missing
+  // definition in the unreturned tail could be misclassified as undefined.
+  let complete = files.length < MAX_STEP_DEFINITION_FILES;
 
   // Read sequentially under a global byte envelope. The previous concurrent
   // read had no per-file or aggregate bound, so a workspace could hold the
@@ -377,14 +404,17 @@ export async function collectWorkspaceStepDefinitionSources(
 
   for (const uri of candidateFiles) {
     if (acceptedBytes >= MAX_STEP_DEFINITION_TOTAL_BYTES) {
+      complete = false;
       break;
     }
 
     const read = await readBoundedFile(uri.fsPath, MAX_STEP_DEFINITION_FILE_BYTES);
     if (!read) {
+      complete = false;
       continue;
     }
     if (acceptedBytes + read.byteLength > MAX_STEP_DEFINITION_TOTAL_BYTES) {
+      complete = false;
       break;
     }
 
@@ -400,7 +430,7 @@ export async function collectWorkspaceStepDefinitionSources(
     sources.push(read.text);
   }
 
-  return sources;
+  return { sources, complete };
 }
 
 /**
