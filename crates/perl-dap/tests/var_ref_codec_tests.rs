@@ -347,11 +347,13 @@ fn test_h5_decode_scope_boundary_valid() -> Result<(), Box<dyn std::error::Error
 fn test_h5_decode_scope_arguments_valid() -> Result<(), Box<dyn std::error::Error>> {
     let wire = 900_004; // frame_id=90_000, kind_disc=4
     let result = VariableReference::decode(wire);
-    assert_eq!(
-        result,
-        Some(VariableReference::Scope { frame_id: 90_000, kind: ScopeKind::Arguments }),
-        "H5: decode(900_004) should return Scope(90_000, Arguments)"
-    );
+    let expected = Some(VariableReference::Scope { frame_id: 90_000, kind: ScopeKind::Arguments });
+    if result != expected {
+        return Err(format!(
+            "H5: decode(900_004) should return Scope(90_000, Arguments), got {result:?}"
+        )
+        .into());
+    }
     Ok(())
 }
 
@@ -433,7 +435,9 @@ fn test_scope_kind_try_from_valid_globals() -> Result<(), Box<dyn std::error::Er
 #[test]
 fn test_scope_kind_try_from_valid_arguments() -> Result<(), Box<dyn std::error::Error>> {
     let kind = ScopeKind::try_from(4)?;
-    assert_eq!(kind, ScopeKind::Arguments, "ScopeKind::try_from(4) should be Arguments");
+    if kind != ScopeKind::Arguments {
+        return Err(format!("ScopeKind::try_from(4) should be Arguments, got {kind:?}").into());
+    }
     Ok(())
 }
 
