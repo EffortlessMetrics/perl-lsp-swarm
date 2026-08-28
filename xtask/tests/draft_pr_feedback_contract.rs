@@ -34,14 +34,14 @@ const fn contains(haystack: &[u8], needle: &[u8]) -> bool {
 const _: () = assert!(
     contains(
         CI_WORKFLOW,
-        b"types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]"
+        b"types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]",
     ),
     "draft/ready state changes must retrigger CI"
 );
 const _: () = assert!(
     contains(
         CI_WORKFLOW,
-        b"echo \"run_ci=false\" >> \"$GITHUB_OUTPUT\""
+        b"echo \"run_ci=false\" >> \"$GITHUB_OUTPUT\"",
     ),
     "drafts must keep the expensive CI selector disabled"
 );
@@ -52,7 +52,7 @@ const _: () = assert!(
 const _: () = assert!(
     contains(
         CI_WORKFLOW,
-        b"github.event_name == 'pull_request' && github.event.pull_request.draft == true"
+        b"github.event_name == 'pull_request' && github.event.pull_request.draft == true",
     ),
     "the conflict-marker job must select draft pull requests"
 );
@@ -63,7 +63,7 @@ const _: () = assert!(
 const _: () = assert!(
     contains(
         CI_WORKFLOW,
-        b"github.event.pull_request.head.sha || github.ref_name"
+        b"github.event.pull_request.head.sha || github.ref_name",
     ),
     "the cheap draft check must inspect the exact pull-request head"
 );
