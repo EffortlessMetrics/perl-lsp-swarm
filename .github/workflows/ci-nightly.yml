@@ -930,8 +930,9 @@ jobs:
         with:
           tool: just
 
-      - name: Check floor-metric ratchet (bootstrap-safe)
-        # Passes if no receipt exists; compares against committed baselines when receipt is present.
+      - name: Check floor-metric ratchet (including fail-closed editor UX)
+        # The editor_ux route always evaluates the committed baseline; missing or
+        # invalid current metrics fail before any scorecard publication.
         # See docs/project/metrics/RATCHET.md for the four-layer model and promotion workflow.
         run: just ci-metrics-ratchet
 
