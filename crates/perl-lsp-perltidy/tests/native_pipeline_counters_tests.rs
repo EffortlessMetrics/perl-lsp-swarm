@@ -152,15 +152,17 @@ fn no_change_subjects_count_zero_edits_with_full_pipeline() {
 }
 
 // ---------------------------------------------------------------------------
-// NPC-004 — scaling cohort ratio bounds and the detector sanity control
+// NPC-004 — observed counter ratio bounds and detector sanity control
 // ---------------------------------------------------------------------------
 
 /// Detector bound shared by the scaling rows and this control: a series is
 /// superlinear when `c(4N)` exceeds `SCALING_RATIO_BOUND_V1 * c(2N)` by more
-/// than `SCALING_ABSOLUTE_SLACK_V1`. Any loosening of either constant lets the
-/// canonical quadratic control below pass, which turns
-/// `detector_flags_known_quadratic_series` red — the detector weakening is
-/// therefore itself observable.
+/// than `SCALING_ABSOLUTE_SLACK_V1`. The detector is applied only to counters
+/// the production instrument records; it does not measure uninstrumented
+/// fit/comparison operations or prove their algorithmic complexity. Any
+/// loosening of either constant lets the synthetic quadratic series below
+/// pass, which turns `detector_flags_known_quadratic_series` red — detector
+/// weakening is therefore itself observable.
 fn is_superlinear(n: u64, two_n: u64, four_n: u64) -> bool {
     two_n > n.saturating_mul(SCALING_RATIO_BOUND_V1).saturating_add(SCALING_ABSOLUTE_SLACK_V1)
         || four_n
@@ -684,6 +686,8 @@ fn implementation_spec_keeps_unproven_followups_explicit() -> Result<(), Box<dyn
     assert!(acceptance.contains("does not close #10302"));
     assert!(acceptance.contains("allocation oracle"));
     assert!(acceptance.contains("NOT_PROVEN"));
+    assert!(acceptance.contains("not a proof of algorithmic complexity"));
+    assert!(acceptance.contains("production operation counters for those activities remain"));
     Ok(())
 }
 

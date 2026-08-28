@@ -119,8 +119,12 @@ evidence:
    delimited/statement/expression/list-operator; comment/trivia/opaque;
    Unicode/tabs/spaces/LF/CRLF/bare-CR; no-change/applied/preserved/refused;
    document/complete-range; bounded size/depth/width. Those bounded scaling
-   rows expose superlinear growth without dangerous allocations. The
-   PR-blocking discriminators are
+   rows expose superlinear growth in the counters this instrument actually
+   records without dangerous allocations. They do not count each fit or
+   structural-comparison operation, so NPC-004 deliberately does not claim
+   to detect a quadratic implementation of either uninstrumented activity;
+   production operation counters and a corresponding quadratic mutation
+   remain `NOT_PROVEN` follow-up work. The PR-blocking discriminators are
    plain deterministic test files asserting (a) single pipeline invocation
    per request at the provider seam, (b) linear-or-bounded counter ratios
    across N/2N/4N scaling steps, (c) refusal/opaque rows stay cost-bounded.

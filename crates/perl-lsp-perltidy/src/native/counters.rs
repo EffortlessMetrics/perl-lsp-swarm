@@ -38,9 +38,11 @@ pub const MAX_REPLACEMENT_BYTES_PER_SOURCE_BYTE_V1: u64 = 4;
 /// Schema-v1 scaling detector ratio bound: a counter series measured at
 /// N / 2N / 4N is superlinear when `c(4N)` exceeds
 /// `SCALING_RATIO_BOUND_V1 * c(2N)` by more than
-/// [`SCALING_ABSOLUTE_SLACK_V1`]. Loosening either constant stops the
-/// canonical quadratic control from being flagged, which makes detector
-/// weakening itself observable (NPC-004).
+/// [`SCALING_ABSOLUTE_SLACK_V1`]. The detector applies to observed counters,
+/// not to uninstrumented fit/comparison operations or their algorithmic
+/// complexity. Loosening either constant stops the synthetic quadratic
+/// control from being flagged, which makes detector weakening itself
+/// observable (NPC-004).
 pub const SCALING_RATIO_BOUND_V1: u64 = 2;
 
 /// Absolute slack of the schema-v1 scaling detector; absorbs the constant
