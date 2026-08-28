@@ -108,6 +108,13 @@ fn validate_scorecard_inputs(
     for candidate in read_receipt_candidates(receipts_dir)? {
         let kind = candidate.value.get("kind").and_then(Value::as_str);
         if kind != Some("ux_scenario_run") {
+            if serde_json::from_value::<UxScenarioRunReceipt>(candidate.value.clone()).is_ok() {
+                bail!(
+                    "receipt-shaped JSON {} has unsupported kind {:?}",
+                    candidate.path.display(),
+                    kind
+                );
+            }
             continue;
         }
 
@@ -284,6 +291,27 @@ mod tests {
         let schema = write_schema(temp.path())?;
 
         validate_scorecard_inputs(&receipts, &matrix, &schema)?;
+        Ok(())
+    }
+
+    #[test]
+    fn receipt_shaped_json_with_wrong_kind_fails_closed() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let receipts = temp.path().join("receipts");
+        fs::create_dir_all(&receipts)?;
+        write_receipt(&receipts, "wrong-kind.json", "known", "known.rs")?;
+        let path = receipts.join("wrong-kind.json");
+        let mut value: Value = serde_json::from_str(&fs::read_to_string(&path)?)?;
+        value["kind"] = Value::String("other_receipt".to_string());
+        fs::write(&path, serde_json::to_string_pretty(&value)?)?;
+        let matrix = write_matrix(temp.path(), &[("known", "known.rs")])?;
+        let schema = write_schema(temp.path())?;
+
+        let error = validation_error(
+            validate_scorecard_inputs(&receipts, &matrix, &schema),
+            "receipt-shaped JSON with the wrong kind unexpectedly passed",
+        )?;
+        assert!(format!("{error:#}").contains("unsupported kind"));
         Ok(())
     }
 
