@@ -272,18 +272,46 @@ fn normalized_source_path(path: &str) -> String {
     normalized.trim_end_matches('/').to_string()
 }
 
+/// Canonicalize both filesystem spellings before the lexical slash/case
+/// normalization. A symlinked `TMPDIR` or invoked-script path makes perl5db
+/// preserve the invoked spelling in the frame path, so resolving only the
+/// expected side would reject the correct stopped frame; resolving only one
+/// side is not enough for either direction.
+fn canonical_path_text(path: &Path) -> String {
+    let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    canonical.to_string_lossy().into_owned()
+}
+
 fn assert_source_path_matches(actual: &str, expected: &Path) -> Result<(), String> {
-    let expected = expected
-        .canonicalize()
-        .unwrap_or_else(|_| expected.to_path_buf())
-        .to_string_lossy()
-        .into_owned();
-    if normalized_source_path(actual) != normalized_source_path(&expected) {
+    let expected_text = canonical_path_text(expected);
+    let actual_text = canonical_path_text(Path::new(actual));
+    if normalized_source_path(&actual_text) != normalized_source_path(&expected_text) {
         return Err(format!(
-            "stopped frame source path does not identify scorecard script: actual={actual:?}, expected={expected:?}"
+            "stopped frame source path does not identify scorecard script: actual={actual:?}, expected={expected_text:?}"
         ));
     }
     Ok(())
+}
+
+/// Accept a stopped frame as scorecard authority only when BOTH the line is
+/// the admitted breakpoint AND the normalized source path identifies the
+/// scorecard script. The source comparison is part of the acceptance
+/// condition, not merely its failure text: a same-line stop reported for a
+/// different file must fail the probe instead of feeding the scope checks.
+fn assert_stopped_frame_is_admitted_breakpoint(
+    actual_source: &str,
+    actual_line: i64,
+    expected_source: &Path,
+    expected_line: i64,
+    label: &str,
+) -> Result<(), String> {
+    if actual_line != expected_line {
+        return Err(format!(
+            "{label} stopped frame is not the admitted breakpoint: source={actual_source:?}, line={actual_line}, expected_line={expected_line}"
+        ));
+    }
+    assert_source_path_matches(actual_source, expected_source)
+        .map_err(|detail| format!("{label}: {detail}"))
 }
 
 fn assert_stale_frame_has_no_scopes(
@@ -340,7 +368,12 @@ scorecard_frame();
 
     let mut session = DapWorkflowSession::new(workflow_timeout())?;
     session.launch_pinned(perl_binary, script_str)?;
-    let resolved_lines = session.set_breakpoints_checked(script_str, &[10, 11])?;
+    // The repeated stop must live INSIDE `scorecard_frame`: every lexical the
+    // session metrics claim authority over (`@big`, `$marker`) belongs to the
+    // sub's pad, and only a suspension whose stopped frame owns that pad can
+    // prove live locals/evaluate authority. Both invocations stop on the same
+    // executable line, each producing a fresh suspension identity.
+    let resolved_lines = session.set_breakpoints_checked(script_str, &[7])?;
     session.configuration_done()?;
 
     let stop = session.wait_stopped()?;
@@ -348,13 +381,13 @@ scorecard_frame();
         session.stack_trace(stop.thread_id)?;
     let expected_line =
         resolved_lines.first().copied().ok_or("setBreakpoints returned no resolved lines")?;
-    if first_frame_line != expected_line {
-        return Err(format!(
-            "first stopped frame is not the admitted breakpoint: thread_id={}, frame_id={}, source={first_source_path:?}, line={first_frame_line}, expected_line={expected_line}",
-            stop.thread_id, first_frame_id
-        ));
-    }
-    assert_source_path_matches(&first_source_path, &script_path)?;
+    assert_stopped_frame_is_admitted_breakpoint(
+        &first_source_path,
+        first_frame_line,
+        &script_path,
+        expected_line,
+        "first",
+    )?;
     session.continue_exec(stop.thread_id)?;
     let second_stop = session.wait_stopped()?;
     if second_stop.thread_id != stop.thread_id {
@@ -364,17 +397,15 @@ scorecard_frame();
         ));
     }
     let (frame_id, source_path, frame_line) = session.stack_trace(second_stop.thread_id)?;
-    let expected_line = resolved_lines
-        .get(1)
-        .copied()
-        .ok_or("setBreakpoints returned fewer than two resolved lines")?;
-    if frame_line != expected_line {
-        return Err(format!(
-            "second stopped frame is not the admitted breakpoint: thread_id={}, frame_id={}, source={source_path:?}, line={frame_line}, expected_line={expected_line}",
-            second_stop.thread_id, frame_id
-        ));
-    }
-    assert_source_path_matches(&source_path, &script_path)?;
+    let repeated_line =
+        resolved_lines.first().copied().ok_or("setBreakpoints returned no resolved lines")?;
+    assert_stopped_frame_is_admitted_breakpoint(
+        &source_path,
+        frame_line,
+        &script_path,
+        repeated_line,
+        "second",
+    )?;
     if frame_id == first_frame_id {
         return Err(format!(
             "second stopped generation reused the first frame id {frame_id}; stale-frame control is not valid"
@@ -394,9 +425,22 @@ scorecard_frame();
         {
             return Err("locals scope contains variables with empty names".to_string());
         }
+        // The stop lives inside `scorecard_frame`, so the advertised Locals
+        // scope must actually name the sub-owned lexicals the metrics claim
+        // authority over — a main-pad enumeration (the #13020 failure mode)
+        // contains neither `@big` nor `$marker` and must fail here.
+        let names: Vec<&str> =
+            locals.iter().filter_map(|var| var.get("name").and_then(Value::as_str)).collect();
+        for required in ["@big", "$marker"] {
+            if !names.contains(&required) {
+                return Err(format!(
+                    "locals scope does not name the sub-owned lexical {required} at the stopped frame: names={names:?}"
+                ));
+            }
+        }
         let n = locals.len();
         Ok(format!(
-            "locals scope returned {} named {}",
+            "locals scope returned {} named {} (including @big and $marker)",
             n,
             if n == 1 { "variable" } else { "variables" }
         ))

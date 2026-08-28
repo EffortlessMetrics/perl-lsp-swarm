@@ -200,9 +200,31 @@ impl DebugAdapter {
             // Keep parsed frames as best-effort latest snapshot. IDs and
             // captured arguments were rebound together above so every visible
             // frame remains uniquely addressable within this suspension.
-            let bound_frames = parsed_frames;
+            let mut bound_frames = parsed_frames;
             if let Some(ref mut session) = *lock_or_recover(&self.session, "debug_adapter.session")
             {
+                // perl5db's `T` snapshot renders the innermost user frame at
+                // its CALL SITE (`main::f() called from file '...' line N`),
+                // not at the line where the debugger is suspended. The stop
+                // banner context captured by the output reader for THIS
+                // suspension (session.stack_frames[0]) is the authority for
+                // the stopped location (#13020): splice it into the first
+                // frame before publishing, so an inner framed stop reports
+                // the frame that owns the suspended pad instead of its
+                // caller's location. Idempotent within one suspension: after
+                // the splice the stored frame already carries the banner
+                // location, so re-splicing is a no-op.
+                if session.state == crate::debug_adapter::DebugState::Stopped
+                    && let Some(stopped) = session.stack_frames.first().cloned()
+                    && let Some(first) = bound_frames.first_mut()
+                    && (first.line != stopped.line || first.source.path != stopped.source.path)
+                {
+                    first.line = stopped.line;
+                    first.source = stopped.source;
+                    if !stopped.name.is_empty() {
+                        first.name = stopped.name;
+                    }
+                }
                 session.stack_frames = bound_frames.clone();
             }
             bound_frames
