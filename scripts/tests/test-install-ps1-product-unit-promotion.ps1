@@ -175,6 +175,41 @@ try {
     Setup-Root
     Stage-Pair -Dest $ExtractDir -Server "server-a" -Dap "dap-a"
     Invoke-Promote
+    Stage-ServerOnly -Dest $ExtractDir -Server "source-server"
+    $env:PERL_LSP_INSTALL_FAULT = "before_commit"
+    Invoke-Promote -Mode source
+    Remove-Item Env:PERL_LSP_INSTALL_FAULT -ErrorAction SilentlyContinue
+    if (($LastStatus -ne 0) -and (Assert-CompletePair -Server "server-a" -Dap "dap-a") -and ($LastOutput -like "*before_commit*")) {
+        Pass-Case "release-to-source commit fault preserves the paired selectors"
+    } else {
+        Fail-Case "release-to-source commit fault preserves the paired selectors" "status=$LastStatus output=$LastOutput"
+    }
+
+    Setup-Root
+    Stage-ServerOnly -Dest $ExtractDir -Server "source-server"
+    Invoke-Promote -Mode source
+    $previousCurrent = Get-StandaloneCurrentObservation -InstallDir $InstallDir
+    $previousServer = Join-Path $TempRoot "prev-server"
+    $currentDirBefore = Get-StandaloneCurrentDir -InstallDir $InstallDir
+    Copy-Item -LiteralPath (Join-Path $currentDirBefore "perllsp.exe") -Destination $previousServer
+    Stage-Pair -Dest $ExtractDir -Server "server-b" -Dap "dap-b"
+    $env:PERL_LSP_INSTALL_FAULT = "before_commit"
+    Invoke-Promote
+    Remove-Item Env:PERL_LSP_INSTALL_FAULT -ErrorAction SilentlyContinue
+    $currentAfter = Get-StandaloneCurrentObservation -InstallDir $InstallDir
+    $dirAfter = Get-StandaloneCurrentDir -InstallDir $InstallDir
+    $serverUnchanged = ($null -ne $dirAfter) -and
+        ((Hash-BytesFile (Join-Path $dirAfter "perllsp.exe")) -eq (Hash-BytesFile $previousServer))
+    if (($LastStatus -ne 0) -and ($currentAfter -eq $previousCurrent) -and $serverUnchanged -and
+        ($LastOutput -like "*before_commit*")) {
+        Pass-Case "source-to-release commit fault preserves the source-only selection"
+    } else {
+        Fail-Case "source-to-release commit fault preserves the source-only selection" "status=$LastStatus before=$previousCurrent after=$currentAfter output=$LastOutput"
+    }
+
+    Setup-Root
+    Stage-Pair -Dest $ExtractDir -Server "server-a" -Dap "dap-a"
+    Invoke-Promote
     Stage-Pair -Dest $ExtractDir -Server "server-b" -Dap "dap-b"
     $env:PERL_LSP_INSTALL_FAULT = "before_publish"
     Invoke-Promote

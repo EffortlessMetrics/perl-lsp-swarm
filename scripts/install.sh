@@ -1142,7 +1142,7 @@ promote_legacy_layout_if_needed() {
 
 install_binaries() {
     local _mode="${1:-${INSTALL_MODE:-release}}"
-    local _disposition _id _store _previous="none" _receipt _server_hash _dap_hash="-"
+    local _disposition _id _store _previous="none" _receipt _server_hash _dap_hash="-" _incoming_pair
 
     mkdir -p "$INSTALL_DIR"
 

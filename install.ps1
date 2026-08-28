@@ -783,7 +783,8 @@ function Set-StandalonePathVisibleSelectors {
     param(
         [Parameter(Mandatory = $true)][string]$InstallDir,
         [bool]$AllowFault = $true,
-        [string]$Disposition = ""
+        [string]$Disposition = "",
+        [switch]$PermitStaleDapRemoval
     )
     Invoke-ProductUnitFaultIfRequested -Barrier "before_selectors" -AllowFault $AllowFault
     $serverDest = Join-Path $InstallDir "$Name.cmd"
@@ -797,7 +798,10 @@ function Set-StandalonePathVisibleSelectors {
     }
     if ($wantDap) {
         Write-StandaloneCmdShim -ShimPath $dapDest -ExeName "$DapName.exe"
-    } elseif (Test-Path -LiteralPath $dapDest) {
+    } elseif ($PermitStaleDapRemoval -and (Test-Path -LiteralPath $dapDest)) {
+        # Stale-DAP cleanup is post-commit only: removing the selector before
+        # the current-pointer commit would leave the previous paired candidate
+        # current with no PATH-visible adapter if the commit fails.
         Remove-Item -LiteralPath $dapDest -Force
     }
     foreach ($legacyExe in @((Join-Path $InstallDir "$Name.exe"), (Join-Path $InstallDir "$DapName.exe"))) {
@@ -921,13 +925,13 @@ function Install-StandaloneProductUnit {
         $legacyId = Publish-ImmutableStandaloneCandidate -SourceDir $legacy.Dir -InstallDir $InstallDir -Disposition $legacy.Disposition -AllowFault $false
         Remove-Item -LiteralPath $legacy.Dir -Recurse -Force -ErrorAction SilentlyContinue
         Set-StandaloneCurrentSelection -InstallDir $InstallDir -CandidateId $legacyId -AllowFault $false
-        Set-StandalonePathVisibleSelectors -InstallDir $InstallDir -AllowFault $false -Disposition $legacy.Disposition
+        Set-StandalonePathVisibleSelectors -InstallDir $InstallDir -AllowFault $false -Disposition $legacy.Disposition -PermitStaleDapRemoval
     }
 
     $id = Publish-ImmutableStandaloneCandidate -SourceDir $ExtractDir -InstallDir $InstallDir -Disposition $disposition
     Set-StandalonePathVisibleSelectors -InstallDir $InstallDir -Disposition $disposition
     Set-StandaloneCurrentSelection -InstallDir $InstallDir -CandidateId $id
-    Set-StandalonePathVisibleSelectors -InstallDir $InstallDir -Disposition $disposition
+    Set-StandalonePathVisibleSelectors -InstallDir $InstallDir -Disposition $disposition -PermitStaleDapRemoval
 
     $previous = "none"
     $prevPath = Join-Path $store "previous"
