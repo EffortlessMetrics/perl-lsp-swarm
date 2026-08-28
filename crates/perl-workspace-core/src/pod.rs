@@ -223,6 +223,18 @@ mod tests {
     }
 
     #[test]
+    fn malformed_inline_markup_still_returns_a_fact() -> Result<(), &'static str> {
+        // The underlying POD extractor is intentionally tolerant of an
+        // unterminated formatting code at EOF. Preserve that result while
+        // keeping the fact test on its typed Option path.
+        let src = "=head1 NAME\n\nB<unclosed\n";
+        let f = facts(src).ok_or("malformed POD fixture must still produce facts")?;
+        assert_eq!(f.name.as_deref(), Some("unclosed"));
+        assert_eq!(f.sections.first().map(|section| section.kind), Some(PodSectionKind::Head1));
+        Ok(())
+    }
+
+    #[test]
     fn item_text_in_code_is_not_treated_as_pod() {
         // A line starting with `=` only enters POD mode via a real directive;
         // ordinary code never starts a line with `=item`, but guard anyway.
