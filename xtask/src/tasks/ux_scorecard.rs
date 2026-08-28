@@ -146,17 +146,17 @@ fn run_at(
         }),
     };
 
-    write_json(&output_path, &artifact)?;
-    fs::write(&status_path, render_status_markdown(&artifact, baseline.as_ref()))
-        .with_context(|| format!("writing {}", status_path.display()))?;
-    maybe_embed_receipt_block(&root, &artifact)?;
-
     if ratchet_check {
         let baseline = baseline
             .as_ref()
             .ok_or_else(|| color_eyre::eyre::eyre!("editor_ux ratchet baseline was not loaded"))?;
         enforce_ratchet(baseline, &artifact)?;
     }
+
+    write_json(&output_path, &artifact)?;
+    fs::write(&status_path, render_status_markdown(&artifact, baseline.as_ref()))
+        .with_context(|| format!("writing {}", status_path.display()))?;
+    maybe_embed_receipt_block(&root, &artifact)?;
 
     match format {
         UxScorecardFormat::Human => {
@@ -478,7 +478,6 @@ fn path_relative_to_root(root: &Path, path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::process::Command;
 
     fn measurement(
         id: &str,
@@ -867,42 +866,64 @@ mod tests {
     }
 
     #[test]
-    fn malformed_measurement_cli_returns_nonzero_without_artifacts() -> Result<()> {
-        let temp = tempfile::tempdir()?;
-        let input_path = temp.path().join("malformed.json");
-        let output_path = temp.path().join("scorecard.json");
-        let status_path = temp.path().join("status.md");
-        fs::write(&input_path, "[{ malformed measurement")?;
+    fn failed_ratchet_preserves_existing_artifacts_for_missing_current_metric() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let baseline_path = root.path().join(BASELINE_PATH);
+        let baseline_parent = baseline_path
+            .parent()
+            .ok_or_else(|| color_eyre::eyre::eyre!("baseline path has no parent"))?;
+        fs::create_dir_all(baseline_parent)?;
+        let baseline = baseline_with_floor_metrics(BTreeMap::from([(
+            "completion_top1_pct".to_string(),
+            Some(75.0),
+        )]));
+        fs::write(&baseline_path, serde_json::to_string_pretty(&baseline)?)?;
 
-        let args = [
-            "ux-scorecard",
-            "--ratchet-check",
-            "--input",
-            input_path
-                .to_str()
-                .ok_or_else(|| color_eyre::eyre::eyre!("input path is not UTF-8"))?,
-            "--output",
-            output_path
-                .to_str()
-                .ok_or_else(|| color_eyre::eyre::eyre!("output path is not UTF-8"))?,
-            "--status-md",
-            status_path
-                .to_str()
-                .ok_or_else(|| color_eyre::eyre::eyre!("status path is not UTF-8"))?,
-        ];
-        let mut command = if let Some(binary) = std::env::var_os("CARGO_BIN_EXE_xtask") {
-            Command::new(binary)
-        } else {
-            let mut command = Command::new("cargo");
-            command.args(["run", "--quiet", "--locked", "-p", "xtask", "--"]);
-            command
-        };
-        command.args(args).current_dir(project_root()?);
-        let output = command.output()?;
+        let input_path = root.path().join("measurements.json");
+        fs::write(&input_path, minimal_measurement_json())?;
+        let output_path = root.path().join("scorecard.json");
+        let status_path = root.path().join("status.md");
+        let receipt_path = root.path().join("target/receipts/receipt.json");
+        let receipt_parent = receipt_path
+            .parent()
+            .ok_or_else(|| color_eyre::eyre::eyre!("receipt path has no parent"))?;
+        fs::create_dir_all(receipt_parent)?;
+        let previous_output = "previous scorecard\n";
+        let previous_status = "previous status\n";
+        let previous_receipt = r#"{"previous":true}
+"#;
+        fs::write(&output_path, previous_output)?;
+        fs::write(&status_path, previous_status)?;
+        fs::write(&receipt_path, previous_receipt)?;
 
-        check_true(!output.status.success(), "malformed measurement CLI unexpectedly succeeded")?;
-        check_true(!output_path.exists(), "malformed measurement created scorecard artifact")?;
-        check_true(!status_path.exists(), "malformed measurement created status artifact")
+        let error = run_at(
+            root.path(),
+            UxScorecardFormat::Human,
+            Some(PathBuf::from("measurements.json")),
+            Some(PathBuf::from("scorecard.json")),
+            Some(PathBuf::from("status.md")),
+            true,
+        )
+        .expect_err("missing current floor metric must fail the ratchet");
+        check_true(
+            error.to_string().contains("ratchet check failed"),
+            "missing metric error did not identify ratchet failure",
+        )?;
+        check(
+            &fs::read_to_string(&output_path)?,
+            &previous_output.to_string(),
+            "scorecard artifact changed after failed ratchet",
+        )?;
+        check(
+            &fs::read_to_string(&status_path)?,
+            &previous_status.to_string(),
+            "status artifact changed after failed ratchet",
+        )?;
+        check(
+            &fs::read_to_string(&receipt_path)?,
+            &previous_receipt.to_string(),
+            "receipt artifact changed after failed ratchet",
+        )
     }
 
     #[test]
