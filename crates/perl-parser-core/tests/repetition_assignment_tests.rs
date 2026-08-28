@@ -103,13 +103,32 @@ fn ordinary_repetition_operator_remains_binary() -> Result<(), String> {
 #[test]
 fn whitespace_does_not_form_repetition_assignment() -> Result<(), String> {
     let source = "$value x = 3;";
-    let mut parser = Parser::new(source);
-    let result = parser.parse();
+    let output = Parser::new(source).parse_with_recovery();
 
-    if let Ok(ast) = result
-        && find_assignment(&ast, "x=").is_some()
-    {
-        return Err(format!("spaced x = must not be normalized to x=:\n{}", ast.to_sexp()));
+    if find_assignment(&output.ast, "x=").is_some() {
+        return Err(format!("spaced x = must not be normalized to x=:\n{}", output.ast.to_sexp()));
+    }
+    // The claim is only that spaced `x =` stays outside the operator, not
+    // that the parser diagnoses the same-line leftover: statement-terminator
+    // enforcement deliberately ignores same-line trailing tokens, so the
+    // source parses as the variable expression followed by an ordinary `x =
+    // 3` assignment with no repetition diagnostic. Pin that exact shape so
+    // the test cannot pass vacuously on some future unrelated acceptance.
+    let NodeKind::Program { statements, .. } = &output.ast.kind else {
+        return Err(format!("expected program root, got {:?}", output.ast.kind));
+    };
+    if statements.len() != 2 {
+        return Err(format!(
+            "expected the leftover `x = 3` to parse as a second statement, got {}",
+            output.ast.to_sexp()
+        ));
+    }
+    if !output.diagnostics.is_empty() {
+        return Err(format!(
+            "same-line leftover enforcement is owned by statement termination, not the \
+             repetition operator; expected no repetition diagnostic, got {:?}",
+            output.diagnostics
+        ));
     }
 
     Ok(())
