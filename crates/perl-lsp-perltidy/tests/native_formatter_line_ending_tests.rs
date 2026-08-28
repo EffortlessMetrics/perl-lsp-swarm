@@ -1,11 +1,7 @@
 #![deny(clippy::map_err_ignore)]
 
-use perl_lsp_perltidy::native::{
-    FormatContext, FormatDisposition, FormatLineEndingDisposition,
-};
-use perl_lsp_perltidy::{
-    FormatConfig, NativeFormatter, PerlFormatter, TextPosition, TextRange,
-};
+use perl_lsp_perltidy::native::{FormatContext, FormatDisposition, FormatLineEndingDisposition};
+use perl_lsp_perltidy::{FormatConfig, NativeFormatter, PerlFormatter, TextPosition, TextRange};
 
 fn assert_crlf_only(text: &str) {
     assert_eq!(text.matches('\n').count(), text.matches("\r\n").count());
@@ -35,13 +31,7 @@ fn wrapped_expression_layout_preserves_crlf_for_generated_lines() {
     assert!(result.changed);
     assert_eq!(
         result.formatted,
-        concat!(
-            "my $result = foo(\r\n",
-            "  $alpha,\r\n",
-            "  $beta,\r\n",
-            "  $gamma\r\n",
-            ");\r\n",
-        )
+        concat!("my $result = foo(\r\n", "  $alpha,\r\n", "  $beta,\r\n", "  $gamma\r\n", ");\r\n",)
     );
     assert_crlf_only(&result.formatted);
 }
@@ -49,11 +39,7 @@ fn wrapped_expression_layout_preserves_crlf_for_generated_lines() {
 #[test]
 fn range_block_layout_preserves_crlf_in_result_and_edit() {
     let formatter = NativeFormatter::new();
-    let source = concat!(
-        "my $before=1;\r\n",
-        "while($n){next;}\r\n",
-        "my $after=2;\r\n",
-    );
+    let source = concat!("my $before=1;\r\n", "while($n){next;}\r\n", "my $after=2;\r\n",);
     let range = TextRange::new(TextPosition::new(1, 0), TextPosition::new(1, 16));
 
     let result = formatter.format_range(source, range, &FormatConfig::default());
@@ -86,10 +72,7 @@ fn typed_outcome_reports_crlf_preserved_after_generated_layout() {
     );
 
     assert_eq!(result.outcome.disposition, FormatDisposition::Applied);
-    assert_eq!(
-        result.outcome.safety.line_endings,
-        FormatLineEndingDisposition::Preserved
-    );
+    assert_eq!(result.outcome.safety.line_endings, FormatLineEndingDisposition::Preserved);
     assert_crlf_only(&result.result.formatted);
 }
 
