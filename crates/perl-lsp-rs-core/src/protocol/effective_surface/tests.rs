@@ -199,6 +199,41 @@ fn workspace_symbol_resolve_overrides_simple_shape_after_suppression() {
 }
 
 #[test]
+fn notebook_cell_execution_is_a_typed_identity_without_a_wire_pointer() {
+    let all = build_ok(&bare_inputs(FeatureProfile::All));
+    assert_eq!(
+        all.families.get(&CapabilityFamily::NotebookCellExecution),
+        Some(&FamilyOutcome::Static),
+    );
+    assert!(all.advertised_feature_ids.contains(&"lsp.notebook_cell_execution"));
+    assert!(CapabilityFamily::NotebookCellExecution.wire_prefixes().is_empty());
+    assert!(
+        flatten_surface_pointers(&all.server_capabilities)
+            .iter()
+            .all(|pointer| !pointer.contains("notebookCellExecution")),
+        "identity-only sub-feature must not invent a server capability"
+    );
+
+    let production = build_ok(&bare_inputs(FeatureProfile::Production));
+    assert_eq!(
+        production.families.get(&CapabilityFamily::NotebookCellExecution),
+        Some(&FamilyOutcome::UnadvertisedUnsupported),
+    );
+    assert!(!production.advertised_feature_ids.contains(&"lsp.notebook_cell_execution"));
+
+    let mut disabled = bare_inputs(FeatureProfile::All);
+    disabled.disabled_feature_ids.insert("lsp.notebook_cell_execution".to_string());
+    let suppressed = build_ok(&disabled);
+    assert_eq!(
+        suppressed.families.get(&CapabilityFamily::NotebookCellExecution),
+        Some(&FamilyOutcome::Suppressed(SuppressionReason::DisabledByConfiguration {
+            feature_id: "lsp.notebook_cell_execution".to_string(),
+        },)),
+    );
+    assert!(!suppressed.advertised_feature_ids.contains(&"lsp.notebook_cell_execution"));
+}
+
+#[test]
 fn position_encoding_pin_records_negotiated_preference_as_downgrade() {
     let mut client = bare_client();
     client.negotiated_position_encoding = Some(PositionEncoding::Utf8);
@@ -222,6 +257,24 @@ fn position_encoding_pin_records_negotiated_preference_as_downgrade() {
     assert!(
         surface.suppressed_or_downgraded().contains_key(&CapabilityFamily::PositionEncoding),
         "the pin is recorded as a typed downgrade, not silently applied"
+    );
+}
+
+#[test]
+fn completion_projection_removes_invalid_server_insert_text_modes_shape() {
+    let surface = build_ok(&bare_inputs(FeatureProfile::Production));
+    assert_eq!(
+        surface
+            .server_capabilities
+            .pointer("/completionProvider/completionItem/labelDetailsSupport"),
+        Some(&serde_json::json!(true)),
+    );
+    assert!(
+        surface
+            .server_capabilities
+            .pointer("/completionProvider/completionItem/insertTextModes")
+            .is_none(),
+        "insertTextModes is a client capability, not a valid server capability"
     );
 }
 
@@ -317,6 +370,23 @@ fn watcher_registration_requires_claimed_support_active_symbol_and_no_jetbrains_
     assert_eq!(
         refused.watcher_registration_decision,
         WatcherPlanDecision::Withheld(WatcherWithholdReason::ClientUnsupported),
+    );
+
+    // The shipped watcher predicate still depends on the simple
+    // `lsp.workspace_symbol` flag. Suppressing only that flag leaves the
+    // resolve-capable wire surface active, but withholds the watcher for the
+    // exact typed feature-gate cause.
+    let mut resolve_only = base();
+    resolve_only.disabled_feature_ids.insert("lsp.workspace_symbol".to_string());
+    let resolve_only = build_ok(&resolve_only);
+    assert_eq!(
+        resolve_only.server_capabilities.get("workspaceSymbolProvider"),
+        Some(&serde_json::json!({ "resolveProvider": true })),
+    );
+    assert!(resolve_only.registration_plan.registrations.is_empty());
+    assert_eq!(
+        resolve_only.watcher_registration_decision,
+        WatcherPlanDecision::Withheld(WatcherWithholdReason::WorkspaceSymbolFeatureDisabled,),
     );
 
     // With the JetBrains compatibility exception: force-disabled.
@@ -654,21 +724,31 @@ fn model_matches_static_builder_except_runtime_authority_deltas() {
         // 1. positionEncoding pin exists only in the final surface;
         // 2. workspace.* exists only in the runtime-owned replacement;
         // 3. textDocumentSync pointers differ (runtime replaces the shape).
-        let removed_model_only = retain_count(&mut model_only, |pointer| {
+        assert!(
+            model_only.iter().any(|pointer| pointer == "positionEncoding"),
+            "positionEncoding itself must be the model-only pin pointer"
+        );
+        retain_count(&mut model_only, |pointer| {
             pointer == "positionEncoding"
                 || pointer.starts_with("workspace")
                 || pointer.starts_with("textDocumentSync")
         });
-        assert!(
-            removed_model_only >= 1,
-            "positionEncoding pin must appear as a model-only pointer"
-        );
         // 4. inlineCompletionProvider tri-state: with no client signal the
         // final surface withholds it even when compiled in.
         if flags.inline_completion {
             static_only.retain(|pointer| !pointer.starts_with("inlineCompletionProvider"));
         }
         static_only.retain(|pointer| !pointer.starts_with("textDocumentSync"));
+
+        // The live static builder still emits this invalid server-capability
+        // field. S03 removes that second writer; S02 must not preserve it in
+        // the intended final-surface authority.
+        let invalid_insert_text_modes = "completionProvider.completionItem.insertTextModes[]";
+        assert!(
+            static_only.iter().any(|pointer| pointer == invalid_insert_text_modes),
+            "the pre-S03 static builder delta must remain explicit"
+        );
+        static_only.retain(|pointer| pointer != invalid_insert_text_modes);
 
         // textDocumentSync differs in value but shares pointers; compare
         // shapes explicitly and record the exact delta.
@@ -697,7 +777,7 @@ fn model_matches_static_builder_except_runtime_authority_deltas() {
         assert_eq!(sync["final"]["willSave"], serde_json::json!(true));
         assert_eq!(sync["final"]["willSaveWaitUntil"], serde_json::json!(false));
 
-        // Everything OUTSIDE the four documented delta families must agree
+        // Everything outside the documented authority deltas must agree
         // byte-for-byte (Value equality), proving the model reproduces the
         // shipped static surface exactly rather than approximately.
         let mut sanitized_static = static_json.clone();
@@ -709,6 +789,12 @@ fn model_matches_static_builder_except_runtime_authority_deltas() {
                 map.remove("positionEncoding");
                 map.remove("inlineCompletionProvider");
             }
+        }
+        if let Some(completion_item) = sanitized_static
+            .pointer_mut("/completionProvider/completionItem")
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            completion_item.remove("insertTextModes");
         }
         assert_eq!(
             sanitized_static, sanitized_final,
@@ -732,57 +818,45 @@ fn retain_count(pointers: &mut Vec<String>, predicate: impl Fn(&str) -> bool) ->
 fn every_9665_targeted_inventory_row_maps_into_the_model() {
     use crate::protocol::final_surface_inventory::{SurfaceKind, final_surface_rows};
 
-    let surface = build_ok(&bare_inputs(FeatureProfile::All));
-    for row in final_surface_rows() {
-        if row.target_issue != "#9665" {
+    let rows = final_surface_rows();
+    for row in &rows {
+        if row.target_issue != "#9665" || row.kind != SurfaceKind::Suppression {
             continue;
         }
-        match row.kind {
-            SurfaceKind::Suppression => {
-                // Each named suppression input is expressible as a typed
-                // model mechanism: disabledFeatures IDs map to feature-ID
-                // families; profile:/tool:/config: inputs are expressed by
-                // profile selection, the reviewed RuntimeAvailability seam
-                // (no tool probe exists), and registration-plan tuning.
-                let expressible = row
-                    .protocol_field
-                    .starts_with("initializationOptions.disabledFeatures:")
-                    || CapabilityFamily::feature_id_for_suppression(row.protocol_field).is_some()
-                    || row.protocol_field.starts_with("profile:")
-                    || row.protocol_field.starts_with("tool:")
-                    || row.protocol_field.starts_with("config:");
-                assert!(
-                    expressible,
-                    "S02 model cannot yet express suppression row {}",
-                    row.surface_id
-                );
-            }
-            SurfaceKind::Compatibility => {
-                // Compatibility rows either map to a KnownException or are
-                // negotiation-input records modeled as typed facts.
-                let modeled = matches!(
-                    row.surface_id,
-                    "compat.client.jetbrains.watcherForceDisable"
-                        | "compat.client.opencode.pushDiagnosticsRetention"
-                        | "compat.protocol.positionEncodingUtf16Pin"
-                        | "compat.negotiated.clientInputsWithoutAdvertisementSeam"
-                        | "compat.protocol.diagnosticRefreshSingularKey"
-                        | "compat.protocol.markdownContentFormatFallback"
-                        | "compat.protocol.completionItemFlattenedShape"
-                        | "compat.initialize.legacyRootPath"
-                        | "compat.initialize.initOptionsRootFallbackChain"
-                        | "compat.initialize.cwdFallback"
-                );
-                assert!(
-                    modeled,
-                    "compatibility row {} lacks a typed model disposition",
-                    row.surface_id
-                );
-            }
-            _ => {}
-        }
+
+        // Each named suppression input is expressible as a typed model
+        // mechanism: disabledFeatures IDs map to feature-ID families;
+        // profile:/tool:/config: inputs are expressed by profile selection,
+        // reviewed RuntimeAvailability, and registration-plan tuning.
+        let expressible = row.protocol_field.starts_with("initializationOptions.disabledFeatures:")
+            || CapabilityFamily::feature_id_for_suppression(row.protocol_field).is_some()
+            || row.protocol_field.starts_with("profile:")
+            || row.protocol_field.starts_with("tool:")
+            || row.protocol_field.starts_with("config:");
+        assert!(expressible, "S02 model cannot yet express suppression row {}", row.surface_id);
     }
-    let _ = surface; // silence unused in wasm builds where rows differ
+
+    let compatibility_rows: Vec<_> = rows
+        .iter()
+        .filter(|row| row.target_issue == "#9665" && row.kind == SurfaceKind::Compatibility)
+        .collect();
+    assert_eq!(
+        compatibility_rows.len(),
+        3,
+        "S02 owns only intrinsic client exceptions and the position pin"
+    );
+    for row in compatibility_rows {
+        let maps_to_typed_policy = row.protocol_field
+            == KnownException::JetBrainsWatcherForceDisable.subject_evidence()
+            || row.protocol_field
+                == KnownException::OpenCodePushDiagnosticsRetention.subject_evidence()
+            || row.client_capability_inputs.contains(&"general.positionEncodings");
+        assert!(
+            maps_to_typed_policy,
+            "S02 compatibility row {} lacks an actual typed final-surface policy",
+            row.surface_id
+        );
+    }
 }
 
 #[test]

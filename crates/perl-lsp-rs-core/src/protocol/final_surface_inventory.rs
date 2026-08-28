@@ -254,6 +254,7 @@ fn compat(
     subject: &'static str,
     reason: &'static str,
     expiry: &'static str,
+    target_issue: &'static str,
 ) -> SurfaceRow {
     SurfaceRow {
         surface_id,
@@ -266,7 +267,7 @@ fn compat(
         runtime_route_owner: "n/a (negotiation-time behavior branch)",
         evidence_owner,
         competing_paths: Vec::new(),
-        target_issue: "#9665",
+        target_issue,
         compatibility: Some(CompatBoundary { subject, reason, expiry }),
         additional_owned_pointers: NO_POINTERS,
         rewrites_surface_pointer: None,

@@ -2,7 +2,8 @@
 //! [`EffectiveLspSurface`] authority (#9665, train #8032 stage S02).
 //!
 //! These tests are the S03 migration evidence: every subject proves the model
-//! independently derives the exact final surface the runtime emits, and pins
+//! independently derives the intended final surface outside one explicit
+//! pre-S03 invalid-field removal delta, and pins
 //! the runtime suppression twin to the canonical model table. No production
 //! behavior changes here.
 //!
@@ -140,8 +141,9 @@ fn runtime_flags_for(inputs: &SurfaceInputs) -> BuildFlags {
     flags
 }
 
-/// Core discriminator: the model must reproduce the EXACT emitted initialize
-/// capabilities for the given subject, plus effective advertised identities.
+/// Core discriminator: the model must reproduce emitted initialize capabilities
+/// outside the explicit pre-S03 `insertTextModes` removal delta, plus effective
+/// advertised identities.
 fn assert_initialize_matches_model(params: Value) -> EffectiveLspSurface {
     let server = LspServer::new();
     let response = server
@@ -152,10 +154,35 @@ fn assert_initialize_matches_model(params: Value) -> EffectiveLspSurface {
     let surface = EffectiveLspSurface::build(&inputs)
         .unwrap_or_else(|error| panic!("model refused subject: {error}"));
 
+    let mut runtime_capabilities =
+        response.get("capabilities").cloned().expect("initialize response carries capabilities");
+    let removed_insert_text_modes = runtime_capabilities
+        .pointer_mut("/completionProvider/completionItem")
+        .and_then(Value::as_object_mut)
+        .and_then(|completion_item| completion_item.remove("insertTextModes"));
+    let completion_active = surface
+        .families
+        .get(&CapabilityFamily::Completion)
+        .is_some_and(FamilyOutcome::is_effectively_advertised);
+    if completion_active {
+        assert_eq!(
+            removed_insert_text_modes,
+            Some(json!([1, 2])),
+            "the live pre-S03 path must expose only the enumerated invalid delta"
+        );
+    } else {
+        assert!(removed_insert_text_modes.is_none());
+    }
+    assert!(
+        surface
+            .server_capabilities
+            .pointer("/completionProvider/completionItem/insertTextModes")
+            .is_none(),
+        "the intended authority must not preserve the invalid client-capability field"
+    );
     assert_eq!(
-        response.get("capabilities"),
-        Some(&surface.server_capabilities),
-        "model projection must equal the shipped initialize capabilities"
+        runtime_capabilities, surface.server_capabilities,
+        "model projection must equal shipped initialize capabilities outside the          explicit insertTextModes removal owned by S03"
     );
     // The model derives identities from final family outcomes (#9665 item
     // 5); the shipped runtime still persists post-configuration flag IDs

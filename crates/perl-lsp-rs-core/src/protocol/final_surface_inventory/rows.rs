@@ -1126,6 +1126,7 @@ fn compatibility_rows() -> Vec<SurfaceRow> {
             "JetBrains-family clients (name contains jetbrains/intellij/idea, case-insensitive)",
             "their dynamic watcher registration flow is unreliable and degrades startup; forces caps.dynamic_registration_support=false regardless of declaration and queues one-time logMessage after initialized",
             "until EffectiveLspSurface introduces typed compatibility policy (#9665)",
+            "#9665",
         ),
         compat(
             "compat.client.opencode.pushDiagnosticsRetention",
@@ -1136,6 +1137,7 @@ fn compatibility_rows() -> Vec<SurfaceRow> {
             "OpenCode clients advertising pull diagnostics",
             "OpenCode relies on push publishDiagnostics even while declaring textDocument.diagnostic; pull gating suppressed to avoid losing diagnostics",
             "revisit under #6735 negotiation matrix when OpenCode consumes pull diagnostics",
+            "#9665",
         ),
         compat(
             "compat.protocol.diagnosticRefreshSingularKey",
@@ -1146,6 +1148,7 @@ fn compatibility_rows() -> Vec<SurfaceRow> {
             "clients built on lsp-types/helix-lsp-types emit singular diagnostic on the wire",
             "spec key is plural diagnostics; dropping singular would regress lsp-types-based clients (Helix)",
             "when observed clients stop emitting the singular spelling; dual-read guarded by tests until then",
+            "#6735",
         ),
         compat(
             "compat.protocol.markdownContentFormatFallback",
@@ -1155,7 +1158,8 @@ fn compatibility_rows() -> Vec<SurfaceRow> {
             "#1724; markdown_support default-true branch in handle_initialize",
             "clients omitting general.markup.contentFormat",
             "legacy fallback reads hover.contentFormat; absent both, markdown assumed supported",
-            "until #9665 canonical negotiation model owns markup selection",
+            "until #6735 canonical client-capability normalization owns markup selection",
+            "#6735",
         ),
         compat(
             "compat.protocol.completionItemFlattenedShape",
@@ -1165,7 +1169,8 @@ fn compatibility_rows() -> Vec<SurfaceRow> {
             "dual-shape parse branch in handle_initialize; lifecycle tests initialize_parses_completion_item_capabilities_from_flattened_shape",
             "generic clients flattening completionItem booleans onto textDocument.completion",
             "both shapes parsed; flattened form wins only when completionItem lacks the key",
-            "until #9665 normalizes capability parsing",
+            "until #6735 normalizes capability parsing",
+            "#6735",
         ),
         compat(
             "compat.initialize.legacyRootPath",
@@ -1176,6 +1181,7 @@ fn compatibility_rows() -> Vec<SurfaceRow> {
             "older JetBrains LSP clients sending rootPath",
             "rootPath converted to file URI and used after workspaceFolders/rootUri checks fail",
             "drop when minimum supported client floor excludes legacy JetBrains versions",
+            "#1671",
         ),
         compat(
             "compat.initialize.initOptionsRootFallbackChain",
@@ -1185,7 +1191,8 @@ fn compatibility_rows() -> Vec<SurfaceRow> {
             "initializationOptions fallback chain in handle_initialize; lifecycle tests initialize_init_options_workspace_folders_sets_root_path / initialize_reads_root_uri_from_initialization_options",
             "clients placing workspace roots inside initializationOptions instead of top-level params",
             "mirrors top-level resolution order after all standard fields are absent",
-            "until #9665 owns root-resolution policy",
+            "until #1671 initialize bootstrap owns root-resolution policy",
+            "#1671",
         ),
         compat(
             "compat.initialize.cwdFallback",
@@ -1195,7 +1202,8 @@ fn compatibility_rows() -> Vec<SurfaceRow> {
             "cwd fallback in handle_initialize; lifecycle test initialize_uses_current_directory_when_root_is_missing",
             "lightweight clients initializing without any root signal",
             "prevents an uninitialized workspace state for minimal clients",
-            "until #9665 defines explicit no-workspace behavior",
+            "until #1671 initialize bootstrap defines explicit no-workspace behavior",
+            "#1671",
         ),
         compat(
             "compat.protocol.positionEncodingUtf16Pin",
@@ -1206,6 +1214,7 @@ fn compatibility_rows() -> Vec<SurfaceRow> {
             "every client negotiating a non-UTF-16 preferred encoding",
             "providers still compute UTF-16 offsets; advertising anything else would corrupt positions, so the negotiated value is stored but not advertised",
             "#8032 train stage threading the negotiated encoding through position/text contracts",
+            "#9665",
         ),
         compat(
             "compat.negotiated.clientInputsWithoutAdvertisementSeam",
@@ -1227,7 +1236,8 @@ fn compatibility_rows() -> Vec<SurfaceRow> {
             "#6735 negotiation matrix; lifecycle tests initialize_parses_* / initialize_leaves_*_disabled_when_absent",
             "client-negotiated behavior variants with no dedicated serverCapabilities advertisement field",
             "each input is parsed in handle_initialize into ClientCapabilities and consumed downstream by providers/edits/outbound requests (#8068/#8285); recorded once so the denominator stays closed instead of implying an advertisement seam that does not exist",
-            "S02 EffectiveLspSurface models each as a typed negotiation outcome (#9665)",
+            "owned by #6735 client-capability normalization; S02 consumes only normalized inputs that affect final-surface policy",
+            "#6735",
         ),
     ]
 }

@@ -2082,11 +2082,11 @@
       "runtime_route_owner": "n/a (negotiation-time behavior branch)",
       "evidence_owner": "cwd fallback in handle_initialize; lifecycle test initialize_uses_current_directory_when_root_is_missing",
       "competing_paths": [],
-      "target_issue": "#9665",
+      "target_issue": "#1671",
       "compatibility": {
         "subject": "lightweight clients initializing without any root signal",
         "reason": "prevents an uninitialized workspace state for minimal clients",
-        "expiry": "until #9665 defines explicit no-workspace behavior"
+        "expiry": "until #1671 initialize bootstrap defines explicit no-workspace behavior"
       },
       "additional_owned_pointers": [],
       "rewrites_surface_pointer": null,
@@ -2103,11 +2103,11 @@
       "runtime_route_owner": "n/a (negotiation-time behavior branch)",
       "evidence_owner": "initializationOptions fallback chain in handle_initialize; lifecycle tests initialize_init_options_workspace_folders_sets_root_path / initialize_reads_root_uri_from_initialization_options",
       "competing_paths": [],
-      "target_issue": "#9665",
+      "target_issue": "#1671",
       "compatibility": {
         "subject": "clients placing workspace roots inside initializationOptions instead of top-level params",
         "reason": "mirrors top-level resolution order after all standard fields are absent",
-        "expiry": "until #9665 owns root-resolution policy"
+        "expiry": "until #1671 initialize bootstrap owns root-resolution policy"
       },
       "additional_owned_pointers": [],
       "rewrites_surface_pointer": null,
@@ -2124,7 +2124,7 @@
       "runtime_route_owner": "n/a (negotiation-time behavior branch)",
       "evidence_owner": "legacy fallback chain in handle_initialize; lifecycle tests initialize_uses_current_directory_when_root_is_missing",
       "competing_paths": [],
-      "target_issue": "#9665",
+      "target_issue": "#1671",
       "compatibility": {
         "subject": "older JetBrains LSP clients sending rootPath",
         "reason": "rootPath converted to file URI and used after workspaceFolders/rootUri checks fail",
@@ -2157,11 +2157,11 @@
       "runtime_route_owner": "n/a (negotiation-time behavior branch)",
       "evidence_owner": "#6735 negotiation matrix; lifecycle tests initialize_parses_* / initialize_leaves_*_disabled_when_absent",
       "competing_paths": [],
-      "target_issue": "#9665",
+      "target_issue": "#6735",
       "compatibility": {
         "subject": "client-negotiated behavior variants with no dedicated serverCapabilities advertisement field",
         "reason": "each input is parsed in handle_initialize into ClientCapabilities and consumed downstream by providers/edits/outbound requests (#8068/#8285); recorded once so the denominator stays closed instead of implying an advertisement seam that does not exist",
-        "expiry": "S02 EffectiveLspSurface models each as a typed negotiation outcome (#9665)"
+        "expiry": "owned by #6735 client-capability normalization; S02 consumes only normalized inputs that affect final-surface policy"
       },
       "additional_owned_pointers": [],
       "rewrites_surface_pointer": null,
@@ -2180,11 +2180,11 @@
       "runtime_route_owner": "n/a (negotiation-time behavior branch)",
       "evidence_owner": "dual-shape parse branch in handle_initialize; lifecycle tests initialize_parses_completion_item_capabilities_from_flattened_shape",
       "competing_paths": [],
-      "target_issue": "#9665",
+      "target_issue": "#6735",
       "compatibility": {
         "subject": "generic clients flattening completionItem booleans onto textDocument.completion",
         "reason": "both shapes parsed; flattened form wins only when completionItem lacks the key",
-        "expiry": "until #9665 normalizes capability parsing"
+        "expiry": "until #6735 normalizes capability parsing"
       },
       "additional_owned_pointers": [],
       "rewrites_surface_pointer": null,
@@ -2204,7 +2204,7 @@
       "runtime_route_owner": "n/a (negotiation-time behavior branch)",
       "evidence_owner": "#9592; lifecycle tests initialize_reads_diagnostic_refresh_support_from_spec_plural_key/_singular_client_deviation",
       "competing_paths": [],
-      "target_issue": "#9665",
+      "target_issue": "#6735",
       "compatibility": {
         "subject": "clients built on lsp-types/helix-lsp-types emit singular diagnostic on the wire",
         "reason": "spec key is plural diagnostics; dropping singular would regress lsp-types-based clients (Helix)",
@@ -2228,11 +2228,11 @@
       "runtime_route_owner": "n/a (negotiation-time behavior branch)",
       "evidence_owner": "#1724; markdown_support default-true branch in handle_initialize",
       "competing_paths": [],
-      "target_issue": "#9665",
+      "target_issue": "#6735",
       "compatibility": {
         "subject": "clients omitting general.markup.contentFormat",
         "reason": "legacy fallback reads hover.contentFormat; absent both, markdown assumed supported",
-        "expiry": "until #9665 canonical negotiation model owns markup selection"
+        "expiry": "until #6735 canonical client-capability normalization owns markup selection"
       },
       "additional_owned_pointers": [],
       "rewrites_surface_pointer": null,

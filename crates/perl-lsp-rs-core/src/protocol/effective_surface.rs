@@ -255,6 +255,12 @@ pub enum CapabilityFamily {
     WorkspaceSymbol,
     /// `notebookDocumentSync`.
     NotebookDocumentSync,
+    /// `lsp.notebook_cell_execution` identity-only sub-feature.
+    ///
+    /// This selection has no independent `serverCapabilities` pointer; it
+    /// still participates in profile/configuration suppression and the
+    /// effective advertised feature-ID set.
+    NotebookCellExecution,
     /// `foldingRangeProvider`.
     FoldingRange,
     /// `inlayHintProvider`.
@@ -367,8 +373,10 @@ pub enum DowngradeReason {
 pub enum WatcherWithholdReason {
     /// The client did not affirmatively declare dynamic file-watcher support.
     ClientUnsupported,
-    /// No active workspace-symbol surface remains for the watcher to serve.
-    WorkspaceSurfaceInactive,
+    /// The simple `lsp.workspace_symbol` feature gate required by the shipped
+    /// watcher-admission predicate is inactive. A resolve-only
+    /// `workspaceSymbolProvider` advertisement may still remain active.
+    WorkspaceSymbolFeatureDisabled,
     /// A reviewed runtime availability input withheld the plan.
     RuntimeUnavailable {
         /// Reviewed input that withheld the plan (`runtime_tuning.*`).
@@ -929,7 +937,7 @@ impl EffectiveLspSurface {
         } else if !client.dynamic_file_watcher_registration.is_supported() {
             WatcherPlanDecision::Withheld(WatcherWithholdReason::ClientUnsupported)
         } else if !flags.workspace_symbol {
-            WatcherPlanDecision::Withheld(WatcherWithholdReason::WorkspaceSurfaceInactive)
+            WatcherPlanDecision::Withheld(WatcherWithholdReason::WorkspaceSymbolFeatureDisabled)
         } else if !inputs.runtime.file_watchers_enabled {
             WatcherPlanDecision::Withheld(WatcherWithholdReason::RuntimeUnavailable {
                 input: "runtime_tuning.file_watchers",
@@ -1072,6 +1080,7 @@ fn flag_family_table(base: &BuildFlags) -> Vec<(CapabilityFamily, bool)> {
         (CapabilityFamily::WorkspaceSymbol, base.workspace_symbol),
         (CapabilityFamily::DocumentHighlight, base.document_highlight),
         (CapabilityFamily::NotebookDocumentSync, base.notebook_document_sync),
+        (CapabilityFamily::NotebookCellExecution, base.notebook_cell_execution),
         (CapabilityFamily::FoldingRange, base.folding_range),
         (CapabilityFamily::InlayHint, base.inlay_hints),
         (CapabilityFamily::PullDiagnostic, base.pull_diagnostics),
@@ -1109,6 +1118,7 @@ fn post_config_flag(flags: &BuildFlags, family: CapabilityFamily) -> bool {
         CapabilityFamily::WorkspaceSymbol => flags.workspace_symbol,
         CapabilityFamily::DocumentHighlight => flags.document_highlight,
         CapabilityFamily::NotebookDocumentSync => flags.notebook_document_sync,
+        CapabilityFamily::NotebookCellExecution => flags.notebook_cell_execution,
         CapabilityFamily::FoldingRange => flags.folding_range,
         CapabilityFamily::InlayHint => flags.inlay_hints,
         CapabilityFamily::PullDiagnostic => flags.pull_diagnostics,
@@ -1156,6 +1166,7 @@ impl CapabilityFamily {
             Self::DocumentHighlight => "lsp.document_highlight",
             Self::WorkspaceSymbol => "lsp.workspace_symbol",
             Self::NotebookDocumentSync => "lsp.notebook_document_sync",
+            Self::NotebookCellExecution => "lsp.notebook_cell_execution",
             Self::FoldingRange => "lsp.folding_range",
             Self::InlayHint => "lsp.inlay_hint",
             Self::PullDiagnostic => "lsp.pull_diagnostics",
@@ -1200,6 +1211,7 @@ impl CapabilityFamily {
             Self::WorkspaceSymbol => &["workspaceSymbolProvider"],
             Self::DocumentHighlight => &["documentHighlightProvider"],
             Self::NotebookDocumentSync => &["notebookDocumentSync"],
+            Self::NotebookCellExecution => &[],
             Self::FoldingRange => &["foldingRangeProvider"],
             Self::InlayHint => &["inlayHintProvider"],
             Self::PullDiagnostic => &["diagnosticProvider"],
@@ -1247,6 +1259,7 @@ impl CapabilityFamily {
             (Self::DocumentSymbol, "lsp.document_symbol"),
             (Self::WorkspaceSymbol, "lsp.workspace_symbol"),
             (Self::NotebookDocumentSync, "lsp.notebook_document_sync"),
+            (Self::NotebookCellExecution, "lsp.notebook_cell_execution"),
             (Self::FoldingRange, "lsp.folding_range"),
             (Self::InlayHint, "lsp.inlay_hint"),
             (Self::PullDiagnostic, "lsp.pull_diagnostics"),
@@ -1537,7 +1550,6 @@ fn project_server_capabilities(
                 "triggerCharacters": COMPLETION_TRIGGER_CHARACTERS,
                 "completionItem": {
                     "labelDetailsSupport": true,
-                    "insertTextModes": [1, 2],
                 },
             }),
         );
