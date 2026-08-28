@@ -72,7 +72,10 @@ const REQUIREMENTS: &[(&str, &[&str])] = &[
             "named next",
         ],
     ),
-    ("the earliest missing judgment", &["earliest missing judgment"]),
+    (
+        "the earliest missing judgment",
+        &["earliest missing judgment"],
+    ),
     ("read-only pre-admission research", &["read-only research"]),
     ("the prepare-issue repair route", &["prepare-issue"]),
     ("the prepare-proof repair route", &["prepare-proof"]),
