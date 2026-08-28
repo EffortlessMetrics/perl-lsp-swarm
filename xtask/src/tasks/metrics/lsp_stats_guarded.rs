@@ -158,9 +158,7 @@ fn load_workflows(fixture_matrix: &Path) -> Result<BTreeMap<String, FixtureWorkf
     Ok(workflows)
 }
 
-fn load_receipt_validator(
-    receipt_schema: &Path,
-) -> Result<jsonschema::Validator> {
+fn load_receipt_validator(receipt_schema: &Path) -> Result<jsonschema::Validator> {
     let schema_raw = fs::read_to_string(receipt_schema)
         .with_context(|| format!("reading UX receipt schema: {}", receipt_schema.display()))?;
     let schema: Value = serde_json::from_str(&schema_raw)
