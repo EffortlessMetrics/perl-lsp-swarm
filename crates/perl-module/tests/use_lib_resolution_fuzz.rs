@@ -36,9 +36,9 @@ fn fuzz_string(state: &mut u64, max_len: usize) -> String {
 fn fuzz_path(state: &mut u64) -> String {
     let segment: String = fuzz_string(state, 24)
         .chars()
-        .filter(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-'))
+        .filter(|ch| ch.is_ascii_alphanumeric() || matches!(*ch, '_' | '-'))
         .collect();
-    let segment = if segment.is_empty() { "fallback" } else { &segment };
+    let segment = if segment.is_empty() { "fallback" } else { segment.as_str() };
     format!("lib/{segment}")
 }
 
