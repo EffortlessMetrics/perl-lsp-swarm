@@ -36,7 +36,7 @@ impl WhitespaceEditMap {
             return None;
         }
 
-        let mut normalized = Vec::with_capacity(edits.len());
+        let mut normalized: Vec<NormalizedEdit> = Vec::with_capacity(edits.len());
         let mut old_cursor = 0usize;
         let mut new_cursor = 0usize;
         let mut cumulative_shift = 0isize;
