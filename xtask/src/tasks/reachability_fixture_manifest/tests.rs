@@ -273,6 +273,42 @@ fn rejects_duplicate_row_ids() -> TestResult {
 }
 
 #[test]
+fn rejects_duplicate_denominator_family_entries() -> TestResult {
+    let mut manifest = minimal_manifest(vec![
+        positive_row("a1-positive", Some("a2-opposite")),
+        control_row("a2-opposite"),
+    ]);
+    // A second entry for the same family carries requirements and deferrals
+    // that first-entry lookups never read; it must fail closed instead of
+    // silently splitting one family's accounting across two entries.
+    let duplicated = manifest.denominator[0].clone();
+    manifest.denominator.push(duplicated);
+    let violations = validate_document(Path::new("/unused"), &manifest);
+    assert!(
+        violations
+            .iter()
+            .any(|v| v.contains("denominator declares family") && v.contains("more than once")),
+        "missing duplicate-family violation: {violations:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn contains_word_rejects_empty_needle_and_resumes_on_char_boundaries() {
+    // An empty needle supplies no grounding evidence; the previous fallback
+    // advanced the cursor past the end of the haystack and panicked.
+    assert!(!contains_word("sub demo { }", ""));
+    // A multi-byte match rejected by the ASCII boundary checks must resume at
+    // the char boundary after the match; advancing one byte split the UTF-8
+    // character and panicked on the next slice.
+    assert!(!contains_word("aé", "é"));
+    assert!(contains_word("aé", "a"));
+    // Word-boundary discipline stays intact on both edges.
+    assert!(contains_word("sub entry_calls_live_scc { }", "entry_calls_live_scc"));
+    assert!(!contains_word("entry_calls_live_scc_extra", "entry_calls_live_scc"));
+}
+
+#[test]
 fn rejects_unstable_fixture_identity() -> TestResult {
     let mut second = control_row("second");
     second.fixture.id = "sample".to_string();
@@ -763,7 +799,10 @@ fn self_fixture_documents_fail_with_expected_codes() -> TestResult {
         }
         checked += 1;
     }
-    assert!(checked >= 8, "self-fixture corpus unexpectedly small: {checked}");
+    // Exact ratchet: every invalid self-fixture stays exercised. A deletion
+    // of a rejection fixture must fail here, not silently shrink the corpus.
+    // Raise this number when a rejection fixture is added.
+    assert_eq!(checked, 13, "invalid self-fixture corpus changed size");
     Ok(())
 }
 
@@ -771,8 +810,126 @@ fn self_fixture_documents_fail_with_expected_codes() -> TestResult {
 fn real_repository_manifest_passes_validation() -> TestResult {
     let root = crate::utils::project_root()?;
     let stats = validate(&root)?;
-    assert!(stats.rows >= 40, "denominator population too small: {}", stats.rows);
+    // Exact ratchet: the canonical denominator population is pinned, so a
+    // silent row deletion fails here as well as in the declared_row_count
+    // cross-check. Update this number when rows are added or removed.
+    assert_eq!(stats.rows, 81, "denominator population changed");
     assert_eq!(stats.families_covered, model::FAMILIES.len());
+    Ok(())
+}
+
+/// Direct fail-closed schema-evaluator coverage: every implemented assertion
+/// keyword gets one accepted and one rejected instance, and the sibling
+/// keyword cases pin the defects from PR #12706 review (maxLength boundary,
+/// size-arm continuation past a wrong instance type).
+#[test]
+fn schema_evaluator_accepts_and_rejects_each_implemented_keyword() -> TestResult {
+    let cases: &[(&str, serde_json::Value, serde_json::Value, bool)] = &[
+        // (label, schema, instance, expect_violation)
+        ("type", serde_json::json!({"type": "array"}), serde_json::json!("crates"), true),
+        ("type-ok", serde_json::json!({"type": "array"}), serde_json::json!([1]), false),
+        ("const", serde_json::json!({"const": 11553}), serde_json::json!(1), true),
+        ("enum", serde_json::json!({"enum": ["a", "b"]}), serde_json::json!("c"), true),
+        ("enum-ok", serde_json::json!({"enum": ["a", "b"]}), serde_json::json!("a"), false),
+        ("required", serde_json::json!({"required": ["family"]}), serde_json::json!({}), true),
+        (
+            "required-ok",
+            serde_json::json!({"required": ["family"]}),
+            serde_json::json!({"family": "A_local_flow"}),
+            false,
+        ),
+        ("pattern", serde_json::json!({"pattern": "^[a-z]+$"}), serde_json::json!("Bad1"), true),
+        (
+            "pattern-ok",
+            serde_json::json!({"pattern": "^[a-z]+$"}),
+            serde_json::json!("good"),
+            false,
+        ),
+        // maxLength must accept shorter strings, not only exact-length ones.
+        ("maxLength", serde_json::json!({"maxLength": 5}), serde_json::json!("abcdef"), true),
+        (
+            "maxLength-accepts-shorter",
+            serde_json::json!({"maxLength": 5}),
+            serde_json::json!("ab"),
+            false,
+        ),
+        (
+            "maxLength-boundary",
+            serde_json::json!({"maxLength": 5}),
+            serde_json::json!("abcde"),
+            false,
+        ),
+        ("minLength", serde_json::json!({"minLength": 3}), serde_json::json!("ab"), true),
+        // A minLength+maxLength range that fits must produce no violation; the
+        // folded comparison rejected exactly this instance.
+        (
+            "length-range-ok",
+            serde_json::json!({"minLength": 2, "maxLength": 5}),
+            serde_json::json!("ab"),
+            false,
+        ),
+        // A wrong instance type must not abort sibling keywords in the same
+        // schema object: the `type` violation stays reported.
+        (
+            "size-arm-sibling-type-still-reported",
+            serde_json::json!({"type": "array", "minItems": 1}),
+            serde_json::json!("scalar"),
+            true,
+        ),
+        ("minItems", serde_json::json!({"minItems": 2}), serde_json::json!([1]), true),
+        ("minItems-ok", serde_json::json!({"minItems": 2}), serde_json::json!([1, 2]), false),
+        ("uniqueItems", serde_json::json!({"uniqueItems": true}), serde_json::json!([1, 1]), true),
+        (
+            "uniqueItems-ok",
+            serde_json::json!({"uniqueItems": true}),
+            serde_json::json!([1, 2]),
+            false,
+        ),
+        (
+            "additionalProperties",
+            serde_json::json!({"properties": {"a": {}}, "additionalProperties": false}),
+            serde_json::json!({"b": 1}),
+            true,
+        ),
+        (
+            "additionalProperties-ok",
+            serde_json::json!({"properties": {"a": {}}, "additionalProperties": false}),
+            serde_json::json!({"a": 1}),
+            false,
+        ),
+        (
+            "propertyNames",
+            serde_json::json!({"propertyNames": {"maxLength": 3}}),
+            serde_json::json!({"toolong": 1}),
+            true,
+        ),
+        (
+            "propertyNames-ok",
+            serde_json::json!({"propertyNames": {"maxLength": 3}}),
+            serde_json::json!({"ok": 1}),
+            false,
+        ),
+        (
+            "ref",
+            serde_json::json!({"$defs": {"positive": {"minimum": 1}}, "$ref": "#/$defs/positive"}),
+            serde_json::json!(0),
+            true,
+        ),
+        (
+            "ref-ok",
+            serde_json::json!({"$defs": {"positive": {"minimum": 1}}, "$ref": "#/$defs/positive"}),
+            serde_json::json!(2),
+            false,
+        ),
+    ];
+    for (label, schema, instance, expect_violation) in cases {
+        let violations = schema::evaluate(schema, instance);
+        assert_eq!(
+            violations.is_empty(),
+            !*expect_violation,
+            "{label}: unexpected outcome {violations:?}"
+        );
+    }
     Ok(())
 }
 

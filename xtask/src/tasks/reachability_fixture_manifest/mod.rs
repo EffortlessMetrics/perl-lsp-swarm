@@ -448,6 +448,10 @@ fn validate_subject_source_facts(
 /// ASCII word containment so fragments match Perl identifier spellings without
 /// matching inside longer identifiers unintentionally on both edges.
 fn contains_word(haystack: &str, needle: &str) -> bool {
+    // An empty needle matches everywhere and supplies no grounding evidence.
+    if needle.is_empty() {
+        return false;
+    }
     let is_identifier_char = |c: char| c.is_ascii_alphanumeric() || c == '_';
     let mut search_from = 0usize;
     while let Some(found) = haystack[search_from..].find(needle) {
@@ -460,7 +464,11 @@ fn contains_word(haystack: &str, needle: &str) -> bool {
         if !boundary_before && !boundary_after {
             return true;
         }
-        search_from = absolute + 1;
+        // Resume after the whole rejected match. `after_start` is a char
+        // boundary (the match ends on one), so a rejected multi-byte match can
+        // never split a UTF-8 character here; advancing by one byte would
+        // panic on the next slice.
+        search_from = after_start;
     }
     false
 }
@@ -999,6 +1007,19 @@ fn family_declares_deferral(manifest: &model::Manifest, family: &str, expected: 
 
 fn validate_coverage(manifest: &model::Manifest, violations: &mut Vec<String>) {
     const DOC: &str = MANIFEST_RELATIVE_PATH;
+    // One family, one denominator entry: family lookups resolve the first
+    // matching entry, so a second entry for the same family would carry
+    // requirements and deferrals that the accounting below silently never
+    // reads while the completeness pass still counts them.
+    let mut seen_families = BTreeSet::new();
+    for entry in &manifest.denominator {
+        if !seen_families.insert(entry.family.as_str()) {
+            violations.push(format!(
+                "{DOC}: denominator declares family {:?} more than once; merge its coverage into one entry",
+                entry.family
+            ));
+        }
+    }
     // Rule 4: claimed families/profiles/stages keep instantiated denominator
     // rows unless the slot is explicitly deferred to a named owner.
     for family in model::FAMILIES {

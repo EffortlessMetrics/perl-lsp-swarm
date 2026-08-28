@@ -325,8 +325,14 @@ fn eval(
                 if let Some(limit) = subschema.as_u64() {
                     if let Some(text) = instance.as_str() {
                         let length = text.chars().count() as u64;
-                        let violated =
-                            length < limit || (keyword == "maxLength" && length > limit);
+                        // Split the comparisons per keyword: folding both into
+                        // one expression (`length < limit || ... > limit`)
+                        // made maxLength pass only at exactly the limit.
+                        let violated = if keyword == "maxLength" {
+                            length > limit
+                        } else {
+                            length < limit
+                        };
                         if violated {
                             out.push(format!("{at}: length {length} violates {keyword} {limit}"));
                         }
@@ -369,10 +375,16 @@ fn eval(
             }
             "minItems" | "maxItems" | "minProperties" | "maxProperties" => {
                 if let Some(limit) = subschema.as_u64() {
-                    let count = match instance {
-                        Value::Array(elements) => elements.len() as u64,
-                        Value::Object(object) => object.len() as u64,
-                        _ => return,
+                    let Some(count) = (match instance {
+                        Value::Array(elements) => Some(elements.len() as u64),
+                        Value::Object(object) => Some(object.len() as u64),
+                        _ => None,
+                    }) else {
+                        // Size assertions do not apply to other instance types.
+                        // Skip only this keyword: a `return` here would abort
+                        // the remaining keywords in the same schema object and
+                        // silently drop e.g. a sibling `type` violation.
+                        continue;
                     };
                     let violated = keyword.starts_with("min") && count < limit
                         || keyword.starts_with("max") && count > limit;

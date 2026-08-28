@@ -818,7 +818,7 @@
       "fixture": {
         "id": "gold-cancel-fixture",
         "path": "test_corpus/gold/inc_no_lib_cancellation/fixture.pl",
-        "digest_sha256_lf": "810fc9f136a78e2fd73b4f334ac24b3cfc0c1c058c091fe21359f2d5b6d37e9c",
+        "digest_sha256_lf": "fea5db6a7afbce3744c1d3c06c7217e5fab882fdcc4430824b9a67c1c991a8db",
         "role": "positive"
       },
       "subjects": [

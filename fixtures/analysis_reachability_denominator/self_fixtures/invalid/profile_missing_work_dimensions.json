@@ -15,7 +15,7 @@
   "rows": [
     {
       "row_id": "sf-profile-missing-dimensions",
-      "fixture": { "id": "graph-shapes", "path": "crates/perl-corpus/fixtures/reachability_denominator/graph_shapes.pl", "digest_sha256_lf": "1551e9a03a1c3eecc8a079941e4b248c365e6a871a673c79cc0028d0dc484f30", "role": "positive" },
+      "fixture": { "id": "graph-shapes", "path": "crates/perl-corpus/fixtures/reachability_denominator/lib/GraphShapes.pm", "digest_sha256_lf": "19217102262c50898832666003003486b1b3341777c328869a7c42b0ff50edda", "role": "positive" },
       "subjects": ["profile://self-fixture"],
       "source_roles": ["profile-inputs"],
       "train": { "node": "N.denominator", "component": "self-fixture", "family": "A_local_flow", "claim_profile": "reachability-v1" },
@@ -36,7 +36,7 @@
     },
     {
       "row_id": "sf-profile-control",
-      "fixture": { "id": "graph-shapes-profile", "path": "crates/perl-corpus/fixtures/reachability_denominator/graph_shapes.pl", "digest_sha256_lf": "1551e9a03a1c3eecc8a079941e4b248c365e6a871a673c79cc0028d0dc484f30", "role": "control_opposite" },
+      "fixture": { "id": "graph-shapes-profile", "path": "crates/perl-corpus/fixtures/reachability_denominator/lib/GraphShapes.pm", "digest_sha256_lf": "19217102262c50898832666003003486b1b3341777c328869a7c42b0ff50edda", "role": "control_opposite" },
       "subjects": ["subject://self-fixture-control"],
       "source_roles": ["sub-declarations"],
       "train": { "node": "N.denominator", "component": "self-fixture", "family": "A_local_flow", "claim_profile": "reachability-v1" },

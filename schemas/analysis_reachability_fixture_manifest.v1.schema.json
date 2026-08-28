@@ -87,6 +87,7 @@
     },
     "denominator": {
       "type": "array",
+      "uniqueItems": true,
       "items": {
         "type": "object",
         "additionalProperties": false,
