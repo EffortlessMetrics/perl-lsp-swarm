@@ -6,7 +6,7 @@
 /// Behavioral tests for LSP functionality
 /// These tests verify actual functionality, not just response shapes
 /// They ensure the wired infrastructure produces real results
-use serde_json::json;
+use serde_json::{Value, json};
 use std::path::Path;
 use std::time::Duration;
 use url::Url;
@@ -34,6 +34,31 @@ fn uri_matches(expected: &str, actual: &str) -> bool {
     }
 
     false
+}
+
+fn workspace_edit_has_text_edits(edit: &Value, target_uri: &str) -> bool {
+    if edit.get("changes").and_then(Value::as_object).is_some_and(|changes| {
+        changes.iter().any(|(uri, edits)| {
+            uri_matches(target_uri, uri)
+                && edits.as_array().is_some_and(|edits| !edits.is_empty())
+        })
+    }) {
+        return true;
+    }
+
+    edit.get("documentChanges")
+        .and_then(Value::as_array)
+        .is_some_and(|document_changes| {
+            document_changes.iter().any(|change| {
+                change
+                    .pointer("/textDocument/uri")
+                    .and_then(Value::as_str)
+                    .is_some_and(|uri| uri_matches(target_uri, uri))
+                    && change.get("edits").and_then(Value::as_array).is_some_and(|edits| {
+                        !edits.is_empty()
+                    })
+            })
+        })
 }
 
 mod test_fixtures {
@@ -186,10 +211,6 @@ fn test_cross_file_references() -> TestResult {
 
 #[test]
 fn test_workspace_symbol_search() -> TestResult {
-    // Ensure we use fast, deterministic fallbacks to avoid long waits
-    unsafe {
-        std::env::set_var("LSP_TEST_FALLBACKS", "1");
-    }
     let (mut harness, workspace) = create_test_server()?;
 
     // Search for symbols across workspace
@@ -218,10 +239,6 @@ fn test_workspace_symbol_search() -> TestResult {
 
 #[test]
 fn test_extract_variable_returns_edits() -> TestResult {
-    // Ensure we use fast, deterministic fallbacks to avoid long waits
-    unsafe {
-        std::env::set_var("LSP_TEST_FALLBACKS", "1");
-    }
     let (mut harness, workspace) = create_test_server()?;
 
     // Request code actions for expression extraction
@@ -239,24 +256,21 @@ fn test_extract_variable_returns_edits() -> TestResult {
 
     {
         let actions = result.as_array().ok_or("Should return action array")?;
+        let extract_action = actions
+            .iter()
+            .find(|action| {
+                action["title"].as_str().is_some_and(|title| title.contains("Extract"))
+            })
+            .ok_or("Should have extract variable action")?;
+        let edit = extract_action
+            .get("edit")
+            .ok_or("Extract variable action should include a workspace edit")?;
+        let file_uri = workspace.uri("script.pl");
 
-        // Find extract variable action
-        let extract_action =
-            actions.iter().find(|a| a["title"].as_str().is_some_and(|t| t.contains("Extract")));
-
-        if let Some(action) = extract_action {
-            // Verify it has actual edits
-            if let Some(edit) = action.get("edit") {
-                let changes = &edit["changes"];
-                assert!(!changes.is_null(), "Should have workspace edit changes");
-
-                // Check for edits in the file
-                let file_uri = workspace.uri("script.pl");
-                let file_edits = &changes[file_uri.as_str()];
-                let edits = file_edits.as_array().ok_or("Should have edits array")?;
-                assert!(!edits.is_empty(), "Should have actual text edits");
-            }
-        }
+        assert!(
+            workspace_edit_has_text_edits(edit, &file_uri),
+            "Extract variable action should include at least one text edit for {file_uri}; got {edit}"
+        );
     }
     Ok(())
 }
@@ -402,10 +416,6 @@ fn test_test_generation_actions_present() -> TestResult {
 
 #[test]
 fn test_completion_detail_formatting() -> TestResult {
-    // Ensure we use fast, deterministic fallbacks to avoid long waits
-    unsafe {
-        std::env::set_var("LSP_TEST_FALLBACKS", "1");
-    }
     let (mut harness, workspace) = create_test_server()?;
 
     // Request completion after $obj->
