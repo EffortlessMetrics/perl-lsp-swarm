@@ -43,6 +43,9 @@ TARGETS = (
     ".github/PULL_REQUEST_TEMPLATE.md",
     "xtask/tests/shift_left_publication_contract.rs",
 )
+REQUIRED_COMMAND = (
+    "cargo test -p xtask --test shift_left_publication_contract --locked"
+)
 EVENTS = ("pull_request", "push")
 
 
@@ -92,6 +95,9 @@ def event_paths(text: str, event: str) -> set[str]:
 
 
 def validate(text: str) -> None:
+    assert text.count(REQUIRED_COMMAND) == 1, (
+        "agent-flow workflow must execute the shift-left publication contract exactly once"
+    )
     for event in EVENTS:
         paths = event_paths(text, event)
         missing = REQUIRED_PATHS - paths
@@ -128,6 +134,15 @@ for event in EVENTS:
             raise AssertionError(
                 f"removing {target!r} only from on.{event}.paths must fail the contract"
             )
+
+without_publication_check = source.replace(REQUIRED_COMMAND, "true", 1)
+assert without_publication_check != source, "workflow-command mutation fixture must apply"
+try:
+    validate(without_publication_check)
+except AssertionError:
+    pass
+else:
+    raise AssertionError("removing the publication-contract command must fail the contract")
 
 print("agent-flow control-plane trigger fixtures passed")
 PY
