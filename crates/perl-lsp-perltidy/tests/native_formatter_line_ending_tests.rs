@@ -1,7 +1,9 @@
 #![deny(clippy::map_err_ignore)]
 
 use perl_lsp_perltidy::native::{FormatContext, FormatDisposition, FormatLineEndingDisposition};
-use perl_lsp_perltidy::{FormatConfig, NativeFormatter, PerlFormatter, TextPosition, TextRange};
+use perl_lsp_perltidy::{
+    FinalNewline, FormatConfig, NativeFormatter, PerlFormatter, TextPosition, TextRange,
+};
 
 fn assert_crlf_only(text: &str) {
     assert_eq!(text.matches('\n').count(), text.matches("\r\n").count());
@@ -140,4 +142,44 @@ fn insert_final_newline_uses_crlf_after_generated_layout() {
 
     assert_eq!(result.formatted, "while ($n) {\r\n    next;\r\n}\r\n");
     assert_crlf_only(&result.formatted);
+}
+
+#[test]
+fn insert_final_newline_handles_empty_document() {
+    let formatter = NativeFormatter::new();
+    let config = FormatConfig { final_newline: FinalNewline::Insert, ..FormatConfig::default() };
+
+    let result = formatter.format_document("", &config);
+
+    assert!(result.changed);
+    assert_eq!(result.formatted, "\n");
+}
+
+#[test]
+fn insert_final_newline_is_idempotent_for_crlf_layout() {
+    let formatter = NativeFormatter::new();
+    let config = FormatConfig { final_newline: FinalNewline::Insert, ..FormatConfig::default() };
+    let source = "while($n){next;}\r\n";
+
+    let first = formatter.format_document(source, &config);
+    let second = formatter.format_document(&first.formatted, &config);
+
+    assert_eq!(first.formatted, "while ($n) {\r\n    next;\r\n}\r\n");
+    assert_eq!(second.formatted, first.formatted);
+    assert!(!second.changed);
+}
+
+#[test]
+fn insert_final_newline_refuses_malformed_document_without_edit() {
+    let formatter = NativeFormatter::new();
+    let config = FormatConfig { final_newline: FinalNewline::Insert, ..FormatConfig::default() };
+    let source = "my $x = ;\r\n";
+
+    let result = formatter.format_document(source, &config);
+
+    assert!(!result.changed);
+    assert_eq!(result.formatted, source);
+    assert!(result.edits.is_empty());
+    assert_eq!(result.diagnostics.len(), 1);
+    assert_eq!(result.diagnostics[0].code, "native.format.parse_error");
 }
