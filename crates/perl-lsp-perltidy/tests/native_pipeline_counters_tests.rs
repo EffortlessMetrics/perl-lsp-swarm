@@ -312,7 +312,10 @@ fn nested_counter_scope_populates_supplied_and_outer_snapshots() {
     assert_eq!(outer_snapshot.elapsed, supplied.elapsed);
     assert_eq!(outer_snapshot.pipeline_invocations, supplied.pipeline_invocations);
     assert_eq!(outer_snapshot.parse_gate_invocations, supplied.parse_gate_invocations);
-    assert_eq!(outer_snapshot.source_parse_gate_invocations, supplied.source_parse_gate_invocations);
+    assert_eq!(
+        outer_snapshot.source_parse_gate_invocations,
+        supplied.source_parse_gate_invocations
+    );
     assert_eq!(
         outer_snapshot.formatted_output_parse_gate_invocations,
         supplied.formatted_output_parse_gate_invocations
@@ -656,13 +659,7 @@ fn receipt_identity_rows_include_production_counter_snapshot() {
         &FormatContext::default(),
         &mut counters,
     );
-    let row = identity_row_with_counters(
-        &spec,
-        &typed,
-        &toolchain_tag(),
-        "test-run",
-        &counters,
-    );
+    let row = identity_row_with_counters(&spec, &typed, &toolchain_tag(), "test-run", &counters);
 
     assert_eq!(row["counters"]["schema"], COUNTER_SCHEMA_V1);
     assert_eq!(row["counters"]["pipeline_invocations"], 1);
