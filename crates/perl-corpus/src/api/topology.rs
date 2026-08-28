@@ -115,6 +115,22 @@ pub enum CorpusTopologyError {
         /// Required root-relative prefix for the declared layer.
         required_prefix: &'static str,
     },
+    /// A deserialized asset path is not selected by its owning layer classifier.
+    UnclassifiedAssetPath {
+        /// Asset ID.
+        id: String,
+        /// Declared layer whose classifier rejected the path.
+        layer: CorpusAssetLayer,
+    },
+    /// A deserialized asset kind disagrees with its owning layer classifier.
+    AssetKindMismatch {
+        /// Asset ID.
+        id: String,
+        /// Kind declared by the serialized asset.
+        declared: CorpusAssetKind,
+        /// Kind selected by the owning layer classifier.
+        classified: CorpusAssetKind,
+    },
     /// The serialized topology schema is not supported by this implementation.
     UnsupportedSchemaVersion {
         /// Schema version found in the topology.
@@ -208,6 +224,15 @@ impl fmt::Display for CorpusTopologyError {
                 write!(
                     formatter,
                     "corpus asset {id:?} is outside declared {layer:?} layer prefix {required_prefix:?}"
+                )
+            }
+            Self::UnclassifiedAssetPath { id, layer } => {
+                write!(formatter, "corpus asset {id:?} is not classified by its {layer:?} layer")
+            }
+            Self::AssetKindMismatch { id, declared, classified } => {
+                write!(
+                    formatter,
+                    "corpus asset {id:?} declares kind {declared:?}, but its layer classifies it as {classified:?}"
                 )
             }
             Self::UnsupportedSchemaVersion { found, supported } => {
@@ -406,6 +431,23 @@ fn validate_asset_identity(asset: &CorpusAsset) -> Result<(), CorpusTopologyErro
             id: asset.id.clone(),
             layer: asset.layer,
             required_prefix,
+        });
+    }
+
+    let path = Path::new(&asset.relative_path);
+    let classified = match asset.layer {
+        CorpusAssetLayer::TestCorpus => classify_test_asset(path),
+        CorpusAssetLayer::Fuzz => classify_fuzz_asset(path),
+    }
+    .ok_or_else(|| CorpusTopologyError::UnclassifiedAssetPath {
+        id: asset.id.clone(),
+        layer: asset.layer,
+    })?;
+    if classified != asset.kind {
+        return Err(CorpusTopologyError::AssetKindMismatch {
+            id: asset.id.clone(),
+            declared: asset.kind,
+            classified,
         });
     }
 
@@ -1067,6 +1109,74 @@ mod tests {
                 required_prefix: "crates/perl-corpus/fuzz",
             })
         );
+    }
+
+    #[test]
+    fn validation_rejects_unclassified_fuzz_readme() -> Result<(), Box<dyn std::error::Error>> {
+        let relative_path = "crates/perl-corpus/fuzz/README.md";
+        let asset = CorpusAsset {
+            id: relative_path.to_string(),
+            layer: CorpusAssetLayer::Fuzz,
+            kind: CorpusAssetKind::PerlSource,
+            relative_path: relative_path.to_string(),
+            requirement: AssetRequirement::Required,
+        };
+
+        match topology_with(vec![asset]).validate() {
+            Err(CorpusTopologyError::UnclassifiedAssetPath { id, layer })
+                if id == relative_path && layer == CorpusAssetLayer::Fuzz =>
+            {
+                Ok(())
+            }
+            result => {
+                Err(format!("unexpected validation result for fuzz README: {result:?}").into())
+            }
+        }
+    }
+
+    #[test]
+    fn validation_rejects_fuzz_text_kind_mismatch() -> Result<(), Box<dyn std::error::Error>> {
+        let relative_path = "crates/perl-corpus/fuzz/case.txt";
+        let asset = CorpusAsset {
+            id: relative_path.to_string(),
+            layer: CorpusAssetLayer::Fuzz,
+            kind: CorpusAssetKind::PerlSource,
+            relative_path: relative_path.to_string(),
+            requirement: AssetRequirement::Required,
+        };
+
+        match topology_with(vec![asset]).validate() {
+            Err(CorpusTopologyError::AssetKindMismatch {
+                id,
+                declared: CorpusAssetKind::PerlSource,
+                classified: CorpusAssetKind::TextFixture,
+            }) if id == relative_path => Ok(()),
+            result => {
+                Err(format!("unexpected validation result for fuzz kind mismatch: {result:?}")
+                    .into())
+            }
+        }
+    }
+
+    #[test]
+    fn validation_preserves_valid_round_trip_identity() -> Result<(), Box<dyn std::error::Error>> {
+        let relative_path = "crates/perl-corpus/fuzz/case.txt";
+        let topology = topology_with(vec![CorpusAsset {
+            id: relative_path.to_string(),
+            layer: CorpusAssetLayer::Fuzz,
+            kind: CorpusAssetKind::TextFixture,
+            relative_path: relative_path.to_string(),
+            requirement: AssetRequirement::Required,
+        }]);
+
+        let payload = serde_json::to_string(&topology)?;
+        let loaded = serde_json::from_str::<CorpusTopology>(&payload)?;
+        loaded.validate()?;
+        if loaded == topology {
+            Ok(())
+        } else {
+            Err("valid topology identity changed across serialization".into())
+        }
     }
 
     #[test]
