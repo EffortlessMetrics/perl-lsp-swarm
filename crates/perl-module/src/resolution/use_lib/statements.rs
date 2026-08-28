@@ -2,6 +2,12 @@
 
 /// Split Perl source into semicolon-terminated statements without treating
 /// semicolons inside simple quoted strings or line comments as terminators.
+///
+/// The compatibility scanner also exposes the first statement inside a leading
+/// `BEGIN { ... }` block as a source subslice. Without that bounded prefix peel,
+/// the block opener hides an otherwise ordinary `use lib` or `no lib` pragma
+/// from the prefix recognizer. Later statements in the block already begin at
+/// their own semicolon boundary and need no special handling.
 pub(super) fn split_perl_statements(source: &str) -> Vec<&str> {
     let mut statements = Vec::new();
     let mut start = 0;
@@ -68,7 +74,7 @@ pub(super) fn split_perl_statements(source: &str) -> Vec<&str> {
 
         if ch == ';' && !in_single && !in_double {
             let end = idx + ch.len_utf8();
-            statements.push(&source[start..end]);
+            push_statement(&mut statements, &source[start..end]);
             start = end;
             has_content = false;
         } else if !ch.is_whitespace() {
@@ -79,10 +85,46 @@ pub(super) fn split_perl_statements(source: &str) -> Vec<&str> {
     }
 
     if start < source.len() {
-        statements.push(&source[start..]);
+        push_statement(&mut statements, &source[start..]);
     }
 
     statements
+}
+
+fn push_statement<'a>(statements: &mut Vec<&'a str>, statement: &'a str) {
+    let trimmed = statement.trim_start();
+    let statement = strip_leading_begin_block_prefix(trimmed).unwrap_or(statement);
+    statements.push(statement);
+}
+
+/// Return the first statement body inside a leading `BEGIN { ... }` block.
+///
+/// This is intentionally narrower than Perl block parsing: it only removes the
+/// phase keyword, optional line comments, and the opening brace before the
+/// first semicolon-delimited statement. The returned value remains a subslice
+/// of the original source so activation offsets stay exact.
+fn strip_leading_begin_block_prefix(trimmed: &str) -> Option<&str> {
+    let rest = trimmed.strip_prefix("BEGIN")?;
+    if !rest.starts_with(|c: char| c.is_whitespace() || c == '{' || c == '#') {
+        return None;
+    }
+
+    let rest = skip_leading_whitespace_and_comments(rest);
+    let rest = rest.strip_prefix('{')?;
+    Some(skip_leading_whitespace_and_comments(rest))
+}
+
+fn skip_leading_whitespace_and_comments(mut source: &str) -> &str {
+    loop {
+        source = source.trim_start();
+        let Some(comment) = source.strip_prefix('#') else {
+            return source;
+        };
+        let Some(newline) = comment.find('\n') else {
+            return &source[source.len()..];
+        };
+        source = &comment[newline + 1..];
+    }
 }
 
 pub(super) fn strip_use_lib_prefix(trimmed: &str) -> Option<&str> {
