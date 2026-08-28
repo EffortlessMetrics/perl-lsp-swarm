@@ -132,6 +132,13 @@ fn walk_quickorm(
         }
         NodeKind::Subroutine { .. } | NodeKind::Method { .. } => {}
         _ => {
+            // A declaration or nested call can still execute the one-shot
+            // builder's first `table` invocation (for example
+            // `my $first = table ...`). Detect it before descending so a
+            // later bare statement cannot emit false candidates.
+            if ctx.table_builder_active() && extract_table_declaration(node, file_id, ctx, out) {
+                ctx.consume_current_builder();
+            }
             for child in node.children() {
                 walk_quickorm(child, file_id, ctx, out);
             }
@@ -169,19 +176,32 @@ fn normalize_import_value(raw: &str) -> Option<String> {
     if trimmed.is_empty() { None } else { Some(trimmed.to_string()) }
 }
 
-/// Inspect one expression and return whether it consumed the one-shot table DSL.
+/// Find the first `table` invocation reachable in an executable expression.
+///
+/// The search does not descend into `sub`/`method` bodies: those are deferred
+/// definitions, so a `table` call inside them has not executed yet.
+fn find_executable_table_call(expression: &Node) -> Option<&Node> {
+    match &expression.kind {
+        NodeKind::FunctionCall { name, .. } if name == "table" => Some(expression),
+        NodeKind::Subroutine { .. } | NodeKind::Method { .. } => None,
+        _ => expression.children().into_iter().find_map(find_executable_table_call),
+    }
+}
+
+/// Inspect one statement or expression and return whether it executed the
+/// one-shot table DSL.
 fn extract_table_declaration(
     expression: &Node,
     file_id: FileId,
     ctx: &QuickOrmWalkCtx,
     out: &mut Vec<QuickOrmColumnFact>,
 ) -> bool {
-    let NodeKind::FunctionCall { name, args } = &expression.kind else {
+    let Some(call) = find_executable_table_call(expression) else {
         return false;
     };
-    if name != "table" {
+    let NodeKind::FunctionCall { args, .. } = &call.kind else {
         return false;
-    }
+    };
 
     let builder = args.iter().rev().find(|arg| is_anonymous_builder(arg));
     if args.first().is_some_and(is_static_table_name)
@@ -283,20 +303,35 @@ fn single_static_name_candidate(node: &Node) -> Option<NameCandidate> {
 
 fn collect_static_name_candidates(node: &Node) -> Vec<NameCandidate> {
     match &node.kind {
-        NodeKind::String { value, interpolated: false }
-        | NodeKind::Identifier { name: value } => expand_symbol_list(value)
-            .into_iter()
-            .map(|name| NameCandidate {
-                name,
-                span_start: node.location.start,
-                span_end: node.location.end,
-            })
-            .collect(),
+        NodeKind::String { value, interpolated: false } | NodeKind::Identifier { name: value } => {
+            expand_symbol_list(value)
+                .into_iter()
+                .map(|name| NameCandidate {
+                    name,
+                    span_start: node.location.start,
+                    span_end: node.location.end,
+                })
+                .collect()
+        }
         NodeKind::Binary { op, left, right } if op == "," => {
             let mut names = collect_static_name_candidates(left);
             names.extend(collect_static_name_candidates(right));
             names
         }
+        // A bare `qw/name email/` argument parses as an array literal of word
+        // strings. An explicit arrayref group wraps it in another array
+        // literal and stays unmodeled (see the arrayref negative control).
+        NodeKind::ArrayLiteral { elements } => elements
+            .iter()
+            .filter_map(|element| match &element.kind {
+                NodeKind::String { value, interpolated: false } => Some(NameCandidate {
+                    name: normalize_symbol_name(value)?,
+                    span_start: element.location.start,
+                    span_end: element.location.end,
+                }),
+                _ => None,
+            })
+            .collect(),
         _ => Vec::new(),
     }
 }
@@ -335,13 +370,7 @@ fn parse_qw_words(raw: &str) -> Option<Vec<String>> {
         _ => return None,
     };
     let inner = delimited.strip_prefix(open)?.strip_suffix(close)?;
-    Some(
-        inner
-            .split_whitespace()
-            .filter(|name| !name.is_empty())
-            .map(str::to_string)
-            .collect(),
-    )
+    Some(inner.split_whitespace().filter(|name| !name.is_empty()).map(str::to_string).collect())
 }
 
 fn push_field(
@@ -545,9 +574,9 @@ table users => sub { column id => sub { primary_key }; };
 
         assert!(has_name(&candidate, "My::ORM::Table::User::id"));
         assert!(candidate.iter().all(|fact| fact.entity.kind == EntityKind::Field));
-        assert!(!production
-            .iter()
-            .any(|fact| fact.entity.canonical_name == "My::ORM::Table::User::id"));
+        assert!(
+            !production.iter().any(|fact| fact.entity.canonical_name == "My::ORM::Table::User::id")
+        );
     }
 
     #[test]
@@ -635,6 +664,93 @@ table users => sub {
 
         assert!(!has_name(&facts, "My::ORM::Table::User::dynamic_id"));
         assert!(!has_name(&facts, "My::ORM::Table::User::later_id"));
+    }
+
+    #[test]
+    fn assigned_static_table_call_publishes_and_consumes_the_builder() {
+        let facts = candidate_facts(
+            r#"
+package My::ORM::Table::User;
+use DBIx::QuickORM type => 'table';
+
+my $first = table users => sub {
+    column id => sub { primary_key };
+};
+table admins => sub {
+    column admin_id => sub { primary_key };
+};
+1;
+"#,
+        );
+
+        assert!(has_name(&facts, "My::ORM::Table::User::id"));
+        assert!(!has_name(&facts, "My::ORM::Table::User::admin_id"));
+    }
+
+    #[test]
+    fn assigned_dynamic_table_call_consumes_without_publishing() {
+        let facts = candidate_facts(
+            r#"
+package My::ORM::Table::User;
+use DBIx::QuickORM type => 'table';
+
+my $first = table $dynamic => sub {
+    column dynamic_id => sub { primary_key };
+};
+table users => sub {
+    column later_id => sub { primary_key };
+};
+1;
+"#,
+        );
+
+        assert!(!has_name(&facts, "My::ORM::Table::User::dynamic_id"));
+        assert!(!has_name(&facts, "My::ORM::Table::User::later_id"));
+    }
+
+    #[test]
+    fn table_call_nested_in_a_call_argument_consumes_the_builder() {
+        let facts = candidate_facts(
+            r#"
+package My::ORM::Table::User;
+use DBIx::QuickORM type => 'table';
+
+register_schema( table users => sub {
+    column id => sub { primary_key };
+} );
+table admins => sub {
+    column admin_id => sub { primary_key };
+};
+1;
+"#,
+        );
+
+        assert!(has_name(&facts, "My::ORM::Table::User::id"));
+        assert!(!has_name(&facts, "My::ORM::Table::User::admin_id"));
+    }
+
+    #[test]
+    fn deferred_sub_body_table_call_does_not_consume_the_builder() {
+        let facts = candidate_facts(
+            r#"
+package My::ORM::Table::User;
+use DBIx::QuickORM type => 'table';
+
+sub install_later {
+    table deferred => sub {
+        column deferred_id => sub { primary_key };
+    };
+}
+
+table users => sub {
+    column id => sub { primary_key };
+};
+1;
+"#,
+        );
+
+        assert!(has_name(&facts, "My::ORM::Table::User::id"));
+        assert!(!has_name(&facts, "My::ORM::Table::User::deferred_id"));
     }
 
     #[test]
