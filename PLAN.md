@@ -125,8 +125,8 @@ applicable:
    C209, C210) + C203/C1101.
 2. **Platform and target** — per-OS/arch coverage with the **three-way**
    `windows_arm64` record (`user_prose`, `tracked_source`,
-   `published_receipt`) kept separate exactly as #11548's schema already models
-   it. Effective support = **receipt-bound**: `tracked_source=built` does NOT
+   `published_receipt`) kept separate exactly as the validated route catalog
+   must model it. Effective support = **receipt-bound**: `tracked_source=built` does NOT
    yield `supported` while `published_receipt=absent` (FND-4 disposition owned
    here).
 3. **Product-unit and lifecycle completeness** — server/adapter membership,
@@ -154,18 +154,19 @@ Resulting **route verdict enum** (suggested):
 
 ### 2.3 Where it lives (artifact + generator shape)
 
-Follow the #11548 pattern exactly — deterministic, generated, schema-closed:
+Follow the validated route-catalog generator pattern — deterministic, generated,
+schema-closed:
 
 - Extend the xtask generator (new subcommand, e.g.
   `cargo xtask install-route-classification build --write`) that **consumes
   `distribution/public_release_claims.v2.json`** (input digest recorded) plus a
   small curated **route-join table** (`policy/install-route-join.toml` or a
-  static map in the generator, mirroring how #11548 pinned
+  static map in the generator, using the same kind of explicit
   `dimension_overrides(claim_id)` and `restatement_group(claim_id)` as static
   tables in `xtask/src/public_release_claims.rs`).
 - Emit `distribution/install_route_classification.v1.json` + closed schema
   `schemas/install_route_classification.v1.schema.json`; regenerate-and-compare
-  byte-identity check wired beside #11548's Python/xtask gate.
+  byte-identity check wired beside the catalog's own validation gate.
 - Classification (§2.2) is **pure derivation** — it must be mechanical and
   testable. The only curated inputs are: route→claim join, the anti-claim
   identity map, and the pessimistic-contradiction rule. **Preference ordering
@@ -244,7 +245,8 @@ from the #11575 inventory; once #10333/#10334 lands, each fixture must be
 rebound to the exact catalog row, route ID, and projection context rather than
 assuming the former prose-row denominator.
 
-1. **Receipt-binding (FND-4, the falsifier #11548 explicitly deferred here).**
+1. **Receipt-binding (FND-4, routed from the landed inventory to this
+   classifier).**
    Query `(windows, aarch64, {perllsp}, editor)`. Wrong implementations join
    `tracked_source=built` (C405/C501) or `user_prose=x64_fallback_build_from_source`
    (C1204) into "archive download supported". Correct output: **no
