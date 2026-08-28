@@ -4,44 +4,20 @@
 //! observed node can match. Forbidden-node rows are more dangerous: a misspelled
 //! kind can pass vacuously and overstate negative coverage. Validate every AST kind
 //! reference before parser output participates in the verdict.
+//!
+//! This test reads the authored manifest at compile time and inspects only the two
+//! AST-expectation collections. It deliberately does not duplicate the parser-owned
+//! manifest schema or create another runtime file-opening path.
 
 use perl_parser::NodeKind;
-use serde::Deserialize;
+use serde_json::Value;
 use std::fmt;
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::io;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
-#[derive(Debug, Deserialize)]
-struct ParserAccuracyManifest {
-    fixtures: Vec<ParserAccuracyFixture>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ParserAccuracyFixture {
-    id: String,
-    #[serde(default)]
-    ast_expectations: Vec<AstExpectation>,
-    #[serde(default)]
-    forbidden_nodes: Vec<ForbiddenNode>,
-}
-
-#[derive(Debug, Deserialize)]
-struct AstExpectation {
-    id: String,
-    kind: String,
-    #[serde(default)]
-    parent_kind: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ForbiddenNode {
-    id: String,
-    kind: String,
-    #[serde(default)]
-    parent_kind: Option<String>,
-}
+const MANIFEST_JSON: &str =
+    include_str!("../../perl-corpus/fixtures/parser_accuracy/manifest.json");
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct InvalidNodeKindReference {
@@ -69,43 +45,43 @@ impl std::error::Error for InvalidNodeKindReference {}
 
 #[test]
 fn parser_accuracy_ast_nodekind_references_are_canonical() -> TestResult {
-    let manifest = load_manifest()?;
+    let manifest: Value = serde_json::from_str(MANIFEST_JSON)?;
+    let fixtures = manifest.get("fixtures").and_then(Value::as_array).ok_or_else(|| {
+        invalid_manifest("parser-accuracy manifest field `fixtures` must be an array")
+    })?;
 
-    for fixture in &manifest.fixtures {
-        for expectation in &fixture.ast_expectations {
-            validate_node_kind_reference(
-                &fixture.id,
-                &expectation.id,
-                "ast_expectations.kind",
-                &expectation.kind,
-            )?;
-            if let Some(parent_kind) = expectation.parent_kind.as_deref() {
-                validate_node_kind_reference(
-                    &fixture.id,
-                    &expectation.id,
-                    "ast_expectations.parent_kind",
-                    parent_kind,
-                )?;
-            }
-        }
+    let mut positive_references = 0usize;
+    let mut forbidden_references = 0usize;
 
-        for forbidden in &fixture.forbidden_nodes {
-            validate_node_kind_reference(
-                &fixture.id,
-                &forbidden.id,
-                "forbidden_nodes.kind",
-                &forbidden.kind,
-            )?;
-            if let Some(parent_kind) = forbidden.parent_kind.as_deref() {
-                validate_node_kind_reference(
-                    &fixture.id,
-                    &forbidden.id,
-                    "forbidden_nodes.parent_kind",
-                    parent_kind,
-                )?;
-            }
-        }
+    for fixture in fixtures {
+        let fixture_id = fixture.get("id").and_then(Value::as_str).ok_or_else(|| {
+            invalid_manifest("every parser-accuracy fixture must have a string `id`")
+        })?;
+
+        positive_references += validate_reference_rows(
+            fixture_id,
+            fixture,
+            "ast_expectations",
+            "ast_expectations.kind",
+            "ast_expectations.parent_kind",
+        )?;
+        forbidden_references += validate_reference_rows(
+            fixture_id,
+            fixture,
+            "forbidden_nodes",
+            "forbidden_nodes.kind",
+            "forbidden_nodes.parent_kind",
+        )?;
     }
+
+    assert!(
+        positive_references > 0,
+        "parser-accuracy manifest must expose at least one positive AST NodeKind reference"
+    );
+    assert!(
+        forbidden_references > 0,
+        "parser-accuracy manifest must expose at least one forbidden AST NodeKind reference"
+    );
 
     Ok(())
 }
@@ -139,13 +115,68 @@ fn misspelled_forbidden_kind_is_rejected_before_absence_matching() {
     );
 }
 
+fn validate_reference_rows(
+    fixture_id: &str,
+    fixture: &Value,
+    collection: &'static str,
+    kind_field: &'static str,
+    parent_field: &'static str,
+) -> Result<usize, Box<dyn std::error::Error>> {
+    let Some(raw_rows) = fixture.get(collection) else {
+        return Ok(0);
+    };
+    let rows = raw_rows.as_array().ok_or_else(|| {
+        invalid_manifest(format!(
+            "fixture `{fixture_id}` field `{collection}` must be an array"
+        ))
+    })?;
+
+    let mut checked = 0usize;
+    for row in rows {
+        let expectation_id = row.get("id").and_then(Value::as_str).ok_or_else(|| {
+            invalid_manifest(format!(
+                "fixture `{fixture_id}` field `{collection}` contains a row without a string `id`"
+            ))
+        })?;
+        let kind = row.get("kind").and_then(Value::as_str).ok_or_else(|| {
+            invalid_manifest(format!(
+                "fixture `{fixture_id}` expectation `{expectation_id}` field `{kind_field}` must be a string"
+            ))
+        })?;
+
+        validate_node_kind_reference(fixture_id, expectation_id, kind_field, kind)?;
+        checked += 1;
+
+        match row.get("parent_kind") {
+            None | Some(Value::Null) => {}
+            Some(Value::String(parent_kind)) => {
+                validate_node_kind_reference(
+                    fixture_id,
+                    expectation_id,
+                    parent_field,
+                    parent_kind,
+                )?;
+                checked += 1;
+            }
+            Some(_) => {
+                return Err(invalid_manifest(format!(
+                    "fixture `{fixture_id}` expectation `{expectation_id}` field `{parent_field}` must be a string or null"
+                ))
+                .into());
+            }
+        }
+    }
+
+    Ok(checked)
+}
+
 fn validate_node_kind_reference(
     fixture_id: &str,
     expectation_id: &str,
     field: &'static str,
     kind: &str,
 ) -> Result<(), InvalidNodeKindReference> {
-    if NodeKind::ALL_KIND_NAMES.iter().any(|canonical| *canonical == kind) {
+    if NodeKind::ALL_KIND_NAMES.contains(&kind) {
         return Ok(());
     }
 
@@ -157,17 +188,6 @@ fn validate_node_kind_reference(
     })
 }
 
-fn load_manifest() -> Result<ParserAccuracyManifest, Box<dyn std::error::Error>> {
-    let manifest_path = workspace_root()
-        .join("crates")
-        .join("perl-corpus")
-        .join("fixtures")
-        .join("parser_accuracy")
-        .join("manifest.json");
-    let manifest_json = fs::read_to_string(manifest_path)?;
-    Ok(serde_json::from_str(&manifest_json)?)
-}
-
-fn workspace_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..")
+fn invalid_manifest(message: impl Into<String>) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
