@@ -75,6 +75,7 @@ pub(super) fn scan_line_comments_and_open_literals(source: &str) -> Vec<SourceRe
 pub(super) fn scan_heredoc_regions(source: &str) -> Vec<SourceRegion> {
     let mut regions = Vec::new();
     let mut active = Vec::new();
+    let mut literal_state = LiteralScanState::default();
     let mut line_start = 0usize;
 
     for raw_line in source.split_inclusive('\n') {
@@ -100,7 +101,7 @@ pub(super) fn scan_heredoc_regions(source: &str) -> Vec<SourceRegion> {
             }
         } else {
             active.extend(
-                heredoc_openers_on_line(line)
+                heredoc_openers_on_line(line, &mut literal_state)
                     .into_iter()
                     .map(|(label, allow_indented)| (line_end, label, allow_indented)),
             );
@@ -118,13 +119,13 @@ pub(super) fn scan_heredoc_regions(source: &str) -> Vec<SourceRegion> {
 
 #[cfg(test)]
 fn heredoc_opener_on_line(line: &str) -> Option<(String, bool)> {
-    heredoc_openers_on_line(line).into_iter().next()
+    let mut state = LiteralScanState::default();
+    heredoc_openers_on_line(line, &mut state).into_iter().next()
 }
 
-fn heredoc_openers_on_line(line: &str) -> Vec<(String, bool)> {
+fn heredoc_openers_on_line(line: &str, state: &mut LiteralScanState) -> Vec<(String, bool)> {
     let mut openers = Vec::new();
     let bytes = line.as_bytes();
-    let mut state = LiteralScanState::default();
     let mut index = 0;
 
     while index < bytes.len() {
@@ -1012,6 +1013,18 @@ mod tests {
     }
 
     #[test]
+    fn multiline_literals_do_not_create_phantom_heredoc_openers() {
+        for source in
+            ["my $text = \"\n<<FAKE\n\";\nmy$x=1;\n", "my $text = q{\n<<FAKE\n};\nmy$x=1;\n"]
+        {
+            assert!(
+                scan_heredoc_regions(source).is_empty(),
+                "a marker inside a multiline literal must not open a heredoc: {source:?}"
+            );
+        }
+    }
+
+    #[test]
     fn heredoc_opener_label_forms() {
         assert_eq!(
             heredoc_opener_on_line("my $x = <<EOF;"),
@@ -1630,13 +1643,15 @@ mod tests {
 
     #[test]
     fn heredoc_openers_ignore_quoted_quote_like_and_comment_markers() {
+        let mut first_state = LiteralScanState::default();
         assert_eq!(
-            super::heredoc_openers_on_line("print <<A, q{<<B}; # <<C"),
+            super::heredoc_openers_on_line("print <<A, q{<<B}; # <<C", &mut first_state),
             vec![("A".to_string(), false)],
             "only the real opener is queued"
         );
+        let mut second_state = LiteralScanState::default();
         assert_eq!(
-            super::heredoc_openers_on_line("print <<A, \"<<B\", <<C; # <<D"),
+            super::heredoc_openers_on_line("print <<A, \"<<B\", <<C; # <<D", &mut second_state),
             vec![("A".to_string(), false), ("C".to_string(), false)],
             "quoted text and comments must not create phantom openers"
         );

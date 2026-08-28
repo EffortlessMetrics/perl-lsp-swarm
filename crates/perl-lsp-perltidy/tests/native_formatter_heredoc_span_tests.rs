@@ -157,6 +157,21 @@ fn quote_like_and_comment_markers_do_not_hide_following_code() {
 }
 
 #[test]
+fn multiline_literal_markers_do_not_hide_following_code() {
+    let formatter = NativeFormatter::new();
+
+    for source in ["my $text = \"\n<<FAKE\n\";\nmy$x=1;\n", "my $text = q{\n<<FAKE\n};\nmy$x=1;\n"]
+    {
+        let following_code = TextRange::new(TextPosition::new(3, 0), TextPosition::new(4, 0));
+        let result = formatter.format_range(source, following_code, &FormatConfig::default());
+
+        assert!(result.changed, "following code must remain format-eligible: {source:?}");
+        assert_eq!(result.formatted, source.replace("my$x=1;", "my $x = 1;"));
+        assert!(result.diagnostics.is_empty());
+    }
+}
+
+#[test]
 fn multiple_heredocs_preserve_the_second_body_and_terminator_only() {
     let formatter = NativeFormatter::new();
     let source = "print <<A, <<B;\nfirst\nA\nsecond\nB\nmy$x=2;\n";
