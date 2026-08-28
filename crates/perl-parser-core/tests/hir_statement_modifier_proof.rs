@@ -182,8 +182,7 @@ fn postfix_modifiers_preserve_exact_body_hir_topology_and_sources() -> TestResul
     for case in CASES {
         let file = lower(case.body_source)?;
         assert_eq!(
-            file.body_model_version,
-            HIR_BODY_MODEL_VERSION,
+            file.body_model_version, HIR_BODY_MODEL_VERSION,
             "production body lowering must attach the current HIR body model for {:?}",
             case.body_source
         );
@@ -336,15 +335,9 @@ fn prefix_control_flow_does_not_mint_postfix_modifier_proof() -> TestResult {
 fn malformed_and_chained_modifiers_are_rejected_before_hir_proof_admission() {
     for (source, subject) in [
         ("$result = $value if;\n", "missing modifier condition"),
-        (
-            "$result = $value if $enabled while $ready;\n",
-            "chained statement modifiers",
-        ),
+        ("$result = $value if $enabled while $ready;\n", "chained statement modifiers"),
     ] {
         let result = lower(source);
-        assert!(
-            result.is_err(),
-            "{subject} must not enter HIR proof admission: {source:?}"
-        );
+        assert!(result.is_err(), "{subject} must not enter HIR proof admission: {source:?}");
     }
 }
