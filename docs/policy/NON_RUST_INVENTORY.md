@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12257 |
-| Rust-family files | 3745 |
-| Non-Rust files | 8512 |
-| Allowlisted | 6277 |
+| Total tracked files | 12262 |
+| Rust-family files | 3748 |
+| Non-Rust files | 8514 |
+| Allowlisted | 6279 |
 | Unclassified | 2235 |
 
 ## Non-Rust files by category
@@ -21,7 +21,7 @@
 | generated | 2 |
 | production | 333 |
 | test | 2033 |
-| tooling | 653 |
+| tooling | 655 |
 | unclassified | 2235 |
 
 ## Unclassified files
@@ -2336,6 +2336,7 @@
 | `.changes/unreleased/product-12725-Changed-092400.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12765-Changed-154500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12806-Added-213000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-13125-Fixed-021800.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3445-Added-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3765-Changed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3885-Added-120000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -6613,6 +6614,7 @@
 | `scripts/fuzz-bounded` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/gate-local.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/gen-xlarge-workspace.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/generate-badges.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/generate-badges.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/generate-receipt.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/generate-receipts.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -6736,6 +6738,7 @@
 | `scripts/tests/test-forbid-fatal-constructs-wrapper.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-gate-local-wrapper.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-generate-badges-wrapper.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/tests/test-generate-badges.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-generate-receipt.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-ignored-test-count-wrapper.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-install-bootstrap-identity.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
