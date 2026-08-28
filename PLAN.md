@@ -263,12 +263,38 @@ FIXTURE_CATALOG = (
         ),
     },
 )
+WRONG_REGISTRY_CATALOG = (
+    {
+        "route_id": "r_wrong_registry",
+        "target_registry": "vs_marketplace",
+        "projection_contexts": (
+            "VS_Marketplace_compatible_marketplace_context",
+        ),
+    },
+)
+DUPLICATE_ID_CATALOG = FIXTURE_CATALOG + FIXTURE_CATALOG[:1]
 
 def resolve_catalog_route(catalog_rows, route_id):
     matches = [row for row in catalog_rows if row["route_id"] == route_id]
     if len(matches) != 1:
         raise ValueError(f"route ID must resolve exactly once: {route_id}")
     return matches[0]
+
+def require_open_vsx_route(catalog_rows, route_id, projection_context):
+    route = resolve_catalog_route(catalog_rows, route_id)
+    if (
+        route["target_registry"] != "open_vsx"
+        or projection_context not in route["projection_contexts"]
+    ):
+        raise ValueError("route is not compatible with the Open VSX projection")
+    return route
+
+def assert_rejected(catalog_rows, route_id, projection_context):
+    try:
+        require_open_vsx_route(catalog_rows, route_id, projection_context)
+    except ValueError:
+        return True
+    raise AssertionError("incompatible catalog route was accepted")
 
 def fixture_ledger():
     rows = []
@@ -332,15 +358,11 @@ def validate_closure(inventory_rows, ledger_rows, catalog_rows):
     c1208_rows = [row for row in ledger_rows if row["id"] == "C1208"]
     if len(c1208_rows) != 1:
         raise ValueError("C1208 must remain a single Open VSX projection")
-    c1208_route = resolve_catalog_route(
-        catalog_rows, c1208_rows[0]["exact_catalog_route_id"]
+    require_open_vsx_route(
+        catalog_rows,
+        c1208_rows[0]["exact_catalog_route_id"],
+        c1208_rows[0]["exact_projection_context"],
     )
-    if (
-        c1208_route["target_registry"] != "open_vsx"
-        or c1208_rows[0]["exact_projection_context"]
-        not in c1208_route["projection_contexts"]
-    ):
-        raise ValueError("C1208 must remain a separate Open VSX projection")
     return True
 
 assert validate_closure(
@@ -348,6 +370,14 @@ assert validate_closure(
     fixture_ledger(),
     FIXTURE_CATALOG,
 )
+assert assert_rejected(
+    WRONG_REGISTRY_CATALOG,
+    "r_wrong_registry",
+    "VS_Marketplace_compatible_marketplace_context",
+)
+assert assert_rejected(FIXTURE_CATALOG, "r_unknown", "Open_VSX_compatible_marketplace_context")
+assert assert_rejected(DUPLICATE_ID_CATALOG, "r_4f8c2a", "Open_VSX_compatible_marketplace_context")
+assert assert_rejected(FIXTURE_CATALOG, "r_4f8c2a", "VS_Marketplace_compatible_marketplace_context")
 ```
 
 The fixture rejects missing, duplicate, unknown, and incompatible IDs before
@@ -360,7 +390,10 @@ contexts remain gated on #10333. A prose manifest or count without this
 set-equality and compatibility check does not satisfy closure. The C1208 assertion
 also proves that its opaque ID resolves to exactly one catalog row whose registry is
 Open VSX and whose projection context is compatible; an ID that resolves to the
-Marketplace row, an unknown ID, or an incompatible context fails the fixture.
+Marketplace row, an unknown ID, a duplicate ID, or an incompatible context fails
+the fixture. These controls exercise the future catalog contract shape only: the
+validated production catalog is not present in this planning PR, so binding this
+fixture to #10333's eventual catalog remains `NOT_PROVEN` until that contract lands.
 
 ### 2.2 Classification = conjunction of independent per-dimension verdicts
 
@@ -484,9 +517,11 @@ survives the hard filter. Zero candidates returns `no_route` with sorted reasons
 and more than one exact eligible row is an ambiguity refusal; strict never chooses
 by input order. `permissive` first uses the same hard filter and partitions the
 eligible routes into `P` (all dimensions `proven_current`) and `Q` (all dimensions
-either `proven_current` or `receipt_bound_partial`, with the required explicit
-integrity/provenance, product-unit/lifecycle, and freshness/channel/publication
-receipts). `P` and `Q` are disjoint.
+either `proven_current` or `receipt_bound_partial`, with at least one
+`receipt_bound_partial` dimension and the required explicit integrity/provenance,
+product-unit/lifecycle, and freshness/channel/publication receipts). `P` and `Q`
+are disjoint by construction; equivalently, `Q` is the eligible-route complement
+of `P`.
 
 The permissive result has closed cardinality. If `|P| > 0`, the candidate set is
 exactly all `|P|` proven-current routes, each returned once; every `Q` route is
@@ -518,6 +553,15 @@ unpinned command. Pending diagnostics are sorted by issue ID and all remaining
 routes are omitted with reasons. These outputs are mechanical and non-operative
 while H1–H7 remain human-pending; H7(c) can add only a verify-first,
 not-selectable-until-verified diagnostic for deferred channels.
+
+This section defines the selection contract but does not claim executable
+route-classification proof in this planning PR. The future classifier harness must
+bind the cardinality cases (`|P|`/`|Q|` equal to zero, one, and multiple), shuffle
+candidate input, include Unicode route IDs and projection contexts, and include
+duplicate route-ID/context controls before claiming the UTF-8 order or cardinality
+rules are proven. Until that harness runs against the validated #10333 catalog,
+those runtime claims remain `NOT_PROVEN`; the rules above are acceptance criteria,
+not observed production behavior.
 
 ### Option A — Static precedence table (curated data only)
 
