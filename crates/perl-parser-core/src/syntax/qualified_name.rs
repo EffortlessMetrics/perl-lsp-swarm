@@ -25,8 +25,19 @@ pub enum QualifiedNameError {
 }
 
 impl fmt::Display for QualifiedNameError {
-    fn fmt(&self, _f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        Ok(())
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EmptyName => write!(f, "name is empty"),
+            Self::LeadingSigil(sigil) => {
+                write!(f, "qualified name cannot start with sigil '{sigil}'")
+            }
+            Self::EmptySegment { index } => {
+                write!(f, "segment {index} is empty (leading/trailing/double separator)")
+            }
+            Self::InvalidSegment { index } => {
+                write!(f, "segment {index} is not a valid identifier")
+            }
+        }
     }
 }
 
