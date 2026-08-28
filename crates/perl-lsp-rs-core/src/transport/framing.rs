@@ -95,6 +95,14 @@ impl ContentLengthFramer {
         self.resync_if_needed();
     }
 
+    pub(crate) const fn buffered_bytes(&self) -> usize {
+        self.buf.len()
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.buf.clear();
+    }
+
     /// Attempt to extract one complete message body.
     ///
     /// Returns:
@@ -342,11 +350,15 @@ fn parse_request_body(body: &[u8]) -> Result<JsonRpcRequest, serde_json::Error> 
     serde_json::from_value(value)
 }
 
-/// Stateful reader for `Content-Length` framed JSON-RPC requests.
+/// Legacy compatibility reader for `Content-Length` framed JSON-RPC requests.
 ///
 /// This reader keeps partial frame state across reads, which allows it to
 /// handle split headers, split bodies, and multiple messages arriving in a
 /// single transport read.
+///
+/// The public `transport::framing` path retains the historical lossy,
+/// skip-and-continue behavior. Shipped LSP ingress uses the strict reader
+/// re-exported from `transport` instead.
 #[derive(Default)]
 pub struct ContentLengthMessageReader {
     framer: ContentLengthFramer,
@@ -401,10 +413,10 @@ impl ContentLengthMessageReader {
     }
 }
 
-/// Read an LSP message from a buffered reader.
+/// Legacy one-shot LSP reader retained for compatibility.
 ///
-/// This is a compatibility helper for one-shot reads. For long-running loops,
-/// prefer [`ContentLengthMessageReader`] to preserve parser state across calls.
+/// This helper may rewrite invalid UTF-8 and suppress malformed input. New
+/// ingress code must use the strict reader from the parent `transport` module.
 pub fn read_message(reader: &mut dyn BufRead) -> io::Result<Option<JsonRpcRequest>> {
     let mut content_length = None;
 

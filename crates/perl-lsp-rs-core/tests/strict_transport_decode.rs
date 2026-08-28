@@ -11,10 +11,7 @@ use std::io::{self, Cursor};
 type TestResult = Result<(), Box<dyn Error>>;
 
 fn request_body(id: i64, method: &str, params: &str) -> Vec<u8> {
-    format!(
-        r#"{{"jsonrpc":"2.0","id":{id},"method":"{method}","params":{params}}}"#
-    )
-    .into_bytes()
+    format!(r#"{{"jsonrpc":"2.0","id":{id},"method":"{method}","params":{params}}}"#).into_bytes()
 }
 
 fn required_request(
@@ -50,11 +47,8 @@ fn accepts_multibyte_utf8_with_byte_content_length() -> TestResult {
     let mut reader = ContentLengthMessageReader::new();
 
     let request = required_request(&mut reader, &mut input)?;
-    let label = request
-        .params
-        .as_ref()
-        .and_then(|params| params.get("label"))
-        .and_then(Value::as_str);
+    let label =
+        request.params.as_ref().and_then(|params| params.get("label")).and_then(Value::as_str);
 
     assert_eq!(label, Some("café 🦀"));
     Ok(())
@@ -63,11 +57,7 @@ fn accepts_multibyte_utf8_with_byte_content_length() -> TestResult {
 #[test]
 fn invalid_utf8_is_typed_and_payload_private() -> TestResult {
     const SECRET: &str = "private-document-token";
-    let mut body = request_body(
-        2,
-        "textDocument/didOpen",
-        r#"{"text":"private-document-token"}"#,
-    );
+    let mut body = request_body(2, "textDocument/didOpen", r#"{"text":"private-document-token"}"#);
     let valid_up_to = body.len();
     body.push(0xff);
 
@@ -115,9 +105,7 @@ fn truncated_utf8_reports_a_truncated_sequence() -> TestResult {
 
     match error {
         IncomingMessageError::InvalidUtf8 {
-            valid_up_to: actual_valid_up_to,
-            error_len,
-            ..
+            valid_up_to: actual_valid_up_to, error_len, ..
         } => {
             assert_eq!(actual_valid_up_to, valid_up_to);
             assert_eq!(error_len, None);
@@ -144,10 +132,7 @@ fn malformed_json_and_invalid_message_shape_remain_distinct() -> TestResult {
 
     assert!(!malformed_error.to_string().contains("private-token"));
     assert!(!format!("{malformed_error:?}").contains("private-token"));
-    assert!(matches!(
-        &malformed_error,
-        IncomingMessageError::MalformedJson { .. }
-    ));
+    assert!(matches!(&malformed_error, IncomingMessageError::MalformedJson { .. }));
 
     let invalid_shape =
         br#"{"jsonrpc":"2.0","id":1,"method":{"private-token":true},"params":{"token":"private-token"}}"#;
@@ -157,10 +142,74 @@ fn malformed_json_and_invalid_message_shape_remain_distinct() -> TestResult {
 
     assert!(!shape_error.to_string().contains("private-token"));
     assert!(!format!("{shape_error:?}").contains("private-token"));
-    assert!(matches!(
-        shape_error,
-        IncomingMessageError::InvalidMessageShape { .. }
-    ));
+    assert!(matches!(shape_error, IncomingMessageError::InvalidMessageShape { .. }));
+    Ok(())
+}
+
+#[test]
+fn invalid_jsonrpc_version_and_batch_are_distinct_outcomes() -> TestResult {
+    let invalid_version = br#"{"jsonrpc":"1.0","id":1,"method":"shutdown","params":{}}"#;
+    let mut version_input = Cursor::new(frame(invalid_version));
+    let mut version_reader = ContentLengthMessageReader::new();
+    let version_error = required_error(&mut version_reader, &mut version_input)?;
+    if !matches!(version_error, IncomingMessageError::InvalidJsonRpcVersion { .. }) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("expected invalid JSON-RPC version, got {version_error}"),
+        )
+        .into());
+    }
+
+    let batch = br#"[{"jsonrpc":"2.0","id":1,"method":"shutdown","params":{}}]"#;
+    let mut batch_input = Cursor::new(frame(batch));
+    let mut batch_reader = ContentLengthMessageReader::new();
+    let batch_error = required_error(&mut batch_reader, &mut batch_input)?;
+    if !matches!(batch_error, IncomingMessageError::UnsupportedBatch { .. }) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("expected unsupported batch, got {batch_error}"),
+        )
+        .into());
+    }
+    Ok(())
+}
+
+#[test]
+fn incomplete_frame_is_typed_before_clean_eof() -> TestResult {
+    let body = request_body(10, "shutdown", "{}");
+    let full_frame = frame(&body);
+    let truncated_frame = full_frame
+        .get(..full_frame.len().saturating_sub(1))
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "frame unexpectedly empty"))?
+        .to_vec();
+    let mut input = Cursor::new(truncated_frame);
+    let mut reader = ContentLengthMessageReader::new();
+
+    let error = required_error(&mut reader, &mut input)?;
+    if !matches!(error, IncomingMessageError::TruncatedFrame { .. }) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("expected truncated frame, got {error}"),
+        )
+        .into());
+    }
+    if reader.read_next_outcome(&mut input)?.is_some() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "terminal truncation must not repeat after the buffered frame is cleared",
+        )
+        .into());
+    }
+
+    let mut clean_input = Cursor::new(Vec::new());
+    let mut clean_reader = ContentLengthMessageReader::new();
+    if clean_reader.read_next_outcome(&mut clean_input)?.is_some() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "clean EOF must not produce an incoming outcome",
+        )
+        .into());
+    }
     Ok(())
 }
 
@@ -213,10 +262,7 @@ fn framing_failure_does_not_consume_following_valid_frame() -> TestResult {
         required_error(&mut reader, &mut input)?,
         IncomingMessageError::Framing(FramingError::InvalidContentLength)
     ));
-    assert_eq!(
-        required_request(&mut reader, &mut input)?.method,
-        "initialize"
-    );
+    assert_eq!(required_request(&mut reader, &mut input)?.method, "initialize");
     Ok(())
 }
 
@@ -244,9 +290,23 @@ fn strict_reader_source_bans_lossy_decode_and_payload_previews() {
     let source = include_str!("../src/transport/incoming.rs");
 
     for forbidden in ["from_utf8_lossy", "body_preview", "preview ="] {
-        assert!(
-            !source.contains(forbidden),
-            "strict incoming reader must not contain {forbidden}"
-        );
+        assert!(!source.contains(forbidden), "strict incoming reader must not contain {forbidden}");
     }
+}
+
+#[test]
+fn shipped_ingress_uses_typed_reader_not_compatibility_loop() -> TestResult {
+    let cli = include_str!("../../perl-lsp-rs/src/cli.rs");
+    let serving = include_str!("../../perl-lsp-rs/src/runtime/serving.rs");
+    if cli.contains("msg_reader.read_next(&mut buf_reader)")
+        || serving.contains("message_reader.read_next(reader)")
+        || serving.contains("message_reader.read_next(&mut buf_reader)")
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "shipped ingress must not call the lossy compatibility reader",
+        )
+        .into());
+    }
+    Ok(())
 }

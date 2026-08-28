@@ -51,16 +51,40 @@ pub enum IncomingMessageError {
         /// Original typed deserialization error.
         source: serde_json::Error,
     },
+    /// The frame's JSON-RPC version is missing or is not `2.0`.
+    InvalidJsonRpcVersion {
+        /// Number of bytes in the complete frame body.
+        payload_bytes: usize,
+    },
+    /// A JSON-RPC batch was received before batch semantics are supported here.
+    UnsupportedBatch {
+        /// Number of bytes in the complete frame body.
+        payload_bytes: usize,
+    },
+    /// EOF arrived while the framer still held an incomplete frame.
+    TruncatedFrame {
+        /// Number of buffered bytes discarded at terminal EOF.
+        buffered_bytes: usize,
+    },
 }
 
 impl IncomingMessageError {
-    const fn kind(&self) -> &'static str {
+    /// Return a stable, payload-free classification for runtime policy.
+    pub const fn kind(&self) -> &'static str {
         match self {
             Self::Framing(_) => "framing",
             Self::InvalidUtf8 { .. } => "invalid_utf8",
             Self::MalformedJson { .. } => "malformed_json",
             Self::InvalidMessageShape { .. } => "invalid_message_shape",
+            Self::InvalidJsonRpcVersion { .. } => "invalid_jsonrpc_version",
+            Self::UnsupportedBatch { .. } => "unsupported_batch",
+            Self::TruncatedFrame { .. } => "truncated_frame",
         }
+    }
+
+    /// Whether this outcome means the input stream cannot produce another frame.
+    pub const fn is_terminal_at_eof(&self) -> bool {
+        matches!(self, Self::TruncatedFrame { .. })
     }
 
     const fn payload_bytes(&self) -> Option<usize> {
@@ -69,6 +93,9 @@ impl IncomingMessageError {
             Self::InvalidUtf8 { payload_bytes, .. }
             | Self::MalformedJson { payload_bytes, .. }
             | Self::InvalidMessageShape { payload_bytes, .. } => Some(*payload_bytes),
+            Self::InvalidJsonRpcVersion { payload_bytes }
+            | Self::UnsupportedBatch { payload_bytes } => Some(*payload_bytes),
+            Self::TruncatedFrame { .. } => None,
         }
     }
 }
@@ -77,23 +104,13 @@ impl fmt::Debug for IncomingMessageError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Framing(source) => f.debug_tuple("Framing").field(source).finish(),
-            Self::InvalidUtf8 {
-                payload_bytes,
-                valid_up_to,
-                error_len,
-                ..
-            } => f
+            Self::InvalidUtf8 { payload_bytes, valid_up_to, error_len, .. } => f
                 .debug_struct("InvalidUtf8")
                 .field("payload_bytes", payload_bytes)
                 .field("valid_up_to", valid_up_to)
                 .field("error_len", error_len)
                 .finish_non_exhaustive(),
-            Self::MalformedJson {
-                payload_bytes,
-                line,
-                column,
-                ..
-            } => f
+            Self::MalformedJson { payload_bytes, line, column, .. } => f
                 .debug_struct("MalformedJson")
                 .field("payload_bytes", payload_bytes)
                 .field("line", line)
@@ -103,6 +120,16 @@ impl fmt::Debug for IncomingMessageError {
                 .debug_struct("InvalidMessageShape")
                 .field("payload_bytes", payload_bytes)
                 .finish_non_exhaustive(),
+            Self::InvalidJsonRpcVersion { payload_bytes } => f
+                .debug_struct("InvalidJsonRpcVersion")
+                .field("payload_bytes", payload_bytes)
+                .finish(),
+            Self::UnsupportedBatch { payload_bytes } => {
+                f.debug_struct("UnsupportedBatch").field("payload_bytes", payload_bytes).finish()
+            }
+            Self::TruncatedFrame { buffered_bytes } => {
+                f.debug_struct("TruncatedFrame").field("buffered_bytes", buffered_bytes).finish()
+            }
         }
     }
 }
@@ -112,31 +139,18 @@ impl fmt::Display for IncomingMessageError {
         match self {
             Self::Framing(source) => write!(f, "{source}"),
             Self::InvalidUtf8 {
-                payload_bytes,
-                valid_up_to,
-                error_len: Some(error_len),
-                ..
+                payload_bytes, valid_up_to, error_len: Some(error_len), ..
             } => write!(
                 f,
                 "incoming body contains invalid UTF-8 at byte {valid_up_to} \
                  (invalid sequence length {error_len}; {payload_bytes} payload bytes)"
             ),
-            Self::InvalidUtf8 {
-                payload_bytes,
-                valid_up_to,
-                error_len: None,
-                ..
-            } => write!(
+            Self::InvalidUtf8 { payload_bytes, valid_up_to, error_len: None, .. } => write!(
                 f,
                 "incoming body ends with a truncated UTF-8 sequence at byte {valid_up_to} \
                  ({payload_bytes} payload bytes)"
             ),
-            Self::MalformedJson {
-                payload_bytes,
-                line,
-                column,
-                ..
-            } => write!(
+            Self::MalformedJson { payload_bytes, line, column, .. } => write!(
                 f,
                 "incoming body contains malformed JSON at line {line}, column {column} \
                  ({payload_bytes} payload bytes)"
@@ -145,6 +159,20 @@ impl fmt::Display for IncomingMessageError {
                 f,
                 "incoming body is not accepted by the current JSON-RPC message shape \
                  ({payload_bytes} payload bytes)"
+            ),
+            Self::InvalidJsonRpcVersion { payload_bytes } => write!(
+                f,
+                "incoming body has a missing or unsupported JSON-RPC version \
+                 ({payload_bytes} payload bytes)"
+            ),
+            Self::UnsupportedBatch { payload_bytes } => write!(
+                f,
+                "incoming JSON-RPC batch is not supported ({payload_bytes} payload bytes)"
+            ),
+            Self::TruncatedFrame { buffered_bytes } => write!(
+                f,
+                "input ended with a truncated Content-Length frame \
+                 ({buffered_bytes} buffered bytes)"
             ),
         }
     }
@@ -158,6 +186,9 @@ impl std::error::Error for IncomingMessageError {
             Self::MalformedJson { source, .. } | Self::InvalidMessageShape { source, .. } => {
                 Some(source)
             }
+            Self::InvalidJsonRpcVersion { .. }
+            | Self::UnsupportedBatch { .. }
+            | Self::TruncatedFrame { .. } => None,
         }
     }
 }
@@ -182,9 +213,7 @@ impl ContentLengthMessageReader {
     /// Create a new reader with empty frame state.
     #[must_use]
     pub fn new() -> Self {
-        Self {
-            framer: ContentLengthFramer::new(),
-        }
+        Self { framer: ContentLengthFramer::new() }
     }
 
     /// Read one complete frame outcome from the underlying byte stream.
@@ -208,7 +237,12 @@ impl ContentLengthMessageReader {
 
             let bytes_read = reader.read(&mut chunk)?;
             if bytes_read == 0 {
-                return Ok(None);
+                let buffered_bytes = self.framer.buffered_bytes();
+                if buffered_bytes == 0 {
+                    return Ok(None);
+                }
+                self.framer.clear();
+                return Ok(Some(Err(IncomingMessageError::TruncatedFrame { buffered_bytes })));
             }
             self.framer.push(&chunk[..bytes_read]);
         }
@@ -260,13 +294,20 @@ fn decode_current_message_shape(
     value: Value,
     payload_bytes: usize,
 ) -> Result<JsonRpcRequest, IncomingMessageError> {
+    if value.is_array() {
+        return Err(IncomingMessageError::UnsupportedBatch { payload_bytes });
+    }
+
+    let Some(jsonrpc) = value.get("jsonrpc").and_then(Value::as_str) else {
+        return Err(IncomingMessageError::InvalidJsonRpcVersion { payload_bytes });
+    };
+    if jsonrpc != "2.0" {
+        return Err(IncomingMessageError::InvalidJsonRpcVersion { payload_bytes });
+    }
+
     if value.get("method").is_some() {
-        return serde_json::from_value(value).map_err(|source| {
-            IncomingMessageError::InvalidMessageShape {
-                payload_bytes,
-                source,
-            }
-        });
+        return serde_json::from_value(value)
+            .map_err(|source| IncomingMessageError::InvalidMessageShape { payload_bytes, source });
     }
 
     // Preserve the current response-routing compatibility until #7626 owns
@@ -285,10 +326,6 @@ fn decode_current_message_shape(
         });
     }
 
-    serde_json::from_value(value).map_err(|source| {
-        IncomingMessageError::InvalidMessageShape {
-            payload_bytes,
-            source,
-        }
-    })
+    serde_json::from_value(value)
+        .map_err(|source| IncomingMessageError::InvalidMessageShape { payload_bytes, source })
 }
