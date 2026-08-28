@@ -101,9 +101,12 @@ augroup perllsp_deep_receipt
 augroup END
 
 function! s:RootUri(server_info) abort
+  " vim-lsp treats trailing-slash markers as directories and all others as
+  " files. Keep both Git spellings so ordinary repositories and linked
+  " worktrees/submodules resolve through the same semantic `.git` marker.
   let l:root = lsp#utils#find_nearest_parent_file_directory(
         \ expand('%:p'),
-        \ ['.perl-lsp.toml', 'Makefile.PL', 'Build.PL', 'cpanfile', 'dist.ini', '.git'])
+        \ ['.perl-lsp.toml', 'Makefile.PL', 'Build.PL', 'cpanfile', 'dist.ini', '.git/', '.git'])
   if empty(l:root)
     let l:root = getcwd()
   endif
