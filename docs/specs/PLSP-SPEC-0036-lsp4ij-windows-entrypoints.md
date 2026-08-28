@@ -249,9 +249,10 @@ These questions are intentionally preserved for the implementation lane:
   `46a3db8dadbd23493a3ca00ec3053bb64521b819`. The same refresh reports
   `origin/main` through GitHub, and PR #13291’s base, at
   `0fac6d848048113b4d3e3886e874fd32ff8dd8ee`; PR #13291’s current head is
-  `f96072a9490653c8e1d61749bdff1bc81c797967`. These are refresh-time facts,
-  not durable authority: every implementation or proof lane must query GitHub
-  again and use the then-current head/base and protection state.
+  `173591ed5e52f3a1b164ac8d63e6ed5013bdcf72`. This is a timestamped
+  refresh-time snapshot, not durable authority: every implementation or proof
+  lane must query GitHub again and use the then-current head/base and
+  protection state.
 - PR #12815 remains open; its proposed `.cmd` topology is not current-main
   behavior until it lands and is revalidated.
 - Issue #13289 remains open and may change durability/flush/startup recovery
