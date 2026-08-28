@@ -17,8 +17,8 @@ product surface already consumes it.
 
 | Surface | Current implementation | Canonical owner and target |
 | --- | --- | --- |
-| Test2 imports and pragma effects | `perl-lsp-rs-core::providers::testing::test2` reads Test2 source and supplies the current critic integration. | #4907 with #6946 and #6948: registered FrameworkAdapters emit versioned source facts once. |
-| Completion and hover | Generic test completion/hover still routes Test2 contexts through Test::More presentation data. Test2 exclusions, aliases, V1 defaults, and standalone tool defaults are not yet authoritative on these surfaces. | #6951 / #2384: complete and document only local names authorized by canonical import facts. |
+| Test2 imports and pragma effects | `perl-lsp-rs-core::providers::testing::test2` reads Test2 source, distinguishes reviewed first-party bundles and tools from unknown or dynamic modules, and supplies the current critic and completion bridge. | #4907 with #6946 and #6948: registered FrameworkAdapters emit versioned source facts once. |
+| Completion and hover | Completion reconciles generic test candidates against parser-scoped Test2 import facts, including exclusions, aliases, V1 defaults, and reviewed standalone defaults. Hover still routes Test2 contexts through Test::More presentation data. | #6951 / #2384: complete and document only local names authorized by canonical import facts. |
 | Subtest discovery | The Rust parser-backed walker supplies document symbols and Run Subtest lenses. Other Rust and VS Code discovery paths still exist. | #4774 / #6953: one generation-aware, nested `TestItem` tree with stable typed identity. |
 | TAP result facts | The execute-command path currently uses a provider-local Rust TAP reader. `perl-test-facts` is the accepted pure result-facts authority, but consumer migration is not complete. | #6943 / #4776: `perl-test-facts` becomes the only server-side TAP parser; #4778 removes the TypeScript parser. |
 | Test execution | The execute-command provider can run `yath`, `prove`, or `perl`; a separate legacy server path and a direct VS Code `prove` path also remain. | #4776 / #4898 / #4972: one runner plan, one supervised process path, and one typed result contract. |
@@ -41,22 +41,39 @@ use Test2::V0 -no_strict;
 use Test2::V0 -no_warnings;
 use Test2::V1;
 use Test2::V1 -import;
+use Test2::Bundle::More;
+use Test2::Tools::ClassicCompare;
+use Test2::Tools::Spec;
 ```
 
-It also preserves the important V0/V1 distinction: plain `Test2::V1` exposes
-the `T2()` handle rather than the V0 bare-function set.
+It preserves the important V0/V1 distinction: plain `Test2::V1` exposes the
+`T2()` handle rather than the V0 bare-function set. It also keeps bundle-selected
+subsets separate from standalone module defaults. For example, V0 selects only
+`cmp_ok` from `Test2::Tools::ClassicCompare`, while a standalone import exposes
+the module's full classic-comparison default set.
 
-Today these facts are used most directly by native critic behavior. For a
-supported normal `use Test2::V0;` import, the critic can treat the bundle as
-providing `strict` and `warnings`; the documented opt-outs remain significant.
+Reviewed first-party contracts include `Test2::Bundle::Extended`,
+`Test2::Bundle::More`, `Test2::Bundle::Simple`, and statically enumerable tool
+modules. `Test2::Suite` is recognized as the distribution namespace but imports
+no symbols and supplies no caller pragmas. Modules with dynamic import behavior,
+such as `Test2::Tools::Target`, remain unknown rather than receiving invented
+static defaults.
 
-These facts do **not yet** make completion and hover fully import-accurate.
-Until #6951 lands, statements such as `!ok`, `-as`, V1-only `T2`, and standalone
-`Test2::Tools::*` defaults can still diverge from what those editor surfaces
-show.
+These facts are consumed by native critic behavior and by the parser-scoped
+completion bridge. For a supported normal `use Test2::V0;` import, the critic
+can treat the bundle as providing `strict` and `warnings`; the documented
+opt-outs remain significant. Completion projects only the local Test2 names
+resolved for the cursor's active package, including exclusions, aliases, V1's
+`T2` default, and reviewed standalone tool defaults.
+
+Hover is not yet import-authoritative. It still presents Test::More-backed cards
+for Test2 contexts, so richer Test2-specific signatures and documentation remain
+part of #6951 and the canonical adapter migration.
 
 Current migration oracle:
 [`providers::testing::test2`](../../crates/perl-lsp-rs-core/src/providers/testing/test2.rs).
+Completion bridge:
+[`completion::request::test_frameworks`](../../crates/perl-lsp-rs-core/src/providers/completion/completion/request/test_frameworks.rs).
 Canonical source-fact program: #4907, #6946, and #6948.
 
 ### Test structure
