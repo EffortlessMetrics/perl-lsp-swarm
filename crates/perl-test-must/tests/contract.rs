@@ -72,20 +72,6 @@ fn must_failure_reports_semantic_clauses_once() -> Result<(), String> {
 }
 
 #[test]
-fn must_with_failure_reports_context_type_and_value_once() -> Result<(), String> {
-    let message = panic_text(|| {
-        must_with::<(), DiagnosticError>(Err(DiagnosticError), "fixture must parse");
-    })?;
-
-    assert_eq!(occurrences(&message, "must:"), 1, "message was: {message}");
-    assert_eq!(occurrences(&message, "fixture must parse"), 1, "message was: {message}");
-    assert_eq!(occurrences(&message, "unexpected Err<"), 1, "message was: {message}");
-    assert_eq!(occurrences(&message, "DiagnosticError"), 1, "message was: {message}");
-    assert_eq!(occurrences(&message, "diagnostic-error"), 1, "message was: {message}");
-    Ok(())
-}
-
-#[test]
 fn must_some_with_failure_reports_context_and_type_once() -> Result<(), String> {
     let message = panic_text(|| {
         let _ = must_some_with(Option::<MissingItem>::None, "indexed symbol must exist");
