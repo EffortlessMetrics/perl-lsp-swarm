@@ -571,7 +571,8 @@ enum Commands {
         no_build: bool,
     },
 
-    /// Regenerate public Shields endpoint JSON for README badges.
+    /// Deprecated compatibility delegate for the Python badge endpoint owner.
+    #[command(hide = true)]
     Badges {
         /// Check committed endpoints for drift without updating badges/.
         #[arg(long)]
@@ -1140,9 +1141,48 @@ enum Commands {
         #[arg(long, default_value = "auto")]
         base: String,
 
+        /// Immutable CI subject receipt. When supplied, the exact receipt
+        /// identity replaces mutable base/HEAD discovery.
+        #[arg(long)]
+        subject: Option<PathBuf>,
+
+        /// Repository root override for hermetic fixtures.
+        #[arg(long)]
+        root: Option<PathBuf>,
+
         /// Output format: `json` or `text` (default: json).
         #[arg(long, default_value = "json")]
         format: String,
+    },
+
+    /// Resolve one immutable GitHub-event subject and bounded input receipt (#8042).
+    CiSubject {
+        /// Event kind (`pull_request`, `push`, `merge_group`,
+        /// `workflow_dispatch`, or `explicit`). Defaults to
+        /// `GITHUB_EVENT_NAME`, then `explicit`.
+        #[arg(long)]
+        event_name: Option<String>,
+        /// GitHub event JSON. Defaults to `GITHUB_EVENT_PATH`.
+        #[arg(long)]
+        event_path: Option<PathBuf>,
+        /// Expected owner/name. Defaults to `GITHUB_REPOSITORY`.
+        #[arg(long)]
+        repository: Option<String>,
+        /// Exact GitHub workflow SHA. Defaults to `GITHUB_SHA`.
+        #[arg(long)]
+        github_sha: Option<String>,
+        /// Exact base SHA for explicit/workflow-dispatch subjects.
+        #[arg(long)]
+        base_sha: Option<String>,
+        /// Exact head SHA for explicit/workflow-dispatch subjects.
+        #[arg(long)]
+        head_sha: Option<String>,
+        /// Bounded semantic receipt path.
+        #[arg(long)]
+        receipt: PathBuf,
+        /// Repository root override for hermetic fixtures.
+        #[arg(long)]
+        root: Option<PathBuf>,
     },
 
     /// Run the thin exact-head repository contract advisory (issue #3987).
@@ -1153,6 +1193,10 @@ enum Commands {
         /// Head git ref or full SHA for the evaluated range.
         #[arg(long, default_value = "HEAD")]
         head: String,
+        /// Immutable CI subject receipt. When supplied, its exact identity
+        /// and changed-input digest replace independent event resolution.
+        #[arg(long)]
+        subject: Option<PathBuf>,
         /// JSON receipt output path.
         #[arg(long, default_value = "target/receipts/ci-contract.json")]
         receipt: PathBuf,
@@ -2239,6 +2283,10 @@ enum Commands {
         /// Base git ref used for scope-aware PR-fast planning
         #[arg(long)]
         base: Option<String>,
+
+        /// Immutable CI subject receipt used for scope-aware planning.
+        #[arg(long)]
+        subject: Option<PathBuf>,
 
         /// List available gates without running them
         #[arg(long, short)]
@@ -5386,11 +5434,36 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::CiBaseline { branch, days, limit, output } => {
             ci_metrics::run_ci_baseline(branch, days, limit, output)
         }
-        Commands::CiScope { base, format } => {
-            ci_scope::run(ci_scope::CiScopeConfig { base, format })
+        Commands::CiScope { base, subject, root, format } => {
+            ci_scope::run(ci_scope::CiScopeConfig { base, subject, root, format })
         }
-        Commands::CiContract { base, head, receipt, summary } => {
-            ci_contract::run(ci_contract::CiContractConfig { base, head, receipt, summary })
+        Commands::CiSubject {
+            event_name,
+            event_path,
+            repository,
+            github_sha,
+            base_sha,
+            head_sha,
+            receipt,
+            root,
+        } => tasks::ci_subject::run(tasks::ci_subject::CiSubjectConfig {
+            event_name,
+            event_path,
+            repository,
+            github_sha,
+            base_sha,
+            head_sha,
+            receipt,
+            root,
+        }),
+        Commands::CiContract { base, head, subject, receipt, summary } => {
+            ci_contract::run(ci_contract::CiContractConfig {
+                base,
+                head,
+                subject,
+                receipt,
+                summary,
+            })
         }
         Commands::CommandEvidence { command } => match command {
             CommandEvidenceCommand::Run {
@@ -6190,6 +6263,7 @@ fn run_cli(cli: Cli) -> Result<()> {
             gate_policy,
             gate,
             base,
+            subject,
             list,
             explain_denominator,
             explain_disposition,
@@ -6206,6 +6280,7 @@ fn run_cli(cli: Cli) -> Result<()> {
             gate_policy: Some(gate_policy),
             gate_filter: gate,
             base_ref: base,
+            subject,
             output_format: format,
             emit_receipt: receipt,
             receipt_path,
