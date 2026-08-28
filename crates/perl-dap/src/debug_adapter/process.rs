@@ -3088,6 +3088,10 @@ mod tests {
     }
 
     /// `terminate_child_process` returns `true` immediately if the process already exited.
+    ///
+    /// The "already exited" precondition uses a bounded poll instead of a fixed
+    /// sleep: process-start latency under AV/load spikes exceeds any constant
+    /// sleep and made this suite-order-dependent on Windows (#12791).
     #[test]
     fn terminate_child_process_already_exited_returns_true() -> Result<(), String> {
         use std::process::Command;
@@ -3102,8 +3106,12 @@ mod tests {
         let mut child =
             Command::new("true").spawn().map_err(|e| format!("Failed to spawn: {e}"))?;
 
-        // Wait for it to exit.
-        std::thread::sleep(std::time::Duration::from_millis(200));
+        // Wait for it to exit — deterministically, within a generous bound.
+        if !DebugAdapter::wait_for_child_exit(&mut child, std::time::Duration::from_secs(10)) {
+            return Err(
+                "child did not exit within 10s; host process latency pathological".to_string()
+            );
+        }
         let result = DebugAdapter::terminate_child_process(&mut child);
         if !result {
             return Err("terminate_child_process should return true for an already-exited process"
