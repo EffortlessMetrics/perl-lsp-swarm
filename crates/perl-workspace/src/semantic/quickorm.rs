@@ -192,11 +192,9 @@ fn direct_table_or_view_builder_anchor(expression: &Node) -> Option<&Node> {
 
 fn static_table_name_anchor(node: &Node) -> Option<&Node> {
     match &node.kind {
-        NodeKind::String {
-            value,
-            interpolated,
-        } if !value.trim().is_empty()
-            && (!*interpolated || !contains_unescaped_interpolation(value)) =>
+        NodeKind::String { value, interpolated }
+            if !value.trim().is_empty()
+                && (!*interpolated || !contains_unescaped_interpolation(value)) =>
         {
             Some(node)
         }
@@ -375,10 +373,7 @@ mod tests {
         let ast = parser
             .parse()
             .map_err(|error| format!("failed to parse QuickORM import: {error:?}"))?;
-        Ok(super::super::workspace_import_extractor::extract_import_specs(
-            &ast,
-            FileId(1),
-        ))
+        Ok(super::super::workspace_import_extractor::extract_import_specs(&ast, FileId(1)))
     }
 
     fn generated_facts_from_source(
@@ -415,10 +410,8 @@ mod tests {
     }
 
     fn canonical_names(facts: &[GeneratedMemberFact]) -> Vec<&str> {
-        let mut names: Vec<_> = facts
-            .iter()
-            .map(|fact| fact.entity.canonical_name.as_str())
-            .collect();
+        let mut names: Vec<_> =
+            facts.iter().map(|fact| fact.entity.canonical_name.as_str()).collect();
         names.sort_unstable();
         names
     }
@@ -565,8 +558,8 @@ table users => sub {
     }
 
     #[test]
-    fn dynamic_builder_consumes_table_package_authority()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn dynamic_builder_consumes_table_package_authority() -> Result<(), Box<dyn std::error::Error>>
+    {
         let facts = generated_facts_from_source(
             r#"
 package MyApp::Schema::User;
@@ -585,8 +578,8 @@ table users => sub {};
     }
 
     #[test]
-    fn double_quoted_static_table_name_emits_qorm_table()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn double_quoted_static_table_name_emits_qorm_table() -> Result<(), Box<dyn std::error::Error>>
+    {
         let facts = generated_facts_from_source(
             r#"
 package MyApp::Schema::User;
@@ -596,16 +589,13 @@ table "users" => sub {};
 "#,
         )?;
 
-        assert_eq!(
-            canonical_names(&facts),
-            vec!["MyApp::Schema::User::qorm_table"]
-        );
+        assert_eq!(canonical_names(&facts), vec!["MyApp::Schema::User::qorm_table"]);
         Ok(())
     }
 
     #[test]
-    fn interpolated_table_name_does_not_emit_qorm_table()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn interpolated_table_name_does_not_emit_qorm_table() -> Result<(), Box<dyn std::error::Error>>
+    {
         let facts = generated_facts_from_source(
             r#"
 package MyApp::Schema::User;
@@ -630,10 +620,7 @@ view active_users => sub {};
 "#,
         )?;
 
-        assert_eq!(
-            canonical_names(&facts),
-            vec!["MyApp::Schema::ActiveUser::qorm_table"]
-        );
+        assert_eq!(canonical_names(&facts), vec!["MyApp::Schema::ActiveUser::qorm_table"]);
         Ok(())
     }
 
@@ -732,10 +719,7 @@ table users => sub {};
 "#,
         )?;
 
-        assert_eq!(
-            canonical_names(&facts),
-            vec!["MyApp::Schema::User::qorm_table"]
-        );
+        assert_eq!(canonical_names(&facts), vec!["MyApp::Schema::User::qorm_table"]);
         Ok(())
     }
 
