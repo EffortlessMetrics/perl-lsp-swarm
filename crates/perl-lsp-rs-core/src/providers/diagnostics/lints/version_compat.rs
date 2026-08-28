@@ -125,6 +125,14 @@ const SMARTMATCH_FEATURE_GATE_VERSION: PerlVersion = PerlVersion::new(5, 42);
 /// Walks the AST looking for uses of version-gated features and emits
 /// `PL900` warnings when the declared version does not support them.
 pub fn check_version_compat(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
+    check_version_compat_with_project_version(node, diagnostics, None);
+}
+
+pub fn check_version_compat_with_project_version(
+    node: &Node,
+    diagnostics: &mut Vec<Diagnostic>,
+    project_version: Option<&str>,
+) {
     // Collect the declared version and builtin imports from top-level statements.
     let statements = match &node.kind {
         NodeKind::Program { statements } => statements,
@@ -171,16 +179,21 @@ pub fn check_version_compat(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
         }
     }
 
-    // If no version was declared, skip all checks.
+    // A project version is only a fallback. Source declarations remain authoritative.
+    let using_project_version = declared_version.is_none();
     let declared_version = match declared_version {
         Some(v) => v,
-        None => return,
+        None => match project_version.and_then(|value| parse_perl_version(value.trim())) {
+            Some(v) => v,
+            None => return,
+        },
     };
 
     let pragma_map = PragmaTracker::build(node);
     let mut pragma_cursor = PragmaQueryCursor::new();
 
     // Second pass: walk AST for version-gated constructs.
+    let diagnostics_before_walk = diagnostics.len();
     walk_node(node, &mut |n| {
         let pragma_state = pragma_cursor.state_for_offset(&pragma_map, n.location.start);
 
@@ -487,6 +500,12 @@ pub fn check_version_compat(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
             _ => {}
         }
     });
+
+    if using_project_version {
+        for diagnostic in &mut diagnostics[diagnostics_before_walk..] {
+            diagnostic.message.push_str(" (target from project [perl].version)");
+        }
+    }
 }
 
 /// Return the minimum (major, minor) for a named feature from the table.
@@ -873,6 +892,45 @@ mod tests {
         let mut diags = Vec::new();
         check_version_compat(&ast, &mut diags);
         diags
+    }
+
+    fn version_compat_diags_with_project_version(
+        source: &str,
+        project_version: Option<&str>,
+    ) -> Vec<Diagnostic> {
+        let ast = must(Parser::new(source).parse());
+        let mut diags = Vec::new();
+        check_version_compat_with_project_version(&ast, &mut diags, project_version);
+        diags
+    }
+
+    #[test]
+    fn project_version_is_used_as_pl900_fallback() {
+        let diags =
+            version_compat_diags_with_project_version("sub f ($x) { return $x; }", Some("5.20"));
+        assert!(
+            diags.iter().any(|diagnostic| diagnostic.message.contains("project [perl].version"))
+        );
+    }
+
+    #[test]
+    fn source_version_wins_over_project_fallback() {
+        let diags = version_compat_diags_with_project_version(
+            "use v5.40; use builtin 'inf'; my $value = builtin::inf();",
+            Some("5.20"),
+        );
+        assert!(
+            !diags.iter().any(|diagnostic| diagnostic.message.contains("project [perl].version"))
+        );
+    }
+
+    #[test]
+    fn invalid_project_version_fails_closed() {
+        let diags = version_compat_diags_with_project_version(
+            "sub f ($x) { return $x; }",
+            Some("not-a-version"),
+        );
+        assert!(diags.is_empty());
     }
 
     #[test]

@@ -256,8 +256,12 @@ impl PullDiagnosticsOrchestrator {
         // because `build_context` runs on all targets (including wasm32), while
         // `workspace_root_for_doc` is `#[cfg(not(target_arch = "wasm32"))]` since it is
         // only needed from the native perlcritic diagnostic paths.
-        let workspace_root = server
-            .folder_for_doc_uri(uri)
+        let folder = server.folder_for_doc_uri(uri);
+        let project_version = folder
+            .as_ref()
+            .and_then(|folder| folder.project_config.as_ref())
+            .and_then(|config| config.perl.version.clone());
+        let workspace_root = folder
             .and_then(|folder| folder.path.or_else(|| source_path_from_uri(&folder.uri)))
             .or_else(|| server.root_path.lock().clone());
 
@@ -315,6 +319,7 @@ impl PullDiagnosticsOrchestrator {
             native_critic_exclude,
             workspace_root,
             include_paths,
+            project_version,
             markup_message_support,
             identity_root_key: root_key,
             facts_generation,

@@ -1880,8 +1880,9 @@ pub struct ProjectPerlConfig {
     pub discovery_extensions: Vec<String>,
     /// Additional directory names skipped during workspace discovery.
     pub discovery_skipped_dirs: Vec<String>,
-    /// Perl version string (e.g. "5.38") — parsed but not yet wired to diagnostics.
-    /// Reserved for future use; ignored in this implementation.
+    /// Trusted per-folder Perl version string (e.g. "5.38") used as the PL900
+    /// fallback target when the source has no `use VERSION` declaration.
+    /// Invalid values fail closed and source declarations always win.
     pub version: Option<String>,
     /// Whether to read `PERL5LIB` from the environment and include it in the
     /// module search path.  Unset means "leave the server default unchanged".

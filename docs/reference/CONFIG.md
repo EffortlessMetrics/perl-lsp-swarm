@@ -205,7 +205,8 @@ for every shipped rule (ID, category, severity, and which of the `recommended` /
 # All keys are optional. Unknown keys are silently ignored.
 
 [perl]
-# Perl version hint (reserved for future diagnostic targeting)
+# Per-folder PL900 fallback target when source has no `use VERSION` declaration.
+# Source declarations win; invalid values fail closed.
 version = "5.38"
 
 # Module search paths relative to workspace root.
