@@ -66,16 +66,26 @@ fn lwp_user_agent_constructor_assignment_enables_instance_catalog() {
 
 #[test]
 fn constructor_inference_is_import_receiver_and_assignment_bounded() {
-    let sources = [
+    let mut sources: Vec<String> = [
         "my $http = HTTP::Tiny->new;\n$http->po",
         "use HTTP::Tiny;\nmy $http = HTTP::Tiny->new;\n$http = Other::Client->new;\n$http->po",
         "use HTTP::Tiny;\nmy $http_client = HTTP::Tiny->new;\n$http->po",
-        "use HTTP::Tiny;\nmy $http = HTTP::Tiny->new;\n$http .= \"text\";\n$http->po",
-        "use HTTP::Tiny;\nmy $http = HTTP::Tiny->new;\n$http += 1;\n$http->po",
-    ];
+        "use HTTP::Tiny;\nmy ($http, $other) = (HTTP::Tiny->new, 1);\n$http->po",
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect();
+    for operator in [
+        ".=", "x=", "+=", "-=", "*=", "/=", "%=", "**=", "<<=", ">>=", "&=", "|=", "^=", "&&=",
+        "||=", "//=",
+    ] {
+        sources.push(format!(
+            "use HTTP::Tiny;\nmy $http = HTTP::Tiny->new;\n$http {operator} 1;\n$http->po"
+        ));
+    }
 
     for source in sources {
-        let item_labels = labels(&completions_at_end(source));
+        let item_labels = labels(&completions_at_end(&source));
         assert!(
             !has_label(&item_labels, "post"),
             "constructor evidence should stay bounded in {source:?}"

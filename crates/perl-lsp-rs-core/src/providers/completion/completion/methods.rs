@@ -341,6 +341,11 @@ fn latest_assignment_for_binding<'a>(
 
         let after_receiver = source[receiver_pos + receiver.len()..].trim_start();
         let Some((assignment, compound)) = assignment_after_receiver(after_receiver) else {
+            if is_list_assignment_target(after_receiver) {
+                // A list assignment also replaces the receiver's value, even though
+                // the assignment operator is not immediately after the scalar.
+                expression = Some("");
+            }
             continue;
         };
         if compound {
@@ -358,8 +363,8 @@ fn latest_assignment_for_binding<'a>(
 
 fn assignment_after_receiver(after_receiver: &str) -> Option<(&str, bool)> {
     for operator in [
-        "**=", "<<=", ">>=", "&&=", "||=", "//=", ".=", "+=", "-=", "*=", "/=", "%=", "&=", "|=",
-        "^=", "=",
+        "**=", "<<=", ">>=", "&&=", "||=", "//=", ".=", "x=", "+=", "-=", "*=", "/=", "%=", "&=",
+        "|=", "^=", "=",
     ] {
         if let Some(rhs) = after_receiver.strip_prefix(operator) {
             if operator == "=" && rhs.chars().next().is_some_and(|c| matches!(c, '=' | '>' | '~')) {
@@ -369,6 +374,14 @@ fn assignment_after_receiver(after_receiver: &str) -> Option<(&str, bool)> {
         }
     }
     None
+}
+
+fn is_list_assignment_target(after_receiver: &str) -> bool {
+    let Some(equal_pos) = after_receiver.find('=') else {
+        return false;
+    };
+    let left_hand_side = after_receiver[..equal_pos].trim();
+    left_hand_side.starts_with(',') || left_hand_side.starts_with(')')
 }
 
 fn expression_calls_constructor(expression: &str, module: &str) -> bool {

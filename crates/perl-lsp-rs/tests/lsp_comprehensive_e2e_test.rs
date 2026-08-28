@@ -451,6 +451,27 @@ fn test_e2e_http_completion_respects_pod_and_heredoc_boundaries() -> TestResult 
         "use HTTP::Tiny;\nmy $http = HTTP::Tiny->new;\n=begin\nnot a valid POD region\n$http->po",
     )?;
 
+    for (index, operator) in [
+        ".=", "x=", "+=", "-=", "*=", "/=", "%=", "**=", "<<=", ">>=", "&=", "|=", "^=", "&&=",
+        "||=", "//=",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        assert_no_post_completion(
+            &mut ctx,
+            &format!("file:///test/http-compound-{index}.pl"),
+            &format!(
+                "use HTTP::Tiny;\nmy $http = HTTP::Tiny->new;\n$http {operator} 1;\n$http->po"
+            ),
+        )?;
+    }
+    assert_no_post_completion(
+        &mut ctx,
+        "file:///test/http-list-assignment.pl",
+        "use HTTP::Tiny;\nmy ($http, $other) = (HTTP::Tiny->new, 1);\n$http->po",
+    )?;
+
     Ok(())
 }
 
