@@ -9,8 +9,8 @@ fn next_u64(state: &mut u64) -> u64 {
 
 fn gen_char(seed: &mut u64) -> char {
     const ALPHABET: &[char] = &[
-        'a', 'Z', '0', '9', '_', ':', '/', '\\', '\'', ' ', ';', '(', ')', '[', ']', '{', '}',
-        'λ', 'Ж', '界', 'é', '🙂',
+        'a', 'Z', '0', '9', '_', ':', '/', '\\', '\'', ' ', ';', '(', ')', '[', ']', '{', '}', 'λ',
+        'Ж', '界', 'é', '🙂',
     ];
     ALPHABET[(next_u64(seed) as usize) % ALPHABET.len()]
 }
@@ -131,10 +131,6 @@ fn fuzz_boundary_detection_for_standalone_vs_embedded_tokens() {
         ));
 
         let right_embedded = format!(" {token}{embed_right}");
-        assert!(!has_standalone_module_token_boundaries(
-            &right_embedded,
-            1,
-            1 + token.len()
-        ));
+        assert!(!has_standalone_module_token_boundaries(&right_embedded, 1, 1 + token.len()));
     }
 }

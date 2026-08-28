@@ -53,11 +53,7 @@ fn given_unicode_identifier_neighbor_when_matching_boundaries_then_false() {
     let span = parse_module_token(line, start);
 
     assert_eq!(span, Some(ModuleTokenSpan { start, end: start + "App::Config".len() }));
-    assert!(!has_standalone_module_token_boundaries(
-        line,
-        start,
-        start + "App::Config".len()
-    ));
+    assert!(!has_standalone_module_token_boundaries(line, start, start + "App::Config".len()));
 }
 
 #[test]
