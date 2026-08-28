@@ -11,9 +11,9 @@ use std::collections::HashMap;
 use std::cell::RefCell;
 
 use xtask::branch_deletion_admission::{
-    DeletionAdmission, DeletionExecutor, ReadOnlyCommands, RemoteIdentity, branch_deletion_command,
-    collect_request, evaluate, execute_admitted_deletion, parse_remote_identity,
-    repository_from_remote_url, verify_remote_identity,
+    DeletionAdmission, DeletionExecutor, ReadOnlyCommands, RecheckGate, RemoteIdentity,
+    branch_deletion_command, collect_request, evaluate, execute_admitted_deletion,
+    parse_remote_identity, recheck_gate, repository_from_remote_url, verify_remote_identity,
 };
 
 const BRANCH: &str = "agent/vim-activation-root-7762";
@@ -829,5 +829,120 @@ fn a_cross_repository_parent_retains() -> Result<(), Box<dyn std::error::Error>>
     // test cannot pass because the fixture is broken.
     let same_but_owned = evaluate(&collect_request(&healthy(), 7799, "origin")?.request);
     assert_eq!(same_but_owned.admission, DeletionAdmission::SafeToDelete);
+    Ok(())
+}
+
+/// A command surface on which a child pull request is opened *after* the
+/// admitting read and *before* the pre-deletion re-read.
+///
+/// `gh pr list` reports no children on its first call and a live child on
+/// every call after it. This is the interleaving the review named: opening a
+/// pull request does not move the branch tip, so neither the remote lease nor
+/// a tip comparison can observe it. Only a second graph read can.
+struct ChildOpensAfterFirstRead {
+    inner: FakeCommands,
+    listings: RefCell<usize>,
+}
+
+impl ChildOpensAfterFirstRead {
+    fn new() -> Self {
+        Self { inner: healthy(), listings: RefCell::new(0) }
+    }
+}
+
+impl ReadOnlyCommands for ChildOpensAfterFirstRead {
+    fn capture(&self, program: &str, args: &[&str]) -> color_eyre::eyre::Result<String> {
+        if program == "gh" && args.first() == Some(&"pr") && args.get(1) == Some(&"list") {
+            let mut listings = self.listings.borrow_mut();
+            *listings += 1;
+            if *listings > 1 {
+                return Ok(format!(
+                    r#"[{{"number":7810,"state":"OPEN","isDraft":false,"headRefName":"agent/child-7810","baseRefName":"{BRANCH}","mergeable":"MERGEABLE"}}]"#
+                ));
+            }
+        }
+        self.inner.capture(program, args)
+    }
+}
+
+/// Drive the `cleanup` sequence — collect, evaluate, collect again, evaluate
+/// again, gate, and only then delete — against one command surface, and report
+/// whether the executor was reached.
+///
+/// This composes the same units the `Cleanup` arm composes. It does not prove
+/// the arm is wired this way; `the_cleanup_path_gates_its_deletion_on_the_re_read`
+/// in the sibling suite reads the arm's source and asserts that ordering. The
+/// two together are what make the property behavioural *and* reachable.
+fn run_cleanup_sequence(
+    commands: &dyn ReadOnlyCommands,
+) -> Result<(bool, RecordingDeleter), Box<dyn std::error::Error>> {
+    let deleter = RecordingDeleter::default();
+
+    let collected = collect_request(commands, 7799, "origin")?;
+    let outcome = evaluate(&collected.request);
+    if !outcome.admission.admits_deletion() {
+        return Ok((false, deleter));
+    }
+
+    let recollected = collect_request(commands, 7799, "origin")?;
+    let recheck = evaluate(&recollected.request);
+    if let RecheckGate::Retain { .. } = recheck_gate(&outcome, &recheck) {
+        return Ok((false, deleter));
+    }
+
+    execute_admitted_deletion(commands, &deleter, &recheck, &recollected.remote_identity)?;
+    Ok((true, deleter))
+}
+
+/// The falsifier the review asked for: a child opened between the admitting
+/// read and the deletion leaves the branch undeleted, and the executor is
+/// never reached at all.
+///
+/// # What this does and does not close
+///
+/// The authorization-to-mutation window has two halves. This closes the first:
+/// a child appearing between the two graph reads is observed by the second read
+/// and retains. The second half — a child opened after the *final* read and
+/// before the push lands — is not closed by anything here and cannot be, because
+/// no lease observes a new dependency edge and GitHub exposes no lock against
+/// one. That remainder needs an integration lock or a deferred-deletion policy
+/// and is #3957 / #6188's, which is why this PR relates to #12885 as `Advances`.
+#[test]
+fn a_child_opened_after_the_admitting_read_is_never_deleted_out_from_under()
+-> Result<(), Box<dyn std::error::Error>> {
+    // Positive control first. Without it this test would pass for the trivial
+    // reason that the sequence never deletes anything.
+    let (control_deleted, control_deleter) = run_cleanup_sequence(&healthy())?;
+    assert!(control_deleted, "an unencumbered subject must still be deleted");
+    assert_eq!(
+        control_deleter.invocations.borrow().len(),
+        1,
+        "the control must reach the executor exactly once",
+    );
+
+    let racing = ChildOpensAfterFirstRead::new();
+    let (deleted, deleter) = run_cleanup_sequence(&racing)?;
+
+    assert!(!deleted, "a child opened after the admitting read must retain the branch");
+    assert!(
+        deleter.invocations.borrow().is_empty(),
+        "the deletion must not be attempted at all: {:?}",
+        deleter.invocations.borrow(),
+    );
+    assert!(
+        *racing.listings.borrow() >= 2,
+        "the sequence must read the child graph twice, or this proves nothing; read {} time(s)",
+        racing.listings.borrow(),
+    );
+
+    // The child the first read missed is exactly the one the second read must
+    // catch: evaluating the later graph alone retains, and names the child.
+    let later = evaluate(&collect_request(&racing, 7799, "origin")?.request);
+    assert!(!later.admission.admits_deletion());
+    assert!(
+        later.retained_children.iter().any(|child| child.number == 7810),
+        "the retained packet must name the child that appeared: {:?}",
+        later.retained_children,
+    );
     Ok(())
 }
