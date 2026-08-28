@@ -20,11 +20,11 @@ follow-up
 
 ## Orchestration affordances
 
-### Lane-root decisions
+### Root decisions
 
-The lane root retains whether a finding is valid, stale, refuted, superseded, or a
-bounded follow-up; whether it changes claim/owner/proof/risk; the accepted repair; and
-which proof/review dimensions become stale.
+The main Claude thread retains whether a finding is valid, stale, refuted, superseded,
+or a bounded follow-up; whether it changes claim/owner/proof/risk; the accepted repair;
+and which proof/review dimensions become stale.
 
 ### Useful subagent work
 
@@ -43,9 +43,9 @@ not resolve threads or authorize repair.
 
 ### Mutation owner and join
 
-One candidate writer integrates accepted repairs. The lane root joins duplicate or
-conflicting findings, verifies dispositions against current evidence, and decides which
-findings are repaired, refuted, superseded, followed up, blocked, or not proven.
+One candidate writer integrates accepted repairs. The main Claude thread joins duplicate
+or conflicting findings, verifies dispositions against current evidence, and decides
+which findings are repaired, refuted, superseded, followed up, blocked, or not proven.
 
 The join is complete only when every substantive finding has one supported visible
 disposition, accepted mutations have current affected proof, and material claim/owner
