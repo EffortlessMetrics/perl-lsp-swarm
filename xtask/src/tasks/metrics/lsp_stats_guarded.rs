@@ -34,6 +34,8 @@ const UX_RUN_SIGNATURE_FIELDS: &[&str] = &[
     "ci_tier",
     "result",
     "duration_ms",
+    "time_to_first_useful_result_ms",
+    "operation_timings",
     "assertions",
     "canonical_repro",
     "friendly_repro",
@@ -574,6 +576,32 @@ mod tests {
             let error = validation_error(
                 validate_scorecard_inputs(&receipts, &matrix, &schema),
                 "UX-run-shaped JSON with no identity fields and a missing or malformed kind unexpectedly passed",
+            )?;
+            assert!(format!("{error:#}").contains("unsupported or malformed kind"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn malformed_timing_without_identity_or_kind_still_fails_closed() -> Result<()> {
+        for kind in [None, Some(Value::Null)] {
+            let temp = tempfile::tempdir()?;
+            let receipts = temp.path().join("receipts");
+            fs::create_dir_all(&receipts)?;
+            let mut value = serde_json::json!({
+                "result": "pass",
+                "duration_ms": 10.0,
+                "time_to_first_useful_result_ms": "not-a-number"
+            });
+            if let Some(kind) = kind {
+                value["kind"] = kind;
+            }
+            fs::write(receipts.join("malformed-timing.json"), serde_json::to_string(&value)?)?;
+            let matrix = write_matrix(temp.path(), &[("known", "known.rs")])?;
+
+            let error = validation_error(
+                validate_scorecard_inputs(&receipts, &matrix, &checked_in_receipt_schema()),
+                "identity-free malformed timing unexpectedly passed the scorecard boundary",
             )?;
             assert!(format!("{error:#}").contains("unsupported or malformed kind"));
         }
