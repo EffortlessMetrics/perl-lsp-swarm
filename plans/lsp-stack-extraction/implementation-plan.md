@@ -1,18 +1,18 @@
 # lsp-stack Extraction Implementation Plan
 
-Status: planned
+Status: in progress
 Owner: perl-lsp maintainers
 Linked ADR: [PLSP-ADR-0004](../../docs/adr/PLSP-ADR-0004-lsp-stack-extraction.md)
 Linked spec: [PLSP-SPEC-0028](../../docs/specs/PLSP-SPEC-0028-lsp-stack-extraction.md)
+Static audit: [PR 2 static seam audit](static-seam-audit.md)
 
 ## Purpose
 
-Define the PR sequence for a future `lsp-stack` extraction without starting the
-extraction in this PR.
+Define the controlled PR sequence for a future `lsp-stack` extraction.
 
-This plan exists so future agents know the boundary before they move code. The
-current app remains the shipping implementation until a later extraction PR
-proves parity.
+The boundary and static seam audit now exist. Production extraction has not
+started, and the current app remains the shipping implementation until later
+dependency, scaffold, move, and parity PRs earn each step.
 
 ## Current-app Hardening Prerequisite
 
@@ -60,7 +60,7 @@ Future `lsp-stack` must have no Perl dependencies.
 
 ### PR 1: Boundary docs
 
-Status: this PR
+Status: landed
 
 Goal:
 
@@ -98,6 +98,8 @@ Revert the docs-only PR. No runtime rollback is needed because no code moved.
 
 ### PR 2: Static seam audit
 
+Status: documented by [the static seam audit](static-seam-audit.md)
+
 Goal:
 
 Classify candidate protocol/runtime files as language-neutral, Perl-specific,
@@ -111,8 +113,10 @@ Allowed changes:
 Acceptance:
 
 - every candidate names its current tests
-- every mixed file names the Perl dependency that blocks extraction
+- every mixed file names the Perl dependency or product-policy coupling that
+  blocks extraction
 - every proposed first move is low-risk and language-neutral
+- candidate sets are pinned to an audited source revision
 
 Proof:
 
@@ -126,9 +130,18 @@ Revert the audit doc. Do not move code based on a reverted audit.
 
 ### PR 3: Dependency boundary audit
 
+Status: next after PR 2 lands
+
 Goal:
 
 Prove the first candidate extraction set can compile without Perl dependencies.
+
+Input:
+
+- Set A from the static seam audit:
+  `crates/perl-lsp-rs-core/src/protocol/document_version.rs`
+- Set B only after its JSON-RPC error-classification and product-policy blockers
+  are separated in place
 
 Allowed changes:
 
@@ -138,9 +151,11 @@ Allowed changes:
 
 Acceptance:
 
+- the Set A source compiles with only `std` and `serde_json`
 - no `perl-*` dependency in the candidate set
 - no provider, parser, DAP, release, or package dependency in the candidate set
 - dependency additions are documented and language-neutral
+- static inspection is not reported as dependency-closure proof
 
 Proof:
 
@@ -190,10 +205,13 @@ Goal:
 
 Move one language-neutral protocol primitive with no behavior change.
 
-Candidate class:
+Candidate order:
 
-- JSON-RPC ID parsing or request envelope utilities
-- only if the dependency audit proves the type has no Perl dependency
+1. `protocol/document_version.rs`, after PR 3 proves its isolated dependency
+   closure
+2. JSON-RPC ID and request-envelope utilities, only after the static audit's
+   in-place error-classification and product-policy blockers are removed and
+   their dependency closure is re-proven
 
 Acceptance:
 
@@ -227,6 +245,8 @@ Acceptance:
 - no Perl provider imports
 - request/response framing tests pass
 - raw RPC receipt remains green
+- `$/perl-lsp/clientResponse` conversion remains in the current-app adapter
+- the neutral codec does not depend on `perl_parser_core::ErrorClass`
 
 Proof:
 
@@ -252,6 +272,8 @@ Acceptance:
 - file-watcher tuning still gates only file watchers
 - inline-completion dynamic registration is not suppressed by watcher tuning
 - generation-aware stale-read cancellation still passes existing receipts
+- provider names, Perl environment variables, source-edit semantics, and
+  product limit policy remain in the current app
 
 Proof:
 
@@ -296,8 +318,9 @@ is in the extracted primitive.
 ## Always Invalid In This Lane
 
 - creating `crates/lsp-stack` before the boundary and audits land
-- moving code in the boundary-docs PR
+- moving code in the boundary-docs or static-audit PR
 - adding Perl dependencies to future `lsp-stack`
+- treating a generic module name as proof of a language-neutral boundary
 - changing inline-completion behavior while extracting infrastructure
 - changing DAP while extracting LSP infrastructure
 - changing release, publish, signing, marketplace, or package behavior
