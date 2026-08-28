@@ -538,6 +538,36 @@ mod tests {
     }
 
     #[test]
+    fn quoted_test2_options_follow_runtime_semantics() {
+        let no_t2 = complete("use Test2::V1 '-no-T2';\nT|", Some("t/example.t"));
+        assert!(!labels(&no_t2).contains(&"T2"));
+
+        let custom =
+            complete("use Test2::V1 '-T2' => { '-as' => 'custom' };\ncu|", Some("t/example.t"));
+        assert!(labels(&custom).contains(&"custom"));
+        assert!(!labels(&custom).contains(&"T2"));
+
+        let quoted_value =
+            complete("use Test2::V1 -srand => \"contains -no-T2\";\nT|", Some("t/example.t"));
+        assert!(labels(&quoted_value).contains(&"T2"));
+    }
+
+    #[test]
+    fn quoted_target_option_preserves_aliases_and_bundle_defaults() {
+        let alias = complete(
+            "use Test2::V0 '-target' => { service => 'My::Service' };\nser|",
+            Some("t/example.t"),
+        );
+        assert!(labels(&alias).contains(&"service"));
+
+        let defaults = complete(
+            "use Test2::V0 '-target' => { service => 'My::Service' };\ni|",
+            Some("t/example.t"),
+        );
+        assert!(labels(&defaults).contains(&"is"));
+    }
+
+    #[test]
     fn nested_target_values_do_not_emit_nested_aliases() {
         let direct_nested = complete(
             "use Test2::Tools::Target service => [$target, repo => 'My::Repo',], actual => 'My::Actual';\nrepo|",

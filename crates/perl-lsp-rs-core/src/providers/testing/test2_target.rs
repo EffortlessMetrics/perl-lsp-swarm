@@ -127,6 +127,35 @@ fn find_bundle_target_option(raw_args: &str) -> Option<(usize, usize, &str)> {
             continue;
         }
 
+        if delimiters.is_empty()
+            && (index == 0 || bytes[index - 1].is_ascii_whitespace() || bytes[index - 1] == b',')
+            && (byte == b'\'' || byte == b'"')
+        {
+            if let Some(option_end) = scan_quoted_value(bytes, index) {
+                let option = raw_args.get(index + 1..option_end - 1)?;
+                let after = bytes.get(option_end);
+                let has_boundary_after = after
+                    .is_none_or(|byte| byte.is_ascii_whitespace() || matches!(*byte, b',' | b'='));
+                if option == "-target" && has_boundary_after {
+                    let mut value_start = option_end;
+                    while bytes.get(value_start).is_some_and(u8::is_ascii_whitespace) {
+                        value_start += 1;
+                    }
+                    if bytes.get(value_start..value_start + 2) == Some(b"=>") {
+                        value_start += 2;
+                        while bytes.get(value_start).is_some_and(u8::is_ascii_whitespace) {
+                            value_start += 1;
+                        }
+                    }
+
+                    let value_end = scan_bundle_target_value(raw_args, value_start)?;
+                    return Some((index, value_end, &raw_args[value_start..value_end]));
+                }
+                index = option_end;
+                continue;
+            }
+        }
+
         if byte == b'\'' || byte == b'"' {
             quote = Some(byte);
         } else if matches!(byte, b'{' | b'[' | b'(') {

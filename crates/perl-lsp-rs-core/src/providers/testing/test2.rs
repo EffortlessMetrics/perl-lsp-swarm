@@ -575,8 +575,10 @@ fn v1_short_flag(raw_args: &str, flag_char: char) -> bool {
     })
 }
 
-/// Return option tokens at the import-argument level, ignoring quoted text
-/// and nested values such as `-T2 => { -as => 'custom' }`.
+/// Return option tokens at the import-argument level, ignoring quoted values
+/// and nested values such as `-T2 => { -as => 'custom' }`. A whole quoted
+/// option token is retained because Perl evaluates `'-no-T2'` and `-no-T2` to
+/// the same import argument.
 fn top_level_option_tokens(raw: &str) -> Vec<&str> {
     let bytes = raw.as_bytes();
     let mut tokens = Vec::new();
@@ -600,6 +602,22 @@ fn top_level_option_tokens(raw: &str) -> Vec<&str> {
         }
 
         match byte {
+            b'\'' | b'"'
+                if delimiters.is_empty()
+                    && (index == 0
+                        || bytes[index - 1].is_ascii_whitespace()
+                        || bytes[index - 1] == b',') =>
+            {
+                if let Some(end) = scan_quoted_token(bytes, index) {
+                    let token = &raw[index + 1..end - 1];
+                    if is_option_token(token) {
+                        tokens.push(token);
+                    }
+                    index = end;
+                    continue;
+                }
+                quote = Some(byte);
+            }
             b'\'' | b'"' => quote = Some(byte),
             b'{' | b'[' | b'(' => delimiters.push(byte),
             b'}' | b']' | b')' => {
@@ -636,6 +654,29 @@ fn top_level_option_tokens(raw: &str) -> Vec<&str> {
     }
 
     tokens
+}
+
+fn scan_quoted_token(bytes: &[u8], start: usize) -> Option<usize> {
+    let quote = *bytes.get(start)?;
+    let mut escaped = false;
+    for (offset, byte) in bytes[start + 1..].iter().enumerate() {
+        if escaped {
+            escaped = false;
+        } else if *byte == b'\\' {
+            escaped = true;
+        } else if *byte == quote {
+            return Some(start + offset + 2);
+        }
+    }
+    None
+}
+
+fn is_option_token(token: &str) -> bool {
+    token.len() > 1
+        && token.starts_with('-')
+        && token[1..]
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '_' | '-'))
 }
 
 /// Split raw import-argument text into classifiable atoms. Handles `qw//`
