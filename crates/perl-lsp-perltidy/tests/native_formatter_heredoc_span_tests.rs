@@ -64,6 +64,16 @@ fn native_range_formatter_refuses_final_heredoc_terminator_without_newline() {
 }
 
 #[test]
+fn native_range_formatter_refuses_empty_final_heredoc_terminator() {
+    let formatter = NativeFormatter::new();
+    let source = "print <<'EOF';\nEOF";
+
+    let result = formatter.format_range(source, line_range(1), &FormatConfig::default());
+
+    assert_heredoc_refusal(&result, source);
+}
+
+#[test]
 fn unterminated_heredoc_remains_owned_by_parse_gate() {
     let formatter = NativeFormatter::new();
     let source = "print <<'EOF';\nraw { text }\n";
