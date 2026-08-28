@@ -134,7 +134,7 @@ impl<'a> Parser<'a> {
                     // Check for postfix dereference operators
                     match self.peek_kind() {
                         Some(TokenKind::ArraySigil) => {
-                            // ->@* or ->@[...]
+                            // ->@*, ->@[...], or ->@{...}
                             self.tokens.next()?; // consume @
 
                             if self.peek_kind() == Some(TokenKind::Star) {
@@ -167,6 +167,23 @@ impl<'a> Parser<'a> {
                                         op: "->@[]".to_string(),
                                         left: Box::new(expr),
                                         right: Box::new(index),
+                                    },
+                                    SourceLocation { start, end },
+                                );
+                            } else if self.peek_kind() == Some(TokenKind::LeftBrace) {
+                                // ->@{...} postfix hash slice
+                                self.tokens.next()?; // consume {
+                                let keys = self.parse_hash_subscript_key()?;
+                                self.expect_closing_delimiter(TokenKind::RightBrace)?;
+
+                                let start = expr.location.start;
+                                let end = self.previous_position();
+
+                                record_postfix_layer()?;
+                                expr = Node::new(
+                                    NodeKind::HashSlice {
+                                        target: Box::new(expr),
+                                        keys: Box::new(keys),
                                     },
                                     SourceLocation { start, end },
                                 );
