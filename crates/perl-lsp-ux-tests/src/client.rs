@@ -525,10 +525,8 @@ fn server_request_response(message: &Value) -> Option<Value> {
             "failureReason": "UX test client does not apply workspace edits automatically"
         }),
         "workspace/configuration" => {
-            let item_count = message
-                .pointer("/params/items")
-                .and_then(Value::as_array)
-                .map_or(0, Vec::len);
+            let item_count =
+                message.pointer("/params/items").and_then(Value::as_array).map_or(0, Vec::len);
             Value::Array(vec![Value::Null; item_count])
         }
         "window/showMessageRequest" => Value::Null,
@@ -699,10 +697,7 @@ mod tests {
 
         assert_eq!(response["id"], "extension-3");
         assert_eq!(response["error"]["code"], -32601);
-        assert_eq!(
-            response["error"]["message"],
-            "Method not found: experimental/clientPrompt"
-        );
+        assert_eq!(response["error"]["message"], "Method not found: experimental/clientPrompt");
     }
 
     #[test]
