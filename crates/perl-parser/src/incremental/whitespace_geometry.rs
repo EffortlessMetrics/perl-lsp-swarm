@@ -91,8 +91,7 @@ impl WhitespaceEditMap {
     }
 
     pub(super) fn clone_tree(&self, root: &Node) -> Node {
-        let mut cloned =
-            root.clone_with_mapped_locations(|location| self.map_location(location));
+        let mut cloned = root.clone_with_mapped_locations(|location| self.map_location(location));
         // Parser::parse always returns a Program rooted at the source origin.
         // Leading trivia moves its first statement, not the Program anchor.
         cloned.location.start = root.location.start;
@@ -204,11 +203,7 @@ fn structural_tokens_match(old_source: &str, new_source: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use perl_parser_core::{
-        ast::NodeKind,
-        edit::Edit,
-        position::Position,
-    };
+    use perl_parser_core::{ast::NodeKind, edit::Edit, position::Position};
 
     fn edit(start: usize, old_end: usize, new_end: usize) -> Edit {
         Edit::new(
@@ -238,8 +233,8 @@ mod tests {
     }
 
     #[test]
-    fn admits_exact_mid_file_insertion_and_shifts_only_following_geometry()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn admits_exact_mid_file_insertion_and_shifts_only_following_geometry(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let edits = edit_set([edit(2, 2, 3)]);
         let map = WhitespaceEditMap::try_new("a b", "a  b", &edits)
             .ok_or("exact whitespace insertion should be admitted")?;
@@ -260,8 +255,8 @@ mod tests {
     }
 
     #[test]
-    fn admits_exact_deletion_and_left_biases_the_preceding_token_end()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn admits_exact_deletion_and_left_biases_the_preceding_token_end(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let edits = edit_set([edit(2, 3, 2)]);
         let map = WhitespaceEditMap::try_new("a  b", "a b", &edits)
             .ok_or("exact whitespace deletion should be admitted")?;
