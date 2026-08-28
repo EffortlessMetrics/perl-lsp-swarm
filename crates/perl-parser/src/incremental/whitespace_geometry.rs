@@ -1,0 +1,315 @@
+use perl_lexer::{PerlLexer, TokenType};
+use perl_parser_core::{
+    ast::{Node, SourceLocation},
+    edit::{Edit, EditSet},
+};
+use std::sync::Arc;
+
+const MAX_WHITESPACE_FAST_PATH_EDITS: usize = 10;
+
+#[derive(Debug, Clone, Copy)]
+struct NormalizedEdit {
+    old_start: usize,
+    old_end: usize,
+    new_start: usize,
+    new_end: usize,
+    byte_shift: isize,
+}
+
+#[derive(Debug)]
+pub(super) struct WhitespaceEditMap {
+    edits: Vec<NormalizedEdit>,
+}
+
+impl WhitespaceEditMap {
+    /// Admit an edit batch only when the declared edits exactly explain the
+    /// old/new sources, every replacement is whitespace-only, and lexing the
+    /// two complete sources yields the same non-whitespace token fingerprint.
+    ///
+    /// The full-source coherence check is deliberate. Incremental-v2's legacy
+    /// `Edit` values carry positions but not replacement text, and stale or
+    /// over-wide ranges previously made whitespace tests exercise structural
+    /// bytes such as `$` and `=`. Reconstructing the unchanged segments keeps
+    /// malformed edit authority out of the reuse path.
+    pub(super) fn try_new(old_source: &str, new_source: &str, edits: &EditSet) -> Option<Self> {
+        if edits.is_empty() || edits.len() > MAX_WHITESPACE_FAST_PATH_EDITS {
+            return None;
+        }
+
+        let mut normalized = Vec::with_capacity(edits.len());
+        let mut old_cursor = 0usize;
+        let mut new_cursor = 0usize;
+        let mut cumulative_shift = 0isize;
+
+        for edit in edits.edits() {
+            let old_start = original_coordinate(edit.start_byte, cumulative_shift)?;
+            let old_end = original_coordinate(edit.old_end_byte, cumulative_shift)?;
+            let new_start = edit.start_byte;
+            let new_end = edit.new_end_byte;
+
+            if old_start < old_cursor
+                || old_end < old_start
+                || new_start < new_cursor
+                || new_end < new_start
+            {
+                return None;
+            }
+
+            if old_source.get(old_cursor..old_start)? != new_source.get(new_cursor..new_start)? {
+                return None;
+            }
+
+            let removed = old_source.get(old_start..old_end)?;
+            let inserted = new_source.get(new_start..new_end)?;
+            if !removed.chars().all(char::is_whitespace)
+                || !inserted.chars().all(char::is_whitespace)
+            {
+                return None;
+            }
+
+            let byte_shift = edit.byte_shift();
+            normalized.push(NormalizedEdit {
+                old_start,
+                old_end,
+                new_start,
+                new_end,
+                byte_shift,
+            });
+            old_cursor = old_end;
+            new_cursor = new_end;
+            cumulative_shift = cumulative_shift.checked_add(byte_shift)?;
+        }
+
+        if old_source.get(old_cursor..)? != new_source.get(new_cursor..)?
+            || shifted_position(old_source.len(), cumulative_shift) != new_source.len()
+            || !structural_tokens_match(old_source, new_source)
+        {
+            return None;
+        }
+
+        Some(Self { edits: normalized })
+    }
+
+    pub(super) fn clone_tree(&self, root: &Node) -> Node {
+        root.clone_with_mapped_locations(|location| self.map_location(location))
+    }
+
+    fn map_location(&self, location: SourceLocation) -> SourceLocation {
+        if location.start == location.end {
+            let anchor = self.map_position(location.start, BoundaryBias::Right);
+            return SourceLocation { start: anchor, end: anchor };
+        }
+
+        let start = self.map_position(location.start, BoundaryBias::Right);
+        let end = self.map_position(location.end, BoundaryBias::Left).max(start);
+        SourceLocation { start, end }
+    }
+
+    fn map_position(&self, position: usize, bias: BoundaryBias) -> usize {
+        let mut cumulative_shift = 0isize;
+
+        for edit in &self.edits {
+            if position < edit.old_start {
+                break;
+            }
+
+            if edit.old_start == edit.old_end && position == edit.old_start {
+                if bias == BoundaryBias::Right {
+                    cumulative_shift = cumulative_shift.saturating_add(edit.byte_shift);
+                }
+                return shifted_position(position, cumulative_shift);
+            }
+
+            if position < edit.old_end {
+                return match bias {
+                    BoundaryBias::Left => edit.new_start,
+                    BoundaryBias::Right => edit.new_end,
+                };
+            }
+
+            cumulative_shift = cumulative_shift.saturating_add(edit.byte_shift);
+        }
+
+        shifted_position(position, cumulative_shift)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BoundaryBias {
+    Left,
+    Right,
+}
+
+fn original_coordinate(coordinate: usize, cumulative_shift: isize) -> Option<usize> {
+    let coordinate = isize::try_from(coordinate).ok()?;
+    usize::try_from(coordinate.checked_sub(cumulative_shift)?).ok()
+}
+
+fn shifted_position(position: usize, shift: isize) -> usize {
+    if shift >= 0 {
+        position.saturating_add(shift as usize)
+    } else {
+        position.saturating_sub(shift.unsigned_abs())
+    }
+}
+
+enum StructuralLexItem {
+    Token { kind: TokenType, text: Arc<str> },
+    End,
+    Rejected,
+}
+
+fn next_structural_token(lexer: &mut PerlLexer<'_>) -> StructuralLexItem {
+    loop {
+        let Some(token) = lexer.next_token() else {
+            return StructuralLexItem::Rejected;
+        };
+
+        if token.token_type.is_recovery_token() {
+            return StructuralLexItem::Rejected;
+        }
+
+        match token.token_type {
+            TokenType::Whitespace | TokenType::Newline => continue,
+            TokenType::EOF => return StructuralLexItem::End,
+            kind => return StructuralLexItem::Token { kind, text: token.text },
+        }
+    }
+}
+
+fn structural_tokens_match(old_source: &str, new_source: &str) -> bool {
+    let mut old_lexer = PerlLexer::new(old_source);
+    let mut new_lexer = PerlLexer::new(new_source);
+
+    loop {
+        match (
+            next_structural_token(&mut old_lexer),
+            next_structural_token(&mut new_lexer),
+        ) {
+            (StructuralLexItem::End, StructuralLexItem::End) => return true,
+            (
+                StructuralLexItem::Token { kind: old_kind, text: old_text },
+                StructuralLexItem::Token { kind: new_kind, text: new_text },
+            ) if old_kind == new_kind && old_text == new_text => {}
+            _ => return false,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use perl_parser_core::position::Position;
+
+    fn edit(start: usize, old_end: usize, new_end: usize) -> Edit {
+        Edit::new(
+            start,
+            old_end,
+            new_end,
+            Position::new(start, 0, start as u32),
+            Position::new(old_end, 0, old_end as u32),
+            Position::new(new_end, 0, new_end as u32),
+        )
+    }
+
+    fn edit_set(edits: impl IntoIterator<Item = Edit>) -> EditSet {
+        let mut set = EditSet::new();
+        for edit in edits {
+            set.add(edit);
+        }
+        set
+    }
+
+    fn loc(start: usize, end: usize) -> SourceLocation {
+        SourceLocation { start, end }
+    }
+
+    fn leaf(name: &str, start: usize, end: usize) -> Node {
+        Node::new(NodeKind::Identifier { name: name.to_string() }, loc(start, end))
+    }
+
+    use perl_parser_core::ast::NodeKind;
+
+    #[test]
+    fn admits_exact_mid_file_insertion_and_shifts_only_following_geometry() {
+        let edits = edit_set([edit(2, 2, 3)]);
+        let map = WhitespaceEditMap::try_new("a b", "a  b", &edits)
+            .expect("exact whitespace insertion should be admitted");
+        let root = Node::new(
+            NodeKind::Program { statements: vec![leaf("a", 0, 1), leaf("b", 2, 3)] },
+            loc(0, 3),
+        );
+
+        let mapped = map.clone_tree(&root);
+        let NodeKind::Program { statements } = mapped.kind else {
+            panic!("expected Program");
+        };
+        assert_eq!(mapped.location, loc(0, 4));
+        assert_eq!(statements[0].location, loc(0, 1));
+        assert_eq!(statements[1].location, loc(3, 4));
+    }
+
+    #[test]
+    fn admits_exact_deletion_and_left_biases_the_preceding_token_end() {
+        let edits = edit_set([edit(2, 3, 2)]);
+        let map = WhitespaceEditMap::try_new("a  b", "a b", &edits)
+            .expect("exact whitespace deletion should be admitted");
+        let root = Node::new(
+            NodeKind::Program { statements: vec![leaf("a", 0, 1), leaf("b", 3, 4)] },
+            loc(0, 4),
+        );
+
+        let mapped = map.clone_tree(&root);
+        let NodeKind::Program { statements } = mapped.kind else {
+            panic!("expected Program");
+        };
+        assert_eq!(mapped.location, loc(0, 3));
+        assert_eq!(statements[0].location, loc(0, 1));
+        assert_eq!(statements[1].location, loc(2, 3));
+    }
+
+    #[test]
+    fn maps_progressive_multi_edit_coordinates() {
+        let edits = edit_set([edit(0, 0, 1), edit(3, 3, 4), edit(5, 5, 6)]);
+        let map = WhitespaceEditMap::try_new("a b", " a  b ", &edits)
+            .expect("coherent progressive whitespace edits should be admitted");
+        let root = Node::new(
+            NodeKind::Program { statements: vec![leaf("a", 0, 1), leaf("b", 2, 3)] },
+            loc(0, 3),
+        );
+
+        let mapped = map.clone_tree(&root);
+        let NodeKind::Program { statements } = mapped.kind else {
+            panic!("expected Program");
+        };
+        assert_eq!(mapped.location, loc(1, 5));
+        assert_eq!(statements[0].location, loc(1, 2));
+        assert_eq!(statements[1].location, loc(4, 5));
+    }
+
+    #[test]
+    fn rejects_overwide_edit_that_claims_the_operator_as_whitespace() {
+        let edits = edit_set([edit(6, 6, 9)]);
+        assert!(WhitespaceEditMap::try_new("my $x = 42;", "my $x   = 42;", &edits).is_none());
+    }
+
+    #[test]
+    fn rejects_structural_replacement_even_when_surrounded_by_whitespace() {
+        let edits = edit_set([edit(6, 7, 8)]);
+        assert!(WhitespaceEditMap::try_new("my $x = 42;", "my $x += 42;", &edits).is_none());
+    }
+
+    #[test]
+    fn rejects_newline_that_terminates_a_comment_and_exposes_code() {
+        let old = "# hidden print 1;";
+        let new = "# hidden\n print 1;";
+        let edits = edit_set([edit(8, 8, 9)]);
+        assert!(WhitespaceEditMap::try_new(old, new, &edits).is_none());
+    }
+
+    #[test]
+    fn rejects_whitespace_changes_inside_a_comment_token() {
+        let edits = edit_set([edit(3, 4, 5)]);
+        assert!(WhitespaceEditMap::try_new("# a b\n1;", "# a  b\n1;", &edits).is_none());
+    }
+}
