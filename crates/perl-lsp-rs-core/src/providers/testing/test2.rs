@@ -460,6 +460,13 @@ pub fn resolve_import(module: &str, raw_args: &str) -> Option<ResolvedImport> {
                         break;
                     }
                     let (opens, closes) = count_unquoted_braces(value);
+                    if is_dynamic_target_atom(value) {
+                        atom_index = consume_dynamic_target_expression(&atoms, atom_index - 1);
+                        if saw_hash {
+                            continue;
+                        }
+                        break;
+                    }
                     if !saw_hash && opens == 0 {
                         // Parentheses and unary-plus may be separated from a
                         // hash opener by whitespace (`( { ... } )` and
@@ -501,10 +508,6 @@ pub fn resolve_import(module: &str, raw_args: &str) -> Option<ResolvedImport> {
                             && atoms.get(atom_index).map(String::as_str) == Some("(")
                         {
                             atom_index = consume_parenthesized_expression(&atoms, atom_index);
-                            break;
-                        }
-                        if is_dynamic_target_atom(value) {
-                            atom_index = consume_dynamic_target_expression(&atoms, atom_index - 1);
                             break;
                         }
                         if scalar_target_is_truthy(value) {
@@ -1281,6 +1284,9 @@ fn consume_unwrapped_target_expression(atoms: &[String], start: usize) -> usize 
     if is_quote_like_operator(value) {
         return consume_quote_like_target(atoms, operand, value);
     }
+    if is_dynamic_target_atom(value) {
+        return consume_dynamic_target_expression(atoms, operand);
+    }
     if value == "(" {
         return consume_parenthesized_expression(atoms, operand);
     }
@@ -1306,19 +1312,34 @@ fn consume_dynamic_target_expression(atoms: &[String], start: usize) -> usize {
     }
 
     let mut depth = 0usize;
-    for (index, atom) in atoms.iter().enumerate().skip(start.saturating_add(1)) {
+    let mut next = start.saturating_add(1);
+    for (index, atom) in atoms.iter().enumerate().skip(next) {
         match atom.as_str() {
             "{" => depth = depth.saturating_add(1),
             "}" => {
                 depth = depth.saturating_sub(1);
                 if depth == 0 {
-                    return index.saturating_add(1);
+                    next = index.saturating_add(1);
+                    break;
                 }
             }
             _ => {}
         }
     }
-    atoms.len()
+    if depth != 0 {
+        return atoms.len();
+    }
+
+    // A dereference can be part of a larger dynamic expression. Consume its
+    // suffix through the target-option boundary so words after the closure do
+    // not become ordinary imports or hash helpers.
+    while let Some(atom) = atoms.get(next).map(String::as_str) {
+        if matches!(atom, "," | "}" | ")") {
+            break;
+        }
+        next = next.saturating_add(1);
+    }
+    next
 }
 
 /// Whether a scalar `-target` literal creates Test2::Tools::Target helpers.
@@ -1336,13 +1357,11 @@ fn scalar_target_is_truthy(raw: &str) -> bool {
     if matches!(trimmed, "q" | "qq") {
         return false;
     }
-    let quoted = is_quoted_token(trimmed);
-    let value = strip_quotes(trimmed);
-
     // A quoted non-empty string is truthy except for Perl's one false string,
     // "0". In particular, quoted spellings such as 'undef' and '0.0' must not
     // be confused with their unquoted false/dynamic counterparts.
-    if quoted {
+    if is_quoted_token(trimmed) {
+        let value = strip_quotes(trimmed);
         // Double-quoted interpolation is runtime-dependent, even when the
         // resulting value might look like a package name. Single-quoted
         // package values remain proven literals.
@@ -1356,7 +1375,7 @@ fn scalar_target_is_truthy(raw: &str) -> bool {
         return false;
     }
 
-    if value.is_empty() || value == "0" {
+    if trimmed.is_empty() || trimmed == "0" {
         return false;
     }
     // Variables and operators require evaluation. Do not guess their Perl
@@ -1371,7 +1390,7 @@ fn scalar_target_is_truthy(raw: &str) -> bool {
     // A nonempty quoted string (other than Perl's false string `"0"`) and a
     // bare package name are safely established truthy literals. Numeric forms
     // not covered above remain deliberately outside this resolver's boundary.
-    if is_quoted_token(trimmed) || is_bareword(value) {
+    if is_bareword(trimmed) {
         return true;
     }
     false
