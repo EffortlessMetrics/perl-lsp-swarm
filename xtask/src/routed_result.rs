@@ -509,10 +509,14 @@ pub fn build_routed_result(
     });
 
     // Honesty guards: not-ready prerequisites must mean never-started.
+    // In-process execution is post-start activity: the work ran inside the
+    // runner process, so a never-started claim cannot carry it (review
+    // thread 3873885140).
     let child_touched = observation.child.exit_code.is_some()
         || observation.child.signal.is_some()
         || observation.child.timed_out
-        || observation.child.cancelled;
+        || observation.child.cancelled
+        || observation.child.in_process;
     if prerequisites.state != PrerequisiteState::Ready
         && (observation.command_started || child_touched)
     {
@@ -846,7 +850,8 @@ fn validate_plane_honesty(result: &RoutedGateResultV1) -> Result<(), String> {
     let child_touched = result.child.exit_code.is_some()
         || result.child.signal.is_some()
         || result.child.timed_out
-        || result.child.cancelled;
+        || result.child.cancelled
+        || result.child.in_process;
 
     if result.prerequisites.state != PrerequisiteState::Ready
         && (result.command_started || child_touched)

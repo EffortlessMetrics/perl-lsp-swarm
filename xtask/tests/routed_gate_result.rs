@@ -789,3 +789,47 @@ fn prerequisite_evidence_unavailable_is_missing_never_ready() {
         xtask::routed_result::TerminalOutcome::BlockedNotProven
     ));
 }
+
+#[test]
+fn in_process_is_post_start_activity_for_never_started_commands() {
+    // Review thread 3873885140: `in_process` claims in-process execution, so
+    // a never-started observation carrying it is contradictory and must
+    // refuse — in both the builder's honesty guard and the validator's.
+    let plan = compiled_plan();
+    let contradictory = RunObservation {
+        runner_status: RoutedReaderGateStatus::SpawnErrorBeforeStart,
+        hosted: None,
+        prerequisites: Some(PrerequisiteEvidence {
+            state: PrerequisiteState::Missing,
+            missing_artifacts: vec!["target/release/perllsp".to_string()],
+            dependency_gates: BTreeMap::new(),
+        }),
+        command_started: false,
+        child: ChildObservation {
+            exit_code: None,
+            signal: None,
+            timed_out: false,
+            cancelled: false,
+            in_process: true,
+        },
+        timing: timing(false),
+        artifacts: Vec::new(),
+        receipt_shortfall: Vec::new(),
+    };
+    assert!(
+        build_routed_result(&plan, "fmt_gate", contradictory).is_err(),
+        "never-started with in_process=true must refuse to build"
+    );
+
+    // The validator rejects the same shape if it arrives by other means.
+    let mut sealed = build_success(&plan);
+    sealed.command_started = false;
+    sealed.child.in_process = true;
+    sealed.child.exit_code = None;
+    sealed.result_fingerprint =
+        sealed.semantic_fingerprint_of().expect("re-seal after writer mutation");
+    assert!(
+        sealed.validate().is_err(),
+        "never-started with in_process=true must fail validation"
+    );
+}
