@@ -77,8 +77,7 @@ fn receipt_schema_preserves_explicit_null_measurement_states() -> TestResult {
     );
 
     let operation_timing = string_set(
-        &properties["operation_timings"]["items"]["properties"]["time_to_first_useful_result_ms"]
-            ["type"],
+        &properties["operation_timings"]["items"]["properties"]["time_to_first_useful_result_ms"]["type"],
         "operation timing type",
     )?;
     assert_eq!(
