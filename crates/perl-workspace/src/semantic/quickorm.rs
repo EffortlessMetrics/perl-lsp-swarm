@@ -1,9 +1,13 @@
 //! Bounded DBIx::QuickORM semantic adaptation.
 //!
 //! QuickORM's import arguments configure its custom DSL importer; they are not
-//! an Exporter-style explicit symbol list. In table-package mode, executing a
-//! direct package-level `table` builder installs one fixed method,
-//! `qorm_table`.
+//! an Exporter-style explicit symbol list. Exact unfiltered `type => 'orm'`
+//! and `type => 'table'` forms select QuickORM's default DSL export set. Forms
+//! with filters, renames, or otherwise unknown configuration remain a dynamic
+//! import boundary until the canonical import model can represent that mapping.
+//!
+//! In table-package mode, executing a direct package-level `table` or `view`
+//! builder installs one fixed method, `qorm_table`.
 //!
 //! Named field and link accessors are intentionally absent here. Upstream
 //! installs those through database-backed `autofill`/`autorow`, not from a
@@ -44,13 +48,21 @@ fn normalize_import_specs_at_node(node: &Node, specs: &mut [ImportSpec]) {
         {
             match classify_import_shape(args) {
                 QuickOrmImportShape::Bare => {}
-                QuickOrmImportShape::UnfilteredOrm
-                | QuickOrmImportShape::UnfilteredTable
-                | QuickOrmImportShape::Dynamic => {
-                    // ImportSpec cannot yet encode QuickORM's selected DSL set.
-                    // Preserve the use-site while refusing the generic extractor's
-                    // false `type`, `orm`, and `table` explicit-symbol facts.
+                QuickOrmImportShape::UnfilteredOrm | QuickOrmImportShape::UnfilteredTable => {
+                    // Both exact unfiltered modes install QuickORM's complete
+                    // documented DSL export set. Keep `builder` and ORM-mode
+                    // downstream `import` machinery outside this bounded fact.
                     spec.kind = ImportKind::Use;
+                    spec.symbols = ImportSymbols::Default;
+                    spec.provenance = Provenance::ImportExportInference;
+                    spec.confidence = Confidence::High;
+                }
+                QuickOrmImportShape::Dynamic => {
+                    // The selected or renamed namespace is not known. ManualImport
+                    // prevents the visibility layer from exposing every default
+                    // export while ImportSymbols::Dynamic preserves conservative
+                    // dynamic-call evidence after the import site.
+                    spec.kind = ImportKind::ManualImport;
                     spec.symbols = ImportSymbols::Dynamic;
                     spec.provenance = Provenance::DynamicBoundary;
                     spec.confidence = Confidence::Low;
@@ -65,7 +77,7 @@ fn normalize_import_specs_at_node(node: &Node, specs: &mut [ImportSpec]) {
 }
 
 /// Extract the fixed `qorm_table` member installed by a direct, unfiltered
-/// QuickORM table-package builder.
+/// QuickORM table-package `table` or `view` builder.
 pub(super) fn extract_generated_member_facts(
     ast: &Node,
     file_id: FileId,
@@ -134,11 +146,12 @@ fn walk_direct_statement(
             context.table_package_active = false;
         }
         NodeKind::ExpressionStatement { expression }
-            if context.table_package_active && is_direct_table_builder(expression) =>
+            if context.table_package_active && is_direct_table_or_view_builder(expression) =>
         {
             let package = context.current_package.as_deref().unwrap_or("main");
             push_qorm_table_fact(package, node, file_id, facts);
-            // QuickORM removes its DSL imports after the table package is built.
+            // QuickORM removes its DSL imports after the table or view package
+            // is built, so a second direct builder has no QuickORM authority.
             context.table_package_active = false;
         }
         // Runtime-controlled and bare lexical blocks are not package-level
@@ -148,11 +161,11 @@ fn walk_direct_statement(
     }
 }
 
-fn is_direct_table_builder(expression: &Node) -> bool {
+fn is_direct_table_or_view_builder(expression: &Node) -> bool {
     let NodeKind::FunctionCall { name, args } = &expression.kind else {
         return false;
     };
-    if name != "table" || args.is_empty() {
+    if !matches!(name.as_str(), "table" | "view") || args.is_empty() {
         return false;
     }
 
@@ -309,7 +322,7 @@ mod tests {
         let mut parser = Parser::new(source);
         let ast = parser
             .parse()
-            .map_err(|error| format!("failed to parse QuickORM table: {error:?}"))?;
+            .map_err(|error| format!("failed to parse QuickORM table package: {error:?}"))?;
         Ok(
             super::super::generated_member_extractor::extract_generated_member_facts(
                 &ast,
@@ -335,7 +348,7 @@ mod tests {
     }
 
     #[test]
-    fn configured_table_import_is_not_an_explicit_symbol_list(
+    fn configured_table_import_uses_default_dsl_exports(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let specs = import_specs_from_source(
             "package User; use DBIx::QuickORM type => 'table'; table users => sub {};",
@@ -343,34 +356,34 @@ mod tests {
         let spec = quickorm_spec(&specs)?;
 
         assert_eq!(spec.kind, ImportKind::Use);
-        assert_eq!(spec.symbols, ImportSymbols::Dynamic);
-        assert_eq!(spec.provenance, Provenance::DynamicBoundary);
-        assert_eq!(spec.confidence, Confidence::Low);
+        assert_eq!(spec.symbols, ImportSymbols::Default);
+        assert_eq!(spec.provenance, Provenance::ImportExportInference);
+        assert_eq!(spec.confidence, Confidence::High);
         Ok(())
     }
 
     #[test]
-    fn configured_orm_import_is_not_an_explicit_symbol_list(
+    fn configured_orm_import_uses_default_dsl_exports(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let specs = import_specs_from_source("package App; use DBIx::QuickORM type => 'orm';")?;
         let spec = quickorm_spec(&specs)?;
 
         assert_eq!(spec.kind, ImportKind::Use);
-        assert_eq!(spec.symbols, ImportSymbols::Dynamic);
-        assert_eq!(spec.provenance, Provenance::DynamicBoundary);
-        assert_eq!(spec.confidence, Confidence::Low);
+        assert_eq!(spec.symbols, ImportSymbols::Default);
+        assert_eq!(spec.provenance, Provenance::ImportExportInference);
+        assert_eq!(spec.confidence, Confidence::High);
         Ok(())
     }
 
     #[test]
-    fn filtered_quickorm_import_remains_a_dynamic_boundary(
+    fn filtered_quickorm_import_remains_a_dynamic_manual_import(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let specs = import_specs_from_source(
             "package User; use DBIx::QuickORM type => 'table', only => ['table'];",
         )?;
         let spec = quickorm_spec(&specs)?;
 
-        assert_eq!(spec.kind, ImportKind::Use);
+        assert_eq!(spec.kind, ImportKind::ManualImport);
         assert_eq!(spec.symbols, ImportSymbols::Dynamic);
         assert_eq!(spec.provenance, Provenance::DynamicBoundary);
         assert_eq!(spec.confidence, Confidence::Low);
@@ -412,14 +425,30 @@ table users => sub {
         assert_eq!(names, vec!["MyApp::Schema::User::qorm_table"]);
         let fact = facts.first().ok_or("missing qorm_table fact")?;
         assert_eq!(fact.entity.kind, EntityKind::GeneratedMember);
-        assert_eq!(
-            fact.entity.provenance,
-            Provenance::FrameworkSynthesis
-        );
+        assert_eq!(fact.entity.provenance, Provenance::FrameworkSynthesis);
         assert_eq!(fact.entity.confidence, Confidence::Medium);
         assert_eq!(fact.anchor.provenance, Provenance::FrameworkSynthesis);
         assert_eq!(fact.anchor.confidence, Confidence::Medium);
         assert!(fact.anchor.span_end_byte > fact.anchor.span_start_byte);
+        Ok(())
+    }
+
+    #[test]
+    fn view_package_emits_fixed_qorm_table_member(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let facts = generated_facts_from_source(
+            r#"
+package MyApp::Schema::ActiveUser;
+use DBIx::QuickORM type => 'table';
+view active_users => sub {};
+1;
+"#,
+        )?;
+
+        assert_eq!(
+            canonical_names(&facts),
+            vec!["MyApp::Schema::ActiveUser::qorm_table"]
+        );
         Ok(())
     }
 
