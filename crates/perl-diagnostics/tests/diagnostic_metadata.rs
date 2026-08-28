@@ -1,70 +1,17 @@
-//! Exhaustive coverage for the diagnostic code registry and LSP metadata bridge.
+//! Registry-wide coverage for the diagnostic code registry and LSP metadata bridge.
 //!
-//! These tests exercise every known diagnostic variant so newly added codes must
-//! keep parse, URL, hint, and tag metadata internally consistent.
+//! These tests derive the registered-code denominator from `parse_code` across
+//! every formatted `PL000`-`PL999` slot, so newly registered codes cannot evade
+//! URL, hint, tag, and round-trip coverage through a stale hand-maintained list.
 #![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use perl_diagnostics::catalog::diagnostic_meta;
 use perl_diagnostics::codes::{DiagnosticCode, DiagnosticTag};
 
-const DIAGNOSTIC_CODES: &[DiagnosticCode] = &[
-    DiagnosticCode::ParseError,
-    DiagnosticCode::SyntaxError,
-    DiagnosticCode::UnexpectedEof,
-    DiagnosticCode::MissingStrict,
-    DiagnosticCode::MissingWarnings,
-    DiagnosticCode::UnusedVariable,
-    DiagnosticCode::UndefinedVariable,
-    DiagnosticCode::VariableShadowing,
-    DiagnosticCode::VariableRedeclaration,
-    DiagnosticCode::DuplicateParameter,
-    DiagnosticCode::ParameterShadowsGlobal,
-    DiagnosticCode::UnusedParameter,
-    DiagnosticCode::UnquotedBareword,
-    DiagnosticCode::UninitializedVariable,
-    DiagnosticCode::MisspelledPragma,
-    DiagnosticCode::CaptureVarWithoutRegexMatch,
-    DiagnosticCode::MissingPackageDeclaration,
-    DiagnosticCode::DuplicatePackage,
-    DiagnosticCode::DuplicateSubroutine,
-    DiagnosticCode::MissingReturn,
-    DiagnosticCode::InvalidPrototype,
-    DiagnosticCode::RoleConflict,
-    DiagnosticCode::MissingPodCoverage,
-    DiagnosticCode::BarewordFilehandle,
-    DiagnosticCode::TwoArgOpen,
-    DiagnosticCode::ImplicitReturn,
-    DiagnosticCode::AssignmentInCondition,
-    DiagnosticCode::NumericComparisonWithUndef,
-    DiagnosticCode::PrintfFormatMismatch,
-    DiagnosticCode::UnreachableCode,
-    DiagnosticCode::EvalErrorFlow,
-    DiagnosticCode::DuplicateHashKey,
-    DiagnosticCode::GotoUndefinedLabel,
-    DiagnosticCode::LoopControlUndefinedLabel,
-    DiagnosticCode::DeprecatedDefined,
-    DiagnosticCode::DeprecatedArrayBase,
-    DiagnosticCode::PhaseScopedStrictPragma,
-    DiagnosticCode::PhaseScopedWarningsPragma,
-    DiagnosticCode::SecurityStringEval,
-    DiagnosticCode::SecurityBacktickExec,
-    DiagnosticCode::SecuritySignalHandler,
-    DiagnosticCode::SecuritySystemCall,
-    DiagnosticCode::SecurityExecCall,
-    DiagnosticCode::SecurityPipeOpen,
-    DiagnosticCode::SecurityReadpipe,
-    DiagnosticCode::UnusedImport,
-    DiagnosticCode::ModuleNotFound,
-    DiagnosticCode::SourceFilterModule,
-    DiagnosticCode::HeredocInFormat,
-    DiagnosticCode::HeredocInBegin,
-    DiagnosticCode::HeredocDynamicDelimiter,
-    DiagnosticCode::HeredocInSourceFilter,
-    DiagnosticCode::HeredocInRegexCode,
-    DiagnosticCode::HeredocInEval,
-    DiagnosticCode::HeredocTiedHandle,
-    DiagnosticCode::VersionIncompatFeature,
-];
+fn registered_codes() -> impl Iterator<Item = DiagnosticCode> {
+    (0_u16..1000)
+        .filter_map(|number| DiagnosticCode::parse_code(&format!("PL{number:03}")))
+}
 
 fn known_code_string(code: &str) -> bool {
     DiagnosticCode::parse_code(code).is_some()
@@ -72,17 +19,22 @@ fn known_code_string(code: &str) -> bool {
 
 #[test]
 fn diagnostic_code_registry_round_trips() -> Result<(), Box<dyn std::error::Error>> {
-    for code in DIAGNOSTIC_CODES {
+    for code in registered_codes() {
         let code_string = code.as_str();
 
-        assert_eq!(DiagnosticCode::parse_code(code_string), Some(*code));
+        assert_eq!(DiagnosticCode::parse_code(code_string), Some(code));
         assert!(code_string.len() == 5);
         assert!(code_string.starts_with("PL"));
 
-        let meta = diagnostic_meta(*code);
+        let meta = diagnostic_meta(code);
         assert_eq!(meta.code, serde_json::json!(code_string));
 
-        let expected_url = format!("https://docs.perl-lsp.org/errors/{code_string}");
+        let expected_url = match code {
+            DiagnosticCode::SecuritySqlInjection => {
+                "https://owasp.org/www-community/attacks/SQL_Injection".to_string()
+            }
+            _ => format!("https://docs.perl-lsp.org/errors/{code_string}"),
+        };
         assert_eq!(code.documentation_url(), Some(expected_url.as_str()));
         assert_eq!(meta.desc, Some(serde_json::json!({ "href": expected_url })));
         assert!(meta.hint.is_some());
@@ -93,7 +45,7 @@ fn diagnostic_code_registry_round_trips() -> Result<(), Box<dyn std::error::Erro
 
 #[test]
 fn diagnostic_tags_are_lsp_safe_and_deterministic() -> Result<(), Box<dyn std::error::Error>> {
-    for code in DIAGNOSTIC_CODES {
+    for code in registered_codes() {
         let tags = code.tags();
         assert!(tags.len() <= 1);
 
