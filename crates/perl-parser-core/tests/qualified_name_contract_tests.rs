@@ -63,3 +63,19 @@ fn distinguishes_identifier_start_and_continuation_rules() {
         assert!(!is_valid_identifier_part(invalid), "expected {invalid:?} to be invalid");
     }
 }
+
+#[test]
+fn preserves_unicode_segments_and_reports_separator_boundaries() {
+    assert_eq!(validate_perl_qualified_name("Müller::日本::π2"), Ok(()));
+
+    let cases = [
+        ("Müller::", QualifiedNameError::EmptySegment { index: 1 }),
+        ("日本::::π", QualifiedNameError::EmptySegment { index: 1 }),
+        ("Müller::bad-name", QualifiedNameError::InvalidSegment { index: 1 }),
+        ("π/β", QualifiedNameError::InvalidSegment { index: 0 }),
+    ];
+
+    for (name, expected) in cases {
+        assert_eq!(validate_perl_qualified_name(name), Err(expected));
+    }
+}
