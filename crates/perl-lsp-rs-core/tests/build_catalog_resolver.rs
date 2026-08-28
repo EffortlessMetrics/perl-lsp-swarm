@@ -1,17 +1,22 @@
 mod build_catalog {
+    use perl_test_must::{must_err_with, must_with};
+
     include!("../build_catalog.rs");
 
     #[test]
     fn missing_explicit_override_is_terminal_even_with_workspace_catalog() {
-        let root = tempfile::tempdir().expect("create test catalog directory");
+        let root = must_with(tempfile::tempdir(), "create test catalog directory");
         let workspace_catalog = root.path().join("features.toml");
         let missing_override = root.path().join("missing-features.toml");
-        std::fs::write(&workspace_catalog, "[meta]\nversion = 'test'\nlsp_version = 'test'\n")
-            .expect("write fallback workspace catalog");
+        must_with(
+            std::fs::write(&workspace_catalog, "[meta]\nversion = 'test'\nlsp_version = 'test'\n"),
+            "write fallback workspace catalog",
+        );
 
-        let error =
-            resolve_catalog_source_with_override(root.path(), Some(missing_override.clone()))
-                .expect_err("missing explicit override must be terminal");
+        let error = must_err_with(
+            resolve_catalog_source_with_override(root.path(), Some(missing_override.clone())),
+            "missing explicit override must be terminal",
+        );
 
         assert!(error.contains("FEATURES_TOML_OVERRIDE path does not exist"));
         assert!(workspace_catalog.exists());
@@ -20,21 +25,25 @@ mod build_catalog {
 
     #[test]
     fn missing_override_emits_no_fallback_artifact() {
-        let root = tempfile::tempdir().expect("create test catalog directory");
-        std::fs::write(
-            root.path().join("features.toml"),
-            "[meta]\nversion = 'test'\nlsp_version = 'test'\n",
-        )
-        .expect("write fallback workspace catalog");
+        let root = must_with(tempfile::tempdir(), "create test catalog directory");
+        must_with(
+            std::fs::write(
+                root.path().join("features.toml"),
+                "[meta]\nversion = 'test'\nlsp_version = 'test'\n",
+            ),
+            "write fallback workspace catalog",
+        );
         let out_dir = root.path().join("out");
-        std::fs::create_dir(&out_dir).expect("create test output directory");
+        must_with(std::fs::create_dir(&out_dir), "create test output directory");
 
-        let error = generate_lsp_catalog_module_at(
-            root.path(),
-            &out_dir,
-            Some(root.path().join("missing-features.toml")),
-        )
-        .expect_err("missing explicit override must fail the entrypoint");
+        let error = must_err_with(
+            generate_lsp_catalog_module_at(
+                root.path(),
+                &out_dir,
+                Some(root.path().join("missing-features.toml")),
+            ),
+            "missing explicit override must fail the entrypoint",
+        );
 
         assert!(error.contains("FEATURES_TOML_OVERRIDE path does not exist"));
         assert!(!out_dir.join("feature_contracts.rs").exists());
@@ -42,15 +51,18 @@ mod build_catalog {
 
     #[test]
     fn declared_compliance_percent_is_refused_before_generation() {
-        let root = tempfile::tempdir().expect("create test catalog directory");
+        let root = must_with(tempfile::tempdir(), "create test catalog directory");
         let catalog_path = root.path().join("features.toml");
-        std::fs::write(
-            &catalog_path,
-            "[meta]\nversion = 'test'\nlsp_version = 'test'\ncompliance_percent = 98\n\n[[feature]]\nid = 'test'\nmaturity = 'planned'\n",
-        )
-        .expect("write catalog with refused aggregate");
+        must_with(
+            std::fs::write(
+                &catalog_path,
+                "[meta]\nversion = 'test'\nlsp_version = 'test'\ncompliance_percent = 98\n\n[[feature]]\nid = 'test'\nmaturity = 'planned'\n",
+            ),
+            "write catalog with refused aggregate",
+        );
 
-        let error = read_catalog(&catalog_path).expect_err("declaration aggregate must be refused");
+        let error =
+            must_err_with(read_catalog(&catalog_path), "declaration aggregate must be refused");
 
         assert!(error.contains("meta.compliance_percent is refused"));
     }
