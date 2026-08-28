@@ -11,7 +11,7 @@ enum NestedSide {
 }
 
 fn first_binary(node: &Node) -> Option<&Node> {
-    if matches!(node.kind, NodeKind::Binary { .. }) {
+    if matches!(&node.kind, NodeKind::Binary { .. }) {
         return Some(node);
     }
 
@@ -34,7 +34,7 @@ fn binary_parts(node: &Node) -> Option<(&str, &Node, &Node)> {
 }
 
 fn first_ternary(node: &Node) -> Option<&Node> {
-    if matches!(node.kind, NodeKind::Ternary { .. }) {
+    if matches!(&node.kind, NodeKind::Ternary { .. }) {
         return Some(node);
     }
 
@@ -84,23 +84,31 @@ fn assert_nested_binary(
 }
 
 #[test]
-fn logical_or_binds_inside_left_range_operand() {
-    assert_nested_binary("$a || $b .. $c;", "..", NestedSide::Left, "||");
+fn symbolic_logical_and_bitwise_ops_bind_inside_left_range_operand() {
+    for (source, nested_op) in [
+        ("$a & $b .. $c;", "&"),
+        ("$a ^ $b .. $c;", "^"),
+        ("$a | $b .. $c;", "|"),
+        ("$a && $b .. $c;", "&&"),
+        ("$a || $b .. $c;", "||"),
+        ("$a // $b .. $c;", "//"),
+    ] {
+        assert_nested_binary(source, "..", NestedSide::Left, nested_op);
+    }
 }
 
 #[test]
-fn logical_or_binds_inside_right_range_operand() {
-    assert_nested_binary("$a .. $b || $c;", "..", NestedSide::Right, "||");
-}
-
-#[test]
-fn bitwise_and_binds_inside_range_operand() {
-    assert_nested_binary("$a & $b .. $c;", "..", NestedSide::Left, "&");
-}
-
-#[test]
-fn defined_or_binds_inside_range_operand() {
-    assert_nested_binary("$a .. $b // $c;", "..", NestedSide::Right, "//");
+fn symbolic_logical_and_bitwise_ops_bind_inside_right_range_operand() {
+    for (source, nested_op) in [
+        ("$a .. $b & $c;", "&"),
+        ("$a .. $b ^ $c;", "^"),
+        ("$a .. $b | $c;", "|"),
+        ("$a .. $b && $c;", "&&"),
+        ("$a .. $b || $c;", "||"),
+        ("$a .. $b // $c;", "//"),
+    ] {
+        assert_nested_binary(source, "..", NestedSide::Right, nested_op);
+    }
 }
 
 #[test]
