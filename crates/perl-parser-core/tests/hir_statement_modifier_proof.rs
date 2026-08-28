@@ -249,7 +249,8 @@ fn postfix_modifiers_preserve_exact_body_hir_topology_and_sources() -> TestResul
 
         let condition_variable = variable(body, *condition, "postfix condition")?;
         assert_eq!(
-            condition_variable.sigil, case.condition_sigil,
+            condition_variable.sigil,
+            case.condition_sigil,
             "wrong condition sigil for {:?}",
             case.body_source
         );
