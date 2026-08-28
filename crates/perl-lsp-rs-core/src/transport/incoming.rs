@@ -6,7 +6,7 @@
 
 use super::framing::{ContentLengthFramer, FramingError};
 use crate::protocol::{JsonRpcId, JsonRpcRequest};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::fmt;
 use std::io::{self, Read};
 

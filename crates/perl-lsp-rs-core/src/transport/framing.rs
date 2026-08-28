@@ -6,7 +6,7 @@
 
 use crate::protocol::{JsonRpcRequest, JsonRpcResponse};
 use std::fmt;
-use std::io::{self, BufRead, Write};
+use std::io::{self, BufRead, Read, Write};
 
 // ── Absorbed from perl-content-length-framing ─────────────────────────────────
 
@@ -307,11 +307,33 @@ pub type ContentLengthMessageReader = crate::transport::ContentLengthMessageRead
 /// and skip-and-continue behavior remain compatible with the old API: typed
 /// framing and decode failures are logged and omitted, so `Ok(None)` means no
 /// later valid request was found and does not distinguish clean EOF from a
-/// stream containing only rejected frames. Callers that need that distinction
-/// must use [`crate::transport::ContentLengthMessageReader::read_next_outcome`].
+/// stream containing only rejected frames. The adapter consumes at most one byte
+/// from `reader` per underlying read, so bytes belonging to a following frame
+/// remain available for the next call. Callers that need typed outcomes must
+/// use [`crate::transport::ContentLengthMessageReader::read_next_outcome`].
 pub fn read_message(reader: &mut dyn BufRead) -> io::Result<Option<JsonRpcRequest>> {
     let mut message_reader = crate::transport::ContentLengthMessageReader::new();
-    message_reader.read_next(reader)
+    let mut bounded_reader = OneByteBufRead { reader };
+    message_reader.read_next(&mut bounded_reader)
+}
+
+struct OneByteBufRead<'a> {
+    reader: &'a mut dyn BufRead,
+}
+
+impl Read for OneByteBufRead<'_> {
+    fn read(&mut self, destination: &mut [u8]) -> io::Result<usize> {
+        let Some(first) = destination.first_mut() else {
+            return Ok(0);
+        };
+        let buffered = self.reader.fill_buf()?;
+        let Some(byte) = buffered.first() else {
+            return Ok(0);
+        };
+        *first = *byte;
+        self.reader.consume(1);
+        Ok(1)
+    }
 }
 
 /// Write an LSP response with `Content-Length` framing.
@@ -356,8 +378,8 @@ pub fn log_response(response: &JsonRpcResponse) {
 #[cfg(test)]
 mod tests {
     use super::{
-        log_response, read_message, write_message, write_notification, ContentLengthFramer,
-        ContentLengthMessageReader, FramingError, MAX_FRAME_SIZE, MAX_HEADER_BYTES,
+        ContentLengthFramer, ContentLengthMessageReader, FramingError, MAX_FRAME_SIZE,
+        MAX_HEADER_BYTES, log_response, read_message, write_message, write_notification,
     };
     use crate::protocol::{JsonRpcError, JsonRpcId, JsonRpcResponse};
     use perl_parser_core::{ErrorCategory, ErrorClass};

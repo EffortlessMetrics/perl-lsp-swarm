@@ -1,12 +1,13 @@
 //! Regression coverage for strict incoming transport decoding (#7596).
 
 use perl_lsp_rs_core::protocol::JsonRpcRequest;
+use perl_lsp_rs_core::transport::framing::{MAX_FRAME_SIZE, read_message};
 use perl_lsp_rs_core::transport::{
-    frame, ContentLengthMessageReader, FramingError, IncomingMessageError,
+    ContentLengthMessageReader, FramingError, IncomingMessageError, frame,
 };
 use serde_json::Value;
 use std::error::Error;
-use std::io::{self, Cursor, Read};
+use std::io::{self, BufReader, Cursor, Read};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -39,6 +40,40 @@ impl Read for ChunkedReader {
         let target = destination
             .get_mut(..count)
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "chunk target too small"))?;
+        target.copy_from_slice(source);
+        self.offset += count;
+        Ok(count)
+    }
+}
+
+struct FailingReader {
+    bytes: Vec<u8>,
+    offset: usize,
+    fail_after: usize,
+}
+
+impl FailingReader {
+    fn new(bytes: Vec<u8>, fail_after: usize) -> Self {
+        Self { bytes, offset: 0, fail_after }
+    }
+}
+
+impl Read for FailingReader {
+    fn read(&mut self, destination: &mut [u8]) -> io::Result<usize> {
+        if self.offset >= self.fail_after {
+            return Err(io::Error::new(io::ErrorKind::Other, "injected transport read failure"));
+        }
+
+        let remaining = self.bytes.len().saturating_sub(self.offset);
+        let before_failure = self.fail_after - self.offset;
+        let count = remaining.min(before_failure).min(destination.len());
+        let source = self
+            .bytes
+            .get(self.offset..self.offset + count)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "source out of bounds"))?;
+        let target = destination
+            .get_mut(..count)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "destination too small"))?;
         target.copy_from_slice(source);
         self.offset += count;
         Ok(count)
@@ -382,7 +417,11 @@ fn framing_failure_does_not_consume_following_valid_frame() -> TestResult {
 #[test]
 fn compatibility_reader_strictly_rejects_then_continues() -> TestResult {
     let mut invalid_body = request_body(7, "textDocument/didOpen", r#"{"text":"safe"}"#);
-    invalid_body.push(0xff);
+    let string_end = invalid_body
+        .iter()
+        .rposition(|byte| *byte == b'"')
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing string terminator"))?;
+    invalid_body.insert(string_end, 0xff);
     let valid_body = request_body(8, "exit", "{}");
 
     let mut stream = frame(&invalid_body);
@@ -395,6 +434,142 @@ fn compatibility_reader_strictly_rejects_then_continues() -> TestResult {
         .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "expected valid request"))?;
 
     assert_eq!(request.method, "exit");
+    Ok(())
+}
+
+#[test]
+fn compatibility_read_message_skips_rejected_frame_and_returns_following_valid() -> TestResult {
+    let mut malformed = request_body(7, "broken", r#"{"text":"private"}"#);
+    let string_end = malformed
+        .iter()
+        .rposition(|byte| *byte == b'"')
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing string terminator"))?;
+    malformed.insert(string_end, 0xff);
+    let valid = request_body(8, "exit", "{}");
+    let mut stream = frame(&malformed);
+    stream.extend(frame(&valid));
+    let mut input = BufReader::with_capacity(4096, Cursor::new(stream));
+
+    let request = read_message(&mut input)?
+        .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "expected valid request"))?;
+    if request.method != "exit" {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("compatibility reader returned unexpected method {}", request.method),
+        )
+        .into());
+    }
+    if read_message(&mut input)?.is_some() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "compatibility reader should reach EOF after the valid frame",
+        )
+        .into());
+    }
+    Ok(())
+}
+
+#[test]
+fn strict_reader_propagates_underlying_io_failure() -> TestResult {
+    let bytes = frame(&request_body(15, "initialize", "{}"));
+    let fail_after = bytes.len().saturating_sub(1);
+    let mut input = FailingReader::new(bytes, fail_after);
+    let mut reader = ContentLengthMessageReader::new();
+    let error = match reader.read_next_outcome(&mut input) {
+        Err(error) => error,
+        Ok(other) => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("injected I/O failure was not propagated: {other:?}"),
+            )
+            .into());
+        }
+    };
+    if error.kind() != io::ErrorKind::Other {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("unexpected injected I/O error kind: {:?}", error.kind()),
+        )
+        .into());
+    }
+    Ok(())
+}
+
+#[test]
+fn oversized_frame_is_reported_and_following_frame_is_recoverable() -> TestResult {
+    let mut stream = format!("Content-Length: {}\r\n\r\n", MAX_FRAME_SIZE + 1).into_bytes();
+    stream.extend(frame(&request_body(16, "shutdown", "{}")));
+    let mut input = Cursor::new(stream);
+    let mut reader = ContentLengthMessageReader::new();
+
+    let error = required_error(&mut reader, &mut input)?;
+    if !matches!(error, IncomingMessageError::Framing(FramingError::FrameTooLarge { .. })) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("expected oversized-frame error, got {error}"),
+        )
+        .into());
+    }
+    if required_request(&mut reader, &mut input)?.method != "shutdown" {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "valid frame after oversized header was not recovered",
+        )
+        .into());
+    }
+    Ok(())
+}
+
+#[test]
+fn leading_desynchronization_is_discarded_before_valid_frame() -> TestResult {
+    let mut stream = b"garbage-before-frame\0\xff".to_vec();
+    stream.extend(frame(&request_body(17, "initialized", "{}")));
+    let mut input = Cursor::new(stream);
+    let mut reader = ContentLengthMessageReader::new();
+
+    if required_request(&mut reader, &mut input)?.method != "initialized" {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "valid frame after leading desynchronization was not recovered",
+        )
+        .into());
+    }
+    Ok(())
+}
+
+#[test]
+fn embedded_content_length_text_remains_inside_payload() -> TestResult {
+    let body = request_body(
+        18,
+        "textDocument/hover",
+        r#"{"text":"prefix Content-Length: 0\r\n\r\nsuffix"}"#,
+    );
+    let mut stream = frame(&body);
+    stream.extend(frame(&request_body(19, "shutdown", "{}")));
+    let mut input = Cursor::new(stream);
+    let mut reader = ContentLengthMessageReader::new();
+
+    let request = required_request(&mut reader, &mut input)?;
+    let text = request
+        .params
+        .as_ref()
+        .and_then(|params| params.get("text"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing embedded text"))?;
+    if text != "prefix Content-Length: 0\r\n\r\nsuffix" {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "embedded Content-Length text was altered",
+        )
+        .into());
+    }
+    if required_request(&mut reader, &mut input)?.method != "shutdown" {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "frame after embedded Content-Length text was not recovered",
+        )
+        .into());
+    }
     Ok(())
 }
 
