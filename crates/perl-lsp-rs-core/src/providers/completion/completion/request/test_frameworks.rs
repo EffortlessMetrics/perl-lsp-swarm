@@ -462,6 +462,33 @@ mod tests {
     }
 
     #[test]
+    fn nested_target_values_do_not_emit_nested_aliases() {
+        let direct_nested = complete(
+            "use Test2::Tools::Target service => [$target, repo => 'My::Repo',], actual => 'My::Actual';\nrepo|",
+            Some("t/example.t"),
+        );
+        assert!(!labels(&direct_nested).contains(&"repo"));
+
+        let direct_top_level = complete(
+            "use Test2::Tools::Target service => [$target, repo => 'My::Repo',], actual => 'My::Actual';\nact|",
+            Some("t/example.t"),
+        );
+        assert!(labels(&direct_top_level).contains(&"actual"));
+
+        let bundle_nested = complete(
+            "use Test2::V0 -target => { service => [$target, repo => 'My::Repo',], actual => 'My::Actual' };\nrepo|",
+            Some("t/example.t"),
+        );
+        assert!(!labels(&bundle_nested).contains(&"repo"));
+
+        let bundle_top_level = complete(
+            "use Test2::V0 -target => { service => [$target, repo => 'My::Repo',], actual => 'My::Actual' };\nact|",
+            Some("t/example.t"),
+        );
+        assert!(labels(&bundle_top_level).contains(&"actual"));
+    }
+
+    #[test]
     fn target_helpers_survive_selective_imports_and_exclusions() {
         let selected = complete(
             "use Test2::V0 -target => { service => 'My::Service' }, ok;\nser|",

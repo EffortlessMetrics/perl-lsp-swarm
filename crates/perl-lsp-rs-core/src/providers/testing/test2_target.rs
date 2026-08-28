@@ -18,7 +18,7 @@ static BUNDLE_TARGET_OPTION: LazyLock<Option<Regex>> = LazyLock::new(|| {
 
 static TARGET_ALIAS_PAIR: LazyLock<Option<Regex>> = LazyLock::new(|| {
     Regex::new(
-        r#"(?x)(?:^|,)\s*(?:'(?P<single>[A-Za-z_][A-Za-z0-9_]*|)'|"(?P<double>[A-Za-z_][A-Za-z0-9_]*|)"|(?P<bare>[A-Za-z_][A-Za-z0-9_]*))\s*=>\s*(?P<target>[^,]+)"#,
+        r#"(?xs)^\s*(?:'(?P<single>[A-Za-z_][A-Za-z0-9_]*|)'|"(?P<double>[A-Za-z_][A-Za-z0-9_]*|)"|(?P<bare>[A-Za-z_][A-Za-z0-9_]*))\s*=>\s*(?P<target>.*?)\s*$"#,
     )
     .ok()
 });
@@ -69,7 +69,13 @@ fn parse_target_aliases(raw_value: &str) -> BTreeSet<String> {
         let Some(pattern) = TARGET_ALIAS_PAIR.as_ref() else {
             return aliases;
         };
-        for captures in pattern.captures_iter(value) {
+        let Some(entries) = split_top_level_entries(value) else {
+            return aliases;
+        };
+        for entry in entries {
+            let Some(captures) = pattern.captures(entry) else {
+                continue;
+            };
             let Some(target) = captures.name("target").map(|capture| capture.as_str().trim())
             else {
                 continue;
@@ -100,6 +106,57 @@ fn parse_target_aliases(raw_value: &str) -> BTreeSet<String> {
 fn is_static_target_package(value: &str) -> bool {
     let package = strip_quotes(value.trim());
     STATIC_PACKAGE.as_ref().is_some_and(|pattern| pattern.is_match(package))
+}
+
+fn split_top_level_entries(value: &str) -> Option<Vec<&str>> {
+    let mut entries = Vec::new();
+    let mut start = 0;
+    let mut delimiters = Vec::new();
+    let mut quote = None;
+    let mut escaped = false;
+
+    for (index, byte) in value.bytes().enumerate() {
+        if let Some(active_quote) = quote {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == active_quote {
+                quote = None;
+            }
+            continue;
+        }
+
+        match byte {
+            b'\'' | b'"' => quote = Some(byte),
+            b'{' | b'[' | b'(' => delimiters.push(byte),
+            b'}' | b']' | b')' => {
+                let expected = match byte {
+                    b'}' => Some(b'{'),
+                    b']' => Some(b'['),
+                    b')' => Some(b'('),
+                    _ => None,
+                };
+                let Some(expected) = expected else {
+                    return None;
+                };
+                if delimiters.pop() != Some(expected) {
+                    return None;
+                }
+            }
+            b',' if delimiters.is_empty() => {
+                entries.push(&value[start..index]);
+                start = index + 1;
+            }
+            _ => {}
+        }
+    }
+
+    if quote.is_some() || !delimiters.is_empty() {
+        return None;
+    }
+    entries.push(&value[start..]);
+    Some(entries)
 }
 
 fn remove_option(raw_args: &str, option_start: usize, option_end: usize) -> String {
@@ -228,5 +285,14 @@ mod tests {
             aliases("Test2::Tools::Target", "service => 'My::Service', dynamic => $target",),
             BTreeSet::from(["service".to_string()])
         );
+    }
+
+    #[test]
+    fn nested_target_pairs_are_not_flattened_into_aliases() {
+        let nested = "service => [$target, repo => 'My::Repo',], actual => 'My::Actual'";
+        let expected = BTreeSet::from(["actual".to_string()]);
+
+        assert_eq!(aliases("Test2::Tools::Target", nested), expected);
+        assert_eq!(aliases("Test2::V0", &format!("-target => {{ {nested} }}")), expected);
     }
 }
