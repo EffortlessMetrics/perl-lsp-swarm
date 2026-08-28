@@ -265,7 +265,9 @@ fn collect_rs_files(
         };
         let name = entry.file_name().to_string_lossy().into_owned();
         let child_relative = format!("{relative}/{name}");
-        if child_relative.starts_with(FACADE_CRATE_PREFIX) {
+        if child_relative.starts_with(FACADE_CRATE_PREFIX)
+            || child_relative == "crates/perl-parser"
+        {
             continue;
         }
         let path = entry.path();
