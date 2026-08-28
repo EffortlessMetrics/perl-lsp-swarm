@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "fixture": "completion_scope_ranking",
+  "assertions": [
+    {
+      "kind": "completion_non_empty",
+      "line": 3,
+      "character": 18,
+      "rationale": "the shared $scope prefix must produce both visible lexical candidates"
+    },
+    {
+      "kind": "completion_top1",
+      "line": 3,
+      "character": 18,
+      "expected_label": "$scope_inner",
+      "rationale": "the immediate-scope lexical must rank ahead of the file-scope lexical"
+    },
+    {
+      "kind": "completion_top5",
+      "line": 3,
+      "character": 18,
+      "expected_label": "$scope_outer",
+      "rationale": "the visible ancestor lexical must remain useful while ranking below the immediate-scope candidate"
+    }
+  ]
+}

@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "fixture": "completion_scope_sibling",
+  "assertions": [
+    {
+      "kind": "completion_non_empty",
+      "line": 5,
+      "character": 11,
+      "rationale": "the request path must return candidates for the shared $sib_le prefix"
+    },
+    {
+      "kind": "completion_present",
+      "line": 5,
+      "character": 11,
+      "expected_label": "$sib_level_top",
+      "rationale": "the file-scope lexical is an ancestor binding and must remain visible inside the later block"
+    },
+    {
+      "kind": "completion_noise_absent",
+      "line": 5,
+      "character": 11,
+      "forbidden_label": "$sib_left",
+      "rationale": "a lexical from an ended sibling block must not appear at any completion rank"
+    }
+  ]
+}
