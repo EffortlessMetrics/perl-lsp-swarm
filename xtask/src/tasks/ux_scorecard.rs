@@ -457,7 +457,7 @@ fn enforce_ratchet(baseline: &SubsystemBaseline, artifact: &UxScorecardArtifact)
         current_floor.insert(format!("latency_{}_p95_ms", request), latency.p95_ms);
     }
 
-    let violations = evaluate_ratchet(&baseline, &current_floor);
+    let violations = evaluate_ratchet(baseline, &current_floor);
     if violations.is_empty() {
         return Ok(());
     }
