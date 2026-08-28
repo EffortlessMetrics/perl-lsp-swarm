@@ -6,8 +6,9 @@ description: Carry one selected pull request through publication, feedback repai
 # Finish PR
 
 Carry one coherent acceptance-and-rollback candidate through its current GitHub state.
-The Codex root remains the accountable lane owner. Do not inspect sibling
-implementations or treat nearby files, crates, branches, or worktrees as ownership.
+The Codex root remains the accountable orchestrator for this root-held claim frame. Do
+not inspect sibling implementations or treat nearby files, crates, branches, or
+worktrees as ownership.
 
 Read the selected PR, controlling issue, governing authority, cumulative diff, proof
 and limitations, submitted reviews, inline threads, current substantive review result,
@@ -20,9 +21,9 @@ Codex's operational path is this skill together with `$orchestrate-work`,
 
 ## Orchestration affordances
 
-### Lane-root decisions
+### Root decisions
 
-The lane root retains:
+The accountable root retains:
 
 - the earliest still-useful entry point in the PR route;
 - whether a finding is valid, stale, refuted, superseded, or a bounded follow-up;
@@ -53,9 +54,9 @@ uncertainty, and non-goals. Workers return graph deltas, not merge verdicts.
 One writer integrates accepted candidate repairs. Read-only reviewers and CI evidence
 workers do not mutate the candidate.
 
-The lane root joins current findings/dispositions, affected proof, cumulative review,
-live integration facts, contradictions, and limitations into one typed route result.
-Repeated bot findings or several workers reading one artifact are not independent
+The accountable root joins current findings/dispositions, affected proof, cumulative
+review, live integration facts, contradictions, and limitations into one typed route
+result. Repeated bot findings or several workers reading one artifact are not independent
 evidence.
 
 ### Return packet
@@ -142,7 +143,7 @@ One writer mutates this candidate branch/worktree at a time. Read-only research,
 review, CI classification, and oracle work may assist.
 
 - behind-only movement on `main` requires no action;
-- a real Git conflict is resolved in this lane;
+- a real Git conflict is resolved in this claim;
 - an explicit stack is retargeted after its prerequisite lands;
 - a combined-tree interaction is repaired in the smallest affected candidate;
 - only affected proof and review are refreshed.
