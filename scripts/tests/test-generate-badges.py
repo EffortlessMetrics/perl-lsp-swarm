@@ -72,7 +72,10 @@ time.sleep(300)
         )
     else:
         child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(300)"])
-    Path(os.environ["FAKE_RIPR_CHILD_PID"]).write_text(str(child.pid), encoding="utf-8")
+    child_pid_path = Path(os.environ["FAKE_RIPR_CHILD_PID"])
+    child_pid_temp = child_pid_path.with_suffix(".pid.tmp")
+    child_pid_temp.write_text(f"{child.pid}\n", encoding="utf-8")
+    child_pid_temp.replace(child_pid_path)
     if os.environ.get("FAKE_RIPR_EXIT_AFTER_CHILD") == "1":
         raise SystemExit(0)
 if os.environ.get("FAKE_RIPR_HANG") == "1":
@@ -389,8 +392,14 @@ class GenerateBadgesTests(unittest.TestCase):
 
             def capture_child_pid():
                 try:
-                    candidate = int(child_pid_file.read_text(encoding="utf-8"))
+                    marker = child_pid_file.read_text(encoding="utf-8")
                 except (FileNotFoundError, ValueError):
+                    return False
+                if not marker.endswith("\n"):
+                    return False
+                try:
+                    candidate = int(marker.removesuffix("\n"))
+                except ValueError:
                     return False
                 if candidate <= 0:
                     return False
