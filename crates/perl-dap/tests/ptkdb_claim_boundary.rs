@@ -463,6 +463,54 @@ exit 0;
 }
 
 #[test]
+fn reference_peer_rejects_non_object_post_handshake_frame_without_terminating()
+-> Result<(), Box<dyn std::error::Error>> {
+    for malformed in [b"[]".as_slice(), b"1".as_slice()] {
+        let listener = TcpListener::bind(("127.0.0.1", 0))?;
+        let peer_addr = listener.local_addr()?;
+        let plugin = repo_root().join("fixtures/debug-peer/perl/minimal_ptkdb_peer.pl");
+        let mut child = ChildCleanup::new(
+            Command::new("perl")
+                .arg(&plugin)
+                .env("PERL_DAP_PEER", peer_addr.to_string())
+                .env("PERL_DAP_PEER_MODE", "mirror")
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped())
+                .spawn()?,
+            Vec::<PathBuf>::new(),
+        );
+
+        let (mut stream, _) = listener.accept()?;
+        stream.set_read_timeout(Some(Duration::from_secs(3)))?;
+        let mut hello = [0_u8; 4096];
+        let read = stream.read(&mut hello)?;
+        assert!(std::str::from_utf8(&hello[..read])?.contains("peer/hello"));
+        let response = br#"{"type":"response","requestSeq":1,"command":"peer/hello","success":true,"body":{"sessionId":"test"}}"#;
+        write!(stream, "Content-Length: {}\r\n\r\n", response.len())?;
+        stream.write_all(response)?;
+        let mut events = Vec::new();
+        while !String::from_utf8_lossy(&events).contains("debugger/stopped") {
+            let mut chunk = [0_u8; 4096];
+            let read = stream.read(&mut chunk)?;
+            events.extend_from_slice(&chunk[..read]);
+        }
+        write!(stream, "Content-Length: {}\r\n\r\n", malformed.len())?;
+        stream.write_all(malformed)?;
+        drop(stream);
+
+        let status = child.child.wait()?;
+        let stderr = child_stderr(&mut child.child);
+        assert!(status.success(), "non-object post-handshake frame terminated the peer: {stderr}");
+        assert!(
+            stderr.contains("post-handshake frame must be a JSON object; closing peer session"),
+            "missing non-object frame diagnostic for {:?}: {stderr}",
+            malformed
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn reference_ptkdb_adapter_rejects_wrong_source_and_bad_rendezvous_without_touching_ptkdb()
 -> Result<(), Box<dyn std::error::Error>> {
     let plugin = repo_root().join("fixtures/debug-peer/perl/minimal_ptkdb_peer.pl");
@@ -591,6 +639,55 @@ exit 0;
         assert!(!stderr.contains("cannot connect"), "{name} reached the network: {stderr}");
     }
 
+    Ok(())
+}
+
+#[test]
+fn reference_ptkdb_adapter_rejects_loaded_module_without_artifact_binding()
+-> Result<(), Box<dyn std::error::Error>> {
+    let plugin = repo_root().join("fixtures/debug-peer/perl/minimal_ptkdb_peer.pl");
+    let module_dir = unique_temp_marker("loaded-module")?;
+    let module_path = module_dir.join("Devel/ptkdb.pm");
+    std::fs::create_dir_all(module_path.parent().ok_or("missing module parent")?)?;
+    std::fs::write(
+        &module_path,
+        format!(
+            "package Devel::ptkdb;\nour $VERSION = '1.1091';\nour $PERL_DAP_MIRROR_SOURCE = '{}';\nour $PERL_DAP_MIRROR_SHA256 = '{}';\nour $PERL_DAP_MIRROR_DIST_SHA256 = '{}';\nsub set_file {{ return \"original:$_[2]\"; }}\n1;\n",
+            "CPAN:AEPAGE/Devel-ptkdb-1.1091", PTKDB_MODULE_SHA256, PTKDB_DIST_SHA256
+        ),
+    )?;
+    let harness = r#"
+BEGIN { unshift @INC, $ENV{PTKDB_MODULE_DIR}; }
+require Devel::ptkdb;
+package main;
+my $loaded = do $ENV{PTKDB_PLUGIN_UNDER_TEST};
+die "plugin load failed: " . ($@ || $!) unless $loaded;
+my $window = bless {}, 'Devel::ptkdb';
+my $value = $window->set_file('/work/rejected.pl', 13);
+die "loaded-module rejection touched set_file: $value" unless $value eq 'original:13';
+exit 0;
+"#;
+    let output = Command::new("perl")
+        .arg("-e")
+        .arg(harness)
+        .env("PTKDB_MODULE_DIR", &module_dir)
+        .env("PTKDB_PLUGIN_UNDER_TEST", &plugin)
+        .env("PTKDB_SOURCE_MARKER", "CPAN:AEPAGE/Devel-ptkdb-1.1091")
+        .env("PTKDB_SOURCE_SHA256", PTKDB_MODULE_SHA256)
+        .env("PTKDB_DIST_SHA256", PTKDB_DIST_SHA256)
+        .env("PERL_DAP_PEER", "127.0.0.1:1")
+        .env("PERL_DAP_PEER_TOKEN", PEER_TOKEN)
+        .env("PERL_DAP_PEER_MODE", "mirror")
+        .output()?;
+    let stderr = String::from_utf8(output.stderr)?;
+    std::fs::remove_file(&module_path)?;
+    std::fs::remove_dir_all(&module_dir)?;
+    assert!(output.status.success(), "loaded-module rejection harness failed: {stderr}");
+    assert!(
+        stderr.contains("loaded Devel/ptkdb.pm bytes cannot be bound to this provenance check"),
+        "missing artifact-binding rejection diagnostic: {stderr}"
+    );
+    assert!(!stderr.contains("cannot connect"), "rejection must precede peer connection: {stderr}");
     Ok(())
 }
 

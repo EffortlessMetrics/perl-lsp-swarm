@@ -79,8 +79,11 @@ The reference harness must expose both `$Devel::ptkdb::VERSION = '1.1091'` and
 `$Devel::ptkdb::PERL_DAP_MIRROR_SOURCE =
 'CPAN:AEPAGE/Devel-ptkdb-1.1091'` plus
 `$Devel::ptkdb::PERL_DAP_MIRROR_SHA256` equal to the pinned module digest. A
-real loaded module is hashed from its `%INC` path and a mismatch fails closed
-before any connection or method wrap. When the rendezvous variables
+The adapter does not activate when `%INC` reports a loaded `Devel/ptkdb.pm`:
+Perl does not expose the bytes already executed, so hashing that mutable path
+would not bind provenance to the loaded artifact. The adapter therefore accepts
+only the explicit no-`%INC` headless harness contract; loaded stock modules fail
+closed before any connection or method wrap. When the rendezvous variables
 are absent, loaded mode is a silent no-op. A version/source mismatch or
 malformed/authentication contract leaves the harness untouched and reports one
 narrow diagnostic on stderr.
@@ -92,8 +95,8 @@ Those missing behaviors keep #7349 and #4786 open.
 
 The Rust integration test exercises the adapter against the real authenticated
 host backend with a marked ptkdb-shaped harness. That proves the protocol,
-version/source gates, wrapper preservation, harness stop seam, and cleanup
-logic. It is not a stock ptkdb or Tk session and cannot promote compatibility.
+version/source gates for the headless harness, wrapper preservation, harness stop
+seam, and cleanup logic. It does not prove loaded-module provenance. This is not a stock ptkdb or Tk session and cannot promote compatibility.
 
 ## Rendezvous environment
 

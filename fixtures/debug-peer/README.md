@@ -23,9 +23,11 @@ not require ptkdb and emits the synthetic reference events. Loading it with
 `do` from `.ptkdbrc` is a silent no-op unless the authenticated mirror
 rendezvous is present; for the explicitly marked reference `Devel::ptkdb 1.1091`
 shaped seam it preserves `set_file`, reports harness stop locations, and emits
-bounded termination. The source marker is an adapter-contract guard, not a
-cryptographic provenance check. This headless conformance is partner-seam
-evidence, not a live Tk compatibility receipt or stock ptkdb support claim.
+bounded termination. If `%INC` reports a loaded `Devel/ptkdb.pm`, the adapter
+fails closed because its already-executed bytes cannot be bound to the marker;
+the source marker is an adapter-contract guard, not a cryptographic provenance
+check. This headless conformance is partner-seam evidence, not a live Tk
+compatibility receipt or stock ptkdb support claim.
 
 Note: `hello_request.json` predates the optional `token` field added on
 `peer/hello` in [#3404](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/3404)

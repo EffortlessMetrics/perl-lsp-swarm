@@ -28,7 +28,6 @@ use warnings;
 package PerlDAP::PtkdbMirror;
 
 use Errno qw(EAGAIN EINTR EWOULDBLOCK);
-use Digest::SHA qw(sha256_hex);
 use IO::Select;
 use IO::Socket::INET;
 use JSON::PP qw(decode_json encode_json);
@@ -371,49 +370,6 @@ sub _is_sha256 {
     return defined $value && "$value" =~ /\A[0-9a-f]{64}\z/;
 }
 
-sub _ptkdb_source_digest {
-    my $path = $INC{'Devel/ptkdb.pm'};
-    return (undef, undef, 'Devel/ptkdb.pm is not present in %INC')
-        unless defined $path && length $path;
-    return (undef, undef, 'Devel/ptkdb.pm path must be absolute')
-        unless $path =~ m{\A/} || $path =~ m{\A[A-Za-z]:[\\/]};
-    my @before = lstat($path);
-    return (undef, undef, 'Devel/ptkdb.pm path is not a regular non-symlink file')
-        unless @before && -f _ && !-l _;
-    open my $fh, '<:raw', $path
-        or return (undef, undef, "cannot read loaded Devel/ptkdb.pm: $!");
-    local $/;
-    my $source = <$fh>;
-    my $digest = defined $source ? sha256_hex($source) : undef;
-    my @opened = stat($fh);
-    my @after = lstat($path);
-    close $fh or return (undef, undef, "cannot close loaded Devel/ptkdb.pm: $!");
-    return (undef, undef, 'cannot hash loaded Devel/ptkdb.pm')
-        unless defined $digest;
-    return (undef, undef, 'loaded Devel/ptkdb.pm was replaced while being verified')
-        unless @opened && @after && -f _ && !-l _
-            && $opened[0] == $after[0]
-            && $opened[1] == $after[1]
-            && $opened[7] == $after[7]
-            && $before[0] == $after[0]
-            && $before[1] == $after[1]
-            && $before[7] == $after[7]
-            && $before[9] == $after[9];
-    return ($digest, $source, undef);
-}
-
-sub _module_contains_pinned_provenance {
-    my ($source) = @_;
-    return (0, 'loaded Devel/ptkdb.pm does not declare the pinned source identity')
-        unless defined $source
-            && index($source, "PERL_DAP_MIRROR_SOURCE = '" . REFERENCE_PTKDB_SOURCE . "'") >= 0;
-    return (0, 'loaded Devel/ptkdb.pm does not declare the pinned module digest')
-        unless index($source, "PERL_DAP_MIRROR_SHA256 = '" . REFERENCE_PTKDB_MODULE_SHA256 . "'") >= 0;
-    return (0, 'loaded Devel/ptkdb.pm does not declare the pinned distribution digest')
-        unless index($source, "PERL_DAP_MIRROR_DIST_SHA256 = '" . REFERENCE_PTKDB_DIST_SHA256 . "'") >= 0;
-    return (1, undef);
-}
-
 sub _check_ptkdb_provenance {
     my $loaded_path = $INC{'Devel/ptkdb.pm'};
     my $source = _ptkdb_source();
@@ -433,15 +389,7 @@ sub _check_ptkdb_provenance {
         unless "$declared_dist_digest" eq REFERENCE_PTKDB_DIST_SHA256;
 
     if (defined $loaded_path && length $loaded_path) {
-        my ($digest, $source_bytes, $error) = _ptkdb_source_digest();
-        return (0, $error) unless defined $digest;
-        return (0, 'loaded Devel/ptkdb.pm digest does not match the pinned CPAN artifact')
-            unless $digest eq REFERENCE_PTKDB_MODULE_SHA256;
-        return (0, 'loaded Devel::ptkdb module digest marker does not match the pinned CPAN artifact')
-            unless "$declared_module_digest" eq REFERENCE_PTKDB_MODULE_SHA256;
-        my ($bound, $binding_error) = _module_contains_pinned_provenance($source_bytes);
-        return (0, $binding_error) unless $bound;
-        return (1, undef);
+        return (0, 'loaded Devel/ptkdb.pm bytes cannot be bound to this provenance check; refusing loaded-module activation');
     }
 
     # The headless harness has no installed module file. Its explicit contract
@@ -560,6 +508,10 @@ sub run_reference_peer {
         my ($message, $read_error) = _read_message($state, 1);
         if (!$message) {
             next if $read_error eq 'read timed out';
+            last;
+        }
+        unless (ref($message) eq 'HASH') {
+            _diagnostic('post-handshake frame must be a JSON object; closing peer session');
             last;
         }
         next unless ($message->{type} // '') eq 'request';

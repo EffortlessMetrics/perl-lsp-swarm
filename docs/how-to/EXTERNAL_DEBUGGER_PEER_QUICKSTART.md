@@ -70,8 +70,8 @@ do $perl_dap_peer or die $@ || $!;
 This mode is intentionally narrow and is not a pinned or distributable stock
 ptkdb plugin:
 
-- it activates only for a ptkdb-shaped harness that exposes `Devel::ptkdb 1.1091`
-  and the exact pinned `Devel::ptkdb 1.1091` module SHA-256, when a trusted host launcher has
+- it activates only for a ptkdb-shaped headless harness that exposes
+  `Devel::ptkdb 1.1091` and the exact pinned contract SHA-256 digests, when a trusted host launcher has
   supplied `PERL_DAP_PEER`, a 32-hex `PERL_DAP_PEER_TOKEN`, and
   `PERL_DAP_PEER_MODE=mirror`;
 - it advertises no inspection or control capabilities;
@@ -79,6 +79,12 @@ ptkdb plugin:
   file and line when `DB::DB` reaches the marked stop path;
 - it emits debugger-console connection output and one bounded termination event;
 - it is a silent no-op when the rendezvous environment is absent.
+
+The adapter refuses activation when `%INC` reports that a `Devel/ptkdb.pm` file
+was loaded. Perl does not provide the bytes already executed, and hashing the
+mutable `%INC` path later would not prove the loaded artifact. This keeps the
+contract limited to the explicit headless harness until a load-time artifact
+binding is available.
 
 It does not yet mirror debuggee stdout/stderr, answer stack/scopes/variables, or
 accept stepping and breakpoint commands. The repository test uses a
