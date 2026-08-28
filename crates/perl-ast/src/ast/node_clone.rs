@@ -7,7 +7,7 @@
 //! The same engine powers [`Node::clone_with_mapped_locations`], keeping
 //! position-only tree rewrites exhaustive and depth-safe.
 
-use super::{Node, NodeKind, SourceLocation};
+use super::{Node, NodeKind, SourceLocation, Token};
 use std::cell::Cell;
 
 thread_local! {
@@ -45,8 +45,11 @@ impl Node {
     /// Clone the full tree while replacing every source location.
     ///
     /// The structural walk is the same iterative canonical traversal used by
-    /// [`Clone`]. `map` is called once for every [`Node::location`] and once for
-    /// every independent [`SourceLocation`] stored in a [`NodeKind`] payload.
+    /// [`Clone`]. `map` is called once for every [`Node::location`], once for
+    /// every independent [`SourceLocation`] stored in a [`NodeKind`] payload,
+    /// and once for every recovery [`Token`] span. Recovery token text is
+    /// immutable, so its mapped start is used while its original byte width is
+    /// preserved.
     /// Its invocation order is intentionally unspecified; callers should derive
     /// each result from the supplied location rather than from traversal order.
     ///
@@ -124,13 +127,26 @@ where
     }
 }
 
-/// Map every independent [`SourceLocation`] stored outside [`Node::location`].
+fn map_token_span<F>(token: &mut Token, map: &F)
+where
+    F: Fn(SourceLocation) -> SourceLocation,
+{
+    let mapped = map(SourceLocation { start: token.start(), end: token.end() });
+    let Some(mapped_end) = mapped.start.checked_add(token.len()) else {
+        return;
+    };
+    let Ok(mapped_token) = token.with_span(mapped.start, mapped_end) else {
+        return;
+    };
+    *token = mapped_token;
+}
+
+/// Map every independent source span stored outside [`Node::location`].
 ///
 /// The no-location arm is intentionally exhaustive and has no wildcard. A new
 /// `NodeKind` variant therefore fails to compile here until its payload geometry
-/// is classified. Recovery-token spans are a separate invariant-bearing type,
-/// not `SourceLocation`; incremental reuse rejects recovery trees before calling
-/// this mapper.
+/// is classified. Recovery [`Token`] geometry is handled explicitly while
+/// preserving the token text's validated byte width.
 fn map_payload_locations<F>(kind: &mut NodeKind, map: &F)
 where
     F: Fn(SourceLocation) -> SourceLocation,
@@ -150,6 +166,11 @@ where
         | NodeKind::Format { name_span, .. } => map_optional_location(name_span, map),
         NodeKind::Package { name_span, .. } => *name_span = map(*name_span),
         NodeKind::PhaseBlock { phase_span, .. } => map_optional_location(phase_span, map),
+        NodeKind::Error { found, .. } => {
+            if let Some(found) = found {
+                map_token_span(found, map);
+            }
+        }
         NodeKind::Program { .. }
         | NodeKind::ExpressionStatement { .. }
         | NodeKind::VariableDeclaration { .. }
@@ -212,7 +233,6 @@ where
         | NodeKind::No { .. }
         | NodeKind::DataSection { .. }
         | NodeKind::Identifier { .. }
-        | NodeKind::Error { .. }
         | NodeKind::MissingExpression
         | NodeKind::MissingStatement
         | NodeKind::MissingIdentifier
@@ -281,9 +301,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        CLONE_PAYLOAD_SHELL, CloneObserver, Node, NodeKind, ShellCloneGuard, SourceLocation,
-        clone_node, clone_payload_shell, clone_slot_placeholder, install_cloned_children,
-        map_payload_locations, take_last_n_reversed,
+        CLONE_PAYLOAD_SHELL, CloneObserver, Node, NodeKind, ShellCloneGuard, SourceLocation, Token,
+        TokenKind, clone_node, clone_payload_shell, clone_slot_placeholder,
+        install_cloned_children, map_payload_locations, take_last_n_reversed,
     };
     use std::cell::Cell;
 
@@ -396,6 +416,42 @@ mod tests {
         assert_eq!(right.location, loc(12, 13));
         assert!(matches!(&left.kind, NodeKind::Number { value } if value == "1"));
         assert!(matches!(&right.kind, NodeKind::Number { value } if value == "2"));
+        Ok(())
+    }
+
+    #[test]
+    fn mapped_location_clone_updates_recovery_token_span() -> Result<(), Box<dyn std::error::Error>> {
+        let found = Token::new_checked(TokenKind::Semicolon, ";", 8, 9)?;
+        let source = Node::new(
+            NodeKind::Error {
+                message: "missing expression".to_string(),
+                expected: Vec::new(),
+                found: Some(found),
+                partial: None,
+            },
+            loc(8, 9),
+        );
+
+        let mapped = source.clone_with_mapped_locations(|location| {
+            loc(location.start.saturating_add(10), location.end.saturating_add(10))
+        });
+
+        let source_found = match &source.kind {
+            NodeKind::Error { found: Some(found), .. } => found,
+            other => return Err(format!("expected Error, got {}", other.kind_name()).into()),
+        };
+        let mapped_found = match &mapped.kind {
+            NodeKind::Error { found: Some(found), .. } => found,
+            other => return Err(format!("expected Error, got {}", other.kind_name()).into()),
+        };
+
+        assert_eq!(source.location, loc(8, 9));
+        assert_eq!(source_found.start(), 8);
+        assert_eq!(source_found.end(), 9);
+        assert_eq!(mapped.location, loc(18, 19));
+        assert_eq!(mapped_found.start(), 18);
+        assert_eq!(mapped_found.end(), 19);
+        assert_eq!(mapped_found.text.as_ref(), ";");
         Ok(())
     }
 

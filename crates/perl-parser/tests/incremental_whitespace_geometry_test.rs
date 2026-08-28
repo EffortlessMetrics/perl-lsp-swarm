@@ -117,6 +117,11 @@ fn heredoc_body_span_matches_a_fresh_parse() -> TestResult {
 }
 
 #[test]
+fn recovery_token_span_matches_a_fresh_parse() -> TestResult {
+    assert_leading_whitespace_reuse_matches_fresh("my $x = ;")
+}
+
+#[test]
 fn token_body_whitespace_never_uses_the_basic_fast_path() -> TestResult {
     let cases = [
         ("my $s = \"a b\";", "my $s = \"a  b\";", "b\";"),
