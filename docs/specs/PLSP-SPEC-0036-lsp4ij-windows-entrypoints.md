@@ -88,6 +88,18 @@ The LSP template must preserve the `--stdio` argument and must not replace the
 absolute `${BASE_DIR}` reference with `perllsp`, `perllsp.cmd`, or
 `perllsp.exe`.
 
+Before constructing the `/c` command string, the implementation must validate
+the substituted base directory and selector path as path data, not as an
+already-safe command fragment. Validation must reject empty, relative, rooted-
+outside, malformed, or otherwise invalid substitutions and must establish that
+the selector path is contained by the intended install root. The implementation
+must canonicalize the resolved selector/executable path, resolving symlinks,
+junctions, and other Windows reparse points, and then re-check containment
+against the canonical install root before launch. A path that resolves outside
+that root, or whose canonicalization cannot be completed, must fail closed.
+These checks apply before quoting or shell encoding and must be identical for
+the LSP and DAP selectors.
+
 If the LSP4IJ field is string-valued, its unescaped value must render as:
 
 ```text
@@ -136,6 +148,18 @@ cmd.exe /d /s /c ""<<insert base directory>>\perl-dap.cmd""
 Until that schema and serialization confirmation exists, the DAP projection is
 also `NOT_PROVEN`.
 
+The implementation must not treat rendering the vector as launch proof. Its
+focused oracle must execute the substituted command in a controlled promoted
+installation and assert successful process completion/handshake for the
+expected selector and candidate identity. The oracle must capture stderr with a
+bounded size and duration, attribute any diagnostics to the launched process,
+and fail on non-zero exit, timeout, unexpected stderr, or identity mismatch.
+It must include negative controls for a selector/executable reached through a
+reparse point outside the install root and for an invalid substituted path.
+The same oracle shape is required for LSP and DAP, with protocol-specific
+success criteria recorded separately. A rendered command string, an empty
+stderr stream, or a process-started event alone is insufficient evidence.
+
 ### C4 — Mirror, patch, and provenance authority
 
 The released upstream fixture and repository-owned desired projection must never
@@ -173,6 +197,9 @@ both LSP and DAP:
 
 - the template expands its base-directory placeholder to the intended absolute
   install root;
+- the substituted base directory and selector path are validated before command
+  construction, and canonicalization/reparse resolution proves that the final
+  selector and executable remain contained by the intended install root;
 - the launched process reaches the install-root `.cmd` selector and then the
   selected candidate member;
 - a stale executable with a different identity in `PATH` is not selected;
@@ -180,6 +207,11 @@ both LSP and DAP:
 - changing `current` changes the selected candidate as specified, without
   changing the template or creating a root `.exe` copy; and
 - missing, invalid, or checksum-failing candidate material fails closed.
+
+The launch oracle must assert successful completion or protocol handshake and
+record bounded, attributable stderr for each LSP and DAP execution. It must
+fail closed on timeout, non-zero exit, unexpected diagnostics, path
+canonicalization failure, reparse escape, or candidate-identity mismatch.
 
 The proof must record the promoted candidate identity, the template subject and
 digest, the effective command vector, and the observed process/binary identity.
@@ -239,6 +271,9 @@ No Cargo build, installer harness, vendored-template edit, or Windows launch
 probe is part of this spec PR. Implementation PRs must add the existing focused
 PowerShell promotion/checksum checks and the existing LSP4IJ template/installer
 contract checks, followed by a real promoted-install LSP and DAP launch receipt.
+Those implementation proofs must include the pre-command substituted-path
+validation, canonical/reparse containment negative controls, and bounded
+successful-launch/stderr oracle described in C2, C3, and C5.
 
 ## Unresolved currentness and authority questions
 
