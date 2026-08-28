@@ -277,6 +277,11 @@ fn non_brace_quote_like_hash_values_remain_opaque() -> TestResult {
         "tr/Foo,Bar/Baz/",
         "y/Foo,Bar/Baz/",
         "qw(Foo,Bar)",
+        // Non-bracketing payloads whose content would break hash-pair parity if
+        // the quote-like value were split into atoms: embedded whitespace and
+        // an embedded fat comma.
+        "q/Widget Other/",
+        "q/Foo=>Bar/",
     ] {
         let args = format!("-target => {{ pkg => {value}, other => 'Gadget' }}, ok");
         let resolved = resolve_import("Test2::V0", &args)
@@ -284,7 +289,7 @@ fn non_brace_quote_like_hash_values_remain_opaque() -> TestResult {
         assert!(resolved.symbols.contains("pkg"), "value {value:?}");
         assert!(resolved.symbols.contains("other"), "value {value:?}");
         assert!(resolved.symbols.contains("ok"), "value {value:?}");
-        for leaked in ["Foo", "Bar", "Baz", "Gadget"] {
+        for leaked in ["Foo", "Bar", "Baz", "Gadget", "Widget", "Other"] {
             assert!(!resolved.symbols.contains(leaked), "{leaked} leaked from {value:?}");
         }
     }
@@ -328,6 +333,27 @@ fn nested_hash_target_restores_outer_key_value_parity() -> TestResult {
     assert!(resolved.symbols.contains("ok"));
     for leaked in ["nested", "Widget", "Gadget"] {
         assert!(!resolved.symbols.contains(leaked), "{leaked} leaked");
+    }
+    Ok(())
+}
+
+#[test]
+fn expression_hash_values_preserve_key_value_parity() -> TestResult {
+    // A multi-atom expression value (`uc 'Widget'`) must not shift the
+    // alternating key/value scan: the real `other` key stays a helper and the
+    // expression's operand does not leak as one. (List operators whose argument
+    // list itself contains a top-level comma remain a known boundary; see the
+    // expression-value parity follow-up issue.)
+    for value in ["uc 'Widget'", "scalar 'Widget'"] {
+        let args = format!("-target => {{ pkg => {value}, other => 'Gadget' }}, ok");
+        let resolved = resolve_import("Test2::V0", &args)
+            .ok_or_else(|| io::Error::other("Test2::V0 must be recognized"))?;
+        assert!(resolved.symbols.contains("pkg"), "value {value:?}");
+        assert!(resolved.symbols.contains("other"), "value {value:?}");
+        assert!(resolved.symbols.contains("ok"), "value {value:?}");
+        for leaked in ["Widget", "Gadget", "uc", "scalar"] {
+            assert!(!resolved.symbols.contains(leaked), "{leaked} leaked from {value:?}");
+        }
     }
     Ok(())
 }
