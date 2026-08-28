@@ -286,6 +286,23 @@ fn jsonrpc_model_has_no_perl_taxonomy_escape_hatch() {
 }
 
 #[test]
+fn jsonrpc_taxonomy_guard_rejects_synthetic_restoration() {
+    let restored_taxonomy = r#"
+use perl_parser_core::ErrorClass;
+
+impl ErrorClass for JsonRpcError {}
+"#;
+
+    assert_eq!(
+        unregistered_forbidden_tokens(
+            "crates/perl-lsp-rs-core/src/protocol/jsonrpc.rs",
+            restored_taxonomy
+        ),
+        BTreeSet::from(["perl_parser_core".to_string()])
+    );
+}
+
+#[test]
 fn temporary_exceptions_are_unique_owned_and_still_consumed() {
     let root = repo_root();
     let mut unique = BTreeSet::new();
