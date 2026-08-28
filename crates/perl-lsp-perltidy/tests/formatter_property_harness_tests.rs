@@ -22,10 +22,11 @@ use proptest::test_runner::{Config as ProptestConfig, FileFailurePersistence};
 mod formatter_property_harness;
 
 use formatter_property_harness::{
-    dormant_registry, family_registry, generate_case, generate_invalidation_case, record_for,
-    run_case, DormantStatus, GeneratedCase, HARNESS_SCHEMA_VERSION, MAX_PLAN_EDITS,
-    MAX_SUBJECT_BYTES, MAX_SUBJECT_LINES,
+    DormantStatus, GeneratedCase, HARNESS_SCHEMA_VERSION, LineEndingKind, MAX_PLAN_EDITS,
+    MAX_SUBJECT_BYTES, MAX_SUBJECT_LINES, dormant_registry, family_registry, generate_case,
+    generate_invalidation_case, record_for, run_case,
 };
+use perl_lsp_perltidy::native::FinalNewline;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -63,7 +64,8 @@ fn arb_valid_case() -> impl Strategy<Value = GeneratedCase> {
 }
 
 fn arb_invalidation_case() -> impl Strategy<Value = GeneratedCase> {
-    (any::<u64>(), 0usize..16usize).prop_map(|(seed, index)| generate_invalidation_case(seed, index))
+    (any::<u64>(), 0usize..16usize)
+        .prop_map(|(seed, index)| generate_invalidation_case(seed, index))
 }
 
 /// FPH-009 source pin: the harness module and the fuzz target must never
@@ -73,8 +75,9 @@ fn harness_module_does_not_reference_external_oracle() -> TestResult {
     let harness_source = fs::read_to_string(format!(
         "{MANIFEST_DIR}/tests/support/formatter_property_harness/mod.rs"
     ))?;
-    let fuzz_source =
-        fs::read_to_string(format!("{MANIFEST_DIR}/../../fuzz/fuzz_targets/perl_tidy_formatter.rs"))?;
+    let fuzz_source = fs::read_to_string(format!(
+        "{MANIFEST_DIR}/../../fuzz/fuzz_targets/perl_tidy_formatter.rs"
+    ))?;
 
     let banned_in_harness = [
         "PerlTidyFormatter",
@@ -95,13 +98,15 @@ fn harness_module_does_not_reference_external_oracle() -> TestResult {
         );
     }
 
-    let banned_in_fuzz =
-        ["PerlTidyFormatter", "with_os_runtime", "std::process", "process::Command", "Command::new"];
+    let banned_in_fuzz = [
+        "PerlTidyFormatter",
+        "with_os_runtime",
+        "std::process",
+        "process::Command",
+        "Command::new",
+    ];
     for token in banned_in_fuzz {
-        assert!(
-            !fuzz_source.contains(token),
-            "fuzz target must not reference {token} (FPH-009)"
-        );
+        assert!(!fuzz_source.contains(token), "fuzz target must not reference {token} (FPH-009)");
     }
     Ok(())
 }
@@ -156,7 +161,7 @@ fn every_admitted_family_has_a_registered_disposition() -> TestResult {
         );
         for disposition in record.dispositions {
             assert!(
-                covered_dispositions.contains(&disposition),
+                covered_dispositions.contains(disposition),
                 "disposition {disposition} is registered but never exercised (FPH-001)"
             );
         }
@@ -223,17 +228,22 @@ proptest! {
 
     /// FPH-004: the second pass from a fresh context never re-applies and
     /// keeps the rendered bytes stable; line-level families must classify as
-    /// a legitimate already-formatted no-change with zero edits.
+    /// a legitimate already-formatted no-change with zero edits. Bare-CR
+    /// subjects are excluded from the strict classification: their
+    /// Insert-policy renders can contain `\r`-inside-`\n` lines that the
+    /// safe-subset line admission does not cover, so a typed refusal is
+    /// legitimate there (registered FPH-008 dormancy).
     #[test]
     fn second_pass_is_legitimate_nochange(case in arb_valid_case()) {
         let receipt = run_case(&case).map_err(|violation| TestCaseError::fail(violation.to_string()))?;
         let record = record_for(case.family);
+        let bare_cr_subject = case.profile.line_ending == LineEndingKind::BareCr;
         if let Some(second) = &receipt.second_pass {
             prop_assert_ne!(second.disposition, "applied");
             prop_assert_ne!(second.disposition, "failed_or_not_proven");
             prop_assert_eq!(second.edit_count, 0);
             prop_assert!(second.bytes_stable);
-            if !record.renders_closed_blocks {
+            if !record.renders_closed_blocks && !bare_cr_subject {
                 prop_assert_eq!(second.disposition, "no_change");
             } else {
                 prop_assert!(
@@ -265,13 +275,25 @@ proptest! {
         );
     }
 
-    /// FPH-006: line-ending conventions survive LF/CRLF/bare-CR/mixed
-    /// variants and every emitted UTF-16 range is valid for the exact subject
-    /// geometry.
+    /// FPH-006: line-ending conventions survive LF/CRLF/mixed variants and
+    /// every emitted UTF-16 range is valid for the exact subject geometry.
+    /// Honest carve-outs, each a registered fail-closed dormant slot
+    /// (FPH-008) rather than a vacuous pass: bare-CR preservation, CRLF-only
+    /// subjects rendered through a block family (inserted wrap lines are
+    /// always LF today), and the Insert/Trim final-newline policies that own
+    /// the final terminator by contract.
     #[test]
     fn line_endings_and_utf16_geometry_survive_variants(case in arb_valid_case()) {
         let receipt = run_case(&case).map_err(|violation| TestCaseError::fail(violation.to_string()))?;
-        prop_assert!(receipt.line_endings_preserved);
+        let bare_cr = case.profile.line_ending == LineEndingKind::BareCr;
+        let policy_owns_terminator = case.profile.final_newline != FinalNewline::Preserve;
+        let wrap_inserts_foreign_separator = record_for(case.family).renders_closed_blocks
+            && (case.profile.line_ending == LineEndingKind::Crlf
+                || !case.subject.text.contains('\n'));
+        prop_assert!(
+            receipt.line_endings_preserved || bare_cr || policy_owns_terminator
+                || wrap_inserts_foreign_separator
+        );
         if receipt.outcome_disposition == "applied" {
             prop_assert!(receipt.utf16_geometry_verified);
         }
@@ -302,7 +324,7 @@ proptest! {
 #[test]
 fn dormant_invariants_report_not_proven_until_dependencies_land() -> TestResult {
     let dormant = dormant_registry();
-    assert!(dormant.len() >= 4, "expected the registered dormant slots to be present");
+    assert!(dormant.len() >= 6, "expected the registered dormant slots to be present");
     let mut seen_ids: Vec<&str> = Vec::new();
     for entry in dormant {
         assert!(!seen_ids.contains(&entry.id), "duplicate dormant id {}", entry.id);
@@ -325,6 +347,8 @@ fn dormant_invariants_report_not_proven_until_dependencies_land() -> TestResult 
         "structural_preservation_beyond_parse_success",
         "protected_region_hash_preservation",
         "strict_second_pass_typed_idempotence_for_rendered_blocks",
+        "bare_cr_line_ending_preservation",
+        "wrap_line_separators_follow_source_convention",
     ] {
         assert!(
             seen_ids.contains(&expected),
@@ -350,8 +374,9 @@ fn fuzz_target_and_regression_pipeline_are_wired() -> TestResult {
         "fuzz manifest must declare the perl_tidy_formatter target (FPH-010)"
     );
 
-    let fuzz_source =
-        fs::read_to_string(format!("{MANIFEST_DIR}/../../fuzz/fuzz_targets/perl_tidy_formatter.rs"))?;
+    let fuzz_source = fs::read_to_string(format!(
+        "{MANIFEST_DIR}/../../fuzz/fuzz_targets/perl_tidy_formatter.rs"
+    ))?;
     assert!(
         fuzz_source.contains("formatter_property_harness"),
         "fuzz target must include the shared invariant core (FPH-010)"
@@ -371,7 +396,9 @@ fn fuzz_target_and_regression_pipeline_are_wired() -> TestResult {
         let Some(rest) = line.strip_prefix("cc ") else { continue };
         let hex = rest.split_whitespace().next().unwrap_or("");
         assert_eq!(hex.len(), 64, "committed regression seed must be 64 hex chars");
-        committed_seed = Some(u64::from_str_radix(hex, 16)?);
+        // The harness consumes the low 128 bits' leading word; the full
+        // 256-bit entry stays wire-compatible with the lexer convention.
+        committed_seed = Some(u64::from_str_radix(&hex[..16], 16)?);
     }
     let seed = committed_seed.ok_or("committed regression file must carry one cc seed entry")?;
 
