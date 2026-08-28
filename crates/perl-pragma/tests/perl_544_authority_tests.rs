@@ -56,7 +56,11 @@ fn perl_544_bundle_is_explicit_and_excludes_enhanced_xx() {
     let perl_544 = features_enabled_by_version(PerlVersion::new(5, 44));
 
     assert_eq!(perl_544, expected);
-    assert_eq!(perl_544, perl_542, "Perl 5.44 keeps the 5.42 bundle membership");
+    assert_eq!(
+        perl_544,
+        perl_542,
+        "Perl 5.44 keeps the 5.42 bundle membership",
+    );
     assert!(
         !perl_544.contains(&"enhanced_xx"),
         "enhanced_xx remains opt-in under Perl 5.44",
@@ -82,7 +86,12 @@ fn explicit_feature_pragmas_toggle_enhanced_xx() {
 fn feature_all_and_experimental_admit_enhanced_xx() {
     let feature_all = program(vec![use_node("feature", &["':all'"], 0, 20)], 20);
     let experimental = program(
-        vec![use_node("experimental", &["'enhanced_xx'"], 0, 34)],
+        vec![use_node(
+            "experimental",
+            &["'enhanced_xx'"],
+            0,
+            34,
+        )],
         34,
     );
 
@@ -103,7 +112,9 @@ fn use_version_is_retained_in_snapshot() {
     let ast = program(vec![use_node("v5.44", &[], 0, 10)], 10);
 
     assert_eq!(
-        CompileTimePragmaEnvironment::build(&ast).snapshot_at(10).perl_version(),
+        CompileTimePragmaEnvironment::build(&ast)
+            .snapshot_at(10)
+            .perl_version(),
         Some(PerlVersion::new(5, 44)),
     );
 }
@@ -115,7 +126,9 @@ fn require_version_does_not_change_lexical_pragma_state() {
             NodeKind::FunctionCall {
                 name: "require".to_string(),
                 args: vec![Node::new(
-                    NodeKind::VString { value: "v5.44".to_string() },
+                    NodeKind::VString {
+                        value: "v5.44".to_string(),
+                    },
                     loc(8, 13),
                 )],
             },
@@ -135,7 +148,12 @@ fn require_version_does_not_change_lexical_pragma_state() {
 #[test]
 fn conditional_version_target_retains_version_authority() {
     let ast = program(
-        vec![use_node("if", &["$]", ">=", "5.044", "v5.44"], 0, 30)],
+        vec![use_node(
+            "if",
+            &["$]", ">=", "5.044", "v5.44"],
+            0,
+            30,
+        )],
         30,
     );
 
@@ -150,7 +168,9 @@ fn conditional_version_target_retains_version_authority() {
 #[test]
 fn nested_version_declaration_restores_outer_authority() {
     let inner = Node::new(
-        NodeKind::Block { statements: vec![use_node("v5.44", &[], 20, 30)] },
+        NodeKind::Block {
+            statements: vec![use_node("v5.44", &[], 20, 30)],
+        },
         loc(15, 50),
     );
     let ast = program(vec![use_node("v5.42", &[], 0, 10), inner], 50);
@@ -158,14 +178,14 @@ fn nested_version_declaration_restores_outer_authority() {
 
     assert_eq!(
         environment.snapshot_at(12).perl_version(),
-        Some(PerlVersion::new(5, 42))
+        Some(PerlVersion::new(5, 42)),
     );
     assert_eq!(
         environment.snapshot_at(35).perl_version(),
-        Some(PerlVersion::new(5, 44))
+        Some(PerlVersion::new(5, 44)),
     );
     assert_eq!(
         environment.snapshot_at(50).perl_version(),
-        Some(PerlVersion::new(5, 42))
+        Some(PerlVersion::new(5, 42)),
     );
 }
