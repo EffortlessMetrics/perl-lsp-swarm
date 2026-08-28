@@ -391,13 +391,16 @@ pub fn resolve_import(module: &str, raw_args: &str) -> Option<ResolvedImport> {
     stripped = RENAME_FIX.replace_all(&stripped, " ").into_owned();
 
     let atoms = tokenize_import_args(&stripped);
+    let mut atom_index = 0;
+    let mut target_helpers: BTreeSet<String> = BTreeSet::new();
 
     let mut positives: Vec<String> = Vec::new();
     let mut exclusions: BTreeSet<String> = BTreeSet::new();
     let mut include_default_tag = false;
     let mut include_all_tag = false;
 
-    for atom in &atoms {
+    while let Some(atom) = atoms.get(atom_index) {
+        atom_index += 1;
         let atom = atom.trim();
         if atom.is_empty() {
             continue;
@@ -419,8 +422,38 @@ pub fn resolve_import(module: &str, raw_args: &str) -> Option<ResolvedImport> {
             continue;
         }
         if atom.starts_with('-') {
-            // Import option (`-no_strict`, `-target`, `-import`, ...): consumed
-            // elsewhere, not a positive symbol.
+            // Test2::V0 and Test2::V1 consume the value after `-target` before
+            // export processing. The flat atom view must do the same or a
+            // single-segment package name/hash key looks like an imported sub.
+            if atom == "-target" {
+                let mut brace_depth = 0_isize;
+                let mut saw_hash = false;
+                let mut expect_key = true;
+                while let Some(value) = atoms.get(atom_index) {
+                    atom_index += 1;
+                    let opens = value.matches('{').count() as isize;
+                    let closes = value.matches('}').count() as isize;
+                    if !saw_hash && opens == 0 {
+                        target_helpers.insert("CLASS".to_string());
+                        break;
+                    }
+                    saw_hash |= opens > 0;
+                    brace_depth += opens;
+                    let candidate = strip_quotes(value.trim_matches(['{', '}']).trim());
+                    if brace_depth == 1 && !candidate.is_empty() {
+                        if expect_key && is_bareword(candidate) {
+                            target_helpers.insert(candidate.to_string());
+                        }
+                        expect_key = !expect_key;
+                    }
+                    brace_depth -= closes;
+                    if saw_hash && brace_depth <= 0 {
+                        break;
+                    }
+                }
+            }
+            // Other import options are flags whose effects are handled
+            // elsewhere; no option token is a positive symbol.
             continue;
         }
         if is_bareword(atom) {
@@ -465,6 +498,11 @@ pub fn resolve_import(module: &str, raw_args: &str) -> Option<ResolvedImport> {
     }
     for excluded in &exclusions {
         symbols.remove(excluded);
+    }
+    // Test2::Tools::Target installs these helpers separately from the export
+    // list, so they neither suppress defaults nor participate in exclusions.
+    for helper in target_helpers {
+        symbols.insert(helper);
     }
 
     Some(ResolvedImport { symbols, pragmas })
