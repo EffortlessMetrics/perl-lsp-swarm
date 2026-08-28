@@ -1,40 +1,82 @@
 use crate::PragmaState;
 
 /// Parsed Perl version from a lexical `use v...;` or `use 5.xxx;` pragma.
+///
+/// The three components preserve the declared `major.minor.patch` identity so
+/// bundle selection cannot confuse `v5.44.1` with `v5.44` or read the decimal
+/// form `5.044001` as minor `44001`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct PerlVersion {
     /// Major Perl version component.
     pub major: u32,
     /// Minor Perl version component.
     pub minor: u32,
+    /// Patch (or developer-release) component; `0` for two-component forms.
+    pub patch: u32,
 }
 
 impl PerlVersion {
-    /// Create a new Perl version value.
+    /// Create a new Perl version value with no patch component.
     pub const fn new(major: u32, minor: u32) -> Self {
-        Self { major, minor }
+        Self { major, minor, patch: 0 }
+    }
+
+    /// Create a new Perl version value with an explicit patch component.
+    pub const fn with_patch(major: u32, minor: u32, patch: u32) -> Self {
+        Self { major, minor, patch }
     }
 }
 
-/// Parse a Perl version string into a major/minor pair.
+/// Parse a Perl version string into a `major.minor.patch` triple.
 ///
-/// Handles lexical version pragmas such as:
-/// - `v5.36`
-/// - `v5.36.0`
-/// - `5.036`
-/// - `5.10`
-/// - developer releases like `5.012_001`
+/// Handles lexical version pragmas following Perl's own version semantics:
+/// - dotted forms keep their literal components: `v5.36`, `v5.36.0`, `5.44.1`
+/// - single decimal forms group the fraction into three-digit components:
+///   `5.036` and `5.36` mean 5.36.0; `5.044001` and `5.044_001` mean 5.44.1
+/// - developer releases like `5.012_001` keep the release component
 pub fn parse_perl_version(module: &str) -> Option<PerlVersion> {
     let s = module.strip_prefix('v').unwrap_or(module);
-    let mut parts = s.splitn(3, '.');
+    let mut parts = s.split('.');
 
     let major = parse_version_component(parts.next()?)?;
-    let minor = match parts.next() {
-        Some(part) => parse_version_component(part)?,
-        None => 0,
+
+    // A second dotted component switches to literal interpretation; a single
+    // fractional group follows Perl's three-digit decimal regularization.
+    let (minor, patch) = match parts.next() {
+        Some(fraction) => match parts.next() {
+            Some(patch) => (parse_version_component(fraction)?, parse_version_component(patch)?),
+            None => parse_decimal_fraction(fraction)?,
+        },
+        None => (0, 0),
     };
 
-    Some(PerlVersion::new(major, minor))
+    Some(PerlVersion::with_patch(major, minor, patch))
+}
+
+/// Parse one decimal fraction as Perl-regularized three-digit groups.
+///
+/// The first group is the minor version as written (`44` and `044` both mean
+/// minor 44); the next group is the patch component, right-padded when short
+/// (`044001` means 44.1, `0441` means 44.100), matching `version.pm`'s
+/// decimal regularization.
+fn parse_decimal_fraction(fraction: &str) -> Option<(u32, u32)> {
+    let digits: String = fraction.chars().filter(|c| *c != '_').collect();
+    if digits.is_empty() || !digits.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    let (minor_group, patch_group) = if digits.len() <= 3 {
+        (digits.as_str(), "")
+    } else {
+        (digits.get(..3)?, digits.get(3..).unwrap_or_default())
+    };
+    let minor = minor_group.parse().ok()?;
+    let patch = match patch_group.len() {
+        0 => 0,
+        1 => patch_group.parse::<u32>().ok()? * 100,
+        2 => patch_group.parse::<u32>().ok()? * 10,
+        _ => patch_group.get(..3).and_then(|group| group.parse().ok()).unwrap_or(0),
+    };
+    Some((minor, patch))
 }
 
 fn parse_version_component(component: &str) -> Option<u32> {

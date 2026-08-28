@@ -15,7 +15,8 @@ pub(crate) use walk::build_ranges;
 pub(crate) struct TrackedPragmaState {
     /// Effective pragma state exposed through legacy and snapshot queries.
     pub(crate) state: PragmaState,
-    /// Exact lexical version declaration active for this tracked state.
+    /// Perl version declaration (major.minor.patch) active for this tracked
+    /// state, normalized from the lexical `use VERSION` source form.
     pub(crate) perl_version: Option<PerlVersion>,
 }
 
