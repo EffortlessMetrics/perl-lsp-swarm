@@ -905,6 +905,7 @@ impl<'a> Parser<'a> {
                                     )
                                 });
 
+                            let mut scalar_filehandle = false;
                             if self.is_implicit_arg_terminator()
                                 || is_nullary_without_args
                                 || is_comma_terminated
@@ -1114,8 +1115,18 @@ impl<'a> Parser<'a> {
                                 {
                                     args.push(self.parse_shift()?);
                                 } else {
+                                    scalar_filehandle =
+                                        self.is_expression_scalar_filehandle_pattern(name);
+
                                     // Parse the first argument
-                                    args.push(self.parse_assignment_or_declaration()?);
+                                    if scalar_filehandle {
+                                        // Parse the filehandle alone. Parsing it as a full
+                                        // assignment first would consume `$fh %hash` as a
+                                        // modulo expression and lose the indirect-call boundary.
+                                        args.push(self.parse_primary()?);
+                                    } else {
+                                        args.push(self.parse_assignment_or_declaration()?);
+                                    }
 
                                     // Generic bare calls can also take implicit list arguments
                                     // after a leading block/hash argument, just like parse_args()
@@ -1215,10 +1226,30 @@ impl<'a> Parser<'a> {
                                     .location
                                     .end;
 
-                                expr = Node::new(
-                                    NodeKind::FunctionCall { name: name.clone(), args },
-                                    SourceLocation { start, end },
-                                );
+                                expr = if scalar_filehandle {
+                                    let mut message_args = args;
+                                    let object = if message_args.is_empty() {
+                                        return Err(ParseError::syntax(
+                                            "Missing scalar filehandle",
+                                            start,
+                                        ));
+                                    } else {
+                                        message_args.remove(0)
+                                    };
+                                    Node::new(
+                                        NodeKind::IndirectCall {
+                                            method: name.clone(),
+                                            object: Box::new(object),
+                                            args: message_args,
+                                        },
+                                        SourceLocation { start, end },
+                                    )
+                                } else {
+                                    Node::new(
+                                        NodeKind::FunctionCall { name: name.clone(), args },
+                                        SourceLocation { start, end },
+                                    )
+                                };
                             }
                         }
                     } else if matches!(expr.kind, NodeKind::Undef) {

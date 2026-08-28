@@ -215,6 +215,48 @@ impl<'a> Parser<'a> {
         false
     }
 
+    /// Check the expression-context form of a scalar-filehandle output call.
+    ///
+    /// At this point in `parse_postfix_chain`, the builtin name has already been
+    /// parsed and the current token is the prospective filehandle. Keep the
+    /// admission deliberately narrow so the generic expression parser does not
+    /// consume `$fh %hash` as a modulo expression before the indirect-call route
+    /// can see it.
+    fn is_expression_scalar_filehandle_pattern(&mut self, name: &str) -> bool {
+        if !matches!(name, "print" | "printf" | "say") {
+            return false;
+        }
+
+        let Some(filehandle) = self.tokens.peek().ok() else {
+            return false;
+        };
+        if !filehandle.text.starts_with('$') || filehandle.text.len() <= 1 {
+            return false;
+        }
+
+        let Some(argument) = self.tokens.peek_second().ok() else {
+            return false;
+        };
+        if matches!(
+            argument.kind(),
+            TokenKind::Comma
+                | TokenKind::FatArrow
+                | TokenKind::RightParen
+                | TokenKind::RightBrace
+                | TokenKind::RightBracket
+                | TokenKind::Eof
+        ) {
+            return false;
+        }
+
+        argument.kind() == TokenKind::String
+            || argument.kind() == TokenKind::LeftParen
+            || argument.kind() == TokenKind::Number
+            || argument.text.starts_with('$')
+            || argument.text.starts_with('@')
+            || argument.text.starts_with('%')
+    }
+
     /// Statement-start unknown lowercase bareword followed by sigiled arguments.
     ///
     /// Per PARSER_CONTRACTS (#1788): user-defined names like `my_custom_method`

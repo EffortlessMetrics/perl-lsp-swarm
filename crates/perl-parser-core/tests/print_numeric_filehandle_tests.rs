@@ -84,19 +84,19 @@ fn assert_clean_regular_call(source: &str) -> Result<(), String> {
 }
 
 #[test]
-fn supported_builtins_preserve_numeric_scalar_filehandles_at_statement_start() -> Result<(), String> {
-    for (method, source) in [
-        ("print", "print $fh 1;"),
-        ("printf", "printf $fh 1;"),
-        ("say", "say $fh 1;"),
-    ] {
+fn supported_builtins_preserve_numeric_scalar_filehandles_at_statement_start() -> Result<(), String>
+{
+    for (method, source) in
+        [("print", "print $fh 1;"), ("printf", "printf $fh 1;"), ("say", "say $fh 1;")]
+    {
         assert_scalar_filehandle_call(source, method, ExpectedArgument::Number("1"))?;
     }
     Ok(())
 }
 
 #[test]
-fn supported_builtins_preserve_numeric_scalar_filehandles_in_expression_context() -> Result<(), String> {
+fn supported_builtins_preserve_numeric_scalar_filehandles_in_expression_context()
+-> Result<(), String> {
     for (method, source) in [
         ("print", "my $ok = print $fh 1;"),
         ("printf", "my $ok = printf $fh 1;"),
@@ -126,12 +126,20 @@ fn numeric_terms_do_not_enable_other_indirect_builtins() -> Result<(), String> {
 
 #[test]
 fn comma_control_stays_a_regular_print_list() -> Result<(), String> {
-    assert_clean_regular_call("print $fh, 1;")
+    for source in ["print $fh, 1;", "my $ok = print $fh, 1;"] {
+        assert_clean_regular_call(source)?;
+    }
+    Ok(())
 }
 
 #[test]
 fn subscript_controls_stay_regular_print_operands() -> Result<(), String> {
-    for source in ["print $hash{key};", "print $array[0];"] {
+    for source in [
+        "print $hash{key};",
+        "print $array[0];",
+        "my $ok = print $hash{key};",
+        "my $ok = print $array[0];",
+    ] {
         assert_clean_regular_call(source)?;
     }
     Ok(())
