@@ -9,6 +9,15 @@ fn completions_at_end(source: &str) -> Vec<CompletionItem> {
         .get_completions(source, source.len())
 }
 
+fn completions_at_marker(source: &str) -> Vec<CompletionItem> {
+    const MARKER: &str = "<|>";
+    let position = source.find(MARKER).expect("completion marker should be present");
+    let source = source.replacen(MARKER, "", 1);
+    let ast = Parser::new(&source).parse_with_recovery().ast;
+    CompletionProvider::new_with_index_and_source(&ast, &source, None)
+        .get_completions(&source, position)
+}
+
 fn labels(items: &[CompletionItem]) -> Vec<String> {
     items.iter().map(|item| item.label.to_string()).collect()
 }
@@ -52,6 +61,51 @@ fn bare_path_factory_call_enables_instance_catalog() {
     assert!(has_label(&item_labels, "children"));
     assert!(has_label(&item_labels, "chmod"));
     assert!(!has_label(&item_labels, "slurp"));
+}
+
+#[test]
+fn path_factory_respects_explicit_empty_and_versioned_imports() {
+    let explicit = labels(&completions_at_end(
+        "use Path::Tiny qw(path);\nmy $file = path(\"notes.txt\");\n$file->sl",
+    ));
+    assert!(has_label(&explicit, "slurp"));
+
+    let versioned = labels(&completions_at_end(
+        "use Path::Tiny 0.150;\nmy $file = path(\"notes.txt\");\n$file->sl",
+    ));
+    assert!(has_label(&versioned, "slurp"));
+
+    for source in [
+        "use Path::Tiny qw();\nmy $file = path(\"notes.txt\");\n$file->sl",
+        "use Path::Tiny ();\nmy $file = path(\"notes.txt\");\n$file->sl",
+        "use Path::Tiny qw(cwd);\nmy $file = path(\"notes.txt\");\n$file->sl",
+    ] {
+        let item_labels = labels(&completions_at_end(source));
+        assert!(
+            !has_label(&item_labels, "slurp"),
+            "non-imported path factory should stay quiet in {source:?}"
+        );
+    }
+
+    let class_api = labels(&completions_at_end(
+        "use Path::Tiny ();\nmy $file = Path::Tiny->new(\"notes.txt\");\n$file->sl",
+    ));
+    assert!(
+        has_label(&class_api, "slurp"),
+        "empty symbol imports still load the Path::Tiny class API"
+    );
+}
+
+#[test]
+fn path_api_requires_use_before_completion_position() {
+    let factory_labels = labels(&completions_at_marker(
+        "my $file = path(\"notes.txt\");\n$file->sl<|>\nuse Path::Tiny;",
+    ));
+    assert!(!has_label(&factory_labels, "slurp"));
+
+    let static_labels = labels(&completions_at_marker("Path::Tiny->te<|>\nuse Path::Tiny;"));
+    assert!(!has_label(&static_labels, "tempfile"));
+    assert!(!has_label(&static_labels, "tempdir"));
 }
 
 #[test]
