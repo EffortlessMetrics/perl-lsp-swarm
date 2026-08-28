@@ -1,8 +1,8 @@
 # perl-lsp Documentation
 
-Use this directory as the short docs front door. It tells you where to go next
-without making you learn the workspace layout first. For the full Diataxis-style
-map of the docs tree, use [INDEX.md](INDEX.md).
+Use this page as the short docs route map. It tells you where to go next
+without making you learn the workspace layout first. For the complete
+inventory, use [INDEX.md](INDEX.md).
 
 ## Diataxis in This Repository
 
@@ -48,7 +48,7 @@ Start here if you need to orient quickly before diving into a crate:
 | `crates/perl-lexer/` | Context-aware tokenizer | Lexing/token stream changes |
 | `crates/perl-parser-core/` | Parser shared infrastructure | Low-level parser utilities and common primitives |
 | `crates/perl-semantic-analyzer/` | Scope/symbol resolution | Name resolution, cross-reference semantics |
-| `crates/perl-workspace-index/` | Cross-file indexing and symbol lookup | Workspace search/refactor surfaces |
+| `crates/perl-workspace/` | Cross-file indexing and symbol lookup | Workspace search/refactor surfaces |
 | `crates/tree-sitter-perl-c/` | C tree-sitter grammar binding | Compatibility for tree-sitter consumers |
 | `crates/tree-sitter-perl-rs/` | Rust-native tree-sitter-style facade over v3 parser | Tree-sitter ergonomics on native parser stack |
 | `docs/project/` | Status, roadmap, process, governance docs | "What is true now?" and "what ships next?" |
