@@ -1331,11 +1331,22 @@ impl ClassModelBuilder {
     }
 
     fn object_pad_writer_name(field_name: &str, traits: &[String]) -> Option<String> {
-        if traits.iter().any(|trait_name| trait_name == "writer") {
-            Some(format!("set_{}", Self::object_pad_public_name(field_name)))
-        } else {
-            None
+        for trait_name in traits {
+            if trait_name == "writer" {
+                return Some(format!("set_{}", Self::object_pad_public_name(field_name)));
+            }
+
+            if let Some(writer_name) = trait_name
+                .strip_prefix("writer(")
+                .and_then(|writer_name| writer_name.strip_suffix(')'))
+                .map(str::trim)
+                .filter(|writer_name| !writer_name.is_empty())
+            {
+                return Some(writer_name.to_owned());
+            }
         }
+
+        None
     }
 
     fn object_pad_accessor_name(field_name: &str, traits: &[String]) -> Option<String> {
