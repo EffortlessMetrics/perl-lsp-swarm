@@ -4,6 +4,7 @@
 //! source file across workspace discovery and runtime file operations.
 
 use std::borrow::Cow;
+use std::io::Read;
 use std::path::Path;
 
 /// Number of bytes to inspect for binary content detection.
@@ -11,6 +12,9 @@ use std::path::Path;
 /// 4 KB is enough to catch all common binary formats (ELF, PE, ZIP, PNG, …)
 /// while being cheap to scan.
 const BINARY_PROBE_BYTES: usize = 4096;
+
+/// Maximum number of bytes read when classifying an extensionless script.
+const SHEBANG_PROBE_BYTES: usize = 256;
 
 /// Minimum ratio of NUL bytes (within the probe window) required to classify
 /// content as binary.
@@ -157,10 +161,91 @@ pub fn is_perl_source_extension(extension: &str) -> bool {
     PERL_SOURCE_EXTENSIONS.iter().any(|candidate| candidate.eq_ignore_ascii_case(ext))
 }
 
+fn has_perl_source_extension(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(is_perl_source_extension)
+}
+
 /// Returns `true` if `path` points to a recognized Perl source file.
+///
+/// In addition to canonical extensions, this recognizes existing regular files
+/// with no extension whose first line selects a Perl interpreter. Extension
+/// checks remain path-only; only extensionless candidates incur a bounded file
+/// read.
 #[must_use]
 pub fn is_perl_source_path(path: &Path) -> bool {
-    path.extension().and_then(|ext| ext.to_str()).is_some_and(is_perl_source_extension)
+    has_perl_source_extension(path) || is_extensionless_perl_script(path)
+}
+
+fn is_extensionless_perl_script(path: &Path) -> bool {
+    path.extension().is_none() && has_perl_shebang(path)
+}
+
+fn has_perl_shebang(path: &Path) -> bool {
+    let Ok(file) = std::fs::File::open(path) else {
+        return false;
+    };
+    if !file.metadata().is_ok_and(|metadata| metadata.is_file()) {
+        return false;
+    }
+
+    let mut prefix = Vec::with_capacity(SHEBANG_PROBE_BYTES);
+    let mut limited = file.take(SHEBANG_PROBE_BYTES as u64);
+    if limited.read_to_end(&mut prefix).is_err() {
+        return false;
+    }
+    let first_line = prefix.split(|byte| *byte == b'\n').next().unwrap_or_default();
+    let Ok(first_line) = std::str::from_utf8(first_line) else {
+        return false;
+    };
+
+    is_perl_shebang_line(first_line)
+}
+
+fn is_perl_shebang_line(line: &str) -> bool {
+    let Some(command) = line.strip_prefix("#!") else {
+        return false;
+    };
+    let mut words = command.split_ascii_whitespace();
+    let Some(interpreter) = words.next() else {
+        return false;
+    };
+    let interpreter = interpreter.rsplit('/').next().unwrap_or(interpreter);
+
+    if is_perl_interpreter_name(interpreter) {
+        return true;
+    }
+    if interpreter != "env" {
+        return false;
+    }
+
+    let Some(command) = words.next() else {
+        return false;
+    };
+    let command = if command == "-S" {
+        let Some(command) = words.next() else {
+            return false;
+        };
+        command
+    } else {
+        command
+    };
+    let command = command.rsplit('/').next().unwrap_or(command);
+    is_perl_interpreter_name(command)
+}
+
+fn is_perl_interpreter_name(name: &str) -> bool {
+    if name == "perl" {
+        return true;
+    }
+
+    name.strip_prefix("perl").is_some_and(|version| {
+        !version.is_empty()
+            && version.split('.').all(|component| {
+                !component.is_empty() && component.bytes().all(|byte| byte.is_ascii_digit())
+            })
+    })
 }
 
 /// Returns `true` if `uri` or path-like string points to a Perl source file.
@@ -174,7 +259,7 @@ pub fn is_perl_source_path(path: &Path) -> bool {
 pub fn is_perl_source_uri(uri: &str) -> bool {
     let path_part = uri.split_once(['?', '#']).map_or(uri, |(path_prefix, _)| path_prefix);
     let decoded_path = percent_decode_uri_path(path_part);
-    is_perl_source_path(Path::new(decoded_path.as_ref()))
+    has_perl_source_extension(Path::new(decoded_path.as_ref()))
 }
 
 fn percent_decode_uri_path(path: &str) -> Cow<'_, str> {
@@ -220,8 +305,8 @@ fn hex_value(byte: u8) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::{
-        BINARY_PROBE_BYTES, PERL_SOURCE_EXTENSIONS, is_binary_content, is_perl_source_extension,
-        is_perl_source_path, is_perl_source_uri,
+        BINARY_PROBE_BYTES, PERL_SOURCE_EXTENSIONS, is_binary_content, is_perl_shebang_line,
+        is_perl_source_extension, is_perl_source_path, is_perl_source_uri,
     };
     use std::path::Path;
 
@@ -254,6 +339,18 @@ mod tests {
         assert!(is_perl_source_path(Path::new("/var/www/cgi-bin/upload.CGI")));
         assert!(!is_perl_source_path(Path::new("/workspace/README.md")));
         assert!(!is_perl_source_path(Path::new("/workspace/no_extension")));
+    }
+
+    #[test]
+    fn classifies_perl_shebang_lines_without_lookalike_false_positives() {
+        assert!(is_perl_shebang_line("#!/usr/bin/perl"));
+        assert!(is_perl_shebang_line("#!/usr/local/bin/perl5.40 -w"));
+        assert!(is_perl_shebang_line("#!/usr/bin/env perl"));
+        assert!(is_perl_shebang_line("#!/usr/bin/env -S perl -w"));
+        assert!(!is_perl_shebang_line("#!/usr/bin/superl"));
+        assert!(!is_perl_shebang_line("#!/usr/bin/perlbrew"));
+        assert!(!is_perl_shebang_line("#!/bin/sh # perl"));
+        assert!(!is_perl_shebang_line("use strict;"));
     }
 
     #[test]
