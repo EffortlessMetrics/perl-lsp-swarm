@@ -56,10 +56,11 @@ broader `perl-tdd-support` package solely to obtain these helpers.
 
 ### Proof ownership for mechanical conversions
 
-`perl-test-must` owns the canonical helper contract. Its public contract and
-process-isolated tests prove helper naming, retained context, unexpected-branch
-details, payload type/value rendering, and caller attribution. A mechanical
-site conversion should not reproduce that helper proof.
+`perl-test-must` owns the canonical helper contract. Its in-process contract
+tests prove helper naming, retained context, unexpected-branch details, and
+payload type/value rendering. The separate `track_caller.rs` integration test
+runs each failing helper in a child process and proves caller attribution. A
+mechanical site conversion should not reproduce either helper proof.
 
 The changed site must instead prove that:
 
