@@ -8,6 +8,7 @@ on:
       - .github/workflows/zz-patch-13228.yml
       - .github/patch-13228.py
       - .github/patch-13228-token-tests.py
+      - .github/patch-13228-grammars.py
 
 permissions:
   contents: write
@@ -20,7 +21,7 @@ jobs:
       - name: Checkout branch
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 0
+          fetch-depth: 1
 
       - name: Configure Rust
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable
@@ -52,21 +53,28 @@ jobs:
           if adjusted != 2:
               raise SystemExit(f'expected to adjust two token role tables, adjusted {adjusted}')
           source = '\n'.join(lines) + '\n'
-          source = source.replace(
-              "'    \"&&=\" | \"||=\" | \"//=\" |'",
-              "'    | \"&&=\" | \"||=\" | \"//=\" |'",
-          )
-          source = source.replace(
-              "'    \"&&=\" | \"||=\" | \"^^=\" | \"//=\" |'",
-              "'    | \"&&=\" | \"||=\" | \"^^=\" | \"//=\" |'",
-          )
 
-          start = source.index('# Keep exhaustive/manual token test tables')
-          end = source.index('# ---------------------------------------------------------------------------\n# Longest-match lexer recognition')
-          Path('/tmp/patch-13228-core.py').write_text(source[:start] + source[end:])
+          token_tests_start = source.index('# Keep exhaustive/manual token test tables')
+          token_tests_end = source.index(
+              '# ---------------------------------------------------------------------------\n'
+              '# Longest-match lexer recognition'
+          )
+          source = source[:token_tests_start] + source[token_tests_end:]
+
+          grammar_start = source.index(
+              '# ---------------------------------------------------------------------------\n'
+              '# Secondary parser grammars'
+          )
+          grammar_end = source.index(
+              '# ---------------------------------------------------------------------------\n'
+              '# Focused executable contracts'
+          )
+          source = source[:grammar_start] + source[grammar_end:]
+          Path('/tmp/patch-13228-core.py').write_text(source)
           PY
           python3 /tmp/patch-13228-core.py
           python3 .github/patch-13228-token-tests.py
+          python3 .github/patch-13228-grammars.py
           cargo fmt --all
           git diff --check
 
