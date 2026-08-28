@@ -226,6 +226,7 @@ impl DiagnosticsProvider {
         module_resolver: Option<&dyn Fn(&str, usize) -> bool>,
         module_search_context: &[ModuleSearchPathDisplay],
         source_path: Option<&Path>,
+        project_version: Option<&str>,
     ) -> Vec<Diagnostic> {
         self.get_diagnostics_with_path_and_semantics_impl(
             ast,
@@ -235,7 +236,7 @@ impl DiagnosticsProvider {
             &[],
             Some(module_search_context),
             source_path,
-            None,
+            project_version,
             FileId(0),
             &NullSemanticQueries,
         )
@@ -318,6 +319,7 @@ impl DiagnosticsProvider {
         module_resolver: Option<&dyn Fn(&str, usize) -> bool>,
         module_search_context: &[ModuleSearchPathDisplay],
         source_path: Option<&Path>,
+        project_version: Option<&str>,
         file_id: FileId,
         semantic_queries: &Q,
     ) -> Vec<Diagnostic> {
@@ -329,7 +331,7 @@ impl DiagnosticsProvider {
             &[],
             Some(module_search_context),
             source_path,
-            None,
+            project_version,
             file_id,
             semantic_queries,
         )

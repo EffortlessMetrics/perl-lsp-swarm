@@ -749,6 +749,9 @@ impl LspServer {
                 .map(|context| context.search_display_paths())
                 .unwrap_or_default();
             let source_path = source_path_from_uri(uri);
+            let project_version = self
+                .folder_for_doc_uri(uri)
+                .and_then(|folder| folder.project_config.as_ref()?.perl.version.clone());
 
             // Wait for index build, then sample staleness before touching the
             // workspace index tier (#5016 item 2).  Sample after readiness and
@@ -792,6 +795,7 @@ impl LspServer {
                                         Some(&resolver),
                                         &search_context,
                                         source_path.as_deref(),
+                                        project_version.as_deref(),
                                         file_id,
                                         &queries,
                                     )
@@ -811,6 +815,7 @@ impl LspServer {
                                         Some(&resolver),
                                         &search_context,
                                         source_path.as_deref(),
+                                        project_version.as_deref(),
                                         file_id,
                                         &queries,
                                     )
@@ -826,6 +831,7 @@ impl LspServer {
                         Some(&resolver),
                         &search_context,
                         source_path.as_deref(),
+                        project_version.as_deref(),
                     )
                 })
             };
@@ -837,6 +843,7 @@ impl LspServer {
                 Some(&resolver),
                 &search_context,
                 source_path.as_deref(),
+                project_version.as_deref(),
             );
 
             // Add configured policy critic diagnostics.
@@ -1875,6 +1882,9 @@ impl LspServer {
                     .map(|context| context.search_display_paths())
                     .unwrap_or_default();
                 let source_path = source_path_from_uri(uri_str);
+                let project_version = self
+                    .folder_for_doc_uri(uri_str)
+                    .and_then(|folder| folder.project_config.as_ref()?.perl.version.clone());
 
                 #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
                 let workspace_index_tier_enabled =
@@ -1907,6 +1917,7 @@ impl LspServer {
                                             Some(&resolver),
                                             &search_context,
                                             source_path.as_deref(),
+                                            project_version.as_deref(),
                                             file_id,
                                             &queries,
                                         )
@@ -1926,6 +1937,7 @@ impl LspServer {
                                             Some(&resolver),
                                             &search_context,
                                             source_path.as_deref(),
+                                            project_version.as_deref(),
                                             file_id,
                                             &queries,
                                         )
@@ -1941,6 +1953,7 @@ impl LspServer {
                             Some(&resolver),
                             &search_context,
                             source_path.as_deref(),
+                            project_version.as_deref(),
                         )
                     })
                 };
@@ -1952,6 +1965,7 @@ impl LspServer {
                     Some(&resolver),
                     &search_context,
                     source_path.as_deref(),
+                    project_version.as_deref(),
                 );
 
                 // Add native critic diagnostics when explicitly selected.
@@ -4312,6 +4326,61 @@ mod tests {
             Some(workspace.as_path()),
             "workspace_root must fall back to root_path when no folder contains the document"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn build_context_keeps_project_version_isolated_to_owning_folder()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let folder_a = temp.path().join("folder-a");
+        let folder_b = temp.path().join("folder-b");
+        let script_b = folder_b.join("script.pl");
+        std::fs::create_dir_all(&folder_a)?;
+        std::fs::create_dir_all(&folder_b)?;
+        std::fs::write(&script_b, "sub f ($x) { $x }\n")?;
+        let doc_uri = url::Url::from_file_path(&script_b).map_err(|_| "bad uri")?.to_string();
+
+        let mut config_a = perl_lsp_rs_core::config::ProjectConfig::default();
+        config_a.perl.version = Some("5.20".to_string());
+        let mut config_b = perl_lsp_rs_core::config::ProjectConfig::default();
+        config_b.perl.version = Some("5.40".to_string());
+
+        let (server, _buf) = make_server_with_capture();
+        let mut folders = server.workspace_folders.lock();
+        folders.push(
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(
+                url::Url::from_directory_path(&folder_a).map_err(|_| "bad uri_a")?.to_string(),
+            )
+            .with_path(folder_a)
+            .with_project_config(config_a),
+        );
+        folders.push(
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(
+                url::Url::from_directory_path(&folder_b).map_err(|_| "bad uri_b")?.to_string(),
+            )
+            .with_path(folder_b)
+            .with_project_config(config_b),
+        );
+        drop(folders);
+
+        let context = PullDiagnosticsOrchestrator::new().build_context(&server, &doc_uri);
+        assert_eq!(context.project_version.as_deref(), Some("5.40"));
+        Ok(())
+    }
+
+    #[test]
+    fn build_context_is_rootless_without_project_version_authority()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let script = temp.path().join("script.pl");
+        std::fs::write(&script, "sub f ($x) { $x }\n")?;
+        let doc_uri = url::Url::from_file_path(&script).map_err(|_| "bad uri")?.to_string();
+        let (server, _buf) = make_server_with_capture();
+
+        let context = PullDiagnosticsOrchestrator::new().build_context(&server, &doc_uri);
+        assert!(context.project_version.is_none());
+        assert!(context.identity_root_key.is_none());
         Ok(())
     }
 

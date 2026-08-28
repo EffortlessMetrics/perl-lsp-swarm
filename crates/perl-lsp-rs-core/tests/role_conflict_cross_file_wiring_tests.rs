@@ -65,6 +65,7 @@ fn pl303_diags_cross_file(
                 None,
                 &[],
                 None,
+                None,
                 file_id,
                 &queries,
             );

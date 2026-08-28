@@ -128,6 +128,11 @@ pub fn check_version_compat(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
     check_version_compat_with_project_version(node, diagnostics, None);
 }
 
+/// Check version compatibility using an optional folder-owned fallback target.
+///
+/// A source `use VERSION` declaration remains authoritative. When the source
+/// declares no version, `project_version` supplies the PL900 target only if its
+/// complete configured spelling is valid; malformed values fail closed.
 pub fn check_version_compat_with_project_version(
     node: &Node,
     diagnostics: &mut Vec<Diagnostic>,
@@ -183,7 +188,7 @@ pub fn check_version_compat_with_project_version(
     let using_project_version = declared_version.is_none();
     let declared_version = match declared_version {
         Some(v) => v,
-        None => match project_version.and_then(|value| parse_perl_version(value.trim())) {
+        None => match project_version.and_then(parse_configured_project_version) {
             Some(v) => v,
             None => return,
         },
@@ -506,6 +511,21 @@ pub fn check_version_compat_with_project_version(
             diagnostic.message.push_str(" (target from project [perl].version)");
         }
     }
+}
+
+fn parse_configured_project_version(value: &str) -> Option<PerlVersion> {
+    let value = value.trim();
+    let version = value.strip_prefix('v').unwrap_or(value);
+    if version.is_empty()
+        || version.split('.').any(|component| {
+            let component = component.split_once('_').map_or(component, |(head, _)| head);
+            component.parse::<u32>().is_err()
+        })
+    {
+        return None;
+    }
+
+    parse_perl_version(value)
 }
 
 /// Return the minimum (major, minor) for a named feature from the table.
@@ -929,6 +949,15 @@ mod tests {
         let diags = version_compat_diags_with_project_version(
             "sub f ($x) { return $x; }",
             Some("not-a-version"),
+        );
+        assert!(diags.is_empty());
+    }
+
+    #[test]
+    fn malformed_project_version_suffix_fails_closed() {
+        let diags = version_compat_diags_with_project_version(
+            "sub f ($x) { return $x; }",
+            Some("5.20.garbage"),
         );
         assert!(diags.is_empty());
     }
