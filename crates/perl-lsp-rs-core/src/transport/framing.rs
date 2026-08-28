@@ -403,8 +403,8 @@ pub fn log_response(response: &JsonRpcResponse) {
 #[cfg(test)]
 mod tests {
     use super::{
-        log_response, read_message, write_message, write_notification, ContentLengthFramer,
-        ContentLengthMessageReader, FramingError, MAX_FRAME_SIZE, MAX_HEADER_BYTES,
+        ContentLengthFramer, ContentLengthMessageReader, FramingError, MAX_FRAME_SIZE,
+        MAX_HEADER_BYTES, log_response, read_message, write_message, write_notification,
     };
     use crate::protocol::{JsonRpcError, JsonRpcId, JsonRpcResponse};
     use perl_parser_core::{ErrorCategory, ErrorClass};
