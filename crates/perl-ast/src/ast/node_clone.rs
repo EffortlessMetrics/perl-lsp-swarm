@@ -251,7 +251,8 @@ mod tests {
     }
 
     #[test]
-    fn mapped_location_clone_updates_every_canonical_node() {
+    fn mapped_location_clone_updates_every_canonical_node()
+    -> Result<(), Box<dyn std::error::Error>> {
         let binary = Node::new(
             NodeKind::Binary {
                 op: "+".to_string(),
@@ -272,19 +273,22 @@ mod tests {
         assert_eq!(source.location, loc(0, 3), "mapping must not mutate the source tree");
         assert_eq!(mapped.location, loc(10, 13));
 
-        let NodeKind::Program { statements } = &mapped.kind else {
-            panic!("expected Program, got {}", mapped.kind.kind_name());
+        let statements = match &mapped.kind {
+            NodeKind::Program { statements } => statements,
+            other => return Err(format!("expected Program, got {}", other.kind_name()).into()),
         };
         assert_eq!(statements.len(), 1);
         assert_eq!(statements[0].location, loc(10, 13));
-        let NodeKind::Binary { op, left, right } = &statements[0].kind else {
-            panic!("expected Binary, got {}", statements[0].kind.kind_name());
+        let (op, left, right) = match &statements[0].kind {
+            NodeKind::Binary { op, left, right } => (op, left, right),
+            other => return Err(format!("expected Binary, got {}", other.kind_name()).into()),
         };
         assert_eq!(op, "+");
         assert_eq!(left.location, loc(10, 11));
         assert_eq!(right.location, loc(12, 13));
         assert!(matches!(&left.kind, NodeKind::Number { value } if value == "1"));
         assert!(matches!(&right.kind, NodeKind::Number { value } if value == "2"));
+        Ok(())
     }
 
     #[test]
