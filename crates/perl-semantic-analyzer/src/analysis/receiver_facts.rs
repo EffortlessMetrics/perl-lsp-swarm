@@ -339,7 +339,7 @@ fn hash_receiver_fact(
     if let Some(slot_fact) = hash_slot_type_fact(&container_fact, &evidence) {
         return ReceiverFact::from_type_fact(
             kind,
-            with_extra_evidence(slot_fact, evidence),
+            with_access_evidence(slot_fact, &container_fact, evidence),
             receiver,
         );
     }
@@ -398,7 +398,7 @@ fn array_receiver_fact(
     if let Some(index_fact) = array_index_type_fact(&container_fact, index) {
         return ReceiverFact::from_type_fact(
             ReceiverKind::ArrayIndex,
-            with_extra_evidence(index_fact, evidence),
+            with_access_evidence(index_fact, &container_fact, evidence),
             receiver,
         );
     }
@@ -418,8 +418,51 @@ fn array_receiver_fact(
 }
 
 fn receiver_container_fact(left: &Node, context: ReceiverFactContext<'_>) -> Option<TypeFact> {
-    let (_, name) = variable_identity(left)?;
-    context.type_environment.and_then(|env| env.get_fact_at(name))
+    if let Some((_, name)) = variable_identity(left) {
+        return context.type_environment.and_then(|env| env.get_fact_at(name));
+    }
+
+    match &left.kind {
+        NodeKind::Binary { op, left: container, right } if op == "{}" || op == "->{}" => {
+            let container_fact = receiver_container_fact(container, context)?;
+            let Some(key) = static_slot_key(right) else {
+                return Some(with_access_evidence(
+                    TypeFact::dynamic(DynamicBoundary::DynamicHashKey),
+                    &container_fact,
+                    TypeEvidence::Heuristic {
+                        reason: "hash receiver key is dynamic".to_string(),
+                    },
+                ));
+            };
+
+            let base = receiver_base_label(container);
+            let is_hashref = op == "->{}"
+                || receiver_text(left, context.source).is_some_and(|text| text.contains("->{"));
+            let evidence = if is_hashref {
+                TypeEvidence::HashRefSlot { base, key }
+            } else {
+                TypeEvidence::HashSlot { hash: base, key }
+            };
+
+            hash_slot_type_fact(&container_fact, &evidence)
+                .map(|fact| with_access_evidence(fact, &container_fact, evidence))
+        }
+        NodeKind::Binary { op, left: container, right } if op == "[]" || op == "->[]" => {
+            let container_fact = receiver_container_fact(container, context)?;
+            let evidence = TypeEvidence::Heuristic { reason: "array index receiver".to_string() };
+            let Some(index) = static_array_index(right) else {
+                return Some(with_access_evidence(
+                    TypeFact::dynamic(DynamicBoundary::UnknownReceiver),
+                    &container_fact,
+                    evidence,
+                ));
+            };
+
+            array_index_type_fact(&container_fact, index)
+                .map(|fact| with_access_evidence(fact, &container_fact, evidence))
+        }
+        _ => None,
+    }
 }
 
 fn hash_slot_type_fact(container_fact: &TypeFact, evidence: &TypeEvidence) -> Option<TypeFact> {
@@ -449,8 +492,19 @@ fn array_index_type_fact(container_fact: &TypeFact, index: usize) -> Option<Type
     }
 }
 
-fn with_extra_evidence(mut fact: TypeFact, evidence: TypeEvidence) -> TypeFact {
-    fact.evidence.push(evidence);
+fn with_access_evidence(
+    mut fact: TypeFact,
+    container_fact: &TypeFact,
+    evidence: TypeEvidence,
+) -> TypeFact {
+    for inherited in &container_fact.evidence {
+        if !fact.evidence.contains(inherited) {
+            fact.evidence.push(inherited.clone());
+        }
+    }
+    if !fact.evidence.contains(&evidence) {
+        fact.evidence.push(evidence);
+    }
     fact
 }
 
@@ -610,6 +664,7 @@ fn is_self_like_name(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::type_inference::TypeInferenceEngine;
     use crate::Parser;
     use std::collections::BTreeMap;
 
@@ -720,6 +775,20 @@ mod tests {
         Ok(receiver_fact_for_method_call(
             call,
             ReceiverFactContext::new(Some(env)).with_source(code),
+        ))
+    }
+
+    fn source_derived_receiver_fact_for(
+        code: &str,
+        method: &str,
+    ) -> Result<ReceiverFact, String> {
+        let ast = parse_ast(code)?;
+        let call = method_call_named(&ast, method).ok_or("expected method call")?;
+        let mut engine = TypeInferenceEngine::new();
+        engine.infer(&ast).map_err(|err| format!("inference failed: {err:?}"))?;
+        Ok(receiver_fact_for_method_call(
+            call,
+            ReceiverFactContext::new(Some(engine.environment())).with_source(code),
         ))
     }
 
@@ -1098,6 +1167,63 @@ mod tests {
         assert_eq!(fact.package.as_deref(), Some("My::Item"));
         assert_eq!(fact.confidence, Confidence::High);
         assert_eq!(fact.fallback_state, ReceiverFallbackState::Exact);
+        Ok(())
+    }
+
+    #[test]
+    fn source_derived_hash_of_arrays_receiver_resolves_element_fact() -> Result<(), String> {
+        let fact = source_derived_receiver_fact_for(
+            "my %groups = (staff => [My::User->new]); $groups{staff}[0]->render();",
+            "render",
+        )?;
+
+        assert_eq!(fact.kind, ReceiverKind::ArrayIndex);
+        assert_eq!(fact.package.as_deref(), Some("My::User"));
+        assert_eq!(fact.candidate_packages, vec!["My::User"]);
+        assert_eq!(fact.confidence, Confidence::High);
+        assert_eq!(fact.freshness, ReceiverFactFreshness::Fresh);
+        assert_eq!(fact.dynamic_boundary, None);
+        assert_eq!(fact.fallback_state, ReceiverFallbackState::Exact);
+        assert!(fact.evidence.iter().any(|evidence| {
+            matches!(evidence, TypeEvidence::HashSlot { hash, key } if hash == "$groups" && key == "staff")
+        }));
+        assert!(fact.evidence.iter().any(|evidence| {
+            matches!(evidence, TypeEvidence::Heuristic { reason } if reason == "array index receiver")
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn source_derived_hashref_of_arrays_receiver_resolves_element_fact() -> Result<(), String> {
+        let fact = source_derived_receiver_fact_for(
+            "my $groups = { staff => [My::User->new] }; $groups->{staff}[0]->render();",
+            "render",
+        )?;
+
+        assert_eq!(fact.kind, ReceiverKind::ArrayIndex);
+        assert_eq!(fact.package.as_deref(), Some("My::User"));
+        assert_eq!(fact.confidence, Confidence::High);
+        assert_eq!(fact.dynamic_boundary, None);
+        assert_eq!(fact.fallback_state, ReceiverFallbackState::Exact);
+        assert!(fact.evidence.iter().any(|evidence| {
+            matches!(evidence, TypeEvidence::HashRefSlot { base, key } if base == "$groups" && key == "staff")
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn dynamic_hash_key_inside_array_chain_preserves_dynamic_boundary() -> Result<(), String> {
+        let fact = source_derived_receiver_fact_for(
+            "my %groups = (staff => [My::User->new]); my $bucket = 'staff'; $groups{$bucket}[0]->render();",
+            "render",
+        )?;
+
+        assert_eq!(fact.kind, ReceiverKind::ArrayIndex);
+        assert_eq!(fact.package, None);
+        assert!(fact.candidate_packages.is_empty());
+        assert_eq!(fact.confidence, Confidence::Low);
+        assert_eq!(fact.dynamic_boundary, Some(DynamicBoundary::DynamicHashKey));
+        assert_eq!(fact.fallback_state, ReceiverFallbackState::Fallback);
         Ok(())
     }
 
