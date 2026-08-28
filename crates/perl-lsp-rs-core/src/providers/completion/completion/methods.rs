@@ -5,6 +5,7 @@
 use super::lexical_context::{is_in_comment, is_in_heredoc, is_in_pod, is_in_regex, is_in_string};
 use super::scope_distance;
 use super::{context::CompletionContext, items::CompletionItem, items::InsertTextFormat};
+use perl_lexer::find_data_marker_byte_lexed;
 use perl_semantic_analyzer::symbol::{Symbol, SymbolKind, SymbolTable};
 use std::borrow::Cow;
 use std::collections::HashSet;
@@ -286,7 +287,8 @@ fn is_code_position(source: &str, position: usize) -> bool {
         || is_in_comment(source, position)
         || is_in_heredoc(source, position)
         || is_in_regex(source, position)
-        || is_in_pod(source, position))
+        || is_in_pod(source, position)
+        || find_data_marker_byte_lexed(source).is_some_and(|marker| position >= marker))
 }
 
 fn binding_at_position<'a>(
@@ -297,10 +299,12 @@ fn binding_at_position<'a>(
 ) -> Option<&'a Symbol> {
     let name = receiver.strip_prefix('$')?;
     let candidates = symbol_table.find_symbol(name, scope_id, SymbolKind::scalar());
-    let defining_scope = candidates.first()?.scope_id;
-    candidates
-        .into_iter()
-        .filter(|symbol| symbol.scope_id == defining_scope && symbol.location.start <= position)
+    let mut visible = candidates.into_iter().filter(|symbol| symbol.location.start <= position);
+    let first = visible.next()?;
+    let defining_scope = first.scope_id;
+    std::iter::once(first)
+        .chain(visible)
+        .filter(|symbol| symbol.scope_id == defining_scope)
         .max_by_key(|symbol| symbol.location.start)
 }
 
@@ -309,6 +313,7 @@ fn latest_assignment_for_binding<'a>(
     source: &'a str,
     receiver: &str,
     binding: &Symbol,
+    cursor_scope_id: usize,
     end: usize,
 ) -> Option<&'a str> {
     let scope_end = symbol_table
@@ -338,6 +343,9 @@ fn latest_assignment_for_binding<'a>(
         {
             continue;
         }
+        if assignment_is_in_unrelated_subroutine(symbol_table, occurrence_scope, cursor_scope_id) {
+            continue;
+        }
 
         let after_receiver = source[receiver_pos + receiver.len()..].trim_start();
         let Some((assignment, compound)) = assignment_after_receiver(after_receiver) else {
@@ -359,6 +367,34 @@ fn latest_assignment_for_binding<'a>(
     }
 
     expression
+}
+
+fn assignment_is_in_unrelated_subroutine(
+    symbol_table: &SymbolTable,
+    occurrence_scope_id: usize,
+    cursor_scope_id: usize,
+) -> bool {
+    let mut current = occurrence_scope_id;
+    while let Some(scope) = symbol_table.scopes.get(&current) {
+        if scope.kind == perl_semantic_analyzer::symbol::ScopeKind::Subroutine {
+            let mut cursor_scope = cursor_scope_id;
+            while let Some(cursor) = symbol_table.scopes.get(&cursor_scope) {
+                if cursor.id == scope.id {
+                    return false;
+                }
+                let Some(parent) = cursor.parent else {
+                    break;
+                };
+                cursor_scope = parent;
+            }
+            return true;
+        }
+        let Some(parent) = scope.parent else {
+            break;
+        };
+        current = parent;
+    }
+    false
 }
 
 fn assignment_after_receiver(after_receiver: &str) -> Option<(&str, bool)> {
@@ -395,7 +431,48 @@ fn expression_calls_constructor(expression: &str, module: &str) -> bool {
         return false;
     };
 
-    after_new.chars().next().is_none_or(|c| c == '(' || c.is_whitespace())
+    let after_new = after_new.trim_start();
+    if after_new.is_empty() {
+        return true;
+    }
+    if !after_new.starts_with('(') {
+        return false;
+    }
+
+    let mut depth = 0usize;
+    let mut escaped = false;
+    let mut quote = None;
+    for (index, byte) in after_new.bytes().enumerate() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if byte == b'\\' {
+            escaped = true;
+            continue;
+        }
+        if let Some(active_quote) = quote {
+            if byte == active_quote {
+                quote = None;
+            }
+            continue;
+        }
+        if matches!(byte, b'\'' | b'"') {
+            quote = Some(byte);
+            continue;
+        }
+        match byte {
+            b'(' => depth += 1,
+            b')' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return after_new[index + 1..].trim().is_empty();
+                }
+            }
+            _ => {}
+        }
+    }
+    false
 }
 
 fn infer_imported_constructor_receiver_type(
@@ -414,6 +491,7 @@ fn infer_imported_constructor_receiver_type(
         source,
         receiver,
         binding,
+        context.cursor_scope_id,
         receiver_pos + receiver.len(),
     )?;
 

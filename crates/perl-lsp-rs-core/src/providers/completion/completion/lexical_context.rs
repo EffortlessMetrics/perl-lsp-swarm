@@ -41,7 +41,11 @@ fn advance_pod_state<'a>(state: &mut PodState<'a>, line: &'a str) -> bool {
             true
         }
         PodState::ForParagraph => {
-            if line.trim().is_empty() {
+            if is_pod_end_marker(line) {
+                *state = PodState::Code;
+            } else if line.trim().is_empty() {
+                // `=for` is a single command paragraph; code resumes after
+                // its terminating blank line.
                 *state = PodState::Code;
             }
             true
@@ -136,52 +140,16 @@ fn position_within_line(position: usize, line_start: usize, line_end: usize) -> 
 
 /// Heuristic to check if position is inside a regex literal.
 pub(super) fn is_in_regex(source: &str, position: usize) -> bool {
-    let before = &source[..position];
-
-    let Some(last_slash) = before.rfind('/') else {
+    if invalid_string_position(source, position) {
         return false;
-    };
-
-    let pre_slash = before[..last_slash].trim_end();
-    if pre_slash.ends_with("=~") || pre_slash.ends_with("!~") {
-        return true;
     }
 
-    if pre_slash_has_regex_op(pre_slash) {
-        return true;
-    }
-
-    if matches!(
-        pre_slash.split_ascii_whitespace().next_back(),
-        Some("or") | Some("and") | Some("not")
-    ) {
-        return true;
-    }
-
-    if let Some(last_char) = pre_slash.chars().next_back()
-        && matches!(last_char, '(' | ',' | '=' | '!' | '&' | '|' | ';' | '{' | '~')
-    {
-        return true;
-    }
-
-    pre_slash.is_empty()
-}
-
-/// Return true when the text immediately before a `/` is one of the explicit regex operators.
-fn pre_slash_has_regex_op(pre_slash: &str) -> bool {
-    let trimmed = pre_slash.trim_end();
-    for op in &["qr", "m", "s", "tr", "y"] {
-        if let Some(before_op) = trimmed.strip_suffix(op) {
-            let boundary_ok = before_op
-                .chars()
-                .next_back()
-                .is_none_or(|c| !c.is_ascii_alphanumeric() && c != '_');
-            if boundary_ok {
-                return true;
-            }
-        }
-    }
-    false
+    let mut literal_state = LiteralScanState::default();
+    literal_state.scan_segment(source.as_bytes(), 0, position);
+    literal_state
+        .literal
+        .as_ref()
+        .is_some_and(|literal| literal.kind == QuoteLikeLiteralKind::Regex)
 }
 
 /// Return true when the cursor is positioned in the flag region after a closing regex delimiter.
@@ -332,14 +300,6 @@ fn is_in_heredoc_with_boundary(source: &str, position: usize, include_closing_li
                 return true;
             }
         } else {
-            if advance_pod_state(&mut pod_state, line) {
-                if position >= line_start && position < line_end {
-                    return false;
-                }
-                line_start = line_end;
-                continue;
-            }
-
             let started_in_literal = literal_state.is_active();
             if !started_in_literal && advance_pod_state(&mut pod_state, line) {
                 if position >= line_start && position < line_end {
@@ -1410,22 +1370,8 @@ fn is_in_multiline_literal(source: &str, position: usize) -> bool {
 }
 
 fn is_pod_start_marker(line: &str) -> bool {
-    matches!(
-        pod_directive(line),
-        Some(
-            "=pod"
-                | "=head1"
-                | "=head2"
-                | "=head3"
-                | "=head4"
-                | "=head5"
-                | "=head6"
-                | "=over"
-                | "=item"
-                | "=back"
-                | "=encoding"
-        )
-    )
+    pod_directive(line)
+        .is_some_and(|directive| !matches!(directive, "=cut" | "=begin" | "=for" | "=end"))
 }
 
 fn is_pod_end_marker(line: &str) -> bool {

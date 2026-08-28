@@ -62,6 +62,14 @@ fn lwp_user_agent_constructor_assignment_enables_instance_catalog() {
     assert!(has_label(&item_labels, "request"));
     assert!(has_label(&item_labels, "requests_redirectable"));
     assert!(!has_label(&item_labels, "get"), "typed API methods should respect the method prefix");
+
+    let put_labels =
+        labels(&completions_at_end("use LWP::UserAgent;\nmy $ua = LWP::UserAgent->new;\n$ua->put"));
+    assert!(has_label(&put_labels, "put"));
+    let delete_labels = labels(&completions_at_end(
+        "use LWP::UserAgent;\nmy $ua = LWP::UserAgent->new;\n$ua->delete",
+    ));
+    assert!(has_label(&delete_labels, "delete"));
 }
 
 #[test]
@@ -71,6 +79,8 @@ fn constructor_inference_is_import_receiver_and_assignment_bounded() {
         "use HTTP::Tiny;\nmy $http = HTTP::Tiny->new;\n$http = Other::Client->new;\n$http->po",
         "use HTTP::Tiny;\nmy $http_client = HTTP::Tiny->new;\n$http->po",
         "use HTTP::Tiny;\nmy ($http, $other) = (HTTP::Tiny->new, 1);\n$http->po",
+        "use HTTP::Tiny;\nmy $http = HTTP::Tiny->new()->get($url);\n$http->po",
+        "use HTTP::Tiny;\nmy $http = Other::Client->new;\nsub reset { $http = HTTP::Tiny->new; }\n$http->po",
     ]
     .into_iter()
     .map(String::from)
@@ -99,12 +109,15 @@ fn textual_constructor_mentions_outside_code_do_not_activate_catalog() {
         "use HTTP::Tiny;\nmy $text = '$http = HTTP::Tiny->new';\n$http->po",
         "use HTTP::Tiny;\n# $http = HTTP::Tiny->new;\n$http->po",
         "use HTTP::Tiny;\nmy $pattern = qr/$http = HTTP::Tiny->new/;\n$http->po",
+        "use HTTP::Tiny;\nmy $pattern = qr{$http = HTTP::Tiny->new()};\n$http->po",
         "use HTTP::Tiny;\nmy $text = <<'END';\n$http = HTTP::Tiny->new;\nEND\n$http->po",
         "use HTTP::Tiny;\n=pod\n$http = HTTP::Tiny->new;\n=cut\n$http->po",
         "use HTTP::Tiny;\n=encoding utf8\n$http = HTTP::Tiny->new;\n$http->po",
         "use HTTP::Tiny;\n=head5 Deep\n$http = HTTP::Tiny->new;\n$http->po",
         "use HTTP::Tiny;\n=head6 Deeper\n$http = HTTP::Tiny->new;\n$http->po",
         "use HTTP::Tiny;\n=pod\n=end comment\n$http = HTTP::Tiny->new;\n$http->po",
+        "use HTTP::Tiny;\nmy $http;\n__DATA__\n$http = HTTP::Tiny->new;\n$http->po",
+        "use HTTP::Tiny;\nmy $http;\n__END__\n$http = HTTP::Tiny->new;\n$http->po",
     ];
 
     for source in sources {
@@ -127,15 +140,10 @@ fn pod_regions_resume_code_after_matching_end_and_for_paragraph() {
 }
 
 #[test]
-fn for_paragraph_requires_cut_before_code_resumes() {
-    let inside_pod =
-        "use HTTP::Tiny;\nmy $http = HTTP::Tiny->new;\n=for comment\ntext\n\n$http->po";
-    let inside_labels = labels(&completions_at_end(inside_pod));
-    assert!(!has_label(&inside_labels, "post"));
-
-    let after_cut = format!("{inside_pod}\n=cut\n$http->po");
-    let after_cut_labels = labels(&completions_at_end(&after_cut));
-    assert!(has_label(&after_cut_labels, "post"));
+fn for_paragraph_resumes_code_after_blank_line() {
+    let source = "use HTTP::Tiny;\nmy $http = HTTP::Tiny->new;\n=for comment\ntext\n\n$http->po";
+    let item_labels = labels(&completions_at_end(source));
+    assert!(has_label(&item_labels, "post"), "unexpected labels: {item_labels:?}");
 }
 
 #[test]
