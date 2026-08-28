@@ -4,9 +4,8 @@
 
 use serde::Serialize;
 
-use perl_lsp_rs_core::providers::formatting::{
-    FormatPosition, FormatRange,
-    range_admission::{RangePositionError, SourceGeometry, admit_format_range},
+use perl_lsp_rs_core::providers::formatting::range_admission::{
+    RangePositionError, SourceGeometry, admit_wire_endpoints,
 };
 
 use super::super::{
@@ -135,17 +134,18 @@ fn admit_wire_range(
 ) -> Result<NormalizedRange, PlanError> {
     let wire = parse_range(value, label)
         .map_err(|error| PlanError::new("invalid_range", error.message))?;
-    let requested = FormatRange::new(
-        FormatPosition::new(wire.start.line, wire.start.character),
-        FormatPosition::new(wire.end.line, wire.end.character),
-    );
-    let admitted =
-        admit_format_range(geometry, source, &requested).map_err(|error| match error {
-            perl_lsp_rs_core::providers::formatting::RangeAdmissionError::Reversed => {
-                PlanError::reversed_range(label)
-            }
-            error => PlanError::new(error.reason(), error.message()),
-        })?;
+    let admitted = admit_wire_endpoints(
+        geometry,
+        source,
+        (wire.start.line, wire.start.character),
+        (wire.end.line, wire.end.character),
+    )
+    .map_err(|error| match error {
+        perl_lsp_rs_core::providers::formatting::RangeAdmissionError::Reversed => {
+            PlanError::reversed_range(label)
+        }
+        error => PlanError::new(error.reason(), error.message()),
+    })?;
     Ok(NormalizedRange::between(
         PositionRecord::at(wire.start.line, wire.start.character, admitted.start_byte),
         PositionRecord::at(wire.end.line, wire.end.character, admitted.end_byte),
