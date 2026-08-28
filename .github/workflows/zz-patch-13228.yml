@@ -35,6 +35,24 @@ jobs:
           from pathlib import Path
 
           source = Path('.github/patch-13228.py').read_text()
+          lines = source.splitlines()
+          role_tail_lines = {
+              '"            | TokenKind::DefinedOrAssign\\n",',
+              '"            | TokenKind::Not\\n",',
+          }
+          adjusted = 0
+          for index, line in enumerate(lines):
+              if line.strip() not in role_tail_lines:
+                  continue
+              for candidate in range(index + 1, min(index + 20, len(lines))):
+                  if lines[candidate].strip() == 'expected=2,':
+                      lines[candidate] = lines[candidate].replace('expected=2', 'expected=1')
+                      adjusted += 1
+                      break
+          if adjusted != 2:
+              raise SystemExit(f'expected to adjust two token role tables, adjusted {adjusted}')
+          source = '\n'.join(lines) + '\n'
+
           start = source.index('# Keep exhaustive/manual token test tables')
           end = source.index('# ---------------------------------------------------------------------------\n# Longest-match lexer recognition')
           Path('/tmp/patch-13228-core.py').write_text(source[:start] + source[end:])
