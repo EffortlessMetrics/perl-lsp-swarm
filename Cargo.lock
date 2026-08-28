@@ -1695,6 +1695,7 @@ dependencies = [
  "chrono",
  "clap",
  "color-eyre",
+ "perl-test-must",
  "regex",
  "serde_json",
  "toml",
