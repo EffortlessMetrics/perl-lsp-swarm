@@ -437,8 +437,7 @@ pub fn resolve_import(module: &str, raw_args: &str) -> Option<ResolvedImport> {
                 let mut pending_helpers: BTreeSet<String> = BTreeSet::new();
                 while let Some(value) = atoms.get(atom_index) {
                     atom_index += 1;
-                    let opens = value.matches('{').count() as isize;
-                    let closes = value.matches('}').count() as isize;
+                    let (opens, closes) = count_unquoted_braces(value);
                     if !saw_hash && opens == 0 {
                         // Parentheses and unary-plus may be separated from a
                         // hash opener by whitespace (`( { ... } )` and
@@ -658,12 +657,106 @@ fn v1_short_flag(raw_args: &str, flag_char: char) -> bool {
 fn tokenize_import_args(raw: &str) -> Vec<String> {
     let mut out = Vec::new();
     let expanded = expand_qw(raw);
-    // Normalize fat commas and commas to a single separator, then split.
-    for piece in expanded.split([',']) {
-        let piece = piece.replace("=>", " ");
+    // Normalize separators only outside quoted strings. A quoted scalar is one
+    // Perl atom even when it contains commas, braces, or escaped delimiters.
+    for piece in split_import_pieces(&expanded) {
+        let piece = replace_unquoted_fat_commas(&piece);
         out.extend(split_import_piece(&piece));
     }
     out
+}
+
+/// Split import arguments on commas outside quoted strings. Hash commas are
+/// intentionally separators too; `split_import_piece` preserves each quoted
+/// key/value atom after this pass.
+fn split_import_pieces(raw: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut current = String::new();
+    let mut quote = None;
+    let mut escaped = false;
+
+    for ch in raw.chars() {
+        if let Some(delimiter) = quote {
+            current.push(ch);
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == delimiter {
+                quote = None;
+            }
+        } else if matches!(ch, '\'' | '"') {
+            current.push(ch);
+            quote = Some(ch);
+        } else if ch == ',' {
+            out.push(std::mem::take(&mut current));
+        } else {
+            current.push(ch);
+        }
+    }
+    out.push(current);
+    out
+}
+
+/// Replace fat-comma operators outside quoted strings without changing text
+/// such as `'=>` inside a target package name.
+fn replace_unquoted_fat_commas(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut quote = None;
+    let mut escaped = false;
+    let mut chars = raw.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        if let Some(delimiter) = quote {
+            out.push(ch);
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == delimiter {
+                quote = None;
+            }
+        } else if matches!(ch, '\'' | '"') {
+            out.push(ch);
+            quote = Some(ch);
+        } else if ch == '=' && chars.peek() == Some(&'>') {
+            out.push(' ');
+            out.push(' ');
+            chars.next();
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
+/// Count braces that are structural rather than characters inside a quoted
+/// Perl scalar. The result is used only for the conservative hash-target
+/// recognizer, which must fail closed when the structure is not balanced.
+fn count_unquoted_braces(raw: &str) -> (isize, isize) {
+    let mut opens = 0;
+    let mut closes = 0;
+    let mut quote = None;
+    let mut escaped = false;
+
+    for ch in raw.chars() {
+        if let Some(delimiter) = quote {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == delimiter {
+                quote = None;
+            }
+        } else if matches!(ch, '\'' | '"') {
+            quote = Some(ch);
+        } else if ch == '{' {
+            opens += 1;
+        } else if ch == '}' {
+            closes += 1;
+        }
+    }
+    (opens, closes)
 }
 
 /// Split one import-argument piece while keeping quoted strings intact and

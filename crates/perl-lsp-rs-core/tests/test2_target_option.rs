@@ -138,6 +138,35 @@ fn named_hash_targets_preserve_defaults_and_generate_helpers() -> TestResult {
 }
 
 #[test]
+fn quoted_hash_delimiters_do_not_close_or_leak_target_values() -> TestResult {
+    let resolved =
+        resolve_import("Test2::V0", "-target => { pkg => 'Widget}', other => 'Gadget' }, ok")
+            .ok_or_else(|| io::Error::other("Test2::V0 must be recognized"))?;
+
+    assert!(resolved.symbols.contains("pkg"));
+    assert!(resolved.symbols.contains("other"));
+    assert!(resolved.symbols.contains("ok"));
+    assert!(!resolved.symbols.contains("Widget"));
+    assert!(!resolved.symbols.contains("Gadget"));
+    assert!(!resolved.symbols.contains("leaked"));
+    Ok(())
+}
+
+#[test]
+fn quoted_commas_and_escaped_delimiters_remain_one_target_atom() -> TestResult {
+    for target in ["'Foo,Bar'", "'Foo\\'Bar'"] {
+        let resolved = resolve_import("Test2::V0", &format!("-target => {target}, ok"))
+            .ok_or_else(|| io::Error::other("Test2::V0 must be recognized"))?;
+        assert!(resolved.symbols.contains("CLASS"), "target {target:?}");
+        assert!(resolved.symbols.contains("ok"), "target {target:?}");
+        assert!(!resolved.symbols.contains("Foo"));
+        assert!(!resolved.symbols.contains("Bar"));
+        assert!(!resolved.symbols.contains("is"));
+    }
+    Ok(())
+}
+
+#[test]
 fn wrapped_hash_targets_ignore_structural_tokens() -> TestResult {
     for args in [
         "-target => +{ pkg => 'Widget', other => 'Gadget' }",
