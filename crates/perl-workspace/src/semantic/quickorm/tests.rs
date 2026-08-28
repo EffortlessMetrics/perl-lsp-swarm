@@ -67,6 +67,25 @@ fn configured_table_import_uses_default_dsl_exports() -> Result<(), Box<dyn std:
 }
 
 #[test]
+fn compact_and_comment_separated_fat_arrow_imports_are_source_backed()
+-> Result<(), Box<dyn std::error::Error>> {
+    for source in [
+        "package User; use DBIx::QuickORM type=>\"table\"; table users => sub {};",
+        "package User; use DBIx::QuickORM type # key\n => # arrow\n \"table\"; table users => sub {};",
+    ] {
+        let specs = import_specs_from_source(source)?;
+        let spec = quickorm_spec(&specs)?;
+        assert_eq!(spec.confidence, Confidence::High);
+        assert_eq!(spec.symbols, ImportSymbols::Default);
+        assert_eq!(
+            canonical_names(&generated_facts_from_source(source)?),
+            vec!["User::qorm_table"]
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn parser_preserves_quickorm_configuration_as_key_value_args()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut parser = Parser::new("use DBIx::QuickORM type => 'table';");
@@ -348,6 +367,45 @@ table "${prefix}_users" => sub {};
 "#,
     )?;
 
+    assert!(facts.is_empty());
+    Ok(())
+}
+
+#[test]
+fn trailing_dollar_in_double_quoted_table_name_is_literal() -> Result<(), Box<dyn std::error::Error>>
+{
+    let facts = generated_facts_from_source(
+        "package MyApp::Schema::Dollar; use DBIx::QuickORM type => 'table'; table \"cost$\" => sub {};",
+    )?;
+    assert_eq!(canonical_names(&facts), vec!["MyApp::Schema::Dollar::qorm_table"]);
+    Ok(())
+}
+
+#[test]
+fn nested_builder_does_not_promote_outer_table_call() -> Result<(), Box<dyn std::error::Error>> {
+    let facts = generated_facts_from_source(
+        "package User; use DBIx::QuickORM type => 'table'; table users, wrapper(sub {});",
+    )?;
+    assert!(facts.is_empty());
+    Ok(())
+}
+
+#[test]
+fn package_builder_redefinition_invalidates_prior_generated_fact()
+-> Result<(), Box<dyn std::error::Error>> {
+    let facts = generated_facts_from_source(
+        "package User; use DBIx::QuickORM type => 'table'; table users => sub {}; sub table { 1 };",
+    )?;
+    assert!(facts.is_empty());
+    Ok(())
+}
+
+#[test]
+fn package_level_table_shadow_blocks_later_import_promotion()
+-> Result<(), Box<dyn std::error::Error>> {
+    let facts = generated_facts_from_source(
+        "package User; sub table { 1 }; use DBIx::QuickORM type => 'table'; table users => sub {};",
+    )?;
     assert!(facts.is_empty());
     Ok(())
 }

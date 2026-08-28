@@ -56,8 +56,7 @@ fn normalize_import_specs_at_node(node: &Node, specs: &mut [ImportSpec], source:
             .iter_mut()
             .find(|spec| spec.module == QUICKORM_MODULE && spec.anchor_id == Some(anchor_id))
         {
-            let source_segment =
-                source.and_then(|text| text.get(node.location.start..node.location.end));
+            let source_segment = source.and_then(|text| source_import_segment(text, node));
             match classify_import_shape(args, source_segment) {
                 QuickOrmImportShape::Bare => {}
                 QuickOrmImportShape::UnfilteredOrm | QuickOrmImportShape::UnfilteredTable => {
@@ -127,6 +126,7 @@ fn extract_generated_member_facts_from_source(
 struct WalkContext {
     current_package: Option<String>,
     table_package_authority: BTreeSet<String>,
+    shadowed_builders: BTreeSet<String>,
 }
 
 fn walk_direct_statements(
@@ -168,9 +168,10 @@ fn walk_direct_statement(
         }
         NodeKind::Use { module, args, .. } if module == QUICKORM_MODULE => {
             let package = current_package(context).to_string();
-            let source_segment =
-                source.and_then(|text| text.get(node.location.start..node.location.end));
-            if classify_import_shape(args, source_segment) == QuickOrmImportShape::UnfilteredTable {
+            let source_segment = source.and_then(|text| source_import_segment(text, node));
+            if classify_import_shape(args, source_segment) == QuickOrmImportShape::UnfilteredTable
+                && !context.shadowed_builders.contains(&package)
+            {
                 context.table_package_authority.insert(package);
             } else {
                 context.table_package_authority.remove(&package);
@@ -183,6 +184,7 @@ fn walk_direct_statement(
         NodeKind::ExpressionStatement { expression } => {
             let package = current_package(context).to_string();
             if !context.table_package_authority.contains(&package)
+                || context.shadowed_builders.contains(&package)
                 || !is_direct_table_or_view_call(expression)
             {
                 return;
@@ -198,6 +200,14 @@ fn walk_direct_statement(
                 return;
             };
             push_qorm_table_fact(&package, anchor, file_id, facts);
+        }
+        NodeKind::Subroutine { name: Some(name), .. } if is_builder_name(name) => {
+            let package = current_package(context).to_string();
+            context.shadowed_builders.insert(package.clone());
+            context.table_package_authority.remove(&package);
+            facts.retain(|fact| {
+                fact.entity.canonical_name != format!("{package}::{QORM_TABLE_MEMBER}")
+            });
         }
         // Runtime-controlled and bare lexical blocks are not package-level
         // table declarations. Do not recurse into them or let their package /
@@ -221,12 +231,25 @@ fn direct_table_or_view_builder_anchor(expression: &Node) -> Option<&Node> {
     let NodeKind::FunctionCall { args, .. } = &expression.kind else {
         return None;
     };
-    if !is_direct_table_or_view_call(expression) || !args.iter().skip(1).any(contains_builder_body)
+    if !is_direct_table_or_view_call(expression)
+        || !args.iter().skip(1).any(is_direct_builder_argument)
     {
         return None;
     }
 
     static_table_name_anchor(args.first()?)
+}
+
+fn is_direct_builder_argument(node: &Node) -> bool {
+    match &node.kind {
+        NodeKind::Subroutine { .. } | NodeKind::Block { .. } | NodeKind::HashLiteral { .. } => true,
+        NodeKind::Binary { op, right, .. } if op == "=>" => is_direct_builder_argument(right),
+        _ => false,
+    }
+}
+
+fn is_builder_name(name: &str) -> bool {
+    matches!(name, "table" | "view" | QORM_TABLE_MEMBER)
 }
 
 fn static_table_name_anchor(node: &Node) -> Option<&Node> {
@@ -245,7 +268,8 @@ fn static_table_name_anchor(node: &Node) -> Option<&Node> {
 
 fn contains_unescaped_interpolation(value: &str) -> bool {
     let mut escaped = false;
-    for character in value.chars() {
+    let mut characters = value.chars().peekable();
+    while let Some(character) = characters.next() {
         if escaped {
             escaped = false;
             continue;
@@ -254,7 +278,14 @@ fn contains_unescaped_interpolation(value: &str) -> bool {
             escaped = true;
             continue;
         }
-        if matches!(character, '$' | '@') {
+        if character == '@' {
+            return true;
+        }
+        if character == '$'
+            && characters
+                .peek()
+                .is_some_and(|next| next.is_ascii_alphanumeric() || matches!(next, '_' | '{'))
+        {
             return true;
         }
     }
@@ -268,17 +299,6 @@ fn is_static_identifier(value: &str) -> bool {
     };
     (first.is_ascii_alphabetic() || first == '_')
         && characters.all(|character| character.is_ascii_alphanumeric() || character == '_')
-}
-
-fn contains_builder_body(node: &Node) -> bool {
-    if matches!(
-        node.kind,
-        NodeKind::Subroutine { .. } | NodeKind::Block { .. } | NodeKind::HashLiteral { .. }
-    ) {
-        return true;
-    }
-
-    node.children().into_iter().any(contains_builder_body)
 }
 
 fn push_qorm_table_fact(
@@ -374,30 +394,55 @@ fn classify_import_shape(args: &[String], source: Option<&str>) -> QuickOrmImpor
     }
 }
 
+fn source_import_segment<'a>(source: &'a str, node: &Node) -> Option<&'a str> {
+    let remainder = source.get(node.location.start..)?;
+    let end =
+        remainder.find(';').map_or(node.location.end - node.location.start, |index| index + 1);
+    remainder.get(..end)
+}
+
 fn exact_source_import_pair(source: &str) -> Option<(&str, &str)> {
-    let mut rest = source.trim();
+    let mut rest = trim_source_trivia(source);
     let use_keyword = rest.strip_prefix("use")?;
     if !use_keyword.chars().next().is_none_or(|c| c.is_ascii_whitespace()) {
         return None;
     }
-    rest = use_keyword.trim_start();
+    rest = trim_source_trivia(use_keyword);
     rest = rest.strip_prefix(QUICKORM_MODULE)?;
     if !rest.chars().next().is_none_or(|c| c.is_ascii_whitespace() || c == ';') {
         return None;
     }
-    rest = rest.trim_start();
+    rest = trim_source_trivia(rest);
     if rest.is_empty() || rest == ";" {
         return None;
     }
 
     let (key, remainder) = parse_source_quoted_or_identifier(rest)?;
-    rest = remainder.trim_start();
+    rest = trim_source_trivia(remainder);
     rest = rest.strip_prefix("=>")?.trim_start();
+    rest = trim_source_trivia(rest);
     let (value, remainder) = parse_source_quoted_or_identifier(rest)?;
-    if remainder.trim() != ";" && !remainder.trim().is_empty() {
+    let remainder = trim_source_trivia(remainder);
+    if remainder != ";" && !remainder.is_empty() {
         return None;
     }
     Some((key, value))
+}
+
+fn trim_source_trivia(mut source: &str) -> &str {
+    loop {
+        source = source.trim_start();
+        if let Some(comment) = source.strip_prefix('#') {
+            source = comment;
+            if let Some(newline) = source.find(['\r', '\n']) {
+                source = &source[newline..];
+            } else {
+                return "";
+            }
+            continue;
+        }
+        return source;
+    }
 }
 
 fn parse_source_quoted_or_identifier(source: &str) -> Option<(&str, &str)> {
@@ -412,7 +457,7 @@ fn parse_source_quoted_or_identifier(source: &str) -> Option<(&str, &str)> {
     }
     let end = source
         .char_indices()
-        .find(|(_, character)| character.is_ascii_whitespace() || *character == ';')
+        .find(|(_, character)| character.is_ascii_whitespace() || matches!(character, ';' | '='))
         .map_or(source.len(), |(index, _)| index);
     let value = &source[..end];
     (!value.is_empty()).then_some((value, &source[end..]))
