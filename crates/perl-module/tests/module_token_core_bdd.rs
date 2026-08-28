@@ -64,6 +64,7 @@ fn given_unicode_identifier_neighbor_when_matching_boundaries_then_false() {
 fn given_invalid_utf8_spans_when_matching_boundaries_then_false_without_panicking() {
     let line = "Δοκιμή::設定";
 
+    assert!(!has_standalone_module_token_boundaries(line, 0, 0));
     assert!(!has_standalone_module_token_boundaries(line, 2, 1));
     assert!(!has_standalone_module_token_boundaries(line, 0, line.len() + 1));
     assert!(!has_standalone_module_token_boundaries(line, 1, line.len()));

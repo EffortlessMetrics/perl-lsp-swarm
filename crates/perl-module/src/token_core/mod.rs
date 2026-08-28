@@ -34,10 +34,10 @@ pub fn parse_module_token(text: &str, start: usize) -> Option<ModuleTokenSpan> {
 
 /// Check if a span from `start` to `end` is bounded as a standalone token.
 ///
-/// Invalid, reversed, out-of-bounds, or mid-codepoint spans are rejected.
+/// Empty, invalid, reversed, out-of-bounds, or mid-codepoint spans are rejected.
 #[must_use]
 pub fn has_standalone_module_token_boundaries(line: &str, start: usize, end: usize) -> bool {
-    if start > end
+    if start >= end
         || end > line.len()
         || !line.is_char_boundary(start)
         || !line.is_char_boundary(end)
