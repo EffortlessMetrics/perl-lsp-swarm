@@ -83,7 +83,7 @@ For complete workspace membership and canonical crate/version truth, use [`../Ca
 | inspect the workflow UX scorecard contract | [project/metrics/WORKFLOW_SCORECARDS.md](project/metrics/WORKFLOW_SCORECARDS.md), [reference/UX_TESTING.md](reference/UX_TESTING.md) |
 | verify badges and PR evidence boundaries | [VERIFICATION.md](VERIFICATION.md) |
 | work on the codebase | [../CONTRIBUTING.md](../CONTRIBUTING.md) |
-| browse the full docs map | [INDEX.md](INDEX.md) |
+| browse the curated docs map | [INDEX.md](INDEX.md) |
 | classify or author docs by Diataxis type | [reference/DIATAXIS_GUIDE.md](reference/DIATAXIS_GUIDE.md) |
 
 ## Docs by Type
