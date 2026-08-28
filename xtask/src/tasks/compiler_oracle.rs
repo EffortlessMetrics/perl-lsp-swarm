@@ -129,37 +129,25 @@ for my $sub (qw(Oracle::Demo::proto)) {
     }
 
     fn normalize_rust_compile_effects(file: &HirFile) -> BTreeSet<NormalizedFact> {
-        file.compile_effects()
-            .iter()
-            .filter_map(normalize_rust_compile_effect)
-            .collect()
+        file.compile_effects().iter().filter_map(normalize_rust_compile_effect).collect()
     }
 
     fn normalize_rust_compile_effect(effect: &CompileEffect) -> Option<NormalizedFact> {
         match effect.kind {
-            CompileEffectKind::DeclarePackage => effect
-                .fact_name
-                .as_ref()
-                .map(|name| normalized("package", name.clone())),
+            CompileEffectKind::DeclarePackage => {
+                effect.fact_name.as_ref().map(|name| normalized("package", name.clone()))
+            }
             CompileEffectKind::DeclareSub => effect.fact_name.as_ref().map(|name| {
-                normalized(
-                    "sub",
-                    qualify_name(effect.package_context.as_deref(), name),
-                )
+                normalized("sub", qualify_name(effect.package_context.as_deref(), name))
             }),
-            CompileEffectKind::AssignInheritance => effect
-                .fact_name
-                .as_ref()
-                .map(|name| normalized("isa", name.clone())),
-            CompileEffectKind::DefineConstant => effect
-                .fact_name
-                .as_ref()
-                .map(|name| normalized("constant", name.clone())),
+            CompileEffectKind::AssignInheritance => {
+                effect.fact_name.as_ref().map(|name| normalized("isa", name.clone()))
+            }
+            CompileEffectKind::DefineConstant => {
+                effect.fact_name.as_ref().map(|name| normalized("constant", name.clone()))
+            }
             CompileEffectKind::RegisterPrototype => effect.fact_name.as_ref().map(|name| {
-                normalized(
-                    "prototype",
-                    qualify_name(effect.package_context.as_deref(), name),
-                )
+                normalized("prototype", qualify_name(effect.package_context.as_deref(), name))
             }),
             _ => None,
         }
@@ -194,10 +182,7 @@ for my $sub (qw(Oracle::Demo::proto)) {
 
         let stdout =
             String::from_utf8(output.stdout).context("decode Perl compile-effect oracle stdout")?;
-        Ok(PerlOracleOutput {
-            perl_version,
-            facts: parse_oracle_facts(&stdout)?,
-        })
+        Ok(PerlOracleOutput { perl_version, facts: parse_oracle_facts(&stdout)? })
     }
 
     fn query_perl_version() -> Result<String> {
@@ -309,10 +294,8 @@ for my $sub (qw(Oracle::Demo::proto)) {
         rust_facts: BTreeSet<NormalizedFact>,
         perl_facts: BTreeSet<NormalizedFact>,
     ) -> DifferentialReceipt {
-        let matched_facts = rust_facts
-            .intersection(&perl_facts)
-            .cloned()
-            .collect::<Vec<NormalizedFact>>();
+        let matched_facts =
+            rust_facts.intersection(&perl_facts).cloned().collect::<Vec<NormalizedFact>>();
         let missing_in_perl = rust_facts
             .difference(&perl_facts)
             .map(|fact| disagreement(fact.family, fact.name.clone(), "rust_only"));
