@@ -7,9 +7,9 @@
 //! The prefix fixture separately drives completion, preserving the consumer
 //! shape contract documented for the main Scenario 14 grid.
 
+use perl_lsp_ux_tests::binary_available;
+use perl_lsp_ux_tests::{ScenarioConfig, UxHarness};
 use std::time::Duration;
-
-use perl_lsp_ux_tests::{ScenarioConfig, UxHarness, binary_available};
 
 const PL701: &str = "PL701";
 
@@ -47,9 +47,9 @@ sub value {\n\
 ";
 
 fn has_pl701(diags: &[serde_json::Value]) -> bool {
-    diags.iter().any(|diag| {
-        diag.get("code").and_then(|code| code.as_str()).map(|code| code == PL701).unwrap_or(false)
-            || diag.get("code").and_then(|code| code.as_u64()).map(|code| code == 701).unwrap_or(false)
+    diags.iter().any(|d| {
+        d.get("code").and_then(|c| c.as_str()).map(|c| c == PL701).unwrap_or(false)
+            || d.get("code").and_then(|c| c.as_u64()).map(|c| c == 701).unwrap_or(false)
     })
 }
 
