@@ -64,6 +64,20 @@ pub mod generated_member_extractor {
         facts.extend(super::quickorm::extract_generated_member_facts(ast, file_id));
         facts
     }
+
+    /// Extract generated members with the source text available to adapters
+    /// whose parser representation intentionally omits separators.
+    pub(crate) fn extract_generated_member_facts_with_source(
+        ast: &Node,
+        file_id: FileId,
+        source: &str,
+    ) -> Vec<GeneratedMemberFact> {
+        let mut facts = extract_generated_member_facts(ast, file_id);
+        facts.extend(super::quickorm::extract_generated_member_facts_with_source(
+            ast, file_id, source,
+        ));
+        facts
+    }
 }
 
 /// Import-spec extraction for `ImportExportIndex` population during `index_file`.
@@ -77,6 +91,18 @@ pub mod workspace_import_extractor {
     pub fn extract_import_specs(ast: &Node, file_id: FileId) -> Vec<ImportSpec> {
         let mut specs = super::workspace_import_extractor_core::extract_import_specs(ast, file_id);
         super::quickorm::normalize_import_specs(ast, &mut specs);
+        specs
+    }
+
+    /// Extract import facts with source text available for exact framework
+    /// syntax checks that the normalized AST cannot express.
+    pub fn extract_import_specs_with_source(
+        ast: &Node,
+        file_id: FileId,
+        source: &str,
+    ) -> Vec<ImportSpec> {
+        let mut specs = super::workspace_import_extractor_core::extract_import_specs(ast, file_id);
+        super::quickorm::normalize_import_specs_with_source(ast, &mut specs, source);
         specs
     }
 }

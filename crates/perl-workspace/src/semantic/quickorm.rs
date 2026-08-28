@@ -36,10 +36,18 @@ enum QuickOrmImportShape {
 /// Rewrite generic import facts where QuickORM arguments are importer
 /// configuration rather than an Exporter-style symbol list.
 pub(super) fn normalize_import_specs(ast: &Node, specs: &mut [ImportSpec]) {
-    normalize_import_specs_at_node(ast, specs);
+    normalize_import_specs_at_node(ast, specs, None);
 }
 
-fn normalize_import_specs_at_node(node: &Node, specs: &mut [ImportSpec]) {
+pub(super) fn normalize_import_specs_with_source(
+    ast: &Node,
+    specs: &mut [ImportSpec],
+    source: &str,
+) {
+    normalize_import_specs_at_node(ast, specs, Some(source));
+}
+
+fn normalize_import_specs_at_node(node: &Node, specs: &mut [ImportSpec], source: Option<&str>) {
     if let NodeKind::Use { module, args, .. } = &node.kind
         && module == QUICKORM_MODULE
     {
@@ -48,7 +56,9 @@ fn normalize_import_specs_at_node(node: &Node, specs: &mut [ImportSpec]) {
             .iter_mut()
             .find(|spec| spec.module == QUICKORM_MODULE && spec.anchor_id == Some(anchor_id))
         {
-            match classify_import_shape(args) {
+            let source_segment =
+                source.and_then(|text| text.get(node.location.start..node.location.end));
+            match classify_import_shape(args, source_segment) {
                 QuickOrmImportShape::Bare => {}
                 QuickOrmImportShape::UnfilteredOrm | QuickOrmImportShape::UnfilteredTable => {
                     // Both exact unfiltered modes install QuickORM's complete
@@ -74,7 +84,7 @@ fn normalize_import_specs_at_node(node: &Node, specs: &mut [ImportSpec]) {
     }
 
     for child in node.children() {
-        normalize_import_specs_at_node(child, specs);
+        normalize_import_specs_at_node(child, specs, source);
     }
 }
 
@@ -84,14 +94,30 @@ pub(super) fn extract_generated_member_facts(
     ast: &Node,
     file_id: FileId,
 ) -> Vec<GeneratedMemberFact> {
+    extract_generated_member_facts_from_source(ast, file_id, None)
+}
+
+pub(super) fn extract_generated_member_facts_with_source(
+    ast: &Node,
+    file_id: FileId,
+    source: &str,
+) -> Vec<GeneratedMemberFact> {
+    extract_generated_member_facts_from_source(ast, file_id, Some(source))
+}
+
+fn extract_generated_member_facts_from_source(
+    ast: &Node,
+    file_id: FileId,
+    source: Option<&str>,
+) -> Vec<GeneratedMemberFact> {
     let mut facts = Vec::new();
     let mut context = WalkContext::default();
 
     match &ast.kind {
         NodeKind::Program { statements } => {
-            walk_direct_statements(statements, file_id, &mut context, &mut facts);
+            walk_direct_statements(statements, file_id, &mut context, &mut facts, source);
         }
-        _ => walk_direct_statement(ast, file_id, &mut context, &mut facts),
+        _ => walk_direct_statement(ast, file_id, &mut context, &mut facts, source),
     }
 
     facts
@@ -108,9 +134,10 @@ fn walk_direct_statements(
     file_id: FileId,
     context: &mut WalkContext,
     facts: &mut Vec<GeneratedMemberFact>,
+    source: Option<&str>,
 ) {
     for statement in statements {
-        walk_direct_statement(statement, file_id, context, facts);
+        walk_direct_statement(statement, file_id, context, facts, source);
     }
 }
 
@@ -119,10 +146,11 @@ fn walk_direct_statement(
     file_id: FileId,
     context: &mut WalkContext,
     facts: &mut Vec<GeneratedMemberFact>,
+    source: Option<&str>,
 ) {
     match &node.kind {
         NodeKind::Program { statements } => {
-            walk_direct_statements(statements, file_id, context, facts);
+            walk_direct_statements(statements, file_id, context, facts, source);
         }
         NodeKind::Package { name, block, .. } => {
             if let Some(block) = block {
@@ -130,7 +158,7 @@ fn walk_direct_statement(
                 context.current_package = Some(name.clone());
 
                 if let NodeKind::Block { statements } = &block.kind {
-                    walk_direct_statements(statements, file_id, context, facts);
+                    walk_direct_statements(statements, file_id, context, facts, source);
                 }
 
                 context.current_package = saved_package;
@@ -140,7 +168,9 @@ fn walk_direct_statement(
         }
         NodeKind::Use { module, args, .. } if module == QUICKORM_MODULE => {
             let package = current_package(context).to_string();
-            if classify_import_shape(args) == QuickOrmImportShape::UnfilteredTable {
+            let source_segment =
+                source.and_then(|text| text.get(node.location.start..node.location.end));
+            if classify_import_shape(args, source_segment) == QuickOrmImportShape::UnfilteredTable {
                 context.table_package_authority.insert(package);
             } else {
                 context.table_package_authority.remove(&package);
@@ -301,7 +331,7 @@ fn push_qorm_table_fact(
     facts.push(GeneratedMemberFact { entity, anchor });
 }
 
-fn classify_import_shape(args: &[String]) -> QuickOrmImportShape {
+fn classify_import_shape(args: &[String], source: Option<&str>) -> QuickOrmImportShape {
     if args.is_empty() {
         return QuickOrmImportShape::Bare;
     }
@@ -317,13 +347,23 @@ fn classify_import_shape(args: &[String]) -> QuickOrmImportShape {
         _ => return QuickOrmImportShape::Dynamic,
     };
 
+    let Some(source) = source else {
+        return QuickOrmImportShape::Dynamic;
+    };
+    let Some((source_key, source_value)) = exact_source_import_pair(source) else {
+        return QuickOrmImportShape::Dynamic;
+    };
+    if source_key != "type" || !matches!(source_value, "orm" | "table") {
+        return QuickOrmImportShape::Dynamic;
+    }
+
     let Some(key) = static_import_key(raw_key) else {
         return QuickOrmImportShape::Dynamic;
     };
     let Some(value) = quoted_import_value(raw_value) else {
         return QuickOrmImportShape::Dynamic;
     };
-    if key != "type" {
+    if key != source_key || value != source_value {
         return QuickOrmImportShape::Dynamic;
     }
 
@@ -332,6 +372,50 @@ fn classify_import_shape(args: &[String]) -> QuickOrmImportShape {
         "table" => QuickOrmImportShape::UnfilteredTable,
         _ => QuickOrmImportShape::Dynamic,
     }
+}
+
+fn exact_source_import_pair(source: &str) -> Option<(&str, &str)> {
+    let mut rest = source.trim();
+    let use_keyword = rest.strip_prefix("use")?;
+    if !use_keyword.chars().next().is_none_or(|c| c.is_ascii_whitespace()) {
+        return None;
+    }
+    rest = use_keyword.trim_start();
+    rest = rest.strip_prefix(QUICKORM_MODULE)?;
+    if !rest.chars().next().is_none_or(|c| c.is_ascii_whitespace() || c == ';') {
+        return None;
+    }
+    rest = rest.trim_start();
+    if rest.is_empty() || rest == ";" {
+        return None;
+    }
+
+    let (key, remainder) = parse_source_quoted_or_identifier(rest)?;
+    rest = remainder.trim_start();
+    rest = rest.strip_prefix("=>")?.trim_start();
+    let (value, remainder) = parse_source_quoted_or_identifier(rest)?;
+    if remainder.trim() != ";" && !remainder.trim().is_empty() {
+        return None;
+    }
+    Some((key, value))
+}
+
+fn parse_source_quoted_or_identifier(source: &str) -> Option<(&str, &str)> {
+    let first = source.as_bytes().first().copied()?;
+    if first == b'\'' || first == b'"' {
+        let end = source[1..].find(char::from(first))? + 1;
+        let value = &source[1..end];
+        if value.is_empty() || value.contains(['\\', '$', '@', '%']) {
+            return None;
+        }
+        return Some((value, &source[end + 1..]));
+    }
+    let end = source
+        .char_indices()
+        .find(|(_, character)| character.is_ascii_whitespace() || *character == ';')
+        .map_or(source.len(), |(index, _)| index);
+    let value = &source[..end];
+    (!value.is_empty()).then_some((value, &source[end..]))
 }
 
 fn static_import_key(raw: &str) -> Option<String> {

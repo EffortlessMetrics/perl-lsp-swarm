@@ -5,7 +5,11 @@ fn import_specs_from_source(source: &str) -> Result<Vec<ImportSpec>, Box<dyn std
     let mut parser = Parser::new(source);
     let ast =
         parser.parse().map_err(|error| format!("failed to parse QuickORM import: {error:?}"))?;
-    Ok(super::super::workspace_import_extractor::extract_import_specs(&ast, FileId(1)))
+    Ok(super::super::workspace_import_extractor::extract_import_specs_with_source(
+        &ast,
+        FileId(1),
+        source,
+    ))
 }
 
 fn generated_facts_from_source(
@@ -15,7 +19,11 @@ fn generated_facts_from_source(
     let ast = parser
         .parse()
         .map_err(|error| format!("failed to parse QuickORM table package: {error:?}"))?;
-    Ok(super::super::generated_member_extractor::extract_generated_member_facts(&ast, FileId(2)))
+    Ok(super::super::generated_member_extractor::extract_generated_member_facts_with_source(
+        &ast,
+        FileId(2),
+        source,
+    ))
 }
 
 fn quickorm_spec(specs: &[ImportSpec]) -> Result<&ImportSpec, Box<dyn std::error::Error>> {
@@ -89,6 +97,44 @@ fn parser_preserves_quickorm_type_call_expression_syntax() -> Result<(), Box<dyn
     assert!(
         raw.contains('(') && raw.contains(')'),
         "call expression punctuation must remain visible to the classifier: {args:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn bare_quickorm_import_does_not_enable_table_package_facts()
+-> Result<(), Box<dyn std::error::Error>> {
+    let source = "package User; use DBIx::QuickORM; table users => sub {};";
+    let specs = import_specs_from_source(source)?;
+    let spec = quickorm_spec(&specs)?;
+    assert_eq!(spec.kind, ImportKind::Use);
+    assert_eq!(spec.symbols, ImportSymbols::Default);
+    assert!(generated_facts_from_source(source)?.is_empty());
+    Ok(())
+}
+
+#[test]
+fn comma_without_fat_arrow_remains_dynamic_and_cannot_enable_table_mode()
+-> Result<(), Box<dyn std::error::Error>> {
+    let source = "package User; sub type () { 'only' }; use DBIx::QuickORM type, 'table'; table users => sub {};";
+    let specs = import_specs_from_source(source)?;
+    let spec = quickorm_spec(&specs)?;
+    assert_eq!(spec.kind, ImportKind::ManualImport);
+    assert_eq!(spec.symbols, ImportSymbols::Dynamic);
+    assert_eq!(spec.provenance, Provenance::DynamicBoundary);
+    assert!(generated_facts_from_source(source)?.is_empty());
+    Ok(())
+}
+
+#[test]
+fn source_free_generated_member_facade_is_conservative() -> Result<(), Box<dyn std::error::Error>> {
+    let source = "package User; use DBIx::QuickORM type => 'table'; table users => sub {};";
+    let mut parser = Parser::new(source);
+    let ast = parser.parse().map_err(|error| format!("parse failed: {error:?}"))?;
+    assert!(
+        super::super::generated_member_extractor::extract_generated_member_facts(&ast, FileId(2))
+            .is_empty(),
+        "source-free extraction must not infer separator-sensitive QuickORM authority"
     );
     Ok(())
 }

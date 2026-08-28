@@ -117,3 +117,21 @@ table "users" => sub {};
 
     Ok(())
 }
+
+#[test]
+fn workspace_index_blocks_quickorm_comma_without_fat_arrow()
+-> Result<(), Box<dyn std::error::Error>> {
+    let index = WorkspaceIndex::new();
+    let uri = Url::parse("file:///lib/MyApp/Schema/Comma.pm")?;
+    let source = r#"
+package MyApp::Schema::Comma;
+sub type () { 'only' };
+use DBIx::QuickORM type, 'table';
+table "users" => sub {};
+1;
+"#;
+
+    index.index_file(uri, source.to_string())?;
+    assert!(index.search_generated_workspace_symbols("qorm_table", None).is_empty());
+    Ok(())
+}
