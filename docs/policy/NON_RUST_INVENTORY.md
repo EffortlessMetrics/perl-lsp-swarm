@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12256 |
-| Rust-family files | 3745 |
-| Non-Rust files | 8511 |
-| Allowlisted | 6276 |
+| Total tracked files | 12263 |
+| Rust-family files | 3748 |
+| Non-Rust files | 8515 |
+| Allowlisted | 6280 |
 | Unclassified | 2235 |
 
 ## Non-Rust files by category
@@ -17,11 +17,11 @@
 | Category | Count |
 |---|---|
 | config | 480 |
-| documentation | 2775 |
+| documentation | 2777 |
 | generated | 2 |
 | production | 333 |
 | test | 2033 |
-| tooling | 653 |
+| tooling | 655 |
 | unclassified | 2235 |
 
 ## Unclassified files
@@ -6613,6 +6613,7 @@
 | `scripts/fuzz-bounded` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/gate-local.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/gen-xlarge-workspace.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/generate-badges.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/generate-badges.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/generate-receipt.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/generate-receipts.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -6736,6 +6737,7 @@
 | `scripts/tests/test-forbid-fatal-constructs-wrapper.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-gate-local-wrapper.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-generate-badges-wrapper.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/tests/test-generate-badges.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-generate-receipt.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-ignored-test-count-wrapper.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-install-bootstrap-identity.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -8530,6 +8532,8 @@
 | `xtask/tests/fixtures/dependency-hygiene/machete-malformed.json` | test | `non-rust-dependency-hygiene-machete-fixtures` | devex/dependency-hygiene |
 | `xtask/tests/fixtures/dependency-hygiene/machete-missing-ignored-used.json` | test | `non-rust-dependency-hygiene-machete-fixtures` | devex/dependency-hygiene |
 | `xtask/tests/fixtures/dependency-hygiene/machete-missing-unused.json` | test | `non-rust-dependency-hygiene-machete-fixtures` | devex/dependency-hygiene |
+| `xtask/tests/fixtures/lsp-318-changelog/PROVENANCE.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `xtask/tests/fixtures/lsp-318-changelog/specification.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `xtask/tests/fixtures/module-train-live/raw-clean-surface.json` | test | `non-rust-module-train-live-observation-fixtures` | devex/module-train |
 | `xtask/tests/fixtures/module-train-live/raw-corpus.json` | test | `non-rust-module-train-live-observation-fixtures` | devex/module-train |
 | `xtask/tests/fixtures/native-critic/false-positive/checked_io.pm` | test | `non-rust-perl-modules` | parser/lsp-fixtures |

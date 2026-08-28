@@ -268,6 +268,31 @@ fn classification_plan(matrix: &str) -> Result<BTreeMap<&'static str, Vec<&'stat
 }
 
 #[test]
+fn vendored_specification_matches_its_recorded_provenance_hash() {
+    use sha2::{Digest, Sha256};
+    use std::fmt::Write as _;
+
+    let provenance = read(PROVENANCE_PATH);
+    let recorded = provenance
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("- SHA-256: `"))
+        .and_then(|rest| rest.strip_suffix('`'))
+        .expect("provenance must record the vendored specification SHA-256");
+    let mut digest = Sha256::new();
+    digest.update(read(SPEC_FIXTURE_PATH).as_bytes());
+    let observed = digest.finalize().iter().fold(String::new(), |mut out, byte| {
+        let _ = write!(out, "{byte:02x}");
+        out
+    });
+
+    assert_eq!(
+        recorded.to_ascii_lowercase(),
+        observed,
+        "the vendored specification no longer matches the revision pinned in provenance"
+    );
+}
+
+#[test]
 fn official_lsp_318_changelog_is_totally_classified() -> Result<(), Box<dyn std::error::Error>> {
     let provenance = read(PROVENANCE_PATH);
     assert_provenance_is_current(&provenance);
