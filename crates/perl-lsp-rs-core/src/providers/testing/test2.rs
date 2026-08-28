@@ -159,8 +159,12 @@ const ENCODING: &[&str] = &["set_encoding"];
 /// `Test2::Tools::Exports`.
 const EXPORTS: &[&str] = &["imported_ok", "not_imported_ok"];
 
-/// `Test2::Tools::Refcount`.
-const REFCOUNT: &[&str] = &["is_refcount", "is_oneref", "refcount"];
+/// `Test2::Tools::Refcount` standalone default exports.
+const REFCOUNT_DEFAULT: &[&str] = &["is_refcount", "is_oneref"];
+
+/// The Refcount symbols selected explicitly by `Test2::V0`, including the
+/// optional `refcount` helper.
+const REFCOUNT_V0: &[&str] = &["is_refcount", "is_oneref", "refcount"];
 
 /// `Test2::Tools::Event`.
 const EVENT: &[&str] = &["gen_event"];
@@ -280,7 +284,7 @@ static V0_DEFAULT: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
         REF,
         ENCODING,
         EXPORTS,
-        REFCOUNT,
+        REFCOUNT_V0,
         EVENT,
         API_V0,
         SUBTEST_BUNDLE,
@@ -350,7 +354,7 @@ pub fn module_default_exports(module: &str) -> Option<&'static [&'static str]> {
         "Test2::Tools::Ref" => REF,
         "Test2::Tools::Encoding" => ENCODING,
         "Test2::Tools::Exports" => EXPORTS,
-        "Test2::Tools::Refcount" => REFCOUNT,
+        "Test2::Tools::Refcount" => REFCOUNT_DEFAULT,
         "Test2::Tools::Event" => EVENT,
         "Test2::Tools::Subtest" => SUBTEST_OWN,
         "Test2::Tools::AsyncSubtest" => ASYNC_SUBTEST,
