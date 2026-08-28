@@ -558,7 +558,6 @@ fn expression_calls_function(expression: &str, function: &str) -> bool {
 fn infer_imported_api_receiver_type(
     context: &CompletionContext,
     source: &str,
-    used_modules: &HashSet<String>,
 ) -> Option<&'static str> {
     let receiver = context.receiver_prefix().trim_end_matches("->");
     let source_before_cursor = source.get(..context.position).unwrap_or(source);
@@ -566,8 +565,7 @@ fn infer_imported_api_receiver_type(
     let expression =
         assignment_expression_before_receiver(receiver, &source_before_cursor[..receiver_pos])?;
 
-    if used_modules.contains("Path::Tiny")
-        && module_was_used_before(source, context.position, "Path::Tiny")
+    if module_was_used_before(source, context.position, "Path::Tiny")
         && ((module_imported_symbol_before(source, context.position, "Path::Tiny", "path")
             && expression_calls_function(expression, "path"))
             || ["new", "cwd", "rootdir", "tempfile", "tempdir"]
@@ -578,8 +576,7 @@ fn infer_imported_api_receiver_type(
     }
 
     ["HTTP::Tiny", "LWP::UserAgent"].into_iter().find(|&module| {
-        used_modules.contains(module)
-            && module_was_used_before(source, context.position, module)
+        module_was_used_before(source, context.position, module)
             && expression_calls_constructor(expression, module)
     })
 }
@@ -588,10 +585,9 @@ fn imported_static_methods(
     prefix: &str,
     source: &str,
     position: usize,
-    used_modules: &HashSet<String>,
 ) -> Option<&'static [(&'static str, &'static str)]> {
     let module = static_receiver_module(prefix)?;
-    if !used_modules.contains(module) || !module_was_used_before(source, position, module) {
+    if !module_was_used_before(source, position, module) {
         return None;
     }
 
@@ -802,12 +798,12 @@ pub fn add_method_completions(
     }
 
     // Exact imported API-factory evidence takes priority over naming heuristics.
-    let receiver_type = infer_imported_api_receiver_type(context, source, used_modules)
+    let receiver_type = infer_imported_api_receiver_type(context, source)
         .map(str::to_owned)
         .or_else(|| infer_receiver_type(context, source));
 
     let static_api_methods =
-        imported_static_methods(context.receiver_prefix(), source, context.position, used_modules);
+        imported_static_methods(context.receiver_prefix(), source, context.position);
     let instance_api_methods = known_instance_methods(receiver_type.as_deref());
 
     // Choose methods based on inferred type
