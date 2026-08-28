@@ -42,7 +42,7 @@ fn advance_pod_state<'a>(state: &mut PodState<'a>, line: &'a str) -> bool {
         }
         PodState::ForParagraph => {
             if line.trim().is_empty() {
-                *state = PodState::CutTerminated;
+                *state = PodState::Code;
             }
             true
         }
@@ -1641,14 +1641,11 @@ mod tests {
     }
 
     #[test]
-    fn for_paragraph_remains_active_until_cut() {
+    fn for_paragraph_ends_at_blank_line() {
         let source = "use HTTP::Tiny;\n=for comment\ndocumentation\n\nmy $http = HTTP::Tiny->new;\n$http->po";
-        assert!(is_in_pod(source, source.len()));
+        assert!(!is_in_pod(source, source.len()));
         assert!(!is_in_string(source, source.len()));
         assert!(!is_in_heredoc(source, source.len()));
-
-        let after_cut = format!("{source}\n=cut\nmy $after = ");
-        assert!(!is_in_pod(&after_cut, after_cut.len()));
     }
 
     #[test]
