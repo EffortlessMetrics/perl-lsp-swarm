@@ -28,6 +28,33 @@ jobs:
           toolchain: 1.95.0
           components: clippy, rustfmt
 
+      - name: Narrow production-route guard
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          path = Path("scripts/agent_7725_patch.py")
+          text = path.read_text(encoding="utf-8")
+          old = '''for path in [discovery, subject, trace]:
+              text = path.read_text(encoding="utf-8")
+              if "repository_commit" in text and "40, 64, true" in text:
+                  raise SystemExit(f"{path}: residual range-based repository commit validation")
+          '''
+          new = '''residual_calls = {
+              discovery: 'validate_reference(&input.subject.repository_commit, "repository commit", 40, 64, true)?;',
+              subject: 'validate_reference(&producer.repository_commit, "repository commit", 40, 64, true)?;',
+              trace: 'validate_reference(&subject.repository_commit, "repository commit", 40, 64, true)?;',
+          }
+          for path, stale_call in residual_calls.items():
+              if stale_call in path.read_text(encoding="utf-8"):
+                  raise SystemExit(f"{path}: residual range-based repository commit validation")
+          '''
+          if text.count(old) != 1:
+              raise SystemExit("temporary patch guard shape changed")
+          path.write_text(text.replace(old, new, 1), encoding="utf-8")
+          PY
+
       - name: Apply exact Git object identity law
         run: python3 scripts/agent_7725_patch.py
 
