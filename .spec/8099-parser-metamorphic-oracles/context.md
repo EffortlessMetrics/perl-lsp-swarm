@@ -20,11 +20,14 @@ retirement are implemented and calibrated.
 
 ## Current evidence
 
-The committed parser-accuracy manifest contains 50 fixtures across 29
-families. The generated status currently renders
-`whitespace_invariance_rate=0.4 (trailing whitespace; n=46)`. The scorer does
-not retain the 46 applied cases, the omitted fixture dispositions, or a first
-divergent parser plane.
+The committed denominator projections disagree. `docs/project/status/parser.md`
+renders 52 fixtures across 30 families, while
+`docs/project/status/parser_accuracy_fixture_inventory.json` records 50 across
+29. The generated status reports
+`whitespace_invariance_rate=0.4 (trailing whitespace; n=46)`. The live manifest,
+not either stale projection, is therefore the denominator authority for the
+migration. The scorer does not retain the 46 applied case identities, the
+remaining fixture dispositions, or a first divergent parser plane.
 
 The committed status surfaces also disagree about failure packets:
 `docs/project/status/parser.md` says 50 active packets while
@@ -146,27 +149,26 @@ the declared case denominator.
 ## Legacy population freeze
 
 Before changing transformation behavior, emit one deterministic legacy row for
-every fixture in the current 50-fixture manifest under
+every fixture in the live manifest at the evidence pin under
 `trailing_horizontal_whitespace.legacy.v1`.
 
 - The 46 fixtures for which the current function returns a variant retain the
   old hash-equality observation, but their terminal result is `not_proven`
   with reason `legacy_hash_oracle_untrusted`.
-- The four fixtures that do not enter the current sample retain a row with
-  terminal result `not_proven` and reason
-  `legacy_applicability_unclassified`. The old substring/no-change decision is
-  evidence about legacy control flow, not a trustworthy `not_applicable`
-  ruling.
+- Every remaining fixture retains a row with terminal result `not_proven` and
+  reason `legacy_applicability_unclassified`. The old substring/no-change
+  decision is evidence about legacy control flow, not a trustworthy
+  `not_applicable` ruling.
 - No legacy row creates a parser-accuracy failure packet.
 - No ratio derived from these rows may become a floor.
 - Reclassification is consumptive: each legacy row remains visible until a
   typed registered profile covers it or a reviewed disposition explains why
   it cannot be covered.
 
-If the manifest or current sample count changes before implementation, the
-first implementation commit records the new base pin and exact population
-delta. It does not silently force the historical `50 / 46` counts onto newer
-source.
+If the live manifest or current sample count changes before the retained case
+artifact lands, the implementation records the new base pin, every case
+identity, and the exact population delta. It does not force a stale total from
+one of the disagreeing generated projections onto newer source.
 
 ## Transformation authority
 
@@ -272,7 +274,7 @@ split.
 
 The staged migration is:
 
-1. freeze the legacy 50-row population and add schema/accounting checks;
+1. freeze every live legacy row and add schema/accounting checks;
 2. implement independently validated edits and coordinate maps;
 3. add typed parser snapshots and ordered plane comparisons;
 4. route required typed non-passes into #8031;
