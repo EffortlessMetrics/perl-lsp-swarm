@@ -50,7 +50,8 @@ impl NativeFormatter {
         let Some(sanitized) = sanitize_non_code_heredoc_markers(source) else {
             return engine.format_document_typed(source, config, context);
         };
-        let source_identity = engine.format_document_typed(source, config, context).outcome.identity;
+        let source_identity =
+            engine.format_document_typed(source, config, context).outcome.identity;
 
         restore_typed_result(
             source,
