@@ -372,18 +372,46 @@ impl EditorUxRatchetViolations {
     fn len(&self) -> usize {
         self.missing.len() + self.regressions.len()
     }
+
+    fn report_lines(&self) -> Vec<String> {
+        let mut lines = Vec::with_capacity(self.len());
+        lines.extend(self.missing.iter().map(|missing| {
+            format!(
+                "VIOLATION [editor_ux] {} baseline={:.3} current=missing",
+                missing.metric, missing.baseline_value
+            )
+        }));
+        lines.extend(self.regressions.iter().map(|regression| {
+            format!(
+                "VIOLATION [editor_ux] {} baseline={:.3} current={:.3} regression={:.2}%",
+                regression.metric,
+                regression.baseline_value,
+                regression.current_value,
+                regression.regression_pct * 100.0
+            )
+        }));
+        lines
+    }
 }
 
 fn evaluate_ratchet(
     baseline: &SubsystemBaseline,
     current: &BTreeMap<String, Option<f64>>,
 ) -> EditorUxRatchetViolations {
+    let finite_current: BTreeMap<String, Option<f64>> = current
+        .iter()
+        .map(|(metric, value)| {
+            let finite_value = (*value).filter(|value| value.is_finite());
+            (metric.clone(), finite_value)
+        })
+        .collect();
+
     let missing = baseline
         .floor_metrics
         .iter()
         .filter_map(|(metric, baseline_value)| {
             let baseline_value = baseline_value.as_ref().copied()?;
-            if current.get(metric).and_then(|value| *value).is_some() {
+            if finite_current.get(metric).and_then(|value| *value).is_some() {
                 None
             } else {
                 Some(MissingRequiredMetric { metric: metric.clone(), baseline_value })
@@ -393,7 +421,7 @@ fn evaluate_ratchet(
 
     EditorUxRatchetViolations {
         missing,
-        regressions: ratchet::check_floor_metrics(baseline, current),
+        regressions: ratchet::check_floor_metrics(baseline, &finite_current),
     }
 }
 
@@ -418,20 +446,8 @@ fn enforce_ratchet(root: &Path, artifact: &UxScorecardArtifact) -> Result<()> {
         return Ok(());
     }
 
-    for missing in &violations.missing {
-        eprintln!(
-            "VIOLATION [editor_ux] {} baseline={:.3} current=missing",
-            missing.metric, missing.baseline_value
-        );
-    }
-    for regression in &violations.regressions {
-        eprintln!(
-            "VIOLATION [editor_ux] {} baseline={:.3} current={:.3} regression={:.2}%",
-            regression.metric,
-            regression.baseline_value,
-            regression.current_value,
-            regression.regression_pct * 100.0
-        );
+    for line in violations.report_lines() {
+        eprintln!("{line}");
     }
 
     bail!("editor_ux ratchet check failed with {} violation(s)", violations.len())
@@ -662,13 +678,36 @@ mod tests {
     }
 
     #[test]
+    fn ratchet_rejects_non_finite_current_values() {
+        let baseline = baseline_with_floor_metrics(BTreeMap::from([
+            ("nan_metric".to_string(), Some(10.0)),
+            ("negative_infinity_metric".to_string(), Some(20.0)),
+            ("positive_infinity_metric".to_string(), Some(30.0)),
+        ]));
+        let current = BTreeMap::from([
+            ("nan_metric".to_string(), Some(f64::NAN)),
+            ("negative_infinity_metric".to_string(), Some(f64::NEG_INFINITY)),
+            ("positive_infinity_metric".to_string(), Some(f64::INFINITY)),
+        ]);
+
+        let violations = evaluate_ratchet(&baseline, &current);
+        let missing: Vec<&str> =
+            violations.missing.iter().map(|item| item.metric.as_str()).collect();
+
+        assert_eq!(
+            missing,
+            vec!["nan_metric", "negative_infinity_metric", "positive_infinity_metric"]
+        );
+        assert!(violations.regressions.is_empty());
+    }
+
+    #[test]
     fn ratchet_collects_missing_and_numeric_regressions_together() {
         let baseline = baseline_with_floor_metrics(BTreeMap::from([
             ("hover_correctness_pct".to_string(), Some(100.0)),
             ("missing_metric".to_string(), Some(75.0)),
         ]));
-        let current =
-            BTreeMap::from([("hover_correctness_pct".to_string(), Some(80.0))]);
+        let current = BTreeMap::from([("hover_correctness_pct".to_string(), Some(80.0))]);
 
         let violations = evaluate_ratchet(&baseline, &current);
 
@@ -676,6 +715,70 @@ mod tests {
         assert_eq!(violations.missing[0].metric, "missing_metric");
         assert_eq!(violations.regressions.len(), 1);
         assert_eq!(violations.regressions[0].metric, "hover_correctness_pct");
+    }
+
+    #[test]
+    fn enforce_ratchet_uses_fail_closed_editor_ux_boundary() {
+        let root = tempfile::tempdir().expect("temporary repository root");
+        let baseline = baseline_with_floor_metrics(BTreeMap::from([
+            ("future_metric".to_string(), None),
+            ("hover_correctness_pct".to_string(), Some(100.0)),
+            ("missing_metric".to_string(), Some(75.0)),
+            ("nan_metric".to_string(), Some(50.0)),
+            ("null_metric".to_string(), Some(25.0)),
+            ("zero_metric".to_string(), Some(0.0)),
+        ]));
+        let baseline_path = root.path().join(BASELINE_PATH);
+        fs::create_dir_all(baseline_path.parent().expect("baseline parent"))
+            .expect("create baseline directory");
+        fs::write(
+            &baseline_path,
+            serde_json::to_string_pretty(&baseline).expect("serialize baseline"),
+        )
+        .expect("write baseline");
+
+        let artifact = UxScorecardArtifact {
+            schema_version: 1,
+            measured_at: "2026-01-01T00:00:00Z".to_string(),
+            subsystem: "editor_ux",
+            scenario_count: 1,
+            scenario_ids: vec!["ratchet_boundary".to_string()],
+            rows: BTreeMap::from([
+                (
+                    "hover_correctness_pct".to_string(),
+                    PercentMetric { value: Some(80.0) },
+                ),
+                ("nan_metric".to_string(), PercentMetric { value: Some(f64::NAN) }),
+                ("null_metric".to_string(), PercentMetric { value: None }),
+                ("zero_metric".to_string(), PercentMetric { value: Some(0.0) }),
+            ]),
+            latency_by_request_class: BTreeMap::new(),
+            provenance: json!({}),
+        };
+
+        let error = enforce_ratchet(root.path(), &artifact)
+            .expect_err("missing, null, non-finite, and regressed metrics must fail");
+        assert_eq!(
+            error.to_string(),
+            "editor_ux ratchet check failed with 4 violation(s)"
+        );
+
+        let current = BTreeMap::from([
+            ("hover_correctness_pct".to_string(), Some(80.0)),
+            ("nan_metric".to_string(), Some(f64::NAN)),
+            ("null_metric".to_string(), None),
+            ("zero_metric".to_string(), Some(0.0)),
+        ]);
+        let violations = evaluate_ratchet(&baseline, &current);
+        assert_eq!(
+            violations.report_lines(),
+            vec![
+                "VIOLATION [editor_ux] missing_metric baseline=75.000 current=missing",
+                "VIOLATION [editor_ux] nan_metric baseline=50.000 current=missing",
+                "VIOLATION [editor_ux] null_metric baseline=25.000 current=missing",
+                "VIOLATION [editor_ux] hover_correctness_pct baseline=100.000 current=80.000 regression=20.00%",
+            ]
+        );
     }
 
     #[test]
