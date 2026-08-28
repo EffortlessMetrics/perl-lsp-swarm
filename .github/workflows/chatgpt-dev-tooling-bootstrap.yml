@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   apply-and-verify:
-    if: github.event.head_commit.message == 'chore(agent): bootstrap clippy tooling repair'
+    if: "${{ github.event.head_commit.message == 'chore(agent): bootstrap clippy tooling repair' }}"
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
