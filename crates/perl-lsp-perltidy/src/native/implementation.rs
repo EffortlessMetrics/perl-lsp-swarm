@@ -201,7 +201,7 @@ impl PerlFormatter for NativeFormatter {
         // do not block formatting of the clean range.
         //
         // Overlap detection strategy: line-based constructs are checked only on
-        // lines within the range; token-based constructs compare token byte spans
+        // lines within the range; lexer/parser token spans are compared
         // against the byte interval of the requested lines (conservative — a token
         // that merely starts before the range but ends inside it is considered an
         // overlap and causes a bail-out).
@@ -1673,12 +1673,12 @@ fn literal_preserve_region(source: &str) -> Option<&'static str> {
         if matches!(trimmed.trim_end(), "__DATA__" | "__END__") {
             return Some("DATA/END section");
         }
-        if contains_likely_heredoc_start(line) {
-            return Some("heredoc");
-        }
         if is_format_declaration_start(trimmed) {
             return Some("format body");
         }
+    }
+    if heredoc_preserve_region_overlapping(source, 0, source.len()) {
+        return Some("heredoc");
     }
     token_literal_preserve_region(source)
 }
@@ -1691,11 +1691,12 @@ fn literal_preserve_region(source: &str) -> Option<&'static str> {
 /// the rest of the document contains such constructs.
 ///
 /// ## Line-based checks
-/// POD markers, `__DATA__`/`__END__`, heredoc starts, and `format` declarations
-/// are detected by scanning only the source lines that fall within `range`.
+/// POD markers, `__DATA__`/`__END__`, and `format` declarations are detected by
+/// scanning only the source lines that fall within `range`.
 ///
 /// ## Token-based checks
-/// Regex literals, substitution, transliteration, and quote-like operators are
+/// Heredoc openers and bodies come from the full lexer's byte spans. Regex literals,
+/// substitution, transliteration, and quote-like operators are
 /// detected by tokenising the full source and checking whether any such token's
 /// byte span overlaps the byte interval of the requested lines. A token that
 /// starts before the range but ends inside it is treated as an overlap (bail
@@ -1714,9 +1715,6 @@ fn literal_preserve_region_for_range(source: &str, range: TextRange) -> Option<&
         if matches!(trimmed.trim_end(), "__DATA__" | "__END__") {
             return Some("DATA/END section");
         }
-        if contains_likely_heredoc_start(line) {
-            return Some("heredoc");
-        }
         if is_format_declaration_start(trimmed) {
             return Some("format body");
         }
@@ -1725,6 +1723,9 @@ fn literal_preserve_region_for_range(source: &str, range: TextRange) -> Option<&
     // --- token-based checks (overlap with requested byte range) ---
     // Compute the byte range for the requested lines.
     let (range_byte_start, range_byte_end) = byte_span_for_line_range(source, range);
+    if heredoc_preserve_region_overlapping(source, range_byte_start, range_byte_end) {
+        return Some("heredoc");
+    }
     token_literal_preserve_region_overlapping(source, range_byte_start, range_byte_end)
 }
 
@@ -1761,6 +1762,28 @@ fn byte_span_for_line_range(source: &str, range: TextRange) -> (usize, usize) {
     }
 
     (byte_start, byte_end)
+}
+
+fn heredoc_preserve_region_overlapping(
+    source: &str,
+    range_byte_start: usize,
+    range_byte_end: usize,
+) -> bool {
+    use perl_lexer::TokenType;
+
+    let mut lexer = perl_lexer::PerlLexer::with_body_tokens(source);
+    while let Some(token) = lexer.next_token() {
+        if matches!(&token.token_type, TokenType::EOF) {
+            return false;
+        }
+        if matches!(&token.token_type, TokenType::HeredocStart | TokenType::HeredocBody(_))
+            && token.start < range_byte_end
+            && token.end > range_byte_start
+        {
+            return true;
+        }
+    }
+    false
 }
 
 fn token_literal_preserve_region_overlapping(
@@ -1847,20 +1870,6 @@ fn is_pod_start(trimmed_line: &str) -> bool {
     )
 }
 
-fn contains_likely_heredoc_start(line: &str) -> bool {
-    let Some((_, after_marker)) = line.split_once("<<") else {
-        return false;
-    };
-    if after_marker.starts_with('<') {
-        return false;
-    }
-
-    let after_indent = after_marker.trim_start();
-    let marker = after_indent.strip_prefix('~').unwrap_or(after_indent).trim_start();
-    let marker = marker.strip_prefix(['\'', '"', '`']).unwrap_or(marker);
-    marker.chars().next().is_some_and(|ch| ch == '_' || ch.is_ascii_alphabetic())
-}
-
 fn is_format_declaration_start(trimmed_line: &str) -> bool {
     if !trimmed_line.ends_with('=') {
         return false;
@@ -1876,10 +1885,57 @@ fn is_format_declaration_start(trimmed_line: &str) -> bool {
 mod tests {
     use super::{
         FormatConfig, NativeFormatter, PerlFormatter, TextPosition, TextRange,
-        byte_span_for_line_range, literal_preserve_region, literal_preserve_region_for_range,
-        range_includes_line, split_line_ending, split_trailing_comment,
-        token_literal_preserve_region_overlapping,
+        byte_span_for_line_range, heredoc_preserve_region_overlapping, literal_preserve_region,
+        literal_preserve_region_for_range, range_includes_line, split_line_ending,
+        split_trailing_comment, token_literal_preserve_region_overlapping,
     };
+
+    #[test]
+    fn heredoc_span_helper_tracks_opener_body_and_post_terminator_code()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = "my $face = \"😀\";\nprint <<'EOF';\nmy$x=1;\nEOF\nmy$y=2;\n";
+        let opener_start =
+            source.find("<<").ok_or_else(|| std::io::Error::other("missing heredoc opener"))?;
+        let body_start =
+            source.find("my$x=1").ok_or_else(|| std::io::Error::other("missing heredoc body"))?;
+        let after_start = source
+            .find("my$y=2")
+            .ok_or_else(|| std::io::Error::other("missing post-heredoc code"))?;
+
+        assert!(heredoc_preserve_region_overlapping(source, opener_start, opener_start + 2));
+        assert!(heredoc_preserve_region_overlapping(
+            source,
+            body_start,
+            body_start + "my$x=1".len()
+        ));
+        assert!(!heredoc_preserve_region_overlapping(source, after_start, source.len()));
+
+        Ok(())
+    }
+
+    #[test]
+    fn heredoc_span_helper_rejects_textual_false_markers() -> Result<(), Box<dyn std::error::Error>>
+    {
+        for source in ["my$x=\"<<LABEL\";\n", "my$x=1; # <<LABEL\n", "my $x = 1 << 2;\n"] {
+            assert!(!heredoc_preserve_region_overlapping(source, 0, source.len()));
+            assert_eq!(literal_preserve_region(source), None);
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn range_preserve_gate_detects_body_but_not_code_after_terminator()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = "print <<'EOF';\nmy$x=1;\nEOF\nmy$y=2;\n";
+        let body = TextRange::new(TextPosition::new(1, 0), TextPosition::new(2, 0));
+        let after = TextRange::new(TextPosition::new(3, 0), TextPosition::new(4, 0));
+
+        assert_eq!(literal_preserve_region_for_range(source, body), Some("heredoc"));
+        assert_eq!(literal_preserve_region_for_range(source, after), None);
+
+        Ok(())
+    }
 
     #[test]
     fn split_trailing_comment_ignores_hash_inside_backticks()
