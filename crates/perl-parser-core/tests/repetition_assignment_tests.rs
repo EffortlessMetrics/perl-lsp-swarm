@@ -27,11 +27,12 @@ fn repetition_assignment_builds_assignment_ast() -> Result<(), String> {
         return Err(format!("expected Assignment, got: {:?}", assignment.kind));
     };
 
-    assert!(
-        matches!(&rhs.kind, NodeKind::Number { value } if value == "3"),
-        "expected numeric repetition count, got: {:?}",
-        rhs.kind,
-    );
+    if !matches!(&rhs.kind, NodeKind::Number { value } if value == "3") {
+        return Err(format!(
+            "expected numeric repetition count, got: {:?}",
+            rhs.kind
+        ));
+    }
     Ok(())
 }
 
@@ -47,11 +48,12 @@ fn repetition_assignment_is_right_associative() -> Result<(), String> {
         return Err(format!("expected Assignment, got: {:?}", assignment.kind));
     };
 
-    assert!(
-        matches!(&rhs.kind, NodeKind::Assignment { op, .. } if op == "="),
-        "expected = assignment on x= RHS, got: {:?}",
-        rhs.kind,
-    );
+    if !matches!(&rhs.kind, NodeKind::Assignment { op, .. } if op == "=") {
+        return Err(format!(
+            "expected = assignment on x= RHS, got: {:?}",
+            rhs.kind
+        ));
+    }
     Ok(())
 }
 
@@ -67,31 +69,34 @@ fn ordinary_repetition_operator_remains_binary() -> Result<(), String> {
         return Err(format!("expected Assignment, got: {:?}", assignment.kind));
     };
 
-    assert!(
-        matches!(&rhs.kind, NodeKind::Binary { op, .. } if op == "x"),
-        "expected ordinary x repetition on assignment RHS, got: {:?}",
-        rhs.kind,
-    );
+    if !matches!(&rhs.kind, NodeKind::Binary { op, .. } if op == "x") {
+        return Err(format!(
+            "expected ordinary x repetition on assignment RHS, got: {:?}",
+            rhs.kind
+        ));
+    }
     Ok(())
 }
 
 #[test]
-fn whitespace_does_not_form_repetition_assignment() {
+fn whitespace_does_not_form_repetition_assignment() -> Result<(), String> {
     let source = "$value x = 3;";
     let mut parser = Parser::new(source);
     let result = parser.parse();
     let has_diagnostics = !parser.get_errors().is_empty();
 
-    assert!(
-        result.is_err() || has_diagnostics,
-        "spaced x = must remain invalid Perl",
-    );
-
-    if let Ok(ast) = result {
-        assert!(
-            find_assignment(&ast, "x=").is_none(),
-            "spaced x = must not be normalized to x=:\n{}",
-            ast.to_sexp(),
-        );
+    if result.is_ok() && !has_diagnostics {
+        return Err("spaced x = must remain invalid Perl".to_string());
     }
+
+    if let Ok(ast) = result
+        && find_assignment(&ast, "x=").is_some()
+    {
+        return Err(format!(
+            "spaced x = must not be normalized to x=:\n{}",
+            ast.to_sexp()
+        ));
+    }
+
+    Ok(())
 }
