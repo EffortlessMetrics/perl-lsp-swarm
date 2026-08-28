@@ -464,10 +464,12 @@ assuming the former prose-row denominator.
    appear as `pending_gate(#5461/#4348)`/`not_recommended`; under H2(b), its
    intentional omission must be recorded as the ruled policy. An implementation
    that treats either ruling as the other fails.
-7. **Determinism.** `cargo xtask install-route-classification check` is
-   byte-identical across runs and machines: classification output contains no
-   timestamps, ambient state, or catalog-order dependence beyond stable claim
-   IDs. Any run-to-run diff fails.
+7. **Determinism.** The eventual catalog-owner regeneration check must produce
+   byte-identical classification output across repeated runs and supported
+   environments. The output contains no timestamps or other ambient state, and
+   catalog ordering is normalized rather than observed; any run-to-run diff
+   fails. The concrete command and owning package remain deferred until the
+   validated catalog contract selects them.
 8. **Denominator and inventory closure.** Every exact route row and projection
    context in the validated catalog is classified exactly once, and every one of
    the literal claim IDs C101, C102, C103, C104, C105, C106, C107, C108, C201,
@@ -574,11 +576,11 @@ and fail-closed route states. If any authority is absent or structurally
 changes, stop at `NOT_PROVEN` and re-derive §2 and its fixtures; do not
 substitute the closed #12858 attempt.
 
-**Proof strategy:** all §4 falsifiers as focused `cargo test -p xtask` cases
-plus the byte-identity regen check; `just doctor`, `cargo fmt -p xtask --
---check`, `cargo clippy -p xtask --all-targets --locked -- -D warnings`,
-`cargo test -p xtask --all-targets --locked`. No CI-cycle dependency beyond the
-standard gates.
+**Proof strategy:** all §4 falsifiers as focused cases in the catalog-owner
+proof harness, plus the byte-identity regeneration check selected by the
+validated catalog contract. The owning package's formatting, lint, and test
+ checks, together with `just doctor`, are run once that contract selects the
+ concrete surfaces. No CI-cycle dependency beyond the standard gates.
 
 **Residual risks:**
 
