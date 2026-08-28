@@ -63,7 +63,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 use std::io::{self, BufRead, BufReader, Read, Write};
-use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -83,9 +82,9 @@ use crate::security;
 use patterns::{
     DEBUG_SESSION_TERMINATE_WAIT_MS, DEBUGGER_FRAME_POLL_MS, DEBUGGER_QUERY_WAIT_MS,
     EVENT_QUEUE_CAPACITY, RECENT_OUTPUT_MAX_LINES, RecentOutputBuffer, RecentOutputLine,
-    ansi_escape_re, assignment_ops_re, context_re, dangerous_ops_re, deref_re, error_re,
-    exception_re, glob_re, inc_re, is_valid_function_breakpoint_name, is_valid_set_variable_name,
-    prompt_re, regex_mutation_re, stack_frame_re, warning_re,
+    ansi_escape_re, assignment_ops_re, context_re, dangerous_ops_re, deref_re, die_suffix_re,
+    error_re, exception_re, glob_re, inc_re, is_valid_function_breakpoint_name,
+    is_valid_set_variable_name, prompt_re, regex_mutation_re, stack_frame_re, warning_re,
 };
 use safe_eval::validate_safe_expression;
 use sync_utils::{dispatch_event, emit_event_safe, lock_or_recover};
@@ -608,19 +607,18 @@ impl DebugAdapter {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .spawn()
+            && let Ok(mut guard) = self.session.lock()
         {
-            if let Ok(mut guard) = self.session.lock() {
-                *guard = Some(DebugSession {
-                    process: child,
-                    state: DebugState::Running,
-                    stack_frames: vec![],
-                    stack_frame_arguments: HashMap::new(),
-                    variable_cache: VariableCache::default(),
-                    thread_id: 1,
-                    last_resume_mode: ResumeMode::Continue,
-                    stopped_generation: 0,
-                });
-            }
+            *guard = Some(DebugSession {
+                process: child,
+                state: DebugState::Running,
+                stack_frames: vec![],
+                stack_frame_arguments: HashMap::new(),
+                variable_cache: VariableCache::default(),
+                thread_id: 1,
+                last_resume_mode: ResumeMode::Continue,
+                stopped_generation: 0,
+            });
         }
     }
 
@@ -1139,8 +1137,7 @@ print "result: $final\n";
             let _ = mapped_commands.insert(command);
         }
 
-        let mut request_seq = 2;
-        for command in mapped_commands {
+        for (request_seq, command) in (2_i64..).zip(mapped_commands) {
             let arguments = match command {
                 "configurationDone" => Some(json!({})),
                 "setFunctionBreakpoints" => {
@@ -1184,7 +1181,6 @@ print "result: $final\n";
             };
 
             let response = adapter.handle_request(request_seq, command, arguments);
-            request_seq += 1;
 
             match response {
                 DapMessage::Response { command: actual, message, .. } => {

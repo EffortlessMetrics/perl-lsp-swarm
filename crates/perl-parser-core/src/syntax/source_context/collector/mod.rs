@@ -17,12 +17,11 @@ pub(crate) fn collect_regions(source: &str) -> Vec<SourceRegion> {
     regions.extend(literal_scan::scan_line_comments_and_open_literals(source));
     regions.extend(literal_scan::scan_heredoc_regions(source));
     regions.extend(collect_lexer_literal_regions(source));
-    if let Some(marker_start) = find_data_marker_byte_lexed(source) {
-        if let Some(region) =
+    if let Some(marker_start) = find_data_marker_byte_lexed(source)
+        && let Some(region) =
             SourceRegion::new(marker_start, source.len(), SourceRegionKind::DataSection)
-        {
-            regions.push(region);
-        }
+    {
+        regions.push(region);
     }
     coalesce_regions(regions, source.len())
 }

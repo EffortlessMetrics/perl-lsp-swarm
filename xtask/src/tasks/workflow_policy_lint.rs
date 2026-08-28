@@ -47,6 +47,10 @@ const ALLOWLIST_WORKFLOW_LANE_MISSING: &[&str] = &[
     "winget-bump.yml",
     // Schedule/utility workflows tracked separately from the lane economics.
     "ci-gate-self-tests.yml",
+    // Advisory pull_request sentinel (#6238): payload-only head-name
+    // classification alongside pr-plan.yml, deliberately outside the CI
+    // economics map and outside `ci-lane-whitelist.toml`.
+    "pr-plan-head-name-guard.yml",
     "triage-issues.yml",
     "workflow-trigger-lint.yml",
 ];

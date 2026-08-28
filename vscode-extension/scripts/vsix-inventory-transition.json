@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 7845,
-  "reason": "#7845 routes the process-exit crash handler, the watchdog timeout path, and the automatic-restart budget in extension.ts through the landed CrashRecoveryArbiter, including review-hardened stale-watchdog generation binding, snapshot-based episode settlement, episode-handle-bound settlement with deferred different-generation failures, and removal of the unreachable manual-restart catch. Composed on top of the accepted #9842 transition from main (package.json script metadata 58406->58886 already declared there); this transition owns out/extension.js 1519372->1534537 measured on the merged current-source tree (local rolldown 1.2.4, eol=lf; CI smoke re-measures the archive). No file added, removed, or loosened; total recomputed ->1711328.",
-  "base_baseline_file_sha256": "8a20c2b29c57b1baad098d658e385e2a8f32b92cbd9637b6681aa51aefcd119e",
-  "candidate_baseline_file_sha256": "ad49f7d100b5de70e7931e7c7e705a57fa00b6090bc807b391f2910673866ddf",
-  "base_inventory_sha256": "77366544182581a948a34d8f7701f7388f1384f0d1efb539c3221fe0e93e5895",
-  "candidate_inventory_sha256": "dd7332f25fca75e351a1813d63bb177ca14cf951c551651e406f979e0cf7a446"
+  "owner_issue": 12757,
+  "reason": "Reconciles the crash-recovery convergence bundle for #12757 after making the extension lifecycle arbiter the sole connection-close restart owner, disposing integrations before terminal cleanup, and routing a post-exhaustion explicit retry through a fresh lifecycle generation. Cumulative size-only delta: out/extension.js 1534537 -> 1548892 (+14355); no packaged file was added, removed, or loosened.",
+  "base_baseline_file_sha256": "18c71611c572f227fff586fed8e8a8f85f9cedabd7c9f5febe72464c09e6f7f5",
+  "candidate_baseline_file_sha256": "bbedb2f0d07c89240638a3e1323b4c57e75e64ac3f36e8b70223754dbe43417d",
+  "base_inventory_sha256": "124e8ae60936f4b50e724e0d6341bb662818dc3324c3790cb08e03bac854b655",
+  "candidate_inventory_sha256": "47560cea1d8fa4da6af0bd27939daba70e14f4d8415f82177081f7ca71af8e33"
 }

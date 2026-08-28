@@ -128,8 +128,14 @@ assert settings["languages"]["Perl"]["language_servers"] == [
     "!perl-lsp",
     "...",
 ]
+# The configured path is an opaque token, not a filesystem claim: _settings
+# embeds `str(perllsp)`, so the expectation must go through the same Path->str
+# conversion. On Windows str(Path("/tmp/perllsp")) is "\\tmp\\perllsp" while
+# the raw environment token stays "/tmp/perllsp"; comparing one against the
+# other makes this contract host-dependent.
+expected_path = str(Path(os.environ["ZED_EXPECTED_PERLLSP_PATH"]))
 assert settings["lsp"]["perllsp"]["binary"] == {
-    "path": os.environ["ZED_EXPECTED_PERLLSP_PATH"],
+    "path": expected_path,
     "arguments": [],
 }
 assert settings["lsp"]["perllsp"]["settings"]["perl"] == {"trace": True}

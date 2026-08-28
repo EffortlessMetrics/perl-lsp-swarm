@@ -10,7 +10,9 @@
 
 use perl_semantic_analyzer::Parser;
 use perl_semantic_analyzer::analysis::dancer2_activation::extract_dancer2_activation_sites;
-use perl_semantic_analyzer::analysis::dancer2_routes::extract_dancer2_route_declarations;
+use perl_semantic_analyzer::analysis::dancer2_routes::{
+    extract_dancer2_route_contexts, extract_dancer2_route_declarations,
+};
 use perl_semantic_analyzer::symbol::{SymbolExtractor, SymbolKind, SymbolTable};
 use perl_semantic_facts::framework::{
     AdapterCancellation, AdapterDetectionInput, AdapterDetectionResult, DetectionEvidenceClass,
@@ -21,10 +23,12 @@ use perl_semantic_facts::framework_adapters::dancer2::{
     dancer2_activation_facts, dancer2_descriptor, detect_dancer2, parse_dancer2_import_args,
 };
 use perl_semantic_facts::framework_adapters::dancer2_routes::{
-    Dancer2RouteDeclaration, dancer2_route_facts,
+    Dancer2RouteDeclaration, Dancer2RouteFacts, dancer2_route_facts, dancer2_route_family_facts,
 };
 use perl_semantic_facts::route::{
-    RouteFact, RouteHandler, RouteMethodSet, RouteNameSelection, RouteOptions, RoutePatternKind,
+    RouteEffectivePattern, RouteFact, RouteHandler, RouteHandlerContextFact, RouteMethodSet,
+    RouteNameSelection, RouteOptions, RouteParameterFact, RouteParameterKind, RoutePatternKind,
+    RoutePrefixFact, route_fact_identity,
 };
 use perl_semantic_facts::{Confidence, FileId, SemanticFactStatus, SourceGeneration};
 use perl_tdd_support::{must, must_some};
@@ -246,48 +250,96 @@ fn dancer2_skeleton_corpus_round_trips() -> Result<(), serde_json::Error> {
     let serialized = serde_json::to_string(&facts)?;
     let decoded: Vec<RouteFact> = serde_json::from_str(&serialized)?;
     assert_eq!(decoded, facts, "route facts round-trip through the transport");
+
+    // The family chain over the same corpus: the fixture's `/` pattern has no
+    // prefix, no parameters, and one inline handler interval.
+    let contexts = extract_dancer2_route_contexts(&ast, FileId(11));
+    assert!(contexts.prefixes.is_empty(), "the skeleton fixture carries no prefix");
+    let family = dancer2_route_family_facts(
+        &detection,
+        &activation,
+        sites[0].package.as_deref(),
+        &contexts.routes,
+        &contexts.prefixes,
+    );
+    assert_eq!(family.routes.len(), 1);
+    assert!(family.parameters.is_empty(), "`/` has no parameter segments");
+    assert_eq!(family.handler_contexts.len(), 1);
+    assert_eq!(family.handler_contexts[0].status(), SemanticFactStatus::Exact);
+    let handler = family.handler_contexts[0].envelope.anchor;
+    assert_eq!(
+        &code[handler.start_byte as usize..handler.end_byte as usize],
+        "sub { 'Hello World' }"
+    );
     Ok(())
 }
 
-// Falsifier 4: the legacy extractor's behavior is untouched — the #8910
-// containment still holds on the live path, and the legacy route synthesis
-// keeps producing route-path Subroutine symbols.
+// Falsifier 4 (#8928 retirement): containment still holds, the admitted
+// forms are retired to canonical facts, and the unadmitted forms keep the
+// legacy path with the recorded boundary.
 #[test]
-fn legacy_extractor_behavior_is_untouched() {
+fn legacy_extractor_retirement_boundary() {
     // Containment: no `use Dancer2`, no legacy route symbol.
-    let unactivated = "package App;\nget '/hello' => sub { 'x' };\n";
+    let unactivated = "package App;
+get '/hello' => sub { 'x' };
+";
     let table = legacy_symbols(unactivated);
     assert!(
         legacy_route_symbol(&table, "/hello").is_none(),
         "bare `get` without `use Dancer2` must not produce a legacy route symbol"
     );
 
-    // Legacy live path still synthesizes the route-path Subroutine symbol.
-    let activated = "package App;\nuse Dancer2;\nget '/hello' => sub { 'x' };\n";
+    // Admitted form: retired — the canonical facts own the route identity.
+    let activated = "package App;
+use Dancer2;
+get '/hello' => sub { 'x' };
+";
     let table = legacy_symbols(activated);
+    assert!(
+        legacy_route_symbol(&table, "/hello").is_none(),
+        "the admitted form must not synthesize a legacy route-path symbol (#8928)"
+    );
+
+    // Unadmitted form (excluded keyword): the legacy path keeps it.
+    let excluded = "package App;
+use Dancer2 '!get';
+get '/hello' => sub { 'x' };
+";
+    let table = legacy_symbols(excluded);
     let symbol = must_some(legacy_route_symbol(&table, "/hello"));
     assert!(symbol.attributes.iter().any(|attr| attr == "http_method=GET"));
+
+    // Unadmitted form (bare `delete`, not a Dancer2 keyword): legacy keeps it.
+    let bare_delete = "package App;
+use Dancer2;
+delete '/x' => sub { 1 };
+";
+    let table = legacy_symbols(bare_delete);
+    let symbol = must_some(legacy_route_symbol(&table, "/x"));
+    assert!(symbol.attributes.iter().any(|attr| attr == "http_method=DELETE"));
 }
 
-// Shadow parity: classify the intended canonical-vs-legacy deltas over the
-// #8918 fixture forms. The legacy extractor is NOT retired here (#8928 gate).
+// Shadow parity (#8918 receipts, post-#8928 retirement): the canonical
+// values are unchanged; the legacy route-path symbols for the admitted
+// forms are retired. Parity over these forms was proven before retirement
+// landed (frozen legacy oracle: `dancer2_provider_cutover_parity.rs`).
 #[test]
 fn shadow_parity_classifies_intended_deltas() {
-    // Exact-equivalent simple literal route.
+    // Exact-equivalent simple literal route: canonical keeps the pattern;
+    // the admitted form is retired from the legacy path.
     let simple = "package App;\nuse Dancer2;\nget '/x' => sub { 1 };\n";
     let facts = canonical_facts(simple, "gen-1");
     let table = legacy_symbols(simple);
     assert_eq!(facts.len(), 1);
-    assert!(legacy_route_symbol(&table, "/x").is_some());
+    assert!(legacy_route_symbol(&table, "/x").is_none(), "admitted form retired (#8928)");
     assert_eq!(facts[0].route.pattern.value.as_deref(), Some("/x"));
 
-    // Intended GET→HEAD enrichment.
-    let symbol = must_some(legacy_route_symbol(&table, "/x"));
-    assert_eq!(symbol.attributes, vec!["http_method=GET".to_string()]);
+    // Intended GET→HEAD enrichment over the retired legacy GET-only value.
     assert!(exact_methods(&facts[0]).contains(&"HEAD".to_string()));
 
-    // Intended named-route correction: legacy names the symbol by the route
-    // NAME and loses the pattern; canonical keeps both distinct.
+    // Intended named-route correction: the retired legacy path named the
+    // symbol by the route NAME and lost the pattern; canonical keeps both
+    // distinct.
     let named = "package App;\nuse Dancer2;\nget 'user_show', '/users/:id', sub { 1 };\n";
     let facts = canonical_facts(named, "gen-1");
     let table = legacy_symbols(named);
@@ -295,22 +347,22 @@ fn shadow_parity_classifies_intended_deltas() {
     assert_eq!(literal_name_value(&facts[0]), "user_show");
     assert_eq!(facts[0].route.pattern.value.as_deref(), Some("/users/:id"));
     assert!(
-        legacy_route_symbol(&table, "user_show").is_some(),
-        "legacy synthesizes the symbol under the name operand"
+        legacy_route_symbol(&table, "user_show").is_none(),
+        "the admitted named form is retired (#8928); canonical keeps name and pattern distinct"
     );
-    assert!(legacy_route_symbol(&table, "/users/:id").is_none(), "legacy loses the actual pattern");
+    assert!(legacy_route_symbol(&table, "/users/:id").is_none());
 
-    // Intended `any` method-set correction.
+    // Intended `any` method-set correction over the retired legacy ANY value.
     let any_route = "package App;\nuse Dancer2;\nany '/multi' => sub { 1 };\n";
     let facts = canonical_facts(any_route, "gen-1");
     let table = legacy_symbols(any_route);
-    let symbol = must_some(legacy_route_symbol(&table, "/multi"));
-    assert!(symbol.attributes.iter().any(|attr| attr == "http_method=ANY"));
+    assert!(legacy_route_symbol(&table, "/multi").is_none(), "admitted `any` is retired (#8928)");
     let methods = exact_methods(&facts[0]);
     assert!(!methods.iter().any(|method| method == "ANY"));
     assert_eq!(methods.len(), 7, "bare any records the reviewed default set");
 
-    // Intended `options` coverage: the legacy verb table lacks `options`.
+    // Intended `options` coverage: the legacy verb table never covered
+    // `options`; canonical does, and the admitted form is retired.
     let options_route = "package App;\nuse Dancer2;\noptions '/x' => sub { 1 };\n";
     let facts = canonical_facts(options_route, "gen-1");
     let table = legacy_symbols(options_route);
@@ -318,7 +370,7 @@ fn shadow_parity_classifies_intended_deltas() {
     assert_eq!(exact_methods(&facts[0]), vec!["OPTIONS".to_string()]);
     assert!(
         legacy_route_symbol(&table, "/x").is_none(),
-        "legacy does not cover the `options` verb"
+        "admitted `options` is retired (#8928); pre-retirement legacy never covered it either"
     );
 
     // Intended bare-`delete` rejection: legacy accepts it, canonical does not.
@@ -518,4 +570,349 @@ fn extraction_is_observable_but_minting_is_activation_gated() {
         extract_dancer2_route_declarations(&ast, FileId(1));
     assert_eq!(declarations.len(), 1, "grammar extraction observes the route");
     assert!(canonical_facts(code, "gen-1").is_empty(), "no activation, no facts");
+}
+
+// ---------------------------------------------------------------------
+// #8921: prefix, route-parameter, and handler-context facts end to end.
+// ---------------------------------------------------------------------
+
+/// Full family chain over one source: parse → activation sites → route
+/// contexts (routes + prefixes) → registry detection → exact activation
+/// facts → minted canonical family facts.
+fn family_facts(code: &str, generation: &str) -> Dancer2RouteFacts {
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let sites = extract_dancer2_activation_sites(&ast, FileId(1));
+    let contexts = extract_dancer2_route_contexts(&ast, FileId(1));
+    let detection = detect_dancer2(&input(generation));
+    let mut facts = Dancer2RouteFacts::default();
+    for site in &sites {
+        let activation =
+            dancer2_activation_facts(&detection, site.package.as_deref(), &site.evidence);
+        let minted = dancer2_route_family_facts(
+            &detection,
+            &activation,
+            site.package.as_deref(),
+            &contexts.routes,
+            &contexts.prefixes,
+        );
+        facts.routes.extend(minted.routes);
+        facts.prefixes.extend(minted.prefixes);
+        facts.parameters.extend(minted.parameters);
+        facts.handler_contexts.extend(minted.handler_contexts);
+    }
+    facts
+}
+
+fn parameter_names(facts: &Dancer2RouteFacts) -> Vec<String> {
+    facts
+        .parameters
+        .iter()
+        .filter(|parameter| parameter.parameter.name.is_some())
+        .map(|parameter| must_some(parameter.parameter.name.clone()))
+        .collect()
+}
+
+// The issue's primary positive fixture: literal prefix + named parameter +
+// inline handler produce the composed projection, the route-scoped key fact,
+// and the handler interval — all exact and anchored.
+#[test]
+fn issue_fixture_mints_prefix_params_and_handler_context() {
+    let code = "package MyApp;\nuse Dancer2;\nprefix '/api';\nget '/users/:id' => sub {\n    my $id = route_parameters->{id};\n};\n";
+    let facts = family_facts(code, "gen-1");
+    assert_eq!(facts.prefixes.len(), 1);
+    assert_eq!(facts.prefixes[0].status(), SemanticFactStatus::Exact);
+    assert_eq!(facts.routes.len(), 1);
+    let route = &facts.routes[0];
+    let composed = must_some(match &route.route.effective_pattern {
+        RouteEffectivePattern::Composed { value, prefix_declarations } => {
+            Some((value.clone(), prefix_declarations.clone()))
+        }
+        _ => None,
+    });
+    assert_eq!(composed.0, "/api/users/:id");
+    assert_eq!(composed.1, &[0]);
+    assert!(
+        route
+            .envelope
+            .invalidation_dependencies()
+            .iter()
+            .any(|dependency| dependency.dependency_key == "route-prefix:1:0"),
+        "the route projection depends on the prefix declaration"
+    );
+    assert_eq!(route.status(), SemanticFactStatus::Exact);
+
+    assert_eq!(facts.parameters.len(), 1);
+    let parameter = &facts.parameters[0];
+    assert_eq!(parameter.route_declaration_index, 0);
+    assert_eq!(parameter.application_name, "MyApp");
+    assert_eq!(parameter.status(), SemanticFactStatus::Exact);
+    let anchor = parameter.parameter.anchor;
+    assert_eq!(&code[anchor.start_byte as usize..anchor.end_byte as usize], ":id");
+    let (_, route_entity) = route_fact_identity(FileId(1), 0, &SourceGeneration::known("gen-1"));
+    assert_eq!(parameter.envelope.entity_id, Some(route_entity));
+
+    assert_eq!(facts.handler_contexts.len(), 1);
+    let context = &facts.handler_contexts[0];
+    assert_eq!(context.envelope.kind, perl_semantic_facts::SemanticFactKind::RouteHandlerContext);
+    assert_eq!(context.dsl_contract_version, "dancer2-dsl.1-1.v2");
+    let interval = context.envelope.anchor;
+    assert_eq!(
+        &code[interval.start_byte as usize..interval.end_byte as usize],
+        "sub {\n    my $id = route_parameters->{id};\n}"
+    );
+    // Nested lexical scopes inside the handler stay inside the interval.
+    assert!(
+        code[interval.start_byte as usize..interval.end_byte as usize].contains("route_parameters"),
+        "the interval covers the handler body where request context applies"
+    );
+}
+
+// Falsifier: ZERO family facts without registry activation.
+#[test]
+fn zero_family_facts_without_registry_activation() {
+    let code = "package MyApp;\nuse Dancer2;\nprefix '/api';\nget '/users/:id' => sub { 1 };\n";
+    let absent_observation = ModuleObservationReceipt::new(
+        "module-resolver.v1",
+        "root:fixture",
+        "project-environment.v1",
+        SourceGeneration::known("gen-1"),
+        "sha256:fixture-input",
+        vec![ModuleSelectorEvaluation::new("Dancer2", ModuleSelectorOutcome::Absent)],
+    );
+    let absent_input = AdapterDetectionInput::new(
+        dancer2_descriptor(),
+        absent_observation,
+        None,
+        AdapterCancellation::active(),
+    );
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let sites = extract_dancer2_activation_sites(&ast, FileId(1));
+    let contexts = extract_dancer2_route_contexts(&ast, FileId(1));
+    assert_eq!(contexts.prefixes.len(), 1, "extraction observes the prefix without activation");
+    let detection = detect_dancer2(&absent_input);
+    let activation =
+        dancer2_activation_facts(&detection, sites[0].package.as_deref(), &sites[0].evidence);
+    let facts = dancer2_route_family_facts(
+        &detection,
+        &activation,
+        sites[0].package.as_deref(),
+        &contexts.routes,
+        &contexts.prefixes,
+    );
+    assert_eq!(facts, Dancer2RouteFacts::default(), "no detection, no facts of any kind");
+}
+
+// Falsifier: `!prefix` at the activating import suppresses prefix facts and
+// degrades composed projections — the unimported keyword cannot establish a
+// proven application prefix.
+#[test]
+fn excluded_prefix_keyword_mints_no_prefix_facts() {
+    let code = "package App;\nuse Dancer2 qw(!prefix);\nprefix '/api';\nget '/x' => sub { 1 };\n";
+    let facts = family_facts(code, "gen-1");
+    assert_eq!(facts.routes.len(), 1, "routes still mint");
+    assert!(facts.prefixes.is_empty(), "the excluded keyword mints nothing");
+    // The composition degrades: without the imported keyword the `prefix`
+    // call is not a proven Dancer2 application prefix, so the route must not
+    // retain an exact `/api/x` projection or claim dependencies on the
+    // never-minted prefix declaration.
+    let route = &facts.routes[0];
+    assert!(
+        matches!(route.route.effective_pattern, RouteEffectivePattern::Boundary { .. }),
+        "composed projections over an excluded prefix keyword degrade"
+    );
+    assert_eq!(route.status(), SemanticFactStatus::Degraded);
+    assert!(
+        !route
+            .envelope
+            .invalidation_dependencies()
+            .iter()
+            .any(|dependency| dependency.dependency_key == "route-prefix:1:0"),
+        "no dependency on a prefix declaration that minted no fact"
+    );
+}
+
+// Falsifier: dynamic prefix stays a boundary end to end — no guessed value.
+#[test]
+fn computed_prefix_stays_a_boundary_end_to_end() {
+    let code = "package App;\nuse Dancer2;\nprefix $base;\nget '/x' => sub { 1 };\n";
+    let facts = family_facts(code, "gen-1");
+    assert_eq!(facts.prefixes.len(), 1);
+    assert_eq!(facts.prefixes[0].status(), SemanticFactStatus::Degraded);
+    assert!(facts.prefixes[0].envelope.boundary.is_some());
+    assert_eq!(facts.routes.len(), 1);
+    assert!(
+        matches!(facts.routes[0].route.effective_pattern, RouteEffectivePattern::Boundary { .. }),
+        "no effective projection is guessed behind a computed prefix"
+    );
+    assert_eq!(facts.routes[0].status(), SemanticFactStatus::Degraded);
+}
+
+// Falsifier: same parameter name in unrelated routes stays route-scoped; the
+// observed keys are never a globally closed schema.
+#[test]
+fn same_parameter_name_is_route_scoped() {
+    let code =
+        "package App;\nuse Dancer2;\nget '/a/:id' => sub { 1 };\nget '/b/:id' => sub { 2 };\n";
+    let facts = family_facts(code, "gen-1");
+    assert_eq!(facts.parameters.len(), 2);
+    assert_eq!(parameter_names(&facts), vec!["id".to_string(), "id".to_string()]);
+    assert_ne!(facts.parameters[0].envelope.fact_id, facts.parameters[1].envelope.fact_id);
+    assert_eq!(facts.parameters[0].route_declaration_index, 0);
+    assert_eq!(facts.parameters[1].route_declaration_index, 1);
+    for parameter in &facts.parameters {
+        assert_eq!(parameter.envelope.package.as_deref(), Some("App"));
+    }
+
+    // A same-named key in another package's app mints through its own
+    // activation only (package B below never activated).
+    let two_apps = "package A;\nuse Dancer2;\nget '/a/:id' => sub { 1 };\npackage B;\nget '/b/:id' => sub { 2 };\n";
+    let facts = family_facts(two_apps, "gen-1");
+    assert_eq!(facts.parameters.len(), 1);
+    assert_eq!(facts.parameters[0].envelope.package.as_deref(), Some("A"));
+}
+
+// Falsifier: handler-only DSL availability is the exact inline-handler
+// interval — adjacent subs stay outside it, and a bounded handler removes the
+// context fact entirely.
+#[test]
+fn handler_context_interval_does_not_leak() {
+    let code = "package App;\nuse Dancer2;\nget '/x' => sub { route_parameters->{id}; };\nsub adjacent { route_parameters->{id}; }\n";
+    let facts = family_facts(code, "gen-1");
+    assert_eq!(facts.handler_contexts.len(), 1);
+    let interval = facts.handler_contexts[0].envelope.anchor;
+    let handler_text = &code[interval.start_byte as usize..interval.end_byte as usize];
+    assert!(handler_text.starts_with("sub {"));
+    assert!(
+        !handler_text.contains("sub adjacent"),
+        "the adjacent named sub stays outside the route-handler interval"
+    );
+
+    // A string handler has no proven interval: no handler-context fact.
+    let bounded = "package App;\nuse Dancer2;\nget '/x' => 'handler_name';\n";
+    let facts = family_facts(bounded, "gen-1");
+    assert_eq!(facts.routes.len(), 1);
+    assert!(matches!(facts.routes[0].route.handler, RouteHandler::Bounded { .. }));
+    assert!(facts.handler_contexts.is_empty(), "a bounded handler removes the context fact");
+}
+
+// Falsifier: prefix/pattern edits invalidate only affected current facts.
+#[test]
+fn prefix_edit_recomputes_dependent_projections() {
+    let before = "package App;\nuse Dancer2;\nprefix '/api';\nget '/x' => sub { 1 };\n";
+    let after = "package App;\nuse Dancer2;\nprefix '/v2';\nget '/x' => sub { 1 };\n";
+    let gen1 = family_facts(before, "gen-1");
+    let gen2 = family_facts(after, "gen-2");
+    let composed = |facts: &Dancer2RouteFacts| {
+        must_some(match &facts.routes[0].route.effective_pattern {
+            RouteEffectivePattern::Composed { value, .. } => Some(value.clone()),
+            _ => None,
+        })
+    };
+    assert_eq!(composed(&gen1), "/api/x");
+    assert_eq!(composed(&gen2), "/v2/x");
+    assert_ne!(gen1.prefixes[0].envelope.fact_id, gen2.prefixes[0].envelope.fact_id);
+    assert_ne!(gen1.routes[0].envelope.fact_id, gen2.routes[0].envelope.fact_id);
+    assert_ne!(
+        gen1.routes[0].envelope.source_generation, gen2.routes[0].envelope.source_generation,
+        "a held gen-1 fact cannot represent the edited source"
+    );
+}
+
+// Falsifier: generation isolation across roots for the whole family.
+#[test]
+fn family_facts_are_generation_owned() {
+    let code = "package App;\nuse Dancer2;\nprefix '/api';\nget '/u/:id' => sub { 1 };\n";
+    let root_a = family_facts(code, "gen-a");
+    let root_b = family_facts(code, "gen-b");
+    assert_eq!(root_a.prefixes.len(), 1);
+    assert_ne!(root_a.prefixes[0].envelope.fact_id, root_b.prefixes[0].envelope.fact_id);
+    assert_ne!(root_a.parameters[0].envelope.fact_id, root_b.parameters[0].envelope.fact_id);
+    assert_ne!(
+        root_a.handler_contexts[0].envelope.fact_id,
+        root_b.handler_contexts[0].envelope.fact_id
+    );
+}
+
+// Regex routes mint an unsupported-capture boundary parameter, never guessed
+// capture keys.
+#[test]
+fn regex_route_mints_capture_boundary_not_keys() {
+    let code = "package App;\nuse Dancer2;\nget qr{^/re/(\\d+)$} => sub { 1 };\n";
+    let facts = family_facts(code, "gen-1");
+    assert_eq!(facts.parameters.len(), 1);
+    assert!(matches!(facts.parameters[0].parameter.kind, RouteParameterKind::CaptureUnsupported));
+    assert_eq!(facts.parameters[0].status(), SemanticFactStatus::Degraded);
+    assert!(facts.parameters[0].envelope.boundary.is_some());
+}
+
+// Typed parameters carry the declared type name and its limitation.
+#[test]
+fn typed_parameters_carry_type_and_limitation() {
+    let code = "package App;\nuse Dancer2;\nget '/u/:id[Int]' => sub { 1 };\n";
+    let facts = family_facts(code, "gen-1");
+    assert_eq!(facts.parameters.len(), 1);
+    let type_name = must_some(match &facts.parameters[0].parameter.kind {
+        RouteParameterKind::Typed { type_name } => Some(type_name.clone()),
+        _ => None,
+    });
+    assert_eq!(type_name, "Int");
+    assert!(facts.parameters[0].parameter.limitation.is_some());
+    assert_eq!(facts.parameters[0].status(), SemanticFactStatus::Exact);
+}
+
+// Splat/megasplat parameters mint keyless capture facts.
+#[test]
+fn splat_and_megasplat_parameters_mint() {
+    let code = "package App;\nuse Dancer2;\nget '/files/*/**' => sub { 1 };\n";
+    let facts = family_facts(code, "gen-1");
+    assert_eq!(facts.parameters.len(), 2);
+    assert!(matches!(facts.parameters[0].parameter.kind, RouteParameterKind::Splat));
+    assert!(matches!(facts.parameters[1].parameter.kind, RouteParameterKind::Megasplat));
+    let anchors: Vec<&str> = facts
+        .parameters
+        .iter()
+        .map(|parameter| {
+            &code[parameter.parameter.anchor.start_byte as usize
+                ..parameter.parameter.anchor.end_byte as usize]
+        })
+        .collect();
+    assert_eq!(anchors, vec!["*", "**"]);
+}
+
+// The whole family round-trips through the JSON transport.
+#[test]
+fn family_facts_round_trip_through_json() -> Result<(), serde_json::Error> {
+    let code = "package App;\nuse Dancer2;\nprefix '/api';\nprefix '/v1' => sub {\n  get '/u/:id[Int]/*' => sub { 1 };\n};\n";
+    let facts = family_facts(code, "gen-1");
+    assert_eq!(facts.prefixes.len(), 2);
+    assert_eq!(facts.routes.len(), 1);
+    assert_eq!(facts.parameters.len(), 2);
+    assert_eq!(facts.handler_contexts.len(), 1);
+    let routes = serde_json::to_string(&facts.routes)?;
+    assert_eq!(
+        serde_json::from_str::<Vec<RouteFact>>(&routes)?,
+        facts.routes,
+        "route facts round-trip"
+    );
+    let prefixes = serde_json::to_string(&facts.prefixes)?;
+    assert_eq!(
+        serde_json::from_str::<Vec<RoutePrefixFact>>(&prefixes)?,
+        facts.prefixes,
+        "prefix facts round-trip"
+    );
+    let parameters = serde_json::to_string(&facts.parameters)?;
+    assert_eq!(
+        serde_json::from_str::<Vec<RouteParameterFact>>(&parameters)?,
+        facts.parameters,
+        "parameter facts round-trip"
+    );
+    let contexts = serde_json::to_string(&facts.handler_contexts)?;
+    assert_eq!(
+        serde_json::from_str::<Vec<RouteHandlerContextFact>>(&contexts)?,
+        facts.handler_contexts,
+        "handler-context facts round-trip"
+    );
+    Ok(())
 }
