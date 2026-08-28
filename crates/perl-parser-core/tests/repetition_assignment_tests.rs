@@ -10,9 +10,7 @@ fn find_assignment<'a>(node: &'a Node, expected_op: &str) -> Option<&'a Node> {
         return Some(node);
     }
 
-    node.children()
-        .into_iter()
-        .find_map(|child| find_assignment(child, expected_op))
+    node.children().into_iter().find_map(|child| find_assignment(child, expected_op))
 }
 
 #[test]
@@ -28,10 +26,7 @@ fn repetition_assignment_builds_assignment_ast() -> Result<(), String> {
     };
 
     if !matches!(&rhs.kind, NodeKind::Number { value } if value == "3") {
-        return Err(format!(
-            "expected numeric repetition count, got: {:?}",
-            rhs.kind
-        ));
+        return Err(format!("expected numeric repetition count, got: {:?}", rhs.kind));
     }
     Ok(())
 }
@@ -49,10 +44,7 @@ fn repetition_assignment_is_right_associative() -> Result<(), String> {
     };
 
     if !matches!(&rhs.kind, NodeKind::Assignment { op, .. } if op == "=") {
-        return Err(format!(
-            "expected = assignment on x= RHS, got: {:?}",
-            rhs.kind
-        ));
+        return Err(format!("expected = assignment on x= RHS, got: {:?}", rhs.kind));
     }
     Ok(())
 }
@@ -92,10 +84,7 @@ fn whitespace_does_not_form_repetition_assignment() -> Result<(), String> {
     if let Ok(ast) = result
         && find_assignment(&ast, "x=").is_some()
     {
-        return Err(format!(
-            "spaced x = must not be normalized to x=:\n{}",
-            ast.to_sexp()
-        ));
+        return Err(format!("spaced x = must not be normalized to x=:\n{}", ast.to_sexp()));
     }
 
     Ok(())
