@@ -58,7 +58,11 @@ const REQUIREMENTS: &[(&str, &[&str])] = &[
     ("one writer", &["one writer"]),
     (
         "a named next or backward route",
-        &["next or backward route", "next/backward route", "named next"],
+        &[
+            "next or backward route",
+            "next/backward route",
+            "named next",
+        ],
     ),
     ("read-only pre-admission research", &["read-only research"]),
     ("the prepare-issue repair route", &["prepare-issue"]),
