@@ -178,7 +178,7 @@ sub _validate_hello_response {
     my $success = $response->{success};
     return (0, 'peer/hello response has an invalid success flag')
         unless defined $success
-            && (!ref($success) || ref($success) eq 'JSON::PP::Boolean')
+            && ref($success) eq 'JSON::PP::Boolean'
             && ("$success" eq '0' || "$success" eq '1');
     if (!$response->{success}) {
         return (0, 'peer/hello rejection has no string message')
@@ -373,21 +373,24 @@ sub _is_sha256 {
 
 sub _ptkdb_source_digest {
     my $path = $INC{'Devel/ptkdb.pm'};
-    return (undef, 'Devel/ptkdb.pm is not present in %INC')
+    return (undef, undef, 'Devel/ptkdb.pm is not present in %INC')
         unless defined $path && length $path;
-    return (undef, 'Devel/ptkdb.pm path must be absolute')
+    return (undef, undef, 'Devel/ptkdb.pm path must be absolute')
         unless $path =~ m{\A/} || $path =~ m{\A[A-Za-z]:[\\/]};
     my @before = lstat($path);
-    return (undef, 'Devel/ptkdb.pm path is not a regular non-symlink file')
+    return (undef, undef, 'Devel/ptkdb.pm path is not a regular non-symlink file')
         unless @before && -f _ && !-l _;
     open my $fh, '<:raw', $path
-        or return (undef, "cannot read loaded Devel/ptkdb.pm: $!");
-    my $digest = eval { sha256_hex($fh) };
+        or return (undef, undef, "cannot read loaded Devel/ptkdb.pm: $!");
+    local $/;
+    my $source = <$fh>;
+    my $digest = defined $source ? sha256_hex($source) : undef;
     my @opened = stat($fh);
     my @after = lstat($path);
-    close $fh or return (undef, "cannot close loaded Devel/ptkdb.pm: $!");
-    return (undef, 'cannot hash loaded Devel/ptkdb.pm') unless defined $digest;
-    return (undef, 'loaded Devel/ptkdb.pm was replaced while being verified')
+    close $fh or return (undef, undef, "cannot close loaded Devel/ptkdb.pm: $!");
+    return (undef, undef, 'cannot hash loaded Devel/ptkdb.pm')
+        unless defined $digest;
+    return (undef, undef, 'loaded Devel/ptkdb.pm was replaced while being verified')
         unless @opened && @after && -f _ && !-l _
             && $opened[0] == $after[0]
             && $opened[1] == $after[1]
@@ -396,16 +399,11 @@ sub _ptkdb_source_digest {
             && $before[1] == $after[1]
             && $before[7] == $after[7]
             && $before[9] == $after[9];
-    return ($digest, undef);
+    return ($digest, $source, undef);
 }
 
 sub _module_contains_pinned_provenance {
-    my ($path) = @_;
-    open my $fh, '<:raw', $path
-        or return (0, "cannot inspect loaded Devel/ptkdb.pm: $!");
-    local $/;
-    my $source = <$fh>;
-    close $fh or return (0, "cannot close loaded Devel/ptkdb.pm inspection: $!");
+    my ($source) = @_;
     return (0, 'loaded Devel/ptkdb.pm does not declare the pinned source identity')
         unless defined $source
             && index($source, "PERL_DAP_MIRROR_SOURCE = '" . REFERENCE_PTKDB_SOURCE . "'") >= 0;
@@ -435,13 +433,13 @@ sub _check_ptkdb_provenance {
         unless "$declared_dist_digest" eq REFERENCE_PTKDB_DIST_SHA256;
 
     if (defined $loaded_path && length $loaded_path) {
-        my ($digest, $error) = _ptkdb_source_digest();
+        my ($digest, $source_bytes, $error) = _ptkdb_source_digest();
         return (0, $error) unless defined $digest;
         return (0, 'loaded Devel/ptkdb.pm digest does not match the pinned CPAN artifact')
             unless $digest eq REFERENCE_PTKDB_MODULE_SHA256;
         return (0, 'loaded Devel::ptkdb module digest marker does not match the pinned CPAN artifact')
             unless "$declared_module_digest" eq REFERENCE_PTKDB_MODULE_SHA256;
-        my ($bound, $binding_error) = _module_contains_pinned_provenance($loaded_path);
+        my ($bound, $binding_error) = _module_contains_pinned_provenance($source_bytes);
         return (0, $binding_error) unless $bound;
         return (1, undef);
     }

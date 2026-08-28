@@ -364,7 +364,11 @@ exit 0;
         "plugin did not send peer/hello: {:?}",
         &hello[..read]
     );
-    stream.write_all(b"Content-Length: 2\r\n\r\n[]")?;
+    // JSON numbers must not be accepted as the protocol's boolean success flag.
+    let malformed_response =
+        br#"{"type":"response","requestSeq":1,"command":"peer/hello","success":1}"#;
+    write!(stream, "Content-Length: {}\r\n\r\n", malformed_response.len())?;
+    stream.write_all(malformed_response)?;
     drop(stream);
 
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -381,8 +385,79 @@ exit 0;
     let stderr = child_stderr(&mut child.child);
     assert!(status.success(), "malformed-response harness failed: {stderr}");
     assert!(
-        stderr.contains("invalid peer/hello response: peer/hello response must be a JSON object"),
+        stderr.contains(
+            "invalid peer/hello response: peer/hello response has an invalid success flag"
+        ),
         "missing fail-closed diagnostic: {stderr}"
+    );
+    Ok(())
+}
+
+#[test]
+fn reference_ptkdb_adapter_rejects_string_success_flag_without_touching_ptkdb()
+-> Result<(), Box<dyn std::error::Error>> {
+    let listener = TcpListener::bind(("127.0.0.1", 0))?;
+    let peer_addr = listener.local_addr()?;
+    let plugin = repo_root().join("fixtures/debug-peer/perl/minimal_ptkdb_peer.pl");
+    let harness = r#"
+package Devel::ptkdb;
+our $VERSION = '1.1091';
+our $PERL_DAP_MIRROR_SOURCE = 'CPAN:AEPAGE/Devel-ptkdb-1.1091';
+our $PERL_DAP_MIRROR_SHA256 = '2da4a792a732c134f8f4fa3b6b482da9e5df8dec8cd7ae424ad3b6e06c0bceab';
+our $PERL_DAP_MIRROR_DIST_SHA256 = '889bfc25d107f46718963023cc9662d3d779896a48d729d0327beec0502c226e';
+sub set_file { return "original:$_[2]"; }
+package main;
+my $loaded = do $ENV{PTKDB_PLUGIN_UNDER_TEST};
+die "plugin load failed: " . ($@ || $!) unless $loaded;
+my $window = bless {}, 'Devel::ptkdb';
+my $value = $window->set_file('/work/rejected.pl', 13);
+die "string response touched set_file: $value" unless $value eq 'original:13';
+exit 0;
+"#;
+
+    let mut child = ChildCleanup::new(
+        Command::new("perl")
+            .arg("-e")
+            .arg(harness)
+            .env("PERL_DAP_PEER", peer_addr.to_string())
+            .env("PERL_DAP_PEER_TOKEN", PEER_TOKEN)
+            .env("PERL_DAP_PEER_MODE", "mirror")
+            .env("PTKDB_PLUGIN_UNDER_TEST", plugin)
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()?,
+        Vec::<PathBuf>::new(),
+    );
+
+    let (mut stream, _) = listener.accept()?;
+    stream.set_read_timeout(Some(Duration::from_secs(3)))?;
+    let mut hello = [0_u8; 4096];
+    let read = stream.read(&mut hello)?;
+    assert!(std::str::from_utf8(&hello[..read])?.contains("peer/hello"));
+    let malformed_response =
+        br#"{"type":"response","requestSeq":1,"command":"peer/hello","success":"1"}"#;
+    write!(stream, "Content-Length: {}\r\n\r\n", malformed_response.len())?;
+    stream.write_all(malformed_response)?;
+    drop(stream);
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let status = loop {
+        if let Some(status) = child.child.try_wait()? {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            break child.child.wait()?;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    let stderr = child_stderr(&mut child.child);
+    assert!(status.success(), "string-response harness failed: {stderr}");
+    assert!(
+        stderr.contains(
+            "invalid peer/hello response: peer/hello response has an invalid success flag"
+        ),
+        "missing strict-boolean diagnostic: {stderr}"
     );
     Ok(())
 }
