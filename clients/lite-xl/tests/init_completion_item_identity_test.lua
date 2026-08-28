@@ -283,6 +283,12 @@ package.preload["plugins.lsp.helpdoc"] = function()
   end
 end
 
+-- init.lua (#11172) requires the staged capability manifest at load time;
+-- serve the exact staged module the same way harness.new_world does.
+package.preload["plugins.lsp.capability_manifest"] = function()
+  return dofile(here .. "/../upstream/capability_manifest.lua")
+end
+
 utf8extra = { len = function(s) return utf8.len(s) or #s end }
 
 PLATFORM = "Windows"
