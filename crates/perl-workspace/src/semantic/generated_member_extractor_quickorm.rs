@@ -68,7 +68,7 @@ fn walk_quickorm(
             }
         }
         NodeKind::Use { module, args, .. } if module == "DBIx::QuickORM" => {
-            ctx.explicit_table_class_active = is_explicit_table_class_import(args);
+            ctx.explicit_table_class_active |= is_explicit_table_class_import(args);
         }
         NodeKind::No { module, .. } if module == "DBIx::QuickORM" => {
             ctx.explicit_table_class_active = false;
@@ -381,6 +381,24 @@ table users => sub {
         assert!(has_name(&facts, "My::ORM::Table::User::id"));
         assert!(has_name(&facts, "My::ORM::Table::User::name"));
         assert!(has_name(&facts, "My::ORM::Table::User::email"));
+    }
+
+    #[test]
+    fn later_plain_import_does_not_erase_explicit_table_class_activation() {
+        let facts = extract_from_source(
+            r#"
+package My::ORM::Table::User;
+use DBIx::QuickORM type => 'table';
+use DBIx::QuickORM;
+
+table users => sub {
+    column id => sub { primary_key };
+};
+1;
+"#,
+        );
+
+        assert!(has_name(&facts, "My::ORM::Table::User::id"));
     }
 
     #[test]
