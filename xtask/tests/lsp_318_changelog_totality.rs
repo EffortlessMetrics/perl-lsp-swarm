@@ -182,7 +182,7 @@ fn official_lsp_318_changelog_is_totally_classified()
             surface.id
         );
 
-        for marker in surface.row_markers {
+        for &marker in surface.row_markers {
             let cells = row_cells(&matrix, marker)?;
             let status = cells[5];
             assert!(
@@ -192,7 +192,7 @@ fn official_lsp_318_changelog_is_totally_classified()
             );
         }
 
-        for marker in surface.required_text {
+        for &marker in surface.required_text {
             assert!(
                 matrix.contains(marker),
                 "official LSP 3.18 surface `{}` lost required boundary text `{marker}`",
