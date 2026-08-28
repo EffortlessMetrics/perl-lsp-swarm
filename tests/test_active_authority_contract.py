@@ -61,6 +61,11 @@ JUST_CALL = re.compile(r"\bjust ([a-z0-9][a-z0-9-]*)")
 JUST_RECIPE_DEF = re.compile(r"^([a-z0-9_][a-z0-9_-]*)(?:\s+[^\n]*?)?:(?!=)", re.MULTILINE)
 FLOW_ROSTER_HEADING = "Choose the narrowest applicable public flow:"
 FLOW_BULLET = re.compile(r"^- `\$?([a-z][a-z-]*)`", re.MULTILINE)
+RETIRED_ACTIVE_SKILL_AUTHORITY = (
+    re.compile(r"\blane root\b"),
+    re.compile(r"\blane-root\b"),
+    re.compile(r"\blane owner\b"),
+)
 
 
 def read(path: str) -> str:
@@ -386,11 +391,11 @@ class CrossSurfaceInvariantTests(unittest.TestCase):
             for skill_path in sorted((ROOT / skill_root).rglob("SKILL.md")):
                 lowered = active_text(str(skill_path), is_text=False).lower()
                 relative = skill_path.relative_to(ROOT).as_posix()
-                for retired in ("lane root", "lane-root", "lane owner"):
-                    self.assertNotIn(
-                        retired,
-                        lowered,
-                        f"{relative} restored retired claim-orchestration authority {retired!r}",
+                for retired in RETIRED_ACTIVE_SKILL_AUTHORITY:
+                    self.assertIsNone(
+                        retired.search(lowered),
+                        f"{relative} restored retired claim-orchestration authority "
+                        f"{retired.pattern!r}",
                     )
 
         self.assertFalse(
