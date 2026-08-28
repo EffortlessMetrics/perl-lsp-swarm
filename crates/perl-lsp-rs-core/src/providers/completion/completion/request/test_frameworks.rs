@@ -489,6 +489,36 @@ mod tests {
     }
 
     #[test]
+    fn nested_hash_target_values_do_not_fall_through_to_import_tokens() {
+        let direct_nested = complete(
+            "use Test2::Tools::Target service => { repo => 'My::Repo' }, actual => 'My::Actual';\nrepo|",
+            Some("t/example.t"),
+        );
+        assert!(!labels(&direct_nested).contains(&"repo"));
+
+        let bundle_nested = complete(
+            "use Test2::V0 -target => { service => { repo => 'My::Repo' }, actual => 'My::Actual' };\nrepo|",
+            Some("t/example.t"),
+        );
+        assert!(!labels(&bundle_nested).contains(&"repo"));
+
+        let bundle_top_level = complete(
+            "use Test2::V0 -target => { service => { repo => 'My::Repo' }, actual => 'My::Actual' };\nact|",
+            Some("t/example.t"),
+        );
+        assert!(labels(&bundle_top_level).contains(&"actual"));
+    }
+
+    #[test]
+    fn undef_target_does_not_emit_a_class_alias() {
+        let direct = complete("use Test2::Tools::Target undef;\nCL|", Some("t/example.t"));
+        assert!(!labels(&direct).contains(&"CLASS"));
+
+        let bundle = complete("use Test2::V0 -target => undef;\nCL|", Some("t/example.t"));
+        assert!(!labels(&bundle).contains(&"CLASS"));
+    }
+
+    #[test]
     fn target_helpers_survive_selective_imports_and_exclusions() {
         let selected = complete(
             "use Test2::V0 -target => { service => 'My::Service' }, ok;\nser|",

@@ -9,13 +9,6 @@ use regex::Regex;
 use std::collections::BTreeSet;
 use std::sync::LazyLock;
 
-static BUNDLE_TARGET_OPTION: LazyLock<Option<Regex>> = LazyLock::new(|| {
-    Regex::new(
-        r#"(?xs)(?:^|[\s,])(?P<option>-target\s*(?:=>)?\s*(?P<value>\{[^{}]*\}|'(?:\\.|[^'])*'|"(?:\\.|[^"])*"|[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*))"#,
-    )
-    .ok()
-});
-
 static TARGET_ALIAS_PAIR: LazyLock<Option<Regex>> = LazyLock::new(|| {
     Regex::new(
         r#"(?xs)^\s*(?:'(?P<single>[A-Za-z_][A-Za-z0-9_]*|)'|"(?P<double>[A-Za-z_][A-Za-z0-9_]*|)"|(?P<bare>[A-Za-z_][A-Za-z0-9_]*))\s*=>\s*(?P<target>.*?)\s*$"#,
@@ -49,12 +42,10 @@ pub(crate) fn resolve_target_import(module: &str, raw_args: &str) -> Option<Test
             remaining_args: None,
         }),
         "Test2::V0" | "Test2::V1" => {
-            let captures = BUNDLE_TARGET_OPTION.as_ref()?.captures(raw_args)?;
-            let option = captures.name("option")?;
-            let value = captures.name("value")?;
+            let (option_start, option_end, value) = find_bundle_target_option(raw_args)?;
             Some(Test2TargetImport {
-                aliases: parse_target_aliases(value.as_str()),
-                remaining_args: Some(remove_option(raw_args, option.start(), option.end())),
+                aliases: parse_target_aliases(value),
+                remaining_args: Some(remove_option(raw_args, option_start, option_end)),
             })
         }
         _ => None,
@@ -105,7 +96,108 @@ fn parse_target_aliases(raw_value: &str) -> BTreeSet<String> {
 
 fn is_static_target_package(value: &str) -> bool {
     let package = strip_quotes(value.trim());
-    STATIC_PACKAGE.as_ref().is_some_and(|pattern| pattern.is_match(package))
+    package != "undef" && STATIC_PACKAGE.as_ref().is_some_and(|pattern| pattern.is_match(package))
+}
+
+fn find_bundle_target_option(raw_args: &str) -> Option<(usize, usize, &str)> {
+    let bytes = raw_args.as_bytes();
+    let option = b"-target";
+
+    for start in 0..bytes.len() {
+        if bytes.get(start..start + option.len()) != Some(option)
+            || (start > 0 && !matches!(bytes[start - 1], b',' | b'\n' | b'\r' | b'\t' | b' '))
+        {
+            continue;
+        }
+
+        let mut value_start = start + option.len();
+        while bytes.get(value_start).is_some_and(u8::is_ascii_whitespace) {
+            value_start += 1;
+        }
+        if bytes.get(value_start..value_start + 2) == Some(b"=>") {
+            value_start += 2;
+            while bytes.get(value_start).is_some_and(u8::is_ascii_whitespace) {
+                value_start += 1;
+            }
+        }
+
+        let value_end = scan_bundle_target_value(raw_args, value_start)?;
+        return Some((start, value_end, &raw_args[value_start..value_end]));
+    }
+
+    None
+}
+
+fn scan_bundle_target_value(raw: &str, start: usize) -> Option<usize> {
+    let bytes = raw.as_bytes();
+    match *bytes.get(start)? {
+        b'\'' | b'"' => scan_quoted_value(bytes, start),
+        b'{' | b'[' | b'(' => scan_balanced_value(bytes, start),
+        _ => {
+            let end = bytes[start..]
+                .iter()
+                .position(|byte| matches!(byte, b',' | b' ' | b'\t' | b'\r' | b'\n'))
+                .map_or(bytes.len(), |offset| start + offset);
+            let value = raw.get(start..end)?.trim();
+            (is_static_target_package(value) || value == "undef").then_some(end)
+        }
+    }
+}
+
+fn scan_quoted_value(bytes: &[u8], start: usize) -> Option<usize> {
+    let quote = *bytes.get(start)?;
+    let mut escaped = false;
+    for (offset, byte) in bytes[start + 1..].iter().enumerate() {
+        if escaped {
+            escaped = false;
+        } else if *byte == b'\\' {
+            escaped = true;
+        } else if *byte == quote {
+            return Some(start + offset + 2);
+        }
+    }
+    None
+}
+
+fn scan_balanced_value(bytes: &[u8], start: usize) -> Option<usize> {
+    let mut delimiters = Vec::new();
+    let mut quote = None;
+    let mut escaped = false;
+
+    for (index, byte) in bytes[start..].iter().enumerate() {
+        if let Some(active_quote) = quote {
+            if escaped {
+                escaped = false;
+            } else if *byte == b'\\' {
+                escaped = true;
+            } else if *byte == active_quote {
+                quote = None;
+            }
+            continue;
+        }
+
+        match *byte {
+            b'\'' | b'"' => quote = Some(*byte),
+            b'{' | b'[' | b'(' => delimiters.push(*byte),
+            b'}' | b']' | b')' => {
+                let expected = match *byte {
+                    b'}' => b'{',
+                    b']' => b'[',
+                    b')' => b'(',
+                    _ => unreachable!(),
+                };
+                if delimiters.pop() != Some(expected) {
+                    return None;
+                }
+                if delimiters.is_empty() {
+                    return Some(start + index + 1);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    None
 }
 
 fn split_top_level_entries(value: &str) -> Option<Vec<&str>> {
@@ -294,5 +386,26 @@ mod tests {
 
         assert_eq!(aliases("Test2::Tools::Target", nested), expected);
         assert_eq!(aliases("Test2::V0", &format!("-target => {{ {nested} }}")), expected);
+    }
+
+    #[test]
+    fn nested_hash_target_values_are_not_flattened_into_aliases() {
+        let nested = "service => { repo => 'My::Repo' }, actual => 'My::Actual'";
+        let expected = BTreeSet::from(["actual".to_string()]);
+
+        assert_eq!(aliases("Test2::Tools::Target", nested), expected);
+        assert_eq!(aliases("Test2::V0", &format!("-target => {{ {nested} }}")), expected);
+    }
+
+    #[test]
+    fn undef_target_is_not_treated_as_a_static_package() {
+        assert!(aliases("Test2::Tools::Target", "undef").is_empty());
+        assert_eq!(
+            resolve_target_import("Test2::V0", "-target => undef"),
+            Some(Test2TargetImport {
+                aliases: BTreeSet::new(),
+                remaining_args: Some(String::new()),
+            })
+        );
     }
 }
