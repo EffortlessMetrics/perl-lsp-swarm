@@ -48,25 +48,27 @@ jobs:
           path = Path("crates/perl-lexer/src/lib.rs")
           source = path.read_text(encoding="utf-8")
 
-          old_comment = """        // A delimiter line is not part of the body budget, but probing it must
-        // still be bounded. Reuse the body cap as the maximum delimiter-line
-        // inspection window; pathological indentation or trailing whitespace
-        // therefore cannot restore an unbounded scan.
-"""
-          new_comment = """        // A delimiter line is not part of the body budget, but probing it must
-        // still be bounded. Reuse the body cap as the maximum delimiter-line
-        // inspection window. `<<~` may indent the label, but Perl requires the
-        // label itself to be followed immediately by a line ending or EOF.
-"""
+          old_comment = (
+              "        // A delimiter line is not part of the body budget, but probing it must\n"
+              "        // still be bounded. Reuse the body cap as the maximum delimiter-line\n"
+              "        // inspection window; pathological indentation or trailing whitespace\n"
+              "        // therefore cannot restore an unbounded scan.\n"
+          )
+          new_comment = (
+              "        // A delimiter line is not part of the body budget, but probing it must\n"
+              "        // still be bounded. Reuse the body cap as the maximum delimiter-line\n"
+              "        // inspection window. `<<~` may indent the label, but Perl requires the\n"
+              "        // label itself to be followed immediately by a line ending or EOF.\n"
+          )
           if source.count(old_comment) != 1:
               raise SystemExit("expected exactly one heredoc delimiter comment")
           source = source.replace(old_comment, new_comment, 1)
 
-          trailing_space_acceptance = r"""        while cursor < scan_end && matches!(self.input_bytes[cursor], b' ' | b'\t') {
-            cursor += 1;
-        }
-
-"""
+          trailing_space_acceptance = (
+              "        while cursor < scan_end && matches!(self.input_bytes[cursor], b' ' | b'\\t') {\n"
+              "            cursor += 1;\n"
+              "        }\n\n"
+          )
           if source.count(trailing_space_acceptance) != 2:
               raise SystemExit("expected leading-indent and trailing-space scans")
           label_assignment = "        cursor = label_end;\n\n"
