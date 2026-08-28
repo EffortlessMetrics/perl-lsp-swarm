@@ -628,9 +628,12 @@ fn rename_edit_count_at_least_passes(
     min: usize,
     expected: Option<&[RenameExpectedEdit]>,
 ) -> bool {
+    // A successful rename must produce a real edit.  `min` is a lower bound
+    // on that edit set, not a way to turn a successful-rename assertion into
+    // a response-shape check: min=0 still rejects an empty WorkspaceEdit.
     !rename_is_null(resp)
         && observed_rename_edits(resp).is_some()
-        && rename_total_edit_count(resp) >= min
+        && rename_total_edit_count(resp) >= min.max(1)
         && rename_expected_edits_match(resp, expected_uri, expected)
 }
 
@@ -889,6 +892,23 @@ mod rename_oracle_tests {
             None,
         ) {
             return Err("error rename response passed a zero-minimum count assertion".into());
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn rename_count_assertion_rejects_empty_success_at_zero_minimum() -> TestResult {
+        let empty_success = json!({"result": {"changes": {}}});
+        if rename_edit_count_at_least_passes(
+            &empty_success,
+            "file:///gold/rename_subroutine.pl",
+            0,
+            None,
+        ) {
+            return Err(
+                "empty successful WorkspaceEdit passed a zero-minimum rename assertion".into()
+            );
         }
 
         Ok(())

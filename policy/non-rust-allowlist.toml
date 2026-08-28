@@ -828,6 +828,23 @@ created = "2026-08-15"
 review_after = "2026-11-15"
 
 [[allow]]
+id = "non-rust-gold-rename-sidecars"
+glob = "test_corpus/gold/rename_subroutine/*.json"
+kind = "test_fixture"
+language = "json"
+surface = "fixtures"
+classification = "test"
+owner = "parser/lsp-fixtures"
+reason = "Typed gold-corpus assertion sidecars for the named-subroutine rename scorecard fixture; the corpus contract validates their schema and the editor scorecard replays their expected edits."
+covered_by = [
+  "cargo test -p perl-corpus --test gold_repository_contract --locked",
+  "cargo test -p perl-lsp-rs --test editor_intelligence_scorecard --locked",
+]
+broad_glob_reason = "The fixture directory owns a fixed pair of JSON assertion sidecars; the gold repository contract rejects unrecognized members and validates the sidecar topology."
+created = "2026-08-28"
+review_after = "2026-11-28"
+
+[[allow]]
 id = "non-rust-lsp4ij-released-evidence"
 glob = "integrations/lsp4ij/upstream/0.20.1/**"
 kind = "upstream_evidence_snapshot"
