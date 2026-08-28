@@ -33,18 +33,27 @@ grep -Fq 'generated_parent_count" != "1"' <<<"$dispatch_block" \
   || fail 'multi-parent generated heads must be rejected'
 
 ci_workflow="$ROOT/.github/workflows/ci.yml"
-grep -Fq 'dispatch-subject:' "$ci_workflow" \
-  || fail 'ci.yml must define a dispatched-subject prerequisite'
 grep -Fq 'EXPECTED_HEAD_SHA: ${{ inputs.head_sha }}' "$ci_workflow" \
-  || fail 'ci.yml must consume the producer-supplied head_sha'
-grep -Fq 'if [[ "$GITHUB_SHA" != "$EXPECTED_HEAD_SHA" ]]' "$ci_workflow" \
-  || fail 'ci.yml must reject a branch race between validation and dispatch'
-grep -Fq 'ref: ${{ github.sha }}' "$ci_workflow" \
-  || fail 'ci.yml must checkout the immutable GitHub dispatch subject'
-grep -Fq 'needs: dispatch-subject' "$ci_workflow" \
-  || fail 'gated jobs must depend on dispatched-subject validation'
-grep -Fq 'dispatch-subject.result == '\''success'\''' "$ci_workflow" \
-  || fail 'gated jobs must fail closed when subject validation fails'
+  || fail 'ci.yml production jobs must consume the producer-supplied head_sha'
+grep -Fq 'Verify dispatched CI subject' "$ci_workflow" \
+  || fail 'ci.yml must inline the dispatch subject check in an existing production job'
+grep -Fq 'Verify dispatched formatter subject' "$ci_workflow" \
+  || fail 'Rust formatting must inline the dispatch subject check'
+grep -Fq 'if [[ ! "$EXPECTED_HEAD_SHA" =~ ^[0-9a-f]{40}$ || "$GITHUB_SHA" != "$EXPECTED_HEAD_SHA" ]]' "$ci_workflow" \
+  || fail 'ci.yml must fail closed on malformed or raced dispatch subjects'
+
+for workflow in em-ci-routed-rust.yml ripr.yml pr-title-check.yml; do
+  workflow_path="$ROOT/.github/workflows/$workflow"
+  if grep -Fq 'dispatch-subject:' "$workflow_path" || grep -Fq 'needs: dispatch-subject' "$workflow_path"; then
+    fail "$workflow must not add a dispatch-subject prerequisite job"
+  fi
+done
+grep -Fq 'Verify dispatched Rust subject' "$ROOT/.github/workflows/em-ci-routed-rust.yml" \
+  || fail 'EM Rust route must inline the dispatch subject check'
+grep -Fq 'Verify dispatched ripr subject' "$ROOT/.github/workflows/ripr.yml" \
+  || fail 'ripr route must inline the dispatch subject check'
+grep -Fq 'Verify dispatched title-check subject' "$ROOT/.github/workflows/pr-title-check.yml" \
+  || fail 'title validation must inline the dispatch subject check'
 
 source_sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 head_sha=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
