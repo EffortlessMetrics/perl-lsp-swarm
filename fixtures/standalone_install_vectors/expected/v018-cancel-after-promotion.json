@@ -1,0 +1,141 @@
+{
+  "schema": "standalone_semantic_packet.v1",
+  "vector_id": "v018-cancel-after-promotion",
+  "contract_generation": 1,
+  "route": "first_party_posix",
+  "mode": "release_archive",
+  "requested_product_unit": "server_only",
+  "effective_product_unit": "server_only",
+  "effective_path_policy": "persist",
+  "resolved_subject_digest": "sha256:1c59de49e9b47e31ea8918276f48a6eae555c3508b240cc8bcd8e6f094373dd4",
+  "attempts": [
+    {
+      "attempt_id": "attempt-a1",
+      "branch_id": "branch-main",
+      "outcome": "cancelled",
+      "reason_family": "cancelled"
+    }
+  ],
+  "branches": [
+    {
+      "branch_id": "branch-main",
+      "subject_digest": "sha256:1c59de49e9b47e31ea8918276f48a6eae555c3508b240cc8bcd8e6f094373dd4",
+      "terminal_result": "cancelled",
+      "reason_family": "cancelled"
+    }
+  ],
+  "executed_stages": [
+    {
+      "attempt_id": "attempt-a1",
+      "branch_id": "branch-main",
+      "stage_id": "resolve_subject",
+      "result": "succeeded",
+      "reason_family": "none",
+      "receipt_digest": "sha256:fed48b24ecdc6c34c5f9ea548e62353cfc947dba6cd72f36805fbc4fcb0c57a1",
+      "predecessor_digests": []
+    },
+    {
+      "attempt_id": "attempt-a1",
+      "branch_id": "branch-main",
+      "stage_id": "transport",
+      "result": "succeeded",
+      "reason_family": "none",
+      "receipt_digest": "sha256:73b1d73112d0dcedef52076b145f83cba8fac9ef4236355c7a4abc142e9aa6d7",
+      "predecessor_digests": [
+        "sha256:fed48b24ecdc6c34c5f9ea548e62353cfc947dba6cd72f36805fbc4fcb0c57a1"
+      ],
+      "artifacts": [
+        "artifact-archive-v018"
+      ]
+    },
+    {
+      "attempt_id": "attempt-a1",
+      "branch_id": "branch-main",
+      "stage_id": "checksum_integrity",
+      "result": "succeeded",
+      "reason_family": "none",
+      "receipt_digest": "sha256:18d7558aa21eb67535f7f1c3740c358c052eb8929a5a8b5074839adeef64970d",
+      "predecessor_digests": [
+        "sha256:73b1d73112d0dcedef52076b145f83cba8fac9ef4236355c7a4abc142e9aa6d7"
+      ],
+      "evidence": [
+        "evidence-checksum-v018"
+      ]
+    },
+    {
+      "attempt_id": "attempt-a1",
+      "branch_id": "branch-main",
+      "stage_id": "archive_manifest_and_staging",
+      "result": "succeeded",
+      "reason_family": "none",
+      "receipt_digest": "sha256:5803938b15a699c6046f68d0cc0ac59663a0173860e29bb5ef11ebdb822bf744",
+      "predecessor_digests": [
+        "sha256:18d7558aa21eb67535f7f1c3740c358c052eb8929a5a8b5074839adeef64970d"
+      ]
+    },
+    {
+      "attempt_id": "attempt-a1",
+      "branch_id": "branch-main",
+      "stage_id": "executable_observation",
+      "result": "succeeded",
+      "reason_family": "none",
+      "receipt_digest": "sha256:cb846ec445fe8b6709142821fa3a1a8a96f6c0a4753ac470ff1090dcfc597549",
+      "predecessor_digests": [
+        "sha256:5803938b15a699c6046f68d0cc0ac59663a0173860e29bb5ef11ebdb822bf744"
+      ]
+    },
+    {
+      "attempt_id": "attempt-a1",
+      "branch_id": "branch-main",
+      "stage_id": "promotion",
+      "result": "succeeded",
+      "reason_family": "none",
+      "receipt_digest": "sha256:95b97b4fa101305f9c4dac4287afd0cac8df6074a8b347d023ff06b2f47688ba",
+      "predecessor_digests": [
+        "sha256:cb846ec445fe8b6709142821fa3a1a8a96f6c0a4753ac470ff1090dcfc597549"
+      ]
+    },
+    {
+      "attempt_id": "attempt-a1",
+      "branch_id": "branch-main",
+      "stage_id": "path_persistence",
+      "result": "failed",
+      "reason_family": "cancelled",
+      "receipt_digest": "sha256:b90555aabf1191be6143f3404b0e4b66766b5ebb62cee52ebdd49c4a14eeb55b",
+      "predecessor_digests": []
+    }
+  ],
+  "skipped_stages": [
+    {
+      "attempt_id": "attempt-a1",
+      "branch_id": "branch-main",
+      "stage_id": "source_build",
+      "authorization": "mode_authorized"
+    }
+  ],
+  "observations": [],
+  "effects": [
+    {
+      "level": "transport_artifacts",
+      "kind": "transport_artifacts"
+    },
+    {
+      "level": "staged",
+      "kind": "staged_archive"
+    },
+    {
+      "level": "promotion_reached",
+      "kind": "promoted"
+    }
+  ],
+  "side_effect_ceiling": "promotion_reached",
+  "claim_ceiling": "current_state_promotion",
+  "pair_claims_satisfied": false,
+  "terminal": {
+    "result": "cancelled",
+    "stage_id": "path_persistence",
+    "reason_family": "cancelled",
+    "action_class": "abort_install"
+  },
+  "redaction_disposition": "roles_only"
+}

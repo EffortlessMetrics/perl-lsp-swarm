@@ -1,0 +1,67 @@
+{
+  "vector_id": "v002-archive-historical-server-only",
+  "contract_generation": 1,
+  "family": "historical_server_only_archive",
+  "platform_classification": "platform_neutral",
+  "intent": {
+    "operation_id": "txn-v002",
+    "attempt_id": "attempt-a1",
+    "route": "first_party_powershell",
+    "mode": "release_archive",
+    "selector": { "exact": { "tag": "synthetic-v0.9.0-historic" } },
+    "target": { "platform": "synthetic-platform", "arch": "synthetic-arch", "libc": "synthetic-libc" },
+    "requested_product_unit": "server_only",
+    "fallback_policy": "forbidden",
+    "path_policy": "session_only",
+    "config_digest": "cfg-digest-v002"
+  },
+  "resolved_subject": {
+    "subject_id": "subject-v002",
+    "mode": "release_archive",
+    "release_ref": { "repo": "synthetic/example", "tag": "synthetic-v0.9.0-historic" },
+    "topology": { "topology_id": "topology-syn-v002", "digest": "sha256:topology-syn-v002", "row": "row-syn-v002", "maturity": "historical" },
+    "archive": { "name": "perllsp-synthetic-v0.9.0-server-only.tar.gz", "format": "tar.gz", "integrity_policy_id": "integrity-syn-v002" },
+    "product_unit": "server_only",
+    "required_executables": ["perllsp"],
+    "destination_role": "install_root",
+    "provenance_required": false
+  },
+  "stage_graph": [
+    { "stage_id": "resolve_subject", "applicability": "required", "predecessors": [], "port_script": "resolve" },
+    { "stage_id": "transport", "applicability": "required", "predecessors": ["resolve_subject"], "port_script": "transport" },
+    { "stage_id": "checksum_integrity", "applicability": "required", "predecessors": ["transport"], "port_script": "checksum" },
+    { "stage_id": "provenance", "applicability": "not_applicable", "predecessors": ["checksum_integrity"], "port_script": "unused-provenance" },
+    { "stage_id": "archive_manifest_and_staging", "applicability": "required", "predecessors": ["checksum_integrity"], "port_script": "staging" },
+    { "stage_id": "executable_observation", "applicability": "required", "predecessors": ["archive_manifest_and_staging"], "port_script": "observe" },
+    { "stage_id": "source_build", "applicability": "not_applicable", "predecessors": [], "port_script": "unused-source-build" },
+    { "stage_id": "promotion", "applicability": "required", "predecessors": ["executable_observation"], "port_script": "promote" },
+    { "stage_id": "path_persistence", "applicability": "required", "predecessors": ["promotion"], "port_script": "path" },
+    { "stage_id": "fresh_process_observation", "applicability": "required", "predecessors": ["path_persistence"], "port_script": "fresh" },
+    { "stage_id": "installed_transition", "applicability": "required", "predecessors": ["fresh_process_observation"], "port_script": "install" }
+  ],
+  "port_scripts": {
+    "resolve": { "calls": [{ "result": "success" }] },
+    "transport": { "calls": [{ "result": "success", "artifacts": ["artifact-archive-v002"], "effects": [{ "level": "transport_artifacts", "kind": "transport_artifacts" }] }] },
+    "checksum": { "calls": [{ "result": "success", "evidence": ["evidence-checksum-v002"] }] },
+    "unused-provenance": { "calls": [{ "result": "success" }] },
+    "staging": { "calls": [{ "result": "success", "effects": [{ "level": "staged", "kind": "staged_archive" }] }] },
+    "observe": { "calls": [{ "result": "success", "executables": { "perllsp": "ok" } }] },
+    "unused-source-build": { "calls": [{ "result": "success" }] },
+    "promote": { "calls": [{ "result": "success", "effects": [{ "level": "promotion_reached", "kind": "promoted" }] }] },
+    "path": { "calls": [{ "result": "success", "effects": [{ "level": "path_persisted", "kind": "path_persisted" }] }] },
+    "fresh": { "calls": [{ "result": "success" }] },
+    "install": { "calls": [{ "result": "success", "effects": [{ "level": "installed_claim", "kind": "installed_claim" }] }] }
+  },
+  "expected": {
+    "terminal_result": "succeeded",
+    "terminal_stage": "installed_transition",
+    "reason_family": "none",
+    "action_class": "none",
+    "side_effect_ceiling": "installed_claim",
+    "claim_ceiling": "historical_evidence_only",
+    "pair_claims_satisfied": false,
+    "branch_count": 1,
+    "attempt_count": 1
+  },
+  "redaction": { "forbidden_tokens": [] }
+}
