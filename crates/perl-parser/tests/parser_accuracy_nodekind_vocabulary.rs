@@ -5,19 +5,44 @@
 //! kind can pass vacuously and overstate negative coverage. Validate every AST kind
 //! reference before parser output participates in the verdict.
 //!
-//! This test reads the authored manifest at compile time and inspects only the two
-//! AST-expectation collections. It deliberately does not duplicate the parser-owned
-//! manifest schema or create another runtime file-opening path.
+//! This test deserializes a narrow projection of the authored manifest at compile
+//! time. Parser, scorer, span, and recovery fields remain owned by their existing
+//! harnesses; this projection owns only the NodeKind reference identity it checks.
 
 use perl_parser::NodeKind;
-use serde_json::Value;
+use serde::Deserialize;
 use std::fmt;
-use std::io;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 const MANIFEST_JSON: &str =
     include_str!("../../perl-corpus/fixtures/parser_accuracy/manifest.json");
+const AST_KIND_FIELD: &str = "ast_expectations.kind";
+const AST_PARENT_KIND_FIELD: &str = "ast_expectations.parent_kind";
+const FORBIDDEN_KIND_FIELD: &str = "forbidden_nodes.kind";
+const FORBIDDEN_PARENT_KIND_FIELD: &str = "forbidden_nodes.parent_kind";
+
+#[derive(Debug, Deserialize)]
+struct ParserAccuracyNodeKindManifest {
+    fixtures: Vec<ParserAccuracyNodeKindFixture>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ParserAccuracyNodeKindFixture {
+    id: String,
+    #[serde(default)]
+    ast_expectations: Vec<NodeKindReference>,
+    #[serde(default)]
+    forbidden_nodes: Vec<NodeKindReference>,
+}
+
+#[derive(Debug, Deserialize)]
+struct NodeKindReference {
+    id: String,
+    kind: String,
+    #[serde(default)]
+    parent_kind: Option<String>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct InvalidNodeKindReference {
@@ -45,32 +70,22 @@ impl std::error::Error for InvalidNodeKindReference {}
 
 #[test]
 fn parser_accuracy_ast_nodekind_references_are_canonical() -> TestResult {
-    let manifest: Value = serde_json::from_str(MANIFEST_JSON)?;
-    let fixtures = manifest.get("fixtures").and_then(Value::as_array).ok_or_else(|| {
-        invalid_manifest("parser-accuracy manifest field `fixtures` must be an array")
-    })?;
-
+    let manifest: ParserAccuracyNodeKindManifest = serde_json::from_str(MANIFEST_JSON)?;
     let mut positive_references = 0usize;
     let mut forbidden_references = 0usize;
 
-    for fixture in fixtures {
-        let fixture_id = fixture.get("id").and_then(Value::as_str).ok_or_else(|| {
-            invalid_manifest("every parser-accuracy fixture must have a string `id`")
-        })?;
-
+    for fixture in &manifest.fixtures {
         positive_references += validate_reference_rows(
-            fixture_id,
-            fixture,
-            "ast_expectations",
-            "ast_expectations.kind",
-            "ast_expectations.parent_kind",
+            &fixture.id,
+            &fixture.ast_expectations,
+            AST_KIND_FIELD,
+            AST_PARENT_KIND_FIELD,
         )?;
         forbidden_references += validate_reference_rows(
-            fixture_id,
-            fixture,
-            "forbidden_nodes",
-            "forbidden_nodes.kind",
-            "forbidden_nodes.parent_kind",
+            &fixture.id,
+            &fixture.forbidden_nodes,
+            FORBIDDEN_KIND_FIELD,
+            FORBIDDEN_PARENT_KIND_FIELD,
         )?;
     }
 
@@ -87,160 +102,99 @@ fn parser_accuracy_ast_nodekind_references_are_canonical() -> TestResult {
 }
 
 #[test]
-fn misspelled_forbidden_kind_is_rejected_before_absence_matching() -> TestResult {
-    let canonical = serde_json::json!({
-        "forbidden_nodes": [{
-            "id": "quote_braces_not_block",
-            "kind": "Block"
-        }]
-    });
+fn misspelled_forbidden_kind_is_rejected_before_absence_matching() {
+    let canonical = [NodeKindReference {
+        id: "quote_braces_not_block".to_string(),
+        kind: "Block".to_string(),
+        parent_kind: None,
+    }];
     assert_eq!(
         validate_reference_rows(
             "quote_like",
             &canonical,
-            "forbidden_nodes",
-            "forbidden_nodes.kind",
-            "forbidden_nodes.parent_kind",
-        )?,
-        1,
+            FORBIDDEN_KIND_FIELD,
+            FORBIDDEN_PARENT_KIND_FIELD,
+        ),
+        Ok(1),
         "the canonical forbidden-node control must remain admitted"
     );
 
-    let misspelled = serde_json::json!({
-        "forbidden_nodes": [{
-            "id": "quote_braces_not_block",
-            "kind": "Bloock"
-        }]
-    });
-    assert_invalid_reference(
+    let misspelled = [NodeKindReference {
+        id: "quote_braces_not_block".to_string(),
+        kind: "Bloock".to_string(),
+        parent_kind: None,
+    }];
+    assert_eq!(
         validate_reference_rows(
             "quote_like",
             &misspelled,
-            "forbidden_nodes",
-            "forbidden_nodes.kind",
-            "forbidden_nodes.parent_kind",
+            FORBIDDEN_KIND_FIELD,
+            FORBIDDEN_PARENT_KIND_FIELD,
         ),
-        InvalidNodeKindReference {
+        Err(InvalidNodeKindReference {
             fixture_id: "quote_like".to_string(),
             expectation_id: "quote_braces_not_block".to_string(),
-            field: "forbidden_nodes.kind",
+            field: FORBIDDEN_KIND_FIELD,
             kind: "Bloock".to_string(),
-        },
-    )
+        })
+    );
 }
 
 #[test]
-fn misspelled_parent_kind_is_rejected_through_manifest_row_validation() -> TestResult {
-    let canonical = serde_json::json!({
-        "ast_expectations": [{
-            "id": "string_under_statement",
-            "kind": "String",
-            "parent_kind": "ExpressionStatement"
-        }]
-    });
+fn misspelled_parent_kind_is_rejected_through_manifest_row_validation() {
+    let canonical = [NodeKindReference {
+        id: "string_under_statement".to_string(),
+        kind: "String".to_string(),
+        parent_kind: Some("ExpressionStatement".to_string()),
+    }];
     assert_eq!(
         validate_reference_rows(
             "quote_like",
             &canonical,
-            "ast_expectations",
-            "ast_expectations.kind",
-            "ast_expectations.parent_kind",
-        )?,
-        2,
+            AST_KIND_FIELD,
+            AST_PARENT_KIND_FIELD,
+        ),
+        Ok(2),
         "the canonical kind and parent-kind control must remain admitted"
     );
 
-    let misspelled = serde_json::json!({
-        "ast_expectations": [{
-            "id": "string_under_statement",
-            "kind": "String",
-            "parent_kind": "ExpressionStatment"
-        }]
-    });
-    assert_invalid_reference(
+    let misspelled = [NodeKindReference {
+        id: "string_under_statement".to_string(),
+        kind: "String".to_string(),
+        parent_kind: Some("ExpressionStatment".to_string()),
+    }];
+    assert_eq!(
         validate_reference_rows(
             "quote_like",
             &misspelled,
-            "ast_expectations",
-            "ast_expectations.kind",
-            "ast_expectations.parent_kind",
+            AST_KIND_FIELD,
+            AST_PARENT_KIND_FIELD,
         ),
-        InvalidNodeKindReference {
+        Err(InvalidNodeKindReference {
             fixture_id: "quote_like".to_string(),
             expectation_id: "string_under_statement".to_string(),
-            field: "ast_expectations.parent_kind",
+            field: AST_PARENT_KIND_FIELD,
             kind: "ExpressionStatment".to_string(),
-        },
-    )
-}
-
-fn assert_invalid_reference(
-    result: Result<usize, Box<dyn std::error::Error>>,
-    expected: InvalidNodeKindReference,
-) -> TestResult {
-    let error = match result {
-        Ok(checked) => {
-            return Err(format!(
-                "non-canonical NodeKind reference was admitted after checking {checked} references"
-            )
-            .into());
-        }
-        Err(error) => error,
-    };
-    assert_eq!(error.to_string(), expected.to_string());
-    Ok(())
+        })
+    );
 }
 
 fn validate_reference_rows(
     fixture_id: &str,
-    fixture: &Value,
-    collection: &'static str,
+    rows: &[NodeKindReference],
     kind_field: &'static str,
     parent_field: &'static str,
-) -> Result<usize, Box<dyn std::error::Error>> {
-    let Some(raw_rows) = fixture.get(collection) else {
-        return Ok(0);
-    };
-    let rows = raw_rows.as_array().ok_or_else(|| {
-        invalid_manifest(format!("fixture `{fixture_id}` field `{collection}` must be an array"))
-    })?;
-
+) -> Result<usize, InvalidNodeKindReference> {
     let mut checked = 0usize;
     for row in rows {
-        let expectation_id = row.get("id").and_then(Value::as_str).ok_or_else(|| {
-            invalid_manifest(format!(
-                "fixture `{fixture_id}` field `{collection}` contains a row without a string `id`"
-            ))
-        })?;
-        let kind = row.get("kind").and_then(Value::as_str).ok_or_else(|| {
-            invalid_manifest(format!(
-                "fixture `{fixture_id}` expectation `{expectation_id}` field `{kind_field}` must be a string"
-            ))
-        })?;
-
-        validate_node_kind_reference(fixture_id, expectation_id, kind_field, kind)?;
+        validate_node_kind_reference(fixture_id, &row.id, kind_field, &row.kind)?;
         checked += 1;
 
-        match row.get("parent_kind") {
-            None | Some(Value::Null) => {}
-            Some(Value::String(parent_kind)) => {
-                validate_node_kind_reference(
-                    fixture_id,
-                    expectation_id,
-                    parent_field,
-                    parent_kind,
-                )?;
-                checked += 1;
-            }
-            Some(_) => {
-                return Err(invalid_manifest(format!(
-                    "fixture `{fixture_id}` expectation `{expectation_id}` field `{parent_field}` must be a string or null"
-                ))
-                .into());
-            }
+        if let Some(parent_kind) = row.parent_kind.as_deref() {
+            validate_node_kind_reference(fixture_id, &row.id, parent_field, parent_kind)?;
+            checked += 1;
         }
     }
-
     Ok(checked)
 }
 
@@ -260,8 +214,4 @@ fn validate_node_kind_reference(
         field,
         kind: kind.to_string(),
     })
-}
-
-fn invalid_manifest(message: impl Into<String>) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
