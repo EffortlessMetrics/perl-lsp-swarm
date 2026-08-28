@@ -30,7 +30,7 @@ fn when_serializing_a_program_then_output_uses_source_file_root() {
     let sexp = node.to_sexp();
 
     assert!(sexp.starts_with("(source_file"), "expected source_file root, got: {sexp}");
-    assert!(sexp.contains("(number 42)"), "expected nested number, got: {sexp}");
+    assert!(sexp.contains("(number (value 42))"), "expected nested number, got: {sexp}");
 }
 
 #[test]
@@ -51,8 +51,11 @@ fn when_serializing_variable_declaration_with_initializer_then_both_parts_are_em
     let sexp = decl.to_sexp();
 
     assert!(sexp.contains("(my_declaration"), "expected declarator tag, got: {sexp}");
-    assert!(sexp.contains("(variable $ x)"), "expected declared variable, got: {sexp}");
-    assert!(sexp.contains("(number 1)"), "expected initializer number, got: {sexp}");
+    assert!(
+        sexp.contains("(variable (sigil $) (name x))"),
+        "expected declared variable, got: {sexp}"
+    );
+    assert!(sexp.contains("(number (value 1))"), "expected initializer number, got: {sexp}");
 }
 
 #[test]

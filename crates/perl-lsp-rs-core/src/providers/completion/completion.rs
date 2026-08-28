@@ -97,6 +97,7 @@ mod items;
 mod keywords;
 pub use keywords::FUNDAMENTAL_CONSTRUCT_LABELS;
 mod lexical_context;
+pub(crate) mod lexical_visibility;
 mod methods;
 mod packages;
 mod regex_patterns;

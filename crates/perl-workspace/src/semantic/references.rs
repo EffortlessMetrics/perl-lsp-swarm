@@ -58,10 +58,10 @@ impl ReferenceIndex {
         // Reference edges in the shard.
         let mut edge_targets: HashMap<u64, Vec<EntityId>> = HashMap::new();
         for edge in &shard.edges {
-            if edge.kind == EdgeKind::References {
-                if let Some(occ_id) = edge.via_occurrence_id {
-                    edge_targets.entry(occ_id.0).or_default().push(edge.to_entity_id);
-                }
+            if edge.kind == EdgeKind::References
+                && let Some(occ_id) = edge.via_occurrence_id
+            {
+                edge_targets.entry(occ_id.0).or_default().push(edge.to_entity_id);
             }
         }
 

@@ -9,6 +9,7 @@
 //! race. They also do not claim incremental parser reuse; #1374 remains the
 //! performance and reuse owner. The required `lsp_smoke` gate includes this
 //! file from `semantic_definition.rs`.
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 #[path = "support/real_process.rs"]
 mod real_process;
@@ -172,7 +173,7 @@ fn wait_for_current_parse_tokens(
 ) -> Result<Vec<u64>> {
     let deadline = Instant::now() + timeout();
     let mut attempt = 0u32;
-    let mut last_result = Value::Null;
+    let mut last_result;
 
     loop {
         let id = format!("{id_prefix}-{attempt}");

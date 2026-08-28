@@ -97,8 +97,9 @@ pub fn classify_transition(accepted: &AcceptedBaseline, current: &RunReport) -> 
         && accepted.buckets() == &current.buckets
         && accepted.failures() == current.failures.as_slice()
         && value.semantic_boundaries == current.semantic_boundaries
-        && current.harness_status == Some(0)
     {
+        // Terminal validity was already decided by typed admission inside
+        // `validate_run_report` (#6884); no zero-only re-check here.
         return Classification {
             transition: CompatibilityTransition::NoChange,
             reason: "complete observation exactly matches the accepted v2 ratchet".into(),

@@ -1,3 +1,4 @@
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 #[path = "support/real_process.rs"]
 mod real_process;
 
@@ -114,7 +115,7 @@ fn workspace_configuration_is_emitted_only_after_initialized() -> Result<()> {
     // Retain the initialize response after reading every earlier frame. If the
     // server sent workspace/configuration first, the strict client buffered it
     // and the next lookup returns it immediately.
-    let response = client.receive_response_and_retain(&initialize_id, PROCESS_TIMEOUT)?;
+    client.receive_response_and_retain(&initialize_id, PROCESS_TIMEOUT)?;
     let premature = client.receive_server_request("workspace/configuration", ABSENCE_TIMEOUT);
     ensure!(
         premature.is_err(),
@@ -174,7 +175,7 @@ fn compatibility_initialization_starts_the_deferred_pull_after_initialize_respon
 
     let mut client = RealProcessClient::spawn_exact()?;
     client.send_raw_bytes(&RealProcessClient::encode_message(&initialize))?;
-    let response = client.receive_response_and_retain(&initialize_id, PROCESS_TIMEOUT)?;
+    client.receive_response_and_retain(&initialize_id, PROCESS_TIMEOUT)?;
     let premature = client.receive_server_request("workspace/configuration", ABSENCE_TIMEOUT);
     ensure!(
         premature.is_err(),

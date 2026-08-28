@@ -871,6 +871,35 @@ impl LspServer {
                 }
             }
 
+            // Canonical Dancer2 bounded diagnostics (#8928): only
+            // diagnostics whose truth is fully established by canonical
+            // facts (excluded keyword use; handler-only keyword outside an
+            // exact handler). Computed with the documents lock released.
+            {
+                let content_hash = perl_lsp_rs_core::tooling::perl_critic::hash_content(&text);
+                let context = self.dancer2_request_context(uri, &text, content_hash, ast);
+                for diagnostic in perl_lsp_rs_core::providers::dancer2::bounded_diagnostics(
+                    ast,
+                    &context.activations,
+                    &context.facts,
+                ) {
+                    diagnostics.push(InternalDiagnostic {
+                        range: (
+                            usize::try_from(diagnostic.start).unwrap_or(0),
+                            usize::try_from(diagnostic.end).unwrap_or(0),
+                        ),
+                        severity: InternalDiagnosticSeverity::Warning,
+                        code: Some(diagnostic.code.to_string()),
+                        message: diagnostic.message,
+                        related_information: Vec::new(),
+                        tags: Vec::new(),
+                        suggestion: None,
+                        fixable: false,
+                        critic_observation: None,
+                    });
+                }
+            }
+
             // Deduplicate diagnostics appended after the provider's own dedup pass
             // (critic, dead-code).  The native critic's `recommended` profile
             // overlaps with built-in lints (RequireUseStrict↔PL100, etc.) — both

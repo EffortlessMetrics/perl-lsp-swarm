@@ -1,0 +1,568 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://effortlessmetrics.dev/perl-lsp/schemas/compiler_lexical_cutline_cases.v1.schema.json",
+  "title": "Compiler lexical cut-line cases manifest v1",
+  "description": "Proof-definition manifest for the first compiler-backed lexical references/rename cohort (#12156). It defines the admitted-class denominator, exclusion/refusal classes, lifecycle rows, work invariants, and controlled mutations. It changes no compiler, provider, plan, handler, projection, fallback, client, or accepted-state behavior.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "manifest",
+    "issue",
+    "owner",
+    "status",
+    "updated",
+    "claim_boundary",
+    "authorities",
+    "protocol_lifecycle",
+    "vocabulary",
+    "fixtures",
+    "work_invariants",
+    "cases",
+    "mutations",
+    "test_targets"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "compiler_lexical_cutline_cases.v1"
+    },
+    "manifest": {
+      "const": "compiler-lexical-cutline-cases"
+    },
+    "issue": {
+      "const": 12156
+    },
+    "owner": {
+      "type": "string",
+      "minLength": 1
+    },
+    "status": {
+      "const": "proof-definition"
+    },
+    "updated": {
+      "type": "string",
+      "minLength": 1
+    },
+    "claim_boundary": {
+      "type": "string",
+      "minLength": 1
+    },
+    "authorities": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "parent_cut_lines",
+        "claim_row_authority",
+        "lexical_anchors",
+        "interim_vocabulary",
+        "contribution_envelope",
+        "preparation_contract",
+        "protocol"
+      ],
+      "properties": {
+        "parent_cut_lines": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "minItems": 1
+        },
+        "claim_row_authority": { "type": "string", "minLength": 1 },
+        "lexical_anchors": { "type": "string", "minLength": 1 },
+        "interim_vocabulary": { "type": "string", "minLength": 1 },
+        "contribution_envelope": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["schema", "issue", "landed_commit"],
+          "properties": {
+            "schema": { "const": "FilePirLexicalContributionV1" },
+            "issue": { "type": "string", "minLength": 1 },
+            "landed_commit": { "type": "string", "minLength": 40, "maxLength": 40 }
+          }
+        },
+        "preparation_contract": { "type": "string", "minLength": 1 },
+        "protocol": { "const": "LSP 3.18" }
+      }
+    },
+    "protocol_lifecycle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "prepare_rename_result_shapes",
+        "rename_params_fields",
+        "client_carried_continuation_token",
+        "stale_prior_observation_rule",
+        "correlation_outcomes"
+      ],
+      "properties": {
+        "prepare_rename_result_shapes": {
+          "type": "array",
+          "items": {
+            "enum": ["range", "range_placeholder", "default_behavior", "null"]
+          },
+          "minItems": 4,
+          "maxItems": 4,
+          "uniqueItems": true
+        },
+        "rename_params_fields": {
+          "type": "array",
+          "items": {
+            "enum": ["textDocument", "position", "newName"]
+          },
+          "minItems": 3,
+          "maxItems": 3,
+          "uniqueItems": true
+        },
+        "client_carried_continuation_token": {
+          "const": "forbidden"
+        },
+        "stale_prior_observation_rule": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_outcomes": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "no_prior_preparation",
+              "matching_current_preparation",
+              "prior_preparation_stale",
+              "prior_preparation_different_target",
+              "prior_preparation_different_family",
+              "prior_preparation_different_document_instance",
+              "prior_preparation_different_configuration",
+              "prior_preparation_malformed_or_foreign",
+              "instrument_failure"
+            ]
+          },
+          "minItems": 9,
+          "maxItems": 9,
+          "uniqueItems": true
+        }
+      }
+    },
+    "vocabulary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sigils",
+        "occurrence_roles",
+        "result_classes",
+        "case_kinds",
+        "position_encoding"
+      ],
+      "properties": {
+        "sigils": {
+          "type": "array",
+          "items": { "enum": ["scalar", "array", "hash", "code"] },
+          "minItems": 4,
+          "maxItems": 4,
+          "uniqueItems": true
+        },
+        "occurrence_roles": {
+          "type": "array",
+          "items": { "enum": ["declaration", "read", "write", "modify"] },
+          "minItems": 4,
+          "maxItems": 4,
+          "uniqueItems": true
+        },
+        "result_classes": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "exact_nonempty",
+              "exact_empty",
+              "refusal",
+              "not_ready",
+              "unsupported",
+              "old_route",
+              "instrument_failure"
+            ]
+          },
+          "minItems": 7,
+          "maxItems": 7,
+          "uniqueItems": true
+        },
+        "case_kinds": {
+          "type": "array",
+          "items": { "enum": ["admitted", "excluded", "lifecycle"] },
+          "minItems": 3,
+          "maxItems": 3,
+          "uniqueItems": true
+        },
+        "position_encoding": {
+          "const": "utf16"
+        }
+      }
+    },
+    "fixtures": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/fixture" }
+    },
+    "work_invariants": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/work_invariant" }
+    },
+    "cases": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/case" }
+    },
+    "mutations": {
+      "type": "array",
+      "minItems": 37,
+      "items": { "$ref": "#/$defs/mutation" }
+    },
+    "test_targets": {
+      "type": "array",
+      "minItems": 5,
+      "items": { "$ref": "#/$defs/test_target" }
+    }
+  },
+  "$defs": {
+    "fixture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "line_ending", "source", "source_sha256"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "line_ending": { "enum": ["LF", "CRLF"] },
+        "source": { "type": "string", "minLength": 1 },
+        "source_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "anchor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "byte_start",
+        "byte_end",
+        "line",
+        "character_start",
+        "character_end",
+        "role"
+      ],
+      "properties": {
+        "byte_start": { "type": "integer", "minimum": 0 },
+        "byte_end": { "type": "integer", "minimum": 1 },
+        "line": { "type": "integer", "minimum": 0 },
+        "character_start": { "type": "integer", "minimum": 0 },
+        "character_end": { "type": "integer", "minimum": 1 },
+        "role": { "enum": ["declaration", "read", "write", "modify"] }
+      }
+    },
+    "position": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["line", "character"],
+      "properties": {
+        "line": { "type": "integer", "minimum": 0 },
+        "character": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "binding": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["sigil", "name", "body", "scope_path"],
+      "properties": {
+        "sigil": { "enum": ["scalar", "array", "hash", "code"] },
+        "name": { "type": "string", "minLength": 1 },
+        "body": { "type": "string", "minLength": 1 },
+        "scope_path": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "minItems": 1
+        }
+      }
+    },
+    "preparation": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": [
+        "scenario",
+        "prior_observation",
+        "correlation_outcome",
+        "old_plan_reuse",
+        "fresh_current_result"
+      ],
+      "properties": {
+        "scenario": {
+          "enum": [
+            "no_prior_prepare",
+            "matching_prepare",
+            "stale_prepare_fresh_success",
+            "stale_prepare_current_refusal",
+            "close_reopen",
+            "cache_miss_eviction",
+            "malformed_foreign"
+          ]
+        },
+        "prior_observation": { "type": "string", "minLength": 1 },
+        "correlation_outcome": {
+          "enum": [
+            "no_prior_preparation",
+            "matching_current_preparation",
+            "prior_preparation_stale",
+            "prior_preparation_different_target",
+            "prior_preparation_different_family",
+            "prior_preparation_different_document_instance",
+            "prior_preparation_different_configuration",
+            "prior_preparation_malformed_or_foreign",
+            "instrument_failure"
+          ]
+        },
+        "old_plan_reuse": { "const": "forbidden" },
+        "fresh_current_result": {
+          "enum": ["success", "refusal", "not_ready", "unsupported"]
+        },
+        "prior_fixture": { "type": "string", "minLength": 1 }
+      }
+    },
+    "edit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "byte_start", "byte_end"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "byte_start": { "type": "integer", "minimum": 0 },
+        "byte_end": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "rename": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": [
+        "new_name",
+        "authorization",
+        "plan_result",
+        "rename_outcome",
+        "authorized_occurrence_ids",
+        "plan_edit_ids",
+        "projected_edit_ids",
+        "applied_edit_ids",
+        "edits",
+        "postcondition_source",
+        "client_application"
+      ],
+      "properties": {
+        "new_name": { "type": "string", "minLength": 1 },
+        "authorization": { "const": "current-subject-#10650" },
+        "plan_result": { "type": "string", "minLength": 1 },
+        "rename_outcome": {
+          "enum": ["success", "refusal", "instrument_failure"]
+        },
+        "authorized_occurrence_ids": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        },
+        "plan_edit_ids": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        },
+        "projected_edit_ids": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        },
+        "applied_edit_ids": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        },
+        "edits": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/edit" }
+        },
+        "postcondition_source": { "type": "string" },
+        "client_application": {
+          "enum": ["applied-verified", "rejected", "not-applicable"]
+        }
+      }
+    },
+    "lifecycle": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["sequence", "currentness"],
+      "properties": {
+        "sequence": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "minItems": 1
+        },
+        "currentness": { "type": "string", "minLength": 1 }
+      }
+    },
+    "case": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "case_id",
+        "kind",
+        "coverage",
+        "summary",
+        "fixture",
+        "request",
+        "binding",
+        "expected",
+        "preparation",
+        "rename",
+        "lifecycle",
+        "work_invariants",
+        "adjacent_boundary",
+        "mutations"
+      ],
+      "properties": {
+        "case_id": {
+          "type": "string",
+          "pattern": "^LX-(POS|RN|EXC|LC)-[0-9]{3}$"
+        },
+        "kind": { "enum": ["admitted", "excluded", "lifecycle"] },
+        "coverage": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "summary": { "type": "string", "minLength": 1 },
+        "fixture": { "type": "string", "minLength": 1 },
+        "request": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["method", "subject", "include_declaration"],
+          "properties": {
+            "method": {
+              "enum": ["textDocument/references", "textDocument/rename"]
+            },
+            "subject": { "$ref": "#/$defs/position" },
+            "include_declaration": { "type": "boolean" },
+            "new_name": { "type": "string", "minLength": 1 }
+          }
+        },
+        "binding": { "$ref": "#/$defs/binding" },
+        "expected": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "result_class",
+            "declaration_anchor",
+            "reference_locations",
+            "completeness",
+            "fallback_invoked"
+          ],
+          "properties": {
+            "result_class": {
+              "enum": [
+                "exact_nonempty",
+                "exact_empty",
+                "refusal",
+                "not_ready",
+                "unsupported",
+                "old_route",
+                "instrument_failure"
+              ]
+            },
+            "declaration_anchor": {
+              "oneOf": [{ "$ref": "#/$defs/anchor" }, { "type": "null" }]
+            },
+            "reference_locations": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/anchor" }
+            },
+            "completeness": { "enum": ["exact", "not-applicable"] },
+            "fallback_invoked": { "type": "boolean" }
+          }
+        },
+        "preparation": { "$ref": "#/$defs/preparation" },
+        "rename": { "$ref": "#/$defs/rename" },
+        "lifecycle": { "$ref": "#/$defs/lifecycle" },
+        "generation": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["scenario", "expected"],
+          "properties": {
+            "scenario": { "type": "string", "minLength": 1 },
+            "expected": { "type": "string", "minLength": 1 }
+          }
+        },
+        "work_invariants": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^WI-[0-9]{2}$" },
+          "uniqueItems": true
+        },
+        "adjacent_boundary": { "type": "string", "minLength": 1 },
+        "mutations": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^LX-MUT-[0-9]{2}$" },
+          "uniqueItems": true
+        }
+      }
+    },
+    "work_invariant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "stage",
+        "authority",
+        "subject",
+        "assertion",
+        "instrument",
+        "status"
+      ],
+      "properties": {
+        "id": { "type": "string", "pattern": "^WI-[0-9]{2}$" },
+        "stage": { "type": "string", "minLength": 1 },
+        "authority": { "type": "string", "minLength": 1 },
+        "subject": { "type": "string", "minLength": 1 },
+        "assertion": { "enum": ["zero", "false", "identity"] },
+        "instrument": { "type": "string", "minLength": 1 },
+        "status": { "enum": ["active", "pending"] },
+        "note": { "type": "string", "minLength": 1 }
+      }
+    },
+    "mutation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mutation_id",
+        "summary",
+        "wrong_behavior",
+        "expected_detection",
+        "fails_rows"
+      ],
+      "properties": {
+        "mutation_id": { "type": "string", "pattern": "^LX-MUT-[0-9]{2}$" },
+        "summary": { "type": "string", "minLength": 1 },
+        "wrong_behavior": { "type": "string", "minLength": 1 },
+        "expected_detection": { "type": "string", "minLength": 1 },
+        "fails_rows": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^LX-(POS|RN|EXC|LC)-[0-9]{3}$" },
+          "minItems": 1,
+          "uniqueItems": true
+        }
+      }
+    },
+    "test_target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["target", "kind", "status", "registration"],
+      "properties": {
+        "target": { "type": "string", "minLength": 1 },
+        "kind": { "enum": ["manifest", "external-stdio", "mutation"] },
+        "status": { "enum": ["active", "named-pending"] },
+        "proof": { "type": "string", "minLength": 1 },
+        "owner": { "type": "string", "minLength": 1 },
+        "registration": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}
