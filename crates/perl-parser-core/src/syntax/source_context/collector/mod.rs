@@ -1,5 +1,6 @@
 //! Region collection for [`super::index::SourceRegionIndex`].
 
+mod heredoc_candidate;
 mod literal_scan;
 
 use std::cmp::Ordering;
@@ -13,10 +14,11 @@ use super::region::SourceRegion;
 
 /// Collect non-code regions from `source` using lexer spans plus a lifted line scanner.
 pub(crate) fn collect_regions(source: &str) -> Vec<SourceRegion> {
+    let lexer_regions = collect_lexer_literal_regions(source);
     let mut regions = Vec::new();
     regions.extend(literal_scan::scan_line_comments_and_open_literals(source));
-    regions.extend(literal_scan::scan_heredoc_regions(source));
-    regions.extend(collect_lexer_literal_regions(source));
+    regions.extend(heredoc_candidate::scan_heredoc_regions_in_code(source, &lexer_regions));
+    regions.extend(lexer_regions);
     if let Some(marker_start) = find_data_marker_byte_lexed(source)
         && let Some(region) =
             SourceRegion::new(marker_start, source.len(), SourceRegionKind::DataSection)
