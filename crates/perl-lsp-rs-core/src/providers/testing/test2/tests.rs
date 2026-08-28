@@ -105,6 +105,7 @@ fn test2_imports_v0_default_exports_cover_common_tools() {
         "warnings",
         "no_warnings",
         "ref_ok",
+        "refcount",
         "mock",
     ] {
         assert!(defaults.contains(&expected), "V0 default set should export `{expected}`");
@@ -342,6 +343,24 @@ fn classic_compare_standalone_defaults_do_not_reuse_the_v0_subset() {
         assert!(facts.is_imported(expected), "ClassicCompare should import {expected}");
     }
     assert_eq!((facts.strict, facts.warnings), (false, false));
+}
+
+#[test]
+fn refcount_standalone_defaults_do_not_reuse_the_v0_selection() {
+    let defaults = module_default_exports("Test2::Tools::Refcount").expect("known tool");
+    assert_eq!(defaults, &["is_refcount", "is_oneref"]);
+
+    let standalone = Test2Facts::from_source("use Test2::Tools::Refcount;\n");
+    assert!(standalone.is_imported("is_refcount"));
+    assert!(standalone.is_imported("is_oneref"));
+    assert!(!standalone.is_imported("refcount"), "refcount is optional standalone");
+
+    let explicit = Test2Facts::from_source("use Test2::Tools::Refcount qw(refcount);\n");
+    assert!(explicit.is_imported("refcount"));
+    assert!(!explicit.is_imported("is_refcount"));
+
+    let v0 = Test2Facts::from_source("use Test2::V0;\n");
+    assert!(v0.is_imported("refcount"), "V0 explicitly selects the optional helper");
 }
 
 #[test]
