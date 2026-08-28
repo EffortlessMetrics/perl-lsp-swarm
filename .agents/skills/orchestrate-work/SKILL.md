@@ -79,7 +79,7 @@ cold-start, briefing, duplicate research, resource contention, join, and
 correlated-failure costs. Stop adding agents when another result cannot change a
 decision.
 
-### Programme continuity
+## Programme continuity
 
 The unit of delegation is a coherent **programme**, not necessarily one atomic skill.
 Keep one context when the same subject/artifact understanding remains load-bearing:
@@ -176,9 +176,21 @@ Do not grant a child generic claim-orchestration authority. If an experimental
 whole-flow worker is useful, bound it to the named claim and route while the root retains
 decision/join authority.
 
-Separate stable facts from observed volatile state. Head SHAs, check results,
-mergeability, and required-policy observations must be re-derived before mutation or
-irreversible action.
+**Separate the brief's stable part from its observed part.** The claim, acceptance
+criteria, non-goals, and authorities are stable. Head SHAs, check results, mergeability,
+and counts go stale faster than an executor can act on them.
+
+Carry volatile values as an observation basis, not instructions:
+
+```text
+Observed as of <sha>: <PR state, head, then-discovered required-policy set and results>.
+Re-derive live protection, rulesets, contexts, and results before mutating.
+If materially different, return PREMISE_CHANGED, CANDIDATE_MOVED, or SUPERSEDED rather
+than proceeding against stale state.
+```
+
+Discover required policy rather than naming a remembered set. Write any instruction
+that names a specific PR, branch, or SHA as conditional.
 
 ## Graph-delta returns
 
