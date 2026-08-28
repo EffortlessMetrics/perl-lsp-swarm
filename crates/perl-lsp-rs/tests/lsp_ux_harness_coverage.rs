@@ -157,7 +157,7 @@ fn wait_for_symbol_rejects_same_file_decoy() -> Result<(), String> {
                 && symbol
                     .pointer("/location/uri")
                     .and_then(|uri| uri.as_str())
-                    .is_some_and(|uri| uri == target_uri)
+                    .is_some_and(|uri| uri == target_uri.as_str())
         })
     });
     if !saw_decoy {
@@ -190,7 +190,7 @@ fn wait_for_symbol_rejects_matching_name_from_wrong_uri() -> Result<(), String> 
                 && symbol
                     .pointer("/location/uri")
                     .and_then(|uri| uri.as_str())
-                    .is_some_and(|uri| uri == expected_uri)
+                    .is_some_and(|uri| uri == expected_uri.as_str())
         })
     });
     if !saw_expected {
