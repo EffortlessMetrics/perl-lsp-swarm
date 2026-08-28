@@ -79,6 +79,24 @@ fn indented_heredoc_allows_leading_but_not_trailing_whitespace() -> R {
 }
 
 #[test]
+fn indented_heredoc_accepts_tab_indented_exact_terminator() -> R {
+    let source = "<<~'END'\n\tbody\n\tEND\nmy $x = 1;\n";
+    let tokens = PerlLexer::with_body_tokens(source).collect_tokens();
+
+    require_eq(body_slice(source, &tokens)?, "\tbody\n", "tab-indented heredoc body")?;
+    require_clean_continuation(source, &tokens, "my $x = 1;")
+}
+
+#[test]
+fn empty_heredoc_body_terminates_exactly() -> R {
+    let source = "<<'END'\nEND\nmy $x = 1;\n";
+    let tokens = PerlLexer::with_body_tokens(source).collect_tokens();
+
+    require_eq(body_slice(source, &tokens)?, "", "empty heredoc body")?;
+    require_clean_continuation(source, &tokens, "my $x = 1;")
+}
+
+#[test]
 fn trailing_whitespace_near_miss_without_exact_label_is_unterminated() -> R {
     let source = "<<END\nbody\nEND \t";
     let tokens = PerlLexer::new(source).collect_tokens();
