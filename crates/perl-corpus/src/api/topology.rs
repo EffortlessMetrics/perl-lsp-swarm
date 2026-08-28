@@ -1216,7 +1216,7 @@ mod tests {
         let cases = [
             (
                 "unclassified fuzz README",
-                r#"{"schema_version":1,"assets":[{"id":"crates/perl-corpus/fuzz/README.md","layer":"fuzz","kind":"perl_source","relative_path":"crates/perl-corpus/fuzz/README.md","requirement":"required"}]}"#,
+                r#"{"schema_version":1,"assets":[{"id":"crates/perl-corpus/fuzz/README.md","layer":"fuzz","kind":"perl_source","relative_path":"crates/perl-corpus/fuzz/README.md","requirement":"required"},{"id":"crates/perl-corpus/fuzz/case.pl","layer":"fuzz","kind":"perl_source","relative_path":"crates/perl-corpus/fuzz/case.pl","requirement":"required"}]}"#,
                 CorpusTopologyError::UnclassifiedAssetPath {
                     id: "crates/perl-corpus/fuzz/README.md".to_string(),
                     layer: CorpusAssetLayer::Fuzz,
@@ -1224,7 +1224,7 @@ mod tests {
             ),
             (
                 "fuzz text kind mismatch",
-                r#"{"schema_version":1,"assets":[{"id":"crates/perl-corpus/fuzz/case.txt","layer":"fuzz","kind":"perl_source","relative_path":"crates/perl-corpus/fuzz/case.txt","requirement":"required"}]}"#,
+                r#"{"schema_version":1,"assets":[{"id":"crates/perl-corpus/fuzz/case.pl","layer":"fuzz","kind":"perl_source","relative_path":"crates/perl-corpus/fuzz/case.pl","requirement":"required"},{"id":"crates/perl-corpus/fuzz/case.txt","layer":"fuzz","kind":"perl_source","relative_path":"crates/perl-corpus/fuzz/case.txt","requirement":"required"}]}"#,
                 CorpusTopologyError::AssetKindMismatch {
                     id: "crates/perl-corpus/fuzz/case.txt".to_string(),
                     declared: CorpusAssetKind::PerlSource,
@@ -1237,9 +1237,10 @@ mod tests {
             let topology = serde_json::from_str::<CorpusTopology>(payload)?;
             let asset = topology
                 .assets
-                .first()
+                .iter()
+                .find(|asset| asset.relative_path.ends_with("case.pl"))
                 .cloned()
-                .ok_or_else(|| format!("forged {label} topology has no asset"))?;
+                .ok_or_else(|| format!("forged {label} topology has no valid requested asset"))?;
 
             for (entry_point, result) in [
                 ("validate", topology.validate().map(|_| ())),
