@@ -1,6 +1,6 @@
 name: Temporary PerlTidy CRLF implementation proof
 
-# Branch-local transport revision 2; removed before review.
+# Branch-local transport revision 3; removed before review.
 on:
   push:
     branches:
@@ -34,11 +34,96 @@ jobs:
         with:
           toolchain: 1.95.0
 
-      - name: Apply bounded native formatter repair
+      - name: Apply count-checked native formatter repair
+        shell: bash
         run: |
           set -euo pipefail
-          git apply --check .github/perltidy-crlf.patch
-          git apply .github/perltidy-crlf.patch
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("crates/perl-lsp-perltidy/src/native/implementation.rs")
+          text = path.read_text(encoding="utf-8")
+          replacements = [
+              (
+                  """        for line in source.split_inclusive('\\n') {
+                      let (body, line_ending) = split_line_ending(line);
+                      formatted
+                          .push_str(&format_simple_line(body, config).unwrap_or_else(|| body.to_string()));
+                      formatted.push_str(line_ending);
+                  }
+          """,
+                  """        for line in source.split_inclusive('\\n') {
+                      let (body, line_ending) = split_line_ending(line);
+                      let formatted_body =
+                          format_simple_line(body, config).unwrap_or_else(|| body.to_string());
+                      formatted.push_str(&preserve_generated_line_endings(formatted_body, line_ending));
+                      formatted.push_str(line_ending);
+                  }
+          """,
+                  "document formatting loop",
+              ),
+              (
+                  """            if let Some(formatted_line) = formatted_body {
+                      if formatted_line != body {
+          """,
+                  """            if let Some(formatted_line) = formatted_body {
+                      let formatted_line =
+                          preserve_generated_line_endings(formatted_line, line_ending);
+                      if formatted_line != body {
+          """,
+                  "range formatting loop",
+              ),
+              (
+                  """fn split_line_ending(line: &str) -> (&str, &str) {
+              if let Some(body) = line.strip_suffix("\\r\\n") {
+                  (body, "\\r\\n")
+              } else if let Some(body) = line.strip_suffix('\\n') {
+                  (body, "\\n")
+              } else {
+                  (line, "")
+              }
+          }
+
+          pub(super) fn range_includes_line""",
+                  """fn split_line_ending(line: &str) -> (&str, &str) {
+              if let Some(body) = line.strip_suffix("\\r\\n") {
+                  (body, "\\r\\n")
+              } else if let Some(body) = line.strip_suffix('\\n') {
+                  (body, "\\n")
+              } else {
+                  (line, "")
+              }
+          }
+
+          fn preserve_generated_line_endings(formatted: String, source_line_ending: &str) -> String {
+              if source_line_ending != "\\r\\n" || !formatted.contains('\\n') {
+                  return formatted;
+              }
+
+              let mut normalized = String::with_capacity(formatted.len());
+              let mut remaining = formatted.as_str();
+              while let Some((line, tail)) = remaining.split_once('\\n') {
+                  normalized.push_str(line.strip_suffix('\\r').unwrap_or(line));
+                  normalized.push_str("\\r\\n");
+                  remaining = tail;
+              }
+              normalized.push_str(remaining);
+              normalized
+          }
+
+          pub(super) fn range_includes_line""",
+                  "line-ending helper seam",
+              ),
+          ]
+
+          for old, new, label in replacements:
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"expected exactly one {label}; found {count}")
+              text = text.replace(old, new, 1)
+
+          path.write_text(text, encoding="utf-8")
+          PY
 
       - name: Format candidate
         run: cargo fmt -p perl-lsp-perltidy
