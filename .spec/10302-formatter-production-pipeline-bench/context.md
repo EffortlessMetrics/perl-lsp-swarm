@@ -18,7 +18,7 @@ variance, adapter double-invocation, helper-only benchmarking). Installed
 first-useful journeys record end-to-end latency only and cannot localize a
 regression.
 
-## Governing evidence (2026-08-28, origin/main@a9664af790888333efbe50a042fa060f3cc2d171; candidate head 159da8901d49e2fd7b22cf8721a7440cd0e4260f)
+## Governing evidence (2026-08-28, origin/main@a9664af790888333efbe50a042fa060f3cc2d171; candidate head ad04447af4eec899e0feee9b4500d7a590a18917)
 
 - Production seams to pin invocation counts against:
   `crates/perl-lsp-rs-core/src/providers/formatting/formatting.rs`
@@ -61,8 +61,8 @@ regression.
   and stable digests in `FormatIdentity` — all already machine-comparable.
 - Honest dependency boundary: representative corpus identities (#9327) are
   OPEN with zero tree references, and output/allocation envelopes (#7140/
-  #7501) are OPEN; subjects must be self-contained checked-in fixtures now
-  with a registered extension seam for #9327, and counter envelopes must
+  #7501) are OPEN; current subjects remain self-contained in the benchmark
+  source, with a future subject-manifest extension seam for #9327, and counter envelopes must
   carry their own versioned schema until #7140 codifies product limits.
   Derived output/replacement/retained bytes can prove output growth but are
   not an allocation oracle. The selected future route is a serialized
@@ -110,8 +110,8 @@ evidence:
    invocation-test artifact and the complete vector matrix remain
    `NOT_PROVEN`. Benches live in
    `crates/perl-lsp-perltidy/benches/native_pipeline_benchmark.rs`
-   over the current procedural `bench_rows()` subjects. A checked-in authoritative
-   registry is not present in this candidate and remains `NOT_PROVEN`.
+   over the current procedural `bench_rows()` subjects. A versioned subject
+   manifest is not present in this candidate and remains `NOT_PROVEN`.
    Its completeness test covers every named #10302 member:
    module/script/test/PSGI/data-processing; compact/multiline;
    delimited/statement/expression/list-operator; comment/trivia/opaque;
@@ -162,8 +162,8 @@ exists solely to encode an empty required-feature field.
 
 Hosted wiring creates and exports exactly one `NATIVE_PIPELINE_RUN_ID` before
 the `BENCH_TARGETS` loop, so the formatter benchmark and later extractor share
-one run identity. Hosted strict extraction supplies the authoritative subject
-registry, runtime measurement sidecar, matching `--expect-run-id`, and
+one run identity. Hosted strict extraction would supply a future subject
+manifest, runtime measurement sidecar, matching `--expect-run-id`, and
 formatter `--expect-id "native_pipeline_document/delimited_n32_lf_tabs"`. Structural pins
 cover creation order, export/benchmark visibility, and every strict argument;
 moving creation after the loop or dropping/diverging an argument fails.

@@ -1,7 +1,7 @@
 # Checklist: #10302 production-path formatter performance receipt
 
 Base pin: `origin/main@a9664af790888333efbe50a042fa060f3cc2d171` (2026-08-28).
-Candidate head: `159da8901d49e2fd7b22cf8721a7440cd0e4260f` (PR #13190).
+Candidate head: `ad04447af4eec899e0feee9b4500d7a590a18917` (PR #13190).
 Composition sibling: #10301 fuzz/property spec
 (`.spec/10301-formatter-property-fuzz-harness/`) — disjoint file set.
 PR #13190 delivers a bounded runtime-counter and benchmark-enrollment slice.
@@ -69,14 +69,16 @@ Planned surface:
       `[[bench]] name = "native_pipeline_benchmark" harness = false`
 - [ ] `crates/perl-lsp-perltidy/benches/native_pipeline_benchmark.rs` +
       `benches/support/perf_subjects.rs`: benchmark executable and subject
-      loader currently use procedural `bench_rows()` subjects. The authoritative
-      checked-in registry remains a future #10302 contract and `NOT_PROVEN`.
+      loader currently use procedural `bench_rows()` subjects. A future versioned
+      subject manifest remains a #10302 contract and
+      `NOT_PROVEN`.
       The delivered benchmark has an actual `benchmark_group("native_pipeline_document")` /
       `bench_function("delimited_n32_lf_tabs", ...)` pair producing
       representative Criterion ID
       `native_pipeline_document/delimited_n32_lf_tabs` (the group/name pair
       is the emitted Criterion layout)
-- [ ] Future #10302 contract (not delivered by PR #13190): checked-in authoritative
+- [ ] Future #10302 contract (not delivered by PR #13190): versioned subject
+      manifest (not present in this candidate),
       `crates/perl-lsp-perltidy/benches/native_pipeline_subjects.v1.json`, keyed
       by canonical Criterion ID, covers every required matrix member:
       module/script/test/PSGI/data-processing; compact/multiline;
@@ -109,12 +111,12 @@ Planned surface:
       `review_after = "2026-11-27"`, and `expires = "2027-02-27"`
 - [ ] Runtime-generated
       `target/criterion/native-pipeline-measurements.v1.json`, distinct from
-      the checked-in registry and keyed by canonical Criterion ID, records
+      the future subject manifest and keyed by canonical Criterion ID, records
       schema/run identity, observed subject/config/engine/environment identity,
       stage/work/edit/depth/invocation counters, allocation measurements, and
       named source-parse/render/formatted-parse/edit-derivation/classification/
       total elapsed fields. It contains exactly one row per
-      registry subject from the dedicated serialized receipt pass; Criterion's
+      manifest subject from the dedicated serialized receipt pass; Criterion's
       repeated timing samples remain separate and join later by canonical ID
 - [ ] `crates/perl-lsp-perltidy/tests/native_pipeline_counters_tests.rs`:
       NPC-001..NPC-006 + NPC-010 pipeline/parse canaries incl. detector sanity
@@ -198,7 +200,7 @@ python3 benchmarks/scripts/validate-formatter-receipt.py \
 Open residuals (owned by upstream issues, not silently dropped):
 
 - [ ] Enroll #9327 representative corpus identities through the subject
-      registry seam when that corpus lands
+      subject-manifest seam when that corpus lands
 - [ ] Align derived-output envelopes with #7140/#7501 product bounds when they
       codify limits (schema-major bump + before/after receipts); allocation
       remains a separate real-oracle requirement
