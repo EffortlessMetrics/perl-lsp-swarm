@@ -173,13 +173,13 @@ Required preparatory separations:
 
 1. Land this audit without code movement.
 2. Run PR 3 against Set A and record the exact minimal dependency closure.
-3. Make one in-place, behavior-preserving JSON-RPC decoupling PR for the Set B
-   blockers.
-4. Re-run the dependency audit for Set B.
-5. Create the crate scaffold only after at least one candidate set compiles
-   without a Perl dependency.
-6. Move `document_version.rs` first as the lowest-risk whole-file primitive.
-7. Move the neutral JSON-RPC set next because it unlocks transport.
+3. Create the crate scaffold only after Set A compiles without a Perl
+   dependency.
+4. Move `document_version.rs` first as the lowest-risk whole-file primitive.
+5. Make one in-place, behavior-preserving JSON-RPC decoupling PR for the Set B
+   blockers; preserve the current app's public re-exports and wire behavior.
+6. Re-run the PR 3 dependency audit for Set B.
+7. Move the neutral JSON-RPC set because it unlocks transport.
 8. Split and move the low-level frame codec only after JSON-RPC parity is green.
 9. Consider cancellation, budgets, URI handling, schema mechanics, and generic
    registration helpers separately; none is admitted wholesale by this audit.
