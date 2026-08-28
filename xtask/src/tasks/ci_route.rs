@@ -1109,7 +1109,10 @@ fn route_file(file: &str, route: &mut RouteBuilder) {
         return;
     }
 
-    if file == "scripts/generate-badges.py" || file == "scripts/tests/test-generate-badges.py" {
+    if file == "badges/README.md"
+        || file == "scripts/generate-badges.py"
+        || file == "scripts/tests/test-generate-badges.py"
+    {
         route.add_surface("ripr-badge-endpoints");
         route.add_pack(RIPR_BADGE_ENDPOINTS_PACK);
         route.add_coverage_pack("patch-coverage-ripr-badge-endpoints");
@@ -3071,8 +3074,12 @@ mod tests {
     }
 
     #[test]
-    fn ci_route_receipt_maps_both_ripr_badge_python_paths_to_focused_non_lcov_pack() -> Result<()> {
-        for path in ["scripts/generate-badges.py", "scripts/tests/test-generate-badges.py"] {
+    fn ci_route_receipt_maps_ripr_badge_owner_paths_to_focused_non_lcov_pack() -> Result<()> {
+        for path in [
+            "badges/README.md",
+            "scripts/generate-badges.py",
+            "scripts/tests/test-generate-badges.py",
+        ] {
             let receipt = route_receipt("origin/main", "HEAD", vec![path.to_string()])?;
             assert_eq!(receipt.changed_surfaces, vec!["ripr-badge-endpoints"]);
             assert!(proof_pack_ids(&receipt).contains(&"ripr-badge-endpoints-focused"));

@@ -8,10 +8,12 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 SCRIPT = Path(__file__).parents[1] / "generate-badges.py"
 WORKFLOW = Path(__file__).parents[2] / ".github/workflows/badge-endpoints.yml"
 RUST_DELEGATE = Path(__file__).parents[2] / "xtask/src/tasks/badges.rs"
+BADGE_README = Path(__file__).parents[2] / "badges/README.md"
 SPEC = importlib.util.spec_from_file_location("ripr_badge_generator", SCRIPT)
 assert SPEC is not None
 generator = importlib.util.module_from_spec(SPEC)
@@ -38,9 +40,20 @@ expected = ["check", "--root", root, "--format", "repo-badge-json"]
 if observed != {"argv": expected, "cwd": root}:
     print("unexpected fake RIPR invocation", file=sys.stderr)
     raise SystemExit(64)
-if os.environ.get("FAKE_RIPR_HANG") == "1":
+if os.environ.get("FAKE_RIPR_SPAWN_CHILD") == "1":
     child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(300)"])
     Path(os.environ["FAKE_RIPR_CHILD_PID"]).write_text(str(child.pid), encoding="utf-8")
+if os.environ.get("FAKE_RIPR_HANG") == "1":
+    time.sleep(300)
+stdout_bytes = int(os.environ.get("FAKE_RIPR_STDOUT_BYTES", "0"))
+stderr_bytes = int(os.environ.get("FAKE_RIPR_STDERR_BYTES", "0"))
+if stdout_bytes:
+    sys.stdout.write("o" * stdout_bytes)
+    sys.stdout.flush()
+if stderr_bytes:
+    sys.stderr.write("e" * stderr_bytes)
+    sys.stderr.flush()
+if os.environ.get("FAKE_RIPR_AFTER_OUTPUT_HANG") == "1":
     time.sleep(300)
 print(os.environ["FAKE_RIPR_PAYLOAD"])
 print(os.environ.get("FAKE_RIPR_STDERR", ""), file=sys.stderr)
@@ -94,6 +107,12 @@ class GenerateBadgesTests(unittest.TestCase):
         ]:
             with self.subTest(displaced_semantic=displaced_semantic):
                 self.assertNotIn(displaced_semantic, source)
+
+    def test_badge_owner_guide_names_only_the_python_generator(self):
+        source = BADGE_README.read_text(encoding="utf-8")
+        self.assertIn("python3 scripts/generate-badges.py", source)
+        self.assertIn("python3 scripts/generate-badges.py --check", source)
+        self.assertNotIn("cargo xtask badges", source)
 
     def test_exact_source_manual_proof_is_read_only_and_writer_separated(self):
         validate_workflow_contract(WORKFLOW.read_text(encoding="utf-8"))
@@ -266,6 +285,7 @@ class GenerateBadgesTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root, _, fake, _ = self.make_fixture(directory)
             env = self.fake_env(root, fake, {"counts": VALID_COUNTS})
+            env["FAKE_RIPR_SPAWN_CHILD"] = "1"
             env["FAKE_RIPR_HANG"] = "1"
             previous = os.environ.copy()
             os.environ.update(env)
@@ -275,16 +295,139 @@ class GenerateBadgesTests(unittest.TestCase):
             finally:
                 os.environ.clear()
                 os.environ.update(previous)
-            child_pid = int((root / "ripr-child.pid").read_text(encoding="utf-8"))
-            deadline = time.monotonic() + 3
-            while time.monotonic() < deadline:
-                try:
-                    os.kill(child_pid, 0)
-                except OSError:
-                    break
-                time.sleep(0.05)
-            else:
-                self.fail(f"timed-out fake RIPR child {child_pid} remained alive")
+            self.assert_fake_child_stopped(root, "timed-out")
+
+    def assert_fake_child_stopped(self, root: Path, reason: str):
+        child_pid = int((root / "ripr-child.pid").read_text(encoding="utf-8"))
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            try:
+                os.kill(child_pid, 0)
+            except OSError:
+                return
+            time.sleep(0.05)
+        self.fail(f"{reason} fake RIPR child {child_pid} remained alive")
+
+    def assert_output_overflow_terminates_tree(self, stream_name: str):
+        with tempfile.TemporaryDirectory() as directory:
+            root, _, fake, _ = self.make_fixture(directory)
+            env = self.fake_env(root, fake, {"counts": VALID_COUNTS})
+            env["FAKE_RIPR_SPAWN_CHILD"] = "1"
+            env["FAKE_RIPR_AFTER_OUTPUT_HANG"] = "1"
+            limit = getattr(generator, f"PRODUCER_{stream_name.upper()}_LIMIT")
+            env[f"FAKE_RIPR_{stream_name.upper()}_BYTES"] = str(limit * 4)
+            previous = os.environ.copy()
+            os.environ.update(env)
+            try:
+                with self.assertRaisesRegex(
+                    generator.RiprOutputLimitExceeded,
+                    rf"{stream_name} exceeded {limit} bytes",
+                ) as raised:
+                    generator.generate(root, check=False, ripr_timeout_seconds=15)
+            finally:
+                os.environ.clear()
+                os.environ.update(previous)
+            self.assertLessEqual(
+                raised.exception.retained_stdout_bytes,
+                generator.PRODUCER_STDOUT_LIMIT,
+            )
+            self.assertLessEqual(
+                raised.exception.retained_stderr_bytes,
+                generator.PRODUCER_STDERR_LIMIT,
+            )
+            self.assert_fake_child_stopped(root, f"oversized {stream_name}")
+
+    def test_oversized_stdout_is_bounded_and_terminates_process_tree(self):
+        self.assert_output_overflow_terminates_tree("stdout")
+
+    def test_oversized_stderr_is_bounded_and_terminates_process_tree(self):
+        self.assert_output_overflow_terminates_tree("stderr")
+
+    def test_windows_taskkill_timeout_is_reported_without_masking_trigger(self):
+        class FakeProcess:
+            pid = 123
+
+            def __init__(self):
+                self.killed = False
+
+            def poll(self):
+                return None
+
+            def kill(self):
+                self.killed = True
+
+            def wait(self, timeout):
+                return 1
+
+        process = FakeProcess()
+        with mock.patch.object(
+            generator.subprocess,
+            "run",
+            side_effect=subprocess.TimeoutExpired("taskkill", 1),
+        ):
+            failures = generator.terminate_process_tree(process, windows=True)
+        self.assertTrue(process.killed)
+        self.assertIn("taskkill timed out", failures)
+
+    def test_final_process_wait_timeout_is_reported_and_retried(self):
+        class FakeProcess:
+            pid = 456
+
+            def __init__(self):
+                self.killed = False
+                self.waits = 0
+
+            def poll(self):
+                return None
+
+            def kill(self):
+                self.killed = True
+
+            def wait(self, timeout):
+                self.waits += 1
+                if self.waits == 1:
+                    raise subprocess.TimeoutExpired("ripr", timeout)
+                return 1
+
+        process = FakeProcess()
+        completed = subprocess.CompletedProcess(["taskkill"], 0)
+        with mock.patch.object(generator.subprocess, "run", return_value=completed):
+            failures = generator.terminate_process_tree(process, windows=True)
+        self.assertTrue(process.killed)
+        self.assertEqual(process.waits, 2)
+        self.assertIn("direct process wait timed out", failures)
+
+    def test_reader_pipes_close_only_after_all_readers_are_terminal(self):
+        class FakeReader:
+            def __init__(self, name: str, alive: bool):
+                self.name = name
+                self.alive = alive
+
+            def join(self, timeout):
+                return None
+
+            def is_alive(self):
+                return self.alive
+
+        class FakeStream:
+            def __init__(self):
+                self.closed = False
+
+            def close(self):
+                self.closed = True
+
+        blocked_streams = [FakeStream(), FakeStream()]
+        failure = generator.finish_readers(
+            [FakeReader("blocked", True)], blocked_streams
+        )
+        self.assertIn("blocked", failure)
+        self.assertTrue(all(not stream.closed for stream in blocked_streams))
+
+        terminal_streams = [FakeStream(), FakeStream()]
+        self.assertIsNone(
+            generator.finish_readers([FakeReader("done", False)], terminal_streams)
+        )
+        self.assertTrue(all(stream.closed for stream in terminal_streams))
 
 
 if __name__ == "__main__":

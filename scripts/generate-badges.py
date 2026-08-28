@@ -7,19 +7,43 @@ import argparse
 import json
 import os
 from pathlib import Path
+import queue
 import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
+from typing import BinaryIO
 
 RIPR_TIMEOUT_SECONDS = 15 * 60
 TERMINATION_GRACE_SECONDS = 5
 STDERR_DIAGNOSTIC_LIMIT = 2_048
+PRODUCER_STDOUT_LIMIT = 64 * 1_024
+PRODUCER_STDERR_LIMIT = 64 * 1_024
+STREAM_READ_CHUNK_SIZE = 8 * 1_024
 EXPECTED_COUNT_FIELDS = (
     "unsuppressed_exposure_gaps",
     "unsuppressed_test_efficiency_findings",
 )
+
+
+class RiprOutputLimitExceeded(RuntimeError):
+    """RIPR exceeded a producer-stream memory bound."""
+
+    def __init__(self, stream_name: str, limit: int) -> None:
+        super().__init__(
+            f"ripr {stream_name} exceeded {limit} bytes; its process tree was terminated"
+        )
+        self.stream_name = stream_name
+        self.limit = limit
+        self.retained_stdout_bytes = 0
+        self.retained_stderr_bytes = 0
+        self.cleanup_failure: str | None = None
+
+    def record_cleanup_failure(self, detail: str) -> None:
+        self.cleanup_failure = detail
+        self.args = (f"{self.args[0]}; cleanup incomplete: {detail}",)
 
 
 def bounded_stderr(stderr: str) -> str:
@@ -29,23 +53,40 @@ def bounded_stderr(stderr: str) -> str:
     return normalized[:STDERR_DIAGNOSTIC_LIMIT] + "... [truncated]"
 
 
-def terminate_process_tree(process: subprocess.Popen[str]) -> None:
-    """Terminate the RIPR process group on both supported runner families."""
-    if os.name == "nt":
-        result = subprocess.run(
-            ["taskkill", "/PID", str(process.pid), "/T", "/F"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=TERMINATION_GRACE_SECONDS,
-            check=False,
-        )
-        if result.returncode and process.poll() is None:
-            process.kill()
+def terminate_process_tree(
+    process: subprocess.Popen[bytes], *, windows: bool | None = None
+) -> list[str]:
+    """Best-effort tree termination that never masks the triggering failure."""
+    failures: list[str] = []
+    is_windows = os.name == "nt" if windows is None else windows
+    if is_windows:
+        try:
+            result = subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=TERMINATION_GRACE_SECONDS,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            failures.append("taskkill timed out")
+        except OSError as error:
+            failures.append(f"taskkill failed: {error}")
+        else:
+            if result.returncode:
+                failures.append(f"taskkill exited {result.returncode}")
+        if failures and process.poll() is None:
+            try:
+                process.kill()
+            except OSError as error:
+                failures.append(f"direct process kill failed: {error}")
     else:
         try:
             os.killpg(process.pid, signal.SIGTERM)
         except ProcessLookupError:
             pass
+        except OSError as error:
+            failures.append(f"process-group SIGTERM failed: {error}")
         try:
             process.wait(timeout=TERMINATION_GRACE_SECONDS)
         except subprocess.TimeoutExpired:
@@ -56,7 +97,54 @@ def terminate_process_tree(process: subprocess.Popen[str]) -> None:
             os.killpg(process.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
-    process.wait(timeout=TERMINATION_GRACE_SECONDS)
+        except OSError as error:
+            failures.append(f"process-group SIGKILL failed: {error}")
+    try:
+        process.wait(timeout=TERMINATION_GRACE_SECONDS)
+    except subprocess.TimeoutExpired:
+        failures.append("direct process wait timed out")
+        try:
+            process.kill()
+            process.wait(timeout=TERMINATION_GRACE_SECONDS)
+        except (OSError, subprocess.TimeoutExpired) as error:
+            failures.append(f"direct process fallback did not terminate: {error}")
+    except OSError as error:
+        failures.append(f"direct process wait failed: {error}")
+    return failures
+
+
+def finish_readers(
+    readers: list[threading.Thread], streams: list[BinaryIO]
+) -> str | None:
+    """Close pipe streams only after every bounded reader is terminal."""
+    for reader in readers:
+        reader.join(timeout=TERMINATION_GRACE_SECONDS)
+    still_running = [reader.name for reader in readers if reader.is_alive()]
+    if still_running:
+        return "output readers did not stop: " + ", ".join(still_running)
+    for stream in streams:
+        stream.close()
+    return None
+
+
+def read_bounded_stream(
+    stream: BinaryIO,
+    destination: bytearray,
+    limit: int,
+    stream_name: str,
+    overflow: queue.Queue[tuple[str, int]],
+) -> None:
+    """Read at most ``limit`` bytes and signal before retaining any excess."""
+    while True:
+        read1 = getattr(stream, "read1", stream.read)
+        chunk = read1(STREAM_READ_CHUNK_SIZE)
+        if not chunk:
+            return
+        remaining = limit - len(destination)
+        destination.extend(chunk[:remaining])
+        if len(chunk) > remaining:
+            overflow.put((stream_name, limit))
+            return
 
 
 def run_ripr(root: Path, timeout_seconds: float = RIPR_TIMEOUT_SECONDS) -> str:
@@ -74,23 +162,81 @@ def run_ripr(root: Path, timeout_seconds: float = RIPR_TIMEOUT_SECONDS) -> str:
         cwd=root,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        text=True,
         **platform_options,
     )
-    try:
-        stdout, stderr = process.communicate(timeout=timeout_seconds)
-    except subprocess.TimeoutExpired as error:
-        terminate_process_tree(process)
-        _, stderr = process.communicate()
+    if process.stdout is None or process.stderr is None:
+        cleanup = terminate_process_tree(process)
+        suffix = f"; cleanup incomplete: {'; '.join(cleanup)}" if cleanup else ""
+        raise RuntimeError(f"ripr output pipes were not created{suffix}")
+
+    stdout_bytes = bytearray()
+    stderr_bytes = bytearray()
+    overflow: queue.Queue[tuple[str, int]] = queue.Queue()
+    readers = [
+        threading.Thread(
+            target=read_bounded_stream,
+            args=(process.stdout, stdout_bytes, PRODUCER_STDOUT_LIMIT, "stdout", overflow),
+            name="ripr-stdout-reader",
+            daemon=True,
+        ),
+        threading.Thread(
+            target=read_bounded_stream,
+            args=(process.stderr, stderr_bytes, PRODUCER_STDERR_LIMIT, "stderr", overflow),
+            name="ripr-stderr-reader",
+            daemon=True,
+        ),
+    ]
+    for reader in readers:
+        reader.start()
+
+    deadline = time.monotonic() + timeout_seconds
+    failure: RuntimeError | None = None
+    while True:
+        try:
+            stream_name, limit = overflow.get_nowait()
+        except queue.Empty:
+            pass
+        else:
+            failure = RiprOutputLimitExceeded(stream_name, limit)
+            break
+        if process.poll() is not None and all(not reader.is_alive() for reader in readers):
+            break
+        if time.monotonic() >= deadline:
+            failure = RuntimeError(
+                f"ripr check timed out after {timeout_seconds:g}s and its process tree was terminated"
+            )
+            break
+        time.sleep(0.01)
+
+    cleanup_failures = terminate_process_tree(process) if failure is not None else []
+    reader_failure = finish_readers(readers, [process.stdout, process.stderr])
+    if reader_failure is not None:
+        cleanup_failures.append(reader_failure)
+
+    stderr = stderr_bytes.decode("utf-8", errors="replace")
+    if failure is not None:
+        if isinstance(failure, RiprOutputLimitExceeded):
+            failure.retained_stdout_bytes = len(stdout_bytes)
+            failure.retained_stderr_bytes = len(stderr_bytes)
+            if cleanup_failures:
+                failure.record_cleanup_failure("; ".join(cleanup_failures))
+            raise failure
         diagnostic = bounded_stderr(stderr)
         suffix = f"; stderr: {diagnostic}" if diagnostic else ""
-        raise RuntimeError(
-            f"ripr check timed out after {timeout_seconds:g}s and its process tree was terminated{suffix}"
-        ) from error
+        cleanup_suffix = (
+            f"; cleanup incomplete: {'; '.join(cleanup_failures)}"
+            if cleanup_failures
+            else ""
+        )
+        raise RuntimeError(f"{failure}{suffix}{cleanup_suffix}")
     if process.returncode:
         diagnostic = bounded_stderr(stderr)
         suffix = f": {diagnostic}" if diagnostic else ""
         raise RuntimeError(f"ripr check failed for ripr+ badge (exit {process.returncode}){suffix}")
+    try:
+        stdout = stdout_bytes.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise RuntimeError("ripr stdout was not valid UTF-8") from error
     return stdout
 
 
