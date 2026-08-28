@@ -103,6 +103,22 @@ fn range_formatting_after_heredoc_terminator_remains_eligible() {
 }
 
 #[test]
+fn trailing_trivia_after_heredoc_does_not_extend_preserve_span() {
+    let formatter = NativeFormatter::new();
+    let source = "print <<'EOF';\nbody\nEOF\n\n# trailing note\nmy$x=1;\n";
+    let following = TextRange::new(TextPosition::new(3, 0), TextPosition::new(6, 0));
+
+    let result = formatter.format_range(source, following, &FormatConfig::default());
+
+    assert!(result.changed);
+    assert_eq!(
+        result.formatted,
+        "print <<'EOF';\nbody\nEOF\n\n# trailing note\nmy $x = 1;\n"
+    );
+    assert!(result.diagnostics.is_empty());
+}
+
+#[test]
 fn unclosed_heredoc_body_remains_owned_by_parse_gate() {
     let formatter = NativeFormatter::new();
     let source = "print <<'EOF';\nmy$x=1;\n";
