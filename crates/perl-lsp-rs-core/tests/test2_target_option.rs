@@ -354,6 +354,11 @@ fn target_helpers_reach_live_bundle_completion() {
         "use Test2::V0 -target => q{};\nC|",
         "use Test2::V0 -target => q{0};\nC|",
         "use Test2::V0 -target => qq{};\nC|",
+        "use Test2::V0 -target => m{Foo};\nC|",
+        "use Test2::V0 -target => s{a}{b};\nC|",
+        "use Test2::V0 -target => tr{a}{b};\nC|",
+        "use Test2::V0 -target => qx{command};\nC|",
+        "use Test2::V0 -target => qw{} , ok;\nC|",
     ] {
         let completions = complete(source);
         assert!(
@@ -361,4 +366,7 @@ fn target_helpers_reach_live_bundle_completion() {
             "quote-like target must not synthesize CLASS: {source:?}"
         );
     }
+
+    let truthy = complete("use Test2::V0 -target => 'Foo';\nC|");
+    assert!(has_test2_completion(&truthy, "CLASS"));
 }

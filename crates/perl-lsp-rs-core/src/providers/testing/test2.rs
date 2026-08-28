@@ -437,6 +437,13 @@ pub fn resolve_import(module: &str, raw_args: &str) -> Option<ResolvedImport> {
                 let mut pending_helpers: BTreeSet<String> = BTreeSet::new();
                 while let Some(value) = atoms.get(atom_index) {
                     atom_index += 1;
+                    if is_quote_like_operator(value) {
+                        // Quote-like operators are expressions, even when
+                        // their first token resembles a bareword. Consume
+                        // their delimiters and leave CLASS unproven.
+                        atom_index = consume_quote_like_target(&atoms, atom_index - 1, value);
+                        break;
+                    }
                     let (opens, closes) = count_unquoted_braces(value);
                     if !saw_hash && opens == 0 {
                         // Parentheses and unary-plus may be separated from a
@@ -863,7 +870,9 @@ fn expand_qw(raw: &str) -> String {
                         b'<' => b'>',
                         other => other,
                     };
-                    if let Some(end_rel) = bytes[j + 1..].iter().position(|&b| b == close) {
+                    if let Some(end_rel) = bytes[j + 1..].iter().position(|&b| b == close)
+                        && !qw_is_target_value(raw, i)
+                    {
                         // `j + 1` and `j + 1 + end_rel` sit on ASCII delimiter
                         // bytes, i.e. char boundaries, so slicing `raw` is safe.
                         let inner = &raw[j + 1..j + 1 + end_rel];
@@ -882,6 +891,20 @@ fn expand_qw(raw: &str) -> String {
         i += ch.len_utf8();
     }
     out
+}
+
+/// Keep a `qw` expression opaque when it is the value of `-target`.
+///
+/// `expand_qw` is useful for ordinary import lists, but expanding an empty
+/// target (`qw{}`) would erase the target atom and make the following export
+/// look like the target value. The target resolver must instead consume the
+/// expression and fail closed.
+fn qw_is_target_value(raw: &str, index: usize) -> bool {
+    let start = raw[..index].rfind(',').map_or(0, |position| position + 1);
+    let before = raw[start..index].trim_end();
+    before
+        .rsplit_once("-target")
+        .is_some_and(|(_, suffix)| suffix.trim().is_empty() || suffix.trim() == "=>")
 }
 
 /// Strip surrounding single or double quotes from a token.
@@ -911,6 +934,52 @@ fn is_quoted_token(tok: &str) -> bool {
 /// Whether an atom contains only target-expression wrapper punctuation.
 fn is_structural_target_atom(atom: &str) -> bool {
     !atom.is_empty() && atom.chars().all(|c| matches!(c, '+' | '{' | '}' | '(' | ')'))
+}
+
+/// Perl quote-like operators produce expressions, never package-name atoms.
+fn is_quote_like_operator(atom: &str) -> bool {
+    matches!(atom, "q" | "qq" | "qw" | "qx" | "m" | "qr" | "s" | "tr" | "y")
+}
+
+/// Consume the delimited expression following a quote-like operator.
+fn consume_quote_like_target(atoms: &[String], start: usize, operator: &str) -> usize {
+    let mut next = start.saturating_add(1);
+    let consume_one = |atoms: &[String], index: &mut usize| {
+        let Some(open) = atoms.get(*index).map(String::as_str) else {
+            return;
+        };
+        let close = match open {
+            "(" => ")",
+            "{" => "}",
+            "[" => "]",
+            "<" => ">",
+            _ => {
+                *index = (*index).saturating_add(1);
+                return;
+            }
+        };
+        let mut depth = 0usize;
+        while let Some(atom) = atoms.get(*index) {
+            match atom.as_str() {
+                value if value == open => depth = depth.saturating_add(1),
+                value if value == close => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        *index = (*index).saturating_add(1);
+                        return;
+                    }
+                }
+                _ => {}
+            }
+            *index = (*index).saturating_add(1);
+        }
+    };
+
+    consume_one(atoms, &mut next);
+    if matches!(operator, "s" | "tr" | "y") {
+        consume_one(atoms, &mut next);
+    }
+    next
 }
 
 /// Look ahead through separated wrapper punctuation for a hash opener.
