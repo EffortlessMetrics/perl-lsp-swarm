@@ -67,11 +67,7 @@ pub const DBI_ST_METHODS: &[(&str, &str)] = &[
 ///
 /// Each entry is `(name, signature, description)`.
 pub const DBI_DB_METHOD_SIGS: &[(&str, &str, &str)] = &[
-    (
-        "do",
-        "do($statement, \\@attr?, @bind_values?)",
-        "Execute a single SQL statement",
-    ),
+    ("do", "do($statement, \\@attr?, @bind_values?)", "Execute a single SQL statement"),
     ("prepare", "prepare($statement, \\@attr?)", "Prepare a SQL statement for execution"),
     (
         "prepare_cached",
@@ -286,10 +282,7 @@ pub fn infer_receiver_type(context: &CompletionContext, source: &str) -> Option<
 
 fn is_simple_scalar_receiver(receiver: &str) -> bool {
     receiver.strip_prefix('$').is_some_and(|name| {
-        !name.is_empty()
-            && name
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == ':')
+        !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == ':')
     })
 }
 
@@ -347,11 +340,7 @@ fn assignment_expression_before_receiver<'a>(
             search_end = receiver_pos;
             continue;
         };
-        if expression
-            .chars()
-            .next()
-            .is_some_and(|c| matches!(c, '=' | '>' | '~'))
-        {
+        if expression.chars().next().is_some_and(|c| matches!(c, '=' | '>' | '~')) {
             search_end = receiver_pos;
             continue;
         }
@@ -374,10 +363,7 @@ fn expression_calls_constructor(expression: &str, module: &str) -> bool {
         return false;
     };
 
-    after_new
-        .chars()
-        .next()
-        .is_none_or(|c| c == '(' || c.is_whitespace())
+    after_new.chars().next().is_none_or(|c| c == '(' || c.is_whitespace())
 }
 
 fn infer_imported_constructor_receiver_type(
@@ -391,12 +377,9 @@ fn infer_imported_constructor_receiver_type(
     let expression =
         assignment_expression_before_receiver(receiver, &source_before_cursor[..receiver_pos])?;
 
-    ["HTTP::Tiny", "LWP::UserAgent"]
-        .into_iter()
-        .find(|&module| {
-            used_modules.contains(module)
-                && expression_calls_constructor(expression, module)
-        })
+    ["HTTP::Tiny", "LWP::UserAgent"].into_iter().find(|&module| {
+        used_modules.contains(module) && expression_calls_constructor(expression, module)
+    })
 }
 
 fn imported_static_methods(
