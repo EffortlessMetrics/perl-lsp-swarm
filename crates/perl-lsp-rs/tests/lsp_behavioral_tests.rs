@@ -68,10 +68,17 @@ fn workspace_edit_has_text_edits(edit: &Value, target_uri: &str) -> bool {
 
     edit.get("documentChanges").and_then(Value::as_array).is_some_and(|document_changes| {
         document_changes.iter().any(|change| {
+            let Some(text_document) = change.get("textDocument") else {
+                return false;
+            };
+            let valid_version = text_document
+                .get("version")
+                .is_some_and(|version| version.is_null() || version.is_i64() || version.is_u64());
             change
                 .pointer("/textDocument/uri")
                 .and_then(Value::as_str)
                 .is_some_and(|uri| uri_matches(target_uri, uri))
+                && valid_version
                 && change
                     .get("edits")
                     .and_then(Value::as_array)
@@ -124,6 +131,18 @@ fn workspace_edit_requires_well_formed_text_edits() {
             "documentChanges": [{
                 "textDocument": { "uri": target_uri },
                 "edits": [null]
+            }]
+        }),
+        json!({
+            "documentChanges": [{
+                "textDocument": { "uri": target_uri, "version": "1" },
+                "edits": [{ "range": range.clone(), "newText": "my $x" }]
+            }]
+        }),
+        json!({
+            "documentChanges": [{
+                "textDocument": { "uri": target_uri, "version": 1.5 },
+                "edits": [{ "range": range.clone(), "newText": "my $x" }]
             }]
         }),
     ] {

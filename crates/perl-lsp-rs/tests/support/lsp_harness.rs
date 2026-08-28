@@ -41,6 +41,20 @@ pub struct LinkedEditingSpan {
     pub end_character: u64,
 }
 
+/// Selects the timing policy used by [`LspHarness::wait_for_symbol`].
+///
+/// `Fallback` is deliberately a harness-only policy.  The server's
+/// `LSP_TEST_FALLBACKS` switch is process-global and controls individual
+/// test-only dispatch handlers; workspace/symbol does not use that fallback.
+/// Keeping the policy explicit lets end-to-end tests exercise the fast branch
+/// without racing other tests by mutating the process environment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WaitForSymbolMode {
+    Default,
+    Performance,
+    Fallback,
+}
+
 pub struct LspHarness {
     sender: mpsc::Sender<Vec<u8>>,
     output_buffer: Arc<Mutex<Vec<u8>>>,
@@ -638,22 +652,46 @@ impl LspHarness {
         want_uri: Option<&str>,
         budget: Duration,
     ) -> Result<(), String> {
+        let mode = if std::env::var("PERL_LSP_PERFORMANCE_TEST").is_ok() {
+            WaitForSymbolMode::Performance
+        } else if std::env::var("LSP_TEST_FALLBACKS").is_ok() {
+            WaitForSymbolMode::Fallback
+        } else {
+            WaitForSymbolMode::Default
+        };
+        self.wait_for_symbol_with_mode(query, want_uri, budget, mode)
+    }
+
+    /// Poll workspace/symbol with an explicit, isolated timing policy.
+    ///
+    /// The explicit mode is intentionally separate from environment discovery:
+    /// tests can exercise performance/fallback timing without changing
+    /// process-global variables while sibling tests are running.
+    pub fn wait_for_symbol_with_mode(
+        &mut self,
+        query: &str,
+        want_uri: Option<&str>,
+        budget: Duration,
+        mode: WaitForSymbolMode,
+    ) -> Result<(), String> {
         // Detect environment characteristics for timeout and backoff tuning only.
         // Performance configuration may shorten the wait, but it must not weaken
         // the symbol-name and URI oracle.
         let is_ci = std::env::var("CI").is_ok() || std::env::var("GITHUB_ACTIONS").is_ok();
-        let is_performance_test = std::env::var("PERL_LSP_PERFORMANCE_TEST").is_ok();
 
         // Adaptive parameters based on environment
         let is_windows = cfg!(windows);
-        let (max_attempts, initial_timeout, max_sleep) = if is_ci {
-            (8, 300, 200) // CI: more attempts, longer timeouts
-        } else if is_windows {
-            (8, 300, 150) // Windows local runs are slower than Linux/macOS for temp workspace indexing
-        } else if is_performance_test {
-            (3, 100, 50) // Performance: fewer attempts, faster timeouts
-        } else {
-            (5, 200, 100) // Local: balanced approach
+        let (max_attempts, initial_timeout, max_sleep) = match mode {
+            WaitForSymbolMode::Performance | WaitForSymbolMode::Fallback => {
+                (3, 100, 50) // Explicit fast policies remain isolated from environment state.
+            }
+            WaitForSymbolMode::Default if is_ci => {
+                (8, 300, 200) // CI: more attempts, longer timeouts
+            }
+            WaitForSymbolMode::Default if is_windows => {
+                (8, 300, 150) // Windows local runs are slower than Linux/macOS.
+            }
+            WaitForSymbolMode::Default => (5, 200, 100), // Local: balanced approach
         };
 
         let start = Instant::now();
@@ -701,7 +739,7 @@ impl LspHarness {
         }
 
         Err(format!(
-            "symbol '{query}' not ready within {budget:?} after {attempt} attempts. {last_observation} (CI: {is_ci}, Perf: {is_performance_test})"
+            "symbol '{query}' not ready within {budget:?} after {attempt} attempts. {last_observation} (CI: {is_ci}, mode: {mode:?})"
         ))
     }
 

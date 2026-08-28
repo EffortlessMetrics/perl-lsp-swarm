@@ -8,7 +8,7 @@ mod support;
 
 use serde_json::json;
 use std::time::Duration;
-use support::lsp_harness::{LspHarness, workspace_symbol_response_contains};
+use support::lsp_harness::{LspHarness, WaitForSymbolMode, workspace_symbol_response_contains};
 
 #[test]
 fn harness_supports_edit_save_diagnostics_workflow() -> Result<(), String> {
@@ -164,9 +164,18 @@ fn wait_for_symbol_rejects_same_file_decoy() -> Result<(), String> {
         return Err(format!("workspace/symbol did not return the decoy response: {response}"));
     }
 
-    let result = harness.wait_for_symbol("target", Some(&target_uri), Duration::from_secs(2));
-    if result.is_ok() {
-        return Err("same-file decoy must not satisfy wait_for_symbol".to_string());
+    for mode in
+        [WaitForSymbolMode::Default, WaitForSymbolMode::Performance, WaitForSymbolMode::Fallback]
+    {
+        let result = harness.wait_for_symbol_with_mode(
+            "target",
+            Some(&target_uri),
+            Duration::from_secs(2),
+            mode,
+        );
+        if result.is_ok() {
+            return Err(format!("same-file decoy must not satisfy wait_for_symbol in {mode:?}"));
+        }
     }
     Ok(())
 }
@@ -197,9 +206,20 @@ fn wait_for_symbol_rejects_matching_name_from_wrong_uri() -> Result<(), String> 
         return Err(format!("workspace/symbol did not return the expected response: {response}"));
     }
 
-    let result = harness.wait_for_symbol("target", Some(&other_uri), Duration::from_secs(2));
-    if result.is_ok() {
-        return Err("matching name from another URI must not satisfy wait_for_symbol".to_string());
+    for mode in
+        [WaitForSymbolMode::Default, WaitForSymbolMode::Performance, WaitForSymbolMode::Fallback]
+    {
+        let result = harness.wait_for_symbol_with_mode(
+            "target",
+            Some(&other_uri),
+            Duration::from_secs(2),
+            mode,
+        );
+        if result.is_ok() {
+            return Err(format!(
+                "matching name from another URI must not satisfy wait_for_symbol in {mode:?}"
+            ));
+        }
     }
     Ok(())
 }
@@ -215,7 +235,16 @@ fn harness_with_workspace_and_wait_for_symbol_matches_file_uri() -> Result<(), S
     ])?;
 
     let target_uri = workspace.uri("lib/MyApp/Greeting.pm");
-    harness.wait_for_symbol("greet", Some(&target_uri), Duration::from_secs(4))?;
+    for mode in
+        [WaitForSymbolMode::Default, WaitForSymbolMode::Performance, WaitForSymbolMode::Fallback]
+    {
+        harness.wait_for_symbol_with_mode(
+            "greet",
+            Some(&target_uri),
+            Duration::from_secs(4),
+            mode,
+        )?;
+    }
 
     let symbols = harness.request(
         "workspace/symbol",
