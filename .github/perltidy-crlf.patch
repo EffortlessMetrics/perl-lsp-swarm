@@ -1,7 +1,7 @@
 diff --git a/crates/perl-lsp-perltidy/src/native/implementation.rs b/crates/perl-lsp-perltidy/src/native/implementation.rs
 --- a/crates/perl-lsp-perltidy/src/native/implementation.rs
 +++ b/crates/perl-lsp-perltidy/src/native/implementation.rs
-@@ -107,10 +107,11 @@ impl NativeFormatter {
+@@ -107,8 +107,9 @@ impl NativeFormatter {
  
          for line in source.split_inclusive('\n') {
              let (body, line_ending) = split_line_ending(line);
@@ -13,7 +13,7 @@ diff --git a/crates/perl-lsp-perltidy/src/native/implementation.rs b/crates/perl
              formatted.push_str(line_ending);
          }
  
-@@ -137,6 +138,8 @@ impl NativeFormatter {
+@@ -137,7 +138,9 @@ impl NativeFormatter {
              };
  
              if let Some(formatted_line) = formatted_body {
@@ -22,7 +22,7 @@ diff --git a/crates/perl-lsp-perltidy/src/native/implementation.rs b/crates/perl
                  if formatted_line != body {
                      edits.push(TextEdit::new(
                          TextRange::new(
-@@ -267,6 +270,29 @@ fn split_line_ending(line: &str) -> (&str, &str) {
+@@ -267,6 +270,25 @@ fn split_line_ending(line: &str) -> (&str, &str) {
      }
  }
  
