@@ -3,14 +3,45 @@ name: PR Title Check
 on:
   pull_request_target:
     types: [opened, edited, reopened, synchronize]
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      expected_head_sha:
+        description: Exact generated PR head SHA; must equal the dispatch subject.
+        required: false
+        type: string
 
 permissions:
   pull-requests: write
   checks: write
 
 jobs:
+  dispatch-subject:
+    name: Verify dispatched title-check subject
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    if: always()
+    steps:
+      - name: Verify exact dispatched subject
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          EXPECTED_HEAD_SHA: ${{ inputs.expected_head_sha }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$EXPECTED_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::workflow_dispatch expected_head_sha is missing or malformed"
+            exit 1
+          fi
+          if [[ ! "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ || "$GITHUB_SHA" != "$EXPECTED_HEAD_SHA" ]]; then
+            echo "::error::Dispatched commit $GITHUB_SHA does not match expected subject $EXPECTED_HEAD_SHA"
+            exit 1
+          fi
+      - name: Non-dispatch event does not require a manual subject
+        if: github.event_name != 'workflow_dispatch'
+        run: echo "workflow_dispatch subject binding not applicable"
+
   validate-title:
+    needs: dispatch-subject
+    if: always() && needs.dispatch-subject.result == 'success'
     runs-on:
       group: em-ci-nano
       labels: [self-hosted, linux, x64, em-ci, trusted-pr, workflow-nano]

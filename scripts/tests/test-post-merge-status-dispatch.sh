@@ -23,6 +23,10 @@ grep -Fq -- '-f "base_sha=$VERIFIED_SOURCE_SHA"' <<<"$dispatch_block" \
   || fail 'ci.yml must receive the verified source base_sha'
 grep -Fq -- '-f "head_sha=$GENERATED_HEAD_SHA"' <<<"$dispatch_block" \
   || fail 'ci.yml must receive the generated PR head_sha'
+grep -Fq -- 'elif gh workflow run "$workflow" --ref "$BRANCH" \' <<<"$dispatch_block" \
+  || fail 'the non-ci workflows must be dispatched from the generated branch'
+grep -Fq -- '-f "expected_head_sha=$GENERATED_HEAD_SHA"' <<<"$dispatch_block" \
+  || fail 'the three non-ci workflows must receive the generated PR head_sha'
 grep -Fq 'generated_parent_sha" != "$VERIFIED_SOURCE_SHA"' <<<"$dispatch_block" \
   || fail 'the generated head parent must be checked against the verified source'
 grep -Fq 'generated_parent_count" != "1"' <<<"$dispatch_block" \

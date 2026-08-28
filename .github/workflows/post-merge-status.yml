@@ -608,7 +608,8 @@ jobs:
                 -f "head_sha=$GENERATED_HEAD_SHA"; then
                 continue
               fi
-            elif gh workflow run "$workflow" --ref "$BRANCH"; then
+            elif gh workflow run "$workflow" --ref "$BRANCH" \
+              -f "expected_head_sha=$GENERATED_HEAD_SHA"; then
               continue
             fi
             echo "::error::Failed to dispatch $workflow"

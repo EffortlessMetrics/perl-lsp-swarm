@@ -3,6 +3,10 @@ name: EM CI Routed Rust
 on:
   workflow_dispatch:
     inputs:
+      expected_head_sha:
+        description: Exact generated PR head SHA; must equal the dispatch subject.
+        required: false
+        type: string
       force_target:
         description: Force a route target for fallback proof.
         required: false
@@ -34,11 +38,39 @@ env:
   RUST_VERSION: "1.95.0"
 
 jobs:
+  dispatch-subject:
+    name: Verify dispatched CI subject
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    if: always()
+    steps:
+      - name: Verify exact dispatched subject
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          EXPECTED_HEAD_SHA: ${{ inputs.expected_head_sha }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$EXPECTED_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::workflow_dispatch expected_head_sha is missing or malformed"
+            exit 1
+          fi
+          if [[ ! "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ || "$GITHUB_SHA" != "$EXPECTED_HEAD_SHA" ]]; then
+            echo "::error::Dispatched commit $GITHUB_SHA does not match expected subject $EXPECTED_HEAD_SHA"
+            exit 1
+          fi
+      - name: Non-dispatch event does not require a manual subject
+        if: github.event_name != 'workflow_dispatch'
+        run: echo "workflow_dispatch subject binding not applicable"
+
   route-rust-small:
     name: Route Perl LSP Rust Small
+    needs: dispatch-subject
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    if: github.event.pull_request.draft != true || github.event_name != 'pull_request'
+    if: >-
+      always() &&
+      needs.dispatch-subject.result == 'success' &&
+      (github.event.pull_request.draft != true || github.event_name != 'pull_request')
     outputs:
       target: ${{ steps.route.outputs.target }}
       reason: ${{ steps.route.outputs.reason }}

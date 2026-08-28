@@ -40,7 +40,12 @@ on:
   # PRs, they only burn the 10 GB quota.
   schedule:
     - cron: '23 11 * * *'
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      expected_head_sha:
+        description: Exact generated PR head SHA; must equal the dispatch subject.
+        required: false
+        type: string
 
 concurrency:
   group: ripr-${{ github.event.pull_request.number || github.ref }}
@@ -54,14 +59,41 @@ permissions:
   contents: read
 
 jobs:
+  dispatch-subject:
+    name: Verify dispatched ripr subject
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    if: always()
+    steps:
+      - name: Verify exact dispatched subject
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          EXPECTED_HEAD_SHA: ${{ inputs.expected_head_sha }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$EXPECTED_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::workflow_dispatch expected_head_sha is missing or malformed"
+            exit 1
+          fi
+          if [[ ! "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ || "$GITHUB_SHA" != "$EXPECTED_HEAD_SHA" ]]; then
+            echo "::error::Dispatched commit $GITHUB_SHA does not match expected subject $EXPECTED_HEAD_SHA"
+            exit 1
+          fi
+      - name: Non-dispatch event does not require a manual subject
+        if: github.event_name != 'workflow_dispatch'
+        run: echo "workflow_dispatch subject binding not applicable"
+
   # -------------------------------------------------------------------------
   # 1. Router -- picks the target runner for this PR run.
   # -------------------------------------------------------------------------
   route-ripr:
     name: Route ripr runner
+    needs: dispatch-subject
     runs-on: ubuntu-latest
     timeout-minutes: 5
     if: >-
+      always() &&
+      needs.dispatch-subject.result == 'success' &&
       (github.event.pull_request.draft != true || github.event_name != 'pull_request') &&
       github.event_name != 'schedule'
     outputs:
