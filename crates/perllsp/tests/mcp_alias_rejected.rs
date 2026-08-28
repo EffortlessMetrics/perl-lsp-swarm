@@ -50,7 +50,7 @@ fn reserved_mcp_subcommand_fails_closed() -> Result<(), Box<dyn std::error::Erro
     );
     assert!(
         !stderr.contains("Content-Length"),
-        "LSP framing leaked into rejection: {stderr}",
+        "LSP framing leaked into rejection: {stderr}"
     );
     Ok(())
 }
@@ -75,7 +75,7 @@ fn reserved_mcp_help_is_protocol_clean() -> Result<(), Box<dyn std::error::Error
     assert!(stdout.contains("never starts the LSP runtime"), "{stdout}");
     assert!(
         !stdout.contains("Content-Length"),
-        "protocol framing leaked into help: {stdout}",
+        "protocol framing leaked into help: {stdout}"
     );
     Ok(())
 }
