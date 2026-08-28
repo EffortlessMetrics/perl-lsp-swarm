@@ -171,9 +171,7 @@ fn is_htmx_header_prefix(prefix: &str) -> bool {
 }
 
 fn starts_with_ignore_ascii_case(value: &str, prefix: &str) -> bool {
-    value
-        .get(..prefix.len())
-        .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
+    value.get(..prefix.len()).is_some_and(|head| head.eq_ignore_ascii_case(prefix))
 }
 
 #[cfg(test)]
