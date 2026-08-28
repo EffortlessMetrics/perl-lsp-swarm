@@ -161,6 +161,39 @@ sub _read_message {
     }
 }
 
+sub _validate_hello_response {
+    my ($response, $hello_seq) = @_;
+    return (0, 'peer/hello response must be a JSON object')
+        unless ref($response) eq 'HASH';
+    return (0, 'peer/hello response has an invalid type')
+        unless defined $response->{type} && !ref($response->{type})
+            && $response->{type} eq 'response';
+    return (0, 'peer/hello response has an invalid request sequence')
+        unless defined $response->{requestSeq} && !ref($response->{requestSeq})
+            && $response->{requestSeq} =~ /\A\d+\z/
+            && $response->{requestSeq} == $hello_seq;
+    return (0, 'peer/hello response has an invalid command')
+        unless defined $response->{command} && !ref($response->{command})
+            && $response->{command} eq 'peer/hello';
+    my $success = $response->{success};
+    return (0, 'peer/hello response has an invalid success flag')
+        unless defined $success
+            && (!ref($success) || ref($success) eq 'JSON::PP::Boolean')
+            && ("$success" eq '0' || "$success" eq '1');
+    if (!$response->{success}) {
+        return (0, 'peer/hello rejection has no string message')
+            if defined $response->{message} && ref($response->{message});
+        return (1, undef);
+    }
+    return (0, 'successful peer/hello response must contain an object body')
+        unless ref($response->{body}) eq 'HASH';
+    return (0, 'successful peer/hello response must contain a sessionId')
+        unless defined $response->{body}{sessionId}
+            && !ref($response->{body}{sessionId})
+            && length $response->{body}{sessionId};
+    return (1, undef);
+}
+
 sub _parse_rendezvous {
     my (%options) = @_;
     my $require_token = $options{require_token};
@@ -246,9 +279,11 @@ sub _connect_and_handshake {
             close($socket);
             return (undef, "peer/hello response failed: $read_error");
         }
-        next unless ($response->{type} // '') eq 'response';
-        next unless ($response->{requestSeq} // -1) == $hello_seq;
-        next unless ($response->{command} // '') eq 'peer/hello';
+        my ($valid, $validation_error) = _validate_hello_response($response, $hello_seq);
+        unless ($valid) {
+            close($socket);
+            return (undef, "invalid peer/hello response: $validation_error");
+        }
         unless ($response->{success}) {
             my $why = $response->{message} // 'unknown reason';
             close($socket);
@@ -364,6 +399,23 @@ sub _ptkdb_source_digest {
     return ($digest, undef);
 }
 
+sub _module_contains_pinned_provenance {
+    my ($path) = @_;
+    open my $fh, '<:raw', $path
+        or return (0, "cannot inspect loaded Devel/ptkdb.pm: $!");
+    local $/;
+    my $source = <$fh>;
+    close $fh or return (0, "cannot close loaded Devel/ptkdb.pm inspection: $!");
+    return (0, 'loaded Devel/ptkdb.pm does not declare the pinned source identity')
+        unless defined $source
+            && index($source, "PERL_DAP_MIRROR_SOURCE = '" . REFERENCE_PTKDB_SOURCE . "'") >= 0;
+    return (0, 'loaded Devel/ptkdb.pm does not declare the pinned module digest')
+        unless index($source, "PERL_DAP_MIRROR_SHA256 = '" . REFERENCE_PTKDB_MODULE_SHA256 . "'") >= 0;
+    return (0, 'loaded Devel/ptkdb.pm does not declare the pinned distribution digest')
+        unless index($source, "PERL_DAP_MIRROR_DIST_SHA256 = '" . REFERENCE_PTKDB_DIST_SHA256 . "'") >= 0;
+    return (1, undef);
+}
+
 sub _check_ptkdb_provenance {
     my $loaded_path = $INC{'Devel/ptkdb.pm'};
     my $source = _ptkdb_source();
@@ -389,6 +441,8 @@ sub _check_ptkdb_provenance {
             unless $digest eq REFERENCE_PTKDB_MODULE_SHA256;
         return (0, 'loaded Devel::ptkdb module digest marker does not match the pinned CPAN artifact')
             unless "$declared_module_digest" eq REFERENCE_PTKDB_MODULE_SHA256;
+        my ($bound, $binding_error) = _module_contains_pinned_provenance($loaded_path);
+        return (0, $binding_error) unless $bound;
         return (1, undef);
     }
 
