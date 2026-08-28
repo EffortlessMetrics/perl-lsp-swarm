@@ -581,11 +581,17 @@ impl CheckpointedIncrementalParser {
         let mut raw_tokens = Vec::new();
         let mut checkpoint_positions = vec![0, 100, 500, 1000, 5000];
 
-        // Collect raw lexer tokens and save checkpoints at specific positions
+        // Collect raw lexer tokens and save checkpoints at the first token
+        // boundary at or beyond each target position. Token boundaries rarely
+        // land exactly on arbitrary byte offsets, so checking for equality
+        // would silently omit almost every checkpoint and turn a bounded
+        // window into an EOF-sized fallback.
         let mut position = 0;
         while let Some(token) = lexer.next_token() {
-            // Save checkpoint at specific positions
-            if checkpoint_positions.first() == Some(&position) {
+            // Save the checkpoint before lexing the next token once the
+            // cursor has reached/passed the target. `position` is the lexer
+            // cursor represented by the checkpoint captured here.
+            while checkpoint_positions.first().is_some_and(|target| *target <= position) {
                 checkpoint_positions.remove(0);
                 let checkpoint = lexer.checkpoint();
                 self.checkpoint_cache.add(checkpoint);
@@ -883,6 +889,41 @@ mod tests {
         } else {
             unreachable!("Expected program nodes");
         }
+    }
+
+    #[test]
+    fn test_checkpoint_window_captures_non_aligned_targets() {
+        // Checkpoint targets are byte offsets, while lexer boundaries are
+        // token-aligned. This source deliberately makes the target offsets
+        // land inside statements, exercising the at-or-after capture rule.
+        let source = "my $value = 1;\n".repeat(700);
+        let edit = SimpleEdit { start: 150, end: 151, new_text: "2".to_string() };
+
+        let mut incremental = CheckpointedIncrementalParser::new();
+        must(incremental.parse(source.clone()));
+        let incremental_tree = must(incremental.apply_edit(&edit));
+
+        let stats = incremental.stats();
+        assert!(stats.checkpoints_used > 0, "non-aligned target must use a checkpoint, got {stats:?}");
+        assert!(stats.tokens_relexed > 0, "bounded window must re-lex the edited region, got {stats:?}");
+        assert!(
+            stats.right_checkpoint_distance <= 5000,
+            "non-aligned target must retain a bounded right window, got {stats:?}"
+        );
+        assert!(
+            stats.right_checkpoint_distance < source.len(),
+            "right window should not fall back to the whole source, got {stats:?}"
+        );
+
+        let mut expected_source = source;
+        expected_source.replace_range(edit.start..edit.end, &edit.new_text);
+        let mut full = CheckpointedIncrementalParser::new();
+        let full_tree = must(full.parse(expected_source));
+        assert_eq!(
+            format!("{incremental_tree:?}"),
+            format!("{full_tree:?}"),
+            "incremental result must remain equivalent to a fresh parse"
+        );
     }
 
     #[test]
