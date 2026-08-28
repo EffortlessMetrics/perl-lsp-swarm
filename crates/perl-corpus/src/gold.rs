@@ -529,9 +529,16 @@ impl<'de> Deserialize<'de> for RenameAssertion {
                 return Err(de::Error::unknown_field(field, FIELDS));
             }
         }
+        let has_min = object.contains_key("min");
 
         let unchecked: RenameAssertionUnchecked =
             serde_json::from_value(value).map_err(de::Error::custom)?;
+        if has_min && !matches!(&unchecked.kind, RenameAssertionKind::RenameEditCountAtLeast { .. })
+        {
+            return Err(de::Error::custom(
+                "min is only supported for rename_edit_count_at_least assertions",
+            ));
+        }
         Ok(Self {
             kind: unchecked.kind,
             line: unchecked.line,
@@ -545,6 +552,7 @@ impl<'de> Deserialize<'de> for RenameAssertion {
 
 /// One expected text edit in a rename workspace edit.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RenameExpectedEdit {
     pub line: u32,
     pub character: u32,
@@ -569,6 +577,7 @@ where
 
 /// On-disk representation of `expected_rename.json`
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RenameGoldExpected {
     pub version: u32,
     pub fixture: String,
@@ -719,6 +728,50 @@ mod tests {
         );
         if explicit_null.is_ok() {
             return Err("explicit null expected_edits must fail closed".into());
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn rename_schema_rejects_nested_typos_and_variant_mismatched_fields()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let nested_typo = r#"{
+            "version": 1,
+            "fixture": "fixture",
+            "assertions": [{
+                "kind": "rename_succeeds",
+                "line": 4,
+                "character": 4,
+                "new_name": "sum_values",
+                "expected_edits": [{
+                    "line": 4,
+                    "character": 4,
+                    "end_line": 4,
+                    "end_character": 19,
+                    "new_text": "sum_values",
+                    "new_texxt": "sum_values"
+                }]
+            }]
+        }"#;
+        if serde_json::from_str::<RenameGoldExpected>(nested_typo).is_ok() {
+            return Err("unknown nested expected edit field was accepted".into());
+        }
+
+        for kind in ["rename_succeeds", "rename_null"] {
+            let mismatched = format!(
+                r#"{{"kind":"{kind}","line":4,"character":4,"new_name":"sum_values","min":1}}"#
+            );
+            if serde_json::from_str::<RenameAssertion>(&mismatched).is_ok() {
+                return Err(format!("min was accepted for {kind}").into());
+            }
+        }
+
+        let count = serde_json::from_str::<RenameAssertion>(
+            r#"{"kind":"rename_edit_count_at_least","min":1,"line":4,"character":4,"new_name":"sum_values"}"#,
+        )?;
+        if !matches!(count.kind, RenameAssertionKind::RenameEditCountAtLeast { min: 1 }) {
+            return Err("min was not retained for rename_edit_count_at_least".into());
         }
 
         Ok(())

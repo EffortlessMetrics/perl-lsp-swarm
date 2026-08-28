@@ -701,6 +701,43 @@ mod tests {
             return Err(contract_error(format!("unexpected validation error: {error}")).into());
         }
 
+        let nested_typo = omitted.replace(
+            "\"new_name\": \"sum_values\"",
+            "\"new_name\": \"sum_values\",\n                \"expected_edits\": [{\n                    \"line\": 4,\n                    \"character\": 4,\n                    \"end_line\": 4,\n                    \"end_character\": 19,\n                    \"new_text\": \"sum_values\",\n                    \"new_te xt\": \"sum_values\"\n                }]",
+        );
+        write_fixture_file(&sidecar, &nested_typo)?;
+        let error = match validate_named_sidecar(&sidecar, "fixture") {
+            Ok(()) => return Err("unknown nested expected edit field was accepted".into()),
+            Err(error) => error,
+        };
+        if !error.to_string().contains("new_te xt") {
+            return Err(contract_error(format!("unexpected validation error: {error}")).into());
+        }
+
+        for kind in ["rename_succeeds", "rename_null"] {
+            let mismatched = format!(
+                r#"{{"version":1,"fixture":"fixture","assertions":[{{"kind":"{kind}","line":4,"character":4,"new_name":"sum_values","min":1}}]}}"#
+            );
+            write_fixture_file(&sidecar, &mismatched)?;
+            if validate_named_sidecar(&sidecar, "fixture").is_ok() {
+                return Err(format!("min was accepted for {kind}").into());
+            }
+        }
+
+        let count = r#"{
+            "version": 1,
+            "fixture": "fixture",
+            "assertions": [{
+                "kind": "rename_edit_count_at_least",
+                "min": 1,
+                "line": 4,
+                "character": 4,
+                "new_name": "sum_values"
+            }]
+        }"#;
+        write_fixture_file(&sidecar, count)?;
+        validate_named_sidecar(&sidecar, "fixture")?;
+
         Ok(())
     }
 
