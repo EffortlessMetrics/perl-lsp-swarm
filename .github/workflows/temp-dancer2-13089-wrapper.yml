@@ -1,0 +1,102 @@
+name: Temporary Dancer2 contract repair wrapper
+
+on:
+  push:
+    branches: ["fix/13089-dancer2-dsl-keywords"]
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout candidate branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: fix/13089-dancer2-dsl-keywords
+          fetch-depth: 1
+
+      - name: Apply the count-checked repair
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          from pathlib import Path
+          import textwrap
+
+          workflow = Path(".github/workflows/temp-dancer2-13089.yml").read_text()
+          start_marker = "          python3 <<'PY'\n"
+          end_marker = "\n          PY\n"
+          start = workflow.index(start_marker) + len(start_marker)
+          end = workflow.index(end_marker, start)
+          script = textwrap.dedent(workflow[start:end])
+          old = '"fn default_keyword_facts(\\n"'
+          new = '"fn default_keyword_facts(evidence: &Dancer2ImportEvidence)"'
+          if script.count(old) != 1:
+              raise SystemExit(f"expected one helper marker, found {script.count(old)}")
+          script = script.replace(old, new, 1)
+          exec(compile(script, "dancer2-contract-repair", "exec"))
+          PY
+
+          cargo fmt --all
+          cargo fmt --all -- --check
+          git diff --check
+
+      - name: Run semantic-fact proof
+        run: cargo test --locked -p perl-semantic-facts
+
+      - name: Run route-family receipt proof
+        run: cargo test --locked -p perl-semantic-analyzer --test dancer2_route_facts
+
+      - name: Run Dancer2 provider proof
+        run: cargo test --locked -p perl-lsp-rs-core providers::dancer2
+
+      - name: Commit verified repair and remove temporary executors
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm \
+            .github/workflows/temp-dancer2-13089.yml \
+            .github/workflows/temp-dancer2-13089-wrapper.yml
+          if rg -n 'dancer2-dsl\.1-1\.v2' \
+            crates/perl-semantic-facts \
+            crates/perl-semantic-analyzer \
+            crates/perl-lsp-rs-core; then
+            echo "::error::stale Dancer2 v2 contract receipt remains"
+            exit 1
+          fi
+          python3 <<'PY'
+          import subprocess
+
+          expected = {
+              ".github/workflows/temp-dancer2-13089-wrapper.yml",
+              ".github/workflows/temp-dancer2-13089.yml",
+              "crates/perl-lsp-rs-core/src/providers/dancer2/completion.rs",
+              "crates/perl-semantic-analyzer/tests/dancer2_route_facts.rs",
+              "crates/perl-semantic-facts/src/framework_adapters/dancer2.rs",
+              "crates/perl-semantic-facts/src/route.rs",
+          }
+          changed = set(
+              subprocess.check_output(["git", "diff", "--name-only"], text=True).splitlines()
+          )
+          if changed != expected:
+              raise SystemExit(
+                  "unexpected changed-file set:\n"
+                  f"expected={sorted(expected)}\nobserved={sorted(changed)}"
+              )
+          PY
+          git diff --check
+          git config user.name "EffortlessSteven"
+          git config user.email "git@effortlesssteven.com"
+          git add \
+            .github/workflows/temp-dancer2-13089-wrapper.yml \
+            .github/workflows/temp-dancer2-13089.yml \
+            crates/perl-lsp-rs-core/src/providers/dancer2/completion.rs \
+            crates/perl-semantic-analyzer/tests/dancer2_route_facts.rs \
+            crates/perl-semantic-facts/src/framework_adapters/dancer2.rs \
+            crates/perl-semantic-facts/src/route.rs
+          git commit -m "fix(dancer2): gate keyword facts by framework version (#13089)"
+          git push origin HEAD:fix/13089-dancer2-dsl-keywords
