@@ -106,6 +106,13 @@ that root, or whose canonicalization cannot be completed, must fail closed.
 These checks apply before quoting or shell encoding and must be identical for
 the LSP and DAP selectors.
 
+Because `cmd.exe` expands `%VAR%` during `/c` processing and `!VAR!` under
+delayed expansion, the validation and encoding boundary must either reject
+selector paths containing percent signs, exclamation marks, carets, or other
+shell metacharacters, or prove with the pinned schema/serialization oracle that
+the chosen encoding preserves them verbatim. Silent expansion or corruption of
+such a path is a fail-closed condition.
+
 If the LSP4IJ field is string-valued, its unescaped value must render as:
 
 ```text
@@ -226,6 +233,10 @@ canonicalization failure, reparse escape, or candidate-identity mismatch.
 
 The proof must record the promoted candidate identity, the template subject and
 digest, the effective command vector, and the observed process/binary identity.
+The launch receipt must be a versioned contract: it names a receipt-schema
+version and carries the identities above in that version's required fields, so
+consumers can detect and reject receipts produced under an older or
+incompatible contract.
 An LSP4IJ/JetBrains launch receipt is required before making a released-client
 support claim. A local imported template can prove the proposed projection, but
 cannot prove what an unmodified released LSP4IJ build ships.
