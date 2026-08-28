@@ -1,6 +1,6 @@
 //! Editor UX scenario counting and receipt generation for quality.md.
 
-// LazyLock<Regex> initializers use .expect() for known-good patterns — permitted by coding standards.
+// Known-good shape assertions in tests use expect-style diagnostics.
 #![allow(clippy::expect_used)]
 
 use std::collections::BTreeMap;
@@ -26,7 +26,7 @@ struct EditorUxFixtureMatrix {
 #[derive(Debug, Deserialize)]
 struct EditorUxWorkflow {
     // ci_tier is present in the JSON but not used for signal counting;
-    // the fixture integrity test enforces that tags, not tier, are the source of truth.
+    // the fixture integrity test enforces that tags, not tier, are authoritative.
     #[allow(dead_code)]
     ci_tier: String,
     confidence_signals: Vec<String>,
@@ -41,6 +41,8 @@ struct UxFlakeLedger {
 struct UxFlakeEntry {
     test: String,
     state: String,
+    #[serde(default)]
+    disposition: Option<String>,
     #[serde(default)]
     failure_class: Option<String>,
     #[serde(default)]
@@ -84,16 +86,13 @@ pub(super) fn collect_editor_ux_confidence_counts(root: &Path) -> Result<BTreeMa
     let matrix: EditorUxFixtureMatrix = serde_json::from_str(&matrix_raw)
         .with_context(|| format!("parsing {}", matrix_path.display()))?;
 
-    // Count by reading the explicit confidence_signals tags on each workflow.
-    // The fixture matrix integrity test enforces that every declared signal is exercised
-    // by at least one workflow, so stale tags will be caught there.
     let mut counts: BTreeMap<String, usize> = BTreeMap::new();
     for workflow in &matrix.workflows {
         for signal in &workflow.confidence_signals {
             *counts.entry(signal.clone()).or_insert(0) += 1;
         }
     }
-    // Ensure all three canonical signal keys are always present (even if zero).
+
     for signal in
         &["first_five_minutes_harness", "manual_editor_smoke", "issue_burndown_regression_guard"]
     {
@@ -142,7 +141,10 @@ pub(super) fn generate_editor_ux_receipt(root: &Path) -> Result<String> {
                 "name": "issue_burndown_regression_guard",
                 "state": "tracked",
                 "owner": "perl-lsp-ux-tests",
-                "workflow_count": confidence_counts.get("issue_burndown_regression_guard").copied().unwrap_or(0),
+                "workflow_count": confidence_counts
+                    .get("issue_burndown_regression_guard")
+                    .copied()
+                    .unwrap_or(0),
             },
         ],
         "integration_points": {
@@ -167,14 +169,17 @@ fn load_measured_scorecard(root: &Path) -> Result<Option<MeasuredEditorUxScoreca
     Ok(Some(scorecard))
 }
 
-fn load_active_known_blockers(root: &Path) -> Result<Vec<serde_json::Value>> {
+fn load_flake_ledger(root: &Path) -> Result<UxFlakeLedger> {
     let path = root.join(".ci/ux-flakes.json");
     if !path.exists() {
-        return Ok(Vec::new());
+        return Ok(UxFlakeLedger { entries: Vec::new() });
     }
     let raw = fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
-    let ledger: UxFlakeLedger =
-        serde_json::from_str(&raw).with_context(|| format!("parsing {}", path.display()))?;
+    serde_json::from_str(&raw).with_context(|| format!("parsing {}", path.display()))
+}
+
+fn load_active_known_blockers(root: &Path) -> Result<Vec<serde_json::Value>> {
+    let ledger = load_flake_ledger(root)?;
     let blockers = ledger
         .entries
         .into_iter()
@@ -185,6 +190,7 @@ fn load_active_known_blockers(root: &Path) -> Result<Vec<serde_json::Value>> {
             serde_json::json!({
                 "test_name": entry.test,
                 "state": entry.state,
+                "disposition": entry.disposition,
                 "failure_class": entry.failure_class,
                 "component": entry.component,
                 "route": route,
@@ -356,19 +362,39 @@ mod tests {
     }
 
     #[test]
-    fn active_known_blockers_are_rendered_from_flake_ledger() -> Result<()> {
+    fn scenario_14_terminal_dispositions_do_not_render_as_active_blockers() -> Result<()> {
         let root = crate::utils::project_root()?;
+        let ledger = load_flake_ledger(&root)?;
+        let scenario_14_entries: Vec<&UxFlakeEntry> = ledger
+            .entries
+            .iter()
+            .filter(|entry| entry.test.starts_with("ux_scenario_14_inc_conformance::"))
+            .collect();
+
+        assert_eq!(scenario_14_entries.len(), 11, "expected the 11 historical Scenario 14 rows");
+        for entry in scenario_14_entries {
+            assert_eq!(entry.state, "resolved", "{} must have a terminal state", entry.test);
+            assert_ne!(entry.issue, Some(7570), "{} must not route to unrelated #7570", entry.test);
+            assert!(
+                matches!(
+                    entry.disposition.as_deref(),
+                    Some("stabilized" | "resolved_by_intent" | "folded" | "not_proven")
+                ),
+                "{} must carry a terminal disposition, got {:?}",
+                entry.test,
+                entry.disposition
+            );
+        }
+
         let blockers = load_active_known_blockers(&root)?;
         assert!(
-            blockers.iter().any(|entry| {
-                entry["test_name"]
-                    == "ux_scenario_14_inc_conformance::scenario_14_system_inc_completion_opt_in_enabled"
-                    && entry["failure_class"] == "provider_regression"
-                    && entry["component"] == "module_resolution"
-                    && entry["route"] == "provider_fix"
-                    && entry["issue"] == 7570
+            blockers.iter().all(|entry| {
+                !entry["test_name"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .starts_with("ux_scenario_14_inc_conformance::")
             }),
-            "scenario_14 known blocker should remain visible"
+            "resolved Scenario 14 history must not render as a current scorecard blocker"
         );
         Ok(())
     }
