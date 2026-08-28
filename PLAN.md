@@ -1,7 +1,9 @@
 # Plan: #11549 — Conjunctive install-route classification and preferred-route selection
 
-> Status: REVIEWED PLAN (refreshed 2026-08-28 against #11549, #11575, and the
-> current dependency issues). The plan is not an accepted executable input
+> Status: DURABLE TRACKED PLAN (refreshed 2026-08-28 against #11549, #11575, and
+> the current dependency issues). This file is repository-carried planning
+> authority for scope, prerequisites, and proof obligations; issue #11549 is
+> the authority for human product rulings. It is not an executable input
 > contract until the validated route schema/catalog owned by #10333 exists.
 
 ## 0. Claim and entry
@@ -124,6 +126,30 @@ C801 (diagnostic advice), C1001/C1002/C1008 (probes/posture), C1102
 post-install probes metadata, not route selection), C703 (channel
 independence frame — a rule, not a route).
 
+### 2.1.1 Inventory projection/exclusion oracle
+
+The landed #11575 inventory is the complete audit input for this plan, not the
+future route denominator. A validator must parse every literal claim ID in its
+claim-row table and require an exact-one disposition in the future join data:
+
+1. a claim is projected to one or more exact catalog route rows and projection
+   contexts, or
+2. it is listed in an explicit exclusion record containing the claim ID and a
+   reason (`diagnostic_surface`, `verification_metadata`, `channel_rule`,
+   `volatile_metadata`, `adjacent_product`, or `non_install_dependency`).
+
+The validator rejects an unknown ID, duplicate disposition, missing ID, range
+shorthand, or exclusion reason not in that closed vocabulary. Restatement rows
+may project to the same route only when their exact IDs are independently listed;
+they do not expand the denominator. The current exclusion set therefore includes
+the rows named in §2.1, including C107, C108, C1205, and C1208 only if their
+explicit reasons are recorded by the accepted join artifact; Open VSX (C1208)
+must not disappear merely because it is a separate channel. The same exact-once
+rule applies to FND-1 through FND-12: each finding must be joined to a route,
+recorded as a route-independent constraint, or explicitly excluded with a reason.
+This oracle is the acceptance condition for inventory traceability; the 70-row
+prose count and the planning-family table are not substitutes for it.
+
 ### 2.2 Classification = conjunction of independent per-dimension verdicts
 
 For each exact catalog route row and projection context, classification is the
@@ -161,27 +187,51 @@ authoritative aggregation; a missing or unjoined required dimension yields
 7. **Receipt axis** — channel-independence: each route inherits exactly the
    receipt channel(s) its catalog row cites; no cross-channel inference (C201/C703).
 
-Resulting **route verdict enum** (suggested):
-`proven_current` · `receipt_bound_partial{dimension, values}` ·
-`pending_gate{issue}` · `contradicted{claim_a, claim_b, finding}` ·
-`unproven` · `not_recommended{reason, finding}`.
+The result retains a fixed-order vector of seven dimension verdicts, followed by
+an overall summary. The vector is authoritative when failures overlap; an overall
+summary must never erase a failing dimension:
+
+```text
+route_verdict {
+  identity_topology,
+  platform_target,
+  product_unit_lifecycle,
+  integrity_provenance,
+  freshness_channel_publication,
+  path_session_execution,
+  receipt,
+  overall,
+}
+```
+
+Each dimension uses `proven_current`, `receipt_bound_partial`, `pending_gate`,
+`contradicted`, or `unproven`. `not_recommended` is a selection annotation, not
+a replacement for a dimension result. For deterministic summaries, compute
+`overall` from the complete vector using this fixed severity order:
+`contradicted` > `pending_gate` > `unproven` > `receipt_bound_partial` >
+`proven_current`; ties retain all dimension names, claim IDs, findings, and
+values in numeric dimension order. Thus a route can expose both
+`integrity=contradicted{C207,C1005,FND-7}` and
+`product_unit_lifecycle=unproven`; the summary is `contradicted` but the
+unproven lifecycle failure remains machine-visible. No first/last claim or
+single scalar may select the winning failure.
 
 ### 2.3 Where it lives (artifact + generator shape)
 
 Follow the validated route-catalog generator pattern — deterministic, generated,
 schema-closed:
 
-- Extend the xtask generator (new subcommand, e.g.
-  `cargo xtask install-route-classification build --write`) that **consumes
-  the exact validated route schema/catalog published by #10333** (input
-  digest and producer revisions recorded) plus a
+- Extend the repository's eventual classification generator (the command,
+  artifact filenames, schema path, and API are deliberately deferred to the
+  validated contract) so it **consumes the exact validated route schema/catalog
+  published by #10333** (input digest and producer revisions recorded) plus a
   small curated **route-join table** (`policy/install-route-join.toml` or a
-  static map in the generator, using the same kind of explicit
-  `dimension_overrides(claim_id)` and `restatement_group(claim_id)` as static
-  tables in `xtask/src/public_release_claims.rs`).
-- Emit `distribution/install_route_classification.v1.json` + closed schema
-  `schemas/install_route_classification.v1.schema.json`; regenerate-and-compare
-  byte-identity check wired beside the catalog's own validation gate.
+  static map in the generator). The join representation must be selected only
+  after #10333 publishes its accepted contract; this plan does not name or
+  imply a v2 filename, module, schema, or generator API.
+- Emit the classification artifact and closed schema required by that accepted
+  contract, with a regenerate-and-compare byte-identity check wired beside the
+  catalog's own validation gate.
 - Classification (§2.2) is **pure derivation** — it must be mechanical and
   testable. The only curated inputs are: route→claim join, the anti-claim
   identity map, and the pessimistic-contradiction rule. **Preference ordering
@@ -189,15 +239,26 @@ schema-closed:
 - Sequencing note: #10334 fans in the producer evidence but does not replace
   #10333's schema authority; #11434 supplies denominator closure and #11432
   supplies its named evidence producer. Do not build against the closed #12858
-  branch. Re-derive exact route joins, projection contexts, and falsifier
+  branch or any artifact/API from that attempt. Re-derive exact route joins, projection contexts, and falsifier
   fixtures if the validated input contract changes.
 
 ---
 
 ## 3. Preferred-route selection: algorithm options and tradeoffs
 
-Selection input: `(platform, arch, desired product units, context
-{editor | ci | server-only | manual}, risk posture)`. Once H1–H7 are explicitly
+Selection input is an exact context tuple:
+`(editor_family, editor_identity, os, os_version, arch, target_triple, libc,
+platform_capabilities, desired_product_units, context, risk_posture)`, where
+`editor_family` distinguishes VS Code-compatible managed clients from generic
+LSP clients (Emacs, Neovim, Helix, Sublime, and other clients),
+`target_triple`/`libc` distinguishes GNU from musl projections,
+`platform_capabilities` includes Windows ARM emulation capability/version, and
+`risk_posture` is either `strict` or `permissive`. `strict` may select only
+`proven_current` routes with independent integrity/provenance and complete
+lifecycle evidence; `permissive` may expose partial or pending routes as
+explicitly annotated diagnostics but may not select a contradicted, unproven,
+or capability-incompatible route. Unknown context fields refuse selection
+rather than guessing. Once H1–H7 are explicitly
 ruled, output may be an ordered route recommendation with per-route verdicts and
 gate citations. Before then, any selection output is only a provisional diagnostic;
 it must not recommend or silently order a route.
@@ -274,7 +335,9 @@ assuming the former prose-row denominator.
    (C1204) into "archive download supported". Correct output: **no
    receipt-backed native route** while `published_receipt_v0_17_0=absent`;
    either a refusal citing FND-4 or an explicit x64-fallback/build-from-source
-   recommendation labeled receipt-bound. A classifier that prints "supported"
+   recommendation labeled receipt-bound. The fixture must include Windows version
+   and emulation capability; Windows 10 ARM cannot use the x64 fallback, while
+   Windows 11 ARM may do so when the capability is observed. A classifier that prints "supported"
    for Windows ARM64 fails.
 2. **Conjunction-contradiction (FND-7).** Route `posix-bootstrap` joins C207
    (`fail_closed_required`) and C1005 (`fail_open_conditional`). Integrity
@@ -299,10 +362,10 @@ assuming the former prose-row denominator.
    `proven_current` competitor — never reorder the table to hide the verdict.
    `cargo-git` must never outrank `cargo-registry`.
 6. **Pending-gate honesty (FND-9).** `(windows, x86_64, {perllsp})`: the table
-   may list `manual-archive` first, but `powershell-installer` must appear (if
-   at all) as `pending_gate(#5461/#4348)`/`not_recommended` — not silently
-   omitted (silence hides the gate) and not recommended (a wrong implementation
-   ranks by prose recency).
+   may list `manual-archive` first. Under H2(a), `powershell-installer` must
+   appear as `pending_gate(#5461/#4348)`/`not_recommended`; under H2(b), its
+   intentional omission must be recorded as the ruled policy. An implementation
+   that treats either ruling as the other fails.
 7. **Determinism.** `cargo xtask install-route-classification check` is
    byte-identical across runs and machines: classification output contains no
    timestamps, ambient state, or catalog-order dependence beyond stable claim
@@ -343,6 +406,16 @@ assuming the former prose-row denominator.
     server-only, or manual context without an explicit catalog projection.
     Missing preferred policy or a failed hard filter must not silently fall back
     to `latest`, an unpinned command, or another context's route.
+17. **Composite simultaneous failures.** A fixture with integrity contradiction
+    and incomplete lifecycle must retain both dimension verdicts in the fixed
+    vector and produce the same `overall=contradicted` summary regardless of
+    catalog or claim input order. A scalar-only result, or a result that drops
+    the lifecycle failure, fails.
+18. **Selection-context and risk isolation.** Identical requests differing only
+    in editor family, target/libc, observed Windows emulation capability, or
+    `strict` versus `permissive` must either select the corresponding valid
+    projection or refuse explicitly. A route that ignores any supplied field
+    fails; `permissive` must not turn a contradiction into a selection.
 
 ---
 
@@ -350,18 +423,20 @@ assuming the former prose-row denominator.
 
 Preference ordering is **product authority, not derivable** from source or
 inventory. These rows cannot be resolved by the implementer; each needs a
-maintainer ruling (issue comment suffices). Defaults are proposed so a ruling
-can be one word.
+maintainer ruling in issue #11549 (an issue comment suffices). The listed options
+are proposals for that ruling, not defaults. If a row is unanswered, its state is
+`human-pending`: no ordering, recommendation, or operative selection policy may
+be emitted.
 
-| # | Decision | Options | Proposed default if unanswered | Consequence of getting it wrong |
+| # | Decision | Options | Unanswered state | Consequence of getting it wrong |
 | --- | --- | --- | --- | --- |
-| H1 | Global ordering principle: convenience-first (C202 teaches extension → archive → …) vs integrity-first (identity-bound verify > ease) | (a) convenience-first per C202; (b) integrity-first reorder | (a) convenience-first, matching live prose; integrity surfaces as annotation | Classifier formalizes guidance that contradicts maintainer intent across every context |
-| H2 | Windows x86_64 default while published PowerShell installer is broken (#5461/#4348) | (a) manual-archive first, powershell shown as `pending_gate`; (b) omit powershell entirely; (c) lead with scoop/choco/winget verify-first | (a) | Users routed to a 404 installer, or gate visibility lost (FND-9's four-site spread re-grows) |
-| H3 | Windows ARM64 until an ARM64 release ships (FND-4 — routed to #11549 by name) | (a) recommend x64-fallback + build-from-source labeled receipt-bound; (b) refuse with "no receipt-backed route"; (c) follow prose (contradicts receipts) | (a), citing FND-4 | Either false "supported" claim or an unnecessarily barren answer; FND-4 disposition must be defensible |
-| H4 | macOS server-only ranking: homebrew-tap vs cargo-registry (both `current`; tap freshness unproven per C1304/C1305 caveats) | (a) tap first (native UX); (b) cargo-registry first (version receipts); (c) context-split (editor=tap, headless=cargo) | (c) context-split | A preferred route whose freshness caveat the docs themselves flag |
-| H5 | Unpinned mutability policy: `cargo-git` (FND-6) and `latest` endorsements (FND-3) | (a) classify `not_recommended`, never selected; (b) selectable with warning; (c) leave unclassified | (a); CI context additionally: pinned `version:` only, contradicting C303's `latest` endorsement | Classifier endorses what FND-3 calls a moving target the receipt does not cover |
-| H6 | perl-dap (adapter) acquisition default for non-VS Code users | (a) archive pair route; (b) separate `cargo install --locked perl-dap` (C702); (c) defer — server-only answer, adapter on request | (a) for editor contexts, (b) for headless, mirroring C702 | Users get a server without a debugger, or build-from-source surprises (C208) |
-| H7 | Unproven channels (`unproven-channels`: scoop/choco/winget C212, Docker) in selection output | (a) never selected, visible in a "unproven" appendix; (b) fully omitted; (c) selectable with verify-first instruction (as C212 prose does) | (a) | Either dead output weight or an implied endorsement the receipts don't back |
+| H1 | Global ordering principle: convenience-first (C202 teaches extension → archive → …) vs integrity-first (identity-bound verify > ease) | (a) convenience-first per C202; (b) integrity-first reorder | `human-pending`; no ordering | Classifier formalizes guidance that contradicts maintainer intent across every context |
+| H2 | Windows x86_64 policy while published PowerShell installer is broken (#5461/#4348) | (a) manual-archive first, powershell shown as `pending_gate`; (b) omit powershell entirely; (c) lead with scoop/choco/winget verify-first | `human-pending`; no route recommendation | Users routed to a 404 installer, or gate visibility lost (FND-9's four-site spread re-grows) |
+| H3 | Windows ARM64 until an ARM64 release ships (FND-4 — routed to #11549 by name) | (a) recommend x64-fallback + build-from-source labeled receipt-bound; (b) refuse with "no receipt-backed route"; (c) follow prose (contradicts receipts) | `human-pending`; no route recommendation | Either false "supported" claim or an unnecessarily barren answer; FND-4 disposition must be defensible |
+| H4 | macOS server-only ranking: homebrew-tap vs cargo-registry (both `current`; tap freshness unproven per C1304/C1305 caveats) | (a) tap first (native UX); (b) cargo-registry first (version receipts); (c) context-split (editor=tap, headless=cargo) | `human-pending`; no ordering | A preferred route whose freshness caveat the docs themselves flag |
+| H5 | Unpinned mutability policy: `cargo-git` (FND-6) and `latest` endorsements (FND-3) | (a) classify `not_recommended`, never selected; (b) selectable with warning; (c) leave unclassified | `human-pending`; no selection | Classifier endorses what FND-3 calls a moving target the receipt does not cover |
+| H6 | perl-dap (adapter) acquisition policy for non-VS Code users | (a) archive pair route; (b) separate `cargo install --locked perl-dap` (C702); (c) defer — server-only answer, adapter on request | `human-pending`; no ordering | Users get a server without a debugger, or build-from-source surprises (C208) |
+| H7 | Unproven channels (`unproven-channels`: scoop/choco/winget C212, Docker) in selection output | (a) never selected, visible in a "unproven" appendix; (b) fully omitted; (c) selectable with verify-first instruction (as C212 prose does) | `human-pending`; no selection | Either dead output weight or an implied endorsement the receipts don't back |
 
 *(Count: 7 EXPLICIT-HUMAN rows.)*
 
@@ -403,11 +478,11 @@ standard gates.
   fan-in/#11434 denominator closure may be incomplete → re-derive §2.1,
   hard-dimension bindings, and affected fixtures; the human preference rulings
   remain separate.
-- H1–H7 are proposed defaults only, not maintainer rulings. Until each is
-  explicitly ruled in the authoritative issue, all seven rows are
+- H1–H7 contain proposed options only, not defaults or maintainer rulings. Until
+  each is explicitly ruled in the authoritative issue, all seven rows are
   **non-operative**: the plan and any resulting artifact remain
   `provisional(human-pending)` and **non-preferred**. The implementer must not
-  turn a proposed default into a recommendation, and the authority gap must
+  turn a proposed option into a recommendation, and the authority gap must
   remain machine-visible rather than silently choosing it.
 - Prose drift (new surfaces) after inventory audit commit `20174d50c` →
   denominator closure falsifier catches unmodeled rows only after the inventory
