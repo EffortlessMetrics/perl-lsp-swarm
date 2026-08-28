@@ -67,7 +67,11 @@ pub const DBI_ST_METHODS: &[(&str, &str)] = &[
 ///
 /// Each entry is `(name, signature, description)`.
 pub const DBI_DB_METHOD_SIGS: &[(&str, &str, &str)] = &[
-    ("do", "do($statement, \\@attr?, @bind_values?)", "Execute a single SQL statement"),
+    (
+        "do",
+        "do($statement, \\@attr?, @bind_values?)",
+        "Execute a single SQL statement",
+    ),
     ("prepare", "prepare($statement, \\@attr?)", "Prepare a SQL statement for execution"),
     (
         "prepare_cached",
@@ -306,11 +310,11 @@ fn is_in_pod_block(source: &str, position: usize) -> bool {
 }
 
 fn is_code_position(source: &str, position: usize) -> bool {
-    !is_in_string(source, position)
-        && !is_in_comment(source, position)
-        && !is_in_heredoc(source, position)
-        && !is_in_regex(source, position)
-        && !is_in_pod_block(source, position)
+    !(is_in_string(source, position)
+        || is_in_comment(source, position)
+        || is_in_heredoc(source, position)
+        || is_in_regex(source, position)
+        || is_in_pod_block(source, position))
 }
 
 fn assignment_expression_before_receiver<'a>(
@@ -390,7 +394,8 @@ fn infer_imported_constructor_receiver_type(
     ["HTTP::Tiny", "LWP::UserAgent"]
         .into_iter()
         .find(|&module| {
-            used_modules.contains(module) && expression_calls_constructor(expression, module)
+            used_modules.contains(module)
+                && expression_calls_constructor(expression, module)
         })
 }
 

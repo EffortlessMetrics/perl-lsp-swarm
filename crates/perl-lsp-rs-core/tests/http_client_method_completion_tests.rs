@@ -34,8 +34,7 @@ fn http_tiny_static_catalog_requires_import() {
 
 #[test]
 fn http_tiny_constructor_assignment_enables_instance_catalog() {
-    let source =
-        "use HTTP::Tiny;\nmy $http = HTTP::Tiny->new;\nmy $status = 200;\n$http->po";
+    let source = "use HTTP::Tiny;\nmy $http = HTTP::Tiny->new;\nmy $status = 200;\n$http->po";
     let items = completions_at_end(source);
     let item_labels = labels(&items);
 
@@ -46,7 +45,9 @@ fn http_tiny_constructor_assignment_enables_instance_catalog() {
         "typed API methods should respect the method prefix"
     );
 
-    let post = items.iter().find(|item| item.label.as_ref() == "post");
+    let post = items
+        .iter()
+        .find(|item| item.label.as_ref() == "post");
     assert!(post.is_some(), "post completion should be present");
     if let Some(post) = post {
         assert_eq!(
@@ -60,8 +61,7 @@ fn http_tiny_constructor_assignment_enables_instance_catalog() {
 
 #[test]
 fn lwp_user_agent_constructor_assignment_enables_instance_catalog() {
-    let source =
-        "use LWP::UserAgent;\nmy $ua = LWP::UserAgent -> new(timeout => 10);\n$ua->re";
+    let source = "use LWP::UserAgent;\nmy $ua = LWP::UserAgent -> new(timeout => 10);\n$ua->re";
     let item_labels = labels(&completions_at_end(source));
 
     assert!(has_label(&item_labels, "request"));
