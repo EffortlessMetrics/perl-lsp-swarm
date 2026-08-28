@@ -72,8 +72,7 @@ fn test2_suite_is_a_non_importing_distribution_namespace() {
 #[test]
 fn first_party_bundles_have_exact_exports_and_pragma_contracts() {
     let v0 = module_default_exports("Test2::V0").expect("V0 defaults");
-    let extended =
-        module_default_exports("Test2::Bundle::Extended").expect("Extended defaults");
+    let extended = module_default_exports("Test2::Bundle::Extended").expect("Extended defaults");
     assert_eq!(extended, v0, "Extended is the legacy V0 alias");
 
     let more = Test2Facts::from_source("use Test2::Bundle::More;\n");
@@ -349,12 +348,8 @@ fn test2_imports_standalone_tool_has_no_pragmas() {
 
 #[test]
 fn classic_compare_standalone_defaults_do_not_reuse_the_v0_subset() {
-    let defaults =
-        module_default_exports("Test2::Tools::ClassicCompare").expect("known tool");
-    assert_eq!(
-        defaults,
-        &["is", "is_deeply", "isnt", "like", "unlike", "cmp_ok"]
-    );
+    let defaults = module_default_exports("Test2::Tools::ClassicCompare").expect("known tool");
+    assert_eq!(defaults, &["is", "is_deeply", "isnt", "like", "unlike", "cmp_ok"]);
 
     let facts = Test2Facts::from_source("use Test2::Tools::ClassicCompare;\n");
     for expected in defaults {
@@ -383,12 +378,10 @@ fn refcount_standalone_defaults_do_not_reuse_the_v0_selection() {
 
 #[test]
 fn refcount_all_includes_the_optional_helper_without_changing_defaults() {
-    let defaults = resolve_import("Test2::Tools::Refcount", "")
-        .expect("known Refcount tool");
+    let defaults = resolve_import("Test2::Tools::Refcount", "").expect("known Refcount tool");
     assert!(!defaults.symbols.contains("refcount"));
 
-    let all = resolve_import("Test2::Tools::Refcount", "':ALL'")
-        .expect("known Refcount tool");
+    let all = resolve_import("Test2::Tools::Refcount", "':ALL'").expect("known Refcount tool");
     assert!(all.symbols.contains("is_refcount"));
     assert!(all.symbols.contains("is_oneref"));
     assert!(all.symbols.contains("refcount"));
@@ -410,14 +403,7 @@ fn test2_api_has_no_defaults_but_trusts_explicit_imports() {
 #[test]
 fn additional_first_party_tools_expose_reviewed_defaults() {
     for (module, expected) in [
-        (
-            "Test2::Tools::AsyncSubtest",
-            &[
-                "async_subtest",
-                "fork_subtest",
-                "thread_subtest",
-            ][..],
-        ),
+        ("Test2::Tools::AsyncSubtest", &["async_subtest", "fork_subtest", "thread_subtest"][..]),
         ("Test2::Tools::GenTemp", &["gen_temp"][..]),
         ("Test2::Tools::Grab", &["grab"][..]),
     ] {
@@ -447,8 +433,7 @@ fn spec_and_tester_preserve_default_vs_optional_exports() {
 
     let tester = Test2Facts::from_source("use Test2::Tools::Tester;\n");
     assert!(tester.imported_symbols.is_empty(), "Tester exports nothing by default");
-    let tester_all =
-        resolve_import("Test2::Tools::Tester", "':ALL'").expect("known tester tool");
+    let tester_all = resolve_import("Test2::Tools::Tester", "':ALL'").expect("known tester tool");
     assert_eq!(
         tester_all.symbols,
         ["event_groups", "facets", "filter_events"].into_iter().map(str::to_string).collect()

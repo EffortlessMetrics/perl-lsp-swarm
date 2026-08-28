@@ -132,8 +132,7 @@ const COMPARE_OWN_DEFAULT: &[&str] = &["is", "like"];
 const CLASSIC_COMPARE_V0: &[&str] = &["cmp_ok"];
 
 /// `Test2::Tools::ClassicCompare` standalone default exports.
-const CLASSIC_COMPARE_DEFAULT: &[&str] =
-    &["is", "is_deeply", "isnt", "like", "unlike", "cmp_ok"];
+const CLASSIC_COMPARE_DEFAULT: &[&str] = &["is", "is_deeply", "isnt", "like", "unlike", "cmp_ok"];
 
 /// `Test2::Tools::Warnings`.
 const WARNINGS: &[&str] = &["warns", "warning", "warnings", "no_warnings"];
