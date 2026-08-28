@@ -15,6 +15,7 @@ struct StoppedFrameAuthority {
     adapter_generation: u64,
     stopped_generation: u64,
     top: StackFrame,
+    snapshot: Vec<StackFrame>,
 }
 
 enum FramedStackQuery {
@@ -53,6 +54,7 @@ impl DebugAdapter {
             adapter_generation,
             stopped_generation: session.stopped_generation,
             top,
+            snapshot: session.stack_frames.clone(),
         })
     }
 
@@ -333,7 +335,7 @@ impl DebugAdapter {
             parsed_frames
         } else if let Some(authority) = authority.as_ref() {
             self.with_current_stopped_session(authority, |_| {
-                Self::filter_user_visible_frames(vec![authority.top.clone()])
+                Self::filter_user_visible_frames(authority.snapshot.clone())
             })
             .unwrap_or_default()
         } else if !session_was_present
@@ -691,6 +693,39 @@ mod pagination_tests {
             &Some(&json!([])),
             "running stackTrace exposed stopped frames",
         )?;
+        Ok(())
+    }
+
+    #[test]
+    fn unavailable_framed_refresh_retains_current_generation_callers()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let adapter = DebugAdapter::new();
+        adapter.seed_stopped_session_with_frames_for_test(vec![
+            make_frame(7, "main::inner"),
+            make_frame(8, "main::outer"),
+        ]);
+        {
+            let mut guard = lock_or_recover(&adapter.session, "test.unavailable_framed_refresh");
+            let session = guard.as_mut().ok_or("test session was not seeded")?;
+            session.stopped_generation = 7;
+            let _ = session.process.stdin.take();
+        }
+
+        let response = adapter.handle_stack_trace(1, 1, None);
+        let DapMessage::Response { body: Some(body), .. } = response else {
+            return Err("fallback stackTrace response omitted its body".into());
+        };
+        let frames = body
+            .get("stackFrames")
+            .and_then(Value::as_array)
+            .ok_or("fallback stackTrace body omitted stackFrames")?;
+        require_eq(&frames.len(), &2, "fallback stack depth")?;
+        require_eq(
+            &frames.get(1).and_then(|frame| frame.get("name")),
+            &Some(&json!("main::outer")),
+            "fallback omitted current-generation caller",
+        )?;
+        require_eq(&body.get("totalFrames"), &Some(&json!(2)), "fallback totalFrames")?;
         Ok(())
     }
 
