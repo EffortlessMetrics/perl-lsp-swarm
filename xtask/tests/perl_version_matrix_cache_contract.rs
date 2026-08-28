@@ -11,8 +11,7 @@ fn project_root() -> PathBuf {
 }
 
 #[test]
-fn perl_matrix_uses_default_branch_cache_producers()
--> Result<(), Box<dyn std::error::Error>> {
+fn perl_matrix_uses_default_branch_cache_producers() -> Result<(), Box<dyn std::error::Error>> {
     let workflow_path = project_root().join(".github/workflows/perl-version-matrix.yml");
     let source = fs::read_to_string(&workflow_path)?;
     let workflow: Value = serde_yaml_ng::from_str(&source)?;
@@ -71,9 +70,7 @@ fn perl_matrix_uses_default_branch_cache_producers()
     );
     assert_eq!(
         cache_with.get("save-if").and_then(Value::as_str),
-        Some(
-            "${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}"
-        ),
+        Some("${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}"),
         "PR matrix runs must restore only while default-branch schedule/manual runs may save"
     );
 
