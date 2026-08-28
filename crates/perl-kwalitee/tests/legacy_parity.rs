@@ -107,6 +107,30 @@ fn load_manifest() -> Manifest {
     serde_json::from_str(&text).unwrap_or_else(|error| panic!("decode {}: {error}", path.display()))
 }
 
+fn independent_frozen_catalog_ids() -> Vec<String> {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("legacy_indicator_migrations.toml");
+    let text = fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("read independent catalog {}: {error}", path.display()));
+    let document: toml::Value = toml::from_str(&text)
+        .unwrap_or_else(|error| panic!("decode independent catalog {}: {error}", path.display()));
+    document
+        .get("indicator")
+        .and_then(toml::Value::as_array)
+        .unwrap_or_else(|| panic!("independent catalog {} has no indicator array", path.display()))
+        .iter()
+        .map(|row| {
+            row.get("legacy_id")
+                .and_then(toml::Value::as_str)
+                .unwrap_or_else(|| panic!("independent catalog row has no legacy_id"))
+                .to_string()
+        })
+        .collect()
+}
+
+fn catalog_matches_independent_authority(candidate: &[String]) -> bool {
+    candidate == independent_frozen_catalog_ids()
+}
+
 fn checked_input_path(relative: &str) -> &Path {
     let path = Path::new(relative);
     assert!(!path.is_absolute(), "fixture input path must be relative: {relative}");
@@ -207,10 +231,15 @@ fn frozen_matrix_covers_every_row_profile_and_strictness() {
     assert_eq!(manifest.schema_version, 1);
     assert_eq!(manifest.subject, "perl_kwalitee.v1");
 
+    let independent_ids = independent_frozen_catalog_ids();
+    assert_eq!(
+        manifest.catalog_ids, independent_ids,
+        "parity manifest drifted from the independent frozen migration ledger"
+    );
     let live_ids = indicator_ids().into_iter().map(ToOwned::to_owned).collect::<Vec<String>>();
     assert_eq!(
-        live_ids, manifest.catalog_ids,
-        "catalog identity or order changed without updating the frozen authority"
+        live_ids, independent_ids,
+        "catalog identity or order changed from the independent frozen authority"
     );
 
     let expected_cases = BTreeSet::from([
@@ -286,6 +315,18 @@ fn frozen_matrix_covers_every_row_profile_and_strictness() {
             "warn".to_string(),
         ]),
         "fixture must exercise all five historical statuses"
+    );
+}
+
+#[test]
+fn independent_catalog_authority_rejects_missing_row_drift() {
+    let authority = independent_frozen_catalog_ids();
+    let mut drifted = authority.clone();
+    drifted.pop();
+
+    assert!(
+        !catalog_matches_independent_authority(&drifted),
+        "a catalog missing a frozen legacy row must not match the independent authority"
     );
 }
 
