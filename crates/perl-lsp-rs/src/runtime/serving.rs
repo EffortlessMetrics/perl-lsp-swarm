@@ -235,8 +235,13 @@ mod strict_ingress_tests {
     fn serving_ingress_rejects_malformed_frames_and_reaches_valid_request()
     -> Result<(), Box<dyn Error>> {
         let mut invalid_utf8 =
-            br#"{"jsonrpc":"2.0","id":1,"method":"invalid","params":{}}"#.to_vec();
-        invalid_utf8.push(0xff);
+            br#"{"jsonrpc":"2.0","id":1,"method":"shutdown","params":{"ignored":"safe"}}"#
+                .to_vec();
+        let string_end = invalid_utf8
+            .iter()
+            .rposition(|byte| *byte == b'"')
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing string terminator"))?;
+        invalid_utf8.insert(string_end, 0xff);
         let malformed_json = br#"{"jsonrpc":"2.0","method":"invalid""#;
         let invalid_version = br#"{"jsonrpc":"1.0","id":1,"method":"invalid","params":{}}"#;
         let batch = br#"[{"jsonrpc":"2.0","id":1,"method":"invalid","params":{}}]"#;
@@ -255,6 +260,13 @@ mod strict_ingress_tests {
         let mut input = io::BufReader::new(Cursor::new(stream));
         server.serve(&mut input)?;
 
+        if server.shutdown_received.load(Ordering::Acquire) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid UTF-8 shutdown request was dispatched",
+            )
+            .into());
+        }
         if !server.initialize_requested.load(Ordering::Acquire) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
