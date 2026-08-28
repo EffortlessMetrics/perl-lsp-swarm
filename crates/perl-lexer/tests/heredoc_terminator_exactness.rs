@@ -48,6 +48,18 @@ fn require_clean_continuation(source: &str, tokens: &[Token], marker: &str) -> R
     )
 }
 
+fn require_unterminated_payload(source: &str, tokens: &[Token], expected: &str) -> R {
+    let unknown = tokens
+        .iter()
+        .find(|token| matches!(&token.token_type, TokenType::UnknownRest))
+        .ok_or_else(|| missing("expected unterminated heredoc recovery"))?;
+    let payload = source
+        .get(unknown.start..unknown.end)
+        .ok_or_else(|| missing("unterminated heredoc recovery has invalid source geometry"))?;
+
+    require_eq(payload, expected, "unterminated heredoc recovery payload")
+}
+
 #[test]
 fn ordinary_heredoc_rejects_trailing_whitespace_near_miss() -> R {
     let source = "<<'END'\nbody\nEND   \nEND\nmy $x = 1;\n";
@@ -70,13 +82,57 @@ fn indented_heredoc_allows_leading_but_not_trailing_whitespace() -> R {
 fn trailing_whitespace_near_miss_without_exact_label_is_unterminated() -> R {
     let source = "<<END\nbody\nEND \t";
     let tokens = PerlLexer::new(source).collect_tokens();
-    let unknown = tokens
-        .iter()
-        .find(|token| matches!(&token.token_type, TokenType::UnknownRest))
-        .ok_or_else(|| missing("whitespace-suffixed near miss terminated the heredoc"))?;
-    let payload = source
-        .get(unknown.start..unknown.end)
-        .ok_or_else(|| missing("unterminated heredoc recovery has invalid source geometry"))?;
+    require_unterminated_payload(source, &tokens, "body\nEND \t")
+}
 
-    require_eq(payload, "body\nEND \t", "unterminated heredoc recovery payload")
+#[test]
+fn exact_terminator_accepts_crlf_and_rejects_trailing_space() -> R {
+    let source = "<<'END'\r\nbody\r\nEND   \r\nEND\r\nmy $x = 1;\r\n";
+    let tokens = PerlLexer::with_body_tokens(source).collect_tokens();
+
+    require_eq(body_slice(source, &tokens)?, "body\r\nEND   \r\n", "CRLF heredoc body")?;
+    require_clean_continuation(source, &tokens, "my $x = 1;")
+}
+
+#[test]
+fn exact_terminator_accepts_bare_cr_and_rejects_trailing_tab() -> R {
+    let source = "<<'END'\rbody\rEND \t\rEND\rmy $x = 1;\r";
+    let tokens = PerlLexer::with_body_tokens(source).collect_tokens();
+
+    require_eq(body_slice(source, &tokens)?, "body\rEND \t\r", "bare-CR heredoc body")?;
+    require_clean_continuation(source, &tokens, "my $x = 1;")
+}
+
+#[test]
+fn prefix_suffix_comment_and_non_line_whitespace_are_near_misses() -> R {
+    for (case, near_miss) in [
+        ("leading space", " END\n"),
+        ("prefix", "XEND\n"),
+        ("suffix", "ENDX\n"),
+        ("comment", "END#comment\n"),
+        ("vertical tab", "END\u{000b}\n"),
+        ("form feed", "END\u{000c}\n"),
+    ] {
+        let source = format!("<<'END'\nbody\n{near_miss}END\nmy $x = 1;\n");
+        let tokens = PerlLexer::with_body_tokens(&source).collect_tokens();
+        let expected_body = format!("body\n{near_miss}");
+
+        require_eq(
+            body_slice(&source, &tokens)?,
+            expected_body.as_str(),
+            format!("{case} must remain heredoc body"),
+        )?;
+        require_clean_continuation(&source, &tokens, "my $x = 1;")?;
+    }
+    Ok(())
+}
+
+#[test]
+fn exact_label_at_eof_is_unterminated() -> R {
+    // Current perlop documents a terminator as the label immediately followed
+    // by a newline; an exact label at EOF is therefore intentionally recovery.
+    let source = "<<END\nbody\nEND";
+    let tokens = PerlLexer::new(source).collect_tokens();
+
+    require_unterminated_payload(source, &tokens, "body\nEND")
 }

@@ -213,7 +213,7 @@ impl<'a> PerlLexer<'a> {
         // A delimiter line is not part of the body budget, but probing it must
         // still be bounded. Reuse the body cap as the maximum delimiter-line
         // inspection window. `<<~` may indent the label, but Perl requires the
-        // label itself to be followed immediately by a line ending or EOF.
+        // label itself to be followed immediately by a line ending.
         let scan_end = line_start.saturating_add(MAX_HEREDOC_BYTES).min(self.input_bytes.len());
         let mut cursor = line_start;
 
@@ -229,10 +229,7 @@ impl<'a> PerlLexer<'a> {
         }
         cursor = label_end;
 
-        if cursor == self.input_bytes.len()
-            || (cursor < self.input_bytes.len()
-                && matches!(self.input_bytes[cursor], b'\n' | b'\r'))
-        {
+        if cursor < self.input_bytes.len() && matches!(self.input_bytes[cursor], b'\n' | b'\r') {
             Some(cursor)
         } else {
             None
