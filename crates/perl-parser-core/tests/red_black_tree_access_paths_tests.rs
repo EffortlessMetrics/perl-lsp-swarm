@@ -119,18 +119,10 @@ fn matches<'a>(
     text: &str,
     access: AccessMode,
 ) -> Vec<&'a SubscriptPath> {
-    paths
-        .iter()
-        .filter(|path| path.text == text && path.access == access)
-        .collect()
+    paths.iter().filter(|path| path.text == text && path.access == access).collect()
 }
 
-fn assert_path_count(
-    paths: &[SubscriptPath],
-    text: &str,
-    access: AccessMode,
-    expected: usize,
-) {
+fn assert_path_count(paths: &[SubscriptPath], text: &str, access: AccessMode, expected: usize) {
     let found = matches(paths, text, access);
     assert_eq!(
         found.len(),
@@ -141,10 +133,7 @@ fn assert_path_count(
 
 fn assert_path_present(paths: &[SubscriptPath], text: &str, access: AccessMode) {
     let found = matches(paths, text, access);
-    assert!(
-        !found.is_empty(),
-        "expected a {access:?} path for {text}; all paths: {paths:#?}"
-    );
+    assert!(!found.is_empty(), "expected a {access:?} path for {text}; all paths: {paths:#?}");
 }
 
 #[test]
@@ -203,12 +192,7 @@ fn red_black_fixup_preserves_terminal_color_writes() {
     let paths = subscript_paths(FIXUP_SOURCE, &file);
 
     assert_path_count(&paths, "$node->{parent}->{color}", AccessMode::Write, 1);
-    assert_path_count(
-        &paths,
-        "$node->{parent}->{parent}->{color}",
-        AccessMode::Write,
-        1,
-    );
+    assert_path_count(&paths, "$node->{parent}->{parent}->{color}", AccessMode::Write, 1);
     assert_path_count(&paths, "$tree->{root}->{color}", AccessMode::Write, 1);
     assert_path_count(&paths, "$uncle->{color}", AccessMode::Write, 1);
 
@@ -224,12 +208,7 @@ fn rotation_metrics_keep_one_rmw_place_and_one_computed_selector() {
     let file = lower(FIXUP_SOURCE);
     let paths = subscript_paths(FIXUP_SOURCE, &file);
 
-    assert_path_count(
-        &paths,
-        "$tree->{stats}->{rotations}",
-        AccessMode::ReadModifyWrite,
-        1,
-    );
+    assert_path_count(&paths, "$tree->{stats}->{rotations}", AccessMode::ReadModifyWrite, 1);
     assert_path_count(
         &paths,
         "$tree->{stats}->{by_direction}->{$direction}",
@@ -247,18 +226,8 @@ fn rotation_metrics_keep_one_rmw_place_and_one_computed_selector() {
 
     // RMW is a single terminal-place mode; it must not be duplicated as a
     // separate read and write of the computed selector.
-    assert_path_count(
-        &paths,
-        "$tree->{stats}->{by_direction}->{$direction}",
-        AccessMode::Read,
-        0,
-    );
-    assert_path_count(
-        &paths,
-        "$tree->{stats}->{by_direction}->{$direction}",
-        AccessMode::Write,
-        0,
-    );
+    assert_path_count(&paths, "$tree->{stats}->{by_direction}->{$direction}", AccessMode::Read, 0);
+    assert_path_count(&paths, "$tree->{stats}->{by_direction}->{$direction}", AccessMode::Write, 0);
     assert_path_present(&paths, "$tree->{stats}", AccessMode::Read);
     assert_path_present(&paths, "$tree->{stats}->{by_direction}", AccessMode::Read);
 }
