@@ -305,10 +305,6 @@ pub(super) fn is_in_heredoc(source: &str, position: usize) -> bool {
     is_in_heredoc_with_boundary(source, position, false)
 }
 
-fn is_in_heredoc_or_closing_line(source: &str, position: usize) -> bool {
-    is_in_heredoc_with_boundary(source, position, true)
-}
-
 fn is_in_heredoc_with_boundary(source: &str, position: usize, include_closing_line: bool) -> bool {
     if position == 0 {
         return false;
@@ -1342,48 +1338,34 @@ fn strip_horizontal_space(text: &str) -> (&str, bool) {
 ///
 /// Lines that fall inside a heredoc are skipped so that heredoc bodies containing
 /// `=pod`-like content cannot corrupt the POD state machine.
+///
+/// The scan is one incremental forward pass sharing the heredoc/literal state
+/// machine with [`is_in_string`]: the pod decision for each line only needs the
+/// heredoc and literal state at that line's start, so recomputing either state
+/// from the source start per line (an O(lines × prefix) rescan) is avoided on
+/// the per-keystroke completion path.
 pub(super) fn is_in_pod(source: &str, position: usize) -> bool {
     if position == 0 {
         return false;
     }
 
-    let Some(prefix) = source.get(..position.min(source.len())) else {
-        return false;
-    };
-    let mut state = PodState::default();
-    let mut line_start = 0;
-    for raw_line in prefix.split_inclusive('\n') {
-        let line = strip_line_ending(raw_line);
-        let ignored = is_in_heredoc_or_closing_line(source, line_start)
-            || is_in_multiline_literal(source, line_start);
-
-        if !ignored {
-            advance_pod_state(&mut state, line);
-        }
-
-        line_start += raw_line.len();
-    }
-
-    !matches!(state, PodState::Code)
-}
-
-fn is_in_multiline_literal(source: &str, position: usize) -> bool {
+    let prefix_end = position.min(source.len());
     let bytes = source.as_bytes();
-    let position = position.min(bytes.len());
+    let mut state = PodState::default();
+    let mut literal_state = LiteralScanState::default();
     let mut active_delimiters: std::collections::VecDeque<HeredocDelimiter> =
         std::collections::VecDeque::new();
-    let mut pod_state = PodState::default();
-    let mut state = LiteralScanState::default();
     let mut line_start = 0usize;
 
-    while line_start < position {
-        let line_end = bytes[line_start..position]
+    while line_start < prefix_end {
+        let line_end = bytes[line_start..prefix_end]
             .iter()
             .position(|candidate| *candidate == b'\n')
-            .map_or(position, |newline_offset| line_start + newline_offset + 1);
+            .map_or(prefix_end, |newline_offset| line_start + newline_offset + 1);
         let line = source.get(line_start..line_end).map(strip_line_ending).unwrap_or_default();
 
         if let Some(delimiter) = active_delimiters.front() {
+            // Heredoc body and its closing line never advance POD state.
             if delimiter.matches_close(line) {
                 active_delimiters.pop_front();
             }
@@ -1391,33 +1373,40 @@ fn is_in_multiline_literal(source: &str, position: usize) -> bool {
             continue;
         }
 
-        let started_in_literal = state.is_active();
-        if !started_in_literal && advance_pod_state(&mut pod_state, line) {
+        if !matches!(state, PodState::Code) {
+            advance_pod_state(&mut state, line);
             line_start = line_end;
             continue;
         }
 
-        let segment_end = line_end.min(position);
-        let resumed_code_index = state.scan_segment(bytes, line_start, segment_end);
+        let started_in_literal = literal_state.is_active();
+        if !started_in_literal && advance_pod_state(&mut state, line) {
+            line_start = line_end;
+            continue;
+        }
 
-        if !started_in_literal && line_end <= position {
-            active_delimiters
-                .extend(extract_heredoc_delimiters_from_source_line(source, line, line_end, 0));
-        } else if let Some(resumed_code_index) = resumed_code_index
-            && line_end <= position
-        {
-            active_delimiters.extend(extract_heredoc_delimiters_from_source_line(
-                source,
-                line,
-                line_end,
-                resumed_code_index - line_start,
-            ));
+        let resumed_code_index =
+            literal_state.scan_segment(bytes, line_start, line_end.min(prefix_end));
+        if line_end <= prefix_end {
+            if started_in_literal {
+                if let Some(resumed_code_index) = resumed_code_index {
+                    active_delimiters.extend(extract_heredoc_delimiters_from_source_line(
+                        source,
+                        line,
+                        line_end,
+                        resumed_code_index - line_start,
+                    ));
+                }
+            } else {
+                active_delimiters
+                    .extend(extract_heredoc_delimiters_from_source_line(source, line, line_end, 0));
+            }
         }
 
         line_start = line_end;
     }
 
-    state.is_active()
+    !matches!(state, PodState::Code)
 }
 
 fn is_pod_end_marker(line: &str) -> bool {
@@ -2032,6 +2021,22 @@ my $after = "op"#;
             let source = format!("=pod\ndocs\n{line}\nmy $code = 1;");
             assert!(is_in_pod(&source, source.len()), "{line} must stay POD");
         }
+    }
+
+    #[test]
+    fn is_in_pod_ignores_pod_lines_inside_multiline_literal() {
+        let source = "my $text = \"\n=pod\n=cut\n\";\nmy $code = 1;";
+        assert!(!is_in_pod(source, source.len()));
+
+        let pod_after_literal = "my $text = \"\n=pod\n\";\n=pod\ndocs\nmy $code = 1;";
+        assert!(is_in_pod(pod_after_literal, pod_after_literal.len()));
+    }
+
+    #[test]
+    fn is_in_pod_ignores_cut_inside_unclosed_heredoc() {
+        let source = "<<'EOF'\n=cut\nEOF\nmy $code = 1;";
+        assert!(!is_in_pod(source, source.len()));
+        assert!(!is_in_heredoc(source, source.find("my $code").unwrap()));
     }
 
     #[test]
