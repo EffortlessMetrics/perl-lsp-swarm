@@ -86,7 +86,8 @@ and claim-level orchestration:
 - GitHub publication, merge judgment, reconciliation, and continuation.
 
 A claim or lane is a **logical frame held by the root**, not normally another
-orchestrator agent. A claim frame may contain:
+orchestrator agent. These logical claim frames keep claim orchestration in the root
+while bounded contexts execute research, mutation, and review. A claim frame may contain:
 
 ```text
 claim
