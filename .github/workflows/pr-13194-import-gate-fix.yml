@@ -160,7 +160,7 @@ jobs:
             .github/workflows/pr-13194-import-gate-fix.yml \
             .github/workflows/pr-13194-focused-proof.yml
 
-          changed="$(git diff --name-only | sort)"
+          changed="$(git diff --name-only HEAD | sort)"
           expected="$(printf '%s\n' \
             .github/workflows/pr-13194-focused-proof.yml \
             .github/workflows/pr-13194-import-gate-fix.yml \
