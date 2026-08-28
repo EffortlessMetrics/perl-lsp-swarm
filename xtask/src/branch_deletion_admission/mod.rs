@@ -159,7 +159,7 @@ fn run(args: Args) -> Result<()> {
             let recollected = collect_request(&commands, pr, &remote)?;
             let recheck = evaluate(&recollected.request);
             if let RecheckGate::Retain { detail } = recheck_gate(&outcome, &recheck) {
-                eprintln!("branch-deletion-admission: retaining — {detail}");
+                write_err(&format!("branch-deletion-admission: retaining — {detail}\n"))?;
                 std::process::exit(RETAIN_EXIT_CODE);
             }
 
@@ -235,6 +235,20 @@ fn write_out(rendered: &str) -> Result<()> {
     let mut handle = stdout.lock();
     handle.write_all(rendered.as_bytes()).wrap_err("writing the admission outcome")?;
     handle.flush().wrap_err("flushing the admission outcome")?;
+    Ok(())
+}
+
+/// Report a retention on stderr, keeping stdout reserved for the outcome a
+/// caller parses.
+///
+/// This is the stderr sibling of `write_out` rather than `eprintln!`, which
+/// the workspace's `clippy::print_stderr` lint denies in library code — a
+/// library must not decide where a process's diagnostics land.
+fn write_err(rendered: &str) -> Result<()> {
+    let stderr = io::stderr();
+    let mut handle = stderr.lock();
+    handle.write_all(rendered.as_bytes()).wrap_err("writing the retention reason")?;
+    handle.flush().wrap_err("flushing the retention reason")?;
     Ok(())
 }
 
