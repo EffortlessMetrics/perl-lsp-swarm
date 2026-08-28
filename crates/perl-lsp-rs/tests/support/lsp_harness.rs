@@ -65,6 +65,39 @@ fn uri_matches(expected: &str, actual: &str) -> bool {
     false
 }
 
+fn workspace_symbol_name_matches(query: &str, actual: &str) -> bool {
+    let leaf = actual.rsplit("::").next().unwrap_or(actual);
+    if leaf == query {
+        return true;
+    }
+
+    leaf.chars()
+        .next()
+        .is_some_and(|sigil| matches!(sigil, '$' | '@' | '%' | '&' | '*'))
+        && leaf.get(1..) == Some(query)
+}
+
+pub(crate) fn workspace_symbol_response_contains(
+    response: &Value,
+    query: &str,
+    want_uri: Option<&str>,
+) -> bool {
+    response.as_array().is_some_and(|symbols| {
+        symbols.iter().any(|symbol| {
+            symbol
+                .get("name")
+                .and_then(Value::as_str)
+                .is_some_and(|actual| workspace_symbol_name_matches(query, actual))
+                && want_uri.is_none_or(|expected| {
+                    symbol
+                        .pointer("/location/uri")
+                        .and_then(Value::as_str)
+                        .is_some_and(|actual| uri_matches(expected, actual))
+                })
+        })
+    })
+}
+
 impl LspHarness {
     fn new_raw_with_server_factory<F>(server_factory: F) -> Self
     where
@@ -592,34 +625,18 @@ impl LspHarness {
         }
     }
 
-    /// Poll workspace/symbol until query appears with enhanced reliability and CI optimization
+    /// Poll workspace/symbol until the requested symbol identity appears.
     pub fn wait_for_symbol(
         &mut self,
         query: &str,
         want_uri: Option<&str>,
         budget: Duration,
     ) -> Result<(), String> {
-        // Detect environment characteristics for optimization
+        // Detect environment characteristics for timeout and backoff tuning only.
+        // Performance configuration may shorten the wait, but it must not weaken
+        // the symbol-name and URI oracle.
         let is_ci = std::env::var("CI").is_ok() || std::env::var("GITHUB_ACTIONS").is_ok();
         let is_performance_test = std::env::var("PERL_LSP_PERFORMANCE_TEST").is_ok();
-        let use_fallbacks = std::env::var("LSP_TEST_FALLBACKS").is_ok();
-
-        // Fast path for performance tests or fallback mode
-        if use_fallbacks || is_performance_test {
-            let timeout = if is_performance_test { 50 } else { 100 };
-            let res = self.request_with_timeout(
-                "workspace/symbol",
-                serde_json::json!({ "query": query }),
-                Duration::from_millis(timeout),
-            );
-            if res.is_ok() {
-                return Ok(()); // Symbol indexing is working
-            }
-            if use_fallbacks {
-                eprintln!("Warning: symbol '{}' not indexed, proceeding anyway", query);
-                return Ok(());
-            }
-        }
 
         // Adaptive parameters based on environment
         let is_windows = cfg!(windows);
@@ -635,7 +652,7 @@ impl LspHarness {
 
         let start = Instant::now();
         let mut attempt = 0;
-        let mut last_error = None;
+        let mut last_observation = "no workspace/symbol response received".to_string();
 
         while start.elapsed() < budget && attempt < max_attempts {
             attempt += 1;
@@ -650,23 +667,14 @@ impl LspHarness {
             );
 
             match res {
-                Ok(v) => {
-                    if let Some(arr) = v.as_array() {
-                        let found = arr.iter().any(|s| {
-                            let uri = s.pointer("/location/uri").and_then(|u| u.as_str());
-                            want_uri.is_none_or(|expect| {
-                                uri.is_some_and(|actual| uri_matches(expect, actual))
-                            })
-                        });
-                        if found {
-                            return Ok(());
-                        }
-                        // Symbol search succeeded but didn't find target - continue
+                Ok(value) => {
+                    if workspace_symbol_response_contains(&value, query, want_uri) {
+                        return Ok(());
                     }
+                    last_observation = format!("last response: {value}");
                 }
-                Err(e) => {
-                    last_error = Some(e);
-                    // Request failed - might be server not ready, continue with backoff
+                Err(error) => {
+                    last_observation = format!("last error: {error}");
                 }
             }
 
@@ -686,16 +694,8 @@ impl LspHarness {
             }
         }
 
-        // Enhanced error reporting
-        let error_context = if let Some(err) = last_error {
-            format!("Last error: {}", err)
-        } else {
-            "Symbol search succeeded but target not found".to_string()
-        };
-
         Err(format!(
-            "symbol '{}' not ready within {:?} after {} attempts. {} (CI: {}, Perf: {})",
-            query, budget, attempt, error_context, is_ci, is_performance_test
+            "symbol '{query}' not ready within {budget:?} after {attempt} attempts. {last_observation} (CI: {is_ci}, Perf: {is_performance_test})"
         ))
     }
 
