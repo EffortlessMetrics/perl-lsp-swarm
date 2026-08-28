@@ -161,7 +161,32 @@ function hasOverlappingQuantifiedAlternation(source: string): boolean {
 }
 
 export function isPotentiallyExpensiveRegex(source: string): boolean {
-  return POTENTIALLY_EXPENSIVE_REGEX_RE.test(source) || hasOverlappingQuantifiedAlternation(source);
+  return (
+    POTENTIALLY_EXPENSIVE_REGEX_RE.test(source) ||
+    hasOverlappingQuantifiedAlternation(source) ||
+    hasUnboundedWildcard(source) ||
+    hasAdjacentVariableRepetition(source)
+  );
+}
+
+function hasUnboundedWildcard(source: string): boolean {
+  return /(^|[^\\])\.[+*]/.test(source);
+}
+
+function hasAdjacentVariableRepetition(source: string): boolean {
+  return /(?:\\.|\\[[^\]]*\]|[^\\()[\]|^$])(?:\+|\*)(?:\\.|\\[[^\]]*\]|[^\\()[\]|^$])(?:\+|\*)/.test(
+    source,
+  );
+}
+
+export function normalizeGherkinRegexFlags(flags: string): string {
+  let normalized = '';
+  for (const flag of flags.toLowerCase()) {
+    if ((flag === 'i' || flag === 'm' || flag === 's') && !normalized.includes(flag)) {
+      normalized += flag;
+    }
+  }
+  return normalized;
 }
 
 export function isSafeGherkinStepMatch(source: string, stepText: string): boolean {

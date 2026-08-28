@@ -55,6 +55,8 @@ describe('gherkin ReDoS guard (#6154)', () => {
     ['quantified alternation', '^(a|aa)+$', 'aaaaaaaa'],
     ['backreference', '^(a)\\1$', 'aa'],
     ['lookahead', '^(?=a)a$', 'a'],
+    ['quantified wildcard', '^.*$', 'anything'],
+    ['adjacent variable repetition', '^a*a*$', 'aaaa'],
   ])('rejects %s through the shared match policy', (_name, source, stepText) => {
     expect(isSafeGherkinStepMatch(source, stepText)).toBe(false);
   });

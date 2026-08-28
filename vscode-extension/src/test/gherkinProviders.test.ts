@@ -109,7 +109,7 @@ describe('gherkin outline providers', () => {
     );
 
     expect(links).toHaveLength(1);
-    const link = links[0];
+    const link = links?.[0];
     if (!link) return;
 
     expect(link.targetUri.fsPath).toBe('/project/features/step_definitions/user_steps.pm');
@@ -302,7 +302,7 @@ describe('gherkin outline providers', () => {
         { line: 2, character: 15 } as vscode.Position,
         [{ uri: vscode.Uri.file('/project/steps.pm'), text: definitions }],
       ),
-    ).toEqual([]);
+    ).toBeNull();
   });
 
   test('keeps provider and step-definition matching parity for policy limits', () => {
@@ -402,7 +402,7 @@ describe('gherkin outline providers', () => {
     );
 
     expect(links).toHaveLength(1);
-    const link = links[0];
+    const link = links?.[0];
     if (!link) return;
 
     expect(link.targetSelectionRange?.start.line).toBe(2);

@@ -2,7 +2,11 @@ import { randomUUID } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { createGherkinMatchBudget, isSafeGherkinStepMatch } from './gherkinRedosGuard';
+import {
+  createGherkinMatchBudget,
+  isSafeGherkinStepMatch,
+  normalizeGherkinRegexFlags,
+} from './gherkinRedosGuard';
 
 const CREATE_STEP_DEFINITION_COMMAND = 'perl-lsp.createGherkinStepDefinition';
 const GHERKIN_STEP_RE = /^\s*(Given|When|Then|And|But)\b\s*(.*)$/;
@@ -39,6 +43,7 @@ export interface GherkinStepLine {
 export interface ExtractedStepDefinition {
   keyword: StepKeyword;
   pattern: string;
+  flags: string;
 }
 
 export interface StepDefinitionScan {
@@ -213,15 +218,16 @@ export function scanStepDefinitions(source: string): StepDefinitionScan {
       continue;
     }
 
-    const pattern = extractSlashDelimitedPattern(trimmed, match[0].length - 1);
-    if (!pattern) {
+    const parsed = extractSlashDelimitedPattern(trimmed, match[0].length - 1);
+    if (!parsed) {
       ambiguous = true;
       continue;
     }
 
     definitions.push({
       keyword: match[1] as StepKeyword,
-      pattern,
+      pattern: parsed.pattern,
+      flags: parsed.flags,
     });
   }
 
@@ -457,7 +463,10 @@ function escapeRegexLiteral(text: string): string {
   return text.replace(/[|\\{}()[\]^$+*?.]/g, '\\$&').replace(/\//g, '\\/');
 }
 
-function extractSlashDelimitedPattern(line: string, delimiterIndex: number): string | null {
+function extractSlashDelimitedPattern(
+  line: string,
+  delimiterIndex: number,
+): { pattern: string; flags: string } | null {
   let pattern = '';
   let escaped = false;
 
@@ -476,7 +485,11 @@ function extractSlashDelimitedPattern(line: string, delimiterIndex: number): str
     }
 
     if (char === '/') {
-      return pattern;
+      let flags = '';
+      for (let flagIndex = index + 1; /[A-Za-z]/.test(line[flagIndex] ?? ''); flagIndex += 1) {
+        flags += line[flagIndex];
+      }
+      return { pattern, flags };
     }
 
     pattern += char;
@@ -494,7 +507,9 @@ function testExtractedDefinition(
   }
 
   try {
-    return new RegExp(definition.pattern).test(stepText);
+    return new RegExp(definition.pattern, normalizeGherkinRegexFlags(definition.flags)).test(
+      stepText,
+    );
   } catch {
     return null;
   }

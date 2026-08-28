@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import {
   createGherkinMatchBudget,
   isSafeGherkinStepMatch,
+  normalizeGherkinRegexFlags,
   type GherkinMatchBudget,
 } from './gherkinRedosGuard';
 
@@ -104,6 +105,12 @@ export function registerGherkinProviders(): vscode.Disposable[] {
       }
 
       const links = provideGherkinStepDefinitionLinks(document.getText(), position, candidates);
+      if (links === null) {
+        void vscode.window.showWarningMessage(
+          'Gherkin step matching stopped after reaching its safety budget; no definition result is available.',
+        );
+        return undefined;
+      }
       return links.length > 0 ? links : undefined;
     },
   };
@@ -142,7 +149,7 @@ export function provideGherkinStepDefinitionLinks(
   featureText: string,
   position: vscode.Position,
   documents: readonly StepDefinitionDocument[],
-): vscode.LocationLink[] {
+): vscode.LocationLink[] | null {
   const step = extractStepReference(featureText, position);
   if (!step) {
     return [];
@@ -153,7 +160,7 @@ export function provideGherkinStepDefinitionLinks(
   for (const document of documents) {
     const documentMatches = findMatchingStepDefinitions(step, document, budget);
     if (documentMatches === null) {
-      return [];
+      return null;
     }
     matches.push(...documentMatches);
   }
@@ -572,20 +579,10 @@ function stepTextMatches(stepText: string, matcher: StepMatcher): boolean {
   }
 
   try {
-    return new RegExp(matcher.source, normalizeRegexFlags(matcher.flags)).test(stepText);
+    return new RegExp(matcher.source, normalizeGherkinRegexFlags(matcher.flags)).test(stepText);
   } catch {
     return false;
   }
-}
-
-function normalizeRegexFlags(flags: string): string {
-  let normalized = '';
-  for (const flag of flags.toLowerCase()) {
-    if ((flag === 'i' || flag === 'm' || flag === 's') && !normalized.includes(flag)) {
-      normalized += flag;
-    }
-  }
-  return normalized;
 }
 
 function definitionScore(uri: vscode.Uri, keyword: StepDefinitionKeyword): number {

@@ -63,6 +63,7 @@ describe('gherkin step definition support', () => {
       {
         keyword: 'Given',
         pattern: '^a user exists with name "([^"]+)"$',
+        flags: '',
       },
     ]);
 
@@ -90,6 +91,14 @@ describe('gherkin step definition support', () => {
     expect(
       classifyStepDefinitionStatus(step!, ['Given qr/^some other step$/, sub { return; };']),
     ).toBe('undefined');
+  });
+
+  test('applies supported regex flags during classification', () => {
+    const step = parseGherkinStepLine('Given STATUS: PASS', 0);
+    expect(step).not.toBeNull();
+    expect(
+      classifyStepDefinitionStatus(step!, ['Given qr/^status: pass$/i, sub { return; };']),
+    ).toBe('defined');
   });
 
   test('treats potentially expensive step regexes as ambiguous', () => {
