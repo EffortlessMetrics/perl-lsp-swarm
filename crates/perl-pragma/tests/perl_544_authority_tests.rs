@@ -1,6 +1,8 @@
 use perl_ast::SourceLocation;
 use perl_ast::ast::{Node, NodeKind};
-use perl_pragma::{CompileTimePragmaEnvironment, PerlVersion, features_enabled_by_version};
+use perl_pragma::{
+    CompileTimePragmaEnvironment, PerlVersion, PragmaState, features_enabled_by_version,
+};
 
 fn loc(start: usize, end: usize) -> SourceLocation {
     SourceLocation { start, end }
@@ -97,9 +99,18 @@ fn feature_all_and_experimental_admit_enhanced_xx() {
 }
 
 #[test]
-fn use_and_require_versions_are_retained_in_snapshots() {
-    let use_ast = program(vec![use_node("v5.44", &[], 0, 10)], 10);
-    let require_ast = program(
+fn use_version_is_retained_in_snapshot() {
+    let ast = program(vec![use_node("v5.44", &[], 0, 10)], 10);
+
+    assert_eq!(
+        CompileTimePragmaEnvironment::build(&ast).snapshot_at(10).perl_version(),
+        Some(PerlVersion::new(5, 44)),
+    );
+}
+
+#[test]
+fn require_version_does_not_change_lexical_pragma_state() {
+    let ast = program(
         vec![Node::new(
             NodeKind::FunctionCall {
                 name: "require".to_string(),
@@ -112,19 +123,13 @@ fn use_and_require_versions_are_retained_in_snapshots() {
         )],
         14,
     );
+    let environment = CompileTimePragmaEnvironment::build(&ast);
+    let snapshot = environment.snapshot_at(14);
 
-    assert_eq!(
-        CompileTimePragmaEnvironment::build(&use_ast)
-            .snapshot_at(10)
-            .perl_version(),
-        Some(PerlVersion::new(5, 44)),
-    );
-    assert_eq!(
-        CompileTimePragmaEnvironment::build(&require_ast)
-            .snapshot_at(14)
-            .perl_version(),
-        Some(PerlVersion::new(5, 44)),
-    );
+    assert_eq!(snapshot.perl_version(), None);
+    assert!(!snapshot.strict_enabled());
+    assert!(!snapshot.warnings_enabled());
+    assert_eq!(snapshot.state(), &PragmaState::default());
 }
 
 #[test]
