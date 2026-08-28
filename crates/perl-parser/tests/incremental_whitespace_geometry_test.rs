@@ -10,6 +10,7 @@ use perl_parser::{
 };
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
+type NodeResult = Result<Node, Box<dyn std::error::Error>>;
 
 fn edit(start: usize, old_end: usize, new_end: usize) -> Edit {
     Edit::new(
@@ -22,11 +23,9 @@ fn edit(start: usize, old_end: usize, new_end: usize) -> Edit {
     )
 }
 
-fn parse_fresh(source: &str) -> TestResultNode {
+fn parse_fresh(source: &str) -> NodeResult {
     Ok(Parser::new(source).parse()?)
 }
-
-type TestResultNode = Result<Node, Box<dyn std::error::Error>>;
 
 fn assert_not_zero_reparse_basic_path(parser: &IncrementalParserV2) {
     assert!(
@@ -35,6 +34,20 @@ fn assert_not_zero_reparse_basic_path(parser: &IncrementalParserV2) {
             || parser.reparsed_nodes > 0,
         "token-body whitespace must not take the zero-reparse basic fast path"
     );
+}
+
+fn assert_leading_whitespace_reuse_matches_fresh(source: &str) -> TestResult {
+    let shifted = format!(" {source}");
+    let mut parser = IncrementalParserV2::new();
+    parser.parse(source)?;
+    parser.edit(edit(0, 0, 1));
+
+    let incremental = parser.parse(&shifted)?;
+    assert_eq!(incremental, parse_fresh(&shifted)?);
+    assert!(parser.used_incremental_path());
+    assert!(!parser.used_advanced_reuse());
+    assert_eq!(parser.reparsed_nodes, 0);
+    Ok(())
 }
 
 #[test]
@@ -89,6 +102,18 @@ fn crlf_insertion_matches_fresh_parse_geometry() -> TestResult {
     assert!(!parser.used_advanced_reuse());
     assert_eq!(parser.reparsed_nodes, 0);
     Ok(())
+}
+
+#[test]
+fn declaration_payload_spans_match_a_fresh_parse() -> TestResult {
+    assert_leading_whitespace_reuse_matches_fresh(
+        "package Geometry::Pkg;\nsub work { 1; }\nBEGIN { 2; }\n",
+    )
+}
+
+#[test]
+fn heredoc_body_span_matches_a_fresh_parse() -> TestResult {
+    assert_leading_whitespace_reuse_matches_fresh("my $text = <<'EOF';\nbody\nEOF\n")
 }
 
 #[test]
@@ -152,6 +177,6 @@ fn mapped_statement_spans_are_safe_for_range_consumers() -> TestResult {
         .map(|statement| &source2[statement.location.start..statement.location.end])
         .collect();
 
-    assert_eq!(statement_text, ["my $x = 1;", "my $y = 2;"]);
+    assert_eq!(statement_text, vec!["my $x = 1;", "my $y = 2;"]);
     Ok(())
 }
