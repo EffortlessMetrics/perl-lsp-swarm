@@ -435,7 +435,9 @@ pub fn resolve_import(module: &str, raw_args: &str) -> Option<ResolvedImport> {
                     let opens = value.matches('{').count() as isize;
                     let closes = value.matches('}').count() as isize;
                     if !saw_hash && opens == 0 {
-                        target_helpers.insert("CLASS".to_string());
+                        if scalar_target_is_truthy(value) {
+                            target_helpers.insert("CLASS".to_string());
+                        }
                         break;
                     }
                     saw_hash |= opens > 0;
@@ -706,6 +708,21 @@ fn strip_quotes(tok: &str) -> &str {
         }
     }
     tok
+}
+
+/// Whether a scalar `-target` literal creates Test2::Tools::Target helpers.
+///
+/// Perl's false scalar values do not install the target helpers. Keep this
+/// deliberately literal-only: dynamic expressions remain outside this
+/// resolver's proof boundary rather than being guessed as truthy or falsey.
+fn scalar_target_is_truthy(raw: &str) -> bool {
+    let trimmed = raw.trim();
+    if trimmed == "undef" || trimmed == "0" {
+        return false;
+    }
+
+    let value = strip_quotes(trimmed);
+    !value.is_empty() && value != "0"
 }
 
 /// Extract `use ...;` statements from Perl source, respecting quotes and `#`

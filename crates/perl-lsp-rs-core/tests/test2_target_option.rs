@@ -48,6 +48,21 @@ fn scalar_targets_preserve_defaults_and_generate_class() -> TestResult {
 }
 
 #[test]
+fn false_scalar_targets_do_not_generate_class() -> TestResult {
+    for target in ["0", "undef", "''", "\"\""] {
+        let resolved = resolve_import("Test2::V0", &format!("-target => {target}"))
+            .ok_or_else(|| io::Error::other("Test2::V0 must be recognized"))?;
+
+        assert!(resolved.symbols.contains("ok"));
+        assert!(
+            !resolved.symbols.contains("CLASS"),
+            "false target {target:?} must not install CLASS"
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn named_hash_targets_preserve_defaults_and_generate_helpers() -> TestResult {
     let args = "-target => { pkg => 'Widget', other => 'Gadget' }";
     for (module, expected_default) in [("Test2::V0", "is"), ("Test2::V1", "T2")] {
