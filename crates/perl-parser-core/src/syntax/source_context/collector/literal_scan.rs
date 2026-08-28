@@ -216,6 +216,9 @@ fn heredoc_opener_at(line: &str, marker: usize) -> Option<(String, bool)> {
     if before.ends_with('<') {
         return None;
     }
+    if ends_with_left_shift_operand(before) {
+        return None;
+    }
     let mut rest = &line[marker + 2..];
     let allow_indented = if let Some(stripped) = rest.strip_prefix('~') {
         rest = stripped;
@@ -250,6 +253,36 @@ fn heredoc_opener_at(line: &str, marker: usize) -> Option<(String, bool)> {
         _ => return None,
     };
     if label.is_empty() { None } else { Some((label, allow_indented)) }
+}
+
+/// A bare identifier after `<<` is a valid heredoc label, but an identifier
+/// immediately before `<<` makes the operator a Perl left shift instead. Keep
+/// the recovery scanner from treating the shift's RHS as a heredoc body.
+/// Keyword-led forms such as `print <<EOF` and `return <<EOF` remain genuine
+/// heredocs.
+fn ends_with_left_shift_operand(before: &str) -> bool {
+    let trimmed = before.trim_end_matches([' ', '\t']);
+    let Some(last) = trimmed.chars().next_back() else {
+        return false;
+    };
+
+    if matches!(last, ')' | ']' | '}' | '\'' | '"' | '`') {
+        return true;
+    }
+    if !(last.is_alphanumeric() || matches!(last, '_' | '$' | '@' | '%' | '&' | '*')) {
+        return false;
+    }
+
+    let token_start = trimmed
+        .char_indices()
+        .rev()
+        .take_while(|(_, character)| {
+            character.is_alphanumeric() || matches!(character, '_' | '$' | '@' | '%' | '&' | '*')
+        })
+        .last()
+        .map_or(trimmed.len(), |(index, _)| index);
+    let token = &trimmed[token_start..];
+    !matches!(token, "print" | "printf" | "say" | "return" | "die" | "warn")
 }
 
 /// Whether `rest` starts an unquoted heredoc label, i.e. a Perl identifier.
@@ -1068,11 +1101,25 @@ mod tests {
 
     #[test]
     fn left_shift_expression_is_not_a_heredoc_opener() {
-        for source in ["my $y = $x << 2;\n", "my $y = $x <<< 2;\n"] {
+        for source in [
+            "my $y = $x << 2;\n",
+            "my $y = $x <<< 2;\n",
+            "my $y = $x << EOF;\nnot a heredoc body\nEOF\nmy $after = 1;\n",
+            "my $y = bareword << EOF;\nnot a heredoc body\nEOF\nmy $after = 1;\n",
+        ] {
             assert!(
                 scan_heredoc_regions(source).is_empty(),
                 "a shift expression must not open a heredoc: {source:?}"
             );
+        }
+    }
+
+    #[test]
+    fn keyword_led_heredocs_still_open_after_shift_disambiguation() {
+        for source in ["print <<EOF;\nbody\nEOF\n", "return <<EOF;\nbody\nEOF\n"] {
+            let regions = scan_heredoc_regions(source);
+            assert_eq!(regions.len(), 1, "keyword-led heredoc must remain visible: {source:?}");
+            assert!(regions[0].end < source.len(), "keyword-led heredoc must close: {source:?}");
         }
     }
 
