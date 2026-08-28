@@ -12,8 +12,7 @@
 //! runs in the underlying engine.
 
 use super::implementation::{
-    self, FormatConfig, FormatResult, FormatterMode, PerlFormatter, TextRange,
-    range_includes_line,
+    self, FormatConfig, FormatResult, FormatterMode, PerlFormatter, TextRange, range_includes_line,
 };
 use super::outcome::{
     FormatContext, FormatIdentity, FormatReasonCode, FormatRequestTarget, TypedFormatResult,
@@ -287,9 +286,7 @@ fn range_overlaps_completed_heredoc(source: &str, range: TextRange) -> bool {
         let kind = token.kind();
 
         let unknown_heredoc_tail = kind == TokenKind::UnknownRest
-            && pending_body_starts
-                .first()
-                .is_some_and(|body_start| token.start() == *body_start);
+            && pending_body_starts.first().is_some_and(|body_start| token.start() == *body_start);
         if unknown_heredoc_tail {
             // An unclosed or over-budget heredoc is not a proven completed
             // literal region. Leave it to the full-document parse gate.
@@ -304,11 +301,12 @@ fn range_overlaps_completed_heredoc(source: &str, range: TextRange) -> bool {
             };
             if pending_body_starts.iter().any(|body_start| {
                 regions.regions().iter().any(|region| {
+                    let protected_end = byte_offset_after_line(source, region.end);
                     region.kind == SourceRegionKind::Heredoc
                         && region.end > *body_start
-                        && region.end <= completion_limit
+                        && protected_end <= completion_limit
                         && region.start < range_end
-                        && region.end > range_start
+                        && protected_end > range_start
                 })
             }) {
                 return true;
@@ -335,10 +333,7 @@ fn byte_offset_after_line(source: &str, offset: usize) -> usize {
 
 fn line_start_at_or_before(source: &str, offset: usize) -> usize {
     let offset = offset.min(source.len());
-    source
-        .get(..offset)
-        .and_then(|prefix| prefix.rfind('\n').map(|index| index + 1))
-        .unwrap_or(0)
+    source.get(..offset).and_then(|prefix| prefix.rfind('\n').map(|index| index + 1)).unwrap_or(0)
 }
 
 fn byte_span_for_line_range(source: &str, range: TextRange) -> (usize, usize) {

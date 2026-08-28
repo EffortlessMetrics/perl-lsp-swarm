@@ -3,9 +3,7 @@
 use perl_lsp_perltidy::native::{
     FormatContext, FormatDisposition, FormatReasonCode, FormatRequestTarget,
 };
-use perl_lsp_perltidy::{
-    FormatConfig, NativeFormatter, PerlFormatter, TextPosition, TextRange,
-};
+use perl_lsp_perltidy::{FormatConfig, NativeFormatter, PerlFormatter, TextPosition, TextRange};
 
 #[test]
 fn document_formatting_ignores_marker_text_inside_string_and_comment() {
@@ -111,10 +109,7 @@ fn trailing_trivia_after_heredoc_does_not_extend_preserve_span() {
     let result = formatter.format_range(source, following, &FormatConfig::default());
 
     assert!(result.changed);
-    assert_eq!(
-        result.formatted,
-        "print <<'EOF';\nbody\nEOF\n\n# trailing note\nmy $x = 1;\n"
-    );
+    assert_eq!(result.formatted, "print <<'EOF';\nbody\nEOF\n\n# trailing note\nmy $x = 1;\n");
     assert!(result.diagnostics.is_empty());
 }
 
@@ -126,7 +121,10 @@ fn unclosed_heredoc_body_remains_owned_by_parse_gate() {
 
     let result = formatter.format_range(source, body, &FormatConfig::default());
 
-    assert!(result.diagnostics.iter().all(|diagnostic| {
-        diagnostic.code != "native.format.literal_preserve_region"
-    }));
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .all(|diagnostic| { diagnostic.code != "native.format.literal_preserve_region" })
+    );
 }
