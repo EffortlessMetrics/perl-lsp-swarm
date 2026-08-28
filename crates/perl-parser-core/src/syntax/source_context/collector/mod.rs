@@ -26,10 +26,23 @@ pub(crate) fn collect_regions(source: &str) -> Vec<SourceRegion> {
     coalesce_regions(regions, source.len())
 }
 
-/// Return completed heredoc spans before normalization, retaining zero-length
-/// spans for empty bodies so callers can protect their terminator boundaries.
-pub(crate) fn scan_heredoc_regions(source: &str) -> Vec<SourceRegion> {
-    literal_scan::scan_heredoc_regions(source)
+/// Return the completed heredoc body events emitted by the production lexer.
+///
+/// `HeredocBody` spans include the empty-body case (`start == end`) and end at
+/// the physical terminator line, so callers can protect that line without
+/// reconstructing heredoc ownership with a second scanner.
+pub(crate) fn completed_heredoc_spans(source: &str) -> Vec<SourceRegion> {
+    let mut regions = Vec::new();
+    let mut lexer = PerlLexer::with_body_tokens(source);
+    while let Some(token) = lexer.next_token() {
+        if matches!(token.token_type, TokenType::HeredocBody(_))
+            && let Some(region) =
+                SourceRegion::new(token.start, token.end, SourceRegionKind::Heredoc)
+        {
+            regions.push(region);
+        }
+    }
+    regions
 }
 
 fn collect_lexer_literal_regions(source: &str) -> Vec<SourceRegion> {

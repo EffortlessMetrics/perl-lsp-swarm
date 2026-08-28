@@ -82,11 +82,11 @@ impl SourceRegionIndex {
         &self.regions
     }
 
-    /// Return completed heredoc spans before normalization, retaining empty
-    /// body spans so callers can protect their terminator lines.
+    /// Return completed heredoc spans emitted by the production lexer, retaining
+    /// empty body spans so callers can protect their terminator lines.
     #[must_use]
     pub fn completed_heredoc_spans(&self) -> Vec<SourceRegion> {
-        collector::scan_heredoc_regions(&self.source)
+        collector::completed_heredoc_spans(&self.source)
     }
 
     /// Return a copy with additional override regions merged in.

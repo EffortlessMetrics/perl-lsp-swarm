@@ -276,8 +276,8 @@ fn range_overlaps_completed_heredoc(source: &str, range: TextRange) -> bool {
     }
 
     let regions = SourceRegionIndex::build(source);
-    // The scanner returns completed heredoc regions in FIFO order. Do not join
-    // them back to lexer opener offsets: queued declarations such as
+    // The production lexer returns completed heredoc body events in FIFO order.
+    // Do not join them back to opener offsets: queued declarations such as
     // `print <<A, <<B;` share one physical body start even though the second
     // body begins after the first terminator. A region ending at EOF is an
     // unclosed heredoc, so it remains owned by the document parse gate.

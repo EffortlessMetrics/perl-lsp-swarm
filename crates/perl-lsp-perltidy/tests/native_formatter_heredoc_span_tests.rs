@@ -105,6 +105,70 @@ fn range_formatting_refuses_empty_heredoc_terminator_line() {
 }
 
 #[test]
+fn range_formatting_refuses_crlf_heredoc_terminator_line() {
+    let formatter = NativeFormatter::new();
+    let source = "print <<'EOF';\r\nraw { text }\r\nEOF\r\nmy$x=1;\r\n";
+    let terminator = TextRange::new(TextPosition::new(2, 0), TextPosition::new(3, 0));
+
+    let result = formatter.format_range(source, terminator, &FormatConfig::default());
+
+    assert!(!result.changed);
+    assert_eq!(result.formatted, source);
+    assert!(result.diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == "native.format.literal_preserve_region"
+            && diagnostic.message.contains("heredoc")
+    }));
+}
+
+#[test]
+fn range_formatting_refuses_final_heredoc_terminator_without_newline() {
+    let formatter = NativeFormatter::new();
+    let source = "print <<'EOF';\nraw { text }\nEOF";
+    let terminator = TextRange::new(TextPosition::new(2, 0), TextPosition::new(2, 3));
+
+    let result = formatter.format_range(source, terminator, &FormatConfig::default());
+
+    assert!(!result.changed);
+    assert_eq!(result.formatted, source);
+    assert!(result.diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == "native.format.literal_preserve_region"
+            && diagnostic.message.contains("heredoc")
+    }));
+}
+
+#[test]
+fn range_formatting_refuses_empty_final_heredoc_terminator() {
+    let formatter = NativeFormatter::new();
+    let source = "print <<'EOF';\nEOF";
+    let terminator = TextRange::new(TextPosition::new(1, 0), TextPosition::new(1, 3));
+
+    let result = formatter.format_range(source, terminator, &FormatConfig::default());
+
+    assert!(!result.changed);
+    assert_eq!(result.formatted, source);
+    assert!(result.diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == "native.format.literal_preserve_region"
+            && diagnostic.message.contains("heredoc")
+    }));
+}
+
+#[test]
+fn range_formatting_uses_utf16_columns_without_losing_heredoc_boundary() {
+    let formatter = NativeFormatter::new();
+    let source = "my $face = \"😀\";\nprint <<'EOF';\nraw { text }\nEOF\nmy$x=1;\n";
+    let body = TextRange::new(TextPosition::new(2, 1), TextPosition::new(3, 1));
+
+    let result = formatter.format_range(source, body, &FormatConfig::default());
+
+    assert!(!result.changed);
+    assert_eq!(result.formatted, source);
+    assert!(result.diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == "native.format.literal_preserve_region"
+            && diagnostic.message.contains("heredoc")
+    }));
+}
+
+#[test]
 fn empty_heredocs_keep_each_terminator_protected_and_following_code_eligible() {
     let formatter = NativeFormatter::new();
     let source = "print <<A, <<B;\nA\nB\nmy$x=2;\n";
