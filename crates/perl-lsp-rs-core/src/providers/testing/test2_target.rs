@@ -108,6 +108,7 @@ fn is_static_target_package(value: &str) -> bool {
 fn find_bundle_target_option(raw_args: &str) -> Option<(usize, usize, &str)> {
     let bytes = raw_args.as_bytes();
     let option = b"-target";
+    let outer_group = outer_parenthesized_range(raw_args);
 
     let mut delimiters = Vec::new();
     let mut quote = None;
@@ -127,12 +128,25 @@ fn find_bundle_target_option(raw_args: &str) -> Option<(usize, usize, &str)> {
             continue;
         }
 
-        if delimiters.is_empty()
-            && (index == 0 || bytes[index - 1].is_ascii_whitespace() || bytes[index - 1] == b',')
+        let at_import_level = delimiters.is_empty()
+            || outer_group.is_some_and(|(start, end)| {
+                delimiters.as_slice() == [b'('] && index > start && index < end
+            });
+        let at_outer_group_start = outer_group.is_some_and(|(start, _)| index == start + 1);
+
+        if at_import_level
+            && (index == 0
+                || bytes[index - 1].is_ascii_whitespace()
+                || bytes[index - 1] == b','
+                || at_outer_group_start)
             && (byte == b'\'' || byte == b'"')
         {
             if let Some(option_end) = scan_quoted_value(bytes, index) {
                 let option = raw_args.get(index + 1..option_end - 1)?;
+                if is_rhs_value(bytes, index) {
+                    index = option_end;
+                    continue;
+                }
                 let after = bytes.get(option_end);
                 let has_boundary_after = after
                     .is_none_or(|byte| byte.is_ascii_whitespace() || matches!(*byte, b',' | b'='));
@@ -148,8 +162,9 @@ fn find_bundle_target_option(raw_args: &str) -> Option<(usize, usize, &str)> {
                         }
                     }
 
-                    let value_end = scan_bundle_target_value(raw_args, value_start)?;
-                    return Some((index, value_end, &raw_args[value_start..value_end]));
+                    if let Some(value_end) = scan_bundle_target_value(raw_args, value_start) {
+                        return Some((index, value_end, &raw_args[value_start..value_end]));
+                    }
                 }
                 index = option_end;
                 continue;
@@ -171,9 +186,9 @@ fn find_bundle_target_option(raw_args: &str) -> Option<(usize, usize, &str)> {
                 return None;
             }
         } else if byte == b'-'
-            && delimiters.is_empty()
+            && at_import_level
             && bytes.get(index..index + option.len()) == Some(option)
-            && option_has_boundaries(bytes, index, option.len())
+            && option_has_boundaries(bytes, index, option.len(), outer_group)
         {
             let mut value_start = index + option.len();
             while bytes.get(value_start).is_some_and(u8::is_ascii_whitespace) {
@@ -186,8 +201,9 @@ fn find_bundle_target_option(raw_args: &str) -> Option<(usize, usize, &str)> {
                 }
             }
 
-            let value_end = scan_bundle_target_value(raw_args, value_start)?;
-            return Some((index, value_end, &raw_args[value_start..value_end]));
+            if let Some(value_end) = scan_bundle_target_value(raw_args, value_start) {
+                return Some((index, value_end, &raw_args[value_start..value_end]));
+            }
         }
         index += 1;
     }
@@ -195,14 +211,39 @@ fn find_bundle_target_option(raw_args: &str) -> Option<(usize, usize, &str)> {
     None
 }
 
-fn option_has_boundaries(bytes: &[u8], start: usize, len: usize) -> bool {
+fn is_rhs_value(bytes: &[u8], start: usize) -> bool {
+    let mut cursor = start;
+    while cursor > 0 && bytes[cursor - 1].is_ascii_whitespace() {
+        cursor -= 1;
+    }
+    cursor >= 2 && bytes[cursor - 2] == b'=' && bytes[cursor - 1] == b'>'
+}
+
+fn outer_parenthesized_range(raw: &str) -> Option<(usize, usize)> {
+    let start = raw.len() - raw.trim_start().len();
+    if raw.as_bytes().get(start) != Some(&b'(') {
+        return None;
+    }
+
+    let end = scan_balanced_value(raw.as_bytes(), start)?;
+    raw.get(end..).is_some_and(|trailing| trailing.trim().is_empty()).then_some((start, end))
+}
+
+fn option_has_boundaries(
+    bytes: &[u8],
+    start: usize,
+    len: usize,
+    outer_group: Option<(usize, usize)>,
+) -> bool {
     let before_is_boundary = start == 0
         || bytes.get(start - 1).is_some_and(|byte| byte.is_ascii_whitespace() || *byte == b',');
+    let before_is_outer_group =
+        outer_group.is_some_and(|(group_start, _)| start == group_start + 1);
     let after = start + len;
     let after_is_boundary = bytes
         .get(after)
         .is_none_or(|byte| byte.is_ascii_whitespace() || matches!(*byte, b',' | b'='));
-    before_is_boundary && after_is_boundary
+    (before_is_boundary || before_is_outer_group) && after_is_boundary
 }
 
 fn scan_bundle_target_value(raw: &str, start: usize) -> Option<usize> {

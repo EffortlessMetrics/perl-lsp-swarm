@@ -385,6 +385,12 @@ mod tests {
         items.iter().map(|item| item.label.as_ref()).collect()
     }
 
+    fn has_target_alias(items: &[CompletionItem], name: &str) -> bool {
+        items
+            .iter()
+            .any(|item| item.label == name && item.detail.as_deref() == Some(TEST2_TARGET_DETAIL))
+    }
+
     #[test]
     fn framework_neutral_test_file_keeps_only_common_test_vocabulary() {
         let common = complete("i|", Some("t/example.t"));
@@ -553,18 +559,45 @@ mod tests {
     }
 
     #[test]
+    fn quoted_option_rhs_is_not_reinterpreted_as_an_option() {
+        let items = complete("use Test2::V1 -as => '-no-T2';\nT|", Some("t/example.t"));
+        assert!(labels(&items).contains(&"T2"));
+    }
+
+    #[test]
     fn quoted_target_option_preserves_aliases_and_bundle_defaults() {
         let alias = complete(
             "use Test2::V0 '-target' => { service => 'My::Service' };\nser|",
             Some("t/example.t"),
         );
-        assert!(labels(&alias).contains(&"service"));
+        assert!(has_target_alias(&alias, "service"));
 
         let defaults = complete(
             "use Test2::V0 '-target' => { service => 'My::Service' };\ni|",
             Some("t/example.t"),
         );
         assert!(labels(&defaults).contains(&"is"));
+    }
+
+    #[test]
+    fn quoted_target_rhs_does_not_hide_a_later_real_target() {
+        let items = complete(
+            "use Test2::V0 -as => '-target', -target => { service => 'My::Service' };\nser|",
+            Some("t/example.t"),
+        );
+        assert!(has_target_alias(&items, "service"));
+    }
+
+    #[test]
+    fn parenthesized_quoted_options_follow_runtime_semantics() {
+        let alias = complete(
+            "use Test2::V0 ('-target' => { service => 'My::Service' });\nser|",
+            Some("t/example.t"),
+        );
+        assert!(has_target_alias(&alias, "service"));
+
+        let no_t2 = complete("use Test2::V1 ('-no-T2');\nT|", Some("t/example.t"));
+        assert!(!labels(&no_t2).contains(&"T2"));
     }
 
     #[test]

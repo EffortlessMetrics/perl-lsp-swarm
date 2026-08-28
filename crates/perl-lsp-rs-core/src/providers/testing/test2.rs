@@ -575,11 +575,12 @@ fn v1_short_flag(raw_args: &str, flag_char: char) -> bool {
     })
 }
 
-/// Return option tokens at the import-argument level, ignoring quoted values
-/// and nested values such as `-T2 => { -as => 'custom' }`. A whole quoted
-/// option token is retained because Perl evaluates `'-no-T2'` and `-no-T2` to
-/// the same import argument.
+/// Return option tokens at the import-argument level, ignoring quoted RHS
+/// values and nested values such as `-T2 => { -as => 'custom' }`. A quoted
+/// option key or standalone option token is retained because Perl evaluates
+/// `'-no-T2'` and `-no-T2` to the same import argument.
 fn top_level_option_tokens(raw: &str) -> Vec<&str> {
+    let raw = strip_outer_parentheses(raw);
     let bytes = raw.as_bytes();
     let mut tokens = Vec::new();
     let mut delimiters = Vec::new();
@@ -610,7 +611,7 @@ fn top_level_option_tokens(raw: &str) -> Vec<&str> {
             {
                 if let Some(end) = scan_quoted_token(bytes, index) {
                     let token = &raw[index + 1..end - 1];
-                    if is_option_token(token) {
+                    if is_option_token(token) && !is_rhs_value(bytes, index) {
                         tokens.push(token);
                     }
                     index = end;
@@ -642,7 +643,7 @@ fn top_level_option_tokens(raw: &str) -> Vec<&str> {
                 }) {
                     end += 1;
                 }
-                if end > index + 1 {
+                if end > index + 1 && !is_rhs_value(bytes, index) {
                     tokens.push(&raw[index..end]);
                 }
                 index = end;
@@ -654,6 +655,56 @@ fn top_level_option_tokens(raw: &str) -> Vec<&str> {
     }
 
     tokens
+}
+
+fn is_rhs_value(bytes: &[u8], start: usize) -> bool {
+    let mut cursor = start;
+    while cursor > 0 && bytes[cursor - 1].is_ascii_whitespace() {
+        cursor -= 1;
+    }
+    cursor >= 2 && bytes[cursor - 2] == b'=' && bytes[cursor - 1] == b'>'
+}
+
+fn strip_outer_parentheses(raw: &str) -> &str {
+    let trimmed = raw.trim();
+    if trimmed.as_bytes().first() != Some(&b'(') {
+        return raw;
+    }
+
+    let bytes = trimmed.as_bytes();
+    let mut depth = 0usize;
+    let mut quote = None;
+    let mut escaped = false;
+    for (index, byte) in bytes.iter().copied().enumerate() {
+        if let Some(active_quote) = quote {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == active_quote {
+                quote = None;
+            }
+            continue;
+        }
+
+        match byte {
+            b'\'' | b'"' => quote = Some(byte),
+            b'(' => depth += 1,
+            b')' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return if trimmed[index + 1..].trim().is_empty() {
+                        &trimmed[1..index]
+                    } else {
+                        raw
+                    };
+                }
+            }
+            _ => {}
+        }
+    }
+
+    raw
 }
 
 fn scan_quoted_token(bytes: &[u8], start: usize) -> Option<usize> {
