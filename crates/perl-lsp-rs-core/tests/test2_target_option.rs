@@ -154,6 +154,16 @@ fn qualified_quoted_scalar_targets_require_literal_proof() -> TestResult {
 }
 
 #[test]
+fn separated_unary_plus_targets_consume_their_operand() -> TestResult {
+    let resolved = resolve_import("Test2::V0", "-target => + 'Foo', ok")
+        .ok_or_else(|| io::Error::other("Test2::V0 must be recognized"))?;
+    assert!(resolved.symbols.contains("ok"));
+    assert!(!resolved.symbols.contains("CLASS"));
+    assert!(!resolved.symbols.contains("Foo"));
+    Ok(())
+}
+
+#[test]
 fn named_hash_targets_preserve_defaults_and_generate_helpers() -> TestResult {
     let args = "-target => { pkg => 'Widget', other => 'Gadget' }";
     for (module, expected_default) in [("Test2::V0", "is"), ("Test2::V1", "T2")] {
@@ -528,6 +538,10 @@ fn target_helpers_reach_live_bundle_completion() {
     assert!(has_test2_completion(&qualified, "CLASS"));
     let dynamic = complete("use Test2::V0 -target => \"$ENV{TARGET}\";\nC|");
     assert!(!has_test2_completion(&dynamic, "CLASS"));
+
+    let separated_plus = complete("use Test2::V0 -target => + 'Foo', ok;\no|");
+    assert!(has_test2_completion(&separated_plus, "ok"));
+    assert!(!has_test2_completion(&separated_plus, "Foo"));
 
     let v0_hash = complete("use Test2::V0 -target => { pkg => 'Widget', other => 'Gadget' };\np|");
     assert!(has_test2_completion(&v0_hash, "plan"));

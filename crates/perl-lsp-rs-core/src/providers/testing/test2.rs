@@ -465,6 +465,15 @@ pub fn resolve_import(module: &str, raw_args: &str) -> Option<ResolvedImport> {
                             if target_starts_hash(&atoms, atom_index - 1) {
                                 continue;
                             }
+                            if value == "+" {
+                                // A separated unary-plus target owns its
+                                // operand too. Otherwise `+ 'Foo'` would
+                                // stop here and the outer export scan would
+                                // incorrectly import `Foo`.
+                                atom_index =
+                                    consume_unwrapped_target_expression(&atoms, atom_index - 1);
+                                break;
+                            }
                             if value == "(" {
                                 if let Some((next_index, truthy)) =
                                     consume_parenthesized_scalar(&atoms, atom_index - 1)
@@ -1237,6 +1246,29 @@ fn consume_parenthesized_expression(atoms: &[String], start: usize) -> usize {
         }
     }
     atoms.len()
+}
+
+/// Consume the operand of a separated unary-plus target without inferring it.
+///
+/// The target option owns the complete expression even when its first wrapper
+/// atom is separate from the operand (`+ 'Foo'` or `+ foo()`). The operand is
+/// deliberately left outside the truthiness boundary: only a direct quoted
+/// scalar or bare literal is proven by this resolver.
+fn consume_unwrapped_target_expression(atoms: &[String], start: usize) -> usize {
+    let operand = start.saturating_add(1);
+    let Some(value) = atoms.get(operand).map(String::as_str) else {
+        return atoms.len();
+    };
+    if is_quote_like_operator(value) {
+        return consume_quote_like_target(atoms, operand, value);
+    }
+    if value == "(" {
+        return consume_parenthesized_expression(atoms, operand);
+    }
+    if is_bareword(value) && atoms.get(operand + 1).map(String::as_str) == Some("(") {
+        return consume_parenthesized_expression(atoms, operand + 1);
+    }
+    operand.saturating_add(1)
 }
 
 /// Whether a scalar `-target` literal creates Test2::Tools::Target helpers.
