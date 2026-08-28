@@ -56,6 +56,11 @@ pub struct DistMetadataFacts {
 
 /// The prereq relations recognized in cpanfile / META.json.
 const RELATIONS: &[&str] = &["requires", "recommends", "suggests", "conflicts"];
+/// META 1.x phase-specific top-level prerequisite keys → canonical phase.
+const META_V1_PHASED_REQUIRES: &[(&str, &str)] = &[
+    ("configure_requires", "configure"),
+    ("build_requires", "build"),
+];
 /// cpanfile statement keywords → (relation, phase).
 const CPANFILE_KEYWORDS: &[(&str, &str, &str)] = &[
     ("configure_requires", "requires", "configure"),
@@ -98,8 +103,13 @@ pub fn parse_meta_json(file_id: FileId, content: &str) -> Option<DistMetadataFac
             }
         }
     }
-    // v1.4 flat fallback: top-level requires/recommends/... = { module: version }.
+    // v1.4 flat fallback: phase-specific *_requires plus runtime relations.
     if prereqs.is_empty() {
+        for &(key, phase) in META_V1_PHASED_REQUIRES {
+            if let Some(modules) = value.get(key) {
+                collect_modules(modules, phase, "requires", &mut prereqs);
+            }
+        }
         for relation in RELATIONS {
             if let Some(modules) = value.get(relation) {
                 collect_modules(modules, "runtime", relation, &mut prereqs);
@@ -340,6 +350,37 @@ mod tests {
         assert!(
             facts.prereqs.iter().any(|p| p.module == "Carp" && p.relation == "requires"),
             "flat top-level requires read as fallback"
+        );
+    }
+
+    #[test]
+    fn v1_4_phase_specific_prereqs_are_retained() {
+        let content = r#"{
+            "configure_requires": {"ExtUtils::MakeMaker": "6.64"},
+            "build_requires": {"Test::More": "0.88"},
+            "requires": {"Carp": "0"}
+        }"#;
+        let facts = parse_meta_json(fid(), content).unwrap();
+        let mapped = facts
+            .prereqs
+            .iter()
+            .map(|p| {
+                (
+                    p.module.as_str(),
+                    p.version.as_deref(),
+                    p.phase.as_str(),
+                    p.relation.as_str(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            mapped,
+            vec![
+                ("Test::More", Some("0.88"), "build", "requires"),
+                ("ExtUtils::MakeMaker", Some("6.64"), "configure", "requires"),
+                ("Carp", Some("0"), "runtime", "requires"),
+            ],
+            "META 1.x prerequisite keys retain phase, relation, version, and deterministic order"
         );
     }
 
