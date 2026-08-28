@@ -1514,6 +1514,15 @@ jobs:
       - name: Compile all targets (catches integration-test + bench bit-rot)
         run: just check-all-targets
 
+      # The frozen legacy parity authority is a required merge surface. Keep
+      # both integration targets here because compile-all-targets alone cannot
+      # execute their assertions, and the routed pr-fast lane is advisory.
+      - name: Legacy parity library authority (required merge surface)
+        run: cargo test -p perl-kwalitee --test legacy_parity --locked -- --nocapture
+
+      - name: Legacy parity CLI authority (required merge surface)
+        run: cargo test -p xtask --test perl_kwalitee_parity --locked -- --nocapture
+
       # Required merge surface for #7767/#7796: unit_routed_full only executes via
       # advisory pr-smoke, so stale Emacs guidance could otherwise merge while this
       # contract merely compiles. Keep the oracle on Compile All Targets.
