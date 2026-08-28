@@ -11,4 +11,4 @@
 pub mod subtest;
 pub mod tap;
 pub mod test2;
-pub mod test2_target;
+pub(crate) mod test2_target;
