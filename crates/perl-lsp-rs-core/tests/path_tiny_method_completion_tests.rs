@@ -26,7 +26,10 @@ fn default_path_factory_assignment_enables_instance_catalog() {
     assert!(has_label(&item_labels, "slurp"));
     assert!(has_label(&item_labels, "slurp_raw"));
     assert!(has_label(&item_labels, "slurp_utf8"));
-    assert!(!has_label(&item_labels, "child"), "typed API methods should respect the method prefix");
+    assert!(
+        !has_label(&item_labels, "child"),
+        "typed API methods should respect the method prefix"
+    );
 
     let slurp = items.iter().find(|item| item.label.as_ref() == "slurp");
     assert!(slurp.is_some(), "slurp completion should be present");
