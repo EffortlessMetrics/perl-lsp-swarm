@@ -87,6 +87,16 @@ fn direct_require_preserves_unicode_module_reference() {
 }
 
 #[test]
+fn direct_reference_rejects_emoji_module_names_for_use_and_require() {
+    for keyword in ["use", "require"] {
+        let line = format!("{keyword} Foo::💥;");
+        let cursor = line.find('💥').unwrap_or(0);
+
+        assert_eq!(extract_module_reference(&line, cursor), None);
+    }
+}
+
+#[test]
 fn multiline_cursor_lookup_resolves_line_local_reference_only() {
     let source = "package Demo::App;\nuse Demo::Worker;\nmy $x = 1;\n";
     let worker_cursor = source.find("Worker").unwrap_or(0);

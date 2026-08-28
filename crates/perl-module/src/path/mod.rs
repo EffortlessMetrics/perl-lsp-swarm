@@ -23,8 +23,9 @@ pub fn module_name_to_path(module_name: &str) -> String {
 /// Returns true when `module_name` is safe to map to a relative `.pm` path for @INC probing.
 ///
 /// Rejects path-shaped input, traversal segments, sigils, and other values that must not
-/// reach filesystem existence checks. Package segments use the same Unicode letter/digit
-/// identifier class as the canonical module-token parser.
+/// reach filesystem existence checks. Package segments use the lexer-compatible Unicode XID
+/// class, intentionally excluding the token parser's emoji and join-control extensions because
+/// those values are not safe filesystem lookup module names.
 #[must_use]
 pub fn is_lookup_safe_module_name(module_name: &str) -> bool {
     if module_name.is_empty() {
