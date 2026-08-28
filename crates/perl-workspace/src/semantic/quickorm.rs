@@ -145,11 +145,12 @@ fn walk_direct_statement(
         NodeKind::No { module, .. } if module == QUICKORM_MODULE => {
             context.table_package_active = false;
         }
-        NodeKind::ExpressionStatement { expression }
-            if context.table_package_active && is_direct_table_or_view_builder(expression) =>
-        {
+        NodeKind::ExpressionStatement { expression } if context.table_package_active => {
+            let Some(anchor) = direct_table_or_view_builder_anchor(expression) else {
+                return;
+            };
             let package = context.current_package.as_deref().unwrap_or("main");
-            push_qorm_table_fact(package, node, file_id, facts);
+            push_qorm_table_fact(package, anchor, file_id, facts);
             // QuickORM removes its DSL imports after the table or view package
             // is built, so a second direct builder has no QuickORM authority.
             context.table_package_active = false;
@@ -161,15 +162,29 @@ fn walk_direct_statement(
     }
 }
 
-fn is_direct_table_or_view_builder(expression: &Node) -> bool {
+fn direct_table_or_view_builder_anchor(expression: &Node) -> Option<&Node> {
     let NodeKind::FunctionCall { name, args } = &expression.kind else {
-        return false;
+        return None;
     };
     if !matches!(name.as_str(), "table" | "view") || args.is_empty() {
-        return false;
+        return None;
     }
 
-    args.iter().any(contains_builder_body)
+    let anchor = static_table_name_anchor(args.first()?)?;
+    if !args.iter().skip(1).any(contains_builder_body) {
+        return None;
+    }
+
+    Some(anchor)
+}
+
+fn static_table_name_anchor(node: &Node) -> Option<&Node> {
+    match &node.kind {
+        NodeKind::String { value, interpolated: false } if !value.trim().is_empty() => Some(node),
+        NodeKind::Identifier { name } if !name.trim().is_empty() => Some(node),
+        NodeKind::Binary { op, left, .. } if op == "=>" => static_table_name_anchor(left),
+        _ => None,
+    }
 }
 
 fn contains_builder_body(node: &Node) -> bool {
