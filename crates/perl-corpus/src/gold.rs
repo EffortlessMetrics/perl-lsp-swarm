@@ -145,6 +145,7 @@ pub struct HoverAssertion {
 
 /// On-disk representation of `expected_hover.json`
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HoverGoldExpected {
     pub version: u32,
     pub fixture: String,
@@ -234,6 +235,7 @@ pub struct GotoAssertion {
 
 /// On-disk representation of `expected_goto.json`
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GotoGoldExpected {
     pub version: u32,
     pub fixture: String,
@@ -321,6 +323,7 @@ pub struct CompletionAssertion {
 
 /// On-disk representation of `expected_completion.json`
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CompletionGoldExpected {
     pub version: u32,
     pub fixture: String,
@@ -408,6 +411,7 @@ pub struct DocumentSymbolAssertion {
 
 /// On-disk representation of `expected_symbols.json`
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DocumentSymbolGoldExpected {
     pub version: u32,
     pub fixture: String,
