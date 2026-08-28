@@ -976,6 +976,7 @@ fn split_import_piece(piece: &str) -> Vec<String> {
                     out.push(ch.to_string());
                 }
             }
+            ',' if attached_parens == 0 => flush(&mut out, &mut current),
             c if c.is_whitespace() && attached_parens == 0 => flush(&mut out, &mut current),
             _ => current.push(ch),
         }
@@ -1260,6 +1261,12 @@ fn scalar_target_is_truthy(raw: &str) -> bool {
     // "0". In particular, quoted spellings such as 'undef' and '0.0' must not
     // be confused with their unquoted false/dynamic counterparts.
     if quoted {
+        // Double-quoted interpolation is runtime-dependent, even when the
+        // resulting value might look like a package name. Single-quoted
+        // package values remain proven literals.
+        if trimmed.starts_with('"') && (value.contains('$') || value.contains('@')) {
+            return false;
+        }
         return !value.is_empty() && value != "0";
     }
 

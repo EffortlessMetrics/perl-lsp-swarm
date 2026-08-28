@@ -371,4 +371,18 @@ mod tests {
         let items = complete("use Test2::V0;\nmy $path = 'is|';\n", Some("t/example.t"));
         assert!(!labels(&items).contains(&"is"));
     }
+
+    #[test]
+    fn compact_call_like_targets_preserve_explicit_completion_only() {
+        for source in
+            ["use Test2::V0 -target => foo(), ok;\no|", "use Test2::V0 -target => (foo()), ok;\no|"]
+        {
+            let items = complete(source, Some("t/example.t"));
+            let labels = labels(&items);
+            assert!(labels.contains(&"ok"), "ok missing: {source:?}");
+            for leaked in ["CLASS", "foo", "1", "2", "is"] {
+                assert!(!labels.contains(&leaked), "{leaked} leaked: {source:?}");
+            }
+        }
+    }
 }

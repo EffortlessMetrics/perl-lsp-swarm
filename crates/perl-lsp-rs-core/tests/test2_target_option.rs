@@ -91,7 +91,9 @@ fn empty_scalar_targets_preserve_following_exports() -> TestResult {
 
 #[test]
 fn dynamic_and_uncertain_numeric_targets_do_not_generate_class() -> TestResult {
-    for target in ["$target", "0.0", "0e0", "+0", "-0", "00", "-0.0", "0e+0", "0x0"] {
+    for target in
+        ["$target", "\"$ENV{TARGET}\"", "0.0", "0e0", "+0", "-0", "00", "-0.0", "0e+0", "0x0"]
+    {
         let resolved = resolve_import("Test2::V0", &format!("-target => {target}"))
             .ok_or_else(|| io::Error::other("Test2::V0 must be recognized"))?;
 
@@ -371,6 +373,21 @@ fn whitespace_separated_call_like_targets_fail_closed() -> TestResult {
 }
 
 #[test]
+fn compact_call_like_targets_fail_closed() -> TestResult {
+    for target in ["foo()", "(foo())"] {
+        let resolved = resolve_import("Test2::V0", &format!("-target => {target}, ok"))
+            .ok_or_else(|| io::Error::other("Test2::V0 must be recognized"))?;
+
+        assert!(resolved.symbols.contains("ok"));
+        for leaked in ["CLASS", "foo", "1", "2"] {
+            assert!(!resolved.symbols.contains(leaked), "{leaked} leaked from {target}");
+        }
+        assert!(!resolved.symbols.contains("is"));
+    }
+    Ok(())
+}
+
+#[test]
 fn parenthesized_hash_targets_preserve_key_value_parity() -> TestResult {
     let resolved =
         resolve_import("Test2::V0", "-target => ( { first => 'One', second => 'Two' } ), ok")
@@ -381,6 +398,20 @@ fn parenthesized_hash_targets_preserve_key_value_parity() -> TestResult {
     assert!(resolved.symbols.contains("ok"));
     for leaked in ["One", "Two", "is", "CLASS"] {
         assert!(!resolved.symbols.contains(leaked), "{leaked} leaked from parenthesized hash");
+    }
+    Ok(())
+}
+
+#[test]
+fn compact_parenthesized_hash_targets_preserve_key_value_parity() -> TestResult {
+    let resolved = resolve_import("Test2::V0", "-target => ({first=>'One',second=>'Two'}), ok")
+        .ok_or_else(|| io::Error::other("Test2::V0 must be recognized"))?;
+
+    for expected in ["first", "second", "ok"] {
+        assert!(resolved.symbols.contains(expected), "{expected} missing");
+    }
+    for leaked in ["One", "Two", "is", "CLASS"] {
+        assert!(!resolved.symbols.contains(leaked), "{leaked} leaked");
     }
     Ok(())
 }
@@ -415,6 +446,8 @@ fn malformed_target_structures_fail_closed_without_leaking_atoms() -> TestResult
     assert!(!malformed_hash.symbols.contains("leaked_helper"));
     assert!(!malformed_hash.symbols.contains("Widget"));
     assert!(!malformed_hash.symbols.contains("trailing_name"));
+    assert!(malformed_hash.symbols.contains("ok"));
+    assert!(malformed_hash.symbols.contains("is"));
 
     let malformed_parenthesized =
         resolve_import("Test2::V0", "-target => ('LeakedFunction', trailing_name")
@@ -422,6 +455,8 @@ fn malformed_target_structures_fail_closed_without_leaking_atoms() -> TestResult
     assert!(!malformed_parenthesized.symbols.contains("CLASS"));
     assert!(!malformed_parenthesized.symbols.contains("LeakedFunction"));
     assert!(!malformed_parenthesized.symbols.contains("trailing_name"));
+    assert!(malformed_parenthesized.symbols.contains("ok"));
+    assert!(malformed_parenthesized.symbols.contains("is"));
     Ok(())
 }
 
@@ -563,4 +598,14 @@ fn target_helpers_reach_live_bundle_completion() {
     assert!(!has_test2_completion(&call_like, "CLASS"));
     let call_like_name = complete("use Test2::V0 -target => foo ();\nf|");
     assert!(!has_test2_completion(&call_like_name, "foo"));
+
+    for source in
+        ["use Test2::V0 -target => foo(), ok;\n|", "use Test2::V0 -target => (foo()), ok;\n|"]
+    {
+        let completions = complete(source);
+        assert!(has_test2_completion(&completions, "ok"), "ok missing: {source:?}");
+        for leaked in ["CLASS", "foo", "1", "2", "is"] {
+            assert!(!has_test2_completion(&completions, leaked), "{leaked} leaked: {source:?}");
+        }
+    }
 }
