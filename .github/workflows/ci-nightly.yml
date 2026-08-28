@@ -181,7 +181,7 @@ jobs:
         # | select(.kind == ["bench"])`) -- since this REPLACES the blanket
         # `cargo bench --workspace`, an omitted target here is silent
         # coverage loss the old command wouldn't have had. Verified against
-        # the current metadata (14 bench targets, all 14 listed below); if a
+        # the current metadata (15 bench targets, all 15 listed below); if a
         # new bench target is added to the workspace, add it here too.
         export NATIVE_PIPELINE_RUN_ID="${GITHUB_RUN_ID}-${GITHUB_SHA}"
         declare -a BENCH_TARGETS=(
