@@ -145,16 +145,30 @@ Input:
 
 Allowed changes:
 
-- docs or build metadata experiments only when they do not create
-  `crates/lsp-stack`
+- docs
+- a committed, non-shipping isolated audit fixture under
+  `tests/fixtures/lsp-stack-set-a-audit/`, or an equivalently reviewable
+  repository command that constructs the same scratch crate
+- no `crates/lsp-stack`
 - no production code movement
+
+The preferred fixture is a self-contained Cargo package with its own empty
+`[workspace]`, its own lockfile, and one direct dependency: `serde_json`. Its
+`src/lib.rs` must import the audited production file by path so the exact
+candidate source and its colocated tests compile without copying or editing it.
+It must not inherit root workspace dependencies, features, build scripts, or
+package metadata.
 
 Acceptance:
 
-- the Set A source compiles with only `std` and `serde_json`
-- no `perl-*` dependency in the candidate set
-- no provider, parser, DAP, release, or package dependency in the candidate set
+- the Set A source compiles and its colocated tests pass through the isolated
+  manifest
+- the isolated package's only direct external dependency is `serde_json`
+- no `perl-*` dependency appears in the isolated dependency graph
+- no provider, parser, DAP, release, or package dependency appears in the
+  isolated dependency graph
 - dependency additions are documented and language-neutral
+- checking `perl-lsp-rs-core` alone is not reported as dependency-closure proof
 - static inspection is not reported as dependency-closure proof
 
 Proof:
@@ -162,12 +176,20 @@ Proof:
 ```bash
 git diff --check
 ./scripts/cargo-safe check -p perl-lsp-rs-core --all-targets --profile agent --locked
+cargo metadata --manifest-path tests/fixtures/lsp-stack-set-a-audit/Cargo.toml --format-version 1 --no-deps
+cargo tree --manifest-path tests/fixtures/lsp-stack-set-a-audit/Cargo.toml --edges normal
+cargo test --manifest-path tests/fixtures/lsp-stack-set-a-audit/Cargo.toml --all-targets --locked
 ```
+
+If PR 3 uses a repository command instead of the preferred fixture path, that
+command must emit the scratch manifest and dependency graph and compile and run
+the candidate's colocated tests. A prose inspection or root-workspace check is
+not an equivalent proof.
 
 Rollback:
 
-Revert the audit. Keep candidates in the current app until the dependency
-boundary is clean.
+Revert the audit fixture or command. Keep candidates in the current app until
+the dependency boundary is clean.
 
 ### PR 4: Crate scaffold
 
@@ -215,13 +237,15 @@ Candidate order:
 
 Acceptance:
 
+- the moved tests run from `lsp-stack` and prove the same parse/serialize
+  behavior
 - existing current-app tests pass
-- moved tests prove the same parse/serialize behavior
 - no capability or provider behavior changes
 
 Proof:
 
 ```bash
+./scripts/cargo-safe test -p lsp-stack --all-targets --profile agent --locked
 ./scripts/cargo-safe test -p perl-lsp-rs-core --profile agent --locked
 ./scripts/cargo-safe test -p perl-lsp-rs --test lsp_registration_tests --profile agent --locked
 ./scripts/cargo-safe check -p perl-lsp-rs --all-targets --profile agent --locked
@@ -243,7 +267,7 @@ reviewable changes:
 2. separate standards-only errors and method names from provider, product, and
    test extensions
 3. preserve current public re-exports and JSON-RPC wire behavior
-4. re-run a PR 3-style dependency audit for the resulting Set B
+4. re-run a PR 3-style isolated dependency audit for the resulting Set B
 5. move the neutral JSON-RPC primitives only after that audit passes
 
 These are not transport changes and must not be bundled with framing. An
@@ -251,13 +275,19 @@ in-place blocker-removal PR may change module ownership inside
 `perl-lsp-rs-core`, but it must not move behavior into `lsp-stack` before the
 dependency audit is green.
 
-Minimum proof:
+Minimum proof for in-place blocker removal:
 
 ```bash
 ./scripts/cargo-safe test -p perl-lsp-rs-core --profile agent --locked
 ./scripts/cargo-safe test -p perl-lsp-rs --test lsp_registration_tests --profile agent --locked
 ./scripts/cargo-safe check -p perl-lsp-rs --all-targets --profile agent --locked
 git diff --check
+```
+
+Any Set B PR that moves source or tests into `lsp-stack` must also run:
+
+```bash
+./scripts/cargo-safe test -p lsp-stack --all-targets --profile agent --locked
 ```
 
 ### PR 6: Transport/framing move
@@ -270,6 +300,7 @@ proven.
 Acceptance:
 
 - no Perl provider imports
+- moved framing tests run from `lsp-stack`
 - request/response framing tests pass
 - raw RPC receipt remains green
 - `$/perl-lsp/clientResponse` conversion remains in the current-app adapter
@@ -278,6 +309,7 @@ Acceptance:
 Proof:
 
 ```bash
+./scripts/cargo-safe test -p lsp-stack --all-targets --profile agent --locked
 ./scripts/cargo-safe test -p perl-lsp-rs --test lsp_registration_tests --profile agent --locked
 PERL_LSP_E2E=1 PERL_LSP_DIAGNOSTIC_DEBOUNCE_MS=0 PERL_LSP_DIAGNOSTIC_MODE=syntax-only cargo test -p perl-lsp-ux-tests --test ux_latency_raw_rpc -- --test-threads=1 --nocapture
 git diff --check
@@ -296,6 +328,7 @@ they are language-neutral.
 
 Acceptance:
 
+- moved runtime tests run from `lsp-stack`
 - file-watcher tuning still gates only file watchers
 - inline-completion dynamic registration is not suppressed by watcher tuning
 - generation-aware stale-read cancellation still passes existing receipts
@@ -305,6 +338,7 @@ Acceptance:
 Proof:
 
 ```bash
+./scripts/cargo-safe test -p lsp-stack --all-targets --profile agent --locked
 ./scripts/cargo-safe test -p perl-lsp-rs --test lsp_registration_tests --profile agent --locked
 PERL_LSP_E2E=1 PERL_LSP_DIAGNOSTIC_DEBOUNCE_MS=0 PERL_LSP_DIAGNOSTIC_MODE=syntax-only cargo test -p perl-lsp-ux-tests --test ux_neovim_lean_startup_trace -- --test-threads=1 --nocapture
 git diff --check
@@ -330,6 +364,7 @@ Acceptance:
 Proof:
 
 ```bash
+./scripts/cargo-safe test -p lsp-stack --all-targets --profile agent --locked
 ./scripts/cargo-safe check -p perl-lsp-rs --all-targets --profile agent --locked
 ./scripts/cargo-safe test -p perl-lsp-rs --test lsp_inline_completion_registration_tests --profile agent --locked
 ./scripts/cargo-safe test -p perl-lsp-rs --test lsp_registration_tests --profile agent --locked
@@ -347,6 +382,8 @@ is in the extracted primitive.
 - creating `crates/lsp-stack` before the boundary and audits land
 - moving code in the boundary-docs or static-audit PR
 - adding Perl dependencies to future `lsp-stack`
+- accepting a root-workspace check as proof of an isolated dependency boundary
+- moving tests without running them from the destination crate
 - treating a generic module name as proof of a language-neutral boundary
 - changing inline-completion behavior while extracting infrastructure
 - changing DAP while extracting LSP infrastructure
