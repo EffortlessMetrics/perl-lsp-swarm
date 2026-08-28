@@ -76,7 +76,10 @@ fn is_perl_source_file(path: &Path) -> bool {
     is_perl_source_path(path)
 }
 
-#[cfg(feature = "workspace")]
+// Production classification goes through `read_perl_source_file`'s
+// same-object byte classification; this URI-shaped wrapper is retained for
+// the test suite that pins the URI-to-disk classification contract.
+#[cfg(all(feature = "workspace", test))]
 fn is_perl_source_uri_on_disk(uri: &str) -> bool {
     uri_to_fs_path(uri).is_some_and(|path| is_perl_source_path(&path))
 }
@@ -126,10 +129,29 @@ pub(crate) fn read_watched_file_content(uri: &str, purpose: &str) -> Option<Stri
 
 #[cfg(feature = "workspace")]
 fn read_perl_source_file(path: &Path) -> std::io::Result<Option<String>> {
+    // Screen non-regular objects before opening: opening a FIFO for reading
+    // can block on Unix, and watcher/discovery threads call this helper
+    // directly. Classification still decides from actual bytes below, so an
+    // object swapped into this screen window stays fail-closed.
+    if let Ok(metadata) = std::fs::metadata(path)
+        && !metadata.is_file()
+    {
+        return Ok(None);
+    }
     let mut file = std::fs::File::open(path)?;
-    let mut bytes = Vec::new();
+    // Classify from a bounded prefix before paying for an unbounded read of a
+    // large extensionless non-Perl artifact. `is_perl_source_bytes` inspects
+    // only the shebang window, so the prefix is sufficient for every path it
+    // can classify, and recognized extensions short-circuit on the path.
+    const CLASSIFICATION_PROBE_BYTES: u64 = 4096;
+    let mut prefix = Vec::new();
+    (&mut file).take(CLASSIFICATION_PROBE_BYTES).read_to_end(&mut prefix)?;
+    if !is_perl_source_bytes(path, &prefix) {
+        return Ok(None);
+    }
+    let mut bytes = prefix;
     file.read_to_end(&mut bytes)?;
-    Ok(is_perl_source_bytes(path, &bytes).then(|| decode_text_bytes(&bytes)))
+    Ok(Some(decode_text_bytes(&bytes)))
 }
 
 /// RAII guard that clears the `indexing_in_progress` flag on drop.
@@ -1702,11 +1724,11 @@ impl LspServer {
         // and therefore retain buffer authority.
         #[cfg(feature = "workspace")]
         if let Some(coordinator) = self.coordinator() {
-            let is_perl_source = if let Some(path) = uri_to_fs_path(uri) {
+            let disk_classification: Option<bool> = if let Some(path) = uri_to_fs_path(uri) {
                 match read_perl_source_file(&path) {
                     Ok(content) => {
                         loaded_content = content;
-                        loaded_content.is_some()
+                        Some(loaded_content.is_some())
                     }
                     Err(e) => {
                         tracing::debug!(
@@ -1720,11 +1742,16 @@ impl LspServer {
                                 coordinator.index().clear_file(uri);
                             }
                         }
-                        false
+                        // A transient read failure (save/replace window,
+                        // permission change, sharing violation) must not evict
+                        // existing facts: keep prior index state until a later
+                        // event confirms the disk content, mirroring the
+                        // rename destination branch.
+                        None
                     }
                 }
             } else {
-                false
+                Some(false)
             };
 
             // Re-check after the disk read/classification. If didOpen raced
@@ -1744,11 +1771,14 @@ impl LspServer {
             }
 
             let workspace_index = coordinator.index();
-            workspace_index.clear_file(uri);
+            // An unknown disk state (transient read failure above) keeps the
+            // existing facts instead of clearing them.
+            if let Some(is_perl_source) = disk_classification {
+                workspace_index.clear_file(uri);
 
-            // Re-index the file if it is a Perl source file.
-            if is_perl_source {
-                if let Ok(url) = url::Url::parse(uri)
+                // Re-index the file if it is a Perl source file.
+                if is_perl_source
+                    && let Ok(url) = url::Url::parse(uri)
                     && let Some(content) = loaded_content.as_ref()
                 {
                     match workspace_index.index_file(url, content.clone()) {
@@ -3030,6 +3060,67 @@ mod tests {
                 .len(),
             1,
             "renames must retain the new extensionless file identity"
+        );
+        Ok(())
+    }
+
+    #[cfg(all(feature = "workspace", unix))]
+    #[test]
+    fn changed_events_retain_facts_when_the_disk_read_fails()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir()?;
+        let script_path = directory.path().join("transient-tool");
+        let script_uri = url::Url::from_file_path(&script_path).map_err(|_| "invalid URI")?;
+        std::fs::write(&script_path, "#!/usr/bin/env perl\nsub transient_tool { 1 }\n1;\n")?;
+
+        let mut server = LspServer::new();
+        server.index_coordinator =
+            Some(std::sync::Arc::new(IndexCoordinator::with_limits_and_caps(
+                IndexResourceLimits::default(),
+                IndexPerformanceCaps::default(),
+            )));
+
+        server.handle_did_change_watched_files(Some(json!({
+            "changes": [{ "uri": script_uri.to_string(), "type": 2 }]
+        })))?;
+        let index = server.coordinator().ok_or("missing index coordinator")?.index();
+        assert!(
+            index
+                .file_symbols(script_uri.as_str())
+                .iter()
+                .any(|symbol| symbol.name == "transient_tool"),
+            "the readable script must be indexed by its changed event"
+        );
+
+        // A permission change makes the next read fail with an error that is
+        // not NotFound. The facts indexed before the failure must survive the
+        // event instead of being evicted as confirmed non-Perl content.
+        std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o000))?;
+        server.handle_did_change_watched_files(Some(json!({
+            "changes": [{ "uri": script_uri.to_string(), "type": 2 }]
+        })))?;
+        assert!(
+            index
+                .file_symbols(script_uri.as_str())
+                .iter()
+                .any(|symbol| symbol.name == "transient_tool"),
+            "a transient read failure must retain existing facts"
+        );
+
+        // A later confirmed read still reconciles the index.
+        std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o644))?;
+        std::fs::write(&script_path, "#!/usr/bin/env perl\nsub transient_tool_v2 { 1 }\n1;\n")?;
+        server.handle_did_change_watched_files(Some(json!({
+            "changes": [{ "uri": script_uri.to_string(), "type": 2 }]
+        })))?;
+        assert!(
+            index
+                .file_symbols(script_uri.as_str())
+                .iter()
+                .any(|symbol| symbol.name == "transient_tool_v2"),
+            "a confirmed later read must refresh the retained facts"
         );
         Ok(())
     }

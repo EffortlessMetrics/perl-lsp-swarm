@@ -205,6 +205,18 @@ fn is_extensionless_perl_script(path: &Path) -> bool {
 }
 
 fn has_perl_shebang(path: &Path) -> bool {
+    // Screen non-regular objects before opening: opening a FIFO for reading
+    // blocks on Unix until a writer appears, which would stall discovery and
+    // watcher threads before the classification below can run. The opened
+    // object is still validated after open, so an object swapped into this
+    // screen window remains fail-closed.
+    match std::fs::metadata(path) {
+        Ok(metadata) if metadata.is_file() => {}
+        Ok(_) => return false,
+        // Keep the open's own authoritative failure handling for screen
+        // errors (broken symlinks, permission changes) unchanged.
+        Err(_) => {}
+    }
     let Ok(file) = std::fs::File::open(path) else {
         // Permission and other open failures are deliberately fail-closed.
         return false;
@@ -251,16 +263,25 @@ fn is_perl_shebang_line(line: &str) -> bool {
         return false;
     }
 
-    let Some(command) = words.next() else {
+    // GNU `env` accepts options and NAME=VALUE assignments before the command,
+    // both directly (`#!/usr/bin/env -i perl`) and inside a split `-S` string
+    // (`#!/usr/bin/env -S -i perl`, `#!/usr/bin/env -S FOO=bar perl`). Scan
+    // past them so the first real command word is classified.
+    let mut split_string = false;
+    let mut command = None;
+    for word in words {
+        if !split_string && word == "-S" {
+            split_string = true;
+            continue;
+        }
+        if word.starts_with('-') || word.contains('=') {
+            continue;
+        }
+        command = Some(word);
+        break;
+    }
+    let Some(command) = command else {
         return false;
-    };
-    let command = if command == "-S" {
-        let Some(command) = words.next() else {
-            return false;
-        };
-        command
-    } else {
-        command
     };
     let command = perl_interpreter_name(command);
     is_perl_interpreter_name(command)
@@ -289,7 +310,26 @@ fn is_perl_interpreter_name(name: &str) -> bool {
     let mut components = version.split('.');
     components.next() == Some("5")
         && components.all(|component| {
-            !component.is_empty() && component.bytes().all(|byte| byte.is_ascii_digit())
+            let digits = component
+                .find(|character: char| !character.is_ascii_digit())
+                .unwrap_or(component.len());
+            if digits == 0 {
+                return false;
+            }
+            match component[digits..].strip_prefix('-') {
+                // Distro builds append a platform qualifier to the numeric
+                // version (`perl5.38-x86_64-linux-gnu`); accept lowercase
+                // alphanumerics, '_', and '.' after the separating '-'.
+                Some(qualifier) if !qualifier.is_empty() => qualifier.bytes().all(|byte| {
+                    byte.is_ascii_lowercase()
+                        || byte.is_ascii_digit()
+                        || byte == b'_'
+                        || byte == b'-'
+                }),
+                // A component that is not purely numeric and carries no
+                // qualifier (`5foo`) is not a versioned Perl interpreter.
+                _ => digits == component.len(),
+            }
         })
 }
 
@@ -400,6 +440,25 @@ mod tests {
         assert!(!is_perl_shebang_line("#!/usr/bin/perl6"));
         assert!(!is_perl_shebang_line("#!/bin/sh # perl"));
         assert!(!is_perl_shebang_line("use strict;"));
+    }
+
+    #[test]
+    fn accepts_distro_qualified_versioned_interpreters() {
+        assert!(is_perl_shebang_line("#!/usr/bin/perl5.38-x86_64-linux-gnu"));
+        assert!(is_perl_shebang_line("#!/usr/bin/perl5.40.0-rc2"));
+        assert!(is_perl_shebang_line(r"#!C:\Perl\bin\Perl5.40.exe"));
+        assert!(!is_perl_shebang_line("#!/usr/bin/perl5foo"));
+        assert!(!is_perl_shebang_line("#!/usr/bin/perl5-"));
+        assert!(!is_perl_shebang_line("#!/usr/bin/perl5.38-x86_64!"));
+    }
+
+    #[test]
+    fn skips_env_options_and_assignments_before_command() {
+        assert!(is_perl_shebang_line("#!/usr/bin/env -S -i perl"));
+        assert!(is_perl_shebang_line("#!/usr/bin/env -S FOO=bar perl"));
+        assert!(is_perl_shebang_line("#!/usr/bin/env -i perl"));
+        assert!(is_perl_shebang_line("#!/usr/bin/env --split-string perl -w"));
+        assert!(!is_perl_shebang_line("#!/usr/bin/env -S -i echo"));
     }
 
     #[test]
