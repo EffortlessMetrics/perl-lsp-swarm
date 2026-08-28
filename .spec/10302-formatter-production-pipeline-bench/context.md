@@ -18,7 +18,7 @@ variance, adapter double-invocation, helper-only benchmarking). Installed
 first-useful journeys record end-to-end latency only and cannot localize a
 regression.
 
-## Governing evidence (2026-08-28, origin/main@a9664af790888333efbe50a042fa060f3cc2d171; candidate head 3ed2da0a25f5bb7e96b1fde782ce0e5c15a74417)
+## Governing evidence (2026-08-28, origin/main@a9664af790888333efbe50a042fa060f3cc2d171; candidate head 159da8901d49e2fd7b22cf8721a7440cd0e4260f)
 
 - Production seams to pin invocation counts against:
   `crates/perl-lsp-rs-core/src/providers/formatting/formatting.rs`
@@ -110,7 +110,8 @@ evidence:
    invocation-test artifact and the complete vector matrix remain
    `NOT_PROVEN`. Benches live in
    `crates/perl-lsp-perltidy/benches/native_pipeline_benchmark.rs`
-   over a checked-in authoritative registry keyed by canonical Criterion ID.
+   over the current procedural `bench_rows()` subjects. A checked-in authoritative
+   registry is not present in this candidate and remains `NOT_PROVEN`.
    Its completeness test covers every named #10302 member:
    module/script/test/PSGI/data-processing; compact/multiline;
    delimited/statement/expression/list-operator; comment/trivia/opaque;
@@ -170,35 +171,37 @@ moving creation after the loop or dropping/diverging an argument fails.
 Per-subject receipt identity is not present today: `extract-criterion.py`
 keeps Criterion timing plus global Git SHA/dirty state, OS, and Rust version,
 and `format-results.py` does not recover fixture digest, config fingerprint,
-or engine. NPC-008 is therefore `NOT_PROVEN`. The selected implementation has
-two distinct artifacts keyed by canonical Criterion ID: a checked-in
-authoritative `native_pipeline_subjects.v1.json` registry, and a runtime-
-generated `target/criterion/native-pipeline-measurements.v1.json` sidecar.
-The sidecar carries schema/run and observed identity, work/edit/depth/
-invocation counters, allocation measurements and supported-platform state,
-and named source-parse/render/formatted-parse/edit-derivation/classification/
-total elapsed fields. It has exactly one row per registry
-subject, produced by a dedicated serialized receipt pass outside Criterion's
-repeated timing iterations; Criterion timing stays separate and joins by
-canonical ID. Strict extraction takes both paths and an expected run ID,
-requires a 1:1 Criterion/registry/sidecar join, and fails missing,
-duplicate, stale, unmatched, or schema-mismatched rows before the formatter-
-results path preserves every field. After strict extraction,
-`format-results.py latest.json --receipt` writes a receipt file and the planned
-`validate-formatter-receipt.py` checks receipt + registry + sidecar + expected
-run/ID fail-closed, requiring every formatter row to retain identity,
-counters, allocation/status, and all stage/total timing fields.
+or engine. NPC-008 is therefore `NOT_PROVEN`. The selected implementation does
+not provide the checked-in `native_pipeline_subjects.v1.json` registry or the
+runtime-generated `target/criterion/native-pipeline-measurements.v1.json`
+sidecar/strict join. Those are future #10302 work, not delivered behavior.
+The future sidecar contract would carry schema/run and observed identity,
+work/edit/depth/invocation counters, allocation measurements and
+supported-platform state, plus named source-parse/render/formatted-parse/
+edit-derivation/classification/total elapsed fields. It would require exactly
+one row per registry subject, produced by a dedicated serialized receipt pass
+outside Criterion's repeated timing iterations; Criterion timing would stay
+separate and join by canonical ID. Future strict extraction would take both
+paths and an expected run ID, require a 1:1 Criterion/registry/sidecar join,
+and fail missing, duplicate, stale, unmatched, or schema-mismatched rows
+before a future formatter-results receipt path preserves every field. The
+planned `format-results.py latest.json --receipt` and
+`validate-formatter-receipt.py` steps are not present in this candidate and
+remain `NOT_PROVEN`.
 
-Allocation uses a separate durable seam inside the benchmark executable:
+A future allocation implementation is intended to use a separate durable seam
+inside the benchmark executable:
 `crates/perl-lsp-perltidy/benches/support/allocation_tracker.rs`, adapting the
 counting global allocator in `xtask/src/allocation_tracker.rs`.
-One dedicated receipt pass per registry subject is serialized outside
-Criterion's repeated timing iterations; warm-up occurs before reset; the
-allocator window begins immediately before the production `format_*_typed`
-call and is snapshotted immediately after; sidecar serialization occurs
-outside it. Criterion timing is joined separately. The
-sidecar records `allocation_count`, `allocated_bytes`, and `peak_delta_bytes`
-with a supported-platform tag. Unsupported/unavailable measurement stays
+That future implementation would serialize one dedicated receipt pass per
+registry subject outside Criterion's repeated timing iterations; warm-up would
+occur before reset; the allocator window would begin immediately before the
+production `format_*_typed`
+call and would be snapshotted immediately after; sidecar serialization would
+occur outside it. Criterion timing would be joined separately. The future
+sidecar would record `allocation_count`, `allocated_bytes`, and
+`peak_delta_bytes` with a supported-platform tag. Unsupported/unavailable
+measurement stays
 `NOT_PROVEN`. Because the benchmark allocator requires `unsafe impl
 GlobalAlloc`, unsafe trait methods, and forwarding blocks, the implementation
 must place `SAFETY:` comments at each site and add three distinct cargo-allow
@@ -239,8 +242,8 @@ Sibling spec `.spec/10301-formatter-property-fuzz-harness/` shares only
 subject vocabulary; file sets are disjoint (this claim: `benches/`,
 additive `src/native/` counter plumbing, crate `Cargo.toml` dev-dep,
 provider-facing counted proof in `crates/perl-lsp-perltidy/tests/native_pipeline_counters_tests.rs`,
-provider collector forwarding, checked-in subject registry, runtime
-measurement sidecar schema, benchmark-only allocation tracker,
+provider collector forwarding, future subject-registry/sidecar schema,
+benchmark-only allocation tracker,
 extractor/formatter receipt-schema fixtures and three-way join,
 `.github/workflows/ci-nightly.yml` BENCH_TARGETS and strict-ID entries, canary
 test file).

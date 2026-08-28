@@ -1,7 +1,7 @@
 # Checklist: #10302 production-path formatter performance receipt
 
 Base pin: `origin/main@a9664af790888333efbe50a042fa060f3cc2d171` (2026-08-28).
-Candidate head: `3ed2da0a25f5bb7e96b1fde782ce0e5c15a74417` (PR #13190).
+Candidate head: `159da8901d49e2fd7b22cf8721a7440cd0e4260f` (PR #13190).
 Composition sibling: #10301 fuzz/property spec
 (`.spec/10301-formatter-property-fuzz-harness/`) — disjoint file set.
 PR #13190 delivers a bounded runtime-counter and benchmark-enrollment slice.
@@ -69,13 +69,14 @@ Planned surface:
       `[[bench]] name = "native_pipeline_benchmark" harness = false`
 - [ ] `crates/perl-lsp-perltidy/benches/native_pipeline_benchmark.rs` +
       `benches/support/perf_subjects.rs`: benchmark executable and subject
-      loader over the authoritative registry
-      and an actual `benchmark_group("native_pipeline_document")` /
+      loader currently use procedural `bench_rows()` subjects. The authoritative
+      checked-in registry remains a future #10302 contract and `NOT_PROVEN`.
+      The delivered benchmark has an actual `benchmark_group("native_pipeline_document")` /
       `bench_function("delimited_n32_lf_tabs", ...)` pair producing
       representative Criterion ID
       `native_pipeline_document/delimited_n32_lf_tabs` (the group/name pair
       is the emitted Criterion layout)
-- [ ] Checked-in authoritative
+- [ ] Future #10302 contract (not delivered by PR #13190): checked-in authoritative
       `crates/perl-lsp-perltidy/benches/native_pipeline_subjects.v1.json`, keyed
       by canonical Criterion ID, covers every required matrix member:
       module/script/test/PSGI/data-processing; compact/multiline;
