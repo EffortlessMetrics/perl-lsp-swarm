@@ -72,11 +72,13 @@ const OFFICIAL_CHANGELOG_SURFACES: &[ChangelogSurface] = &[
         row_markers: &["`SnippetTextEdit` workspace edits"],
         required_text: &[],
     },
-    // The watcher row owns the explicit document-selector non-claim; watcher
-    // support does not substitute for the official document-filter surface.
+    // The official bullet is about document and notebook filters. Notebook
+    // selectors are classified as not applicable; document-selector support
+    // remains an explicit non-claim. The implemented 3.17 file-watcher
+    // RelativePattern surface must not substitute for either selector surface.
     ChangelogSurface {
         id: "relative_patterns_in_document_filters",
-        row_markers: &["RelativePattern watcher registrations", "Notebook 3.18 additions"],
+        row_markers: &["Notebook 3.18 additions"],
         required_text: &["Document-selector `RelativePattern` support remains unclaimed."],
     },
     ChangelogSurface {
