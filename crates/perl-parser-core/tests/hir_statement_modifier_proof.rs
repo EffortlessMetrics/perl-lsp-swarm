@@ -245,7 +245,8 @@ fn postfix_modifiers_preserve_exact_body_hir_topology_and_sources() -> TestResul
             case.body_source
         );
         assert_eq!(
-            condition_variable.name, case.condition_name,
+            condition_variable.name,
+            case.condition_name,
             "wrong condition variable for {:?}",
             case.body_source
         );
