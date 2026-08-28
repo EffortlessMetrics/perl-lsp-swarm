@@ -87,6 +87,62 @@ fn builder_retains_meta_v1_configure_build_and_runtime_phases() {
 }
 
 #[test]
+fn builder_v2_prereqs_suppress_flat_v1_fallback() {
+    let model = build(
+        "meta-v2-precedence",
+        &[(
+            "META.json",
+            r#"{
+                "prereqs": {"runtime": {"requires": {"V2::Only": "1"}}},
+                "configure_requires": {"V1::Only": "1"},
+                "requires": {"V1::Runtime": "1"}
+            }"#,
+        )],
+        FactClasses::FILES | FactClasses::DIST,
+    );
+    let facts = model
+        .dist_metadata
+        .iter()
+        .find(|d| d.source == perl_workspace_core::DistMetadataSource::MetaJson)
+        .unwrap();
+
+    assert_eq!(facts.prereqs.len(), 1);
+    assert_eq!(facts.prereqs[0].module, "V2::Only");
+    assert!(!facts.prereqs.iter().any(|p| p.module.starts_with("V1::")));
+}
+
+#[test]
+fn builder_malformed_v2_maps_fall_back_without_fabricated_facts() {
+    let model = build(
+        "meta-malformed-v2",
+        &[(
+            "META.json",
+            r#"{
+                "prereqs": {
+                    "runtime": {"requires": {"Not::A::Version": []}},
+                    "test": "not a relation map"
+                },
+                "configure_requires": {"V1::Only": "1"},
+                "build_requires": "not a module map",
+                "requires": {"V1::Runtime": "1"}
+            }"#,
+        )],
+        FactClasses::FILES | FactClasses::DIST,
+    );
+    let facts = model
+        .dist_metadata
+        .iter()
+        .find(|d| d.source == perl_workspace_core::DistMetadataSource::MetaJson)
+        .unwrap();
+
+    assert_eq!(
+        facts.prereqs.iter().map(|p| p.module.as_str()).collect::<Vec<_>>(),
+        vec!["V1::Only", "V1::Runtime"]
+    );
+    assert!(!facts.prereqs.iter().any(|p| p.module == "Not::A::Version"));
+}
+
+#[test]
 fn builder_extracts_cpanfile_facts() {
     let model = build(
         "cpan",

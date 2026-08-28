@@ -92,6 +92,7 @@ pub fn parse_meta_json(file_id: FileId, content: &str) -> Option<DistMetadataFac
     };
 
     let mut prereqs = Vec::new();
+    let mut recovered_v2_entries = false;
     // v2: prereqs[phase][relation] = { module: version }.
     if let Some(serde_json::Value::Object(phases)) = value.get("prereqs") {
         for (phase, relations) in phases {
@@ -100,20 +101,20 @@ pub fn parse_meta_json(file_id: FileId, content: &str) -> Option<DistMetadataFac
                 if !RELATIONS.contains(&relation.as_str()) {
                     continue;
                 }
-                collect_modules(modules, phase, relation, &mut prereqs);
+                recovered_v2_entries |= collect_modules(modules, phase, relation, &mut prereqs);
             }
         }
     }
     // v1.4 flat fallback: phase-specific *_requires plus runtime relations.
-    if prereqs.is_empty() {
+    if !recovered_v2_entries {
         for &(key, phase) in META_V1_PHASED_REQUIRES {
             if let Some(modules) = value.get(key) {
-                collect_modules(modules, phase, "requires", &mut prereqs);
+                let _ = collect_modules(modules, phase, "requires", &mut prereqs);
             }
         }
         for relation in RELATIONS {
             if let Some(modules) = value.get(relation) {
-                collect_modules(modules, "runtime", relation, &mut prereqs);
+                let _ = collect_modules(modules, "runtime", relation, &mut prereqs);
             }
         }
     }
@@ -232,16 +233,20 @@ fn collect_modules(
     phase: &str,
     relation: &str,
     out: &mut Vec<Prereq>,
-) {
-    let serde_json::Value::Object(map) = modules else { return };
+) -> bool {
+    let serde_json::Value::Object(map) = modules else { return false };
+    let mut recovered = false;
     for (module, version) in map {
+        let Some(version) = json_scalar_string(version) else { continue };
         out.push(Prereq {
             module: module.clone(),
-            version: json_scalar_string(version),
+            version: Some(version),
             phase: phase.to_string(),
             relation: relation.to_string(),
         });
+        recovered = true;
     }
+    recovered
 }
 
 /// A JSON value as a string, only if it *is* a string.
