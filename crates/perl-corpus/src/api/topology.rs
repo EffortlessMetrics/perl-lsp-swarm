@@ -1180,6 +1180,64 @@ mod tests {
     }
 
     #[test]
+    fn deserialization_rejects_invalid_asset_kind_fields() {
+        let cases = [
+            (
+                "missing kind",
+                r#"{"schema_version":1,"assets":[{"id":"crates/perl-corpus/fuzz/case.txt","layer":"fuzz","relative_path":"crates/perl-corpus/fuzz/case.txt","requirement":"required"}]}"#,
+            ),
+            (
+                "extra kind field",
+                r#"{"schema_version":1,"assets":[{"id":"crates/perl-corpus/fuzz/case.txt","layer":"fuzz","kind":"text_fixture","asset_kind":"text_fixture","relative_path":"crates/perl-corpus/fuzz/case.txt","requirement":"required"}]}"#,
+            ),
+            (
+                "malformed kind",
+                r#"{"schema_version":1,"assets":[{"id":"crates/perl-corpus/fuzz/case.txt","layer":"fuzz","kind":42,"relative_path":"crates/perl-corpus/fuzz/case.txt","requirement":"required"}]}"#,
+            ),
+            (
+                "unsupported kind",
+                r#"{"schema_version":1,"assets":[{"id":"crates/perl-corpus/fuzz/case.txt","layer":"fuzz","kind":"binary","relative_path":"crates/perl-corpus/fuzz/case.txt","requirement":"required"}]}"#,
+            ),
+        ];
+
+        for (label, payload) in cases {
+            assert!(
+                serde_json::from_str::<CorpusTopology>(payload).is_err(),
+                "forged {label} asset kind must fail at deserialization"
+            );
+        }
+    }
+
+    #[test]
+    fn deserialized_forged_asset_kinds_are_revalidated() -> Result<(), Box<dyn std::error::Error>> {
+        let cases = [
+            (
+                "unclassified fuzz README",
+                r#"{"schema_version":1,"assets":[{"id":"crates/perl-corpus/fuzz/README.md","layer":"fuzz","kind":"perl_source","relative_path":"crates/perl-corpus/fuzz/README.md","requirement":"required"}]}"#,
+                CorpusTopologyError::UnclassifiedAssetPath {
+                    id: "crates/perl-corpus/fuzz/README.md".to_string(),
+                    layer: CorpusAssetLayer::Fuzz,
+                },
+            ),
+            (
+                "fuzz text kind mismatch",
+                r#"{"schema_version":1,"assets":[{"id":"crates/perl-corpus/fuzz/case.txt","layer":"fuzz","kind":"perl_source","relative_path":"crates/perl-corpus/fuzz/case.txt","requirement":"required"}]}"#,
+                CorpusTopologyError::AssetKindMismatch {
+                    id: "crates/perl-corpus/fuzz/case.txt".to_string(),
+                    declared: CorpusAssetKind::PerlSource,
+                    classified: CorpusAssetKind::TextFixture,
+                },
+            ),
+        ];
+
+        for (label, payload, expected) in cases {
+            let topology = serde_json::from_str::<CorpusTopology>(payload)?;
+            assert_eq!(topology.validate(), Err(expected), "forged {label} must fail validation");
+        }
+        Ok(())
+    }
+
+    #[test]
     fn binding_rejects_unsupported_schema_versions() {
         for found in [0, CORPUS_TOPOLOGY_SCHEMA_VERSION + 1] {
             let mut topology = topology_with(Vec::new());
