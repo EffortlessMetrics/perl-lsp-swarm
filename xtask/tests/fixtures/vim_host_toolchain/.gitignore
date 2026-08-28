@@ -1,0 +1,5 @@
+# This is a committed test fixture for the offline vim_host_toolchain
+# provisioning tests (#11372), not build output. Re-include the archive that
+# the repo-root .gitignore excludes globally as a release artifact (*.zip).
+# It is tiny (under 1 KB), deterministic, and carries no executable payload.
+!*.zip

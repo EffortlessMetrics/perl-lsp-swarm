@@ -67,8 +67,15 @@ pub fn extract_symbol_refs(root: &Node) -> Vec<SymbolRef> {
 fn walk(node: &Node, out: &mut Vec<SymbolRef>) {
     match &node.kind {
         // Skip declaration targets; only walk initializer expressions.
-        NodeKind::VariableDeclaration { initializer, .. }
-        | NodeKind::VariableListDeclaration { initializer, .. } => {
+        NodeKind::VariableDeclaration { declarator, variable, initializer, .. } => {
+            if declarator == "local" && walk_local_typeglob_alias(variable, out) {
+                return;
+            }
+            if let Some(init) = initializer {
+                walk(init, out);
+            }
+        }
+        NodeKind::VariableListDeclaration { initializer, .. } => {
             if let Some(init) = initializer {
                 walk(init, out);
             }
@@ -180,6 +187,22 @@ fn walk(node: &Node, out: &mut Vec<SymbolRef>) {
             node.for_each_child(|child| walk(child, out));
         }
     }
+}
+
+/// A localized typeglob assignment is both a declaration boundary and an alias
+/// boundary.  Unlike ordinary variable declarations, dropping the declaration
+/// target here would hide the name being temporarily rebound as well as its
+/// source typeglob from the symbol-reference surface.
+fn walk_local_typeglob_alias(node: &Node, out: &mut Vec<SymbolRef>) -> bool {
+    let NodeKind::Assignment { lhs, rhs, .. } = &node.kind else {
+        return false;
+    };
+    if !matches!(lhs.kind, NodeKind::Typeglob { .. }) {
+        return false;
+    }
+    walk(lhs, out);
+    walk(rhs, out);
+    true
 }
 
 fn static_method_target(object: &Node, method: &str) -> Option<(String, String)> {

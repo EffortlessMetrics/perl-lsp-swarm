@@ -1,6 +1,6 @@
 //! Tests for "batteries included" LSP functionality
 //!
-//! This test validates that perl-lsp provides a complete, production-ready experience
+//! This test validates that the batteries-included LSP surface works end to end;
 //! with formatting, linting, and import optimization working out-of-the-box.
 
 #![cfg(test)]

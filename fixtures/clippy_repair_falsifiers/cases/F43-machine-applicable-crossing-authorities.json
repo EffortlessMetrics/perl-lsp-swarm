@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "case_id": "F43-machine-applicable-crossing-authorities",
+  "family": "real_regression_10600_family",
+  "purpose": "MachineApplicable suggestions crossing public API/liveness/feature/schema/error/concurrency/proof authorities apply silently.",
+  "incident_reference": null,
+  "subject": {
+    "scope": "workspace",
+    "target_kinds": [
+      "lib",
+      "bin",
+      "test"
+    ],
+    "profile": "all",
+    "platforms": [
+      "linux",
+      "windows",
+      "macos"
+    ],
+    "features": "default"
+  },
+  "governed_lint": null,
+  "dishonest_mutation": {
+    "kind": "source-snippet",
+    "language": "rust",
+    "trigger_evidence": [
+      "rewrites public signature",
+      "crossing semver/liveness authority"
+    ],
+    "content": "// suggestion rewrites public signature default to satisfy a style lint,\n// crossing semver/liveness authority with no admission record\n",
+    "sha256": "3281ebe5245bcbcbe53b8515214209c22ce311b147080dd0393b0ae36df0fc28"
+  },
+  "rejecting_authority": {
+    "status": "pending_owner",
+    "owner_issue": 11228,
+    "unresolved_reason": "Same admission gap as F42; authority-crossing dimension frozen distinctly."
+  },
+  "expected_result": {
+    "result_class": "reject",
+    "reason_code": "machine_applicable_authority_crossing"
+  },
+  "positive_counterpart": {
+    "sanctioned_evidence": [
+      "body-local rewrites",
+      "API crossings need review"
+    ],
+    "note": "Only bounded candidates with follow-up proof.",
+    "content": "// honest: MachineApplicable limited to body-local rewrites; API crossings need review\n",
+    "sha256": "2e9790812e0f755b0b2b5fc699fe129510a98865c7aee5404c8976774957da30"
+  },
+  "applicability": {
+    "packet_classes": [
+      "qualification",
+      "foundation",
+      "migration",
+      "activation",
+      "review"
+    ],
+    "domains": [
+      "clippy-core"
+    ]
+  },
+  "delta_provenance": {
+    "change_reason": "initial corpus freeze (#11649)",
+    "owning_issue": 11649,
+    "historical_interpretability": true
+  },
+  "claim_boundary": "Pairs with E37 semver control; admission law pends #11228."
+}

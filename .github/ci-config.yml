@@ -196,6 +196,9 @@ labels:
   # Semver compatibility
   ci:semver: 'API compatibility check'
 
+  # Public API surface ratchet
+  ci:public-api: 'Public API surface check'
+
   # All tests
   ci:all-tests: 'Comprehensive test suite'
 # =============================================================================

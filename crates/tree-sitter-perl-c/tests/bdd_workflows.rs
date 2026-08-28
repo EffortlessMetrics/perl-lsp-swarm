@@ -5,6 +5,7 @@
 //! These scenarios validate the user-visible behaviors that matter most for
 //! this crate: parser setup, successful and failing parses, file parsing, and
 //! query/capture interoperability.
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use std::{
     error::Error,

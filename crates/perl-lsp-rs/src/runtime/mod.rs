@@ -31,6 +31,7 @@ mod notebook;
 pub(crate) mod outbound;
 #[allow(unused_imports)]
 use outbound::OutboundSink;
+pub(crate) mod parse_effect_contract;
 pub(crate) mod parse_worker;
 #[cfg(feature = "workspace")]
 pub(crate) mod readiness;
@@ -40,6 +41,7 @@ mod resolve_session;
 pub mod routing;
 pub(crate) mod scheduler;
 mod serving;
+mod session_warning_dedup;
 pub(crate) mod stream_session;
 mod symbol_extraction;
 mod test_api;
@@ -62,6 +64,12 @@ mod diagnostics_sink_tests;
 mod document_symbols_sink_tests;
 #[cfg(test)]
 mod open_buffer_authority_tests;
+#[cfg(test)]
+mod session_warning_dedup_tests;
+
+// Test/pressure observation of the bounded session-warning dedup store (#9769).
+#[cfg(any(test, feature = "expose_lsp_test_api"))]
+pub use session_warning_dedup::{SessionWarningDedupSnapshot, SessionWarningFamilyCounters};
 
 // Re-export protocol types for backward compatibility
 // Tests and external code import these from perl_lsp::
@@ -76,6 +84,8 @@ use perl_parser::{
     Parser,
     ast::{Node, NodeKind},
     declaration::ParentMap,
+};
+use perl_tdd_support::{
     tdd_basic::TestGenerator,
     test_runner::{TestKind, TestRunner},
 };
@@ -98,7 +108,6 @@ use crate::features::{
     code_lens_provider::{CodeLensProvider, get_shebang_lens, resolve_code_lens},
     diagnostics::{DiagnosticSeverity as InternalDiagnosticSeverity, DiagnosticsProvider},
     document_highlight::DocumentHighlightProvider,
-    formatting::{CodeFormatter, FormattingOptions},
     implementation_provider::ImplementationProvider,
     type_hierarchy::TypeHierarchyProvider,
 };
@@ -411,19 +420,14 @@ pub struct LspServer {
     /// set this flag so unavailable-binary tests do not depend on PATH.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) force_perlcritic_command_unavailable: AtomicBool,
-    /// Deduplication set for workspace-scoped Perl::Critic warning notifications.
+    /// Typed, bounded dedup state for user-facing session warnings (#9769).
     ///
-    /// Keys are stable identifiers (for example, `missing-binary` or
-    /// `missing-profile:/abs/path`) so repeated diagnostic cycles do not spam
-    /// users with identical `window/showMessage` warnings.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) critic_workspace_warnings_sent: Mutex<std::collections::HashSet<String>>,
-    /// Deduplication set for invalid enum warnings from editor-provided settings.
-    ///
-    /// The same client payload can arrive through initialization, configuration
-    /// pulls, and repeated `didChangeConfiguration` notifications. Warn once per
-    /// setting/value pair per server session so a typo is visible without toast spam.
-    pub(crate) client_setting_warnings_sent: Mutex<std::collections::HashSet<String>>,
+    /// Governs whether a repeated Perl::Critic, invalid-client-setting, or AI
+    /// backend warning should be suppressed for the same reviewed subject.
+    /// Retains only fixed-size fingerprint identities under an explicit
+    /// per-family hard cap; it never holds semantic state and never
+    /// influences configuration, diagnostics, provider, or readiness truth.
+    pub(crate) session_warning_dedup: session_warning_dedup::SessionWarningDedupStore,
     /// Test-only hook invoked after push diagnostics capture their document
     /// snapshot and before the stale-generation guard decides whether to
     /// publish. This keeps concurrency boundary tests deterministic without
@@ -455,12 +459,6 @@ pub struct LspServer {
     pub(crate) ai_inline_backend: Mutex<
         Option<Arc<dyn perl_lsp_rs_core::providers::inline_completion::InlineCompletionBackend>>,
     >,
-    /// Deduplication set for user-facing AI backend warnings.
-    ///
-    /// Authentication failures are actionable but can recur on every
-    /// completion request. Keep the notification session-scoped so a broken
-    /// credential does not spam the editor while preserving one clear signal.
-    pub(crate) ai_backend_warnings_sent: Mutex<HashSet<String>>,
     /// When `true`, eagerly maintain the per-document incremental parsing state
     /// (`incremental_doc` / `incremental_state`) inside the `didChange` mutation
     /// critical section.
@@ -648,19 +646,29 @@ impl LspServer {
     /// The provider error is intentionally not included in the editor-facing
     /// message: provider responses may contain sensitive or noisy details.
     /// The detailed error remains available to the debug log at the call site.
+    /// Suppression identity is the reviewed auth code alone, retained in the
+    /// bounded session-warning dedup store (#9769) and cleared when a
+    /// configuration notification starts a new user-visible session.
     pub(crate) fn notify_ai_auth_failure(&self) {
-        let mut warnings = self.ai_backend_warnings_sent.lock();
-        if warnings.contains("auth") {
-            return;
-        }
-        warnings.insert("auth".to_string());
-
-        if let Err(error) = self.show_message(
-            MessageType::Warning,
-            "AI inline completion authentication failed. Check the configured API key and provider settings.",
-        ) {
-            warnings.remove("auth");
-            tracing::warn!(%error, "failed to notify client about AI authentication failure");
+        let identity = session_warning_dedup::SessionWarningIdentity::subjectless(
+            session_warning_dedup::SessionWarningCode::AiBackendAuthFailure,
+        );
+        // Decide + send + rollback under one family-lock hold (#9769): a
+        // concurrent auth failure must never suppress against an identity
+        // whose send has not succeeded yet.
+        let decision = self.session_warning_dedup.emit_once_with(
+            session_warning_dedup::SessionWarningFamily::AiBackend,
+            identity,
+            || {
+                self.show_message(
+                    MessageType::Warning,
+                    "AI inline completion authentication failed. Check the configured API key and provider settings.",
+                )
+                .is_ok()
+            },
+        );
+        if !matches!(decision, session_warning_dedup::SessionWarningDecision::Suppress) {
+            tracing::debug!(?decision, "AI auth failure warning emission decided");
         }
     }
 
@@ -1608,6 +1616,7 @@ mod tests {
             current_package: Some("Demo".to_string()),
             variables: vec!["$got".to_string()],
             imports: vec!["strict".to_string(), "warnings".to_string()],
+            ..PreparedInlineCompletionContext::default()
         }
     }
 

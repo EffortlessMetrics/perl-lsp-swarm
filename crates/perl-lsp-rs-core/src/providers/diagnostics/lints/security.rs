@@ -16,6 +16,11 @@
 //! | `PL604` | Warning | `exec()` call replaces the current process |
 //! | `PL605` | Warning | Pipe-open executes shell commands |
 //! | `PL606` | Warning | `readpipe()` executes shell commands (equivalent to qx//) |
+//! | `PL607` | Warning | Interpolated/concatenated SQL text in `->prepare()` / `->do()` (#5035) |
+//! | `PL608` | Warning | `s/pat/repl/e` evaluates the substitution replacement as Perl code (#9818) |
+//! | `PL609` | Warning | Embedded `(?{ ... })` or `(??{ ... })` code executes inside regex patterns (#9818) |
+
+use std::collections::HashMap;
 
 use perl_diagnostics::codes::DiagnosticCode;
 use perl_parser_core::ast::{Node, NodeKind};
@@ -33,8 +38,14 @@ use perl_diagnostics::codes::DiagnosticSeverity;
 /// - String `eval` (security risk vs. block `eval`)
 /// - Backtick/qx command execution (ensure input is sanitized)
 /// - Global signal-handler assignment to `$SIG{__DIE__}` / `$SIG{__WARN__}`
+/// - Interpolated or concatenated SQL text passed to DBI statement-taking
+///   methods (`prepare`/`prepare_cached`/`do`) (#5035)
+/// - Substitutions evaluating their replacement as Perl code (`s///e`,
+///   `s///ee`) and embedded immediate/deferred code blocks (`(?{ ... })`,
+///   `(??{ ... })`) in regex patterns (`m//`, `qr//`, bare literals) (#9818)
 pub fn check_security(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
     walk_security_node(node, diagnostics, false);
+    check_sql_injection(node, diagnostics);
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -339,6 +350,35 @@ fn walk_security_node(
             walk_security_node(value, diagnostics, signal_shadowed);
             signal_shadowed
         }
+        NodeKind::Regex { has_embedded_code: true, .. } => {
+            // Code-executing regex family (#9818): the parser computes
+            // `has_embedded_code` for immediate/deferred code blocks, but the flag had
+            // no diagnostic consumer here. A bare regex literal has no bound
+            // expression to traverse.
+            push_embedded_pattern_code_diagnostic(node, diagnostics);
+            signal_shadowed
+        }
+        NodeKind::Match { expr, has_embedded_code, .. } => {
+            if *has_embedded_code {
+                push_embedded_pattern_code_diagnostic(node, diagnostics);
+            }
+            // #9821: the expression bound via =~ receives the same checks it
+            // would get in any other position.
+            walk_security_node(expr, diagnostics, signal_shadowed)
+        }
+        NodeKind::Substitution { expr, modifiers, has_embedded_code, .. } => {
+            // One parser flag conflates both execution causes (#975): when the
+            // /e modifier is present the evaluated replacement names the
+            // finding (PL608); a remaining flag can then only come from an
+            // embedded (?{ ... }) pattern (PL609).
+            if modifiers.contains('e') {
+                push_substitution_eval_diagnostic(node, diagnostics);
+            } else if *has_embedded_code {
+                push_embedded_pattern_code_diagnostic(node, diagnostics);
+            }
+            // #9821: same traversal obligation as Match above.
+            walk_security_node(expr, diagnostics, signal_shadowed)
+        }
         NodeKind::Return { value: None } => signal_shadowed,
         NodeKind::LabeledStatement { statement, .. } => {
             walk_security_node(statement, diagnostics, signal_shadowed);
@@ -359,9 +399,6 @@ fn walk_security_node(
         | NodeKind::Number { .. }
         | NodeKind::String { .. }
         | NodeKind::VString { .. }
-        | NodeKind::Regex { .. }
-        | NodeKind::Match { .. }
-        | NodeKind::Substitution { .. }
         | NodeKind::Transliteration { .. }
         | NodeKind::Identifier { .. }
         | NodeKind::Variable { .. }
@@ -628,6 +665,7 @@ fn check_system_call(name: &str, node: &Node, diagnostics: &mut Vec<Diagnostic>)
     let message = "system() executes a shell command. Ensure input is sanitized.".to_string();
     let explanation =
         "Use the list form system($cmd, @args) to avoid shell injection when arguments come from user input".to_string();
+    const SYSTEM_LIST_FORM_SUGGESTION: &str = "Use the list form: system($cmd, @args) instead of system(\"$cmd @args\") to avoid shell injection";
     diagnostics.push(Diagnostic {
         range,
         severity: DiagnosticSeverity::Warning,
@@ -639,16 +677,20 @@ fn check_system_call(name: &str, node: &Node, diagnostics: &mut Vec<Diagnostic>)
         }],
         tags: Vec::new(),
         fixable: false,
-        critic_observation: Some(BuiltInCriticObservation::pl603_system(
-            Severity::Harsh,
-            range,
-            message,
-            Some(explanation),
-        )),
-        suggestion: Some(
-            "Use the list form: system($cmd, @args) instead of system(\"$cmd @args\") to avoid shell injection"
-                .to_string(),
+        critic_observation: Some(
+            BuiltInCriticObservation::pl603_system(
+                Severity::Harsh,
+                range,
+                message,
+                Some(explanation.clone()),
+            )
+            // #12004: the observation carries the ordinary row's exact
+            // user-visible remediation so retirement cannot drop it. The
+            // binding keeps the two copies from drifting apart.
+            .with_suggestion(SYSTEM_LIST_FORM_SUGGESTION)
+            .with_related_information(range, explanation),
         ),
+        suggestion: Some(SYSTEM_LIST_FORM_SUGGESTION.to_string()),
     });
 }
 
@@ -671,6 +713,7 @@ fn check_exec_call(name: &str, node: &Node, diagnostics: &mut Vec<Diagnostic>) {
             .to_string();
     let explanation =
         "Use the list form exec($cmd, @args) to avoid shell injection when arguments come from user input".to_string();
+    const EXEC_LIST_FORM_SUGGESTION: &str = "Use the list form: exec($cmd, @args) instead of exec(\"$cmd @args\") to avoid shell injection";
     diagnostics.push(Diagnostic {
         range,
         severity: DiagnosticSeverity::Warning,
@@ -682,16 +725,17 @@ fn check_exec_call(name: &str, node: &Node, diagnostics: &mut Vec<Diagnostic>) {
         }],
         tags: Vec::new(),
         fixable: false,
-        critic_observation: Some(BuiltInCriticObservation::pl604_exec(
-            Severity::Harsh,
-            range,
-            message,
-            Some(explanation),
-        )),
-        suggestion: Some(
-            "Use the list form: exec($cmd, @args) instead of exec(\"$cmd @args\") to avoid shell injection"
-                .to_string(),
+        critic_observation: Some(
+            BuiltInCriticObservation::pl604_exec(
+                Severity::Harsh,
+                range,
+                message,
+                Some(explanation.clone()),
+            )
+            .with_suggestion(EXEC_LIST_FORM_SUGGESTION)
+            .with_related_information(range, explanation),
         ),
+        suggestion: Some(EXEC_LIST_FORM_SUGGESTION.to_string()),
     });
 }
 
@@ -784,6 +828,12 @@ fn is_pipe_two_arg_string(node: &Node) -> bool {
     }
 }
 
+/// Shared remediation text for the command-execution family (PL601/PL606):
+/// one binding keeps the ordinary diagnostic and the critic observation
+/// from drifting apart (#12004).
+const OPEN_LIST_FORM_SUGGESTION: &str =
+    "Use open(my $fh, '-|', @cmd) or IPC::Run for safer command execution";
+
 /// Detect `readpipe()` function calls.
 ///
 /// `readpipe("cmd")` is functionally identical to backticks/qx//,
@@ -815,15 +865,17 @@ fn check_readpipe(name: &str, node: &Node, diagnostics: &mut Vec<Diagnostic>) {
         }],
         tags: Vec::new(),
         fixable: false,
-        critic_observation: Some(BuiltInCriticObservation::pl606_readpipe(
-            Severity::Harsh,
-            range,
-            message,
-            Some(explanation),
-        )),
-        suggestion: Some(
-            "Use open(my $fh, '-|', @cmd) or IPC::Run for safer command execution".to_string(),
+        critic_observation: Some(
+            BuiltInCriticObservation::pl606_readpipe(
+                Severity::Harsh,
+                range,
+                message,
+                Some(explanation.clone()),
+            )
+            .with_suggestion(OPEN_LIST_FORM_SUGGESTION)
+            .with_related_information(range, explanation),
         ),
+        suggestion: Some(OPEN_LIST_FORM_SUGGESTION.to_string()),
     });
 }
 
@@ -850,11 +902,427 @@ fn push_command_execution_diagnostic(
         }],
         tags: Vec::new(),
         fixable: false,
-        critic_observation: Some(observe(Severity::Harsh, range, message, Some(explanation))),
+        critic_observation: Some(
+            observe(Severity::Harsh, range, message, Some(explanation.clone()))
+                .with_suggestion(OPEN_LIST_FORM_SUGGESTION)
+                .with_related_information(range, explanation),
+        ),
+        suggestion: Some(OPEN_LIST_FORM_SUGGESTION.to_string()),
+    });
+}
+
+/// Emit one PL608 diagnostic for a substitution whose replacement is
+/// evaluated as Perl code by the `e`/`ee` modifier (#9818).
+///
+/// No native Perl::Critic alias exists for this construct class, so the
+/// ordinary row carries no overlap observation: the #11918 observation
+/// constructors only admit the reviewed cohorts.
+fn push_substitution_eval_diagnostic(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
+    let range = (node.location.start, node.location.end);
+    diagnostics.push(Diagnostic {
+        range,
+        severity: DiagnosticSeverity::Warning,
+        code: Some(DiagnosticCode::SecuritySubstitutionEval.as_str().to_string()),
+        message: "The /e flag evaluates this substitution's replacement as Perl code.".to_string(),
+        related_information: vec![RelatedInformation {
+            location: range,
+            message: "When the substitution runs, its replacement is evaluated like string eval. Untrusted input reaching the replacement allows code injection.".to_string(),
+        }],
+        tags: Vec::new(),
+        fixable: false,
+        critic_observation: None,
         suggestion: Some(
-            "Use open(my $fh, '-|', @cmd) or IPC::Run for safer command execution".to_string(),
+            "Compute the replacement without /e, or keep untrusted input out of the evaluated expression"
+                .to_string(),
         ),
     });
+}
+
+/// Emit one PL609 diagnostic for an embedded immediate `(?{ ... })` or
+/// deferred `(??{ ... })` executable code block in a pattern (`m//`, `qr//`,
+/// a bare literal, or a substitution pattern) (#9818).
+///
+/// Same no-native-alias boundary as [`push_substitution_eval_diagnostic`].
+fn push_embedded_pattern_code_diagnostic(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
+    let range = (node.location.start, node.location.end);
+    diagnostics.push(Diagnostic {
+        range,
+        severity: DiagnosticSeverity::Warning,
+        code: Some(DiagnosticCode::SecurityEmbeddedRegexCode.as_str().to_string()),
+        message: "Embedded (?{ ... }) or (??{ ... }) code executes Perl code while this pattern is evaluated."
+            .to_string(),
+        related_information: vec![RelatedInformation {
+            location: range,
+            message: "An embedded code block runs Perl code during pattern matching or deferred-pattern construction; untrusted patterns allow code injection.".to_string(),
+        }],
+        tags: Vec::new(),
+        fixable: false,
+        critic_observation: None,
+        suggestion: Some("Remove the embedded executable code block from the pattern".to_string()),
+    });
+}
+
+/// DBI statement-taking methods whose first argument is SQL text (#5035).
+///
+/// `execute(@bind_values)` is deliberately absent: its arguments are bind
+/// values for an already-prepared statement, not SQL text, so it is never a
+/// SQL-text sink (issue #5035 research, DBI 1.651 semantics).
+const DBI_STATEMENT_METHODS: [&str; 3] = ["prepare", "prepare_cached", "do"];
+
+/// Classification of the SQL statement argument at a DBI sink (#5035).
+///
+/// The producer only warns on proven dynamic assembly into the SQL text.
+/// A computed statement (variable, call result) is a typed dynamic boundary:
+/// the walker cannot distinguish safe from unsafe assembly, so it never
+/// guesses and stays silent — mirroring the diagnostics family's
+/// dynamic-boundary suppression precedent
+/// (`providers/diagnostics/diagnostics_shadow.rs`: a reference inside a
+/// dynamic boundary scope is suppressed, never guessed).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SqlTextEvidence {
+    /// A `$`/`@` sigil variable is interpolated directly into the SQL literal.
+    Interpolated,
+    /// A variable is concatenated into the SQL literal.
+    Concatenated,
+    /// Literal-only SQL (with or without `?` placeholders): proven safe shape.
+    Static,
+    /// The SQL text is computed and indistinguishable at AST level.
+    DynamicBoundary,
+}
+
+/// Detect SQL assembled from variables and passed to a DBI statement-taking
+/// method (#5035).
+///
+/// Honesty boundaries, each pinned by tests below:
+/// - Only reviewed DBI statement-taking sinks (`prepare`, `prepare_cached`,
+///   `do`) whose receiver carries same-file `DBI->connect(...)` evidence warn
+///   (the receiver-classification precedent lives in
+///   `collect_receiver_assignments`). A name qualifies only when every
+///   same-file assignment before the sink comes from `DBI->connect`; a method
+///   spelled `prepare` on an unproven, shadowed, rebound, or later-connected
+///   receiver is a receiver-ambiguity boundary and stays silent — a security
+///   warning never guesses DB-ness.
+/// - Placeholders (`?`) with bind values are the negative control.
+/// - A computed statement argument is a typed dynamic boundary and never
+///   warns.
+fn check_sql_injection(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
+    let mut index = ReceiverAssignmentIndex::new();
+    collect_receiver_assignments(node, &mut index);
+    let index = index.finish();
+    walk_sql_injection_sinks(node, &index, diagnostics);
+}
+
+/// One same-file scalar assignment observed for a receiver name (#5035).
+struct ReceiverAssignment {
+    /// Byte offset of the assignment site, for source-order qualification.
+    offset: usize,
+    /// Whether the assigned value is a `DBI->connect(...)` call.
+    is_connect: bool,
+}
+
+/// Collect same-file scalar assignments per receiver name.
+///
+/// This is the AST-provable form of the repository's DBI receiver-classification
+/// precedent (`providers/completion/completion/methods.rs`,
+/// `infer_receiver_type`: "check if variable was assigned from DBI->connect"):
+/// the canonical `my $dbh = DBI->connect(...)` (or plain assignment) idiom.
+/// Completion hints may fall back to name heuristics (`$dbh`), but a security
+/// warning may not guess, so qualification is structural: a name whose
+/// pre-sink assignments are not all `DBI->connect` calls (shadowed inner
+/// `my $dbh = Engine->new`, rebinding, connect introduced after the sink) is
+/// unproven and stays silent. Handles reached through aliases, parameters, or
+/// DBD-specific class names stay unproven likewise; the binding-precise
+/// statement-handle identity model is owned by #7471.
+fn collect_receiver_assignments(node: &Node, index: &mut ReceiverAssignmentIndex) {
+    let connect_assigned = |value: &Node| match &value.kind {
+        NodeKind::MethodCall { object, method, .. } => {
+            matches!(&object.kind, NodeKind::Identifier { name } if name == "DBI")
+                && method == "connect"
+        }
+        _ => false,
+    };
+
+    match &node.kind {
+        // Declarations without an initializer are neutral: they carry no
+        // evidence about the receiver's origin either way.
+        NodeKind::VariableDeclaration { variable, initializer: Some(init), .. } => {
+            if let Some(name) = scalar_variable_name(variable) {
+                index.record(name, node.location.start, connect_assigned(init));
+            }
+        }
+        NodeKind::Assignment { lhs, rhs, .. } => {
+            if let Some(name) = scalar_variable_name(lhs) {
+                index.record(name, node.location.start, connect_assigned(rhs));
+            }
+        }
+        _ => {}
+    }
+
+    node.for_each_child(|child| collect_receiver_assignments(child, index));
+}
+
+/// Pre-indexed receiver-assignment evidence, keyed by receiver name (#5035).
+///
+/// One pass over the document builds this index; every SQL sink then resolves
+/// its receiver in O(1) by name plus a source-ordered prefix scan of only that
+/// receiver's assignments. A document with A assignments and S sinks costs
+/// O(A + S log A) per diagnostic pass instead of O(A x S), so a crafted
+/// document cannot multiply sinks against assignments to exhaust CPU through
+/// an open-document diagnostic request (#5035 review).
+struct ReceiverAssignmentIndex {
+    by_name: HashMap<String, Vec<ReceiverAssignment>>,
+}
+
+impl ReceiverAssignmentIndex {
+    fn new() -> Self {
+        Self { by_name: HashMap::new() }
+    }
+
+    fn record(&mut self, name: String, offset: usize, is_connect: bool) {
+        self.by_name.entry(name).or_default().push(ReceiverAssignment { offset, is_connect });
+    }
+
+    /// Freeze the index after collection, putting every receiver's
+    /// assignments in source order. Pre-order AST traversal is source-ordered
+    /// in practice; sorting each bucket by offset makes that a guarantee
+    /// instead of an assumption, so the prefix-qualification semantics below
+    /// stay identical to the file-wide scan it replaces.
+    fn finish(mut self) -> Self {
+        for bucket in self.by_name.values_mut() {
+            bucket.sort_by_key(|assignment| assignment.offset);
+        }
+        self
+    }
+
+    /// Whether `name` is a proven DBI handle at a sink starting at
+    /// `sink_offset` (#5035): at least one same-file assignment before the
+    /// sink must exist, and every such assignment must come from
+    /// `DBI->connect(...)`. Assignments after the sink cannot describe the
+    /// receiver at call time under name-based analysis; mixed pre-sink
+    /// evidence is an ambiguity boundary.
+    fn is_proven_dbh(&self, name: &str, sink_offset: usize) -> bool {
+        let Some(bucket) = self.by_name.get(name) else {
+            return false;
+        };
+        let prior = bucket.partition_point(|assignment| assignment.offset < sink_offset);
+        prior > 0 && bucket[..prior].iter().all(|assignment| assignment.is_connect)
+    }
+}
+
+/// The bare name of a scalar variable node (`$dbh` -> `dbh`), if this node is
+/// one.
+fn scalar_variable_name(node: &Node) -> Option<String> {
+    match &node.kind {
+        NodeKind::Variable { sigil, name } if sigil == "$" => Some(name.clone()),
+        _ => None,
+    }
+}
+
+fn walk_sql_injection_sinks(
+    node: &Node,
+    index: &ReceiverAssignmentIndex,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    if let NodeKind::MethodCall { object, method, args } = &node.kind {
+        check_sql_injection_method_call(object, method, args, node, index, diagnostics);
+    }
+    node.for_each_child(|child| walk_sql_injection_sinks(child, index, diagnostics));
+}
+
+/// Check one method call against the DBI SQL-injection sink set.
+fn check_sql_injection_method_call(
+    object: &Node,
+    method: &str,
+    args: &[Node],
+    node: &Node,
+    index: &ReceiverAssignmentIndex,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    if !DBI_STATEMENT_METHODS.contains(&method) {
+        return;
+    }
+
+    // Receiver ambiguity boundary: only a receiver whose same-file pre-sink
+    // assignments all come from `DBI->connect` is a proven DBI handle.
+    // Anything else (unassigned `$dbh`, shadowed or rebound names, another
+    // class's `prepare`, a later connect) stays silent.
+    let receiver_is_dbh = scalar_variable_name(object)
+        .is_some_and(|name| index.is_proven_dbh(&name, node.location.start));
+    if !receiver_is_dbh {
+        return;
+    }
+
+    let Some(statement_arg) = sql_statement_argument(args) else {
+        return;
+    };
+
+    match classify_sql_text(statement_arg) {
+        SqlTextEvidence::Interpolated | SqlTextEvidence::Concatenated => {}
+        SqlTextEvidence::Static | SqlTextEvidence::DynamicBoundary => return,
+    }
+
+    let range = (node.location.start, node.location.end);
+    let message = format!(
+        "Interpolated SQL passed to ->{method}() is a SQL injection risk. Use placeholders (?) and bind values."
+    );
+    let explanation = "Values interpolated or concatenated into the SQL text can change the statement's meaning when input is crafted. Placeholders with bind values keep the SQL text static.".to_string();
+    diagnostics.push(Diagnostic {
+        range,
+        severity: DiagnosticSeverity::Warning,
+        code: Some(DiagnosticCode::SecuritySqlInjection.as_str().to_string()),
+        message: message.clone(),
+        related_information: vec![RelatedInformation {
+            location: range,
+            message: explanation.clone(),
+        }],
+        tags: Vec::new(),
+        fixable: false,
+        critic_observation: None,
+        suggestion: Some(
+            "Use placeholders: $dbh->prepare('... WHERE id = ?')->execute($user_id)".to_string(),
+        ),
+    });
+}
+
+/// The SQL statement argument of a DBI sink call.
+///
+/// Mirrors `check_two_arg_open`/`check_pipe_open`: the parser may represent
+/// parenthesized call args as a flat `args` list or as a single wrapped
+/// `ArrayLiteral`, so both shapes resolve to the effective argument list.
+fn sql_statement_argument(args: &[Node]) -> Option<&Node> {
+    let effective_args: &[Node] = if args.len() == 1 {
+        if let NodeKind::ArrayLiteral { elements } = &args[0].kind {
+            elements.as_slice()
+        } else {
+            args
+        }
+    } else {
+        args
+    };
+    effective_args.first()
+}
+
+/// Classify the SQL text expression of a DBI sink call.
+fn classify_sql_text(node: &Node) -> SqlTextEvidence {
+    match &node.kind {
+        NodeKind::String { value, interpolated } => {
+            if *interpolated && string_contains_interpolation(value) {
+                SqlTextEvidence::Interpolated
+            } else {
+                // Single-quoted literal, or a double-quoted literal with no
+                // sigil in the text: static SQL, placeholders included.
+                SqlTextEvidence::Static
+            }
+        }
+        // Heredocs are string literals: an interpolating heredoc (`<<SQL`,
+        // `<<"SQL"`) whose body contains a sigil is source-proven assembly,
+        // exactly like a double-quoted string; a literal heredoc
+        // (`<<'SQL'`) is static (#5035 review).
+        NodeKind::Heredoc { content, interpolated, .. } => {
+            if *interpolated && string_contains_interpolation(content) {
+                SqlTextEvidence::Interpolated
+            } else {
+                SqlTextEvidence::Static
+            }
+        }
+        NodeKind::Binary { op, .. } if op == "." => classify_concatenation(node),
+        // A bare variable, call result, or any other expression: the SQL text
+        // is computed and indistinguishable at AST level.
+        _ => SqlTextEvidence::DynamicBoundary,
+    }
+}
+
+/// Classify a `.` concatenation chain by combining operand evidence: any
+/// unsafe operand makes the chain unsafe; otherwise any computed operand
+/// makes the whole statement a dynamic boundary; literal-only chains are
+/// static.
+fn classify_concatenation(node: &Node) -> SqlTextEvidence {
+    let NodeKind::Binary { left, right, .. } = &node.kind else {
+        return SqlTextEvidence::DynamicBoundary;
+    };
+
+    let mut combined = SqlTextEvidence::Static;
+    for operand in [left, right] {
+        let evidence = match &operand.kind {
+            // Nested `.` chain: fold recursively.
+            NodeKind::Binary { op, .. } if op == "." => classify_concatenation(operand),
+            // A variable operand is a proven dynamic value in the SQL text.
+            NodeKind::Variable { .. } => SqlTextEvidence::Concatenated,
+            // String and heredoc operands reuse the interpolation classifier.
+            NodeKind::String { .. } | NodeKind::Heredoc { .. } => classify_sql_text(operand),
+            // Any other operand (call, method, conditional) computes text we
+            // cannot distinguish.
+            _ => SqlTextEvidence::DynamicBoundary,
+        };
+        combined = match (combined, evidence) {
+            // A proven variable in the SQL text dominates: the injection
+            // vector is source-proven even when another operand is computed.
+            (SqlTextEvidence::Interpolated, _) | (_, SqlTextEvidence::Interpolated) => {
+                SqlTextEvidence::Interpolated
+            }
+            (SqlTextEvidence::Concatenated, _) | (_, SqlTextEvidence::Concatenated) => {
+                SqlTextEvidence::Concatenated
+            }
+            (SqlTextEvidence::DynamicBoundary, _) | (_, SqlTextEvidence::DynamicBoundary) => {
+                SqlTextEvidence::DynamicBoundary
+            }
+            (combined, _) => combined,
+        };
+    }
+    combined
+}
+
+/// Whether an interpolating string's text interpolates a variable: a `$` or
+/// `@` sigil followed by an identifier character, `{`, or — under the scalar
+/// sigil only — one of the punctuation match-variable sigils, and not
+/// escaped.
+///
+/// Escaping follows Perl backslash parity: only an odd-length run of
+/// preceding backslashes escapes the sigil. An even-length run escapes the
+/// backslash itself, so the sigil still interpolates (`"\\$id"` interpolates
+/// `$id` after emitting a literal backslash) (#5035 review).
+///
+/// The punctuation successors `$&` (match text), `` $` `` (pre-match), `$'`
+/// (post-match), and `$+` (highest capture group) name the special match
+/// variables: like any scalar they interpolate in double-quoted strings and
+/// interpolating heredocs, so a match over attacker-controlled input feeds
+/// that text into the SQL exactly like `$id` and must not classify the
+/// statement as static (#5035 review).
+fn string_contains_interpolation(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.iter().enumerate().any(|(index, byte)| {
+        let sigil = match *byte {
+            b'$' | b'@' => *byte,
+            _ => return false,
+        };
+        if escaped_by_backslash_run(bytes, index) {
+            return false;
+        }
+        bytes.get(index + 1).is_some_and(|next| is_interpolation_successor(sigil, *next))
+    })
+}
+
+/// Whether the byte after a `$`/`@` sigil starts an interpolation: an
+/// identifier character, a block `${...}`/`@{...}` opener, or — for the
+/// scalar sigil only — one of the punctuation match variables
+/// (`$&`, `` $` ``, `$'`, `$+`) (#5035 review).
+fn is_interpolation_successor(sigil: u8, next: u8) -> bool {
+    next.is_ascii_alphanumeric()
+        || next == b'_'
+        || next == b'{'
+        || (sigil == b'$' && matches!(next, b'&' | b'`' | b'\'' | b'+'))
+}
+
+/// Whether the byte at `index` is escaped by an odd-length run of contiguous
+/// preceding backslashes.
+fn escaped_by_backslash_run(bytes: &[u8], index: usize) -> bool {
+    let mut run = 0;
+    let mut cursor = index;
+    while cursor > 0 && bytes[cursor - 1] == b'\\' {
+        run += 1;
+        cursor -= 1;
+    }
+    run % 2 == 1
 }
 
 fn shadows_signal_table(node: &Node) -> bool {
@@ -1138,6 +1606,50 @@ mod tests {
         }
     }
 
+    /// #12004: the observation's remediation copy must stay identical to the
+    /// ordinary diagnostic fields it mirrors, or merged rows silently serve
+    /// stale text after the ordinary row retires.
+    #[test]
+    fn observation_remediation_copies_match_the_ordinary_diagnostic_fields() {
+        for (source, code) in [
+            (r#"system("ls");"#, "PL603"),
+            (r#"exec("ls");"#, "PL604"),
+            (r#"my $out = readpipe("ls");"#, "PL606"),
+            ("my $out = `ls`;", "PL601"),
+            ("my $out = qx(ls);", "PL601"),
+        ] {
+            let diags = security_diags(source);
+            let diagnostic = diags
+                .iter()
+                .find(|d| d.code.as_deref() == Some(code))
+                .unwrap_or_else(|| panic!("{code} must be emitted for {source}"));
+            let suggestion = diagnostic
+                .suggestion
+                .as_deref()
+                .unwrap_or_else(|| panic!("{code} must carry an ordinary suggestion"));
+            let observation = observation_of(&diags, code)
+                .unwrap_or_else(|| panic!("{code} must carry a critic observation: {diags:?}"));
+
+            assert_eq!(
+                observation.suggestion(),
+                Some(suggestion),
+                "{code}: observation suggestion drifted from the ordinary diagnostic"
+            );
+
+            let ordinary_related: Vec<_> =
+                diagnostic.related_information.iter().map(|r| r.message.as_str()).collect();
+            let observation_related: Vec<_> = observation
+                .related_information()
+                .iter()
+                .map(|(_, message)| message.as_str())
+                .collect();
+            assert_eq!(
+                observation_related, ordinary_related,
+                "{code}: observation related information drifted from the ordinary diagnostic"
+            );
+        }
+    }
+
     #[test]
     fn qx_form_fires_pl601_and_single_quoted_qx_text_does_not() {
         let diags = security_diags("my $date = qx(date);");
@@ -1169,6 +1681,614 @@ mod tests {
         assert!(
             diags.iter().all(|d| d.critic_observation.is_none()),
             "only the reviewed overlap cohort declares observations: {diags:?}"
+        );
+    }
+
+    // --- SQL injection (PL607) tests (#5035) ---
+
+    fn sql_diags(source: &str) -> Vec<Diagnostic> {
+        security_diags(source)
+    }
+
+    fn dbh_connect() -> &'static str {
+        r#"my $dbh = DBI->connect("dbi:Pg:dbname=x", "u", "p");"#
+    }
+
+    fn pl607<'a>(diags: &'a [Diagnostic]) -> Option<&'a Diagnostic> {
+        diags.iter().find(|d| d.code.as_deref() == Some("PL607"))
+    }
+
+    #[test]
+    fn interpolated_prepare_is_flagged_with_exact_range() {
+        let source = format!(
+            "{}\nmy $user_id = 42;\nmy $sth = $dbh->prepare(\"SELECT * FROM users WHERE id = $user_id\");\n",
+            dbh_connect()
+        );
+        let diags = sql_diags(&source);
+        let diagnostic = pl607(&diags)
+            .unwrap_or_else(|| panic!("interpolated prepare must be flagged as PL607: {diags:?}"));
+        let (start, end) = diagnostic.range;
+        assert_eq!(
+            &source[start..end],
+            r#"$dbh->prepare("SELECT * FROM users WHERE id = $user_id")"#,
+            "PL607 byte range must cover the exact prepare call"
+        );
+        assert_eq!(diagnostic.severity, DiagnosticSeverity::Warning);
+        assert!(diagnostic.critic_observation.is_none());
+        assert!(diagnostic.suggestion.is_some());
+    }
+
+    #[test]
+    fn placeholder_prepare_is_silent() {
+        let source = format!(
+            "{}\nmy $sth = $dbh->prepare('SELECT * FROM users WHERE id = ?');\n$sth->execute(42);\n",
+            dbh_connect()
+        );
+        let diags = sql_diags(&source);
+        assert!(
+            pl607(&diags).is_none(),
+            "placeholders with bind values are the safe control: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn concatenated_variable_sql_is_flagged() {
+        let source = format!(
+            "{}\nmy $user_input = <STDIN>;\nmy $sth = $dbh->prepare('SELECT * FROM users WHERE id = ' . $user_input);\n",
+            dbh_connect()
+        );
+        let diags = sql_diags(&source);
+        assert!(
+            pl607(&diags).is_some(),
+            "concatenated variable SQL must be flagged as PL607: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn concatenated_literal_only_sql_is_silent() {
+        let source = format!(
+            "{}\nmy $sth = $dbh->prepare('SELECT ' . '*' . ' FROM users');\n",
+            dbh_connect()
+        );
+        let diags = sql_diags(&source);
+        assert!(
+            pl607(&diags).is_none(),
+            "literal-only concatenation carries no variable: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn interpolated_do_is_flagged_and_placeholder_do_is_silent() {
+        let flagged = format!(
+            "{}\nmy $name = <STDIN>;\n$dbh->do(\"DELETE FROM users WHERE name = $name\");\n",
+            dbh_connect()
+        );
+        let diags = sql_diags(&flagged);
+        assert!(pl607(&diags).is_some(), "interpolated do() must be flagged as PL607: {diags:?}");
+
+        let safe = format!(
+            "{}\n$dbh->do('DELETE FROM users WHERE name = ?', undef, 'bob');\n",
+            dbh_connect()
+        );
+        let diags = sql_diags(&safe);
+        assert!(
+            pl607(&diags).is_none(),
+            "placeholder do() with bind values must stay silent: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn prepare_cached_is_a_statement_sink() {
+        let source = format!(
+            "{}\nmy $id = <STDIN>;\nmy $sth = $dbh->prepare_cached(\"SELECT * FROM t WHERE id = $id\");\n",
+            dbh_connect()
+        );
+        let diags = sql_diags(&source);
+        assert!(
+            pl607(&diags).is_some(),
+            "prepare_cached takes SQL text exactly like prepare: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn execute_bind_values_are_never_a_sql_text_sink() {
+        // #5035 research: execute(@bind_values) receives bind values for an
+        // already-prepared statement, not SQL text — even an interpolated
+        // argument is a computed bind value, not statement assembly.
+        let source = format!(
+            "{}\nmy $sth = $dbh->prepare('SELECT * FROM users WHERE id = ?');\nmy $id = <STDIN>;\n$sth->execute(\"$id\");\n",
+            dbh_connect()
+        );
+        let diags = sql_diags(&source);
+        assert!(
+            pl607(&diags).is_none(),
+            "execute() arguments are bind values, never SQL text: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn non_dbi_receiver_prepare_stays_silent() {
+        // Receiver ambiguity boundary (#5035 research: "receiver ambiguity
+        // cannot produce a DBI warning"): a `prepare` method on an object
+        // without same-file DBI->connect evidence is not a proven DBI sink.
+        let source = concat!(
+            "package Engine;\n",
+            "sub new { return bless {}, shift }\n",
+            "sub prepare { return 1 }\n",
+            "package main;\n",
+            "my $engine = Engine->new;\n",
+            "my $name = <STDIN>;\n",
+            "my $q = $engine->prepare(\"SELECT $name\");\n",
+        );
+        let diags = sql_diags(source);
+        assert!(
+            pl607(&diags).is_none(),
+            "non-DBI receiver prepare must not produce a DBI warning: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn unassigned_receiver_prepare_stays_silent() {
+        // Same ambiguity boundary: `$dbh` with no visible connect evidence is
+        // unproven, so even a spelled-identically variable stays silent.
+        let source = "my $sth = $dbh->prepare(\"SELECT * FROM users WHERE id = $user_id\");\n";
+        let diags = sql_diags(source);
+        assert!(
+            pl607(&diags).is_none(),
+            "unproven receiver must not produce a DBI warning: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn computed_sql_variable_is_a_dynamic_boundary_and_stays_silent() {
+        let source = format!(
+            "{}\nmy $sql = build_query();\nmy $sth = $dbh->prepare($sql);\n",
+            dbh_connect()
+        );
+        let diags = sql_diags(&source);
+        assert!(
+            pl607(&diags).is_none(),
+            "a computed SQL string is a typed dynamic boundary, never a guess: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn mixed_placeholder_and_interpolation_still_fires() {
+        // Placeholders elsewhere in the statement do not sanitize a variable
+        // interpolated into another part of the SQL text.
+        let source = format!(
+            "{}\nmy $col = <STDIN>;\nmy $sth = $dbh->prepare(\"SELECT * FROM t WHERE a = ? AND b = $col\");\n",
+            dbh_connect()
+        );
+        let diags = sql_diags(&source);
+        assert!(
+            pl607(&diags).is_some(),
+            "a placeholder does not sanitize an interpolated variable in the same statement: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn escaped_sigil_in_sql_string_stays_silent() {
+        let source =
+            format!("{}\nmy $sth = $dbh->prepare(\"SELECT '5\\$' WHERE x = ?\");\n", dbh_connect());
+        let diags = sql_diags(&source);
+        assert!(pl607(&diags).is_none(), "an escaped sigil is not an interpolation: {diags:?}");
+    }
+
+    #[test]
+    fn assignment_form_receiver_evidence_is_accepted() {
+        let source = concat!(
+            "my $dbh;\n",
+            "$dbh = DBI->connect('dbi:SQLite:dbname=x');\n",
+            "my $id = <STDIN>;\n",
+            "$dbh->do(\"DELETE FROM t WHERE id = $id\");\n",
+        );
+        let diags = sql_diags(source);
+        assert!(
+            pl607(&diags).is_some(),
+            "plain assignment from DBI->connect is valid receiver evidence: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn sql_diagnostic_wire_identity_follows_the_storyboarded_contract() {
+        // The storyboarded wire format (lsp_critical_user_stories.rs, TEST 4)
+        // pins the security.sql_injection codeDescription to the OWASP SQL
+        // injection reference; the registered PL607 code carries that href
+        // through documentation_url on both push and pull wire paths.
+        assert_eq!(
+            DiagnosticCode::SecuritySqlInjection.documentation_url(),
+            Some("https://owasp.org/www-community/attacks/SQL_Injection")
+        );
+    }
+
+    // --- #5035 review repairs ---
+
+    #[test]
+    fn even_backslash_run_still_interpolates_and_is_flagged() {
+        // Review finding: Perl escapes the backslash itself for an even-length
+        // run, so `"\\$id"` emits one literal backslash AND interpolates $id.
+        // The producer must flag it, not classify it as static SQL.
+        let statement = r#"my $sth = $dbh->prepare("SELECT * FROM t WHERE x = \\$id");"#;
+        let source = format!("{}\nmy $id = <STDIN>;\n{}\n", dbh_connect(), statement);
+        let diags = sql_diags(&source);
+        assert!(
+            pl607(&diags).is_some(),
+            "an even backslash run does not escape the sigil: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn odd_backslash_run_escapes_the_sigil_and_stays_silent() {
+        // Review finding mirror control: `"\$id"` keeps the sigil literal, so
+        // the SQL text is static.
+        let statement = r#"my $sth = $dbh->prepare("SELECT * FROM t WHERE x = \$id");"#;
+        let source = format!("{}\n{}\n", dbh_connect(), statement);
+        let diags = sql_diags(&source);
+        assert!(pl607(&diags).is_none(), "an odd backslash run escapes the sigil: {diags:?}");
+    }
+
+    #[test]
+    fn shadowed_non_dbi_rebinding_suppresses_the_warning() {
+        // Review finding: an inner `my $dbh = Engine->new` shadows the outer
+        // DBI->connect binding. Name-level pre-sink evidence is mixed, so the
+        // receiver is an ambiguity boundary and stays silent — the warning
+        // never guesses which binding the sink sees.
+        let source = concat!(
+            "my $dbh = DBI->connect('dbi:SQLite:dbname=x');\n",
+            "{\n",
+            "my $dbh = Engine->new;\n",
+            "my $id = <STDIN>;\n",
+            "my $q = $dbh->prepare(\"SELECT * FROM t WHERE id = $id\");\n",
+            "}\n",
+        );
+        let diags = sql_diags(source);
+        assert!(
+            pl607(&diags).is_none(),
+            "a shadowed non-DBI rebinding must not receive PL607: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn connect_introduced_after_the_sink_stays_silent() {
+        // Review finding: a connect assignment after the call cannot describe
+        // the receiver at call time; the sink has no pre-sink connect
+        // evidence and stays silent.
+        let source = concat!(
+            "my $id = <STDIN>;\n",
+            "my $sth = $dbh->prepare(\"SELECT * FROM t WHERE id = $id\");\n",
+            "my $dbh = DBI->connect('dbi:SQLite:dbname=x');\n",
+        );
+        let diags = sql_diags(source);
+        assert!(
+            pl607(&diags).is_none(),
+            "a connect after the sink must not retroactively classify it: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn interpolating_heredoc_sql_is_flagged() {
+        // Review finding: `<<END_SQL` interpolates exactly like a
+        // double-quoted string, so a sigil in the body is source-proven SQL
+        // assembly.
+        let source = format!(
+            "{}\nmy $id = <STDIN>;\nmy $sth = $dbh->prepare(<<END_SQL);\nSELECT * FROM t WHERE id = $id\nEND_SQL\n",
+            dbh_connect()
+        );
+        let diags = sql_diags(&source);
+        assert!(
+            pl607(&diags).is_some(),
+            "an interpolating heredoc with a sigil must be flagged: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn literal_heredoc_sql_is_silent() {
+        // Mirror control: `<<'END_SQL'` never interpolates, so even `$id`
+        // text in the body is a static SQL literal.
+        let source = format!(
+            "{}\nmy $sth = $dbh->prepare(<<'END_SQL');\nSELECT * FROM t WHERE id = $id\nEND_SQL\n",
+            dbh_connect()
+        );
+        let diags = sql_diags(&source);
+        assert!(pl607(&diags).is_none(), "a literal heredoc is static SQL: {diags:?}");
+    }
+
+    // --- #5035 review repairs: punctuation match variables (P1) ---
+
+    #[test]
+    fn ampersand_match_variable_sql_is_flagged_with_exact_range() {
+        // `$&` (the match text) interpolates like any scalar: after a match
+        // over attacker-controlled input it injects that text into the SQL,
+        // so the sink must classify as interpolated, not static.
+        let source = format!(
+            "{}\nmy $raw = <STDIN>;\n$raw =~ /(\\w+)/;\nmy $sth = $dbh->prepare(\"SELECT * FROM t WHERE name = $&\");\n",
+            dbh_connect()
+        );
+        let diags = sql_diags(&source);
+        let diagnostic = pl607(&diags).unwrap_or_else(|| {
+            panic!("`$&` match text in SQL must be flagged as PL607: {diags:?}")
+        });
+        let (start, end) = diagnostic.range;
+        assert_eq!(
+            &source[start..end],
+            r#"$dbh->prepare("SELECT * FROM t WHERE name = $&")"#,
+            "PL607 byte range must cover the exact prepare call"
+        );
+    }
+
+    #[test]
+    fn pre_match_variable_sql_is_flagged_with_exact_range() {
+        // `` $` `` (the pre-match text) interpolates like any scalar after a
+        // match over attacker-controlled input.
+        let source = format!(
+            "{}\nmy $raw = <STDIN>;\n$raw =~ /(\\w+)/;\nmy $sth = $dbh->prepare(\"SELECT * FROM t WHERE name = $`\");\n",
+            dbh_connect()
+        );
+        let diags = sql_diags(&source);
+        let diagnostic = pl607(&diags).unwrap_or_else(|| {
+            panic!("`` $` `` pre-match text in SQL must be flagged as PL607: {diags:?}")
+        });
+        let (start, end) = diagnostic.range;
+        assert_eq!(
+            &source[start..end],
+            r#"$dbh->prepare("SELECT * FROM t WHERE name = $`")"#,
+            "PL607 byte range must cover the exact prepare call"
+        );
+    }
+
+    #[test]
+    fn post_match_variable_sql_is_flagged_with_exact_range() {
+        // `$'` (the post-match text) interpolates like any scalar after a
+        // match over attacker-controlled input.
+        let source = format!(
+            "{}\nmy $raw = <STDIN>;\n$raw =~ /(\\w+)/;\nmy $sth = $dbh->prepare(\"SELECT * FROM t WHERE name = $'\");\n",
+            dbh_connect()
+        );
+        let diags = sql_diags(&source);
+        let diagnostic = pl607(&diags).unwrap_or_else(|| {
+            panic!("`$'` post-match text in SQL must be flagged as PL607: {diags:?}")
+        });
+        let (start, end) = diagnostic.range;
+        assert_eq!(
+            &source[start..end],
+            r#"$dbh->prepare("SELECT * FROM t WHERE name = $'")"#,
+            "PL607 byte range must cover the exact prepare call"
+        );
+    }
+
+    #[test]
+    fn highest_capture_group_variable_sql_is_flagged_with_exact_range() {
+        // `$+` (the highest-numbered capture group of the last successful
+        // match) is a punctuation match variable exactly like `$&`: captured
+        // attacker text reaches the SQL through it.
+        let source = format!(
+            "{}\nmy $raw = <STDIN>;\n$raw =~ /(\\w+)/;\nmy $sth = $dbh->prepare(\"SELECT * FROM t WHERE name = $+\");\n",
+            dbh_connect()
+        );
+        let diags = sql_diags(&source);
+        let diagnostic = pl607(&diags).unwrap_or_else(|| {
+            panic!("`$+` capture text in SQL must be flagged as PL607: {diags:?}")
+        });
+        let (start, end) = diagnostic.range;
+        assert_eq!(
+            &source[start..end],
+            r#"$dbh->prepare("SELECT * FROM t WHERE name = $+")"#,
+            "PL607 byte range must cover the exact prepare call"
+        );
+    }
+
+    #[test]
+    fn escaped_punctuation_match_variable_stays_silent() {
+        // The parity rule composes with the new successors: an odd backslash
+        // run escapes the sigil, so `\$&` is literal `$&` text and the SQL
+        // stays static.
+        let source = format!(
+            "{}\nmy $sth = $dbh->prepare(\"SELECT * FROM t WHERE x = '\\$&' AND y = ?\");\n",
+            dbh_connect()
+        );
+        let diags = sql_diags(&source);
+        assert!(
+            pl607(&diags).is_none(),
+            "an escaped punctuation match variable is not an interpolation: {diags:?}"
+        );
+    }
+
+    // --- #5035 review repairs: single-pass receiver evidence index (P2) ---
+
+    #[test]
+    fn receiver_evidence_index_keeps_classification_identical_across_sink_counts() {
+        // Sinks resolve receivers through the name-keyed index instead of
+        // rescanning the whole assignment list per sink (the quadratic
+        // O(assignments x sinks) pass). This pins the classification matrix
+        // at several document sizes: each proven receiver fires exactly once,
+        // rebound and unproven receivers stay silent, a shared name with many
+        // connect assignments keeps every sink proven, and a mid-document
+        // rebinding silences exactly the post-rebinding sinks.
+        let pl607_count = |diags: &[Diagnostic]| {
+            diags.iter().filter(|d| d.code.as_deref() == Some("PL607")).count()
+        };
+
+        for sinks in [1usize, 10, 100, 500] {
+            // (a) one connect and one interpolated sink per distinct receiver.
+            let mut proven = String::new();
+            let mut rebound_silent = String::new();
+            for i in 0..sinks {
+                proven.push_str(&format!(
+                    "my $dbh{i} = DBI->connect('dbi:SQLite:dbname=x');\nmy $id{i} = <STDIN>;\n$dbh{i}->do(\"DELETE FROM t{i} WHERE id = $id{i}\");\n"
+                ));
+                rebound_silent.push_str(&format!(
+                    "my $eng{i} = Engine->new;\nmy $id{i} = <STDIN>;\n$eng{i}->do(\"DELETE FROM t{i} WHERE id = $id{i}\");\n"
+                ));
+            }
+            assert_eq!(
+                pl607_count(&sql_diags(&proven)),
+                sinks,
+                "every proven receiver fires once at {sinks} sinks"
+            );
+            assert_eq!(
+                pl607_count(&sql_diags(&rebound_silent)),
+                0,
+                "non-connect receivers stay silent at {sinks} sinks"
+            );
+
+            // (b) the crafted quadratic shape: one shared name with many
+            // assignments, all connects, feeding many sinks.
+            let mut shared = String::new();
+            for _ in 0..sinks {
+                shared.push_str("$dbh = DBI->connect('dbi:SQLite:dbname=x');\n");
+            }
+            shared.push_str("my $id = <STDIN>;\n");
+            for _ in 0..sinks {
+                shared.push_str("$dbh->do(\"DELETE FROM t WHERE id = $id\");\n");
+            }
+            assert_eq!(
+                pl607_count(&sql_diags(&shared)),
+                sinks,
+                "all-connect shared name keeps every sink proven at {sinks} assignments/sinks"
+            );
+
+            // (c) mid-document rebinding of the shared name: only the sinks
+            // before the non-connect rebinding carry proven evidence.
+            let mut rebound = String::new();
+            rebound.push_str("my $dbh = DBI->connect('dbi:SQLite:dbname=x');\nmy $id = <STDIN>;\n");
+            for _ in 0..sinks {
+                rebound.push_str("$dbh->do(\"DELETE FROM a WHERE id = $id\");\n");
+            }
+            rebound.push_str("$dbh = Engine->new;\n");
+            for _ in 0..sinks {
+                rebound.push_str("$dbh->do(\"DELETE FROM b WHERE id = $id\");\n");
+            }
+            assert_eq!(
+                pl607_count(&sql_diags(&rebound)),
+                sinks,
+                "only pre-rebinding sinks fire at {sinks} sinks"
+            );
+        }
+    }
+
+    // --- embedded regex code (#9818) ---
+
+    fn has_code(diags: &[Diagnostic], expected: &str) -> bool {
+        diags.iter().any(|d| d.code.as_deref() == Some(expected))
+    }
+
+    #[test]
+    fn e_modifier_substitution_is_flagged() {
+        let diags = security_diags(r#"$s =~ s/(\w+)/uc($1)/e;"#);
+        assert!(
+            has_code(&diags, "PL608"),
+            "s///e should publish the stable substitution-eval code PL608: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn ee_modifier_substitution_is_flagged() {
+        let diags = security_diags(r#"$t =~ s/\$(\w+)/$$1/ee;"#);
+        assert!(
+            has_code(&diags, "PL608"),
+            "s///ee should publish the stable substitution-eval code PL608: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn standalone_e_modifier_substitution_is_flagged() {
+        let diags = security_diags(r#"s/version (\d+)/$1 + 1/e;"#);
+        assert!(
+            has_code(&diags, "PL608"),
+            "bare s///e should publish PL608 even without a =~ binding: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn embedded_code_block_in_qr_is_flagged() {
+        let diags = security_diags(r#"my $r = qr/(?{ print "hi" })/;"#);
+        assert!(
+            has_code(&diags, "PL609"),
+            "qr/(?{{...}})/ should publish the stable embedded-code class PL609: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn embedded_code_block_in_explicit_match_is_flagged() {
+        let diags = security_diags(r#"$x =~ m/(?{ print "hi" })/;"#);
+        assert!(
+            has_code(&diags, "PL609"),
+            "m/(?{{...}})/ should publish the stable embedded-code class PL609: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn embedded_code_block_in_bare_match_is_flagged() {
+        let diags = security_diags(r#"$x =~ /(?{ print "hi" })/;"#);
+        assert!(
+            has_code(&diags, "PL609"),
+            "bare /(?{{...}})/ should publish the same embedded-code class PL609: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn embedded_code_block_in_substitution_pattern_is_flagged() {
+        let diags = security_diags(r#"$x =~ s/(?{ print "hi" })/ok/;"#);
+        assert!(
+            has_code(&diags, "PL609"),
+            "(?{{...}}) inside a substitution pattern without /e should publish PL609: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn plain_substitution_is_not_flagged() {
+        let diags = security_diags(r#"$s =~ s/a/b/;"#);
+        assert!(
+            !diags.iter().any(|d| d.code.as_deref().is_some_and(|c| c.starts_with("PL6"))),
+            "plain s/// must not publish a security diagnostic: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn qr_without_embedded_code_is_not_flagged() {
+        let diags = security_diags(r#"my $re = qr/hello/;"#);
+        assert!(
+            !diags.iter().any(|d| d.code.as_deref().is_some_and(|c| c.starts_with("PL6"))),
+            "plain qr// must not publish a security diagnostic: {diags:?}"
+        );
+    }
+
+    // --- bound-expression traversal (#9821) ---
+
+    #[test]
+    fn backtick_bound_to_match_is_still_flagged() {
+        let diags = security_diags("`ls` =~ /x/;");
+        assert!(
+            has_code(&diags, "PL601"),
+            "backtick under Match.expr must publish the same PL601 as elsewhere: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn backtick_bound_to_substitution_is_still_flagged() {
+        let diags = security_diags("`ls` =~ s/a/b/;");
+        assert!(
+            has_code(&diags, "PL601"),
+            "backtick under Substitution.expr must publish the same PL601: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn readpipe_bound_to_match_is_still_flagged() {
+        let diags = security_diags(r#"readpipe("ls") =~ /x/;"#);
+        assert!(
+            has_code(&diags, "PL606"),
+            "readpipe() under Match.expr must keep its own stable code PL606: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn variable_bound_to_match_is_not_flagged() {
+        let diags = security_diags("$s =~ /x/;");
+        assert!(
+            !diags.iter().any(|d| d.code.as_deref().is_some_and(|c| c.starts_with("PL6"))),
+            "ordinary variable binding under =~ must stay silent: {diags:?}"
         );
     }
 }

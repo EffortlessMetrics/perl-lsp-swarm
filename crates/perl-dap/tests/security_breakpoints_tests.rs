@@ -2,6 +2,10 @@
 //!
 //! Tests for preventing protocol injection vulnerabilities in breakpoint conditions.
 
+#![expect(
+    clippy::print_stdout,
+    reason = "Integration-test diagnostic and skip output; tracing is not the harness logger."
+)]
 use perl_dap::debug_adapter::{DapMessage, DebugAdapter};
 use serde_json::json;
 

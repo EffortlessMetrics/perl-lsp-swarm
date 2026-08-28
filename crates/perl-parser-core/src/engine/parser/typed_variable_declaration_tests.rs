@@ -13,7 +13,9 @@ fn test_legacy_typed_my_declaration_parses_without_error_node()
         "Expected typed my declaration to parse without ERROR node, got: {sexp}",
     );
     assert!(
-        sexp.contains("my_declaration (variable $ this)"),
+        sexp.contains(
+            "(my_declaration (declarator my) (variable (variable (sigil $) (name this)))"
+        ),
         "Expected my declaration variable in sexp, got: {sexp}",
     );
     Ok(())
@@ -31,7 +33,10 @@ fn test_plain_my_declaration_not_affected() -> Result<(), Box<dyn std::error::Er
         !sexp.contains("ERROR"),
         "Plain my declaration should parse without ERROR node, got: {sexp}",
     );
-    assert!(sexp.contains("(variable $ x)"), "Expected variable $x in sexp, got: {sexp}");
+    assert!(
+        sexp.contains("(variable (sigil $) (name x))"),
+        "Expected variable $x in sexp, got: {sexp}"
+    );
     Ok(())
 }
 

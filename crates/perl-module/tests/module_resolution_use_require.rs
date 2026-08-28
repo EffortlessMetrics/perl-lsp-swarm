@@ -9,7 +9,7 @@
 //! - Legacy `'` separator through resolution
 //! - Multi-level @INC search with workspace + system overlap
 
-use perl_module::resolution::{ModuleUriResolution, resolve_module_path, resolve_module_uri};
+use perl_module::{ModuleUriResolution, resolve_module_path, resolve_module_uri};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -709,12 +709,12 @@ mod legacy_separator_resolution {
         Ok(())
     }
 
-    /// The `perl_module::path::module_name_to_path` function (used internally)
+    /// The `perl_module::module_name_to_path` function (used internally)
     /// handles legacy separators directly.
     #[test]
     fn module_name_to_path_handles_legacy_tick() {
         // This exercises the path that resolve_module_path uses internally
-        let path = perl_module::resolution::path::resolve_module_path(
+        let path = perl_module::resolve_module_path(
             std::path::Path::new("/fake"),
             "Old::Style",
             &["lib".to_string()],

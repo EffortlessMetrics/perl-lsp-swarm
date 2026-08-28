@@ -1,0 +1,34 @@
+{
+  "schema": "agent_review_finding.v1",
+  "schema_version": 1,
+  "finding_id": "example-train/R_service_marker/N_service_marker_probe/FIND-marker-tree-comparison",
+  "packet_ref": {
+    "packet_id": "example-train/R_service_marker/N_service_marker_probe/2026-08-24T00:00:00Z",
+    "reviewed_head": "b31d5e9a2"
+  },
+  "lens": "semantic_correctness",
+  "outcome": "resolved_current_head",
+  "severity": "advisory",
+  "evidence": [
+    {
+      "kind": "focused_test_observation",
+      "identity": "cargo test -p xtask --bin xtask service_marker_probe --locked@b31d5e9a2",
+      "observation": "The stale-marker falsifier initially compared marker presence instead of recorded tree; the focused test passed for a marker recorded against another tree."
+    },
+    {
+      "kind": "mutation_observation",
+      "identity": "invert tree comparison mutation@b31d5e9a2",
+      "observation": "Inverting the comparison flips both focused tests red, proving the comparison is load-bearing after repair."
+    }
+  ],
+  "suggested_action": "Bind the mismatch to the recorded-tree versus observed-tree comparison and reject alternate-tree markers in the same change.",
+  "builder_response": {
+    "disposition": "accepted",
+    "statement": "Repaired the comparison and added the alternate-tree rejection case to the focused test at the same head."
+  },
+  "resolution": {
+    "resolution_head": "b31d5e9a2",
+    "evidence": []
+  },
+  "final_disposition": "resolved_on_current_head"
+}

@@ -1,18 +1,17 @@
-//! Formatting handlers for code formatting features
+//! Formatting handler for the proven manual whole-document formatting route.
 //!
-//! Handles textDocument/formatting, textDocument/rangeFormatting,
-//! and textDocument/onTypeFormatting requests.
+//! Secondary edit-producing routes are withdrawn (#11955); see the shared
+//! policy interceptor in `runtime::dispatch::formatting_policy`.
 
 use super::super::{
     GLOBAL_CANCELLATION_REGISTRY, INVALID_REQUEST, JsonRpcError, JsonRpcId, LspServer,
     PerlLspCancellationToken, Value, json,
 };
 use crate::cancellation::RequestCleanupGuard;
-use crate::convert::{WirePosition, WireRange};
 use crate::features::formatting::{
     CodeFormatter, FormattingError, FormattingOptions, PerlTidyConfig,
 };
-use crate::protocol::{REQUEST_CANCELLED, invalid_params, req_position, req_range, req_uri};
+use crate::protocol::{REQUEST_CANCELLED, req_uri};
 use perl_lsp_rs_core::config::FormatterMode;
 
 /// Build a `JsonRpcError` from a `FormattingError`, populating the `data` field
@@ -79,37 +78,13 @@ impl LspServer {
         self.config.lock().formatting_engine
     }
 
-    /// Handle textDocument/onTypeFormatting request
-    pub(crate) fn handle_on_type_formatting(
-        &self,
-        params: Option<Value>,
-    ) -> Result<Option<Value>, JsonRpcError> {
-        if let Some(p) = params {
-            let uri = req_uri(&p)?;
-            let ch = p["ch"].as_str().and_then(|s| s.chars().next()).unwrap_or('\n');
-            let (line, col) = req_position(&p)?;
-
-            let documents = self.documents_guard();
-            let doc = self.get_document(&documents, uri).ok_or_else(|| JsonRpcError {
-                code: INVALID_REQUEST,
-                message: format!("Document not open: {}", uri),
-                data: None,
-            })?;
-
-            let indent_step = p["options"]["tabSize"].as_u64().unwrap_or(4) as usize;
-
-            if let Some(edits) = crate::on_type_formatting::compute_on_type_edit(
-                &doc.text,
-                line,
-                col,
-                ch,
-                indent_step,
-            ) {
-                return Ok(Some(json!(edits)));
-            }
-        }
-        Ok(Some(json!([])))
-    }
+    // Secondary edit-producing handlers (`textDocument/rangeFormatting`,
+    // `textDocument/rangesFormatting`, `textDocument/onTypeFormatting`) were
+    // removed here (#11955): their geometry, currentness, and outcome policy
+    // are unproven, and duplicate authorities behind the shared policy route
+    // could re-arm withdrawn routes. Restoration is owned by #9317, #7089,
+    // and #9320; until then the shared policy interceptor refuses these
+    // methods before any parameter validation.
 
     /// Handle textDocument/formatting request
     pub(crate) fn handle_formatting(
@@ -225,210 +200,6 @@ impl LspServer {
         }
 
         self.handle_formatting(params)
-    }
-
-    /// Handle textDocument/rangeFormatting request
-    pub(crate) fn handle_range_formatting(
-        &self,
-        params: Option<Value>,
-    ) -> Result<Option<Value>, JsonRpcError> {
-        // Gate unadvertised feature
-        if !self.advertised_features.lock().range_formatting {
-            return Err(crate::protocol::method_not_advertised());
-        }
-
-        if !self.is_formatting_enabled() {
-            return Ok(Some(json!([])));
-        }
-
-        if let Some(params) = params {
-            let uri = req_uri(&params)?;
-            let ((start_line, start_char), (end_line, end_char)) = req_range(&params)?;
-            let options: FormattingOptions = serde_json::from_value(params["options"].clone())
-                .unwrap_or(FormattingOptions {
-                    tab_size: 4,
-                    insert_spaces: true,
-                    trim_trailing_whitespace: None,
-                    insert_final_newline: None,
-                    trim_final_newlines: None,
-                });
-
-            let range = WireRange::new(
-                WirePosition::new(start_line, start_char),
-                WirePosition::new(end_line, end_char),
-            );
-
-            tracing::debug!(uri, "Formatting range in document");
-
-            // Snapshot the document text under the lock, then release the
-            // guard before running the perltidy subprocess so other LSP
-            // requests are not blocked for the full subprocess duration
-            // (#4643).
-            let text = {
-                let documents = self.documents_guard();
-                let doc = self
-                    .get_document(&documents, uri)
-                    .ok_or_else(|| document_not_open_error(uri))?;
-                doc.text_arc.to_string()
-            };
-            let config = self.build_perltidy_config();
-            let formatter = CodeFormatter::with_config_and_mode(config, self.formatter_mode());
-            match formatter.format_range(&text, &range, &options) {
-                Ok(edits) => {
-                    let lsp_edits: Vec<Value> = edits
-                        .into_iter()
-                        .map(|edit| {
-                            json!({
-                                "range": {
-                                    "start": {
-                                        "line": edit.range.start.line,
-                                        "character": edit.range.start.character,
-                                    },
-                                    "end": {
-                                        "line": edit.range.end.line,
-                                        "character": edit.range.end.character,
-                                    },
-                                },
-                                "newText": edit.new_text,
-                            })
-                        })
-                        .collect();
-
-                    return Ok(Some(json!(lsp_edits)));
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "Range formatting error");
-                    return Err(formatting_error_to_rpc("Range formatting failed", e));
-                }
-            }
-        }
-
-        Ok(Some(json!([])))
-    }
-
-    /// Handle textDocument/rangesFormatting request (LSP 3.18)
-    pub(crate) fn handle_ranges_formatting(
-        &self,
-        params: Option<Value>,
-    ) -> Result<Option<Value>, JsonRpcError> {
-        if !self.is_formatting_enabled() {
-            return Ok(Some(json!([])));
-        }
-
-        if let Some(params) = params {
-            let uri = req_uri(&params)?;
-            let options: FormattingOptions = serde_json::from_value(params["options"].clone())
-                .unwrap_or(FormattingOptions {
-                    tab_size: 4,
-                    insert_spaces: true,
-                    trim_trailing_whitespace: None,
-                    insert_final_newline: None,
-                    trim_final_newlines: None,
-                });
-
-            // Parse ranges array
-            let ranges_array = params
-                .get("ranges")
-                .and_then(|r| r.as_array())
-                .ok_or_else(|| invalid_params("Missing required parameter: ranges"))?;
-
-            if ranges_array.is_empty() {
-                return Ok(Some(json!([])));
-            }
-
-            tracing::debug!(count = ranges_array.len(), uri, "Formatting ranges in document");
-
-            // Snapshot the document text under the lock, then release the
-            // guard before running the perltidy subprocess so other LSP
-            // requests are not blocked for the full subprocess duration
-            // (#4643).
-            let text = {
-                let documents = self.documents_guard();
-                let doc = self
-                    .get_document(&documents, uri)
-                    .ok_or_else(|| document_not_open_error(uri))?;
-                doc.text_arc.to_string()
-            };
-            let config = self.build_perltidy_config();
-            let formatter = CodeFormatter::with_config_and_mode(config, self.formatter_mode());
-            let mut all_edits = Vec::new();
-
-            // Process each range
-            for (idx, range_val) in ranges_array.iter().enumerate() {
-                let start_line_u64 =
-                    range_val.pointer("/start/line").and_then(|v| v.as_u64()).ok_or_else(|| {
-                        invalid_params(&format!("Missing ranges[{}].start.line", idx))
-                    })?;
-                let start_line = u32::try_from(start_line_u64).map_err(|_| {
-                    invalid_params(&format!("ranges[{}].start.line exceeds u32::MAX", idx))
-                })?;
-
-                let start_char_u64 =
-                    range_val.pointer("/start/character").and_then(|v| v.as_u64()).ok_or_else(
-                        || invalid_params(&format!("Missing ranges[{}].start.character", idx)),
-                    )?;
-                let start_char = u32::try_from(start_char_u64).map_err(|_| {
-                    invalid_params(&format!("ranges[{}].start.character exceeds u32::MAX", idx))
-                })?;
-
-                let end_line_u64 = range_val
-                    .pointer("/end/line")
-                    .and_then(|v| v.as_u64())
-                    .ok_or_else(|| invalid_params(&format!("Missing ranges[{}].end.line", idx)))?;
-                let end_line = u32::try_from(end_line_u64).map_err(|_| {
-                    invalid_params(&format!("ranges[{}].end.line exceeds u32::MAX", idx))
-                })?;
-
-                let end_char_u64 =
-                    range_val.pointer("/end/character").and_then(|v| v.as_u64()).ok_or_else(
-                        || invalid_params(&format!("Missing ranges[{}].end.character", idx)),
-                    )?;
-                let end_char = u32::try_from(end_char_u64).map_err(|_| {
-                    invalid_params(&format!("ranges[{}].end.character exceeds u32::MAX", idx))
-                })?;
-
-                let range = WireRange::new(
-                    WirePosition::new(start_line, start_char),
-                    WirePosition::new(end_line, end_char),
-                );
-
-                match formatter.format_range(&text, &range, &options) {
-                    Ok(edits) => {
-                        all_edits.extend(edits);
-                    }
-                    Err(e) => {
-                        tracing::warn!(idx, error = %e, "Range formatting error");
-                        return Err(formatting_error_to_rpc(
-                            &format!("Range formatting failed for range {}", idx),
-                            e,
-                        ));
-                    }
-                }
-            }
-
-            let lsp_edits: Vec<Value> = all_edits
-                .into_iter()
-                .map(|edit| {
-                    json!({
-                        "range": {
-                            "start": {
-                                "line": edit.range.start.line,
-                                "character": edit.range.start.character,
-                            },
-                            "end": {
-                                "line": edit.range.end.line,
-                                "character": edit.range.end.character,
-                            },
-                        },
-                        "newText": edit.new_text,
-                    })
-                })
-                .collect();
-
-            return Ok(Some(json!(lsp_edits)));
-        }
-
-        Ok(Some(json!([])))
     }
 }
 
@@ -640,6 +411,7 @@ mod tests {
 
         let server = Arc::new(LspServer::new());
         let uri = "file:///test_concurrent_lock.pl";
+        server.advertised_features.lock().formatting = true;
 
         // Generate a large document so the native formatter has enough work
         // to create a measurable window where the lock is released but

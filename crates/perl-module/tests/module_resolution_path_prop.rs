@@ -1,5 +1,5 @@
-use perl_module::path::module_name_to_path;
-use perl_module::resolution::path::resolve_module_path;
+use perl_module::module_name_to_path;
+use perl_module::resolve_module_path;
 use proptest::prelude::*;
 use std::path::PathBuf;
 

@@ -35,8 +35,6 @@
     clippy::items_after_statements,
     clippy::return_self_not_must_use,
     clippy::unused_self,
-    clippy::collapsible_match,
-    clippy::collapsible_if,
     clippy::only_used_in_recursion,
     clippy::items_after_test_module,
     clippy::while_let_loop,
@@ -55,6 +53,12 @@
 pub use perl_parser_core::line_index;
 pub use perl_parser_core::{Node, NodeKind, SourceLocation};
 pub use perl_parser_core::{Parser, ast, position};
+
+/// Transport-neutral reachability operation, work-budget, and
+/// terminal-outcome contract (#11553), re-exported from the
+/// `perl-semantic-facts` substrate for the liveness train consumers
+/// (#10915/#10921/#10928/#10935 and later leaves).
+pub use perl_semantic_facts::reachability_operation;
 
 /// Unified public API surface.
 pub mod api;

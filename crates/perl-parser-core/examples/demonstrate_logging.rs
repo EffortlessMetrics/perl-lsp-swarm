@@ -1,3 +1,4 @@
+#![allow(clippy::print_stdout)] // //! Demonstration example: intentionally logs to stdout by design.
 //! Demonstration of default value substitution logging
 //!
 //! This example shows how the parser logs when default values are substituted.

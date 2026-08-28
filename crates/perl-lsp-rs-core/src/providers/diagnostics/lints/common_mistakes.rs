@@ -52,57 +52,63 @@ pub fn check_common_mistakes(
             }
 
             // Check for == or != with undef
-            NodeKind::Binary { op, left, right } => {
+            NodeKind::Binary { op, left, right }
                 if (op == "==" || op == "!=")
-                    && (might_be_undef(left, symbol_table) || might_be_undef(right, symbol_table))
-                {
-                    // The emitter chooses the reviewed PL404 shape at the
-                    // syntax branch that observed it (#11918): a literal
-                    // `undef` operand is the literal shape (the reviewed
-                    // native alias `native.common.undef_comparison` covers
-                    // exactly that); an unresolved-variable operand is the
-                    // data-flow shape, which deliberately has no native
-                    // alias and stays a distinct finding.
-                    let literal_undef = matches!(left.kind, NodeKind::Undef)
-                        || matches!(right.kind, NodeKind::Undef);
-                    let range = (n.location.start, n.location.end);
-                    let message = format!(
-                        "Using '{}' with potentially undefined value -- use 'defined()' to check first",
-                        op
-                    );
-                    let observation = if literal_undef {
-                        BuiltInCriticObservation::pl404_literal_undef_comparison(
-                            Severity::Stern,
-                            range,
-                            message.clone(),
-                            Some("Consider using 'defined' check or '//' operator".to_string()),
-                        )
-                    } else {
-                        BuiltInCriticObservation::pl404_potentially_undef_comparison(
-                            Severity::Stern,
-                            range,
-                            message.clone(),
-                            Some("Consider using 'defined' check or '//' operator".to_string()),
-                        )
-                    };
-                    diagnostics.push(Diagnostic {
+                    && (might_be_undef(left, symbol_table)
+                        || might_be_undef(right, symbol_table)) =>
+            {
+                // The emitter chooses the reviewed PL404 shape at the
+                // syntax branch that observed it (#11918): a literal
+                // `undef` operand is the literal shape (the reviewed
+                // native alias `native.common.undef_comparison` covers
+                // exactly that); an unresolved-variable operand is the
+                // data-flow shape, which deliberately has no native
+                // alias and stays a distinct finding.
+                let literal_undef =
+                    matches!(left.kind, NodeKind::Undef) || matches!(right.kind, NodeKind::Undef);
+                let range = (n.location.start, n.location.end);
+                let message = format!(
+                    "Using '{}' with potentially undefined value -- use 'defined()' to check first",
+                    op
+                );
+                const UNDEF_GUARD_SUGGESTION: &str =
+                    "Guard with 'defined($var)' or use the '//' (defined-or) operator";
+                const UNDEF_RELATED_EXPLANATION: &str =
+                    "Consider using 'defined' check or '//' operator";
+                let observation = if literal_undef {
+                    BuiltInCriticObservation::pl404_literal_undef_comparison(
+                        Severity::Stern,
                         range,
-                        severity: DiagnosticSeverity::Warning,
-                        code: Some(DiagnosticCode::NumericComparisonWithUndef.as_str().to_string()),
-                        message,
-                        related_information: vec![RelatedInformation {
-                            location: range,
-                            message: "Consider using 'defined' check or '//' operator".to_string(),
-                        }],
-                        tags: Vec::new(),
-                        fixable: false,
-                        critic_observation: Some(observation),
-                        suggestion: Some(
-                            "Guard with 'defined($var)' or use the '//' (defined-or) operator"
-                                .to_string(),
-                        ),
-                    });
+                        message.clone(),
+                        Some(UNDEF_RELATED_EXPLANATION.to_string()),
+                    )
+                } else {
+                    BuiltInCriticObservation::pl404_potentially_undef_comparison(
+                        Severity::Stern,
+                        range,
+                        message.clone(),
+                        Some(UNDEF_RELATED_EXPLANATION.to_string()),
+                    )
                 }
+                // #12004: the observation carries the ordinary row's
+                // exact user-visible remediation so retirement cannot
+                // drop it. Shared bindings keep the copies identical.
+                .with_suggestion(UNDEF_GUARD_SUGGESTION)
+                .with_related_information(range, UNDEF_RELATED_EXPLANATION.to_string());
+                diagnostics.push(Diagnostic {
+                    range,
+                    severity: DiagnosticSeverity::Warning,
+                    code: Some(DiagnosticCode::NumericComparisonWithUndef.as_str().to_string()),
+                    message,
+                    related_information: vec![RelatedInformation {
+                        location: range,
+                        message: UNDEF_RELATED_EXPLANATION.to_string(),
+                    }],
+                    tags: Vec::new(),
+                    fixable: false,
+                    critic_observation: Some(observation),
+                    suggestion: Some(UNDEF_GUARD_SUGGESTION.to_string()),
+                });
             }
             NodeKind::FunctionCall { name, args } => {
                 check_bareword_filehandle(name, args, n, diagnostics);
@@ -423,6 +429,48 @@ mod tests {
         // Stern matches the reviewed native alias declaration; deriving it
         // from the LSP Warning instead would be an invented mapping.
         assert_eq!(observation.severity(), crate::tooling::perl_critic::Severity::Stern);
+    }
+
+    /// #12004: the observation's remediation copy must stay identical to the
+    /// ordinary diagnostic fields it mirrors, or merged rows silently serve
+    /// stale text after the ordinary row retires.
+    #[test]
+    fn pl404_observation_remediation_copies_match_the_ordinary_diagnostic_fields() {
+        for source in ["if (5 == undef) { }", "if ($undeclared_var == 5) { }"] {
+            let diags = common_mistakes_diags(source);
+            let diagnostic = diags
+                .iter()
+                .find(|d| d.code.as_deref() == Some("PL404"))
+                .unwrap_or_else(|| panic!("PL404 must be emitted for {source}"));
+            let suggestion = diagnostic
+                .suggestion
+                .as_deref()
+                .unwrap_or_else(|| panic!("PL404 must carry an ordinary suggestion"));
+            let observation = diagnostic
+                .critic_observation
+                .as_ref()
+                .unwrap_or_else(|| panic!("PL404 must carry an observation: {diags:?}"));
+
+            assert_eq!(
+                observation.suggestion(),
+                Some(suggestion),
+                "PL404: observation suggestion drifted from the ordinary diagnostic"
+            );
+            let ordinary_related = diagnostic
+                .related_information
+                .iter()
+                .map(|r| r.message.as_str())
+                .collect::<Vec<_>>();
+            let observation_related = observation
+                .related_information()
+                .iter()
+                .map(|(_, m)| m.as_str())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                observation_related, ordinary_related,
+                "PL404: observation related information drifted from the ordinary diagnostic"
+            );
+        }
     }
 
     #[test]

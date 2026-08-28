@@ -1,0 +1,23 @@
+{
+  "name": "nc01_basename_only_authorization",
+  "control": 1,
+  "op": "bind_subject",
+  "input": {
+    "candidate": {
+      "basename": "Core.pm",
+      "package_name": "App::Core",
+      "session_generation": 3,
+      "suspension_generation": 11,
+      "observation_generation": 2,
+      "inc_key": "",
+      "resolved_runtime_path": "",
+      "saved_content_digest": "",
+      "logical_source_uri": "file:///ws/lib/App/Core.pm",
+      "perl_identity": "perl 5.42.0",
+      "launch_root": "/ws",
+      "module_classification": "source_backed_perl_module",
+      "operation_identity": 5
+    }
+  },
+  "expected_error": "insufficient_subject_identity"
+}

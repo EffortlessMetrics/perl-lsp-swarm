@@ -34,8 +34,7 @@ distinction with two independent axes in `features.toml`:
 These two are **not** contradictory and must not be "reconciled" by deleting the
 `(@proposed)` marker. The same convention is used for every other
 upstream-proposed method perl-lsp implements at GA quality — e.g.
-`textDocument/rangesFormatting` (`features.toml` `lsp.ranges_formatting`),
-`workspace/foldingRange/refresh`, and `workspace/textDocumentContent`. Removing
+`workspace/foldingRange/refresh` and `workspace/textDocumentContent`. Removing
 `(@proposed)` would falsely imply the *upstream method* is stable.
 
 **Invariant.** A `features.toml` entry whose `spec` names an LSP version where the

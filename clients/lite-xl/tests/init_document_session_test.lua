@@ -196,14 +196,24 @@ package.preload["plugins.lsp.listbox"] = function()
   return { hide = function() end, show_text = function() end }
 end
 
+-- Local patch (#11172): the staged modules fold their capability
+-- advertisement and command projection through the exact manifest source.
+package.preload["plugins.lsp.capability_manifest"] = function()
+  return dofile(here .. "/../upstream/capability_manifest.lua")
+end
 package.preload["plugins.lsp.diagnostics"] = function()
   -- Lifecycle seams consumed by init.lua (#11124); inert in this suite,
   -- whose subject is document-session/version behavior, not publications.
+  -- set_render_resolver: combined-tree repair for this lane (#11165); the
+  -- #11128 seam call entered init.lua on main without updating these fakes.
   return {
     note_provider = function() end,
     close_session = function() end,
     retire_provider = function() end,
+    set_render_resolver = function() end,
     publish = function() return true, nil end,
+    -- #12047 render-resolver seam: init.lua registers it unconditionally at load.
+    set_render_resolver = function() end,
   }
 end
 
@@ -355,9 +365,9 @@ local function drain(server, method)
   return played
 end
 
----Canonical URI exactly as production computes it (staged util.touri).
+---Canonical URI exactly as production computes it (#11165 authority).
 local function expected_uri(path)
-  return dofile(here .. "/../upstream/util.lua").touri(path)
+  return dofile(here .. "/../upstream/util.lua").path_to_uri(path)
 end
 
 local INCREMENTAL = { textDocumentSync = { openClose = true, change = 2, save = { includeText = false } }, positionEncoding = "utf-16" }
@@ -529,14 +539,16 @@ do
   local first = get_session(lsp, doc, server)
   ok(first ~= nil and first.session_generation == 1, "case5: first open is session generation 1")
 
-  -- Queue a change that never goes out (backpressure) so the old session
-  -- holds unsent pending state.
-  server.can_push_value = false
+  -- Queue a change and leave its batch unsent so the old session holds
+  -- pending state (#10833): batches always queue - there is no admission
+  -- hold anymore - so holding is a property of the unsent queue whose send
+  -- callback has not run, not of a can_push gate.
   doc:raw_insert(1, 5, "stale", nil, 0)
-  drain(server)
-  server.can_push_value = true
   ok(first ~= nil and #first.pending_changes == 1,
     "case5: old session holds one unsent pending change before close")
+  local stale_batches = drain(server, "textDocument/didChange")
+  ok(#stale_batches == 1 and first ~= nil and #first.pending_changes == 0,
+    "case5: sending the batch releases exactly the held change")
 
   lsp.close_document(doc)
   local closed = drain(server, "textDocument/didClose")

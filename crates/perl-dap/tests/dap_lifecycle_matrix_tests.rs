@@ -11,9 +11,13 @@
 //! All tests skip gracefully when `perl` is not on `PATH`.
 //! AC: DAP lifecycle matrix — phase 2 e2e coverage.
 
+#![expect(
+    clippy::print_stderr,
+    reason = "Integration-test diagnostic and skip output; tracing is not the harness logger."
+)]
 mod common;
 
-use common::{DapWorkflowSession, perl_available, workflow_timeout};
+use common::{DapWorkflowSession, debuggee_perl_or_typed_skip, workflow_timeout};
 use perl_dap::debug_adapter::{DapMessage, DebugAdapter};
 use perl_tdd_support::must_some;
 use serde_json::{Value, json};
@@ -64,10 +68,10 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 /// and each assertion documents the adapter contract it validates.
 #[test]
 fn test_lifecycle_full_ordered_sequence() -> TestResult {
-    if !perl_available() {
-        eprintln!("Skipping test_lifecycle_full_ordered_sequence - perl not available");
+    let Some(debuggee_perl) = debuggee_perl_or_typed_skip("test_lifecycle_full_ordered_sequence")
+    else {
         return Ok(());
-    }
+    };
 
     let workspace = tempdir()?;
     let script = workspace.path().join("lifecycle_matrix.pl");
@@ -83,7 +87,7 @@ fn test_lifecycle_full_ordered_sequence() -> TestResult {
 
     // ── Step 2: launch ─────────────────────────────────────────────
     // stopOnEntry=false: adapter does NOT emit stopped until configurationDone.
-    session.launch(&script_str)?;
+    session.launch_pinned(&debuggee_perl.binary, &script_str)?;
 
     // ── Step 3: setBreakpoints (verified=true) ──────────────────────────────────
     // DAP protocol ordering: setBreakpoints MUST be called before configurationDone.
@@ -210,12 +214,11 @@ fn test_lifecycle_full_ordered_sequence() -> TestResult {
 /// frames without a client request, this test would catch the race.
 #[test]
 fn test_lifecycle_stopped_event_precedes_stack_trace() -> TestResult {
-    if !perl_available() {
-        eprintln!(
-            "Skipping test_lifecycle_stopped_event_precedes_stack_trace - perl not available"
-        );
+    let Some(debuggee_perl) =
+        debuggee_perl_or_typed_skip("test_lifecycle_stopped_event_precedes_stack_trace")
+    else {
         return Ok(());
-    }
+    };
 
     let workspace = tempdir()?;
     let script = workspace.path().join("lifecycle_ordering.pl");
@@ -225,7 +228,7 @@ fn test_lifecycle_stopped_event_precedes_stack_trace() -> TestResult {
     let timeout = workflow_timeout();
     let mut session = DapWorkflowSession::new(timeout)?;
 
-    session.launch(&script_str)?;
+    session.launch_pinned(&debuggee_perl.binary, &script_str)?;
     session.set_breakpoints_checked(&script_str, &[BP_LINE])?;
     session.configuration_done()?;
 
@@ -257,15 +260,16 @@ fn test_lifecycle_stopped_event_precedes_stack_trace() -> TestResult {
     Ok(())
 }
 
-// ─── Test 3: scopes returns Locals AND Globals ─────────────────────────────────
+// ─── Test 3: scopes advertises the #10563 contract (Locals only) ─────────────
 
-/// Validates that `scopes` returns BOTH Locals and Globals scopes, and that the
-/// Locals scope contains a REAL named lexical variable from the user script.
+/// Validates that `scopes` advertises the current scope contract — Locals, with
+/// the retired Package/Globals scopes absent — and that the Locals scope
+/// contains a REAL named lexical variable from the user script.
 ///
-/// The DAP spec requires a `scopes` response for each frame; editors typically
-/// render Locals and Globals as separate expandable trees.  This test asserts
-/// that both scope references are positive and distinct, indicating non-empty,
-/// separate scope buckets.
+/// The DAP spec requires a `scopes` response for each frame. #10563 retired
+/// Package/Globals from the advertised contract, so this journey asserts the
+/// Locals reference is positive and the retired scope names stay unadvertised
+/// at a live stopped frame.
 ///
 /// Fixture layout (lifecycle_scopes.pl):
 ///   Line 1: use strict;
@@ -290,11 +294,11 @@ fn test_lifecycle_stopped_event_precedes_stack_trace() -> TestResult {
 /// is a regression guard: it will catch any future revert of the PADLIST walk that
 /// re-exposes the internal-frame bug.
 #[test]
-fn test_lifecycle_scopes_locals_and_globals() -> TestResult {
-    if !perl_available() {
-        eprintln!("Skipping test_lifecycle_scopes_locals_and_globals - perl not available");
+fn test_lifecycle_scopes_locals_contract() -> TestResult {
+    let Some(debuggee_perl) = debuggee_perl_or_typed_skip("test_lifecycle_scopes_locals_contract")
+    else {
         return Ok(());
-    }
+    };
 
     // Breakpoint line for THIS fixture only — one line past the first lexical
     // assignment so that `my $x = 10` has already executed when we stop.
@@ -302,7 +306,8 @@ fn test_lifecycle_scopes_locals_and_globals() -> TestResult {
 
     let workspace = tempdir()?;
     let script = workspace.path().join("lifecycle_scopes.pl");
-    // Script with an explicit `our` global so the Globals scope has at least one entry.
+    // Script keeps an explicit `our` global so this journey still witnesses how
+    // the advertised scope contract treats package-level variables.
     // Line layout (1-based):
     //   1: use strict;
     //   2: use warnings;
@@ -318,7 +323,7 @@ fn test_lifecycle_scopes_locals_and_globals() -> TestResult {
     let timeout = workflow_timeout();
     let mut session = DapWorkflowSession::new(timeout)?;
 
-    session.launch(&script_str)?;
+    session.launch_pinned(&debuggee_perl.binary, &script_str)?;
     let resolved = session.set_breakpoints_checked(&script_str, &[SCOPES_BP_LINE])?;
     let resolved_line =
         resolved.first().copied().ok_or("set_breakpoints_checked returned empty resolved lines")?;
@@ -343,19 +348,24 @@ fn test_lifecycle_scopes_locals_and_globals() -> TestResult {
         frame_info.frame_id
     );
 
-    // Globals scope: must be present and positive.
-    let globals_ref = session.scopes_globals_ref(frame_info.frame_id)?;
+    // #10563 scope contract: a live stopped frame advertises only Locals (plus
+    // Arguments when the frame has captured arguments). Package and Globals
+    // are intentionally not advertised, so this journey proves the retired
+    // scopes stay absent instead of expecting the pre-#10563 Globals entry.
+    let scopes_resp = session.request("scopes", Some(json!({"frameId": frame_info.frame_id})));
+    let scopes_body = session.expect_success(&scopes_resp, "scopes")?;
+    let advertised: Vec<&str> = scopes_body
+        .as_ref()
+        .and_then(|body| body.get("scopes"))
+        .and_then(Value::as_array)
+        .map(|scopes| {
+            scopes.iter().filter_map(|scope| scope.get("name").and_then(Value::as_str)).collect()
+        })
+        .unwrap_or_default();
     assert!(
-        globals_ref > 0,
-        "Globals scope variablesReference must be positive (frameId={})",
-        frame_info.frame_id
-    );
-
-    // Locals and Globals must have DIFFERENT references (no aliasing).
-    assert_ne!(
-        locals_ref, globals_ref,
-        "Locals and Globals variablesReference must be distinct \
-         (locals={locals_ref}, globals={globals_ref})"
+        !advertised.iter().any(|name| *name == "Globals" || *name == "Package"),
+        "#10563: Package/Globals scopes must stay unadvertised at a live stopped frame; \
+         got {advertised:?}"
     );
 
     // Locals must contain the real lexical `$x` (assigned at line 5).
@@ -380,12 +390,9 @@ fn test_lifecycle_scopes_locals_and_globals() -> TestResult {
          SCOPES_BP_LINE={SCOPES_BP_LINE}; got locals={locals:?}"
     );
 
-    // The Globals request must answer without error. Its *contents* are deliberately
-    // not asserted: globals enumeration returns nothing at a live breakpoint, and this
-    // assertion previously passed only on the fabricated `$_` placeholder rather than
-    // on the declared `our $global` (#10162). The Locals guards above are the part of
-    // this test that proves real inspection, and they still hold.
-    let _globals = session.variables(globals_ref)?;
+    // The Locals guards above are the part of this test that proves real
+    // inspection. Globals enumeration returns nothing at a live breakpoint
+    // (#10162), and since #10563 the Globals scope is not advertised at all.
 
     session.continue_exec(frame_info.thread_id)?;
     let _ = session.drain_until_event("terminated");
@@ -412,12 +419,11 @@ fn test_lifecycle_scopes_locals_and_globals() -> TestResult {
 /// currently expose a `terminate` handler beyond this natural-exit path.
 #[test]
 fn test_lifecycle_continue_leads_to_terminated_event() -> TestResult {
-    if !perl_available() {
-        eprintln!(
-            "Skipping test_lifecycle_continue_leads_to_terminated_event - perl not available"
-        );
+    let Some(debuggee_perl) =
+        debuggee_perl_or_typed_skip("test_lifecycle_continue_leads_to_terminated_event")
+    else {
         return Ok(());
-    }
+    };
 
     let workspace = tempdir()?;
     let script = workspace.path().join("lifecycle_exit.pl");
@@ -427,7 +433,7 @@ fn test_lifecycle_continue_leads_to_terminated_event() -> TestResult {
     let timeout = workflow_timeout();
     let mut session = DapWorkflowSession::new(timeout)?;
 
-    session.launch(&script_str)?;
+    session.launch_pinned(&debuggee_perl.binary, &script_str)?;
     session.set_breakpoints_checked(&script_str, &[BP_LINE])?;
     session.configuration_done()?;
 
@@ -460,10 +466,11 @@ fn test_lifecycle_continue_leads_to_terminated_event() -> TestResult {
 ///   name (string), value (string), variablesReference (number >= 0)
 #[test]
 fn test_lifecycle_variables_non_empty_at_stop() -> TestResult {
-    if !perl_available() {
-        eprintln!("Skipping test_lifecycle_variables_non_empty_at_stop - perl not available");
+    let Some(debuggee_perl) =
+        debuggee_perl_or_typed_skip("test_lifecycle_variables_non_empty_at_stop")
+    else {
         return Ok(());
-    }
+    };
 
     let workspace = tempdir()?;
     let script = workspace.path().join("lifecycle_vars.pl");
@@ -473,7 +480,7 @@ fn test_lifecycle_variables_non_empty_at_stop() -> TestResult {
     let timeout = workflow_timeout();
     let mut session = DapWorkflowSession::new(timeout)?;
 
-    session.launch(&script_str)?;
+    session.launch_pinned(&debuggee_perl.binary, &script_str)?;
     session.set_breakpoints_checked(&script_str, &[BP_LINE])?;
     session.configuration_done()?;
 
