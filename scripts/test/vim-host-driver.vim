@@ -73,16 +73,39 @@ endfunction
 
 " Cross-host path identity. Git-vim may render a Windows drive as `/f/...`;
 " URI conversion and temporary-directory resolution can also cross a symlink
-" boundary. Normalize both sides before judging the bound fixture root.
+" boundary. Normalize both sides before judging the bound fixture root. Case
+" folds only where the filesystem is case-insensitive: folding on a
+" case-sensitive host would equate opposite-case roots and turn the
+" digest-bound fixture check into a false green.
+function! s:CaseInsensitiveFilesystem() abort
+  return has('win32') || has('win32unix')
+endfunction
+
 function! s:NormalizedPath(path) abort
-  let l:path = resolve(fnamemodify(a:path, ':p'))
-  let l:path = tolower(substitute(l:path, '\\', '/', 'g'))
+  let l:path = substitute(resolve(fnamemodify(a:path, ':p')), '\\', '/', 'g')
+  if s:CaseInsensitiveFilesystem()
+    let l:path = tolower(l:path)
+  endif
   return substitute(l:path, '^/\([a-z]\)/', '\1:/', '')
 endfunction
 
 function! s:SamePath(left, right) abort
   return s:NormalizedPath(a:left) ==# s:NormalizedPath(a:right)
 endfunction
+
+" Oracle negative control: the case fold must track the filesystem. On a
+" case-insensitive host opposite-case spellings still compare equal; on a
+" case-sensitive host they must stay distinct so an opposite-case root can
+" never pass for the digest-bound fixture.
+if s:CaseInsensitiveFilesystem()
+  if !s:SamePath('/Perllsp/CaseProbe', '/perllsp/caseprobe')
+    call s:Fail('path oracle dropped case folding on a case-insensitive host')
+  endif
+else
+  if s:SamePath('/Perllsp/CaseProbe', '/perllsp/caseprobe')
+    call s:Fail('path oracle folded case on a case-sensitive host')
+  endif
+endif
 
 " Actual-host proof for vim-lsp's client-specific marker spelling. The #7762
 " manifest carries semantic `.git`; the adapter projects that to `.git/` for
