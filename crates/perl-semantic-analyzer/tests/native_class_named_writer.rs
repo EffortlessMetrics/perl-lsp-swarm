@@ -82,6 +82,7 @@ use v5.42;
 class Collection {
     field @values :writer;
     field %metadata :writer(write_metadata);
+    field $valid_scalar :writer(invalid-name);
 }
 "#,
     );
@@ -90,12 +91,22 @@ class Collection {
     let model = must_some(models.iter().find(|model| model.name == "Collection"));
 
     assert!(
-        model.fields.is_empty(),
+        !model.fields.iter().any(|field| field.name == "values" || field.name == "metadata"),
         "non-scalar field declarations must be rejected before entering the writer boundary"
     );
     assert!(
         !model.methods.iter().any(|method| method.synthetic),
         "array/hash fields must not synthesize scalar writer methods"
+    );
+
+    let scalar = must_some(model.fields.iter().find(|field| field.name == "valid_scalar"));
+    assert_eq!(
+        scalar.writer, None,
+        "a valid scalar field must still reject an invalid named-writer identifier"
+    );
+    assert!(
+        !model.methods.iter().any(|method| method.synthetic && method.name == "invalid-name"),
+        "an invalid named-writer identifier must not synthesize a method"
     );
 }
 
