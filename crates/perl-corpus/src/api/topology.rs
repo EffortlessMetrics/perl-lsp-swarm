@@ -1180,7 +1180,8 @@ mod tests {
     }
 
     #[test]
-    fn deserialization_rejects_invalid_asset_kind_fields() {
+    fn deserialization_rejects_invalid_asset_kind_fields() -> Result<(), Box<dyn std::error::Error>>
+    {
         let cases = [
             (
                 "missing kind",
@@ -1201,11 +1202,13 @@ mod tests {
         ];
 
         for (label, payload) in cases {
-            assert!(
-                serde_json::from_str::<CorpusTopology>(payload).is_err(),
-                "forged {label} asset kind must fail at deserialization"
-            );
+            if serde_json::from_str::<CorpusTopology>(payload).is_ok() {
+                return Err(
+                    format!("forged {label} asset kind must fail at deserialization").into()
+                );
+            }
         }
+        Ok(())
     }
 
     #[test]
@@ -1232,7 +1235,27 @@ mod tests {
 
         for (label, payload, expected) in cases {
             let topology = serde_json::from_str::<CorpusTopology>(payload)?;
-            assert_eq!(topology.validate(), Err(expected), "forged {label} must fail validation");
+            let asset = topology
+                .assets
+                .first()
+                .cloned()
+                .ok_or_else(|| format!("forged {label} topology has no asset"))?;
+
+            for (entry_point, result) in [
+                ("validate", topology.validate().map(|_| ())),
+                ("with_root", topology.clone().with_root(".").map(|_| ())),
+                ("asset_path", topology.asset_path(&asset).map(|_| ())),
+            ] {
+                match result {
+                    Err(error) if error == expected => {}
+                    result => {
+                        return Err(format!(
+                            "forged {label} must fail through {entry_point} with {expected:?}, got {result:?}"
+                        )
+                        .into())
+                    }
+                }
+            }
         }
         Ok(())
     }
