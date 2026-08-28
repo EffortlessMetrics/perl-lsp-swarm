@@ -1,0 +1,108 @@
+name: One-shot exact heredoc terminator patch
+
+on:
+  push:
+    branches:
+      - chatgpt/heredoc-exact-terminator
+    paths:
+      - .github/workflows/chatgpt-heredoc-exact-terminator.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: chatgpt-heredoc-exact-terminator
+  cancel-in-progress: false
+
+jobs:
+  patch-and-prove:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout candidate branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: chatgpt/heredoc-exact-terminator
+          fetch-depth: 0
+
+      - name: Prove the regression is red before the production fix
+        shell: bash
+        run: |
+          set +e
+          cargo test -p perl-lexer --test heredoc_terminator_exactness --locked \
+            > /tmp/heredoc-red.log 2>&1
+          status=$?
+          set -e
+          cat /tmp/heredoc-red.log
+          if [ "$status" -eq 0 ]; then
+            echo "new heredoc tests did not discriminate the current implementation" >&2
+            exit 1
+          fi
+
+      - name: Require exact heredoc terminator matching
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("crates/perl-lexer/src/lib.rs")
+          source = path.read_text(encoding="utf-8")
+
+          old_comment = """        // A delimiter line is not part of the body budget, but probing it must
+        // still be bounded. Reuse the body cap as the maximum delimiter-line
+        // inspection window; pathological indentation or trailing whitespace
+        // therefore cannot restore an unbounded scan.
+"""
+          new_comment = """        // A delimiter line is not part of the body budget, but probing it must
+        // still be bounded. Reuse the body cap as the maximum delimiter-line
+        // inspection window. `<<~` may indent the label, but Perl requires the
+        // label itself to be followed immediately by a line ending or EOF.
+"""
+          if source.count(old_comment) != 1:
+              raise SystemExit("expected exactly one heredoc delimiter comment")
+          source = source.replace(old_comment, new_comment, 1)
+
+          trailing_space_acceptance = r"""        while cursor < scan_end && matches!(self.input_bytes[cursor], b' ' | b'\t') {
+            cursor += 1;
+        }
+
+"""
+          if source.count(trailing_space_acceptance) != 2:
+              raise SystemExit("expected leading-indent and trailing-space scans")
+          label_assignment = "        cursor = label_end;\n\n"
+          target = label_assignment + trailing_space_acceptance
+          if source.count(target) != 1:
+              raise SystemExit("expected exactly one trailing-space terminator scan")
+          source = source.replace(target, label_assignment, 1)
+          path.write_text(source, encoding="utf-8")
+          PY
+
+      - name: Format and run focused proof
+        shell: bash
+        run: |
+          cargo fmt -p perl-lexer
+          unexpected="$({ git diff --name-only; git ls-files --others --exclude-standard; } \
+            | sort -u \
+            | grep -Ev '^(crates/perl-lexer/src/lib.rs|crates/perl-lexer/tests/heredoc_terminator_exactness.rs)$' || true)"
+          if [ -n "$unexpected" ]; then
+            echo "formatter changed files outside the candidate allowlist:" >&2
+            printf '%s\n' "$unexpected" >&2
+            exit 1
+          fi
+          cargo fmt -p perl-lexer -- --check
+          cargo test -p perl-lexer --test heredoc_terminator_exactness --locked
+          git diff --check
+
+      - name: Commit the proven candidate and remove this workflow
+        shell: bash
+        run: |
+          rm .github/workflows/chatgpt-heredoc-exact-terminator.yml
+          git config user.name "EffortlessSteven"
+          git config user.email "git@effortlesssteven.com"
+          git add -- \
+            .github/workflows/chatgpt-heredoc-exact-terminator.yml \
+            crates/perl-lexer/src/lib.rs \
+            crates/perl-lexer/tests/heredoc_terminator_exactness.rs
+          git diff --cached --check
+          git commit -m "fix(lexer): require exact heredoc terminators"
+          git push origin HEAD:chatgpt/heredoc-exact-terminator
