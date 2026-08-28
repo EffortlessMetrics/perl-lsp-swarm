@@ -1,0 +1,71 @@
+name: ChatGPT dev-tooling bootstrap
+
+on:
+  push:
+    branches:
+      - chatgpt/dev-tooling-clippy-contract-12956
+
+permissions:
+  contents: write
+
+jobs:
+  apply-and-verify:
+    if: github.event.head_commit.message == 'chore(agent): bootstrap clippy tooling repair'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Install Rust 1.95 with Clippy and rustfmt
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
+        with:
+          toolchain: 1.95.0
+          components: clippy,rustfmt
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+        with:
+          key: chatgpt-dev-tooling-${{ hashFiles('Cargo.lock') }}
+          cache-on-failure: true
+
+      - name: Apply bounded developer-tooling patch
+        run: |
+          set -euo pipefail
+          python3 scripts/maintenance/chatgpt_dev_tooling_patch.py
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('.github/workflows/ci-nightly.yml')
+          text = path.read_text(encoding='utf-8')
+          old = '        run: |\n          cargo xtask gates --gate clippy_full'
+          new = '        run: cargo xtask gates --gate clippy_full'
+          if text.count(old) != 1:
+              raise SystemExit(f'{path}: expected one strict-Clippy block, found {text.count(old)}')
+          path.write_text(text.replace(old, new), encoding='utf-8')
+          PY
+          cargo fmt --all
+
+      - name: Verify focused command contract
+        run: |
+          set -euo pipefail
+          cargo fmt --all -- --check
+          cargo test -p xtask --test clippy_command_contract --locked
+          cargo clippy -p xtask --bin xtask --locked -- -D warnings -A missing_docs
+          git diff --check
+
+      - name: Verify canonical full-workspace Clippy gate
+        run: cargo xtask gates --gate clippy_full
+
+      - name: Commit verified candidate
+        run: |
+          set -euo pipefail
+          git config user.name 'EffortlessSteven'
+          git config user.email 'git@effortlesssteven.com'
+          git add -A
+          git diff --cached --check
+          git -c commit.gpgsign=false commit -m 'tooling(clippy): unify full-workspace lint entrypoint (#12956)'
+          git push origin "HEAD:${GITHUB_REF_NAME}"
