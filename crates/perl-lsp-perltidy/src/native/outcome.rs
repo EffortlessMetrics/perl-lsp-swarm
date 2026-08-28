@@ -235,12 +235,10 @@ impl NativeFormatter {
         context: &FormatContext,
         counters: &mut NativePipelineCounters,
     ) -> TypedFormatResult {
-        let scope = PipelineCollectorScope::install_if_none();
+        let scope = PipelineCollectorScope::install();
         let started = std::time::Instant::now();
         let result = <Self as PerlFormatter>::format_document(self, source, config);
-        if let Some(scope) = scope {
-            scope.merge_into(counters);
-        }
+        scope.merge_into(counters);
         counters.observe_edits_derived(
             u64::try_from(result.edits.len()).unwrap_or(u64::MAX),
             result
@@ -293,7 +291,7 @@ impl NativeFormatter {
         context: &FormatContext,
         counters: &mut NativePipelineCounters,
     ) -> TypedFormatResult {
-        let scope = PipelineCollectorScope::install_if_none();
+        let scope = PipelineCollectorScope::install();
         let started = std::time::Instant::now();
         let result = if valid_range(source, range) {
             <Self as PerlFormatter>::format_range(self, source, range, config)
@@ -304,9 +302,7 @@ impl NativeFormatter {
                 "native range formatting refused because the requested UTF-16 range is invalid",
             )
         };
-        if let Some(scope) = scope {
-            scope.merge_into(counters);
-        }
+        scope.merge_into(counters);
         counters.observe_edits_derived(
             u64::try_from(result.edits.len()).unwrap_or(u64::MAX),
             result

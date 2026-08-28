@@ -21,8 +21,8 @@ use perf_subjects::{SubjectSpec, identity_row_with_counters, toolchain_tag};
 use perl_lsp_perltidy::native::{
     COUNTER_CLOCK_TAG, COUNTER_SCHEMA_V1, FormatConfig, FormatContext, FormatDisposition,
     FormatReasonCode, MAX_REPLACEMENT_BYTES_PER_SOURCE_BYTE_V1, NativeFormatter,
-    NativePipelineCounters, SCALING_ABSOLUTE_SLACK_V1, SCALING_RATIO_BOUND_V1, TextPosition,
-    TextRange, TypedFormatResult,
+    NativePipelineCounters, PipelineCollectorScope, SCALING_ABSOLUTE_SLACK_V1,
+    SCALING_RATIO_BOUND_V1, TextPosition, TextRange, TypedFormatResult,
 };
 
 // ---------------------------------------------------------------------------
@@ -235,6 +235,12 @@ fn scaling_cohort_ratios_stay_within_bounded_envelope() {
                 two_n.1.lines_processed,
                 four_n.1.lines_processed,
             ),
+            (
+                "delimited_groups_fitted",
+                n.1.delimited_groups_fitted,
+                two_n.1.delimited_groups_fitted,
+                four_n.1.delimited_groups_fitted,
+            ),
             ("edits_derived", n.1.edits_derived, two_n.1.edits_derived, four_n.1.edits_derived),
             (
                 "replacement_bytes",
@@ -255,6 +261,31 @@ fn scaling_cohort_ratios_stay_within_bounded_envelope() {
         assert!(two_n.1.lines_processed > n.1.lines_processed);
         assert!(four_n.1.lines_processed > two_n.1.lines_processed);
     }
+}
+
+#[test]
+fn nested_counter_scope_populates_supplied_and_outer_snapshots() {
+    let outer = PipelineCollectorScope::install();
+    let source =
+        SubjectSpec { family: "delimited", line_ending: "lf", indent: "tabs", units: 4 }.source();
+    let mut supplied = NativePipelineCounters::default();
+    let typed = NativeFormatter::new().format_document_typed_with_counters(
+        &source,
+        &FormatConfig::default(),
+        &FormatContext::default(),
+        &mut supplied,
+    );
+
+    assert_eq!(typed.outcome.disposition, FormatDisposition::Applied);
+    assert_eq!(supplied.pipeline_invocations, 1);
+    assert_eq!(supplied.parse_gate_invocations, 2);
+    assert!(supplied.delimited_groups_fitted > 0);
+
+    let mut outer_snapshot = NativePipelineCounters::default();
+    outer.merge_into(&mut outer_snapshot);
+    assert_eq!(outer_snapshot.pipeline_invocations, 1);
+    assert_eq!(outer_snapshot.parse_gate_invocations, 2);
+    assert!(outer_snapshot.delimited_groups_fitted > 0);
 }
 
 // ---------------------------------------------------------------------------

@@ -201,52 +201,49 @@ impl PipelineCollectorScope {
         Self { previous, active: true }
     }
 
-    /// Install a collector scope only when none is active. Typed entries use
-    /// this so a caller that owns a wider scope (for example an LSP provider
-    /// decision spanning the whole request) keeps one collector across every
-    /// pipeline the decision runs — making adapter double-invocation visible.
-    /// `None` means a wider scope is already recording; the caller must then
-    /// skip its own merge.
-    pub fn install_if_none() -> Option<Self> {
-        let active = ACTIVE_COLLECTOR.with(|cell| cell.borrow().is_some());
-        if active { None } else { Some(Self::install()) }
-    }
-
     /// Fold everything recorded inside the scope into `counters` and restore
-    /// the previous scope state.
+    /// the previous scope state. If a wider scope already exists, the nested
+    /// observations are merged into both the supplied snapshot and that wider
+    /// scope so either consumer sees the complete nested pass.
     pub fn merge_into(mut self, counters: &mut NativePipelineCounters) {
         let recorded = ACTIVE_COLLECTOR.with(|cell| cell.borrow_mut().take());
-        let previous = self.detach();
+        let mut previous = self.detach();
+        let recorded = recorded.unwrap_or_default();
+        if let Some(previous) = previous.as_mut() {
+            merge_counters(previous, &recorded);
+        }
         ACTIVE_COLLECTOR.with(|cell| *cell.borrow_mut() = previous);
 
-        let recorded = recorded.unwrap_or_default();
-        counters.pipeline_invocations =
-            counters.pipeline_invocations.saturating_add(recorded.pipeline_invocations);
-        counters.parse_gate_invocations =
-            counters.parse_gate_invocations.saturating_add(recorded.parse_gate_invocations);
-        counters.source_parse_gate_invocations = counters
-            .source_parse_gate_invocations
-            .saturating_add(recorded.source_parse_gate_invocations);
-        counters.formatted_output_parse_gate_invocations = counters
-            .formatted_output_parse_gate_invocations
-            .saturating_add(recorded.formatted_output_parse_gate_invocations);
-        counters.gate_nodes_observed =
-            counters.gate_nodes_observed.saturating_add(recorded.gate_nodes_observed);
-        counters.lines_processed =
-            counters.lines_processed.saturating_add(recorded.lines_processed);
-        counters.delimited_groups_fitted =
-            counters.delimited_groups_fitted.saturating_add(recorded.delimited_groups_fitted);
-        counters.edits_derived = counters.edits_derived.saturating_add(recorded.edits_derived);
-        counters.replacement_bytes =
-            counters.replacement_bytes.saturating_add(recorded.replacement_bytes);
-        counters.peak_depth = counters.peak_depth.max(recorded.peak_depth);
-        counters.elapsed = counters.elapsed.saturating_add(recorded.elapsed);
+        merge_counters(counters, &recorded);
     }
 
     fn detach(&mut self) -> Option<NativePipelineCounters> {
         self.active = false;
         self.previous.take()
     }
+}
+
+fn merge_counters(counters: &mut NativePipelineCounters, recorded: &NativePipelineCounters) {
+    counters.pipeline_invocations =
+        counters.pipeline_invocations.saturating_add(recorded.pipeline_invocations);
+    counters.parse_gate_invocations =
+        counters.parse_gate_invocations.saturating_add(recorded.parse_gate_invocations);
+    counters.source_parse_gate_invocations = counters
+        .source_parse_gate_invocations
+        .saturating_add(recorded.source_parse_gate_invocations);
+    counters.formatted_output_parse_gate_invocations = counters
+        .formatted_output_parse_gate_invocations
+        .saturating_add(recorded.formatted_output_parse_gate_invocations);
+    counters.gate_nodes_observed =
+        counters.gate_nodes_observed.saturating_add(recorded.gate_nodes_observed);
+    counters.lines_processed = counters.lines_processed.saturating_add(recorded.lines_processed);
+    counters.delimited_groups_fitted =
+        counters.delimited_groups_fitted.saturating_add(recorded.delimited_groups_fitted);
+    counters.edits_derived = counters.edits_derived.saturating_add(recorded.edits_derived);
+    counters.replacement_bytes =
+        counters.replacement_bytes.saturating_add(recorded.replacement_bytes);
+    counters.peak_depth = counters.peak_depth.max(recorded.peak_depth);
+    counters.elapsed = counters.elapsed.saturating_add(recorded.elapsed);
 }
 
 impl Drop for PipelineCollectorScope {
