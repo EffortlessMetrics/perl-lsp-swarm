@@ -27,3 +27,48 @@ fn retired_mcp_alias_exits_without_starting_lsp() -> Result<(), Box<dyn std::err
     assert!(!stderr.contains("Content-Length"), "LSP framing leaked into rejection: {stderr}");
     Ok(())
 }
+
+#[test]
+fn reserved_mcp_subcommand_exits_without_starting_either_protocol()
+-> Result<(), Box<dyn std::error::Error>> {
+    let output = run_perllsp(&["mcp", "--workspace", ".", "--stdio"])?;
+
+    if output.status.success() {
+        return Err("reserved MCP command unexpectedly succeeded".into());
+    }
+    if !output.stdout.is_empty() {
+        return Err(format!("protocol stdout was not empty: {:?}", output.stdout).into());
+    }
+
+    let stderr = String::from_utf8(output.stderr)?;
+    assert!(
+        stderr.contains("is reserved for the native MCP adapter"),
+        "missing native-adapter boundary: {stderr}"
+    );
+    assert!(stderr.contains("No MCP server was started."), "missing fail-closed result: {stderr}");
+    assert!(!stderr.contains("Content-Length"), "LSP framing leaked into rejection: {stderr}");
+    Ok(())
+}
+
+#[test]
+fn reserved_mcp_help_documents_the_owned_command_grammar()
+-> Result<(), Box<dyn std::error::Error>> {
+    let output = run_perllsp(&["mcp", "--help"])?;
+
+    if !output.status.success() {
+        return Err(format!("MCP help failed with status {:?}", output.status.code()).into());
+    }
+    if !output.stderr.is_empty() {
+        return Err(format!("MCP help wrote stderr: {:?}", output.stderr).into());
+    }
+
+    let stdout = String::from_utf8(output.stdout)?;
+    assert!(
+        stdout.contains("Usage: perllsp mcp --stdio [--workspace <ROOT>]"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("native MCP adapter is not available"), "{stdout}");
+    assert!(stdout.contains("never starts the LSP runtime"), "{stdout}");
+    assert!(!stdout.contains("Content-Length"), "protocol framing leaked into help: {stdout}");
+    Ok(())
+}
