@@ -30,8 +30,17 @@ fn decimal_subminor_versions_do_not_inflate_the_minor() {
 
 #[test]
 fn malformed_decimal_subminor_tails_remain_rejected() {
-    for spelling in ["5.043011x", "5.043abc"] {
+    for spelling in ["5.043011_foo", "5.043011_01_02", "5.043011_01x", "5.043011x", "5.043abc"] {
         assert_eq!(parse_perl_version(spelling), None);
+    }
+}
+
+#[test]
+fn numeric_decimal_subminor_suffixes_remain_supported() {
+    for (spelling, expected) in
+        [("5.043011_01", PerlVersion::new(5, 43)), ("5.012_001", PerlVersion::new(5, 12))]
+    {
+        assert_eq!(parse_perl_version(spelling), Some(expected), "{spelling}");
     }
 }
 
