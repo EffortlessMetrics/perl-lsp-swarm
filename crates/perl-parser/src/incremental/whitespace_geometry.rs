@@ -55,6 +55,19 @@ impl WhitespaceEditMap {
                 return None;
             }
 
+            // Consecutive insertions at one original boundary are coherent and
+            // can be accumulated. An insertion followed by a non-empty edit at
+            // that same original boundary is ambiguous for left-biased spans:
+            // the progressive new coordinate already includes the insertion.
+            // Keep that mixed overlap on the conservative fallback path.
+            if let Some(previous) = normalized.last()
+                && previous.old_start == old_start
+                && previous.old_start == previous.old_end
+                && old_start != old_end
+            {
+                return None;
+            }
+
             if old_source.get(old_cursor..old_start)? != new_source.get(new_cursor..new_start)? {
                 return None;
             }
@@ -121,7 +134,10 @@ impl WhitespaceEditMap {
                 if bias == BoundaryBias::Right {
                     cumulative_shift = cumulative_shift.saturating_add(edit.byte_shift);
                 }
-                return shifted_position(position, cumulative_shift);
+                // More than one progressive insertion may map to this same
+                // original boundary. Consume all of them before returning the
+                // mapped position so the following node receives the full shift.
+                continue;
             }
 
             if position < edit.old_end {
@@ -205,6 +221,8 @@ mod tests {
     use super::*;
     use perl_parser_core::{ast::NodeKind, edit::Edit, position::Position};
 
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
     fn edit(start: usize, old_end: usize, new_end: usize) -> Edit {
         Edit::new(
             start,
@@ -233,8 +251,7 @@ mod tests {
     }
 
     #[test]
-    fn admits_exact_mid_file_insertion_and_shifts_only_following_geometry(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn maps_mid_file_insertion_selectively() -> TestResult {
         let edits = edit_set([edit(2, 2, 3)]);
         let map = WhitespaceEditMap::try_new("a b", "a  b", &edits)
             .ok_or("exact whitespace insertion should be admitted")?;
@@ -255,8 +272,7 @@ mod tests {
     }
 
     #[test]
-    fn admits_exact_deletion_and_left_biases_the_preceding_token_end(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn maps_whitespace_deletion_selectively() -> TestResult {
         let edits = edit_set([edit(2, 3, 2)]);
         let map = WhitespaceEditMap::try_new("a  b", "a b", &edits)
             .ok_or("exact whitespace deletion should be admitted")?;
@@ -277,7 +293,7 @@ mod tests {
     }
 
     #[test]
-    fn maps_progressive_multi_edit_coordinates() -> Result<(), Box<dyn std::error::Error>> {
+    fn maps_progressive_multi_edit_coordinates() -> TestResult {
         let edits = edit_set([edit(0, 0, 1), edit(3, 3, 4), edit(5, 5, 6)]);
         let map = WhitespaceEditMap::try_new("a b", " a  b ", &edits)
             .ok_or("coherent progressive whitespace edits should be admitted")?;
@@ -294,6 +310,71 @@ mod tests {
         assert_eq!(mapped.location, loc(0, 5));
         assert_eq!(statements[0].location, loc(1, 2));
         assert_eq!(statements[1].location, loc(4, 5));
+        Ok(())
+    }
+
+    #[test]
+    fn accumulates_adjacent_insertions_at_one_boundary() -> TestResult {
+        let edits = edit_set([edit(2, 2, 3), edit(3, 3, 4)]);
+        let map = WhitespaceEditMap::try_new("a b", "a   b", &edits)
+            .ok_or("adjacent progressive insertions should be admitted")?;
+        let root = Node::new(
+            NodeKind::Program { statements: vec![leaf("a", 0, 1), leaf("b", 2, 3)] },
+            loc(0, 3),
+        );
+
+        let mapped = map.clone_tree(&root);
+        let statements = match &mapped.kind {
+            NodeKind::Program { statements } => statements,
+            other => return Err(format!("expected Program, got {}", other.kind_name()).into()),
+        };
+        assert_eq!(mapped.location, loc(0, 5));
+        assert_eq!(statements[0].location, loc(0, 1));
+        assert_eq!(statements[1].location, loc(4, 5));
+        Ok(())
+    }
+
+    #[test]
+    fn admits_adjacent_progressive_deletions() {
+        let edits = edit_set([edit(1, 2, 1), edit(1, 2, 1)]);
+        assert!(WhitespaceEditMap::try_new("a   b", "a b", &edits).is_some());
+    }
+
+    #[test]
+    fn admits_utf8_source_when_edit_offsets_are_boundaries() {
+        let old = "print 'é';my $x = 1;";
+        let insertion = old.find("my $x").unwrap_or(old.len());
+        let new = "print 'é'; my $x = 1;";
+        let edits = edit_set([edit(insertion, insertion, insertion + 1)]);
+        assert!(WhitespaceEditMap::try_new(old, new, &edits).is_some());
+    }
+
+    #[test]
+    fn admits_crlf_normalization_without_changing_structural_tokens() -> TestResult {
+        let old = "my $x = 1;\nmy $y = 2;";
+        let newline = old.find('\n').ok_or("expected newline")?;
+        let new = "my $x = 1;\r\nmy $y = 2;";
+        let edits = edit_set([edit(newline, newline, newline + 1)]);
+        let map = WhitespaceEditMap::try_new(old, new, &edits)
+            .ok_or("CRLF insertion should be admitted")?;
+        let second_start = newline + 1;
+        let root = Node::new(
+            NodeKind::Program {
+                statements: vec![
+                    leaf("first", 0, newline),
+                    leaf("second", second_start, old.len()),
+                ],
+            },
+            loc(0, old.len()),
+        );
+
+        let mapped = map.clone_tree(&root);
+        let statements = match &mapped.kind {
+            NodeKind::Program { statements } => statements,
+            other => return Err(format!("expected Program, got {}", other.kind_name()).into()),
+        };
+        assert_eq!(statements[0].location, loc(0, newline));
+        assert_eq!(statements[1].location, loc(second_start + 1, new.len()));
         Ok(())
     }
 
@@ -321,5 +402,56 @@ mod tests {
     fn rejects_whitespace_changes_inside_a_comment_token() {
         let edits = edit_set([edit(3, 4, 5)]);
         assert!(WhitespaceEditMap::try_new("# a b\n1;", "# a  b\n1;", &edits).is_none());
+    }
+
+    #[test]
+    fn rejects_whitespace_changes_inside_a_string_token() {
+        let old = "my $s = \"a b\";";
+        let insertion = old.rfind(" b").map_or(old.len(), |index| index + 1);
+        let new = "my $s = \"a  b\";";
+        let edits = edit_set([edit(insertion, insertion, insertion + 1)]);
+        assert!(WhitespaceEditMap::try_new(old, new, &edits).is_none());
+    }
+
+    #[test]
+    fn rejects_whitespace_changes_inside_a_heredoc_body() {
+        let old = "my $s = <<'EOF';\na b\nEOF\n";
+        let insertion = old.find("b\nEOF").unwrap_or(old.len());
+        let new = "my $s = <<'EOF';\na  b\nEOF\n";
+        let edits = edit_set([edit(insertion, insertion, insertion + 1)]);
+        assert!(WhitespaceEditMap::try_new(old, new, &edits).is_none());
+    }
+
+    #[test]
+    fn rejects_stale_edit_coordinates() {
+        let edits = edit_set([edit(4, 4, 5)]);
+        assert!(WhitespaceEditMap::try_new("my $x = 1;", "my  $x = 1;", &edits).is_none());
+    }
+
+    #[test]
+    fn rejects_temporally_reordered_progressive_edits() {
+        let edits = edit_set([edit(5, 5, 6), edit(0, 0, 1)]);
+        assert!(WhitespaceEditMap::try_new("a b c", " a b c ", &edits).is_none());
+    }
+
+    #[test]
+    fn rejects_overlapping_declared_ranges() {
+        let edits = edit_set([edit(1, 3, 1), edit(2, 3, 2)]);
+        assert!(WhitespaceEditMap::try_new("a   b", "a b", &edits).is_none());
+    }
+
+    #[test]
+    fn rejects_insert_then_delete_at_same_original_boundary() {
+        let edits = edit_set([edit(1, 1, 2), edit(2, 3, 2)]);
+        assert!(WhitespaceEditMap::try_new("a  b", "a  b", &edits).is_none());
+    }
+
+    #[test]
+    fn rejects_offsets_inside_utf8_code_points() {
+        let old = "print 'é';";
+        let accent = old.find('é').unwrap_or(old.len());
+        let new = "print ' é';";
+        let edits = edit_set([edit(accent + 1, accent + 1, accent + 2)]);
+        assert!(WhitespaceEditMap::try_new(old, new, &edits).is_none());
     }
 }
