@@ -8,7 +8,7 @@ mod support;
 
 use serde_json::json;
 use std::time::Duration;
-use support::lsp_harness::LspHarness;
+use support::lsp_harness::{LspHarness, workspace_symbol_response_contains};
 
 #[test]
 fn harness_supports_edit_save_diagnostics_workflow() -> Result<(), String> {
@@ -61,6 +61,71 @@ fn harness_supports_edit_save_diagnostics_workflow() -> Result<(), String> {
 }
 
 #[test]
+fn workspace_symbol_match_requires_name_and_uri() {
+    let target_uri = "file:///workspace/lib/Target.pm";
+
+    let same_file_decoy = json!([{
+        "name": "same_file_decoy",
+        "location": {
+            "uri": target_uri,
+            "range": {
+                "start": { "line": 0, "character": 0 },
+                "end": { "line": 0, "character": 16 }
+            }
+        }
+    }]);
+    assert!(
+        !workspace_symbol_response_contains(&same_file_decoy, "target", Some(target_uri)),
+        "an unrelated symbol from the target file must not satisfy readiness"
+    );
+
+    let wrong_uri = json!([{
+        "name": "target",
+        "location": {
+            "uri": "file:///workspace/lib/Other.pm",
+            "range": {
+                "start": { "line": 0, "character": 0 },
+                "end": { "line": 0, "character": 6 }
+            }
+        }
+    }]);
+    assert!(
+        !workspace_symbol_response_contains(&wrong_uri, "target", Some(target_uri)),
+        "the requested name from another file must not satisfy a URI-bound wait"
+    );
+
+    let qualified_name = json!([{
+        "name": "MyApp::target",
+        "location": {
+            "uri": target_uri,
+            "range": {
+                "start": { "line": 1, "character": 4 },
+                "end": { "line": 1, "character": 10 }
+            }
+        }
+    }]);
+    assert!(
+        workspace_symbol_response_contains(&qualified_name, "target", Some(target_uri)),
+        "a qualified symbol whose leaf name matches should satisfy readiness"
+    );
+
+    let sigiled_name = json!([{
+        "name": "$target",
+        "location": {
+            "uri": target_uri,
+            "range": {
+                "start": { "line": 2, "character": 3 },
+                "end": { "line": 2, "character": 10 }
+            }
+        }
+    }]);
+    assert!(
+        workspace_symbol_response_contains(&sigiled_name, "target", Some(target_uri)),
+        "Perl variable sigils should not prevent a matching symbol from satisfying readiness"
+    );
+}
+
+#[test]
 fn harness_with_workspace_and_wait_for_symbol_matches_file_uri() -> Result<(), String> {
     let (mut harness, workspace) = LspHarness::with_workspace(&[
         (
@@ -80,14 +145,10 @@ fn harness_with_workspace_and_wait_for_symbol_matches_file_uri() -> Result<(), S
         }),
     )?;
 
-    let found = symbols.as_array().is_some_and(|arr| {
-        arr.iter().any(|s| {
-            s.pointer("/location/uri").and_then(|u| u.as_str()) == Some(target_uri.as_str())
-        })
-    });
-
-    if !found {
-        return Err(format!("Expected workspace/symbol to include {target_uri}"));
+    if !workspace_symbol_response_contains(&symbols, "greet", Some(&target_uri)) {
+        return Err(format!(
+            "Expected workspace/symbol to include greet from {target_uri}; got {symbols}"
+        ));
     }
 
     Ok(())
