@@ -6,18 +6,18 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12296 |
-| Rust-family files | 3766 |
-| Non-Rust files | 8530 |
-| Allowlisted | 6295 |
+| Total tracked files | 12318 |
+| Rust-family files | 3770 |
+| Non-Rust files | 8548 |
+| Allowlisted | 6313 |
 | Unclassified | 2235 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 480 |
-| documentation | 2783 |
+| config | 490 |
+| documentation | 2791 |
 | generated | 2 |
 | production | 339 |
 | test | 2033 |
@@ -2338,6 +2338,7 @@
 | `.changes/unreleased/product-12806-Added-213000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-13157-Fixed-023317.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-13159-Fixed-023400.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-13283-Fixed-122901.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3445-Added-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3765-Changed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3885-Added-120000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -2602,6 +2603,23 @@
 | `.ci/fix-forward/playbooks.toml` | config | `non-rust-ci-config` | release/ci |
 | `.ci/fixtures/lite-xl-perl-upstream/receipts/public-replay.v1.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/fixtures/lite-xl-perl-upstream/upstream-acceptance.toml` | config | `non-rust-ci-config` | release/ci |
+| `.ci/fixtures/perl-kwalitee-legacy-parity/expected/explain_all.txt` | config | `non-rust-ci-config` | release/ci |
+| `.ci/fixtures/perl-kwalitee-legacy-parity/expected/legacy_reader.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/fixtures/perl-kwalitee-legacy-parity/expected/migration_reference.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.ci/fixtures/perl-kwalitee-legacy-parity/expected/nightly_non_strict.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/fixtures/perl-kwalitee-legacy-parity/expected/nightly_non_strict.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.ci/fixtures/perl-kwalitee-legacy-parity/expected/nightly_strict.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/fixtures/perl-kwalitee-legacy-parity/expected/nightly_strict.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.ci/fixtures/perl-kwalitee-legacy-parity/expected/pr_non_strict.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/fixtures/perl-kwalitee-legacy-parity/expected/pr_non_strict.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.ci/fixtures/perl-kwalitee-legacy-parity/expected/pr_strict.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/fixtures/perl-kwalitee-legacy-parity/expected/pr_strict.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.ci/fixtures/perl-kwalitee-legacy-parity/expected/release_non_strict.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/fixtures/perl-kwalitee-legacy-parity/expected/release_non_strict.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.ci/fixtures/perl-kwalitee-legacy-parity/expected/release_strict.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/fixtures/perl-kwalitee-legacy-parity/expected/release_strict.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.ci/fixtures/perl-kwalitee-legacy-parity/input/legacy_receipt_v1.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/fixtures/perl-kwalitee-legacy-parity/manifest.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/fixtures/zed-perl-upstream/codex-train.v1.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/fixtures/zed-perl-upstream/convergence.v1.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/fixtures/zed-perl-upstream/default-order.v1.json` | config | `non-rust-ci-config` | release/ci |
