@@ -319,37 +319,85 @@ sub _ptkdb_source {
     return undef;
 }
 
+sub _ptkdb_declared_module_digest {
+    return $Devel::ptkdb::PERL_DAP_MIRROR_SHA256
+        if defined $Devel::ptkdb::PERL_DAP_MIRROR_SHA256;
+    return undef;
+}
+
+sub _ptkdb_declared_dist_digest {
+    return $Devel::ptkdb::PERL_DAP_MIRROR_DIST_SHA256
+        if defined $Devel::ptkdb::PERL_DAP_MIRROR_DIST_SHA256;
+    return undef;
+}
+
+sub _is_sha256 {
+    my ($value) = @_;
+    return defined $value && "$value" =~ /\A[0-9a-f]{64}\z/;
+}
+
 sub _ptkdb_source_digest {
     my $path = $INC{'Devel/ptkdb.pm'};
     return (undef, 'Devel/ptkdb.pm is not present in %INC')
         unless defined $path && length $path;
+    return (undef, 'Devel/ptkdb.pm path must be absolute')
+        unless $path =~ m{\A/} || $path =~ m{\A[A-Za-z]:[\\/]};
+    my @before = lstat($path);
+    return (undef, 'Devel/ptkdb.pm path is not a regular non-symlink file')
+        unless @before && -f _ && !-l _;
     open my $fh, '<:raw', $path
         or return (undef, "cannot read loaded Devel/ptkdb.pm: $!");
     my $digest = eval { sha256_hex($fh) };
+    my @opened = stat($fh);
+    my @after = lstat($path);
     close $fh or return (undef, "cannot close loaded Devel/ptkdb.pm: $!");
     return (undef, 'cannot hash loaded Devel/ptkdb.pm') unless defined $digest;
+    return (undef, 'loaded Devel/ptkdb.pm was replaced while being verified')
+        unless @opened && @after && -f _ && !-l _
+            && $opened[0] == $after[0]
+            && $opened[1] == $after[1]
+            && $opened[7] == $after[7]
+            && $before[0] == $after[0]
+            && $before[1] == $after[1]
+            && $before[7] == $after[7]
+            && $before[9] == $after[9];
     return ($digest, undef);
 }
 
 sub _check_ptkdb_provenance {
     my $loaded_path = $INC{'Devel/ptkdb.pm'};
+    my $source = _ptkdb_source();
+    my $declared_module_digest = _ptkdb_declared_module_digest();
+    my $declared_dist_digest = _ptkdb_declared_dist_digest();
+
+    return (0, 'ptkdb source and distribution provenance fields are required')
+        unless defined $source && defined $declared_module_digest
+            && defined $declared_dist_digest;
+    return (0, 'ptkdb module digest marker is not a lowercase SHA-256 digest')
+        unless _is_sha256($declared_module_digest);
+    return (0, 'ptkdb distribution digest marker is not a lowercase SHA-256 digest')
+        unless _is_sha256($declared_dist_digest);
+    return (0, 'ptkdb source identity does not match the pinned CPAN artifact')
+        unless "$source" eq REFERENCE_PTKDB_SOURCE;
+    return (0, 'ptkdb distribution digest does not match the pinned CPAN artifact')
+        unless "$declared_dist_digest" eq REFERENCE_PTKDB_DIST_SHA256;
+
     if (defined $loaded_path && length $loaded_path) {
         my ($digest, $error) = _ptkdb_source_digest();
         return (0, $error) unless defined $digest;
         return (0, 'loaded Devel/ptkdb.pm digest does not match the pinned CPAN artifact')
             unless $digest eq REFERENCE_PTKDB_MODULE_SHA256;
+        return (0, 'loaded Devel::ptkdb module digest marker does not match the pinned CPAN artifact')
+            unless "$declared_module_digest" eq REFERENCE_PTKDB_MODULE_SHA256;
         return (1, undef);
     }
 
     # The headless harness has no installed module file. Its explicit contract
-    # carries the same immutable module digest; this remains harness proof only.
-    my $source = _ptkdb_source();
-    my $digest = $Devel::ptkdb::PERL_DAP_MIRROR_SHA256;
-    return (0, 'reference harness provenance fields are required')
-        unless defined $source && defined $digest;
+    # carries the same immutable module and distribution identities; this remains
+    # harness proof only.
     return (0, 'reference harness provenance does not match the pinned CPAN artifact')
         unless "$source" eq REFERENCE_PTKDB_SOURCE
-            && "$digest" eq REFERENCE_PTKDB_MODULE_SHA256;
+            && "$declared_module_digest" eq REFERENCE_PTKDB_MODULE_SHA256;
     return (1, undef);
 }
 

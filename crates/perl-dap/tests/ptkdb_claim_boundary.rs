@@ -11,6 +11,36 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const PEER_TOKEN: &str = "0123456789abcdef0123456789abcdef";
+const PTKDB_MODULE_SHA256: &str =
+    "2da4a792a732c134f8f4fa3b6b482da9e5df8dec8cd7ae424ad3b6e06c0bceab";
+const PTKDB_DIST_SHA256: &str = "889bfc25d107f46718963023cc9662d3d779896a48d729d0327beec0502c226e";
+
+struct ChildCleanup {
+    child: Child,
+    paths: Vec<PathBuf>,
+}
+
+impl ChildCleanup {
+    fn new(child: Child, paths: impl IntoIterator<Item = PathBuf>) -> Self {
+        Self { child, paths: paths.into_iter().collect() }
+    }
+
+    fn kill(&mut self) -> std::io::Result<()> {
+        self.child.kill()
+    }
+}
+
+impl Drop for ChildCleanup {
+    fn drop(&mut self) {
+        if self.child.try_wait().ok().flatten().is_none() {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+        for path in &self.paths {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -86,7 +116,7 @@ fn ptkdb_docs_separate_bootstrap_host_protocol_and_live_partner_proof()
     assert!(target.contains("ptkdb live peer experimental"));
     assert!(target.contains("set_file"));
     assert!(target.contains("not a stock ptkdb or Tk session and cannot promote compatibility"));
-    assert!(target.contains("2da4a792a732c134f8f4fa3b6b482da9e5df8dec8cd7ae424ad3b6e06c0bceab"));
+    assert!(target.contains(PTKDB_MODULE_SHA256));
 
     let decisions = read("docs/reference/EXTERNAL_DEBUGGER_PEER_DECISIONS.md")?;
     assert!(decisions.contains("stock ptkdb live compatibility  not proven"));
@@ -135,6 +165,7 @@ package Devel::ptkdb;
 our $VERSION = '1.1091';
 our $PERL_DAP_MIRROR_SOURCE = 'CPAN:AEPAGE/Devel-ptkdb-1.1091';
 our $PERL_DAP_MIRROR_SHA256 = '2da4a792a732c134f8f4fa3b6b482da9e5df8dec8cd7ae424ad3b6e06c0bceab';
+our $PERL_DAP_MIRROR_DIST_SHA256 = '889bfc25d107f46718963023cc9662d3d779896a48d729d0327beec0502c226e';
 sub set_file {
     my ($self, $path, $line) = @_;
     push @main::original_calls, "$path:$line";
@@ -157,7 +188,7 @@ die "original set_file was not preserved"
 exit 0;
 "#;
 
-    let mut child = Command::new("perl")
+    let child = Command::new("perl")
         .arg("-e")
         .arg(harness)
         .env("PERL_DAP_PEER", peer_addr.to_string())
@@ -167,8 +198,9 @@ exit 0;
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()?;
+    let mut child = ChildCleanup::new(child, Vec::<PathBuf>::new());
 
-    let stream = accept_plugin(&listener, &mut child, Duration::from_secs(10))?;
+    let stream = accept_plugin(&listener, &mut child.child, Duration::from_secs(10))?;
     let token = PeerSessionToken::try_from(PEER_TOKEN)?;
     let mut backend = ExternalDebuggerPeerBackend::from_connected_stream_with_token(
         stream,
@@ -193,16 +225,16 @@ exit 0;
     }
 
     let status = loop {
-        if let Some(status) = child.try_wait()? {
+        if let Some(status) = child.child.try_wait()? {
             break status;
         }
         if Instant::now() >= deadline {
             let _ = child.kill();
-            break child.wait()?;
+            break child.child.wait()?;
         }
         std::thread::sleep(Duration::from_millis(10));
     };
-    let stderr = child_stderr(&mut child);
+    let stderr = child_stderr(&mut child.child);
     assert!(status.success(), "ptkdb mirror harness failed: {stderr}");
 
     let console_connected = events.iter().any(|event| {
@@ -250,6 +282,7 @@ package Devel::ptkdb;
 our $VERSION = '1.1090';
 our $PERL_DAP_MIRROR_SOURCE = 'CPAN:AEPAGE/Devel-ptkdb-1.1091';
 our $PERL_DAP_MIRROR_SHA256 = '2da4a792a732c134f8f4fa3b6b482da9e5df8dec8cd7ae424ad3b6e06c0bceab';
+our $PERL_DAP_MIRROR_DIST_SHA256 = '889bfc25d107f46718963023cc9662d3d779896a48d729d0327beec0502c226e';
 sub set_file { return "original:$_[2]"; }
 package main;
 my $loaded = do $ENV{PTKDB_PLUGIN_UNDER_TEST};
@@ -295,6 +328,7 @@ package Devel::ptkdb;
 our $VERSION = '1.1091';
 our $PERL_DAP_MIRROR_SOURCE = $ENV{PTKDB_SOURCE_MARKER};
 our $PERL_DAP_MIRROR_SHA256 = $ENV{PTKDB_SOURCE_SHA256};
+our $PERL_DAP_MIRROR_DIST_SHA256 = $ENV{PTKDB_DIST_SHA256};
 sub set_file { return "original:$_[2]"; }
 package main;
 my $loaded = do $ENV{PTKDB_PLUGIN_UNDER_TEST};
@@ -321,6 +355,14 @@ exit 0;
             Some(PEER_TOKEN),
             Some("mirror"),
             "provenance check failed",
+        ),
+        (
+            "wrong distribution digest",
+            "CPAN:AEPAGE/Devel-ptkdb-1.1091",
+            Some("127.0.0.1:1"),
+            Some(PEER_TOKEN),
+            Some("mirror"),
+            "distribution digest does not match",
         ),
         (
             "missing token",
@@ -360,7 +402,15 @@ exit 0;
                 if name == "wrong source digest" {
                     "0000000000000000000000000000000000000000000000000000000000000000"
                 } else {
-                    "2da4a792a732c134f8f4fa3b6b482da9e5df8dec8cd7ae424ad3b6e06c0bceab"
+                    PTKDB_MODULE_SHA256
+                },
+            )
+            .env(
+                "PTKDB_DIST_SHA256",
+                if name == "wrong distribution digest" {
+                    "0000000000000000000000000000000000000000000000000000000000000000"
+                } else {
+                    PTKDB_DIST_SHA256
                 },
             )
             .stdout(Stdio::null())
@@ -417,6 +467,7 @@ package Devel::ptkdb;
 our $VERSION = '1.1091';
 our $PERL_DAP_MIRROR_SOURCE = 'CPAN:AEPAGE/Devel-ptkdb-1.1091';
 our $PERL_DAP_MIRROR_SHA256 = '2da4a792a732c134f8f4fa3b6b482da9e5df8dec8cd7ae424ad3b6e06c0bceab';
+our $PERL_DAP_MIRROR_DIST_SHA256 = '889bfc25d107f46718963023cc9662d3d779896a48d729d0327beec0502c226e';
 sub set_file { return $_[2]; }
 package DB;
 our $on = 1;
@@ -444,7 +495,7 @@ close $fh or die "close survival marker: $!";
 exit 0;
 "#;
 
-    let mut child = Command::new("perl")
+    let child = Command::new("perl")
         .arg("-e")
         .arg(harness)
         .env("PERL_DAP_PEER", peer_addr.to_string())
@@ -456,8 +507,9 @@ exit 0;
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()?;
+    let mut child = ChildCleanup::new(child, [release.clone(), survived.clone()]);
 
-    let stream = accept_plugin(&listener, &mut child, Duration::from_secs(10))?;
+    let stream = accept_plugin(&listener, &mut child.child, Duration::from_secs(10))?;
     let token = PeerSessionToken::try_from(PEER_TOKEN)?;
     let mut backend = ExternalDebuggerPeerBackend::from_connected_stream_with_token(
         stream,
@@ -493,20 +545,17 @@ exit 0;
 
     let child_deadline = Instant::now() + Duration::from_secs(10);
     let status = loop {
-        if let Some(status) = child.try_wait()? {
+        if let Some(status) = child.child.try_wait()? {
             break status;
         }
         if Instant::now() >= child_deadline {
             let _ = child.kill();
-            break child.wait()?;
+            break child.child.wait()?;
         }
         std::thread::sleep(Duration::from_millis(10));
     };
-    let stderr = child_stderr(&mut child);
+    let stderr = child_stderr(&mut child.child);
     let survived_disconnect = survived.exists();
-    let _ = std::fs::remove_file(&release);
-    let _ = std::fs::remove_file(&survived);
-
     assert!(
         status.success(),
         "host disconnect killed the ptkdb debuggee during a later peer write: {stderr}"
