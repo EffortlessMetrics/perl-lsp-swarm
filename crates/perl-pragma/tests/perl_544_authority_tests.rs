@@ -114,7 +114,9 @@ fn use_and_require_versions_are_retained_in_snapshots() {
     );
 
     assert_eq!(
-        CompileTimePragmaEnvironment::build(&use_ast).snapshot_at(10).perl_version(),
+        CompileTimePragmaEnvironment::build(&use_ast)
+            .snapshot_at(10)
+            .perl_version(),
         Some(PerlVersion::new(5, 44)),
     );
     assert_eq!(
@@ -133,7 +135,9 @@ fn conditional_version_target_retains_version_authority() {
     );
 
     assert_eq!(
-        CompileTimePragmaEnvironment::build(&ast).snapshot_at(30).perl_version(),
+        CompileTimePragmaEnvironment::build(&ast)
+            .snapshot_at(30)
+            .perl_version(),
         Some(PerlVersion::new(5, 44)),
     );
 }
@@ -147,7 +151,16 @@ fn nested_version_declaration_restores_outer_authority() {
     let ast = program(vec![use_node("v5.42", &[], 0, 10), inner], 50);
     let environment = CompileTimePragmaEnvironment::build(&ast);
 
-    assert_eq!(environment.snapshot_at(12).perl_version(), Some(PerlVersion::new(5, 42)));
-    assert_eq!(environment.snapshot_at(35).perl_version(), Some(PerlVersion::new(5, 44)));
-    assert_eq!(environment.snapshot_at(50).perl_version(), Some(PerlVersion::new(5, 42)));
+    assert_eq!(
+        environment.snapshot_at(12).perl_version(),
+        Some(PerlVersion::new(5, 42))
+    );
+    assert_eq!(
+        environment.snapshot_at(35).perl_version(),
+        Some(PerlVersion::new(5, 44))
+    );
+    assert_eq!(
+        environment.snapshot_at(50).perl_version(),
+        Some(PerlVersion::new(5, 42))
+    );
 }
