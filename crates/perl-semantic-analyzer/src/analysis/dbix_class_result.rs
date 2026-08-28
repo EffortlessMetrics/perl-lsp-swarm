@@ -120,10 +120,7 @@ pub fn extract_dbix_class_result_sites(
     let mut partials = BTreeMap::<String, PartialResultSite>::new();
     let mut current_package = "main".to_string();
     walk_result_sites(ast, file_id, &mut current_package, &mut partials);
-    partials
-        .into_values()
-        .map(|partial| partial.finish(generation.clone()))
-        .collect()
+    partials.into_values().map(|partial| partial.finish(generation.clone())).collect()
 }
 
 fn walk_result_sites(
@@ -146,18 +143,12 @@ fn walk_result_sites(
             }
             return;
         }
-        NodeKind::Package {
-            name,
-            block: Some(block),
-            ..
-        } => {
+        NodeKind::Package { name, block: Some(block), .. } => {
             let mut package_scope = name.clone();
             walk_result_sites(block, file_id, &mut package_scope, partials);
             return;
         }
-        NodeKind::Package {
-            name, block: None, ..
-        } => {
+        NodeKind::Package { name, block: None, .. } => {
             *current_package = name.clone();
         }
         NodeKind::Use { module, args, .. } if matches!(module.as_str(), "base" | "parent") => {
@@ -188,10 +179,7 @@ fn walk_result_sites(
     }
 }
 
-fn classify_inheritance(
-    module: &str,
-    args: &[String],
-) -> Option<DbixClassInheritanceEvidence> {
+fn classify_inheritance(module: &str, args: &[String]) -> Option<DbixClassInheritanceEvidence> {
     let form = if module == "base" {
         DbixClassInheritanceForm::Base
     } else {
@@ -200,10 +188,7 @@ fn classify_inheritance(
     let tokens: Vec<&str> = args
         .iter()
         .map(|arg| arg.trim())
-        .filter(|arg| {
-            !arg.is_empty()
-                && !matches!(*arg, "," | "=>" | "(" | ")" | "-norequire")
-        })
+        .filter(|arg| !arg.is_empty() && !matches!(*arg, "," | "=>" | "(" | ")" | "-norequire"))
         .collect();
 
     if tokens.is_empty() {
@@ -248,12 +233,7 @@ fn table_evidence(
     statement: &Node,
     current_package: &str,
 ) -> Option<DbixTableEvidence> {
-    let NodeKind::MethodCall {
-        object,
-        method,
-        args,
-    } = &expression.kind
-    else {
+    let NodeKind::MethodCall { object, method, args } = &expression.kind else {
         return None;
     };
     if method != "table" || !target_is_current_package(object, current_package) {
@@ -348,11 +328,7 @@ mod tests {
     fn sites(code: &str) -> Vec<DbixClassResultSite> {
         let mut parser = Parser::new(code);
         let ast = must(parser.parse());
-        extract_dbix_class_result_sites(
-            &ast,
-            FileId(7),
-            SourceGeneration::known("source-gen-1"),
-        )
+        extract_dbix_class_result_sites(&ast, FileId(7), SourceGeneration::known("source-gen-1"))
     }
 
     fn site_for<'a>(found: &'a [DbixClassResultSite], package: &str) -> &'a DbixClassResultSite {
@@ -366,17 +342,9 @@ mod tests {
         let site = site_for(&found, "App::Schema::Result::User");
         assert!(matches!(
             site.inheritance,
-            DbixClassInheritanceEvidence::Exact {
-                form: DbixClassInheritanceForm::Base,
-                ..
-            }
+            DbixClassInheritanceEvidence::Exact { form: DbixClassInheritanceForm::Base, .. }
         ));
-        let DbixTableEvidence::Static {
-            name,
-            source_range,
-            ..
-        } = &site.table
-        else {
+        let DbixTableEvidence::Static { name, source_range, .. } = &site.table else {
             assert!(matches!(site.table, DbixTableEvidence::Static { .. }));
             return;
         };
@@ -393,18 +361,13 @@ mod tests {
         let site = site_for(&found, "App::Schema::Result::User");
         assert!(matches!(
             site.inheritance,
-            DbixClassInheritanceEvidence::Exact {
-                form: DbixClassInheritanceForm::Parent,
-                ..
-            }
+            DbixClassInheritanceEvidence::Exact { form: DbixClassInheritanceForm::Parent, .. }
         ));
     }
 
     #[test]
     fn same_named_table_without_activation_stays_non_framework_evidence() {
-        let found = sites(
-            "package Local::Thing;\nsub table { }\n__PACKAGE__->table('users');\n",
-        );
+        let found = sites("package Local::Thing;\nsub table { }\n__PACKAGE__->table('users');\n");
         let site = site_for(&found, "Local::Thing");
         assert_eq!(site.inheritance, DbixClassInheritanceEvidence::Missing);
         assert!(matches!(site.table, DbixTableEvidence::Static { .. }));
@@ -417,9 +380,8 @@ mod tests {
 
     #[test]
     fn dynamic_parent_and_table_are_explicit_boundaries() {
-        let parent = sites(
-            "package Dynamic::Parent;\nuse parent $base;\n__PACKAGE__->table('users');\n",
-        );
+        let parent =
+            sites("package Dynamic::Parent;\nuse parent $base;\n__PACKAGE__->table('users');\n");
         assert!(matches!(
             site_for(&parent, "Dynamic::Parent").inheritance,
             DbixClassInheritanceEvidence::Dynamic { .. }
@@ -447,10 +409,7 @@ mod tests {
         assert_eq!(found.len(), 2);
         assert_eq!(found[0].anchor.package.as_deref(), Some("Alpha"));
         assert_eq!(found[1].anchor.package.as_deref(), Some("Zed"));
-        assert_ne!(
-            found[0].anchor.activation_anchor_id,
-            found[1].anchor.activation_anchor_id
-        );
+        assert_ne!(found[0].anchor.activation_anchor_id, found[1].anchor.activation_anchor_id);
     }
 
     #[test]

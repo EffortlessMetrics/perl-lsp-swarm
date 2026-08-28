@@ -36,8 +36,7 @@ pub const DBIX_CLASS_ADAPTER_ID: AdapterId = AdapterId(0x0044_4249);
 pub const DBIX_CLASS_PROFILE_VERSION: &str = "dbix-class.result-source.1.v1";
 
 /// Descriptor schema revision for the DBIx::Class shadow adapter.
-pub const DBIX_CLASS_DESCRIPTOR_REVISION: u32 =
-    crate::framework::FRAMEWORK_ADAPTER_SCHEMA_VERSION;
+pub const DBIX_CLASS_DESCRIPTOR_REVISION: u32 = crate::framework::FRAMEWORK_ADAPTER_SCHEMA_VERSION;
 
 /// Build the canonical DBIx::Class adapter descriptor.
 #[must_use]
@@ -84,9 +83,7 @@ pub fn detect_dbix_class(input: &AdapterDetectionInput) -> AdapterDetectionResul
         return if owned.is_empty() {
             AdapterDetectionResult::for_input(
                 input,
-                DetectionOutcome::Unavailable {
-                    reason: UnavailableReason::NoModulesAvailable,
-                },
+                DetectionOutcome::Unavailable { reason: UnavailableReason::NoModulesAvailable },
             )
         } else {
             AdapterDetectionResult::for_input(
@@ -106,16 +103,12 @@ pub fn detect_dbix_class(input: &AdapterDetectionInput) -> AdapterDetectionResul
     match &evaluation.outcome {
         ModuleSelectorOutcome::Absent => AdapterDetectionResult::for_input(
             input,
-            DetectionOutcome::Absent {
-                reason: DetectionAbsenceReason::RequiredModulesMissing,
-            },
+            DetectionOutcome::Absent { reason: DetectionAbsenceReason::RequiredModulesMissing },
         ),
         ModuleSelectorOutcome::Unresolved { .. } | ModuleSelectorOutcome::Unavailable { .. } => {
             AdapterDetectionResult::for_input(
                 input,
-                DetectionOutcome::Unavailable {
-                    reason: UnavailableReason::NoModulesAvailable,
-                },
+                DetectionOutcome::Unavailable { reason: UnavailableReason::NoModulesAvailable },
             )
         }
         ModuleSelectorOutcome::Ambiguous { .. } => AdapterDetectionResult::for_input(
@@ -126,10 +119,7 @@ pub fn detect_dbix_class(input: &AdapterDetectionInput) -> AdapterDetectionResul
                 )],
             },
         ),
-        ModuleSelectorOutcome::Matched {
-            activation,
-            evidence_class,
-        } => {
+        ModuleSelectorOutcome::Matched { activation, evidence_class } => {
             let identity_confidence = evidence_class.confidence_ceiling();
             if activation.module_name != DBIX_CLASS_CORE_MODULE {
                 return AdapterDetectionResult::for_input(
@@ -473,9 +463,7 @@ pub fn dbix_result_profile_facts(
     table: &DbixTableEvidence,
 ) -> DbixResultProfileFacts {
     let mut facts = DbixResultProfileFacts {
-        outcome: DbixResultProfileOutcome::Absent {
-            reason: "profile not evaluated".to_string(),
-        },
+        outcome: DbixResultProfileOutcome::Absent { reason: "profile not evaluated".to_string() },
         profile_version: DBIX_CLASS_PROFILE_VERSION,
         confidence: Confidence::Low,
         completeness: DbixFactCompleteness::Bounded,
@@ -510,23 +498,18 @@ pub fn dbix_result_profile_facts(
             return facts;
         }
         DetectionOutcome::Unavailable { reason } => {
-            facts.outcome = DbixResultProfileOutcome::MissingOrUnavailable {
-                reason: format!("{reason:?}"),
-            };
+            facts.outcome =
+                DbixResultProfileOutcome::MissingOrUnavailable { reason: format!("{reason:?}") };
             return facts;
         }
-        DetectionOutcome::Conflicting {
-            conflict_descriptions,
-        } => {
+        DetectionOutcome::Conflicting { conflict_descriptions } => {
             facts.outcome = DbixResultProfileOutcome::AmbiguousOrConflicting {
                 reason: conflict_descriptions.join("; "),
             };
             return facts;
         }
         DetectionOutcome::Unsupported { reason } => {
-            facts.outcome = DbixResultProfileOutcome::Unsupported {
-                reason: reason.clone(),
-            };
+            facts.outcome = DbixResultProfileOutcome::Unsupported { reason: reason.clone() };
             return facts;
         }
         DetectionOutcome::Absent {
@@ -540,15 +523,10 @@ pub fn dbix_result_profile_facts(
             return facts;
         }
         DetectionOutcome::Absent { reason } => {
-            facts.outcome = DbixResultProfileOutcome::Absent {
-                reason: format!("{reason:?}"),
-            };
+            facts.outcome = DbixResultProfileOutcome::Absent { reason: format!("{reason:?}") };
             return facts;
         }
-        DetectionOutcome::Detected {
-            confidence,
-            framework_version,
-        } => {
+        DetectionOutcome::Detected { confidence, framework_version } => {
             facts.confidence = *confidence;
             facts.framework_version = framework_version.clone();
         }
@@ -563,21 +541,15 @@ pub fn dbix_result_profile_facts(
             return facts;
         }
         DbixClassInheritanceEvidence::Dynamic { reason } => {
-            facts.outcome = DbixResultProfileOutcome::DynamicBoundary {
-                reason: reason.clone(),
-            };
+            facts.outcome = DbixResultProfileOutcome::DynamicBoundary { reason: reason.clone() };
             return facts;
         }
         DbixClassInheritanceEvidence::Unsupported { reason } => {
-            facts.outcome = DbixResultProfileOutcome::Unsupported {
-                reason: reason.clone(),
-            };
+            facts.outcome = DbixResultProfileOutcome::Unsupported { reason: reason.clone() };
             return facts;
         }
         DbixClassInheritanceEvidence::Recovered { reason } => {
-            facts.outcome = DbixResultProfileOutcome::RecoveredSource {
-                reason: reason.clone(),
-            };
+            facts.outcome = DbixResultProfileOutcome::RecoveredSource { reason: reason.clone() };
             return facts;
         }
         DbixClassInheritanceEvidence::Exact { .. } => {}
@@ -590,11 +562,9 @@ pub fn dbix_result_profile_facts(
     }
 
     let (table_name, table_anchor_id, table_range) = match table {
-        DbixTableEvidence::Static {
-            name,
-            anchor_id,
-            source_range,
-        } => (name, *anchor_id, *source_range),
+        DbixTableEvidence::Static { name, anchor_id, source_range } => {
+            (name, *anchor_id, *source_range)
+        }
         DbixTableEvidence::Missing => {
             facts.outcome = DbixResultProfileOutcome::Absent {
                 reason: "result class has no static table/source declaration".to_string(),
@@ -602,24 +572,17 @@ pub fn dbix_result_profile_facts(
             return facts;
         }
         DbixTableEvidence::Dynamic { reason } => {
-            facts.outcome = DbixResultProfileOutcome::DynamicBoundary {
-                reason: reason.clone(),
-            };
+            facts.outcome = DbixResultProfileOutcome::DynamicBoundary { reason: reason.clone() };
             return facts;
         }
         DbixTableEvidence::Recovered { reason } => {
-            facts.outcome = DbixResultProfileOutcome::RecoveredSource {
-                reason: reason.clone(),
-            };
+            facts.outcome = DbixResultProfileOutcome::RecoveredSource { reason: reason.clone() };
             return facts;
         }
     };
 
-    let Some(package) = anchor
-        .package
-        .as_deref()
-        .map(str::trim)
-        .filter(|package| !package.is_empty())
+    let Some(package) =
+        anchor.package.as_deref().map(str::trim).filter(|package| !package.is_empty())
     else {
         facts.outcome = DbixResultProfileOutcome::StaleOrIncomplete {
             reason: "result class lacks a package identity".to_string(),
@@ -649,11 +612,8 @@ pub fn dbix_result_profile_facts(
         return facts;
     }
 
-    let Some(scope_identity) = facts
-        .scope_identity
-        .as_deref()
-        .map(str::trim)
-        .filter(|scope| !scope.is_empty())
+    let Some(scope_identity) =
+        facts.scope_identity.as_deref().map(str::trim).filter(|scope| !scope.is_empty())
     else {
         facts.outcome = DbixResultProfileOutcome::StaleOrIncomplete {
             reason: "checked detection lacks a non-empty root/scope identity".to_string(),
@@ -766,21 +726,12 @@ trait DetectionConfidenceExt {
 
 impl DetectionConfidenceExt for AdapterDetectionResult {
     fn confidence_is_not_high(&self) -> bool {
-        !matches!(
-            self.outcome,
-            DetectionOutcome::Detected {
-                confidence: Confidence::High,
-                ..
-            }
-        )
+        !matches!(self.outcome, DetectionOutcome::Detected { confidence: Confidence::High, .. })
     }
 }
 
 fn identity_component(value: &str) -> String {
-    value
-        .replace('%', "%25")
-        .replace('/', "%2F")
-        .replace(':', "%3A")
+    value.replace('%', "%25").replace('/', "%2F").replace(':', "%3A")
 }
 
 #[cfg(test)]
@@ -793,12 +744,9 @@ mod tests {
 
     fn detection(scope: &str, generation: &str, version: &str) -> AdapterDetectionResult {
         let generation = SourceGeneration::known(generation);
-        let activation = ModuleActivationIdentity::new(
-            DBIX_CLASS_CORE_MODULE,
-            None,
-            generation.clone(),
-        )
-        .with_observed_version(ModuleVersionEvidence::new(version, generation.clone()));
+        let activation =
+            ModuleActivationIdentity::new(DBIX_CLASS_CORE_MODULE, None, generation.clone())
+                .with_observed_version(ModuleVersionEvidence::new(version, generation.clone()));
         let input = AdapterDetectionInput::new(
             dbix_class_descriptor(),
             ModuleObservationReceipt::new(
@@ -849,10 +797,7 @@ mod tests {
     #[test]
     fn descriptor_is_core_selective_and_shadow() {
         let descriptor = dbix_class_descriptor();
-        assert_eq!(
-            descriptor.required_module_selectors,
-            vec![DBIX_CLASS_CORE_MODULE.to_string()]
-        );
+        assert_eq!(descriptor.required_module_selectors, vec![DBIX_CLASS_CORE_MODULE.to_string()]);
         assert_eq!(descriptor.disposition, AdapterDisposition::Shadow);
         assert_eq!(
             descriptor.framework_version_constraint.as_deref(),
@@ -940,10 +885,7 @@ mod tests {
             &base_inheritance(),
             &table("users"),
         );
-        assert!(matches!(
-            facts.outcome,
-            DbixResultProfileOutcome::StaleOrIncomplete { .. }
-        ));
+        assert!(matches!(facts.outcome, DbixResultProfileOutcome::StaleOrIncomplete { .. }));
     }
 
     #[test]
@@ -956,10 +898,7 @@ mod tests {
             },
             &table("users"),
         );
-        assert!(matches!(
-            facts.outcome,
-            DbixResultProfileOutcome::DynamicBoundary { .. }
-        ));
+        assert!(matches!(facts.outcome, DbixResultProfileOutcome::DynamicBoundary { .. }));
     }
 
     #[test]
