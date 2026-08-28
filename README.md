@@ -160,7 +160,7 @@ The current architecture collapsed the old microcrate graph into a smaller publi
 ## Documentation
 
 Start with the [short documentation route map](docs/README.md). Use the
-[full documentation index](docs/INDEX.md) when you need the complete inventory.
+[curated documentation index](docs/INDEX.md) for a broader map of the docs tree.
 
 | Task | Link |
 |---|---|
