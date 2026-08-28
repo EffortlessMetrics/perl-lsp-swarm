@@ -301,7 +301,35 @@ fn contains_unescaped_interpolation(value: &str) -> bool {
 }
 
 fn is_perl_interpolation_name_start(character: &char) -> bool {
-    character.is_ascii_alphanumeric() || matches!(character, '_' | '{' | ':' | '^')
+    character.is_ascii_alphanumeric()
+        || matches!(
+            character,
+            '_' | '{'
+                | ':'
+                | '^'
+                | '&'
+                | '\''
+                | '`'
+                | '+'
+                | '-'
+                | '?'
+                | '!'
+                | '@'
+                | '#'
+                | ';'
+                | '='
+                | '.'
+                | '~'
+                | '<'
+                | '>'
+                | '%'
+                | '('
+                | ')'
+                | '|'
+                | '*'
+                | '['
+                | ']'
+        )
 }
 
 fn is_static_identifier(value: &str) -> bool {
@@ -320,9 +348,7 @@ fn push_qorm_table_fact(
     facts: &mut Vec<GeneratedMemberFact>,
 ) {
     let canonical_name = format!("{package}::{QORM_TABLE_MEMBER}");
-    if facts.iter().any(|fact| fact.entity.canonical_name == canonical_name) {
-        return;
-    }
+    let existing_index = facts.iter().position(|fact| fact.entity.canonical_name == canonical_name);
 
     let span_start = source.location.start;
     let span_end = source.location.end;
@@ -363,7 +389,14 @@ fn push_qorm_table_fact(
         confidence: Confidence::High,
     };
 
-    facts.push(GeneratedMemberFact { entity, anchor });
+    let fact = GeneratedMemberFact { entity, anchor };
+    if let Some(index) = existing_index {
+        // A later valid import/build is a fresh source anchor for the same
+        // canonical member. Do not retain the stale first declaration.
+        facts[index] = fact;
+    } else {
+        facts.push(fact);
+    }
 }
 
 fn classify_import_shape(args: &[String], source: Option<&str>) -> QuickOrmImportShape {

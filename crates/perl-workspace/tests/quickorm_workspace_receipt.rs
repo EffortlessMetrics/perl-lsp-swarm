@@ -104,7 +104,14 @@ table outer_users => sub {};
 #[test]
 fn workspace_index_receipts_keep_perl_interpolation_dynamic()
 -> Result<(), Box<dyn std::error::Error>> {
-    for (name, table_name) in [("Namespaced", "$::prefix_users"), ("Special", "$^O")] {
+    for (name, table_name) in [
+        ("Namespaced", "$::prefix_users"),
+        ("Special", "$^O"),
+        ("Match", "$&"),
+        ("Postmatch", "$'"),
+        ("Prematch", "$`"),
+        ("MatchedIndexes", "@+"),
+    ] {
         let index = WorkspaceIndex::new();
         let uri = Url::parse(&format!("file:///lib/MyApp/Schema/{name}.pm"))?;
         let source = format!(
@@ -117,6 +124,34 @@ fn workspace_index_receipts_keep_perl_interpolation_dynamic()
             "interpolated table name {table_name} must not reach generated workspace symbols"
         );
     }
+    Ok(())
+}
+
+#[test]
+fn workspace_index_blocks_bare_quickorm_import() -> Result<(), Box<dyn std::error::Error>> {
+    let index = WorkspaceIndex::new();
+    let uri = Url::parse("file:///lib/MyApp/Schema/Bare.pm")?;
+    let source = r#"
+package MyApp::Schema::Bare;
+use DBIx::QuickORM;
+table "users" => sub {};
+1;
+"#;
+
+    index.index_file(uri.clone(), source.to_string())?;
+    let shard =
+        index.file_fact_shard(uri.as_str()).ok_or("WorkspaceIndex did not retain a fact shard")?;
+    assert!(
+        shard
+            .entities
+            .iter()
+            .all(|entity| entity.canonical_name != "MyApp::Schema::Bare::qorm_table"),
+        "bare QuickORM import must not create a generated member fact"
+    );
+    assert!(
+        index.search_generated_workspace_symbols("qorm_table", None).is_empty(),
+        "bare QuickORM import must not reach generated workspace symbols"
+    );
     Ok(())
 }
 

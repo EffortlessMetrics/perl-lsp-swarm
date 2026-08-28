@@ -76,3 +76,27 @@ table users => sub {};
     );
     Ok(())
 }
+
+#[test]
+fn bare_quickorm_import_does_not_surface_generated_completion()
+-> Result<(), Box<dyn std::error::Error>> {
+    let index = Arc::new(WorkspaceIndex::new());
+    index.index_file(
+        Url::parse("file:///workspace/MyApp/Schema/Bare.pm")?,
+        r#"
+package MyApp::Schema::Bare;
+use DBIx::QuickORM;
+table users => sub {};
+1;
+"#
+        .to_string(),
+    )?;
+
+    let completions = completion_items(index, "MyApp::Schema::Bare->q")?;
+    let labels = labels(&completions);
+    assert!(
+        !labels.contains(&"qorm_table"),
+        "bare importer configuration must not promote qorm_table completion: {labels:?}"
+    );
+    Ok(())
+}

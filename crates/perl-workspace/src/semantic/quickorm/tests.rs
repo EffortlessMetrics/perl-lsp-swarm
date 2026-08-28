@@ -467,6 +467,38 @@ fn perl_namespace_and_special_scalar_interpolation_remains_dynamic()
 }
 
 #[test]
+fn punctuation_special_variable_interpolation_remains_dynamic()
+-> Result<(), Box<dyn std::error::Error>> {
+    for (package, table_name) in
+        [("Match", "$&"), ("Postmatch", "$'"), ("Prematch", "$`"), ("MatchedIndexes", "@+")]
+    {
+        let source = format!(
+            "package MyApp::Schema::{package}; use DBIx::QuickORM type => 'table'; table \"{table_name}\" => sub {{}};"
+        );
+        assert!(
+            generated_facts_from_source(&source)?.is_empty(),
+            "special Perl variable interpolation must not promote {table_name}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn repeated_valid_imports_refresh_the_qorm_table_anchor() -> Result<(), Box<dyn std::error::Error>>
+{
+    let source = "package User; use DBIx::QuickORM type => 'table'; table 'first' => sub {}; use DBIx::QuickORM type => 'table'; table 'second' => sub {};";
+    let facts = generated_facts_from_source(source)?;
+    let fact = facts.first().ok_or("missing qorm_table fact")?;
+    let second_start = source.find("'second'").ok_or("missing second table name")?;
+    let second_end = second_start + "'second'".len();
+
+    assert_eq!(canonical_names(&facts), vec!["User::qorm_table"]);
+    assert_eq!(fact.anchor.span_start_byte as usize, second_start);
+    assert_eq!(fact.anchor.span_end_byte as usize, second_end);
+    Ok(())
+}
+
+#[test]
 fn nested_builder_does_not_promote_outer_table_call() -> Result<(), Box<dyn std::error::Error>> {
     let facts = generated_facts_from_source(
         "package User; use DBIx::QuickORM type => 'table'; table users, wrapper(sub {});",
