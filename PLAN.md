@@ -158,15 +158,17 @@ reason incompatible with its claim kind. This prevents arbitrary exclusions from
 hiding route-relevant claims. The accepted join must explicitly dispose of
 currently unlisted rows such as C107, C108, C1205, and C1208: generic-client and
 Open VSX rows must be projected when route-relevant, while non-install dependency
-or metadata rows may be excluded only with a compatible explicit reason. `C202` is
-one inventory claim with four required projections, not one preferred route: (1) a
-VS Code-compatible extension/managed-client projection, (2) a published
-manual-archive projection, (3) a generic-client/other-editor download projection,
-and (4) a local Cargo/source-build projection. Each projection must bind to its own
-exact catalog route ID and compatible context; the four rows may not be collapsed,
-inferred across editor families, or ordered from the prose claim. The catalog
-contract owns the eventual opaque IDs, so these are semantic projection
-requirements only until #10333 publishes them.
+or metadata rows may be excluded only with a compatible explicit reason. `C202` is one
+inventory claim with four required route/context projections, not one preferred route:
+(1) the VS Code extension route in the `VS_Code_compatible_managed_client` context,
+(2) the manual archive route in the `macOS_or_Linux_or_Windows_manual_archive`
+context, (3) the other-editor download route in the `generic_LSP_client` context,
+and (4) the local Cargo route in the `local_testing_or_prerelease_validation`
+context. Each projection must bind to its own exact catalog route ID and compatible
+context; the four rows may not be collapsed, inferred across editor families, or
+ordered from the prose claim. The catalog contract owns the eventual opaque IDs, so
+these semantic route roles and contexts are requirements only until #10333 publishes
+the catalog rows.
 
 The same exact-once rule applies to FND-1 through FND-12: each finding must be joined to a
 route, recorded as a route-independent constraint, or explicitly excluded with a
@@ -178,8 +180,10 @@ For the six rows raised by review, the provisional ledger disposition is literal
 C107 → `project(generic-client PATH, generic-client editor context)`;
 C108 → `exclude(non_install_dependency, external formatting/critic tools)`;
 C201 → `exclude(channel_rule, channel-independence frame)`;
-C202 → `project_all(VS_Code_managed_client, published_manual_archive,
-generic_other_editor, local_cargo_source_build)`); C1205 → `exclude(non_install_dependency, internal
+C202 → `project_all((VS_Code_extension, VS_Code_compatible_managed_client),
+(manual_archive, macOS_or_Linux_or_Windows_manual_archive),
+(other_editor_download, generic_LSP_client),
+(local_cargo, local_testing_or_prerelease_validation))`); C1205 → `exclude(non_install_dependency, internal
 deployment guidance)`; and C1208 → `project(open-vsx, Open VSX-compatible
 marketplace context)`. These are required
 dispositions for the future validated catalog ledger; they are not permission to
@@ -261,10 +265,12 @@ def validate_closure(rows, ledger):
         else:
             raise ValueError(f"{item_id}: invalid disposition")
     if ledger["C202"].get("projections") != [
-        "VS_Code_managed_client", "published_manual_archive",
-        "generic_other_editor", "local_cargo_source_build",
+        ("VS_Code_extension", "VS_Code_compatible_managed_client"),
+        ("manual_archive", "macOS_or_Linux_or_Windows_manual_archive"),
+        ("other_editor_download", "generic_LSP_client"),
+        ("local_cargo", "local_testing_or_prerelease_validation"),
     ]:
-        raise ValueError("C202 requires all four projections")
+        raise ValueError("C202 requires its four ordered route/context projections")
     if ledger["C1208"].get("exact_projection_context") != "Open_VSX_compatible_marketplace_context":
         raise ValueError("C1208 must remain Open VSX scoped")
     if ledger["FND-5"] != {
@@ -543,13 +549,23 @@ assuming the former prose-row denominator.
    result (`pending_gate` > `unproven` > `proven_current`). Removing the inert
    status must leave the same result. A fixture that only lists the eight names,
    or treats `volatile_number` as `unproven`, is incomplete.
-8. **Determinism.** The eventual catalog-owner regeneration check must produce
+8. **C202 projection preservation.** The closure fixture must emit exactly four
+   ordered rows for C202:
+   `(VS_Code_extension, VS_Code_compatible_managed_client)`,
+   `(manual_archive, macOS_or_Linux_or_Windows_manual_archive)`,
+   `(other_editor_download, generic_LSP_client)`, and
+   `(local_cargo, local_testing_or_prerelease_validation)`. A fixture that emits
+   only the VS Code row, merges contexts, substitutes an opaque catalog ID before
+   #10333 publishes it, or changes this source order fails. This checks preservation
+   of applicable projections; it does not make the order operative route-selection
+   policy while H1–H7 remain human-pending.
+9. **Determinism.** The eventual catalog-owner regeneration check must produce
    byte-identical classification output across repeated runs and supported
    environments. The output contains no timestamps or other ambient state, and
    catalog ordering is normalized rather than observed; any run-to-run diff
    fails. The concrete command and owning package remain deferred until the
    validated catalog contract selects them.
-9. **Denominator and inventory closure.** Every exact route row and projection
+10. **Denominator and inventory closure.** Every exact route row and projection
    context in the validated catalog is classified exactly once, and every one of
    the literal claim IDs C101, C102, C103, C104, C105, C106, C107, C108, C201,
    C202, C203, C204, C205, C206, C207, C208, C209, C210, C211, C212, C213,
@@ -564,43 +580,43 @@ assuming the former prose-row denominator.
    unjoined row fails the check. The 70 prose claim rows from #11575 are the
    closed audit denominator; they do not define the classifier's route
    denominator by themselves.
-10. **Cross-channel inference block (C201/C703).** A claim's receipt on channel
+11. **Cross-channel inference block (C201/C703).** A claim's receipt on channel
    X must never satisfy another route's receipt requirement (e.g., GitHub
    Releases v0.17.0 receipt must not make `homebrew-tap` `proven_current`).
    An implementation with a global "release exists" fact fails.
-11. **Independent checksum/provenance binding.** A route with matching
+12. **Independent checksum/provenance binding.** A route with matching
     `SHA256SUMS` text but no independently bound artifact and release identity
     must remain `unproven`; a checksum string copied from a different channel
     must not satisfy the integrity/provenance axis.
-12. **Candidate versus installed state.** A candidate artifact that has been
+13. **Candidate versus installed state.** A candidate artifact that has been
     built or uploaded but has no installed, verified product-unit observation
     must not satisfy installation or first-use cells. Conversely, an installed
     local build must not be emitted as a public publication receipt.
-13. **PATH/session/execution isolation.** A route that resolves only through
+14. **PATH/session/execution isolation.** A route that resolves only through
     the current shell's PATH, an inherited session, or an ambient working
     directory must remain unproven for a fresh-process route. A fresh lookup,
     transport, cleanup, and settled process must each be present; one cannot
     stand in for the others.
-14. **Lifecycle closure.** A route with install and first-use evidence but no
+15. **Lifecycle closure.** A route with install and first-use evidence but no
     repair, upgrade, rollback, or removal cell remains incomplete. A lifecycle
     cell from another product unit or channel must not close this route.
-15. **Publication and verification separation.** A private/candidate upload or
+16. **Publication and verification separation.** A private/candidate upload or
     an unverified public listing must not become `proven_current`; publication,
     checksum/provenance verification, and currentness are separate predicates.
-16. **No-route and ambiguity closure.** If every route fails a hard dimension,
+17. **No-route and ambiguity closure.** If every route fails a hard dimension,
     output must be an explicit no-route result with reasons. If two exact rows
     or contexts are ambiguous, selection must refuse rather than choose by
     input order, prose frequency, or a fallback command.
-17. **Context and fallback isolation.** An editor route must not satisfy a CI,
+18. **Context and fallback isolation.** An editor route must not satisfy a CI,
     server-only, or manual context without an explicit catalog projection.
     Missing preferred policy or a failed hard filter must not silently fall back
     to `latest`, an unpinned command, or another context's route.
-18. **Composite simultaneous failures.** A fixture with integrity contradiction
+19. **Composite simultaneous failures.** A fixture with integrity contradiction
     and incomplete lifecycle must retain both dimension verdicts in the fixed
     vector and produce the same `overall=contradicted` summary regardless of
     catalog or claim input order. A scalar-only result, or a result that drops
     the lifecycle failure, fails.
-19. **Selection-context and risk isolation.** Identical requests differing only
+20. **Selection-context and risk isolation.** Identical requests differing only
     in editor family, target/libc, observed Windows emulation capability, or
     `strict` versus `permissive` must either select the corresponding valid
     projection or refuse explicitly. A route that ignores any supplied field
