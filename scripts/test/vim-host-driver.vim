@@ -71,6 +71,62 @@ function! s:WaitFor(expr, timeout_ms) abort
   return VimLspHostWaitFor(a:expr, a:timeout_ms)
 endfunction
 
+" Cross-host path identity. Git-vim may render a Windows drive as `/f/...`;
+" URI conversion and temporary-directory resolution can also cross a symlink
+" boundary. Normalize both sides before judging the bound fixture root.
+function! s:NormalizedPath(path) abort
+  let l:path = resolve(fnamemodify(a:path, ':p'))
+  let l:path = tolower(substitute(l:path, '\\', '/', 'g'))
+  return substitute(l:path, '^/\([a-z]\)/', '\1:/', '')
+endfunction
+
+function! s:SamePath(left, right) abort
+  return s:NormalizedPath(a:left) ==# s:NormalizedPath(a:right)
+endfunction
+
+" Actual-host proof for vim-lsp's client-specific marker spelling. The #7762
+" manifest carries semantic `.git`; the adapter projects that to `.git/` for
+" an ordinary repository directory and `.git` for a linked-worktree/submodule
+" gitdir file. These temporary roots are outside the digest-bound server
+" fixture: they probe the pinned helper and canonical adapter without mutating
+" the fixture identity or launching a second server.
+function! s:ProbeGitRootShapes() abort
+  let l:probe_root = tempname()
+  let l:result = {
+        \ 'probe': 'error',
+        \ 'git_directory': 'not_observed',
+        \ 'git_file': 'not_observed',
+        \ }
+  try
+    let l:git_directory_root = l:probe_root . '/git-directory'
+    let l:git_file_root = l:probe_root . '/git-file'
+    call mkdir(l:git_directory_root . '/.git', 'p')
+    call mkdir(l:git_directory_root . '/lib', 'p')
+    call writefile(['package GitDirectoryProbe;', '1;'], l:git_directory_root . '/lib/Probe.pm')
+    call mkdir(l:git_file_root . '/lib', 'p')
+    call writefile(['gitdir: ../actual-git-dir'], l:git_file_root . '/.git')
+    call writefile(['package GitFileProbe;', '1;'], l:git_file_root . '/lib/Probe.pm')
+
+    let l:markers = VimLspHostClientRootMarkers()
+    let l:git_directory_observed = lsp#utils#find_nearest_parent_file_directory(
+          \ l:git_directory_root . '/lib/Probe.pm', l:markers)
+    let l:git_file_observed = lsp#utils#find_nearest_parent_file_directory(
+          \ l:git_file_root . '/lib/Probe.pm', l:markers)
+    let l:result = {
+          \ 'probe': 'pass',
+          \ 'git_directory': s:SamePath(l:git_directory_observed, l:git_directory_root)
+          \   ? 'pass' : 'fail',
+          \ 'git_file': s:SamePath(l:git_file_observed, l:git_file_root)
+          \   ? 'pass' : 'fail',
+          \ }
+  catch
+    let l:result.probe = 'error'
+  finally
+    silent! call delete(l:probe_root, 'rf')
+  endtry
+  return l:result
+endfunction
+
 " Native-detection listener: a FileType autocommand for `perl` fired by Vim's
 " own detection is the only admitted activation observation (#7762 law: a
 " pre-forced filetype cannot manufacture activation).
@@ -128,10 +184,10 @@ if empty(s:failures)
         \ 'position_encoding': s:position_encoding,
         \ })
 
-  " #7762 root observation: the effective root must resolve through the
-  " activation markers, not through an inherited working directory. Semantic
-  " markers may be files or directories (`.git` is both across Git layouts),
-  " so the receipt must recognize either shape.
+  " #7762 root observation: the live root must be the digest-bound fixture,
+  " not merely some cwd fallback that also happens to contain a marker. The
+  " same actual host then probes both Git marker shapes through the canonical
+  " adapter and the pinned vim-lsp helper.
   let s:root_uri = VimLspHostRootUri()
   let s:root_path = lsp#utils#uri_to_path(s:root_uri)
   let s:root_source = 'cwd_fallback'
@@ -144,12 +200,31 @@ if empty(s:failures)
       break
     endif
   endfor
+  let s:root_matches_fixture = s:SamePath(s:root_path, s:fixture_root)
+  let s:git_root_shapes = s:ProbeGitRootShapes()
+  call s:Emit('root_selected', {
+        \ 'root_source': s:root_source,
+        \ 'root_marker': s:root_marker,
+        \ 'expected_root': 'fixture_root',
+        \ 'observed_root': s:root_matches_fixture ? 'fixture_root' : 'other_root',
+        \ 'git_directory_root': get(s:git_root_shapes, 'git_directory', 'not_observed'),
+        \ 'git_file_root': get(s:git_root_shapes, 'git_file', 'not_observed'),
+        \ })
   if s:root_source !=# 'activation_root_marker'
     " The reason must stay a safe identity token: embedding the root URI
     " would violate the Rust event contract and discard the whole stream.
     call s:Fail('root did not resolve through an activation marker (marker_file_absent)')
   endif
-  call s:Emit('root_selected', {'root_source': s:root_source, 'root_marker': s:root_marker})
+  if !s:root_matches_fixture
+    call s:Fail('root_mismatch')
+  endif
+  if get(s:git_root_shapes, 'probe', 'error') !=# 'pass'
+    call s:Fail('git_root_probe_failed')
+  elseif get(s:git_root_shapes, 'git_directory', 'fail') !=# 'pass'
+    call s:Fail('git_directory_root_mismatch')
+  elseif get(s:git_root_shapes, 'git_file', 'fail') !=# 'pass'
+    call s:Fail('git_file_root_mismatch')
+  endif
 endif
 
 " Attach-completion mechanism observation: the wire push-diagnostics update
