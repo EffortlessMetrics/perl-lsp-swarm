@@ -509,6 +509,27 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn classifies_a_fifo_without_opening_or_blocking_on_it()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let fifo = directory.path().join("perl-named-pipe");
+        let created = std::process::Command::new("mkfifo").arg(&fifo).output()?;
+        if !fifo.exists() {
+            // No mkfifo on this host (or restricted /dev): the regression is
+            // not exercisable here and Unix CI covers it.
+            eprintln!("skipping FIFO regression: mkfifo unavailable ({created:?})");
+            return Ok(());
+        }
+
+        assert!(
+            !is_perl_source_path(&fifo),
+            "a FIFO is not Perl source and must be rejected from its metadata alone"
+        );
+        Ok(())
+    }
+
     #[test]
     fn classifies_uri_like_inputs() {
         assert!(is_perl_source_uri("file:///workspace/script.pl"));
