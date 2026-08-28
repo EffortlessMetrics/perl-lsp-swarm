@@ -1,0 +1,35 @@
+name: Temporary editor scorecard source bundle
+
+on:
+  push:
+    branches: [chatgpt/editor-scorecard-rustfmt-probe]
+
+permissions:
+  contents: read
+
+jobs:
+  bundle:
+    name: Bundle exact PR source set
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout exact PR subject
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: 65f34b9061c0aab996e7f48e0efba43186d7db96
+          persist-credentials: false
+      - name: Verify exact subject
+        run: test "$(git rev-parse 'HEAD^{commit}')" = "65f34b9061c0aab996e7f48e0efba43186d7db96"
+      - name: Upload source set
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.0
+        with:
+          name: editor-scorecard-source-65f34b9061c0aab996e7f48e0efba43186d7db96
+          path: |
+            .ci/ux-flakes.json
+            .ci/schemas/ux-flakes.schema.json
+            crates/perl-lsp-ux-tests/tests/quarantine_registry_contract.rs
+            crates/perl-lsp-ux-tests/tests/ux_scenario_14_inc_conformance.rs
+            docs/project/status/editor_ux.json
+            xtask/src/tasks/update_status/editor_ux.rs
+          if-no-files-found: error
+          retention-days: 1
