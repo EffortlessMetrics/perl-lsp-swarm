@@ -41,10 +41,6 @@ pub mod eval_sub_extractor;
 #[path = "generated_member_extractor.rs"]
 mod generated_member_extractor_core;
 
-#[allow(unreachable_pub)]
-#[path = "workspace_import_extractor.rs"]
-mod workspace_import_extractor_core;
-
 mod quickorm;
 
 /// Framework-generated member extraction for package-level declarations.
@@ -66,21 +62,8 @@ pub mod generated_member_extractor {
     }
 }
 
-/// Import-spec extraction for `ImportExportIndex` population during `index_file`.
-pub mod workspace_import_extractor {
-    use crate::Node;
-    use perl_semantic_facts::{FileId, ImportSpec};
-
-    pub use super::workspace_import_extractor_core::extract_use_lib_facts;
-
-    /// Extract import facts and apply bounded framework-specific import semantics.
-    pub fn extract_import_specs(ast: &Node, file_id: FileId) -> Vec<ImportSpec> {
-        let mut specs =
-            super::workspace_import_extractor_core::extract_import_specs(ast, file_id);
-        super::quickorm::normalize_import_specs(ast, &mut specs);
-        specs
-    }
-}
+/// Import-spec extractor for `ImportExportIndex` population during `index_file`.
+pub mod workspace_import_extractor;
 
 /// Per-provider scorecard gate fixture suites (test-only).
 #[cfg(test)]

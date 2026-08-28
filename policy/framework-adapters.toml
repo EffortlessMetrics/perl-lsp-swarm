@@ -7,7 +7,7 @@ schema_version = 1
 policy = "framework-adapters"
 owner = "perl-lsp maintainers"
 status = "advisory"
-updated = "2026-05-20"
+updated = "2026-08-28"
 spec = "docs/specs/PLSP-SPEC-0024-framework-fact-adapters.md"
 fact_provenance_spec = "docs/specs/PLSP-SPEC-0017-fact-provenance-and-source-backing.md"
 edit_authorization_spec = "docs/specs/PLSP-SPEC-0018-edit-authorization-contract.md"
@@ -183,6 +183,44 @@ blocks = [
   "unsupported_fact_class",
 ]
 claim_boundary = "DBIx::Class support is deferred to a static source-backed subset; runtime schema loading remains dynamic."
+
+[[adapter]]
+framework = "DBIx::QuickORM"
+fact_class = "table_package_generated_member"
+state = "pilot"
+fact_provenance = "SourceBackedGenerated"
+source_anchor_required = true
+generated_label_required = true
+rename_policy = "block_generated_member_by_default"
+safe_delete_policy = "block_generated_member_by_default"
+provider_surfaces = [
+  "completion",
+  "workspace_symbols",
+  "rename",
+  "safe_delete",
+]
+supported_forms = [
+  "use DBIx::QuickORM type => 'table'",
+  "package-level table NAME => sub { ... }",
+]
+blocked_forms = [
+  "plain ORM import",
+  "type => 'orm'",
+  "only => ['table']",
+  "manual column and columns projection",
+  "view table-package projection",
+  "autofill and autorow",
+  "dynamic table name",
+  "table call inside an ordinary subroutine",
+]
+blocks = [
+  "generated_no_source",
+  "dynamic_boundary",
+  "stale_fact",
+  "low_confidence",
+  "unsupported_fact_class",
+]
+claim_boundary = "The bounded DBIx::QuickORM adapter emits only qorm_table for an exact table-package import plus a static package-level table declaration. Manual columns and database-driven autorow members are not source-projected; generated edits remain blocked by default."
 
 [[adapter]]
 framework = "Catalyst"
