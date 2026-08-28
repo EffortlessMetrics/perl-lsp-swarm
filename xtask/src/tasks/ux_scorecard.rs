@@ -744,10 +744,7 @@ mod tests {
             scenario_count: 1,
             scenario_ids: vec!["ratchet_boundary".to_string()],
             rows: BTreeMap::from([
-                (
-                    "hover_correctness_pct".to_string(),
-                    PercentMetric { value: Some(80.0) },
-                ),
+                ("hover_correctness_pct".to_string(), PercentMetric { value: Some(80.0) }),
                 ("nan_metric".to_string(), PercentMetric { value: Some(f64::NAN) }),
                 ("null_metric".to_string(), PercentMetric { value: None }),
                 ("zero_metric".to_string(), PercentMetric { value: Some(0.0) }),
@@ -758,10 +755,7 @@ mod tests {
 
         let error = enforce_ratchet(root.path(), &artifact)
             .expect_err("missing, null, non-finite, and regressed metrics must fail");
-        assert_eq!(
-            error.to_string(),
-            "editor_ux ratchet check failed with 4 violation(s)"
-        );
+        assert_eq!(error.to_string(), "editor_ux ratchet check failed with 4 violation(s)");
 
         let current = BTreeMap::from([
             ("hover_correctness_pct".to_string(), Some(80.0)),
