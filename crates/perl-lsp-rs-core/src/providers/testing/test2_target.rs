@@ -23,9 +23,8 @@ static TARGET_ALIAS_PAIR: LazyLock<Option<Regex>> = LazyLock::new(|| {
     .ok()
 });
 
-static STATIC_PACKAGE: LazyLock<Option<Regex>> = LazyLock::new(|| {
-    Regex::new(r"^[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*$").ok()
-});
+static STATIC_PACKAGE: LazyLock<Option<Regex>> =
+    LazyLock::new(|| Regex::new(r"^[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*$").ok());
 
 /// A statically resolved Test2 target import.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -112,9 +111,7 @@ fn remove_option(raw_args: &str, option_start: usize, option_end: usize) -> Stri
         }
     }
 
-    format!("{}{}", &raw_args[..remove_start], &raw_args[remove_end..])
-        .trim()
-        .to_string()
+    format!("{}{}", &raw_args[..remove_start], &raw_args[remove_end..]).trim().to_string()
 }
 
 fn trim_outer_delimiters(value: &str) -> &str {
@@ -156,10 +153,7 @@ mod tests {
     #[test]
     fn direct_target_pairs_preserve_static_aliases() {
         assert_eq!(
-            aliases(
-                "Test2::Tools::Target",
-                "service => 'My::Service', repo => 'My::Repo'",
-            ),
+            aliases("Test2::Tools::Target", "service => 'My::Service', repo => 'My::Repo'",),
             BTreeSet::from(["repo".to_string(), "service".to_string()])
         );
     }
@@ -192,10 +186,7 @@ mod tests {
     #[test]
     fn v1_target_preserves_import_option() {
         assert_eq!(
-            resolve_target_import(
-                "Test2::V1",
-                "-import, -target => { service => 'My::Service' }",
-            ),
+            resolve_target_import("Test2::V1", "-import, -target => { service => 'My::Service' }",),
             Some(Test2TargetImport {
                 aliases: BTreeSet::from(["service".to_string()]),
                 remaining_args: Some("-import".to_string()),
@@ -212,5 +203,6 @@ mod tests {
     #[test]
     fn dynamic_target_expression_does_not_invent_an_alias() {
         assert!(aliases("Test2::Tools::Target", "$target").is_empty());
+        assert!(resolve_target_import("Test2::V0", "-target => $target").is_none());
     }
 }

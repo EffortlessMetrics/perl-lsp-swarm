@@ -389,11 +389,29 @@ mod tests {
 
     #[test]
     fn standalone_target_completes_default_class_alias() {
-        let items = complete(
-            "use Test2::Tools::Target 'My::Service';\nCL|",
-            Some("lib/Example.pm"),
-        );
+        let items =
+            complete("use Test2::Tools::Target 'My::Service';\nCL|", Some("lib/Example.pm"));
         assert!(labels(&items).contains(&"CLASS"));
+    }
+
+    #[test]
+    fn scalar_targets_preserve_versioned_defaults_without_package_values() {
+        let v0_tools = complete("use Test2::V0 -target => 'My::Service';\ni|", Some("t/example.t"));
+        assert!(labels(&v0_tools).contains(&"is"));
+
+        let v0_class =
+            complete("use Test2::V0 -target => 'My::Service';\nCL|", Some("t/example.t"));
+        assert!(labels(&v0_class).contains(&"CLASS"));
+        assert!(!labels(&v0_class).contains(&"My::Service"));
+
+        let v1_handle =
+            complete("use Test2::V1 -target => 'My::Service';\nT|", Some("t/example.t"));
+        assert!(labels(&v1_handle).contains(&"T2"));
+
+        let v1_class =
+            complete("use Test2::V1 -target => 'My::Service';\nCL|", Some("t/example.t"));
+        assert!(labels(&v1_class).contains(&"CLASS"));
+        assert!(!labels(&v1_class).contains(&"My::Service"));
     }
 
     #[test]
@@ -430,6 +448,28 @@ mod tests {
             Some("t/example.t"),
         );
         assert!(labels(&imported_items).contains(&"is"));
+    }
+
+    #[test]
+    fn target_helpers_survive_selective_imports_and_exclusions() {
+        let selected = complete(
+            "use Test2::V0 -target => { service => 'My::Service' }, ok;\nser|",
+            Some("t/example.t"),
+        );
+        assert!(labels(&selected).contains(&"service"));
+        assert!(!labels(&selected).contains(&"My::Service"));
+
+        let excluded = complete(
+            "use Test2::V0 -target => { service => 'My::Service' }, '!ok';\no|",
+            Some("t/example.t"),
+        );
+        assert!(!labels(&excluded).contains(&"ok"));
+
+        let excluded_alias = complete(
+            "use Test2::V0 -target => { service => 'My::Service' }, '!ok';\nser|",
+            Some("t/example.t"),
+        );
+        assert!(labels(&excluded_alias).contains(&"service"));
     }
 
     #[test]
