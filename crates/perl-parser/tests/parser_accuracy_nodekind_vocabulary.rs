@@ -148,12 +148,7 @@ fn misspelled_parent_kind_is_rejected_through_manifest_row_validation() {
         parent_kind: Some("ExpressionStatement".to_string()),
     }];
     assert_eq!(
-        validate_reference_rows(
-            "quote_like",
-            &canonical,
-            AST_KIND_FIELD,
-            AST_PARENT_KIND_FIELD,
-        ),
+        validate_reference_rows("quote_like", &canonical, AST_KIND_FIELD, AST_PARENT_KIND_FIELD,),
         Ok(2),
         "the canonical kind and parent-kind control must remain admitted"
     );
@@ -164,12 +159,7 @@ fn misspelled_parent_kind_is_rejected_through_manifest_row_validation() {
         parent_kind: Some("ExpressionStatment".to_string()),
     }];
     assert_eq!(
-        validate_reference_rows(
-            "quote_like",
-            &misspelled,
-            AST_KIND_FIELD,
-            AST_PARENT_KIND_FIELD,
-        ),
+        validate_reference_rows("quote_like", &misspelled, AST_KIND_FIELD, AST_PARENT_KIND_FIELD,),
         Err(InvalidNodeKindReference {
             fixture_id: "quote_like".to_string(),
             expectation_id: "string_under_statement".to_string(),
