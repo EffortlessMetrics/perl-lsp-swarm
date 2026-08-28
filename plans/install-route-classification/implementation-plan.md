@@ -298,6 +298,16 @@ ALLOWED_EXCLUSIONS = {
     "volatile_metadata", "adjacent_product", "non_install_dependency",
 }
 CLAIM_DISPOSITION_RULES = {
+    "C108": {
+        "kind": "exclude",
+        "reason": "non_install_dependency",
+        "rationale": "external formatting/critic tools",
+    },
+    "C201": {
+        "kind": "exclude",
+        "reason": "channel_rule",
+        "rationale": "channel-independence frame",
+    },
     "C1205": {
         "kind": "exclude",
         "reason": "non_install_dependency",
@@ -371,6 +381,13 @@ def assert_rejected(catalog_rows, route_id, projection_context):
         return True
     raise AssertionError("incompatible catalog route was accepted")
 
+def assert_disposition_rejected(row):
+    try:
+        require_claim_disposition(row)
+    except ValueError:
+        return True
+    raise AssertionError(f"{row['id']}: incompatible claim disposition was accepted")
+
 def fixture_ledger():
     rows = []
     for item_id in EXPECTED_CLAIMS:
@@ -386,12 +403,8 @@ def fixture_ledger():
                 "exact_catalog_route_id": "r_4f8c2a",
                 "exact_projection_context": "Open_VSX_compatible_marketplace_context",
             })
-        elif item_id == "C1205":
-            rows.append({
-                "id": item_id, "kind": "exclude",
-                "reason": "non_install_dependency",
-                "rationale": "internal deployment guidance",
-            })
+        elif item_id in CLAIM_DISPOSITION_RULES:
+            rows.append({"id": item_id, **CLAIM_DISPOSITION_RULES[item_id]})
         else:
             rows.append({
                 "id": item_id, "kind": "project",
@@ -465,17 +478,24 @@ assert assert_rejected(
 assert assert_rejected(FIXTURE_CATALOG, "r_unknown", "Open_VSX_compatible_marketplace_context")
 assert assert_rejected(DUPLICATE_ID_CATALOG, "r_4f8c2a", "Open_VSX_compatible_marketplace_context")
 assert assert_rejected(FIXTURE_CATALOG, "r_4f8c2a", "VS_Marketplace_compatible_marketplace_context")
-try:
-    require_claim_disposition({
-        "id": "C1205",
-        "kind": "project",
+for incompatible in (
+    {
+        "id": "C108", "kind": "project",
+        "exact_catalog_route_id": "fixture-route-C108",
+        "exact_projection_context": "fixture-context-C108",
+    },
+    {
+        "id": "C201", "kind": "project",
+        "exact_catalog_route_id": "fixture-route-C201",
+        "exact_projection_context": "fixture-context-C201",
+    },
+    {
+        "id": "C1205", "kind": "project",
         "exact_catalog_route_id": "fixture-route-C1205",
         "exact_projection_context": "fixture-context-C1205",
-    })
-except ValueError:
-    pass
-else:
-    raise AssertionError("out-of-scope C1205 disposition was accepted")
+    },
+):
+    assert assert_disposition_rejected(incompatible)
 ```
 
 The fixture rejects missing, duplicate, unknown, and incompatible IDs before
@@ -487,9 +507,10 @@ before route classification exists; only exact catalog route IDs and projection
 contexts remain gated on #10334's catalog and #10333's contract. A prose manifest or count without this
 set-equality and compatibility check does not satisfy closure. Every project row
 also resolves its exact route ID and projection context through the fixture catalog.
-The claim-to-disposition rule independently requires out-of-scope C1205 to remain
-the declared `non_install_dependency` exclusion; a project or other exclusion
-disposition is rejected.
+The claim-to-disposition rules independently require out-of-scope C108, C201, and
+C1205 to remain their declared exclusions (`non_install_dependency`, `channel_rule`,
+and `non_install_dependency`, respectively); a project or other incompatible
+exclusion disposition is rejected for each.
 The C1208 assertion
 also proves that its opaque ID resolves to exactly one catalog row whose registry is
 Open VSX and whose projection context is compatible; an ID that resolves to the
