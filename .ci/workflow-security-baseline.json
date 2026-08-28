@@ -278,70 +278,6 @@
       "rule": "pr_write_permission"
     },
     {
-      "evidence": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
-      "fingerprint": "26e54cf146e1e450d70a4849a656af3daf9b3a32ac59206558e62418d38c8f25",
-      "line": 44,
-      "message": "write-capable workflow checkout must set persist-credentials: false",
-      "path": ".github/workflows/ci.yml",
-      "rule": "checkout_persists_credentials_on_write_surface"
-    },
-    {
-      "evidence": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
-      "fingerprint": "42629fd1bfd9abf66d1e35b999cf8ebdbf00ef169307fd3e0325d7d6b479c72e",
-      "line": 227,
-      "message": "write-capable workflow checkout must set persist-credentials: false",
-      "path": ".github/workflows/ci.yml",
-      "rule": "checkout_persists_credentials_on_write_surface"
-    },
-    {
-      "evidence": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
-      "fingerprint": "f0cef1a2472b4574941a9040c024d3b58a4c94e119649b569bba85f41ab36fb5",
-      "line": 291,
-      "message": "write-capable workflow checkout must set persist-credentials: false",
-      "path": ".github/workflows/ci.yml",
-      "rule": "checkout_persists_credentials_on_write_surface"
-    },
-    {
-      "evidence": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
-      "fingerprint": "f7fa8b9409dab9e21ffa7891d02b259545075fba6bbb7f63eda095f50b5e761d",
-      "line": 329,
-      "message": "write-capable workflow checkout must set persist-credentials: false",
-      "path": ".github/workflows/ci.yml",
-      "rule": "checkout_persists_credentials_on_write_surface"
-    },
-    {
-      "evidence": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
-      "fingerprint": "0c8336da717804e1aa0c9821a56675afe7e75b54f22bfb6f3e2996b5f6662b9e",
-      "line": 570,
-      "message": "write-capable workflow checkout must set persist-credentials: false",
-      "path": ".github/workflows/ci.yml",
-      "rule": "checkout_persists_credentials_on_write_surface"
-    },
-    {
-      "evidence": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
-      "fingerprint": "15cc86f10ff903261ae0246c97878767d1bedb2fe2f0485c9210d9d1f096247c",
-      "line": 942,
-      "message": "write-capable workflow checkout must set persist-credentials: false",
-      "path": ".github/workflows/ci.yml",
-      "rule": "checkout_persists_credentials_on_write_surface"
-    },
-    {
-      "evidence": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
-      "fingerprint": "c194ef916205046c28d951accc2600f6d8b87fd0a1b1e1eee0f402f2815ef0f8",
-      "line": 1162,
-      "message": "write-capable workflow checkout must set persist-credentials: false",
-      "path": ".github/workflows/ci.yml",
-      "rule": "checkout_persists_credentials_on_write_surface"
-    },
-    {
-      "evidence": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
-      "fingerprint": "eaeba8e95af7883e7704dad187b77ba080478f67b202414ce93f473aaa7c6212",
-      "line": 1218,
-      "message": "write-capable workflow checkout must set persist-credentials: false",
-      "path": ".github/workflows/ci.yml",
-      "rule": "checkout_persists_credentials_on_write_surface"
-    },
-    {
       "evidence": "if [ \"${{ github.event_name }}\" != \"pull_request\" ]; then",
       "fingerprint": "c274dc76d000bafc45b833accd65e62c5f6f2f1698df9fc4104fd035633e4be2",
       "line": 51,
@@ -524,14 +460,6 @@
       "message": "PR-triggered workflow references a secret",
       "path": ".github/workflows/ci.yml",
       "rule": "pr_secret_reference"
-    },
-    {
-      "evidence": "statuses: write",
-      "fingerprint": "c2f030ad5b52a7abebeeb8ddc9c63c4f232e039ac378c493c10a1c54b92c0e5f",
-      "line": 847,
-      "message": "PR-triggered workflow grants write authority",
-      "path": ".github/workflows/ci.yml",
-      "rule": "pr_write_permission"
     },
     {
       "evidence": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
