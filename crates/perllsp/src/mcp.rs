@@ -99,11 +99,7 @@ fn parse_invocation(args: &[String]) -> Result<McpProductAction, &'static str> {
 }
 
 fn write_with_exit_code(writer: &mut dyn Write, text: &str, code: u8) -> u8 {
-    if writer.write_all(text.as_bytes()).is_ok() {
-        code
-    } else {
-        1
-    }
+    if writer.write_all(text.as_bytes()).is_ok() { code } else { 1 }
 }
 
 #[cfg(test)]
