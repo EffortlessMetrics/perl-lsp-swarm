@@ -29,9 +29,10 @@ deliberately separate:
 
 The source header is not a released `lsp-mode` 10.0.1 package. For package
 metadata only, Emacs 28.1 and 28.2 fall within the released 10.0.0 line's
-declared range; Emacs 27 and older need an explicitly compatible historical
-client or an Emacs upgrade. These package metadata bounds do not by themselves
-prove the complete `perllsp` client journey.
+declared range. The checked `lsp-mode` rows do not cover Emacs 27 or older;
+those users need a separately validated compatible client package or an Emacs
+upgrade. These package metadata bounds do not by themselves prove the complete
+`perllsp` client journey.
 
 Install `perllsp` using the project installation guide or README.
 
