@@ -643,7 +643,9 @@ mod tests {
             .workflows
             .iter()
             .find(|workflow| workflow.id == "simple_file_smoke")
-            .ok_or("guarded scorecard omitted the receipt workflow")?;
+            .ok_or_else(|| {
+                color_eyre::eyre::eyre!("guarded scorecard omitted the receipt workflow")
+            })?;
 
         assert_eq!(workflow.pass_rate.state, "measured");
         assert_eq!(workflow.pass_rate.value, Some(1.0));
