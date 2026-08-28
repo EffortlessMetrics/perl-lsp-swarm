@@ -160,6 +160,28 @@ mod tests {
         values.iter().map(|value| (*value).to_owned()).collect()
     }
 
+    fn cargo_passthrough_command(subcommand: &str) -> Result<CliCommand> {
+        let cli = Cli::try_parse_from([
+            "perl-ci-hygiene",
+            subcommand,
+            "--",
+            "--workspace",
+            "--all-targets",
+            "parser::tests",
+        ])?;
+        Ok(cli.command)
+    }
+
+    fn edge_case_flags(args: &[&str]) -> Result<(bool, bool)> {
+        let mut argv = vec!["perl-ci-hygiene", "test-edge-cases"];
+        argv.extend_from_slice(args);
+        let cli = Cli::try_parse_from(argv)?;
+        let CliCommand::TestEdgeCases { bench, coverage } = cli.command else {
+            return Err(eyre!("expected test-edge-cases command"));
+        };
+        Ok((bench, coverage))
+    }
+
     #[test]
     fn compare_benchmarks_forwards_hyphenated_arguments_in_order() -> Result<()> {
         let cli = Cli::try_parse_from([
@@ -177,27 +199,33 @@ mod tests {
         assert_eq!(
             args,
             owned(
-                &["--fail-on-regression", "--threshold=-0.5", "baseline.json", "candidate.json"]
+                &["--fail-on-regression", "--threshold=-0.5", "baseline.json", "candidate.json",]
             )
         );
         Ok(())
     }
 
     #[test]
-    fn test_capped_forwards_cargo_flags_after_separator() -> Result<()> {
-        let cli = Cli::try_parse_from([
-            "perl-ci-hygiene",
-            "test-capped",
-            "--",
-            "--workspace",
-            "--all-targets",
-            "parser::tests",
-        ])?;
-        let CliCommand::TestCapped { cargo_args } = cli.command else {
+    fn cargo_passthrough_commands_forward_flags_after_separator() -> Result<()> {
+        let expected = owned(&["--workspace", "--all-targets", "parser::tests"]);
+
+        let CliCommand::TestCapped { cargo_args } = cargo_passthrough_command("test-capped")?
+        else {
             return Err(eyre!("expected test-capped command"));
         };
+        assert_eq!(cargo_args, expected);
 
-        assert_eq!(cargo_args, owned(&["--workspace", "--all-targets", "parser::tests"]));
+        let CliCommand::E2eGate { cargo_args } = cargo_passthrough_command("e2e-gate")? else {
+            return Err(eyre!("expected e2e-gate command"));
+        };
+        assert_eq!(cargo_args, expected);
+
+        let CliCommand::TestE2ECapped { cargo_args } =
+            cargo_passthrough_command("test-e2e-capped")?
+        else {
+            return Err(eyre!("expected test-e2e-capped command"));
+        };
+        assert_eq!(cargo_args, expected);
         Ok(())
     }
 
@@ -236,14 +264,10 @@ mod tests {
 
     #[test]
     fn edge_case_flags_are_independent() -> Result<()> {
-        let cli =
-            Cli::try_parse_from(["perl-ci-hygiene", "test-edge-cases", "--bench", "--coverage"])?;
-        let CliCommand::TestEdgeCases { bench, coverage } = cli.command else {
-            return Err(eyre!("expected test-edge-cases command"));
-        };
-
-        assert!(bench);
-        assert!(coverage);
+        assert_eq!(edge_case_flags(&[])?, (false, false));
+        assert_eq!(edge_case_flags(&["--bench"])?, (true, false));
+        assert_eq!(edge_case_flags(&["--coverage"])?, (false, true));
+        assert_eq!(edge_case_flags(&["--bench", "--coverage"])?, (true, true));
         Ok(())
     }
 
