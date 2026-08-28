@@ -307,6 +307,7 @@ jobs:
           path: ${{ runner.temp }}/post-merge-status-payload
 
       - name: Verify and stage canonical generated files
+        id: verify-payload
         env:
           EXPECTED_SOURCE_SHA: ${{ github.sha }}
           PAYLOAD_ROOT: ${{ runner.temp }}/post-merge-status-payload
@@ -425,6 +426,9 @@ jobs:
                   raise SystemExit(f"repository destination is a symlink: {relative}")
               destination.parent.mkdir(parents=True, exist_ok=True)
               shutil.copyfile(files_root / relative, destination)
+
+          with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as output:
+              output.write(f"source-sha={manifest['source_sha']}\n")
 
           # Observe the whole working tree. Restricting `git diff` to `canonical`
           # made this guard unfalsifiable: the pathspec filtered the output down
@@ -553,20 +557,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           BRANCH: automation/post-merge-status
+          BASE_SHA: ${{ steps.verify-payload.outputs.source-sha }}
+          EXPECTED_SOURCE_SHA: ${{ github.sha }}
+          HEAD_SHA: ${{ steps.create-pr.outputs.pull-request-head-sha }}
         run: |
-          # Keep attempting every required workflow so one transient dispatch
-          # failure cannot strand the later required checks. The final status
-          # remains failing when any dispatch failed.
-          set +e
-          failed=0
-          for workflow in ci.yml em-ci-routed-rust.yml ripr.yml pr-title-check.yml; do
-            if gh workflow run "$workflow" --ref "$BRANCH"; then
-              continue
-            fi
-            echo "::error::Failed to dispatch $workflow"
-            failed=1
-          done
-          exit "$failed"
+          bash scripts/ci/dispatch-generated-status-checks.sh \
+            "$BRANCH" "$BASE_SHA" "$EXPECTED_SOURCE_SHA" "$HEAD_SHA"
 
   supersede-stale:
     name: Supersede stale generated status PR
@@ -666,4 +662,3 @@ jobs:
 
           print(f"superseded {closed} stale proposal PR(s); default-branch tip {tip}")
           PY
-

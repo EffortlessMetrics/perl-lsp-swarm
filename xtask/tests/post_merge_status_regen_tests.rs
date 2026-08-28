@@ -65,92 +65,6 @@ fn workflow_dispatch_trigger(workflow: &Value) -> bool {
     }
 }
 
-#[cfg(unix)]
-fn assert_dispatch_loop_behavior(
-    dispatch_run: &str,
-    dispatch_order: &[String],
-    branch: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
-    use std::process::{Command, Output};
-
-    let temp_dir = tempfile::tempdir()?;
-    let stub_dir = temp_dir.path().join("bin");
-    fs::create_dir(&stub_dir)?;
-    let stub_gh = stub_dir.join("gh");
-    fs::write(
-        &stub_gh,
-        "#!/usr/bin/env bash\n\
-         printf '%s|%s|%s|%s|%s\\n' \"$1\" \"$2\" \"$3\" \"$4\" \"$5\" >> \"$GH_LOG\"\n\
-         if [ \"$#\" -ne 5 ]; then exit 2; fi\n\
-         if [ \"${FAIL_WORKFLOW:-}\" = \"$3\" ]; then exit 1; fi\n",
-    )?;
-    use std::os::unix::fs::PermissionsExt;
-    let mut permissions = fs::metadata(&stub_gh)?.permissions();
-    permissions.set_mode(0o755);
-    fs::set_permissions(&stub_gh, permissions)?;
-    let simulation_run =
-        dispatch_run.replacen("gh workflow run", &format!("{} workflow run", stub_gh.display()), 1);
-    assert_ne!(simulation_run, dispatch_run, "dispatch step must invoke gh workflow run");
-
-    let run_dispatch = |fail_workflow: Option<&str>, log_name: &str| {
-        let log_path = temp_dir.path().join(log_name);
-        let existing_path = std::env::var_os("PATH").unwrap_or_default();
-        let path = std::env::join_paths(
-            std::iter::once(stub_dir.clone()).chain(std::env::split_paths(&existing_path)),
-        )?;
-        let mut command = Command::new("/bin/bash");
-        command
-            .arg("-c")
-            .arg(&simulation_run)
-            .env("PATH", path)
-            .env("BRANCH", branch)
-            .env("GH_LOG", &log_path);
-        if let Some(fail_workflow) = fail_workflow {
-            command.env("FAIL_WORKFLOW", fail_workflow);
-        } else {
-            command.env_remove("FAIL_WORKFLOW");
-        }
-        let output: Output = command.output().map_err(|error| {
-            format!("failed to execute dispatch shell for {}: {error}", log_path.display())
-        })?;
-        let calls = fs::read_to_string(&log_path)
-            .map_err(|error| {
-                format!(
-                    "failed to read {}: {error}; stdout={}; stderr={}",
-                    log_path.display(),
-                    String::from_utf8_lossy(&output.stdout),
-                    String::from_utf8_lossy(&output.stderr)
-                )
-            })?
-            .lines()
-            .map(str::to_owned)
-            .collect::<Vec<_>>();
-        Ok::<_, Box<dyn std::error::Error>>((output, calls))
-    };
-
-    let (success_output, success_calls) = run_dispatch(None, "all-success.log")?;
-    assert!(
-        success_output.status.success(),
-        "all-success dispatch run failed: {}",
-        String::from_utf8_lossy(&success_output.stderr)
-    );
-    let expected_calls = dispatch_order
-        .iter()
-        .map(|workflow| format!("workflow|run|{workflow}|--ref|{branch}"))
-        .collect::<Vec<_>>();
-    assert_eq!(success_calls, expected_calls, "all required dispatches must run in workflow order");
-
-    let first_workflow = dispatch_order.first().ok_or("required workflow set must not be empty")?;
-    let (failure_output, failure_calls) = run_dispatch(Some(first_workflow), "first-failure.log")?;
-    assert!(!failure_output.status.success(), "a failed dispatch must fail the step");
-    assert_eq!(
-        failure_calls, expected_calls,
-        "a failed dispatch must not skip later required workflows"
-    );
-
-    Ok(())
-}
-
 fn project_root() -> PathBuf {
     // Walk up from the manifest directory to the workspace root.
     let mut dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -318,6 +232,29 @@ fn test_post_merge_workflow_dispatches_all_required_checks()
             step.get("name").and_then(Value::as_str) == Some("Raise CI on the generated PR")
         })
         .ok_or("post-merge-status.yml must define the generated-PR dispatch step")?;
+    let verify_step = jobs
+        .values()
+        .filter_map(|job| job.get("steps").and_then(Value::as_sequence))
+        .flat_map(|steps| steps.iter())
+        .find(|step| {
+            step.get("name").and_then(Value::as_str)
+                == Some("Verify and stage canonical generated files")
+        })
+        .ok_or("post-merge-status.yml must define the trusted payload verification step")?;
+    assert_eq!(
+        verify_step.get("id").and_then(Value::as_str),
+        Some("verify-payload"),
+        "the trusted payload step must own the immutable base output"
+    );
+    let verify_run = verify_step
+        .get("run")
+        .and_then(Value::as_str)
+        .ok_or("trusted payload verification step must define a shell body")?;
+    assert!(
+        verify_run.contains("manifest.get(\"source_sha\") != os.environ[\"EXPECTED_SOURCE_SHA\"]")
+            && verify_run.contains("source-sha={manifest['source_sha']}"),
+        "the base output must come from the manifest only after exact source verification"
+    );
     let dispatch_run = dispatch_step
         .get("run")
         .and_then(Value::as_str)
@@ -336,6 +273,39 @@ fn test_post_merge_workflow_dispatches_all_required_checks()
         dispatch_branch, "automation/post-merge-status",
         "generated-PR dispatch must target its automation branch"
     );
+    let dispatch_env = dispatch_step
+        .get("env")
+        .and_then(Value::as_mapping)
+        .ok_or("generated-PR dispatch step must declare immutable identity inputs")?;
+    let env_value = |name: &str| {
+        dispatch_env
+            .iter()
+            .find_map(|(key, value)| (key.as_str() == Some(name)).then(|| value.as_str()).flatten())
+    };
+    assert_eq!(
+        env_value("BASE_SHA"),
+        Some("${{ steps.verify-payload.outputs.source-sha }}"),
+        "ci.yml must receive the source SHA emitted by the verified payload step"
+    );
+    assert_eq!(
+        env_value("EXPECTED_SOURCE_SHA"),
+        Some("${{ github.sha }}"),
+        "dispatch must bind the verified payload source to the immutable workflow source"
+    );
+    assert_eq!(
+        env_value("HEAD_SHA"),
+        Some("${{ steps.create-pr.outputs.pull-request-head-sha }}"),
+        "ci.yml must receive the exact head produced by the create-PR transaction"
+    );
+    assert!(
+        dispatch_run.contains("scripts/ci/dispatch-generated-status-checks.sh")
+            && dispatch_run
+                .contains("\"$BRANCH\" \"$BASE_SHA\" \"$EXPECTED_SOURCE_SHA\" \"$HEAD_SHA\""),
+        "generated-PR dispatch step must call the extracted fail-closed helper with exact identities"
+    );
+
+    let dispatch_script =
+        fs::read_to_string(root.join("scripts/ci/dispatch-generated-status-checks.sh"))?;
 
     let policy_path = root.join(".ci/policies/required-checks.toml");
     let policy_text = fs::read_to_string(policy_path)?;
@@ -346,7 +316,7 @@ fn test_post_merge_workflow_dispatches_all_required_checks()
         "required-checks.toml must declare at least one required workflow"
     );
 
-    let dispatch_start = dispatch_run
+    let dispatch_start = dispatch_script
         .split_once("for workflow in")
         .map(|(_, remainder)| remainder)
         .ok_or("dispatch step must iterate over workflow names")?;
@@ -370,14 +340,32 @@ fn test_post_merge_workflow_dispatches_all_required_checks()
         );
     }
     assert!(
-        dispatch_run.contains("set +e")
-            && dispatch_run.contains("failed=1")
-            && dispatch_run.contains("exit \"$failed\""),
+        dispatch_script.contains("set +e")
+            && dispatch_script.contains("failed=1")
+            && dispatch_script.contains("exit \"$failed\"")
+            && dispatch_script.contains("-f \"base_sha=$base_sha\"")
+            && dispatch_script.contains("-f \"head_sha=$head_sha\""),
         "generated-PR dispatch step must continue after an individual failure and fail overall"
     );
 
     #[cfg(unix)]
-    assert_dispatch_loop_behavior(dispatch_run, &dispatch_order, dispatch_branch)?;
+    {
+        let fixture = root.join("scripts/tests/test-dispatch-generated-status-checks.sh");
+        let output = std::process::Command::new("bash").arg(&fixture).output()?;
+        assert!(
+            output.status.success(),
+            "generated-status dispatch fixture failed: stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8(output.stdout)?;
+        assert!(
+            stdout.contains("legacy omitted-base ci.yml dispatch reproduces the observed 422")
+                && stdout.contains("exact argv preserves all four dispatch contracts")
+                && stdout.contains("one failure still attempts all workflows and fails at the end"),
+            "hosted fixture proof must cover the original 422, exact argv, and fail-final behavior"
+        );
+    }
 
     Ok(())
 }
