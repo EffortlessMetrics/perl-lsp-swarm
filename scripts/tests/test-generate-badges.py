@@ -385,9 +385,22 @@ class GenerateBadgesTests(unittest.TestCase):
             real_monotonic = time.monotonic
             wall_start = real_monotonic()
             logical_start = wall_start
+            observed_child_pid = []
+
+            def capture_child_pid():
+                try:
+                    candidate = int(child_pid_file.read_text(encoding="utf-8"))
+                except (FileNotFoundError, ValueError):
+                    return False
+                if candidate <= 0:
+                    return False
+                observed_child_pid.append(candidate)
+                return True
 
             def containment_clock():
-                if child_pid_file.is_file() or real_monotonic() - wall_start >= 10:
+                if observed_child_pid or capture_child_pid():
+                    return logical_start + 31
+                if real_monotonic() - wall_start >= 10:
                     return logical_start + 31
                 return logical_start
 
@@ -402,11 +415,16 @@ class GenerateBadgesTests(unittest.TestCase):
             finally:
                 os.environ.clear()
                 os.environ.update(previous)
-            self.assertTrue(child_pid_file.is_file(), "fake RIPR child was not observed")
-            self.assert_fake_child_stopped(root, "timed-out")
+            self.assertTrue(observed_child_pid, "fake RIPR child PID was not observed")
+            self.assert_fake_child_stopped(
+                root, "timed-out", child_pid=observed_child_pid[0]
+            )
 
-    def assert_fake_child_stopped(self, root: Path, reason: str):
-        child_pid = int((root / "ripr-child.pid").read_text(encoding="utf-8"))
+    def assert_fake_child_stopped(
+        self, root: Path, reason: str, child_pid: int | None = None
+    ):
+        if child_pid is None:
+            child_pid = int((root / "ripr-child.pid").read_text(encoding="utf-8"))
         deadline = time.monotonic() + 3
         while time.monotonic() < deadline:
             if not self.process_is_running(child_pid):
