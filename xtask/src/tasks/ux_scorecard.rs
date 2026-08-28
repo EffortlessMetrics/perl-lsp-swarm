@@ -67,6 +67,17 @@ pub fn run(
     ratchet_check: bool,
 ) -> Result<()> {
     let root = project_root()?;
+    run_at(&root, format, input, output, status_md, ratchet_check)
+}
+
+fn run_at(
+    root: &Path,
+    format: UxScorecardFormat,
+    input: Option<PathBuf>,
+    output: Option<PathBuf>,
+    status_md: Option<PathBuf>,
+    ratchet_check: bool,
+) -> Result<()> {
     let input_path = root.join(input.unwrap_or_else(|| PathBuf::from(DEFAULT_INPUT)));
     let output_path = root.join(output.unwrap_or_else(|| PathBuf::from(DEFAULT_OUTPUT)));
     let status_path = root.join(status_md.unwrap_or_else(|| PathBuf::from(DEFAULT_STATUS_MD)));
@@ -79,6 +90,11 @@ pub fn run(
         raw_measurements.iter().map(|m| m.scenario_id.clone()).collect();
 
     let declared_scenario_count = load_declared_scenario_count(&root);
+
+    // Validate the required baseline before creating any output. A malformed
+    // ratchet input must not leave a partially updated scorecard behind.
+    let baseline =
+        if ratchet_check { Some(load_baseline(&root)?) } else { load_baseline_opt(&root) };
 
     let mut rows = BTreeMap::new();
     rows.insert(
@@ -130,14 +146,16 @@ pub fn run(
         }),
     };
 
-    let baseline = load_baseline_opt(&root);
     write_json(&output_path, &artifact)?;
     fs::write(&status_path, render_status_markdown(&artifact, baseline.as_ref()))
         .with_context(|| format!("writing {}", status_path.display()))?;
     maybe_embed_receipt_block(&root, &artifact)?;
 
     if ratchet_check {
-        enforce_ratchet(&root, &artifact)?;
+        let baseline = baseline
+            .as_ref()
+            .ok_or_else(|| color_eyre::eyre::eyre!("editor_ux ratchet baseline was not loaded"))?;
+        enforce_ratchet(baseline, &artifact)?;
     }
 
     match format {
@@ -201,9 +219,13 @@ fn load_declared_scenario_count(root: &Path) -> Option<usize> {
 }
 
 fn load_baseline_opt(root: &Path) -> Option<SubsystemBaseline> {
+    load_baseline(root).ok()
+}
+
+fn load_baseline(root: &Path) -> Result<SubsystemBaseline> {
     let path = root.join(BASELINE_PATH);
-    let raw = fs::read_to_string(&path).ok()?;
-    serde_json::from_str(&raw).ok()
+    let raw = fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+    serde_json::from_str(&raw).with_context(|| format!("parsing {}", path.display()))
 }
 
 fn write_json(path: &Path, artifact: &UxScorecardArtifact) -> Result<()> {
@@ -425,13 +447,7 @@ fn evaluate_ratchet(
     }
 }
 
-fn enforce_ratchet(root: &Path, artifact: &UxScorecardArtifact) -> Result<()> {
-    let baseline_path = root.join(BASELINE_PATH);
-    let baseline_raw = fs::read_to_string(&baseline_path)
-        .with_context(|| format!("reading {}", baseline_path.display()))?;
-    let baseline: SubsystemBaseline = serde_json::from_str(&baseline_raw)
-        .with_context(|| format!("parsing {}", baseline_path.display()))?;
-
+fn enforce_ratchet(baseline: &SubsystemBaseline, artifact: &UxScorecardArtifact) -> Result<()> {
     let mut current_floor = BTreeMap::new();
     for (k, v) in &artifact.rows {
         current_floor.insert(k.clone(), v.value);
@@ -462,6 +478,7 @@ fn path_relative_to_root(root: &Path, path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Command;
 
     fn measurement(
         id: &str,
@@ -777,7 +794,8 @@ mod tests {
             provenance: json!({}),
         };
 
-        let error = match enforce_ratchet(root.path(), &artifact) {
+        let loaded_baseline = load_baseline(root.path())?;
+        let error = match enforce_ratchet(&loaded_baseline, &artifact) {
             Ok(()) => {
                 return Err(color_eyre::eyre::eyre!(
                     "missing, null, non-finite, and regressed metrics must fail"
@@ -797,17 +815,94 @@ mod tests {
             ("null_metric".to_string(), None),
             ("zero_metric".to_string(), Some(0.0)),
         ]);
-        let violations = evaluate_ratchet(&baseline, &current);
+        let violations = evaluate_ratchet(&loaded_baseline, &current);
         check(
             &violations.report_lines(),
             &vec![
-                "VIOLATION [editor_ux] missing_metric baseline=75.000 current=missing",
-                "VIOLATION [editor_ux] nan_metric baseline=50.000 current=missing",
-                "VIOLATION [editor_ux] null_metric baseline=25.000 current=missing",
-                "VIOLATION [editor_ux] hover_correctness_pct baseline=100.000 current=80.000 regression=20.00%",
+                "VIOLATION [editor_ux] missing_metric baseline=75.000 current=missing".to_string(),
+                "VIOLATION [editor_ux] nan_metric baseline=50.000 current=missing".to_string(),
+                "VIOLATION [editor_ux] null_metric baseline=25.000 current=missing".to_string(),
+                "VIOLATION [editor_ux] hover_correctness_pct baseline=100.000 current=80.000 regression=20.00%".to_string(),
             ],
             "violation report lines",
         )
+    }
+
+    fn minimal_measurement_json() -> &'static str {
+        r#"[{"scenario_id":"malformed-input-regression","hover_correct":true,"completion_top1_correct":null,"completion_top5_correct":null,"definition_exact_hit":null,"symbol_correct":null,"diagnostics_correct":null,"rename_success":null,"cross_file_success":null,"latency_ms_by_request":{}}]"#
+    }
+
+    #[test]
+    fn malformed_baseline_returns_before_writing_artifacts() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let baseline_path = root.path().join(BASELINE_PATH);
+        let baseline_parent = baseline_path
+            .parent()
+            .ok_or_else(|| color_eyre::eyre::eyre!("baseline path has no parent"))?;
+        fs::create_dir_all(baseline_parent)?;
+        fs::write(&baseline_path, "{ malformed baseline")?;
+
+        fs::write(root.path().join("measurements.json"), minimal_measurement_json())?;
+        let output_path = root.path().join("scorecard.json");
+        let status_path = root.path().join("status.md");
+        let result = run_at(
+            root.path(),
+            UxScorecardFormat::Human,
+            Some(PathBuf::from("measurements.json")),
+            Some(PathBuf::from("scorecard.json")),
+            Some(PathBuf::from("status.md")),
+            true,
+        );
+
+        let error = match result {
+            Ok(()) => return Err(color_eyre::eyre::eyre!("malformed baseline must fail")),
+            Err(error) => error,
+        };
+        check_true(
+            error.to_string().contains("parsing"),
+            "malformed baseline error missing context",
+        )?;
+        check_true(!output_path.exists(), "malformed baseline created scorecard artifact")?;
+        check_true(!status_path.exists(), "malformed baseline created status artifact")
+    }
+
+    #[test]
+    fn malformed_measurement_cli_returns_nonzero_without_artifacts() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let input_path = temp.path().join("malformed.json");
+        let output_path = temp.path().join("scorecard.json");
+        let status_path = temp.path().join("status.md");
+        fs::write(&input_path, "[{ malformed measurement")?;
+
+        let args = [
+            "ux-scorecard",
+            "--ratchet-check",
+            "--input",
+            input_path
+                .to_str()
+                .ok_or_else(|| color_eyre::eyre::eyre!("input path is not UTF-8"))?,
+            "--output",
+            output_path
+                .to_str()
+                .ok_or_else(|| color_eyre::eyre::eyre!("output path is not UTF-8"))?,
+            "--status-md",
+            status_path
+                .to_str()
+                .ok_or_else(|| color_eyre::eyre::eyre!("status path is not UTF-8"))?,
+        ];
+        let mut command = if let Some(binary) = std::env::var_os("CARGO_BIN_EXE_xtask") {
+            Command::new(binary)
+        } else {
+            let mut command = Command::new("cargo");
+            command.args(["run", "--quiet", "--locked", "-p", "xtask", "--"]);
+            command
+        };
+        command.args(args).current_dir(project_root()?);
+        let output = command.output()?;
+
+        check_true(!output.status.success(), "malformed measurement CLI unexpectedly succeeded")?;
+        check_true(!output_path.exists(), "malformed measurement created scorecard artifact")?;
+        check_true(!status_path.exists(), "malformed measurement created status artifact")
     }
 
     #[test]
