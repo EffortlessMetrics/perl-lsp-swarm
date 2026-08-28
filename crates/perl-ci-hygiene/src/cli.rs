@@ -148,3 +148,190 @@ pub(crate) enum CliCommand {
     /// Run heredoc integration tests, using xtask when available.
     TestHeredocs,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{Cli, CliCommand};
+    use clap::{Parser, error::ErrorKind};
+    use color_eyre::eyre::{Result, eyre};
+    use std::path::PathBuf;
+
+    fn owned(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| (*value).to_owned()).collect()
+    }
+
+    #[test]
+    fn compare_benchmarks_forwards_hyphenated_arguments_in_order() -> Result<()> {
+        let cli = Cli::try_parse_from([
+            "perl-ci-hygiene",
+            "compare-benchmarks",
+            "--fail-on-regression",
+            "--threshold=-0.5",
+            "baseline.json",
+            "candidate.json",
+        ])?;
+        let CliCommand::CompareBenchmarks { args } = cli.command else {
+            return Err(eyre!("expected compare-benchmarks command"));
+        };
+
+        assert_eq!(
+            args,
+            owned(&[
+                "--fail-on-regression",
+                "--threshold=-0.5",
+                "baseline.json",
+                "candidate.json",
+            ])
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_capped_forwards_cargo_flags_after_separator() -> Result<()> {
+        let cli = Cli::try_parse_from([
+            "perl-ci-hygiene",
+            "test-capped",
+            "--",
+            "--workspace",
+            "--all-targets",
+            "parser::tests",
+        ])?;
+        let CliCommand::TestCapped { cargo_args } = cli.command else {
+            return Err(eyre!("expected test-capped command"));
+        };
+
+        assert_eq!(
+            cargo_args,
+            owned(&["--workspace", "--all-targets", "parser::tests"])
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn panic_test_modes_reject_conflicting_inputs() {
+        let result = Cli::try_parse_from([
+            "perl-ci-hygiene",
+            "check-panic-test",
+            "--inventory",
+            "--identity-registry",
+            "policy/panic-test-identities.json",
+        ]);
+
+        assert!(matches!(
+            result,
+            Err(error) if error.kind() == ErrorKind::ArgumentConflict
+        ));
+    }
+
+    #[test]
+    fn panic_test_identity_registry_preserves_path() -> Result<()> {
+        let cli = Cli::try_parse_from([
+            "perl-ci-hygiene",
+            "check-panic-test",
+            "--identity-registry",
+            "policy/panic-test-identities.json",
+        ])?;
+        let CliCommand::CheckPanicTest { inventory, identity_registry } = cli.command else {
+            return Err(eyre!("expected check-panic-test command"));
+        };
+
+        assert!(!inventory);
+        assert_eq!(
+            identity_registry,
+            Some(PathBuf::from("policy/panic-test-identities.json"))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_case_flags_are_independent() -> Result<()> {
+        let cli = Cli::try_parse_from([
+            "perl-ci-hygiene",
+            "test-edge-cases",
+            "--bench",
+            "--coverage",
+        ])?;
+        let CliCommand::TestEdgeCases { bench, coverage } = cli.command else {
+            return Err(eyre!("expected test-edge-cases command"));
+        };
+
+        assert!(bench);
+        assert!(coverage);
+        Ok(())
+    }
+
+    #[test]
+    fn badge_check_flag_defaults_off_and_enables_explicitly() -> Result<()> {
+        let default_cli = Cli::try_parse_from(["perl-ci-hygiene", "generate-badges"])?;
+        let CliCommand::GenerateBadges { check: default_check } = default_cli.command else {
+            return Err(eyre!("expected generate-badges command"));
+        };
+        assert!(!default_check);
+
+        let check_cli = Cli::try_parse_from([
+            "perl-ci-hygiene",
+            "generate-badges",
+            "--check",
+        ])?;
+        let CliCommand::GenerateBadges { check } = check_cli.command else {
+            return Err(eyre!("expected generate-badges command"));
+        };
+        assert!(check);
+        Ok(())
+    }
+
+    #[test]
+    fn doc_path_argument_distinguishes_absent_and_supplied() -> Result<()> {
+        let default_cli = Cli::try_parse_from(["perl-ci-hygiene", "check-doc-paths"])?;
+        let CliCommand::CheckDocPaths { docs_dir: default_dir } = default_cli.command else {
+            return Err(eyre!("expected check-doc-paths command"));
+        };
+        assert_eq!(default_dir, None);
+
+        let selected_cli = Cli::try_parse_from([
+            "perl-ci-hygiene",
+            "check-doc-paths",
+            "docs/reference",
+        ])?;
+        let CliCommand::CheckDocPaths { docs_dir } = selected_cli.command else {
+            return Err(eyre!("expected check-doc-paths command"));
+        };
+        assert_eq!(docs_dir.as_deref(), Some("docs/reference"));
+        Ok(())
+    }
+
+    #[test]
+    fn scalar_and_boolean_inputs_reach_their_variants() -> Result<()> {
+        let version_cli =
+            Cli::try_parse_from(["perl-ci-hygiene", "bump-version", "0.18.0"])?;
+        let CliCommand::BumpVersion { version } = version_cli.command else {
+            return Err(eyre!("expected bump-version command"));
+        };
+        assert_eq!(version, "0.18.0");
+
+        let todos_cli = Cli::try_parse_from(["perl-ci-hygiene", "check-todos", "--list"])?;
+        let CliCommand::CheckTodos { list } = todos_cli.command else {
+            return Err(eyre!("expected check-todos command"));
+        };
+        assert!(list);
+
+        let fatal_cli =
+            Cli::try_parse_from(["perl-ci-hygiene", "forbid-fatal-constructs", "-v"])?;
+        let CliCommand::ForbidFatalConstructs { verbose } = fatal_cli.command else {
+            return Err(eyre!("expected forbid-fatal-constructs command"));
+        };
+        assert!(verbose);
+        Ok(())
+    }
+
+    #[test]
+    fn missing_and_unknown_subcommands_are_rejected() {
+        assert!(Cli::try_parse_from(["perl-ci-hygiene"]).is_err());
+
+        let unknown = Cli::try_parse_from(["perl-ci-hygiene", "unknown-command"]);
+        assert!(matches!(
+            unknown,
+            Err(error) if error.kind() == ErrorKind::InvalidSubcommand
+        ));
+    }
+}
