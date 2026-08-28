@@ -133,7 +133,7 @@ fn public_api_job_runs(
         return false;
     };
     let expected = format!(
-        "(github.event_name == 'workflow_dispatch' && inputs.run_public_api) || github.event_name == 'schedule' || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, '{label}') && (github.event.action != 'labeled' || github.event.label.name == '{label}'))"
+        "(github.event_name == 'workflow_dispatch' && inputs.run_api_checks) || github.event_name == 'schedule' || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, '{label}') && (github.event.action != 'labeled' || github.event.label.name == '{label}'))"
     );
     if expression != expected {
         return false;
@@ -555,7 +555,7 @@ fn nightly_public_api_label_is_governed_and_provisioned() -> Result<(), Box<dyn 
     }
 
     assert_eq!(label, "ci:public-api", "the public API lane owns one stable trigger label");
-    assert!(public_api.contains("(github.event_name == 'workflow_dispatch' && inputs.run_public_api) ||"));
+    assert!(public_api.contains("(github.event_name == 'workflow_dispatch' && inputs.run_api_checks) ||"));
     assert!(public_api.contains("github.event_name == 'schedule' ||"));
     assert!(!public_api.contains("github.event_name == 'pull_request' ||"));
     assert!(!public_api.contains("github.event_name == 'push'"));
