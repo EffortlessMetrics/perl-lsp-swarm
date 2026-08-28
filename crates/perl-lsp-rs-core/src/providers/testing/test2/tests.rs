@@ -25,12 +25,30 @@ fn test2_imports_bundle_classification() {
     assert!(is_test2_bundle("Test2::Bundle::Extended"));
     assert!(is_test2_bundle("Test2::Bundle::More"));
     assert!(is_test2_bundle("Test2::Bundle::Simple"));
+    assert!(!is_test2_bundle("Test2::Bundle::Unknown"));
 
     // The distribution namespace and individual modules are not bundles.
     assert!(!is_test2_bundle("Test2::Suite"));
     assert!(!is_test2_bundle("Test2::Tools::Basic"));
     assert!(!is_test2_bundle("Test2::Plugin::UTF8"));
     assert!(!is_test2_bundle("Test2::API"));
+}
+
+#[test]
+fn unknown_bundle_stays_unmodeled_on_the_production_facts_path() {
+    let facts = Test2Facts::from_source("use Test2::Bundle::Unknown;\n");
+
+    assert!(facts.uses_test2(), "the structural Test2 recognizer still sees the module");
+    assert!(
+        !facts.uses_test2_bundle(),
+        "an unknown bundle must not be treated as an authoritative bundle"
+    );
+    assert!(facts.imported_symbols.is_empty(), "unknown bundles have no invented defaults");
+    assert_eq!((facts.strict, facts.warnings), (false, false));
+
+    let explicit = Test2Facts::from_source("use Test2::Bundle::Unknown qw(custom_helper);\n");
+    assert!(explicit.is_imported("custom_helper"));
+    assert_eq!((explicit.strict, explicit.warnings), (false, false));
 }
 
 #[test]

@@ -313,17 +313,25 @@ const V1_DEFAULT: &[&str] = &["T2"];
 /// Whether `module` is any Test2 module the LSP has awareness of.
 pub fn is_test2_module(module: &str) -> bool {
     is_test2_bundle(module)
+        || module.starts_with("Test2::Bundle::")
         || module == "Test2::Suite"
         || module.starts_with("Test2::Tools::")
         || module.starts_with("Test2::Plugin::")
         || module == "Test2::API"
 }
 
-/// Whether `module` is a Test2 *bundle* module. Bundles are the recommended
-/// entry points (`Test2::V0`, `Test2::V1`, `Test2::Bundle::*`). `Test2::Suite`
-/// is the distribution namespace, not a bundle and not an importer.
+/// Whether `module` is a reviewed Test2 *bundle* module. Unknown
+/// `Test2::Bundle::*` names remain recognized by [`is_test2_module`] so explicit
+/// imports can be trusted, but they are not authoritative bundle contracts.
 pub fn is_test2_bundle(module: &str) -> bool {
-    matches!(module, "Test2::V0" | "Test2::V1") || module.starts_with("Test2::Bundle::")
+    matches!(
+        module,
+        "Test2::V0"
+            | "Test2::V1"
+            | "Test2::Bundle::Extended"
+            | "Test2::Bundle::More"
+            | "Test2::Bundle::Simple"
+    )
 }
 
 /// The default export set for a known Test2 module, or `None` if the module is
