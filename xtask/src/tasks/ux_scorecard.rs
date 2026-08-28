@@ -921,15 +921,21 @@ mod tests {
         fs::write(&status_path, previous_status)?;
         fs::write(&receipt_path, previous_receipt)?;
 
-        let error = run_at(
+        let error = match run_at(
             root.path(),
             UxScorecardFormat::Human,
             Some(PathBuf::from("measurements.json")),
             Some(PathBuf::from("scorecard.json")),
             Some(PathBuf::from("status.md")),
             true,
-        )
-        .expect_err("missing current floor metric must fail the ratchet");
+        ) {
+            Ok(()) => {
+                return Err(color_eyre::eyre::eyre!(
+                    "missing current floor metric must fail the ratchet"
+                ));
+            }
+            Err(error) => error,
+        };
         check_true(
             error.to_string().contains("ratchet check failed"),
             "missing metric error did not identify ratchet failure",
@@ -979,15 +985,21 @@ mod tests {
         fs::write(&status_path, previous_status)?;
         fs::write(&receipt_path, malformed_receipt)?;
 
-        let error = run_at(
+        let error = match run_at(
             root.path(),
             UxScorecardFormat::Human,
             Some(PathBuf::from("measurements.json")),
             Some(PathBuf::from("scorecard.json")),
             Some(PathBuf::from("status.md")),
             true,
-        )
-        .expect_err("malformed existing receipt must fail before publication");
+        ) {
+            Ok(()) => {
+                return Err(color_eyre::eyre::eyre!(
+                    "malformed existing receipt must fail before publication"
+                ));
+            }
+            Err(error) => error,
+        };
         check_true(
             error.to_string().contains("parsing"),
             "malformed receipt error missing parsing context",
