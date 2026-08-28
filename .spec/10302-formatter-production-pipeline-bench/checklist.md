@@ -1,21 +1,23 @@
 # Checklist: #10302 production-path formatter performance receipt
 
-Base pin: `origin/main@e6e956461534b2566c735696f289e0915e2cb189` (2026-08-27).
+Base pin: `origin/main@a9664af790888333efbe50a042fa060f3cc2d171` (2026-08-28).
+Candidate head: `943fed849676f0c9cb9bf9757e60eb1adfb836e6` (PR #13190).
 Composition sibling: #10301 fuzz/property spec
 (`.spec/10301-formatter-property-fuzz-harness/`) — disjoint file set.
 PR #13190 delivers a bounded runtime-counter and benchmark-enrollment slice.
 It does not close #10302. Allocation proof, strict runtime-sidecar joining, and
 the remaining full-matrix/release evidence remain open and `NOT_PROVEN`.
 
-Red-first receipts-of-record (2026-08-27, pure reads on the base pin):
+Red-first receipts-of-record (2026-08-28, pure reads against the base pin and
+current candidate head as noted below):
 
-- Zero formatter bench surface: `BENCH_TARGETS` in
-  `.github/workflows/ci-nightly.yml` enumerates exactly 14 targets
-  (perl-workspace, perl-token, perl-symbol, perl-pragma, perl-parser ×6,
-  perl-lsp-rs rope_performance_benchmark, perl-lexer, perl-dap,
-  perl-incremental-parsing); `crates/perl-lsp-perltidy/Cargo.toml` has no
-  criterion dev-dep and no `[[bench]]`.
-- Zero instrumentation on the pipeline: tree-wide grep for
+- Current candidate workflow surface: `BENCH_TARGETS` in
+  `.github/workflows/ci-nightly.yml` enumerates exactly 15 targets, including
+  `perl-lsp-perltidy:native_pipeline_benchmark:`. The earlier base comparison
+  had 14 targets and no formatter bench; that is historical baseline context,
+  not the current candidate target claim. Hosted execution, runtime-sidecar
+  production, and strict registry/sidecar/run-ID joining remain `NOT_PROVEN`.
+- Base comparison only — zero instrumentation on the pipeline: tree-wide grep for
   counters/metrics/stats over `crates/perl-lsp-perltidy/**` returns nothing;
   nearest deterministic surfaces are `FormatChangeSummary`,
   `FormatIdentity` digests, and depth tracking at
