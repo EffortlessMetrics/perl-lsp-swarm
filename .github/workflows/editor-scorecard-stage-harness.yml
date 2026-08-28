@@ -1,0 +1,35 @@
+name: Temporary stage Scenario 14 oracle repairs
+
+on:
+  push:
+    branches: [chatgpt/editor-scorecard-rustfmt-probe]
+    paths: [.github/workflows/editor-scorecard-stage-harness.yml]
+
+permissions:
+  contents: write
+
+jobs:
+  stage:
+    name: Apply reviewed harness patch
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout staging branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: chatgpt/editor-scorecard-rustfmt-probe
+          fetch-depth: 0
+      - name: Apply exact patch
+        run: |
+          set -euo pipefail
+          git apply --check .agent/editor-scorecard/scenario14-harness.patch
+          git apply .agent/editor-scorecard/scenario14-harness.patch
+          git diff --check
+      - name: Commit staging candidate
+        run: |
+          set -euo pipefail
+          git config user.name EffortlessSteven
+          git config user.email git@effortlesssteven.com
+          git add crates/perl-lsp-ux-tests/tests/ux_scenario_14_inc_conformance.rs
+          git commit -m "test(ux): strengthen Scenario 14 terminal oracles"
+          git push origin HEAD:chatgpt/editor-scorecard-rustfmt-probe
