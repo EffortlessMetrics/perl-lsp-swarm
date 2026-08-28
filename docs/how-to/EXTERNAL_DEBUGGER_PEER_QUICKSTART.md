@@ -14,7 +14,7 @@ peer. This page covers optional interoperability only.
 | Debug-session plan JSON | Available helper | Inspect source facts and planned breakpoints without starting another debugger. |
 | ptkdb `.ptkdbrc` bootstrap | Best-effort compatibility helper | Generates escaped startup calls; it does not prove ptkdb accepted every call. |
 | Live peer host protocol | **Experimental / developer preview** | Proven against repository fake/reference peers. |
-| Pinned `Devel::ptkdb 1.1091` mirror plugin | **Implementation substrate available** | Authenticated headless proof covers the real stop-location seam and cleanup; no live Tk receipt yet. |
+| Marked ptkdb-shaped `Devel::ptkdb 1.1091` reference adapter | **Implementation substrate available** | Authenticated headless proof covers the harness stop seam and cleanup; no source provenance or live Tk receipt. |
 | Stock `Devel::ptkdb` live peer | **Not yet proven** | Requires an explicit plugin load plus the real ptkdb/Tk/VSIX receipt owned by #4786. |
 
 No external peer is bundled, installed, detected into use, or selected from PATH.
@@ -55,32 +55,35 @@ The generated file:
 This is one-way setup. Without read-back from ptkdb, the product can claim only
 that it generated the calls—not that every breakpoint or watch was installed.
 
-### Load the pinned ptkdb mirror plugin
+### Load the experimental reference mirror adapter
 
 The repository's
 [`minimal_ptkdb_peer.pl`](../../fixtures/debug-peer/perl/minimal_ptkdb_peer.pl)
-can also be loaded from `.ptkdbrc` as an experimental plugin:
+can also be loaded from `.ptkdbrc` as an experimental adapter for the marked
+reference harness:
 
 ```perl
 my $perl_dap_peer = '/absolute/path/to/minimal_ptkdb_peer.pl';
 do $perl_dap_peer or die $@ || $!;
 ```
 
-This mode is intentionally narrow:
+This mode is intentionally narrow and is not a pinned or distributable stock
+ptkdb plugin:
 
-- it activates only for `Devel::ptkdb 1.1091` when a trusted host launcher has
+- it activates only for a ptkdb-shaped harness that exposes `Devel::ptkdb 1.1091`
+  and the exact `$Devel::ptkdb::PERL_DAP_MIRROR_SOURCE` reference marker, when a trusted host launcher has
   supplied `PERL_DAP_PEER`, a 32-hex `PERL_DAP_PEER_TOKEN`, and
   `PERL_DAP_PEER_MODE=mirror`;
 - it advertises no inspection or control capabilities;
-- it preserves ptkdb's original `set_file` method and reports the real file and
-  line when `DB::DB` reaches the Tk stop path;
+- it preserves the harness's original `set_file` method and reports the supplied
+  file and line when `DB::DB` reaches the marked stop path;
 - it emits debugger-console connection output and one bounded termination event;
 - it is a silent no-op when the rendezvous environment is absent.
 
 It does not yet mirror debuggee stdout/stderr, answer stack/scopes/variables, or
 accept stepping and breakpoint commands. The repository test uses a
-ptkdb-shaped headless harness, not Tk. This is implementation evidence for the
-next live test, not a stock-patched compatibility verdict or a ready-made default
+  ptkdb-shaped headless harness, not stock ptkdb or Tk. This is implementation
+  evidence for the next live test, not a compatibility verdict or a ready-made default
 editor configuration.
 
 ### Exercise the experimental live peer host
@@ -144,7 +147,7 @@ presence of modeled protocol fields.
 The peer path is bounded by:
 
 - protocol-version validation and token validation whenever the host mints one;
-- a required authenticated token for the pinned ptkdb plugin;
+- a required authenticated token for the reference adapter;
 - connection, read, write, request, and handshake timeouts;
 - explicit capability intersection;
 - clean socket/thread/process teardown;

@@ -5,13 +5,14 @@
 #
 #   * executed directly: a synthetic reference peer used to inspect and test
 #     the wire contract without Devel::ptkdb;
-#   * loaded from .ptkdbrc: an experimental mirror plugin substrate for the
-#     pinned Devel::ptkdb 1.1091 surface.
+#   * loaded from .ptkdbrc: an experimental mirror adapter for an explicitly
+#     marked, ptkdb-shaped reference harness.
 #
-# The loaded plugin is not a DAP implementation and does not accept editor
+# The loaded adapter is not a DAP implementation and does not accept editor
 # control. It authenticates to perl-dap, reports debugger-console output, emits
-# real stopped events from Devel::ptkdb's set_file($path, $line) stop seam, and
-# emits one terminated event during Perl teardown. Capabilities remain empty.
+# stopped events from the explicitly marked reference harness's
+# set_file($path, $line) seam, and emits one terminated event during Perl
+# teardown. Capabilities remain empty. It is not a stock ptkdb integration.
 #
 # Load it from .ptkdbrc with an absolute path:
 #
@@ -27,14 +28,14 @@ use warnings;
 package PerlDAP::PtkdbMirror;
 
 use Errno qw(EAGAIN EINTR EWOULDBLOCK);
-use Fcntl qw(F_GETFL F_SETFL O_NONBLOCK);
 use IO::Select;
 use IO::Socket::INET;
 use JSON::PP qw(decode_json encode_json);
 use Time::HiRes qw(time);
 
 use constant PROTOCOL_VERSION     => 'perl-debug-peer-v1';
-use constant PINNED_PTKDB_VERSION => '1.1091';
+use constant REFERENCE_PTKDB_VERSION => '1.1091';
+use constant REFERENCE_PTKDB_SOURCE  => 'perl-dap-reference-ptkdb-1.1091';
 use constant MAX_HEADER_BYTES     => 8 * 1024;
 use constant MAX_BODY_BYTES       => 8 * 1024 * 1024;
 use constant CONNECT_TIMEOUT      => 2;
@@ -57,9 +58,8 @@ sub _next_seq {
 
 sub _set_nonblocking {
     my ($socket) = @_;
-    my $flags = fcntl($socket, F_GETFL, 0);
-    return 0 unless defined $flags;
-    return defined fcntl($socket, F_SETFL, $flags | O_NONBLOCK);
+    return 0 unless $socket->can('blocking');
+    return eval { $socket->blocking(0); 1 } ? 1 : 0;
 }
 
 sub _write_all {
@@ -172,11 +172,14 @@ sub _parse_rendezvous {
     my ($host, $port) = $address =~ /\A(127(?:\.\d{1,3}){3}):(\d{1,5})\z/;
     return (undef, "malformed or non-loopback PERL_DAP_PEER '$address'")
         unless defined $host && defined $port;
+    my @octets = split /\./, $host;
+    return (undef, "malformed or non-loopback PERL_DAP_PEER '$address'")
+        unless @octets == 4 && !grep { $_ > 255 } @octets;
     return (undef, "invalid PERL_DAP_PEER port '$port'")
         unless $port > 0 && $port <= 65_535;
 
     if ($require_token) {
-        return (undef, 'PERL_DAP_PEER_TOKEN is required for the live ptkdb plugin')
+        return (undef, 'PERL_DAP_PEER_TOKEN is required for the reference mirror adapter')
             unless defined $token && $token =~ /\A[0-9A-Fa-f]{32}\z/;
     }
 
@@ -196,14 +199,17 @@ sub _connect_and_handshake {
     );
     return (undef, "cannot connect to $rendezvous->{address}: $!") unless $socket;
     $socket->autoflush(1);
-    my $nonblocking = _set_nonblocking($socket) ? 1 : 0;
+    unless (_set_nonblocking($socket)) {
+        close($socket);
+        return (undef, 'cannot enable nonblocking peer I/O');
+    }
 
     my $state = {
         socket      => $socket,
         seq         => 0,
         read_buffer => '',
         closed      => 0,
-        nonblocking => $nonblocking,
+        nonblocking => 1,
     };
 
     my $hello_seq = _next_seq($state);
@@ -304,6 +310,12 @@ sub _ptkdb_version {
     return undef;
 }
 
+sub _ptkdb_source {
+    return $Devel::ptkdb::PERL_DAP_MIRROR_SOURCE
+        if defined $Devel::ptkdb::PERL_DAP_MIRROR_SOURCE;
+    return undef;
+}
+
 sub _after_set_file {
     my ($state, $caller_sub, $path, $line) = @_;
     return unless $caller_sub eq 'DB::DB';
@@ -318,28 +330,39 @@ sub install_ptkdb_mirror {
     return 1 unless $opted_in;
 
     my $version = _ptkdb_version();
-    unless (defined $version && "$version" eq PINNED_PTKDB_VERSION) {
+    unless (defined $version && "$version" eq REFERENCE_PTKDB_VERSION) {
         _diagnostic(
-            'live plugin requires Devel::ptkdb '
-                . PINNED_PTKDB_VERSION
+            'reference mirror adapter requires Devel::ptkdb '
+                . REFERENCE_PTKDB_VERSION
                 . '; observed '
                 . (defined $version ? $version : 'no loaded ptkdb version')
                 . ' -- leaving ptkdb untouched'
         );
         return 1;
     }
+    my $source = _ptkdb_source();
+    unless (defined $source && "$source" eq REFERENCE_PTKDB_SOURCE) {
+        _diagnostic(
+            'reference mirror adapter requires source marker '
+                . REFERENCE_PTKDB_SOURCE
+                . '; observed '
+                . (defined $source ? $source : 'none')
+                . ' -- leaving ptkdb untouched'
+        );
+        return 1;
+    }
     unless (defined &Devel::ptkdb::set_file) {
-        _diagnostic('pinned Devel::ptkdb set_file seam is unavailable -- leaving ptkdb untouched');
+        _diagnostic('reference ptkdb set_file seam is unavailable -- leaving ptkdb untouched');
         return 1;
     }
 
     my ($state, $error) = _connect_and_handshake(
         require_token => 1,
-        peer          => 'Devel::ptkdb mirror plugin',
-        peer_version  => PINNED_PTKDB_VERSION,
+        peer          => 'Devel::ptkdb reference mirror adapter',
+        peer_version  => REFERENCE_PTKDB_VERSION,
     );
     unless ($state) {
-        _diagnostic("live plugin disabled: $error");
+        _diagnostic("reference mirror adapter disabled: $error");
         return 1;
     }
 
@@ -375,8 +398,8 @@ sub install_ptkdb_mirror {
         $ACTIVE,
         'console',
         'Devel::ptkdb '
-            . PINNED_PTKDB_VERSION
-            . " mirror connected; reporting console/stopped/terminated only\n"
+            . REFERENCE_PTKDB_VERSION
+            . " reference mirror connected; reporting console/stopped/terminated only\n"
     );
     return 1;
 }

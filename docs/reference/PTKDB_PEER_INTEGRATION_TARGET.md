@@ -4,9 +4,10 @@ This document defines the smallest `Devel::ptkdb` partner behavior needed to
 cooperate with `perl-dap` without making ptkdb implement DAP.
 
 **Current status**: the host protocol is implemented. The repository's Perl
-reference fixture now also contains an authenticated, headless-tested
-mirror plugin substrate pinned to `Devel::ptkdb 1.1091`. Real stock-ptkdb + Tk
-partner behavior is still not proven; issue #4786 owns that live receipt.
+reference fixture now also contains an authenticated, headless-tested mirror
+adapter for an explicitly marked, ptkdb-shaped `Devel::ptkdb 1.1091` reference
+harness. This is not immutable source or distribution provenance, and it is not
+stock-ptkdb + Tk support; issue #4786 owns that live receipt.
 
 ## Product boundary
 
@@ -51,46 +52,49 @@ now has two explicit modes:
 
 - **executed directly**: the existing synthetic reference peer, useful for
   reading and exercising the wire contract without ptkdb;
-- **loaded from `.ptkdbrc`**: an experimental mirror plugin for the inspected
-  `matthewpersico/Devel-ptkdb@680b83bb0039ac04014a31f00dfe13d8ac589acd`
-  / `Devel::ptkdb 1.1091` surface.
+- **loaded from `.ptkdbrc`**: an experimental mirror adapter for an explicitly
+  marked reference harness exposing the `Devel::ptkdb 1.1091`-shaped surface.
 
 The loaded mode requires a 32-hex session token, accepts only an IPv4 loopback
 rendezvous in `mirror` mode, sends an empty capability set, and uses deadline-guarded peer I/O (with
-nonblocking sockets where the Perl platform exposes that mode). It wraps `Devel::ptkdb::set_file` while preserving the
-original method and emits `debugger/stopped` only when that method is reached
-from `DB::DB`. On the inspected source, this call occurs after ptkdb's
-`no_stop_at_start` gate and immediately before the Tk pause loop, so the event
-carries the actual file and line for a real ptkdb stop. An `END` hook emits one
-best-effort, bounded `debugger/terminated` event.
+  nonblocking sockets where the Perl platform exposes that mode). It wraps the
+  explicitly marked reference harness's `Devel::ptkdb::set_file` while preserving
+  the original method and emits `debugger/stopped` only when that method is
+  reached from `DB::DB`. An `END` hook emits one best-effort, bounded
+  `debugger/terminated` event.
 
-A `.ptkdbrc` can load the plugin by absolute path:
+A `.ptkdbrc` can load the reference adapter by absolute path, but the path is
+not pinned or authenticated:
 
 ```perl
 my $perl_dap_peer = '/absolute/path/to/minimal_ptkdb_peer.pl';
 do $perl_dap_peer or die $@ || $!;
 ```
 
-When the rendezvous variables are absent, loaded mode is a silent no-op. A
-version mismatch or malformed/authentication contract leaves ptkdb untouched
-and reports one narrow diagnostic on stderr.
+The reference harness must expose both `$Devel::ptkdb::VERSION = '1.1091'` and
+`$Devel::ptkdb::PERL_DAP_MIRROR_SOURCE =
+'perl-dap-reference-ptkdb-1.1091'`. This marker is an adapter-contract guard,
+not a cryptographic source or provenance check. When the rendezvous variables
+are absent, loaded mode is a silent no-op. A version/source mismatch or
+malformed/authentication contract leaves the harness untouched and reports one
+narrow diagnostic on stderr.
 
-The current plugin emits debugger-console connection output, real stopped
+The current adapter emits debugger-console connection output, harness stop
 locations, and termination. It does **not** yet tee debuggee stdout/stderr into
 `debugger/output`, answer inspection requests, or accept control requests.
 Those missing behaviors keep #7349 and #4786 open.
 
-The Rust integration test exercises the plugin against the real authenticated
-host backend with a pinned ptkdb-shaped harness. That proves the protocol,
-version gate, wrapper preservation, real stop-location seam, and cleanup logic.
-It is not a Tk session and therefore cannot promote stock ptkdb compatibility.
+The Rust integration test exercises the adapter against the real authenticated
+host backend with a marked ptkdb-shaped harness. That proves the protocol,
+version/source gates, wrapper preservation, harness stop seam, and cleanup
+logic. It is not a stock ptkdb or Tk session and cannot promote compatibility.
 
 ## Rendezvous environment
 
 | Variable | Meaning |
 |---|---|
 | `PERL_DAP_PEER` | Loopback `HOST:PORT` to connect to. |
-| `PERL_DAP_PEER_TOKEN` | Per-session bearer token echoed in `peer/hello`; required by the pinned plugin. |
+| `PERL_DAP_PEER_TOKEN` | Per-session bearer token echoed in `peer/hello`; required by the reference adapter. |
 | `PERL_DAP_PEER_MODE` | `mirror` for the initial integration. |
 
 The host rejects a mismatched protocol version or token. The peer must not log
@@ -113,7 +117,8 @@ The canonical schemas and examples live in:
 - [`minimal_ptkdb_peer.pl`](../../fixtures/debug-peer/perl/minimal_ptkdb_peer.pl)
 
 The fixture remains reference/experimental integration code, not bundled stock
-ptkdb code.
+ptkdb code. The absolute `.ptkdbrc` path and source marker do not establish a
+trusted distribution; do not present this adapter as safely distributable.
 
 ## Capability promotion levels
 
@@ -129,8 +134,8 @@ stopped
 terminated
 ```
 
-This is the only required first-partner level. The pinned plugin has earned the
-handshake, debugger-console output, stopped, and terminated substrate; debuggee
+This is the only required first-partner level. The marked reference adapter has
+earned the handshake, debugger-console output, stopped, and terminated substrate; debuggee
 stdout/stderr mirroring and the live Tk receipt remain open.
 
 ### Level 2 — `mirror_inspection`

@@ -74,7 +74,7 @@ fn ptkdb_docs_separate_bootstrap_host_protocol_and_live_partner_proof()
     assert!(quickstart.contains("Experimental / developer preview"));
     assert!(quickstart.contains("Stock `Devel::ptkdb` live peer"));
     assert!(quickstart.contains("Not yet proven"));
-    assert!(quickstart.contains("Pinned `Devel::ptkdb 1.1091` mirror plugin"));
+    assert!(quickstart.contains("Marked ptkdb-shaped `Devel::ptkdb 1.1091` reference adapter"));
     assert!(quickstart.contains("This is one-way setup"));
     assert!(quickstart.contains("A peer session starts with no assumed capabilities"));
 
@@ -83,8 +83,8 @@ fn ptkdb_docs_separate_bootstrap_host_protocol_and_live_partner_proof()
     assert!(target.contains("Fake-peer conformance establishes host correctness only"));
     assert!(target.contains("does **not** require ptkdb to accept editor control"));
     assert!(target.contains("ptkdb live peer experimental"));
-    assert!(target.contains("Devel::ptkdb::set_file"));
-    assert!(target.contains("cannot promote stock ptkdb compatibility"));
+    assert!(target.contains("set_file"));
+    assert!(target.contains("not a stock ptkdb or Tk session and cannot promote compatibility"));
 
     let decisions = read("docs/reference/EXTERNAL_DEBUGGER_PEER_DECISIONS.md")?;
     assert!(decisions.contains("stock ptkdb live compatibility  not proven"));
@@ -122,7 +122,7 @@ fn ptkdb_docs_do_not_reintroduce_optimistic_v1_defaults() -> Result<(), Box<dyn 
 }
 
 #[test]
-fn pinned_ptkdb_plugin_emits_real_stop_locations_without_control_capabilities()
+fn reference_ptkdb_adapter_emits_harness_stop_locations_without_control_capabilities()
 -> Result<(), Box<dyn std::error::Error>> {
     let listener = TcpListener::bind(("127.0.0.1", 0))?;
     let peer_addr = listener.local_addr()?;
@@ -131,6 +131,7 @@ fn pinned_ptkdb_plugin_emits_real_stop_locations_without_control_capabilities()
     let harness = r#"
 package Devel::ptkdb;
 our $VERSION = '1.1091';
+our $PERL_DAP_MIRROR_SOURCE = 'perl-dap-reference-ptkdb-1.1091';
 sub set_file {
     my ($self, $path, $line) = @_;
     push @main::original_calls, "$path:$line";
@@ -206,7 +207,7 @@ exit 0;
             event,
             DebugEvent::Output { category, output }
                 if *category == OutputCategory::Console
-                    && output.contains("Devel::ptkdb 1.1091 mirror connected")
+                    && output.contains("Devel::ptkdb 1.1091 reference mirror connected")
         )
     });
     assert!(console_connected, "missing plugin connection event: {events:?}");
@@ -238,12 +239,13 @@ exit 0;
 }
 
 #[test]
-fn pinned_ptkdb_plugin_rejects_unpinned_version_without_touching_ptkdb()
+fn reference_ptkdb_adapter_rejects_unpinned_version_without_touching_ptkdb()
 -> Result<(), Box<dyn std::error::Error>> {
     let plugin = repo_root().join("fixtures/debug-peer/perl/minimal_ptkdb_peer.pl");
     let harness = r#"
 package Devel::ptkdb;
 our $VERSION = '1.1090';
+our $PERL_DAP_MIRROR_SOURCE = 'perl-dap-reference-ptkdb-1.1091';
 sub set_file { return "original:$_[2]"; }
 package main;
 my $loaded = do $ENV{PTKDB_PLUGIN_UNDER_TEST};
@@ -268,7 +270,7 @@ exit 0;
     assert!(output.status.success(), "unpinned ptkdb rejection harness failed: {stderr}");
     assert!(
         stderr.contains(
-            "live plugin requires Devel::ptkdb 1.1091; observed 1.1090 -- leaving ptkdb untouched"
+            "reference mirror adapter requires Devel::ptkdb 1.1091; observed 1.1090 -- leaving ptkdb untouched"
         ),
         "missing exact-version rejection diagnostic: {stderr}"
     );
@@ -276,6 +278,104 @@ exit 0;
         !stderr.contains("cannot connect"),
         "version rejection must happen before any peer connection: {stderr}"
     );
+
+    Ok(())
+}
+
+#[test]
+fn reference_ptkdb_adapter_rejects_wrong_source_and_bad_rendezvous_without_touching_ptkdb()
+-> Result<(), Box<dyn std::error::Error>> {
+    let plugin = repo_root().join("fixtures/debug-peer/perl/minimal_ptkdb_peer.pl");
+    let harness = r#"
+package Devel::ptkdb;
+our $VERSION = '1.1091';
+our $PERL_DAP_MIRROR_SOURCE = $ENV{PTKDB_SOURCE_MARKER};
+sub set_file { return "original:$_[2]"; }
+package main;
+my $loaded = do $ENV{PTKDB_PLUGIN_UNDER_TEST};
+die "plugin load failed: " . ($@ || $!) unless $loaded;
+my $window = bless {}, 'Devel::ptkdb';
+my $value = $window->set_file('/work/rejected.pl', 13);
+die "adapter touched set_file: $value" unless $value eq 'original:13';
+exit 0;
+"#;
+
+    let cases = [
+        (
+            "wrong source",
+            "not-the-reference-source",
+            Some("127.0.0.1:1"),
+            Some(PEER_TOKEN),
+            Some("mirror"),
+            "requires source marker",
+        ),
+        (
+            "missing token",
+            "perl-dap-reference-ptkdb-1.1091",
+            Some("127.0.0.1:1"),
+            None,
+            Some("mirror"),
+            "PERL_DAP_PEER_TOKEN is required",
+        ),
+        (
+            "non-loopback peer",
+            "perl-dap-reference-ptkdb-1.1091",
+            Some("0.0.0.0:1"),
+            Some(PEER_TOKEN),
+            Some("mirror"),
+            "malformed or non-loopback",
+        ),
+        (
+            "missing peer",
+            "perl-dap-reference-ptkdb-1.1091",
+            None,
+            Some(PEER_TOKEN),
+            Some("mirror"),
+            "PERL_DAP_PEER not set",
+        ),
+    ];
+
+    for (name, source, peer, token, mode, diagnostic) in cases {
+        let mut command = Command::new("perl");
+        command
+            .arg("-e")
+            .arg(harness)
+            .env("PTKDB_PLUGIN_UNDER_TEST", &plugin)
+            .env("PTKDB_SOURCE_MARKER", source)
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped());
+        match peer {
+            Some(value) => {
+                command.env("PERL_DAP_PEER", value);
+            }
+            None => {
+                command.env_remove("PERL_DAP_PEER");
+            }
+        }
+        match token {
+            Some(value) => {
+                command.env("PERL_DAP_PEER_TOKEN", value);
+            }
+            None => {
+                command.env_remove("PERL_DAP_PEER_TOKEN");
+            }
+        }
+        match mode {
+            Some(value) => {
+                command.env("PERL_DAP_PEER_MODE", value);
+            }
+            None => {
+                command.env_remove("PERL_DAP_PEER_MODE");
+            }
+        }
+
+        let output = command.output()?;
+        let stderr = String::from_utf8(output.stderr)?;
+        assert!(output.status.success(), "{name} rejection harness failed: {stderr}");
+        assert!(stderr.contains(diagnostic), "{name} diagnostic missing: {stderr}");
+        assert!(!stderr.contains(PEER_TOKEN), "{name} leaked the peer token: {stderr}");
+        assert!(!stderr.contains("cannot connect"), "{name} reached the network: {stderr}");
+    }
 
     Ok(())
 }
@@ -294,6 +394,7 @@ fn ptkdb_plugin_survives_host_disconnect_and_later_event_write()
     let harness = r#"
 package Devel::ptkdb;
 our $VERSION = '1.1091';
+our $PERL_DAP_MIRROR_SOURCE = 'perl-dap-reference-ptkdb-1.1091';
 sub set_file { return $_[2]; }
 package DB;
 our $on = 1;
