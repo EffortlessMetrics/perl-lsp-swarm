@@ -8,9 +8,7 @@ use std::error::Error;
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 
 fn receipt_schema() -> TestResult<Value> {
-    Ok(serde_json::from_str(include_str!(
-        "../../../.ci/schemas/ux-scenario-run.schema.json"
-    ))?)
+    Ok(serde_json::from_str(include_str!("../../../.ci/schemas/ux-scenario-run.schema.json"))?)
 }
 
 fn serialized_component(component: UxComponent) -> TestResult<String> {
@@ -70,10 +68,8 @@ fn receipt_schema_preserves_explicit_null_measurement_states() -> TestResult {
     let schema = receipt_schema()?;
     let properties = &schema["properties"];
 
-    let top_level_timing = string_set(
-        &properties["time_to_first_useful_result_ms"]["type"],
-        "top-level timing type",
-    )?;
+    let top_level_timing =
+        string_set(&properties["time_to_first_useful_result_ms"]["type"], "top-level timing type")?;
     assert_eq!(
         top_level_timing,
         BTreeSet::from(["null".to_string(), "number".to_string()]),
@@ -81,8 +77,8 @@ fn receipt_schema_preserves_explicit_null_measurement_states() -> TestResult {
     );
 
     let operation_timing = string_set(
-        &properties["operation_timings"]["items"]["properties"]
-            ["time_to_first_useful_result_ms"]["type"],
+        &properties["operation_timings"]["items"]["properties"]["time_to_first_useful_result_ms"]
+            ["type"],
         "operation timing type",
     )?;
     assert_eq!(
