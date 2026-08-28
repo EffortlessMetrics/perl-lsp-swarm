@@ -1,7 +1,7 @@
 use perl_lexer::{PerlLexer, TokenType};
 use perl_parser_core::{
     ast::{Node, SourceLocation},
-    edit::{Edit, EditSet},
+    edit::EditSet,
 };
 use std::sync::Arc;
 
@@ -91,7 +91,12 @@ impl WhitespaceEditMap {
     }
 
     pub(super) fn clone_tree(&self, root: &Node) -> Node {
-        root.clone_with_mapped_locations(|location| self.map_location(location))
+        let mut cloned =
+            root.clone_with_mapped_locations(|location| self.map_location(location));
+        // Parser::parse always returns a Program rooted at the source origin.
+        // Leading trivia moves its first statement, not the Program anchor.
+        cloned.location.start = root.location.start;
+        cloned
     }
 
     fn map_location(&self, location: SourceLocation) -> SourceLocation {
@@ -199,7 +204,11 @@ fn structural_tokens_match(old_source: &str, new_source: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use perl_parser_core::{ast::NodeKind, position::Position};
+    use perl_parser_core::{
+        ast::NodeKind,
+        edit::Edit,
+        position::Position,
+    };
 
     fn edit(start: usize, old_end: usize, new_end: usize) -> Edit {
         Edit::new(
@@ -287,7 +296,7 @@ mod tests {
             NodeKind::Program { statements } => statements,
             other => return Err(format!("expected Program, got {}", other.kind_name()).into()),
         };
-        assert_eq!(mapped.location, loc(1, 5));
+        assert_eq!(mapped.location, loc(0, 5));
         assert_eq!(statements[0].location, loc(1, 2));
         assert_eq!(statements[1].location, loc(4, 5));
         Ok(())
