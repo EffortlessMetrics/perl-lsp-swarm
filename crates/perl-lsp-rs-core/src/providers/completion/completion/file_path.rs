@@ -235,16 +235,38 @@ mod tests {
 
     #[test]
     fn bare_hx_prefix_exposes_the_full_catalog_without_filesystem_fallthrough() {
+        let expected = [
+            "HX-Boosted",
+            "HX-Current-URL",
+            "HX-History-Restore-Request",
+            "HX-Location",
+            "HX-Prompt",
+            "HX-Push-Url",
+            "HX-Redirect",
+            "HX-Refresh",
+            "HX-Replace-Url",
+            "HX-Request",
+            "HX-Reselect",
+            "HX-Reswap",
+            "HX-Retarget",
+            "HX-Target",
+            "HX-Trigger",
+            "HX-Trigger-After-Settle",
+            "HX-Trigger-After-Swap",
+            "HX-Trigger-Name",
+        ];
         let context = FileCompletionContext::new("hx", 4, 6);
         let completions = complete_file_paths(&context, &|| false);
         let labels: Vec<&str> = completions.iter().map(|item| item.label.as_ref()).collect();
 
-        assert_eq!(labels.len(), 18);
-        assert!(labels.contains(&"HX-Request"));
-        assert!(labels.contains(&"HX-Trigger-After-Settle"));
+        // The exact catalog, in order, proves a result that merely appended
+        // filesystem entries to the header list cannot pass.
+        assert_eq!(labels, expected);
         assert!(
-            complete_htmx_headers(&FileCompletionContext::new("HX", 0, 2))
-                .is_some_and(|items| items.len() == 18)
+            complete_htmx_headers(&FileCompletionContext::new("HX", 0, 2)).is_some_and(
+                |items| items.iter().map(|item| item.label.as_ref()).collect::<Vec<_>>()
+                    == expected
+            )
         );
     }
 
