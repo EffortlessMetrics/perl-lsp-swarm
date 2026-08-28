@@ -7,6 +7,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 const EMACS_SUBJECT_MANIFEST: &str = ".ci/editor-clients/emacs-subjects.v1.json";
+// The manifest pins the exact upstream-source bytes and version. The pinned
+// source header's Package-Requires field supplies this audited minimum until
+// the subject schema carries source dependency metadata directly.
 const PINNED_SOURCE_MINIMUM_EMACS: &str = "29.1";
 
 #[derive(Debug)]
@@ -91,11 +94,15 @@ fn active_emacs_guide_separates_released_and_source_lsp_mode_subjects() {
         source.version
     );
     let emacs_28_release_boundary = format!(
-        "For package compatibility only, Emacs 28.1 and 28.2 can run the released {} line;",
+        "For package metadata only, Emacs 28.1 and 28.2 fall within the released {} line's declared range;",
         released.version
     );
     let stale_source_as_package = format!(
         "current `lsp-mode` {} requires Emacs {}",
+        source.version, PINNED_SOURCE_MINIMUM_EMACS
+    );
+    let stale_tested_package_line = format!(
+        "For the currently tested package line, `lsp-mode` {} requires Emacs {}.",
         source.version, PINNED_SOURCE_MINIMUM_EMACS
     );
 
@@ -124,6 +131,10 @@ fn active_emacs_guide_separates_released_and_source_lsp_mode_subjects() {
     assert!(
         !guide.contains(&stale_source_as_package),
         "the upstream-source row must not return as the unqualified current package line"
+    );
+    assert!(
+        !guide.contains(&stale_tested_package_line),
+        "the pinned source subject must not be relabeled as the currently tested package line"
     );
     assert!(
         !guide.contains(
