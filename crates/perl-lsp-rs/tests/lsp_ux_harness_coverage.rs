@@ -147,8 +147,24 @@ fn wait_for_symbol_rejects_same_file_decoy() -> Result<(), String> {
         "package Decoy;\nsub target_helper { 1 }\n1;\n",
     )])?;
     let target_uri = workspace.uri("lib/Target.pm");
+    harness.open(&target_uri, "package Decoy;\nsub target_helper { 1 }\n1;\n")?;
+    harness.wait_for_idle(Duration::from_millis(200));
 
-    let result = harness.wait_for_symbol("target", Some(&target_uri), Duration::from_millis(300));
+    let response = harness.request("workspace/symbol", json!({ "query": "target" }))?;
+    let saw_decoy = response.as_array().is_some_and(|symbols| {
+        symbols.iter().any(|symbol| {
+            symbol.get("name").and_then(|name| name.as_str()) == Some("target_helper")
+                && symbol
+                    .pointer("/location/uri")
+                    .and_then(|uri| uri.as_str())
+                    .is_some_and(|uri| uri == target_uri)
+        })
+    });
+    if !saw_decoy {
+        return Err(format!("workspace/symbol did not return the decoy response: {response}"));
+    }
+
+    let result = harness.wait_for_symbol("target", Some(&target_uri), Duration::from_secs(2));
     if result.is_ok() {
         return Err("same-file decoy must not satisfy wait_for_symbol".to_string());
     }
@@ -161,9 +177,27 @@ fn wait_for_symbol_rejects_matching_name_from_wrong_uri() -> Result<(), String> 
         ("lib/Expected.pm", "package Expected;\nsub target { 1 }\n1;\n"),
         ("lib/Other.pm", "package Other;\n1;\n"),
     ])?;
+    let expected_uri = workspace.uri("lib/Expected.pm");
     let other_uri = workspace.uri("lib/Other.pm");
+    harness.open(&expected_uri, "package Expected;\nsub target { 1 }\n1;\n")?;
+    harness.open(&other_uri, "package Other;\n1;\n")?;
+    harness.wait_for_idle(Duration::from_millis(200));
 
-    let result = harness.wait_for_symbol("target", Some(&other_uri), Duration::from_millis(300));
+    let response = harness.request("workspace/symbol", json!({ "query": "target" }))?;
+    let saw_expected = response.as_array().is_some_and(|symbols| {
+        symbols.iter().any(|symbol| {
+            symbol.get("name").and_then(|name| name.as_str()) == Some("target")
+                && symbol
+                    .pointer("/location/uri")
+                    .and_then(|uri| uri.as_str())
+                    .is_some_and(|uri| uri == expected_uri)
+        })
+    });
+    if !saw_expected {
+        return Err(format!("workspace/symbol did not return the expected response: {response}"));
+    }
+
+    let result = harness.wait_for_symbol("target", Some(&other_uri), Duration::from_secs(2));
     if result.is_ok() {
         return Err("matching name from another URI must not satisfy wait_for_symbol".to_string());
     }
