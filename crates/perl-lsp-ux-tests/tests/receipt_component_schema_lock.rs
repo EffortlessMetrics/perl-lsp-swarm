@@ -3,34 +3,36 @@
 use perl_lsp_ux_tests::UxComponent;
 use serde_json::Value;
 use std::collections::BTreeSet;
+use std::error::Error;
 
-fn receipt_schema() -> Result<Value, Box<dyn std::error::Error>> {
+type TestResult<T = ()> = Result<T, Box<dyn Error>>;
+
+fn receipt_schema() -> TestResult<Value> {
     Ok(serde_json::from_str(include_str!(
         "../../../.ci/schemas/ux-scenario-run.schema.json"
     ))?)
 }
 
-fn serialized_component(component: UxComponent) -> Result<String, Box<dyn std::error::Error>> {
+fn serialized_component(component: UxComponent) -> TestResult<String> {
     let value = serde_json::to_value(component)?;
     Ok(value.as_str().ok_or("serialized UX component must be a string")?.to_owned())
 }
 
-fn string_set(value: &Value, context: &str) -> Result<BTreeSet<String>, Box<dyn std::error::Error>> {
-    value
-        .as_array()
-        .ok_or_else(|| format!("{context} must be an array"))?
+fn string_set(value: &Value, context: &str) -> TestResult<BTreeSet<String>> {
+    let entries = value.as_array().ok_or_else(|| format!("{context} must be an array"))?;
+    Ok(entries
         .iter()
         .map(|entry| {
             entry
                 .as_str()
                 .map(str::to_owned)
-                .ok_or_else(|| format!("{context} entries must be strings").into())
+                .ok_or_else(|| format!("{context} entries must be strings"))
         })
-        .collect()
+        .collect::<Result<_, _>>()?)
 }
 
 #[test]
-fn receipt_schema_accepts_every_ux_component() -> Result<(), Box<dyn std::error::Error>> {
+fn receipt_schema_accepts_every_ux_component() -> TestResult {
     let schema = receipt_schema()?;
     let schema_components =
         string_set(&schema["properties"]["component"]["enum"], "receipt component enum")?;
@@ -64,8 +66,7 @@ fn receipt_schema_accepts_every_ux_component() -> Result<(), Box<dyn std::error:
 }
 
 #[test]
-fn receipt_schema_preserves_explicit_null_measurement_states()
--> Result<(), Box<dyn std::error::Error>> {
+fn receipt_schema_preserves_explicit_null_measurement_states() -> TestResult {
     let schema = receipt_schema()?;
     let properties = &schema["properties"];
 
