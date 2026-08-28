@@ -9,6 +9,8 @@ pub mod callable_exit;
 pub mod callable_semantic_summary;
 /// Class model for Moose/Moo/Mouse intelligence.
 pub mod class_model;
+/// Static DBIx::Class result-source extraction (#9736).
+pub mod dbix_class_result;
 /// Registry-backed Dancer2 activation-site extraction (#8914).
 pub mod dancer2_activation;
 pub mod dancer2_handler_targets;
