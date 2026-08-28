@@ -142,10 +142,6 @@ fn classify_directive(line: &str) -> Option<(PodSectionKind, String)> {
 
 #[cfg(test)]
 mod tests {
-    #![expect(
-        clippy::unwrap_used,
-        reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
-    )]
     use super::*;
     use crate::id::Digest;
 
@@ -155,9 +151,9 @@ mod tests {
     }
 
     #[test]
-    fn extracts_name_description_and_sections() {
+    fn extracts_name_description_and_sections() -> Result<(), &'static str> {
         let src = "package App;\n\n=head1 NAME\n\nApp - does things\n\n=head1 DESCRIPTION\n\nA longer description.\n\n=head2 run\n\nRuns it.\n\n=cut\n\nsub run { 1 }\n1;\n";
-        let f = facts(src).unwrap();
+        let f = facts(src).ok_or("structured POD fixture must produce facts")?;
         assert_eq!(f.name.as_deref(), Some("App - does things"));
         assert!(f.description.is_some());
         assert!(f.documented_methods.contains(&"run".to_string()), "method run documented");
@@ -166,14 +162,20 @@ mod tests {
             "NAME head1 section with range; sections={:?}",
             f.sections
         );
+        Ok(())
     }
 
     #[test]
-    fn ranges_track_real_lines() {
+    fn ranges_track_real_lines() -> Result<(), &'static str> {
         let src = "package App;\n=head1 NAME\n=cut\n1;\n";
-        let f = facts(src).unwrap();
-        let name = f.sections.iter().find(|s| s.title == "NAME").unwrap();
+        let f = facts(src).ok_or("range POD fixture must produce facts")?;
+        let name = f
+            .sections
+            .iter()
+            .find(|s| s.title == "NAME")
+            .ok_or("range POD fixture must contain NAME")?;
         assert_eq!(name.range.start_line, 1, "=head1 NAME is on line 1 (0-based)");
+        Ok(())
     }
 
     #[test]
@@ -190,13 +192,13 @@ mod tests {
     }
 
     #[test]
-    fn cut_lookalike_directive_does_not_close_pod() {
+    fn cut_lookalike_directive_does_not_close_pod() -> Result<(), &'static str> {
         // Regression: `=cutlery` (or any directive merely *prefixed* by "cut")
         // must not be mistaken for the `=cut` terminator via a starts_with
         // prefix match. Perl parses the directive as the first
         // whitespace-delimited token, so only an exact `=cut` line closes POD.
         let src = "package App;\n\n=head1 NAME\n\nApp - does things\n\n=cutlery not a real directive\n\n=head2 run\n\nRuns it.\n\n=cut\n\nsub run { 1 }\n1;\n";
-        let f = facts(src).unwrap();
+        let f = facts(src).ok_or("cut-lookalike POD fixture must produce facts")?;
         assert!(
             f.sections.iter().any(|s| s.kind == PodSectionKind::Head2 && s.title == "run"),
             "the =head2 after the =cutlery lookalike is still inside POD; sections={:?}",
@@ -206,6 +208,7 @@ mod tests {
             f.documented_methods.contains(&"run".to_string()),
             "run is still documented despite the =cutlery lookalike line"
         );
+        Ok(())
     }
 
     #[test]
