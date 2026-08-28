@@ -3099,7 +3099,7 @@ mod tests {
         let docs_receipt =
             route_receipt("origin/main", "HEAD", vec!["badges/README.md".to_string()])?;
         assert_eq!(docs_receipt.changed_surfaces, vec!["docs"]);
-        assert!(proof_pack_ids(&docs_receipt).contains(&"docs"));
+        assert!(proof_pack_ids(&docs_receipt).contains(&"docs-focused"));
         Ok(())
     }
 
