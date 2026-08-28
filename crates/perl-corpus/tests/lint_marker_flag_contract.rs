@@ -45,7 +45,7 @@ fn unknown_marker_neighbour_still_warns() -> Result<()> {
 
     ensure!(result.is_ok(), "unknown flags should remain warnings, not errors");
     ensure!(
-        result.warnings == [expected_warning],
+        result.warnings == vec![expected_warning],
         "unknown-marker control produced unexpected warnings: {:?}",
         result.warnings
     );
