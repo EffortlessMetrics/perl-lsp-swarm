@@ -596,10 +596,19 @@ fn apply_lsp_whitespace_options(content: &str, options: &FormattingOptions) -> S
         }
     }
     if options.insert_final_newline.unwrap_or(false) && !output.ends_with('\n') {
-        output.push_str(if output.contains("\r\n") { "\r\n" } else { "\n" });
+        output.push_str(inferred_line_ending(&output));
     }
 
     output
+}
+
+fn inferred_line_ending(content: &str) -> &'static str {
+    let bytes = content.as_bytes();
+    let Some(last_lf) = bytes.iter().rposition(|byte| *byte == b'\n') else {
+        return "\n";
+    };
+
+    if last_lf > 0 && bytes[last_lf - 1] == b'\r' { "\r\n" } else { "\n" }
 }
 
 fn trim_trailing_whitespace(content: &str) -> String {
