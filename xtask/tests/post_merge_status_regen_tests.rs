@@ -65,92 +65,28 @@ fn workflow_dispatch_trigger(workflow: &Value) -> bool {
     }
 }
 
+/// The dispatcher script owns the argv-level dispatch behavior proof: it
+/// models the `gh api` receiver preflight and each `gh workflow run` subject,
+/// including the missing-`expected_head_sha` negative control and the
+/// continue-on-failure accounting (#11731).
 #[cfg(unix)]
-fn assert_dispatch_loop_behavior(
-    dispatch_run: &str,
-    dispatch_order: &[String],
-    branch: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
-    use std::process::{Command, Output};
+fn run_dispatch_behavior_proof(root: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+    use std::process::Command;
 
-    let temp_dir = tempfile::tempdir()?;
-    let stub_dir = temp_dir.path().join("bin");
-    fs::create_dir(&stub_dir)?;
-    let stub_gh = stub_dir.join("gh");
-    fs::write(
-        &stub_gh,
-        "#!/usr/bin/env bash\n\
-         printf '%s|%s|%s|%s|%s\\n' \"$1\" \"$2\" \"$3\" \"$4\" \"$5\" >> \"$GH_LOG\"\n\
-         if [ \"$#\" -ne 5 ]; then exit 2; fi\n\
-         if [ \"${FAIL_WORKFLOW:-}\" = \"$3\" ]; then exit 1; fi\n",
-    )?;
-    use std::os::unix::fs::PermissionsExt;
-    let mut permissions = fs::metadata(&stub_gh)?.permissions();
-    permissions.set_mode(0o755);
-    fs::set_permissions(&stub_gh, permissions)?;
-    let simulation_run =
-        dispatch_run.replacen("gh workflow run", &format!("{} workflow run", stub_gh.display()), 1);
-    assert_ne!(simulation_run, dispatch_run, "dispatch step must invoke gh workflow run");
-
-    let run_dispatch = |fail_workflow: Option<&str>, log_name: &str| {
-        let log_path = temp_dir.path().join(log_name);
-        let existing_path = std::env::var_os("PATH").unwrap_or_default();
-        let path = std::env::join_paths(
-            std::iter::once(stub_dir.clone()).chain(std::env::split_paths(&existing_path)),
-        )?;
-        let mut command = Command::new("/bin/bash");
-        command
-            .arg("-c")
-            .arg(&simulation_run)
-            .env("PATH", path)
-            .env("BRANCH", branch)
-            .env("GH_LOG", &log_path);
-        if let Some(fail_workflow) = fail_workflow {
-            command.env("FAIL_WORKFLOW", fail_workflow);
-        } else {
-            command.env_remove("FAIL_WORKFLOW");
-        }
-        let output: Output = command.output().map_err(|error| {
-            format!("failed to execute dispatch shell for {}: {error}", log_path.display())
-        })?;
-        let calls = fs::read_to_string(&log_path)
-            .map_err(|error| {
-                format!(
-                    "failed to read {}: {error}; stdout={}; stderr={}",
-                    log_path.display(),
-                    String::from_utf8_lossy(&output.stdout),
-                    String::from_utf8_lossy(&output.stderr)
-                )
-            })?
-            .lines()
-            .map(str::to_owned)
-            .collect::<Vec<_>>();
-        Ok::<_, Box<dyn std::error::Error>>((output, calls))
-    };
-
-    let (success_output, success_calls) = run_dispatch(None, "all-success.log")?;
+    let script = root.join("scripts/tests/test-post-merge-status-dispatch.sh");
+    let output = Command::new("bash")
+        .arg(&script)
+        .current_dir(root)
+        .output()
+        .map_err(|error| format!("failed to execute {}: {error}", script.display()))?;
     assert!(
-        success_output.status.success(),
-        "all-success dispatch run failed: {}",
-        String::from_utf8_lossy(&success_output.stderr)
-    );
-    let expected_calls = dispatch_order
-        .iter()
-        .map(|workflow| format!("workflow|run|{workflow}|--ref|{branch}"))
-        .collect::<Vec<_>>();
-    assert_eq!(success_calls, expected_calls, "all required dispatches must run in workflow order");
-
-    let first_workflow = dispatch_order.first().ok_or("required workflow set must not be empty")?;
-    let (failure_output, failure_calls) = run_dispatch(Some(first_workflow), "first-failure.log")?;
-    assert!(!failure_output.status.success(), "a failed dispatch must fail the step");
-    assert_eq!(
-        failure_calls, expected_calls,
-        "a failed dispatch must not skip later required workflows"
+        output.status.success(),
+        "dispatch behavior proof failed: {}",
+        String::from_utf8_lossy(&output.stderr)
     );
 
     Ok(())
 }
-
 fn project_root() -> PathBuf {
     // Walk up from the manifest directory to the workspace root.
     let mut dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -322,20 +258,29 @@ fn test_post_merge_workflow_dispatches_all_required_checks()
         .get("run")
         .and_then(Value::as_str)
         .ok_or("generated-PR dispatch step must define a shell body")?;
-    let dispatch_branch = dispatch_step
+    assert_eq!(
+        dispatch_run.trim(),
+        "bash scripts/ci/dispatch-post-merge-status.sh",
+        "generated-PR dispatch step must delegate to the shared dispatcher script"
+    );
+
+    // The dispatcher binds the generated PR head, its ref, and the expected
+    // automation branch through the step environment; the receiver-side
+    // entry guards reject unbound or moved heads.
+    let step_env = dispatch_step
         .get("env")
         .and_then(Value::as_mapping)
-        .and_then(|env| {
-            env.iter().find_map(|(key, value)| match key {
-                Value::String(key) if key == "BRANCH" => value.as_str(),
-                _ => None,
-            })
-        })
-        .ok_or("generated-PR dispatch step must define BRANCH")?;
-    assert_eq!(
-        dispatch_branch, "automation/post-merge-status",
-        "generated-PR dispatch must target its automation branch"
-    );
+        .ok_or("generated-PR dispatch step must define its dispatch environment")?;
+    let env_keys: Vec<String> =
+        step_env.keys().filter_map(|key| key.as_str().map(str::to_owned)).collect();
+    for required_key in
+        ["GH_TOKEN", "GENERATED_HEAD_SHA", "GENERATED_HEAD_REF", "EXPECTED_HEAD_REF"]
+    {
+        assert!(
+            env_keys.iter().any(|key| key == required_key),
+            "generated-PR dispatch environment must bind {required_key}"
+        );
+    }
 
     let policy_path = root.join(".ci/policies/required-checks.toml");
     let policy_text = fs::read_to_string(policy_path)?;
@@ -346,16 +291,19 @@ fn test_post_merge_workflow_dispatches_all_required_checks()
         "required-checks.toml must declare at least one required workflow"
     );
 
-    let dispatch_start = dispatch_run
+    // The dispatcher script owns the dispatch loop and its argv contract; the
+    // dispatched set must still equal the required-check set.
+    let dispatcher_path = root.join("scripts/ci/dispatch-post-merge-status.sh");
+    let dispatcher_text = fs::read_to_string(&dispatcher_path)?;
+    let dispatch_start = dispatcher_text
         .split_once("for workflow in")
         .map(|(_, remainder)| remainder)
-        .ok_or("dispatch step must iterate over workflow names")?;
+        .ok_or("dispatcher must iterate over the required workflow names")?;
     let (dispatch_names, _) = dispatch_start
         .split_once("; do")
-        .ok_or("dispatch workflow loop must use a shell `; do` delimiter")?;
-    let dispatch_order: Vec<String> =
+        .ok_or("dispatcher workflow loop must use a shell `; do` delimiter")?;
+    let dispatched_workflows: BTreeSet<String> =
         dispatch_names.split_whitespace().map(str::to_owned).collect();
-    let dispatched_workflows: BTreeSet<String> = dispatch_order.iter().cloned().collect();
     assert_eq!(
         dispatched_workflows, required_workflows,
         "generated-PR dispatch set must equal the unique workflow paths for required checks"
@@ -370,14 +318,18 @@ fn test_post_merge_workflow_dispatches_all_required_checks()
         );
     }
     assert!(
-        dispatch_run.contains("set +e")
-            && dispatch_run.contains("failed=1")
-            && dispatch_run.contains("exit \"$failed\""),
-        "generated-PR dispatch step must continue after an individual failure and fail overall"
+        dispatcher_text.contains("set +e")
+            && dispatcher_text.contains("failed=1")
+            && dispatcher_text.contains("exit \"$failed\""),
+        "dispatcher must continue after an individual failure and fail overall"
+    );
+    assert!(
+        dispatcher_text.contains("expected_head_sha=$GENERATED_HEAD_SHA"),
+        "dispatcher must bind the receiver-side expected_head_sha guard on every dispatch"
     );
 
     #[cfg(unix)]
-    assert_dispatch_loop_behavior(dispatch_run, &dispatch_order, dispatch_branch)?;
+    run_dispatch_behavior_proof(&root)?;
 
     Ok(())
 }
