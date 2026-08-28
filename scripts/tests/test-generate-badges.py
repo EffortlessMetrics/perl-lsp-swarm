@@ -381,14 +381,28 @@ class GenerateBadgesTests(unittest.TestCase):
             env = self.fake_env(root, fake, {"counts": VALID_COUNTS})
             env["FAKE_RIPR_SPAWN_CHILD"] = "1"
             env["FAKE_RIPR_HANG"] = "1"
+            child_pid_file = root / "ripr-child.pid"
+            real_monotonic = time.monotonic
+            wall_start = real_monotonic()
+            logical_start = wall_start
+
+            def containment_clock():
+                if child_pid_file.is_file() or real_monotonic() - wall_start >= 10:
+                    return logical_start + 31
+                return logical_start
+
             previous = os.environ.copy()
             os.environ.update(env)
             try:
-                with self.assertRaisesRegex(RuntimeError, "process tree was terminated"):
-                    generator.generate(root, check=False, ripr_timeout_seconds=0.5)
+                with mock.patch.object(
+                    generator.time, "monotonic", side_effect=containment_clock
+                ):
+                    with self.assertRaisesRegex(RuntimeError, "process tree was terminated"):
+                        generator.generate(root, check=False, ripr_timeout_seconds=30)
             finally:
                 os.environ.clear()
                 os.environ.update(previous)
+            self.assertTrue(child_pid_file.is_file(), "fake RIPR child was not observed")
             self.assert_fake_child_stopped(root, "timed-out")
 
     def assert_fake_child_stopped(self, root: Path, reason: str):
