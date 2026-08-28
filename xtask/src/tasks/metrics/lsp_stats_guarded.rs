@@ -193,7 +193,7 @@ fn looks_like_ux_scenario_run(value: &Value) -> bool {
 
     has_identity
         || (signature_fields.len() >= 2 && has_distinctive)
-        || (signature_fields.len() == 1 && malformed_marker(object, signature_fields[0]))
+        || signature_fields.iter().any(|field| malformed_marker(object, field))
 }
 
 fn malformed_marker(object: &serde_json::Map<String, Value>, marker: &str) -> bool {
@@ -347,6 +347,25 @@ mod tests {
         let error = validation_error(
             validate_scorecard_inputs(&receipts, &matrix, &checked_in_receipt_schema()),
             "one-marker malformed UX receipt unexpectedly passed",
+        )?;
+        assert!(format!("{error:#}").contains("unsupported or malformed kind"));
+        Ok(())
+    }
+
+    #[test]
+    fn malformed_duration_with_valid_result_fails_closed() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let receipts = temp.path().join("receipts");
+        fs::create_dir_all(&receipts)?;
+        fs::write(
+            receipts.join("malformed-duration.json"),
+            r#"{"result":"pass","duration_ms":"not-a-number"}"#,
+        )?;
+        let matrix = write_matrix(temp.path(), &[("known", "known.rs")])?;
+
+        let error = validation_error(
+            validate_scorecard_inputs(&receipts, &matrix, &checked_in_receipt_schema()),
+            "receipt-shaped JSON with a valid result and invalid duration unexpectedly passed",
         )?;
         assert!(format!("{error:#}").contains("unsupported or malformed kind"));
         Ok(())
@@ -509,6 +528,40 @@ mod tests {
 
         assert_eq!(workflow.pass_rate.state, "measured");
         assert_eq!(workflow.pass_rate.value, Some(1.0));
+        Ok(())
+    }
+
+    #[test]
+    fn null_failure_class_is_rejected_for_non_passing_results() -> Result<()> {
+        let fixture_matrix = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("crates/perl-lsp-ux-tests/fixtures/editor_ux_fixture_matrix.json");
+
+        for result in ["fail", "quarantined", "skipped"] {
+            let temp = tempfile::tempdir()?;
+            let receipts = temp.path().join("receipts");
+            fs::create_dir_all(&receipts)?;
+            let path = write_receipt(
+                &receipts,
+                &format!("null-failure-class-{result}.json"),
+                "simple_file_smoke",
+                "ux_scenario_01_simple_file.rs",
+            )?;
+            let mut value: Value = serde_json::from_str(&fs::read_to_string(&path)?)?;
+            value["result"] = Value::String(result.to_owned());
+            value["failure_class"] = Value::Null;
+            if result == "skipped" {
+                value["skip_reason"] = Value::String("test skip".to_owned());
+            }
+            fs::write(&path, serde_json::to_string_pretty(&value)?)?;
+
+            let error = validation_error(
+                aggregate_from_receipts(&receipts, &fixture_matrix, None).map(|_| ()),
+                &format!("{result} receipt with null failure_class unexpectedly passed"),
+            )?;
+            assert!(format!("{error:#}").contains("invalid UX scenario receipt"));
+        }
+
         Ok(())
     }
 

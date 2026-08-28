@@ -233,6 +233,43 @@
           "skip_reason"
         ]
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "result": {
+            "enum": [
+              "fail",
+              "quarantined",
+              "skipped"
+            ]
+          }
+        },
+        "required": [
+          "result"
+        ]
+      },
+      "then": {
+        "required": [
+          "failure_class"
+        ],
+        "properties": {
+          "failure_class": {
+            "type": "string",
+            "enum": [
+              "provider_regression",
+              "server_crash",
+              "timeout",
+              "test_race",
+              "infra",
+              "matrix_drift",
+              "baseline_drift",
+              "new_test_bug",
+              "unknown"
+            ]
+          }
+        }
+      }
     }
   ],
   "additionalProperties": false
