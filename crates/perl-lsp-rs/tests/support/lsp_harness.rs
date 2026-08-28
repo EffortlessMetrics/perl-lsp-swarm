@@ -66,6 +66,10 @@ fn uri_matches(expected: &str, actual: &str) -> bool {
 }
 
 fn workspace_symbol_name_matches(query: &str, actual: &str) -> bool {
+    if actual == query {
+        return true;
+    }
+
     let leaf = actual.rsplit("::").next().unwrap_or(actual);
     if leaf == query {
         return true;
