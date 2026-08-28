@@ -7,11 +7,8 @@
 use std::{collections::BTreeSet, fs, path::PathBuf};
 
 const MATRIX_PATH: &str = "docs/specs/lsp-318-conformance-matrix.md";
-const CLOSED_STATUSES: &[&str] = &[
-    "implemented+tested+documented",
-    "negative-gated+documented",
-    "not-applicable+documented",
-];
+const CLOSED_STATUSES: &[&str] =
+    &["implemented+tested+documented", "negative-gated+documented", "not-applicable+documented"];
 
 const EXPECTED_CHANGELOG_IDS: &[&str] = &[
     "inline_completions",
@@ -157,8 +154,7 @@ fn row_cells<'a>(matrix: &'a str, feature: &str) -> Result<Vec<&'a str>, String>
 }
 
 #[test]
-fn official_lsp_318_changelog_is_totally_classified()
--> Result<(), Box<dyn std::error::Error>> {
+fn official_lsp_318_changelog_is_totally_classified() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(
         OFFICIAL_CHANGELOG_SURFACES.len(),
         14,
@@ -171,11 +167,7 @@ fn official_lsp_318_changelog_is_totally_classified()
     let expected_ids: BTreeSet<_> = EXPECTED_CHANGELOG_IDS.iter().copied().collect();
 
     for surface in OFFICIAL_CHANGELOG_SURFACES {
-        assert!(
-            ids.insert(surface.id),
-            "duplicate official LSP 3.18 changelog id: {}",
-            surface.id
-        );
+        assert!(ids.insert(surface.id), "duplicate official LSP 3.18 changelog id: {}", surface.id);
         assert!(
             !surface.row_markers.is_empty(),
             "official LSP 3.18 changelog surface `{}` has no matrix classification",
@@ -209,8 +201,7 @@ fn official_lsp_318_changelog_is_totally_classified()
 }
 
 #[test]
-fn every_lsp_318_matrix_row_uses_a_closed_status()
--> Result<(), Box<dyn std::error::Error>> {
+fn every_lsp_318_matrix_row_uses_a_closed_status() -> Result<(), Box<dyn std::error::Error>> {
     let matrix = fs::read_to_string(project_root().join(MATRIX_PATH))?;
     let mut checked_rows = 0_usize;
 
