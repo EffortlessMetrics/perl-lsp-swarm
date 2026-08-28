@@ -1,7 +1,7 @@
 # Checklist: #10302 production-path formatter performance receipt
 
 Base pin: `origin/main@a9664af790888333efbe50a042fa060f3cc2d171` (2026-08-28).
-Candidate head: `943fed849676f0c9cb9bf9757e60eb1adfb836e6` (PR #13190).
+Candidate head: `3ed2da0a25f5bb7e96b1fde782ce0e5c15a74417` (PR #13190).
 Composition sibling: #10301 fuzz/property spec
 (`.spec/10301-formatter-property-fuzz-harness/`) — disjoint file set.
 PR #13190 delivers a bounded runtime-counter and benchmark-enrollment slice.
@@ -58,14 +58,13 @@ Planned surface:
       fresh collector keyed to exactly one run + subject, snapshots before
       reuse, and shares no collector across concurrent requests. Default live
       providers have no collector
-- [ ] Add monotonic `NativePipelineClock`: production `Instant` adapter plus
-      deterministic fake clock. Hook the owning production seams for
-      `source_parse_elapsed_ns`, `render_elapsed_ns`,
+- [ ] Future per-stage timing contract remains `NOT_PROVEN`: add a monotonic
+      `NativePipelineClock`, production `Instant` adapter, deterministic fake
+      clock, and hooks for `source_parse_elapsed_ns`, `render_elapsed_ns`,
       `formatted_parse_elapsed_ns`, `edit_derivation_elapsed_ns`,
-      `classification_elapsed_ns`, and `total_elapsed_ns`. Successful/no-change
-      full-path rows require independently attributed positive values; skipped
-      refusal stages record explicit `not_executed`. Fixture/mutants reject
-      absent, zeroed, copied, or collapsed stage values. Timing stays advisory
+      `classification_elapsed_ns`, and `total_elapsed_ns`. The current slice
+      records only aggregate advisory `elapsed`; it must not be treated as
+      per-stage proof. Timing stays advisory
 - [ ] `crates/perl-lsp-perltidy/Cargo.toml`: additive criterion dev-dep +
       `[[bench]] name = "native_pipeline_benchmark" harness = false`
 - [ ] `crates/perl-lsp-perltidy/benches/native_pipeline_benchmark.rs` +
@@ -119,13 +118,15 @@ Planned surface:
 - [ ] `crates/perl-lsp-perltidy/tests/native_pipeline_counters_tests.rs`:
       NPC-001..NPC-006 + NPC-010 pipeline/parse canaries incl. detector sanity
       control and the early-refusal disposition table
-- [ ] `crates/perl-lsp-rs-core/tests/native_pipeline_invocation_tests.rs`:
-      construct the public provider with a request-local collector, drive
-      `format_document_decision` / `format_range_decision`, prove exactly one
-      private typed call, and pin Off/invalid-range `0/0/0`, typed-preserve
-      `1/0/0`, source-refusal `1/1/0`, and success `1/1/1` vectors; do not claim the currently unreachable
-      formatted-output-refusal vector or this adapter property from
-      perltidy-only tests
+- [ ] Complete provider vector proof remains `NOT_PROVEN`. The current
+      provider-facing subset is in
+      `crates/perl-lsp-perltidy/tests/native_pipeline_counters_tests.rs`:
+      `document_request_parses_exactly_once` and
+      `range_request_parses_exactly_once`. A dedicated
+      `crates/perl-lsp-rs-core/tests/native_pipeline_invocation_tests.rs`
+      artifact does not exist in this candidate; do not claim the absent
+      Off/invalid-range/typed-preserve matrix or the unreachable
+      formatted-output-refusal vector
 - [ ] `.github/workflows/ci-nightly.yml`: one `BENCH_TARGETS` entry
       `"perl-lsp-perltidy:native_pipeline_benchmark:"`; target identity is
       `perl-lsp-perltidy:native_pipeline_benchmark`, and the trailing
@@ -168,7 +169,6 @@ cargo clippy -p perl-lsp-perltidy -p perl-lsp-rs-core --all-targets --locked -- 
 cargo test -p perl-lsp-perltidy --all-targets --locked
 cargo test -p perl-lsp-rs-core --all-targets --locked
 cargo test -p perl-lsp-perltidy --test native_pipeline_counters_tests --locked -- --test-threads=1
-cargo test -p perl-lsp-rs-core --test native_pipeline_invocation_tests --locked
 cargo-allow check --mode no-new
 export NATIVE_PIPELINE_RUN_ID="${GITHUB_RUN_ID:-local}-$(git rev-parse HEAD)-$(date +%s)"
 rm -f target/criterion/native-pipeline-measurements.v1.json

@@ -2,11 +2,11 @@
 
 ## Problem
 
-The nightly benchmark program measures 14 declared Criterion targets across
-nine crates (`ci-nightly.yml` `BENCH_TARGETS`), and **none of them touches
-the formatter**: `crates/perl-lsp-perltidy` has no `[[bench]]` target, no
-criterion dev-dependency, and its sources contain zero counters/metrics/
-stats structures (tree-wide grep on the base pin: no hits). The production
+The current candidate's nightly benchmark program enumerates 15 declared
+Criterion targets across the workspace (`ci-nightly.yml` `BENCH_TARGETS`),
+including `perl-lsp-perltidy:native_pipeline_benchmark:`. The earlier base
+comparison had 14 targets and no formatter bench; that is historical baseline
+context, not the candidate's current workflow state. The production
 native path — source → parse gate
 (`NativeFormatter::validate_clean_parse`, `Parser::parse_with_recovery`) →
 safe-subset line/delimited rendering → edit derivation → typed
@@ -18,19 +18,19 @@ variance, adapter double-invocation, helper-only benchmarking). Installed
 first-useful journeys record end-to-end latency only and cannot localize a
 regression.
 
-## Governing evidence (2026-08-27, origin/main@e6e956461534b2566c735696f289e0915e2cb189)
+## Governing evidence (2026-08-28, origin/main@a9664af790888333efbe50a042fa060f3cc2d171; candidate head 3ed2da0a25f5bb7e96b1fde782ce0e5c15a74417)
 
 - Production seams to pin invocation counts against:
   `crates/perl-lsp-rs-core/src/providers/formatting/formatting.rs`
   `native_document_decision` definition (:249; one
   `format_document_typed` call at :257) and `native_range_decision`
   definition (:262; one `format_range_typed` call at :273) per native LSP
-  request. Provider single-invocation proof lives in
-  `crates/perl-lsp-rs-core/tests/native_pipeline_invocation_tests.rs`, driving
-  public `format_document_decision` / `format_range_decision` with one
-  request-local collector handle so a duplicate private typed call is
-  observable; a perltidy-only
-  test cannot establish adapter call count. Vector order is always
+  request. The provider-facing counted subset is proven in
+  `crates/perl-lsp-perltidy/tests/native_pipeline_counters_tests.rs` by
+  `document_request_parses_exactly_once` and
+  `range_request_parses_exactly_once`, which drive the public decision methods.
+  The complete provider vector matrix is `NOT_PROVEN`; no dedicated
+  `perl-lsp-rs-core` invocation-test artifact exists in this candidate. Vector order is always
   `(pipeline_invocations, source_parse_gate_invocations,
   formatted_output_parse_gate_invocations)`: Off and public invalid range
   `0/0/0`; typed literal-preserve refusal `1/0/0`; source-parse refusal
@@ -89,16 +89,11 @@ evidence:
    plus distinctly attributed source and formatted-output parse-gate
    invocations, tokens/nodes observed by each gate, lines processed,
    delimited groups fitted, edits derived, output/replacement bytes, peak
-   depth, and elapsed fields under monotonic `NativePipelineClock`. Its
-   production adapter uses `Instant`; tests use a deterministic fake clock.
-   Owning source-parse, render, formatted-parse, edit-derivation,
-   classification, and total seams record `source_parse_elapsed_ns`,
-   `render_elapsed_ns`, `formatted_parse_elapsed_ns`,
-   `edit_derivation_elapsed_ns`, `classification_elapsed_ns`, and
-   `total_elapsed_ns` independently. Successful/no-change full-path rows
-   require positive independently attributed fields; skipped refusal stages
-   use explicit `not_executed`. Fake-clock fixtures and mutants reject absent,
-   zeroed, copied, or collapsed values. Timing remains advisory — extending
+   depth, and one aggregate advisory `elapsed` field under `Instant`.
+   The proposed `NativePipelineClock`, deterministic fake clock, named
+   per-stage elapsed fields, and independent stage attribution are not present
+   in the candidate and remain `NOT_PROVEN`; aggregate elapsed must not be
+   presented as those fields. Timing remains advisory — extending
    `FormatChangeSummary`'s precedent rather than inventing a parallel
    formatter. In the fixed `(pipeline_invocations,
    source_parse_gate_invocations, formatted_output_parse_gate_invocations)`
@@ -108,10 +103,12 @@ evidence:
    canaries reject a duplicated private typed call, a skipped successful gate,
    or a collapsed refusal table. Formatted-output refusal remains
    `NOT_PROVEN` because its defensive branch is currently unreachable.
-   Provider tests live in
-   `crates/perl-lsp-rs-core/tests/native_pipeline_invocation_tests.rs` and
-   drive the public decision methods with a request-local collector; the perltidy
-   canaries own only pipeline-internal attribution. Benches live in
+   Provider-facing counted tests live in
+   `crates/perl-lsp-perltidy/tests/native_pipeline_counters_tests.rs` as
+   `document_request_parses_exactly_once` and
+   `range_request_parses_exactly_once`; a dedicated `perl-lsp-rs-core`
+   invocation-test artifact and the complete vector matrix remain
+   `NOT_PROVEN`. Benches live in
    `crates/perl-lsp-perltidy/benches/native_pipeline_benchmark.rs`
    over a checked-in authoritative registry keyed by canonical Criterion ID.
    Its completeness test covers every named #10302 member:
@@ -225,23 +222,23 @@ work, never by relaxing bounds.
 
 ## Claim boundary
 
-This PR is a docs-only contract repair. #10302 remains open/blocked; none of
-the planned benchmark, counter, allocator, receipt, or hosted-workflow runtime
-surfaces is delivered or proven here. The future implementation is a
-measurement-only claim: no formatter algorithm rewrite, no production
-telemetry, no execution of Perl, no release/publication surface. Counters
-are operation-scoped additive hooks on the native formatter and provider;
-behavior when the optional collector is unset (all current callers, tests,
-goldens) is byte-identical. The counting allocator exists only in the benchmark
-executable. Derived-byte proof is limited to output growth and never claims
-allocation count/bytes/peak.
+PR #13190 is a bounded runtime-counter and benchmark-enrollment candidate;
+#10302 remains open/blocked. The candidate delivers operation-scoped counters,
+aggregate advisory elapsed, subject identity, and benchmark enrollment, but does
+not prove per-stage timing, the complete provider vector matrix, allocation
+count/bytes/peak, strict registry/sidecar validation, the full #10302 matrix, or
+release-tier evidence. Those boundaries remain `NOT_PROVEN`. There is no
+formatter algorithm rewrite, Perl execution, or release/publication surface;
+unset collectors remain byte-identical for current callers and goldens.
+Derived-byte proof is limited to output growth and never claims allocation
+count/bytes/peak.
 
 ## Composition
 
 Sibling spec `.spec/10301-formatter-property-fuzz-harness/` shares only
 subject vocabulary; file sets are disjoint (this claim: `benches/`,
 additive `src/native/` counter plumbing, crate `Cargo.toml` dev-dep,
-provider proof in `crates/perl-lsp-rs-core/tests/native_pipeline_invocation_tests.rs`,
+provider-facing counted proof in `crates/perl-lsp-perltidy/tests/native_pipeline_counters_tests.rs`,
 provider collector forwarding, checked-in subject registry, runtime
 measurement sidecar schema, benchmark-only allocation tracker,
 extractor/formatter receipt-schema fixtures and three-way join,
