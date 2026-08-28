@@ -33,6 +33,8 @@
     "--doctor",
     "--json",
     "--completion",
+    "--critic-compatibility",
+    "--external-tools",
     "--features-json",
     "--perltidy-compat-report",
     "--perlcritic-compat-report",
