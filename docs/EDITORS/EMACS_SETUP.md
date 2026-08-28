@@ -5,8 +5,7 @@ This guide shows how to use `perllsp` from Emacs.
 ## Recommended Support Posture
 
 - **Primary path:** Eglot, especially on Emacs 29 or later
-- **Alternative path:** `lsp-mode`, for users already using that stack; current
-  `lsp-mode` 10.0.1 requires Emacs 29.1
+- **Alternative path:** manual `lsp-mode` registration for users already using that stack
 
 Both clients launch the same server command:
 
@@ -20,10 +19,18 @@ perllsp --stdio
 - `perllsp` installed and available to Emacs
 - A Perl project opened from the project root
 
-Emacs 29 includes Eglot. If you use an older Emacs release, choose an Eglot or
-`lsp-mode` release that explicitly supports that Emacs version, or upgrade
-Emacs. In particular, current `lsp-mode` 10.0.1 requires Emacs 29.1 and is not
-a drop-in path for Emacs 28.
+Emacs 29 includes Eglot. The repository's checked `lsp-mode` subjects are
+deliberately separate:
+
+- Released MELPA Stable `lsp-mode` 10.0.0 declares Emacs 28.1 or later.
+- The pinned upstream-source subject reports `lsp-mode` 10.0.1 and declares
+  Emacs 29.1 or later.
+
+The source header is not a released `lsp-mode` 10.0.1 package. For package
+compatibility only, Emacs 28.1 and 28.2 can run the released 10.0.0 line; Emacs
+27 and older need an explicitly compatible historical client or an Emacs
+upgrade. These package metadata bounds do not by themselves prove the complete
+`perllsp` client journey.
 
 Install `perllsp` using the project installation guide or README.
 
@@ -171,8 +178,14 @@ built-in include paths are `lib`, `.`, and `local/lib/perl5`.
 
 Use this path if you already prefer `lsp-mode`. Current stock `lsp-mode` does
 not yet ship a built-in `perllsp` client, so the manual client registration
-below is the current documented setup path. For the currently tested package
-line, `lsp-mode` 10.0.1 requires Emacs 29.1.
+below is the current documented setup path.
+
+Keep the checked package identities separate: released MELPA Stable `lsp-mode`
+10.0.0 declares Emacs 28.1 or later, while the pinned upstream-source 10.0.1
+subject declares Emacs 29.1 or later. Do not treat the source header as a
+released package or apply its minimum retroactively to the released 10.0.0
+package. Both subjects still use the manual registration below; neither row is
+an actual-client support claim by itself.
 
 ```elisp
 (use-package lsp-mode
