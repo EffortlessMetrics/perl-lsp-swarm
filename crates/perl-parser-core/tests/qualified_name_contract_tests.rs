@@ -32,18 +32,12 @@ fn reports_exact_failure_identity_and_segment_index() {
 fn renders_actionable_failure_messages() {
     let cases = [
         (QualifiedNameError::EmptyName, "name is empty"),
-        (
-            QualifiedNameError::LeadingSigil('$'),
-            "qualified name cannot start with sigil '$'",
-        ),
+        (QualifiedNameError::LeadingSigil('$'), "qualified name cannot start with sigil '$'"),
         (
             QualifiedNameError::EmptySegment { index: 2 },
             "segment 2 is empty (leading/trailing/double separator)",
         ),
-        (
-            QualifiedNameError::InvalidSegment { index: 3 },
-            "segment 3 is not a valid identifier",
-        ),
+        (QualifiedNameError::InvalidSegment { index: 3 }, "segment 3 is not a valid identifier"),
     ];
 
     for (error, expected) in cases {
@@ -53,10 +47,7 @@ fn renders_actionable_failure_messages() {
 
 #[test]
 fn splits_at_the_final_package_separator_without_validating() {
-    assert_eq!(
-        split_qualified_name("Foo::Bar::baz"),
-        (Some("Foo::Bar"), "baz")
-    );
+    assert_eq!(split_qualified_name("Foo::Bar::baz"), (Some("Foo::Bar"), "baz"));
     assert_eq!(split_qualified_name("::Foo"), (Some(""), "Foo"));
     assert_eq!(split_qualified_name("Foo::"), (Some("Foo"), ""));
     assert_eq!(container_name("Foo::Bar::baz"), Some("Foo::Bar"));
@@ -69,9 +60,6 @@ fn distinguishes_identifier_start_and_continuation_rules() {
     }
 
     for invalid in ["9name", "name-with-dash", "name with space", "$name", "Foo::Bar"] {
-        assert!(
-            !is_valid_identifier_part(invalid),
-            "expected {invalid:?} to be invalid"
-        );
+        assert!(!is_valid_identifier_part(invalid), "expected {invalid:?} to be invalid");
     }
 }
