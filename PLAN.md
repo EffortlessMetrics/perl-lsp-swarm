@@ -145,25 +145,34 @@ claim-row table and require an exact-one disposition in the future join data:
    `volatile_metadata`, `adjacent_product`, or `non_install_dependency`).
 
 The validator rejects an unknown ID, duplicate disposition, missing ID, range
-shorthand, or exclusion reason not in that closed vocabulary. Restatement rows
-may project to the same route only when their exact IDs are independently listed;
-they do not expand the denominator. The accepted join must explicitly dispose of
+shorthand, or exclusion reason not in that closed vocabulary. Claim kind is also
+validated: `channel_rule` is valid only for channel-independence claims,
+`diagnostic_surface` only for diagnostic advice, `verification_metadata` only for
+verification-only rows, `volatile_metadata` only for volatile metadata,
+`adjacent_product` only for adjacent products, and `non_install_dependency` only
+for non-install dependencies. A channel-specific acquisition claim must project
+to that channel's exact catalog route and compatible projection context. Therefore
+C1208 (Open VSX) must project to an Open VSX route in an Open VSX-compatible
+marketplace context; it cannot be excluded as a `channel_rule`, or by any other
+reason incompatible with its claim kind. This prevents arbitrary exclusions from
+hiding route-relevant claims. The accepted join must explicitly dispose of
 currently unlisted rows such as C107, C108, C1205, and C1208: generic-client and
 Open VSX rows must be projected when route-relevant, while non-install dependency
-or metadata rows may be excluded only with an allowed explicit reason. Open VSX
-(C1208) must not disappear merely because it is a separate channel. The same exact-once
-rule applies to FND-1 through FND-12: each finding must be joined to a route,
-recorded as a route-independent constraint, or explicitly excluded with a reason.
-This oracle is the acceptance condition for inventory traceability; the 70-row
-prose count and the planning-family table are not substitutes for it.
+or metadata rows may be excluded only with a compatible explicit reason. The same
+exact-once rule applies to FND-1 through FND-12: each finding must be joined to a
+route, recorded as a route-independent constraint, or explicitly excluded with a
+compatible reason. This oracle is the acceptance condition for inventory
+traceability; the 70-row prose count and the planning-family table are not
+substitutes for it.
 
 For the six rows raised by review, the provisional ledger disposition is literal:
 C107 → `project(generic-client PATH, generic-client editor context)`;
 C108 → `exclude(non_install_dependency, external formatting/critic tools)`;
 C201 → `exclude(channel_rule, channel-independence frame)`;
-C202 → `project(VS Code Marketplace / Open VSX or source-local, fastest-path
-context)`; C1205 → `exclude(non_install_dependency, internal deployment guidance)`;
-and C1208 → `project(Open VSX, marketplace context)`. These are required
+C202 → `project(vs-code-marketplace, VS Code-compatible managed-client /
+published-extension context)`; C1205 → `exclude(non_install_dependency, internal
+deployment guidance)`; and C1208 → `project(open-vsx, Open VSX-compatible
+marketplace context)`. These are required
 dispositions for the future validated catalog ledger; they are not permission to
 invent route IDs before #10333 publishes that catalog.
 
@@ -198,6 +207,33 @@ route-independent constraint, or an explicit exclusion with an allowed reason.
 In particular, FND-5 is a `route-independent constraint` for the mutable
 `INTERNAL_DEPLOYMENT.md` links represented by C1205; it is not silently omitted.
 
+This is an executable closure contract now, not a future reminder. At
+implementation time, the checked-in ledger must pass this pure check using only
+the inventory and ledger files:
+
+```text
+claim_ids = parse_literal_ids(INSTALL_CLAIM_SURFACES.md)
+finding_ids = [FND-1, FND-2, FND-3, FND-4, FND-5, FND-6, FND-7, FND-8,
+               FND-9, FND-10, FND-11, FND-12]
+require sort(unique(claim_ids)) == sort(claim_ids) and len(claim_ids) == 70
+require sort(unique(finding_ids)) == sort(finding_ids) and len(finding_ids) == 12
+require ledger.keys == set(claim_ids + finding_ids)
+require every ledger[id] has exactly one of:
+  project(exact_catalog_route_id, exact_projection_context)
+  constrain(route_independent, exact_reason)
+  exclude(compatible_closed_reason, rationale)
+require no range shorthand, unknown key, duplicate key, missing context, or
+        claim-kind/reason incompatibility
+require C1208 == project(open-vsx, Open_VSX_compatible_marketplace_context)
+require FND-5 == constrain(route_independent, mutable_internal_deployment_links)
+```
+
+The check reports sorted missing, duplicate, unknown, and incompatible IDs before
+failing. Thus the complete 70-claim / 12-finding closure check is executable
+before route classification exists; only exact catalog route IDs and projection
+contexts remain gated on #10333. A prose manifest or count without this
+set-equality and compatibility check does not satisfy closure.
+
 ### 2.2 Classification = conjunction of independent per-dimension verdicts
 
 For each exact catalog route row and projection context, classification is the
@@ -224,12 +260,21 @@ authoritative aggregation; a missing or unjoined required dimension yields
    the conjunction (C207 fail-closed vs C1005 fail-open on the same
    `scripts/install.sh`) resolves **pessimistically to `contradicted`**, never
    to the optimistic value, until `distribution-docs-sync` lands FND-7.
-5. **Freshness, channel, and publication** — worst-of joined drift statuses,
-   currentness, public publication, and public verification remain separate:
-   any joined `mutable_pin` | `cross_surface_drift` | `source_drift` |
-   `stale_example` | `future_example` caps the route below `proven_current`;
-   `pending` yields `pending_gate(issue)`; `volatile_number` is inert (does not
-   gate routes; FND-8 is copy metadata).
+5. **Freshness, channel, and publication** — drift, currentness, public
+   publication, and public verification remain separate. Map every inventory drift
+   status deterministically to the closed dimension verdict set:
+
+   | Drift status | Dimension result |
+   | --- | --- |
+   | `current` | `proven_current` only if independent publication and verification also pass |
+   | `pending` | `pending_gate(issue)` |
+   | `stale_example`, `future_example`, `mutable_pin`, `cross_surface_drift`, `source_drift` | `unproven` |
+   | `volatile_number` | no downgrade; retain as inert metadata and report FND-8 separately |
+
+   For multiple joined statuses, remove the inert status and apply the fixed
+   order `pending_gate` > `unproven` > `proven_current`; catalog or input order
+   must not affect the result. A `current` row never upgrades a route whose
+   publication or verification predicate fails.
 6. **PATH, session, and execution** — fresh-process resolution, exact host
    lookup, transport, cleanup, and process settlement are explicit dimensions.
 7. **Receipt axis** — channel-independence: each route inherits exactly the
@@ -303,9 +348,14 @@ LSP clients (Emacs, Neovim, Helix, Sublime, and other clients),
 `platform_capabilities` includes Windows ARM emulation capability/version, and
 `risk_posture` is either `strict` or `permissive`. `strict` may select only
 `proven_current` routes with independent integrity/provenance and complete
-lifecycle evidence; `permissive` may expose partial or pending routes as
-explicitly annotated diagnostics but may not select a contradicted, unproven,
-or capability-incompatible route. Unknown context fields refuse selection
+lifecycle evidence. `permissive` uses the same hard filter and may select only
+`proven_current` or `receipt_bound_partial` routes whose seven dimensions contain
+no `contradicted`, `unproven`, or capability-incompatible result; partial evidence
+must be explicitly annotated. `pending_gate` is diagnostic-only and never
+selected. Its deterministic output order is: selected route, non-selected
+`receipt_bound_partial` diagnostics sorted by exact route ID, then pending
+diagnostics sorted by issue ID; all remaining routes are omitted with reasons.
+Strict mode emits no diagnostic fallback. Unknown context fields refuse selection
 rather than guessing. Once H1–H7 are explicitly
 ruled, output may be an ordered route recommendation with per-route verdicts and
 gate citations. Before then, any selection output is only a provisional diagnostic;
@@ -494,7 +544,7 @@ be emitted.
 | H4 | macOS server-only ranking: homebrew-tap vs cargo-registry (both `current`; tap freshness unproven per C1304/C1305 caveats) | (a) tap first (native UX); (b) cargo-registry first (version receipts); (c) context-split (editor=tap, headless=cargo) | `human-pending`; no ordering | A preferred route whose freshness caveat the docs themselves flag |
 | H5 | Unpinned mutability policy: `cargo-git` (FND-6) and `latest` endorsements (FND-3) | (a) classify `not_recommended`, never selected; (b) selectable with warning; (c) leave unclassified | `human-pending`; no selection | Classifier endorses what FND-3 calls a moving target the receipt does not cover |
 | H6 | perl-dap (adapter) acquisition policy for non-VS Code users | (a) archive pair route; (b) separate `cargo install --locked perl-dap` (C702); (c) defer — server-only answer, adapter on request | `human-pending`; no ordering | Users get a server without a debugger, or build-from-source surprises (C208) |
-| H7 | Unproven channels (`unproven-channels`: scoop/choco/winget C212, Docker) in selection output | (a) never selected, visible in a "unproven" appendix; (b) fully omitted; (c) selectable with verify-first instruction (as C212 prose does) | `human-pending`; no selection | Either dead output weight or an implied endorsement the receipts don't back |
+| H7 | Unproven channels (`unproven-channels`: scoop/choco/winget C212, Docker) in selection output | (a) never selected, visible in a "unproven" appendix; (b) fully omitted; (c) visible with a verify-first instruction but never selectable | `human-pending`; no selection | Either dead output weight or an implied endorsement the receipts don't back |
 
 *(Count: 7 EXPLICIT-HUMAN rows.)*
 
