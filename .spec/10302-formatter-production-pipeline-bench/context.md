@@ -166,27 +166,32 @@ exists solely to encode an empty required-feature field.
 
 Hosted wiring creates and exports exactly one `NATIVE_PIPELINE_RUN_ID` before
 the `BENCH_TARGETS` loop, so the formatter benchmark and later extractor share
-one run identity. Hosted strict extraction would supply a future subject
-manifest, runtime measurement sidecar, matching `--expect-run-id`, and
-formatter `--expect-id "native_pipeline_document/delimited_n32_lf_tabs"`. Structural pins
-cover creation order, export/benchmark visibility, and every strict argument;
-moving creation after the loop or dropping/diverging an argument fails.
+one run identity. The benchmark currently uploads its runtime measurement
+sidecar and the representative Criterion result, but does not perform a strict
+versioned-manifest/sidecar join. A future strict extractor would consume that
+manifest, sidecar, matching `--expect-run-id`, and formatter
+`--expect-id "native_pipeline_document/delimited_n32_lf_tabs"`. Structural pins
+cover creation order, export/benchmark visibility, and every currently wired
+strict argument; moving creation after the loop or dropping/diverging an
+argument fails.
 
-Per-subject receipt identity is not present today: `extract-criterion.py`
+Full per-subject fixture/config receipt identity is not present today:
+`extract-criterion.py`
 keeps Criterion timing plus global Git SHA/dirty state, OS, and Rust version,
 and `format-results.py` does not recover fixture digest, config fingerprint,
-or engine. NPC-008 is therefore `NOT_PROVEN`. The selected implementation does
-not provide the checked-in `native_pipeline_subjects.v1.json` registry or the
-runtime-generated `target/criterion/native-pipeline-measurements.v1.json`
-sidecar/strict join. Those are future #10302 work, not delivered behavior.
-The future sidecar contract would carry schema/run and observed identity,
+or engine. NPC-008 is therefore `NOT_PROVEN`. The selected implementation
+provides a runtime-generated `target/criterion/native-pipeline-measurements.v1.json`
+sidecar from procedural `bench_rows()` subjects, but does not provide the
+versioned `native_pipeline_subjects.v1.json` manifest or a strict
+manifest/sidecar join. Those are future #10302 work, not delivered behavior.
+The future strict-join contract would carry schema/run and observed identity,
 work/edit/depth/invocation counters, allocation measurements and
 supported-platform state, plus named source-parse/render/formatted-parse/
 edit-derivation/classification/total elapsed fields. It would require exactly
-one row per registry subject, produced by a dedicated serialized receipt pass
+one row per manifest subject, produced by a dedicated serialized receipt pass
 outside Criterion's repeated timing iterations; Criterion timing would stay
 separate and join by canonical ID. Future strict extraction would take both
-paths and an expected run ID, require a 1:1 Criterion/registry/sidecar join,
+paths and an expected run ID, require a 1:1 Criterion/manifest/sidecar join,
 and fail missing, duplicate, stale, unmatched, or schema-mismatched rows
 before a future formatter-results receipt path preserves every field. The
 planned `format-results.py latest.json --receipt` and
@@ -198,7 +203,7 @@ inside the benchmark executable:
 `crates/perl-lsp-perltidy/benches/support/allocation_tracker.rs`, adapting the
 counting global allocator in `xtask/src/allocation_tracker.rs`.
 That future implementation would serialize one dedicated receipt pass per
-registry subject outside Criterion's repeated timing iterations; warm-up would
+manifest subject outside Criterion's repeated timing iterations; warm-up would
 occur before reset; the allocator window would begin immediately before the
 production `format_*_typed`
 call and would be snapshotted immediately after; sidecar serialization would
@@ -233,7 +238,7 @@ PR #13190 is a bounded runtime-counter and benchmark-enrollment candidate;
 #10302 remains open/blocked. The candidate delivers operation-scoped counters,
 aggregate advisory elapsed, subject identity, and benchmark enrollment, but does
 not prove per-stage timing, the complete provider vector matrix, allocation
-count/bytes/peak, strict registry/sidecar validation, the full #10302 matrix, or
+count/bytes/peak, strict manifest/sidecar validation, the full #10302 matrix, or
 release-tier evidence. Those boundaries remain `NOT_PROVEN`. There is no
 formatter algorithm rewrite, Perl execution, or release/publication surface;
 unset collectors remain byte-identical for current callers and goldens.
@@ -246,7 +251,7 @@ Sibling spec `.spec/10301-formatter-property-fuzz-harness/` shares only
 subject vocabulary; file sets are disjoint (this claim: `benches/`,
 additive `src/native/` counter plumbing, crate `Cargo.toml` dev-dep,
 provider-facing counted proof in `crates/perl-lsp-perltidy/tests/native_pipeline_counters_tests.rs`,
-provider collector forwarding, future subject-registry/sidecar schema,
+provider collector forwarding, future subject-manifest/sidecar schema,
 benchmark-only allocation tracker,
 extractor/formatter receipt-schema fixtures and three-way join,
 `.github/workflows/ci-nightly.yml` BENCH_TARGETS and strict-ID entries, canary
@@ -257,7 +262,7 @@ benchmark job.
 ## Rollback
 
 Single revert: remove the criterion dev-dep, benches dir, counter collector
-plumbing (callers never read it), provider/canary tests, subject-identity
-registry, runtime-sidecar writer, benchmark-only allocation tracker, and
+plumbing (callers never read it), provider/canary tests, procedural subject
+identity, future manifest, runtime-sidecar writer, benchmark-only allocation tracker, and
 fail-closed receipt-schema join, and the BENCH_TARGETS/strict-ID entries.
 Baselines remain untouched; no tracked artifact regeneration.
