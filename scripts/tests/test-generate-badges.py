@@ -8,6 +8,7 @@ import queue
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest import mock
@@ -648,25 +649,38 @@ class GenerateBadgesTests(unittest.TestCase):
         self.assertTrue(job.terminated)
 
     def test_second_reader_start_failure_joins_first_and_releases_tree_and_streams(self):
-        class TrackingWindowsJob(self.FakeWindowsJob):
+        class BlockingReadStream(io.BytesIO):
             def __init__(self):
+                super().__init__()
+                self.released = threading.Event()
+
+            def read1(self, size=-1):
+                self.released.wait(timeout=3)
+                return b""
+
+        class TrackingWindowsJob(self.FakeWindowsJob):
+            def __init__(self, stream):
+                self.stream = stream
                 self.terminate_calls = 0
                 self.close_calls = 0
 
             def terminate(self):
                 self.terminate_calls += 1
+                self.stream.released.set()
                 return []
 
             def close(self):
                 self.close_calls += 1
                 return []
 
-        stdout = io.BytesIO()
+        stdout = BlockingReadStream()
         stderr = io.BytesIO()
         process = self.TerminalProcess(stdout, stderr)
-        job = TrackingWindowsJob()
+        job = TrackingWindowsJob(stdout)
         original_start = generator.threading.Thread.start
+        original_join = generator.threading.Thread.join
         started_readers = []
+        joined_readers = []
 
         def start_first_then_fail(thread):
             if not started_readers:
@@ -675,16 +689,25 @@ class GenerateBadgesTests(unittest.TestCase):
                 return
             raise RuntimeError("reader startup failed")
 
+        def record_join(thread, timeout=None):
+            joined_readers.append(thread)
+            return original_join(thread, timeout=timeout)
+
         with mock.patch.object(generator.os, "name", "nt"), mock.patch.object(
             generator.subprocess, "Popen", return_value=process
         ), mock.patch.object(generator, "WindowsJob", return_value=job), mock.patch.object(
             generator.threading.Thread,
             "start",
             new=start_first_then_fail,
+        ), mock.patch.object(
+            generator.threading.Thread,
+            "join",
+            new=record_join,
         ):
             with self.assertRaisesRegex(RuntimeError, "reader startup failed"):
                 generator.run_ripr(Path.cwd(), timeout_seconds=3)
         self.assertEqual(len(started_readers), 1)
+        self.assertEqual(joined_readers, started_readers)
         self.assertFalse(started_readers[0].is_alive())
         self.assertEqual(job.terminate_calls, 1)
         self.assertEqual(job.close_calls, 1)
