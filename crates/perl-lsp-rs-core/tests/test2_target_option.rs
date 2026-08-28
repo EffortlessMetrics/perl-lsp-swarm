@@ -132,6 +132,23 @@ fn dynamic_dereference_hash_values_do_not_leak_suffix_atoms() -> TestResult {
 }
 
 #[test]
+fn chained_dynamic_dereferences_do_not_close_target_hash() -> TestResult {
+    let resolved = resolve_import(
+        "Test2::V0",
+        "-target => { pkg => $ENV{TARGET}->{other}, next => 'Gadget' }, ok",
+    )
+    .ok_or_else(|| io::Error::other("Test2::V0 must be recognized"))?;
+
+    for expected in ["pkg", "next", "ok"] {
+        assert!(resolved.symbols.contains(expected), "{expected} missing");
+    }
+    for leaked in ["CLASS", "ENV", "TARGET", "other", "Gadget"] {
+        assert!(!resolved.symbols.contains(leaked), "{leaked} leaked");
+    }
+    Ok(())
+}
+
+#[test]
 fn attached_parenthesized_scalar_targets_generate_class() -> TestResult {
     let resolved = resolve_import("Test2::V0", "-target => ('Foo'), ok")
         .ok_or_else(|| io::Error::other("Test2::V0 must be recognized"))?;
@@ -459,6 +476,18 @@ fn compact_call_like_targets_fail_closed() -> TestResult {
 }
 
 #[test]
+fn attached_call_hashref_arguments_do_not_leak_exports() -> TestResult {
+    let resolved = resolve_import("Test2::V0", "-target => foo({ leaked => 'Widget' }), ok")
+        .ok_or_else(|| io::Error::other("Test2::V0 must be recognized"))?;
+
+    assert!(resolved.symbols.contains("ok"));
+    for leaked in ["CLASS", "foo", "leaked", "Widget", "is"] {
+        assert!(!resolved.symbols.contains(leaked), "{leaked} leaked");
+    }
+    Ok(())
+}
+
+#[test]
 fn parenthesized_hash_targets_preserve_key_value_parity() -> TestResult {
     let resolved =
         resolve_import("Test2::V0", "-target => ( { first => 'One', second => 'Two' } ), ok")
@@ -627,6 +656,16 @@ fn target_helpers_reach_live_bundle_completion() {
         assert!(!has_test2_completion(&dynamic_expression_hash, leaked), "{leaked} leaked");
     }
 
+    let chained_dynamic_hash = complete(
+        "use Test2::V0 -target => { pkg => $ENV{TARGET}->{other}, next => 'Gadget' }, ok;\n|",
+    );
+    for expected in ["pkg", "next", "ok"] {
+        assert!(has_test2_completion(&chained_dynamic_hash, expected), "{expected} missing");
+    }
+    for leaked in ["CLASS", "ENV", "TARGET", "other", "Gadget"] {
+        assert!(!has_test2_completion(&chained_dynamic_hash, leaked), "{leaked} leaked");
+    }
+
     let v0_hash_value =
         complete("use Test2::V0 -target => { pkg => 'Widget', other => 'Gadget' };\nW|");
     assert!(
@@ -722,5 +761,11 @@ fn target_helpers_reach_live_bundle_completion() {
         for leaked in ["CLASS", "foo", "1", "2", "is"] {
             assert!(!has_test2_completion(&completions, leaked), "{leaked} leaked: {source:?}");
         }
+    }
+
+    let call_hashref = complete("use Test2::V0 -target => foo({ leaked => 'Widget' }), ok;\n|");
+    assert!(has_test2_completion(&call_hashref, "ok"));
+    for leaked in ["CLASS", "foo", "leaked", "Widget", "is"] {
+        assert!(!has_test2_completion(&call_hashref, leaked), "{leaked} leaked");
     }
 }

@@ -987,13 +987,12 @@ fn split_import_piece(piece: &str) -> Vec<String> {
                 quote = Some(ch);
             }
             '(' | ')' | '{' | '}' => {
-                let attached = matches!(ch, '(') && !current.is_empty()
-                    || matches!(ch, ')') && attached_parens > 0;
+                let attached = matches!(ch, '(') && !current.is_empty() || attached_parens > 0;
                 if attached {
                     current.push(ch);
                     if ch == '(' {
                         attached_parens += 1;
-                    } else {
+                    } else if ch == ')' {
                         attached_parens = attached_parens.saturating_sub(1);
                     }
                 } else {
@@ -1311,23 +1310,38 @@ fn consume_dynamic_target_expression(atoms: &[String], start: usize) -> usize {
         return start.saturating_add(1);
     }
 
-    let mut depth = 0usize;
-    let mut next = start.saturating_add(1);
-    for (index, atom) in atoms.iter().enumerate().skip(next) {
-        match atom.as_str() {
-            "{" => depth = depth.saturating_add(1),
-            "}" => {
-                depth = depth.saturating_sub(1);
-                if depth == 0 {
-                    next = index.saturating_add(1);
-                    break;
+    let consume_subscript = |atoms: &[String], start: usize| -> Option<usize> {
+        let mut depth = 0usize;
+        for (index, atom) in atoms.iter().enumerate().skip(start) {
+            match atom.as_str() {
+                "{" => depth = depth.saturating_add(1),
+                "}" => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        return Some(index.saturating_add(1));
+                    }
                 }
+                _ => {}
             }
-            _ => {}
         }
-    }
-    if depth != 0 {
+        None
+    };
+
+    let Some(mut next) = consume_subscript(atoms, start.saturating_add(1)) else {
         return atoms.len();
+    };
+
+    // Chained dereferences such as `$ENV{TARGET}->{other}` own each following
+    // subscript. Consume those pairs before the enclosing target hash sees
+    // their closing braces as structural hash delimiters.
+    while atoms.get(next).map(String::as_str) == Some("->") {
+        if atoms.get(next.saturating_add(1)).map(String::as_str) != Some("{") {
+            break;
+        }
+        next = consume_subscript(atoms, next.saturating_add(1)).unwrap_or(atoms.len());
+        if next == atoms.len() {
+            return next;
+        }
     }
 
     // A dereference can be part of a larger dynamic expression. Consume its
