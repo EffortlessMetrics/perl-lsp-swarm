@@ -101,30 +101,18 @@ text = replace_once(
     "external include PL701 receipt polarity",
 )
 
-text = replace_once(
-    text,
-    """    // Consistency check.
-    if def_resolves && !pl701_absent {
-        return Err(format!(
-            "Consumer inconsistency (findbin_relative): goto-def resolved but PL701 fired.\\n\\
-             goto-def: {:?}\\n\\
-             diagnostics: {:?}",
-            defs, diags
-        ));
-    }
-    if !def_resolves && pl701_absent {
-        // Both agree module doesn't resolve — log but don't fail the consistency test.
-        // FindBin resolution may be in degraded mode in some environments.
-        eprintln!(
-            "INFO scenario_14_findbin_relative: both consumers agree module does not resolve \
-             (def empty + no PL701). FindBin resolution may be in degraded mode."
-        );
-    }
-
-    // We assert consistency but tolerate FindBin not resolving end-to-end in the
-    // UX harness (it's environment-dependent). What we MUST NOT see is divergence.
-""",
-    """    // FindBin support is environment-dependent, so the terminal contract is
+findbin_function = text.find("fn scenario_14_findbin_relative() -> Result<(), String> {")
+if findbin_function < 0 or text.find(
+    "fn scenario_14_findbin_relative() -> Result<(), String> {", findbin_function + 1
+) >= 0:
+    raise SystemExit("FindBin symmetric consistency oracle: function anchor is missing or duplicated")
+findbin_consistency = text.find("    // Consistency check.\n", findbin_function)
+findbin_hover = text.find("    if let Some(hover) = hover_result {\n", findbin_consistency)
+if findbin_consistency < 0 or findbin_hover < 0:
+    raise SystemExit("FindBin symmetric consistency oracle: bounded anchors not found")
+text = (
+    text[:findbin_consistency]
+    + """    // FindBin support is environment-dependent, so the terminal contract is
     // consumer agreement rather than unconditional resolution. A module is
     // considered resolved only when diagnostics, completion, and definition agree.
     if def_resolves != pl701_absent {
@@ -153,8 +141,8 @@ text = replace_once(
 
     // Tolerate FindBin not resolving end-to-end in the UX harness, but never
     // tolerate disagreement between the consumers that report resolution.
-""",
-    "FindBin symmetric consistency oracle",
+"""
+    + text[findbin_hover:]
 )
 
 text = replace_once(
