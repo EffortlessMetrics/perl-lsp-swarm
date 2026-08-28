@@ -439,9 +439,18 @@ pub fn resolve_import(module: &str, raw_args: &str) -> Option<ResolvedImport> {
                     atom_index += 1;
                     if is_quote_like_operator(value) {
                         // Quote-like operators are expressions, even when
-                        // their first token resembles a bareword. Consume
-                        // their delimiters and leave CLASS unproven.
+                        // their first token resembles a bareword. At the
+                        // scalar boundary they own the target and leave
+                        // CLASS unproven. Inside a hash, however, they are a
+                        // value (or a dynamic key), so consume the complete
+                        // expression and keep scanning the enclosing hash;
+                        // stopping here would leak the remaining keys and
+                        // values into ordinary import processing.
                         atom_index = consume_quote_like_target(&atoms, atom_index - 1, value);
+                        if saw_hash {
+                            expect_key = !expect_key;
+                            continue;
+                        }
                         break;
                     }
                     let (opens, closes) = count_unquoted_braces(value);
@@ -900,11 +909,45 @@ fn expand_qw(raw: &str) -> String {
 /// look like the target value. The target resolver must instead consume the
 /// expression and fail closed.
 fn qw_is_target_value(raw: &str, index: usize) -> bool {
-    let start = raw[..index].rfind(',').map_or(0, |position| position + 1);
-    let before = raw[start..index].trim_end();
-    before
-        .rsplit_once("-target")
-        .is_some_and(|(_, suffix)| suffix.trim().is_empty() || suffix.trim() == "=>")
+    let Some(target_start) = raw[..index].rfind("-target") else {
+        return false;
+    };
+    let before = &raw[target_start..index];
+    if !before.contains("=>") {
+        return false;
+    }
+
+    // A comma at depth zero terminates the target option; commas inside a
+    // hash, call, or wrapper belong to its expression. Keep `qw` opaque in
+    // all of those target-expression contexts so its words cannot be
+    // mistaken for helpers or imports.
+    let mut quote = None;
+    let mut escaped = false;
+    let mut depth = 0usize;
+    for ch in before.chars() {
+        if let Some(delimiter) = quote {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == delimiter {
+                quote = None;
+            }
+            continue;
+        }
+        if matches!(ch, '\'' | '"') {
+            quote = Some(ch);
+        } else if matches!(ch, '(' | '{' | '[') {
+            depth = depth.saturating_add(1);
+        } else if matches!(ch, ')' | '}' | ']') {
+            depth = depth.saturating_sub(1);
+        } else if ch == ',' && depth == 0 {
+            return false;
+        } else if ch == ';' {
+            return false;
+        }
+    }
+    true
 }
 
 /// Strip surrounding single or double quotes from a token.

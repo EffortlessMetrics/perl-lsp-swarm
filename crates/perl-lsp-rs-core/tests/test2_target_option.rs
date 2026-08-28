@@ -152,6 +152,32 @@ fn named_hash_targets_preserve_defaults_and_generate_helpers() -> TestResult {
 }
 
 #[test]
+fn quote_like_hash_values_remain_opaque_and_do_not_leak_imports() -> TestResult {
+    for value in [
+        "q{Widget}",
+        "qq{Widget}",
+        "qx{Widget}",
+        "m{Widget}",
+        "s{Widget}{Other}",
+        "tr{Widget}{Other}",
+        "y{Widget}{Other}",
+        "qw{Widget}",
+    ] {
+        let args = format!("-target => {{ pkg => {value}, other => 'Gadget' }}, ok");
+        let resolved = resolve_import("Test2::V0", &args)
+            .ok_or_else(|| io::Error::other("Test2::V0 must be recognized"))?;
+
+        assert!(resolved.symbols.contains("pkg"), "value {value:?}");
+        assert!(resolved.symbols.contains("other"), "value {value:?}");
+        assert!(resolved.symbols.contains("ok"), "value {value:?}");
+        for leaked in ["Widget", "Other", "Gadget"] {
+            assert!(!resolved.symbols.contains(leaked), "{leaked} leaked from {value:?}");
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn quoted_hash_delimiters_do_not_close_or_leak_target_values() -> TestResult {
     let resolved =
         resolve_import("Test2::V0", "-target => { pkg => 'Widget}', other => 'Gadget' }, ok")
@@ -343,6 +369,26 @@ fn target_helpers_reach_live_bundle_completion() {
         !has_test2_completion(&v0_hash_value, "Widget"),
         "completion must not project a target package value as a Test2 function"
     );
+
+    for value in [
+        "q{Widget}",
+        "qq{Widget}",
+        "qx{Widget}",
+        "m{Widget}",
+        "s{Widget}{Other}",
+        "tr{Widget}{Other}",
+        "y{Widget}{Other}",
+        "qw{Widget}",
+    ] {
+        let source =
+            format!("use Test2::V0 -target => {{ pkg => {value}, other => 'Gadget' }};\n|");
+        let completions = complete(&source);
+        assert!(has_test2_completion(&completions, "pkg"), "value {value:?}");
+        assert!(has_test2_completion(&completions, "other"), "value {value:?}");
+        for leaked in ["Widget", "Other", "Gadget"] {
+            assert!(!has_test2_completion(&completions, leaked), "{leaked} leaked from {value:?}");
+        }
+    }
 
     let v1 = complete("use Test2::V1 -target => 'Foo';\nT|");
     assert!(has_test2_completion(&v1, "T2"));
