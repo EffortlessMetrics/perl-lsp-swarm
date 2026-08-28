@@ -47,8 +47,7 @@ fn require(condition: bool, message: impl Into<String>) -> Result<(), Box<dyn Er
 }
 
 #[test]
-fn code_actions_have_one_native_service_entry_and_no_private_pipeline()
--> Result<(), Box<dyn Error>> {
+fn code_actions_preserve_service_ownership() -> Result<(), Box<dyn Error>> {
     let source = code_action_source()?;
     let service_entries = source.match_indices(SERVICE_ENTRYPOINT).count();
 
