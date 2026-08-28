@@ -205,6 +205,88 @@ pub const LWP_USER_AGENT_METHODS: &[(&str, &str)] = &[
     ("is_protocol_supported", "Check whether a protocol is supported"),
 ];
 
+/// Static constructors and factories documented by `Path::Tiny`.
+pub const PATH_TINY_STATIC_METHODS: &[(&str, &str)] = &[
+    ("new", "Create a Path::Tiny object"),
+    ("cwd", "Return the current directory as an absolute Path::Tiny object"),
+    ("rootdir", "Return the filesystem root as a Path::Tiny object"),
+    ("tempfile", "Create a temporary file path"),
+    ("tempdir", "Create a temporary directory path"),
+];
+
+/// Documented, non-deprecated `Path::Tiny` instance methods.
+pub const PATH_TINY_METHODS: &[(&str, &str)] = &[
+    ("absolute", "Return an absolute path"),
+    ("append", "Append data to a file"),
+    ("append_raw", "Append raw bytes to a file"),
+    ("append_utf8", "Append UTF-8 text to a file"),
+    ("assert", "Assert a condition and return the path"),
+    ("basename", "Return the final path component"),
+    ("cached_temp", "Return the cached temporary-file object"),
+    ("canonpath", "Return the platform-canonical path string"),
+    ("child", "Return a child path"),
+    ("children", "List child paths"),
+    ("chmod", "Set file or directory permissions"),
+    ("copy", "Copy the path to a destination"),
+    ("digest", "Calculate a file digest"),
+    ("edit", "Edit a file through a callback"),
+    ("edit_lines", "Edit file lines through a callback"),
+    ("edit_lines_raw", "Edit raw file lines through a callback"),
+    ("edit_lines_utf8", "Edit UTF-8 file lines through a callback"),
+    ("edit_raw", "Edit a raw file through a callback"),
+    ("edit_utf8", "Edit a UTF-8 file through a callback"),
+    ("exists", "Check whether the path exists"),
+    ("filehandle", "Open and return a file handle"),
+    ("has_same_bytes", "Compare file contents byte for byte"),
+    ("is_absolute", "Check whether the path is absolute"),
+    ("is_dir", "Check whether the path is a directory"),
+    ("is_file", "Check whether the path is a non-directory file"),
+    ("is_relative", "Check whether the path is relative"),
+    ("is_rootdir", "Check whether the path is a filesystem root"),
+    ("iterator", "Return a lazy directory iterator"),
+    ("lines", "Read file contents as lines"),
+    ("lines_raw", "Read raw file contents as lines"),
+    ("lines_utf8", "Read UTF-8 file contents as lines"),
+    ("lstat", "Return lstat metadata for the path"),
+    ("mkdir", "Create the directory and missing parents"),
+    ("move", "Move the path to a destination"),
+    ("opena", "Open a file handle for appending"),
+    ("opena_raw", "Open a raw file handle for appending"),
+    ("opena_utf8", "Open a UTF-8 file handle for appending"),
+    ("openr", "Open a file handle for reading"),
+    ("openr_raw", "Open a raw file handle for reading"),
+    ("openr_utf8", "Open a UTF-8 file handle for reading"),
+    ("openrw", "Open a file handle for reading and writing"),
+    ("openrw_raw", "Open a raw file handle for reading and writing"),
+    ("openrw_utf8", "Open a UTF-8 file handle for reading and writing"),
+    ("openw", "Open a file handle for writing"),
+    ("openw_raw", "Open a raw file handle for writing"),
+    ("openw_utf8", "Open a UTF-8 file handle for writing"),
+    ("parent", "Return a parent path"),
+    ("realpath", "Resolve the path against the filesystem"),
+    ("relative", "Return a path relative to another base"),
+    ("remove", "Remove a file path"),
+    ("remove_tree", "Remove a directory tree"),
+    ("sibling", "Return a sibling path"),
+    ("size", "Return file size in bytes"),
+    ("size_human", "Return a human-readable file size"),
+    ("slurp", "Read an entire file"),
+    ("slurp_raw", "Read an entire file as raw bytes"),
+    ("slurp_utf8", "Read an entire file as UTF-8 text"),
+    ("spew", "Write an entire file atomically"),
+    ("spew_raw", "Write raw bytes atomically"),
+    ("spew_utf8", "Write UTF-8 text atomically"),
+    ("stat", "Return stat metadata for the path"),
+    ("stringify", "Return the normalized path string"),
+    ("subsumes", "Check whether this path contains another path"),
+    ("tempdir", "Create a temporary directory under this path"),
+    ("tempfile", "Create a temporary file under this path"),
+    ("touch", "Create the file or update its timestamps"),
+    ("touchpath", "Create missing parents and touch the file"),
+    ("visit", "Visit directory descendants through a callback"),
+    ("volume", "Return the path volume component"),
+];
+
 const GENERIC_OBJECT_METHODS: &[(&str, &str)] = &[
     ("new", "Constructor"),
     ("isa", "Check if object is of given class"),
@@ -352,21 +434,40 @@ fn assignment_expression_before_receiver<'a>(
     None
 }
 
-fn expression_calls_constructor(expression: &str, module: &str) -> bool {
+fn expression_calls_static_method(expression: &str, module: &str, method: &str) -> bool {
     let Some(after_module) = expression.strip_prefix(module) else {
         return false;
     };
     let Some(after_arrow) = after_module.trim_start().strip_prefix("->") else {
         return false;
     };
-    let Some(after_new) = after_arrow.trim_start().strip_prefix("new") else {
+    let Some(after_method) = after_arrow.trim_start().strip_prefix(method) else {
         return false;
     };
 
-    after_new.chars().next().is_none_or(|c| c == '(' || c.is_whitespace())
+    after_method.chars().next().is_none_or(|c| c == '(' || c.is_whitespace())
 }
 
-fn infer_imported_constructor_receiver_type(
+fn expression_calls_constructor(expression: &str, module: &str) -> bool {
+    expression_calls_static_method(expression, module, "new")
+}
+
+fn expression_calls_function(expression: &str, function: &str) -> bool {
+    let Some(after_function) = expression.strip_prefix(function) else {
+        return false;
+    };
+
+    match after_function.chars().next() {
+        Some('(') => true,
+        Some(c) if c.is_whitespace() => {
+            let argument = after_function.trim_start();
+            !argument.is_empty() && !argument.starts_with("=>")
+        }
+        _ => false,
+    }
+}
+
+fn infer_imported_api_receiver_type(
     context: &CompletionContext,
     source: &str,
     used_modules: &HashSet<String>,
@@ -376,6 +477,15 @@ fn infer_imported_constructor_receiver_type(
     let receiver_pos = source_before_cursor.rfind(receiver)?;
     let expression =
         assignment_expression_before_receiver(receiver, &source_before_cursor[..receiver_pos])?;
+
+    if used_modules.contains("Path::Tiny")
+        && (expression_calls_function(expression, "path")
+            || ["new", "cwd", "rootdir", "tempfile", "tempdir"]
+                .into_iter()
+                .any(|method| expression_calls_static_method(expression, "Path::Tiny", method)))
+    {
+        return Some("Path::Tiny");
+    }
 
     ["HTTP::Tiny", "LWP::UserAgent"].into_iter().find(|&module| {
         used_modules.contains(module) && expression_calls_constructor(expression, module)
@@ -395,6 +505,7 @@ fn imported_static_methods(
         "HTTP::Tiny" => Some(HTTP_TINY_STATIC_METHODS),
         "Mojo::Pg" => Some(MOJO_PG_METHODS),
         "Mojo::mysql" => Some(MOJO_MYSQL_METHODS),
+        "Path::Tiny" => Some(PATH_TINY_STATIC_METHODS),
         _ => None,
     }
 }
@@ -405,6 +516,7 @@ fn known_instance_methods(
     match receiver_type {
         Some("HTTP::Tiny") => Some(HTTP_TINY_METHODS),
         Some("LWP::UserAgent") => Some(LWP_USER_AGENT_METHODS),
+        Some("Path::Tiny") => Some(PATH_TINY_METHODS),
         _ => None,
     }
 }
@@ -595,8 +707,8 @@ pub fn add_method_completions(
         }
     }
 
-    // Exact imported constructor evidence takes priority over naming heuristics.
-    let receiver_type = infer_imported_constructor_receiver_type(context, source, used_modules)
+    // Exact imported API-factory evidence takes priority over naming heuristics.
+    let receiver_type = infer_imported_api_receiver_type(context, source, used_modules)
         .map(str::to_owned)
         .or_else(|| infer_receiver_type(context, source));
 
