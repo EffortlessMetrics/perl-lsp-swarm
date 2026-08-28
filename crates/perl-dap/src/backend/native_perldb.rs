@@ -36,6 +36,98 @@ pub struct NativePerlDbBackend {
     seq: i64,
 }
 
+/// Evidence state for one native backend method or capability family.
+///
+/// `Implemented` is deliberately stronger than “there is a Rust method”: it is
+/// reserved for a method with qualifying positive behavior proof.  The other
+/// states preserve why a capability is currently absent so later evidence work
+/// can consume this projection without inventing a second feature catalog.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NativeMethodSupport {
+    Implemented,
+    Unsupported,
+    RuntimeUnavailable,
+    NotProven,
+}
+
+impl NativeMethodSupport {
+    #[must_use]
+    fn is_implemented(self) -> bool {
+        matches!(self, Self::Implemented)
+    }
+}
+
+/// The native backend's method-support inventory.
+///
+/// This is intentionally crate-private and capability-shaped.  It records the
+/// method/family evidence that this backend owns; #7363 can consume the same
+/// states when it adds runtime prerequisites and behavior receipts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct NativeMethodSupportProjection {
+    pub source_breakpoints: NativeMethodSupport,
+    pub conditional_breakpoints: NativeMethodSupport,
+    pub hit_conditions: NativeMethodSupport,
+    pub logpoints: NativeMethodSupport,
+    pub function_breakpoints: NativeMethodSupport,
+    pub data_breakpoints: NativeMethodSupport,
+    pub evaluate: NativeMethodSupport,
+    pub variables: NativeMethodSupport,
+    pub scopes: NativeMethodSupport,
+    pub stack_trace: NativeMethodSupport,
+    pub continue_execution: NativeMethodSupport,
+    pub stepping: NativeMethodSupport,
+    pub pause: NativeMethodSupport,
+    pub set_variable: NativeMethodSupport,
+}
+
+impl NativeMethodSupportProjection {
+    /// Current evidence snapshot for the partial native backend.
+    #[must_use]
+    pub(crate) fn current() -> Self {
+        Self {
+            // The AST-backed method exists, but the governing SOT entry
+            // (`dap.breakpoints.basic`) is not_proven until selected-backend
+            // runtime and public-transport proof exists.
+            source_breakpoints: NativeMethodSupport::NotProven,
+            conditional_breakpoints: NativeMethodSupport::NotProven,
+            hit_conditions: NativeMethodSupport::NotProven,
+            logpoints: NativeMethodSupport::NotProven,
+            function_breakpoints: NativeMethodSupport::NotProven,
+            data_breakpoints: NativeMethodSupport::Unsupported,
+            evaluate: NativeMethodSupport::Unsupported,
+            variables: NativeMethodSupport::Unsupported,
+            scopes: NativeMethodSupport::Unsupported,
+            stack_trace: NativeMethodSupport::Unsupported,
+            continue_execution: NativeMethodSupport::RuntimeUnavailable,
+            stepping: NativeMethodSupport::RuntimeUnavailable,
+            pause: NativeMethodSupport::RuntimeUnavailable,
+            set_variable: NativeMethodSupport::Unsupported,
+        }
+    }
+
+    /// Derive advertised capability bits only from positively proven methods.
+    #[must_use]
+    pub(crate) fn capabilities(self) -> DebugBackendCapabilities {
+        DebugBackendCapabilities {
+            source_breakpoints: self.source_breakpoints.is_implemented(),
+            conditional_breakpoints: self.conditional_breakpoints.is_implemented(),
+            hit_conditions: self.hit_conditions.is_implemented(),
+            logpoints: self.logpoints.is_implemented(),
+            function_breakpoints: self.function_breakpoints.is_implemented(),
+            data_breakpoints: self.data_breakpoints.is_implemented(),
+            evaluate: self.evaluate.is_implemented(),
+            variables: self.variables.is_implemented(),
+            scopes: self.scopes.is_implemented(),
+            stack_trace: self.stack_trace.is_implemented(),
+            continue_execution: self.continue_execution.is_implemented(),
+            stepping: self.stepping.is_implemented(),
+            pause: self.pause.is_implemented(),
+            set_variable: self.set_variable.is_implemented(),
+            control_mode: ControlMode::DapControlled,
+        }
+    }
+}
+
 impl NativePerlDbBackend {
     /// Create a native backend wrapping a fresh [`DebugAdapter`].
     #[must_use]
@@ -48,29 +140,10 @@ impl NativePerlDbBackend {
         &mut self.adapter
     }
 
-    /// Capabilities backed by implemented native methods and positive behavior proof.
-    ///
-    /// Keep this projection crate-private so later backend evidence work can consume
-    /// the same fail-closed inventory without turning it into a public API contract.
+    /// Capabilities backed by the native method-support evidence projection.
     #[must_use]
     pub(crate) fn proven_capabilities() -> DebugBackendCapabilities {
-        DebugBackendCapabilities {
-            source_breakpoints: true,
-            conditional_breakpoints: false,
-            hit_conditions: false,
-            logpoints: false,
-            function_breakpoints: false,
-            data_breakpoints: false,
-            evaluate: false,
-            variables: false,
-            scopes: false,
-            stack_trace: false,
-            continue_execution: false,
-            stepping: false,
-            pause: false,
-            set_variable: false,
-            control_mode: ControlMode::DapControlled,
-        }
+        NativeMethodSupportProjection::current().capabilities()
     }
 
     fn next_seq(&mut self) -> i64 {
@@ -296,69 +369,41 @@ impl SetFunctionBreakpointsParams {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::EvaluateContext;
     use crate::model::{DebugBreakpoint, DebugSource};
     use anyhow::ensure;
     use std::io::Write;
 
     #[test]
-    fn capabilities_follow_observed_native_method_support() -> anyhow::Result<()> {
-        let mut backend = NativePerlDbBackend::new();
-        let caps = backend.capabilities();
+    fn capabilities_are_subset_of_authoritative_method_support() -> anyhow::Result<()> {
+        let support = NativeMethodSupportProjection::current();
+        let caps = support.capabilities();
 
-        let mut file = must(tempfile::NamedTempFile::new());
-        must(writeln!(file, "my $x = 1;"));
-        let source = DebugSource::from_path(file.path());
-        let source_breakpoints = backend
-            .set_breakpoints(SetBackendBreakpointsParams {
-                source: source.clone(),
-                breakpoints: vec![DebugBreakpoint {
-                    id: None,
-                    source,
-                    line: 1,
-                    column: None,
-                    condition: None,
-                    hit_condition: None,
-                    log_message: None,
-                }],
-            })
-            .is_ok();
         ensure!(
-            caps.source_breakpoints == source_breakpoints,
-            "source_breakpoints capability diverged from set_breakpoints behavior"
+            support.source_breakpoints == NativeMethodSupport::NotProven,
+            "source breakpoint support must follow features_sot.toml until qualifying proof"
         );
+        ensure!(!caps.source_breakpoints);
+        ensure!(!caps.stack_trace);
+        ensure!(!caps.scopes);
+        ensure!(!caps.variables);
+        ensure!(!caps.evaluate);
+        ensure!(caps.control_mode == ControlMode::DapControlled);
+        Ok(())
+    }
 
-        let stack_trace_supported = !matches!(
-            backend.stack_trace(StackTraceParams {
-                thread_id: ThreadId(1),
-                start_frame: None,
-                levels: None,
-            }),
-            Err(BackendError::Unsupported(_))
-        );
-        let scopes_supported =
-            !matches!(backend.scopes(FrameId(1)), Err(BackendError::Unsupported(_)));
-        let variables_supported =
-            !matches!(backend.variables(VariablesRef(1)), Err(BackendError::Unsupported(_)));
-        let evaluate_supported = !matches!(
-            backend.evaluate(EvaluateParams {
-                expression: "$x".to_string(),
-                frame_id: None,
-                context: EvaluateContext::Repl,
-            }),
-            Err(BackendError::Unsupported(_))
-        );
-        let mut observed = DebugBackendCapabilities::none();
-        observed.source_breakpoints = source_breakpoints;
-        observed.stack_trace = stack_trace_supported;
-        observed.scopes = scopes_supported;
-        observed.variables = variables_supported;
-        observed.evaluate = evaluate_supported;
-        observed.control_mode = ControlMode::DapControlled;
-        ensure!(
-            caps == observed,
-            "native capabilities diverged from observed method support: {caps:?} vs {observed:?}"
-        );
+    #[test]
+    fn replacing_proven_method_support_with_unsupported_removes_capability() -> anyhow::Result<()> {
+        let mut support = NativeMethodSupportProjection::current();
+        support.source_breakpoints = NativeMethodSupport::Implemented;
+        ensure!(support.capabilities().source_breakpoints);
+
+        support.source_breakpoints = NativeMethodSupport::Unsupported;
+        ensure!(!support.capabilities().source_breakpoints);
+
+        support.source_breakpoints = NativeMethodSupport::RuntimeUnavailable;
+        ensure!(!support.capabilities().source_breakpoints);
+        support.source_breakpoints = NativeMethodSupport::NotProven;
+        ensure!(!support.capabilities().source_breakpoints);
         Ok(())
     }
 
