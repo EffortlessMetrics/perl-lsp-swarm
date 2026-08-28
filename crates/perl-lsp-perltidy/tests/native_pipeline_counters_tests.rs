@@ -1,0 +1,621 @@
+//! Counter-shape canaries for the native formatter production pipeline
+//! (#10302, acceptance rows NPC-001..NPC-010).
+//!
+//! These are ordinary deterministic package tests, not timing gates: all
+//! assertions bind deterministic integer counters, structural workflow pins,
+//! and exact subject identity. Wall-clock stays advisory per the standing
+//! #3979/#5282 policy and no check in this file may be satisfied by
+//! increasing a timeout, budget constant, size cap, or iteration bound
+//! (NPC-010 ratchet).
+
+#[path = "../benches/support/perf_subjects.rs"]
+mod perf_subjects;
+
+use std::path::PathBuf;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
+
+use perf_subjects::{SubjectSpec, toolchain_tag};
+use perl_lsp_perltidy::native::{
+    COUNTER_CLOCK_TAG, COUNTER_SCHEMA_V1, FormatConfig, FormatContext, FormatDisposition,
+    FormatReasonCode, MAX_REPLACEMENT_BYTES_PER_SOURCE_BYTE_V1, NativeFormatter,
+    NativePipelineCounters, SCALING_ABSOLUTE_SLACK_V1, SCALING_RATIO_BOUND_V1, TextPosition,
+    TextRange, TypedFormatResult,
+};
+
+// ---------------------------------------------------------------------------
+// NPC-001 — schema pin and zero-effect-when-unset
+// ---------------------------------------------------------------------------
+
+#[test]
+fn counter_schema_is_pinned_v1() {
+    assert_eq!(COUNTER_SCHEMA_V1, "native-pipeline-counters-v1");
+    assert_eq!(COUNTER_CLOCK_TAG, "std-instant-monotonic-v1");
+    let counters = NativePipelineCounters::default();
+    assert_eq!(counters.schema(), COUNTER_SCHEMA_V1);
+    assert_eq!(counters.clock_tag(), COUNTER_CLOCK_TAG);
+}
+
+#[test]
+fn unset_collector_leaves_outcomes_byte_identical() {
+    for family in perf_subjects::FAMILIES {
+        let spec = SubjectSpec { family, line_ending: "lf", indent: "tabs", units: 4 };
+        let source = spec.source();
+        let config = FormatConfig::default();
+        let context = FormatContext::new(Some("npc-001".to_string()), Some(7));
+
+        let plain = NativeFormatter::new().format_document_typed(&source, &config, &context);
+        let mut counters = NativePipelineCounters::default();
+        let counted = NativeFormatter::new()
+            .format_document_typed_with_counters(&source, &config, &context, &mut counters);
+
+        assert_eq!(
+            plain, counted,
+            "attaching the collector must not change the document outcome for {family}"
+        );
+
+        let end_line = source.split_inclusive('\n').count() as u32;
+        let range = TextRange::new(TextPosition::new(0, 0), TextPosition::new(end_line, 0));
+        let plain_range = NativeFormatter::new().format_range_typed(&source, range, &config, &context);
+        let mut range_counters = NativePipelineCounters::default();
+        let counted_range = NativeFormatter::new().format_range_typed_with_counters(
+            &source,
+            range,
+            &config,
+            &context,
+            &mut range_counters,
+        );
+
+        assert_eq!(
+            plain_range, counted_range,
+            "attaching the collector must not change the range outcome for {family}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// NPC-002 — every pipeline stage populates deterministic counters
+// ---------------------------------------------------------------------------
+
+#[test]
+fn counters_populate_every_stage_from_production_path() {
+    let spec = SubjectSpec { family: "delimited", line_ending: "lf", indent: "tabs", units: 4 };
+    let source = spec.source();
+    let mut counters = NativePipelineCounters::default();
+    let typed = NativeFormatter::new().format_document_typed_with_counters(
+        &source,
+        &FormatConfig::default(),
+        &FormatContext::default(),
+        &mut counters,
+    );
+
+    // Source gate + post-format parse-preservation gate: exactly two parse-gate
+    // invocations for one fully rendered pipeline pass.
+    assert_eq!(counters.parse_gate_invocations, 2);
+    assert!(
+        counters.gate_nodes_observed > 0,
+        "the parse gate must observe the AST nodes it authorized"
+    );
+    assert_eq!(
+        counters.lines_processed as usize,
+        source.split_inclusive('\n').count(),
+        "every physical line fed to the render stage must be counted"
+    );
+    assert!(
+        counters.delimited_groups_fitted > 0,
+        "delimited subjects must exercise the delimited group fit decision"
+    );
+    assert!(counters.peak_depth > 0, "nesting depth must be observed");
+    assert_eq!(
+        counters.edits_derived as usize,
+        typed.result.edits.len(),
+        "edits_derived must observe the edits the pipeline actually derived"
+    );
+    let replacement_bytes: usize = typed.result.edits.iter().map(|edit| edit.new_text.len()).sum();
+    assert_eq!(counters.replacement_bytes as usize, replacement_bytes);
+    assert_eq!(
+        typed.outcome.disposition,
+        FormatDisposition::Applied,
+        "the NPC-002 subject must exercise a fully applied pipeline"
+    );
+    assert_eq!(counters.pipeline_invocations, 1);
+}
+
+#[test]
+fn no_change_subjects_count_zero_edits_with_full_pipeline() {
+    let spec = SubjectSpec { family: "no-change", line_ending: "lf", indent: "tabs", units: 4 };
+    let source = spec.source();
+    let mut counters = NativePipelineCounters::default();
+    let typed = NativeFormatter::new().format_document_typed_with_counters(
+        &source,
+        &FormatConfig::default(),
+        &FormatContext::default(),
+        &mut counters,
+    );
+    assert_eq!(typed.outcome.disposition, FormatDisposition::NoChange);
+    assert_eq!(typed.outcome.reason, FormatReasonCode::AlreadyFormatted);
+    assert_eq!(counters.parse_gate_invocations, 2);
+    assert_eq!(counters.edits_derived, 0);
+    assert_eq!(counters.replacement_bytes, 0);
+    assert!(counters.lines_processed > 0);
+}
+
+// ---------------------------------------------------------------------------
+// NPC-004 — scaling cohort ratio bounds and the detector sanity control
+// ---------------------------------------------------------------------------
+
+/// Detector bound shared by the scaling rows and this control: a series is
+/// superlinear when `c(4N)` exceeds `SCALING_RATIO_BOUND_V1 * c(2N)` by more
+/// than `SCALING_ABSOLUTE_SLACK_V1`. Any loosening of either constant lets the
+/// canonical quadratic control below pass, which turns
+/// `detector_flags_known_quadratic_series` red — the detector weakening is
+/// therefore itself observable.
+fn is_superlinear(_n: u64, two_n: u64, four_n: u64) -> bool {
+    four_n
+        > two_n
+            .saturating_mul(SCALING_RATIO_BOUND_V1)
+            .saturating_add(SCALING_ABSOLUTE_SLACK_V1)
+}
+
+#[test]
+fn detector_flags_known_quadratic_series() {
+    // Canonical quadratic series (units squared): any bound looser than 2x
+    // stops flagging this control and the assertion below fails.
+    assert!(is_superlinear(100, 400, 1_600));
+    // Exact linear series (through origin) stays bounded.
+    assert!(!is_superlinear(1, 2, 4));
+    // Linear with a constant term stays bounded.
+    assert!(!is_superlinear(105, 210, 420));
+    // Constant series stays bounded.
+    assert!(!is_superlinear(2, 2, 2));
+}
+
+#[test]
+fn scaling_cohort_ratios_stay_within_bounded_envelope() {
+    for family in ["delimited", "statement", "no-change", "opaque"] {
+        let scaling = perf_subjects::scaling_rows(family);
+        assert!(scaling.is_some(), "family {family} must be admitted by the subject registry");
+        let Some(rows) = scaling else { continue };
+
+        let mut samples: Vec<(SubjectSpec, NativePipelineCounters)> = Vec::new();
+        for spec in &rows {
+            let source = spec.source();
+            let mut counters = NativePipelineCounters::default();
+            NativeFormatter::new().format_document_typed_with_counters(
+                &source,
+                &FormatConfig::default(),
+                &FormatContext::default(),
+                &mut counters,
+            );
+            samples.push((*spec, counters));
+        }
+
+        let n = &samples[0];
+        let two_n = &samples[1];
+        let four_n = &samples[2];
+        assert_eq!(samples.len(), 3, "scaling rows must be exactly N / 2N / 4N for {family}");
+
+        // Constant counters: the pipeline stage topology must not scale.
+        assert_eq!(four_n.1.parse_gate_invocations, two_n.1.parse_gate_invocations);
+        assert_eq!(two_n.1.parse_gate_invocations, n.1.parse_gate_invocations);
+        assert_eq!(four_n.1.peak_depth, n.1.peak_depth, "peak depth must stay bounded for {family}");
+        assert_eq!(four_n.1.pipeline_invocations, 1);
+        assert_eq!(two_n.1.pipeline_invocations, 1);
+
+        // Linear-or-bounded counters at every doubling.
+        let series = [
+            ("gate_nodes_observed", n.1.gate_nodes_observed, two_n.1.gate_nodes_observed, four_n.1.gate_nodes_observed),
+            ("lines_processed", n.1.lines_processed, two_n.1.lines_processed, four_n.1.lines_processed),
+            ("edits_derived", n.1.edits_derived, two_n.1.edits_derived, four_n.1.edits_derived),
+            ("replacement_bytes", n.1.replacement_bytes, two_n.1.replacement_bytes, four_n.1.replacement_bytes),
+        ];
+        for (name, n_value, two_n_value, four_n_value) in series {
+            assert!(
+                !is_superlinear(n_value, two_n_value, four_n_value),
+                "{family}.{name} grew superlinearly: N={n_value} 2N={two_n_value} 4N={four_n_value}"
+            );
+        }
+
+        // The scaling subjects really do scale: the render stage must see more
+        // lines as units double (guards against vacuous fixed-size subjects).
+        assert!(two_n.1.lines_processed > n.1.lines_processed);
+        assert!(four_n.1.lines_processed > two_n.1.lines_processed);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// NPC-005 — refusal and opaque rows are cost-bounded
+// ---------------------------------------------------------------------------
+
+#[test]
+fn refusal_and_opaque_rows_remain_cost_bounded() {
+    for family in ["refusal", "opaque"] {
+        let scaling = perf_subjects::scaling_rows(family);
+        assert!(scaling.is_some(), "family {family} must be admitted by the subject registry");
+        let Some(rows) = scaling else { continue };
+
+        let mut observations: Vec<(NativePipelineCounters, FormatDisposition)> = Vec::new();
+        for spec in &rows {
+            let source = spec.source();
+            let mut counters = NativePipelineCounters::default();
+            let typed = NativeFormatter::new().format_document_typed_with_counters(
+                &source,
+                &FormatConfig::default(),
+                &FormatContext::default(),
+                &mut counters,
+            );
+            observations.push((counters, typed.outcome.disposition));
+        }
+        assert_eq!(observations.len(), 3);
+
+        for (counters, disposition) in &observations {
+            assert_eq!(counters.pipeline_invocations, 1);
+            assert_eq!(*disposition, FormatDisposition::Refused, "{family} rows must refuse");
+            assert_eq!(counters.edits_derived, 0, "{family} rows must derive no edits");
+            assert_eq!(counters.replacement_bytes, 0, "{family} rows must derive no bytes");
+        }
+
+        let (n, two_n, four_n) = (&observations[0].0, &observations[1].0, &observations[2].0);
+        if family == "refusal" {
+            // The refusal path must reject at the source parse gate without a
+            // render pass: exactly one gate invocation at every size.
+            assert_eq!(n.parse_gate_invocations, 1);
+            assert_eq!(two_n.parse_gate_invocations, 1);
+            assert_eq!(four_n.parse_gate_invocations, 1);
+        }
+        let series = [
+            ("gate_nodes_observed", n.gate_nodes_observed, two_n.gate_nodes_observed, four_n.gate_nodes_observed),
+            ("lines_processed", n.lines_processed, two_n.lines_processed, four_n.lines_processed),
+        ];
+        for (name, n_value, two_n_value, four_n_value) in series {
+            assert!(
+                !is_superlinear(n_value, two_n_value, four_n_value),
+                "{family}.{name} grew superlinearly: N={n_value} 2N={two_n_value} 4N={four_n_value}"
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// NPC-006 — derived-output growth trips before product envelopes
+// ---------------------------------------------------------------------------
+
+#[test]
+fn derived_output_growth_trips_before_product_envelope() {
+    let trip = perl_lsp_perltidy::exceeds_replacement_envelope_v1;
+    // The envelope demonstrably trips before unbounded growth ships.
+    assert!(trip(10, 41));
+    assert!(!trip(10, 40));
+
+    for family in ["delimited", "statement", "no-change"] {
+        let scaling = perf_subjects::scaling_rows(family);
+        assert!(scaling.is_some(), "family {family} must be admitted by the subject registry");
+        let Some(rows) = scaling else { continue };
+        for spec in &rows {
+            let source = spec.source();
+            let mut counters = NativePipelineCounters::default();
+            NativeFormatter::new().format_document_typed_with_counters(
+                &source,
+                &FormatConfig::default(),
+                &FormatContext::default(),
+                &mut counters,
+            );
+            assert!(
+                !trip(source.len() as u64, counters.replacement_bytes),
+                "{family} derived-output growth exceeded the schema-v1 envelope at n={}",
+                spec.units
+            );
+        }
+    }
+    assert!(MAX_REPLACEMENT_BYTES_PER_SOURCE_BYTE_V1 >= 1);
+}
+
+// ---------------------------------------------------------------------------
+// NPC-003 — one pipeline invocation per LSP request at both provider seams
+// ---------------------------------------------------------------------------
+
+#[derive(Clone)]
+struct RecordingRuntime {
+    invoked: Arc<AtomicBool>,
+}
+
+impl perl_lsp_rs_core::tooling::SubprocessRuntime for RecordingRuntime {
+    fn run_command(
+        &self,
+        _program: &str,
+        _args: &[&str],
+        _stdin: Option<&[u8]>,
+    ) -> Result<perl_lsp_rs_core::tooling::SubprocessOutput, perl_lsp_rs_core::tooling::SubprocessError>
+    {
+        self.invoked.store(true, Ordering::SeqCst);
+        Ok(perl_lsp_rs_core::tooling::SubprocessOutput {
+            stdout: b"my $external = 1;\n".to_vec(),
+            stderr: Vec::new(),
+            status_code: 0,
+        })
+    }
+}
+
+fn formatting_options() -> perl_lsp_rs_core::providers::formatting::FormattingOptions {
+    perl_lsp_rs_core::providers::formatting::FormattingOptions {
+        tab_size: 4,
+        insert_spaces: true,
+        trim_trailing_whitespace: None,
+        insert_final_newline: None,
+        trim_final_newlines: None,
+    }
+}
+
+fn native_provider(
+) -> perl_lsp_rs_core::providers::formatting::FormattingProvider<RecordingRuntime> {
+    perl_lsp_rs_core::providers::formatting::FormattingProvider::new(RecordingRuntime {
+        invoked: Arc::new(AtomicBool::new(false)),
+    })
+}
+
+#[test]
+fn document_request_parses_exactly_once() -> Result<(), Box<dyn std::error::Error>> {
+    let provider = native_provider();
+    let options = formatting_options();
+    let context = FormatContext::new(Some("npc-003/document".to_string()), Some(1));
+
+    let statement =
+        SubjectSpec { family: "statement", line_ending: "lf", indent: "tabs", units: 4 }.source();
+    for content in [statement, "my $x = ;\n".to_string()] {
+        let mut counters = NativePipelineCounters::default();
+        let counted =
+            provider.format_document_decision_with_counters(&content, &options, &context, &mut counters)?;
+        assert_eq!(counters.pipeline_invocations, 1, "one pipeline per document request");
+        let expected_gates =
+            u64::from(counted.outcome.reason != FormatReasonCode::SourceParseError) + 1;
+        assert_eq!(counters.parse_gate_invocations, expected_gates);
+        assert!(
+            !counted.outcome.identity.config_fingerprint.is_empty(),
+            "the seam must keep exact config identity"
+        );
+
+        // The counted seam shares the exact decision path with the plain seam.
+        let plain = provider.format_document_decision(&content, &options, &context)?;
+        assert_eq!(
+            plain.outcome.disposition, counted.outcome.disposition,
+            "the counters-aware seam must not fork the decision path"
+        );
+        assert_eq!(plain.outcome.reason, counted.outcome.reason);
+    }
+    Ok(())
+}
+
+#[test]
+fn range_request_parses_exactly_once() -> Result<(), Box<dyn std::error::Error>> {
+    let provider = native_provider();
+    let options = formatting_options();
+    let context = FormatContext::new(Some("npc-003/range".to_string()), Some(1));
+
+    let statement =
+        SubjectSpec { family: "statement", line_ending: "lf", indent: "tabs", units: 4 }.source();
+    for content in [statement, "my $x = ;\n".to_string()] {
+        let range = perl_lsp_rs_core::providers::formatting::FormatRange::whole_document(&content);
+        let mut counters = NativePipelineCounters::default();
+        let counted = provider
+            .format_range_decision_with_counters(&content, &range, &options, &context, &mut counters)?;
+        assert_eq!(counters.pipeline_invocations, 1, "one pipeline per range request");
+
+        let plain = provider.format_range_decision(&content, &range, &options, &context)?;
+        assert_eq!(plain.outcome.disposition, counted.outcome.disposition);
+        assert_eq!(plain.outcome.reason, counted.outcome.reason);
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// NPC-008 — exact subject identity for receipt consumption
+// ---------------------------------------------------------------------------
+
+#[test]
+fn subject_identity_is_recorded_for_receipt_consumption() {
+    let config_fingerprint = {
+        let spec = SubjectSpec { family: "delimited", line_ending: "lf", indent: "tabs", units: 4 };
+        let source = spec.source();
+        let typed: TypedFormatResult = NativeFormatter::new().format_document_typed(
+            &source,
+            &FormatConfig::default(),
+            &FormatContext::default(),
+        );
+        typed.outcome.identity.config_fingerprint
+    };
+    assert!(!config_fingerprint.is_empty());
+
+    let toolchain = toolchain_tag();
+    assert!(!toolchain.is_empty());
+    for spec in perf_subjects::bench_rows() {
+        let row = perf_subjects::identity_row(&spec, &config_fingerprint, &toolchain);
+        assert_eq!(row["schema"], COUNTER_SCHEMA_V1);
+        assert_eq!(row["engine"], perf_subjects::SUBJECT_ENGINE);
+        assert_eq!(row["bench_id"], spec.bench_id());
+        assert!(
+            row["subject"]["content_digest"].as_str()
+                == Some(spec.content_digest().as_str())
+                && spec.content_digest().starts_with("source-v1:"),
+            "subject digest must be pinned for {}",
+            spec.id()
+        );
+        assert!(
+            row["config_fingerprint"].as_str() == Some(config_fingerprint.as_str()),
+            "config fingerprint must be the production fingerprint"
+        );
+        assert!(!row["toolchain"].as_str().unwrap_or_default().is_empty());
+    }
+
+    // Subject digests must equal the production FormatIdentity digest exactly.
+    for family in perf_subjects::FAMILIES {
+        let spec = SubjectSpec { family, line_ending: "crlf", indent: "spaces", units: 2 };
+        let source = spec.source();
+        let typed: TypedFormatResult = NativeFormatter::new().format_document_typed(
+            &source,
+            &FormatConfig::default(),
+            &FormatContext::default(),
+        );
+        assert_eq!(
+            typed.outcome.identity.content_digest,
+            spec.content_digest(),
+            "subject digest drift for {family}"
+        );
+    }
+
+    // The representative expect-id must exist in the enrolled cohort.
+    let ids: Vec<String> = perf_subjects::bench_rows().iter().map(SubjectSpec::bench_id).collect();
+    assert!(
+        ids.contains(&perf_subjects::REPRESENTATIVE_BENCH_ID.to_string()),
+        "the nightly representative expect-id must be an enrolled bench row"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// NPC-007 — nightly enrollment of the new bench target
+// ---------------------------------------------------------------------------
+
+fn repo_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
+}
+
+fn nightly_workflow() -> Result<String, Box<dyn std::error::Error>> {
+    let path = repo_root().join(".github/workflows/ci-nightly.yml");
+    Ok(std::fs::read_to_string(path)?)
+}
+
+#[test]
+fn bench_target_enrolls_native_pipeline_benchmark() -> Result<(), Box<dyn std::error::Error>> {
+    let workflow = nightly_workflow()?;
+    assert!(
+        workflow.contains("\"perl-lsp-perltidy:native_pipeline_benchmark:\""),
+        "BENCH_TARGETS must enroll perl-lsp-perltidy:native_pipeline_benchmark (declared-superset contract)"
+    );
+    assert!(
+        workflow
+            .contains(&format!("--expect-id \"{}\"", perf_subjects::REPRESENTATIVE_BENCH_ID)),
+        "the extract step must require the representative native pipeline bench id"
+    );
+
+    let manifest = std::fs::read_to_string(repo_root().join("crates/perl-lsp-perltidy/Cargo.toml"))?;
+    let bench_section = manifest
+        .split("[[bench]]")
+        .nth(1)
+        .ok_or("perl-lsp-perltidy must declare a [[bench]] target")?;
+    assert!(
+        bench_section.contains("native_pipeline_benchmark")
+            && bench_section.contains("harness = false"),
+        "the [[bench]] target must be the criterion harness for native_pipeline_benchmark"
+    );
+    assert!(
+        manifest.contains("criterion = { workspace = true }"),
+        "criterion must be a dev-dependency of perl-lsp-perltidy"
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// NPC-009 — timing stays evidence, never a required gate
+// ---------------------------------------------------------------------------
+
+fn step_retains_advisory_posture(workflow: &str, step_name: &str) -> bool {
+    let mut in_step = false;
+    for line in workflow.lines() {
+        if line.contains("- name:") {
+            in_step = line.contains(step_name);
+            continue;
+        }
+        if in_step && line.contains("continue-on-error:") {
+            return line.contains("true");
+        }
+    }
+    false
+}
+
+#[test]
+fn timing_stays_advisory_in_nightly_workflow() -> Result<(), Box<dyn std::error::Error>> {
+    let workflow = nightly_workflow()?;
+    assert!(
+        step_retains_advisory_posture(&workflow, "Compare against baseline"),
+        "the Compare against baseline step must keep continue-on-error: true (#3979/#5282)"
+    );
+    assert!(
+        step_retains_advisory_posture(&workflow, "Generate performance alerts"),
+        "the Generate performance alerts step must keep continue-on-error: true (#3979/#5282)"
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// NPC-010 — anti-masking downward-only ratchet
+// ---------------------------------------------------------------------------
+
+/// Base-pin maxima (origin/main @ a9664af79, 2026-08-27). Any timeout above
+/// these maxima fails this canary; lowering is always allowed.
+fn base_pin_max_timeout_minutes(job: &str) -> Option<u64> {
+    match job {
+        "mutation" => Some(60),
+        "benchmark" => Some(45),
+        "real-repo-latency" => Some(30),
+        "corpus-differential" => Some(20),
+        "lsp-memory-plateau" => Some(35),
+        "test-coverage" => Some(45),
+        "tautology-check" => Some(10),
+        "semver-check" => Some(20),
+        "public-api-check" => Some(20),
+        "scorecard-ratchet-check" => Some(15),
+        "clippy-strict" => Some(20),
+        "perl-kwalitee" => Some(20),
+        "fuzz" => Some(15),
+        _ => None,
+    }
+}
+
+fn job_timeouts(workflow: &str) -> Vec<(String, u64)> {
+    let mut jobs = Vec::new();
+    let mut current_job = String::new();
+    for line in workflow.lines() {
+        if let Some(job) = line.strip_prefix("  ") {
+            if let Some((name, rest)) = job.split_once(':') {
+                if rest.trim().is_empty() && !name.contains(' ') && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+                    current_job = name.to_string();
+                }
+            }
+        }
+        if let Some((key, value)) = line.trim().split_once(':') {
+            if key.trim() == "timeout-minutes" {
+                if let Ok(minutes) = value.trim().parse::<u64>() {
+                    jobs.push((current_job.clone(), minutes));
+                }
+            }
+        }
+    }
+    jobs
+}
+
+#[test]
+fn no_timeout_or_budget_constant_exceeds_base_pin_maxima() -> Result<(), Box<dyn std::error::Error>>
+{
+    let workflow = nightly_workflow()?;
+    let timeouts = job_timeouts(&workflow);
+    assert!(
+        timeouts.len() >= 13,
+        "the ratchet must see every job timeout in ci-nightly.yml"
+    );
+    for (job, minutes) in timeouts {
+        let max = base_pin_max_timeout_minutes(&job);
+        assert!(
+            max.is_some(),
+            "job {job} declares timeout-minutes {minutes} but has no pinned maximum; \
+             lower the timeout or update the base-pin ratchet consciously"
+        );
+        let Some(max) = max else { continue };
+        assert!(
+            minutes <= max,
+            "job {job} timeout {minutes} exceeds the base-pin maximum {max} — \
+             anti-masking forbids absorbing regressions via timeout bumps"
+        );
+    }
+    Ok(())
+}

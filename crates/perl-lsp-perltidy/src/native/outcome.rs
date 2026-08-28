@@ -5,6 +5,7 @@ use super::implementation::{
     FormatResult, FormatterMode, KeywordSpacing, NativeFormatter, PerlFormatter, TextEdit,
     TextRange, TrailingComma, format_simple_line, range_includes_line,
 };
+use super::implementation::counters::{NativePipelineCounters, PipelineCollectorScope};
 use serde::{Deserialize, Serialize};
 
 const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
@@ -223,6 +224,30 @@ impl NativeFormatter {
         classify_native_result(source, config, context, FormatRequestTarget::Document, result)
     }
 
+    /// Format a complete document recording deterministic pipeline work
+    /// counters. The outcome is byte-identical to [`Self::format_document_typed`];
+    /// only the collector observes the stages (NPC-001/NPC-002).
+    #[must_use]
+    pub fn format_document_typed_with_counters(
+        &self,
+        source: &str,
+        config: &FormatConfig,
+        context: &FormatContext,
+        counters: &mut NativePipelineCounters,
+    ) -> TypedFormatResult {
+        counters.observe_pipeline_invocation();
+        let scope = PipelineCollectorScope::install();
+        let started = std::time::Instant::now();
+        let result = <Self as PerlFormatter>::format_document(self, source, config);
+        scope.merge_into(counters);
+        counters.observe_edits_derived(
+            u64::try_from(result.edits.len()).unwrap_or(u64::MAX),
+            result.edits.iter().map(|edit| edit.new_text.len() as u64).fold(0_u64, u64::saturating_add),
+        );
+        counters.observe_elapsed(started.elapsed());
+        classify_native_result(source, config, context, FormatRequestTarget::Document, result)
+    }
+
     /// Format one range and return an explicit typed terminal outcome.
     #[must_use]
     pub fn format_range_typed(
@@ -241,6 +266,44 @@ impl NativeFormatter {
                 "native range formatting refused because the requested UTF-16 range is invalid",
             )
         };
+        classify_native_result(
+            source,
+            config,
+            context,
+            FormatRequestTarget::Range { range },
+            result,
+        )
+    }
+
+    /// Format one range recording deterministic pipeline work counters. The
+    /// outcome is byte-identical to [`Self::format_range_typed`].
+    #[must_use]
+    pub fn format_range_typed_with_counters(
+        &self,
+        source: &str,
+        range: TextRange,
+        config: &FormatConfig,
+        context: &FormatContext,
+        counters: &mut NativePipelineCounters,
+    ) -> TypedFormatResult {
+        counters.observe_pipeline_invocation();
+        let scope = PipelineCollectorScope::install();
+        let started = std::time::Instant::now();
+        let result = if valid_range(source, range) {
+            <Self as PerlFormatter>::format_range(self, source, range, config)
+        } else {
+            FormatResult::unsafe_to_format(
+                source,
+                UNSAFE_RANGE_CODE,
+                "native range formatting refused because the requested UTF-16 range is invalid",
+            )
+        };
+        scope.merge_into(counters);
+        counters.observe_edits_derived(
+            u64::try_from(result.edits.len()).unwrap_or(u64::MAX),
+            result.edits.iter().map(|edit| edit.new_text.len() as u64).fold(0_u64, u64::saturating_add),
+        );
+        counters.observe_elapsed(started.elapsed());
         classify_native_result(
             source,
             config,

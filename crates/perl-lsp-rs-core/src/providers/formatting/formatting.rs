@@ -15,7 +15,7 @@ pub use crate::providers::formatting_types::{
 use crate::tooling::perltidy::native::{
     FormatChangeSummary, FormatContext, FormatDisposition, FormatEngine, FormatEvidenceState,
     FormatIdentity, FormatLineEndingDisposition, FormatOutcome, FormatReasonCode,
-    FormatRequestTarget, FormatSafetyEvidence, TypedFormatResult,
+    FormatRequestTarget, FormatSafetyEvidence, NativePipelineCounters, TypedFormatResult,
 };
 use crate::tooling::perltidy::{
     BracePlacement, ElsePlacement, FinalNewline, FormatConfig, FormatterMode, KeywordSpacing,
@@ -164,9 +164,33 @@ impl<R: SubprocessRuntime> FormattingProvider<R> {
         options: &FormattingOptions,
         context: &FormatContext,
     ) -> Result<FormattingDecision, FormattingError> {
+        self.document_decision_with_counters(content, options, context, None)
+    }
+
+    /// Format the entire document and record deterministic native-pipeline
+    /// work counters through the exact same decision path. The counters ride
+    /// the production typed entry, so one LSP request must always observe
+    /// exactly one pipeline invocation (#10302 NPC-003).
+    pub fn format_document_decision_with_counters(
+        &self,
+        content: &str,
+        options: &FormattingOptions,
+        context: &FormatContext,
+        counters: &mut NativePipelineCounters,
+    ) -> Result<FormattingDecision, FormattingError> {
+        self.document_decision_with_counters(content, options, context, Some(counters))
+    }
+
+    fn document_decision_with_counters(
+        &self,
+        content: &str,
+        options: &FormattingOptions,
+        context: &FormatContext,
+        counters: Option<&mut NativePipelineCounters>,
+    ) -> Result<FormattingDecision, FormattingError> {
         match self.mode {
             FormatterMode::Native | FormatterMode::Compat => {
-                self.native_document_decision(content, options, context)
+                self.native_document_decision(content, options, context, counters)
             }
             FormatterMode::ExternalLegacy => self.external_document_decision(
                 content,
@@ -205,6 +229,30 @@ impl<R: SubprocessRuntime> FormattingProvider<R> {
         options: &FormattingOptions,
         context: &FormatContext,
     ) -> Result<FormattingDecision, FormattingError> {
+        self.range_decision_with_counters(content, range, options, context, None)
+    }
+
+    /// Format a range and record deterministic native-pipeline work counters
+    /// through the exact same decision path (#10302 NPC-003).
+    pub fn format_range_decision_with_counters(
+        &self,
+        content: &str,
+        range: &FormatRange,
+        options: &FormattingOptions,
+        context: &FormatContext,
+        counters: &mut NativePipelineCounters,
+    ) -> Result<FormattingDecision, FormattingError> {
+        self.range_decision_with_counters(content, range, options, context, Some(counters))
+    }
+
+    fn range_decision_with_counters(
+        &self,
+        content: &str,
+        range: &FormatRange,
+        options: &FormattingOptions,
+        context: &FormatContext,
+        counters: Option<&mut NativePipelineCounters>,
+    ) -> Result<FormattingDecision, FormattingError> {
         let target = FormatRequestTarget::Range { range: to_native_range(range) };
         if !range_is_admissible(content, range) {
             return Ok(refused_decision(
@@ -220,7 +268,7 @@ impl<R: SubprocessRuntime> FormattingProvider<R> {
 
         match self.mode {
             FormatterMode::Native | FormatterMode::Compat => {
-                self.native_range_decision(content, range, options, context)
+                self.native_range_decision(content, range, options, context, counters)
             }
             FormatterMode::ExternalLegacy if is_whole_document_range(content, range) => {
                 self.external_document_decision(content, options, context, target)
@@ -251,10 +299,15 @@ impl<R: SubprocessRuntime> FormattingProvider<R> {
         content: &str,
         options: &FormattingOptions,
         context: &FormatContext,
+        counters: Option<&mut NativePipelineCounters>,
     ) -> Result<FormattingDecision, FormattingError> {
         let mut config = native_format_config(options, self.perltidy_config.as_ref(), true);
         config.mode = self.mode;
-        let mut typed = NativeFormatter::new().format_document_typed(content, &config, context);
+        let mut typed = match counters {
+            Some(counters) => NativeFormatter::new()
+                .format_document_typed_with_counters(content, &config, context, counters),
+            None => NativeFormatter::new().format_document_typed(content, &config, context),
+        };
         bind_lsp_options(&mut typed.outcome.identity.config_fingerprint, options);
         project_native_document(content, options, typed)
     }
@@ -265,12 +318,18 @@ impl<R: SubprocessRuntime> FormattingProvider<R> {
         range: &FormatRange,
         options: &FormattingOptions,
         context: &FormatContext,
+        counters: Option<&mut NativePipelineCounters>,
     ) -> Result<FormattingDecision, FormattingError> {
         let native_range = to_native_range(range);
         let mut config = native_format_config(options, self.perltidy_config.as_ref(), false);
         config.mode = self.mode;
-        let mut typed =
-            NativeFormatter::new().format_range_typed(content, native_range, &config, context);
+        let mut typed = match counters {
+            Some(counters) => NativeFormatter::new()
+                .format_range_typed_with_counters(content, native_range, &config, context, counters),
+            None => {
+                NativeFormatter::new().format_range_typed(content, native_range, &config, context)
+            }
+        };
         bind_lsp_options(&mut typed.outcome.identity.config_fingerprint, options);
         project_native_range(content, range, options, typed)
     }

@@ -9,6 +9,9 @@ mod config;
 mod doc;
 mod result;
 
+#[path = "counters.rs"]
+pub(crate) mod counters;
+
 pub use config::{
     BracePlacement, ElsePlacement, FinalNewline, FormatConfig, FormatterMode, KeywordSpacing,
     TrailingComma,
@@ -71,6 +74,14 @@ impl NativeFormatter {
         let mut parser = perl_parser_core::Parser::new(source);
         let output = parser.parse_with_recovery();
 
+        counters::record_with(|counters| {
+            counters.observe_parse_gate(
+                counters::count_parse_nodes(&output.ast),
+                u64::try_from(output.budget_usage.max_depth_reached)
+                    .unwrap_or(u64::MAX),
+            );
+        });
+
         // LCOV_EXCL_START — budget exhaustion on pathologically large/deeply-nested
         // input; not reachable with the small sources used in formatter tests.
         if output.terminated_early() {
@@ -99,14 +110,17 @@ impl NativeFormatter {
 
     fn format_safe_subset(source: &str, config: &FormatConfig) -> String {
         let mut formatted = String::with_capacity(source.len());
+        let mut processed_lines = 0_u64;
 
         for line in source.split_inclusive('\n') {
+            processed_lines = processed_lines.saturating_add(1);
             let (body, line_ending) = split_line_ending(line);
             formatted
                 .push_str(&format_simple_line(body, config).unwrap_or_else(|| body.to_string()));
             formatted.push_str(line_ending);
         }
 
+        counters::record_with(|counters| counters.observe_lines(processed_lines));
         formatted
     }
 
@@ -117,8 +131,10 @@ impl NativeFormatter {
     ) -> (String, Vec<TextEdit>) {
         let mut formatted = String::with_capacity(source.len());
         let mut edits = Vec::new();
+        let mut processed_lines = 0_u64;
 
         for (line_index, line) in source.split_inclusive('\n').enumerate() {
+            processed_lines = processed_lines.saturating_add(1);
             let line_index = line_index as u32;
             let (body, line_ending) = split_line_ending(line);
             let formatted_body = if range_includes_line(range, line_index) {
@@ -146,6 +162,7 @@ impl NativeFormatter {
             formatted.push_str(line_ending);
         }
 
+        counters::record_with(|counters| counters.observe_lines(processed_lines));
         (formatted, edits)
     }
 
