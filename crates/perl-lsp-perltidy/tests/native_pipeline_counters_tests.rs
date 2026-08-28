@@ -158,16 +158,27 @@ fn no_change_subjects_count_zero_edits_with_full_pipeline() {
 // ---------------------------------------------------------------------------
 
 /// Detector bound shared by the scaling rows and this control: a series is
-/// superlinear when `c(4N)` exceeds `SCALING_RATIO_BOUND_V1 * c(2N)` by more
-/// than `SCALING_ABSOLUTE_SLACK_V1`. The detector is applied only to counters
-/// the production instrument records; it does not measure uninstrumented
-/// fit/comparison operations or prove their algorithmic complexity. Boundary
-/// controls supplement the large quadratic series so weakening either detector
-/// constant remains observable.
+/// superlinear when either doubling exceeds `SCALING_RATIO_BOUND_V1` times its
+/// lower sample by more than the effective absolute slack. The detector's
+/// domain is strictly positive, ordered samples; a zero-sized lower sample is
+/// not classified. For small samples, slack is capped by that lower sample so
+/// the configured slack cannot hide the first non-trivial quadratic step. The
+/// detector is applied only to counters the production instrument records; it
+/// does not measure uninstrumented fit/comparison operations or prove their
+/// algorithmic complexity. Boundary controls supplement the large quadratic
+/// series so weakening either detector constant remains observable.
+fn detector_slack(lower_sample: u64) -> u64 {
+    SCALING_ABSOLUTE_SLACK_V1.min(lower_sample)
+}
+
 fn is_superlinear(n: u64, two_n: u64, four_n: u64) -> bool {
-    two_n > n.saturating_mul(SCALING_RATIO_BOUND_V1).saturating_add(SCALING_ABSOLUTE_SLACK_V1)
+    if n == 0 || two_n < n || four_n < two_n {
+        return false;
+    }
+
+    two_n > n.saturating_mul(SCALING_RATIO_BOUND_V1).saturating_add(detector_slack(n))
         || four_n
-            > two_n.saturating_mul(SCALING_RATIO_BOUND_V1).saturating_add(SCALING_ABSOLUTE_SLACK_V1)
+            > two_n.saturating_mul(SCALING_RATIO_BOUND_V1).saturating_add(detector_slack(two_n))
 }
 
 #[test]
@@ -178,6 +189,10 @@ fn detector_flags_known_quadratic_series() {
     // Keep a low-magnitude control: the absolute slack must not hide a
     // quadratic series near the origin.
     assert!(is_superlinear(2, 8, 32));
+    // The lower-domain slack cap keeps the smallest realistic quadratic
+    // series discriminating instead of treating the absolute slack as a
+    // blanket exemption near zero.
+    assert!(is_superlinear(1, 4, 16));
     // The first doubling is independently checked; ignoring N would let this
     // pathological jump pass even though the complete three-point shape is
     // not bounded.
@@ -188,6 +203,11 @@ fn detector_flags_known_quadratic_series() {
     assert!(is_superlinear(1, 11, 11));
     // Exact linear series (through origin) stays bounded.
     assert!(!is_superlinear(1, 2, 4));
+    // A linear series with a constant term stays bounded at the lower-domain
+    // boundary under the capped slack contract.
+    assert!(!is_superlinear(1, 3, 5));
+    // Zero is outside the detector domain, even if later samples are nonzero.
+    assert!(!is_superlinear(0, 4, 16));
     // Linear with a constant term stays bounded.
     assert!(!is_superlinear(105, 210, 420));
     // Constant series stays bounded.

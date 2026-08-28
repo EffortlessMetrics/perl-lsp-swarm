@@ -145,16 +145,18 @@ evidence:
    subject tables carry exact digests so #9327 identities can enroll without
    schema movement.
 
-The representative formatter result is pinned as Criterion ID
-`native_pipeline/document_small`. Nightly strict extraction must pass the
-same `--expect-id "native_pipeline/document_small"`; running the target
-without producing that result is not a successful receipt. An extractor
-fixture pins the grouped Criterion layout
-`native_pipeline/document_small/new/estimates.json`. This representative ID
-proves target execution only; it does not prove the full subject matrix ran.
-The bench must create `benchmark_group("native_pipeline")` and call that
-group's `bench_function("document_small", ...)`; a direct benchmark string
-containing `/` is sanitized to `_` and cannot establish the grouped pin.
+The representative formatter result is pinned as the emitted Criterion ID
+`native_pipeline_document/delimited_n32_lf_tabs`, from the authoritative
+`BENCH_GROUP = "native_pipeline_document"` and the `delimited_n32_lf_tabs`
+subject name. Nightly strict extraction must pass the same
+`--expect-id "native_pipeline_document/delimited_n32_lf_tabs"`; running the
+target without producing that result is not a successful receipt. An
+extractor fixture pins the grouped Criterion layout
+`native_pipeline_document/delimited_n32_lf_tabs/new/estimates.json`. This
+representative ID proves target execution only; it does not prove the full
+subject matrix ran. The benchmark source and workflow are authoritative for
+this group/name pair; the source-truth documents use this emitted ID rather
+than an illustrative group/name pair.
 The serialized `BENCH_TARGETS` entry is
 `perl-lsp-perltidy:native_pipeline_benchmark:`: its target identity is
 `perl-lsp-perltidy:native_pipeline_benchmark`, and the trailing delimiter
@@ -164,7 +166,7 @@ Hosted wiring creates and exports exactly one `NATIVE_PIPELINE_RUN_ID` before
 the `BENCH_TARGETS` loop, so the formatter benchmark and later extractor share
 one run identity. Hosted strict extraction supplies the authoritative subject
 registry, runtime measurement sidecar, matching `--expect-run-id`, and
-formatter `--expect-id "native_pipeline/document_small"`. Structural pins
+formatter `--expect-id "native_pipeline_document/delimited_n32_lf_tabs"`. Structural pins
 cover creation order, export/benchmark visibility, and every strict argument;
 moving creation after the loop or dropping/diverging an argument fails.
 

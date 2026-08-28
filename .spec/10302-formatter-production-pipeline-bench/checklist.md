@@ -69,10 +69,11 @@ Planned surface:
 - [ ] `crates/perl-lsp-perltidy/benches/native_pipeline_benchmark.rs` +
       `benches/support/perf_subjects.rs`: benchmark executable and subject
       loader over the authoritative registry
-      and an actual `benchmark_group("native_pipeline")` /
-      `bench_function("document_small", ...)` pair producing representative
-      Criterion ID `native_pipeline/document_small` (not a direct benchmark
-      string containing `/`, which Criterion sanitizes to `_`)
+      and an actual `benchmark_group("native_pipeline_document")` /
+      `bench_function("delimited_n32_lf_tabs", ...)` pair producing
+      representative Criterion ID
+      `native_pipeline_document/delimited_n32_lf_tabs` (the group/name pair
+      is the emitted Criterion layout)
 - [ ] Checked-in authoritative
       `crates/perl-lsp-perltidy/benches/native_pipeline_subjects.v1.json`, keyed
       by canonical Criterion ID, covers every required matrix member:
@@ -131,14 +132,16 @@ Planned surface:
       `NATIVE_PIPELINE_RUN_ID` before the `BENCH_TARGETS` loop; preserve it for
       the formatter benchmark process. Hosted strict extraction passes
       `--subject-registry`, `--measurement-sidecar`, matching
-      `--expect-run-id`, and `--expect-id "native_pipeline/document_small"`.
+      `--expect-run-id`, and
+      `--expect-id "native_pipeline_document/delimited_n32_lf_tabs"`.
       Structural pins fail if creation moves after the loop, export/visibility
       disappears, or any strict argument diverges
 - [ ] Strict nightly extraction includes the exact matching
-      `--expect-id "native_pipeline/document_small"`
+      `--expect-id "native_pipeline_document/delimited_n32_lf_tabs"`
 - [ ] `benchmarks/scripts/test_extract_criterion.py` includes the exact grouped
       Criterion fixture layout
-      `native_pipeline/document_small/new/estimates.json`; the representative
+      `native_pipeline_document/delimited_n32_lf_tabs/new/estimates.json`;
+      the representative
       ID proves target execution only, not full-matrix execution
 - [ ] Extend `extract-criterion.py` with required `--subject-registry`,
       `--measurement-sidecar`, and `--expect-run-id` inputs. For formatter
@@ -177,7 +180,7 @@ python3 benchmarks/scripts/extract-criterion.py \
   --subject-registry crates/perl-lsp-perltidy/benches/native_pipeline_subjects.v1.json \
   --measurement-sidecar target/criterion/native-pipeline-measurements.v1.json \
   --expect-run-id "$NATIVE_PIPELINE_RUN_ID" \
-  --expect-id "native_pipeline/document_small"
+  --expect-id "native_pipeline_document/delimited_n32_lf_tabs"
 python3 benchmarks/scripts/format-results.py \
   benchmarks/results/latest.json --receipt \
   > benchmarks/results/native-pipeline-receipt.txt
@@ -186,7 +189,7 @@ python3 benchmarks/scripts/validate-formatter-receipt.py \
   --subject-registry crates/perl-lsp-perltidy/benches/native_pipeline_subjects.v1.json \
   --measurement-sidecar target/criterion/native-pipeline-measurements.v1.json \
   --expect-run-id "$NATIVE_PIPELINE_RUN_ID" \
-  --expect-id "native_pipeline/document_small"
+  --expect-id "native_pipeline_document/delimited_n32_lf_tabs"
 ```
 
 Open residuals (owned by upstream issues, not silently dropped):
