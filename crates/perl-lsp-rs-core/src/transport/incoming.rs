@@ -5,7 +5,7 @@
 //! rewrites invalid bytes or includes payload contents in diagnostics.
 
 use super::framing::{ContentLengthFramer, FramingError};
-use crate::protocol::JsonRpcRequest;
+use crate::protocol::{JsonRpcId, JsonRpcRequest};
 use serde_json::{Value, json};
 use std::fmt;
 use std::io::{self, Read};
@@ -311,10 +311,21 @@ fn decode_current_message_shape(
     }
 
     // Preserve the current response-routing compatibility until #7626 owns
-    // first-class Request | Notification | Response direction.
-    if let Some(id) = value.get("id").cloned() {
+    // first-class Request | Notification | Response direction. Even at this
+    // compatibility boundary, reject malformed response envelopes instead of
+    // routing them as pseudo-notifications.
+    if let Some(raw_id) = value.get("id") {
+        let Some(id) = JsonRpcId::from_value(raw_id) else {
+            return reject_current_message_shape(value, payload_bytes);
+        };
+        let has_result = value.get("result").is_some();
+        let has_error = value.get("error").is_some();
+        if has_result == has_error {
+            return reject_current_message_shape(value, payload_bytes);
+        }
+
         let params = json!({
-            "id": id,
+            "id": id.to_value(),
             "result": value.get("result").cloned().unwrap_or(Value::Null),
             "error": value.get("error").cloned(),
         });
@@ -326,6 +337,14 @@ fn decode_current_message_shape(
         });
     }
 
+    serde_json::from_value(value)
+        .map_err(|source| IncomingMessageError::InvalidMessageShape { payload_bytes, source })
+}
+
+fn reject_current_message_shape(
+    value: Value,
+    payload_bytes: usize,
+) -> Result<JsonRpcRequest, IncomingMessageError> {
     serde_json::from_value(value)
         .map_err(|source| IncomingMessageError::InvalidMessageShape { payload_bytes, source })
 }

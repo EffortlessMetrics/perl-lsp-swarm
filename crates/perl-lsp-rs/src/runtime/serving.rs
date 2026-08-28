@@ -109,20 +109,32 @@ impl LspServer {
         sched.shutdown().await;
     }
 
-    /// Handle a message from any reader (for testing)
+    /// Handle a message from any reader (for testing).
+    ///
+    /// The local [`BufReader`] is retained for the whole recovery loop, so a
+    /// malformed frame cannot discard a following valid frame that was read
+    /// into the buffer. Responses are queued on the server's outbound writer;
+    /// dropping the server provides the flush/join boundary for callers that
+    /// need to observe the emitted bytes synchronously.
     pub fn handle_message<R: Read>(&self, reader: &mut R) -> io::Result<()> {
         let mut buf_reader = BufReader::new(reader);
         let mut message_reader = ContentLengthMessageReader::new();
-        match message_reader.read_next_outcome(&mut buf_reader)? {
-            Some(Ok(request)) => {
-                if let Some(response) = self.handle_request(request) {
-                    self.outbound.send_response(response)?;
+        loop {
+            match message_reader.read_next_outcome(&mut buf_reader)? {
+                Some(Ok(request)) => {
+                    if let Some(response) = self.handle_request(request) {
+                        self.outbound.send_response(response)?;
+                    }
+                    break;
                 }
+                Some(Err(error)) => {
+                    log_incoming_error(&error, "runtime message helper");
+                    if error.is_terminal_at_eof() {
+                        break;
+                    }
+                }
+                None => break,
             }
-            Some(Err(error)) => {
-                log_incoming_error(&error, "runtime message helper");
-            }
-            None => {}
         }
         Ok(())
     }
@@ -255,6 +267,45 @@ mod strict_ingress_tests {
             return Err(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 "serving ingress produced no initialize response",
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn message_helper_recovers_after_malformed_frame_in_buffered_input()
+    -> Result<(), Box<dyn Error>> {
+        let mut invalid_utf8 =
+            br#"{"jsonrpc":"2.0","id":1,"method":"invalid","params":{"text":"safe"}}"#.to_vec();
+        let string_end = invalid_utf8.iter().rposition(|byte| *byte == b'"').ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "missing string terminator")
+        })?;
+        invalid_utf8.insert(string_end, 0xff);
+        let valid_initialize =
+            br#"{"jsonrpc":"2.0","id":2,"method":"initialize","params":{"processId":null,"capabilities":{},"rootUri":null}}"#;
+
+        let mut stream = frame(&invalid_utf8);
+        stream.extend(frame(valid_initialize));
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let writer: Arc<Mutex<Box<dyn Write + Send>>> =
+            Arc::new(Mutex::new(Box::new(Capture(Arc::clone(&captured)))));
+        let server = LspServer::with_output(writer);
+        let mut input = Cursor::new(stream);
+        server.handle_message(&mut input)?;
+
+        if !server.initialize_requested.load(Ordering::Acquire) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "message helper lost valid input after malformed frame",
+            )
+            .into());
+        }
+        drop(server);
+        if captured.lock().is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "message helper produced no response for recovered initialize",
             )
             .into());
         }

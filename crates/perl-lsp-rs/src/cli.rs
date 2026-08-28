@@ -246,8 +246,11 @@ mod strict_ingress_tests {
     fn cli_reader_rejects_malformed_frames_before_forwarding_valid_input()
     -> Result<(), Box<dyn Error>> {
         let mut invalid_utf8 =
-            br#"{"jsonrpc":"2.0","id":1,"method":"invalid","params":{}}"#.to_vec();
-        invalid_utf8.push(0xff);
+            br#"{"jsonrpc":"2.0","id":1,"method":"invalid","params":{"text":"safe"}}"#.to_vec();
+        let string_end = invalid_utf8.iter().rposition(|byte| *byte == b'"').ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "missing string terminator")
+        })?;
+        invalid_utf8.insert(string_end, 0xff);
         let malformed_json = br#"{"jsonrpc":"2.0","method":"invalid""#;
         let valid = br#"{"jsonrpc":"2.0","id":2,"method":"shutdown","params":{}}"#;
 

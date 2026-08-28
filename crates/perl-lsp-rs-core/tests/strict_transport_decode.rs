@@ -57,9 +57,14 @@ fn accepts_multibyte_utf8_with_byte_content_length() -> TestResult {
 #[test]
 fn invalid_utf8_is_typed_and_payload_private() -> TestResult {
     const SECRET: &str = "private-document-token";
-    let mut body = request_body(2, "textDocument/didOpen", r#"{"text":"private-document-token"}"#);
-    let valid_up_to = body.len();
-    body.push(0xff);
+    let mut body =
+        br#"{"jsonrpc":"2.0","id":2,"method":"textDocument/didOpen","params":{"text":"private-document-token"}}"#
+            .to_vec();
+    let valid_up_to = body
+        .iter()
+        .rposition(|byte| *byte == b'"')
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing string terminator"))?;
+    body.insert(valid_up_to, 0xff);
 
     let mut input = Cursor::new(frame(&body));
     let mut reader = ContentLengthMessageReader::new();
@@ -175,6 +180,51 @@ fn invalid_jsonrpc_version_and_batch_are_distinct_outcomes() -> TestResult {
 }
 
 #[test]
+fn malformed_response_envelopes_are_rejected_and_recovery_preserves_valid_input() -> TestResult {
+    let malformed_responses: [&[u8]; 3] = [
+        br#"{"jsonrpc":"2.0","id":true,"result":{}}"#,
+        br#"{"jsonrpc":"2.0","id":1}"#,
+        br#"{"jsonrpc":"2.0","id":1,"result":{},"error":{"code":-1,"message":"bad"}}"#,
+    ];
+    let valid_request = request_body(11, "shutdown", "{}");
+    let mut stream = Vec::new();
+    for response in &malformed_responses {
+        stream.extend(frame(response));
+    }
+    stream.extend(frame(&valid_request));
+
+    let mut input = Cursor::new(stream);
+    let mut reader = ContentLengthMessageReader::new();
+    for _ in &malformed_responses {
+        let error = required_error(&mut reader, &mut input)?;
+        if !matches!(&error, IncomingMessageError::InvalidMessageShape { .. }) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("expected malformed response rejection, got {error}"),
+            )
+            .into());
+        }
+        if error.is_terminal_at_eof() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "recoverable malformed response was classified as terminal",
+            )
+            .into());
+        }
+    }
+
+    let request = required_request(&mut reader, &mut input)?;
+    if request.method != "shutdown" {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("expected valid request after malformed responses, got {}", request.method),
+        )
+        .into());
+    }
+    Ok(())
+}
+
+#[test]
 fn incomplete_frame_is_typed_before_clean_eof() -> TestResult {
     let body = request_body(10, "shutdown", "{}");
     let full_frame = frame(&body);
@@ -215,8 +265,14 @@ fn incomplete_frame_is_typed_before_clean_eof() -> TestResult {
 
 #[test]
 fn invalid_utf8_frame_does_not_consume_following_valid_frame() -> TestResult {
-    let mut invalid_body = request_body(4, "textDocument/didChange", r#"{"text":"safe"}"#);
-    invalid_body.push(0xff);
+    let mut invalid_body =
+        br#"{"jsonrpc":"2.0","id":4,"method":"textDocument/didChange","params":{"text":"safe"}}"#
+            .to_vec();
+    let string_end = invalid_body
+        .iter()
+        .rposition(|byte| *byte == b'"')
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing string terminator"))?;
+    invalid_body.insert(string_end, 0xff);
     let valid_body = request_body(5, "shutdown", "{}");
 
     let mut stream = frame(&invalid_body);
