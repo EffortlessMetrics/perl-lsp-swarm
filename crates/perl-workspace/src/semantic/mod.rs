@@ -38,7 +38,9 @@ pub mod queries;
 /// Literal-eval sub extractor for dynamic boundary evidence.
 pub mod eval_sub_extractor;
 
-/// Framework generated member extractor for package-level `has` declarations.
+/// Framework generated-member extraction, including the bounded
+/// DBIx::QuickORM explicit-table-class adapter.
+#[path = "generated_member_extractor_quickorm.rs"]
 pub mod generated_member_extractor;
 
 /// Import-spec extractor for `ImportExportIndex` population during `index_file`.
