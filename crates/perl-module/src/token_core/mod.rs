@@ -18,9 +18,8 @@ pub struct ModuleTokenSpan {
 ///
 /// A module token is one or more identifier segments separated by either
 /// `::` (canonical) or `'` (legacy) separators. Segment starts and
-/// continuations follow the lexer’s Unicode XID authority; continuations also
-/// accept Perl’s emoji and join-control extensions. Returned offsets remain
-/// exact UTF-8 byte spans.
+/// continuations use Perl's Unicode Word class intersected with XID. Returned
+/// offsets remain exact UTF-8 byte spans.
 #[must_use]
 pub fn parse_module_token(text: &str, start: usize) -> Option<ModuleTokenSpan> {
     if start >= text.len() || !text.is_char_boundary(start) {
@@ -75,7 +74,7 @@ pub(crate) fn is_module_identifier_segment(segment: &str) -> bool {
         return false;
     };
 
-    (first == '_' || is_xid_start(first)) && chars.all(|ch| is_xid_continue(ch) || ch == '_')
+    is_identifier_start(first) && chars.all(is_identifier_continue)
 }
 
 fn separator_len_at(text: &str, index: usize) -> Option<usize> {
