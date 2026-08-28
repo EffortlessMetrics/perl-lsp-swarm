@@ -153,6 +153,15 @@ fn run_at(
             .as_ref()
             .ok_or_else(|| color_eyre::eyre::eyre!("editor_ux ratchet baseline was not loaded"))?;
         enforce_ratchet(baseline, &artifact)?;
+        // A ratchet check is read-only. Publication rewrites the tracked
+        // status page with a fresh `measured_at` timestamp, so letting the
+        // check path publish would dirty the working tree on every run.
+        if matches!(format, UxScorecardFormat::Json) {
+            println!("{}", serde_json::to_string_pretty(&artifact)?);
+        } else {
+            println!("editor_ux ratchet check passed (check-only; no artifacts written)");
+        }
+        return Ok(());
     }
 
     // Prepare every publication payload, including the optional receipt, before
@@ -378,7 +387,8 @@ fn prepare_receipt_payload(
         .with_context(|| format!("reading {}", receipt_path.display()))?;
     let mut json_value: serde_json::Value = serde_json::from_str(&raw)
         .with_context(|| format!("parsing {}", receipt_path.display()))?;
-    validate_receipt_schema(root, &json_value)?;
+    let validator = receipt_validator(root)?;
+    validate_receipt_with(&validator, root, &json_value)?;
     if let Some(object) = json_value.as_object_mut() {
         let row = |k: &str| artifact.rows.get(k).and_then(|m| m.value);
         object.insert(
@@ -395,18 +405,26 @@ fn prepare_receipt_payload(
             }),
         );
     }
-    validate_receipt_schema(root, &json_value)?;
+    validate_receipt_with(&validator, root, &json_value)?;
     Ok(Some((receipt_path, format!("{}\n", serde_json::to_string_pretty(&json_value)?))))
 }
 
-fn validate_receipt_schema(root: &Path, receipt: &serde_json::Value) -> Result<()> {
+fn receipt_validator(root: &Path) -> Result<jsonschema::Validator> {
     let schema_path = root.join(".ci/receipt.schema.json");
     let schema_raw = fs::read_to_string(&schema_path)
         .with_context(|| format!("reading {}", schema_path.display()))?;
     let schema: serde_json::Value = serde_json::from_str(&schema_raw)
         .with_context(|| format!("parsing {}", schema_path.display()))?;
-    let validator = jsonschema::validator_for(&schema)
-        .with_context(|| format!("compiling {}", schema_path.display()))?;
+    jsonschema::validator_for(&schema)
+        .with_context(|| format!("compiling {}", schema_path.display()))
+}
+
+fn validate_receipt_with(
+    validator: &jsonschema::Validator,
+    root: &Path,
+    receipt: &serde_json::Value,
+) -> Result<()> {
+    let schema_path = root.join(".ci/receipt.schema.json");
     let violations: Vec<String> =
         validator.iter_errors(receipt).map(|error| error.to_string()).collect();
     if violations.is_empty() {
@@ -418,6 +436,14 @@ fn validate_receipt_schema(root: &Path, receipt: &serde_json::Value) -> Result<(
             violations.join("; ")
         )
     }
+}
+
+/// Thin wrapper retained for the focused schema tests; production callers
+/// compile the validator once via [`receipt_validator`] and reuse it.
+#[cfg(test)]
+fn validate_receipt_schema(root: &Path, receipt: &serde_json::Value) -> Result<()> {
+    let validator = receipt_validator(root)?;
+    validate_receipt_with(&validator, root, receipt)
 }
 
 #[derive(Debug, PartialEq)]
@@ -1015,7 +1041,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_existing_receipt_preserves_all_artifacts_after_valid_ratchet() -> Result<()> {
+    fn malformed_existing_receipt_preserves_all_artifacts_before_publication() -> Result<()> {
         let root = tempfile::tempdir()?;
         let baseline_path = root.path().join(BASELINE_PATH);
         let baseline_parent = baseline_path
@@ -1048,7 +1074,7 @@ mod tests {
             Some(PathBuf::from("measurements.json")),
             Some(PathBuf::from("scorecard.json")),
             Some(PathBuf::from("status.md")),
-            true,
+            false,
         ) {
             Ok(()) => {
                 return Err(color_eyre::eyre::eyre!(
@@ -1075,6 +1101,61 @@ mod tests {
             &fs::read_to_string(&receipt_path)?,
             &malformed_receipt.to_string(),
             "receipt artifact changed after malformed receipt",
+        )
+    }
+
+    #[test]
+    fn ratchet_check_is_read_only_and_never_publishes() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let baseline_path = root.path().join(BASELINE_PATH);
+        let baseline_parent = baseline_path
+            .parent()
+            .ok_or_else(|| color_eyre::eyre::eyre!("baseline path has no parent"))?;
+        fs::create_dir_all(baseline_parent)?;
+        let baseline = baseline_with_floor_metrics(BTreeMap::new());
+        fs::write(&baseline_path, serde_json::to_string_pretty(&baseline)?)?;
+
+        fs::write(root.path().join("measurements.json"), minimal_measurement_json())?;
+        let output_path = root.path().join("scorecard.json");
+        let status_path = root.path().join("status.md");
+        let receipt_path = root.path().join("target/receipts/receipt.json");
+        fs::create_dir_all(
+            receipt_path
+                .parent()
+                .ok_or_else(|| color_eyre::eyre::eyre!("receipt path has no parent"))?,
+        )?;
+
+        let previous_output = "previous scorecard\n";
+        let previous_status = "previous status\n";
+        // Even a malformed receipt must not fail (or be touched) during a
+        // check-only run: the ratchet check never reads or writes artifacts.
+        let previous_receipt = "{ malformed receipt\n";
+        fs::write(&output_path, previous_output)?;
+        fs::write(&status_path, previous_status)?;
+        fs::write(&receipt_path, previous_receipt)?;
+
+        run_at(
+            root.path(),
+            UxScorecardFormat::Human,
+            Some(PathBuf::from("measurements.json")),
+            Some(PathBuf::from("scorecard.json")),
+            Some(PathBuf::from("status.md")),
+            true,
+        )?;
+        check(
+            &fs::read_to_string(&output_path)?,
+            &previous_output.to_string(),
+            "ratchet check must not rewrite the scorecard artifact",
+        )?;
+        check(
+            &fs::read_to_string(&status_path)?,
+            &previous_status.to_string(),
+            "ratchet check must not rewrite the tracked status page",
+        )?;
+        check(
+            &fs::read_to_string(&receipt_path)?,
+            &previous_receipt.to_string(),
+            "ratchet check must not rewrite the receipt",
         )
     }
 
