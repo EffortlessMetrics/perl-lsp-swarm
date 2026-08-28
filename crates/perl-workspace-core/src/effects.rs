@@ -104,13 +104,10 @@ mod tests {
     }
 
     #[test]
-    fn default_pragma_state_does_not_fabricate_effects() {
+    fn empty_projected_inputs_do_not_fabricate_effects() {
+        let state = perl_pragma::PragmaState { features: Vec::new(), ..Default::default() };
         let file_id = test_file_id();
-        let facts = CompileEffectFacts::from_pragma_state(
-            file_id.clone(),
-            &perl_pragma::PragmaState::default(),
-            None,
-        );
+        let facts = CompileEffectFacts::from_pragma_state(file_id.clone(), &state, None);
 
         assert_eq!(facts.file_id, file_id);
         assert!(!facts.strict);
