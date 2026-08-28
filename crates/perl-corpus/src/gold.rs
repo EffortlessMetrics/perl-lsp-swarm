@@ -489,8 +489,22 @@ pub struct RenameAssertion {
     pub line: u32,
     pub character: u32,
     pub new_name: String,
+    /// Exact edits expected when this assertion exercises a concrete rename.
+    /// An empty list preserves the count-only contract of older fixtures.
+    #[serde(default)]
+    pub expected_edits: Vec<RenameExpectedEdit>,
     #[serde(default)]
     pub rationale: String,
+}
+
+/// One expected text edit in a rename workspace edit.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RenameExpectedEdit {
+    pub line: u32,
+    pub character: u32,
+    pub end_line: u32,
+    pub end_character: u32,
+    pub new_text: String,
 }
 
 /// On-disk representation of `expected_rename.json`

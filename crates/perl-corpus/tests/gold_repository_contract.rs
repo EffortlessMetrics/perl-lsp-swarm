@@ -6,7 +6,12 @@
 //! cargo test -p perl-corpus --test gold_repository_contract
 //! ```
 
-use perl_corpus::gold::{GoldAssertion, GoldExpected};
+use perl_corpus::gold::{
+    CompletionGoldExpected, DocumentSymbolGoldExpected, GoldAssertion, GoldExpected,
+    GotoGoldExpected, HoverGoldExpected, RenameGoldExpected,
+};
+use serde::Deserialize;
+use serde::de::DeserializeOwned;
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::error::Error;
@@ -23,6 +28,17 @@ const SIDECAR_FLOORS: [(&str, usize); 7] = [
     ("expected_symbols.json", 2),
     ("expected_rename.json", 2),
     ("expected_module.json", 5),
+];
+
+const FIXTURE_FILES: [&str; 8] = [
+    "fixture.pl",
+    "expected.json",
+    "expected_hover.json",
+    "expected_goto.json",
+    "expected_completion.json",
+    "expected_symbols.json",
+    "expected_rename.json",
+    "expected_module.json",
 ];
 
 fn contract_error(message: impl Into<String>) -> std::io::Error {
@@ -146,6 +162,111 @@ fn validate_diagnostics_sidecar(path: &Path, source_len: usize) -> Result<(), Bo
     Ok(())
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ModuleGoldExpected {
+    version: u32,
+    fixture: String,
+    resolution_mode: String,
+    assertions: Vec<ModuleAssertion>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind", deny_unknown_fields)]
+enum ModuleAssertion {
+    Resolves {
+        module: String,
+        expected_suffix: String,
+        use_line: u32,
+        use_col: u32,
+        consumers: Vec<String>,
+        #[serde(default)]
+        rationale: String,
+    },
+    NotResolved {
+        module: String,
+        use_line: u32,
+        use_col: u32,
+        consumers: Vec<String>,
+        #[serde(default)]
+        rationale: String,
+    },
+}
+
+fn validate_typed_named_sidecar<T: DeserializeOwned>(
+    path: &Path,
+    document: &Value,
+) -> Result<(), Box<dyn Error>> {
+    serde_json::from_value::<T>(document.clone()).map_err(|error| {
+        contract_error(format!("typed assertions in {} are invalid: {error}")).into()
+    })?;
+    Ok(())
+}
+
+fn validate_module_sidecar(
+    path: &Path,
+    document: &Value,
+    expected_fixture: &str,
+) -> Result<(), Box<dyn Error>> {
+    let expected: ModuleGoldExpected = serde_json::from_value(document.clone())
+        .map_err(|error| contract_error(format!("typed assertions in {} are invalid: {error}")))?;
+
+    if expected.version != 1 {
+        return Err(contract_error(format!(
+            "{} uses an unsupported sidecar version",
+            path.display()
+        ))
+        .into());
+    }
+    if expected.fixture != expected_fixture {
+        return Err(contract_error(format!(
+            "{} fixture identity must match its directory",
+            path.display()
+        ))
+        .into());
+    }
+    if expected.resolution_mode.trim().is_empty() {
+        return Err(contract_error(format!(
+            "{} must declare a non-empty resolution mode",
+            path.display()
+        ))
+        .into());
+    }
+    if expected.assertions.is_empty() {
+        return Err(contract_error(format!(
+            "{} must contain at least one assertion",
+            path.display()
+        ))
+        .into());
+    }
+
+    for assertion in expected.assertions {
+        let (module, consumers, rationale) = match assertion {
+            ModuleAssertion::Resolves { module, consumers, rationale, .. }
+            | ModuleAssertion::NotResolved { module, consumers, rationale, .. } => {
+                (module, consumers, rationale)
+            }
+        };
+        if module.trim().is_empty() {
+            return Err(contract_error(format!(
+                "{} contains an assertion with an empty module",
+                path.display()
+            ))
+            .into());
+        }
+        if consumers.is_empty() || consumers.iter().any(|consumer| consumer.trim().is_empty()) {
+            return Err(contract_error(format!(
+                "{} contains an assertion with invalid consumers",
+                path.display()
+            ))
+            .into());
+        }
+        let _ = rationale;
+    }
+
+    Ok(())
+}
+
 fn validate_named_sidecar(path: &Path, expected_fixture: &str) -> Result<(), Box<dyn Error>> {
     let document = read_json(path)?;
     let object = document
@@ -185,6 +306,33 @@ fn validate_named_sidecar(path: &Path, expected_fixture: &str) -> Result<(), Box
         .into());
     }
 
+    match path.file_name().and_then(|name| name.to_str()) {
+        Some("expected_hover.json") => {
+            validate_typed_named_sidecar::<HoverGoldExpected>(path, &document)?;
+        }
+        Some("expected_goto.json") => {
+            validate_typed_named_sidecar::<GotoGoldExpected>(path, &document)?;
+        }
+        Some("expected_completion.json") => {
+            validate_typed_named_sidecar::<CompletionGoldExpected>(path, &document)?;
+        }
+        Some("expected_symbols.json") => {
+            validate_typed_named_sidecar::<DocumentSymbolGoldExpected>(path, &document)?;
+        }
+        Some("expected_rename.json") => {
+            validate_typed_named_sidecar::<RenameGoldExpected>(path, &document)?;
+        }
+        Some("expected_module.json") => {
+            validate_module_sidecar(path, &document, expected_fixture)?;
+        }
+        Some("expected.json") | None => {}
+        Some(name) => {
+            return Err(
+                contract_error(format!("{} is not a recognized named sidecar", name)).into()
+            );
+        }
+    }
+
     Ok(())
 }
 
@@ -207,10 +355,83 @@ fn reject_unknown_sidecars(directory: &Path) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+fn validate_module_payload(path: &Path) -> Result<(), Box<dyn Error>> {
+    for entry in fs::read_dir(path)? {
+        let entry = entry?;
+        let member = entry.path();
+        let metadata = fs::symlink_metadata(&member)?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+
+        if metadata.file_type().is_symlink() {
+            return Err(contract_error(format!(
+                "module fixture payload contains a symbolic link: {}",
+                member.display()
+            ))
+            .into());
+        }
+        if metadata.file_type().is_dir() {
+            validate_module_payload(&member)?;
+            continue;
+        }
+        if !metadata.file_type().is_file()
+            || Path::new(&name).extension().and_then(|ext| ext.to_str()) != Some("pm")
+        {
+            return Err(contract_error(format!(
+                "module fixture payload must contain only regular .pm files: {}",
+                member.display()
+            ))
+            .into());
+        }
+    }
+    Ok(())
+}
+
+fn validate_fixture_members(directory: &Path) -> Result<(), Box<dyn Error>> {
+    for entry in fs::read_dir(directory)? {
+        let entry = entry?;
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let metadata = fs::symlink_metadata(&path)?;
+
+        if metadata.file_type().is_symlink() {
+            return Err(contract_error(format!(
+                "fixture directory contains a symbolic link: {}",
+                path.display()
+            ))
+            .into());
+        }
+        if name == "lib" {
+            if !metadata.file_type().is_dir() {
+                return Err(contract_error(format!(
+                    "fixture lib payload must be a directory: {}",
+                    path.display()
+                ))
+                .into());
+            }
+            validate_module_payload(&path)?;
+            continue;
+        }
+        if !FIXTURE_FILES.contains(&name.as_str()) {
+            return Err(
+                contract_error(format!("unexpected fixture asset: {}", path.display())).into()
+            );
+        }
+        if !metadata.file_type().is_file() {
+            return Err(contract_error(format!(
+                "fixture member must be a regular file: {}",
+                path.display()
+            ))
+            .into());
+        }
+    }
+    Ok(())
+}
+
 fn validate_fixture_directory(
     directory: &Path,
     sidecar_counts: &mut BTreeMap<&'static str, usize>,
 ) -> Result<(), Box<dyn Error>> {
+    validate_fixture_members(directory)?;
     reject_unknown_sidecars(directory)?;
 
     let name = fixture_name(directory)?;
@@ -371,6 +592,44 @@ mod tests {
             Err(error) => error,
         };
         if !error.to_string().contains("beyond fixture length") {
+            return Err(contract_error(format!("unexpected validation error: {error}")).into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_malformed_typed_named_assertion_members() -> Result<(), Box<dyn Error>> {
+        let directory = tempdir()?;
+        let sidecar = directory.path().join("expected_hover.json");
+        write_fixture_file(&sidecar, r#"{"version":1,"fixture":"fixture","assertions":[{}]}"#)?;
+
+        let error = match validate_named_sidecar(&sidecar, "fixture") {
+            Ok(()) => return Err(contract_error("malformed typed assertion was accepted").into()),
+            Err(error) => error,
+        };
+        if !error.to_string().contains("typed assertions") {
+            return Err(contract_error(format!("unexpected validation error: {error}")).into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_unclaimed_fixture_members() -> Result<(), Box<dyn Error>> {
+        let root = tempdir()?;
+        let fixture = root.path().join("fixture");
+        fs::create_dir(&fixture)?;
+        write_fixture_file(&fixture.join("fixture.pl"), "use strict;\n")?;
+        write_fixture_file(
+            &fixture.join("expected.json"),
+            r#"{"diagnostics":[{"assertion":"no_diagnostics"}]}"#,
+        )?;
+        fs::create_dir(fixture.join("unclaimed"))?;
+
+        let error = match validate_fixture_members(&fixture) {
+            Ok(()) => return Err(contract_error("unclaimed fixture member was accepted").into()),
+            Err(error) => error,
+        };
+        if !error.to_string().contains("unexpected fixture asset") {
             return Err(contract_error(format!("unexpected validation error: {error}")).into());
         }
         Ok(())

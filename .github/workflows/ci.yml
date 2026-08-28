@@ -1478,6 +1478,13 @@ jobs:
       - name: Compile all targets (catches integration-test + bench bit-rot)
         run: just check-all-targets
 
+      # The gold repository contract is an integration test, not a compile
+      # witness. Keep it on this required merge surface so the repository
+      # topology and typed-sidecar checks are actually executed for the tree
+      # that would land.
+      - name: Gold repository contract (required merge surface)
+        run: cargo test -p perl-corpus --test gold_repository_contract --locked -- --nocapture
+
       # Required merge surface for #7767/#7796: unit_routed_full only executes via
       # advisory pr-smoke, so stale Emacs guidance could otherwise merge while this
       # contract merely compiles. Keep the oracle on Compile All Targets.

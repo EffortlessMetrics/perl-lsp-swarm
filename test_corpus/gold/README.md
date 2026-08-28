@@ -11,6 +11,8 @@ Every direct child directory must contain:
 
 The repository contract rejects symbolic links, non-regular required files, malformed JSON, empty assertion arrays, mismatched fixture identities, unsupported sidecar versions, unknown `expected*.json` files, and population regressions.
 
+Fixture roots may contain only the allowlisted source and sidecar files plus an optional `lib/` payload. The `lib/` subtree may be nested, but every leaf must be a regular `.pm` file; symbolic links and other unlisted assets are rejected.
+
 Editor and module sidecars use this common envelope:
 
 ```json

@@ -29,9 +29,10 @@ mod common;
 use common::test_utils::TestServerBuilder;
 use perl_corpus::gold::{
     CompletionAssertionKind, CompletionGoldFixture, GoldAssertion, GoldFixture, GotoAssertionKind,
-    GotoGoldFixture, HoverAssertionKind, HoverGoldFixture, RenameAssertionKind, RenameGoldFixture,
-    load_completion_gold_fixtures, load_document_symbol_gold_fixtures, load_gold_fixtures,
-    load_goto_gold_fixtures, load_hover_gold_fixtures, load_rename_gold_fixtures,
+    GotoGoldFixture, HoverAssertionKind, HoverGoldFixture, RenameAssertionKind, RenameExpectedEdit,
+    RenameGoldFixture, load_completion_gold_fixtures, load_document_symbol_gold_fixtures,
+    load_gold_fixtures, load_goto_gold_fixtures, load_hover_gold_fixtures,
+    load_rename_gold_fixtures,
 };
 use perl_corpus::{DocumentSymbolAssertionKind, DocumentSymbolGoldFixture};
 use serde_json::Value;
@@ -550,6 +551,77 @@ fn rename_error_message(resp: &Value) -> Option<&str> {
     resp.get("error").and_then(|error| error["message"].as_str())
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct ObservedRenameEdit {
+    uri: String,
+    line: u32,
+    character: u32,
+    end_line: u32,
+    end_character: u32,
+    new_text: String,
+}
+
+fn json_u32(value: &Value) -> Option<u32> {
+    value.as_u64().and_then(|number| u32::try_from(number).ok())
+}
+
+fn observed_rename_edits(resp: &Value) -> Vec<ObservedRenameEdit> {
+    let Some(changes) =
+        resp.get("result").and_then(|result| result.get("changes")).and_then(Value::as_object)
+    else {
+        return Vec::new();
+    };
+
+    let mut edits = Vec::new();
+    for (uri, value) in changes {
+        let Some(entries) = value.as_array() else { continue };
+        for entry in entries {
+            let Some(range) = entry.get("range") else { continue };
+            let Some(start) = range.get("start") else { continue };
+            let Some(end) = range.get("end") else { continue };
+            let Some(new_text) = entry.get("newText").and_then(Value::as_str) else { continue };
+            let Some(line) = start.get("line").and_then(json_u32) else { continue };
+            let Some(character) = start.get("character").and_then(json_u32) else { continue };
+            let Some(end_line) = end.get("line").and_then(json_u32) else { continue };
+            let Some(end_character) = end.get("character").and_then(json_u32) else { continue };
+            edits.push(ObservedRenameEdit {
+                uri: uri.clone(),
+                line,
+                character,
+                end_line,
+                end_character,
+                new_text: new_text.to_owned(),
+            });
+        }
+    }
+    edits.sort();
+    edits
+}
+
+fn rename_expected_edits_match(
+    resp: &Value,
+    expected_uri: &str,
+    expected: &[RenameExpectedEdit],
+) -> bool {
+    if expected.is_empty() {
+        return true;
+    }
+
+    let mut expected_edits: Vec<ObservedRenameEdit> = expected
+        .iter()
+        .map(|edit| ObservedRenameEdit {
+            uri: expected_uri.to_owned(),
+            line: edit.line,
+            character: edit.character,
+            end_line: edit.end_line,
+            end_character: edit.end_character,
+            new_text: edit.new_text.clone(),
+        })
+        .collect();
+    expected_edits.sort();
+    observed_rename_edits(resp) == expected_edits
+}
+
 /// Run all rename gold fixtures and assert every assertion passes.
 /// Reports rename success rate to stdout under --nocapture.
 #[test]
@@ -581,13 +653,17 @@ fn test_rename_gold_corpus() -> TestResult {
             let resp =
                 server.get_rename(&uri, assertion.line, assertion.character, &assertion.new_name);
 
+            let expected_edits_ok =
+                rename_expected_edits_match(&resp, &uri, &assertion.expected_edits);
             let ok = match &assertion.kind {
                 RenameAssertionKind::RenameSucceeds => {
-                    !rename_is_null(&resp) && rename_total_edit_count(&resp) >= 1
+                    !rename_is_null(&resp)
+                        && rename_total_edit_count(&resp) >= 1
+                        && expected_edits_ok
                 }
                 RenameAssertionKind::RenameNull => rename_is_null(&resp),
                 RenameAssertionKind::RenameEditCountAtLeast { min } => {
-                    rename_total_edit_count(&resp) >= *min
+                    rename_total_edit_count(&resp) >= *min && expected_edits_ok
                 }
             };
 
@@ -627,4 +703,57 @@ fn test_rename_gold_corpus() -> TestResult {
     );
 
     Ok(())
+}
+
+#[cfg(test)]
+mod rename_oracle_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn expected() -> Vec<RenameExpectedEdit> {
+        vec![RenameExpectedEdit {
+            line: 4,
+            character: 4,
+            end_line: 4,
+            end_character: 19,
+            new_text: "sum_values".to_string(),
+        }]
+    }
+
+    fn response(range: Value, new_text: &str) -> Value {
+        json!({
+            "result": {
+                "changes": {
+                    "file:///gold/rename_subroutine.pl": [{
+                        "range": range,
+                        "newText": new_text
+                    }]
+                }
+            }
+        })
+    }
+
+    #[test]
+    fn rename_oracle_rejects_wrong_range() -> TestResult {
+        let resp = response(
+            json!({"start":{"line":4,"character":5},"end":{"line":4,"character":20}}),
+            "sum_values",
+        );
+        if rename_expected_edits_match(&resp, "file:///gold/rename_subroutine.pl", &expected()) {
+            return Err("wrong-range rename edit passed the oracle".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn rename_oracle_rejects_wrong_replacement_text() -> TestResult {
+        let resp = response(
+            json!({"start":{"line":4,"character":4},"end":{"line":4,"character":19}}),
+            "calculate_total",
+        );
+        if rename_expected_edits_match(&resp, "file:///gold/rename_subroutine.pl", &expected()) {
+            return Err("wrong-text rename edit passed the oracle".into());
+        }
+        Ok(())
+    }
 }
