@@ -81,13 +81,7 @@ impl WhitespaceEditMap {
             }
 
             let byte_shift = edit.byte_shift();
-            normalized.push(NormalizedEdit {
-                old_start,
-                old_end,
-                new_start,
-                new_end,
-                byte_shift,
-            });
+            normalized.push(NormalizedEdit { old_start, old_end, new_start, new_end, byte_shift });
             old_cursor = old_end;
             new_cursor = new_end;
             cumulative_shift = cumulative_shift.checked_add(byte_shift)?;
@@ -103,12 +97,13 @@ impl WhitespaceEditMap {
         Some(Self { edits: normalized })
     }
 
-    pub(super) fn clone_tree(&self, root: &Node) -> Node {
-        let mut cloned = root.clone_with_mapped_locations(|location| self.map_location(location));
+    pub(super) fn clone_tree(&self, root: &Node) -> Option<Node> {
+        let mut cloned =
+            root.clone_with_mapped_locations(|location| self.map_location(location))?;
         // Parser::parse always returns a Program rooted at the source origin.
         // Leading trivia moves its first statement, not the Program anchor.
         cloned.location.start = root.location.start;
-        cloned
+        Some(cloned)
     }
 
     fn map_location(&self, location: SourceLocation) -> SourceLocation {
@@ -202,10 +197,7 @@ fn structural_tokens_match(old_source: &str, new_source: &str) -> bool {
     let mut new_lexer = PerlLexer::new(new_source);
 
     loop {
-        match (
-            next_structural_token(&mut old_lexer),
-            next_structural_token(&mut new_lexer),
-        ) {
+        match (next_structural_token(&mut old_lexer), next_structural_token(&mut new_lexer)) {
             (StructuralLexItem::End, StructuralLexItem::End) => return true,
             (
                 StructuralLexItem::Token { kind: old_kind, text: old_text },
@@ -260,7 +252,7 @@ mod tests {
             loc(0, 3),
         );
 
-        let mapped = map.clone_tree(&root);
+        let mapped = map.clone_tree(&root).ok_or("location mapping unexpectedly failed")?;
         let statements = match &mapped.kind {
             NodeKind::Program { statements } => statements,
             other => return Err(format!("expected Program, got {}", other.kind_name()).into()),
@@ -281,7 +273,7 @@ mod tests {
             loc(0, 4),
         );
 
-        let mapped = map.clone_tree(&root);
+        let mapped = map.clone_tree(&root).ok_or("location mapping unexpectedly failed")?;
         let statements = match &mapped.kind {
             NodeKind::Program { statements } => statements,
             other => return Err(format!("expected Program, got {}", other.kind_name()).into()),
@@ -302,7 +294,7 @@ mod tests {
             loc(0, 3),
         );
 
-        let mapped = map.clone_tree(&root);
+        let mapped = map.clone_tree(&root).ok_or("location mapping unexpectedly failed")?;
         let statements = match &mapped.kind {
             NodeKind::Program { statements } => statements,
             other => return Err(format!("expected Program, got {}", other.kind_name()).into()),
@@ -323,7 +315,7 @@ mod tests {
             loc(0, 3),
         );
 
-        let mapped = map.clone_tree(&root);
+        let mapped = map.clone_tree(&root).ok_or("location mapping unexpectedly failed")?;
         let statements = match &mapped.kind {
             NodeKind::Program { statements } => statements,
             other => return Err(format!("expected Program, got {}", other.kind_name()).into()),
@@ -368,7 +360,7 @@ mod tests {
             loc(0, old.len()),
         );
 
-        let mapped = map.clone_tree(&root);
+        let mapped = map.clone_tree(&root).ok_or("location mapping unexpectedly failed")?;
         let statements = match &mapped.kind {
             NodeKind::Program { statements } => statements,
             other => return Err(format!("expected Program, got {}", other.kind_name()).into()),

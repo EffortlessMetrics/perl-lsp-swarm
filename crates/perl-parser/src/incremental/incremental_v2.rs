@@ -595,7 +595,7 @@ impl IncrementalParserV2 {
         last_tree: &IncrementalTree,
         edit_map: &WhitespaceEditMap,
     ) -> Option<Node> {
-        let new_root = edit_map.clone_tree(&last_tree.root);
+        let new_root = edit_map.clone_tree(&last_tree.root)?;
         if !self.validate_incremental_result(&new_root, source) {
             return None;
         }
@@ -2125,8 +2125,7 @@ if ($condition) {
     }
 
     #[test]
-    fn whitespace_before_operator_uses_fast_path_and_maps_selective_geometry()
-    -> ParseResult<()> {
+    fn whitespace_before_operator_uses_fast_path_and_maps_selective_geometry() -> ParseResult<()> {
         let mut parser = IncrementalParserV2::new();
         let source1 = "my $x = 42;";
         let old_tree = parser.parse(source1)?;
@@ -2152,8 +2151,9 @@ if ($condition) {
         assert_eq!(parser.reused_nodes, parser.count_nodes(&old_tree));
 
         if let NodeKind::Program { statements } = &incremental.kind
-            && let NodeKind::VariableDeclaration { variable, initializer: Some(initializer), .. } =
-                &statements[0].kind
+            && let NodeKind::VariableDeclaration {
+                variable, initializer: Some(initializer), ..
+            } = &statements[0].kind
         {
             assert_eq!(variable.location, SourceLocation { start: 3, end: 5 });
             assert_eq!(initializer.location, SourceLocation { start: 10, end: 12 });
@@ -2260,8 +2260,9 @@ if ($condition) {
         assert_eq!(parser.reused_nodes, parser.count_nodes(&old_tree));
 
         if let NodeKind::Program { statements } = &incremental.kind
-            && let NodeKind::VariableDeclaration { variable, initializer: Some(initializer), .. } =
-                &statements[0].kind
+            && let NodeKind::VariableDeclaration {
+                variable, initializer: Some(initializer), ..
+            } = &statements[0].kind
         {
             assert_eq!(variable.location, SourceLocation { start: 3, end: 5 });
             assert_eq!(initializer.location, SourceLocation { start: 10, end: 12 });
@@ -2300,10 +2301,7 @@ if ($condition) {
             assert_eq!(statements[0].location, old_first);
             assert_eq!(
                 statements[1].location,
-                SourceLocation {
-                    start: old_second.start + 1,
-                    end: old_second.end + 1,
-                }
+                SourceLocation { start: old_second.start + 1, end: old_second.end + 1 }
             );
         } else {
             return Err(perl_parser_core::error::ParseError::UnexpectedEof);

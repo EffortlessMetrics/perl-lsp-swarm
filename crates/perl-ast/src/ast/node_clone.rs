@@ -54,12 +54,16 @@ impl Node {
     /// each result from the supplied location rather than from traversal order.
     ///
     /// This is a full owned duplication, not an in-place edit or a shared view.
+    /// Returns `None` when a mapped recovery-token span cannot be represented
+    /// without losing the token's validated byte width.
     #[must_use]
-    pub fn clone_with_mapped_locations<F>(&self, map: F) -> Self
+    pub fn clone_with_mapped_locations<F>(&self, map: F) -> Option<Self>
     where
         F: Fn(SourceLocation) -> SourceLocation,
     {
-        clone_node_with_location_map(self, &mut (), &map)
+        let mut failed = false;
+        let cloned = clone_node_with_location_map(self, &mut (), &map, true, &mut failed);
+        (!failed).then_some(cloned)
     }
 }
 
@@ -127,18 +131,19 @@ where
     }
 }
 
-fn map_token_span<F>(token: &mut Token, map: &F)
+fn map_token_span<F>(token: &mut Token, map: &F) -> bool
 where
     F: Fn(SourceLocation) -> SourceLocation,
 {
     let mapped = map(SourceLocation { start: token.start(), end: token.end() });
     let Some(mapped_end) = mapped.start.checked_add(token.len()) else {
-        return;
+        return false;
     };
     let Ok(mapped_token) = token.with_span(mapped.start, mapped_end) else {
-        return;
+        return false;
     };
     *token = mapped_token;
+    true
 }
 
 /// Map every independent source span stored outside [`Node::location`].
@@ -147,7 +152,19 @@ where
 /// `NodeKind` variant therefore fails to compile here until its payload geometry
 /// is classified. Recovery [`Token`] geometry is handled explicitly while
 /// preserving the token text's validated byte width.
+#[cfg(test)]
 fn map_payload_locations<F>(kind: &mut NodeKind, map: &F)
+where
+    F: Fn(SourceLocation) -> SourceLocation,
+{
+    let _ = map_payload_locations_with_recovery(kind, map, true);
+}
+
+fn map_payload_locations_with_recovery<F>(
+    kind: &mut NodeKind,
+    map: &F,
+    map_recovery_tokens: bool,
+) -> bool
 where
     F: Fn(SourceLocation) -> SourceLocation,
 {
@@ -167,8 +184,12 @@ where
         NodeKind::Package { name_span, .. } => *name_span = map(*name_span),
         NodeKind::PhaseBlock { phase_span, .. } => map_optional_location(phase_span, map),
         NodeKind::Error { found, .. } => {
-            if let Some(found) = found {
-                map_token_span(found, map);
+            if map_recovery_tokens {
+                if let Some(found) = found {
+                    if !map_token_span(found, map) {
+                        return false;
+                    }
+                }
             }
         }
         NodeKind::Program { .. }
@@ -239,6 +260,7 @@ where
         | NodeKind::MissingBlock
         | NodeKind::UnknownRest => {}
     }
+    true
 }
 
 fn preserve_location(location: SourceLocation) -> SourceLocation {
@@ -246,10 +268,17 @@ fn preserve_location(location: SourceLocation) -> SourceLocation {
 }
 
 pub(super) fn clone_node<O: CloneObserver>(root: &Node, observer: &mut O) -> Node {
-    clone_node_with_location_map(root, observer, &preserve_location)
+    let mut failed = false;
+    clone_node_with_location_map(root, observer, &preserve_location, false, &mut failed)
 }
 
-fn clone_node_with_location_map<O, F>(root: &Node, observer: &mut O, map: &F) -> Node
+fn clone_node_with_location_map<O, F>(
+    root: &Node,
+    observer: &mut O,
+    map: &F,
+    map_recovery_tokens: bool,
+    failed: &mut bool,
+) -> Node
 where
     O: CloneObserver,
     F: Fn(SourceLocation) -> SourceLocation,
@@ -279,7 +308,11 @@ where
                 let cloned_children = take_last_n_reversed(&mut done, child_count);
                 let mut cloned = clone_payload_shell(source);
                 cloned.location = map(source.location);
-                map_payload_locations(&mut cloned.kind, map);
+                if !map_payload_locations_with_recovery(&mut cloned.kind, map, map_recovery_tokens)
+                {
+                    *failed = true;
+                    return clone_slot_placeholder();
+                }
                 install_cloned_children(&mut cloned, cloned_children);
                 observer.on_rebuild();
                 done.push(cloned);
@@ -289,12 +322,7 @@ where
 
     match done.pop() {
         Some(cloned) => cloned,
-        None => {
-            let mut cloned = clone_payload_shell(root);
-            cloned.location = map(root.location);
-            map_payload_locations(&mut cloned.kind, map);
-            cloned
-        }
+        None => clone_slot_placeholder(),
     }
 }
 
@@ -302,9 +330,10 @@ where
 mod tests {
     use super::{
         CLONE_PAYLOAD_SHELL, CloneObserver, Node, NodeKind, ShellCloneGuard, SourceLocation, Token,
-        TokenKind, clone_node, clone_payload_shell, clone_slot_placeholder,
-        install_cloned_children, map_payload_locations, take_last_n_reversed,
+        clone_node, clone_payload_shell, clone_slot_placeholder, install_cloned_children,
+        map_payload_locations, take_last_n_reversed,
     };
+    use perl_token::TokenKind;
     use std::cell::Cell;
 
     fn loc(start: usize, end: usize) -> SourceLocation {
@@ -380,7 +409,8 @@ mod tests {
     }
 
     #[test]
-    fn mapped_location_clone_updates_every_canonical_node() -> Result<(), Box<dyn std::error::Error>> {
+    fn mapped_location_clone_updates_every_canonical_node() -> Result<(), Box<dyn std::error::Error>>
+    {
         let binary = Node::new(
             NodeKind::Binary {
                 op: "+".to_string(),
@@ -392,10 +422,12 @@ mod tests {
         let source = program(vec![binary]);
         let calls = Cell::new(0_u64);
 
-        let mapped = source.clone_with_mapped_locations(|location| {
-            calls.set(calls.get().saturating_add(1));
-            loc(location.start.saturating_add(10), location.end.saturating_add(10))
-        });
+        let mapped = source
+            .clone_with_mapped_locations(|location| {
+                calls.set(calls.get().saturating_add(1));
+                loc(location.start.saturating_add(10), location.end.saturating_add(10))
+            })
+            .ok_or("location mapping unexpectedly failed")?;
 
         assert_eq!(calls.get(), 4);
         assert_eq!(source.location, loc(0, 3), "mapping must not mutate the source tree");
@@ -420,7 +452,8 @@ mod tests {
     }
 
     #[test]
-    fn mapped_location_clone_updates_recovery_token_span() -> Result<(), Box<dyn std::error::Error>> {
+    fn mapped_location_clone_updates_recovery_token_span() -> Result<(), Box<dyn std::error::Error>>
+    {
         let found = Token::new_checked(TokenKind::Semicolon, ";", 8, 9)?;
         let source = Node::new(
             NodeKind::Error {
@@ -432,9 +465,14 @@ mod tests {
             loc(8, 9),
         );
 
-        let mapped = source.clone_with_mapped_locations(|location| {
-            loc(location.start.saturating_add(10), location.end.saturating_add(10))
-        });
+        let mapped = source
+            .clone_with_mapped_locations(|location| {
+                loc(location.start.saturating_add(10), location.end.saturating_add(10))
+            })
+            .ok_or("location mapping unexpectedly failed")?;
+
+        let rejected = source.clone_with_mapped_locations(|location| loc(usize::MAX, location.end));
+        assert!(rejected.is_none(), "invalid mapped token geometry must fail closed");
 
         let source_found = match &source.kind {
             NodeKind::Error { found: Some(found), .. } => found,
@@ -468,7 +506,9 @@ mod tests {
             body_span: Some(loc(2, 6)),
         };
         map_payload_locations(&mut heredoc, &shift);
-        assert!(matches!(heredoc, NodeKind::Heredoc { body_span: Some(span), .. } if span == loc(12, 16)));
+        assert!(
+            matches!(heredoc, NodeKind::Heredoc { body_span: Some(span), .. } if span == loc(12, 16))
+        );
 
         let mut try_block = NodeKind::Try {
             body: Box::new(numbered("1", 0)),
@@ -492,7 +532,9 @@ mod tests {
             body: Box::new(numbered("3", 9)),
         };
         map_payload_locations(&mut subroutine, &shift);
-        assert!(matches!(subroutine, NodeKind::Subroutine { name_span: Some(span), .. } if span == loc(14, 18)));
+        assert!(
+            matches!(subroutine, NodeKind::Subroutine { name_span: Some(span), .. } if span == loc(14, 18))
+        );
 
         let mut method = NodeKind::Method {
             name: "run".to_string(),
@@ -502,13 +544,12 @@ mod tests {
             body: Box::new(numbered("4", 9)),
         };
         map_payload_locations(&mut method, &shift);
-        assert!(matches!(method, NodeKind::Method { name_span: Some(span), .. } if span == loc(15, 18)));
+        assert!(
+            matches!(method, NodeKind::Method { name_span: Some(span), .. } if span == loc(15, 18))
+        );
 
-        let mut package = NodeKind::Package {
-            name: "Pkg".to_string(),
-            name_span: loc(8, 11),
-            block: None,
-        };
+        let mut package =
+            NodeKind::Package { name: "Pkg".to_string(), name_span: loc(8, 11), block: None };
         map_payload_locations(&mut package, &shift);
         assert!(matches!(package, NodeKind::Package { name_span, .. } if name_span == loc(18, 21)));
 
@@ -518,7 +559,9 @@ mod tests {
             block: Box::new(numbered("5", 6)),
         };
         map_payload_locations(&mut phase, &shift);
-        assert!(matches!(phase, NodeKind::PhaseBlock { phase_span: Some(span), .. } if span == loc(10, 15)));
+        assert!(
+            matches!(phase, NodeKind::PhaseBlock { phase_span: Some(span), .. } if span == loc(10, 15))
+        );
 
         let mut class = NodeKind::Class {
             name: "Thing".to_string(),
@@ -527,7 +570,9 @@ mod tests {
             body: Box::new(numbered("6", 12)),
         };
         map_payload_locations(&mut class, &shift);
-        assert!(matches!(class, NodeKind::Class { name_span: Some(span), .. } if span == loc(16, 21)));
+        assert!(
+            matches!(class, NodeKind::Class { name_span: Some(span), .. } if span == loc(16, 21))
+        );
 
         let mut format = NodeKind::Format {
             name: "STDOUT".to_string(),
@@ -535,7 +580,9 @@ mod tests {
             body: String::new(),
         };
         map_payload_locations(&mut format, &shift);
-        assert!(matches!(format, NodeKind::Format { name_span: Some(span), .. } if span == loc(17, 23)));
+        assert!(
+            matches!(format, NodeKind::Format { name_span: Some(span), .. } if span == loc(17, 23))
+        );
     }
 
     #[test]
