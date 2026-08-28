@@ -6,8 +6,8 @@
 use xtask::branch_deletion_admission::{
     AdmissionRequest, BranchSubject, DeletionAdmission, GraphCompleteness, Mergeability, NextOwner,
     ObservedPullRequest, OpenChildGraph, ParentSubject, ParentTerminality, PullRequestState,
-    RepositoryId, WorktreeOwnership, branch_deletion_command, evaluate, merge_command,
-    remote_verification_command, render_disposition,
+    RecheckGate, RepositoryId, WorktreeOwnership, branch_deletion_command, evaluate, merge_command,
+    recheck_gate, remote_verification_command, render_disposition,
 };
 
 const PARENT_BRANCH: &str = "agent/vim-activation-root-7762";
@@ -810,6 +810,191 @@ fn the_release_script_runs_the_merge_command_this_module_emits()
     assert_eq!(
         merge_invocations, 1,
         "expected exactly one `gh pr merge` in {SCRIPT}, found {merge_invocations}",
+    );
+    Ok(())
+}
+
+/// The control for the re-check gate. Without it every falsifier below could
+/// pass for the trivial reason that nothing is ever allowed to proceed.
+#[test]
+fn an_unchanged_re_read_proceeds_to_the_deletion() {
+    let admitted = evaluate(&admissible_request());
+    let recheck = evaluate(&admissible_request());
+    assert_eq!(admitted.admission, DeletionAdmission::SafeToDelete);
+    assert_eq!(
+        recheck_gate(&admitted, &recheck),
+        RecheckGate::Proceed,
+        "an identical, still-admitted re-read is the only shape that may delete",
+    );
+}
+
+/// The reason the second read exists: a dependency that did not exist when the
+/// first read authorized. Opening a child does not move the branch tip, so the
+/// lease cannot catch this — only the re-read can.
+#[test]
+fn a_child_opened_between_the_reads_retains() {
+    let admitted = evaluate(&admissible_request());
+
+    let mut later = admissible_request();
+    later.graph.pull_requests = vec![child(7810, false, Mergeability::Clean)];
+    let recheck = evaluate(&later);
+
+    let RecheckGate::Retain { detail } = recheck_gate(&admitted, &recheck) else {
+        panic!("a child opened between the reads must retain the branch");
+    };
+    assert!(
+        detail.contains("no longer admits"),
+        "the retention must name the re-read as the reason: {detail}",
+    );
+}
+
+/// A graph that went unreadable between the reads is not a licence to delete
+/// on the strength of the first one.
+#[test]
+fn a_graph_that_went_unreadable_between_the_reads_retains() {
+    let admitted = evaluate(&admissible_request());
+
+    let mut later = admissible_request();
+    later.graph.completeness =
+        GraphCompleteness::Unavailable { detail: "gh timed out".to_string() };
+    let recheck = evaluate(&later);
+
+    assert!(
+        matches!(recheck_gate(&admitted, &recheck), RecheckGate::Retain { .. }),
+        "an unproven re-read must retain",
+    );
+}
+
+/// A tip that moved between the reads retains here rather than relying on the
+/// lease alone. The lease would also reject it, but the gate must not hand a
+/// stale `admitted_sha` to a push and call the resulting failure a design.
+#[test]
+fn a_tip_that_moved_between_the_reads_retains() {
+    let admitted = evaluate(&admissible_request());
+
+    let mut later = admissible_request();
+    later.parent.reviewed_head_sha = OTHER_SHA.to_string();
+    later.branch.current_sha = Some(OTHER_SHA.to_string());
+    let recheck = evaluate(&later);
+    assert_eq!(
+        recheck.admission,
+        DeletionAdmission::SafeToDelete,
+        "the perturbed re-read must still be admissible, or this tests nothing",
+    );
+
+    let RecheckGate::Retain { detail } = recheck_gate(&admitted, &recheck) else {
+        panic!("a moved tip must retain");
+    };
+    assert!(
+        detail.contains("admitted tip"),
+        "the retention must name the tip as what drifted: {detail}",
+    );
+}
+
+/// A remote repointed between the reads changes the endpoint the deletion is
+/// delivered to. Both reads admit; they admit deletions on different servers.
+#[test]
+fn a_remote_repointed_between_the_reads_retains() {
+    let admitted = evaluate(&admissible_request());
+
+    let mut later = admissible_request();
+    later.push_endpoint = Some("https://example.invalid/attacker/mirror.git".to_string());
+    let recheck = evaluate(&later);
+    assert_eq!(recheck.admission, DeletionAdmission::SafeToDelete);
+
+    let RecheckGate::Retain { detail } = recheck_gate(&admitted, &recheck) else {
+        panic!("a repointed remote must retain");
+    };
+    assert!(
+        detail.contains("push endpoint"),
+        "the retention must name the endpoint as what drifted: {detail}",
+    );
+}
+
+/// A re-read that admits deletion of a *different* branch is not authorization
+/// to delete the one the first read admitted. Without the identity comparison
+/// the gate would pass any admitting re-read at all.
+#[test]
+fn a_re_read_of_a_different_subject_is_not_authorization() {
+    let admitted = evaluate(&admissible_request());
+
+    let mut later = admissible_request();
+    later.parent.number = 9999;
+    later.parent.head_ref = "agent/some-other-branch".to_string();
+    let recheck = evaluate(&later);
+    assert_eq!(recheck.admission, DeletionAdmission::SafeToDelete);
+
+    let RecheckGate::Retain { detail } = recheck_gate(&admitted, &recheck) else {
+        panic!("a re-read describing another subject must retain");
+    };
+    assert!(
+        detail.contains("branch") && detail.contains("parent"),
+        "the retention must name every field that drifted: {detail}",
+    );
+}
+
+/// Fail closed on an admitting re-read carrying no tip: there is nothing to
+/// lease against and nothing to compare, so it is not authorization either.
+#[test]
+fn an_admitting_re_read_without_a_tip_retains() {
+    let admitted = evaluate(&admissible_request());
+    let mut recheck = evaluate(&admissible_request());
+    recheck.admitted_sha = None;
+
+    assert!(
+        matches!(recheck_gate(&admitted, &recheck), RecheckGate::Retain { .. }),
+        "an unleasable re-read must retain",
+    );
+}
+
+/// The gate above is pure, so it proves nothing unless the mutating path
+/// actually consults it. This binds the two: the `Cleanup` arm must collect a
+/// second time, gate on `recheck_gate`, and reach `execute_admitted_deletion`
+/// only after that — in that order.
+#[test]
+fn the_cleanup_path_gates_its_deletion_on_the_re_read() -> Result<(), Box<dyn std::error::Error>> {
+    let source = std::fs::read_to_string(
+        repository_root()?.join("xtask/src/branch_deletion_admission/mod.rs"),
+    )?;
+    let after = source
+        .split_once("BranchDeletionAdmissionCommand::Cleanup {")
+        .ok_or("mod.rs no longer routes a Cleanup command")?
+        .1;
+    // Bound the scan to this arm alone. Reading to end-of-file would let a
+    // later arm's `collect_request`, or a mention in prose, satisfy the
+    // assertions below while the cleanup path itself deleted unguarded.
+    let body = after.split_once("BranchDeletionAdmissionCommand::").map_or(after, |(arm, _)| arm);
+    let code: Vec<&str> =
+        body.lines().map(|line| line.trim()).filter(|line| !line.starts_with("//")).collect();
+
+    let position = |needle: &str| code.iter().position(|line| line.contains(needle));
+
+    let collects: Vec<usize> = code
+        .iter()
+        .enumerate()
+        .filter(|(_, line)| line.contains("collect_request("))
+        .map(|(index, _)| index)
+        .collect();
+    assert_eq!(
+        collects.len(),
+        2,
+        "the cleanup arm must read the live subjects twice — once to admit, once immediately \
+         before deleting; found {} read(s)",
+        collects.len(),
+    );
+
+    let gate = position("recheck_gate(").ok_or("the cleanup arm does not consult recheck_gate")?;
+    let delete = position("execute_admitted_deletion(")
+        .ok_or("the cleanup arm no longer performs the deletion")?;
+
+    assert!(
+        collects[1] < gate && gate < delete,
+        "the order must be second read -> gate -> delete, not {:?} -> {gate} -> {delete}",
+        collects[1],
+    );
+    assert!(
+        code[gate..delete].iter().any(|line| line.contains("RETAIN_EXIT_CODE")),
+        "a retaining verdict between the gate and the deletion must exit, not fall through",
     );
     Ok(())
 }

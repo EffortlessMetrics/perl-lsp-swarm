@@ -27,8 +27,8 @@ pub use model::{
     PullRequestState, RepositoryId, RetainedChild, WorktreeOwnership,
 };
 pub use route::{
-    branch_deletion_command, merge_command, remote_verification_command, render_disposition,
-    render_snapshot_disposition,
+    RecheckGate, branch_deletion_command, merge_command, recheck_gate, remote_verification_command,
+    render_disposition, render_snapshot_disposition,
 };
 
 use clap::{Parser, Subcommand};
@@ -152,20 +152,14 @@ fn run(args: Args) -> Result<()> {
             // it does not close it. A child opened inside that gap is still
             // auto-closed — the residual documented on `branch_deletion_command`,
             // which needs an integration lock or deferred deletion to remove.
+            //
+            // The decision between the two reads is `recheck_gate`, kept pure
+            // so it is falsifiable without a live graph; this arm only supplies
+            // the reads and routes its verdict.
             let recollected = collect_request(&commands, pr, &remote)?;
             let recheck = evaluate(&recollected.request);
-            if !recheck.admission.admits_deletion() {
-                eprintln!(
-                    "branch-deletion-admission: retaining on re-check immediately before deletion: {}",
-                    recheck.detail
-                );
-                std::process::exit(RETAIN_EXIT_CODE);
-            }
-            if recheck.admitted_sha != outcome.admitted_sha {
-                eprintln!(
-                    "branch-deletion-admission: retaining — the admitted tip changed between admission ({:?}) and deletion ({:?})",
-                    outcome.admitted_sha, recheck.admitted_sha
-                );
+            if let RecheckGate::Retain { detail } = recheck_gate(&outcome, &recheck) {
+                eprintln!("branch-deletion-admission: retaining — {detail}");
                 std::process::exit(RETAIN_EXIT_CODE);
             }
 

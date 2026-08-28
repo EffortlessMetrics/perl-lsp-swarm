@@ -81,7 +81,7 @@ pub fn branch_deletion_command(outcome: &AdmissionOutcome) -> Option<Vec<String>
 
 /// The command that binds the remote *name* to the admitted repository.
 ///
-/// `branch_deletion_command` pushes to a remote name, and a name alone says
+/// The deletion is executed against a push URL, and a URL alone says
 /// nothing about which repository it resolves to — the same-repository child
 /// check in `evaluate` is snapshot-local, so a caller pointed at a different
 /// remote would delete a branch no child check ever covered. The caller must
@@ -165,4 +165,88 @@ pub fn render_disposition(outcome: &AdmissionOutcome) -> String {
     }
 
     rendered
+}
+
+/// Whether the second, pre-deletion read still authorizes the deletion the
+/// first read admitted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RecheckGate {
+    /// The re-read subject is the admitted subject, still admitted.
+    Proceed,
+    /// Something moved between the two reads. `detail` names what.
+    Retain { detail: String },
+}
+
+/// Gate the deletion on a re-read of the live subjects.
+///
+/// `cleanup` reads the graph twice: once to decide, and once immediately
+/// before the mutation. The second read is what the deletion actually stands
+/// on. This is the decision between them, kept pure so it can be falsified
+/// without a live graph.
+///
+/// It retains unless *both* hold:
+///
+/// - the re-read still admits deletion — a child opened, a tip moved, a
+///   worktree claimed, or a graph that went unreadable between the reads all
+///   land here through `evaluate`; and
+/// - the re-read describes the *same subject* — repository, parent, branch,
+///   remote, push endpoint, and admitted tip. Equality here is the point: a
+///   re-read that admits deletion of something *else* is not authorization to
+///   delete what the first read admitted. A remote repointed between the reads
+///   changes `push_endpoint`; a force-push changes `admitted_sha`.
+///
+/// # Residual
+///
+/// This narrows the window between authorization and mutation to the gap
+/// between the second read and the push. It does not close it — see the
+/// residual on [`branch_deletion_command`].
+pub fn recheck_gate(admitted: &AdmissionOutcome, recheck: &AdmissionOutcome) -> RecheckGate {
+    if !recheck.admission.admits_deletion() {
+        return RecheckGate::Retain {
+            detail: format!(
+                "the re-read immediately before deletion no longer admits it: {}",
+                recheck.detail
+            ),
+        };
+    }
+
+    // Fail closed on an admitted outcome carrying no tip: there is nothing to
+    // lease against, so there is nothing to compare and nothing to delete.
+    if recheck.admitted_sha.is_none() {
+        return RecheckGate::Retain {
+            detail: "the re-read admitted deletion without an admitted tip to lease against"
+                .to_string(),
+        };
+    }
+
+    let drift: Vec<String> = [
+        ("repository", &admitted.repository, &recheck.repository),
+        ("branch", &admitted.branch, &recheck.branch),
+        ("remote", &admitted.remote, &recheck.remote),
+    ]
+    .into_iter()
+    .filter(|(_, before, after)| before != after)
+    .map(|(field, before, after)| format!("{field} ({before} -> {after})"))
+    .chain(
+        (admitted.parent_number != recheck.parent_number)
+            .then(|| format!("parent (#{} -> #{})", admitted.parent_number, recheck.parent_number)),
+    )
+    .chain((admitted.push_endpoint != recheck.push_endpoint).then(|| {
+        format!("push endpoint ({:?} -> {:?})", admitted.push_endpoint, recheck.push_endpoint)
+    }))
+    .chain((admitted.admitted_sha != recheck.admitted_sha).then(|| {
+        format!("admitted tip ({:?} -> {:?})", admitted.admitted_sha, recheck.admitted_sha)
+    }))
+    .collect();
+
+    if drift.is_empty() {
+        RecheckGate::Proceed
+    } else {
+        RecheckGate::Retain {
+            detail: format!(
+                "the subject changed between admission and deletion: {}",
+                drift.join(", ")
+            ),
+        }
+    }
 }
