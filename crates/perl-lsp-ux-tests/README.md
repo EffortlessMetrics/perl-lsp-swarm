@@ -46,16 +46,16 @@ output. It preserves every server request for assertions through
 `harness.client.peek_server_requests()` and sends a deterministic JSON-RPC
 response:
 
-- registration, unregistration, progress creation, and refresh requests are acknowledged;
-- `workspace/configuration` returns one `null` entry per requested item so the server keeps its defaults;
+- capability-permitted registration, unregistration, progress creation, and refresh requests are acknowledged;
+- known but unadvertised capability-gated requests return a bounded JSON-RPC error and remain available through `peek_capability_violations()`;
+- capability-permitted `workspace/configuration` returns one `null` entry per requested item so the server keeps its defaults;
 - message prompts return no selected action;
 - show-document requests report `success: false`;
 - workspace edits report `applied: false` because the harness does not perform hidden filesystem mutation; and
 - unsupported methods receive JSON-RPC `Method not found` (`-32601`).
 
-This keeps the server's client-request registry from accumulating unresolved
-operations while retaining the exact request id, method, and params as test
-evidence.
+This keeps the active test-client transport moving while retaining the exact
+request id, method, params, response, and capability decision as test evidence.
 
 The stdout transport loop is fail-fast. Malformed framing, invalid JSON, or a
 failure while writing a deterministic client response is retained as transport

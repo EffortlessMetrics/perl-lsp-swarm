@@ -43,6 +43,18 @@ pub enum LspEvent {
     Other { method: String, params: Value },
 }
 
+/// Evidence that a server request required a capability the scenario did not
+/// advertise.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CapabilityViolation {
+    /// Exact JSON-RPC request id supplied by the server.
+    pub id: Value,
+    /// Server method that was rejected.
+    pub method: String,
+    /// Capability path that was absent or false.
+    pub capability: String,
+}
+
 /// A lightweight LSP client that speaks directly to a spawned perl-lsp process.
 pub struct UxClient {
     child: Mutex<Child>,
@@ -56,6 +68,11 @@ pub struct UxClient {
     stderr_lines: Arc<Mutex<Vec<String>>>,
     /// First terminal failure observed by the stdout transport loop.
     transport_error: Arc<Mutex<Option<String>>>,
+    /// Capability-gating violations observed on server requests.
+    capability_violations: Arc<Mutex<Vec<CapabilityViolation>>>,
+    /// Set before the best-effort shutdown handshake so normal EOF is not a
+    /// transport failure.
+    closing: Arc<std::sync::atomic::AtomicBool>,
     _stdout_thread: std::thread::JoinHandle<()>,
     _stderr_thread: std::thread::JoinHandle<()>,
 }
@@ -69,6 +86,7 @@ impl UxClient {
         config: &ScenarioConfig,
     ) -> Result<Self> {
         let mut cmd = build_command(binary_path, config)?;
+        let client_capabilities = build_client_capabilities(config);
 
         let mut child = cmd
             .stdin(Stdio::piped())
@@ -95,12 +113,18 @@ impl UxClient {
         let responses: Arc<Mutex<VecDeque<Value>>> = Arc::new(Mutex::new(VecDeque::new()));
         let stderr_lines: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         let transport_error: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let capability_violations: Arc<Mutex<Vec<CapabilityViolation>>> =
+            Arc::new(Mutex::new(Vec::new()));
+        let closing = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
         // ── stdout reader thread ──────────────────────────────────────────────
         let stdin_clone = Arc::clone(&stdin);
         let ev_clone = Arc::clone(&events);
         let resp_clone = Arc::clone(&responses);
         let transport_error_clone = Arc::clone(&transport_error);
+        let capability_violations_clone = Arc::clone(&capability_violations);
+        let closing_clone = Arc::clone(&closing);
+        let client_capabilities_clone = client_capabilities.clone();
         let _stdout_thread = std::thread::Builder::new()
             .name("ux-lsp-stdout".into())
             .spawn(move || {
@@ -111,12 +135,16 @@ impl UxClient {
                         &stdin_clone,
                         &ev_clone,
                         &resp_clone,
+                        &capability_violations_clone,
+                        &client_capabilities_clone,
                     );
                     if let Err(error) = routed {
-                        let mut guard = transport_error_clone
-                            .lock()
-                            .unwrap_or_else(|poisoned| poisoned.into_inner());
-                        *guard = Some(format!("{error:#}"));
+                        if !closing_clone.load(Ordering::Acquire) {
+                            let mut guard = transport_error_clone
+                                .lock()
+                                .unwrap_or_else(|poisoned| poisoned.into_inner());
+                            *guard = Some(format!("{error:#}"));
+                        }
                         break;
                     }
                 }
@@ -152,12 +180,15 @@ impl UxClient {
             responses,
             stderr_lines,
             transport_error,
+            capability_violations,
+            closing,
             _stdout_thread,
             _stderr_thread,
         };
 
         // ── LSP handshake ─────────────────────────────────────────────────────
-        client.initialize_result = client.handshake(workspace, config, config.timeout)?;
+        client.initialize_result =
+            client.handshake(workspace, config, &client_capabilities, config.timeout)?;
 
         Ok(client)
     }
@@ -166,6 +197,7 @@ impl UxClient {
         &self,
         workspace: &FakeWorkspace,
         config: &ScenarioConfig,
+        client_capabilities: &Value,
         timeout: Duration,
     ) -> Result<Value> {
         let workspace_folders = config
@@ -188,32 +220,7 @@ impl UxClient {
         let mut params = json!({
             "processId": null,
             "rootUri": root_uri,
-            "capabilities": {
-                "general": {
-                    "positionEncodings": ["utf-16"]
-                },
-                "textDocument": {
-                    "hover": {
-                        "contentFormat": ["markdown", "plaintext"]
-                    },
-                    "completion": {
-                        "completionItem": {
-                            "snippetSupport": true
-                        }
-                    },
-                    "formatting": {},
-                    "definition": {},
-                    "publishDiagnostics": {
-                        "relatedInformation": true
-                    }
-                },
-                "workspace": {
-                    "workspaceFolders": true
-                },
-                "window": {
-                    "showMessage": {}
-                }
-            }
+            "capabilities": client_capabilities
         });
         if !workspace_folders.is_empty() {
             params["workspaceFolders"] = Value::Array(workspace_folders);
@@ -373,6 +380,11 @@ impl UxClient {
         self.transport_error.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
+    /// Clone capability violations observed by the transport loop.
+    pub fn peek_capability_violations(&self) -> Vec<CapabilityViolation> {
+        self.capability_violations.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
     /// Wait up to `timeout` for any `window/showMessage` containing `needle`.
     pub fn wait_for_message(&self, needle: &str, timeout: Duration) -> bool {
         let deadline = Instant::now() + timeout;
@@ -418,16 +430,15 @@ fn wait_for_response_queue(
     loop {
         {
             let mut guard = responses.lock().unwrap_or_else(|e| e.into_inner());
-            let position = guard.iter().position(|value| {
-                value["id"].as_u64() == Some(id) || value["id"] == json!(id)
-            });
+            let position = guard
+                .iter()
+                .position(|value| value["id"].as_u64() == Some(id) || value["id"] == json!(id));
             if let Some(msg) = position.and_then(|pos| guard.remove(pos)) {
                 return Ok(msg);
             }
         }
 
-        let transport_failure =
-            transport_error.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let transport_failure = transport_error.lock().unwrap_or_else(|e| e.into_inner()).clone();
         if let Some(error) = transport_failure {
             return Err(anyhow!(
                 "LSP stdout transport failed while waiting for response id={id}: {error}"
@@ -466,6 +477,7 @@ fn merge_json(target: &mut Value, overlay: &Value) {
 impl Drop for UxClient {
     fn drop(&mut self) {
         // Best-effort graceful shutdown.
+        self.closing.store(true, Ordering::Release);
         let shutdown = r#"{"jsonrpc":"2.0","id":999998,"method":"shutdown","params":{}}"#;
         let exit = r#"{"jsonrpc":"2.0","method":"exit"}"#;
         if let Ok(mut stdin) = self.stdin.lock() {
@@ -527,11 +539,44 @@ fn write_lsp_message(writer: &mut impl Write, message: &Value) -> Result<()> {
     Ok(())
 }
 
+fn build_client_capabilities(config: &ScenarioConfig) -> Value {
+    let mut capabilities = json!({
+        "general": {
+            "positionEncodings": ["utf-16"]
+        },
+        "textDocument": {
+            "hover": {
+                "contentFormat": ["markdown", "plaintext"]
+            },
+            "completion": {
+                "completionItem": {
+                    "snippetSupport": true
+                }
+            },
+            "formatting": {},
+            "definition": {},
+            "publishDiagnostics": {
+                "relatedInformation": true
+            }
+        },
+        "workspace": {
+            "workspaceFolders": true
+        },
+        "window": {
+            "showMessage": {}
+        }
+    });
+    merge_json(&mut capabilities, &config.client_capability_overrides);
+    capabilities
+}
+
 fn route_next_stdout_message<R, W>(
     reader: &mut R,
     stdin: &Arc<Mutex<W>>,
     events: &Arc<Mutex<VecDeque<Value>>>,
     responses: &Arc<Mutex<VecDeque<Value>>>,
+    capability_violations: &Arc<Mutex<Vec<CapabilityViolation>>>,
+    capabilities: &Value,
 ) -> Result<()>
 where
     R: BufRead,
@@ -543,28 +588,25 @@ where
     let has_error = message.get("error").is_some();
     let is_response = has_id && (has_result || has_error);
     if is_response {
-        responses
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .push_back(message);
+        responses.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).push_back(message);
         return Ok(());
     }
 
-    let server_response = server_request_response(&message);
-    let method_name = message
-        .get("method")
-        .and_then(Value::as_str)
-        .unwrap_or("<missing>");
+    let decision = server_request_decision(&message, capabilities);
+    let method_name = message.get("method").and_then(Value::as_str).unwrap_or("<missing>");
     let method = method_name.to_owned();
     let id = message.get("id").cloned().unwrap_or(Value::Null);
-    events
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .push_back(message);
+    events.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).push_back(message);
 
-    if let Some(response) = server_response {
+    if let Some(decision) = decision {
+        if let Some(violation) = decision.capability_violation {
+            capability_violations
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(violation);
+        }
         let mut stdin = stdin.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        write_lsp_message(&mut *stdin, &response)
+        write_lsp_message(&mut *stdin, &decision.response)
             .with_context(|| format!("Failed to answer server request method={method} id={id}"))?;
     }
 
@@ -576,13 +618,54 @@ fn is_server_request(message: &Value) -> bool {
         && message.get("method").and_then(Value::as_str).is_some()
 }
 
-fn server_request_response(message: &Value) -> Option<Value> {
+struct ServerRequestDecision {
+    response: Value,
+    capability_violation: Option<CapabilityViolation>,
+}
+
+fn server_request_decision(message: &Value, capabilities: &Value) -> Option<ServerRequestDecision> {
     if !is_server_request(message) {
         return None;
     }
 
     let id = message.get("id")?.clone();
     let method = message.get("method")?.as_str()?;
+    let required_capability = match method {
+        "workspace/applyEdit" => Some("workspace.applyEdit"),
+        "workspace/configuration" => Some("workspace.configuration"),
+        "window/showMessageRequest" => Some("window.showMessage"),
+        "window/showDocument" => Some("window.showDocument.support"),
+        "window/workDoneProgress/create" => Some("window.workDoneProgress"),
+        "workspace/codeLens/refresh" => Some("workspace.codeLens.refreshSupport"),
+        "workspace/semanticTokens/refresh" => Some("workspace.semanticTokens.refreshSupport"),
+        "workspace/inlayHint/refresh" => Some("workspace.inlayHint.refreshSupport"),
+        "workspace/inlineValue/refresh" => Some("workspace.inlineValue.refreshSupport"),
+        "workspace/diagnostic/refresh" => Some("workspace.diagnostics.refreshSupport"),
+        "workspace/foldingRange/refresh" => Some("workspace.foldingRange.refreshSupport"),
+        "workspace/textDocumentContent/refresh" => {
+            Some("workspace.textDocumentContent.refreshSupport")
+        }
+        "client/registerCapability" | "client/unregisterCapability" => {
+            let field = if method == "client/registerCapability" {
+                "registrations"
+            } else {
+                "unregisterations"
+            };
+            if let Some(capability) = dynamic_registration_capability(message, field, capabilities)
+            {
+                return Some(capability_violation(message, method, &capability));
+            }
+            None
+        }
+        _ => None,
+    };
+
+    if let Some(capability) = required_capability
+        && !capability_is_advertised(capabilities, capability)
+    {
+        return Some(capability_violation(message, method, capability));
+    }
+
     let result = match method {
         "workspace/applyEdit" => json!({
             "applied": false,
@@ -606,22 +689,122 @@ fn server_request_response(message: &Value) -> Option<Value> {
         | "workspace/foldingRange/refresh"
         | "workspace/textDocumentContent/refresh" => Value::Null,
         _ => {
-            return Some(json!({
-                "jsonrpc": "2.0",
-                "id": id,
-                "error": {
-                    "code": -32601,
-                    "message": format!("Method not found: {method}")
-                }
-            }));
+            return Some(ServerRequestDecision {
+                response: json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "error": {
+                        "code": -32601,
+                        "message": format!("Method not found: {method}")
+                    }
+                }),
+                capability_violation: None,
+            });
         }
     };
 
-    Some(json!({
-        "jsonrpc": "2.0",
-        "id": id,
-        "result": result
-    }))
+    Some(ServerRequestDecision {
+        response: json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "result": result
+        }),
+        capability_violation: None,
+    })
+}
+
+#[cfg(test)]
+fn server_request_response(message: &Value, capabilities: &Value) -> Option<Value> {
+    server_request_decision(message, capabilities).map(|decision| decision.response)
+}
+
+fn capability_violation(message: &Value, method: &str, capability: &str) -> ServerRequestDecision {
+    let id = message.get("id").cloned().unwrap_or(Value::Null);
+    ServerRequestDecision {
+        response: json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "error": {
+                "code": -32601,
+                "message": format!("Client capability not advertised: {capability} for {method}")
+            }
+        }),
+        capability_violation: Some(CapabilityViolation {
+            id,
+            method: method.to_owned(),
+            capability: capability.to_owned(),
+        }),
+    }
+}
+
+fn capability_is_advertised(capabilities: &Value, path: &str) -> bool {
+    let pointer = format!("/{}", path.replace('.', "/"));
+    match capabilities.pointer(&pointer) {
+        Some(Value::Bool(value)) => *value,
+        Some(Value::Object(_)) | Some(Value::Array(_)) => true,
+        _ => false,
+    }
+}
+
+fn dynamic_registration_capability(
+    message: &Value,
+    field: &str,
+    capabilities: &Value,
+) -> Option<String> {
+    let Some(registrations) =
+        message.pointer(&format!("/params/{field}")).and_then(Value::as_array)
+    else {
+        return Some(format!("/params/{field}"));
+    };
+    if registrations.is_empty() {
+        return Some("dynamic registration payload".to_owned());
+    }
+    for registration in registrations {
+        let Some(method) = registration.get("method").and_then(Value::as_str) else {
+            return Some("dynamic registration method".to_owned());
+        };
+        let Some(capability) = registration_capability_path(method) else {
+            return Some(format!("dynamic registration for {method}"));
+        };
+        if !capability_is_advertised(capabilities, capability) {
+            return Some(capability.to_owned());
+        }
+    }
+    None
+}
+
+fn registration_capability_path(method: &str) -> Option<&'static str> {
+    let path = match method {
+        "workspace/didChangeConfiguration" => {
+            "workspace.didChangeConfiguration.dynamicRegistration"
+        }
+        "workspace/didChangeWatchedFiles" => "workspace.didChangeWatchedFiles.dynamicRegistration",
+        "workspace/executeCommand" => "workspace.executeCommand.dynamicRegistration",
+        "textDocument/completion" => "textDocument.completion.dynamicRegistration",
+        "textDocument/hover" => "textDocument.hover.dynamicRegistration",
+        "textDocument/definition" => "textDocument.definition.dynamicRegistration",
+        "textDocument/declaration" => "textDocument.declaration.dynamicRegistration",
+        "textDocument/typeDefinition" => "textDocument.typeDefinition.dynamicRegistration",
+        "textDocument/implementation" => "textDocument.implementation.dynamicRegistration",
+        "textDocument/references" => "textDocument.references.dynamicRegistration",
+        "textDocument/documentHighlight" => "textDocument.documentHighlight.dynamicRegistration",
+        "textDocument/documentSymbol" => "textDocument.documentSymbol.dynamicRegistration",
+        "textDocument/codeAction" => "textDocument.codeAction.dynamicRegistration",
+        "textDocument/codeLens" => "textDocument.codeLens.dynamicRegistration",
+        "textDocument/documentLink" => "textDocument.documentLink.dynamicRegistration",
+        "textDocument/documentColor" => "textDocument.colorProvider.dynamicRegistration",
+        "textDocument/formatting" => "textDocument.formatting.dynamicRegistration",
+        "textDocument/rangeFormatting" => "textDocument.rangeFormatting.dynamicRegistration",
+        "textDocument/onTypeFormatting" => "textDocument.onTypeFormatting.dynamicRegistration",
+        "textDocument/rename" => "textDocument.rename.dynamicRegistration",
+        "textDocument/publishDiagnostics" => "textDocument.publishDiagnostics.dynamicRegistration",
+        "textDocument/signatureHelp" => "textDocument.signatureHelp.dynamicRegistration",
+        "textDocument/semanticTokens" => "textDocument.semanticTokens.dynamicRegistration",
+        "textDocument/inlayHint" => "textDocument.inlayHint.dynamicRegistration",
+        "textDocument/inlineValue" => "textDocument.inlineValue.dynamicRegistration",
+        _ => return None,
+    };
+    Some(path)
 }
 
 // ── Event decoding ────────────────────────────────────────────────────────────
@@ -685,10 +868,7 @@ mod tests {
 
     impl Write for BrokenWriter {
         fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
-            Err(std::io::Error::new(
-                std::io::ErrorKind::BrokenPipe,
-                "synthetic broken pipe",
-            ))
+            Err(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "synthetic broken pipe"))
         }
 
         fn flush(&mut self) -> std::io::Result<()> {
@@ -722,9 +902,27 @@ mod tests {
         let stdin = Arc::new(Mutex::new(Vec::new()));
         let events = Arc::new(Mutex::new(VecDeque::new()));
         let responses = Arc::new(Mutex::new(VecDeque::new()));
+        let violations = Arc::new(Mutex::new(Vec::new()));
+        let capabilities = capabilities_with(json!({
+            "workspace": { "configuration": true }
+        }));
 
-        route_next_stdout_message(&mut reader, &stdin, &events, &responses)?;
-        route_next_stdout_message(&mut reader, &stdin, &events, &responses)?;
+        route_next_stdout_message(
+            &mut reader,
+            &stdin,
+            &events,
+            &responses,
+            &violations,
+            &capabilities,
+        )?;
+        route_next_stdout_message(
+            &mut reader,
+            &stdin,
+            &events,
+            &responses,
+            &violations,
+            &capabilities,
+        )?;
 
         let framed_response = stdin.lock().unwrap_or_else(|e| e.into_inner()).clone();
         let mut response_reader = BufReader::new(framed_response.as_slice());
@@ -732,21 +930,14 @@ mod tests {
         assert_eq!(client_response["id"], "server-17");
         assert_eq!(client_response["result"], json!([null, null]));
 
-        let observed: Vec<Value> = events
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .iter()
-            .cloned()
-            .collect();
+        let observed: Vec<Value> =
+            events.lock().unwrap_or_else(|e| e.into_inner()).iter().cloned().collect();
         assert_eq!(observed, vec![server_request]);
 
-        let queued: Vec<Value> = responses
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .iter()
-            .cloned()
-            .collect();
+        let queued: Vec<Value> =
+            responses.lock().unwrap_or_else(|e| e.into_inner()).iter().cloned().collect();
         assert_eq!(queued, vec![later_response]);
+        assert!(violations.lock().unwrap_or_else(|e| e.into_inner()).is_empty());
         Ok(())
     }
 
@@ -764,8 +955,19 @@ mod tests {
         let stdin = Arc::new(Mutex::new(BrokenWriter));
         let events = Arc::new(Mutex::new(VecDeque::new()));
         let responses = Arc::new(Mutex::new(VecDeque::new()));
+        let violations = Arc::new(Mutex::new(Vec::new()));
+        let capabilities = capabilities_with(json!({
+            "window": { "workDoneProgress": true }
+        }));
 
-        let failure = match route_next_stdout_message(&mut reader, &stdin, &events, &responses) {
+        let failure = match route_next_stdout_message(
+            &mut reader,
+            &stdin,
+            &events,
+            &responses,
+            &violations,
+            &capabilities,
+        ) {
             Ok(()) => return Err(anyhow!("broken writer unexpectedly accepted the response")),
             Err(error) => format!("{error:#}"),
         };
@@ -795,6 +997,26 @@ mod tests {
 
     #[test]
     fn known_server_requests_receive_results() {
+        let capabilities = capabilities_with(json!({
+            "workspace": {
+                "applyEdit": true,
+                "configuration": true,
+                "codeLens": { "refreshSupport": true },
+                "semanticTokens": { "refreshSupport": true },
+                "inlayHint": { "refreshSupport": true },
+                "inlineValue": { "refreshSupport": true },
+                "diagnostics": { "refreshSupport": true },
+                "foldingRange": { "refreshSupport": true },
+                "textDocumentContent": { "refreshSupport": true }
+            },
+            "textDocument": {
+                "completion": { "dynamicRegistration": true }
+            },
+            "window": {
+                "showDocument": { "support": true },
+                "workDoneProgress": true
+            }
+        }));
         for method in [
             "workspace/applyEdit",
             "workspace/configuration",
@@ -811,13 +1033,28 @@ mod tests {
             "workspace/foldingRange/refresh",
             "workspace/textDocumentContent/refresh",
         ] {
+            let params = match method {
+                "client/registerCapability" => json!({
+                    "registrations": [{
+                        "id": "completion",
+                        "method": "textDocument/completion"
+                    }]
+                }),
+                "client/unregisterCapability" => json!({
+                    "unregisterations": [{
+                        "id": "completion",
+                        "method": "textDocument/completion"
+                    }]
+                }),
+                _ => json!({ "items": [] }),
+            };
             let request = json!({
                 "jsonrpc": "2.0",
                 "id": "server-request-1",
                 "method": method,
-                "params": { "items": [] }
+                "params": params
             });
-            let response = server_request_response(&request).unwrap_or(Value::Null);
+            let response = server_request_response(&request, &capabilities).unwrap_or(Value::Null);
 
             assert_eq!(response["jsonrpc"], "2.0", "method={method}");
             assert_eq!(response["id"], "server-request-1", "method={method}");
@@ -839,7 +1076,10 @@ mod tests {
                 ]
             }
         });
-        let response = server_request_response(&request).unwrap_or(Value::Null);
+        let capabilities = capabilities_with(json!({
+            "workspace": { "configuration": true }
+        }));
+        let response = server_request_response(&request, &capabilities).unwrap_or(Value::Null);
 
         assert_eq!(response["result"], json!([null, null]));
     }
@@ -852,7 +1092,10 @@ mod tests {
             "method": "workspace/applyEdit",
             "params": { "edit": { "changes": {} } }
         });
-        let response = server_request_response(&request).unwrap_or(Value::Null);
+        let capabilities = capabilities_with(json!({
+            "workspace": { "applyEdit": true }
+        }));
+        let response = server_request_response(&request, &capabilities).unwrap_or(Value::Null);
 
         assert_eq!(response["result"]["applied"], false);
         assert_eq!(
@@ -869,7 +1112,11 @@ mod tests {
             "method": "experimental/clientPrompt",
             "params": {}
         });
-        let response = server_request_response(&request).unwrap_or(Value::Null);
+        let response = server_request_response(
+            &request,
+            &build_client_capabilities(&ScenarioConfig::default()),
+        )
+        .unwrap_or(Value::Null);
 
         assert_eq!(response["id"], "extension-3");
         assert_eq!(response["error"]["code"], -32601);
@@ -885,7 +1132,70 @@ mod tests {
         });
 
         assert!(!is_server_request(&notification));
-        assert!(server_request_response(&notification).is_none());
+        assert!(
+            server_request_response(
+                &notification,
+                &build_client_capabilities(&ScenarioConfig::default())
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn known_but_unadvertised_capability_is_rejected_and_recorded() {
+        let request = json!({
+            "jsonrpc": "2.0",
+            "id": 14,
+            "method": "workspace/semanticTokens/refresh",
+            "params": {}
+        });
+        let decision = server_request_decision(
+            &request,
+            &build_client_capabilities(&ScenarioConfig::default()),
+        )
+        .unwrap_or(ServerRequestDecision { response: Value::Null, capability_violation: None });
+
+        assert_eq!(decision.response["id"], 14);
+        assert_eq!(decision.response["error"]["code"], -32601);
+        assert!(
+            decision.response["error"]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("workspace.semanticTokens.refreshSupport"))
+        );
+        assert_eq!(
+            decision.capability_violation,
+            Some(CapabilityViolation {
+                id: json!(14),
+                method: "workspace/semanticTokens/refresh".to_owned(),
+                capability: "workspace.semanticTokens.refreshSupport".to_owned(),
+            })
+        );
+    }
+
+    #[test]
+    fn advertised_capability_allows_known_request() {
+        let request = json!({
+            "jsonrpc": "2.0",
+            "id": "refresh-1",
+            "method": "workspace/semanticTokens/refresh",
+            "params": {}
+        });
+        let capabilities = capabilities_with(json!({
+            "workspace": {
+                "semanticTokens": { "refreshSupport": true }
+            }
+        }));
+        let response = server_request_response(&request, &capabilities).unwrap_or(Value::Null);
+
+        assert_eq!(response["id"], "refresh-1");
+        assert_eq!(response["result"], Value::Null);
+        assert!(response.get("error").is_none());
+    }
+
+    fn capabilities_with(overrides: Value) -> Value {
+        let config =
+            ScenarioConfig { client_capability_overrides: overrides, ..ScenarioConfig::default() };
+        build_client_capabilities(&config)
     }
 
     #[test]
