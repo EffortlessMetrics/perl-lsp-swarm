@@ -30,7 +30,6 @@ struct ParserAccuracyNodeKindManifest {
 #[derive(Debug, Deserialize)]
 struct ParserAccuracyNodeKindFixture {
     id: String,
-    #[serde(default)]
     ast_expectations: Vec<NodeKindReference>,
     #[serde(default)]
     forbidden_nodes: Vec<NodeKindReference>,
@@ -102,7 +101,34 @@ fn parser_accuracy_ast_nodekind_references_are_canonical() -> TestResult {
 }
 
 #[test]
-fn misspelled_forbidden_kind_is_rejected_before_absence_matching() {
+fn manifest_requires_ast_nodekind_collection() {
+    let without_ast_collection = r#"{
+        "fixtures": [{
+            "id": "fixture",
+            "ast_expectation": [],
+            "forbidden_nodes": []
+        }]
+    }"#;
+    assert!(
+        serde_json::from_str::<ParserAccuracyNodeKindManifest>(without_ast_collection).is_err(),
+        "a misspelled or missing ast_expectations collection must not default to empty"
+    );
+
+    let optional_forbidden_collection = r#"{
+        "fixtures": [{
+            "id": "fixture",
+            "ast_expectations": []
+        }]
+    }"#;
+    assert!(
+        serde_json::from_str::<ParserAccuracyNodeKindManifest>(optional_forbidden_collection)
+            .is_ok(),
+        "the existing schema permits fixtures without forbidden_nodes"
+    );
+}
+
+#[test]
+fn non_canonical_kind_controls_are_rejected_before_absence_matching() {
     let canonical = [NodeKindReference {
         id: "quote_braces_not_block".to_string(),
         kind: "Block".to_string(),
@@ -119,29 +145,6 @@ fn misspelled_forbidden_kind_is_rejected_before_absence_matching() {
         "the canonical forbidden-node control must remain admitted"
     );
 
-    let misspelled = [NodeKindReference {
-        id: "quote_braces_not_block".to_string(),
-        kind: "Bloock".to_string(),
-        parent_kind: None,
-    }];
-    assert_eq!(
-        validate_reference_rows(
-            "quote_like",
-            &misspelled,
-            FORBIDDEN_KIND_FIELD,
-            FORBIDDEN_PARENT_KIND_FIELD,
-        ),
-        Err(InvalidNodeKindReference {
-            fixture_id: "quote_like".to_string(),
-            expectation_id: "quote_braces_not_block".to_string(),
-            field: FORBIDDEN_KIND_FIELD,
-            kind: "Bloock".to_string(),
-        })
-    );
-}
-
-#[test]
-fn misspelled_parent_kind_is_rejected_through_manifest_row_validation() {
     let canonical = [NodeKindReference {
         id: "string_under_statement".to_string(),
         kind: "String".to_string(),
@@ -153,20 +156,34 @@ fn misspelled_parent_kind_is_rejected_through_manifest_row_validation() {
         "the canonical kind and parent-kind control must remain admitted"
     );
 
-    let misspelled = [NodeKindReference {
-        id: "string_under_statement".to_string(),
-        kind: "String".to_string(),
-        parent_kind: Some("ExpressionStatment".to_string()),
-    }];
-    assert_eq!(
-        validate_reference_rows("quote_like", &misspelled, AST_KIND_FIELD, AST_PARENT_KIND_FIELD,),
-        Err(InvalidNodeKindReference {
-            fixture_id: "quote_like".to_string(),
-            expectation_id: "string_under_statement".to_string(),
-            field: AST_PARENT_KIND_FIELD,
-            kind: "ExpressionStatment".to_string(),
-        })
-    );
+    let controls = [
+        (FORBIDDEN_KIND_FIELD, FORBIDDEN_PARENT_KIND_FIELD, "Bloock"),
+        (FORBIDDEN_KIND_FIELD, FORBIDDEN_PARENT_KIND_FIELD, "Strng"),
+        (AST_KIND_FIELD, AST_PARENT_KIND_FIELD, "FunctionCal"),
+        (AST_PARENT_KIND_FIELD, AST_KIND_FIELD, "ExpressionStatment"),
+    ];
+    for (kind_field, parent_field, non_canonical) in controls {
+        let rows = [NodeKindReference {
+            id: "varied_non_canonical_control".to_string(),
+            kind: if kind_field == AST_PARENT_KIND_FIELD
+                || kind_field == FORBIDDEN_PARENT_KIND_FIELD
+            {
+                "String".to_string()
+            } else {
+                non_canonical.to_string()
+            },
+            parent_kind: if parent_field == AST_KIND_FIELD || parent_field == FORBIDDEN_KIND_FIELD {
+                Some(non_canonical.to_string())
+            } else {
+                None
+            },
+        }];
+
+        assert!(
+            validate_reference_rows("varied_controls", &rows, kind_field, parent_field).is_err(),
+            "non-canonical control `{non_canonical}` in `{kind_field}` must be rejected"
+        );
+    }
 }
 
 fn validate_reference_rows(
