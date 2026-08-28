@@ -106,6 +106,21 @@ fn direct_reference_rejects_emoji_module_names_for_use_and_require() {
 }
 
 #[test]
+fn direct_reference_rejects_malformed_unicode_prefixes() {
+    for module in ["Foo·Bar", "Foo💥Bar", "Foo::Bar💥"] {
+        for keyword in ["use", "require"] {
+            let line = format!("{keyword} {module};");
+            let cursor = line.find("Foo").unwrap_or(0);
+            assert_eq!(
+                find_module_reference(&line, cursor),
+                None,
+                "malformed module {module:?} must not resolve as a valid prefix"
+            );
+        }
+    }
+}
+
+#[test]
 fn multiline_cursor_lookup_resolves_line_local_reference_only() {
     let source = "package Demo::App;\nuse Demo::Worker;\nmy $x = 1;\n";
     let worker_cursor = source.find("Worker").unwrap_or(0);

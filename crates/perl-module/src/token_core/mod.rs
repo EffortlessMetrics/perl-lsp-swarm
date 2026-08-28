@@ -124,6 +124,29 @@ fn is_perl_word_char(ch: char) -> bool {
     regex.is_match(ch.encode_utf8(&mut [0; 4]))
 }
 
+fn is_rejected_module_identifier_char(ch: char) -> bool {
+    (is_xid_start(ch) || is_xid_continue(ch)) && !is_perl_word_char(ch) || is_emoji_codepoint(ch)
+}
+
+fn is_emoji_codepoint(ch: char) -> bool {
+    matches!(
+        ch as u32,
+        0x1F000..=0x1F02F
+            | 0x1F0A0..=0x1F0FF
+            | 0x1F100..=0x1F1FF
+            | 0x1F200..=0x1F2FF
+            | 0x1F300..=0x1F6FF
+            | 0x1F700..=0x1F77F
+            | 0x1F780..=0x1F7FF
+            | 0x1F800..=0x1F8FF
+            | 0x1F900..=0x1F9FF
+            | 0x1FA00..=0x1FA6F
+            | 0x1FA70..=0x1FAFF
+            | 0x2600..=0x26FF
+            | 0x2700..=0x27BF
+    )
+}
+
 fn left_context_is_module_char(line: &str, start: usize) -> bool {
     if start == 0 {
         return false;
@@ -135,7 +158,7 @@ fn left_context_is_module_char(line: &str, start: usize) -> bool {
     };
 
     if ch != '\'' {
-        return is_module_token_char(ch);
+        return is_module_token_char(ch) || is_rejected_module_identifier_char(ch);
     }
 
     if left_idx == 0 {
@@ -156,7 +179,7 @@ fn right_context_is_module_char(line: &str, end: usize) -> bool {
     };
 
     if ch != '\'' {
-        return is_module_token_char(ch);
+        return is_module_token_char(ch) || is_rejected_module_identifier_char(ch);
     }
 
     right.next().is_some_and(is_module_identifier_char)
