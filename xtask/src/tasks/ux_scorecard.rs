@@ -649,8 +649,20 @@ mod tests {
         }
     }
 
+    fn check<T: std::fmt::Debug + PartialEq>(actual: &T, expected: &T, label: &str) -> Result<()> {
+        if actual == expected {
+            Ok(())
+        } else {
+            Err(color_eyre::eyre::eyre!("{label}: expected {expected:?}, got {actual:?}"))
+        }
+    }
+
+    fn check_true(condition: bool, label: &str) -> Result<()> {
+        if condition { Ok(()) } else { Err(color_eyre::eyre::eyre!("{label}")) }
+    }
+
     #[test]
-    fn ratchet_requires_non_null_current_values_for_instrumented_baselines() {
+    fn ratchet_requires_non_null_current_values_for_instrumented_baselines() -> Result<()> {
         let baseline = baseline_with_floor_metrics(BTreeMap::from([
             ("absent_metric".to_string(), Some(100.0)),
             ("future_metric".to_string(), None),
@@ -664,21 +676,22 @@ mod tests {
 
         let violations = evaluate_ratchet(&baseline, &current);
 
-        assert_eq!(
-            violations.missing,
-            vec![
+        check(
+            &violations.missing,
+            &vec![
                 MissingRequiredMetric {
                     metric: "absent_metric".to_string(),
                     baseline_value: 100.0,
                 },
                 MissingRequiredMetric { metric: "null_metric".to_string(), baseline_value: 50.0 },
-            ]
-        );
-        assert!(violations.regressions.is_empty());
+            ],
+            "missing required metrics",
+        )?;
+        check_true(violations.regressions.is_empty(), "unexpected numeric regressions")
     }
 
     #[test]
-    fn ratchet_rejects_non_finite_current_values() {
+    fn ratchet_rejects_non_finite_current_values() -> Result<()> {
         let baseline = baseline_with_floor_metrics(BTreeMap::from([
             ("nan_metric".to_string(), Some(10.0)),
             ("negative_infinity_metric".to_string(), Some(20.0)),
@@ -694,15 +707,16 @@ mod tests {
         let missing: Vec<&str> =
             violations.missing.iter().map(|item| item.metric.as_str()).collect();
 
-        assert_eq!(
-            missing,
-            vec!["nan_metric", "negative_infinity_metric", "positive_infinity_metric"]
-        );
-        assert!(violations.regressions.is_empty());
+        check(
+            &missing,
+            &vec!["nan_metric", "negative_infinity_metric", "positive_infinity_metric"],
+            "non-finite metrics treated as missing",
+        )?;
+        check_true(violations.regressions.is_empty(), "unexpected numeric regressions")
     }
 
     #[test]
-    fn ratchet_collects_missing_and_numeric_regressions_together() {
+    fn ratchet_collects_missing_and_numeric_regressions_together() -> Result<()> {
         let baseline = baseline_with_floor_metrics(BTreeMap::from([
             ("hover_correctness_pct".to_string(), Some(100.0)),
             ("missing_metric".to_string(), Some(75.0)),
@@ -711,15 +725,27 @@ mod tests {
 
         let violations = evaluate_ratchet(&baseline, &current);
 
-        assert_eq!(violations.len(), 2);
-        assert_eq!(violations.missing[0].metric, "missing_metric");
-        assert_eq!(violations.regressions.len(), 1);
-        assert_eq!(violations.regressions[0].metric, "hover_correctness_pct");
+        check(&violations.len(), &2, "combined violation count")?;
+        let missing = violations
+            .missing
+            .first()
+            .ok_or_else(|| color_eyre::eyre::eyre!("missing violation absent"))?;
+        check(&missing.metric, &"missing_metric".to_string(), "missing metric name")?;
+        check(&violations.regressions.len(), &1, "numeric regression count")?;
+        let regression = violations
+            .regressions
+            .first()
+            .ok_or_else(|| color_eyre::eyre::eyre!("numeric regression absent"))?;
+        check(
+            &regression.metric,
+            &"hover_correctness_pct".to_string(),
+            "numeric regression metric name",
+        )
     }
 
     #[test]
-    fn enforce_ratchet_uses_fail_closed_editor_ux_boundary() {
-        let root = tempfile::tempdir().expect("temporary repository root");
+    fn enforce_ratchet_uses_fail_closed_editor_ux_boundary() -> Result<()> {
+        let root = tempfile::tempdir()?;
         let baseline = baseline_with_floor_metrics(BTreeMap::from([
             ("future_metric".to_string(), None),
             ("hover_correctness_pct".to_string(), Some(100.0)),
@@ -729,13 +755,11 @@ mod tests {
             ("zero_metric".to_string(), Some(0.0)),
         ]));
         let baseline_path = root.path().join(BASELINE_PATH);
-        fs::create_dir_all(baseline_path.parent().expect("baseline parent"))
-            .expect("create baseline directory");
-        fs::write(
-            &baseline_path,
-            serde_json::to_string_pretty(&baseline).expect("serialize baseline"),
-        )
-        .expect("write baseline");
+        let baseline_parent = baseline_path
+            .parent()
+            .ok_or_else(|| color_eyre::eyre::eyre!("baseline path has no parent"))?;
+        fs::create_dir_all(baseline_parent)?;
+        fs::write(&baseline_path, serde_json::to_string_pretty(&baseline)?)?;
 
         let artifact = UxScorecardArtifact {
             schema_version: 1,
@@ -753,9 +777,19 @@ mod tests {
             provenance: json!({}),
         };
 
-        let error = enforce_ratchet(root.path(), &artifact)
-            .expect_err("missing, null, non-finite, and regressed metrics must fail");
-        assert_eq!(error.to_string(), "editor_ux ratchet check failed with 4 violation(s)");
+        let error = match enforce_ratchet(root.path(), &artifact) {
+            Ok(()) => {
+                return Err(color_eyre::eyre::eyre!(
+                    "missing, null, non-finite, and regressed metrics must fail"
+                ));
+            }
+            Err(error) => error,
+        };
+        check(
+            &error.to_string(),
+            &"editor_ux ratchet check failed with 4 violation(s)".to_string(),
+            "ratchet error",
+        )?;
 
         let current = BTreeMap::from([
             ("hover_correctness_pct".to_string(), Some(80.0)),
@@ -764,15 +798,16 @@ mod tests {
             ("zero_metric".to_string(), Some(0.0)),
         ]);
         let violations = evaluate_ratchet(&baseline, &current);
-        assert_eq!(
-            violations.report_lines(),
-            vec![
+        check(
+            &violations.report_lines(),
+            &vec![
                 "VIOLATION [editor_ux] missing_metric baseline=75.000 current=missing",
                 "VIOLATION [editor_ux] nan_metric baseline=50.000 current=missing",
                 "VIOLATION [editor_ux] null_metric baseline=25.000 current=missing",
                 "VIOLATION [editor_ux] hover_correctness_pct baseline=100.000 current=80.000 regression=20.00%",
-            ]
-        );
+            ],
+            "violation report lines",
+        )
     }
 
     #[test]
