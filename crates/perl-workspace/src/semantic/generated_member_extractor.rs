@@ -261,9 +261,6 @@ fn quickorm_static_name_candidate(node: &Node) -> Option<NameCandidate> {
         _ => return None,
     };
     let name = normalize_symbol_name(value)?;
-    if !is_dbix_relationship_name(&name) && !name.contains("::") {
-        return None;
-    }
     Some(NameCandidate {
         name,
         span_start: node.location.start,
@@ -489,18 +486,13 @@ fn use_args_include_dbix_class(args: &[String]) -> bool {
 }
 
 fn use_args_select_quickorm_table_mode(args: &[String]) -> bool {
-    let tokens: Vec<String> = args
-        .iter()
-        .flat_map(|arg| arg.split_whitespace())
-        .map(|token| {
-            token
-                .trim_matches(|ch| matches!(ch, '\'' | '"' | ',' | ';' | '(' | ')'))
-                .to_string()
-        })
-        .filter(|token| !token.is_empty())
-        .collect();
+    let normalized: Vec<String> =
+        args.iter().filter_map(|arg| normalize_symbol_name(arg)).collect();
 
-    matches!(tokens.as_slice(), [key, arrow, value] if key == "type" && arrow == "=>" && value == "table")
+    matches!(
+        normalized.as_slice(),
+        [key, value] if key == "type" && value == "table"
+    )
 }
 
 fn class_tiny_default_hash_pairs(statement: &Node) -> Option<&[(Node, Node)]> {
