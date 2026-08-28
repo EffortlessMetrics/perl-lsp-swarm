@@ -48,7 +48,10 @@ fn reserved_mcp_subcommand_fails_closed() -> Result<(), Box<dyn std::error::Erro
         stderr.contains("No MCP server was started."),
         "missing fail-closed result: {stderr}"
     );
-    assert!(!stderr.contains("Content-Length"), "LSP framing leaked into rejection: {stderr}");
+    assert!(
+        !stderr.contains("Content-Length"),
+        "LSP framing leaked into rejection: {stderr}"
+    );
     Ok(())
 }
 
@@ -70,6 +73,9 @@ fn reserved_mcp_help_is_protocol_clean() -> Result<(), Box<dyn std::error::Error
     );
     assert!(stdout.contains("native MCP adapter is not available"), "{stdout}");
     assert!(stdout.contains("never starts the LSP runtime"), "{stdout}");
-    assert!(!stdout.contains("Content-Length"), "protocol framing leaked into help: {stdout}");
+    assert!(
+        !stdout.contains("Content-Length"),
+        "protocol framing leaked into help: {stdout}"
+    );
     Ok(())
 }
