@@ -1,0 +1,138 @@
+name: One-shot Clippy repair for PR 13181
+
+on:
+  push:
+    branches:
+      - chatgpt/http-client-method-completion
+    paths:
+      - .github/workflows/pr-13181-clippy-fix.yml
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  repair-and-prove:
+    if: github.repository == 'EffortlessMetrics/perl-lsp-swarm'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out the PR branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: chatgpt/http-client-method-completion
+          fetch-depth: 0
+
+      - name: Install Rust 1.95 with rustfmt and clippy
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: 1.95.0
+          components: rustfmt,clippy
+
+      - name: Collapse the equivalent POD exit branches
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('crates/perl-lsp-rs-core/src/providers/completion/completion/lexical_context.rs')
+          lines = path.read_text().splitlines(keepends=True)
+          old = [
+              '            if in_for_paragraph && line.trim().is_empty() {\n',
+              '                in_pod_block = false;\n',
+              '                in_for_paragraph = false;\n',
+              '            } else if is_pod_end_marker(line) {\n',
+              '                in_pod_block = false;\n',
+              '                in_for_paragraph = false;\n',
+              '            }\n',
+          ]
+          starts = [index for index in range(len(lines)) if lines[index:index + len(old)] == old]
+          if len(starts) != 1:
+              raise SystemExit(f'expected exactly one POD exit branch, found {len(starts)}')
+          start = starts[0]
+          lines[start:start + len(old)] = [
+              '            if (in_for_paragraph && line.trim().is_empty()) || is_pod_end_marker(line) {\n',
+              '                in_pod_block = false;\n',
+              '                in_for_paragraph = false;\n',
+              '            }\n',
+          ]
+          path.write_text(''.join(lines))
+          PY
+
+          cargo fmt -p perl-lsp-rs-core
+
+          changed="$(git diff --name-only)"
+          expected='crates/perl-lsp-rs-core/src/providers/completion/completion/lexical_context.rs'
+          if [[ "$changed" != "$expected" ]]; then
+            printf 'repair changed an unexpected file set:\n%s\n' "$changed" >&2
+            exit 1
+          fi
+
+      - name: Run focused proof
+        shell: bash
+        run: |
+          set -euo pipefail
+          receipt_dir='target/receipts/pr-13181-clippy'
+          mkdir -p "$receipt_dir"
+
+          cargo fmt -p perl-lsp-rs-core -- --check \
+            2>&1 | tee "$receipt_dir/rustfmt.log"
+          cargo clippy -p perl-lsp-rs-core --lib --locked -- -D warnings -A missing_docs \
+            2>&1 | tee "$receipt_dir/clippy.log"
+          cargo test -p perl-lsp-rs-core --lib lexical_context --locked \
+            2>&1 | tee "$receipt_dir/lexical-context.log"
+          cargo test -p perl-lsp-rs-core --test http_client_method_completion_tests --locked \
+            2>&1 | tee "$receipt_dir/http-client.log"
+          git diff --check \
+            2>&1 | tee "$receipt_dir/diff-check.log"
+
+          cat > "$receipt_dir/receipt.json" <<JSON
+          {
+            "schema_version": 1,
+            "pr": 13181,
+            "input_head_sha": "${GITHUB_SHA}",
+            "rust_toolchain": "1.95.0",
+            "status": "passed",
+            "commands": [
+              "cargo fmt -p perl-lsp-rs-core -- --check",
+              "cargo clippy -p perl-lsp-rs-core --lib --locked -- -D warnings -A missing_docs",
+              "cargo test -p perl-lsp-rs-core --lib lexical_context --locked",
+              "cargo test -p perl-lsp-rs-core --test http_client_method_completion_tests --locked",
+              "git diff --check"
+            ]
+          }
+          JSON
+
+      - name: Commit the proved repair and remove this workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rm .github/workflows/pr-13181-clippy-fix.yml
+
+          changed="$(git diff --name-only | sort)"
+          expected="$(printf '%s\n' \
+            .github/workflows/pr-13181-clippy-fix.yml \
+            crates/perl-lsp-rs-core/src/providers/completion/completion/lexical_context.rs | sort)"
+          if [[ "$changed" != "$expected" ]]; then
+            printf 'commit would contain an unexpected file set:\n%s\n' "$changed" >&2
+            exit 1
+          fi
+
+          git config user.name 'EffortlessSteven'
+          git config user.email 'git@effortlesssteven.com'
+          git add crates/perl-lsp-rs-core/src/providers/completion/completion/lexical_context.rs
+          git commit -m 'fix(lsp): collapse equivalent POD exit branches'
+          git push origin HEAD:chatgpt/http-client-method-completion
+
+      - name: Upload focused proof receipt
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: pr-13181-clippy-proof-${{ github.sha }}
+          path: target/receipts/pr-13181-clippy
+          if-no-files-found: warn
+          retention-days: 14
