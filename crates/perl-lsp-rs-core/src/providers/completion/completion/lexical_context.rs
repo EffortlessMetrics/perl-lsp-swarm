@@ -1324,68 +1324,57 @@ pub(super) fn is_in_pod(source: &str, position: usize) -> bool {
         return false;
     }
 
-    let position = position.min(source.len());
-    let before = &source[..position];
-    let mut line_end = before.len();
-
-    while line_end > 0 {
-        let line_start = before[..line_end].rfind('\n').map_or(0, |newline| newline + 1);
-        let line = strip_line_ending(&before[line_start..line_end]);
-
-        if is_pod_end_marker(line) {
-            let in_ignored_context = is_ignored_code_context(source, line_start);
-            if !in_ignored_context || has_real_pod_start_before(source, line_start) {
-                return false;
-            }
-        } else if is_pod_start_marker(line) {
-            let in_ignored_context = is_ignored_code_context(source, line_start);
-            if !in_ignored_context {
-                return true;
-            }
-        }
-
-        if line_start == 0 {
-            break;
-        }
-        line_end = line_start - 1;
+    enum PodState<'a> {
+        Code,
+        CutTerminated,
+        Begin(Option<&'a str>),
+        ForParagraph,
     }
 
-    false
-}
+    let Some(prefix) = source.get(..position.min(source.len())) else {
+        return false;
+    };
+    let mut state = PodState::Code;
+    let mut line_start = 0;
+    for raw_line in prefix.split_inclusive('\n') {
+        let line = strip_line_ending(raw_line);
+        let ignored = is_in_heredoc_or_closing_line(source, line_start)
+            || is_in_multiline_literal(source, line_start);
 
-fn is_ignored_code_context(source: &str, line_start: usize) -> bool {
-    is_in_heredoc_or_closing_line(source, line_start) || is_in_multiline_literal(source, line_start)
-}
-
-fn has_real_pod_start_before(source: &str, position: usize) -> bool {
-    let before = &source[..position.min(source.len())];
-    let mut line_end = before.len();
-
-    while line_end > 0 {
-        let line_start = before[..line_end].rfind('\n').map_or(0, |newline| newline + 1);
-        let line = strip_line_ending(&before[line_start..line_end]);
-
-        if is_pod_end_marker(line) {
-            let in_ignored_context = is_ignored_code_context(source, line_start);
-            if !in_ignored_context {
-                return false;
-            }
+        if !ignored {
+            let directive = line.split_ascii_whitespace().next();
+            state = match state {
+                PodState::Code => match directive {
+                    Some("=begin") => PodState::Begin(line.split_ascii_whitespace().nth(1)),
+                    Some("=for") => PodState::ForParagraph,
+                    _ if is_pod_start_marker(line) => PodState::CutTerminated,
+                    _ => PodState::Code,
+                },
+                PodState::CutTerminated if directive == Some("=cut") => PodState::Code,
+                PodState::CutTerminated if directive == Some("=begin") => {
+                    PodState::Begin(line.split_ascii_whitespace().nth(1))
+                }
+                PodState::CutTerminated => PodState::CutTerminated,
+                PodState::Begin(Some(format))
+                    if directive == Some("=end")
+                        && line.split_ascii_whitespace().nth(1) == Some(format) =>
+                {
+                    PodState::Code
+                }
+                PodState::Begin(format) => PodState::Begin(format),
+                PodState::ForParagraph if line.trim().is_empty() || directive == Some("=cut") => {
+                    PodState::Code
+                }
+                PodState::ForParagraph => PodState::ForParagraph,
+            };
+        } else if let PodState::ForParagraph = state {
+            // A heredoc/literal line is not a POD paragraph boundary.
         }
 
-        if is_pod_start_marker(line) {
-            let in_ignored_context = is_ignored_code_context(source, line_start);
-            if !in_ignored_context {
-                return true;
-            }
-        }
-
-        if line_start == 0 {
-            break;
-        }
-        line_end = line_start - 1;
+        line_start += raw_line.len();
     }
 
-    false
+    !matches!(state, PodState::Code)
 }
 
 fn is_in_multiline_literal(source: &str, position: usize) -> bool {
