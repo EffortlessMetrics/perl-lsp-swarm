@@ -1974,6 +1974,7 @@ impl LspServer {
                                 continue;
                             }
                             coordinator.notify_change(uri);
+                            coordinator.index().clear_file(uri);
                             if let Ok(url) = url::Url::parse(uri) {
                                 match coordinator.index().index_file(url, content) {
                                     Ok(()) => {
@@ -1986,13 +1987,26 @@ impl LspServer {
                             }
                             coordinator.notify_parse_complete(uri);
                         }
-                        Ok(None) => {}
+                        Ok(None) => {
+                            let _transition = self.indexing_transition_lock.lock();
+                            if !self.document_is_open(uri) {
+                                coordinator.notify_change(uri);
+                                coordinator.index().clear_file(uri);
+                                coordinator.notify_parse_complete(uri);
+                            }
+                        }
                         Err(e) => {
                             tracing::debug!(
                                 "Failed to read new file for indexing ({}): {}",
                                 path.display(),
                                 e
                             );
+                            let _transition = self.indexing_transition_lock.lock();
+                            if !self.document_is_open(uri) {
+                                coordinator.notify_change(uri);
+                                coordinator.index().clear_file(uri);
+                                coordinator.notify_parse_complete(uri);
+                            }
                         }
                     }
                 }
@@ -2075,6 +2089,7 @@ impl LspServer {
                                         "File opened while rename read was in flight — indexing skipped"
                                     );
                                 } else if let Ok(url) = url::Url::parse(&new_uri) {
+                                    coordinator.index().clear_file(&new_uri);
                                     match coordinator.index().index_file(url, content) {
                                         Ok(()) => {
                                             tracing::debug!("Indexed renamed file: {}", new_uri)
@@ -2087,13 +2102,20 @@ impl LspServer {
                                     }
                                 }
                             }
-                            Ok(None) => {}
+                            Ok(None) => {
+                                if !self.document_is_open(&new_uri) {
+                                    coordinator.index().clear_file(&new_uri);
+                                }
+                            }
                             Err(e) => {
                                 tracing::debug!(
                                     "Failed to read renamed file for indexing ({}): {}",
                                     path.display(),
                                     e
                                 );
+                                if !self.document_is_open(&new_uri) {
+                                    coordinator.index().clear_file(&new_uri);
+                                }
                             }
                         }
                     }
@@ -3133,6 +3155,62 @@ mod tests {
         assert!(
             renamed_symbols.iter().all(|symbol| symbol.uri == rename_uri.as_str()),
             "rename must keep every surviving fact on the new URI identity"
+        );
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn failed_file_lifecycle_reads_clear_stale_closed_file_facts()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let create_path = directory.path().join("created-tool");
+        let old_path = directory.path().join("old-tool");
+        let new_path = directory.path().join("renamed-tool");
+        let create_uri =
+            url::Url::from_file_path(&create_path).map_err(|_| "invalid create URI")?;
+        let old_uri = url::Url::from_file_path(&old_path).map_err(|_| "invalid old URI")?;
+        let new_uri = url::Url::from_file_path(&new_path).map_err(|_| "invalid new URI")?;
+
+        let mut server = LspServer::new();
+        server.index_coordinator =
+            Some(std::sync::Arc::new(IndexCoordinator::with_limits_and_caps(
+                IndexResourceLimits::default(),
+                IndexPerformanceCaps::default(),
+            )));
+        let index = server.coordinator().ok_or("missing index coordinator")?.index();
+
+        index.index_file(
+            url::Url::parse(create_uri.as_str())?,
+            "sub stale_create { 1 }\n1;\n".to_string(),
+        )?;
+        std::fs::write(&create_path, "not Perl source\n")?;
+        server.handle_did_create_files(Some(json!({
+            "files": [{ "uri": create_uri.to_string() }]
+        })))?;
+        assert!(
+            index.find_symbols("stale_create").is_empty(),
+            "failed create classification must clear stale closed-file facts"
+        );
+
+        index.index_file(
+            url::Url::parse(old_uri.as_str())?,
+            "sub stale_old { 1 }\n1;\n".to_string(),
+        )?;
+        index.index_file(
+            url::Url::parse(new_uri.as_str())?,
+            "sub stale_new { 1 }\n1;\n".to_string(),
+        )?;
+        server.handle_did_rename_files(Some(json!({
+            "files": [{ "oldUri": old_uri.to_string(), "newUri": new_uri.to_string() }]
+        })))?;
+        assert!(
+            index.find_symbols("stale_old").is_empty(),
+            "rename must remove the old file identity"
+        );
+        assert!(
+            index.find_symbols("stale_new").is_empty(),
+            "failed rename read must clear stale destination facts"
         );
         Ok(())
     }
