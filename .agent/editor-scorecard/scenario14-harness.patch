@@ -1,0 +1,225 @@
+--- a/crates/perl-lsp-ux-tests/tests/ux_scenario_14_inc_conformance.rs
++++ b/crates/perl-lsp-ux-tests/tests/ux_scenario_14_inc_conformance.rs
+@@ -306,6 +306,12 @@
+         diags
+     );
+ 
++    assert!(
++        completion_ok,
++        "Expected completion to include GreetModule via includePaths=['lib']; labels={:?}",
++        completion_labels(&completions)
++    );
++
+     // Hover result shape check (if non-null).
+     if let Some(hover) = hover_result {
+         assert!(
+@@ -428,6 +434,12 @@
+         diags
+     );
+ 
++    assert!(
++        completion_ok,
++        "Expected completion to include LexicalModule through in-source 'use lib'; labels={:?}",
++        completion_labels(&completions)
++    );
++
+     if let Some(hover) = hover_result {
+         assert!(hover.get("contents").is_some(), "Hover result must have 'contents': {:?}", hover);
+     }
+@@ -521,7 +533,7 @@
+ 
+     print_conformance(
+         "external_include_paths_unauthorized",
+-        !pl701_fires,
++        pl701_fires,
+         completion_absent,
+         def_empty,
+         hover_not_resolved,
+@@ -778,26 +790,35 @@
+ 
+     print_conformance("findbin_relative", pl701_absent, completion_ok, def_resolves, hover_ok);
+ 
+-    // Consistency check.
+-    if def_resolves && !pl701_absent {
++    // FindBin support is environment-dependent, so the terminal contract is
++    // consumer agreement rather than unconditional resolution. A module is
++    // considered resolved only when diagnostics, completion, and definition agree.
++    if def_resolves != pl701_absent {
+         return Err(format!(
+-            "Consumer inconsistency (findbin_relative): goto-def resolved but PL701 fired.\n\
++            "Consumer inconsistency (findbin_relative): goto-def and PL701 disagree.\n\
+              goto-def: {:?}\n\
+              diagnostics: {:?}",
+             defs, diags
+         ));
+     }
+-    if !def_resolves && pl701_absent {
+-        // Both agree module doesn't resolve — log but don't fail the consistency test.
+-        // FindBin resolution may be in degraded mode in some environments.
++    assert_eq!(
++        completion_ok,
++        def_resolves,
++        "Consumer inconsistency (findbin_relative): completion and goto-definition disagree.\n\
++         completion labels: {:?}\n\
++         goto-def: {:?}",
++        completion_labels(&completions),
++        defs
++    );
++    if !def_resolves {
+         eprintln!(
+-            "INFO scenario_14_findbin_relative: both consumers agree module does not resolve \
+-             (def empty + no PL701). FindBin resolution may be in degraded mode."
++            "INFO scenario_14_findbin_relative: diagnostics, completion, and goto-definition \
++             consistently report the environment-dependent capability as unavailable."
+         );
+     }
+ 
+-    // We assert consistency but tolerate FindBin not resolving end-to-end in the
+-    // UX harness (it's environment-dependent). What we MUST NOT see is divergence.
++    // Tolerate FindBin not resolving end-to-end in the UX harness, but never
++    // tolerate disagreement between the consumers that report resolution.
+     if let Some(hover) = hover_result {
+         assert!(hover.get("contents").is_some(), "Hover result must have 'contents': {:?}", hover);
+     }
+@@ -913,6 +934,12 @@
+         "scenario_14_perl5lib_env: PL701 should not fire when module resolves via PERL5LIB; diagnostics={diags:?}"
+     );
+ 
++    assert!(
++        completion_ok,
++        "scenario_14_perl5lib_env: completion should include SystemModule via PERL5LIB; labels={:?}",
++        completion_labels(&completions)
++    );
++
+     if let Some(hover) = hover_result {
+         assert!(hover.get("contents").is_some(), "Hover result must have 'contents': {:?}", hover);
+     }
+@@ -1024,6 +1051,12 @@
+         diags
+     );
+ 
++    assert!(
++        completion_ok,
++        "Expected completion to include Nested::Deep via includePaths=['lib']; labels={:?}",
++        completion_labels(&completions)
++    );
++
+     if let Some(hover) = hover_result {
+         assert!(hover.get("contents").is_some(), "Hover result must have 'contents': {:?}", hover);
+     }
+@@ -1045,12 +1078,6 @@
+ print "still running\\n";\n\
+ ";
+ 
+-const INCLUDE_MISSING_COMPLETION_SOURCE: &str = "\
+-use strict;\n\
+-use warnings;\n\
+-use Gree\n\
+-";
+-
+ /// Completion prefix fixture for the missing-module negative test.
+ /// `MissingFromInclude` does not exist, so it should NOT appear in completion.
+ const MISSING_MODULE_COMPLETION_SOURCE: &str = "\
+@@ -1087,6 +1114,7 @@
+     let def_empty = defs.is_empty();
+ 
+     let hover_result = harness.hover("fixture.pl", 2, 4).expect("hover must not error");
++    let hover_not_resolved = hover_is_not_resolved(&hover_result);
+ 
+     // Completion check (negative): `MissingFromInclude` should NOT appear since
+     // the module does not exist in the include path.
+@@ -1103,7 +1131,7 @@
+         pl701_fires,
+         completion_ok, // "ok" for negative = module absent from completion
+         def_empty,
+-        hover_result.is_none(),
++        hover_not_resolved,
+     );
+ 
+     if !def_empty && pl701_fires {
+@@ -1128,72 +1156,28 @@
+         diags
+     );
+ 
+-    harness.assert_no_crash();
+-
+-    Ok(())
+-}
+-
+-#[test]
+-fn scenario_14_include_path_missing_module_completion_consistency() {
+-    if !binary_available() {
+-        eprintln!(
+-            "SKIP scenario_14_include_path_missing_module_completion_consistency: perl-lsp binary not found"
+-        );
+-        return;
+-    }
+-
+-    let harness = UxHarness::new(
+-        ScenarioConfig { timeout: Duration::from_secs(20), ..Default::default() }
+-            .with_file("fixture.pl", INCLUDE_MISSING_COMPLETION_SOURCE),
+-    )
+-    .expect("Failed to create UX harness");
+-
+-    send_include_paths(&harness, &["lib"]);
+-    harness
+-        .open_file("fixture.pl", INCLUDE_MISSING_COMPLETION_SOURCE)
+-        .expect("didOpen should succeed");
+-    std::thread::sleep(Duration::from_millis(500));
+-
+-    let completions = harness.completion("fixture.pl", 2, 8).expect("completion must not error");
+-    let completion_has_greet = completion_has_module(&completions, "GreetModule");
+-
+-    let defs = harness.definition("fixture.pl", 2, 4).expect("definition must not error");
+-    let def_resolves = !defs.is_empty();
+-
+-    let hover_result = harness.hover("fixture.pl", 2, 4).expect("hover must not error");
+-
+     assert!(
+-        !completion_has_greet,
+-        "Expected completion to keep missing external module absent when includePaths has no lib module; labels={:?}",
++        completion_ok,
++        "Expected completion to keep MissingFromInclude absent; labels={:?}",
+         completion_labels(&completions)
+     );
+     assert!(
+-        !def_resolves,
+-        "Expected goto-definition to remain missing for unresolved include-path module, got defs={:?}",
+-        defs
+-    );
+-    if hover_result.is_some() {
+-        assert!(
+-            !def_resolves,
+-            "Consumer inconsistency (completion_missing_module): hover resolved while goto-definition did not.\n\
+-             hover={:?}\n\
+-             defs={:?}",
+-            hover_result, defs
+-        );
+-    }
+-    assert_eq!(
+-        completion_has_greet,
+-        def_resolves,
+-        "Consumer inconsistency (completion_missing_module): completion and goto-definition disagree.\n\
+-         labels={:?}\n\
+-         defs={:?}",
+-        completion_labels(&completions),
+-        defs
++        hover_not_resolved,
++        "Expected hover to remain unresolved for MissingFromInclude; got {:?}",
++        hover_result
+     );
+ 
+     harness.assert_no_crash();
++
++    Ok(())
+ }
+ 
++// The former `scenario_14_include_path_missing_module_completion_consistency`
++// repeated exact-symbol consumers against a completion-prefix fixture, which
++// violates this file's fixture contract. Its valid completion-negative intent
++// is enforced by `scenario_14_include_path_missing_module_consistency`, where
++// completion uses a prefix and diagnostics/navigation/hover use an exact module.
++
+ // =============================================================================
+ // Fixture 8: PERL5LIB completion gating is independent of useSystemInc
+ // =============================================================================
