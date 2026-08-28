@@ -38,7 +38,6 @@ const UX_RUN_SIGNATURE_FIELDS: &[&str] = &[
     "friendly_repro",
 ];
 
-const UX_RUN_IDENTITY_FIELDS: &[&str] = &["workflow_id", "scenario_file", "test_name"];
 const MIN_UX_RUN_SIGNATURE_FIELDS: usize = 2;
 
 #[derive(Debug, Deserialize)]
@@ -168,19 +167,19 @@ fn load_receipt_validator(receipt_schema: &Path) -> Result<jsonschema::Validator
 }
 
 /// Identify malformed UX run candidates without claiming every JSON receipt in
-/// the shared directory. A candidate must carry at least one UX-run identity
-/// field and one additional UX-run signature field. This catches missing,
-/// non-string, or wrong discriminators while allowing distinct companion
-/// receipts with generic metadata to remain outside the scorecard denominator.
+/// the shared directory. A candidate must carry at least two UX-run signature
+/// fields, including documents that have lost all identity fields. This catches
+/// missing, non-string, or wrong discriminators while allowing distinct
+/// companion receipts with generic metadata to remain outside the scorecard
+/// denominator.
 fn looks_like_ux_scenario_run(value: &Value) -> bool {
     let Some(object) = value.as_object() else {
         return false;
     };
 
-    let has_identity = UX_RUN_IDENTITY_FIELDS.iter().any(|field| object.contains_key(*field));
     let signature_count =
         UX_RUN_SIGNATURE_FIELDS.iter().filter(|field| object.contains_key(**field)).count();
-    has_identity && signature_count >= MIN_UX_RUN_SIGNATURE_FIELDS
+    signature_count >= MIN_UX_RUN_SIGNATURE_FIELDS
 }
 
 fn read_receipt_candidates(receipts_dir: &Path) -> Result<Vec<ReceiptCandidate>> {
@@ -391,14 +390,16 @@ mod tests {
     }
 
     #[test]
-    fn malformed_kind_with_no_workflow_id_still_fails_closed() -> Result<()> {
+    fn malformed_kind_with_no_identity_fields_still_fails_closed() -> Result<()> {
         for kind in [None, Some(Value::Null)] {
             let temp = tempfile::tempdir()?;
             let receipts = temp.path().join("receipts");
             fs::create_dir_all(&receipts)?;
             let mut value = serde_json::json!({
-                "scenario_file": "known.rs",
-                "duration_ms": "not-a-number"
+                "result": "pass",
+                "duration_ms": "not-a-number",
+                "assertions": {},
+                "canonical_repro": "cargo test -p perl-lsp-ux-tests scorecard_guard_test"
             });
             if let Some(kind) = kind {
                 value["kind"] = kind;
@@ -409,7 +410,7 @@ mod tests {
 
             let error = validation_error(
                 validate_scorecard_inputs(&receipts, &matrix, &schema),
-                "UX-run-shaped JSON with a missing or malformed kind unexpectedly passed",
+                "UX-run-shaped JSON with no identity fields and a missing or malformed kind unexpectedly passed",
             )?;
             assert!(format!("{error:#}").contains("unsupported or malformed kind"));
         }
