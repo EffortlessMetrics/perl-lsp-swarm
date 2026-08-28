@@ -516,11 +516,16 @@ pub fn check_version_compat_with_project_version(
 fn parse_configured_project_version(value: &str) -> Option<PerlVersion> {
     let value = value.trim();
     let version = value.strip_prefix('v').unwrap_or(value);
-    if version.is_empty()
-        || version.split('.').any(|component| {
-            let component = component.split_once('_').map_or(component, |(head, _)| head);
-            component.parse::<u32>().is_err()
-        })
+    let mut components = version.split('.');
+    let (Some(major), Some(minor), None) =
+        (components.next(), components.next(), components.next())
+    else {
+        return None;
+    };
+    if major.is_empty()
+        || minor.is_empty()
+        || !major.chars().all(|character| character.is_ascii_digit())
+        || !minor.chars().all(|character| character.is_ascii_digit())
     {
         return None;
     }
@@ -960,6 +965,18 @@ mod tests {
             Some("5.20.garbage"),
         );
         assert!(diags.is_empty());
+    }
+
+    #[test]
+    fn project_version_rejects_trailing_components_and_patch_suffixes() {
+        for value in ["5.20.1", "v5.20.1", "5.20_1", "v5.20_1"] {
+            let diags =
+                version_compat_diags_with_project_version("sub f ($x) { return $x; }", Some(value));
+            assert!(
+                diags.is_empty(),
+                "project version {value:?} must be rejected after major.minor"
+            );
+        }
     }
 
     #[test]

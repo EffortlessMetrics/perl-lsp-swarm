@@ -2023,6 +2023,7 @@ impl LspServer {
                 identity_context.native_critic_profile = identity_native_profile.clone();
                 identity_context.native_critic_include = identity_native_include.clone();
                 identity_context.native_critic_exclude = identity_native_exclude.clone();
+                identity_context.project_version = project_version.clone();
                 identity_context.include_paths = self
                     .include_paths_for_doc(uri_str)
                     .into_iter()
@@ -2952,6 +2953,226 @@ mod tests {
             }
             std::thread::yield_now();
         }
+    }
+
+    fn install_project_version_folder(
+        server: &LspServer,
+        temp: &tempfile::TempDir,
+        version: &str,
+    ) -> Result<(String, String), Box<dyn std::error::Error>> {
+        use perl_lsp_rs_core::config::ProjectConfig;
+
+        let folder = temp.path().join("project");
+        std::fs::create_dir_all(&folder)?;
+        let file = folder.join("main.pl");
+        let uri = url::Url::from_file_path(&file)
+            .map_err(|()| "failed to build project file URI")?
+            .to_string();
+        let folder_uri = url::Url::from_directory_path(&folder)
+            .map_err(|()| "failed to build project folder URI")?
+            .to_string();
+        let mut project = ProjectConfig::default();
+        project.perl.version = Some(version.to_string());
+        server.workspace_folders.lock().push(
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(folder_uri)
+                .with_path(folder)
+                .with_project_config(project),
+        );
+        Ok((uri, file.to_string_lossy().into_owned()))
+    }
+
+    #[test]
+    fn production_push_workspace_and_pull_paths_emit_project_version_pl900()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = "sub f ($x) { return $x; }\n";
+
+        let temp = tempfile::tempdir()?;
+        let (push_server, push_buffer) = make_server_with_capture();
+        let (push_uri, _) = install_project_version_folder(&push_server, &temp, "5.20")?;
+        push_server.test_handle_did_open(Some(json!({
+            "textDocument": {"uri": push_uri, "languageId": "perl", "version": 1, "text": source}
+        })))?;
+        push_server.publish_diagnostics(&push_uri);
+        drop(push_server);
+        let push_output = String::from_utf8(push_buffer.lock().clone())?;
+        assert!(push_output.contains("PL900"), "push path must emit PL900: {push_output}");
+        assert!(
+            push_output.contains("project [perl].version"),
+            "push path must identify the project fallback: {push_output}"
+        );
+
+        let workspace_server = make_server_with_capture().0;
+        let (workspace_uri, _) = install_project_version_folder(&workspace_server, &temp, "5.20")?;
+        workspace_server.test_handle_did_open(Some(json!({
+            "textDocument": {"uri": workspace_uri, "languageId": "perl", "version": 1, "text": source}
+        })))?;
+        let workspace_report = workspace_server
+            .handle_workspace_diagnostic(Some(json!({"previousResultIds": []})))?
+            .ok_or("workspace diagnostic response missing")?;
+        let workspace_text = workspace_report.to_string();
+        assert!(
+            workspace_text.contains("PL900"),
+            "workspace path must emit PL900: {workspace_text}"
+        );
+        assert!(
+            workspace_text.contains("project [perl].version"),
+            "workspace path must identify the project fallback: {workspace_text}"
+        );
+
+        let pull_server = make_server_with_capture().0;
+        let (pull_uri, _) = install_project_version_folder(&pull_server, &temp, "5.20")?;
+        pull_server.test_handle_did_open(Some(json!({
+            "textDocument": {"uri": pull_uri, "languageId": "perl", "version": 1, "text": source}
+        })))?;
+        let pull_report = pull_server
+            .handle_document_diagnostic(Some(json!({"textDocument": {"uri": pull_uri}})))?
+            .ok_or("pull diagnostic response missing")?;
+        let pull_text = pull_report.to_string();
+        assert!(pull_text.contains("PL900"), "pull path must emit PL900: {pull_text}");
+        assert!(
+            pull_text.contains("project [perl].version"),
+            "pull path must identify the project fallback: {pull_text}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn workspace_project_version_reload_invalidates_result_identity()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let folder = temp.path().join("reload-project");
+        std::fs::create_dir_all(&folder)?;
+        let config_path = folder.join(".perl-lsp.toml");
+        std::fs::write(&config_path, "[perl]\nversion = \"5.20\"\n")?;
+        let file = folder.join("main.pl");
+        let uri = url::Url::from_file_path(&file)
+            .map_err(|()| "failed to build reload file URI")?
+            .to_string();
+        let folder_uri = url::Url::from_directory_path(&folder)
+            .map_err(|()| "failed to build reload folder URI")?
+            .to_string();
+        let server = make_server_with_capture().0;
+        server.workspace_folders.lock().push(
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(folder_uri)
+                .with_path(folder.clone()),
+        );
+        server.load_and_apply_project_config();
+        server.test_handle_did_open(Some(json!({
+            "textDocument": {"uri": uri, "languageId": "perl", "version": 1, "text": "sub f ($x) { return $x; }\n"}
+        })))?;
+
+        let first = server
+            .handle_workspace_diagnostic(Some(json!({"previousResultIds": []})))?
+            .ok_or("first workspace diagnostic response missing")?;
+        let first_item = first["items"]
+            .as_array()
+            .and_then(|items| items.first())
+            .ok_or("first report item missing")?;
+        let first_id =
+            first_item["resultId"].as_str().ok_or("first result ID missing")?.to_string();
+
+        std::fs::write(&config_path, "[perl]\nversion = \"5.40\"\n")?;
+        server.load_and_apply_project_config();
+        let second = server
+            .handle_workspace_diagnostic(Some(json!({
+                "previousResultIds": [{"uri": uri, "value": first_id}]
+            })))?
+            .ok_or("second workspace diagnostic response missing")?;
+        let second_item = second["items"]
+            .as_array()
+            .and_then(|items| items.first())
+            .ok_or("second report item missing")?;
+        assert_eq!(second_item["kind"], "full", "config reload must not reuse the old report");
+        assert_ne!(
+            second_item["resultId"].as_str(),
+            Some(first_id.as_str()),
+            "project version changes must invalidate workspace report identity"
+        );
+        assert!(
+            !second_item.to_string().contains("PL900"),
+            "5.40 should satisfy the signature target"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn workspace_reload_preserves_per_folder_project_version_isolation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let first_folder = temp.path().join("first-project");
+        let second_folder = temp.path().join("second-project");
+        std::fs::create_dir_all(&first_folder)?;
+        std::fs::create_dir_all(&second_folder)?;
+        std::fs::write(first_folder.join(".perl-lsp.toml"), "[perl]\nversion = \"5.20\"\n")?;
+        std::fs::write(second_folder.join(".perl-lsp.toml"), "[perl]\nversion = \"5.20\"\n")?;
+
+        let first_file = first_folder.join("main.pl");
+        let second_file = second_folder.join("main.pl");
+        let first_uri = url::Url::from_file_path(&first_file)
+            .map_err(|()| "failed to build first file URI")?
+            .to_string();
+        let second_uri = url::Url::from_file_path(&second_file)
+            .map_err(|()| "failed to build second file URI")?
+            .to_string();
+        let first_folder_uri = url::Url::from_directory_path(&first_folder)
+            .map_err(|()| "failed to build first folder URI")?
+            .to_string();
+        let second_folder_uri = url::Url::from_directory_path(&second_folder)
+            .map_err(|()| "failed to build second folder URI")?
+            .to_string();
+        let server = make_server_with_capture().0;
+        server.workspace_folders.lock().extend([
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(first_folder_uri)
+                .with_path(first_folder.clone()),
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(second_folder_uri)
+                .with_path(second_folder.clone()),
+        ]);
+        server.load_and_apply_project_config();
+        let source = "sub f ($x) { return $x; }\n";
+        for uri in [&first_uri, &second_uri] {
+            server.test_handle_did_open(Some(json!({
+                "textDocument": {"uri": uri, "languageId": "perl", "version": 1, "text": source}
+            })))?;
+        }
+
+        let first_report = server
+            .handle_workspace_diagnostic(Some(json!({"previousResultIds": []})))?
+            .ok_or("initial workspace diagnostic response missing")?;
+        let first_items = first_report["items"].as_array().ok_or("initial report items missing")?;
+        let report_for = |items: &[Value], uri: &str| {
+            items.iter().find(|item| item["uri"].as_str() == Some(uri))
+        };
+        let first_item =
+            report_for(first_items, &first_uri).ok_or("first folder report missing")?;
+        let second_item =
+            report_for(first_items, &second_uri).ok_or("second folder report missing")?;
+        let first_id = first_item["resultId"].as_str().ok_or("first folder result ID missing")?;
+        let second_id =
+            second_item["resultId"].as_str().ok_or("second folder result ID missing")?;
+        assert!(first_item.to_string().contains("PL900"));
+        assert!(second_item.to_string().contains("PL900"));
+
+        std::fs::write(first_folder.join(".perl-lsp.toml"), "[perl]\nversion = \"5.40\"\n")?;
+        server.load_and_apply_project_config();
+        let reloaded = server
+            .handle_workspace_diagnostic(Some(json!({
+                "previousResultIds": [
+                    {"uri": first_uri, "value": first_id},
+                    {"uri": second_uri, "value": second_id}
+                ]
+            })))?
+            .ok_or("reloaded workspace diagnostic response missing")?;
+        let reloaded_items = reloaded["items"].as_array().ok_or("reloaded report items missing")?;
+        let reloaded_first =
+            report_for(reloaded_items, &first_uri).ok_or("reloaded first report missing")?;
+        let reloaded_second =
+            report_for(reloaded_items, &second_uri).ok_or("reloaded second report missing")?;
+        assert_eq!(reloaded_first["kind"], "full");
+        assert!(!reloaded_first.to_string().contains("PL900"));
+        assert!(reloaded_second.to_string().contains("PL900"));
+        assert_ne!(reloaded_first["resultId"].as_str(), Some(first_id));
+        assert_eq!(reloaded_second["resultId"].as_str(), Some(second_id));
+        Ok(())
     }
 
     #[test]
