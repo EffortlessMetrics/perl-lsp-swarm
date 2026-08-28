@@ -386,10 +386,7 @@ fn evaluate_ratchet(
             if current.get(metric).and_then(|value| *value).is_some() {
                 None
             } else {
-                Some(MissingRequiredMetric {
-                    metric: metric.clone(),
-                    baseline_value,
-                })
+                Some(MissingRequiredMetric { metric: metric.clone(), baseline_value })
             }
         })
         .collect();
@@ -658,10 +655,7 @@ mod tests {
                     metric: "absent_metric".to_string(),
                     baseline_value: 100.0,
                 },
-                MissingRequiredMetric {
-                    metric: "null_metric".to_string(),
-                    baseline_value: 50.0,
-                },
+                MissingRequiredMetric { metric: "null_metric".to_string(), baseline_value: 50.0 },
             ]
         );
         assert!(violations.regressions.is_empty());
@@ -673,7 +667,8 @@ mod tests {
             ("hover_correctness_pct".to_string(), Some(100.0)),
             ("missing_metric".to_string(), Some(75.0)),
         ]));
-        let current = BTreeMap::from([("hover_correctness_pct".to_string(), Some(80.0))]);
+        let current =
+            BTreeMap::from([("hover_correctness_pct".to_string(), Some(80.0))]);
 
         let violations = evaluate_ratchet(&baseline, &current);
 
