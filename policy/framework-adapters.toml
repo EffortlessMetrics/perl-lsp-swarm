@@ -185,6 +185,41 @@ blocks = [
 claim_boundary = "DBIx::Class support is deferred to a static source-backed subset; runtime schema loading remains dynamic."
 
 [[adapter]]
+framework = "DBIx::QuickORM"
+fact_class = "generated_member"
+state = "planned"
+fact_provenance = "SourceBackedGenerated"
+source_anchor_required = true
+generated_label_required = true
+rename_policy = "block_generated_member_by_default"
+safe_delete_policy = "block_generated_member_by_default"
+provider_surfaces = [
+  "workspace_symbols",
+]
+supported_forms = [
+  "use DBIx::QuickORM type => 'table'",
+  "use DBIx::QuickORM type => 'orm'",
+  "direct package-level table/view builder -> qorm_table",
+]
+blocked_forms = [
+  "filtered_import",
+  "renamed_import",
+  "skipped_import",
+  "dynamic_import_configuration",
+  "nested_or_runtime_controlled_builder",
+  "manual_column_or_columns_accessor_projection",
+]
+blocks = [
+  "generated_no_source",
+  "stale_fact",
+  "dynamic_boundary",
+  "low_confidence",
+  "ambiguous_identity",
+  "unsupported_fact_class",
+]
+claim_boundary = "DBIx::QuickORM emits only the source-anchored qorm_table generated member for exact unfiltered table-package builders; filtered configuration, runtime-controlled builders, and manual column metadata remain blocked or unmodeled."
+
+[[adapter]]
 framework = "Catalyst"
 fact_class = "route_symbol"
 state = "deferred"

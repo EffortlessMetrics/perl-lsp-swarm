@@ -190,10 +190,7 @@ fn push_qorm_table_fact(
     facts: &mut Vec<GeneratedMemberFact>,
 ) {
     let canonical_name = format!("{package}::{QORM_TABLE_MEMBER}");
-    if facts
-        .iter()
-        .any(|fact| fact.entity.canonical_name == canonical_name)
-    {
+    if facts.iter().any(|fact| fact.entity.canonical_name == canonical_name) {
         return;
     }
 
@@ -242,24 +239,24 @@ fn classify_import_shape(args: &[String]) -> QuickOrmImportShape {
     }
 
     let raw_args = args.join(" ");
-    if raw_args
-        .chars()
-        .any(|ch| matches!(ch, '{' | '}' | '[' | ']'))
-    {
+    if raw_args.chars().any(|ch| matches!(ch, '{' | '}' | '[' | ']')) {
         return QuickOrmImportShape::Dynamic;
     }
 
     let tokens = normalized_import_tokens(args);
-    if tokens.len() != 3 || tokens.get(1).map(String::as_str) != Some("=>") {
-        return QuickOrmImportShape::Dynamic;
-    }
-    if tokens.first().map(String::as_str) != Some("type") {
-        return QuickOrmImportShape::Dynamic;
-    }
+    let value = match tokens.as_slice() {
+        // The parser stores a bare use argument as key/value tokens and
+        // intentionally drops the fat-arrow token.
+        [key, value] if key == "type" => value.as_str(),
+        // Keep accepting the normalized form for callers that provide the
+        // source-level token stream directly.
+        [key, arrow, value] if key == "type" && arrow == "=>" => value.as_str(),
+        _ => return QuickOrmImportShape::Dynamic,
+    };
 
-    match tokens.get(2).map(String::as_str) {
-        Some("orm") => QuickOrmImportShape::UnfilteredOrm,
-        Some("table") => QuickOrmImportShape::UnfilteredTable,
+    match value {
+        "orm" => QuickOrmImportShape::UnfilteredOrm,
+        "table" => QuickOrmImportShape::UnfilteredTable,
         _ => QuickOrmImportShape::Dynamic,
     }
 }
@@ -308,12 +305,7 @@ mod tests {
         let ast = parser
             .parse()
             .map_err(|error| format!("failed to parse QuickORM import: {error:?}"))?;
-        Ok(
-            super::super::workspace_import_extractor::extract_import_specs(
-                &ast,
-                FileId(1),
-            ),
-        )
+        Ok(super::super::workspace_import_extractor::extract_import_specs(&ast, FileId(1)))
     }
 
     fn generated_facts_from_source(
@@ -323,12 +315,10 @@ mod tests {
         let ast = parser
             .parse()
             .map_err(|error| format!("failed to parse QuickORM table package: {error:?}"))?;
-        Ok(
-            super::super::generated_member_extractor::extract_generated_member_facts(
-                &ast,
-                FileId(2),
-            ),
-        )
+        Ok(super::super::generated_member_extractor::extract_generated_member_facts(
+            &ast,
+            FileId(2),
+        ))
     }
 
     fn quickorm_spec(specs: &[ImportSpec]) -> Result<&ImportSpec, Box<dyn std::error::Error>> {
@@ -338,18 +328,29 @@ mod tests {
             .ok_or_else(|| "missing DBIx::QuickORM import spec".into())
     }
 
+    fn find_quickorm_use(node: &Node) -> Option<&Node> {
+        if matches!(&node.kind, NodeKind::Use { module, .. } if module == QUICKORM_MODULE) {
+            return Some(node);
+        }
+
+        for child in node.children() {
+            if let Some(found) = find_quickorm_use(child) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
     fn canonical_names(facts: &[GeneratedMemberFact]) -> Vec<&str> {
-        let mut names: Vec<_> = facts
-            .iter()
-            .map(|fact| fact.entity.canonical_name.as_str())
-            .collect();
+        let mut names: Vec<_> =
+            facts.iter().map(|fact| fact.entity.canonical_name.as_str()).collect();
         names.sort_unstable();
         names
     }
 
     #[test]
-    fn configured_table_import_uses_default_dsl_exports(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn configured_table_import_uses_default_dsl_exports() -> Result<(), Box<dyn std::error::Error>>
+    {
         let specs = import_specs_from_source(
             "package User; use DBIx::QuickORM type => 'table'; table users => sub {};",
         )?;
@@ -363,8 +364,23 @@ mod tests {
     }
 
     #[test]
-    fn configured_orm_import_uses_default_dsl_exports(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn parser_preserves_quickorm_configuration_as_key_value_args()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut parser = Parser::new("use DBIx::QuickORM type => 'table';");
+        let ast = parser
+            .parse()
+            .map_err(|error| format!("failed to parse QuickORM import: {error:?}"))?;
+        let use_node = find_quickorm_use(&ast).ok_or("missing QuickORM use node")?;
+        let NodeKind::Use { args, .. } = &use_node.kind else {
+            return Err("expected QuickORM use node".into());
+        };
+
+        assert_eq!(args, &["type".to_string(), "'table'".to_string()]);
+        Ok(())
+    }
+
+    #[test]
+    fn configured_orm_import_uses_default_dsl_exports() -> Result<(), Box<dyn std::error::Error>> {
         let specs = import_specs_from_source("package App; use DBIx::QuickORM type => 'orm';")?;
         let spec = quickorm_spec(&specs)?;
 
@@ -376,8 +392,8 @@ mod tests {
     }
 
     #[test]
-    fn filtered_quickorm_import_remains_a_dynamic_manual_import(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn filtered_quickorm_import_remains_a_dynamic_manual_import()
+    -> Result<(), Box<dyn std::error::Error>> {
         let specs = import_specs_from_source(
             "package User; use DBIx::QuickORM type => 'table', only => ['table'];",
         )?;
@@ -391,8 +407,8 @@ mod tests {
     }
 
     #[test]
-    fn lookalike_import_keeps_generic_import_classification(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn lookalike_import_keeps_generic_import_classification()
+    -> Result<(), Box<dyn std::error::Error>> {
         let specs = import_specs_from_source("package User; use Local::DSL type => 'table';")?;
         let spec = specs
             .iter()
@@ -406,8 +422,8 @@ mod tests {
     }
 
     #[test]
-    fn table_package_emits_only_fixed_qorm_table_member(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn table_package_emits_only_fixed_qorm_table_member() -> Result<(), Box<dyn std::error::Error>>
+    {
         let facts = generated_facts_from_source(
             r#"
 package MyApp::Schema::User;
@@ -434,8 +450,7 @@ table users => sub {
     }
 
     #[test]
-    fn view_package_emits_fixed_qorm_table_member(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn view_package_emits_fixed_qorm_table_member() -> Result<(), Box<dyn std::error::Error>> {
         let facts = generated_facts_from_source(
             r#"
 package MyApp::Schema::ActiveUser;
@@ -445,16 +460,12 @@ view active_users => sub {};
 "#,
         )?;
 
-        assert_eq!(
-            canonical_names(&facts),
-            vec!["MyApp::Schema::ActiveUser::qorm_table"]
-        );
+        assert_eq!(canonical_names(&facts), vec!["MyApp::Schema::ActiveUser::qorm_table"]);
         Ok(())
     }
 
     #[test]
-    fn orm_mode_inline_schema_does_not_emit_qorm_table(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn orm_mode_inline_schema_does_not_emit_qorm_table() -> Result<(), Box<dyn std::error::Error>> {
         let facts = generated_facts_from_source(
             r#"
 package MyApp::ORM;
@@ -471,8 +482,7 @@ schema app => sub {
     }
 
     #[test]
-    fn filtered_table_import_does_not_emit_qorm_table(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn filtered_table_import_does_not_emit_qorm_table() -> Result<(), Box<dyn std::error::Error>> {
         let facts = generated_facts_from_source(
             r#"
 package MyApp::Schema::User;
@@ -487,8 +497,8 @@ table users => sub {};
     }
 
     #[test]
-    fn table_mode_without_builder_does_not_emit_qorm_table(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn table_mode_without_builder_does_not_emit_qorm_table()
+    -> Result<(), Box<dyn std::error::Error>> {
         let facts = generated_facts_from_source(
             "package MyApp::Schema::User; use DBIx::QuickORM type => 'table'; 1;",
         )?;
@@ -498,8 +508,8 @@ table users => sub {};
     }
 
     #[test]
-    fn table_call_inside_subroutine_is_not_treated_as_package_builder(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn table_call_inside_subroutine_is_not_treated_as_package_builder()
+    -> Result<(), Box<dyn std::error::Error>> {
         let facts = generated_facts_from_source(
             r#"
 package MyApp::Schema::User;
@@ -516,8 +526,8 @@ sub build_later {
     }
 
     #[test]
-    fn table_call_inside_runtime_control_is_not_treated_as_package_builder(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn table_call_inside_runtime_control_is_not_treated_as_package_builder()
+    -> Result<(), Box<dyn std::error::Error>> {
         let facts = generated_facts_from_source(
             r#"
 package MyApp::Schema::User;
@@ -534,8 +544,8 @@ if ($enabled) {
     }
 
     #[test]
-    fn bare_lexical_block_does_not_leak_package_or_framework_state(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn bare_lexical_block_does_not_leak_package_or_framework_state()
+    -> Result<(), Box<dyn std::error::Error>> {
         let facts = generated_facts_from_source(
             r#"
 package MyApp::Schema::User;
@@ -549,16 +559,12 @@ table users => sub {};
 "#,
         )?;
 
-        assert_eq!(
-            canonical_names(&facts),
-            vec!["MyApp::Schema::User::qorm_table"]
-        );
+        assert_eq!(canonical_names(&facts), vec!["MyApp::Schema::User::qorm_table"]);
         Ok(())
     }
 
     #[test]
-    fn lookalike_table_dsl_does_not_emit_qorm_table(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn lookalike_table_dsl_does_not_emit_qorm_table() -> Result<(), Box<dyn std::error::Error>> {
         let facts = generated_facts_from_source(
             r#"
 package MyApp::Schema::User;

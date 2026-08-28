@@ -75,8 +75,7 @@ pub mod workspace_import_extractor {
 
     /// Extract import facts and apply bounded framework-specific import semantics.
     pub fn extract_import_specs(ast: &Node, file_id: FileId) -> Vec<ImportSpec> {
-        let mut specs =
-            super::workspace_import_extractor_core::extract_import_specs(ast, file_id);
+        let mut specs = super::workspace_import_extractor_core::extract_import_specs(ast, file_id);
         super::quickorm::normalize_import_specs(ast, &mut specs);
         specs
     }
