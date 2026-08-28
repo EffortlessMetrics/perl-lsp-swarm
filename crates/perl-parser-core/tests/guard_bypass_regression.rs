@@ -38,8 +38,8 @@ fn never_matches(_: &ParseError) -> bool {
     false
 }
 
-fn require(condition: bool, message: &str) -> Result<(), String> {
-    condition.then_some(()).ok_or_else(|| message.to_owned())
+fn require(condition: bool, message: impl Into<String>) -> Result<(), String> {
+    condition.then_some(()).ok_or_else(|| message.into())
 }
 
 fn parse_fails_with(
@@ -319,19 +319,21 @@ fn power_chain_depth_hits_limit() {
 }
 
 #[test]
-fn deep_power_chain_recovery_surfaces_recursion_diagnostic() {
+fn deep_power_chain_recovery_surfaces_recursion_diagnostic() -> Result<(), String> {
     let code = "1 ** ".repeat(2_000) + "1";
     let mut parser = Parser::new(&code);
     let output = parser.parse_with_recovery();
-    assert!(
+    require(
         has_recursion_guard_diagnostic(&output),
-        "parse_with_recovery should surface RecursionDepthExhausted for a deep power chain"
-    );
-    assert!(
+        "parse_with_recovery should surface RecursionDepthExhausted for a deep power chain",
+    )?;
+    require(
         has_recursion_stop_cause(&output),
-        "parse_with_recovery should preserve the recursion stop cause, got {:?}",
-        output.stop_cause()
-    );
+        format!(
+            "parse_with_recovery should preserve the recursion stop cause, got {:?}",
+            output.stop_cause()
+        ),
+    )
 }
 
 // --- regression: shallow nesting still parses cleanly ---
@@ -391,21 +393,23 @@ fn mixed_not_and_bang_nesting_hits_limit() {
 // --- Test 2: LSP-facing path (parse_with_recovery) ---
 
 #[test]
-fn deep_nesting_recovers_with_recursion_diagnostic_on_lsp_path() {
+fn deep_nesting_recovers_with_recursion_diagnostic_on_lsp_path() -> Result<(), String> {
     // LSP uses parse_with_recovery(): deep nesting must yield a (partial) tree
     // AND a depth-guard diagnostic — not a crash, not a silent success.
     let code = "not ".repeat(300) + "1";
     let mut parser = Parser::new(&code);
     let output = parser.parse_with_recovery();
-    assert!(
+    require(
         has_recursion_guard_diagnostic(&output),
-        "parse_with_recovery should surface RecursionDepthExhausted for deep nesting"
-    );
-    assert!(
+        "parse_with_recovery should surface RecursionDepthExhausted for deep nesting",
+    )?;
+    require(
         has_recursion_stop_cause(&output),
-        "parse_with_recovery should preserve the recursion stop cause, got {:?}",
-        output.stop_cause()
-    );
+        format!(
+            "parse_with_recovery should preserve the recursion stop cause, got {:?}",
+            output.stop_cause()
+        ),
+    )
 }
 
 #[test]
@@ -415,19 +419,21 @@ fn comp_parser_pl_lex_brackstack_block_depth_parses() {
 }
 
 #[test]
-fn pathological_block_depth_still_hits_limit() {
+fn pathological_block_depth_still_hits_limit() -> Result<(), String> {
     let code = nested_eval_blocks(600);
     let mut parser = Parser::new(&code);
     let output = parser.parse_with_recovery();
-    assert!(
+    require(
         has_structural_nesting_error(&output),
-        "600-deep bare blocks should still hit the structural nesting guard"
-    );
-    assert!(
+        "600-deep bare blocks should still hit the structural nesting guard",
+    )?;
+    require(
         has_structural_nesting_stop_cause(&output),
-        "structural block nesting should preserve its stop cause, got {:?}",
-        output.stop_cause()
-    );
+        format!(
+            "structural block nesting should preserve its stop cause, got {:?}",
+            output.stop_cause()
+        ),
+    )
 }
 
 fn has_structural_nesting_error(output: &ParseOutput) -> bool {
