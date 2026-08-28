@@ -1983,7 +1983,9 @@ dependencies = [
  "perl-tdd-support",
  "perl-workspace",
  "proptest",
+ "regex",
  "tempfile",
+ "unicode-ident",
  "url",
 ]
 
