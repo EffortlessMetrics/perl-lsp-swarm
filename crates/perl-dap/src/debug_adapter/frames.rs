@@ -149,6 +149,7 @@ impl DebugAdapter {
             Some(authoritative_top.id),
         )?;
         if let Some(top) = rebound_frames.first_mut() {
+            top.name = authoritative_top.name.clone();
             top.source = authoritative_top.source.clone();
             top.line = authoritative_top.line;
             top.column = authoritative_top.column;
@@ -484,6 +485,9 @@ mod pagination_tests {
     use super::*;
     use crate::debug_adapter::DebugState;
     use std::fmt::Debug;
+    use std::sync::Arc;
+    use std::thread;
+    use std::time::Duration;
 
     fn require_eq<T: Debug + PartialEq>(
         actual: &T,
@@ -601,6 +605,7 @@ mod pagination_tests {
         let top = reconciled.first().ok_or("reconciled stack omitted current frame")?;
         let caller = reconciled.get(1).ok_or("reconciled stack omitted caller frame")?;
         require_eq(&top.id, &99_999, "current frame id")?;
+        require_eq(&top.name, &"main::inner".to_string(), "current frame name")?;
         require_eq(&caller.id, &0, "caller frame id")?;
         require_eq(
             &reconciled_arguments.get(&99_999),
@@ -692,6 +697,95 @@ mod pagination_tests {
             &body.get("stackFrames"),
             &Some(&json!([])),
             "running stackTrace exposed stopped frames",
+        )?;
+        Ok(())
+    }
+
+    fn wait_for_framed_query(adapter: &DebugAdapter) -> Result<(), Box<dyn std::error::Error>> {
+        for _ in 0..100 {
+            if adapter.debugger_query_count_for_test() >= 1 {
+                return Ok(());
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+        Err("stackTrace did not issue its framed query".into())
+    }
+
+    #[test]
+    fn delayed_stack_trace_rejects_session_that_resumes_before_reply()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let adapter = Arc::new(DebugAdapter::new());
+        adapter.seed_stopped_session_with_frames_for_test(vec![make_frame(1, "main::old")]);
+        {
+            let mut guard = lock_or_recover(&adapter.session, "test.delayed_running_session");
+            let session = guard.as_mut().ok_or("test session was not seeded")?;
+            session.stopped_generation = 1;
+        }
+
+        let worker = Arc::clone(&adapter);
+        let request = thread::spawn(move || worker.handle_stack_trace(1, 1, None));
+        wait_for_framed_query(&adapter)?;
+        {
+            let mut guard = lock_or_recover(&adapter.session, "test.resume_during_query");
+            let session = guard.as_mut().ok_or("test session disappeared")?;
+            session.state = DebugState::Running;
+        }
+        adapter.push_recent_output_line_for_test("\"DAP_BEGIN_1\"");
+        adapter.push_recent_output_line_for_test("# 0 main::stale at /tmp/stale.pl line 9");
+        adapter.push_recent_output_line_for_test("\"DAP_END_1\"");
+
+        let response = request.join().map_err(|_| "stackTrace worker panicked")?;
+        let DapMessage::Response { body: Some(body), .. } = response else {
+            return Err("delayed stackTrace response omitted its body".into());
+        };
+        require_eq(
+            &body.get("stackFrames"),
+            &Some(&json!([])),
+            "resumed session accepted delayed framed promotion",
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn delayed_stack_trace_rejects_equal_generation_replacement_session()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let adapter = Arc::new(DebugAdapter::new());
+        adapter.seed_stopped_session_with_frames_for_test(vec![make_frame(1, "main::old")]);
+        {
+            let mut guard = lock_or_recover(&adapter.session, "test.delayed_prior_session");
+            let session = guard.as_mut().ok_or("prior test session was not seeded")?;
+            session.stopped_generation = 1;
+        }
+
+        let worker = Arc::clone(&adapter);
+        let request = thread::spawn(move || worker.handle_stack_trace(1, 1, None));
+        wait_for_framed_query(&adapter)?;
+        adapter.begin_session_generation();
+        adapter.seed_stopped_session_with_frames_for_test(vec![make_frame(1, "main::replacement")]);
+        {
+            let mut guard = lock_or_recover(&adapter.session, "test.delayed_replacement_session");
+            let session = guard.as_mut().ok_or("replacement session was not seeded")?;
+            session.stopped_generation = 1;
+        }
+        adapter.push_recent_output_line_for_test("\"DAP_BEGIN_1\"");
+        adapter.push_recent_output_line_for_test("# 0 main::stale at /tmp/stale.pl line 9");
+        adapter.push_recent_output_line_for_test("\"DAP_END_1\"");
+
+        let response = request.join().map_err(|_| "stackTrace worker panicked")?;
+        let DapMessage::Response { body: Some(body), .. } = response else {
+            return Err("replacement stackTrace response omitted its body".into());
+        };
+        require_eq(
+            &body.get("stackFrames"),
+            &Some(&json!([])),
+            "replaced session accepted delayed framed promotion",
+        )?;
+        let guard = lock_or_recover(&adapter.session, "test.delayed_replacement_check");
+        let session = guard.as_ref().ok_or("replacement session disappeared")?;
+        require_eq(
+            &session.stack_frames.first().map(|frame| frame.name.clone()),
+            &Some("main::replacement".to_string()),
+            "delayed query changed replacement top frame",
         )?;
         Ok(())
     }
