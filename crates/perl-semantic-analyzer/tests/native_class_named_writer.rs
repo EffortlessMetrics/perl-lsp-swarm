@@ -75,6 +75,55 @@ fn native_bare_writer_requires_perl_5_42() {
 }
 
 #[test]
+fn native_writer_is_rejected_for_non_scalar_fields() {
+    let mut parser = Parser::new(
+        r#"
+use v5.42;
+class Collection {
+    field @values :writer;
+    field %metadata :writer(write_metadata);
+}
+"#,
+    );
+    let ast = must(parser.parse());
+    let models = ClassModelBuilder::new().build(&ast);
+    let model = must_some(models.iter().find(|model| model.name == "Collection"));
+
+    assert!(
+        !model.methods.iter().any(|method| method.synthetic),
+        "array/hash fields must not synthesize scalar writer methods"
+    );
+}
+
+#[test]
+fn native_writer_respects_explicit_method_declared_before_field() {
+    let mut parser = Parser::new(
+        r#"
+use v5.42;
+class Collision {
+    method set_value { }
+    field $value :writer;
+}
+"#,
+    );
+    let ast = must(parser.parse());
+    let models = ClassModelBuilder::new().build(&ast);
+    let model = must_some(models.iter().find(|model| model.name == "Collision"));
+    let field = must_some(model.fields.iter().find(|field| field.name == "value"));
+
+    assert_eq!(field.writer, None, "an explicit method must reserve the writer name");
+    assert_eq!(
+        model.methods.iter().filter(|method| method.name == "set_value").count(),
+        1,
+        "the explicit method must not be duplicated by synthetic writer generation"
+    );
+    assert!(
+        model.methods.iter().any(|method| method.name == "set_value" && !method.synthetic),
+        "the surviving method must retain its explicit declaration"
+    );
+}
+
+#[test]
 fn named_writer_attributes_are_fail_closed_and_source_ordered() {
     let mut parser = Parser::new(
         r#"

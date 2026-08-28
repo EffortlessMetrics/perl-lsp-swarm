@@ -2602,6 +2602,7 @@ class MyApp::Point {
         // and synthetic accessors, matching Object::Pad parity.
         let models = build_models(
             r#"
+use v5.42;
 class Point {
     field $x :param :reader = 0;
     field $y :param :writer = 1;
