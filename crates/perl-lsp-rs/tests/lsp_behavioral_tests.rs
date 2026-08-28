@@ -333,14 +333,28 @@ fn test_workspace_symbol_search() -> TestResult {
 fn test_extract_variable_returns_edits() -> TestResult {
     let (mut harness, workspace) = create_test_server()?;
 
+    // Keep this oracle on the production-reachable expression shape exercised by
+    // the runtime provider: a function call nested in a binary expression. The
+    // shared workspace fixture is intentionally about symbol resolution and its
+    // return expression is not a stable extract-variable input.
+    let extract_source = r#"
+my $str = "hello";
+my $result = length($str) + 10;
+print $result;
+"#;
+    let extract_uri = workspace.uri("extract.pl");
+    workspace.write("extract.pl", extract_source)?;
+    harness.open_document(&extract_uri, extract_source)?;
+    harness.wait_for_idle(Duration::from_millis(200));
+
     // Request code actions for expression extraction
     let result = harness.request(
         "textDocument/codeAction",
         json!({
-            "textDocument": {"uri": workspace.uri("script.pl")},
+            "textDocument": {"uri": extract_uri},
             "range": {
-                "start": {"line": 11, "character": 11},
-                "end": {"line": 11, "character": 18} // Select "$x + $y"
+                "start": {"line": 2, "character": 13},
+                "end": {"line": 2, "character": 25} // Select "length($str)"
             },
             "context": {"diagnostics": []}
         }),
@@ -355,7 +369,7 @@ fn test_extract_variable_returns_edits() -> TestResult {
         let edit = extract_action
             .get("edit")
             .ok_or("Extract variable action should include a workspace edit")?;
-        let file_uri = workspace.uri("script.pl");
+        let file_uri = extract_uri;
 
         assert!(
             workspace_edit_has_text_edits(edit, &file_uri),
