@@ -219,7 +219,7 @@ fn captured_pr_subject_survives_base_branch_movement_and_drives_real_ci_scope() 
         "changed-input digest must match the independently computed fixture oracle"
     );
     let expected_receipt = format!(
-        "{{\n  \"schema_version\": \"ci-subject.v1\",\n  \"producer\": \"cargo-xtask-ci-subject\",\n  \"status\": \"RESOLVED\",\n  \"repository\": \"{REPOSITORY}\",\n  \"event_kind\": \"pull_request\",\n  \"resolution_source\": \"github_event\",\n  \"diff_mode\": \"merge_base\",\n  \"base_sha\": \"{base}\",\n  \"head_sha\": \"{head}\",\n  \"base_tree\": \"{}\",\n  \"head_tree\": \"{}\",\n  \"diff_base_sha\": \"{base}\",\n  \"diff_base_tree\": \"{}\",\n  \"changed_file_count\": 1,\n  \"changed_input_digest\": \"36c8a973bc6b53f4abf35ed1b950f4f1f9d6695eba0fa4aee8d959983795d2c5\",\n  \"subject_digest\": \"{}\",\n  \"error_code\": null\n}}\n",
+        "{{\n  \"schema_version\": \"ci-subject.v1\",\n  \"producer\": \"cargo-xtask-ci-subject\",\n  \"status\": \"RESOLVED\",\n  \"repository\": \"{REPOSITORY}\",\n  \"event_kind\": \"pull_request\",\n  \"resolution_source\": \"github_event\",\n  \"diff_mode\": \"merge_base\",\n  \"base_sha\": \"{base}\",\n  \"head_sha\": \"{head}\",\n  \"base_tree\": \"{}\",\n  \"head_tree\": \"{}\",\n  \"diff_base_sha\": \"{base}\",\n  \"diff_base_tree\": \"{}\",\n  \"changed_file_count\": 1,\n  \"changed_input_digest\": \"36c8a973bc6b53f4abf35ed1b950f4f1f9d6695eba0fa4aee8d959983795d2c5\",\n  \"subject_digest\": \"{}\",\n  \"error_code\": null\n}}",
         EXPECTED_BASE_TREE, EXPECTED_HEAD_TREE, EXPECTED_BASE_TREE, EXPECTED_SUBJECT_DIGEST,
     );
     ensure!(
