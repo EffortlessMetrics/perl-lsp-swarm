@@ -2138,6 +2138,16 @@ pub(crate) struct ShellExecutionResult {
     pub(crate) timed_out: bool,
 }
 
+/// Upper bound on extra timeout retries any gate may consume.
+///
+/// Evidence for the value: `.ci/gate-policy.yaml` declares at most
+/// `retry_count: 1` on every gate today, and the #10023/#11797 policy prose
+/// fixes retry-once as the compile-overrun remedy whose wall-time ceiling is
+/// 2x per gate. Config declaring more than this cap is clamped at the runner,
+/// so a YAML edit can neither overflow the u32 attempt arithmetic nor turn a
+/// watchdog into an unbounded loop (#11914 review finding).
+const MAX_GATE_RETRY_COUNT: u32 = 1;
+
 /// Run a gate command, retrying only when an attempt is killed by the
 /// watchdog (`timed_out`), up to `retry_count` additional attempts.
 ///
@@ -2163,7 +2173,19 @@ fn run_shell_command_with_retries(
     retry_count: u32,
     gate_name: &str,
 ) -> Result<ShellExecutionResult> {
-    let total_attempts = 1u32 + retry_count;
+    // Clamp before any attempt arithmetic: `retry_count` comes straight from
+    // `.ci/gate-policy.yaml`, so `1u32 + retry_count` on an unclamped config
+    // could overflow, and each extra attempt spends real watchdog seconds.
+    let effective_retry_count = if retry_count > MAX_GATE_RETRY_COUNT {
+        eprintln!(
+            "gate {gate_name}: configured retry_count {retry_count} exceeds \
+             MAX_GATE_RETRY_COUNT ({MAX_GATE_RETRY_COUNT}); clamping to the cap"
+        );
+        MAX_GATE_RETRY_COUNT
+    } else {
+        retry_count
+    };
+    let total_attempts = 1u32 + effective_retry_count;
     let mut attempt = 1u32;
     let mut timeouts_seen = 0u32;
     let mut attempt_evidence = Vec::new();
@@ -3234,18 +3256,19 @@ mod tests {
     use super::{
         DiffResult, FirstFailure, GateDefinition, GateMetrics, GatePlanningConfig,
         GatePlanningRole, GatePolicy, GateResult, GateRunnerConfig, GateTier, GlobalSettings,
-        MAX_GATE_OUTPUT_BYTES, MetricChange, OutputFormat, PackageTargetIndex, Receipt,
-        RetryAttemptEvidence, VERSION_SYNC_GATE_COMMAND, append_retry_trailer,
-        blocking_failure_gate_names, build_agent_receipt, build_pr_fast_plan_from_scope,
-        build_pr_fast_plan_from_scope_with_targets, commit_advisories, compare_receipts,
-        determine_overall_status, extend_plan_with_non_pr_fast_static_gates,
-        extend_plan_with_static_tiers, extract_output_summary, failure_guidance, filter_gates,
-        is_blocking_gate_status, is_cargo_test_command, is_latest_commit,
-        load_policy_for_inspection, load_receipt, log_reaches_test_execution, output_diff,
-        parse_first_failure, parse_test_execution_reached, parse_test_metrics, plan_gates,
-        read_gate_output, run_gate_plan, run_internal_commit_check, run_internal_xtask_gate,
-        run_shell_command_with_timeout, run_single_gate, selects_commit_tier_gate,
-        shell_command_watchdog_timeout, staged_guard_violation, static_gate_plan, write_receipt,
+        MAX_GATE_OUTPUT_BYTES, MAX_GATE_RETRY_COUNT, MetricChange, OutputFormat,
+        PackageTargetIndex, Receipt, RetryAttemptEvidence, VERSION_SYNC_GATE_COMMAND,
+        append_retry_trailer, blocking_failure_gate_names, build_agent_receipt,
+        build_pr_fast_plan_from_scope, build_pr_fast_plan_from_scope_with_targets,
+        commit_advisories, compare_receipts, determine_overall_status,
+        extend_plan_with_non_pr_fast_static_gates, extend_plan_with_static_tiers,
+        extract_output_summary, failure_guidance, filter_gates, is_blocking_gate_status,
+        is_cargo_test_command, is_latest_commit, load_policy_for_inspection, load_receipt,
+        log_reaches_test_execution, output_diff, parse_first_failure, parse_test_execution_reached,
+        parse_test_metrics, plan_gates, read_gate_output, run_gate_plan, run_internal_commit_check,
+        run_internal_xtask_gate, run_shell_command_with_retries, run_shell_command_with_timeout,
+        run_single_gate, selects_commit_tier_gate, shell_command_watchdog_timeout,
+        staged_guard_violation, static_gate_plan, write_receipt,
     };
     use crate::tasks::ci_scope::{
         ArchWidener, DirectCrate, HeavyLaneEntry, LaneDecisions, LaneEntry, PlatformOverrides,
@@ -5138,7 +5161,70 @@ gates:
         assert!(trailer.contains("attempt 1/2: test_execution_reached=no"));
         assert!(trailer.contains("attempt 2/2: test_execution_reached=yes"));
         assert!(trailer.contains("attempt 2/2: passed after earlier watchdog timeout(s)"));
-        assert_eq!(fs::read_to_string(log_path)?, format!("test result: ok\\n{trailer}"));
+        // `append_retry_trailer` opens the seeded log in append mode and the
+        // trailer itself starts with a real newline, so the file must equal
+        // the seeded bytes followed verbatim by the returned trailer.
+        assert_eq!(fs::read_to_string(log_path)?, format!("test result: ok\n{trailer}"));
+        Ok(())
+    }
+
+    /// Review finding against this branch (#11914): `retry_count` comes from
+    /// `.ci/gate-policy.yaml`/`default_retry_count` config and used to feed
+    /// unbounded `1u32 + retry_count` attempt arithmetic. A config value past
+    /// [`MAX_GATE_RETRY_COUNT`] must be clamped so at most one extra attempt
+    /// runs — never an overflow panic in checked builds, never more watchdog
+    /// budget than the 2x-per-gate policy ceiling from #10023/#11797.
+    #[test]
+    fn retry_count_beyond_cap_stops_at_max_gate_retry_attempts() -> color_eyre::eyre::Result<()> {
+        let tmp = tempdir()?;
+        let log_path = tmp.path().join("retry-cap.log");
+        let command =
+            if cfg!(windows) { "ping -n 4 127.0.0.1".to_string() } else { "sleep 3".to_string() };
+
+        let execution = run_shell_command_with_retries(
+            &command,
+            &log_path,
+            1,
+            u32::MAX,
+            "synthetic_cargo_test_gate",
+        )?;
+
+        assert!(execution.timed_out, "the capped final attempt still hits the watchdog");
+        let log = fs::read_to_string(&log_path)?;
+        assert!(
+            log.contains("retry history (2 attempts)"),
+            "exactly the capped number of attempts may run; got: {log}"
+        );
+        assert!(
+            !log.contains("attempt 3/"),
+            "no attempt may run beyond the declared cap; got: {log}"
+        );
+        Ok(())
+    }
+
+    /// Configuration ratchet: no committed gate may declare a retry budget the
+    /// runner would clamp away, so policy stays honest about its own ceiling
+    /// instead of silently diverging from `MAX_GATE_RETRY_COUNT`.
+    #[test]
+    fn gate_policy_never_declares_retry_counts_beyond_the_runner_cap()
+    -> color_eyre::eyre::Result<()> {
+        let root = crate::utils::project_root()?;
+        let policy = load_policy_for_inspection(&root.join(".ci/gate-policy.yaml"))?;
+
+        assert!(
+            policy.global.default_retry_count <= MAX_GATE_RETRY_COUNT,
+            "global.default_retry_count={} exceeds MAX_GATE_RETRY_COUNT({MAX_GATE_RETRY_COUNT})",
+            policy.global.default_retry_count,
+        );
+        for gate in &policy.gates {
+            assert!(
+                gate.retry_count <= MAX_GATE_RETRY_COUNT,
+                "Gate '{}' declares retry_count={} beyond MAX_GATE_RETRY_COUNT \
+                 ({MAX_GATE_RETRY_COUNT}); the runner would clamp it (#11914)",
+                gate.name,
+                gate.retry_count,
+            );
+        }
         Ok(())
     }
 
