@@ -583,6 +583,7 @@ fn whitespace_range_fallback(
 
 fn apply_lsp_whitespace_options(content: &str, options: &FormattingOptions) -> String {
     let mut output = content.to_string();
+    let document_line_ending = inferred_line_ending(content);
 
     if options.trim_trailing_whitespace.unwrap_or(false) {
         output = trim_trailing_whitespace(&output);
@@ -596,7 +597,7 @@ fn apply_lsp_whitespace_options(content: &str, options: &FormattingOptions) -> S
         }
     }
     if options.insert_final_newline.unwrap_or(false) && !output.ends_with('\n') {
-        output.push_str(inferred_line_ending(&output));
+        output.push_str(document_line_ending);
     }
 
     output

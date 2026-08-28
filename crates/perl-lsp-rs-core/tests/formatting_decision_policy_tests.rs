@@ -296,3 +296,27 @@ fn native_projection_insert_final_newline_uses_last_mixed_ending()
     assert!(decision.document.text.ends_with("}\n"));
     Ok(())
 }
+
+#[test]
+fn native_projection_trim_then_insert_retains_crlf_document_ending()
+-> Result<(), Box<dyn std::error::Error>> {
+    let provider =
+        FormattingProvider::new(RecordingRuntime { invoked: Arc::new(AtomicBool::new(false)) });
+    let mut formatting_options = options();
+    formatting_options.insert_final_newline = Some(true);
+    formatting_options.trim_final_newlines = Some(true);
+    let source = "my $x=1;\r\n";
+
+    let decision = provider.format_document_decision(
+        source,
+        &formatting_options,
+        &FormatContext::default(),
+    )?;
+
+    let expected = "my $x = 1;\r\n";
+    assert_eq!(decision.document.text, expected);
+    assert_eq!(decision.document.edits.len(), 1);
+    assert_eq!(decision.document.edits[0].new_text, expected);
+    assert!(!decision.document.text.ends_with("\r\r\n"));
+    Ok(())
+}
