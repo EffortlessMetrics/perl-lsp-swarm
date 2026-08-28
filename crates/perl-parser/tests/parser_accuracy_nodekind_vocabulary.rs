@@ -126,9 +126,7 @@ fn validate_reference_rows(
         return Ok(0);
     };
     let rows = raw_rows.as_array().ok_or_else(|| {
-        invalid_manifest(format!(
-            "fixture `{fixture_id}` field `{collection}` must be an array"
-        ))
+        invalid_manifest(format!("fixture `{fixture_id}` field `{collection}` must be an array"))
     })?;
 
     let mut checked = 0usize;
