@@ -106,12 +106,13 @@ impl UxClient {
             .spawn(move || {
                 let mut reader = BufReader::new(stdout);
                 loop {
-                    if let Err(error) = route_next_stdout_message(
+                    let routed = route_next_stdout_message(
                         &mut reader,
                         &stdin_clone,
                         &ev_clone,
                         &resp_clone,
-                    ) {
+                    );
+                    if let Err(error) = routed {
                         let mut guard = transport_error_clone
                             .lock()
                             .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -417,17 +418,17 @@ fn wait_for_response_queue(
     loop {
         {
             let mut guard = responses.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(pos) =
-                guard.iter().position(|v| v["id"].as_u64() == Some(id) || v["id"] == json!(id))
-                && let Some(msg) = guard.remove(pos)
-            {
+            let position = guard.iter().position(|value| {
+                value["id"].as_u64() == Some(id) || value["id"] == json!(id)
+            });
+            if let Some(msg) = position.and_then(|pos| guard.remove(pos)) {
                 return Ok(msg);
             }
         }
 
-        if let Some(error) =
-            transport_error.lock().unwrap_or_else(|e| e.into_inner()).clone()
-        {
+        let transport_failure =
+            transport_error.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        if let Some(error) = transport_failure {
             return Err(anyhow!(
                 "LSP stdout transport failed while waiting for response id={id}: {error}"
             ));
@@ -538,8 +539,9 @@ where
 {
     let message = read_one_message(reader)?;
     let has_id = message.get("id").is_some_and(|id| !id.is_null());
-    let is_response =
-        has_id && (message.get("result").is_some() || message.get("error").is_some());
+    let has_result = message.get("result").is_some();
+    let has_error = message.get("error").is_some();
+    let is_response = has_id && (has_result || has_error);
     if is_response {
         responses
             .lock()
@@ -549,11 +551,11 @@ where
     }
 
     let server_response = server_request_response(&message);
-    let method = message
+    let method_name = message
         .get("method")
         .and_then(Value::as_str)
-        .unwrap_or("<missing>")
-        .to_owned();
+        .unwrap_or("<missing>");
+    let method = method_name.to_owned();
     let id = message.get("id").cloned().unwrap_or(Value::Null);
     events
         .lock()
