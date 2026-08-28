@@ -1412,12 +1412,24 @@ fn is_in_multiline_literal(source: &str, position: usize) -> bool {
 fn is_pod_start_marker(line: &str) -> bool {
     matches!(
         pod_directive(line),
-        Some("=pod" | "=head1" | "=head2" | "=head3" | "=head4" | "=over" | "=item" | "=back")
+        Some(
+            "=pod"
+                | "=head1"
+                | "=head2"
+                | "=head3"
+                | "=head4"
+                | "=head5"
+                | "=head6"
+                | "=over"
+                | "=item"
+                | "=back"
+                | "=encoding"
+        )
     )
 }
 
 fn is_pod_end_marker(line: &str) -> bool {
-    matches!(pod_directive(line), Some("=cut" | "=end"))
+    pod_directive(line) == Some("=cut")
 }
 
 fn pod_directive(line: &str) -> Option<&str> {
@@ -1610,6 +1622,22 @@ mod tests {
 
         let source = "=pod\ndocumentation\n  =cut\nstill documentation";
         assert!(is_in_pod(&source, source.len()), "indented =cut must not close POD");
+    }
+
+    #[test]
+    fn recognized_modern_pod_commands_start_pod() {
+        for directive in ["=encoding utf8", "=head5 Deep", "=head6 Deeper"] {
+            let source = format!("{directive}\ndocumentation\n$http->po");
+            assert!(is_in_pod(&source, source.len()), "{directive} must start POD");
+            assert!(!is_in_string(&source, source.len()));
+            assert!(!is_in_heredoc(&source, source.len()));
+        }
+    }
+
+    #[test]
+    fn unmatched_end_does_not_cut_pod() {
+        let source = "=pod\ndocumentation\n=end comment\nstill documentation\n$http->po";
+        assert!(is_in_pod(source, source.len()));
     }
 
     #[test]
