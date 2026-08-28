@@ -1,7 +1,7 @@
 #![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
-use perl_regex::validator::{RegexDiagnosticCode, RegexDynamicRegionKind};
 use perl_regex::RegexValidator;
+use perl_regex::validator::{RegexDiagnosticCode, RegexDynamicRegionKind};
 
 #[test]
 fn embedded_code_facts_cover_full_constructs_while_diagnostics_anchor_openers()
@@ -46,10 +46,7 @@ fn embedded_code_facts_cover_full_constructs_while_diagnostics_anchor_openers()
             .iter()
             .find(|diagnostic| diagnostic.code == diagnostic_code)
             .ok_or("missing embedded-code diagnostic")?;
-        assert_eq!(
-            pattern.get(diagnostic.range.start..diagnostic.range.end),
-            Some(opener)
-        );
+        assert_eq!(pattern.get(diagnostic.range.start..diagnostic.range.end), Some(opener));
     }
 
     Ok(())

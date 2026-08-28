@@ -8,9 +8,7 @@
 use perl_regex::analyzer::{
     FeatureState, ModifierSequence, PerlVersion, RegexLanguageProfile, RegexOperator,
 };
-use perl_regex::validator::{
-    RegexAnalysis, RegexDiagnosticClass, RegexDiagnosticCode, RegexRange,
-};
+use perl_regex::validator::{RegexAnalysis, RegexDiagnosticClass, RegexDiagnosticCode, RegexRange};
 use perl_regex::{RegexAnalyzer, RegexValidator};
 use proptest::prelude::*;
 use proptest::test_runner::{TestCaseError, TestCaseResult};
@@ -66,8 +64,7 @@ fn modifier_spelling() -> impl Strategy<Value = String> {
         ]),
         1 => any::<char>(),
     ];
-    prop::collection::vec(character, 0..24)
-        .prop_map(|characters| characters.into_iter().collect())
+    prop::collection::vec(character, 0..24).prop_map(|characters| characters.into_iter().collect())
 }
 
 fn regex_operator() -> impl Strategy<Value = RegexOperator> {
@@ -118,10 +115,7 @@ fn source_offset() -> impl Strategy<Value = usize> {
 }
 
 fn assert_body_range(pattern: &str, range: RegexRange, label: &str) -> TestCaseResult {
-    prop_assert!(
-        range.start <= range.end,
-        "{label} range is reversed: {range:?} in {pattern:?}"
-    );
+    prop_assert!(range.start <= range.end, "{label} range is reversed: {range:?} in {pattern:?}");
     prop_assert!(
         range.end <= pattern.len(),
         "{label} range escapes input: {range:?}, len={} in {pattern:?}",
@@ -145,11 +139,7 @@ fn assert_analysis_contract(pattern: &str, analysis: &RegexAnalysis) -> TestCase
     for fact in &analysis.facts.embedded_code {
         assert_body_range(pattern, fact.range, "embedded-code fact")?;
         prop_assert!(
-            analysis
-                .facts
-                .dynamic_regions
-                .iter()
-                .any(|region| region.range == fact.range),
+            analysis.facts.dynamic_regions.iter().any(|region| region.range == fact.range),
             "embedded-code fact lacks a matching dynamic region: {:?} in {pattern:?}",
             fact.range
         );
@@ -210,14 +200,8 @@ fn assert_modifier_range(
         range.start >= source_start,
         "{label} range starts before the modifier sequence: {range:?}"
     );
-    prop_assert!(
-        range.start <= range.end,
-        "{label} range is reversed: {range:?}"
-    );
-    prop_assert!(
-        range.end <= source_end,
-        "{label} range escapes the modifier sequence: {range:?}"
-    );
+    prop_assert!(range.start <= range.end, "{label} range is reversed: {range:?}");
+    prop_assert!(range.end <= source_end, "{label} range escapes the modifier sequence: {range:?}");
     let relative_start = range.start - source_start;
     let relative_end = range.end - source_start;
     prop_assert!(

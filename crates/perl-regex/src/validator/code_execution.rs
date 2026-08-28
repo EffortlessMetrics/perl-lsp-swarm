@@ -24,11 +24,7 @@ pub(crate) fn find_code_executions(stream: &RegexEventStream) -> Vec<EmbeddedCod
                     RegexEmbeddedCodeKind::Immediate => EmbeddedCodeKind::Immediate,
                     RegexEmbeddedCodeKind::Deferred => EmbeddedCodeKind::Deferred,
                 };
-                Some(EmbeddedCodeFinding {
-                    construct_range: event.range,
-                    opener_range,
-                    kind,
-                })
+                Some(EmbeddedCodeFinding { construct_range: event.range, opener_range, kind })
             }
             _ => None,
         })
