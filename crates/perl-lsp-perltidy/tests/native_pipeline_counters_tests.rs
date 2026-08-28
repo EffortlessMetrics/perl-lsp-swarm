@@ -161,10 +161,9 @@ fn no_change_subjects_count_zero_edits_with_full_pipeline() {
 /// superlinear when `c(4N)` exceeds `SCALING_RATIO_BOUND_V1 * c(2N)` by more
 /// than `SCALING_ABSOLUTE_SLACK_V1`. The detector is applied only to counters
 /// the production instrument records; it does not measure uninstrumented
-/// fit/comparison operations or prove their algorithmic complexity. Any
-/// loosening of either constant lets the synthetic quadratic series below
-/// pass, which turns `detector_flags_known_quadratic_series` red — detector
-/// weakening is therefore itself observable.
+/// fit/comparison operations or prove their algorithmic complexity. Boundary
+/// controls supplement the large quadratic series so weakening either detector
+/// constant remains observable.
 fn is_superlinear(n: u64, two_n: u64, four_n: u64) -> bool {
     two_n > n.saturating_mul(SCALING_RATIO_BOUND_V1).saturating_add(SCALING_ABSOLUTE_SLACK_V1)
         || four_n
@@ -183,6 +182,10 @@ fn detector_flags_known_quadratic_series() {
     // pathological jump pass even though the complete three-point shape is
     // not bounded.
     assert!(is_superlinear(1, 1_000, 2_000));
+    // These values sit one unit above the current envelope. Increasing either
+    // detector bound must make at least one boundary assertion fail.
+    assert!(is_superlinear(4, 8, 25));
+    assert!(is_superlinear(1, 11, 11));
     // Exact linear series (through origin) stays bounded.
     assert!(!is_superlinear(1, 2, 4));
     // Linear with a constant term stays bounded.
@@ -284,19 +287,44 @@ fn nested_counter_scope_populates_supplied_and_outer_snapshots() {
     assert_eq!(typed.outcome.disposition, FormatDisposition::Applied);
     assert_eq!(supplied.pipeline_invocations, 1);
     assert_eq!(supplied.parse_gate_invocations, 2);
+    assert_eq!(supplied.source_parse_gate_invocations, 1);
+    assert_eq!(supplied.formatted_output_parse_gate_invocations, 1);
+    assert!(supplied.gate_nodes_observed > 0);
+    assert!(supplied.lines_processed > 0);
     assert!(supplied.delimited_groups_fitted > 0);
     assert!(supplied.edits_derived > 0);
     assert!(supplied.replacement_bytes > 0);
+    assert!(supplied.peak_depth > 0);
     assert!(supplied.elapsed > std::time::Duration::ZERO);
 
     let mut outer_snapshot = NativePipelineCounters::default();
     outer.merge_into(&mut outer_snapshot);
     assert_eq!(outer_snapshot.pipeline_invocations, 1);
     assert_eq!(outer_snapshot.parse_gate_invocations, 2);
+    assert_eq!(outer_snapshot.source_parse_gate_invocations, 1);
+    assert_eq!(outer_snapshot.formatted_output_parse_gate_invocations, 1);
+    assert!(outer_snapshot.gate_nodes_observed > 0);
+    assert!(outer_snapshot.lines_processed > 0);
     assert!(outer_snapshot.delimited_groups_fitted > 0);
+    assert!(outer_snapshot.edits_derived > 0);
+    assert!(outer_snapshot.replacement_bytes > 0);
+    assert!(outer_snapshot.peak_depth > 0);
+    assert_eq!(outer_snapshot.elapsed, supplied.elapsed);
+    assert_eq!(outer_snapshot.pipeline_invocations, supplied.pipeline_invocations);
+    assert_eq!(outer_snapshot.parse_gate_invocations, supplied.parse_gate_invocations);
+    assert_eq!(outer_snapshot.source_parse_gate_invocations, supplied.source_parse_gate_invocations);
+    assert_eq!(
+        outer_snapshot.formatted_output_parse_gate_invocations,
+        supplied.formatted_output_parse_gate_invocations
+    );
+    assert_eq!(outer_snapshot.gate_nodes_observed, supplied.gate_nodes_observed);
+    assert_eq!(outer_snapshot.lines_processed, supplied.lines_processed);
+    assert_eq!(outer_snapshot.delimited_groups_fitted, supplied.delimited_groups_fitted);
     assert_eq!(outer_snapshot.edits_derived, supplied.edits_derived);
     assert_eq!(outer_snapshot.replacement_bytes, supplied.replacement_bytes);
+    assert_eq!(outer_snapshot.peak_depth, supplied.peak_depth);
     assert_eq!(outer_snapshot.elapsed, supplied.elapsed);
+    assert_eq!(outer_snapshot, supplied, "nested merge must preserve every counter");
 }
 
 // ---------------------------------------------------------------------------
@@ -630,7 +658,7 @@ fn receipt_identity_rows_include_production_counter_snapshot() {
     );
     let row = identity_row_with_counters(
         &spec,
-        &typed.outcome.identity.config_fingerprint,
+        &typed,
         &toolchain_tag(),
         "test-run",
         &counters,

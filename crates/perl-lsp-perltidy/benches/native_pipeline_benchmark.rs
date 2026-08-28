@@ -54,21 +54,6 @@ fn write_subject_identities(rows: &[serde_json::Value]) {
 }
 
 fn build_subject_identities() -> Vec<serde_json::Value> {
-    // Observe the production config fingerprint once through the real typed
-    // path so receipt rows carry the exact fingerprint the pipeline records.
-    let probe = SubjectSpec { family: "delimited", line_ending: "lf", indent: "tabs", units: 1 };
-    let probe_source = probe.source();
-    let mut probe_counters = NativePipelineCounters::default();
-    let fingerprint = NativeFormatter::new()
-        .format_document_typed_with_counters(
-            &probe_source,
-            &FormatConfig::default(),
-            &FormatContext::default(),
-            &mut probe_counters,
-        )
-        .outcome
-        .identity
-        .config_fingerprint;
     let toolchain = toolchain_tag();
     let run_id = std::env::var("NATIVE_PIPELINE_RUN_ID")
         .ok()
@@ -79,13 +64,13 @@ fn build_subject_identities() -> Vec<serde_json::Value> {
         .map(|spec| {
             let source = spec.source();
             let mut counters = NativePipelineCounters::default();
-            let _typed = NativeFormatter::new().format_document_typed_with_counters(
+            let typed = NativeFormatter::new().format_document_typed_with_counters(
                 &source,
                 &FormatConfig::default(),
                 &FormatContext::default(),
                 &mut counters,
             );
-            identity_row_with_counters(spec, &fingerprint, &toolchain, &run_id, &counters)
+            identity_row_with_counters(spec, &typed, &toolchain, &run_id, &counters)
         })
         .collect()
 }

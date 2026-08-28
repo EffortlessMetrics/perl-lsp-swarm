@@ -13,7 +13,7 @@
 //! This module must stay lint-clean: it is compiled into ordinary test
 //! targets as well as the bench harness.
 
-use perl_lsp_perltidy::native::NativePipelineCounters;
+use perl_lsp_perltidy::native::{FormatIdentity, NativePipelineCounters, TypedFormatResult};
 use serde_json::{Value, json};
 
 /// Production default `FormatConfig::line_width`.
@@ -190,17 +190,51 @@ pub fn identity_row(spec: &SubjectSpec, config_fingerprint: &str, toolchain: &st
 #[must_use]
 pub fn identity_row_with_counters(
     spec: &SubjectSpec,
-    config_fingerprint: &str,
+    typed: &TypedFormatResult,
     toolchain: &str,
     run_id: &str,
     counters: &NativePipelineCounters,
 ) -> Value {
-    let mut row = identity_row(spec, config_fingerprint, toolchain);
+    let identity = &typed.outcome.identity;
+    assert_eq!(
+        identity.content_digest,
+        spec.content_digest(),
+        "production identity digest drift for {}",
+        spec.id()
+    );
+    let mut row = identity_row_from_production_identity(spec, identity, toolchain);
     row["run_id"] = json!(run_id);
     row["counters"] = json!(counters);
     row["counters"]["schema"] = json!(counters.schema());
     row["counters"]["clock_tag"] = json!(counters.clock_tag());
     row
+}
+
+fn identity_row_from_production_identity(
+    spec: &SubjectSpec,
+    identity: &FormatIdentity,
+    toolchain: &str,
+) -> Value {
+    json!({
+        "schema": perl_lsp_perltidy::COUNTER_SCHEMA_V1,
+        "bench_group": BENCH_GROUP,
+        "bench_name": spec.id(),
+        "bench_id": spec.bench_id(),
+        "subject": {
+            "family": spec.family,
+            "line_ending": spec.line_ending,
+            "indent": spec.indent,
+            "units": spec.units,
+            "content_digest": identity.content_digest,
+            "line_count": spec.line_count(),
+        },
+        "engine": identity.actual_engine,
+        "requested_mode": identity.requested_mode,
+        "source_id": identity.source_id,
+        "source_generation": identity.source_generation,
+        "config_fingerprint": identity.config_fingerprint,
+        "toolchain": toolchain,
+    })
 }
 
 /// Toolchain/environment tag for receipt rows. Deterministic per environment;
