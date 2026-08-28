@@ -1,7 +1,8 @@
 //! Method completion for Perl
 //!
-//! Provides context-aware method completion including DBI methods.
+//! Provides context-aware method completion including DBI and common client APIs.
 
+use super::lexical_context::{is_in_comment, is_in_heredoc, is_in_regex, is_in_string};
 use super::{context::CompletionContext, items::CompletionItem, items::InsertTextFormat};
 use perl_semantic_analyzer::symbol::{SymbolKind, SymbolTable};
 use std::borrow::Cow;
@@ -154,6 +155,56 @@ pub const MOJO_MYSQL_METHODS: &[(&str, &str)] = &[
     ("strict_mode", "Create a database wrapper with strict mode enabled"),
 ];
 
+/// Static methods documented by `HTTP::Tiny`.
+pub const HTTP_TINY_STATIC_METHODS: &[(&str, &str)] = &[
+    ("new", "Create an HTTP::Tiny client"),
+    ("can_ssl", "Check whether SSL support is available"),
+];
+
+/// Common instance methods documented by `HTTP::Tiny`.
+pub const HTTP_TINY_METHODS: &[(&str, &str)] = &[
+    ("get", "Send an HTTP GET request"),
+    ("head", "Send an HTTP HEAD request"),
+    ("put", "Send an HTTP PUT request"),
+    ("post", "Send an HTTP POST request"),
+    ("patch", "Send an HTTP PATCH request"),
+    ("delete", "Send an HTTP DELETE request"),
+    ("post_form", "Send form data with an HTTP POST request"),
+    ("mirror", "Mirror a URL to a local file"),
+    ("request", "Send a request with an explicit HTTP method"),
+    ("www_form_urlencode", "Encode form data for a query or request body"),
+    ("can_ssl", "Check whether SSL support is available"),
+    ("connected", "Report the current keep-alive peer"),
+];
+
+/// Common instance methods documented by `LWP::UserAgent`.
+pub const LWP_USER_AGENT_METHODS: &[(&str, &str)] = &[
+    ("request", "Send an HTTP request"),
+    ("simple_request", "Send one HTTP request without redirects"),
+    ("get", "Send an HTTP GET request"),
+    ("head", "Send an HTTP HEAD request"),
+    ("post", "Send an HTTP POST request"),
+    ("put", "Send an HTTP PUT request"),
+    ("delete", "Send an HTTP DELETE request"),
+    ("mirror", "Mirror a URL to a local file"),
+    ("agent", "Get or set the user-agent string"),
+    ("cookie_jar", "Get or set the cookie jar"),
+    ("credentials", "Set credentials for a protection space"),
+    ("default_header", "Get or set one default request header"),
+    ("default_headers", "Get or set default request headers"),
+    ("max_redirect", "Get or set the redirect limit"),
+    ("max_size", "Get or set the response-size limit"),
+    ("parse_head", "Get or set HTML head parsing"),
+    ("requests_redirectable", "Get or set redirectable request methods"),
+    ("ssl_opts", "Get or set SSL options"),
+    ("timeout", "Get or set the request timeout"),
+    ("proxy", "Get or set a proxy for protocols"),
+    ("no_proxy", "Add domains that bypass the proxy"),
+    ("env_proxy", "Load proxy settings from the environment"),
+    ("clone", "Clone the user agent"),
+    ("is_protocol_supported", "Check whether a protocol is supported"),
+];
+
 const GENERIC_OBJECT_METHODS: &[(&str, &str)] = &[
     ("new", "Constructor"),
     ("isa", "Check if object is of given class"),
@@ -229,7 +280,121 @@ pub fn infer_receiver_type(context: &CompletionContext, source: &str) -> Option<
     None
 }
 
-fn imported_framework_methods(
+fn is_simple_scalar_receiver(receiver: &str) -> bool {
+    receiver.strip_prefix('$').is_some_and(|name| {
+        !name.is_empty()
+            && name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == ':')
+    })
+}
+
+fn is_in_pod_block(source: &str, position: usize) -> bool {
+    let source_before_position = source.get(..position).unwrap_or(source);
+    let mut in_pod = false;
+
+    for line in source_before_position.lines() {
+        let directive = line.split_ascii_whitespace().next();
+        if directive == Some("=cut") {
+            in_pod = false;
+        } else if directive.is_some_and(|word| word.starts_with('=')) {
+            in_pod = true;
+        }
+    }
+
+    in_pod
+}
+
+fn is_code_position(source: &str, position: usize) -> bool {
+    !is_in_string(source, position)
+        && !is_in_comment(source, position)
+        && !is_in_heredoc(source, position)
+        && !is_in_regex(source, position)
+        && !is_in_pod_block(source, position)
+}
+
+fn assignment_expression_before_receiver<'a>(
+    receiver: &str,
+    source_before_receiver: &'a str,
+) -> Option<&'a str> {
+    if !is_simple_scalar_receiver(receiver) {
+        return None;
+    }
+
+    let mut search_end = source_before_receiver.len();
+    while let Some(receiver_pos) = source_before_receiver[..search_end].rfind(receiver) {
+        if !is_code_position(source_before_receiver, receiver_pos) {
+            search_end = receiver_pos;
+            continue;
+        }
+
+        let after_receiver = &source_before_receiver[receiver_pos + receiver.len()..];
+        if after_receiver
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_' || c == ':')
+        {
+            search_end = receiver_pos;
+            continue;
+        }
+
+        let after_receiver = after_receiver.trim_start();
+        let Some(expression) = after_receiver.strip_prefix('=') else {
+            search_end = receiver_pos;
+            continue;
+        };
+        if expression
+            .chars()
+            .next()
+            .is_some_and(|c| matches!(c, '=' | '>' | '~'))
+        {
+            search_end = receiver_pos;
+            continue;
+        }
+
+        let statement_end = expression.find(';').unwrap_or(expression.len());
+        return Some(expression[..statement_end].trim());
+    }
+
+    None
+}
+
+fn expression_calls_constructor(expression: &str, module: &str) -> bool {
+    let Some(after_module) = expression.strip_prefix(module) else {
+        return false;
+    };
+    let Some(after_arrow) = after_module.trim_start().strip_prefix("->") else {
+        return false;
+    };
+    let Some(after_new) = after_arrow.trim_start().strip_prefix("new") else {
+        return false;
+    };
+
+    after_new
+        .chars()
+        .next()
+        .is_none_or(|c| c == '(' || c.is_whitespace())
+}
+
+fn infer_imported_constructor_receiver_type(
+    context: &CompletionContext,
+    source: &str,
+    used_modules: &HashSet<String>,
+) -> Option<&'static str> {
+    let receiver = context.receiver_prefix().trim_end_matches("->");
+    let source_before_cursor = source.get(..context.position).unwrap_or(source);
+    let receiver_pos = source_before_cursor.rfind(receiver)?;
+    let expression =
+        assignment_expression_before_receiver(receiver, &source_before_cursor[..receiver_pos])?;
+
+    ["HTTP::Tiny", "LWP::UserAgent"]
+        .into_iter()
+        .find(|&module| {
+            used_modules.contains(module) && expression_calls_constructor(expression, module)
+        })
+}
+
+fn imported_static_methods(
     prefix: &str,
     used_modules: &HashSet<String>,
 ) -> Option<&'static [(&'static str, &'static str)]> {
@@ -239,8 +404,19 @@ fn imported_framework_methods(
     }
 
     match module {
+        "HTTP::Tiny" => Some(HTTP_TINY_STATIC_METHODS),
         "Mojo::Pg" => Some(MOJO_PG_METHODS),
         "Mojo::mysql" => Some(MOJO_MYSQL_METHODS),
+        _ => None,
+    }
+}
+
+fn known_instance_methods(
+    receiver_type: Option<&str>,
+) -> Option<&'static [(&'static str, &'static str)]> {
+    match receiver_type {
+        Some("HTTP::Tiny") => Some(HTTP_TINY_METHODS),
+        Some("LWP::UserAgent") => Some(LWP_USER_AGENT_METHODS),
         _ => None,
     }
 }
@@ -431,14 +607,20 @@ pub fn add_method_completions(
         }
     }
 
-    // Try to infer the receiver type from context
-    let receiver_type = infer_receiver_type(context, source);
+    // Exact imported constructor evidence takes priority over naming heuristics.
+    let receiver_type = infer_imported_constructor_receiver_type(context, source, used_modules)
+        .map(str::to_owned)
+        .or_else(|| infer_receiver_type(context, source));
 
-    let static_framework_methods =
-        imported_framework_methods(context.receiver_prefix(), used_modules);
+    let static_api_methods = imported_static_methods(context.receiver_prefix(), used_modules);
+    let instance_api_methods = known_instance_methods(receiver_type.as_deref());
 
     // Choose methods based on inferred type
-    let methods: Vec<(&str, &str)> = if let Some(methods) = static_framework_methods {
+    let methods: Vec<(&str, &str)> = if let Some(methods) = static_api_methods {
+        let mut methods = methods.to_vec();
+        methods.extend_from_slice(GENERIC_OBJECT_METHODS);
+        methods
+    } else if let Some(methods) = instance_api_methods {
         let mut methods = methods.to_vec();
         methods.extend_from_slice(GENERIC_OBJECT_METHODS);
         methods
@@ -451,9 +633,11 @@ pub fn add_method_completions(
     };
 
     for (method, desc) in methods {
-        let is_static_framework_method = static_framework_methods
+        let is_static_api_method = static_api_methods
             .is_some_and(|catalog| catalog.iter().any(|(name, _)| *name == method));
-        if is_static_framework_method
+        let is_instance_api_method = instance_api_methods
+            .is_some_and(|catalog| catalog.iter().any(|(name, _)| *name == method));
+        if (is_static_api_method || is_instance_api_method)
             && !method_prefix.is_empty()
             && !method.starts_with(method_prefix)
         {
