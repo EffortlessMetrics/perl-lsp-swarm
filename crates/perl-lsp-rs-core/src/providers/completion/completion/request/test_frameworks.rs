@@ -114,7 +114,9 @@ pub(super) fn reconcile(
     }
 
     for name in target_aliases {
-        if !context.prefix.is_empty() && !name.starts_with(&context.prefix) {
+        if test2_facts.imported_symbols.contains(&name)
+            || (!context.prefix.is_empty() && !name.starts_with(&context.prefix))
+        {
             continue;
         }
 
@@ -136,11 +138,12 @@ pub(super) fn reconcile(
 }
 
 /// Project package-scoped Test2 imports into the ordinary export resolver plus
-/// the dynamic aliases installed by `Test2::Tools::Target`.
+/// the static aliases installed by `Test2::Tools::Target`.
 ///
-/// `Test2::V0 -target => { alias => 'Package' }` is sanitized before it reaches
-/// `Test2Facts`: without that step the generic import tokenizer can mistake the
-/// hash key for an explicit Test2 export and suppress the V0 default tool set.
+/// `-target => { alias => 'Package' }` is sanitized before a V0 or V1 bundle
+/// reaches `Test2Facts`: without that step the generic import tokenizer can
+/// mistake the target hash key for an explicit Test2 export and suppress the
+/// bundle's ordinary imports.
 fn project_test2_imports(package_uses: &[&ScopedUse]) -> (String, BTreeSet<String>, bool) {
     let mut source = String::new();
     let mut aliases = BTreeSet::new();
@@ -157,8 +160,9 @@ fn project_test2_imports(package_uses: &[&ScopedUse]) -> (String, BTreeSet<Strin
             uses_target_import = true;
             aliases.extend(target_import.aliases);
 
-            if let Some(remaining_args) = target_import.remaining_v0_args {
-                source.push_str("use Test2::V0");
+            if let Some(remaining_args) = target_import.remaining_args {
+                source.push_str("use ");
+                source.push_str(import.module.as_str());
                 if !remaining_args.is_empty() {
                     source.push(' ');
                     source.push_str(&remaining_args);
@@ -405,6 +409,27 @@ mod tests {
             Some("t/example.t"),
         );
         assert!(labels(&tool_items).contains(&"is"));
+    }
+
+    #[test]
+    fn v1_target_hash_completes_alias_and_preserves_bundle_options() {
+        let alias_items = complete(
+            "use Test2::V1 -target => { service => 'My::Service' };\nser|",
+            Some("t/example.t"),
+        );
+        assert!(labels(&alias_items).contains(&"service"));
+
+        let handle_items = complete(
+            "use Test2::V1 -target => { service => 'My::Service' };\nT|",
+            Some("t/example.t"),
+        );
+        assert!(labels(&handle_items).contains(&"T2"));
+
+        let imported_items = complete(
+            "use Test2::V1 -import, -target => { service => 'My::Service' };\ni|",
+            Some("t/example.t"),
+        );
+        assert!(labels(&imported_items).contains(&"is"));
     }
 
     #[test]
