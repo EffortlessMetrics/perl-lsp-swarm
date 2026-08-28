@@ -352,6 +352,54 @@ fn maybe_embed_receipt_block(root: &Path, artifact: &UxScorecardArtifact) -> Res
         .with_context(|| format!("writing {}", receipt_path.display()))
 }
 
+#[derive(Debug, PartialEq)]
+struct MissingRequiredMetric {
+    metric: String,
+    baseline_value: f64,
+}
+
+#[derive(Debug)]
+struct EditorUxRatchetViolations {
+    missing: Vec<MissingRequiredMetric>,
+    regressions: Vec<ratchet::RatchetViolation>,
+}
+
+impl EditorUxRatchetViolations {
+    fn is_empty(&self) -> bool {
+        self.missing.is_empty() && self.regressions.is_empty()
+    }
+
+    fn len(&self) -> usize {
+        self.missing.len() + self.regressions.len()
+    }
+}
+
+fn evaluate_ratchet(
+    baseline: &SubsystemBaseline,
+    current: &BTreeMap<String, Option<f64>>,
+) -> EditorUxRatchetViolations {
+    let missing = baseline
+        .floor_metrics
+        .iter()
+        .filter_map(|(metric, baseline_value)| {
+            let baseline_value = baseline_value.as_ref().copied()?;
+            if current.get(metric).and_then(|value| *value).is_some() {
+                None
+            } else {
+                Some(MissingRequiredMetric {
+                    metric: metric.clone(),
+                    baseline_value,
+                })
+            }
+        })
+        .collect();
+
+    EditorUxRatchetViolations {
+        missing,
+        regressions: ratchet::check_floor_metrics(baseline, current),
+    }
+}
+
 fn enforce_ratchet(root: &Path, artifact: &UxScorecardArtifact) -> Result<()> {
     let baseline_path = root.join(BASELINE_PATH);
     let baseline_raw = fs::read_to_string(&baseline_path)
@@ -368,18 +416,24 @@ fn enforce_ratchet(root: &Path, artifact: &UxScorecardArtifact) -> Result<()> {
         current_floor.insert(format!("latency_{}_p95_ms", request), latency.p95_ms);
     }
 
-    let violations = ratchet::check_floor_metrics(&baseline, &current_floor);
+    let violations = evaluate_ratchet(&baseline, &current_floor);
     if violations.is_empty() {
         return Ok(());
     }
 
-    for violation in &violations {
+    for missing in &violations.missing {
+        eprintln!(
+            "VIOLATION [editor_ux] {} baseline={:.3} current=missing",
+            missing.metric, missing.baseline_value
+        );
+    }
+    for regression in &violations.regressions {
         eprintln!(
             "VIOLATION [editor_ux] {} baseline={:.3} current={:.3} regression={:.2}%",
-            violation.metric,
-            violation.baseline_value,
-            violation.current_value,
-            violation.regression_pct * 100.0
+            regression.metric,
+            regression.baseline_value,
+            regression.current_value,
+            regression.regression_pct * 100.0
         );
     }
 
@@ -565,6 +619,68 @@ mod tests {
         let scorecard = aggregate_editor_ux_scorecard(&scenarios);
         // 1 true out of 2 measured = 50%
         assert_eq!(scorecard.symbol_correctness_pct, Some(50.0));
+    }
+
+    fn baseline_with_floor_metrics(
+        floor_metrics: BTreeMap<String, Option<f64>>,
+    ) -> SubsystemBaseline {
+        SubsystemBaseline {
+            floor_metrics,
+            improvement_metrics: BTreeMap::new(),
+            tolerance_pct: 0.1,
+            lower_is_better: vec![],
+            schema_version: 1,
+            measured_at: String::new(),
+            subsystem: "editor_ux".to_string(),
+            commit: String::new(),
+        }
+    }
+
+    #[test]
+    fn ratchet_requires_non_null_current_values_for_instrumented_baselines() {
+        let baseline = baseline_with_floor_metrics(BTreeMap::from([
+            ("absent_metric".to_string(), Some(100.0)),
+            ("future_metric".to_string(), None),
+            ("null_metric".to_string(), Some(50.0)),
+            ("zero_metric".to_string(), Some(0.0)),
+        ]));
+        let current = BTreeMap::from([
+            ("null_metric".to_string(), None),
+            ("zero_metric".to_string(), Some(0.0)),
+        ]);
+
+        let violations = evaluate_ratchet(&baseline, &current);
+
+        assert_eq!(
+            violations.missing,
+            vec![
+                MissingRequiredMetric {
+                    metric: "absent_metric".to_string(),
+                    baseline_value: 100.0,
+                },
+                MissingRequiredMetric {
+                    metric: "null_metric".to_string(),
+                    baseline_value: 50.0,
+                },
+            ]
+        );
+        assert!(violations.regressions.is_empty());
+    }
+
+    #[test]
+    fn ratchet_collects_missing_and_numeric_regressions_together() {
+        let baseline = baseline_with_floor_metrics(BTreeMap::from([
+            ("hover_correctness_pct".to_string(), Some(100.0)),
+            ("missing_metric".to_string(), Some(75.0)),
+        ]));
+        let current = BTreeMap::from([("hover_correctness_pct".to_string(), Some(80.0))]);
+
+        let violations = evaluate_ratchet(&baseline, &current);
+
+        assert_eq!(violations.len(), 2);
+        assert_eq!(violations.missing[0].metric, "missing_metric");
+        assert_eq!(violations.regressions.len(), 1);
+        assert_eq!(violations.regressions[0].metric, "hover_correctness_pct");
     }
 
     #[test]
