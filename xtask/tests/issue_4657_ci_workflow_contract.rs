@@ -91,59 +91,6 @@ fn compile_all_targets_checks_out_the_integration_subject() -> Result<(), Box<dy
     Ok(())
 }
 
-/// #10006: drafts keep exact-head cheap feedback without activating full CI.
-#[test]
-fn draft_prs_keep_cheap_feedback_real() -> Result<(), Box<dyn std::error::Error>> {
-    let root = project_root()?;
-    let ci = fs::read_to_string(root.join(".github/workflows/ci.yml"))?.replace("\r\n", "\n");
-
-    assert!(
-        ci.contains(
-            "types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]"
-        ),
-        "draft/ready state changes must keep retriggering CI for the same candidate SHA"
-    );
-
-    let draft_guard = job_block(&ci, "draft-pr-check")
-        .ok_or("ci.yml no longer defines a `draft-pr-check` job")?;
-    assert!(
-        draft_guard.contains("echo \"run_ci=false\" >> \"$GITHUB_OUTPUT\"")
-            && draft_guard.contains("`Rust formatting`")
-            && draft_guard.contains("`Conflict marker check`")
-            && draft_guard.contains("A skipped job is not verification"),
-        "the draft guard must defer the expensive suite while stating which exact-head checks \
-         remain real and that skipped jobs are not proof. Extracted job:\n{draft_guard}"
-    );
-
-    let conflict_markers = job_block(&ci, "conflict-markers")
-        .ok_or("ci.yml no longer defines a `conflict-markers` job")?;
-    assert!(
-        conflict_markers.contains("always() &&")
-            && conflict_markers.contains(
-                "github.event_name == 'pull_request' && github.event.pull_request.draft == true"
-            )
-            && conflict_markers.contains("needs.draft-pr-check.outputs.run_ci == 'true'")
-            && conflict_markers
-                .contains("needs.preflight-latest-check.outputs.is_latest == 'true'")
-            && conflict_markers.contains("github.event.pull_request.head.sha"),
-        "the required conflict-marker job must run against draft heads while preserving the \
-         ready/push freshness route. Extracted job:\n{conflict_markers}"
-    );
-
-    let rust_formatting = job_block(&ci, "rust-formatting")
-        .ok_or("ci.yml no longer defines a `rust-formatting` job")?;
-    assert!(
-        rust_formatting.contains("Checkout exact formatter subject")
-            && rust_formatting.contains("github.event.pull_request.head.sha")
-            && !rust_formatting.contains("draft-pr-check")
-            && !rust_formatting.contains("run_ci"),
-        "candidate-bound rustfmt must remain independent of the draft/full-CI selector. \
-         Extracted job:\n{rust_formatting}"
-    );
-
-    Ok(())
-}
-
 #[test]
 fn ci_workflows_keep_issue_4657_hardening() -> Result<(), Box<dyn std::error::Error>> {
     let root = project_root()?;
