@@ -14,9 +14,9 @@ premise returns to issue preparation.
 
 ## Orchestration affordances
 
-### Lane-root decisions
+### Root decisions
 
-The lane root retains candidate sufficiency, finding dispositions, material
+The main Claude thread retains candidate sufficiency, finding dispositions, material
 claim/authority/proof corrections, risk/rollback decisions, and whether the candidate
 returns to build, proof, issue preparation, or PR convergence.
 
@@ -43,9 +43,9 @@ Review contexts are read-only by default. One candidate writer integrates accept
 repairs. If a reviewer is explicitly reassigned as writer, the resulting head returns
 through affected proof/review.
 
-Join when the lane root has verified load-bearing evidence, preserved/resolved material
-contradictions, dispositioned findings, and can state what the candidate does and does
-not prove.
+Join when the main Claude thread has verified load-bearing evidence,
+preserved/resolved material contradictions, dispositioned findings, and can state what
+the candidate does and does not prove.
 
 ### Return packet
 
@@ -68,16 +68,18 @@ authority—not a diff impression, green CI, or ungrounded delegate verdict.
 
 ## GitHub boundary
 
-The lane root posts. Focused subagents, context forks, and Team members return
-file/line-anchored findings as evidence and do not write to GitHub themselves.
+The main Claude thread posts the joined durable conclusion. Focused subagents, context
+forks, and Team members return file/line-anchored findings as evidence and do not write
+to GitHub unless their brief grants one specific bounded finding publication.
 
-The lane root uses inline review for localized findings and a PR comment/review summary
-for cross-cutting claim, authority, proof, risk, or production-route conclusions.
-Preserve an evidence-backed disposition before resolving substantive findings.
+The main Claude thread uses inline review for localized findings and a PR comment/review
+summary for cross-cutting claim, authority, proof, risk, or production-route
+conclusions. Preserve an evidence-backed disposition before resolving substantive
+findings.
 
 Keep reviewer/Team topology, raw exploration, temporary tests, duplicate clean reports,
-retries, and routine progress runtime-local. One cumulative lane-root conclusion joins
-useful evidence.
+retries, and routine progress runtime-local. One cumulative main-thread conclusion
+joins useful evidence.
 
 ## Routes
 
