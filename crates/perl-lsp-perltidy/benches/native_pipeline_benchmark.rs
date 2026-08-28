@@ -2,12 +2,12 @@
 //! (#10302).
 //!
 //! Every subject drives the real typed pipeline end-to-end
-//! (`format_document_typed`, including classification and evidence) over the
+//! (`format_document_typed_with_counters`, including classification and evidence) over the
 //! checked-in scaling cohort from `support/perf_subjects.rs` — never a
 //! helper-only microbenchmark. Subject identity (content digest, production
 //! config fingerprint, engine, toolchain tag) is emitted to
-//! `benchmarks/results/native-pipeline-subjects.json` for the nightly receipt
-//! chain, which consumes it unmodified (NPC-008).
+//! `target/criterion/native-pipeline-measurements.v1.json` for the nightly
+//! receipt chain, which uploads it alongside Criterion output.
 //!
 //! Wall-clock here is advisory evidence only: per #3979/#5282 the nightly
 //! baseline comparison stays `continue-on-error: true` and no PR gate reads
@@ -26,15 +26,19 @@ use std::hint::black_box;
 use std::path::PathBuf;
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use perf_subjects::{BENCH_GROUP, SubjectSpec, bench_rows, identity_row, toolchain_tag};
-use perl_lsp_perltidy::native::{FormatConfig, FormatContext, NativeFormatter};
+use perf_subjects::{
+    BENCH_GROUP, SubjectSpec, bench_rows, identity_row_with_counters, toolchain_tag,
+};
+use perl_lsp_perltidy::native::{
+    FormatConfig, FormatContext, NativeFormatter, NativePipelineCounters,
+};
 
 /// Fail closed when the receipt identity file cannot be written: a bench run
 /// without per-subject identity rows is exactly the aggregate-only evidence
 /// NPC-008 forbids.
 fn write_subject_identities(rows: &[serde_json::Value]) {
     let output = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../benchmarks/results/native-pipeline-subjects.json");
+        .join("../../target/criterion/native-pipeline-measurements.v1.json");
     if let Some(parent) = output.parent() {
         std::fs::create_dir_all(parent).unwrap_or_else(|error| {
             eprintln!("native pipeline bench: cannot create {}: {error}", parent.display());
@@ -54,13 +58,36 @@ fn build_subject_identities() -> Vec<serde_json::Value> {
     // path so receipt rows carry the exact fingerprint the pipeline records.
     let probe = SubjectSpec { family: "delimited", line_ending: "lf", indent: "tabs", units: 1 };
     let probe_source = probe.source();
+    let mut probe_counters = NativePipelineCounters::default();
     let fingerprint = NativeFormatter::new()
-        .format_document_typed(&probe_source, &FormatConfig::default(), &FormatContext::default())
+        .format_document_typed_with_counters(
+            &probe_source,
+            &FormatConfig::default(),
+            &FormatContext::default(),
+            &mut probe_counters,
+        )
         .outcome
         .identity
         .config_fingerprint;
     let toolchain = toolchain_tag();
-    bench_rows().iter().map(|spec| identity_row(spec, &fingerprint, &toolchain)).collect()
+    let run_id = std::env::var("NATIVE_PIPELINE_RUN_ID")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| format!("local-{toolchain}"));
+    bench_rows()
+        .iter()
+        .map(|spec| {
+            let source = spec.source();
+            let mut counters = NativePipelineCounters::default();
+            let _typed = NativeFormatter::new().format_document_typed_with_counters(
+                &source,
+                &FormatConfig::default(),
+                &FormatContext::default(),
+                &mut counters,
+            );
+            identity_row_with_counters(spec, &fingerprint, &toolchain, &run_id, &counters)
+        })
+        .collect()
 }
 
 fn native_pipeline_document(c: &mut Criterion) {
@@ -72,10 +99,12 @@ fn native_pipeline_document(c: &mut Criterion) {
         let source = spec.source();
         group.bench_function(spec.id(), |b| {
             b.iter(|| {
-                black_box(NativeFormatter::new().format_document_typed(
+                let mut counters = NativePipelineCounters::default();
+                black_box(NativeFormatter::new().format_document_typed_with_counters(
                     black_box(&source),
                     &FormatConfig::default(),
                     &FormatContext::default(),
+                    &mut counters,
                 ))
             });
         });

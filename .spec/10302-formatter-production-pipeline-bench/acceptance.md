@@ -10,8 +10,20 @@ counters so a duplicate private typed call is observable; it cannot be claimed
 by a perltidy-only test. Subject benches live in
 `benches/native_pipeline_benchmark.rs`; workflow and receipt contracts use
 source-backed structural pins — mirror of the house policy-pin pattern.
-This PR repairs the specification only: #10302 remains open/blocked, and no
-runtime benchmark, counter, allocator, receipt, or hosted wiring is delivered.
+The specification was initially delivered by PR #12873. PR #13190 is a bounded
+runtime-counter and benchmark-enrollment slice; it does not close #10302. The
+allocation oracle, strict runtime-sidecar join/validation, and the remaining
+full-matrix evidence stay explicitly `NOT_PROVEN` until their own proof exists.
+
+## PR #13190 implementation boundary
+
+This slice delivers the additive `NativePipelineCounters` instrument, source and
+formatted-output parse-gate counters, counter-aware production typed entries,
+deterministic subject rows with run identity, a dedicated counted pass before
+Criterion timing, and nightly enrollment/upload of the measurement sidecar. It
+does not claim allocation count/bytes/peak, strict registry/sidecar validation,
+the full #10302 matrix, or release-tier evidence. Those acceptance rows remain
+open and must not be inferred from this slice's green package tests.
 
 | Row | Proposition | Proof | Status |
 | --- | --- | --- | --- |

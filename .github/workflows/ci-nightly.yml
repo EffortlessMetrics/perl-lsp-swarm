@@ -183,6 +183,7 @@ jobs:
         # coverage loss the old command wouldn't have had. Verified against
         # the current metadata (14 bench targets, all 14 listed below); if a
         # new bench target is added to the workspace, add it here too.
+        export NATIVE_PIPELINE_RUN_ID="${GITHUB_RUN_ID}-${GITHUB_SHA}"
         declare -a BENCH_TARGETS=(
           "perl-workspace:workspace_index_benchmark:workspace"
           "perl-token:token_scorecard:"
@@ -340,6 +341,7 @@ jobs:
         name: benchmark-results-${{ github.sha }}
         path: |
           benchmarks/results/latest.json
+          target/criterion/native-pipeline-measurements.v1.json
           benchmarks/results/raw-output.txt
           benchmarks/results/real-repo-perf.txt
           benchmark_receipt.txt

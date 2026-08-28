@@ -13,6 +13,7 @@
 //! This module must stay lint-clean: it is compiled into ordinary test
 //! targets as well as the bench harness.
 
+use perl_lsp_perltidy::native::NativePipelineCounters;
 use serde_json::{Value, json};
 
 /// Production default `FormatConfig::line_width`.
@@ -182,6 +183,24 @@ pub fn identity_row(spec: &SubjectSpec, config_fingerprint: &str, toolchain: &st
         "config_fingerprint": config_fingerprint,
         "toolchain": toolchain,
     })
+}
+
+/// Emit one receipt row with the counter snapshot captured by the production
+/// typed pipeline for this exact subject.
+#[must_use]
+pub fn identity_row_with_counters(
+    spec: &SubjectSpec,
+    config_fingerprint: &str,
+    toolchain: &str,
+    run_id: &str,
+    counters: &NativePipelineCounters,
+) -> Value {
+    let mut row = identity_row(spec, config_fingerprint, toolchain);
+    row["run_id"] = json!(run_id);
+    row["counters"] = json!(counters);
+    row["counters"]["schema"] = json!(counters.schema());
+    row["counters"]["clock_tag"] = json!(counters.clock_tag());
+    row
 }
 
 /// Toolchain/environment tag for receipt rows. Deterministic per environment;

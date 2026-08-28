@@ -3,8 +3,9 @@
 Base pin: `origin/main@e6e956461534b2566c735696f289e0915e2cb189` (2026-08-27).
 Composition sibling: #10301 fuzz/property spec
 (`.spec/10301-formatter-property-fuzz-harness/`) — disjoint file set.
-This PR is docs-only. Every implementation box below remains open, #10302
-remains blocked, and no runtime benchmark or receipt proof is delivered here.
+PR #13190 delivers a bounded runtime-counter and benchmark-enrollment slice.
+It does not close #10302. Allocation proof, strict runtime-sidecar joining, and
+the remaining full-matrix/release evidence remain open and `NOT_PROVEN`.
 
 Red-first receipts-of-record (2026-08-27, pure reads on the base pin):
 

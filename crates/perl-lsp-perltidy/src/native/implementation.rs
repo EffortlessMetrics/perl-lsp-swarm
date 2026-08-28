@@ -53,7 +53,10 @@ impl NativeFormatter {
         Self
     }
 
-    fn validate_clean_parse(source: &str) -> Result<(), FormatDiagnostic> {
+    fn validate_clean_parse(
+        source: &str,
+        gate_kind: counters::ParseGateKind,
+    ) -> Result<(), FormatDiagnostic> {
         if let Some(kind) = literal_preserve_region(source) {
             return Err(FormatDiagnostic::new(
                 LITERAL_PRESERVE_CODE,
@@ -63,19 +66,23 @@ impl NativeFormatter {
             ));
         }
 
-        Self::validate_parse_only(source)
+        Self::validate_parse_only(source, gate_kind)
     }
 
     /// Check parse correctness only — no literal-preserve check.
     ///
     /// Used by `format_range` where the literal-preserve gate is scoped to the
     /// requested line range rather than the whole document.
-    fn validate_parse_only(source: &str) -> Result<(), FormatDiagnostic> {
+    fn validate_parse_only(
+        source: &str,
+        gate_kind: counters::ParseGateKind,
+    ) -> Result<(), FormatDiagnostic> {
         let mut parser = perl_parser_core::Parser::new(source);
         let output = parser.parse_with_recovery();
 
         counters::record_with(|counters| {
             counters.observe_parse_gate(
+                gate_kind,
                 counters::count_parse_nodes(&output.ast),
                 u64::try_from(output.budget_usage.max_depth_reached).unwrap_or(u64::MAX),
             );
@@ -187,7 +194,8 @@ impl PerlFormatter for NativeFormatter {
             return FormatResult::unchanged(source);
         }
 
-        if let Err(diagnostic) = Self::validate_clean_parse(source) {
+        if let Err(diagnostic) = Self::validate_clean_parse(source, counters::ParseGateKind::Source)
+        {
             let mut result = FormatResult::unchanged(source);
             result.diagnostics.push(diagnostic);
             return result;
@@ -195,7 +203,9 @@ impl PerlFormatter for NativeFormatter {
 
         let formatted =
             Self::apply_final_newline(&Self::format_safe_subset(source, config), config);
-        if let Err(diagnostic) = Self::validate_clean_parse(&formatted) {
+        if let Err(diagnostic) =
+            Self::validate_clean_parse(&formatted, counters::ParseGateKind::FormattedOutput)
+        {
             let mut result = FormatResult::unchanged(source);
             result.diagnostics.push(FormatDiagnostic::new(
                 PARSE_PRESERVATION_CODE,
@@ -242,7 +252,8 @@ impl PerlFormatter for NativeFormatter {
 
         // Parse-error gate still covers the full document — we cannot safely
         // format any range of a document that does not parse.
-        if let Err(diagnostic) = Self::validate_parse_only(source) {
+        if let Err(diagnostic) = Self::validate_parse_only(source, counters::ParseGateKind::Source)
+        {
             let mut result = FormatResult::unchanged(source);
             result.diagnostics.push(diagnostic);
             return result;
@@ -257,7 +268,9 @@ impl PerlFormatter for NativeFormatter {
         // In practice this branch is unreachable: `format_safe_subset_range` only
         // applies simple whitespace/keyword rewrites that cannot break parse. The
         // guard exists as a defence-in-depth safety net matching `format_document`.
-        if let Err(diagnostic) = Self::validate_parse_only(&formatted) {
+        if let Err(diagnostic) =
+            Self::validate_parse_only(&formatted, counters::ParseGateKind::FormattedOutput)
+        {
             // LCOV_EXCL_START — genuinely unreachable: format_safe_subset_range
             // only applies spacing rewrites that cannot corrupt a clean parse.
             let mut result = FormatResult::unchanged(source);

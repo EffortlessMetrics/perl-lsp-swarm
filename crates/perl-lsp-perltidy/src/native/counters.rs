@@ -64,6 +64,10 @@ pub struct NativePipelineCounters {
     /// Parse-gate invocations (`validate_clean_parse` / `validate_parse_only`).
     /// An applied document gates twice by design: source, then rendered output.
     pub parse_gate_invocations: u64,
+    /// Source-input parse-gate invocations.
+    pub source_parse_gate_invocations: u64,
+    /// Formatted-output parse-gate invocations.
+    pub formatted_output_parse_gate_invocations: u64,
     /// AST nodes observed by the parse gate (counted only while a collector
     /// is installed; never estimated post hoc).
     pub gate_nodes_observed: u64,
@@ -99,8 +103,18 @@ impl NativePipelineCounters {
         self.pipeline_invocations = self.pipeline_invocations.saturating_add(1);
     }
 
-    pub(crate) fn observe_parse_gate(&mut self, nodes: u64, parse_depth: u64) {
+    pub(crate) fn observe_parse_gate(&mut self, kind: ParseGateKind, nodes: u64, parse_depth: u64) {
         self.parse_gate_invocations = self.parse_gate_invocations.saturating_add(1);
+        match kind {
+            ParseGateKind::Source => {
+                self.source_parse_gate_invocations =
+                    self.source_parse_gate_invocations.saturating_add(1);
+            }
+            ParseGateKind::FormattedOutput => {
+                self.formatted_output_parse_gate_invocations =
+                    self.formatted_output_parse_gate_invocations.saturating_add(1);
+            }
+        }
         self.gate_nodes_observed = self.gate_nodes_observed.saturating_add(nodes);
         self.peak_depth = self.peak_depth.max(parse_depth);
     }
@@ -126,6 +140,16 @@ impl NativePipelineCounters {
     pub(crate) fn observe_elapsed(&mut self, elapsed: Duration) {
         self.elapsed = self.elapsed.saturating_add(elapsed);
     }
+}
+
+/// Parse-gate identity used to keep source and formatted-output validation
+/// distinguishable in receipts and mutation controls.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum ParseGateKind {
+    /// The original source supplied by the caller.
+    Source,
+    /// The formatted output before edits are authorized.
+    FormattedOutput,
 }
 
 thread_local! {
@@ -198,6 +222,12 @@ impl PipelineCollectorScope {
             counters.pipeline_invocations.saturating_add(recorded.pipeline_invocations);
         counters.parse_gate_invocations =
             counters.parse_gate_invocations.saturating_add(recorded.parse_gate_invocations);
+        counters.source_parse_gate_invocations = counters
+            .source_parse_gate_invocations
+            .saturating_add(recorded.source_parse_gate_invocations);
+        counters.formatted_output_parse_gate_invocations = counters
+            .formatted_output_parse_gate_invocations
+            .saturating_add(recorded.formatted_output_parse_gate_invocations);
         counters.gate_nodes_observed =
             counters.gate_nodes_observed.saturating_add(recorded.gate_nodes_observed);
         counters.lines_processed =

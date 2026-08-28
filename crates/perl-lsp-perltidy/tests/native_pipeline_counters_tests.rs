@@ -17,7 +17,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-use perf_subjects::{SubjectSpec, toolchain_tag};
+use perf_subjects::{SubjectSpec, identity_row_with_counters, toolchain_tag};
 use perl_lsp_perltidy::native::{
     COUNTER_CLOCK_TAG, COUNTER_SCHEMA_V1, FormatConfig, FormatContext, FormatDisposition,
     FormatReasonCode, MAX_REPLACEMENT_BYTES_PER_SOURCE_BYTE_V1, NativeFormatter,
@@ -99,6 +99,8 @@ fn counters_populate_every_stage_from_production_path() {
     // Source gate + post-format parse-preservation gate: exactly two parse-gate
     // invocations for one fully rendered pipeline pass.
     assert_eq!(counters.parse_gate_invocations, 2);
+    assert_eq!(counters.source_parse_gate_invocations, 1);
+    assert_eq!(counters.formatted_output_parse_gate_invocations, 1);
     assert!(
         counters.gate_nodes_observed > 0,
         "the parse gate must observe the AST nodes it authorized"
@@ -142,6 +144,8 @@ fn no_change_subjects_count_zero_edits_with_full_pipeline() {
     assert_eq!(typed.outcome.disposition, FormatDisposition::NoChange);
     assert_eq!(typed.outcome.reason, FormatReasonCode::AlreadyFormatted);
     assert_eq!(counters.parse_gate_invocations, 2);
+    assert_eq!(counters.source_parse_gate_invocations, 1);
+    assert_eq!(counters.formatted_output_parse_gate_invocations, 1);
     assert_eq!(counters.edits_derived, 0);
     assert_eq!(counters.replacement_bytes, 0);
     assert!(counters.lines_processed > 0);
@@ -281,9 +285,11 @@ fn refusal_and_opaque_rows_remain_cost_bounded() {
         if family == "refusal" {
             // The refusal path must reject at the source parse gate without a
             // render pass: exactly one gate invocation at every size.
-            assert_eq!(n.parse_gate_invocations, 1);
-            assert_eq!(two_n.parse_gate_invocations, 1);
-            assert_eq!(four_n.parse_gate_invocations, 1);
+            for counters in [n, two_n, four_n] {
+                assert_eq!(counters.parse_gate_invocations, 1);
+                assert_eq!(counters.source_parse_gate_invocations, 1);
+                assert_eq!(counters.formatted_output_parse_gate_invocations, 0);
+            }
         }
         let series = [
             (
@@ -446,6 +452,11 @@ fn document_request_parses_exactly_once() -> Result<(), Box<dyn std::error::Erro
         let expected_gates =
             u64::from(counted.outcome.reason != FormatReasonCode::SourceParseError) + 1;
         assert_eq!(counters.parse_gate_invocations, expected_gates);
+        assert_eq!(counters.source_parse_gate_invocations, 1);
+        assert_eq!(
+            counters.formatted_output_parse_gate_invocations,
+            u64::from(counted.outcome.reason != FormatReasonCode::SourceParseError)
+        );
         assert!(
             !counted.outcome.identity.config_fingerprint.is_empty(),
             "the seam must keep exact config identity"
@@ -481,6 +492,11 @@ fn range_request_parses_exactly_once() -> Result<(), Box<dyn std::error::Error>>
             &mut counters,
         )?;
         assert_eq!(counters.pipeline_invocations, 1, "one pipeline per range request");
+        assert_eq!(counters.source_parse_gate_invocations, 1);
+        assert_eq!(
+            counters.formatted_output_parse_gate_invocations,
+            u64::from(counted.outcome.reason != FormatReasonCode::SourceParseError)
+        );
 
         let plain = provider.format_range_decision(&content, &range, &options, &context)?;
         assert_eq!(plain.outcome.disposition, counted.outcome.disposition);
@@ -551,6 +567,31 @@ fn subject_identity_is_recorded_for_receipt_consumption() {
     );
 }
 
+#[test]
+fn receipt_identity_rows_include_production_counter_snapshot() {
+    let spec = SubjectSpec { family: "delimited", line_ending: "lf", indent: "tabs", units: 4 };
+    let source = spec.source();
+    let mut counters = NativePipelineCounters::default();
+    let typed = NativeFormatter::new().format_document_typed_with_counters(
+        &source,
+        &FormatConfig::default(),
+        &FormatContext::default(),
+        &mut counters,
+    );
+    let row = identity_row_with_counters(
+        &spec,
+        &typed.outcome.identity.config_fingerprint,
+        &toolchain_tag(),
+        "test-run",
+        &counters,
+    );
+
+    assert_eq!(row["counters"]["schema"], COUNTER_SCHEMA_V1);
+    assert_eq!(row["counters"]["pipeline_invocations"], 1);
+    assert_eq!(row["counters"]["source_parse_gate_invocations"], 1);
+    assert_eq!(row["counters"]["formatted_output_parse_gate_invocations"], 1);
+}
+
 // ---------------------------------------------------------------------------
 // NPC-007 — nightly enrollment of the new bench target
 // ---------------------------------------------------------------------------
@@ -591,6 +632,45 @@ fn bench_target_enrolls_native_pipeline_benchmark() -> Result<(), Box<dyn std::e
         manifest.contains("criterion = { workspace = true }"),
         "criterion must be a dev-dependency of perl-lsp-perltidy"
     );
+    let benchmark = std::fs::read_to_string(
+        repo_root().join("crates/perl-lsp-perltidy/benches/native_pipeline_benchmark.rs"),
+    )?;
+    assert!(benchmark.contains("format_document_typed_with_counters"));
+    assert!(benchmark.contains("identity_row_with_counters"));
+    assert!(benchmark.contains("native-pipeline-measurements.v1.json"));
+    assert!(workflow.contains("NATIVE_PIPELINE_RUN_ID"));
+    assert!(workflow.contains("target/criterion/native-pipeline-measurements.v1.json"));
+    Ok(())
+}
+
+#[test]
+fn elapsed_measurement_wraps_classification_for_document_and_range()
+-> Result<(), Box<dyn std::error::Error>> {
+    let source = std::fs::read_to_string(
+        repo_root().join("crates/perl-lsp-perltidy/src/native/outcome.rs"),
+    )?;
+    for function in ["format_document_typed_with_counters", "format_range_typed_with_counters"] {
+        let start = source
+            .find(&format!("pub fn {function}"))
+            .ok_or("counter-aware entry point missing")?;
+        let body = &source[start..];
+        let classified = body.find("classify_native_result").ok_or("classification missing")?;
+        let elapsed = body.find("counters.observe_elapsed").ok_or("elapsed observation missing")?;
+        assert!(classified < elapsed, "{function} must include classification in total elapsed");
+    }
+    Ok(())
+}
+
+#[test]
+fn implementation_spec_keeps_unproven_followups_explicit() -> Result<(), Box<dyn std::error::Error>>
+{
+    let acceptance = std::fs::read_to_string(
+        repo_root().join(".spec/10302-formatter-production-pipeline-bench/acceptance.md"),
+    )?;
+    assert!(acceptance.contains("PR #13190"));
+    assert!(acceptance.contains("does not close #10302"));
+    assert!(acceptance.contains("allocation oracle"));
+    assert!(acceptance.contains("NOT_PROVEN"));
     Ok(())
 }
 

@@ -249,8 +249,10 @@ impl NativeFormatter {
                 .map(|edit| edit.new_text.len() as u64)
                 .fold(0_u64, u64::saturating_add),
         );
+        let typed =
+            classify_native_result(source, config, context, FormatRequestTarget::Document, result);
         counters.observe_elapsed(started.elapsed());
-        classify_native_result(source, config, context, FormatRequestTarget::Document, result)
+        typed
     }
 
     /// Format one range and return an explicit typed terminal outcome.
@@ -313,14 +315,15 @@ impl NativeFormatter {
                 .map(|edit| edit.new_text.len() as u64)
                 .fold(0_u64, u64::saturating_add),
         );
-        counters.observe_elapsed(started.elapsed());
-        classify_native_result(
+        let typed = classify_native_result(
             source,
             config,
             context,
             FormatRequestTarget::Range { range },
             result,
-        )
+        );
+        counters.observe_elapsed(started.elapsed());
+        typed
     }
 }
 
