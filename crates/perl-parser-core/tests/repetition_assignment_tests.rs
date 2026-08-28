@@ -4,6 +4,7 @@ mod cpan_test_helpers;
 
 use cpan_test_helpers::{assert_clean_parse, parse};
 use perl_parser_core::hir::{AssignMode, HirExpr, HirKind, HirStmt, lower_ast};
+use perl_parser_core::syntax::error::{ParseError, RecoveryKind, RecoverySite};
 use perl_parser_core::{Node, NodeKind, Parser};
 
 fn find_assignment<'a>(node: &'a Node, expected_op: &str) -> Option<&'a Node> {
@@ -28,6 +29,14 @@ fn find_named_call<'a>(node: &'a Node, expected_name: &str) -> Option<&'a Node> 
     }
 
     node.children().into_iter().find_map(|child| find_named_call(child, expected_name))
+}
+
+fn find_missing_expression<'a>(node: &'a Node) -> Option<&'a Node> {
+    if matches!(&node.kind, NodeKind::MissingExpression) {
+        return Some(node);
+    }
+
+    node.children().into_iter().find_map(find_missing_expression)
 }
 
 #[test]
@@ -244,6 +253,96 @@ fn repetition_assignment_rejects_malformed_operator_boundaries() -> Result<(), S
         if !sexp.contains(expected) {
             return Err(format!("malformed boundary lost expected AST {expected:?}:\n{sexp}"));
         }
+    }
+    Ok(())
+}
+
+#[test]
+fn repetition_assignment_recovers_missing_rhs_with_exact_spans() -> Result<(), String> {
+    for (source, assignment_start, recovery_offset) in
+        [("$value x=;", 0, 7), ("my $value x=;", 3, 10)]
+    {
+        let output = Parser::new(source).parse_with_recovery();
+        let assignment = find_assignment(&output.ast, "x=").ok_or_else(|| {
+            format!("expected recovered x= assignment:\n{}", output.ast.to_sexp())
+        })?;
+        let missing = find_missing_expression(assignment)
+            .ok_or_else(|| format!("expected missing RHS:\n{}", output.ast.to_sexp()))?;
+
+        if assignment.location.start != assignment_start
+            || assignment.location.end != recovery_offset
+            || missing.location.start != recovery_offset
+            || missing.location.end != recovery_offset
+        {
+            return Err(format!(
+                "recovery spans must stop at the missing RHS: assignment={:?}, missing={:?}",
+                assignment.location, missing.location
+            ));
+        }
+        if !matches!(
+            output.diagnostics.as_slice(),
+            [ParseError::Recovered {
+                site: RecoverySite::InfixRhs,
+                kind: RecoveryKind::MissingOperand,
+                location,
+            }] if *location == recovery_offset
+        ) {
+            return Err(format!(
+                "expected one exact missing-RHS recovery at {recovery_offset}, got {:?}",
+                output.diagnostics
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn repetition_assignment_rejects_malformed_missing_rhs_and_triple_equals() -> Result<(), String> {
+    let pos_output = Parser::new("pos $value x=;").parse_with_recovery();
+    let pos_sexp = pos_output.ast.to_sexp();
+    if find_assignment(&pos_output.ast, "x=").is_some()
+        || !pos_sexp.contains("(ERROR (message \"expected expression, found ';' at position 13\")")
+        || !matches!(
+            pos_output.diagnostics.as_slice(),
+            [
+                ParseError::UnexpectedToken { expected, found, location },
+                ParseError::UnexpectedToken { expected: statement_expected, found: statement_found, location: statement_location },
+            ] if expected == "expression"
+                && found == "';'"
+                && *location == 13
+                && statement_expected == "statement"
+                && statement_found == "';'"
+                && *statement_location == 13
+        )
+    {
+        return Err(format!(
+            "pos missing RHS must reject x= at the semicolon with exact diagnostics: ast={pos_sexp}, diagnostics={:?}",
+            pos_output.diagnostics
+        ));
+    }
+
+    let triple_output = Parser::new("$value x=== 3;").parse_with_recovery();
+    let triple_sexp = triple_output.ast.to_sexp();
+    if find_assignment(&triple_output.ast, "x=").is_some()
+        || !triple_sexp
+            .contains("(ERROR (message \"expected expression, found '=' at position 10\")")
+        || !matches!(
+            triple_output.diagnostics.as_slice(),
+            [
+                ParseError::UnexpectedToken { expected, found, location },
+                ParseError::UnexpectedToken { expected: statement_expected, found: statement_found, location: statement_location },
+            ] if expected == "expression"
+                && found == "'='"
+                && *location == 10
+                && statement_expected == "statement"
+                && statement_found == "'='"
+                && *statement_location == 10
+        )
+    {
+        return Err(format!(
+            "x=== must reject x= and recover at the third operator byte: ast={triple_sexp}, diagnostics={:?}",
+            triple_output.diagnostics
+        ));
     }
     Ok(())
 }
