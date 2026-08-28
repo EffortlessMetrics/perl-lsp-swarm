@@ -189,7 +189,9 @@ jobs:
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
           cache-on-failure: true
-          key: ${{ runner.os }}-perl-matrix-smoke-${{ matrix.perl }}-${{ hashFiles('Cargo.lock') }}
+          cache-all-crates: true
+          shared-key: perl-matrix-smoke-${{ matrix.perl }}
+          save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
 
       - name: Rust smoke test with Perl on PATH
         if: matrix.run_rust_smoke
