@@ -79,6 +79,7 @@ updates:
         update-types: ["version-update:semver-major"]
       - dependency-name: "tokio"
         update-types: ["version-update:semver-major"]
+    labels: []
     commit-message:
       prefix: "chore(deps)"
       include: "scope"
@@ -114,6 +115,7 @@ updates:
           - "*"
         update-types:
           - "patch"
+    labels: []
     commit-message:
       prefix: "chore(deps)"
       include: "scope"
@@ -158,6 +160,7 @@ updates:
       # VSCode engine updates require careful compatibility checks
       - dependency-name: "vscode"
         update-types: ["version-update:semver-major"]
+    labels: []
     commit-message:
       prefix: "chore(deps)"
       include: "scope"

@@ -7,22 +7,21 @@ Quick commands and workflows for handling dependency updates.
 ### View Dependabot PRs
 
 ```bash
-# All dependency PRs (Dependabot applies no labels in this repo; filter by author)
+# All dependency PRs (labels are disabled in this repo; filter by author)
 gh pr list --author "app/dependabot"
 
-# Ready to merge (CI passing)
+# CI-passing candidates (discovery only; inspect the version delta before merge)
 gh pr list --author "app/dependabot" --search "status:success"
 ```
 
 ### Merge Dependabot PRs
 
 ```bash
-# Auto-merge single PR (after CI passes)
+# Enable auto-merge for one reviewed patch or security PR
 gh pr merge <pr-number> --auto --squash
 
-# Batch merge all passing patch updates
-gh pr list --author "app/dependabot" --search "status:success" --json number --jq '.[].number' | \
-  xargs -I {} gh pr merge {} --auto --squash
+# Author + status is not a patch classifier. Do not pipe that query into
+# auto-merge because it also selects minor and major updates.
 
 # Manual merge with review
 gh pr checkout <pr-number>
@@ -110,11 +109,14 @@ gh pr list --author "app/dependabot"
 # 1. List all new dependency PRs
 gh pr list --author "app/dependabot" --json number,title
 
-# 2. Merge passing patch updates
-gh pr list --author "app/dependabot" --search "status:success" --json number --jq '.[].number' | \
-  xargs -I {} gh pr merge {} --auto --squash
+# 2. Inspect each candidate's version table and checks
+gh pr view <pr-number>
+gh pr checks <pr-number>
 
-# 3. Triage the rest by semver impact read from each title:
+# 3. Enable auto-merge only for a reviewed patch or security update
+gh pr merge <pr-number> --auto --squash
+
+# 4. Triage the rest by the highest semver impact in each PR body/version table:
 #    x.y.Z -> patch, x.Y.0 -> minor (review changelog), X.0.0 -> major
 #    (dedicated review)
 ```
@@ -261,11 +263,14 @@ schedule:
   time: "09:00"
 ```
 
-**Add labels**:
+**Configure labels**:
 ```yaml
+# Disable all Dependabot labels, including GitHub's defaults.
+labels: []
+
+# Or apply custom labels. Each name must already exist in the repository;
+# otherwise Dependabot ignores it and reports that it could not be found.
 labels:
-  # Each name must already exist in the repository, otherwise Dependabot
-  # logs "The following labels could not be found" on every update PR.
   - "custom-label"
 ```
 
@@ -273,6 +278,7 @@ labels:
 
 - Full Guide: [docs/how-to/DEPENDENCY_MANAGEMENT.md](DEPENDENCY_MANAGEMENT.md)
 - Dependabot Config: [.github/dependabot.yml](../../.github/dependabot.yml)
+- Dependabot Options: https://docs.github.com/en/code-security/reference/supply-chain-security/dependabot-options-reference
 - Cargo Book: https://doc.rust-lang.org/cargo/
 - Semantic Versioning: https://semver.org/
 
