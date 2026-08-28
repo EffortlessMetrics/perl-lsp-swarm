@@ -1,6 +1,6 @@
 mod cpan_test_helpers;
 
-use cpan_test_helpers::parse;
+use cpan_test_helpers::{assert_clean_parse, parse};
 use perl_parser_core::{Node, NodeKind};
 use perl_tdd_support::must_some;
 
@@ -60,6 +60,7 @@ fn assert_nested_binary(
     nested_side: NestedSide,
     nested_op: &str,
 ) {
+    assert_clean_parse(source);
     let ast = parse(source);
     let outer = must_some(first_binary(&ast));
     let (actual_outer, left, right) = must_some(binary_parts(outer));
@@ -124,6 +125,7 @@ fn declaration_tail_uses_the_same_range_precedence() {
 #[test]
 fn range_remains_inside_ternary_condition() {
     let source = "$a .. $b ? $c : $d;";
+    assert_clean_parse(source);
     let ast = parse(source);
     let ternary = must_some(first_ternary(&ast));
     let condition = must_some(ternary_condition(ternary));
