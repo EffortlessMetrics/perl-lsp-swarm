@@ -164,8 +164,8 @@ mod tests {
         let cli = Cli::try_parse_from([
             "perl-ci-hygiene",
             subcommand,
-            "--",
-            "--workspace",
+            "--package",
+            "perl-lsp-rs-core",
             "--all-targets",
             "parser::tests",
         ])?;
@@ -206,8 +206,8 @@ mod tests {
     }
 
     #[test]
-    fn cargo_passthrough_commands_forward_flags_after_separator() -> Result<()> {
-        let expected = owned(&["--workspace", "--all-targets", "parser::tests"]);
+    fn cargo_passthrough_commands_forward_wrapper_flags_without_separator() -> Result<()> {
+        let expected = owned(&["--package", "perl-lsp-rs-core", "--all-targets", "parser::tests"]);
 
         let CliCommand::TestCapped { cargo_args } = cargo_passthrough_command("test-capped")?
         else {
