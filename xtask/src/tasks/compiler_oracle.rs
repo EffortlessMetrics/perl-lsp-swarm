@@ -12,9 +12,14 @@ mod tests {
     use std::collections::BTreeSet;
     use std::fs;
     use std::path::Path;
-    use std::process::Command;
+    use std::process::{Command, Output, Stdio};
+    use std::thread;
+    use std::time::{Duration, Instant};
 
     const FIXTURE_ID: &str = "compile_effect_basic_stash_facts";
+    const COMPARED_FAMILIES: [&str; 5] = ["package", "sub", "constant", "prototype", "isa"];
+    const ORACLE_TIMEOUT: Duration = Duration::from_secs(10);
+    const ORACLE_POLL_INTERVAL: Duration = Duration::from_millis(10);
     const FIXTURE_SOURCE: &str = r#"
 package Oracle::Base;
 sub inherited { 1 }
@@ -72,7 +77,7 @@ for my $sub (qw(Oracle::Demo::proto)) {
         name: String,
     }
 
-    #[derive(Debug, Clone, Serialize)]
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
     struct FactDisagreement {
         family: &'static str,
         name: String,
@@ -103,13 +108,10 @@ for my $sub (qw(Oracle::Demo::proto)) {
             receipt.disagreements.is_empty(),
             "compile-effect oracle disagreements: {rendered}"
         );
-        assert!(
-            receipt.compared_families.contains(&"package")
-                && receipt.compared_families.contains(&"sub")
-                && receipt.compared_families.contains(&"constant")
-                && receipt.compared_families.contains(&"prototype")
-                && receipt.compared_families.contains(&"isa"),
-            "receipt should cover the selected bounded fact families"
+        assert_eq!(
+            receipt.compared_families.as_slice(),
+            COMPARED_FAMILIES.as_slice(),
+            "receipt should cover exactly the selected bounded fact families"
         );
 
         Ok(())
@@ -127,25 +129,37 @@ for my $sub (qw(Oracle::Demo::proto)) {
     }
 
     fn normalize_rust_compile_effects(file: &HirFile) -> BTreeSet<NormalizedFact> {
-        file.compile_effects().iter().filter_map(normalize_rust_compile_effect).collect()
+        file.compile_effects()
+            .iter()
+            .filter_map(normalize_rust_compile_effect)
+            .collect()
     }
 
     fn normalize_rust_compile_effect(effect: &CompileEffect) -> Option<NormalizedFact> {
         match effect.kind {
-            CompileEffectKind::DeclarePackage => {
-                effect.fact_name.as_ref().map(|name| normalized("package", name.clone()))
-            }
+            CompileEffectKind::DeclarePackage => effect
+                .fact_name
+                .as_ref()
+                .map(|name| normalized("package", name.clone())),
             CompileEffectKind::DeclareSub => effect.fact_name.as_ref().map(|name| {
-                normalized("sub", qualify_name(effect.package_context.as_deref(), name))
+                normalized(
+                    "sub",
+                    qualify_name(effect.package_context.as_deref(), name),
+                )
             }),
-            CompileEffectKind::AssignInheritance => {
-                effect.fact_name.as_ref().map(|name| normalized("isa", name.clone()))
-            }
-            CompileEffectKind::DefineConstant => {
-                effect.fact_name.as_ref().map(|name| normalized("constant", name.clone()))
-            }
+            CompileEffectKind::AssignInheritance => effect
+                .fact_name
+                .as_ref()
+                .map(|name| normalized("isa", name.clone())),
+            CompileEffectKind::DefineConstant => effect
+                .fact_name
+                .as_ref()
+                .map(|name| normalized("constant", name.clone())),
             CompileEffectKind::RegisterPrototype => effect.fact_name.as_ref().map(|name| {
-                normalized("prototype", qualify_name(effect.package_context.as_deref(), name))
+                normalized(
+                    "prototype",
+                    qualify_name(effect.package_context.as_deref(), name),
+                )
             }),
             _ => None,
         }
@@ -157,42 +171,109 @@ for my $sub (qw(Oracle::Demo::proto)) {
         fs::write(&fixture_path, source).context("write compiler-oracle fixture")?;
 
         let perl_version = query_perl_version()?;
-        let output = Command::new("perl")
+        let mut command = isolated_perl_command();
+        command
             .arg("-I")
             .arg(tempdir.path())
             .arg("-e")
             .arg(ORACLE_PROBE)
-            .arg(&fixture_path)
-            .env_remove("PERL5OPT")
-            .env_remove("PERL5LIB")
-            .env("LC_ALL", "C")
-            .output()
-            .context("run Perl compile-effect oracle probe")?;
+            .arg(&fixture_path);
+        let output = run_bounded_command(
+            &mut command,
+            ORACLE_TIMEOUT,
+            "Perl compile-effect oracle probe",
+        )?;
 
         if !output.status.success() {
-            bail!("Perl compile-effect oracle failed: {}", String::from_utf8_lossy(&output.stderr));
+            bail!(
+                "Perl compile-effect oracle failed with {}: {}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr)
+            );
         }
 
         let stdout =
             String::from_utf8(output.stdout).context("decode Perl compile-effect oracle stdout")?;
-        Ok(PerlOracleOutput { perl_version, facts: parse_oracle_facts(&stdout)? })
+        Ok(PerlOracleOutput {
+            perl_version,
+            facts: parse_oracle_facts(&stdout)?,
+        })
     }
 
     fn query_perl_version() -> Result<String> {
-        let output = Command::new("perl")
-            .arg("-e")
-            .arg("print $^V")
-            .env_remove("PERL5OPT")
-            .env_remove("PERL5LIB")
-            .env("LC_ALL", "C")
-            .output()
-            .context("query Perl version for compile-effect oracle")?;
+        let mut command = isolated_perl_command();
+        command.arg("-e").arg("print $^V");
+        let output = run_bounded_command(
+            &mut command,
+            ORACLE_TIMEOUT,
+            "Perl version probe for compile-effect oracle",
+        )?;
 
         if !output.status.success() {
-            bail!("Perl version probe failed: {}", String::from_utf8_lossy(&output.stderr));
+            bail!(
+                "Perl version probe failed with {}: {}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr)
+            );
         }
 
         String::from_utf8(output.stdout).context("decode Perl version output")
+    }
+
+    fn isolated_perl_command() -> Command {
+        let mut command = Command::new("perl");
+        command
+            .env_remove("PERL5OPT")
+            .env_remove("PERL5LIB")
+            .env("LC_ALL", "C");
+        command
+    }
+
+    fn run_bounded_command(
+        command: &mut Command,
+        timeout: Duration,
+        operation: &str,
+    ) -> Result<Output> {
+        let mut child = command
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .with_context(|| format!("spawn {operation}"))?;
+        let started = Instant::now();
+
+        loop {
+            if child
+                .try_wait()
+                .with_context(|| format!("poll {operation}"))?
+                .is_some()
+            {
+                return child
+                    .wait_with_output()
+                    .with_context(|| format!("collect {operation} output"));
+            }
+
+            let elapsed = started.elapsed();
+            if elapsed >= timeout {
+                if let Err(error) = child.kill()
+                    && child
+                        .try_wait()
+                        .with_context(|| format!("poll {operation} after kill failure"))?
+                        .is_none()
+                {
+                    return Err(error).with_context(|| format!("kill timed-out {operation}"));
+                }
+                let output = child
+                    .wait_with_output()
+                    .with_context(|| format!("reap timed-out {operation}"))?;
+                bail!(
+                    "{operation} timed out after {} ms; stderr: {}",
+                    timeout.as_millis(),
+                    String::from_utf8_lossy(&output.stderr).trim()
+                );
+            }
+
+            thread::sleep(ORACLE_POLL_INTERVAL.min(timeout.saturating_sub(elapsed)));
+        }
     }
 
     fn parse_oracle_facts(stdout: &str) -> Result<BTreeSet<NormalizedFact>> {
@@ -215,7 +296,10 @@ for my $sub (qw(Oracle::Demo::proto)) {
                 "isa" => "isa",
                 other => bail!("unknown Perl oracle fact family: {other}"),
             };
-            facts.insert(normalized(family, name.to_string()));
+            let fact = normalized(family, name.to_string());
+            if !facts.insert(fact.clone()) {
+                bail!("duplicate Perl oracle fact: {}\t{}", fact.family, fact.name);
+            }
         }
         Ok(facts)
     }
@@ -225,9 +309,10 @@ for my $sub (qw(Oracle::Demo::proto)) {
         rust_facts: BTreeSet<NormalizedFact>,
         perl_facts: BTreeSet<NormalizedFact>,
     ) -> DifferentialReceipt {
-        let compared_families = vec!["package", "sub", "constant", "prototype", "isa"];
-        let matched_facts =
-            rust_facts.intersection(&perl_facts).cloned().collect::<Vec<NormalizedFact>>();
+        let matched_facts = rust_facts
+            .intersection(&perl_facts)
+            .cloned()
+            .collect::<Vec<NormalizedFact>>();
         let missing_in_perl = rust_facts
             .difference(&perl_facts)
             .map(|fact| disagreement(fact.family, fact.name.clone(), "rust_only"));
@@ -239,7 +324,7 @@ for my $sub (qw(Oracle::Demo::proto)) {
         DifferentialReceipt {
             fixture_id: FIXTURE_ID,
             perl_version,
-            compared_families,
+            compared_families: COMPARED_FAMILIES.to_vec(),
             matched_facts,
             disagreements,
         }
@@ -261,6 +346,83 @@ for my $sub (qw(Oracle::Demo::proto)) {
             Some(package) if !package.is_empty() => format!("{package}::{name}"),
             _ => name.to_string(),
         }
+    }
+
+    #[test]
+    fn compiler_oracle_timeout_is_bounded_and_retains_stderr() -> Result<()> {
+        let mut command = isolated_perl_command();
+        command.arg("-e").arg(
+            r#"print STDERR "compiler-oracle-timeout-sentinel\n"; select undef, undef, undef, 2;"#,
+        );
+
+        let error = run_bounded_command(
+            &mut command,
+            Duration::from_millis(250),
+            "compiler-oracle timeout falsifier",
+        )
+        .err()
+        .context("sleeping Perl probe should exceed the compiler-oracle deadline")?;
+        let message = format!("{error:#}");
+
+        assert!(
+            message.contains("timed out after 250 ms"),
+            "timeout should remain explicit: {message}"
+        );
+        assert!(
+            message.contains("compiler-oracle-timeout-sentinel"),
+            "timeout should retain child stderr: {message}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn compiler_oracle_parser_rejects_malformed_unknown_and_duplicate_rows() -> Result<()> {
+        for (source, expected) in [
+            ("\tOracle::Demo\n", "missing fact family"),
+            ("package\t\n", "missing fact name"),
+            ("type\tOracle::Demo\n", "unknown Perl oracle fact family"),
+            (
+                "package\tOracle::Demo\npackage\tOracle::Demo\n",
+                "duplicate Perl oracle fact",
+            ),
+        ] {
+            let error = parse_oracle_facts(source)
+                .err()
+                .with_context(|| format!("oracle row {source:?} should be rejected"))?;
+            let message = format!("{error:#}");
+            assert!(
+                message.contains(expected),
+                "oracle row {source:?} should report {expected:?}, got {message:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn compiler_oracle_comparison_preserves_both_disagreement_directions() {
+        let rust_facts = BTreeSet::from([
+            normalized("package", "Oracle::RustOnly".to_string()),
+            normalized("sub", "Oracle::Shared".to_string()),
+        ]);
+        let perl_facts = BTreeSet::from([
+            normalized("package", "Oracle::PerlOnly".to_string()),
+            normalized("sub", "Oracle::Shared".to_string()),
+        ]);
+
+        let receipt = compare_facts("v-test".to_string(), rust_facts, perl_facts);
+
+        assert_eq!(
+            receipt.matched_facts,
+            vec![normalized("sub", "Oracle::Shared".to_string())]
+        );
+        assert_eq!(
+            receipt.disagreements,
+            vec![
+                disagreement("package", "Oracle::RustOnly".to_string(), "rust_only"),
+                disagreement("package", "Oracle::PerlOnly".to_string(), "perl_only"),
+            ],
+            "the differential receipt must retain both one-sided failure classes"
+        );
     }
 
     #[test]
