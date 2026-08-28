@@ -510,9 +510,17 @@ impl<'a> SemanticQueries for WorkspaceSemanticQueries<'a> {
         // Find an occurrence at this anchor.
         let occurrence = shard.occurrences.iter().find(|o| o.anchor_id == anchor.id)?;
 
-        // Resolve the entity from the occurrence's entity_id.
+        // Resolve the entity from the occurrence's entity_id. The declaring
+        // shard may differ from the referencing file: cross-file inherited
+        // calls bind the parent's entity at the canonical fact boundary, so
+        // the EntityFact must be looked up across the workspace, not assumed
+        // to live in the referencing file's own shard.
         let entity_id = occurrence.entity_id?;
-        let entity = shard.entities.iter().find(|e| e.id == entity_id)?;
+        let entity = self
+            .fact_shards
+            .values()
+            .flat_map(|shard| shard.entities.iter())
+            .find(|e| e.id == entity_id)?;
 
         Some((entity.clone(), occurrence.clone()))
     }
