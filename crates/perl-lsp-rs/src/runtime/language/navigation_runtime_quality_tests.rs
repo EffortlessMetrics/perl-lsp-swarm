@@ -133,6 +133,17 @@ fn runtime_proof_receipt<'a>(
         )
         .into());
     }
+    if receipt_key == "source_backed_receipt" {
+        // #12102 review 3849376084: producer lineage is validated
+        // executably on the selected receipt — a nominal compiler/PIR
+        // receipt must never ride beside a semantic source-backed
+        // selection.
+        assert!(
+            receipt.get("compiler_receipt").is_none(),
+            "source-backed references runtime receipt must not carry a nominal \
+             compiler_receipt key: {receipt}"
+        );
+    }
     Ok(value)
 }
 
@@ -542,6 +553,15 @@ fn references_source_backed_tier_used_when_include_declaration_true()
         runtime_receipt.get("live_cutover").and_then(Value::as_str),
         Some("partial_exact_imported"),
         "live_cutover must be set — source-backed tier is active"
+    );
+    // #12102 review 3849376084: the embedded receipt's producer is asserted
+    // executably — it must name the semantic find_references query, matching
+    // the non-includeDeclaration proof row.
+    assert_eq!(
+        source_backed.get("query").and_then(Value::as_str),
+        Some("find_references"),
+        "includeDeclaration=true source-backed receipt must name the semantic \
+         find_references producer"
     );
     // The live result must be non-empty: we expect at least the two call
     // sites inside `caller` plus the declaration.

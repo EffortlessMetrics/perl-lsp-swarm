@@ -3359,9 +3359,10 @@ use warnings;
 /// than that (`compiler`, `PIR`) create a false before-state for the #12075
 /// cutover, so this guard fails while only nominal attribution exists.
 ///
-/// The single sanctioned unlock is the presence of the real contribution
-/// envelope type in the route's lineage; a fixture proving that unlock stays
-/// representable lives right below.
+/// The single sanctioned unlock validates USE, not mention (#12102 review
+/// 3840973074): the real contribution envelope must be joined in an
+/// executable position before any nominal label is tolerated. A fixture
+/// proving that unlock stays representable lives right below.
 mod producer_truth_guard {
     /// Source of the production references route under guard.
     const LIVE_ROUTE_SOURCE: &str = include_str!("references.rs");
@@ -3370,6 +3371,20 @@ mod producer_truth_guard {
     /// When #9284/#8669 land, joining this type through the route is what
     /// legitimately re-enables compiler/PIR producer labels.
     const COMPILER_LINEAGE_MARKER: &str = "FilePirLexicalContribution";
+
+    /// Executable positions that count as joining the envelope into the
+    /// route's lineage (review 3840973074): a type annotation or parameter
+    /// binding, a return type, a cast, a generic argument, or a
+    /// constructor/call argument. An import path (`use
+    /// crate::compiler::FilePirLexicalContribution;`) matches none of these,
+    /// so staged #9284 plumbing cannot silently re-enable the old vocabulary.
+    const LINEAGE_USE_PATTERNS: &[&str] = &[
+        ": FilePirLexicalContribution",
+        "-> FilePirLexicalContribution",
+        "as FilePirLexicalContribution",
+        "<FilePirLexicalContribution",
+        "(FilePirLexicalContribution",
+    ];
 
     /// Nominal producer labels forbidden without real contribution lineage:
     /// structured receipt keys, feature/route identifiers, and debug/user
@@ -3382,8 +3397,21 @@ mod producer_truth_guard {
         "source-backed compiler facts",
     ];
 
+    /// True only when the envelope marker is USED in an executable position.
+    /// Comment/doc lines and `use` imports are attribution-agnostic and never
+    /// establish lineage on their own.
+    fn envelope_joined_in_executable_position(source: &str) -> bool {
+        source.lines().any(|line| {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("//") || trimmed.starts_with("use ") {
+                return false;
+            }
+            LINEAGE_USE_PATTERNS.iter().any(|pattern| line.contains(pattern))
+        })
+    }
+
     fn nominal_labels_without_lineage(source: &str) -> Vec<&'static str> {
-        if source.contains(COMPILER_LINEAGE_MARKER) {
+        if envelope_joined_in_executable_position(source) {
             return Vec::new();
         }
         NOMINAL_PRODUCER_LABELS.iter().copied().filter(|label| source.contains(label)).collect()
@@ -3414,6 +3442,30 @@ mod producer_truth_guard {
             violations.is_empty(),
             "the guard must permit genuine compiler contribution lineage; \
              unexpectedly flagged {violations:?}"
+        );
+    }
+
+    #[test]
+    fn guard_stays_red_when_the_envelope_is_only_mentioned() {
+        // Review 3840973074 mutation control: importing or commenting the
+        // envelope marker (e.g. while staging #9284 plumbing upstream) must
+        // NOT unlock the nominal producer labels — only an executable join
+        // does.
+        let mention_only_import = "use crate::compiler::FilePirLexicalContribution;\n\
+             let _receipt = json!({\"compiler_receipt\": null});\n";
+        let violations = nominal_labels_without_lineage(mention_only_import);
+        assert_eq!(
+            violations,
+            vec!["\"compiler_receipt\""],
+            "a bare import mention must not unlock nominal producer labels"
+        );
+
+        let mention_only_comment = "// TODO(#9284): thread FilePirLexicalContribution through here.\n\
+             tracing::debug!(\"References: returned source-backed compiler facts\");\n";
+        let violations = nominal_labels_without_lineage(mention_only_comment);
+        assert!(
+            !violations.is_empty(),
+            "a comment mention must not unlock nominal producer labels"
         );
     }
 }
