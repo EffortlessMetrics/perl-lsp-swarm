@@ -555,7 +555,10 @@ fn nightly_public_api_label_is_governed_and_provisioned() -> Result<(), Box<dyn 
     }
 
     assert_eq!(label, "ci:public-api", "the public API lane owns one stable trigger label");
-    assert!(public_api.contains("(github.event_name == 'workflow_dispatch' && inputs.run_api_checks) ||"));
+    assert!(
+        public_api
+            .contains("(github.event_name == 'workflow_dispatch' && inputs.run_api_checks) ||")
+    );
     assert!(public_api.contains("github.event_name == 'schedule' ||"));
     assert!(!public_api.contains("github.event_name == 'pull_request' ||"));
     assert!(!public_api.contains("github.event_name == 'push'"));
