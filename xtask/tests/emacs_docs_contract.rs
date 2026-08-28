@@ -94,7 +94,7 @@ fn active_emacs_guide_separates_released_and_source_lsp_mode_subjects() {
         source.version
     );
     let emacs_28_release_boundary = format!(
-        "For package metadata only, Emacs 28.1 and 28.2 fall within the released {} line's declared range;",
+        "For package metadata only, Emacs 28.1 and 28.2 fall within the released {} line's declared range.",
         released.version
     );
     let stale_source_as_package = format!(
@@ -121,6 +121,12 @@ fn active_emacs_guide_separates_released_and_source_lsp_mode_subjects() {
     assert!(
         guide.contains(&emacs_28_release_boundary),
         "the source-head minimum must not erase the released Emacs 28.1/28.2 package boundary"
+    );
+    assert!(
+        guide.contains(
+            "The checked `lsp-mode` rows do not cover Emacs 27 or older; those users need a separately validated compatible client package or an Emacs upgrade."
+        ),
+        "the old-Emacs boundary must stay scoped to the checked lsp-mode rows rather than deny other clients"
     );
     assert!(
         guide.contains(
