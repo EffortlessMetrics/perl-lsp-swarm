@@ -1,0 +1,9 @@
+project: product
+component: Diagnostics
+kind: Fixed
+body: Kept default PL001 diagnostic metadata aligned with the canonical catalog, including its documentation URL and context hint.
+time: 2026-08-28T02:26:00Z
+custom:
+  PR: "13142"
+  Slug: diagnostic-metadata-default-coherence
+  Breaking: "no"
