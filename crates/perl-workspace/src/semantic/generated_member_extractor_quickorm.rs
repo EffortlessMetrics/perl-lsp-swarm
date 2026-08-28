@@ -1,18 +1,16 @@
-//! Canonical generated-member extraction with bounded DBIx::QuickORM support.
+//! Non-published DBIx::QuickORM generated-member candidate extraction.
 //!
-//! The existing generated-member producer remains the authority for Moo,
-//! Moose, Mouse, Class::Tiny, and DBIx::Class. This wrapper adds one reviewed
-//! successor-ORM subset: explicit DBIx::QuickORM table classes with statically
-//! named `column` or `columns` declarations inside the table builder.
+//! This module proves one bounded successor-ORM subset without admitting it to
+//! canonical shards or live providers: explicit DBIx::QuickORM table classes
+//! with statically named `column` or `columns` declarations inside the table
+//! builder.
 //!
-//! Runtime schema fill, generated row classes, naming hooks, and relationship
-//! accessors remain dynamic boundaries and are deliberately not inferred.
+//! Runtime schema fill, generated row classes, naming hooks, relationship
+//! accessors, dynamic identities, and edit authorization remain blocked. The
+//! production [`super::generated_member_extractor`] path deliberately does not
+//! call this candidate extractor.
 
-#[path = "generated_member_extractor.rs"]
-mod base;
-
-pub(crate) use base::GeneratedMemberFact;
-
+use super::generated_member_extractor::GeneratedMemberFact;
 use crate::{Node, NodeKind};
 use perl_semantic_facts::{
     AnchorFact, AnchorId, Confidence, EntityFact, EntityId, EntityKind, FileId, Provenance,
@@ -31,13 +29,17 @@ struct NameCandidate {
     span_end: usize,
 }
 
-/// Extract generated-member facts from the existing adapters plus the bounded
-/// DBIx::QuickORM explicit-table-class subset.
-pub(crate) fn extract_generated_member_facts(
+/// Extract the bounded DBIx::QuickORM candidate facts without publishing them.
+///
+/// There is intentionally no non-test caller while provider admission remains
+/// blocked. A later promotion must add an explicit consumer and receipt rather
+/// than silently joining the production generated-member stream.
+#[allow(dead_code)]
+pub(crate) fn extract_dbix_quickorm_candidate_facts(
     ast: &Node,
     file_id: FileId,
 ) -> Vec<GeneratedMemberFact> {
-    let mut out = base::extract_generated_member_facts(ast, file_id);
+    let mut out = Vec::new();
     let mut ctx = QuickOrmWalkCtx::default();
     walk_quickorm(ast, file_id, &mut ctx, &mut out);
     out
@@ -50,9 +52,15 @@ fn walk_quickorm(
     out: &mut Vec<GeneratedMemberFact>,
 ) {
     match &node.kind {
-        NodeKind::Program { statements } | NodeKind::Block { statements } => {
+        NodeKind::Program { statements } => {
             for statement in statements {
                 walk_quickorm(statement, file_id, ctx, out);
+            }
+        }
+        NodeKind::Block { statements } => {
+            let mut block_ctx = ctx.clone();
+            for statement in statements {
+                walk_quickorm(statement, file_id, &mut block_ctx, out);
             }
         }
         NodeKind::Package { name, block, .. } => {
@@ -111,11 +119,7 @@ fn extract_table_declaration(
     let NodeKind::FunctionCall { name, args } = &expression.kind else {
         return;
     };
-    if name != "table" {
-        return;
-    }
-
-    if !args.first().is_some_and(is_static_table_name) {
+    if name != "table" || !args.first().is_some_and(is_static_table_name) {
         return;
     }
 
@@ -128,7 +132,7 @@ fn extract_table_declaration(
 fn is_static_table_name(node: &Node) -> bool {
     collect_name_candidates(node)
         .into_iter()
-        .any(|candidate| normalize_static_column_name(&candidate.name).is_some())
+        .any(|candidate| normalize_static_member_name(&candidate.name).is_some())
 }
 
 fn is_anonymous_builder(node: &Node) -> bool {
@@ -142,9 +146,7 @@ fn walk_table_builder(
     out: &mut Vec<GeneratedMemberFact>,
 ) {
     match &builder.kind {
-        NodeKind::Subroutine { name: None, body, .. } => {
-            walk_table_body(body, file_id, ctx, out);
-        }
+        NodeKind::Subroutine { name: None, body, .. } => walk_table_body(body, file_id, ctx, out),
         NodeKind::Block { .. } => walk_table_body(builder, file_id, ctx, out),
         _ => {}
     }
@@ -205,7 +207,7 @@ fn emit_candidate(
     ctx: &QuickOrmWalkCtx,
     out: &mut Vec<GeneratedMemberFact>,
 ) {
-    let Some(name) = normalize_static_column_name(&candidate.name) else {
+    let Some(name) = normalize_static_member_name(&candidate.name) else {
         return;
     };
     let package = ctx.current_package.as_deref().unwrap_or("main");
@@ -236,7 +238,7 @@ fn collect_name_candidates(node: &Node) -> Vec<NameCandidate> {
     }
 }
 
-fn normalize_static_column_name(raw: &str) -> Option<String> {
+fn normalize_static_member_name(raw: &str) -> Option<String> {
     let name = normalize_symbol_name(raw)?;
     let mut chars = name.chars();
     let first = chars.next()?;
@@ -305,14 +307,14 @@ fn push_member(
     }
 
     let entity_id = EntityId(stable_id(
-        "generated-member-entity",
+        "quickorm-candidate-member-entity",
         file_id,
         source_name.span_start,
         package,
         member_name,
     ));
     let anchor_id = AnchorId(stable_id(
-        "generated-member-anchor",
+        "quickorm-candidate-member-anchor",
         file_id,
         source_name.span_start,
         package,
@@ -363,10 +365,13 @@ mod tests {
     use super::*;
     use crate::Parser;
 
-    fn extract_from_source(source: &str) -> Vec<GeneratedMemberFact> {
+    fn parse(source: &str) -> Node {
         let mut parser = Parser::new(source);
-        let output = parser.parse_with_recovery();
-        extract_generated_member_facts(&output.ast, FileId(1))
+        parser.parse_with_recovery().ast
+    }
+
+    fn candidate_facts(source: &str) -> Vec<GeneratedMemberFact> {
+        extract_dbix_quickorm_candidate_facts(&parse(source), FileId(1))
     }
 
     fn has_name(facts: &[GeneratedMemberFact], canonical_name: &str) -> bool {
@@ -374,8 +379,8 @@ mod tests {
     }
 
     #[test]
-    fn explicit_table_class_emits_singular_and_plural_column_members() {
-        let facts = extract_from_source(
+    fn explicit_table_class_emits_singular_and_plural_column_candidates() {
+        let facts = candidate_facts(
             r#"
 package My::ORM::Table::User;
 use DBIx::QuickORM type => 'table';
@@ -394,16 +399,52 @@ table users => sub {
     }
 
     #[test]
+    fn candidate_is_not_published_by_production_generated_member_extractor() {
+        let source = r#"
+package My::ORM::Table::User;
+use DBIx::QuickORM type => 'table';
+table users => sub { column id => sub { primary_key }; };
+1;
+"#;
+        let ast = parse(source);
+        let candidate = extract_dbix_quickorm_candidate_facts(&ast, FileId(1));
+        let production =
+            crate::semantic::generated_member_extractor::extract_generated_member_facts(
+                &ast,
+                FileId(1),
+            );
+
+        assert!(has_name(&candidate, "My::ORM::Table::User::id"));
+        assert!(!has_name(&production, "My::ORM::Table::User::id"));
+    }
+
+    #[test]
+    fn lexical_block_restores_outer_package_and_activation() {
+        let facts = candidate_facts(
+            r#"
+package Outer;
+use DBIx::QuickORM type => 'table';
+if (1) {
+    package Inner;
+}
+table users => sub { column id => sub { primary_key }; };
+1;
+"#,
+        );
+
+        assert!(has_name(&facts, "Outer::id"));
+        assert!(!has_name(&facts, "Inner::id"));
+    }
+
+    #[test]
     fn later_plain_import_does_not_erase_explicit_table_class_activation() {
-        let facts = extract_from_source(
+        let facts = candidate_facts(
             r#"
 package My::ORM::Table::User;
 use DBIx::QuickORM type => 'table';
 use DBIx::QuickORM;
 
-table users => sub {
-    column id => sub { primary_key };
-};
+table users => sub { column id => sub { primary_key }; };
 1;
 "#,
         );
@@ -413,7 +454,7 @@ table users => sub {
 
     #[test]
     fn db_name_does_not_replace_the_row_accessor_name() {
-        let facts = extract_from_source(
+        let facts = candidate_facts(
             r#"
 package My::ORM::Table::User;
 use DBIx::QuickORM type => 'table';
@@ -430,8 +471,8 @@ table users => sub {
     }
 
     #[test]
-    fn plain_quickorm_schema_import_does_not_attach_inline_columns_to_orm_package() {
-        let facts = extract_from_source(
+    fn plain_schema_import_does_not_attach_inline_columns_to_orm_package() {
+        let facts = candidate_facts(
             r#"
 package My::ORM;
 use DBIx::QuickORM;
@@ -450,7 +491,7 @@ schema app => sub {
 
     #[test]
     fn dynamic_table_names_remain_a_dynamic_boundary() {
-        let facts = extract_from_source(
+        let facts = candidate_facts(
             r#"
 package My::ORM::Table::User;
 use DBIx::QuickORM type => 'table';
@@ -468,7 +509,7 @@ table $table_name => sub {
 
     #[test]
     fn dynamic_column_names_remain_a_dynamic_boundary() {
-        let facts = extract_from_source(
+        let facts = candidate_facts(
             r#"
 package My::ORM::Table::User;
 use DBIx::QuickORM type => 'table';
@@ -486,9 +527,9 @@ table users => sub {
     }
 
     #[test]
-    fn quickorm_member_facts_keep_generated_provenance_and_real_anchors()
+    fn candidate_facts_keep_generated_provenance_and_real_anchors()
     -> Result<(), Box<dyn std::error::Error>> {
-        let facts = extract_from_source(
+        let facts = candidate_facts(
             r#"
 package My::ORM::Table::User;
 use DBIx::QuickORM type => 'table';
@@ -499,7 +540,7 @@ table users => sub { column id => sub { primary_key }; };
         let fact = facts
             .iter()
             .find(|fact| fact.entity.canonical_name == "My::ORM::Table::User::id")
-            .ok_or("missing QuickORM generated member fact")?;
+            .ok_or("missing QuickORM candidate fact")?;
 
         assert_eq!(fact.entity.kind, EntityKind::GeneratedMember);
         assert_eq!(fact.entity.provenance, Provenance::FrameworkSynthesis);
