@@ -57,6 +57,8 @@ perl-pragma.workspace = true
 perl-symbol.workspace = true
 perl-parser.workspace = true
 rustc-hash = "2.1.2"
+# EffectiveLspSurface input-digest receipt binding (#9665).
+sha2.workspace = true
 thiserror.workspace = true
 toml = "1.1.2"
 ureq = { version = "3", features = ["json"], optional = true }
