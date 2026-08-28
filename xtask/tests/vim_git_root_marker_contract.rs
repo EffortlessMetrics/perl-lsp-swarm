@@ -61,10 +61,19 @@ fn canonical_adapter_expands_the_plain_git_marker_for_vim_lsp() -> Result<()> {
 #[test]
 fn executable_vim_lsp_root_proof_covers_both_git_root_shapes() -> Result<()> {
     let host_driver = source("scripts/test/vim-host-driver.vim")?;
-    ensure!(
-        host_driver.contains("filereadable(s:marker_path) || isdirectory(s:marker_path)"),
-        "the canonical host receipt must recognize both file and directory markers"
-    );
+    for required in [
+        "filereadable(s:marker_path) || isdirectory(s:marker_path)",
+        "function! s:ProbeGitRootShapes() abort",
+        "VimLspHostClientRootMarkers()",
+        "s:SamePath(s:root_path, s:fixture_root)",
+        "git_directory_root_mismatch",
+        "git_file_root_mismatch",
+    ] {
+        ensure!(
+            host_driver.contains(required),
+            "the canonical hermetic host proof is missing the load-bearing `{required}` discriminator"
+        );
+    }
 
     let deep_rail = source("scripts/ux/vim_vim_lsp_driver.vim")?;
     ensure!(
