@@ -211,6 +211,19 @@ ordered from the prose claim. The catalog contract owns the eventual opaque IDs,
 these semantic route roles and contexts are requirements only until #10334 publishes
 catalog rows conforming to #10333's contract.
 
+The compatibility contract is per ID, not merely a count or a closed vocabulary:
+every route-relevant claim is required to be a `project` disposition with its own
+expected semantic route role and projection context. The fixture binds those roles
+to distinct synthetic route/context pairs so swapping C101 and C102 is rejected even
+when the pair denominator is unchanged. The same rule applies to each finding:
+FND-1, FND-2, FND-3, FND-4, FND-6, FND-7, FND-9, FND-11, and FND-12 are route joins;
+FND-5 is the route-independent constraint for the mutable deployment links; FND-8
+is the `volatile_metadata` exclusion for the install-count badge; and FND-10 is a
+route-independent constraint owned by the literal-pin policy. These are expected
+finding-specific dispositions, not replaceable examples. A route-relevant claim or
+finding changed to an allowed exclusion, or a finding changed to the wrong kind,
+must fail before catalog closure.
+
 The same exact-once rule applies to FND-1 through FND-12: each finding must be joined to a
 route, recorded as a route-independent constraint, or explicitly excluded with a
 compatible reason. This oracle is the acceptance condition for inventory
@@ -368,6 +381,55 @@ REQUIRED_EXCLUSION_IDS = (
     "C106", "C108", "C201", "C216", "C703", "C801", "C1001", "C1002",
     "C1008", "C1102", "C1201", "C1205", "C1309",
 )
+ROUTE_FINDING_IDS = (
+    "FND-1", "FND-2", "FND-3", "FND-4", "FND-6", "FND-7", "FND-9",
+    "FND-11", "FND-12",
+)
+CLAIM_ROUTE_BINDINGS = {
+    item_id: {
+        "exact_catalog_route_id": f"fixture-route-{item_id}",
+        "exact_projection_context": f"fixture-context-{item_id}",
+    }
+    for item_id in EXPECTED_CLAIMS
+    if item_id not in REQUIRED_EXCLUSION_IDS and item_id != "C202"
+}
+CLAIM_ROUTE_BINDINGS["C202"] = tuple(
+    {
+        "exact_catalog_route_id": f"fixture-route-{route}",
+        "exact_projection_context": context,
+    }
+    for route, context in C202_PROJECTIONS
+)
+CLAIM_ROUTE_BINDINGS["C1208"] = {
+    "exact_catalog_route_id": "r_4f8c2a",
+    "exact_projection_context": "Open_VSX_compatible_marketplace_context",
+}
+FINDING_DISPOSITION_RULES = {
+    finding_id: {
+        "kind": "project",
+        "exact_catalog_route_id": f"fixture-finding-route-{finding_id}",
+        "exact_projection_context": f"fixture-finding-context-{finding_id}",
+    }
+    for finding_id in ROUTE_FINDING_IDS
+}
+FINDING_DISPOSITION_RULES.update({
+    "FND-5": {
+        "kind": "constrain",
+        "route_independent": True,
+        "exact_reason": "mutable INTERNAL_DEPLOYMENT links",
+    },
+    "FND-8": {
+        "kind": "exclude",
+        "reason": "volatile_metadata",
+        "rationale": "install-count badge",
+    },
+    "FND-10": {
+        "kind": "constrain",
+        "route_independent": True,
+        "exact_reason": "literal-pin policy owned by #10342",
+    },
+})
+
 def fixture_catalog():
     rows = []
     for item_id in EXPECTED_CLAIMS:
@@ -393,6 +455,11 @@ def fixture_catalog():
                 "target_registry": "fixture_registry",
                 "projection_contexts": (f"fixture-context-{item_id}",),
             })
+    rows.extend({
+        "route_id": f"fixture-finding-route-{finding_id}",
+        "target_registry": "fixture_registry",
+        "projection_contexts": (f"fixture-finding-context-{finding_id}",),
+    } for finding_id in ROUTE_FINDING_IDS)
     return tuple(rows)
 
 FIXTURE_CATALOG = fixture_catalog()
@@ -427,8 +494,43 @@ def require_open_vsx_route(catalog_rows, route_id, projection_context):
 
 def require_claim_disposition(row):
     expected = CLAIM_DISPOSITION_RULES.get(row["id"])
-    if expected is not None and any(row.get(key) != value for key, value in expected.items()):
-        raise ValueError(f"{row['id']}: incompatible claim disposition")
+    if expected is not None:
+        if any(row.get(key) != value for key, value in expected.items()):
+            raise ValueError(f"{row['id']}: incompatible claim disposition")
+    elif row["id"] in EXPECTED_CLAIMS:
+        if row.get("kind") != "project":
+            raise ValueError(f"{row['id']}: route claim must be projected")
+    elif row["id"] in EXPECTED_FINDINGS:
+        expected = FINDING_DISPOSITION_RULES[row["id"]]
+        if any(row.get(key) != value for key, value in expected.items()):
+            raise ValueError(f"{row['id']}: incompatible finding disposition")
+    else:
+        raise ValueError(f"{row['id']}: unknown disposition subject")
+
+def require_claim_route_binding(row):
+    expected = CLAIM_ROUTE_BINDINGS.get(row["id"])
+    if expected is None or row["id"] == "C202":
+        return
+    actual = {
+        "exact_catalog_route_id": row.get("exact_catalog_route_id"),
+        "exact_projection_context": row.get("exact_projection_context"),
+    }
+    if actual != expected:
+        raise ValueError(f"{row['id']}: claim-to-route/context binding mismatch")
+
+def require_finding_route_binding(row):
+    expected = FINDING_DISPOSITION_RULES.get(row["id"])
+    if expected is None or expected["kind"] != "project":
+        return
+    actual = {
+        "exact_catalog_route_id": row.get("exact_catalog_route_id"),
+        "exact_projection_context": row.get("exact_projection_context"),
+    }
+    if actual != {
+        "exact_catalog_route_id": expected["exact_catalog_route_id"],
+        "exact_projection_context": expected["exact_projection_context"],
+    }:
+        raise ValueError(f"{row['id']}: finding-to-route/context binding mismatch")
 
 def require_true(condition, message):
     if not condition:
@@ -471,10 +573,9 @@ def fixture_ledger():
                 "exact_catalog_route_id": f"fixture-route-{item_id}",
                 "exact_projection_context": f"fixture-context-{item_id}",
             })
-    rows.extend({
-        "id": f"FND-{number}", "kind": "constrain",
-        "route_independent": True, "exact_reason": f"fixture-FND-{number}",
-    } for number in range(1, 13))
+    for number in range(1, 13):
+        finding_id = f"FND-{number}"
+        rows.append({"id": finding_id, **FINDING_DISPOSITION_RULES[finding_id]})
     return rows
 
 def validate_closure(inventory_rows, ledger_rows, catalog_rows):
@@ -501,6 +602,8 @@ def validate_closure(inventory_rows, ledger_rows, catalog_rows):
                 row["exact_catalog_route_id"],
                 row["exact_projection_context"],
             )
+            require_claim_route_binding(row)
+            require_finding_route_binding(row)
         elif row["kind"] == "constrain":
             if not row.get("route_independent") or not row.get("exact_reason"):
                 raise ValueError(f"{row['id']}: incomplete constraint")
@@ -515,6 +618,14 @@ def validate_closure(inventory_rows, ledger_rows, catalog_rows):
         raise ValueError("C202 requires four distinct ordered route/context tuples")
     if len({row["exact_catalog_route_id"] for row in c202_rows}) != 4:
         raise ValueError("C202 route IDs must not be reused")
+    if [
+        (row["exact_catalog_route_id"], row["exact_projection_context"])
+        for row in c202_rows
+    ] != [
+        (binding["exact_catalog_route_id"], binding["exact_projection_context"])
+        for binding in CLAIM_ROUTE_BINDINGS["C202"]
+    ]:
+        raise ValueError("C202 claim-to-route/context bindings changed")
     c1208_rows = [row for row in ledger_rows if row["id"] == "C1208"]
     if len(c1208_rows) != 1:
         raise ValueError("C1208 must remain a single Open VSX projection")
@@ -583,6 +694,69 @@ require_true(assert_rejected(FIXTURE_CATALOG, "r_4f8c2a", "VS_Marketplace_compat
 for item_id in REQUIRED_EXCLUSION_IDS:
     incompatible = {"id": item_id, "kind": "project"}
     require_true(assert_disposition_rejected(incompatible), "incompatible disposition was accepted")
+
+def assert_ledger_rejected(ledger_rows):
+    try:
+        validate_closure(
+            [{"id": item_id} for item_id in EXPECTED_CLAIMS],
+            ledger_rows,
+            FIXTURE_CATALOG,
+        )
+    except ValueError:
+        return True
+    raise AssertionError("tampered ledger was accepted")
+
+SWAPPED_CLAIM_BINDINGS = [
+    {
+        **row,
+        **(
+            {
+                "exact_catalog_route_id": "fixture-route-C102",
+                "exact_projection_context": "fixture-context-C102",
+            }
+            if row["id"] == "C101" else {
+                "exact_catalog_route_id": "fixture-route-C101",
+                "exact_projection_context": "fixture-context-C101",
+            }
+            if row["id"] == "C102" else {}
+        ),
+    }
+    for row in fixture_ledger()
+]
+require_true(
+    assert_ledger_rejected(SWAPPED_CLAIM_BINDINGS),
+    "swapped claim route/context bindings were accepted",
+)
+
+ROUTE_CLAIM_EXCLUDED = [
+    {
+        **row,
+        "kind": "exclude",
+        "reason": "non_install_dependency",
+        "rationale": "tamper control",
+    }
+    if row["id"] == "C102" else row
+    for row in fixture_ledger()
+]
+require_true(
+    assert_ledger_rejected(ROUTE_CLAIM_EXCLUDED),
+    "route-relevant claim exclusion was accepted",
+)
+
+FINDING_DISPOSITION_TAMPER = [
+    {
+        **row,
+        "kind": "exclude",
+        "reason": "non_install_dependency",
+        "rationale": "tamper control",
+    }
+    if row["id"] == "FND-4" else row
+    for row in fixture_ledger()
+]
+require_true(
+    assert_ledger_rejected(FINDING_DISPOSITION_TAMPER),
+    "finding-specific disposition tamper was accepted",
+)
 ```
 
 The fixture rejects missing, duplicate, unknown, and incompatible IDs before
@@ -600,6 +774,11 @@ C1205, and C1309) to remain its declared exclusion; a project or other incompati
 exclusion disposition is rejected for each. The reverse catalog check compares exact
 `(route_id, projection_context)` pairs and rejects any unreferenced or multiply
 referenced route/context pair, including an extra context on an otherwise known route.
+The per-ID route-binding check also rejects a complete C101/C102 binding swap, and
+the expected finding disposition map rejects moving route-relevant FND-4 to an
+allowed exclusion. These are deliberate tamper controls: they fail under both
+normal Python execution and `python -O` because validation uses explicit exceptions,
+not assertion statements.
 The C1208 assertion
 also proves that its opaque ID resolves to exactly one catalog row whose registry is
 Open VSX and whose projection context is compatible; an ID that resolves to the
