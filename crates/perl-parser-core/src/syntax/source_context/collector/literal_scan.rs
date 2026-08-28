@@ -8,7 +8,7 @@ use std::cmp::Ordering;
 use crate::syntax::text_line::is_identifier_byte;
 
 use super::super::kind::SourceRegionKind;
-use super::super::region::{SourceRegion, last_char_start};
+use super::super::region::{last_char_start, SourceRegion};
 
 pub(super) fn scan_line_comments_and_open_literals(source: &str) -> Vec<SourceRegion> {
     let mut regions = Vec::new();
@@ -123,27 +123,73 @@ fn heredoc_opener_on_line(line: &str) -> Option<(String, bool)> {
 
 fn heredoc_openers_on_line(line: &str) -> Vec<(String, bool)> {
     let mut openers = Vec::new();
-    let mut search_start = 0;
-    while let Some(relative_marker) = line[search_start..].find("<<") {
-        let marker = search_start + relative_marker;
-        if let Some(opener) = heredoc_opener_at(line, marker) {
-            openers.push(opener);
+    let bytes = line.as_bytes();
+    let mut state = LiteralScanState::default();
+    let mut index = 0;
+
+    while index < bytes.len() {
+        if state.escaped {
+            state.escaped = false;
+            index += 1;
+            continue;
         }
-        search_start = marker + 2;
+
+        if let Some(active_literal) = state.literal.as_mut() {
+            if active_literal.advance(bytes[index], &mut state.escaped) {
+                state.literal = None;
+            }
+            index += 1;
+            continue;
+        }
+
+        if state.in_single_quote || state.in_double_quote || state.in_backtick {
+            match bytes[index] {
+                b'\\' => state.escaped = true,
+                b'\'' if !state.in_double_quote && !state.in_backtick => {
+                    state.in_single_quote = !state.in_single_quote;
+                }
+                b'"' if !state.in_single_quote && !state.in_backtick => {
+                    state.in_double_quote = !state.in_double_quote;
+                }
+                b'`' if !state.in_single_quote && !state.in_double_quote => {
+                    state.in_backtick = !state.in_backtick;
+                }
+                _ => {}
+            }
+            index += 1;
+            continue;
+        }
+
+        match bytes[index] {
+            b'#' => break,
+            b'\'' => state.in_single_quote = true,
+            b'"' => state.in_double_quote = true,
+            b'`' => state.in_backtick = true,
+            b'<' if bytes.get(index + 1) == Some(&b'<') => {
+                if let Some(opener) = heredoc_opener_at(line, index) {
+                    openers.push(opener);
+                }
+                index += 2;
+                continue;
+            }
+            _ => {
+                if let Some(literal_start) = quote_like_literal_start(bytes, index) {
+                    let consumed = literal_start.consumed;
+                    state.literal = Some(ActiveLiteral::new(literal_start));
+                    index += consumed;
+                    continue;
+                }
+            }
+        }
+        index += 1;
     }
+
     openers
 }
 
 fn heredoc_opener_at(line: &str, marker: usize) -> Option<(String, bool)> {
     let before = &line[..marker];
     if before.ends_with('<') {
-        return None;
-    }
-    // Guard against `<<` appearing inside a line comment (#5456). A `#` in the
-    // prefix that is not inside a simple quote pair means the rest of the line
-    // (including the `<<`) is a comment, not a heredoc opener. Without this,
-    // `# see <<EOF docs` would swallow the rest of the file as a heredoc body.
-    if prefix_has_unquoted_comment(before) {
         return None;
     }
     let mut rest = &line[marker + 2..];
@@ -179,37 +225,16 @@ fn heredoc_opener_at(line: &str, marker: usize) -> Option<(String, bool)> {
         }
         _ => return None,
     };
-    if label.is_empty() { None } else { Some((label, allow_indented)) }
+    if label.is_empty() {
+        None
+    } else {
+        Some((label, allow_indented))
+    }
 }
 
 /// Whether `rest` starts an unquoted heredoc label, i.e. a Perl identifier.
 fn starts_heredoc_label(rest: &str) -> bool {
     rest.starts_with(|character: char| character.is_alphabetic() || character == '_')
-}
-
-/// Whether `prefix` (the text before a candidate `<<` heredoc opener) contains
-/// an unquoted `#` line-comment marker. A simple single/double-quote state
-/// machine tracks whether the `#` is inside a string literal.
-fn prefix_has_unquoted_comment(prefix: &str) -> bool {
-    let bytes = prefix.as_bytes();
-    let mut in_single = false;
-    let mut in_double = false;
-    let mut i = 0;
-    while i < bytes.len() {
-        let b = bytes[i];
-        if b == b'\\' && (in_single || in_double) {
-            i += 2; // skip escaped char
-            continue;
-        }
-        match b {
-            b'\'' if !in_double => in_single = !in_single,
-            b'"' if !in_single => in_double = !in_double,
-            b'#' if !in_single && !in_double => return true,
-            _ => {}
-        }
-        i += 1;
-    }
-    false
 }
 
 fn push_region(regions: &mut Vec<SourceRegion>, start: usize, end: usize, kind: SourceRegionKind) {
@@ -1600,6 +1625,32 @@ mod tests {
             super::heredoc_opener_on_line("my $x = <<EOF;"),
             Some(("EOF".to_string(), false)),
             "real heredoc opener must still be found"
+        );
+    }
+
+    #[test]
+    fn heredoc_openers_ignore_quoted_quote_like_and_comment_markers() {
+        assert_eq!(
+            super::heredoc_openers_on_line("print <<A, q{<<B}; # <<C"),
+            vec![("A".to_string(), false)],
+            "only the real opener is queued"
+        );
+        assert_eq!(
+            super::heredoc_openers_on_line("print <<A, \"<<B\", <<C; # <<D"),
+            vec![("A".to_string(), false), ("C".to_string(), false)],
+            "quoted text and comments must not create phantom openers"
+        );
+    }
+
+    #[test]
+    fn quote_like_marker_does_not_extend_a_real_heredoc_to_eof() {
+        let source = "print <<A, q{<<B}; # <<C\nbody\nA\nmy$x=1;\n";
+        let regions = super::scan_heredoc_regions(source);
+
+        assert_eq!(regions.len(), 1, "only the real heredoc should be collected: {regions:?}");
+        assert!(
+            regions[0].end < source.len(),
+            "quoted and commented markers must not leave a phantom heredoc active: {regions:?}"
         );
     }
 

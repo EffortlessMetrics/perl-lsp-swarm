@@ -144,6 +144,19 @@ fn range_formatting_after_heredoc_terminator_remains_eligible() {
 }
 
 #[test]
+fn quote_like_and_comment_markers_do_not_hide_following_code() {
+    let formatter = NativeFormatter::new();
+    let source = "print <<A, q{<<B}; # comment <<C\nbody\nA\nmy$x=1;\n";
+    let following_code = TextRange::new(TextPosition::new(3, 0), TextPosition::new(4, 0));
+
+    let result = formatter.format_range(source, following_code, &FormatConfig::default());
+
+    assert!(result.changed, "code after the real terminator remains eligible");
+    assert_eq!(result.formatted, "print <<A, q{<<B}; # comment <<C\nbody\nA\nmy $x = 1;\n");
+    assert!(result.diagnostics.is_empty());
+}
+
+#[test]
 fn multiple_heredocs_preserve_the_second_body_and_terminator_only() {
     let formatter = NativeFormatter::new();
     let source = "print <<A, <<B;\nfirst\nA\nsecond\nB\nmy$x=2;\n";
@@ -192,10 +205,8 @@ fn unclosed_heredoc_body_remains_owned_by_parse_gate() {
 
     let result = formatter.format_range(source, body, &FormatConfig::default());
 
-    assert!(
-        result
-            .diagnostics
-            .iter()
-            .all(|diagnostic| { diagnostic.code != "native.format.literal_preserve_region" })
-    );
+    assert!(result
+        .diagnostics
+        .iter()
+        .all(|diagnostic| { diagnostic.code != "native.format.literal_preserve_region" }));
 }
