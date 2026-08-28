@@ -17,11 +17,11 @@
       "scope": "pr",
       "quarantine_effect": "non_blocking_pr",
       "expires_after_days": null,
-      "resolved_in": null,
+      "resolved_in": 13167,
       "resolved_at": "2026-08-27",
       "evidence": {
         "command": "PERL_LSP_UX_REQUIRE_BINARY=1 just ux-tests",
-        "verification_pr": null,
+        "verification_pr": 13167,
         "verified_sha": null,
         "replacement_tests": [
           "scenario_14_relative_include_path"
@@ -44,11 +44,11 @@
       "scope": "pr",
       "quarantine_effect": "non_blocking_pr",
       "expires_after_days": null,
-      "resolved_in": null,
+      "resolved_in": 13167,
       "resolved_at": "2026-08-27",
       "evidence": {
         "command": "PERL_LSP_UX_REQUIRE_BINARY=1 just ux-tests",
-        "verification_pr": null,
+        "verification_pr": 13167,
         "verified_sha": null,
         "replacement_tests": [
           "scenario_14_relative_include_path",
@@ -72,11 +72,11 @@
       "scope": "pr",
       "quarantine_effect": "non_blocking_pr",
       "expires_after_days": null,
-      "resolved_in": null,
+      "resolved_in": 13167,
       "resolved_at": "2026-08-27",
       "evidence": {
         "command": "PERL_LSP_UX_REQUIRE_BINARY=1 just ux-tests",
-        "verification_pr": null,
+        "verification_pr": 13167,
         "verified_sha": null,
         "replacement_tests": [
           "scenario_14_use_lib_lexical"
@@ -99,11 +99,11 @@
       "scope": "pr",
       "quarantine_effect": "non_blocking_pr",
       "expires_after_days": null,
-      "resolved_in": null,
+      "resolved_in": 13167,
       "resolved_at": "2026-08-27",
       "evidence": {
         "command": "PERL_LSP_UX_REQUIRE_BINARY=1 just ux-tests",
-        "verification_pr": null,
+        "verification_pr": 13167,
         "verified_sha": null,
         "replacement_tests": [
           "scenario_14_external_include_paths_unauthorized_zero_visibility"
@@ -126,11 +126,11 @@
       "scope": "pr",
       "quarantine_effect": "non_blocking_pr",
       "expires_after_days": null,
-      "resolved_in": null,
+      "resolved_in": 13167,
       "resolved_at": "2026-08-27",
       "evidence": {
         "command": "PERL_LSP_UX_REQUIRE_BINARY=1 just ux-tests",
-        "verification_pr": null,
+        "verification_pr": 13167,
         "verified_sha": null,
         "replacement_tests": [
           "scenario_14_no_lib_cancellation",
@@ -154,11 +154,11 @@
       "scope": "pr",
       "quarantine_effect": "non_blocking_pr",
       "expires_after_days": null,
-      "resolved_in": null,
+      "resolved_in": 13167,
       "resolved_at": "2026-08-27",
       "evidence": {
         "command": "PERL_LSP_UX_REQUIRE_BINARY=1 just ux-tests",
-        "verification_pr": null,
+        "verification_pr": 13167,
         "verified_sha": null,
         "replacement_tests": [
           "scenario_14_findbin_relative"
@@ -181,11 +181,11 @@
       "scope": "pr",
       "quarantine_effect": "non_blocking_pr",
       "expires_after_days": null,
-      "resolved_in": null,
+      "resolved_in": 13167,
       "resolved_at": "2026-08-27",
       "evidence": {
         "command": "PERL_LSP_UX_REQUIRE_BINARY=1 just ux-tests",
-        "verification_pr": null,
+        "verification_pr": 13167,
         "verified_sha": null,
         "replacement_tests": [
           "scenario_14_perl5lib_env"
@@ -208,11 +208,11 @@
       "scope": "pr",
       "quarantine_effect": "non_blocking_pr",
       "expires_after_days": null,
-      "resolved_in": null,
+      "resolved_in": 13167,
       "resolved_at": "2026-08-27",
       "evidence": {
         "command": "PERL_LSP_UX_REQUIRE_BINARY=1 just ux-tests",
-        "verification_pr": null,
+        "verification_pr": 13167,
         "verified_sha": null,
         "replacement_tests": [
           "scenario_14_nested_module_relative_include_path"
@@ -235,11 +235,11 @@
       "scope": "pr",
       "quarantine_effect": "non_blocking_pr",
       "expires_after_days": null,
-      "resolved_in": null,
+      "resolved_in": 13167,
       "resolved_at": "2026-08-27",
       "evidence": {
         "command": "PERL_LSP_UX_REQUIRE_BINARY=1 just ux-tests",
-        "verification_pr": null,
+        "verification_pr": 13167,
         "verified_sha": null,
         "replacement_tests": [
           "scenario_14_include_path_missing_module_consistency"
@@ -262,11 +262,11 @@
       "scope": "pr",
       "quarantine_effect": "non_blocking_pr",
       "expires_after_days": null,
-      "resolved_in": null,
+      "resolved_in": 13167,
       "resolved_at": "2026-08-27",
       "evidence": {
         "command": "PERL_LSP_UX_REQUIRE_BINARY=1 just ux-tests",
-        "verification_pr": null,
+        "verification_pr": 13167,
         "verified_sha": null,
         "replacement_tests": [
           "scenario_14_include_path_missing_module_completion_consistency"
@@ -289,11 +289,11 @@
       "scope": "pr",
       "quarantine_effect": "non_blocking_pr",
       "expires_after_days": null,
-      "resolved_in": null,
+      "resolved_in": 13167,
       "resolved_at": "2026-08-27",
       "evidence": {
         "command": "PERL_LSP_UX_REQUIRE_BINARY=1 just ux-tests",
-        "verification_pr": null,
+        "verification_pr": 13167,
         "verified_sha": null,
         "replacement_tests": [
           "scenario_14_perl5lib_completion_gating_matrix",
