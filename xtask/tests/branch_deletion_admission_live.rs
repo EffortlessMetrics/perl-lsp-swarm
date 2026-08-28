@@ -460,6 +460,81 @@ impl DeletionExecutor for RecordingDeleter {
     }
 }
 
+/// A command surface that repoints the remote once verification has read it.
+///
+/// The first `remote get-url` reads return the admitted endpoint, so collection
+/// and the pre-deletion re-verification both pass. Every later read returns a
+/// different endpoint — the shape of `git remote set-url --push` landing in the
+/// gap between the last check and the mutation.
+struct RepointsAfterVerification {
+    inner: FakeCommands,
+    reads: RefCell<usize>,
+    allow_before_repoint: usize,
+}
+
+impl ReadOnlyCommands for RepointsAfterVerification {
+    fn capture(&self, program: &str, args: &[&str]) -> color_eyre::eyre::Result<String> {
+        if args.first() == Some(&"remote") {
+            let mut reads = self.reads.borrow_mut();
+            *reads += 1;
+            if *reads > self.allow_before_repoint {
+                return Ok("https://evil.example.com/Other/Repo.git\n".to_string());
+            }
+        }
+        self.inner.capture(program, args)
+    }
+}
+
+/// The executed argv must not follow a remote repointed after verification.
+///
+/// This is the race the review named: verifying a remote NAME and then pushing
+/// to that name lets `git remote set-url --push` redirect the deletion after
+/// every read has passed, because git resolves the name again at push time.
+/// Binding the argv to the captured URL removes the second resolution, so the
+/// mutation cannot follow the repoint no matter when it lands.
+#[test]
+fn the_executed_argv_cannot_follow_a_remote_repointed_after_verification()
+-> Result<(), Box<dyn std::error::Error>> {
+    const ADMITTED: &str = "https://github.com/EffortlessMetrics/perl-lsp-swarm.git";
+
+    // Positive control: with no repoint, the deletion executes and targets the
+    // admitted endpoint — so a refusal below cannot be the trivial outcome.
+    let collected = collect_request(&healthy(), 7799, "origin")?;
+    let outcome = evaluate(&collected.request);
+    let control = RecordingDeleter::default();
+    execute_admitted_deletion(&healthy(), &control, &outcome, &collected.remote_identity)?;
+    let control_argv = control.invocations.borrow().first().cloned().unwrap_or_default();
+    assert!(control_argv.contains(&ADMITTED.to_string()), "control argv: {control_argv:?}");
+
+    // Now repoint after every verification read has already succeeded. The
+    // executor still runs — verification saw a consistent remote — but the argv
+    // was fixed at collection and cannot be redirected.
+    let repointing = RepointsAfterVerification {
+        inner: healthy(),
+        reads: RefCell::new(0),
+        // Collection reads fetch + push; re-verification reads them again.
+        allow_before_repoint: 4,
+    };
+    let deleter = RecordingDeleter::default();
+    let _ = execute_admitted_deletion(&repointing, &deleter, &outcome, &collected.remote_identity);
+
+    for argv in deleter.invocations.borrow().iter() {
+        assert!(
+            argv.contains(&ADMITTED.to_string()),
+            "the deletion must still target the admitted endpoint: {argv:?}",
+        );
+        assert!(
+            !argv.iter().any(|argument| argument.contains("evil.example.com")),
+            "the deletion followed a remote repointed after verification: {argv:?}",
+        );
+        assert!(
+            !argv.iter().any(|argument| argument == "origin"),
+            "a remote name in the argv would be re-resolved at push time: {argv:?}",
+        );
+    }
+    Ok(())
+}
+
 /// The deletion path must refuse every retaining outcome, and must not reach
 /// the executor at all. This is the property the August 15 incident violated.
 #[test]
