@@ -1261,7 +1261,8 @@ impl ClassModelBuilder {
     /// keyword and attribute set (`:param`, `:reader`, `:writer`, `:accessor`,
     /// `:mutator`) are identical for both frameworks.
     fn try_extract_field_declaration(&mut self, statement: &Node) -> Option<usize> {
-        let allow_named_writer = self.native_named_writers_allowed(statement.location.start);
+        let allow_named_writer = self.current_framework == Framework::ObjectPad
+            || self.native_named_writers_allowed(statement.location.start);
         let allow_bare_writer =
             self.current_framework == Framework::ObjectPad || allow_named_writer;
         let field = Self::object_pad_field_from_statement(
@@ -1433,10 +1434,12 @@ impl ClassModelBuilder {
     }
 
     fn finalize_field_writers(&mut self) {
-        let declared_names: HashSet<&str> = self
+        let occupied_names: HashSet<&str> = self
             .current_methods
             .iter()
-            .filter(|method| !method.synthetic)
+            // Readers, accessors, mutators, and other generated members reserve
+            // their names before a generated writer can claim them.
+            .filter(|method| method.generated_kind != Some(GeneratedMethodKind::Writer))
             .map(|method| method.name.as_str())
             .collect();
         let mut seen_names = HashSet::new();
@@ -1444,7 +1447,7 @@ impl ClassModelBuilder {
 
         for field in &mut self.current_fields {
             let Some(writer) = field.writer.as_deref() else { continue };
-            if declared_names.contains(writer) || !seen_names.insert(writer.to_owned()) {
+            if occupied_names.contains(writer) || !seen_names.insert(writer.to_owned()) {
                 field.writer = None;
                 continue;
             }

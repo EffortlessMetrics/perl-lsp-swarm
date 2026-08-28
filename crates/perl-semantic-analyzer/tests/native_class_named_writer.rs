@@ -1,4 +1,4 @@
-//! Perl 5.42 native-class writer generation regression.
+//! Perl 5.42 native-class and Object::Pad writer generation regressions.
 
 use perl_semantic_analyzer::{
     Parser,
@@ -35,26 +35,28 @@ class Counter {
 }
 
 #[test]
-fn named_writer_is_profile_bound_and_not_object_pad() {
-    for (code, class_name) in [
-        ("use v5.40; class TooOld { field $value :writer(write_value); }", "TooOld"),
-        (
-            "use Object::Pad; use v5.42; class Extension { field $value :writer(write_value); }",
-            "Extension",
-        ),
-    ] {
-        let mut parser = Parser::new(code);
-        let ast = must(parser.parse());
-        let models = ClassModelBuilder::new().build(&ast);
-        let model = must_some(models.iter().find(|model| model.name == class_name));
-        let field = must_some(model.fields.first());
+fn named_writer_is_profile_bound_but_object_pad_supported() {
+    let mut parser = Parser::new("use v5.40; class TooOld { field $value :writer(write_value); }");
+    let ast = must(parser.parse());
+    let models = ClassModelBuilder::new().build(&ast);
+    let model = must_some(models.iter().find(|model| model.name == "TooOld"));
+    let field = must_some(model.fields.first());
 
-        assert_eq!(field.writer, None, "unsupported named writer must stay non-exact");
-        assert!(
-            !model.methods.iter().any(|method| method.synthetic && method.name == "write_value"),
-            "unsupported named writer must not synthesize a method"
-        );
-    }
+    assert_eq!(field.writer, None, "unsupported native named writer must stay non-exact");
+    assert!(
+        !model.methods.iter().any(|method| method.synthetic && method.name == "write_value"),
+        "unsupported native named writer must not synthesize a method"
+    );
+
+    let mut parser =
+        Parser::new("use Object::Pad; class Extension { field $value :writer(write_value); }");
+    let ast = must(parser.parse());
+    let models = ClassModelBuilder::new().build(&ast);
+    let model = must_some(models.iter().find(|model| model.name == "Extension"));
+    let field = must_some(model.fields.first());
+
+    assert_eq!(field.writer.as_deref(), Some("write_value"));
+    assert!(model.methods.iter().any(|method| method.synthetic && method.name == "write_value"));
 }
 
 #[test]
@@ -110,6 +112,32 @@ class Deterministic {
         .map(|method| method.name.as_str())
         .collect();
     assert_eq!(writers, vec!["shared", "first_name"]);
+}
+
+#[test]
+fn generated_writer_does_not_collide_with_synthetic_reader() {
+    let mut parser = Parser::new(
+        r#"
+use Object::Pad;
+class Collision {
+    field $reader :reader;
+    field $writer :writer(reader);
+}
+"#,
+    );
+    let ast = must(parser.parse());
+    let models = ClassModelBuilder::new().build(&ast);
+    let model = must_some(models.iter().find(|model| model.name == "Collision"));
+    let reader_field = must_some(model.fields.iter().find(|field| field.name == "reader"));
+    let writer_field = must_some(model.fields.iter().find(|field| field.name == "writer"));
+
+    assert_eq!(reader_field.reader.as_deref(), Some("reader"));
+    assert_eq!(writer_field.writer, None, "synthetic reader must own the colliding name");
+    assert_eq!(
+        model.methods.iter().filter(|method| method.name == "reader").count(),
+        1,
+        "collision must not publish duplicate synthetic members"
+    );
 }
 
 #[test]
