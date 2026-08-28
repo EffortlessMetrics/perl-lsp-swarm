@@ -147,7 +147,7 @@ if empty(s:failures)
   if s:root_source !=# 'activation_root_marker'
     " The reason must stay a safe identity token: embedding the root URI
     " would violate the Rust event contract and discard the whole stream.
-    call s:Fail('root did not resolve through an activation marker (marker_absent)')
+    call s:Fail('root did not resolve through an activation marker (marker_file_absent)')
   endif
   call s:Emit('root_selected', {'root_source': s:root_source, 'root_marker': s:root_marker})
 endif
