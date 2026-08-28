@@ -2052,9 +2052,7 @@ impl LspServer {
                                 }
                             }
                             Ok(None) => {
-                                if e.kind() == std::io::ErrorKind::NotFound
-                                    && !self.document_is_open(&new_uri)
-                                {
+                                if !self.document_is_open(&new_uri) {
                                     coordinator.index().clear_file(&new_uri);
                                 }
                             }
@@ -2064,7 +2062,9 @@ impl LspServer {
                                     path.display(),
                                     e
                                 );
-                                if !self.document_is_open(&new_uri) {
+                                if e.kind() == std::io::ErrorKind::NotFound
+                                    && !self.document_is_open(&new_uri)
+                                {
                                     coordinator.index().clear_file(&new_uri);
                                 }
                             }
