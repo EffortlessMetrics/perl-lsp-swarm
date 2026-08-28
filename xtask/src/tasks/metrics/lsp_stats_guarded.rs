@@ -19,8 +19,7 @@ pub use super::lsp_stats_impl::{
 };
 
 const RECEIPT_SCHEMA_PATH: &str = ".ci/schemas/ux-scenario-run.schema.json";
-const FIXTURE_MATRIX_PATH: &str =
-    "crates/perl-lsp-ux-tests/fixtures/editor_ux_fixture_matrix.json";
+const FIXTURE_MATRIX_PATH: &str = "crates/perl-lsp-ux-tests/fixtures/editor_ux_fixture_matrix.json";
 
 #[derive(Debug, Deserialize)]
 struct FixtureMatrix {
@@ -60,11 +59,7 @@ pub fn aggregate_from_receipts(
     flake_ledger: Option<&Path>,
 ) -> Result<MeasuredEditorUxScorecard> {
     let root = project_root()?;
-    validate_scorecard_inputs(
-        receipts_dir,
-        fixture_matrix,
-        &root.join(RECEIPT_SCHEMA_PATH),
-    )?;
+    validate_scorecard_inputs(receipts_dir, fixture_matrix, &root.join(RECEIPT_SCHEMA_PATH))?;
     super::lsp_stats_impl::aggregate_from_receipts(receipts_dir, fixture_matrix, flake_ledger)
 }
 
@@ -88,10 +83,7 @@ fn validate_scorecard_inputs(
             bail!("editor UX fixture matrix contains an empty workflow id");
         }
         if workflow.scenario_file.trim().is_empty() {
-            bail!(
-                "editor UX fixture matrix workflow `{}` has an empty scenario_file",
-                workflow.id
-            );
+            bail!("editor UX fixture matrix workflow `{}` has an empty scenario_file", workflow.id);
         }
         if workflows.insert(workflow.id.as_str(), workflow).is_some() {
             bail!("editor UX fixture matrix contains duplicate workflow id `{}`", workflow.id);
@@ -119,10 +111,7 @@ fn validate_scorecard_inputs(
         }
 
         if let Err(error) = validator.validate(&candidate.value) {
-            bail!(
-                "invalid UX scenario receipt {}: {error}",
-                candidate.path.display()
-            );
+            bail!("invalid UX scenario receipt {}: {error}", candidate.path.display());
         }
 
         let receipt: UxScenarioRunReceipt = serde_json::from_value(candidate.value)
@@ -217,10 +206,7 @@ mod tests {
         Ok(path)
     }
 
-    fn write_matrix(
-        dir: &Path,
-        workflows: &[(&str, &str)],
-    ) -> Result<std::path::PathBuf> {
+    fn write_matrix(dir: &Path, workflows: &[(&str, &str)]) -> Result<std::path::PathBuf> {
         let workflows: Vec<Value> = workflows
             .iter()
             .map(|(id, scenario_file)| {
@@ -376,10 +362,8 @@ mod tests {
         let temp = tempfile::tempdir()?;
         let receipts = temp.path().join("receipts");
         fs::create_dir_all(&receipts)?;
-        let matrix = write_matrix(
-            temp.path(),
-            &[("duplicate", "first.rs"), ("duplicate", "second.rs")],
-        )?;
+        let matrix =
+            write_matrix(temp.path(), &[("duplicate", "first.rs"), ("duplicate", "second.rs")])?;
         let schema = write_schema(temp.path())?;
 
         let error = validation_error(
