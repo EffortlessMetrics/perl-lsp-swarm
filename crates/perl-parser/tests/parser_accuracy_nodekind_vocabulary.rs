@@ -11,6 +11,7 @@
 
 use perl_parser::NodeKind;
 use serde::Deserialize;
+use serde_json::{Map, Value};
 use std::fmt;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -22,6 +23,35 @@ const AST_PARENT_KIND_FIELD: &str = "ast_expectations.parent_kind";
 const FORBIDDEN_KIND_FIELD: &str = "forbidden_nodes.kind";
 const FORBIDDEN_PARENT_KIND_FIELD: &str = "forbidden_nodes.parent_kind";
 
+const PARSER_ACCURACY_FIXTURE_FIELDS: &[&str] = &[
+    "id",
+    "family",
+    "label_mode",
+    "source_path",
+    "scored_lines",
+    "scored_symbols",
+    "fully_labeled_regions",
+    "partial_labeled_regions",
+    "unknown_regions",
+    "negative_regions",
+    "dynamic_boundaries",
+    "unsupported_constructs",
+    "real_project_file",
+    "generated",
+    "line_expectations",
+    "ast_expectations",
+    "symbol_expectations",
+    "provider_expectations",
+    "span_expectations",
+    "symbol_safety_regions",
+    "forbidden_nodes",
+    "recovery_expectations",
+    "incremental_expectations",
+];
+const AST_EXPECTATION_FIELDS: &[&str] =
+    &["id", "kind", "line", "span_text", "parent_kind", "depth", "operator", "parent_operator"];
+const FORBIDDEN_NODE_FIELDS: &[&str] = &["id", "kind", "line", "parent_kind", "depth"];
+
 #[derive(Debug, Deserialize)]
 struct ParserAccuracyNodeKindManifest {
     fixtures: Vec<ParserAccuracyNodeKindFixture>,
@@ -30,6 +60,7 @@ struct ParserAccuracyNodeKindManifest {
 #[derive(Debug, Deserialize)]
 struct ParserAccuracyNodeKindFixture {
     id: String,
+    #[serde(default)]
     ast_expectations: Vec<NodeKindReference>,
     #[serde(default)]
     forbidden_nodes: Vec<NodeKindReference>,
@@ -67,9 +98,20 @@ impl fmt::Display for InvalidNodeKindReference {
 
 impl std::error::Error for InvalidNodeKindReference {}
 
+#[derive(Debug)]
+struct ManifestSchemaError(String);
+
+impl fmt::Display for ManifestSchemaError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for ManifestSchemaError {}
+
 #[test]
 fn parser_accuracy_ast_nodekind_references_are_canonical() -> TestResult {
-    let manifest: ParserAccuracyNodeKindManifest = serde_json::from_str(MANIFEST_JSON)?;
+    let manifest = parse_manifest(MANIFEST_JSON)?;
     let mut positive_references = 0usize;
     let mut forbidden_references = 0usize;
 
@@ -101,29 +143,46 @@ fn parser_accuracy_ast_nodekind_references_are_canonical() -> TestResult {
 }
 
 #[test]
-fn manifest_requires_ast_nodekind_collection() {
-    let without_ast_collection = r#"{
+fn manifest_preserves_optional_nodekind_collections_and_rejects_misspelled_keys() {
+    let forbidden_only = r#"{
         "fixtures": [{
             "id": "fixture",
-            "ast_expectation": [],
-            "forbidden_nodes": []
+            "forbidden_nodes": [{
+                "id": "no_block",
+                "kind": "Block",
+                "line": 1
+            }]
+        }]
+    }"#;
+    let manifest = parse_manifest(forbidden_only).expect("forbidden-only fixture is valid");
+    assert!(manifest.fixtures[0].ast_expectations.is_empty());
+
+    let misspelled_parent_kind = r#"{
+        "fixtures": [{
+            "id": "fixture",
+            "ast_expectations": [{
+                "id": "expectation",
+                "kind": "String",
+                "line": 1,
+                "span_text": "value",
+                "parent_knd": "Program"
+            }]
         }]
     }"#;
     assert!(
-        serde_json::from_str::<ParserAccuracyNodeKindManifest>(without_ast_collection).is_err(),
-        "a misspelled or missing ast_expectations collection must not default to empty"
+        parse_manifest(misspelled_parent_kind).is_err(),
+        "a misspelled parent_kind key must not be silently ignored"
     );
 
-    let optional_forbidden_collection = r#"{
+    let misspelled_forbidden_nodes = r#"{
         "fixtures": [{
             "id": "fixture",
-            "ast_expectations": []
+            "forbidden_nodez": []
         }]
     }"#;
     assert!(
-        serde_json::from_str::<ParserAccuracyNodeKindManifest>(optional_forbidden_collection)
-            .is_ok(),
-        "the existing schema permits fixtures without forbidden_nodes"
+        parse_manifest(misspelled_forbidden_nodes).is_err(),
+        "a misspelled forbidden_nodes key must not be silently ignored"
     );
 }
 
@@ -184,6 +243,103 @@ fn non_canonical_kind_controls_are_rejected_before_absence_matching() {
             "non-canonical control `{non_canonical}` in `{kind_field}` must be rejected"
         );
     }
+}
+
+#[test]
+fn invalid_nodekind_diagnostic_identifies_the_reference() {
+    let error = validate_reference_rows(
+        "quote_like",
+        &[NodeKindReference {
+            id: "string_under_statement".to_string(),
+            kind: "ExpressionStatment".to_string(),
+            parent_kind: None,
+        }],
+        AST_KIND_FIELD,
+        AST_PARENT_KIND_FIELD,
+    )
+    .expect_err("the misspelled NodeKind must be rejected");
+
+    let rendered = error.to_string();
+    for expected in ["quote_like", "string_under_statement", AST_KIND_FIELD, "ExpressionStatment"] {
+        assert!(rendered.contains(expected), "diagnostic `{rendered}` must contain `{expected}`");
+    }
+}
+
+fn parse_manifest(
+    json: &str,
+) -> Result<ParserAccuracyNodeKindManifest, Box<dyn std::error::Error>> {
+    let value: Value = serde_json::from_str(json)?;
+    validate_manifest_schema(&value)?;
+    Ok(serde_json::from_value(value)?)
+}
+
+fn validate_manifest_schema(value: &Value) -> Result<(), ManifestSchemaError> {
+    let root = value.as_object().ok_or_else(|| {
+        ManifestSchemaError("parser-accuracy manifest must be a JSON object".to_string())
+    })?;
+    reject_unknown_fields(root, &["schema_version", "fixtures"], "manifest")?;
+
+    let fixtures = root
+        .get("fixtures")
+        .and_then(Value::as_array)
+        .ok_or_else(|| ManifestSchemaError("manifest.fixtures must be an array".to_string()))?;
+
+    for (fixture_index, fixture) in fixtures.iter().enumerate() {
+        let fixture_path = format!("manifest.fixtures[{fixture_index}]");
+        let fixture_object = fixture
+            .as_object()
+            .ok_or_else(|| ManifestSchemaError(format!("{fixture_path} must be a JSON object")))?;
+        reject_unknown_fields(fixture_object, PARSER_ACCURACY_FIXTURE_FIELDS, &fixture_path)?;
+        validate_reference_collection(
+            fixture_object,
+            "ast_expectations",
+            AST_EXPECTATION_FIELDS,
+            &fixture_path,
+        )?;
+        validate_reference_collection(
+            fixture_object,
+            "forbidden_nodes",
+            FORBIDDEN_NODE_FIELDS,
+            &fixture_path,
+        )?;
+    }
+
+    Ok(())
+}
+
+fn validate_reference_collection(
+    fixture: &Map<String, Value>,
+    field: &str,
+    allowed_fields: &[&str],
+    fixture_path: &str,
+) -> Result<(), ManifestSchemaError> {
+    let Some(collection) = fixture.get(field) else {
+        return Ok(());
+    };
+    let collection = collection
+        .as_array()
+        .ok_or_else(|| ManifestSchemaError(format!("{fixture_path}.{field} must be an array")))?;
+    for (row_index, row) in collection.iter().enumerate() {
+        let row_path = format!("{fixture_path}.{field}[{row_index}]");
+        let row_object = row
+            .as_object()
+            .ok_or_else(|| ManifestSchemaError(format!("{row_path} must be a JSON object")))?;
+        reject_unknown_fields(row_object, allowed_fields, &row_path)?;
+    }
+    Ok(())
+}
+
+fn reject_unknown_fields(
+    object: &Map<String, Value>,
+    allowed_fields: &[&str],
+    object_path: &str,
+) -> Result<(), ManifestSchemaError> {
+    if let Some(unknown) = object.keys().find(|key| !allowed_fields.contains(&key.as_str())) {
+        return Err(ManifestSchemaError(format!(
+            "{object_path} contains unknown field `{unknown}`"
+        )));
+    }
+    Ok(())
 }
 
 fn validate_reference_rows(
