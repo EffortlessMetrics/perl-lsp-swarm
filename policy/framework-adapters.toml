@@ -202,6 +202,7 @@ supported_forms = [
 ]
 blocked_forms = [
   "plain_schema_import_inline_row_identity",
+  "rename_skip_only_import_customization",
   "dynamic_table_name",
   "dynamic_column_name",
   "autofill_runtime_schema",
@@ -219,7 +220,7 @@ blocks = [
   "low_confidence",
   "unsupported_fact_class",
 ]
-claim_boundary = "DBIx::QuickORM has a parser-backed, non-published candidate extractor for statically named columns in explicit table classes. Canonical shards, live providers, runtime schema fill, generated row classes, naming hooks, links, and edit authorization remain blocked pending separate admission proof."
+claim_boundary = "DBIx::QuickORM has a parser-backed, non-published candidate extractor for statically named columns in explicit table classes using the default DSL names. Each import replaces the caller's builder; plain or symbol-customized imports therefore close this candidate contract. Canonical shards, live providers, runtime schema fill, generated row classes, naming hooks, links, and edit authorization remain blocked pending separate admission proof."
 
 [[adapter]]
 framework = "Catalyst"
