@@ -1,7 +1,72 @@
 //! Draft pull-request feedback contract for issue #10006.
+//!
+//! The compile-time assertions keep the contract load-bearing under
+//! `cargo check --workspace --all-targets`; the runtime test additionally
+//! verifies that the required strings compose inside the intended jobs.
 
 use std::fs;
 use std::path::PathBuf;
+
+const CI_WORKFLOW: &[u8] = include_bytes!("../../.github/workflows/ci.yml");
+
+const fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    if needle.len() > haystack.len() {
+        return false;
+    }
+
+    let mut start = 0;
+    while start + needle.len() <= haystack.len() {
+        let mut offset = 0;
+        while offset < needle.len() && haystack[start + offset] == needle[offset] {
+            offset += 1;
+        }
+        if offset == needle.len() {
+            return true;
+        }
+        start += 1;
+    }
+    false
+}
+
+const _: () = assert!(
+    contains(
+        CI_WORKFLOW,
+        b"types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]"
+    ),
+    "draft/ready state changes must retrigger CI"
+);
+const _: () = assert!(
+    contains(
+        CI_WORKFLOW,
+        b"echo \"run_ci=false\" >> \"$GITHUB_OUTPUT\""
+    ),
+    "drafts must keep the expensive CI selector disabled"
+);
+const _: () = assert!(
+    contains(CI_WORKFLOW, b"A skipped job is not verification"),
+    "draft summaries must distinguish skipped jobs from proof"
+);
+const _: () = assert!(
+    contains(
+        CI_WORKFLOW,
+        b"github.event_name == 'pull_request' && github.event.pull_request.draft == true"
+    ),
+    "the conflict-marker job must select draft pull requests"
+);
+const _: () = assert!(
+    contains(CI_WORKFLOW, b"always() &&"),
+    "the draft route must survive its intentionally skipped preflight dependency"
+);
+const _: () = assert!(
+    contains(
+        CI_WORKFLOW,
+        b"github.event.pull_request.head.sha || github.ref_name"
+    ),
+    "the cheap draft check must inspect the exact pull-request head"
+);
 
 fn project_root() -> Result<PathBuf, Box<dyn std::error::Error>> {
     Ok(PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -30,13 +95,6 @@ fn job_block<'a>(workflow: &'a str, job: &str) -> Option<&'a str> {
 fn drafts_keep_exact_head_cheap_feedback() -> Result<(), Box<dyn std::error::Error>> {
     let root = project_root()?;
     let ci = fs::read_to_string(root.join(".github/workflows/ci.yml"))?.replace("\r\n", "\n");
-
-    assert!(
-        ci.contains(
-            "types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]"
-        ),
-        "draft/ready state changes must retrigger CI for the current candidate"
-    );
 
     let draft_guard =
         job_block(&ci, "draft-pr-check").ok_or("ci.yml has no `draft-pr-check` job")?;
@@ -73,16 +131,6 @@ fn drafts_keep_exact_head_cheap_feedback() -> Result<(), Box<dyn std::error::Err
             && !rust_formatting.contains("run_ci"),
         "candidate-bound rustfmt must remain independent of the draft/full-CI selector. \
          Extracted job:\n{rust_formatting}"
-    );
-
-    let compile_all_targets = job_block(&ci, "check-all-targets")
-        .ok_or("ci.yml has no `check-all-targets` job")?;
-    assert!(
-        compile_all_targets.contains(
-            "cargo test -p xtask --test draft_pr_feedback_contract --locked -- --nocapture"
-        ),
-        "the draft feedback contract must execute on the required Compile All Targets surface. \
-         Extracted job:\n{compile_all_targets}"
     );
 
     Ok(())
