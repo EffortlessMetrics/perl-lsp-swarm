@@ -6,18 +6,18 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12296 |
-| Rust-family files | 3766 |
-| Non-Rust files | 8530 |
-| Allowlisted | 6295 |
+| Total tracked files | 12317 |
+| Rust-family files | 3769 |
+| Non-Rust files | 8548 |
+| Allowlisted | 6313 |
 | Unclassified | 2235 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 480 |
-| documentation | 2783 |
+| config | 490 |
+| documentation | 2791 |
 | generated | 2 |
 | production | 339 |
 | test | 2033 |
@@ -2602,6 +2602,23 @@
 | `.ci/fix-forward/playbooks.toml` | config | `non-rust-ci-config` | release/ci |
 | `.ci/fixtures/lite-xl-perl-upstream/receipts/public-replay.v1.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/fixtures/lite-xl-perl-upstream/upstream-acceptance.toml` | config | `non-rust-ci-config` | release/ci |
+| `.ci/fixtures/perl-kwalitee-legacy-parity/expected/explain_all.txt` | config | `non-rust-ci-config` | release/ci |
+| `.ci/fixtures/perl-kwalitee-legacy-parity/expected/legacy_reader.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/fixtures/perl-kwalitee-legacy-parity/expected/migration_reference.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.ci/fixtures/perl-kwalitee-legacy-parity/expected/nightly_non_strict.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/fixtures/perl-kwalitee-legacy-parity/expected/nightly_non_strict.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.ci/fixtures/perl-kwalitee-legacy-parity/expected/nightly_strict.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/fixtures/perl-kwalitee-legacy-parity/expected/nightly_strict.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.ci/fixtures/perl-kwalitee-legacy-parity/expected/pr_non_strict.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/fixtures/perl-kwalitee-legacy-parity/expected/pr_non_strict.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.ci/fixtures/perl-kwalitee-legacy-parity/expected/pr_strict.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/fixtures/perl-kwalitee-legacy-parity/expected/pr_strict.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.ci/fixtures/perl-kwalitee-legacy-parity/expected/release_non_strict.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/fixtures/perl-kwalitee-legacy-parity/expected/release_non_strict.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.ci/fixtures/perl-kwalitee-legacy-parity/expected/release_strict.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/fixtures/perl-kwalitee-legacy-parity/expected/release_strict.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.ci/fixtures/perl-kwalitee-legacy-parity/input/legacy_receipt_v1.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/fixtures/perl-kwalitee-legacy-parity/manifest.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/fixtures/zed-perl-upstream/codex-train.v1.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/fixtures/zed-perl-upstream/convergence.v1.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/fixtures/zed-perl-upstream/default-order.v1.json` | config | `non-rust-ci-config` | release/ci |
@@ -6016,6 +6033,7 @@
 | `docs/specs/PLSP-SPEC-0033-three-rail-evidence.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/specs/PLSP-SPEC-0034-compiler-world.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/specs/PLSP-SPEC-0035-executable-profile-and-eir.md` | documentation | `non-rust-docs-tree` | docs |
+| `docs/specs/PLSP-SPEC-0036-lsp4ij-windows-entrypoints.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/specs/README.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/specs/RELEASE_CANDIDATE_BASELINE.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/specs/lsp-318-conformance-matrix.md` | documentation | `non-rust-docs-tree` | docs |
