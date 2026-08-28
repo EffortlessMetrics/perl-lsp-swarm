@@ -1383,6 +1383,7 @@ impl LspServer {
     /// Updates both ServerConfig and WorkspaceConfig when the client
     /// notifies of configuration changes.
     pub(super) fn handle_did_change_configuration(&self, params: Option<Value>) {
+        self.invalidate_workspace_identity();
         if let Some(params) = params
             && let Some(settings) = params.get("settings")
         {

@@ -514,7 +514,6 @@ pub fn check_version_compat_with_project_version(
 }
 
 fn parse_configured_project_version(value: &str) -> Option<PerlVersion> {
-    let value = value.trim();
     let version = value.strip_prefix('v').unwrap_or(value);
     let mut components = version.split('.');
     let (Some(major), Some(minor), None) =
@@ -977,6 +976,16 @@ mod tests {
                 "project version {value:?} must be rejected after major.minor"
             );
         }
+    }
+
+    #[test]
+    fn project_version_v5_40_fallback_is_applied() {
+        let below = version_compat_diags_with_project_version("use builtin 'inf';", Some("v5.38"));
+        assert!(below.iter().any(|diagnostic| diagnostic.code.as_deref() == Some("PL900")));
+
+        let supported =
+            version_compat_diags_with_project_version("use builtin 'inf';", Some("v5.40"));
+        assert!(supported.iter().all(|diagnostic| diagnostic.code.as_deref() != Some("PL900")));
     }
 
     #[test]

@@ -142,7 +142,7 @@ impl LspServer {
     /// `window/showMessage` Warning is emitted naming the folders and keys, instead
     /// of silently discarding a folder's configuration.
     pub(crate) fn load_and_apply_project_config(&self) {
-        self.workspace_identity_generation.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.invalidate_workspace_identity();
         let mut folders = self.workspace_folders.lock();
 
         if folders.is_empty() {

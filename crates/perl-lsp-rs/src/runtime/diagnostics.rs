@@ -864,6 +864,7 @@ impl LspServer {
             // Add external perlcritic diagnostics (opt-in)
             self.collect_external_perlcritic_diagnostics(uri, &text, &mut diagnostics);
 
+            let _identity_guard = self.workspace_identity_lock.lock();
             if self.workspace_identity_generation.load(Ordering::SeqCst)
                 != workspace_gen_at_snapshot
             {
@@ -1537,6 +1538,7 @@ impl LspServer {
                 // does not cache this stale result and retries on the next request.
                 return Ok(Some(Self::empty_full_diagnostic_report()));
             }
+            let _identity_guard = self.workspace_identity_lock.lock();
             if self.workspace_identity_generation.load(Ordering::SeqCst)
                 != workspace_gen_at_snapshot
             {
@@ -1860,6 +1862,8 @@ impl LspServer {
         // observed at snapshot time so we can guard against stale results below
         // (mirrors the guard already present in handle_document_diagnostic and
         // the push path).
+        let workspace_gen_at_snapshot =
+            self.workspace_identity_generation.load(std::sync::atomic::Ordering::SeqCst);
         let docs_snapshot: Vec<(
             String,
             DocumentState,
@@ -1873,13 +1877,7 @@ impl LspServer {
                 .map(|(k, v)| {
                     let generation_arc = std::sync::Arc::clone(&v.generation);
                     let gen_val = v.generation.load(std::sync::atomic::Ordering::SeqCst);
-                    (
-                        k.clone(),
-                        v.clone(),
-                        generation_arc,
-                        gen_val,
-                        self.workspace_identity_generation.load(Ordering::SeqCst),
-                    )
+                    (k.clone(), v.clone(), generation_arc, gen_val, workspace_gen_at_snapshot)
                 })
                 .collect()
         };
@@ -2354,6 +2352,15 @@ impl LspServer {
             }
         }
 
+        let _identity_guard = self.workspace_identity_lock.lock();
+        if self.workspace_identity_generation.load(Ordering::SeqCst) != workspace_gen_at_snapshot {
+            tracing::debug!(
+                workspace_gen_at_snapshot,
+                current_workspace_gen = self.workspace_identity_generation.load(Ordering::SeqCst),
+                "Skipping stale workspace diagnostic response (workspace ownership/configuration changed)"
+            );
+            return Ok(Some(json!({ "items": [] })));
+        }
         Ok(Some(json!({ "items": items })))
     }
 

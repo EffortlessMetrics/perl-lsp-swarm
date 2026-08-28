@@ -214,6 +214,8 @@ pub struct LspServer {
     workspace_folders: Arc<Mutex<Vec<WorkspaceFolderState>>>,
     /// Monotonic configuration/ownership generation for diagnostic snapshots.
     pub(crate) workspace_identity_generation: Arc<AtomicU64>,
+    /// Serializes workspace identity invalidation with diagnostic publication.
+    pub(crate) workspace_identity_lock: Arc<Mutex<()>>,
     /// Root path for module resolution
     root_path: Arc<Mutex<Option<PathBuf>>>,
     /// `.perltidyrc` profile path discovered from the workspace root during

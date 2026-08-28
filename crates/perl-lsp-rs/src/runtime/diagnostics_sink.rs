@@ -113,6 +113,11 @@ impl PushDiagnosticsSink {
 }
 
 impl LspServer {
+    pub(crate) fn invalidate_workspace_identity(&self) {
+        let _identity_guard = self.workspace_identity_lock.lock();
+        self.workspace_identity_generation.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+
     /// Commit one push-diagnostics replacement/clear at the sink boundary.
     ///
     /// See the module docs for the boundary contract. `payload` must be the
@@ -124,6 +129,9 @@ impl LspServer {
         payload: Value,
         disposition: PushDiagnosticsDisposition,
     ) -> PushDiagnosticsCommitOutcome {
+        // Serialize the generation check and irreversible enqueue with
+        // configuration invalidation.
+        let _identity_guard = self.workspace_identity_lock.lock();
         let mut committed = self.push_diagnostics_sink.committed.lock();
 
         if self.workspace_identity_generation.load(std::sync::atomic::Ordering::SeqCst)
@@ -419,6 +427,23 @@ mod tests {
             frame_count(&buf),
             final_frames,
             "rejected stale candidate must not enqueue a frame"
+        );
+    }
+
+    #[test]
+    fn workspace_identity_invalidation_rejects_pre_reload_candidate() {
+        let (server, _buf) = make_server();
+        let identity = open_document(&server, "file:///sink_reload_test.pl", "my $x = 1;\n");
+
+        server.invalidate_workspace_identity();
+
+        assert_eq!(
+            server.commit_push_diagnostics(
+                &identity,
+                json!({ "uri": identity.normalized_uri, "diagnostics": [] }),
+                PushDiagnosticsDisposition::Clear,
+            ),
+            PushDiagnosticsCommitOutcome::RejectedSupersededGeneration
         );
     }
 
