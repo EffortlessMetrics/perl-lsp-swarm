@@ -24,7 +24,7 @@ Emacs 29 includes Eglot. The repository's checked `lsp-mode` subjects are
 deliberately separate:
 
 - Released MELPA Stable `lsp-mode` 10.0.0 declares Emacs 28.1 or later.
-- The pinned upstream-source subject reports `lsp-mode` 10.0.1; its Emacs
+- The pinned upstream-source subject reports `lsp-mode` 10.0.1 and its Emacs
   dependency minimum is unverified because the checked manifest does not record
   a source-package minimum.
 
