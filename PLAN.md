@@ -229,7 +229,9 @@ production ledger exists in this planning PR. The fixture below is deliberately
 self-contained and list-based: repeated IDs are observable, and C202's four
 projections cannot overwrite one another in a dictionary. Its synthetic route
 IDs are test data only; the implementation must replace them with distinct opaque
-IDs from #10333 and validate the catalog digest before accepting the ledger.
+IDs from #10333 and validate the catalog digest before accepting the ledger. The
+fixture catalog below uses one deliberately opaque ID so C1208 resolution tests
+the catalog binding, not a route-name convention.
 
 ```python
 from collections import Counter
@@ -252,6 +254,21 @@ ALLOWED_EXCLUSIONS = {
     "diagnostic_surface", "verification_metadata", "channel_rule",
     "volatile_metadata", "adjacent_product", "non_install_dependency",
 }
+FIXTURE_CATALOG = (
+    {
+        "route_id": "r_4f8c2a",
+        "target_registry": "open_vsx",
+        "projection_contexts": (
+            "Open_VSX_compatible_marketplace_context",
+        ),
+    },
+)
+
+def resolve_catalog_route(catalog_rows, route_id):
+    matches = [row for row in catalog_rows if row["route_id"] == route_id]
+    if len(matches) != 1:
+        raise ValueError(f"route ID must resolve exactly once: {route_id}")
+    return matches[0]
 
 def fixture_ledger():
     rows = []
@@ -265,7 +282,7 @@ def fixture_ledger():
         elif item_id == "C1208":
             rows.append({
                 "id": item_id, "kind": "project",
-                "exact_catalog_route_id": "fixture-route-open-vsx",
+                "exact_catalog_route_id": "r_4f8c2a",
                 "exact_projection_context": "Open_VSX_compatible_marketplace_context",
             })
         else:
@@ -280,7 +297,7 @@ def fixture_ledger():
     } for number in range(1, 13))
     return rows
 
-def validate_closure(inventory_rows, ledger_rows):
+def validate_closure(inventory_rows, ledger_rows, catalog_rows):
     expected = set(EXPECTED_CLAIMS + EXPECTED_FINDINGS)
     inventory_ids = [row["id"] for row in inventory_rows]
     ledger_ids = [row["id"] for row in ledger_rows]
@@ -313,12 +330,23 @@ def validate_closure(inventory_rows, ledger_rows):
     if len({row["exact_catalog_route_id"] for row in c202_rows}) != 4:
         raise ValueError("C202 route IDs must not be reused")
     c1208_rows = [row for row in ledger_rows if row["id"] == "C1208"]
-    if len(c1208_rows) != 1 or c1208_rows[0]["exact_projection_context"] != "Open_VSX_compatible_marketplace_context":
+    if len(c1208_rows) != 1:
+        raise ValueError("C1208 must remain a single Open VSX projection")
+    c1208_route = resolve_catalog_route(
+        catalog_rows, c1208_rows[0]["exact_catalog_route_id"]
+    )
+    if (
+        c1208_route["target_registry"] != "open_vsx"
+        or c1208_rows[0]["exact_projection_context"]
+        not in c1208_route["projection_contexts"]
+    ):
         raise ValueError("C1208 must remain a separate Open VSX projection")
     return True
 
 assert validate_closure(
-    [{"id": item_id} for item_id in EXPECTED_CLAIMS], fixture_ledger()
+    [{"id": item_id} for item_id in EXPECTED_CLAIMS],
+    fixture_ledger(),
+    FIXTURE_CATALOG,
 )
 ```
 
@@ -329,7 +357,10 @@ all 82 ledger IDs and C202's four records, rather than trusting a count or range
 shorthand. Thus the complete 70-claim / 12-finding closure check is executable
 before route classification exists; only exact catalog route IDs and projection
 contexts remain gated on #10333. A prose manifest or count without this
-set-equality and compatibility check does not satisfy closure.
+set-equality and compatibility check does not satisfy closure. The C1208 assertion
+also proves that its opaque ID resolves to exactly one catalog row whose registry is
+Open VSX and whose projection context is compatible; an ID that resolves to the
+Marketplace row, an unknown ID, or an incompatible context fails the fixture.
 
 ### 2.2 Classification = conjunction of independent per-dimension verdicts
 
@@ -448,21 +479,38 @@ are never one receipt or one selectable route),
 `platform_capabilities` includes Windows ARM emulation capability/version, and
 `risk_posture` is either `strict` or `permissive`.
 
-`strict` selects exactly one `proven_current` route with independent
-integrity/provenance and complete lifecycle evidence; zero candidates returns
-`no_route` with sorted reasons. `permissive` first uses the same hard filter, then
-selects a `proven_current` route when one exists. If none exists, it may select
-exactly one `receipt_bound_partial` route only when every dimension is
-`proven_current` or `receipt_bound_partial` and integrity/provenance,
-product-unit/lifecycle, and freshness/channel/publication receipts are explicit.
-The result is labeled `partial` and never upgrades missing evidence. A
-`pending_gate` or `unproven` route is never selected.
+`strict` has `selected_count=1` only when exactly one `proven_current` route
+survives the hard filter. Zero candidates returns `no_route` with sorted reasons,
+and more than one exact eligible row is an ambiguity refusal; strict never chooses
+by input order. `permissive` first uses the same hard filter and partitions the
+eligible routes into `P` (all dimensions `proven_current`) and `Q` (all dimensions
+either `proven_current` or `receipt_bound_partial`, with the required explicit
+integrity/provenance, product-unit/lifecycle, and freshness/channel/publication
+receipts). `P` and `Q` are disjoint.
 
-Permissive ambiguity is deterministic and defined: distinct eligible candidates
-are returned in canonical order `(integrity, lifecycle, publication, exact
-catalog route ID)` with `selection=deferred_human_order`, rather than being
-silently chosen or refused merely because more than one exists. Once H1–H7 are
-ruled, the applicable human-authored policy may choose from that ordered set.
+The permissive result has closed cardinality. If `|P| > 0`, the candidate set is
+exactly all `|P|` proven-current routes, each returned once; every `Q` route is
+returned exactly once as a partial diagnostic but is not selectable. If `|P| = 0` and
+`|Q| > 0`, the candidate set is exactly all `|Q|` partial routes, each returned
+once and labeled `partial`. If both are empty, the result is `no_route`. In either
+non-empty case, `selected_count=1` exactly when the candidate set has cardinality
+one; when its cardinality is greater than one, `selected_count=0` and the result
+uses `selection=deferred_human_order`. A partial route is never selected while a
+proven-current route exists, and no route with `pending_gate`, `unproven`, or
+`contradicted` is in either candidate set.
+
+Every returned candidate uses this ascending total-order key:
+`(candidate_class, integrity, lifecycle, publication, identity_topology,
+platform_target, path_session_execution, receipt, exact_catalog_route_id,
+exact_projection_context)`. The seven dimension fields use the closed ranks
+`proven_current=0` and `receipt_bound_partial=1` for this eligible set;
+`candidate_class` is `proven_current=0`, `partial=1`. The final two fields compare
+the UTF-8 bytes of the opaque route ID and exact projection context. The catalog
+rejects duplicate route-ID/context pairs, so this key is total and cannot depend
+on catalog or input order. This is mechanical candidate ordering, not preferred
+product authority; while H1–H7 remain pending, even a sole candidate is
+`provisional(human-pending)` and the ordered set is not a recommendation. Once
+H1–H7 are ruled, the applicable human-authored policy may choose from this set.
 Duplicate exact route/context rows are a catalog error and return `NOT_PROVEN`
 with the duplicate IDs. Unknown context or registry fields return `no_route`
 with a sorted reason; they never fall back to another registry, `latest`, or an
@@ -668,11 +716,14 @@ assuming the former prose-row denominator.
     in editor family, target registry, target/libc, observed Windows emulation
     capability, or `strict` versus `permissive` must produce the corresponding
     observable result: strict selects only one proven-current projection (or
-    `no_route` with reasons); permissive selects a proven-current projection, or
-    one explicitly annotated receipt-bound partial projection when eligible, and
-    otherwise returns the deterministic candidate/diagnostic set described in
-    §3. A route that ignores any supplied field fails; permissive must not turn a
-    contradiction, unproven route, or H7 verify-first diagnostic into a selection.
+    `no_route` with reasons); permissive returns exactly `|P|` proven-current
+    candidates when `|P| > 0`, otherwise exactly `|Q|` explicitly annotated
+    receipt-bound partial candidates when `|Q| > 0`, otherwise `no_route`, using
+    the closed total order in §3. It selects exactly one only when the applicable
+    candidate set has cardinality one; multiple candidates return
+    `selection=deferred_human_order` with `selected_count=0`. A route that ignores
+    any supplied field fails; permissive must not turn a contradiction, unproven
+    route, or H7 verify-first diagnostic into a selection.
 
 ---
 
