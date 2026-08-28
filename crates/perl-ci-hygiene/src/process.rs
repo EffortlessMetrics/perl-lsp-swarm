@@ -207,7 +207,7 @@ fn command_exists_in_path(command: &str, path: Option<&OsStr>) -> bool {
     };
 
     env::split_paths(path)
-        .any(|dir| suffixes.iter().any(|ext| dir.join(format!("{command}{ext}")).exists()))
+        .any(|dir| suffixes.iter().any(|ext| dir.join(format!("{command}{ext}")).is_file()))
 }
 
 pub(crate) fn command_output_lines(output: &str) -> Vec<String> {
