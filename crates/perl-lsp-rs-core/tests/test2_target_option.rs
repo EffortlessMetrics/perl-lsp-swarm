@@ -359,6 +359,55 @@ fn comma_inside_dynamic_call_does_not_make_target_truthy() -> TestResult {
 }
 
 #[test]
+fn whitespace_separated_call_like_targets_fail_closed() -> TestResult {
+    let resolved = resolve_import("Test2::V0", "-target => foo (), ok")
+        .ok_or_else(|| io::Error::other("Test2::V0 must be recognized"))?;
+
+    assert!(resolved.symbols.contains("ok"));
+    assert!(!resolved.symbols.contains("CLASS"));
+    assert!(!resolved.symbols.contains("foo"));
+    assert!(!resolved.symbols.contains("is"));
+    Ok(())
+}
+
+#[test]
+fn parenthesized_hash_targets_preserve_key_value_parity() -> TestResult {
+    let resolved =
+        resolve_import("Test2::V0", "-target => ( { first => 'One', second => 'Two' } ), ok")
+            .ok_or_else(|| io::Error::other("Test2::V0 must be recognized"))?;
+
+    assert!(resolved.symbols.contains("first"));
+    assert!(resolved.symbols.contains("second"));
+    assert!(resolved.symbols.contains("ok"));
+    for leaked in ["One", "Two", "is", "CLASS"] {
+        assert!(!resolved.symbols.contains(leaked), "{leaked} leaked from parenthesized hash");
+    }
+    Ok(())
+}
+
+#[test]
+fn quote_like_modifiers_and_escaped_delimiters_preserve_hash_parity() -> TestResult {
+    for value in [
+        "m{Widget}i",
+        "s{Widget}{Other}g",
+        "m{Widget\\}Other}i",
+        "s{Widget\\}Other}{Gadget\\}Value}g",
+    ] {
+        let args = format!("-target => {{ first => {value}, second => 'Two' }}, ok");
+        let resolved = resolve_import("Test2::V0", &args)
+            .ok_or_else(|| io::Error::other("Test2::V0 must be recognized"))?;
+
+        assert!(resolved.symbols.contains("first"), "value {value:?}");
+        assert!(resolved.symbols.contains("second"), "value {value:?}");
+        assert!(resolved.symbols.contains("ok"), "value {value:?}");
+        for leaked in ["Widget", "Other", "Gadget", "Two", "i", "g"] {
+            assert!(!resolved.symbols.contains(leaked), "{leaked} leaked from {value:?}");
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn malformed_target_structures_fail_closed_without_leaking_atoms() -> TestResult {
     let malformed_hash =
         resolve_import("Test2::V0", "-target => { leaked_helper => 'Widget', trailing_name")
@@ -509,4 +558,9 @@ fn target_helpers_reach_live_bundle_completion() {
 
     let truthy = complete("use Test2::V0 -target => 'Foo';\nC|");
     assert!(has_test2_completion(&truthy, "CLASS"));
+
+    let call_like = complete("use Test2::V0 -target => foo ();\nC|");
+    assert!(!has_test2_completion(&call_like, "CLASS"));
+    let call_like_name = complete("use Test2::V0 -target => foo ();\nf|");
+    assert!(!has_test2_completion(&call_like_name, "foo"));
 }

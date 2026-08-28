@@ -483,6 +483,12 @@ pub fn resolve_import(module: &str, raw_args: &str) -> Option<ResolvedImport> {
                                 break;
                             }
                         }
+                        if is_bareword(value)
+                            && atoms.get(atom_index).map(String::as_str) == Some("(")
+                        {
+                            atom_index = consume_parenthesized_expression(&atoms, atom_index);
+                            break;
+                        }
                         if scalar_target_is_truthy(value) {
                             target_helpers.insert("CLASS".to_string());
                         }
@@ -804,6 +810,11 @@ fn quote_like_expression_end(raw: &str, start: usize) -> Option<usize> {
             second_close,
             second_paired,
         )?;
+    }
+    if matches!(*operator, b"m" | b"qr" | b"s" | b"tr" | b"y") {
+        while bytes.get(end).is_some_and(u8::is_ascii_alphabetic) {
+            end += 1;
+        }
     }
     Some(end)
 }
@@ -1207,6 +1218,24 @@ fn consume_parenthesized_scalar(atoms: &[String], start: usize) -> Option<(usize
         }
     }
     None
+}
+
+/// Consume a call-like argument list without attempting to evaluate it.
+fn consume_parenthesized_expression(atoms: &[String], start: usize) -> usize {
+    let mut depth = 0usize;
+    for (index, atom) in atoms.iter().enumerate().skip(start) {
+        match atom.as_str() {
+            "(" => depth += 1,
+            ")" => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return index + 1;
+                }
+            }
+            _ => {}
+        }
+    }
+    atoms.len()
 }
 
 /// Whether a scalar `-target` literal creates Test2::Tools::Target helpers.
