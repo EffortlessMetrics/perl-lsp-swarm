@@ -674,6 +674,7 @@ fn split_import_pieces(raw: &str) -> Vec<String> {
     let mut current = String::new();
     let mut quote = None;
     let mut escaped = false;
+    let mut paren_depth = 0usize;
 
     for ch in raw.chars() {
         if let Some(delimiter) = quote {
@@ -688,7 +689,13 @@ fn split_import_pieces(raw: &str) -> Vec<String> {
         } else if matches!(ch, '\'' | '"') {
             current.push(ch);
             quote = Some(ch);
-        } else if ch == ',' {
+        } else if ch == '(' {
+            paren_depth += 1;
+            current.push(ch);
+        } else if ch == ')' {
+            paren_depth = paren_depth.saturating_sub(1);
+            current.push(ch);
+        } else if ch == ',' && paren_depth == 0 {
             out.push(std::mem::take(&mut current));
         } else {
             current.push(ch);
@@ -767,6 +774,7 @@ fn split_import_piece(piece: &str) -> Vec<String> {
     let mut current = String::new();
     let mut quote = None;
     let mut escaped = false;
+    let mut attached_parens = 0usize;
 
     let flush = |out: &mut Vec<String>, current: &mut String| {
         if !current.is_empty() {
@@ -793,10 +801,21 @@ fn split_import_piece(piece: &str) -> Vec<String> {
                 quote = Some(ch);
             }
             '(' | ')' | '{' | '}' => {
-                flush(&mut out, &mut current);
-                out.push(ch.to_string());
+                let attached = matches!(ch, '(') && !current.is_empty()
+                    || matches!(ch, ')') && attached_parens > 0;
+                if attached {
+                    current.push(ch);
+                    if ch == '(' {
+                        attached_parens += 1;
+                    } else {
+                        attached_parens = attached_parens.saturating_sub(1);
+                    }
+                } else {
+                    flush(&mut out, &mut current);
+                    out.push(ch.to_string());
+                }
             }
-            c if c.is_whitespace() => flush(&mut out, &mut current),
+            c if c.is_whitespace() && attached_parens == 0 => flush(&mut out, &mut current),
             _ => current.push(ch),
         }
     }

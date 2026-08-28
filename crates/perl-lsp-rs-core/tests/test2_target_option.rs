@@ -240,6 +240,20 @@ fn unsupported_parenthesized_target_expressions_do_not_generate_class() -> TestR
 }
 
 #[test]
+fn comma_inside_dynamic_call_does_not_make_target_truthy() -> TestResult {
+    let resolved = resolve_import("Test2::V0", "-target => foo(1, 2), ok")
+        .ok_or_else(|| io::Error::other("Test2::V0 must be recognized"))?;
+
+    assert!(!resolved.symbols.contains("CLASS"));
+    assert!(resolved.symbols.contains("ok"));
+    assert!(!resolved.symbols.contains("foo"));
+    assert!(!resolved.symbols.contains("1"));
+    assert!(!resolved.symbols.contains("2"));
+    assert!(!resolved.symbols.contains("is"));
+    Ok(())
+}
+
+#[test]
 fn malformed_target_structures_fail_closed_without_leaking_atoms() -> TestResult {
     let malformed_hash =
         resolve_import("Test2::V0", "-target => { leaked_helper => 'Widget', trailing_name")
