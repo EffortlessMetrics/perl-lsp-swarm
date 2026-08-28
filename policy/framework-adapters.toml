@@ -7,7 +7,7 @@ schema_version = 1
 policy = "framework-adapters"
 owner = "perl-lsp maintainers"
 status = "advisory"
-updated = "2026-05-20"
+updated = "2026-08-27"
 spec = "docs/specs/PLSP-SPEC-0024-framework-fact-adapters.md"
 fact_provenance_spec = "docs/specs/PLSP-SPEC-0017-fact-provenance-and-source-backing.md"
 edit_authorization_spec = "docs/specs/PLSP-SPEC-0018-edit-authorization-contract.md"
@@ -359,3 +359,41 @@ blocks = [
 ]
 claim_boundary = "Mojo::Base activation/profile facts are registry-backed shadow output (#9681): exact activation requires resolved supported Mojo::Base module identity plus one reviewed static import form (`-base`, literal parent, optionally `-signatures`), stays package/generation scoped, and no provider surface may consume it until the registry-dispatch (#6821) and shard-publication (#6822) contracts land."
 version_constraint = ">=8.0.0,<10.0.0"
+
+[[adapter]]
+framework = "DBIx::QuickORM"
+fact_class = "table_package_generated_member"
+state = "pilot"
+fact_provenance = "SourceBackedGenerated"
+source_anchor_required = true
+generated_label_required = true
+rename_policy = "block_generated_member_by_default"
+safe_delete_policy = "block_generated_member_by_default"
+provider_surfaces = [
+  "completion",
+  "workspace_symbols",
+]
+supported_forms = [
+  "use DBIx::QuickORM type => 'table'; table LITERAL => ... generates qorm_table",
+]
+blocked_forms = [
+  "plain_or_orm_mode_import",
+  "only_table_import",
+  "pre_activation_table_call",
+  "nested_runtime_table_call",
+  "dynamic_table_name",
+  "manual_column_projection",
+  "autofill",
+  "autorow",
+  "autoname",
+  "runtime_schema_introspection",
+]
+blocks = [
+  "generated_no_source",
+  "dynamic_boundary",
+  "stale_fact",
+  "low_confidence",
+  "ambiguous_identity",
+  "unsupported_fact_class",
+]
+claim_boundary = "DBIx::QuickORM table-package support is limited to a source-anchored qorm_table generated member from the reviewed static import and table declaration; manual columns and database-driven row accessors remain blocked."
