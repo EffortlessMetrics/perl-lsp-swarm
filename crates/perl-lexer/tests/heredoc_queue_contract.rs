@@ -548,7 +548,7 @@ fn exact_terminators_cover_lf_crlf_cr_and_indentation() -> R {
         ("print <<EOF;\nbody\nEOF\nmy $x = 1;\n", "body\n", "print <<EOF;\n".len()),
         ("print <<EOF;\r\nbody\r\nEOF\r\nmy $x = 1;\r\n", "body\r\n", "print <<EOF;\r\n".len()),
         ("print <<EOF;\rbody\rEOF\rmy $x = 1;\r", "body\r", "print <<EOF;\r".len()),
-        ("print <<~EOF;\n  body\n\tEOF\nmy $x = 1;\n", "  body\n", "print <<~EOF;\n".len()),
+        ("print <<~EOF;\n  body\n  EOF\nmy $x = 1;\n", "  body\n", "print <<~EOF;\n".len()),
     ];
 
     for (source, expected_body, body_start) in cases {
@@ -562,7 +562,7 @@ fn exact_terminators_cover_lf_crlf_cr_and_indentation() -> R {
         let terminator_line = match source {
             source if source.contains("\r\n") => "EOF\r\n",
             source if source.contains('\r') => "EOF\r",
-            source if source.contains("\tEOF") => "\tEOF\n",
+            source if source.contains("  EOF") => "  EOF\n",
             _ => "EOF\n",
         };
         assert_body_contract(

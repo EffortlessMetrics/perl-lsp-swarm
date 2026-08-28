@@ -88,6 +88,25 @@ fn indented_heredoc_accepts_tab_indented_exact_terminator() -> R {
 }
 
 #[test]
+fn indented_heredoc_rejects_terminator_indented_beyond_body() -> R {
+    // Perl rejects this: the four-space terminator is not a prefix of the
+    // two-space body indentation, so it remains part of the unterminated body.
+    let source = "my $x = <<~END;\n  body\n    END\nprint $x\n";
+    let tokens = PerlLexer::with_body_tokens(source).collect_tokens();
+
+    require_unterminated_payload(&source, &tokens, "  body\n    END\nprint $x\n")
+}
+
+#[test]
+fn indented_heredoc_allows_less_indentation_for_terminator() -> R {
+    let source = "<<~END\n    body\n  END\nmy $x = 1;\n";
+    let tokens = PerlLexer::with_body_tokens(source).collect_tokens();
+
+    require_eq(body_slice(source, &tokens)?, "    body\n", "less-indented heredoc body")?;
+    require_clean_continuation(source, &tokens, "my $x = 1;")
+}
+
+#[test]
 fn empty_heredoc_body_terminates_exactly() -> R {
     let source = "<<'END'\nEND\nmy $x = 1;\n";
     let tokens = PerlLexer::with_body_tokens(source).collect_tokens();
