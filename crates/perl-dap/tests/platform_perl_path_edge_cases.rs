@@ -125,10 +125,10 @@ fn normalize_path_existing_file() -> TestResult {
     std::fs::write(&file, "1;")?;
 
     let normalized = normalize_path(&file);
-    assert!(normalized.is_absolute(), "existing file should canonicalize to absolute");
-    assert!(
-        normalized.to_string_lossy().contains("test.pl"),
-        "normalized path should contain filename"
+    assert_eq!(
+        normalized,
+        file.canonicalize()?,
+        "existing file should return its canonical PathBuf"
     );
     Ok(())
 }
@@ -267,10 +267,9 @@ fn normalize_path_wsl_activeperl() -> TestResult {
 fn normalize_path_wsl_bare_drive_root_not_translated() -> TestResult {
     let input = PathBuf::from("/mnt/c");
     let normalized = normalize_path(&input);
-    let s = normalized.to_string_lossy();
-    assert!(
-        !s.contains(':'),
-        "bare /mnt/c has no path suffix and must not produce a drive-relative path, got: {s}"
+    assert_eq!(
+        normalized, input,
+        "bare /mnt/c must remain the exact input PathBuf"
     );
     Ok(())
 }
@@ -283,12 +282,11 @@ fn normalize_path_wsl_bare_drive_root_not_translated() -> TestResult {
 fn normalize_path_wsl_longer_path_still_translates() -> TestResult {
     let input = PathBuf::from("/mnt/c/Users/test/script.pl");
     let normalized = normalize_path(&input);
-    let s = normalized.to_string_lossy();
-    assert!(
-        s.starts_with("C:\\") || s.starts_with("C:/"),
-        "longer WSL path must still translate to Windows drive root, got: {s}"
+    assert_eq!(
+        normalized,
+        PathBuf::from(r"C:\Users\test\script.pl"),
+        "longer WSL path must retain exact Windows-style translation"
     );
-    assert!(s.contains("test"), "path content must be preserved after translation, got: {s}");
     Ok(())
 }
 
@@ -299,10 +297,9 @@ fn normalize_path_wsl_longer_path_still_translates() -> TestResult {
 fn normalize_path_wsl_non_ascii_drive_not_translated() -> TestResult {
     let input = PathBuf::from("/mnt/é/file.pl");
     let normalized = normalize_path(&input);
-    let s = normalized.to_string_lossy();
-    assert!(
-        !s.contains(':'),
-        "non-ASCII drive position must not be translated to Windows style, got: {s}"
+    assert_eq!(
+        normalized, input,
+        "non-ASCII drive position must remain the exact input PathBuf"
     );
     Ok(())
 }
@@ -314,10 +311,9 @@ fn normalize_path_wsl_non_ascii_drive_not_translated() -> TestResult {
 fn normalize_path_wsl_digit_drive_not_translated() -> TestResult {
     let input = PathBuf::from("/mnt/1/file.pl");
     let normalized = normalize_path(&input);
-    let s = normalized.to_string_lossy();
-    assert!(
-        !s.contains(':') && !s.contains('\\'),
-        "digit in drive position must not be translated, got: {s}"
+    assert_eq!(
+        normalized, input,
+        "digit drive position must remain the exact input PathBuf"
     );
     Ok(())
 }

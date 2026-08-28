@@ -98,10 +98,9 @@ fn normalize_path_wsl_short_mnt_path_no_conversion() -> Result<(), anyhow::Error
     // it is left untranslated rather than producing drive-relative `C:` (#13028).
     let input = PathBuf::from("/mnt/c");
     let normalized = normalize_path(&input);
-    let s = normalized.to_string_lossy().to_string();
-    assert!(
-        !s.contains(':'),
-        "bare /mnt/c must not be translated to a drive-relative path, got: {s}"
+    assert_eq!(
+        normalized, input,
+        "bare /mnt/c must remain the exact input path, not a drive-relative path"
     );
     Ok(())
 }
@@ -112,7 +111,11 @@ fn normalize_path_canonicalizes_existing_path() -> Result<(), anyhow::Error> {
     // Canonicalize should resolve ".." for existing paths
     let input = PathBuf::from("/tmp/./");
     let normalized = normalize_path(&input);
-    assert!(normalized.is_absolute(), "canonicalized existing path should be absolute");
+    assert_eq!(
+        normalized,
+        input.canonicalize()?,
+        "existing paths should return their canonical PathBuf"
+    );
     Ok(())
 }
 
