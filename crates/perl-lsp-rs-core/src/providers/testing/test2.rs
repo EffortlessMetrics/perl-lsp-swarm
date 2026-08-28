@@ -433,6 +433,7 @@ pub fn resolve_import(module: &str, raw_args: &str) -> Option<ResolvedImport> {
                 let mut brace_depth = 0_isize;
                 let mut saw_hash = false;
                 let mut expect_key = true;
+                let mut nested_value_depth = None;
                 let mut hash_closed = false;
                 let mut pending_helpers: BTreeSet<String> = BTreeSet::new();
                 while let Some(value) = atoms.get(atom_index) {
@@ -487,8 +488,15 @@ pub fn resolve_import(module: &str, raw_args: &str) -> Option<ResolvedImport> {
                         }
                         break;
                     }
+                    let previous_depth = brace_depth;
                     saw_hash |= opens > 0;
                     brace_depth += opens;
+                    if previous_depth == 1 && opens > 0 && !expect_key {
+                        // A nested hash is one value of the enclosing hash.
+                        // Keep the outer key/value parity unchanged until the
+                        // complete nested structure closes.
+                        nested_value_depth = Some(brace_depth);
+                    }
                     // Unary-plus and parenthesized hashrefs leave wrapper
                     // punctuation attached to the first/last atom. These
                     // structural atoms must not consume a key/value slot.
@@ -501,6 +509,10 @@ pub fn resolve_import(module: &str, raw_args: &str) -> Option<ResolvedImport> {
                         expect_key = !expect_key;
                     }
                     brace_depth -= closes;
+                    if nested_value_depth.is_some_and(|depth| brace_depth < depth) {
+                        nested_value_depth = None;
+                        expect_key = true;
+                    }
                     if saw_hash && brace_depth <= 0 {
                         hash_closed = true;
                         break;
@@ -692,7 +704,17 @@ fn split_import_pieces(raw: &str) -> Vec<String> {
     let mut escaped = false;
     let mut paren_depth = 0usize;
 
-    for ch in raw.chars() {
+    let mut index = 0;
+    while index < raw.len() {
+        if quote.is_none()
+            && let Some(end) = quote_like_expression_end(raw, index)
+        {
+            current.push_str(&raw[index..end]);
+            index = end;
+            continue;
+        }
+        let Some(ch) = raw[index..].chars().next() else { break };
+        index += ch.len_utf8();
         if let Some(delimiter) = quote {
             current.push(ch);
             if escaped {
@@ -719,6 +741,98 @@ fn split_import_pieces(raw: &str) -> Vec<String> {
     }
     out.push(current);
     out
+}
+
+/// Return the byte offset after a Perl quote-like expression beginning at
+/// `start`, or `None` when the text does not contain a complete expression.
+/// Keeping this expression opaque is essential before comma splitting: commas
+/// inside `q#...#`, `s/.../.../`, and similar forms are not import separators.
+fn quote_like_expression_end(raw: &str, start: usize) -> Option<usize> {
+    let bytes = raw.as_bytes();
+    if start > 0
+        && bytes
+            .get(start.saturating_sub(1))
+            .is_some_and(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
+    {
+        return None;
+    }
+    let operators = [b"tr".as_slice(), b"qq", b"qx", b"qr", b"qw", b"q", b"m", b"s", b"y"];
+    let Some(operator) = operators
+        .iter()
+        .find(|operator| bytes.get(start..start + operator.len()) == Some(*operator))
+    else {
+        return None;
+    };
+    let mut delimiter = start + operator.len();
+    while bytes.get(delimiter).is_some_and(u8::is_ascii_whitespace) {
+        delimiter += 1;
+    }
+    let open = *bytes.get(delimiter)?;
+    if open.is_ascii_alphanumeric() || open == b'_' || open.is_ascii_whitespace() || open == b'=' {
+        return None;
+    }
+    let close = match open {
+        b'(' => b')',
+        b'{' => b'}',
+        b'[' => b']',
+        b'<' => b'>',
+        other => other,
+    };
+    let paired = matches!(open, b'(' | b'{' | b'[' | b'<');
+    let segment_end = find_quote_like_segment_end(bytes, delimiter + 1, open, close, paired)?;
+    let mut end = segment_end;
+    if matches!(*operator, b"s" | b"tr" | b"y") {
+        while bytes.get(end).is_some_and(u8::is_ascii_whitespace) {
+            end += 1;
+        }
+        // Non-paired delimiters are reused after the first segment (`s/a/b/`);
+        // paired forms repeat their opener (`s{a}{b}`).
+        let second_open = if paired { *bytes.get(end)? } else { open };
+        let second_close = match second_open {
+            b'(' => b')',
+            b'{' => b'}',
+            b'[' => b']',
+            b'<' => b'>',
+            other => other,
+        };
+        let second_paired = matches!(second_open, b'(' | b'{' | b'[' | b'<');
+        let second_start = if paired { end + 1 } else { end };
+        end = find_quote_like_segment_end(
+            bytes,
+            second_start,
+            second_open,
+            second_close,
+            second_paired,
+        )?;
+    }
+    Some(end)
+}
+
+fn find_quote_like_segment_end(
+    bytes: &[u8],
+    mut index: usize,
+    open: u8,
+    close: u8,
+    paired: bool,
+) -> Option<usize> {
+    let mut depth = if paired { 1 } else { 0 };
+    let mut escaped = false;
+    while let Some(&byte) = bytes.get(index) {
+        if escaped {
+            escaped = false;
+        } else if byte == b'\\' {
+            escaped = true;
+        } else if paired && byte == open {
+            depth += 1;
+        } else if byte == close {
+            if !paired || depth == 1 {
+                return Some(index + 1);
+            }
+            depth -= 1;
+        }
+        index += 1;
+    }
+    None
 }
 
 /// Replace fat-comma operators outside quoted strings without changing text

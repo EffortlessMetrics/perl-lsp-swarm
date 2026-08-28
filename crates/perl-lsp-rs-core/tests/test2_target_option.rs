@@ -178,6 +178,46 @@ fn quote_like_hash_values_remain_opaque_and_do_not_leak_imports() -> TestResult 
 }
 
 #[test]
+fn non_brace_quote_like_hash_values_remain_opaque() -> TestResult {
+    for value in [
+        "q#Foo,Bar#",
+        "qq/Foo,Bar/",
+        "m/Foo,Bar/",
+        "s/Foo,Bar/Baz/",
+        "tr/Foo,Bar/Baz/",
+        "y/Foo,Bar/Baz/",
+        "qw(Foo,Bar)",
+    ] {
+        let args = format!("-target => {{ pkg => {value}, other => 'Gadget' }}, ok");
+        let resolved = resolve_import("Test2::V0", &args)
+            .ok_or_else(|| io::Error::other("Test2::V0 must be recognized"))?;
+        assert!(resolved.symbols.contains("pkg"), "value {value:?}");
+        assert!(resolved.symbols.contains("other"), "value {value:?}");
+        assert!(resolved.symbols.contains("ok"), "value {value:?}");
+        for leaked in ["Foo", "Bar", "Baz", "Gadget"] {
+            assert!(!resolved.symbols.contains(leaked), "{leaked} leaked from {value:?}");
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn nested_hash_target_restores_outer_key_value_parity() -> TestResult {
+    let resolved = resolve_import(
+        "Test2::V0",
+        "-target => { pkg => { nested => 'Widget' }, other => 'Gadget' }, ok",
+    )
+    .ok_or_else(|| io::Error::other("Test2::V0 must be recognized"))?;
+    assert!(resolved.symbols.contains("pkg"));
+    assert!(resolved.symbols.contains("other"));
+    assert!(resolved.symbols.contains("ok"));
+    for leaked in ["nested", "Widget", "Gadget"] {
+        assert!(!resolved.symbols.contains(leaked), "{leaked} leaked");
+    }
+    Ok(())
+}
+
+#[test]
 fn quoted_hash_delimiters_do_not_close_or_leak_target_values() -> TestResult {
     let resolved =
         resolve_import("Test2::V0", "-target => { pkg => 'Widget}', other => 'Gadget' }, ok")
@@ -388,6 +428,15 @@ fn target_helpers_reach_live_bundle_completion() {
         for leaked in ["Widget", "Other", "Gadget"] {
             assert!(!has_test2_completion(&completions, leaked), "{leaked} leaked from {value:?}");
         }
+    }
+
+    let nested = complete(
+        "use Test2::V0 -target => { pkg => { nested => 'Widget' }, other => 'Gadget' };\n|",
+    );
+    assert!(has_test2_completion(&nested, "pkg"));
+    assert!(has_test2_completion(&nested, "other"));
+    for leaked in ["nested", "Widget", "Gadget"] {
+        assert!(!has_test2_completion(&nested, leaked), "{leaked} leaked from nested hash");
     }
 
     let v1 = complete("use Test2::V1 -target => 'Foo';\nT|");
