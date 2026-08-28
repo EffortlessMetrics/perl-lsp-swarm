@@ -172,11 +172,13 @@ fn multiline_literal_markers_do_not_hide_following_code() {
 }
 
 #[test]
-fn multiple_heredocs_preserve_the_second_body_and_terminator_only() {
+fn multiple_heredocs_preserve_each_body_and_terminator() {
     let formatter = NativeFormatter::new();
     let source = "print <<A, <<B;\nfirst\nA\nsecond\nB\nmy$x=2;\n";
 
     for range in [
+        TextRange::new(TextPosition::new(1, 0), TextPosition::new(2, 0)),
+        TextRange::new(TextPosition::new(2, 0), TextPosition::new(3, 0)),
         TextRange::new(TextPosition::new(3, 0), TextPosition::new(4, 0)),
         TextRange::new(TextPosition::new(4, 0), TextPosition::new(5, 0)),
     ] {

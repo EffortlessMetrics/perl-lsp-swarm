@@ -17,7 +17,7 @@ use super::implementation::{
 use super::outcome::{
     FormatContext, FormatIdentity, FormatReasonCode, FormatRequestTarget, TypedFormatResult,
 };
-use perl_parser_core::{SourceRegionIndex, SourceRegionKind, TokenKind, TokenStream};
+use perl_parser_core::{SourceRegionIndex, SourceRegionKind};
 
 const LITERAL_PRESERVE_CODE: &str = "native.format.literal_preserve_region";
 const CLASSIFIER_HEREDOC_SOURCE: &str = "print <<'EOF';\nbody\nEOF\n";
@@ -276,55 +276,17 @@ fn range_overlaps_completed_heredoc(source: &str, range: TextRange) -> bool {
     }
 
     let regions = SourceRegionIndex::build(source);
-    let heredoc_spans = regions.completed_heredoc_spans();
-    let mut stream = TokenStream::new(source);
-    let mut pending_body_starts = Vec::new();
-
-    loop {
-        let Ok(token) = stream.next() else {
-            return false;
-        };
-        let kind = token.kind();
-
-        let unknown_heredoc_tail = kind == TokenKind::UnknownRest
-            && pending_body_starts.first().is_some_and(|body_start| token.start() == *body_start);
-        if unknown_heredoc_tail {
-            // An unclosed or over-budget heredoc is not a proven completed
-            // literal region. Leave it to the full-document parse gate.
-            pending_body_starts.clear();
-        } else if let Some(first_body_start) = pending_body_starts.first().copied()
-            && token.start() >= first_body_start
-        {
-            let completion_limit = if kind == TokenKind::Eof {
-                source.len()
-            } else {
-                line_start_at_or_before(source, token.start())
-            };
-            if pending_body_starts.iter().any(|body_start| {
-                heredoc_spans.iter().any(|region| {
-                    let protected_end = byte_offset_after_line(source, region.end);
-                    let completed_before_token =
-                        region.start == region.end || protected_end <= completion_limit;
-                    region.kind == SourceRegionKind::Heredoc
-                        && region.start == *body_start
-                        && completed_before_token
-                        && region.start < range_end
-                        && protected_end > range_start
-                })
-            }) {
-                return true;
-            }
-            pending_body_starts.clear();
-        }
-
-        match kind {
-            TokenKind::HeredocStart => {
-                pending_body_starts.push(byte_offset_after_line(source, token.end()));
-            }
-            TokenKind::Eof => return false,
-            _ => {}
-        }
-    }
+    // The scanner returns completed heredoc regions in FIFO order. Do not join
+    // them back to lexer opener offsets: queued declarations such as
+    // `print <<A, <<B;` share one physical body start even though the second
+    // body begins after the first terminator. A region ending at EOF is an
+    // unclosed heredoc, so it remains owned by the document parse gate.
+    regions.completed_heredoc_spans().into_iter().any(|region| {
+        region.kind == SourceRegionKind::Heredoc
+            && region.end < source.len()
+            && region.start < range_end
+            && byte_offset_after_line(source, region.end) > range_start
+    })
 }
 
 fn byte_offset_after_line(source: &str, offset: usize) -> usize {
@@ -332,11 +294,6 @@ fn byte_offset_after_line(source: &str, offset: usize) -> usize {
         .get(offset..)
         .and_then(|suffix| suffix.find('\n').map(|relative| offset + relative + 1))
         .unwrap_or(source.len())
-}
-
-fn line_start_at_or_before(source: &str, offset: usize) -> usize {
-    let offset = offset.min(source.len());
-    source.get(..offset).and_then(|prefix| prefix.rfind('\n').map(|index| index + 1)).unwrap_or(0)
 }
 
 fn byte_span_for_line_range(source: &str, range: TextRange) -> (usize, usize) {
