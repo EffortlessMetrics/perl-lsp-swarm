@@ -1,7 +1,7 @@
 //! Compatibility fixtures for the public facade after the module split.
 //!
 //! The snapshot files in this package were captured before the implementation was
-//! moved out of `lib.rs`.  Keeping this check in an integration-test crate makes
+//! moved out of `lib.rs`. Keeping this check in an integration-test crate makes
 //! the fixture exercise the same public API a downstream crate receives, while
 //! the byte assertions protect the source projection independently of the debug
 //! S-expression projection.
@@ -73,6 +73,39 @@ fn downstream_can_use_only_the_facade_reexports() -> Result<(), Box<dyn std::err
     if first.kind() != "my_declaration" || first.start_byte() != 0 {
         return Err("facade child compatibility contract diverged".into());
     }
+
+    Ok(())
+}
+
+#[test]
+fn implementation_modules_remain_crate_private() -> Result<(), Box<dyn std::error::Error>> {
+    let lib = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/lib.rs"),
+    )?;
+
+    for module in [
+        "cursor",
+        "language",
+        "node",
+        "parser",
+        "point",
+        "query",
+        "semantic_overlay",
+        "support",
+        "tree",
+    ] {
+        let private_declaration = format!("mod {module};");
+        assert_eq!(
+            lib.lines().filter(|line| line.trim() == private_declaration).count(),
+            1,
+            "implementation module {module} must have one crate-private declaration"
+        );
+    }
+
+    assert!(
+        !lib.lines().any(|line| line.trim_start().starts_with("pub mod ")),
+        "implementation modules must not become downstream-visible public modules"
+    );
 
     Ok(())
 }
