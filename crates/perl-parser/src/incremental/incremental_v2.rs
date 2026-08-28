@@ -995,11 +995,7 @@ impl IncrementalParserV2 {
     pub fn get_reuse_efficiency_report(&self) -> String {
         if let Some(analysis) = &self.last_reuse_analysis {
             format!(
-                "Advanced Reuse Analysis:\
-  Efficiency: {:.1}%\
-  Nodes reused: {}\
-  Total nodes: {}\
-  {}",
+                "Advanced Reuse Analysis:\n  Efficiency: {:.1}%\n  Nodes reused: {}\n  Total nodes: {}\n  {}",
                 analysis.reuse_percentage,
                 analysis.reused_nodes,
                 analysis.total_old_nodes,
@@ -1007,10 +1003,7 @@ impl IncrementalParserV2 {
             )
         } else {
             format!(
-                "Basic Incremental Analysis:\
-  Efficiency: {:.1}%\
-  Nodes reused: {}\
-  Nodes reparsed: {}",
+                "Basic Incremental Analysis:\n  Efficiency: {:.1}%\n  Nodes reused: {}\n  Nodes reparsed: {}",
                 self.reused_nodes as f64 / (self.reused_nodes + self.reparsed_nodes) as f64 * 100.0,
                 self.reused_nodes,
                 self.reparsed_nodes
@@ -1549,8 +1542,7 @@ mod tests {
         let mut parser = IncrementalParserV2::new();
 
         // Initial parse with timing
-        let source1 = "my $x = 10;\
-my $y = 20;";
+        let source1 = "my $x = 10;\nmy $y = 20;";
         let start = Instant::now();
         parser.parse(source1)?;
         let initial_time = start.elapsed();
@@ -1581,8 +1573,7 @@ my $y = 20;";
             Position::new(24, 2, 12),
         ));
 
-        let source2 = "my $x = 100;\
-my $y = 200;";
+        let source2 = "my $x = 100;\nmy $y = 200;";
         let start = Instant::now();
         let tree = parser.parse(source2)?;
         let incremental_time = start.elapsed();
@@ -1870,8 +1861,7 @@ if ($condition) {
         // Generate a larger Perl document
         let mut large_source = String::new();
         for i in 0..100 {
-            large_source.push_str(&format!("my $var{} = {};\
-", i, i * 10));
+            large_source.push_str(&format!("my $var{} = {};\n", i, i * 10));
         }
 
         let start = Instant::now();
@@ -1931,8 +1921,7 @@ if ($condition) {
         let mut parser = IncrementalParserV2::new();
 
         // Unicode-heavy source with emojis and international characters
-        let source1 = "my $🌟variable = '你好世界'; # Comment with emoji 🚀\
-my $café = 'résumé';";
+        let source1 = "my $🌟variable = '你好世界'; # Comment with emoji 🚀\nmy $café = 'résumé';";
 
         let start = Instant::now();
         parser.parse(source1)?;
@@ -2234,8 +2223,7 @@ my $café = 'résumé';";
             Position::new(11, 1, 12),
             Position::new(12, 2, 1),
         ));
-        let source2 = "my $x = 42;\
-";
+        let source2 = "my $x = 42;\n";
         let incremental = parser.parse(source2)?;
         assert_eq!(incremental, Parser::new(source2).parse()?);
         assert_eq!(incremental.location, old_tree.location);
