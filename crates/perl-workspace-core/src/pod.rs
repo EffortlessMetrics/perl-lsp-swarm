@@ -154,6 +154,8 @@ mod tests {
     fn extracts_name_description_and_sections() -> Result<(), &'static str> {
         let src = "package App;\n\n=head1 NAME\n\nApp - does things\n\n=head1 DESCRIPTION\n\nA longer description.\n\n=head2 run\n\nRuns it.\n\n=cut\n\nsub run { 1 }\n1;\n";
         let f = facts(src).ok_or("structured POD fixture must produce facts")?;
+        assert_eq!(f.file_id, FileId::new("lib/App.pm", &Digest::of(src)));
+        assert_eq!(f.confidence, Confidence::High);
         assert_eq!(f.name.as_deref(), Some("App - does things"));
         assert!(f.description.is_some());
         assert!(f.documented_methods.contains(&"run".to_string()), "method run documented");
@@ -161,6 +163,43 @@ mod tests {
             f.sections.iter().any(|s| s.kind == PodSectionKind::Head1 && s.title == "NAME"),
             "NAME head1 section with range; sections={:?}",
             f.sections
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn ranges_preserve_crlf_utf8_bytes_and_source_order() -> Result<(), &'static str> {
+        let src = "package App;\r\n\r\n=head1 NAME\r\n\r\n=head2 caf\u{e9}\r\n\r\n=cut\r\n";
+        let f = facts(src).ok_or("CRLF/UTF-8 POD fixture must produce facts")?;
+
+        assert_eq!(
+            f.sections,
+            vec![
+                PodSection {
+                    kind: PodSectionKind::Head1,
+                    title: "NAME".to_string(),
+                    range: SourceRange {
+                        start_byte: 16,
+                        end_byte: 27,
+                        start_line: 2,
+                        start_column_utf8: 0,
+                        end_line: 2,
+                        end_column_utf8: 11,
+                    },
+                },
+                PodSection {
+                    kind: PodSectionKind::Head2,
+                    title: "caf\u{e9}".to_string(),
+                    range: SourceRange {
+                        start_byte: 31,
+                        end_byte: 43,
+                        start_line: 4,
+                        start_column_utf8: 0,
+                        end_line: 4,
+                        end_column_utf8: 12,
+                    },
+                },
+            ]
         );
         Ok(())
     }
