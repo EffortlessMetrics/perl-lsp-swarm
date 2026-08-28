@@ -50,7 +50,9 @@ It preserves the important V0/V1 distinction: plain `Test2::V1` exposes the
 `T2()` handle rather than the V0 bare-function set. It also keeps bundle-selected
 subsets separate from standalone module defaults. For example, V0 selects only
 `cmp_ok` from `Test2::Tools::ClassicCompare`, while a standalone import exposes
-the module's full classic-comparison default set.
+the module's full classic-comparison default set. `Test2::Tools::Refcount`
+similarly keeps `refcount` optional for its standalone defaults while exposing
+it through `:ALL`.
 
 Reviewed first-party contracts include `Test2::Bundle::Extended`,
 `Test2::Bundle::More`, `Test2::Bundle::Simple`, and statically enumerable tool

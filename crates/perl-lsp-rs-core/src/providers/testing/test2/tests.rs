@@ -364,6 +364,19 @@ fn refcount_standalone_defaults_do_not_reuse_the_v0_selection() {
 }
 
 #[test]
+fn refcount_all_includes_the_optional_helper_without_changing_defaults() {
+    let defaults = resolve_import("Test2::Tools::Refcount", "")
+        .expect("known Refcount tool");
+    assert!(!defaults.symbols.contains("refcount"));
+
+    let all = resolve_import("Test2::Tools::Refcount", "':ALL'")
+        .expect("known Refcount tool");
+    assert!(all.symbols.contains("is_refcount"));
+    assert!(all.symbols.contains("is_oneref"));
+    assert!(all.symbols.contains("refcount"));
+}
+
+#[test]
 fn test2_api_has_no_defaults_but_trusts_explicit_imports() {
     let defaults = module_default_exports("Test2::API").expect("known API module");
     assert!(defaults.is_empty());

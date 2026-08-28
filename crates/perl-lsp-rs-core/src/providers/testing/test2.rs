@@ -162,6 +162,9 @@ const EXPORTS: &[&str] = &["imported_ok", "not_imported_ok"];
 /// `Test2::Tools::Refcount` standalone default exports.
 const REFCOUNT_DEFAULT: &[&str] = &["is_refcount", "is_oneref"];
 
+/// The Refcount symbols exported by `:ALL`, including the optional helper.
+const REFCOUNT_ALL: &[&str] = &["is_refcount", "is_oneref", "refcount"];
+
 /// The Refcount symbols selected explicitly by `Test2::V0`, including the
 /// optional `refcount` helper.
 const REFCOUNT_V0: &[&str] = &["is_refcount", "is_oneref", "refcount"];
@@ -370,12 +373,13 @@ pub fn module_default_exports(module: &str) -> Option<&'static [&'static str]> {
 /// The reviewed export-plus-export-ok set for a known Test2 module.
 ///
 /// Most currently modeled modules use the same reviewed set for defaults and
-/// `:ALL`. `Test2::Tools::Compare`, `Spec`, and `Tester` are the reviewed
-/// exceptions. Unknown/custom modules remain `None` rather than receiving
-/// invented names.
+/// `:ALL`. `Test2::Tools::Compare`, `Refcount`, `Spec`, and `Tester` are the
+/// reviewed exceptions. Unknown/custom modules remain `None` rather than
+/// receiving invented names.
 fn module_all_exports(module: &str) -> Option<&'static [&'static str]> {
     match module {
         "Test2::Tools::Compare" => Some(COMPARE),
+        "Test2::Tools::Refcount" => Some(REFCOUNT_ALL),
         "Test2::Tools::Spec" => Some(SPEC_ALL),
         "Test2::Tools::Tester" => Some(TESTER_ALL),
         _ => module_default_exports(module),
