@@ -21,10 +21,12 @@
 //!   persisted after every child so even an outer-watchdog kill retains
 //!   completed children and marks the remaining/running children explicitly.
 //!
-//! Compile/setup failures make dependent behavior children `NOT_PROVEN`
-//! (blocked by prerequisite) — never assertion failures. Behavior children
-//! run against prebuilt binaries, so their watchdog timeout is classified as
-//! a request/teardown timeout rather than retried away.
+//! Compile/setup failures make the dependent behavior children
+//! `NOT_PROVEN` (blocked by prerequisite) — never assertion failures. The
+//! in-process API child has no server-setup dependency. Behavior children
+//! that do use the product server run against prebuilt binaries, so their
+//! watchdog timeout is classified as a request/teardown timeout rather than
+//! retried away.
 //!
 //! The gate receipt (`gates` runner) stays the aggregate authority; the child
 //! receipt written here is gate telemetry for #8053/#4789-style consumers and
@@ -35,12 +37,14 @@
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use chrono::Utc;
 use color_eyre::eyre::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
+use tempfile::NamedTempFile;
 
 use crate::tasks::gates::run_shell_command_with_timeout_in;
 use crate::tasks::git_context::git_stdout_with_worktree_fallback;
@@ -108,6 +112,8 @@ pub struct ChildSpec {
     /// Stable identity, e.g. `semantic_definition/scalar_variable`.
     pub id: &'static str,
     pub kind: ChildKind,
+    /// Whether the behavior child needs the prebuilt product server.
+    pub requires_setup: bool,
     /// Cargo integration target (`--test <target>`); the package is implied
     /// (the binary package for [`ChildKind::Setup`]).
     pub target: &'static str,
@@ -130,10 +136,15 @@ const REGISTRY_FILTER: &str = "client_support_registry";
 /// thirteen deterministic registry-validation cases run as one grouped child
 /// because they share one failure surface (registry/evidence drift) and the
 /// group cannot suppress or conflate any sibling child's independent verdict.
+///
+/// The in-process API lane, semantic compile, and registry lane run before the
+/// retryable product-server setup so an expensive setup timeout cannot erase
+/// their independent evidence.
 pub fn child_specs() -> Vec<ChildSpec> {
     let semantic = |id: &'static str, test: &'static str| ChildSpec {
         id,
         kind: ChildKind::Behavior,
+        requires_setup: true,
         target: SEMANTIC_TARGET,
         test_filter: Some(test),
         exact: true,
@@ -141,25 +152,46 @@ pub fn child_specs() -> Vec<ChildSpec> {
     };
     vec![
         ChildSpec {
-            id: "setup/build_perllsp",
-            kind: ChildKind::Setup,
-            target: "perllsp",
+            id: "compile/lsp_api_contracts",
+            kind: ChildKind::Compile,
+            requires_setup: false,
+            target: API_TARGET,
             test_filter: None,
             exact: false,
             timeout_seconds: SETUP_COMPILE_TIMEOUT_SECONDS,
         },
         ChildSpec {
+            id: "lsp_api_contracts/textdocument_sync_camel_case",
+            kind: ChildKind::Behavior,
+            requires_setup: false,
+            target: API_TARGET,
+            test_filter: Some("test_text_document_sync_option_keys_use_lsp_camel_case"),
+            exact: true,
+            timeout_seconds: BEHAVIOR_TIMEOUT_SECONDS,
+        },
+        ChildSpec {
             id: "compile/semantic_definition",
             kind: ChildKind::Compile,
+            requires_setup: false,
             target: SEMANTIC_TARGET,
             test_filter: None,
             exact: false,
             timeout_seconds: SETUP_COMPILE_TIMEOUT_SECONDS,
         },
         ChildSpec {
-            id: "compile/lsp_api_contracts",
-            kind: ChildKind::Compile,
-            target: API_TARGET,
+            id: "semantic_definition/client_support_registry",
+            kind: ChildKind::Behavior,
+            requires_setup: false,
+            target: SEMANTIC_TARGET,
+            test_filter: Some(REGISTRY_FILTER),
+            exact: false,
+            timeout_seconds: BEHAVIOR_TIMEOUT_SECONDS,
+        },
+        ChildSpec {
+            id: "setup/build_perllsp",
+            kind: ChildKind::Setup,
+            requires_setup: false,
+            target: "perllsp",
             test_filter: None,
             exact: false,
             timeout_seconds: SETUP_COMPILE_TIMEOUT_SECONDS,
@@ -180,22 +212,6 @@ pub fn child_specs() -> Vec<ChildSpec> {
             "semantic_definition/package_qualified_call",
             "semantic_definition_tests::definition_handles_package_qualified_calls",
         ),
-        ChildSpec {
-            id: "semantic_definition/client_support_registry",
-            kind: ChildKind::Behavior,
-            target: SEMANTIC_TARGET,
-            test_filter: Some(REGISTRY_FILTER),
-            exact: false,
-            timeout_seconds: BEHAVIOR_TIMEOUT_SECONDS,
-        },
-        ChildSpec {
-            id: "lsp_api_contracts/textdocument_sync_camel_case",
-            kind: ChildKind::Behavior,
-            target: API_TARGET,
-            test_filter: Some("test_text_document_sync_option_keys_use_lsp_camel_case"),
-            exact: true,
-            timeout_seconds: BEHAVIOR_TIMEOUT_SECONDS,
-        },
     ]
 }
 
@@ -223,7 +239,7 @@ pub fn command_line(spec: &ChildSpec, executable: Option<&str>) -> String {
             let filter = spec.test_filter.unwrap_or_default();
             let executable = executable.unwrap_or("<unresolved-prebuilt-test-binary>");
             let exact = if spec.exact { " --exact" } else { "" };
-            format!("\"{executable}\" {filter}{exact} -- --test-threads=1")
+            format!("\"{executable}\" {filter}{exact} --test-threads=1")
         }
     }
 }
@@ -237,7 +253,10 @@ pub fn command_line(spec: &ChildSpec, executable: Option<&str>) -> String {
 pub fn parse_executable_path(compile_stdout: &str, target: &str) -> Option<std::path::PathBuf> {
     let expected = format!("tests/{target}.rs");
     for line in compile_stdout.lines() {
-        let plain = strip_ansi(line);
+        // Cargo uses native separators in the executable diagnostic on
+        // Windows. Normalize only for matching/parsing; the resulting path
+        // remains valid when joined to the workspace root on every platform.
+        let plain = strip_ansi(line).replace('\\', "/");
         if !plain.contains("Executable") || !plain.contains(&expected) {
             continue;
         }
@@ -467,6 +486,9 @@ pub struct ChildEntry {
     pub timeout_seconds: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub command: Option<String>,
+    /// Resolved executable for a direct-binary behavior child.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub executable: Option<String>,
     pub env_set: BTreeMap<String, String>,
     pub env_unset: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -486,7 +508,8 @@ pub struct ChildEntry {
     /// equivalence; `None` for children spawned from the workspace root).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub working_dir: Option<String>,
-    /// `exited` | `terminated after timeout` | `never spawned`
+    /// `exited` | `unobserved after timeout` | `never spawned` |
+    /// `unobserved`
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cleanup: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -520,19 +543,45 @@ pub struct ChildReceiptDoc {
 /// Aggregate from child evidence (#8063 §6): fail when any required child is
 /// not `PASS`; report the full non-success set in spec order; a missing child
 /// row — or an empty child table — can never produce pass.
-pub fn aggregate(entries: &[ChildEntry], expected_total: usize) -> AggregateDoc {
-    let non_success = entries
+pub fn aggregate(entries: &[ChildEntry], expected: &[ChildSpec]) -> AggregateDoc {
+    let mut counts = BTreeMap::<&str, usize>::new();
+    for entry in entries {
+        *counts.entry(entry.id.as_str()).or_default() += 1;
+    }
+
+    let mut non_success = expected
         .iter()
-        .filter(|entry| entry.status != ChildStatus::Pass)
-        .map(|entry| entry.id.clone())
+        .filter_map(|spec| {
+            let count = counts.get(spec.id).copied().unwrap_or(0);
+            let entry = entries.iter().find(|entry| entry.id == spec.id);
+            (count != 1 || entry.is_none_or(|entry| entry.status != ChildStatus::Pass))
+                .then_some(spec.id.to_string())
+        })
         .collect::<Vec<_>>();
-    let passed = entries.len() - non_success.len();
-    let status = if non_success.is_empty() && expected_total > 0 && entries.len() == expected_total
-    {
-        "pass"
-    } else {
-        "fail"
-    };
+    // An unexpected row is also evidence that the required table was
+    // substituted or drifted. Keep it visible rather than allowing a
+    // same-sized table with the wrong IDs to pass.
+    for entry in entries {
+        if !expected.iter().any(|spec| spec.id == entry.id) {
+            non_success.push(entry.id.clone());
+        }
+    }
+    let passed = expected
+        .iter()
+        .filter(|spec| {
+            counts.get(spec.id) == Some(&1)
+                && entries
+                    .iter()
+                    .find(|entry| entry.id == spec.id)
+                    .is_some_and(|entry| entry.status == ChildStatus::Pass)
+        })
+        .count();
+    let status =
+        if non_success.is_empty() && !expected.is_empty() && entries.len() == expected.len() {
+            "pass"
+        } else {
+            "fail"
+        };
     AggregateDoc { status: status.to_string(), passed, total: entries.len(), non_success }
 }
 
@@ -672,10 +721,16 @@ fn child_env_record(
 ) -> (BTreeMap<String, String>, Vec<String>) {
     let mut set = BTreeMap::new();
     let mut unset = vec!["RUSTC_WRAPPER".to_string(), "CARGO_BUILD_JOBS".to_string()];
-    if kind == ChildKind::Behavior {
-        set.insert("RUST_TEST_THREADS".to_string(), "1".to_string());
-        if let Some(dir) = behavior_dir {
-            set.insert("CARGO_MANIFEST_DIR".to_string(), dir.display().to_string());
+    match kind {
+        ChildKind::Setup | ChildKind::Compile => {
+            unset.push("CARGO_MANIFEST_DIR".to_string());
+            unset.push("RUST_TEST_THREADS".to_string());
+        }
+        ChildKind::Behavior => {
+            set.insert("RUST_TEST_THREADS".to_string(), "1".to_string());
+            if let Some(dir) = behavior_dir {
+                set.insert("CARGO_MANIFEST_DIR".to_string(), dir.display().to_string());
+            }
         }
     }
     (set, unset)
@@ -696,6 +751,7 @@ fn placeholder(spec: &ChildSpec, mark: &str, sha: &str) -> ChildEntry {
         attempts: 0,
         timeout_seconds: spec.timeout_seconds,
         command: Some(command_line(spec, None)),
+        executable: None,
         env_set,
         env_unset,
         started_at: None,
@@ -718,8 +774,9 @@ pub struct SuiteOutcome {
 
 /// How a persist call should mark the suite.
 enum PersistState<'a> {
-    /// Mid-suite: `running` snapshot; `Running(spec)` marks that child.
-    Running(Option<&'a ChildSpec>),
+    /// Mid-suite: `running` snapshot; `Running(entry)` marks that child with
+    /// the exact execution context resolved before spawn.
+    Running(Option<&'a ChildEntry>),
     /// Suite finished: `complete` + aggregate.
     Final(&'a AggregateDoc),
 }
@@ -754,10 +811,19 @@ pub fn run_suite(receipt_path: &Path, executor: &mut dyn ChildExecutor) -> Resul
     let mut executable_by_target: HashMap<&'static str, Option<PathBuf>> = HashMap::new();
 
     for spec in &specs {
+        let behavior = spec.kind == ChildKind::Behavior;
+        let behavior_working_dir = behavior.then(|| root.join(BEHAVIOR_WORKING_DIR));
+        let working_dir = behavior_working_dir.as_deref();
+        let executable = if behavior {
+            executable_by_target.get(spec.target).and_then(Option::as_deref)
+        } else {
+            None
+        };
         let blocked = match spec.kind {
             ChildKind::Setup | ChildKind::Compile => false,
             ChildKind::Behavior => {
-                !setup_ok || compile_ok_by_target.get(spec.target) != Some(&true)
+                (spec.requires_setup && !setup_ok)
+                    || compile_ok_by_target.get(spec.target) != Some(&true)
             }
         };
         if blocked {
@@ -773,8 +839,7 @@ pub fn run_suite(receipt_path: &Path, executor: &mut dyn ChildExecutor) -> Resul
         // Fail-closed: a behavior child whose compile passed but whose
         // prebuilt binary path could not be resolved never executes — and an
         // unresolvable path can never produce a pass.
-        let unresolved_binary = spec.kind == ChildKind::Behavior
-            && executable_by_target.get(spec.target) == Some(&None);
+        let unresolved_binary = behavior && executable_by_target.get(spec.target) == Some(&None);
         if unresolved_binary {
             let mut entry = placeholder(spec, "final", &sha);
             entry.status = ChildStatus::InstrumentFailure;
@@ -793,25 +858,21 @@ pub fn run_suite(receipt_path: &Path, executor: &mut dyn ChildExecutor) -> Resul
             continue;
         }
 
-        // Persist a snapshot marking this child as running before spawn, so
-        // an outer-watchdog kill leaves it explicitly marked rather than
-        // silently absent (#8063 negative control 9).
-        persist(&receipt_path, &sha, &entries, &specs, PersistState::Running(Some(spec)))?;
-
         let log_path = log_dir.join(log_file_name(spec));
         let started_at = Utc::now();
         let start = Instant::now();
-        let behavior = spec.kind == ChildKind::Behavior;
-        let executable = if behavior {
-            executable_by_target.get(spec.target).and_then(Option::as_deref)
-        } else {
-            None
-        };
-        // Behavior children run from the package directory cargo would have
-        // used, so direct-binary execution stays environment-equivalent to
-        // `cargo test` (see BEHAVIOR_WORKING_DIR).
-        let behavior_working_dir = behavior.then(|| root.join(BEHAVIOR_WORKING_DIR));
-        let working_dir = behavior_working_dir.as_deref();
+        // Resolve and persist the complete execution context before spawn, so
+        // an outer-watchdog kill leaves the actual executable, cwd,
+        // environment, and cleanup uncertainty rather than a generic
+        // placeholder (#8063 negative control 9).
+        let running_entry = running_entry(spec, &sha, executable, working_dir);
+        persist(
+            &receipt_path,
+            &sha,
+            &entries,
+            &specs,
+            PersistState::Running(Some(&running_entry)),
+        )?;
         let outcome = executor.execute(spec, executable, working_dir, &log_path)?;
         let duration_ms = start.elapsed().as_millis() as u64;
         let status = classify(spec.kind, &outcome);
@@ -831,6 +892,7 @@ pub fn run_suite(receipt_path: &Path, executor: &mut dyn ChildExecutor) -> Resul
                 spec,
                 executable.map(|path| path.display().to_string()).as_deref(),
             )),
+            executable: executable.map(|path| path.display().to_string()),
             env_set,
             env_unset,
             started_at: Some(started_at.to_rfc3339()),
@@ -846,7 +908,7 @@ pub fn run_suite(receipt_path: &Path, executor: &mut dyn ChildExecutor) -> Resul
             log_path: Some(format!("logs/{}", log_file_name(spec))),
             working_dir: working_dir.map(|dir| dir.display().to_string()),
             cleanup: Some(if outcome.timed_out {
-                "terminated after timeout".to_string()
+                "unobserved after timeout".to_string()
             } else if outcome.spawn_failed {
                 "never spawned".to_string()
             } else {
@@ -887,7 +949,7 @@ pub fn run_suite(receipt_path: &Path, executor: &mut dyn ChildExecutor) -> Resul
         persist(&receipt_path, &sha, &entries, &specs, PersistState::Running(None))?;
     }
 
-    let final_aggregate = aggregate(&entries, specs.len());
+    let final_aggregate = aggregate(&entries, &specs);
     persist(&receipt_path, &sha, &entries, &specs, PersistState::Final(&final_aggregate))?;
     Ok(SuiteOutcome { aggregate: final_aggregate })
 }
@@ -901,8 +963,29 @@ fn persist(
 ) -> Result<()> {
     let doc = build_doc(sha, executed, specs, &state)?;
     let json = serde_json::to_string_pretty(&doc).context("failed to encode child receipt")?;
-    fs::write(receipt_path, json)
-        .with_context(|| format!("failed to write child receipt {}", receipt_path.display()))?;
+    let parent = receipt_path
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let mut temporary = NamedTempFile::new_in(parent).with_context(|| {
+        format!("failed to create temporary child receipt in {}", parent.display())
+    })?;
+    temporary.write_all(format!("{json}\n").as_bytes()).with_context(|| {
+        format!("failed to write temporary child receipt {}", receipt_path.display())
+    })?;
+    temporary.flush().with_context(|| {
+        format!("failed to flush temporary child receipt {}", receipt_path.display())
+    })?;
+    temporary.as_file().sync_all().with_context(|| {
+        format!("failed to sync temporary child receipt {}", receipt_path.display())
+    })?;
+    temporary.persist(receipt_path).map_err(|error| {
+        color_eyre::eyre::eyre!(
+            "failed to atomically replace child receipt {}: {}",
+            receipt_path.display(),
+            error.error
+        )
+    })?;
     Ok(())
 }
 
@@ -918,11 +1001,13 @@ fn build_doc(
             children.push(entry.clone());
             continue;
         }
-        let mark = match state {
-            PersistState::Running(Some(running)) if running.id == spec.id => "running",
-            _ => "pending",
-        };
-        children.push(placeholder(spec, mark, sha));
+        if let PersistState::Running(Some(running)) = state
+            && running.id == spec.id
+        {
+            children.push((*running).clone());
+            continue;
+        }
+        children.push(placeholder(spec, "pending", sha));
     }
     let (suite_state, aggregate) = match state {
         PersistState::Running(_) => ("running", None),
@@ -936,6 +1021,48 @@ fn build_doc(
         children,
         aggregate,
     })
+}
+
+/// Build the in-flight receipt row from the exact context that will be passed
+/// to the executor. Cleanup is deliberately `unobserved` until the child
+/// returns, because an outer watchdog can interrupt the suite between spawn
+/// and the next persistence point.
+fn running_entry(
+    spec: &ChildSpec,
+    sha: &str,
+    executable: Option<&Path>,
+    working_dir: Option<&Path>,
+) -> ChildEntry {
+    let (env_set, env_unset) = child_env_record(spec.kind, working_dir);
+    ChildEntry {
+        id: spec.id.to_string(),
+        kind: spec.kind,
+        target: spec.target.to_string(),
+        test: spec.test_filter.map(str::to_string),
+        status: ChildStatus::Cancelled,
+        execution_mark: "running".to_string(),
+        attempt: 0,
+        attempts: 0,
+        timeout_seconds: spec.timeout_seconds,
+        command: Some(command_line(
+            spec,
+            executable.map(|path| path.display().to_string()).as_deref(),
+        )),
+        executable: executable.map(|path| path.display().to_string()),
+        env_set,
+        env_unset,
+        started_at: Some(Utc::now().to_rfc3339()),
+        ended_at: None,
+        duration_ms: None,
+        exit_code: None,
+        timed_out: false,
+        failure_summary: None,
+        log_path: Some(format!("logs/{}", log_file_name(spec))),
+        working_dir: working_dir.map(|dir| dir.display().to_string()),
+        cleanup: Some("unobserved".to_string()),
+        attempt_history: Vec::new(),
+        subject_sha: sha.to_string(),
+    }
 }
 
 /// CLI entry: run the suite, print the verdict, fail closed.
@@ -1059,27 +1186,58 @@ mod tests {
         assert_eq!(
             ids,
             vec![
-                "setup/build_perllsp",
-                "compile/semantic_definition",
                 "compile/lsp_api_contracts",
+                "lsp_api_contracts/textdocument_sync_camel_case",
+                "compile/semantic_definition",
+                "semantic_definition/client_support_registry",
+                "setup/build_perllsp",
                 "semantic_definition/scalar_variable",
                 "semantic_definition/subroutine",
                 "semantic_definition/scoped_variable",
                 "semantic_definition/package_qualified_call",
-                "semantic_definition/client_support_registry",
-                "lsp_api_contracts/textdocument_sync_camel_case",
             ],
             "the required child set is the #8063 minimum plus the registry group; \
              drift must be deliberate"
         );
-        // Setup/compile children precede every behavior child.
-        let first_behavior = specs
-            .iter()
-            .position(|spec| spec.kind == ChildKind::Behavior)
-            .expect("at least one behavior child");
+        let position = |id: &str| {
+            specs.iter().position(|spec| spec.id == id).expect("pinned child must exist")
+        };
         assert!(
-            specs[..first_behavior].iter().all(|spec| spec.kind != ChildKind::Behavior),
-            "setup/compile children must run before behavior children"
+            position("compile/lsp_api_contracts")
+                < position("lsp_api_contracts/textdocument_sync_camel_case"),
+            "the API behavior must follow its own compile"
+        );
+        assert!(
+            position("compile/semantic_definition")
+                < position("semantic_definition/client_support_registry"),
+            "the registry behavior must follow its own target compile"
+        );
+        assert!(
+            position("semantic_definition/client_support_registry")
+                < position("setup/build_perllsp"),
+            "setup-independent registry evidence must precede retryable product-server setup"
+        );
+        for spec in specs.iter().filter(|spec| spec.requires_setup) {
+            assert!(
+                position("setup/build_perllsp") < position(spec.id)
+                    && position("compile/semantic_definition") < position(spec.id),
+                "server-dependent behavior must follow setup and its target compile: {}",
+                spec.id
+            );
+        }
+    }
+
+    #[test]
+    fn behavior_command_passes_libtest_options_directly() {
+        let spec = child_specs()
+            .into_iter()
+            .find(|spec| spec.id == "semantic_definition/scalar_variable")
+            .expect("pinned behavior child must exist");
+        assert_eq!(
+            command_line(&spec, Some("target/debug/deps/semantic_definition-test")),
+            "\"target/debug/deps/semantic_definition-test\" \
+semantic_definition_tests::definition_finds_scalar_variable_declaration --exact \
+--test-threads=1"
         );
     }
 
@@ -1130,6 +1288,11 @@ tests/semantic_definition.rs (target/debug/deps/semantic_definition-e6b16757b69b
         assert_eq!(
             parse_executable_path(plain, "lsp_api_contracts").as_deref(),
             Some(std::path::Path::new("target/debug/deps/lsp_api_contracts-0123abcd"))
+        );
+        let windows = r"   Executable tests\semantic_definition.rs (target\debug\deps\semantic_definition-e6b16757b69b565f)";
+        assert_eq!(
+            parse_executable_path(windows, "semantic_definition").as_deref(),
+            Some(std::path::Path::new("target/debug/deps/semantic_definition-e6b16757b69b565f"))
         );
 
         // Wrong target's Executable line must not satisfy another target.
@@ -1379,7 +1542,7 @@ tests/semantic_definition.rs (target/debug/deps/semantic_definition-e6b16757b69b
             .find(|child| child.id == "semantic_definition/package_qualified_call")
             .expect("hung child retained");
         assert_eq!(hung.status, ChildStatus::RequestTimeout);
-        assert_eq!(hung.cleanup.as_deref(), Some("terminated after timeout"));
+        assert_eq!(hung.cleanup.as_deref(), Some("unobserved after timeout"));
         assert!(hung.failure_summary.as_deref().is_some_and(|s| !s.is_empty()));
         cleanup(&path);
     }
@@ -1400,11 +1563,11 @@ tests/semantic_definition.rs (target/debug/deps/semantic_definition-e6b16757b69b
             outcome.aggregate.non_success,
             vec![
                 "compile/semantic_definition",
+                "semantic_definition/client_support_registry",
                 "semantic_definition/scalar_variable",
                 "semantic_definition/subroutine",
                 "semantic_definition/scoped_variable",
                 "semantic_definition/package_qualified_call",
-                "semantic_definition/client_support_registry",
             ],
             "semantic dependents are blocked; the API lane still executes"
         );
@@ -1442,15 +1605,14 @@ tests/semantic_definition.rs (target/debug/deps/semantic_definition-e6b16757b69b
         cleanup(&path);
     }
 
-    // A setup (perllsp prebuild) failure blocks every behavior child.
+    // A setup (perllsp prebuild) timeout, including its retry, blocks only
+    // server-dependent semantic behavior; the in-process API contract remains
+    // independently provable.
     #[test]
-    fn suite_setup_failure_blocks_all_behavior_children() {
+    fn suite_setup_failure_does_not_block_in_process_api_child() {
         let path = temp_receipt_path("setup-fail");
         let mut executor = all_pass_executor();
-        executor.set(
-            "setup/build_perllsp",
-            behavior_outcome(101, false, "error: could not compile `perllsp`"),
-        );
+        executor.set("setup/build_perllsp", behavior_outcome(124, true, "building perllsp"));
         let outcome = run_suite(&path, &mut executor).expect("suite should run");
         assert!(outcome.aggregate.status == "fail");
         assert_eq!(
@@ -1461,10 +1623,8 @@ tests/semantic_definition.rs (target/debug/deps/semantic_definition-e6b16757b69b
                 "semantic_definition/subroutine",
                 "semantic_definition/scoped_variable",
                 "semantic_definition/package_qualified_call",
-                "semantic_definition/client_support_registry",
-                "lsp_api_contracts/textdocument_sync_camel_case",
             ],
-            "a setup failure blocks every behavior child; the compiles themselves still run"
+            "a setup timeout blocks server-dependent behavior; the in-process API lane still runs"
         );
         let doc = read_receipt(&path);
         let blocked = doc
@@ -1473,6 +1633,14 @@ tests/semantic_definition.rs (target/debug/deps/semantic_definition-e6b16757b69b
             .find(|child| child.id == "semantic_definition/scalar_variable")
             .expect("blocked child retained");
         assert_eq!(blocked.status, ChildStatus::NotProven);
+        assert!(
+            executor.executed.contains(&"lsp_api_contracts/textdocument_sync_camel_case"),
+            "the in-process API child must execute despite product-server setup failure"
+        );
+        assert!(
+            executor.executed.contains(&"semantic_definition/client_support_registry"),
+            "the setup-independent registry child must execute before product-server setup"
+        );
         cleanup(&path);
     }
 
@@ -1526,7 +1694,8 @@ tests/semantic_definition.rs (target/debug/deps/semantic_definition-e6b16757b69b
         let sha = "deadbeef";
         let specs = child_specs();
         let executed: Vec<ChildEntry> = vec![placeholder(&specs[0], "final", sha)];
-        let doc = build_doc(sha, &executed, &specs, &PersistState::Running(Some(&specs[1])))
+        let running = running_entry(&specs[1], sha, None, None);
+        let doc = build_doc(sha, &executed, &specs, &PersistState::Running(Some(&running)))
             .expect("doc should build");
         assert_eq!(doc.suite_state, "running");
         assert!(doc.aggregate.is_none(), "no aggregate before the suite completes");
@@ -1537,6 +1706,7 @@ tests/semantic_definition.rs (target/debug/deps/semantic_definition-e6b16757b69b
             .expect("running child present");
         assert_eq!(running.status, ChildStatus::Cancelled);
         assert_eq!(running.execution_mark, "running");
+        assert_eq!(running.cleanup.as_deref(), Some("unobserved"));
         let pending = doc
             .children
             .iter()
@@ -1545,17 +1715,74 @@ tests/semantic_definition.rs (target/debug/deps/semantic_definition-e6b16757b69b
         assert_eq!(pending.status, ChildStatus::Cancelled);
         assert_eq!(pending.execution_mark, "pending");
         // Fail-closed: an incomplete table aggregates to fail.
-        let agg = aggregate(&doc.children, specs.len());
+        let agg = aggregate(&doc.children, &specs);
         assert_eq!(agg.status, "fail");
         assert!(agg.non_success.contains(&specs[1].id.to_string()));
+    }
+
+    #[test]
+    fn aggregate_rejects_duplicate_substitution_for_missing_child() {
+        let path = temp_receipt_path("duplicate-aggregate");
+        let mut executor = all_pass_executor();
+        let _ = run_suite(&path, &mut executor).expect("suite should run");
+        let doc = read_receipt(&path);
+        let specs = child_specs();
+        let missing_id = specs.last().expect("pinned child set is non-empty").id;
+        let mut entries = doc.children;
+        entries.pop();
+        entries.push(entries[0].clone());
+
+        let aggregate_doc = aggregate(&entries, &specs);
+        assert_eq!(aggregate_doc.status, "fail");
+        assert!(
+            aggregate_doc.non_success.contains(&missing_id.to_string()),
+            "missing required child must be named: {:?}",
+            aggregate_doc.non_success
+        );
+        assert_eq!(aggregate_doc.passed, specs.len() - 2);
+        assert_eq!(aggregate_doc.total, specs.len());
+
+        let mut unexpected_entries = read_receipt(&path).children;
+        unexpected_entries.pop();
+        let mut unexpected = unexpected_entries[0].clone();
+        unexpected.id = "unexpected/pass".to_string();
+        unexpected_entries.push(unexpected);
+        let aggregate_doc = aggregate(&unexpected_entries, &specs);
+        assert_eq!(aggregate_doc.status, "fail");
+        assert!(aggregate_doc.non_success.contains(&"unexpected/pass".to_string()));
+        assert_eq!(aggregate_doc.passed, specs.len() - 1);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn running_snapshot_retains_resolved_execution_context() {
+        let spec = child_specs()
+            .into_iter()
+            .find(|spec| spec.kind == ChildKind::Behavior)
+            .expect("behavior child");
+        let executable = Path::new("target/debug/deps/semantic_definition-deadbeef");
+        let working_dir = Path::new("crates/perl-lsp-rs");
+        let entry = running_entry(&spec, "deadbeef", Some(executable), Some(working_dir));
+
+        assert_eq!(entry.execution_mark, "running");
+        assert_eq!(entry.status, ChildStatus::Cancelled);
+        assert_eq!(entry.executable.as_deref(), Some(executable.to_string_lossy().as_ref()));
+        assert_eq!(entry.working_dir.as_deref(), Some(working_dir.to_string_lossy().as_ref()));
+        assert_eq!(entry.env_set.get("RUST_TEST_THREADS"), Some(&"1".to_string()));
+        assert_eq!(
+            entry.env_set.get("CARGO_MANIFEST_DIR"),
+            Some(&working_dir.to_string_lossy().to_string())
+        );
+        assert_eq!(entry.cleanup.as_deref(), Some("unobserved"));
+        assert!(entry.command.as_deref().is_some_and(|command| command.contains("deadbeef")));
     }
 
     // Fail-closed negative control: instrument failure everywhere still
     // aggregates to fail, and an empty child table can never pass.
     #[test]
     fn suite_fails_closed_on_instrument_failure() {
-        assert_eq!(aggregate(&[], 0).status, "fail");
-        assert_eq!(aggregate(&[], child_specs().len()).status, "fail");
+        assert_eq!(aggregate(&[], &[]).status, "fail");
+        assert_eq!(aggregate(&[], &child_specs()).status, "fail");
 
         let path = temp_receipt_path("instrument");
         let mut executor = ScriptedExecutor::new();

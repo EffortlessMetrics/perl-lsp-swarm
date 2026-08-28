@@ -5,7 +5,10 @@ use super::{
     SetVariableArguments, SetVariableResponseBody, Value, VariableCacheKind, VariablesArguments,
     is_valid_set_variable_name, json, lock_or_recover, parse_dap_arguments, slice_variables,
 };
+use crate::parse_origin::{DebuggerOutputOrigin, ParseIdentity};
 use crate::value_format::ValueFormatPolicy;
+#[cfg(test)]
+use perl_tdd_support::must_some;
 
 impl DebugAdapter {
     /// Handle variables request
@@ -345,8 +348,14 @@ impl DebugAdapter {
                 }
 
                 let (full_roots, child_cache) = if let Some(lines) = framed_scope_lines.as_ref() {
-                    let (framed_vars, framed_child_cache) =
-                        Self::parse_scope_variables_from_lines(lines, variables_ref, 0, 1024);
+                    let (framed_vars, framed_child_cache) = Self::parse_scope_variables_from_lines(
+                        lines,
+                        variables_ref,
+                        0,
+                        1024,
+                        DebuggerOutputOrigin::DebuggerControlPayload,
+                        ParseIdentity::new().with_operation_id_from_i64(request_seq),
+                    );
                     if framed_vars.is_empty() {
                         // A failed or empty framed locals response is unavailable;
                         // never reinterpret unrelated session history as this
@@ -456,10 +465,22 @@ impl DebugAdapter {
     /// bound cumulative nodes, bytes, or query duration. Safe bounded lexical
     /// collection snapshots are owned by #7358; until that contract exists this
     /// path stays honest about not having observed the contents.
+    ///
+    /// The same no-user-code contract applies to scalars (#9590's public stdio
+    /// canaries caught the old read chain violating it): the value is read
+    /// through raw slot flags only — references render their address via
+    /// `overload::StrVal` (which bypasses overloaded stringification), strings
+    /// via the PV slot when `SVf_POK` is set, integers via IV, floats via NV,
+    /// and anything carrying no readable slot (a tied proxy, a magical SV) as
+    /// `undef`. The previous `$s->SV->PV`/`->IV` chain invoked tied `FETCH` and
+    /// overloaded `""`/numification on magical values, executing debuggee code
+    /// during a read-only inspection; it also lost NV-only scalars entirely
+    /// (they dumped as `undef`). Reading the referent of a reference is still
+    /// not done here.
     pub(super) fn build_locals_b_eval_cmd() -> String {
         format!(
             concat!(
-                "p eval {{ require B; ",
+                "p eval {{ require B; require overload; ",
                 "my $cv=$DB::sub?B::svref_2object(\\&{{$DB::sub}}):B::main_cv(); ",
                 "my $pl=$cv->PADLIST; ",
                 "my @nm=$pl->NAMES->ARRAY; ",
@@ -478,7 +499,32 @@ impl DebugAdapter {
                 "  my $v; ",
                 "  if ($rt eq 'B::AV') {{ $v='ARRAY(0x0)' }} ",
                 "  elsif ($rt eq 'B::HV') {{ $v='HASH(0x0)' }} ",
-                "  else {{ $v=eval{{$s->SV->PV}}//eval{{$s->SV->IV}}//eval{{$s->IV}}//eval{{$s->PV}}//'undef' }} ",
+                "  else {{ ",
+                "    my $f=eval{{$s->FLAGS}}//0; ",
+                "    if ($f & B::SVf_ROK()) {{ ",
+                // Read the RV's referent, not the pad slot: `$a = \$x; $b = $a`
+                // share one referent but sit in distinct slots, so stringifying
+                // the slot would give aliases different addresses. The referent
+                // address also matches the pre-#9590 IV display exactly.
+                "      my $qr=eval{{$s->RV->object_2svref}}; ",
+                "      my $sv=defined $qr?overload::StrVal($qr):''; ",
+                "      if ($sv=~/0x([0-9a-fA-F]+)/) {{ no warnings 'portable'; $v=hex($1) }} ",
+                "      else {{ $v='REF' }} ",
+                "    }} ",
+                "    elsif ($f & B::SVf_POK()) {{ $v=eval{{$s->PV}}//'undef' }} ",
+                "    elsif ($f & B::SVf_IOK()) {{ $v=eval{{$s->IV}}//'undef' }} ",
+                "    elsif ($f & B::SVf_NOK()) {{ $v=eval{{$s->NV}}//'undef' }} ",
+                "    else {{ $v='undef' }} ",
+                "  }} ",
+                // A flagged (wide) PV must not reach perl5db's print: the resulting
+                // "Wide character in print" warning echoes this whole eval back
+                // into the control stream on every locals request and can blow
+                // the bounded capture window. Encode in place to the identical
+                // UTF-8 bytes: unlike utf8::downgrade this always succeeds (it
+                // never fails on code points above 255) and never emits raw
+                // Latin-1 bytes that would break the control reader's UTF-8
+                // line decoding.
+                "  if (defined $v && !ref($v) && utf8::is_utf8($v)) {{ utf8::encode($v) }} ",
                 "  $o.=\"$pv = $v\\n\" ",
                 "}} $o }}",
             ),
@@ -667,7 +713,15 @@ impl DebugAdapter {
             .and_then(|(begin, end)| {
                 self.capture_framed_debugger_output(begin, end, DEBUGGER_QUERY_WAIT_MS * 8)
             })
-            .and_then(|lines| Self::parse_evaluate_result_from_lines(&lines, name, true));
+            .and_then(|lines| {
+                Self::parse_evaluate_result_from_lines(
+                    &lines,
+                    name,
+                    true,
+                    DebuggerOutputOrigin::DebuggerControlPayload,
+                    ParseIdentity::new().with_operation_id_from_i64(request_seq),
+                )
+            });
 
         let Some((default_value, rendered_type, typed)) = parsed else {
             return DapMessage::Response {
@@ -960,9 +1014,7 @@ mod hazard_invariant_tests {
             (8, ScopeKind::Locals),
             (8, ScopeKind::Arguments),
         ] {
-            let wire = VariableReference::Scope { frame_id, kind }
-                .encode()
-                .expect("test scope reference must encode");
+            let wire = must_some(VariableReference::Scope { frame_id, kind }.encode());
             assert!(
                 variables_body_is_empty(&mut a, i64::from(wire)),
                 "unadmitted {kind:?} scope for frame {frame_id} must be honest empty"
@@ -1070,8 +1122,7 @@ mod hazard_invariant_tests {
         // An EvalResult wire value that IS in cache (simulates a fresh evaluate result
         // before resume — the client holds the ref and sends a variables request while
         // the session is still stopped at the same breakpoint).
-        let eval_ref_wire: i32 =
-            VariableReference::EvalResult { counter: 42 }.encode().expect("counter=42 is valid");
+        let eval_ref_wire: i32 = must_some(VariableReference::EvalResult { counter: 42 }.encode());
         assert!(
             (1_000_000..=1_999_999_999).contains(&eval_ref_wire),
             "setup: must be in EvalResult band"
@@ -1154,17 +1205,50 @@ mod hazard_invariant_tests {
     /// A read-only `variables` request must not enumerate or serialize live
     /// aggregates. Bounded lexical collection snapshots are owned by #7358; until
     /// that contract lands, re-introducing an unbudgeted traversal here is a
-    /// regression, so the command template must stay free of it.
+    /// regression, so the command template must stay free of it. The one
+    /// admitted use of `object_2svref` (#9590) is the ROK scalar branch: the
+    /// reference is handed straight to `overload::StrVal` — the documented
+    /// hook-free stringifier — to read the address without invoking overloaded
+    /// `""` (which the raw `->IV` numification path executes on AMG-carrying
+    /// references). It must never feed a traversal.
     #[test]
     fn build_locals_b_eval_cmd_does_not_enumerate_live_collections() {
         let cmd = DebugAdapter::build_locals_b_eval_cmd();
-        for forbidden in ["object_2svref", "Data::Dumper", "Dumper(", "keys %$", "@$r"] {
+        for forbidden in ["Data::Dumper", "Dumper(", "keys %$", "@$r"] {
             assert!(
                 !cmd.contains(forbidden),
                 "lexical introspection must not use {forbidden} \
                  (unbudgeted traversal / debuggee side effects, see #7358): {cmd}"
             );
         }
+        assert_eq!(
+            cmd.matches("object_2svref").count(),
+            1,
+            "object_2svref may only appear in the ROK scalar branch: {cmd}"
+        );
+        assert!(
+            cmd.contains("B::SVf_ROK()"),
+            "the object_2svref read must be gated on SVf_ROK: {cmd}"
+        );
+        assert!(
+            cmd.contains("overload::StrVal($qr)"),
+            "the obtained reference must be consumed only by overload::StrVal: {cmd}"
+        );
+        let rok_branch = cmd
+            .split("B::SVf_ROK()")
+            .nth(1)
+            .unwrap_or_default()
+            .split("elsif")
+            .next()
+            .unwrap_or_default();
+        assert!(
+            rok_branch.contains("$s->RV->object_2svref") && rok_branch.contains("overload::StrVal"),
+            "object_2svref must stay inside the ROK branch and address the referent, not the pad slot: {cmd}"
+        );
+        assert!(
+            cmd.contains("$v='ARRAY(0x0)'") && cmd.contains("$v='HASH(0x0)'"),
+            "aggregate pad entries must keep their opaque non-enumerated markers: {cmd}"
+        );
     }
 
     /// The child-reference codec and child cache serve pages beyond the first 256
@@ -1175,18 +1259,19 @@ mod hazard_invariant_tests {
     fn parsed_array_literal_preserves_a_deep_page() {
         let values = (1..=500).map(|value| value.to_string()).collect::<Vec<_>>().join(",");
         let lines = vec![format!("@big = [{values}]")];
-        let (roots, child_cache) =
-            DebugAdapter::parse_scope_variables_from_lines(&lines, 11, 0, 1024);
-        let root = roots
-            .iter()
-            .find(|variable| variable.row.name == "@big")
-            .expect("@big root must be rendered");
+        let (roots, child_cache) = DebugAdapter::parse_scope_variables_from_lines(
+            &lines,
+            11,
+            0,
+            1024,
+            DebuggerOutputOrigin::FixtureOrInstrumentInput,
+            ParseIdentity::new(),
+        );
+        let root = must_some(roots.iter().find(|variable| variable.row.name == "@big"));
         assert_eq!(root.row.indexed_variables, Some(500));
         assert!(root.row.variables_reference > 0);
 
-        let children = child_cache
-            .get(&root.row.variables_reference)
-            .expect("@big children must be cached for paging");
+        let children = must_some(child_cache.get(&root.row.variables_reference));
         assert_eq!(children.len(), 500);
         assert_eq!(children[250].row.name, "[250]");
         assert_eq!(children[250].row.value, "251");
@@ -1212,6 +1297,35 @@ mod hazard_invariant_tests {
         assert!(
             cmd.contains("= $v"),
             "Perl emit format must contain '= $v' for parse_assignment compatibility: {cmd}"
+        );
+    }
+
+    #[test]
+    fn build_locals_b_eval_cmd_reads_raw_slots_only() {
+        // #9590's public stdio canaries proved the old read chain
+        // (`$s->SV->PV`/`$s->SV->IV`) executed tied `FETCH` and overloaded
+        // `""`/numification during a read-only locals dump, and lost NV-only
+        // scalars entirely. The command must read raw slots gated on FLAGS,
+        // take reference addresses through `overload::StrVal` (which bypasses
+        // overloaded stringification), cover the NV slot, and never emit a
+        // flagged string into perl5db's print (whose "Wide character" warning
+        // echoes the whole eval back into the control stream).
+        let cmd = DebugAdapter::build_locals_b_eval_cmd();
+        assert!(
+            !cmd.contains("$s->SV->PV") && !cmd.contains("$s->SV->IV"),
+            "the stringify-prone read chain must stay gone: {cmd}"
+        );
+        assert!(cmd.contains("B::SVf_ROK()"), "references must be gated on SVf_ROK: {cmd}");
+        assert!(
+            cmd.contains("overload::StrVal"),
+            "reference addresses must be read hook-free via overload::StrVal: {cmd}"
+        );
+        assert!(cmd.contains("B::SVf_POK()"), "string values must be gated on SVf_POK: {cmd}");
+        assert!(cmd.contains("B::SVf_IOK()"), "integers must be gated on SVf_IOK: {cmd}");
+        assert!(cmd.contains("B::SVf_NOK()"), "floats must be read from the NV slot: {cmd}");
+        assert!(
+            cmd.contains("utf8::encode"),
+            "wide PVs must be encoded to UTF-8 bytes before reaching perl5db's print: {cmd}"
         );
     }
 }
@@ -1265,8 +1379,14 @@ mod value_format_family_tests {
             "$u = undef".to_string(),
             "$zero = 0".to_string(),
         ];
-        let (roots, _children) =
-            DebugAdapter::parse_scope_variables_from_lines(&lines, wire, 0, 16);
+        let (roots, _children) = DebugAdapter::parse_scope_variables_from_lines(
+            &lines,
+            wire,
+            0,
+            16,
+            DebuggerOutputOrigin::FixtureOrInstrumentInput,
+            ParseIdentity::new(),
+        );
         let mut session = lock_or_recover(&adapter.session, "value_format_family_tests.seed");
         if let Some(ref mut sess) = *session {
             sess.variable_cache.upsert(wire, VariableCacheKind::Root, roots);
@@ -1390,7 +1510,14 @@ mod value_format_family_tests {
         seed_current_frame(&adapter);
 
         let lines = vec!["@arr = [10, 20]".to_string()];
-        let (roots, children) = DebugAdapter::parse_scope_variables_from_lines(&lines, 11, 0, 16);
+        let (roots, children) = DebugAdapter::parse_scope_variables_from_lines(
+            &lines,
+            11,
+            0,
+            16,
+            DebuggerOutputOrigin::FixtureOrInstrumentInput,
+            ParseIdentity::new(),
+        );
         let child_ref = roots[0].row.variables_reference;
         {
             let mut session = lock_or_recover(&adapter.session, "value_format_family_tests.child");

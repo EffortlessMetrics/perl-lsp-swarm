@@ -25,7 +25,6 @@
 #![warn(missing_docs)]
 #![allow(
     // Migrated from perl-parser - these patterns are acceptable in LSP runtime code
-    clippy::collapsible_match,
     clippy::only_used_in_recursion,
     clippy::while_let_loop,
     clippy::needless_range_loop,
@@ -150,10 +149,6 @@ pub(crate) mod error {
 
 pub(crate) mod completion {
     pub use crate::features::completion::*;
-}
-
-pub(crate) mod on_type_formatting {
-    pub use crate::features::on_type_formatting::*;
 }
 
 pub(crate) mod inline_completions {

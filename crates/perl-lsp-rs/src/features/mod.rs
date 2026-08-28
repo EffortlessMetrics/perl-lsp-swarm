@@ -22,11 +22,9 @@ pub mod inline_completions;
 pub mod linked_editing;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod lsp_document_link;
-pub mod lsp_on_type_formatting;
 pub mod lsp_selection_range;
 /// Bidirectional mapping between LSP server capabilities and feature catalog IDs.
 pub mod map;
-pub mod on_type_formatting;
 pub mod references;
 pub mod rename;
 pub mod selection_range;

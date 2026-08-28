@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 10083,
-  "reason": "#10083 managed-candidate wiring plus its review-repair commits grow the bundled extension and the Unreleased changelog entry (linux CI archive-measured on the rebased head: out/extension.js ->1516263, changelog.md ->21498 after the vsce markdown processor; win32 CRLF checkouts build larger and are not the baseline authority). No file added, removed, or loosened; total recomputed ->1690974.",
-  "base_baseline_file_sha256": "87ea128634d0f3d56d39f91975ea2761c4f94e51a7b1ca5ca10f9edce020d12c",
-  "candidate_baseline_file_sha256": "594cdf44380693aca57965b0f776ee3b854fddd5ab4414f375bdc9f1de1c3c03",
-  "base_inventory_sha256": "cc4fda96f2f218068294c6a3c2e4397edcbf865a169c5c0a9746df9c68e3eefe",
-  "candidate_inventory_sha256": "c16fd70c2236e859a325634c17d5fbd1a731d84fd76c251bca1c780f756dc67e"
+  "owner_issue": 12757,
+  "reason": "Reconciles the crash-recovery convergence bundle for #12757 after making the extension lifecycle arbiter the sole connection-close restart owner, disposing integrations before terminal cleanup, and routing a post-exhaustion explicit retry through a fresh lifecycle generation. Cumulative size-only delta: out/extension.js 1534537 -> 1548892 (+14355); no packaged file was added, removed, or loosened.",
+  "base_baseline_file_sha256": "18c71611c572f227fff586fed8e8a8f85f9cedabd7c9f5febe72464c09e6f7f5",
+  "candidate_baseline_file_sha256": "bbedb2f0d07c89240638a3e1323b4c57e75e64ac3f36e8b70223754dbe43417d",
+  "base_inventory_sha256": "124e8ae60936f4b50e724e0d6341bb662818dc3324c3790cb08e03bac854b655",
+  "candidate_inventory_sha256": "47560cea1d8fa4da6af0bd27939daba70e14f4d8415f82177081f7ca71af8e33"
 }

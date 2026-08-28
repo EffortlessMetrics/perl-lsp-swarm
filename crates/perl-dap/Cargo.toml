@@ -34,6 +34,7 @@ path = "src/lib.rs"
 # JSON serialization
 serde = { workspace = true }
 serde_json.workspace = true
+perl-source-identity = { workspace = true }
 
 # Error handling
 anyhow.workspace = true
@@ -77,6 +78,9 @@ criterion.workspace = true
 
 # Test fixtures
 tempfile.workspace = true
+
+# Exact subject-identity digests for the #9590 public stdio proof receipt
+sha2.workspace = true
 
 perl-tdd-support = { workspace = true }
 
@@ -369,6 +373,16 @@ path = "tests/wave_h_workspace_verification.rs"
 name = "wave_h_platform_edge_cases"
 path = "tests/wave_h_platform_edge_cases.rs"
 # Green TDD: edge cases and boundary conditions for platform module
+
+[[test]]
+name = "error_class_fixed_origin"
+path = "tests/error_class_fixed_origin.rs"
+# #8739: exhaustive ErrorClass matrix for fixed-origin DAP operational errors
+
+[[test]]
+name = "debugger_output_origin"
+path = "tests/debugger_output_origin.rs"
+# #8746: originated stack/variable parse classification by caller-supplied origin
 
 [[test]]
 name = "wave_h_security_edge_cases"

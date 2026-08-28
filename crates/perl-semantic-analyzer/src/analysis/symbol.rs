@@ -422,7 +422,7 @@ pub enum FrameworkKind {
 pub enum WebFrameworkKind {
     /// `use Dancer;`
     Dancer,
-    /// `use Dancer2;` or `use Dancer2::Core;`
+    /// `use Dancer2;` (exact app DSL import only; `Dancer2::Core` does not activate).
     Dancer2,
     /// `use Mojolicious::Lite;`
     MojoliciousLite,
@@ -477,6 +477,69 @@ pub struct FrameworkFlags {
     pub catalyst_controller: bool,
 }
 
+/// Source-side canonical admission set for the #8928 Dancer2 retirement.
+///
+/// A route declaration is admitted when the canonical route-context
+/// extractor returns it in a package whose `use Dancer2` activation site
+/// is source-exact (default DSL, no unmodeled import options) and whose
+/// route keyword the activating import did not exclude. The file id is a
+/// fixed local identity: admission compares package names and keyword
+/// anchor start bytes, both file-local.
+fn canonical_dancer2_route_admission(node: &Node) -> HashSet<(String, u32)> {
+    use crate::analysis::dancer2_activation::extract_dancer2_activation_sites;
+    use crate::analysis::dancer2_routes::extract_dancer2_route_contexts;
+    use perl_semantic_facts::framework_adapters::dancer2::DslSelection;
+
+    let file_id = perl_semantic_facts::FileId(0);
+    // Activation sites first: files without a `use Dancer2` site admit
+    // nothing, so the (heavier) route-context walk is skipped entirely for
+    // the common non-Dancer2 file.
+    let sites = extract_dancer2_activation_sites(node, file_id);
+    if sites.is_empty() {
+        return HashSet::new();
+    }
+    let contexts = extract_dancer2_route_contexts(node, file_id);
+    if contexts.routes.is_empty() {
+        return HashSet::new();
+    }
+
+    // Per-package exclusions from the first source-exact activation site
+    // (the canonical activation walk also resolves per-package state from
+    // the first site).
+    let mut exact_packages: HashMap<String, Vec<String>> = HashMap::new();
+    for site in &sites {
+        let package = site.package.clone().unwrap_or_else(|| "main".to_string());
+        if exact_packages.contains_key(&package) {
+            continue;
+        }
+        let source_exact =
+            site.evidence.dsl.as_ref().is_none_or(|dsl| matches!(dsl, DslSelection::Default))
+                && site.evidence.unmodeled_options.is_empty();
+        if source_exact {
+            exact_packages.insert(package, site.evidence.excluded_keywords.clone());
+        }
+    }
+
+    let route_keywords: std::collections::HashSet<&str> =
+        perl_semantic_facts::framework_adapters::dancer2_routes::DANCER2_ROUTE_KEYWORDS
+            .iter()
+            .copied()
+            .collect();
+    let mut admitted = HashSet::new();
+    for declaration in &contexts.routes {
+        let Some(package) = &declaration.package else { continue };
+        let Some(exclusions) = exact_packages.get(package) else { continue };
+        let keyword = declaration.route.keyword.as_str();
+        if !route_keywords.contains(keyword)
+            || exclusions.iter().any(|excluded| excluded == keyword)
+        {
+            continue;
+        }
+        admitted.insert((package.clone(), declaration.route.keyword_anchor.start_byte));
+    }
+    admitted
+}
+
 /// Extract symbols from an AST for Parse/Index workflows.
 pub struct SymbolExtractor {
     table: SymbolTable,
@@ -488,6 +551,11 @@ pub struct SymbolExtractor {
     const_fast_enabled: bool,
     /// Whether `use Readonly` has been seen in the current compilation unit.
     readonly_enabled: bool,
+    /// Dancer2 route declarations admitted by the canonical extractor
+    /// (#8928 retirement): `(package, keyword anchor start byte)` pairs for
+    /// which the canonical facts own route identity and the legacy
+    /// route-path `Subroutine` synthesis must stay retired.
+    dancer2_canonical_routes: HashSet<(String, u32)>,
 }
 
 impl Default for SymbolExtractor {
@@ -507,6 +575,7 @@ impl SymbolExtractor {
             framework_flags: HashMap::new(),
             const_fast_enabled: false,
             readonly_enabled: false,
+            dancer2_canonical_routes: HashSet::new(),
         }
     }
 
@@ -520,11 +589,17 @@ impl SymbolExtractor {
             framework_flags: HashMap::new(),
             const_fast_enabled: false,
             readonly_enabled: false,
+            dancer2_canonical_routes: HashSet::new(),
         }
     }
 
     /// Extract symbols from an AST node for Index/Analyze workflows.
     pub fn extract(mut self, node: &Node) -> SymbolTable {
+        // #8928 retirement: source-side canonical admission for Dancer2
+        // route declarations. The canonical extractor and activation walk
+        // decide which declarations the canonical facts own; the legacy
+        // route-path synthesis stays retired for exactly that set.
+        self.dancer2_canonical_routes = canonical_dancer2_route_admission(node);
         self.visit_node(node);
         self.upgrade_package_symbols_from_framework_flags();
         self.table
@@ -1845,6 +1920,10 @@ impl SymbolExtractor {
 
     /// Detect Dancer/Dancer2/Mojolicious::Lite route declarations and synthesize route symbols.
     ///
+    /// Legacy temporary path: exact per-package `use` activation is required before
+    /// any route synthesis, and this whole extractor is scheduled for retirement via
+    /// the #8909 provider cutover (#8928).
+    ///
     /// Pattern (two statements):
     /// 1. `ExpressionStatement(Identifier("get"|"post"|"put"|"del"|"patch"|"any"))`
     /// 2. `ExpressionStatement(HashLiteral([ (String("/path"), Subroutine{...}) ]))`
@@ -1861,6 +1940,25 @@ impl SymbolExtractor {
             .get(&self.table.current_package)
             .and_then(|flags| flags.web_framework);
         let first = &statements[idx];
+
+        // #8928 retirement: a Dancer2 route declaration the canonical
+        // extractor admits under a source-exact activation is owned by the
+        // canonical facts. The legacy route-path `Subroutine` synthesis is
+        // retired for exactly this set: children are still visited so
+        // handler-local symbols stay indexed, but no route-path symbol is
+        // synthesized (one authority, never a union). Dancer v1,
+        // Mojolicious::Lite, non-activated packages, custom/dynamic DSLs,
+        // excluded keywords, and forms outside the canonical grammar keep
+        // the legacy path with this recorded boundary.
+        if web_framework == Some(WebFrameworkKind::Dancer2)
+            && u32::try_from(first.location.start).is_ok_and(|keyword_start| {
+                self.dancer2_canonical_routes
+                    .contains(&(self.table.current_package.clone(), keyword_start))
+            })
+        {
+            self.visit_node(first);
+            return Some(1);
+        }
 
         // FunctionCall form: `get '/path' => sub { }` parsed as a bare call.
         if let NodeKind::ExpressionStatement { expression } = &first.kind
@@ -1893,10 +1991,14 @@ impl SymbolExtractor {
                             attributes: vec![format!("http_method={http_method}")],
                         });
 
-                        if matches!(
-                            web_framework,
-                            Some(WebFrameworkKind::Dancer | WebFrameworkKind::Dancer2)
-                        ) && let Some(target_node) = args.get(1)
+                        // Legacy string-target -> Subroutine reference synthesis is
+                        // Dancer v1 only: upstream Dancer v1 allows an action to be
+                        // the name of a subroutine, while Dancer2 route construction
+                        // requires a CodeRef handler (#8910 containment). This whole
+                        // legacy route path is temporary pending the #8909 provider
+                        // cutover (retirement gated on #8928).
+                        if matches!(web_framework, Some(WebFrameworkKind::Dancer))
+                            && let Some(target_node) = args.get(1)
                         {
                             if let Some(target_name) =
                                 Self::collect_symbol_names(target_node).first().cloned()
@@ -2454,7 +2556,10 @@ impl SymbolExtractor {
 
         let web_kind = match module {
             "Dancer" => Some(WebFrameworkKind::Dancer),
-            "Dancer2" | "Dancer2::Core" => Some(WebFrameworkKind::Dancer2),
+            // `Dancer2::Core` is not DSL activation: core modules do not export the
+            // application keywords (#8910 containment). Only an exact `use Dancer2`
+            // activates the legacy Dancer2 analysis.
+            "Dancer2" => Some(WebFrameworkKind::Dancer2),
             "Mojolicious::Lite" => Some(WebFrameworkKind::MojoliciousLite),
             "Plack::Builder" => Some(WebFrameworkKind::PlackBuilder),
             _ => None,

@@ -3,6 +3,11 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+
+# The toolchain guard (#12593) probes `cargo --version` before delegating;
+# fake cargo stubs answer with the workspace-required version and do not log it.
+FAKE_CARGO_VERSION="$(awk -F'"' '/^rust-version[[:space:]]*=/{print $2; exit}' "${REPO_ROOT}/Cargo.toml")"
+export FAKE_CARGO_VERSION
 WRAPPER="${REPO_ROOT}/scripts/swarm-summary.sh"
 
 PASS=0
@@ -54,6 +59,7 @@ write_fake_cargo() {
   mkdir -p "$fake_bin"
   cat > "${fake_bin}/cargo" <<FAKE
 #!/usr/bin/env bash
+if [ "\${1:-}" = "--version" ]; then printf 'cargo %s (stub)\n' "\${FAKE_CARGO_VERSION:-1.95.0}"; exit 0; fi
 pwd > "${pwd_log}"
 printf '%s\n' "\$@" > "${args_log}"
 exit "\${FAKE_CARGO_EXIT:-0}"

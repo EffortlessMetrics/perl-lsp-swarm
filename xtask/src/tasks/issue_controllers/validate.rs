@@ -313,14 +313,12 @@ fn live_state_scan(value: &serde_json::Value, diagnostics: &mut Vec<Diagnostic>)
 
 fn reject_floats(value: &serde_json::Value, where_: &str, diagnostics: &mut Vec<Diagnostic>) {
     match value {
-        serde_json::Value::Number(number) => {
-            if number.is_f64() {
-                diagnostics.push(Diagnostic::new(
-                    "serialization",
-                    where_.to_owned(),
-                    format!("non-integer JSON number is a schema defect: {number}"),
-                ));
-            }
+        serde_json::Value::Number(number) if number.is_f64() => {
+            diagnostics.push(Diagnostic::new(
+                "serialization",
+                where_.to_owned(),
+                format!("non-integer JSON number is a schema defect: {number}"),
+            ));
         }
         serde_json::Value::Array(items) => {
             for (index, item) in items.iter().enumerate() {

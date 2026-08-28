@@ -1,0 +1,20 @@
+{
+  "schema": "perl_dap.loaded_module_reload_family.vector.v1",
+  "name": "terminal_failed_before_mutation_prepare",
+  "description": "The transaction failed deterministically at preflight before the mutation boundary; the phase is carried and nothing advanced.",
+  "outcome": { "kind": "failed_before_mutation", "phase": "preflight", "cause": "prepare_failed" },
+  "generation_before": 5,
+  "expect": {
+    "kind": "failed_before_mutation",
+    "phase": "preflight",
+    "cause": "prepare_failed",
+    "success": false,
+    "possibly_applied": false,
+    "generation": { "previous": 5, "current": 5, "advanced": false },
+    "reconciliation": {
+      "loaded_source_refresh": "deferred",
+      "inspection_invalidation": "deferred",
+      "breakpoint_reconciliation": "deferred"
+    }
+  }
+}

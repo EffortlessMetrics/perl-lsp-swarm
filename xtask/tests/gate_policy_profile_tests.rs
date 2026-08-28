@@ -594,9 +594,10 @@ fn lsp_unit_lanes_share_ceiling_and_budget() -> Result<(), Box<dyn std::error::E
     );
 
     // Keep the budget:ceiling ratio in line with the sibling test lanes.
-    // unit_analysis_full, unit_dap_support_full, and lsp_smoke all sit at
-    // exactly 0.80 (analysis/dap 240000/300s, lsp_smoke 1200000/1500s after
-    // the #8063 atomic decomposition), as do both LSP lanes (336000/420s).
+    // unit_analysis_full and unit_dap_support_full sit at 0.80, as do both
+    // LSP lanes (336000/420s). lsp_smoke keeps its 0.80 declared budget
+    // (576000/720s); the shared Linux watchdog's 75s Rust backstop grace is
+    // cleanup allowance, not a reason to shorten the execution window.
     // The enforced band below is deliberately wider than that single observed
     // value so a considered retune does not trip the guard, but narrow enough
     // to catch a budget set without reference to its ceiling. One band, stated
@@ -616,12 +617,13 @@ fn lsp_unit_lanes_share_ceiling_and_budget() -> Result<(), Box<dyn std::error::E
 }
 
 /// #8063: `lsp_smoke` must stay one atomic-child harness invocation — never a
-/// `&&` composite — with an outer runaway guard that comfortably exceeds the
-/// sum of the per-child budgets the harness enforces, and with no gate-level
-/// `retry_count` (retry policy is executable only inside the typed child
-/// harness, where setup/compile watchdog timeouts retry once and behavior
-/// children never retry). The child set itself is pinned by the xtask bin
-/// tests (`lsp_smoke_atomic::tests::child_set_is_pinned_and_ordered`).
+/// `&&` composite — with an outer runaway guard that accounts for the shared
+/// watchdog's cleanup grace rather than pretending to cover the sum of all
+/// child budgets, and with no gate-level `retry_count` (retry policy is
+/// executable only inside the typed child harness, where setup/compile
+/// watchdog timeouts retry once and behavior children never retry). The child
+/// set itself is pinned by the xtask bin tests
+/// (`lsp_smoke_atomic::tests::child_set_is_pinned_and_ordered`).
 #[test]
 fn lsp_smoke_is_atomic_bounded_and_independently_terminal() -> Result<(), Box<dyn std::error::Error>>
 {
@@ -653,17 +655,16 @@ fn lsp_smoke_is_atomic_bounded_and_independently_terminal() -> Result<(), Box<dy
          timeout is exactly the twice-retried-600s fleet symptom #8063 fixes"
     );
 
-    // Outer runaway guard: 720s is the typical hosted window (the lsp shard's
-    // 1200s inner watchdog minus the two unit lanes at their observed
-    // 173-243s hosted durations). It is deliberately NOT the worst-case sum
+    // Outer runaway guard: 720s is the declared execution window. The Linux
+    // helper's 75s Rust backstop grace is cleanup allowance after that window,
+    // not a reason to shorten it. This is deliberately NOT the worst-case sum
     // of child budgets (3 x 2 x 300s retrying compiles + 6 x 120s behavior =
     // 2520s): the guard bounds the suite and leaves CANCELLED marks in the
     // child receipt, it does not promise unreachable headroom.
     assert_eq!(
         gate.timeout_seconds,
         Some(720),
-        "outer guard must fit the hosted lsp shard window (1200s inner \
-         watchdog minus the two preceding unit lanes), not an unreachable sum"
+        "declared outer guard must preserve the full hosted lsp execution window"
     );
     let budget = gate
         .budgets

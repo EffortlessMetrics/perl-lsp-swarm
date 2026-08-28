@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use perl_module::resolution::use_lib::{
+use perl_module::{
     UseLibAction, UseLibPath, extract_use_lib_operations, extract_use_lib_operations_with_offsets,
     extract_use_lib_paths, no_lib_cancelled_paths_at_offset,
     no_lib_cancelled_paths_from_operations_at_offset, resolve_use_lib_paths,

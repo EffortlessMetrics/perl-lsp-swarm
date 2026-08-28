@@ -29,7 +29,7 @@
 //!   `qwfoo`      → `[]`           (bareword after qw — must stay rejected)
 
 use perl_module::extract_require_import_symbols;
-use perl_module::import::parse_qw_arg_list;
+use perl_module::parse_qw_arg_list;
 
 // ── helper ────────────────────────────────────────────────────────────────────
 
@@ -245,7 +245,7 @@ fn seam_mismatched_closing_delimiter_yields_no_symbols() {
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // These tests call `parse_qw_arg_list` directly via the public API path
-// (since it is `pub` in `perl_module::import`) to give RIPR's static call-graph
+// (since it is `pub` on the `perl_module` facade) to give RIPR's static call-graph
 // a directly traceable reach edge from this test file to the seam.
 //
 // Seam A: `if delimiter.is_ascii_alphanumeric() || delimiter == '_'` (line ~667)

@@ -179,6 +179,13 @@ const XTASK_FILE_POLICY_PACK: ProofPack = ProofPack {
     ],
 };
 
+const XTASK_PARSER_TDD_FACADE_GUARD_PACK: ProofPack = ProofPack {
+    id: "xtask-parser-tdd-facade-guard",
+    commands: &[
+        "cargo test -p xtask --test parser_tdd_facade_consumers --profile agent --locked -- --nocapture",
+    ],
+};
+
 const COMPLETION_CORE_PACK: ProofPack = ProofPack {
     id: "completion-core",
     commands: &[
@@ -430,6 +437,11 @@ const PUBLISH_RECEIPTS_WRAPPER_PACK: ProofPack = ProofPack {
 const GENERATE_BADGES_WRAPPER_PACK: ProofPack = ProofPack {
     id: "generate-badges-wrapper-focused",
     commands: &["bash scripts/tests/test-generate-badges-wrapper.sh"],
+};
+
+const RIPR_BADGE_ENDPOINTS_PACK: ProofPack = ProofPack {
+    id: "ripr-badge-endpoints-focused",
+    commands: &["python scripts/tests/test-generate-badges.py"],
 };
 
 const IGNORED_TEST_COUNT_WRAPPER_PACK: ProofPack = ProofPack {
@@ -686,6 +698,12 @@ fn route_file(file: &str, route: &mut RouteBuilder) {
         route.add_surface("xtask-file-policy");
         route.add_pack(XTASK_FILE_POLICY_PACK);
         return route.add_coverage_pack("patch-coverage-xtask-file-policy");
+    }
+
+    if file == "xtask/tests/parser_tdd_facade_consumers.rs" {
+        route.add_surface("xtask-parser-tdd-facade-guard");
+        route.add_pack(XTASK_PARSER_TDD_FACADE_GUARD_PACK);
+        return route.add_coverage_pack("patch-coverage-xtask-parser-tdd-facade-guard");
     }
 
     if file.starts_with("crates/perl-lsp-rs-core/src/providers/completion/") {
@@ -1088,6 +1106,13 @@ fn route_file(file: &str, route: &mut RouteBuilder) {
         route.add_surface("generate-badges-wrapper");
         route.add_pack(GENERATE_BADGES_WRAPPER_PACK);
         route.add_coverage_pack("patch-coverage-generate-badges-wrapper");
+        return;
+    }
+
+    if file == "scripts/generate-badges.py" || file == "scripts/tests/test-generate-badges.py" {
+        route.add_surface("ripr-badge-endpoints");
+        route.add_pack(RIPR_BADGE_ENDPOINTS_PACK);
+        route.add_coverage_pack("patch-coverage-ripr-badge-endpoints");
         return;
     }
 
@@ -1799,6 +1824,35 @@ mod tests {
         assert!(receipt.coverage_proof_packs.is_empty());
         assert_eq!(
             receipt.skipped_by_policy.get("patch-coverage-ci-policy").map(String::as_str),
+            Some(NON_LCOV_COVERAGE_SKIP_REASON)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn ci_route_receipt_maps_parser_tdd_facade_guard_to_focused_non_lcov_pack() -> Result<()> {
+        let receipt = route_receipt(
+            "origin/main",
+            "HEAD",
+            vec!["xtask/tests/parser_tdd_facade_consumers.rs".to_string()],
+        )?;
+
+        assert_eq!(receipt.changed_surfaces, vec!["xtask-parser-tdd-facade-guard"]);
+        assert!(proof_pack_ids(&receipt).contains(&"xtask-parser-tdd-facade-guard"));
+        assert!(receipt.required_proof_packs.iter().any(|pack| {
+            pack.id == "xtask-parser-tdd-facade-guard"
+                && pack.commands.iter().any(|command| {
+                    command
+                        == "cargo test -p xtask --test parser_tdd_facade_consumers --profile agent --locked -- --nocapture"
+                })
+        }));
+        assert!(receipt.coverage_pack_selector.is_empty());
+        assert!(receipt.coverage_proof_packs.is_empty());
+        assert_eq!(
+            receipt
+                .skipped_by_policy
+                .get("patch-coverage-xtask-parser-tdd-facade-guard")
+                .map(String::as_str),
             Some(NON_LCOV_COVERAGE_SKIP_REASON)
         );
         Ok(())
@@ -3017,6 +3071,32 @@ mod tests {
     }
 
     #[test]
+    fn ci_route_receipt_maps_both_ripr_badge_python_paths_to_focused_non_lcov_pack() -> Result<()> {
+        for path in ["scripts/generate-badges.py", "scripts/tests/test-generate-badges.py"] {
+            let receipt = route_receipt("origin/main", "HEAD", vec![path.to_string()])?;
+            assert_eq!(receipt.changed_surfaces, vec!["ripr-badge-endpoints"]);
+            assert!(proof_pack_ids(&receipt).contains(&"ripr-badge-endpoints-focused"));
+            assert!(receipt.required_proof_packs.iter().any(|pack| {
+                pack.id == "ripr-badge-endpoints-focused"
+                    && pack
+                        .commands
+                        .iter()
+                        .any(|command| command == "python scripts/tests/test-generate-badges.py")
+            }));
+            assert!(receipt.coverage_pack_selector.is_empty());
+            assert!(receipt.coverage_proof_packs.is_empty());
+            assert_eq!(
+                receipt
+                    .skipped_by_policy
+                    .get("patch-coverage-ripr-badge-endpoints")
+                    .map(String::as_str),
+                Some(NON_LCOV_COVERAGE_SKIP_REASON)
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
     fn ci_route_receipt_maps_ignored_test_count_wrapper_to_focused_non_lcov_pack() -> Result<()> {
         let receipt = route_receipt(
             "origin/main",
@@ -3271,6 +3351,7 @@ mod tests {
                 "patch-coverage-completion-core",
                 "patch-coverage-ux-scenario",
                 "patch-coverage-ci-policy",
+                "patch-coverage-xtask-parser-tdd-facade-guard",
                 "patch-coverage-ci-route",
                 "patch-coverage-ci-actuals",
                 "patch-coverage-ripr-summary",
@@ -3316,6 +3397,7 @@ mod tests {
                 "patch-coverage-quick-receipts-wrapper",
                 "patch-coverage-publish-receipts-wrapper",
                 "patch-coverage-generate-badges-wrapper",
+                "patch-coverage-ripr-badge-endpoints",
                 "patch-coverage-ignored-test-count-wrapper",
                 "patch-coverage-swarm-summary-wrapper",
                 "patch-coverage-workspace-exclusions-wrapper",
@@ -3340,6 +3422,7 @@ mod tests {
             "patch-coverage-completion-core",
             "patch-coverage-ux-scenario",
             "patch-coverage-ci-policy",
+            "patch-coverage-xtask-parser-tdd-facade-guard",
             "patch-coverage-ci-route",
             "patch-coverage-ci-actuals",
             "patch-coverage-ripr-summary",
@@ -3385,6 +3468,7 @@ mod tests {
             "patch-coverage-quick-receipts-wrapper",
             "patch-coverage-publish-receipts-wrapper",
             "patch-coverage-generate-badges-wrapper",
+            "patch-coverage-ripr-badge-endpoints",
             "patch-coverage-ignored-test-count-wrapper",
             "patch-coverage-swarm-summary-wrapper",
             "patch-coverage-workspace-exclusions-wrapper",
@@ -3425,6 +3509,10 @@ mod tests {
         );
         assert_eq!(
             skipped.get("patch-coverage-ci-policy").map(String::as_str),
+            Some(NON_LCOV_COVERAGE_SKIP_REASON)
+        );
+        assert_eq!(
+            skipped.get("patch-coverage-xtask-parser-tdd-facade-guard").map(String::as_str),
             Some(NON_LCOV_COVERAGE_SKIP_REASON)
         );
         assert_eq!(
