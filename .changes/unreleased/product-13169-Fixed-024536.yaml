@@ -1,0 +1,12 @@
+project: product
+component: Parser and lexer
+kind: Fixed
+body: >-
+  Recognize Perl's contiguous string-repetition assignment operator (`x=`) as
+  a right-associative assignment while preserving spaced `x =` as invalid
+  syntax.
+time: 2026-08-28T02:45:36Z
+custom:
+  PR: "13169"
+  Slug: repetition-assignment
+  Breaking: "no"
