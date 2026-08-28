@@ -74,11 +74,7 @@ fn assert_packages_present(graph: &BTreeSet<String>, label: &str) {
 
 fn assert_cfg_owned(source: &str, item: &str, path: &Path) {
     let expected = format!("#[cfg(feature = \"semantic-overlay\")]\n{item}");
-    assert!(
-        source.contains(&expected),
-        "{} does not feature-own {item:?}",
-        path.display()
-    );
+    assert!(source.contains(&expected), "{} does not feature-own {item:?}", path.display());
 }
 
 #[test]
@@ -111,11 +107,7 @@ fn semantic_overlay_feature_owns_its_upper_dependencies() -> TestResult {
     let tree_path = crate_root().join("src/tree.rs");
     let tree = fs::read_to_string(&tree_path)?;
     assert_cfg_owned(&tree, "use crate::SemanticOverlay;", &tree_path);
-    assert_cfg_owned(
-        &tree,
-        "pub fn semantic_overlay(&self) -> SemanticOverlay<'_> {",
-        &tree_path,
-    );
+    assert_cfg_owned(&tree, "pub fn semantic_overlay(&self) -> SemanticOverlay<'_> {", &tree_path);
 
     Ok(())
 }
@@ -125,8 +117,7 @@ fn default_and_query_graphs_exclude_overlay_only_packages() -> TestResult {
     let base = resolved_normal_packages(&["--no-default-features"])?;
     assert_packages_absent(&base, "no-default-features graph");
 
-    let queries =
-        resolved_normal_packages(&["--no-default-features", "--features", "queries"])?;
+    let queries = resolved_normal_packages(&["--no-default-features", "--features", "queries"])?;
     assert_packages_absent(&queries, "queries-only graph");
     assert!(queries.contains("regex"), "queries-only graph did not resolve regex: {queries:?}");
 
@@ -135,11 +126,8 @@ fn default_and_query_graphs_exclude_overlay_only_packages() -> TestResult {
 
 #[test]
 fn semantic_overlay_and_all_feature_graphs_include_overlay_packages() -> TestResult {
-    let overlay = resolved_normal_packages(&[
-        "--no-default-features",
-        "--features",
-        "semantic-overlay",
-    ])?;
+    let overlay =
+        resolved_normal_packages(&["--no-default-features", "--features", "semantic-overlay"])?;
     assert_packages_present(&overlay, "semantic-overlay graph");
 
     let all = resolved_normal_packages(&["--all-features"])?;
