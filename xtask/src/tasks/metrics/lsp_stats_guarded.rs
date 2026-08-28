@@ -177,22 +177,15 @@ fn load_receipt_validator(receipt_schema: &Path) -> Result<jsonschema::Validator
 }
 
 /// Identify malformed UX run candidates without claiming every JSON receipt in
-/// the shared directory. Require either three markers with one distinctive
-/// UX-run field or two markers with a malformed value. This catches truncated
-/// and malformed runs while allowing companion receipts that happen to share
-/// generic fields such as workflow and scenario metadata.
+/// the shared directory. Malformed recognized UX markers are always rejected,
+/// including when a distinctive timing marker is the only marker present.
+/// Otherwise, a candidate is UX-shaped when it has a complete identity-bearing
+/// marker set, while non-UX kinds without UX identity fields remain compatible
+/// with timing-bearing companion receipts.
 fn looks_like_ux_scenario_run(value: &Value) -> bool {
     let Some(object) = value.as_object() else {
         return false;
     };
-
-    if object
-        .get("kind")
-        .and_then(Value::as_str)
-        .is_some_and(|kind| KNOWN_NON_UX_COMPANION_KINDS.contains(&kind))
-    {
-        return false;
-    }
 
     let signature_fields: Vec<&str> = UX_RUN_SIGNATURE_FIELDS
         .iter()
@@ -200,11 +193,23 @@ fn looks_like_ux_scenario_run(value: &Value) -> bool {
         .filter(|field| object.contains_key(*field))
         .collect();
     let has_distinctive = UX_RUN_DISTINCTIVE_FIELDS.iter().any(|field| object.contains_key(*field));
-    let has_multiple_markers = signature_fields.len() >= 2;
+    let has_malformed_marker = signature_fields.iter().any(|field| malformed_marker(object, field));
+    if has_malformed_marker {
+        return true;
+    }
 
-    (signature_fields.len() >= 3 && has_distinctive)
-        || (has_multiple_markers
-            && signature_fields.iter().any(|field| malformed_marker(object, field)))
+    let kind = object.get("kind").and_then(Value::as_str);
+    if kind.is_some_and(|kind| KNOWN_NON_UX_COMPANION_KINDS.contains(&kind)) {
+        return false;
+    }
+
+    let has_ux_identity = ["workflow_id", "scenario_file", "test_name", "ci_tier", "assertions"]
+        .iter()
+        .any(|field| object.contains_key(*field));
+    let is_unknown_non_ux_companion =
+        kind.is_some_and(|kind| kind != "ux_scenario_run") && !has_ux_identity;
+
+    !is_unknown_non_ux_companion && signature_fields.len() >= 3 && has_distinctive
 }
 
 fn malformed_marker(object: &serde_json::Map<String, Value>, marker: &str) -> bool {
@@ -671,7 +676,7 @@ mod tests {
         ];
 
         for (index, entry) in malformed_entries.into_iter().enumerate() {
-            for kind in [None, Some("other_receipt")] {
+            for kind in [None, Some(Value::Null), Some(Value::String("other_receipt".to_owned()))] {
                 let temp = tempfile::tempdir()?;
                 let receipts = temp.path().join("receipts");
                 fs::create_dir_all(&receipts)?;
@@ -680,7 +685,7 @@ mod tests {
                     "operation_timings": [entry]
                 });
                 if let Some(kind) = kind {
-                    value["kind"] = Value::String(kind.to_owned());
+                    value["kind"] = kind;
                 }
                 fs::write(
                     receipts.join(format!("malformed-nested-timing-{index}.json")),
@@ -770,6 +775,27 @@ mod tests {
     }
 
     #[test]
+    fn unknown_timing_bearing_non_ux_companion_remains_ignored() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let receipts = temp.path().join("receipts");
+        fs::create_dir_all(&receipts)?;
+        let companion = serde_json::json!({
+            "kind": "other_companion",
+            "result": "pass",
+            "duration_ms": 10.0,
+            "operation_timings": []
+        });
+        fs::write(
+            receipts.join("other-companion-timing.json"),
+            serde_json::to_string_pretty(&companion)?,
+        )?;
+        let matrix = write_matrix(temp.path(), &[("known", "known.rs")])?;
+
+        validate_scorecard_inputs(&receipts, &matrix, &checked_in_receipt_schema())?;
+        Ok(())
+    }
+
+    #[test]
     fn invalid_receipt_candidate_fails_schema_validation() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let receipts = temp.path().join("receipts");
@@ -800,6 +826,10 @@ mod tests {
         value["operation_timings"] = serde_json::json!([{
             "operation": "hover",
             "time_to_first_useful_result_ms": null
+        }, {
+            "operation": "completion",
+            "time_to_first_useful_result_ms": 5.0,
+            "timing_status": "missing_request_start"
         }]);
         fs::write(&path, serde_json::to_string_pretty(&value)?)?;
         let matrix = write_matrix(temp.path(), &[("known", "known.rs")])?;

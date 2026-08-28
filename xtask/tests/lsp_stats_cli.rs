@@ -72,6 +72,7 @@ fn invalid_timing_receipt_fails_publicly_without_overwriting_output() -> TestRes
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+    assert_ne!(output.status.code(), Some(0), "invalid input must exit nonzero");
     assert_eq!(preserved_output, sentinel, "invalid input overwrote the output artifact");
     drop(restore);
     Ok(())
@@ -129,7 +130,57 @@ fn valid_receipt_reaches_public_aggregation_and_writes_json() -> TestResult {
     let generated: serde_json::Value = serde_json::from_slice(&fs::read(&output_path)?)?;
     assert_eq!(generated["schema_version"], 1);
     assert_eq!(generated["subsystem"], "editor_ux");
-    assert!(generated["workflows"].as_array().is_some());
+    let workflow = generated["workflows"]
+        .as_array()
+        .and_then(|workflows| {
+            workflows.iter().find(|workflow| workflow["id"] == "simple_file_smoke")
+        })
+        .ok_or("supplied workflow was not emitted")?;
+    assert_eq!(workflow["pass_rate"]["state"], "measured");
+    assert_eq!(workflow["pass_rate"]["value"], 1.0);
+    assert_eq!(workflow["pass_rate"]["basis"][0], "1 receipts");
+    assert_eq!(generated["top_line"]["workflow_pass_rate"]["value"], 1.0);
+    drop(restore);
+    Ok(())
+}
+
+#[test]
+fn invalid_nested_timing_receipt_fails_publicly_without_overwriting_output() -> TestResult {
+    let _lock = METRICS_OUTPUT_LOCK.lock().map_err(|_| "metrics output lock poisoned")?;
+    let root = workspace_root()?;
+    let output_path = root.join(".ci/metrics/editor_ux.json");
+    let restore =
+        OutputRestore { path: output_path.clone(), original: fs::read(&output_path).ok() };
+    let sentinel = br#"{"sentinel":"preserve-nested"}
+"#;
+    fs::write(&output_path, sentinel)?;
+
+    let receipts = TempDir::new()?;
+    fs::write(
+        receipts.path().join("malformed-nested-timing.json"),
+        br#"{
+            "result": "pass",
+            "operation_timings": [{
+                "operation": "hover",
+                "time_to_first_useful_result_ms": "not-a-number"
+            }]
+        }"#,
+    )?;
+
+    let output = cargo_bin_cmd!("xtask")
+        .args([
+            "metrics",
+            "lsp-stats",
+            "--json",
+            "--receipt-dir",
+            receipts.path().to_str().ok_or("receipt directory path is not valid UTF-8")?,
+        ])
+        .output()?;
+    let preserved_output = fs::read(&output_path)?;
+
+    assert!(!output.status.success(), "nested malformed timing unexpectedly succeeded");
+    assert_ne!(output.status.code(), Some(0), "nested invalid input must exit nonzero");
+    assert_eq!(preserved_output, sentinel, "nested invalid input overwrote the output artifact");
     drop(restore);
     Ok(())
 }
