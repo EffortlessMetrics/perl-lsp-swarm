@@ -274,9 +274,12 @@ sub _connect_and_handshake {
     my $deadline = time() + HANDSHAKE_TIMEOUT;
     while (time() < $deadline) {
         my ($response, $read_error) = _read_message($state, $deadline - time());
-        unless ($response) {
+        unless (defined $response) {
             close($socket);
-            return (undef, "peer/hello response failed: $read_error");
+            my $failure = defined $read_error
+                ? $read_error
+                : 'peer/hello response must be a JSON value';
+            return (undef, "peer/hello response failed: $failure");
         }
         my ($valid, $validation_error) = _validate_hello_response($response, $hello_seq);
         unless ($valid) {
@@ -489,7 +492,10 @@ sub run_reference_peer {
         peer          => 'minimal_ptkdb_peer.pl (reference)',
         peer_version  => '0.1',
     );
-    die "minimal_ptkdb_peer.pl: $error\n" unless $state;
+    unless ($state) {
+        _diagnostic("reference peer disabled: $error");
+        return 0;
+    }
 
     _diagnostic("handshake ok, session=$state->{session_id}");
     _emit_output($state, 'stdout', "minimal_ptkdb_peer.pl: reference peer connected\n");

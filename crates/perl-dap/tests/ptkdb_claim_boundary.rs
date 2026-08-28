@@ -511,6 +511,82 @@ fn reference_peer_rejects_non_object_post_handshake_frame_without_terminating()
 }
 
 #[test]
+fn reference_peer_fails_closed_cleanly_on_handshake_failures()
+-> Result<(), Box<dyn std::error::Error>> {
+    let plugin = repo_root().join("fixtures/debug-peer/perl/minimal_ptkdb_peer.pl");
+    for (name, response, expected_error) in [
+        (
+            "array handshake",
+            Some(br#"[]"#.as_slice()),
+            "invalid peer/hello response: peer/hello response must be a JSON object",
+        ),
+        (
+            "false scalar handshake",
+            Some(br#"0"#.as_slice()),
+            "invalid peer/hello response: peer/hello response must be a JSON object",
+        ),
+        ("EOF handshake", None, "peer/hello response failed: connection closed"),
+        ("timeout handshake", None, "peer/hello response failed: read timed out"),
+    ] {
+        let listener = TcpListener::bind(("127.0.0.1", 0))?;
+        let peer_addr = listener.local_addr()?;
+        let mut child = ChildCleanup::new(
+            Command::new("perl")
+                .arg(&plugin)
+                .env("PERL_DAP_PEER", peer_addr.to_string())
+                .env("PERL_DAP_PEER_MODE", "mirror")
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped())
+                .spawn()?,
+            Vec::<PathBuf>::new(),
+        );
+
+        let (mut stream, _) = listener.accept()?;
+        stream.set_read_timeout(Some(Duration::from_secs(3)))?;
+        let mut hello = [0_u8; 4096];
+        let read = stream.read(&mut hello)?;
+        assert!(std::str::from_utf8(&hello[..read])?.contains("peer/hello"));
+
+        match (name, response) {
+            ("array handshake" | "false scalar handshake", Some(response)) => {
+                write!(stream, "Content-Length: {}\r\n\r\n", response.len())?;
+                stream.write_all(response)?;
+                drop(stream);
+            }
+            ("EOF handshake", None) => drop(stream),
+            ("timeout handshake", None) => {
+                let deadline = Instant::now() + Duration::from_secs(5);
+                while child.child.try_wait()?.is_none() && Instant::now() < deadline {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            }
+            _ => return Err("handshake case setup must be internally consistent".into()),
+        }
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let status = loop {
+            if let Some(status) = child.child.try_wait()? {
+                break status;
+            }
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                break child.child.wait()?;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        let stderr = child_stderr(&mut child.child);
+        assert!(status.success(), "{name} terminated nonzero: {stderr}");
+        assert!(
+            stderr.contains("reference peer disabled:") && stderr.contains(expected_error),
+            "{name} missing clean fail-closed diagnostic: {stderr}"
+        );
+        assert!(!stderr.contains(" at "), "{name} emitted a Perl die traceback: {stderr}");
+    }
+
+    Ok(())
+}
+
+#[test]
 fn reference_ptkdb_adapter_rejects_wrong_source_and_bad_rendezvous_without_touching_ptkdb()
 -> Result<(), Box<dyn std::error::Error>> {
     let plugin = repo_root().join("fixtures/debug-peer/perl/minimal_ptkdb_peer.pl");
