@@ -4,7 +4,7 @@ use perl_pragma::{PerlVersion, features_enabled_by_version, parse_perl_version};
 
 #[test]
 fn perl_543_release_spellings_select_minor_43() {
-    for spelling in ["5.043011", "5.043_011", "v5.43.11", "5.43.11"] {
+    for spelling in ["5.043011", "5.043_011", "5.043011_01", "v5.43.11", "5.43.11"] {
         assert_eq!(
             parse_perl_version(spelling),
             Some(PerlVersion::new(5, 43)),
