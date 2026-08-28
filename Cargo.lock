@@ -1822,6 +1822,7 @@ dependencies = [
  "perl-tdd-support",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "thiserror",
  "toml",
@@ -1982,7 +1983,9 @@ dependencies = [
  "perl-tdd-support",
  "perl-workspace",
  "proptest",
+ "regex",
  "tempfile",
+ "unicode-ident",
  "url",
 ]
 
