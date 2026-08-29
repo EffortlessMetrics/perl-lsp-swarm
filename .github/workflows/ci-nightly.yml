@@ -126,7 +126,7 @@ jobs:
         cache-on-failure: true
 
     - name: Install just
-      uses: taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1  # v2.85.13
+      uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc  # v2.86.7
       with:
         tool: just
 
@@ -138,6 +138,7 @@ jobs:
       run: |
         python3 benchmarks/scripts/test_extract_criterion.py -v
         python3 benchmarks/scripts/test_benchmark_guards.py -v
+        python3 benchmarks/scripts/test_benchmark_targets.py -v
 
     - name: Build perllsp binary for real-repo UX perf lane
       run: cargo build -p perllsp --bin perllsp --locked
@@ -645,7 +646,7 @@ jobs:
           cache-on-failure: true
 
       - name: Install just
-        uses: taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1  # v2.85.13
+        uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc  # v2.86.7
         with:
           tool: just
 
@@ -856,11 +857,21 @@ jobs:
       github.event_name == 'workflow_dispatch' ||
       github.event_name == 'schedule' ||
       (github.event_name == 'pull_request' &&
-       contains(github.event.pull_request.labels.*.name, 'ci:public-api'))
+       contains(github.event.pull_request.labels.*.name, 'ci:public-api') &&
+       (github.event.action != 'labeled' ||
+        github.event.label.name == 'ci:public-api'))
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
+
+      - name: Verify tested candidate identity
+        env:
+          TESTED_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse 'HEAD^{commit}')" = "$TESTED_SHA"
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
@@ -889,7 +900,7 @@ jobs:
         run: cargo install cargo-public-api --locked --version 0.50.1
 
       - name: Install just
-        uses: taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1  # v2.85.13
+        uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc  # v2.86.7
         with:
           tool: just
 
@@ -926,12 +937,13 @@ jobs:
           cache-on-failure: true
 
       - name: Install just
-        uses: taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1  # v2.85.13
+        uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc  # v2.86.7
         with:
           tool: just
 
-      - name: Check floor-metric ratchet (bootstrap-safe)
-        # Passes if no receipt exists; compares against committed baselines when receipt is present.
+      - name: Check floor-metric ratchet (including fail-closed editor UX)
+        # The editor_ux route always evaluates the committed baseline; missing or
+        # invalid current metrics fail before any scorecard publication.
         # See docs/project/metrics/RATCHET.md for the four-layer model and promotion workflow.
         run: just ci-metrics-ratchet
 

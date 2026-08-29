@@ -2420,33 +2420,20 @@ mod tests {
         let schema_raw = fs::read_to_string(&schema_path)?;
         let schema_value: serde_json::Value = serde_json::from_str(&schema_raw)?;
 
-        // Verify the schema has an if/then conditional requiring owner, issue,
-        // and failure_class for active entries.
+        // The state conditional lives under allOf[0] since schema v2.
         let entry_def = &schema_value["$defs"]["flakeEntry"];
-        let if_clause = &entry_def["if"];
-        let then_clause = &entry_def["then"];
+        let conditional = entry_def["allOf"]
+            .as_array()
+            .ok_or("flakeEntry conditional should live under allOf")?
+            .first()
+            .ok_or("flakeEntry.allOf should carry the state conditional")?;
+        let if_clause = &conditional["if"];
+        let then_clause = &conditional["then"];
 
         // The if clause should check for state == "active".
         assert_eq!(
             if_clause["properties"]["state"]["const"], "active",
             "schema if-clause should check for state=active"
-        );
-
-        // The then clause should require owner, issue, and failure_class.
-        let then_required =
-            then_clause["required"].as_array().ok_or("then.required should be an array")?;
-        let required_fields: Vec<&str> = then_required.iter().filter_map(|v| v.as_str()).collect();
-        assert!(
-            required_fields.contains(&"owner"),
-            "schema should require 'owner' for active entries, got {required_fields:?}"
-        );
-        assert!(
-            required_fields.contains(&"issue"),
-            "schema should require 'issue' for active entries, got {required_fields:?}"
-        );
-        assert!(
-            required_fields.contains(&"failure_class"),
-            "schema should require 'failure_class' for active entries, got {required_fields:?}"
         );
 
         // The then clause should narrow owner to non-nullable string.
@@ -2461,6 +2448,79 @@ mod tests {
         assert_eq!(
             then_issue_type, "integer",
             "active entry issue should be narrowed to integer (non-nullable)"
+        );
+
+        // The then clause should null out resolved bookkeeping for active rows.
+        assert_eq!(
+            then_clause["properties"]["resolved_in"]["type"], "null",
+            "active entries must not carry a resolved_in PR"
+        );
+        assert_eq!(
+            then_clause["properties"]["resolved_at"]["type"], "null",
+            "active entries must not carry a resolved_at date"
+        );
+
+        // Presence of owner/issue/failure_class is enforced globally by
+        // flakeEntry.required, which covers active entries.
+        let required =
+            entry_def["required"].as_array().ok_or("flakeEntry.required should be an array")?;
+        let required_fields: Vec<&str> = required.iter().filter_map(|v| v.as_str()).collect();
+        for field in ["owner", "issue", "failure_class"] {
+            assert!(
+                required_fields.contains(&field),
+                "schema should require '{field}' for every entry (active included), got {required_fields:?}"
+            );
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_flake_ledger_schema_binds_verified_evidence_to_exact_head()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = crate::utils::project_root()?;
+        let schema_path = root.join(".ci").join("schemas").join("ux-flakes.schema.json");
+        let schema_raw = fs::read_to_string(&schema_path)?;
+        let schema_value: serde_json::Value = serde_json::from_str(&schema_raw)?;
+
+        // The evidence object must carry an explicit verification
+        // classification plus the exact-head binding fields. A null
+        // verified_sha without an unverified classification is the vacuous
+        // evidence contract rejected in review (PR #13167).
+        let evidence = &schema_value["$defs"]["evidence"];
+        let required = evidence["required"].as_array().ok_or("evidence.required")?;
+        let required_fields: Vec<&str> = required.iter().filter_map(|v| v.as_str()).collect();
+        for field in
+            ["verification_state", "verified_sha", "verified_artifact_blob", "unverified_reason"]
+        {
+            assert!(
+                required_fields.contains(&field),
+                "evidence should require '{field}', got {required_fields:?}"
+            );
+        }
+
+        let conditionals = evidence["allOf"].as_array().ok_or("evidence.allOf")?;
+        let verified_then = &conditionals[0]["then"]["properties"];
+        assert_eq!(
+            verified_then["verified_sha"]["type"], "string",
+            "verified rows must carry a non-null 40-hex verified_sha"
+        );
+        assert_eq!(
+            verified_then["verified_artifact_blob"]["type"], "string",
+            "verified rows must carry a non-null artifact blob binding"
+        );
+        assert_eq!(
+            verified_then["unverified_reason"]["type"], "null",
+            "verified rows must not carry an unverified_reason"
+        );
+        let unverified_then = &conditionals[1]["then"]["properties"];
+        assert_eq!(
+            unverified_then["verified_sha"]["type"], "null",
+            "unverified rows must not fabricate a verified_sha"
+        );
+        assert_eq!(
+            unverified_then["unverified_reason"]["type"], "string",
+            "unverified rows must name their reason"
         );
 
         Ok(())
