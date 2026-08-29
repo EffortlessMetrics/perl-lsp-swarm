@@ -1014,6 +1014,27 @@ mod explicit_pin_tests {
         Ok(())
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn invalid_pathext_falls_back_to_exe() -> Result<(), String> {
+        let empty = super::bare_name_lookup_variants_with_pathext(
+            std::ffi::OsStr::new("perl"),
+            Some(std::ffi::OsStr::new("")),
+        );
+        if !empty.iter().any(|variant| variant == "perl.EXE") {
+            return Err(format!("empty PATHEXT variants were {empty:?}"));
+        }
+
+        let invalid = super::bare_name_lookup_variants_with_pathext(
+            std::ffi::OsStr::new("perl"),
+            Some(std::ffi::OsStr::new("COM;CMD")),
+        );
+        if !invalid.iter().any(|variant| variant == "perl.EXE") {
+            return Err(format!("invalid PATHEXT variants were {invalid:?}"));
+        }
+        Ok(())
+    }
+
     #[cfg(unix)]
     #[test]
     fn non_utf8_pin_is_rejected_before_launch() -> Result<(), String> {
@@ -2595,22 +2616,36 @@ fn is_bare_program_name(path: &Path) -> bool {
 /// CreateProcess `.EXE` default when `PATHEXT` is unset or unusable).
 #[cfg(windows)]
 fn bare_name_lookup_variants(name: &std::ffi::OsStr) -> Vec<std::ffi::OsString> {
+    bare_name_lookup_variants_with_pathext(name, std::env::var_os("PATHEXT").as_deref())
+}
+
+#[cfg(windows)]
+fn bare_name_lookup_variants_with_pathext(
+    name: &std::ffi::OsStr,
+    path_ext: Option<&std::ffi::OsStr>,
+) -> Vec<std::ffi::OsString> {
     let mut variants = vec![name.to_os_string()];
     if Path::new(name).extension().is_some() {
         return variants;
     }
-    let path_ext = std::env::var_os("PATHEXT")
-        .unwrap_or_else(|| std::ffi::OsString::from(".COM;.EXE;.BAT;.CMD"));
+    let path_ext = path_ext.unwrap_or_else(|| std::ffi::OsStr::new(".COM;.EXE;.BAT;.CMD"));
+    let mut found_valid_extension = false;
     for extension in path_ext.to_string_lossy().split(';') {
         let extension = extension.trim();
         if extension.is_empty() || !extension.starts_with('.') {
             continue;
         }
+        found_valid_extension = true;
         let mut with_extension = name.to_os_string();
         with_extension.push(extension);
         if !variants.contains(&with_extension) {
             variants.push(with_extension);
         }
+    }
+    if !found_valid_extension {
+        let mut with_extension = name.to_os_string();
+        with_extension.push(".EXE");
+        variants.push(with_extension);
     }
     variants
 }
