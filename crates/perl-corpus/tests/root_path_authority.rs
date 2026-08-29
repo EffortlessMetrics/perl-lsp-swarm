@@ -23,9 +23,7 @@ fn expect_error<T>(
             if expected(&error) {
                 Ok(())
             } else {
-                Err(failure(format!(
-                    "{context}: unexpected error: {error:?}"
-                )))
+                Err(failure(format!("{context}: unexpected error: {error:?}")))
             }
         }
         Ok(_) => Err(failure(format!("{context}: operation unexpectedly succeeded"))),
@@ -41,10 +39,7 @@ fn require_explicit_source(paths: &ResolvedCorpusPaths) -> TestResult {
     if paths.root_source() == CorpusRootSource::Explicit {
         Ok(())
     } else {
-        Err(failure(format!(
-            "expected explicit root source, got {:?}",
-            paths.root_source()
-        )))
+        Err(failure(format!("expected explicit root source, got {:?}", paths.root_source())))
     }
 }
 
@@ -67,9 +62,7 @@ fn strict_root_retains_shareable_directory_identity() -> TestResult {
     if retained == path_opened {
         Ok(())
     } else {
-        Err(failure(
-            "cloned retained directory handle did not match the bound root",
-        ))
+        Err(failure("cloned retained directory handle did not match the bound root"))
     }
 }
 
@@ -105,15 +98,7 @@ fn required_layers_fail_independently_without_recursive_population_policy() -> T
     let authority = CorpusRoot::explicit(missing_test.path())?;
     expect_error(
         authority.require_repository_layout(),
-        |error| {
-            matches!(
-                error,
-                CorpusRootError::RequiredLayerMissing {
-                    layer: "test_corpus",
-                    ..
-                }
-            )
-        },
+        |error| matches!(error, CorpusRootError::RequiredLayerMissing { layer: "test_corpus", .. }),
         "missing test_corpus layer",
     )?;
 
@@ -122,12 +107,7 @@ fn required_layers_fail_independently_without_recursive_population_policy() -> T
     let authority = CorpusRoot::explicit(missing_fuzz.path())?;
     expect_error(
         authority.require_repository_layout(),
-        |error| {
-            matches!(
-                error,
-                CorpusRootError::RequiredLayerMissing { layer: "fuzz", .. }
-            )
-        },
+        |error| matches!(error, CorpusRootError::RequiredLayerMissing { layer: "fuzz", .. }),
         "missing fuzz layer",
     )
 }
@@ -141,12 +121,7 @@ fn required_layout_rejects_non_directory_intermediate_component() -> TestResult 
     let authority = CorpusRoot::explicit(root.path())?;
     expect_error(
         authority.require_repository_layout(),
-        |error| {
-            matches!(
-                error,
-                CorpusRootError::RequiredLayerNotDirectory { layer: "fuzz", .. }
-            )
-        },
+        |error| matches!(error, CorpusRootError::RequiredLayerNotDirectory { layer: "fuzz", .. }),
         "non-directory fuzz path",
     )
 }
@@ -200,10 +175,7 @@ fn required_layout_rejects_linked_layer_but_not_nested_member_policy() -> TestRe
         |error| {
             matches!(
                 error,
-                CorpusRootError::RequiredLayerSymlinkOrReparse {
-                    layer: "test_corpus",
-                    ..
-                }
+                CorpusRootError::RequiredLayerSymlinkOrReparse { layer: "test_corpus", .. }
             )
         },
         "linked top-level layer",
@@ -247,10 +219,7 @@ fn strict_root_and_required_layer_reject_windows_reparse_points() -> TestResult 
         |error| {
             matches!(
                 error,
-                CorpusRootError::RequiredLayerSymlinkOrReparse {
-                    layer: "test_corpus",
-                    ..
-                }
+                CorpusRootError::RequiredLayerSymlinkOrReparse { layer: "test_corpus", .. }
             )
         },
         "Windows reparse layer",
@@ -274,9 +243,7 @@ fn retained_handle_is_not_redirected_by_path_replacement() -> TestResult {
     let moved_handle = Handle::from_path(&moved)?;
     let replacement_handle = Handle::from_path(&root)?;
     if retained != moved_handle || retained == replacement_handle {
-        return Err(failure(
-            "retained authority followed the replacement pathname",
-        ));
+        return Err(failure("retained authority followed the replacement pathname"));
     }
 
     expect_error(
