@@ -11,80 +11,44 @@ const PROVIDER_ENTRY_SKILLS: &[(&str, &str)] = &[
 const REQUIREMENTS: &[(&str, &[&str])] = &[
     (
         "a pre-mutation boundary",
-        &[
-            "before the first delegated mutation",
-            "before delegating a mutation",
-        ],
+        &["before the first delegated mutation", "before delegating a mutation"],
     ),
     (
         "direct candidate edits are inside the boundary",
         &["direct candidate edit", "editing the candidate directly"],
     ),
-    (
-        "one coherent claim",
-        &["acceptance-and-rollback claim", "coherent claim"],
-    ),
+    ("one coherent claim", &["acceptance-and-rollback claim", "coherent claim"]),
     ("the semantic owner", &["semantic owner"]),
-    (
-        "current governing authority",
-        &["current authority", "governing authority"],
-    ),
-    (
-        "current facts and contradictions",
-        &["source-backed facts", "current facts"],
-    ),
+    ("current governing authority", &["current authority", "governing authority"]),
+    ("current facts and contradictions", &["source-backed facts", "current facts"]),
     ("material contradictions", &["contradictions"]),
-    (
-        "the production or observable seam",
-        &["production seam", "observable seam"],
-    ),
+    ("the production or observable seam", &["production seam", "observable seam"]),
     ("the acceptance surface", &["acceptance surface"]),
     ("the cheapest check", &["cheapest"]),
-    (
-        "the first falsifier",
-        &["first falsifier", "earliest falsifier"],
-    ),
+    ("the first falsifier", &["first falsifier", "earliest falsifier"]),
     (
         "a realistic wrong or negative control",
-        &[
-            "wrong implementation",
-            "negative control",
-            "current defect",
-        ],
+        &["wrong implementation", "negative control", "current defect"],
     ),
     ("the proof ceiling", &["proof ceiling"]),
     ("an explicit NOT_PROVEN boundary", &["not_proven"]),
     (
         "deferred broader proof",
-        &[
-            "broader proof is deferred",
-            "broader proof to defer",
-            "defer broader proof",
-        ],
+        &["broader proof is deferred", "broader proof to defer", "defer broader proof"],
     ),
     ("one mutation owner", &["mutation owner"]),
     ("one writer", &["one writer"]),
     (
         "a named next or backward route",
-        &[
-            "next or backward route",
-            "next/backward route",
-            "named next",
-        ],
+        &["next or backward route", "next/backward route", "named next"],
     ),
-    (
-        "the earliest missing judgment",
-        &["earliest missing judgment"],
-    ),
+    ("the earliest missing judgment", &["earliest missing judgment"]),
     ("read-only pre-admission research", &["read-only research"]),
     ("the prepare-issue repair route", &["prepare-issue"]),
     ("the prepare-proof repair route", &["prepare-proof"]),
     (
         "an unresolved falsifier repair condition",
-        &[
-            "first falsifier is unresolved",
-            "earliest falsifier is unresolved",
-        ],
+        &["first falsifier is unresolved", "earliest falsifier is unresolved"],
     ),
     ("an anti-inference rule", &["do not infer"]),
     (
@@ -126,26 +90,93 @@ fn h2_section(text: &str, heading: &str) -> Option<String> {
         }
     }
 
-    if in_section {
-        Some(lines.join("\n"))
-    } else {
-        None
+    if in_section { Some(lines.join("\n")) } else { None }
+}
+
+fn visible_markdown(text: &str) -> String {
+    let mut visible = Vec::new();
+    let mut in_fence = false;
+    let mut in_comment = false;
+
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("```") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence {
+            continue;
+        }
+
+        let mut remaining = line;
+        while !remaining.is_empty() {
+            if in_comment {
+                let Some(end) = remaining.find("-->") else {
+                    remaining = "";
+                    continue;
+                };
+                in_comment = false;
+                remaining = &remaining[end + 3..];
+            } else if let Some(start) = remaining.find("<!--") {
+                visible.push(&remaining[..start]);
+                in_comment = true;
+                remaining = &remaining[start + 4..];
+            } else {
+                visible.push(remaining);
+                break;
+            }
+        }
+        visible.push("\n");
     }
+
+    visible.concat()
+}
+
+fn is_negated(line: &str, marker: &str) -> bool {
+    let Some(marker_start) = line.find(marker) else {
+        return false;
+    };
+    let sentence_start =
+        line[..marker_start].rfind(['.', '!', '?', ';']).map_or(0, |index| index + 1);
+    let sentence_end = line[marker_start + marker.len()..]
+        .find(['.', '!', '?', ';'])
+        .map_or(line.len(), |index| marker_start + marker.len() + index);
+    let prefix = line[sentence_start..marker_start].trim().to_ascii_lowercase();
+    let suffix = line[marker_start + marker.len()..sentence_end].trim().to_ascii_lowercase();
+
+    ["not ", "never ", "without ", "does not ", "do not ", "no ", "omit ", "omitted", "missing "]
+        .iter()
+        .any(|negation| prefix.ends_with(negation) || suffix.starts_with(negation))
+        || prefix.ends_with("no")
+        || suffix.starts_with("is not ")
+        || suffix.starts_with("is omitted")
+        || suffix.contains(" optional")
 }
 
 fn validate_claim_admission(text: &str) -> Vec<String> {
-    let Some(section) = h2_section(text, SECTION_HEADING) else {
+    let text = visible_markdown(text);
+    let Some(section) = h2_section(&text, SECTION_HEADING) else {
         return vec![format!("missing section '{SECTION_HEADING}'")];
     };
-    let section = section
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .to_ascii_lowercase();
+    let section = section.split_whitespace().collect::<Vec<_>>().join(" ").to_ascii_lowercase();
     let mut errors = Vec::new();
 
     for &(label, alternatives) in REQUIREMENTS {
-        if !alternatives.iter().any(|&term| section.contains(term)) {
+        let boundary_only = matches!(
+            label,
+            "candidate refusal before admission"
+                | "an anti-inference rule"
+                | "the non-stage boundary"
+                | "the non-lease boundary"
+                | "the non-scheduler boundary"
+                | "the non-frontier boundary"
+        );
+        let present = alternatives.iter().any(|&term| {
+            section
+                .lines()
+                .any(|line| line.contains(term) && (boundary_only || !is_negated(line, term)))
+        });
+        if !present {
             errors.push(format!(
                 "claim admission is missing {label}; expected one of: {}",
                 alternatives.join(", ")
@@ -218,27 +249,11 @@ Later content.
 "#;
 
     let errors = validate_claim_admission(text);
-    assert!(
-        errors
-            .iter()
-            .any(|error| error.contains("direct candidate edits"))
-    );
-    assert!(
-        errors
-            .iter()
-            .any(|error| error.contains("acceptance surface"))
-    );
-    assert!(
-        errors
-            .iter()
-            .any(|error| error.contains("proof ceiling"))
-    );
+    assert!(errors.iter().any(|error| error.contains("direct candidate edits")));
+    assert!(errors.iter().any(|error| error.contains("acceptance surface")));
+    assert!(errors.iter().any(|error| error.contains("proof ceiling")));
     assert!(errors.iter().any(|error| error.contains("prepare-issue")));
-    assert!(
-        errors
-            .iter()
-            .any(|error| error.contains("durable-state exception"))
-    );
+    assert!(errors.iter().any(|error| error.contains("durable-state exception")));
 }
 
 #[test]
@@ -257,11 +272,7 @@ frontier.
 "#;
 
     let errors = validate_claim_admission(text);
-    assert!(
-        errors
-            .iter()
-            .any(|error| error.contains("proof ceiling"))
-    );
+    assert!(errors.iter().any(|error| error.contains("proof ceiling")));
     assert!(errors.iter().any(|error| error.contains("NOT_PROVEN")));
     assert!(errors.iter().any(|error| error.contains("prepare-issue")));
     assert!(errors.iter().any(|error| error.contains("prepare-proof")));
@@ -271,4 +282,44 @@ frontier.
 fn missing_admission_section_fails_closed() {
     let errors = validate_claim_admission("## Entry route\n- `prepare-issue`");
     assert_eq!(errors, vec![format!("missing section '{SECTION_HEADING}'")]);
+}
+
+#[test]
+fn hidden_markdown_decoys_do_not_satisfy_the_admission_section() {
+    let text = r#"
+## Shift-left claim admission
+Before the first delegated mutation, retain a coherent claim and its owner.
+<!-- acceptance surface, first falsifier, proof ceiling, NOT_PROVEN, prepare-proof,
+prepare-issue, mutation owner, one writer, runtime-local, stage record, lease,
+scheduler, tracked frontier -->
+```text
+direct candidate edit current authority production seam negative control
+broader proof is deferred earliest missing judgment next/backward route
+```
+## Entry route
+Later content.
+"#;
+
+    let errors = validate_claim_admission(text);
+    assert!(errors.iter().any(|error| error.contains("acceptance surface")));
+    assert!(errors.iter().any(|error| error.contains("proof ceiling")));
+    assert!(errors.iter().any(|error| error.contains("prepare-issue")));
+}
+
+#[test]
+fn negated_markdown_obligations_fail_closed() {
+    let text = r#"
+## Shift-left claim admission
+Before the first delegated mutation, retain a coherent claim and semantic owner.
+The acceptance surface is not required, the proof ceiling is omitted, and no
+negative control is needed. Current authority and production seam are optional.
+## Entry route
+Later content.
+"#;
+
+    let errors = validate_claim_admission(text);
+    assert!(errors.iter().any(|error| error.contains("acceptance surface")));
+    assert!(errors.iter().any(|error| error.contains("proof ceiling")));
+    assert!(errors.iter().any(|error| error.contains("first falsifier")));
+    assert!(errors.iter().any(|error| error.contains("current governing authority")));
 }

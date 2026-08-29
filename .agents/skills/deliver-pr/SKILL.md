@@ -25,6 +25,10 @@ unrelated worktrees as a routine ownership check.
 
 ## Shift-left claim admission
 
+This is a static provider contract and routing guide. It cannot observe or enforce
+model behavior, live ownership, or whether a later mutation actually honored the
+admission; those boundaries remain explicit `NOT_PROVEN` obligations for the lane.
+
 Before the first delegated mutation or direct candidate edit, retain one compact lane
 admission:
 
