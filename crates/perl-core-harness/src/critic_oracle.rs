@@ -33,28 +33,20 @@ impl OracleSubject {
     /// Build a subject from redacted/content identities, rejecting private paths
     /// and missing identity components before they can reach a cache or receipt.
     pub fn new(
-        perl_identity: impl Into<String>,
-        critic_identity: impl Into<String>,
-        fixture_digest: impl Into<String>,
-        root_identity: impl Into<String>,
-        source_digest: impl Into<String>,
-        profile_digest: impl Into<String>,
+        identity: OracleSubjectIdentity,
         invocation: OracleInvocation,
-        environment_digest: impl Into<String>,
-        process_schema: impl Into<String>,
-        parser_schema: impl Into<String>,
     ) -> Result<Self, OracleSubjectError> {
         let subject = Self {
-            perl_identity: perl_identity.into(),
-            critic_identity: critic_identity.into(),
-            fixture_digest: fixture_digest.into(),
-            root_identity: root_identity.into(),
-            source_digest: source_digest.into(),
-            profile_digest: profile_digest.into(),
+            perl_identity: identity.perl_identity,
+            critic_identity: identity.critic_identity,
+            fixture_digest: identity.fixture_digest,
+            root_identity: identity.root_identity,
+            source_digest: identity.source_digest,
+            profile_digest: identity.profile_digest,
             invocation,
-            environment_digest: environment_digest.into(),
-            process_schema: process_schema.into(),
-            parser_schema: parser_schema.into(),
+            environment_digest: identity.environment_digest,
+            process_schema: identity.process_schema,
+            parser_schema: identity.parser_schema,
         };
         subject.validate()?;
         Ok(subject)
@@ -122,6 +114,20 @@ impl OracleSubject {
             ("parser_schema", &self.parser_schema),
         ]
     }
+}
+
+/// The non-invocation identity axes of one complete conformance subject.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+pub struct OracleSubjectIdentity {
+    pub perl_identity: String,
+    pub critic_identity: String,
+    pub fixture_digest: String,
+    pub root_identity: String,
+    pub source_digest: String,
+    pub profile_digest: String,
+    pub environment_digest: String,
+    pub process_schema: String,
+    pub parser_schema: String,
 }
 
 fn validate_identity_value(field: &'static str, value: &str) -> Result<(), OracleSubjectError> {
@@ -311,8 +317,38 @@ impl std::error::Error for OracleCacheError {}
 mod tests {
     use super::*;
 
+    macro_rules! subject_new {
+        (
+            $perl_identity:expr,
+            $critic_identity:expr,
+            $fixture_digest:expr,
+            $root_identity:expr,
+            $source_digest:expr,
+            $profile_digest:expr,
+            $invocation:expr,
+            $environment_digest:expr,
+            $process_schema:expr,
+            $parser_schema:expr $(,)?
+        ) => {
+            OracleSubject::new(
+                OracleSubjectIdentity {
+                    perl_identity: ($perl_identity).into(),
+                    critic_identity: ($critic_identity).into(),
+                    fixture_digest: ($fixture_digest).into(),
+                    root_identity: ($root_identity).into(),
+                    source_digest: ($source_digest).into(),
+                    profile_digest: ($profile_digest).into(),
+                    environment_digest: ($environment_digest).into(),
+                    process_schema: ($process_schema).into(),
+                    parser_schema: ($parser_schema).into(),
+                },
+                $invocation,
+            )
+        };
+    }
+
     fn subject(root: &str, profile: &str) -> OracleSubject {
-        OracleSubject::new(
+        subject_new!(
             "perl-5.40.2-build-a",
             "perlcritic-1.152",
             "sha256:fixture",
@@ -356,7 +392,7 @@ mod tests {
     fn each_non_invocation_identity_axis_changes_the_subject() {
         let baseline = subject("root", "sha256:profile");
         let variants = [
-            OracleSubject::new(
+            subject_new!(
                 "perl-5.40.2-build-b",
                 "perlcritic-1.152",
                 "sha256:fixture",
@@ -369,7 +405,7 @@ mod tests {
                 "perlcritic-parser.v2",
             )
             .expect("perl variant"),
-            OracleSubject::new(
+            subject_new!(
                 "perl-5.40.2-build-a",
                 "perlcritic-1.153",
                 "sha256:fixture",
@@ -382,7 +418,7 @@ mod tests {
                 "perlcritic-parser.v2",
             )
             .expect("critic variant"),
-            OracleSubject::new(
+            subject_new!(
                 "perl-5.40.2-build-a",
                 "perlcritic-1.152",
                 "sha256:fixture-b",
@@ -395,7 +431,7 @@ mod tests {
                 "perlcritic-parser.v2",
             )
             .expect("fixture variant"),
-            OracleSubject::new(
+            subject_new!(
                 "perl-5.40.2-build-a",
                 "perlcritic-1.152",
                 "sha256:fixture",
@@ -408,7 +444,7 @@ mod tests {
                 "perlcritic-parser.v2",
             )
             .expect("root variant"),
-            OracleSubject::new(
+            subject_new!(
                 "perl-5.40.2-build-a",
                 "perlcritic-1.152",
                 "sha256:fixture",
@@ -421,7 +457,7 @@ mod tests {
                 "perlcritic-parser.v2",
             )
             .expect("source variant"),
-            OracleSubject::new(
+            subject_new!(
                 "perl-5.40.2-build-a",
                 "perlcritic-1.152",
                 "sha256:fixture",
@@ -434,7 +470,7 @@ mod tests {
                 "perlcritic-parser.v2",
             )
             .expect("environment variant"),
-            OracleSubject::new(
+            subject_new!(
                 "perl-5.40.2-build-a",
                 "perlcritic-1.152",
                 "sha256:fixture",
@@ -447,7 +483,7 @@ mod tests {
                 "perlcritic-parser.v2",
             )
             .expect("process schema variant"),
-            OracleSubject::new(
+            subject_new!(
                 "perl-5.40.2-build-a",
                 "perlcritic-1.152",
                 "sha256:fixture",
@@ -484,7 +520,7 @@ mod tests {
             },
         ] {
             variants.push(
-                OracleSubject::new(
+                subject_new!(
                     "perl-5.40.2-build-a",
                     "perlcritic-1.152",
                     "sha256:fixture",
@@ -506,7 +542,7 @@ mod tests {
 
     #[test]
     fn tool_and_environment_movement_changes_the_subject() {
-        let first = OracleSubject::new(
+        let first = subject_new!(
             "perl-5.40.2-build-a",
             "perlcritic-1.152",
             "sha256:fixture",
@@ -525,7 +561,7 @@ mod tests {
             "perlcritic-parser.v2",
         )
         .expect("first subject");
-        let second = OracleSubject::new(
+        let second = subject_new!(
             "perl-5.40.2-build-b",
             "perlcritic-1.153",
             "sha256:fixture",
@@ -584,7 +620,7 @@ mod tests {
 
     #[test]
     fn private_paths_are_not_receipt_identities() {
-        let error = OracleSubject::new(
+        let error = subject_new!(
             "perl",
             "critic",
             "fixture",
