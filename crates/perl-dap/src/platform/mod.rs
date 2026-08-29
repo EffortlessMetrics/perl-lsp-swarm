@@ -15,7 +15,7 @@ pub use perl_lsp_rs_core::platform::{
 
 use std::collections::HashMap;
 use std::env;
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
@@ -151,6 +151,16 @@ fn push_unique_path(paths: &mut Vec<PathBuf>, path: PathBuf) {
     }
 }
 
+/// Match `std::env::var`'s usable-value semantics for the canonical resolver.
+///
+/// The cache key intentionally preserves raw environment values so a change in
+/// invalid Unicode still invalidates an entry.  Filesystem fingerprints must
+/// nevertheless follow the resolver: `env::var` ignores invalid-Unicode and
+/// empty values, then falls back to the next configured location.
+fn usable_environment_value(value: &OsString) -> Option<&str> {
+    value.to_str().filter(|value| !value.is_empty())
+}
+
 fn perl_discovery_candidate_paths(key: &PerlDiscoveryCacheKey) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
 
@@ -158,39 +168,34 @@ fn perl_discovery_candidate_paths(key: &PerlDiscoveryCacheKey) -> Vec<PathBuf> {
         push_unique_path(&mut candidates, PathBuf::from(configured_path));
     }
 
-    for directory in env::split_paths(key.path_env.as_os_str()) {
-        push_unique_path(&mut candidates, directory.join(PERL_EXECUTABLE));
+    if let Some(path_env) = usable_environment_value(&key.path_env) {
+        for directory in env::split_paths(OsStr::new(path_env)) {
+            push_unique_path(&mut candidates, directory.join(PERL_EXECUTABLE));
+        }
     }
 
-    let home = if !key.home.is_empty() {
-        PathBuf::from(&key.home)
-    } else if !key.userprofile.is_empty() {
-        PathBuf::from(&key.userprofile)
-    } else {
-        env::temp_dir()
-    };
+    let home = usable_environment_value(&key.home)
+        .or_else(|| usable_environment_value(&key.userprofile))
+        .map(PathBuf::from)
+        .unwrap_or_else(env::temp_dir);
 
-    if !key.perlbrew_perl.is_empty() {
-        let root = if !key.perlbrew_root.is_empty() {
-            PathBuf::from(&key.perlbrew_root)
-        } else {
-            home.join("perl5").join("perlbrew")
-        };
+    if let Some(version) = usable_environment_value(&key.perlbrew_perl) {
+        let root = usable_environment_value(&key.perlbrew_root)
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.join("perl5").join("perlbrew"));
         push_unique_path(
             &mut candidates,
-            root.join("perls").join(&key.perlbrew_perl).join("bin").join(PERL_EXECUTABLE),
+            root.join("perls").join(version).join("bin").join(PERL_EXECUTABLE),
         );
     }
 
-    if !key.plenv_version.is_empty() {
-        let root = if !key.plenv_root.is_empty() {
-            PathBuf::from(&key.plenv_root)
-        } else {
-            home.join(".plenv")
-        };
+    if let Some(version) = usable_environment_value(&key.plenv_version) {
+        let root = usable_environment_value(&key.plenv_root)
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.join(".plenv"));
         push_unique_path(
             &mut candidates,
-            root.join("versions").join(&key.plenv_version).join("bin").join(PERL_EXECUTABLE),
+            root.join("versions").join(version).join("bin").join(PERL_EXECUTABLE),
         );
     }
 
@@ -787,5 +792,61 @@ mod tests {
             ..perl_discovery_cache_key(None)
         };
         assert_eq!(key.path_env, invalid_path);
+    }
+
+    #[test]
+    fn discovery_candidates_follow_resolver_fallbacks_for_invalid_unicode() {
+        let invalid_root = invalid_environment_value();
+        let invalid_home = invalid_environment_value();
+        let key = PerlDiscoveryCacheKey {
+            configured_path: None,
+            path_env: OsString::new(),
+            perlbrew_perl: OsString::from("perl-5.38.0"),
+            perlbrew_root: invalid_root.clone(),
+            plenv_root: OsString::new(),
+            plenv_version: OsString::new(),
+            home: invalid_home,
+            userprofile: OsString::from("/tmp/profile"),
+            prefix: OsString::new(),
+            #[cfg(windows)]
+            program_files: OsString::new(),
+        };
+
+        let candidates = perl_discovery_candidate_paths(&key);
+        let expected = PathBuf::from("/tmp/profile")
+            .join("perl5")
+            .join("perlbrew")
+            .join("perls")
+            .join("perl-5.38.0")
+            .join("bin")
+            .join(PERL_EXECUTABLE);
+        let invalid = PathBuf::from(&invalid_root)
+            .join("perls")
+            .join("perl-5.38.0")
+            .join("bin")
+            .join(PERL_EXECUTABLE);
+
+        assert!(
+            candidates.contains(&expected),
+            "resolver fallback candidate missing: {candidates:?}"
+        );
+        assert!(
+            !candidates.contains(&invalid),
+            "invalid root must not be fingerprinted: {candidates:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    fn invalid_environment_value() -> OsString {
+        use std::os::unix::ffi::OsStringExt;
+
+        OsString::from_vec(vec![b'/', b't', b'm', b'p', b'/', 0xff])
+    }
+
+    #[cfg(windows)]
+    fn invalid_environment_value() -> OsString {
+        use std::os::windows::ffi::OsStringExt;
+
+        OsString::from_wide(&[b'/' as u16, 0xd800])
     }
 }
