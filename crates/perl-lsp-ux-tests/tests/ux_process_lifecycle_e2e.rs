@@ -121,6 +121,12 @@ impl LifecycleProcess {
                     if message.get("id").and_then(Value::as_u64) == Some(id)
                         && (message.get("result").is_some() || message.get("error").is_some()) =>
                 {
+                    ensure!(
+                        message.get("jsonrpc").and_then(Value::as_str) == Some("2.0"),
+                        "response id={id} did not carry the JSON-RPC 2.0 envelope: \
+                         {message:#}\n{}",
+                        self.render_stderr_tail()
+                    );
                     return Ok(message);
                 }
                 Ok(Ok(_)) => {}
@@ -272,9 +278,14 @@ fn read_message(reader: &mut impl BufRead) -> Result<Option<Value>> {
 
 #[test]
 fn stdio_lifecycle_exits_zero_after_shutdown() -> Result<()> {
-    if !binary_available() {
-        return Ok(());
-    }
+    // This test owns the lifecycle proof for the clean stdio exit claim, so a
+    // missing binary must fail loudly instead of silently skipping: a green
+    // result here is only meaningful if the product binary actually ran.
+    ensure!(
+        binary_available(),
+        "perllsp binary is not available; the stdio lifecycle proof cannot run. \
+         Build it first (`cargo build -p perllsp`) or run `just ux-tests`."
+    );
 
     let binary = resolve_binary().context("UX binary became unavailable after preflight")?;
     let workspace = TempDir::new().context("failed to create isolated lifecycle workspace")?;
@@ -331,9 +342,13 @@ fn stdio_lifecycle_exits_zero_after_shutdown() -> Result<()> {
         "method": "exit",
         "params": null
     }))?;
-    server.close_stdin();
 
+    // Hold stdin open until the child has actually terminated. A conformant
+    // server must exit on the `exit` notification itself; closing stdin here
+    // would let a server that only exits on stdin EOF pass as clean exit.
+    // `Drop` still closes stdin during failed-test cleanup.
     let status = server.wait_for_exit(EXIT_TIMEOUT)?;
+    server.close_stdin();
     server.join_readers(READER_TIMEOUT)?;
     let stderr_tail = server.render_stderr_tail();
     ensure!(
