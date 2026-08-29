@@ -1790,6 +1790,9 @@ pub(crate) fn select_test_runner(
 /// On Windows the `which` crate resolves extension-less names through
 /// `PATHEXT`, so it participates in the key there; on other platforms only the
 /// `PATH` value matters.
+/// The command text remains caller-provided. On Windows, `which` resolves
+/// executable names case-insensitively, so differently cased aliases can occupy
+/// separate bounded entries; they still receive the same probe semantics.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct CommandExistsCacheKey {
     command: String,
