@@ -8,10 +8,10 @@
 //! modes. Execute mode is limited to explicit selected base tests.
 
 pub mod artifacts;
-/// Exact, repository-only Perl::Critic oracle subjects and bounded reuse.
-pub mod critic_oracle;
 #[path = "target_contracts/contract.rs"]
 pub mod contract;
+/// Exact, repository-only Perl::Critic oracle subjects and bounded reuse.
+pub mod critic_oracle;
 #[path = "target_contracts/io.rs"]
 pub mod io;
 #[path = "target_contracts/matrix.rs"]
