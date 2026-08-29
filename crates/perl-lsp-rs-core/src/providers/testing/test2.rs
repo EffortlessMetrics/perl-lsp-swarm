@@ -1246,9 +1246,8 @@ fn consume_parenthesized_scalar(atoms: &[String], start: usize) -> Option<(usize
             ")" => {
                 depth = depth.checked_sub(1)?;
                 if depth == 0 {
-                    let truthy = !nested_expression
-                        && inner.len() == 1
-                        && scalar_target_is_truthy(inner[0]);
+                    let truthy =
+                        !nested_expression && inner.len() == 1 && scalar_target_is_truthy(inner[0]);
                     return Some((index + 1, truthy));
                 }
             }
