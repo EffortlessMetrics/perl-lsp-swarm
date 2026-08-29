@@ -312,21 +312,21 @@ fn test_public_range_formatting_replay_infers_prefix_ending_for_unterminated_fin
     for (label, source, expected_edit, expected_document) in [
         (
             "LF prefix",
-            "my $before=1;\nwhile($n){next;}",
+            "my $a=1;\r\nmy $b=2;\nwhile($n){next;}",
             "while ($n) {\n    next;\n}\n",
-            "my $before=1;\nwhile ($n) {\n    next;\n}\n",
+            "my $a=1;\r\nmy $b=2;\nwhile ($n) {\n    next;\n}\n",
         ),
         (
             "CRLF prefix",
-            "my $before=1;\r\nwhile($n){next;}",
+            "my $a=1;\nmy $b=2;\r\nwhile($n){next;}",
             "while ($n) {\r\n    next;\r\n}\r\n",
-            "my $before=1;\r\nwhile ($n) {\r\n    next;\r\n}\r\n",
+            "my $a=1;\nmy $b=2;\r\nwhile ($n) {\r\n    next;\r\n}\r\n",
         ),
     ] {
         let selected_line = "while($n){next;}";
         let range = WireRange {
-            start: WirePosition::new(1, 0),
-            end: WirePosition::new(1, selected_line.encode_utf16().count() as u32),
+            start: WirePosition::new(2, 0),
+            end: WirePosition::new(2, selected_line.encode_utf16().count() as u32),
         };
 
         let edits = must(formatter.format_range(source, &range, &options));
