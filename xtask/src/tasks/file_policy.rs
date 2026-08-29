@@ -2721,8 +2721,8 @@ surface = "docs"
 classification = "generated"
 owner = "release/ci"
 reason = "Generated badge data."
-generated_by = "cargo xtask badges"
-covered_by = []
+generated_by = "python3 scripts/generate-badges.py"
+covered_by = ["python3 scripts/generate-badges.py --check"]
 created = "2026-05-13"
 review_after = "2026-08-13"
 "#,
