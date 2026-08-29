@@ -168,6 +168,7 @@ fn ripr_workflow_blocks_new_gaps_and_requires_receipts() {
 fn coverage_workflow_is_manual_or_nightly_only_and_requires_receipts() {
     let root = repo_root();
     let workflow = must(fs::read_to_string(root.join(".github/workflows/ci-nightly.yml")));
+    let policy = must(fs::read_to_string(root.join(".ci/policies/required-checks.toml")));
     let justfile = must(fs::read_to_string(root.join("justfile")));
     let codecov_router = must(fs::read_to_string(root.join("scripts/ci/route-codecov-packs.py")));
     let coverage_start = must_some(workflow.find("  test-coverage:"));
@@ -182,6 +183,16 @@ fn coverage_workflow_is_manual_or_nightly_only_and_requires_receipts() {
     assert!(
         coverage_job.contains("name: Codecov / Patch 95"),
         "coverage job keeps the familiar advisory check name"
+    );
+    let policy_start = must_some(policy.find("name = \"Codecov / Patch 95\""));
+    let policy_tail = &policy[policy_start..];
+    let policy_end = policy_tail.find("\n[[checks]]").unwrap_or(policy_tail.len());
+    let coverage_policy = &policy_tail[..policy_end];
+    assert!(
+        coverage_policy.contains("events = [\"schedule\", \"workflow_dispatch\"]")
+            && !coverage_policy.contains("pull_request")
+            && !coverage_policy.contains("labelled"),
+        "coverage policy must describe only the executable schedule/manual route"
     );
     let checkout_ref = must_some(checkout_action_ref(coverage_job));
     assert!(
