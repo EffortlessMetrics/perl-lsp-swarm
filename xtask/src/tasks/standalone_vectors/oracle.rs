@@ -281,9 +281,7 @@ pub fn validate_vector(vector: &Vector) -> Result<(), OracleError> {
             {
                 return Err(OracleError::CorpusRule(format!(
                     "{}: fallback subject maturity {:?} != resolved subject maturity {:?}",
-                    vector.vector_id,
-                    fallback_topology.maturity,
-                    resolved_topology.maturity
+                    vector.vector_id, fallback_topology.maturity, resolved_topology.maturity
                 )));
             }
         }
