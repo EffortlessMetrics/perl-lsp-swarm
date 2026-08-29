@@ -25,7 +25,7 @@
 //! Basic Variable Declaration
 //! ==========================================
 //! # @id: vars.basic.my
-//! # @tags: variables, declaration
+//! # @tags: variable, declaration
 //! my $x = 42;
 //! ---
 //! (expected AST representation)
@@ -196,14 +196,20 @@
 //! # }
 //! ```
 //!
-//! # Test Case Validation
+//! # Test Case Metadata
 //!
-//! Corpus files can include validation flags:
+//! Corpus sections can record version context and validation dispositions through recognized
+//! metadata keys:
 //!
-//! - **`parser-sensitive`**: Requires specific parser version
-//! - **`perl-version:5.26`**: Requires Perl 5.26+ features
-//! - **`expected-error`**: Test case should produce parse error
-//! - **`wip`**: Work in progress, may not parse correctly yet
+//! - **`# @perl: 5.26`**: Records the section's declared Perl-version context
+//! - **`# @flags: parser-sensitive`**: Marks a parser-sensitive fixture
+//! - **`# @flags: version-gated`**: Marks a version-sensitive fixture
+//! - **`# @flags: expected-error`**: Marks a case whose expected outcome includes an error
+//! - **`# @flags: todo`**: Marks unfinished corpus work
+//! - **`# @flags: wip`**: Marks work in progress
+//!
+//! This is an example subset, not a complete vocabulary reference. Repository issue #7028 owns
+//! the generated and mechanically verified reference surface.
 //!
 //! # Contributing Test Cases
 //!
