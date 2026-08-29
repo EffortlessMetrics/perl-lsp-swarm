@@ -127,6 +127,12 @@ pub use perl_lsp::features::diagnostics::DiagnosticTag
 pub use perl_lsp::features::diagnostics::DiagnosticsProvider
 pub use perl_lsp::features::diagnostics::RelatedInformation
 pub mod perl_lsp::features::diagnostics::pull
+pub struct perl_lsp::features::diagnostics::pull::AcceptedStateCurrentness(_)
+pub fn perl_lsp::features::diagnostics::pull::AcceptedStateCurrentness::always_current() -> Self
+pub fn perl_lsp::features::diagnostics::pull::AcceptedStateCurrentness::holds(&self) -> bool
+pub fn perl_lsp::features::diagnostics::pull::AcceptedStateCurrentness::new(check: alloc::sync::Arc<(dyn core::ops::function::Fn() -> bool + core::marker::Send + core::marker::Sync)>) -> Self
+pub fn perl_lsp::features::diagnostics::pull::AcceptedStateCurrentness::clone(&self) -> perl_lsp::features::diagnostics::pull::AcceptedStateCurrentness
+pub fn perl_lsp::features::diagnostics::pull::AcceptedStateCurrentness::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_lsp::features::diagnostics::pull::DiagnosticData
 pub perl_lsp::features::diagnostics::pull::DiagnosticData::category: alloc::string::String
 pub perl_lsp::features::diagnostics::pull::DiagnosticData::code: alloc::string::String
@@ -137,6 +143,8 @@ pub fn perl_lsp::features::diagnostics::pull::DiagnosticData::fmt(&self, f: &mut
 pub fn perl_lsp::features::diagnostics::pull::DiagnosticData::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 pub fn perl_lsp::features::diagnostics::pull::DiagnosticData::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub struct perl_lsp::features::diagnostics::pull::PullDiagnosticsContext
+pub perl_lsp::features::diagnostics::pull::PullDiagnosticsContext::accepted_critic_state: perl_lsp_rs_core::config::critic_state::EffectiveCriticState
+pub perl_lsp::features::diagnostics::pull::PullDiagnosticsContext::accepted_state_currentness: perl_lsp::features::diagnostics::pull::AcceptedStateCurrentness
 pub perl_lsp::features::diagnostics::pull::PullDiagnosticsContext::critic_engine: perl_lsp_rs_core::config::CriticEngine
 pub perl_lsp::features::diagnostics::pull::PullDiagnosticsContext::facts_generation: core::option::Option<u64>
 pub perl_lsp::features::diagnostics::pull::PullDiagnosticsContext::identity_root_key: core::option::Option<alloc::string::String>
@@ -208,6 +216,12 @@ pub perl_lsp::features::diagnostics::PullPositionEncoding::Utf8
 pub fn perl_lsp::features::diagnostics::report_identity::PullPositionEncoding::clone(&self) -> perl_lsp::features::diagnostics::report_identity::PullPositionEncoding
 pub fn perl_lsp::features::diagnostics::report_identity::PullPositionEncoding::eq(&self, other: &perl_lsp::features::diagnostics::report_identity::PullPositionEncoding) -> bool
 pub fn perl_lsp::features::diagnostics::report_identity::PullPositionEncoding::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_lsp::features::diagnostics::AcceptedStateCurrentness(_)
+pub fn perl_lsp::features::diagnostics::pull::AcceptedStateCurrentness::always_current() -> Self
+pub fn perl_lsp::features::diagnostics::pull::AcceptedStateCurrentness::holds(&self) -> bool
+pub fn perl_lsp::features::diagnostics::pull::AcceptedStateCurrentness::new(check: alloc::sync::Arc<(dyn core::ops::function::Fn() -> bool + core::marker::Send + core::marker::Sync)>) -> Self
+pub fn perl_lsp::features::diagnostics::pull::AcceptedStateCurrentness::clone(&self) -> perl_lsp::features::diagnostics::pull::AcceptedStateCurrentness
+pub fn perl_lsp::features::diagnostics::pull::AcceptedStateCurrentness::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_lsp::features::diagnostics::DiagnosticProjectionFragment
 pub perl_lsp::features::diagnostics::DiagnosticProjectionFragment::markup_messages: bool
 pub perl_lsp::features::diagnostics::DiagnosticProjectionFragment::position_encoding: perl_lsp::features::diagnostics::report_identity::PullPositionEncoding
@@ -215,6 +229,8 @@ pub fn perl_lsp::features::diagnostics::report_identity::DiagnosticProjectionFra
 pub fn perl_lsp::features::diagnostics::report_identity::DiagnosticProjectionFragment::eq(&self, other: &perl_lsp::features::diagnostics::report_identity::DiagnosticProjectionFragment) -> bool
 pub fn perl_lsp::features::diagnostics::report_identity::DiagnosticProjectionFragment::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_lsp::features::diagnostics::PullDiagnosticsContext
+pub perl_lsp::features::diagnostics::PullDiagnosticsContext::accepted_critic_state: perl_lsp_rs_core::config::critic_state::EffectiveCriticState
+pub perl_lsp::features::diagnostics::PullDiagnosticsContext::accepted_state_currentness: perl_lsp::features::diagnostics::pull::AcceptedStateCurrentness
 pub perl_lsp::features::diagnostics::PullDiagnosticsContext::critic_engine: perl_lsp_rs_core::config::CriticEngine
 pub perl_lsp::features::diagnostics::PullDiagnosticsContext::facts_generation: core::option::Option<u64>
 pub perl_lsp::features::diagnostics::PullDiagnosticsContext::identity_root_key: core::option::Option<alloc::string::String>
