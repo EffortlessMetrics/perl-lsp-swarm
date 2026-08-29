@@ -422,8 +422,8 @@ fn coverage_workflow_is_manual_or_nightly_only_and_requires_receipts() {
         "coverage policy contract must reject stale route wording in free text"
     );
     let stale_inventory = inventory.replacen(
-        "`schedule`, `workflow_dispatch` | no | `ubuntu-24.04` | Coverage",
-        "`schedule`, `workflow_dispatch`, label | no | `ubuntu-24.04` | Coverage",
+        "| `ci-nightly.yml` (test-coverage) | `schedule`, `workflow_dispatch` | no | `ubuntu-24.04` | Coverage | 45 | `coverage` | keep |",
+        "| `ci-nightly.yml` (test-coverage) | `schedule`, `workflow_dispatch` | no | `ubuntu-24.04` | Coverage runs on PRs | 45 | `coverage` | keep |",
         1,
     );
     assert!(
@@ -440,6 +440,22 @@ fn coverage_workflow_is_manual_or_nightly_only_and_requires_receipts() {
     assert!(
         coverage_risk_pack_docs_contract(&stale_risk_sentence).is_err(),
         "risk-pack documentation contract must reject stale coverage route wording"
+    );
+    assert!(
+        has_positive_stale_route_claim(
+            "Coverage does not run on PRs, but coverage runs on PRs for every pull request."
+        ),
+        "contradictory coverage prose must retain the positive stale-route finding"
+    );
+    assert!(
+        !has_positive_stale_route_claim("Coverage does not run on PRs or merge queues."),
+        "wholly negative coverage prose must remain allowed"
+    );
+    assert!(
+        !has_positive_stale_route_claim(
+            "Coverage is advisory, and maintainers can run routed proof locally."
+        ),
+        "legitimate negative coverage prose must remain allowed"
     );
     let stale_lane_alias_source = format!(
         "{lane_economics}\n[lane.coverage_alias]\nworkflow = \".github/workflows/ci-nightly.yml\"\njob = \"test-coverage\"\nlabels = [\"coverage-alias\"]\nbranches = [\"schedule\", \"workflow_dispatch\"]\n"
@@ -1129,7 +1145,15 @@ fn ensure_no_positive_stale_route_value(value: &TomlValue, context: &str) -> Res
 
 fn has_positive_stale_route_claim(text: &str) -> bool {
     let normalized = text.to_ascii_lowercase().replace(['_', '-'], " ");
-    if has_negative_route_prose(&normalized) {
+    normalized
+        .split(|character: char| matches!(character, '.' | ',' | ';' | ':' | '!' | '?'))
+        .map(str::trim)
+        .filter(|clause| !clause.is_empty())
+        .any(has_positive_stale_route_clause)
+}
+
+fn has_positive_stale_route_clause(normalized: &str) -> bool {
+    if has_negative_route_prose(normalized) {
         return false;
     }
     let has_pr_token = normalized
@@ -1172,30 +1196,32 @@ fn has_positive_stale_route_claim(text: &str) -> bool {
 }
 
 fn has_negative_route_prose(normalized: &str) -> bool {
-    [
-        "not a pr",
-        "not pr",
-        "not a pull request",
-        "not a merge",
-        "not merge",
-        "must not",
-        "does not",
-        "without",
-        "never",
-        "absent",
-        "neither",
-        "no pr",
-        "not prs",
-        "no prs",
-        "not a normal pr",
-        "no pull request",
-        "coverage proof routed",
-        "outside the pr",
-        "instead of codecov",
-        "schedule/manual only",
-    ]
-    .iter()
-    .any(|marker| normalized.contains(marker))
+    let has_negative_token = normalized
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .any(|token| matches!(token, "not" | "without" | "never" | "absent" | "neither"));
+    let has_negative_phrase =
+        ["does not", "must not", "instead of"].iter().any(|marker| normalized.contains(marker));
+    let has_no_route_phrase = normalized.contains("no pull request")
+        || normalized.contains("no merge queue")
+        || normalized.contains("no merge group")
+        || (normalized
+            .split(|character: char| !character.is_ascii_alphanumeric())
+            .any(|token| token == "no")
+            && normalized
+                .split(|character: char| !character.is_ascii_alphanumeric())
+                .any(|token| matches!(token, "pr" | "prs")));
+    let has_route_context = normalized.contains("coverage")
+        || normalized.contains("codecov")
+        || normalized.contains("pull request")
+        || normalized
+            .split(|character: char| !character.is_ascii_alphanumeric())
+            .any(|token| matches!(token, "pr" | "prs"));
+    let has_contextual_negative =
+        ["coverage proof routed", "outside the pr", "schedule/manual only"]
+            .iter()
+            .any(|marker| normalized.contains(marker));
+    has_contextual_negative
+        || (has_route_context && (has_negative_token || has_negative_phrase || has_no_route_phrase))
 }
 
 fn has_positive_stale_route_claim_in_context(text: &str, coverage_context: bool) -> bool {
