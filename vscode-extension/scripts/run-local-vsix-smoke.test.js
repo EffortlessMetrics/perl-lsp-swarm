@@ -1892,3 +1892,74 @@ void test('a failing annotation write does not cost the job summary', () => {
   assert.equal(appended[0][1], summary.markdown);
   assert.match(diagnostics[0], /Unable to emit a smoke stage annotation: EPIPE/);
 });
+
+// A packaged journey can decide the aggregate on its own (#13816 review). The
+// headline must name it, or a run whose only defect is a recovery journey reads
+// entirely green on a red check — the misreading this projection removes.
+
+void test('a failed recovery journey appears in the headline that decided the run', () => {
+  const receipt = checkReceipt({
+    overall: 'failed',
+    stages: {
+      crash_recovery_journey: {
+        status: 'failed',
+        reason: 'provider did not recover after respawn',
+      },
+    },
+  });
+  const summary = composeCheckSummary(receipt);
+
+  // Guard the premise: this stage alone decides the aggregate.
+  assert.equal(computeOverallStatus(receipt.stages), 'failed');
+  assert.equal(
+    summary.headline,
+    'package creation and package inventory passed; behavioral smoke passed; ' +
+      'crash-recovery journey failed: provider did not recover after respawn',
+  );
+});
+
+void test('a not-proven activation journey appears in the headline', () => {
+  const receipt = checkReceipt({
+    overall: 'not_proven',
+    stages: {
+      activation_failure_journey: {
+        status: 'not_proven',
+        reason: 'retry leg receipt was not bound to this VSIX',
+      },
+    },
+  });
+  const summary = composeCheckSummary(receipt);
+
+  assert.equal(computeOverallStatus(receipt.stages), 'not_proven');
+  assert.equal(
+    summary.headline,
+    'package creation and package inventory passed; behavioral smoke passed; ' +
+      'activation-failure journey not proven: retry leg receipt was not bound to this VSIX',
+  );
+});
+
+void test('a journey that was declined stays out of the headline', () => {
+  // `not_run` is already explained by the package phrase that declined it, so
+  // repeating it would bury the proposition that actually decided the run.
+  const summary = composeCheckSummary(
+    checkReceipt({
+      overall: 'failed',
+      stages: {
+        package_inventory: {
+          status: 'failed',
+          classification: 'structural',
+          behavior_safe: false,
+        },
+        behavioral_smoke: { status: 'not_run', reason: 'inventory_structural' },
+        activation_failure_journey: { status: 'not_run', reason: 'inventory_structural' },
+        crash_recovery_journey: { status: 'not_run', reason: 'inventory_structural' },
+      },
+    }),
+  );
+
+  assert.equal(
+    summary.headline,
+    'package inventory failed; behavioral smoke not run: inventory_structural',
+  );
+  assert.doesNotMatch(summary.headline, /journey/);
+});

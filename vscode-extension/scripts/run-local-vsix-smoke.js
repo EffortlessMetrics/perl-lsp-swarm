@@ -751,6 +751,16 @@ const CHECK_VERDICT_WORDS = {
 /** Stages whose verdict describes the package rather than installed behaviour. */
 const CHECK_PACKAGE_STAGES = ['package_creation', 'package_inventory'];
 
+/**
+ * Packaged journeys that can decide the aggregate on their own.
+ *
+ * `computeOverallStatus` degrades the run when either is failed or not proven,
+ * so the headline has to be able to name them: a run whose only defect is a
+ * recovery journey would otherwise read entirely green on a red check, which
+ * is the misreading this projection exists to remove.
+ */
+const CHECK_JOURNEY_STAGES = ['activation_failure_journey', 'crash_recovery_journey'];
+
 function checkVerdictWord(status) {
   return CHECK_VERDICT_WORDS[status] ?? String(status);
 }
@@ -842,6 +852,16 @@ function checkBehavioralPhrase(stage) {
 function checkHeadline(receipt) {
   const stages = receipt.stages ?? {};
   const segments = [checkPackagePhrase(stages), checkBehavioralPhrase(stages.behavioral_smoke)];
+  // A journey that did not run is already explained by the package phrase that
+  // declined it; one that reached a non-passing verdict decided this run.
+  for (const key of CHECK_JOURNEY_STAGES) {
+    const stage = stages[key];
+    if (!stage || stage.status === 'pass' || stage.status === 'not_run') {
+      continue;
+    }
+    const phrase = `${CHECK_STAGE_LABELS[key]} ${checkVerdictWord(stage.status)}`;
+    segments.push(stage.reason ? `${phrase}: ${singleLine(stage.reason)}` : phrase);
+  }
   if (receipt.instrument_failure) {
     segments.push(`smoke instrument failed: ${singleLine(receipt.instrument_failure)}`);
   }
