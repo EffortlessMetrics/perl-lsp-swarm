@@ -104,9 +104,11 @@ fn review_response_surfaces_require_reasoned_inline_replies() -> Result<(), Box<
         );
     }
 
-    let reasoned_template = "--reply 'Disposition: fixed\n\n\
-<concise judgment: what failed, why this boundary owns it, and what changed>\n\n\
-Evidence: <claim-bounded evidence>'";
+    let reasoned_template = concat!(
+        "--reply 'Disposition: fixed\n\n",
+        "<concise judgment: what failed, why this boundary owns it, and what changed>\n\n",
+        "Evidence: <claim-bounded evidence>'",
+    );
     assert!(
         threads.contains(reasoned_template),
         "the sanctioned thread helper must emit the reasoned reply template"
