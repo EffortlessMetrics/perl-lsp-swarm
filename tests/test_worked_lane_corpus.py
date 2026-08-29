@@ -94,7 +94,10 @@ MIN_UNPROVED_CHARS = 30
 
 CATEGORY_HEADING = re.compile(r"^### ([a-z0-9-]+)\s*$")
 FIELD_LINE = re.compile(r"^- \*\*([^:*]+):\*\* (.+)$")
-LANE_FILE = re.compile(r"^`([A-Za-z0-9_.-]+\.md)`$")
+# Ledger paths are relative to the corpus directory and use POSIX separators,
+# including when a future lane is kept in a subdirectory. Reject `..` segments
+# so the path remains a child of `EXAMPLES` when it is resolved below.
+LANE_FILE = re.compile(r"^`([A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*\.md)`$")
 
 # A receipt is an issue/PR reference or a commit. Both are checked, because a
 # ledger that verified only `#NNNN` while a row also listed a squash SHA would
@@ -212,11 +215,15 @@ def commit_is_bound(cited: str, used: set[str]) -> bool:
 
 
 def example_documents() -> set[str]:
-    """Every worked-lane document in the corpus, excluding the ledger itself."""
+    """Every worked-lane document in the corpus, excluding the ledger itself.
+
+    Return POSIX paths relative to the corpus so the result has the same shape
+    as a ledger path on every host platform.
+    """
     return {
-        path.name
-        for path in EXAMPLES.glob("*.md")
-        if path.name != LEDGER.name
+        path.relative_to(EXAMPLES).as_posix()
+        for path in EXAMPLES.rglob("*.md")
+        if path != LEDGER
     }
 
 
