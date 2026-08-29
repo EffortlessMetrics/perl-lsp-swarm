@@ -2207,8 +2207,13 @@ impl LspServer {
                 identity_context.native_critic_include = identity_native_include.clone();
                 identity_context.native_critic_exclude = identity_native_exclude.clone();
                 identity_context.project_version = project_version.clone();
-                identity_context.configuration_generation =
-                    project_config_generation_for_doc(self, uri_str);
+                // Record the snapshotted folder-config generation, not a re-read:
+                // the diagnostics above were evaluated under the snapshot, so the
+                // result ID must describe exactly that configuration state even if
+                // a folder reload lands in the residual window after the staleness
+                // guards. Matches the push/document-pull paths, which stamp
+                // `config_generation_at_snapshot` into the report identity.
+                identity_context.configuration_generation = *config_generation_at_snapshot;
                 identity_context.include_paths = self
                     .include_paths_for_doc(uri_str)
                     .into_iter()
