@@ -709,6 +709,7 @@ impl LspServer {
                     Arc::clone(&doc.generation),
                     doc.generation.load(Ordering::SeqCst),
                     self.workspace_identity_generation.load(Ordering::SeqCst),
+                    project_config_generation_for_doc(self, &normalized_uri),
                 ))
             })
             // lock is released here
@@ -724,6 +725,7 @@ impl LspServer {
             generation,
             gen_at_snapshot,
             workspace_gen_at_snapshot,
+            config_generation_at_snapshot,
         )) = snapshot
         else {
             return;
@@ -1086,7 +1088,8 @@ impl LspServer {
             &generation,
             gen_at_snapshot,
             workspace_gen_at_snapshot,
-        );
+        )
+        .with_folder_config_generation(config_generation_at_snapshot);
         let disposition = if lsp_diagnostics.is_empty() {
             PushDiagnosticsDisposition::Clear
         } else {
@@ -1184,12 +1187,20 @@ impl LspServer {
                     doc.line_starts.clone(),
                     Arc::clone(&doc.generation),
                     doc.generation.load(Ordering::SeqCst),
+                    project_config_generation_for_doc(self, &normalized_uri),
                 ))
             })
         };
 
-        let Some((parse_errors, text, version, line_starts, generation, gen_at_snapshot)) =
-            snapshot
+        let Some((
+            parse_errors,
+            text,
+            version,
+            line_starts,
+            generation,
+            gen_at_snapshot,
+            config_generation_at_snapshot,
+        )) = snapshot
         else {
             return;
         };
@@ -1204,7 +1215,8 @@ impl LspServer {
             &generation,
             gen_at_snapshot,
             self.workspace_identity_generation.load(Ordering::SeqCst),
-        );
+        )
+        .with_folder_config_generation(config_generation_at_snapshot);
         let payload = publish_diagnostics_params(uri, Some(version), &lsp_diagnostics);
         match self.commit_push_diagnostics(
             &identity,
@@ -1274,12 +1286,20 @@ impl LspServer {
                     std::sync::Arc::clone(&doc.text_arc),
                     std::sync::Arc::clone(&doc.generation),
                     doc.current_generation(),
+                    project_config_generation_for_doc(self, &normalized_uri),
                 )
             })
             // lock is released here
         };
-        let Some((parse_errors, version, line_starts, text, generation, gen_at_snapshot)) =
-            snapshot
+        let Some((
+            parse_errors,
+            version,
+            line_starts,
+            text,
+            generation,
+            gen_at_snapshot,
+            config_generation_at_snapshot,
+        )) = snapshot
         else {
             return;
         };
@@ -1344,7 +1364,8 @@ impl LspServer {
             &generation,
             gen_at_snapshot,
             self.workspace_identity_generation.load(Ordering::SeqCst),
-        );
+        )
+        .with_folder_config_generation(config_generation_at_snapshot);
         let payload = json!({
             "uri": uri,
             "version": version,
@@ -3162,6 +3183,32 @@ mod tests {
             .ok_or("invalid project diagnostic frame missing")?;
         assert_eq!(invalid_frame.matches("Invalid project [perl].version").count(), 1);
         assert!(!invalid_frame.contains("requires Perl"));
+
+        let invalid_pull_server = make_server_with_capture().0;
+        let (invalid_pull_uri, _) =
+            install_project_version_folder(&invalid_pull_server, &temp, "not-a-version")?;
+        invalid_pull_server.test_handle_did_open(Some(json!({
+            "textDocument": {"uri": invalid_pull_uri, "languageId": "perl", "version": 1, "text": source}
+        })))?;
+        let invalid_pull_report = invalid_pull_server
+            .handle_document_diagnostic(Some(json!({"textDocument": {"uri": invalid_pull_uri}})))?
+            .ok_or("invalid document pull response missing")?;
+        let invalid_pull_text = invalid_pull_report.to_string();
+        assert_eq!(invalid_pull_text.matches("Invalid project [perl].version").count(), 1);
+        assert!(!invalid_pull_text.contains("requires Perl"));
+
+        let invalid_workspace_server = make_server_with_capture().0;
+        let (invalid_workspace_uri, _) =
+            install_project_version_folder(&invalid_workspace_server, &temp, "not-a-version")?;
+        invalid_workspace_server.test_handle_did_open(Some(json!({
+            "textDocument": {"uri": invalid_workspace_uri, "languageId": "perl", "version": 1, "text": source}
+        })))?;
+        let invalid_workspace_report = invalid_workspace_server
+            .handle_workspace_diagnostic(Some(json!({"previousResultIds": []})))?
+            .ok_or("invalid workspace pull response missing")?;
+        let invalid_workspace_text = invalid_workspace_report.to_string();
+        assert_eq!(invalid_workspace_text.matches("Invalid project [perl].version").count(), 1);
+        assert!(!invalid_workspace_text.contains("requires Perl"));
         Ok(())
     }
 

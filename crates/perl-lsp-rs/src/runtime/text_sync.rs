@@ -149,6 +149,9 @@ impl LspServer {
                     &guard_state.generation,
                     guard_state.current_generation(),
                     self.workspace_identity_generation.load(Ordering::SeqCst),
+                )
+                .with_folder_config_generation(
+                    self.project_config_generation_for_uri(&normalized_uri),
                 );
                 self.documents.lock().insert(normalized_uri.clone(), guard_state);
                 // Guarded no-parse document: terminal readiness state (#11675).
@@ -196,6 +199,9 @@ impl LspServer {
                     &guard_state.generation,
                     guard_state.current_generation(),
                     self.workspace_identity_generation.load(Ordering::SeqCst),
+                )
+                .with_folder_config_generation(
+                    self.project_config_generation_for_uri(&normalized_uri),
                 );
                 self.documents.lock().insert(normalized_uri.clone(), guard_state);
                 // Guarded no-parse document: terminal readiness state (#11675).
@@ -239,6 +245,9 @@ impl LspServer {
                     &guard_state.generation,
                     guard_state.current_generation(),
                     self.workspace_identity_generation.load(Ordering::SeqCst),
+                )
+                .with_folder_config_generation(
+                    self.project_config_generation_for_uri(&normalized_uri),
                 );
                 self.documents.lock().insert(normalized_uri.clone(), guard_state);
                 // Guarded no-parse document: terminal readiness state (#11675).
@@ -769,6 +778,9 @@ impl LspServer {
                         &doc_state.generation,
                         doc_state.current_generation(),
                         self.workspace_identity_generation.load(Ordering::SeqCst),
+                    )
+                    .with_folder_config_generation(
+                        self.project_config_generation_for_uri(&normalized_uri),
                     );
                     documents.insert(normalized_uri.clone(), doc_state);
                     // Guarded no-parse document: terminal readiness state (#11675).
@@ -822,6 +834,9 @@ impl LspServer {
                         &doc_state.generation,
                         doc_state.current_generation(),
                         self.workspace_identity_generation.load(Ordering::SeqCst),
+                    )
+                    .with_folder_config_generation(
+                        self.project_config_generation_for_uri(&normalized_uri),
                     );
                     documents.insert(normalized_uri.clone(), doc_state);
                     // Guarded no-parse document: terminal readiness state (#11675).
@@ -871,6 +886,9 @@ impl LspServer {
                         &doc_state.generation,
                         doc_state.current_generation(),
                         self.workspace_identity_generation.load(Ordering::SeqCst),
+                    )
+                    .with_folder_config_generation(
+                        self.project_config_generation_for_uri(&normalized_uri),
                     );
                     documents.insert(normalized_uri.clone(), doc_state);
                     // Guarded no-parse document: terminal readiness state (#11675).

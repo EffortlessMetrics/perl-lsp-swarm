@@ -39,6 +39,7 @@ pub(crate) struct PushDiagnosticIdentity {
     pub(crate) document_instance: Arc<AtomicU32>,
     pub(crate) generation: u32,
     pub(crate) workspace_generation: u64,
+    pub(crate) folder_config_generation: Option<u64>,
 }
 
 impl PushDiagnosticIdentity {
@@ -53,7 +54,13 @@ impl PushDiagnosticIdentity {
             document_instance: Arc::clone(document_instance),
             generation,
             workspace_generation,
+            folder_config_generation: None,
         }
+    }
+
+    pub(crate) fn with_folder_config_generation(mut self, generation: Option<u64>) -> Self {
+        self.folder_config_generation = generation;
+        self
     }
 }
 
@@ -113,6 +120,10 @@ impl PushDiagnosticsSink {
 }
 
 impl LspServer {
+    pub(crate) fn project_config_generation_for_uri(&self, uri: &str) -> Option<u64> {
+        self.folder_for_doc_uri(uri).map(|folder| folder.project_config_generation)
+    }
+
     pub(crate) fn invalidate_workspace_identity(&self) {
         let _identity_guard = self.workspace_identity_lock.lock();
         self.workspace_identity_generation.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -136,6 +147,12 @@ impl LspServer {
 
         if self.workspace_identity_generation.load(std::sync::atomic::Ordering::SeqCst)
             != identity.workspace_generation
+        {
+            return PushDiagnosticsCommitOutcome::RejectedSupersededGeneration;
+        }
+
+        if self.project_config_generation_for_uri(&identity.normalized_uri)
+            != identity.folder_config_generation
         {
             return PushDiagnosticsCommitOutcome::RejectedSupersededGeneration;
         }
@@ -328,6 +345,7 @@ mod tests {
             doc.current_generation(),
             server.workspace_identity_generation.load(std::sync::atomic::Ordering::SeqCst),
         )
+        .with_folder_config_generation(server.project_config_generation_for_uri(&key))
     }
 
     fn frame_count(buf: &StdArc<parking_lot::Mutex<Vec<u8>>>) -> usize {
@@ -444,6 +462,51 @@ mod tests {
                 PushDiagnosticsDisposition::Clear,
             ),
             PushDiagnosticsCommitOutcome::RejectedSupersededGeneration
+        );
+    }
+
+    #[test]
+    fn folder_config_invalidation_rejects_only_owned_push_candidate() {
+        let (server, _buf) = make_server();
+        server.workspace_folders.lock().extend([
+            super::super::workspace_folder::WorkspaceFolderState::new(
+                "file:///sink-root-one/".to_string(),
+            ),
+            super::super::workspace_folder::WorkspaceFolderState::new(
+                "file:///sink-root-two/".to_string(),
+            ),
+        ]);
+
+        let first = open_document(&server, "file:///sink-root-one/first.pl", "my $x = 1;\n");
+        let second = open_document(&server, "file:///sink-root-two/second.pl", "my $y = 1;\n");
+        let first_generation = server
+            .workspace_folders
+            .lock()
+            .first()
+            .expect("first folder must exist")
+            .project_config_generation;
+
+        server.workspace_folders.lock()[0].project_config_generation += 1;
+
+        assert_eq!(
+            server.commit_push_diagnostics(
+                &first,
+                json!({ "uri": first.normalized_uri, "diagnostics": [] }),
+                PushDiagnosticsDisposition::Clear,
+            ),
+            PushDiagnosticsCommitOutcome::RejectedSupersededGeneration
+        );
+        assert_eq!(
+            server.commit_push_diagnostics(
+                &second,
+                json!({ "uri": second.normalized_uri, "diagnostics": [] }),
+                PushDiagnosticsDisposition::Clear,
+            ),
+            PushDiagnosticsCommitOutcome::SafeClearCommitted
+        );
+        assert_eq!(
+            server.workspace_folders.lock()[0].project_config_generation,
+            first_generation + 1
         );
     }
 

@@ -145,12 +145,16 @@ pub fn check_version_compat_with_project_version(
     };
 
     let mut declared_version: Option<PerlVersion> = None;
+    let mut source_version_declared = false;
     let mut builtin_imports: Vec<String> = Vec::new();
     let mut builtin_bundle_declared = false;
 
     for stmt in statements {
         if let NodeKind::Use { module, args, .. } = &stmt.kind {
             // Check for `use vN.NN` or `use N.NNN`
+            if looks_like_source_version(module) {
+                source_version_declared = true;
+            }
             if let Some(version) = parse_perl_version(module) {
                 // Take the highest declared version if multiple appear
                 match declared_version {
@@ -194,9 +198,10 @@ pub fn check_version_compat_with_project_version(
     }
 
     // A project version is only a fallback. Source declarations remain authoritative.
-    let using_project_version = declared_version.is_none();
+    let using_project_version = declared_version.is_none() && !source_version_declared;
     let declared_version = match declared_version {
         Some(v) => v,
+        None if source_version_declared => return,
         None => {
             let Some(project_version) = project_version else {
                 return;
@@ -525,6 +530,11 @@ pub fn check_version_compat_with_project_version(
             diagnostic.message.push_str(" (target from project [perl].version)");
         }
     }
+}
+
+fn looks_like_source_version(module: &str) -> bool {
+    let value = module.strip_prefix('v').unwrap_or(module);
+    value.chars().next().is_some_and(|character| character.is_ascii_digit())
 }
 
 /// Parse the documented `[perl].version` spelling into its effective target.
