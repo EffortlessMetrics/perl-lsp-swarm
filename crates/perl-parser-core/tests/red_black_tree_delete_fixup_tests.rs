@@ -212,11 +212,7 @@ fn assert_path_present(paths: &[SubscriptPath], text: &str, access: AccessMode) 
 
 fn one_path<'a>(paths: &'a [SubscriptPath], text: &str, access: AccessMode) -> &'a SubscriptPath {
     let found = matching_paths(paths, text, access);
-    assert_eq!(
-        found.len(),
-        1,
-        "expected one {access:?} path for {text}; all paths: {paths:#?}"
-    );
+    assert_eq!(found.len(), 1, "expected one {access:?} path for {text}; all paths: {paths:#?}");
     found[0]
 }
 
@@ -286,8 +282,7 @@ fn mirrored_double_black_cases_keep_reads_and_writes_distinct() {
     assert_path_present(&paths, "$node->{color}", AccessMode::Read);
     assert_path_count(&paths, "$node->{color}", AccessMode::Write, 1);
 
-    let left_nephew_write =
-        matching_paths(&paths, "$sibling->{left}->{color}", AccessMode::Write);
+    let left_nephew_write = matching_paths(&paths, "$sibling->{left}->{color}", AccessMode::Write);
     for path in left_nephew_write {
         assert_eq!(path.container, "$sibling->{left}");
         assert_eq!(path.selector, "color");
@@ -306,36 +301,13 @@ fn deletion_metrics_keep_single_terminal_rmw_places() {
     let file = lower(FIXUP_SOURCE);
     let paths = subscript_paths(FIXUP_SOURCE, &file);
 
-    assert_path_count(
-        &paths,
-        "$tree->{stats}->{delete_fixups}",
-        AccessMode::ReadModifyWrite,
-        1,
-    );
-    assert_path_count(
-        &paths,
-        "$tree->{stats}->{by_case}->{$case}",
-        AccessMode::ReadModifyWrite,
-        1,
-    );
-    assert_path_count(
-        &paths,
-        "$tree->{stats}->{by_case}->{$case}",
-        AccessMode::Read,
-        0,
-    );
-    assert_path_count(
-        &paths,
-        "$tree->{stats}->{by_case}->{$case}",
-        AccessMode::Write,
-        0,
-    );
+    assert_path_count(&paths, "$tree->{stats}->{delete_fixups}", AccessMode::ReadModifyWrite, 1);
+    assert_path_count(&paths, "$tree->{stats}->{by_case}->{$case}", AccessMode::ReadModifyWrite, 1);
+    assert_path_count(&paths, "$tree->{stats}->{by_case}->{$case}", AccessMode::Read, 0);
+    assert_path_count(&paths, "$tree->{stats}->{by_case}->{$case}", AccessMode::Write, 0);
 
-    let by_case = one_path(
-        &paths,
-        "$tree->{stats}->{by_case}->{$case}",
-        AccessMode::ReadModifyWrite,
-    );
+    let by_case =
+        one_path(&paths, "$tree->{stats}->{by_case}->{$case}", AccessMode::ReadModifyWrite);
     assert_eq!(by_case.kind, SubscriptKind::Hash);
     assert_eq!(by_case.container, "$tree->{stats}->{by_case}");
     assert_eq!(by_case.selector, "$case");
