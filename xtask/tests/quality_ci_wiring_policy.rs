@@ -448,6 +448,12 @@ fn coverage_workflow_is_manual_or_nightly_only_and_requires_receipts() {
         "contradictory coverage prose must retain the positive stale-route finding"
     );
     assert!(
+        has_positive_stale_route_claim(
+            "Coverage does not run on PRs but coverage runs on PRs for every pull request."
+        ),
+        "unpunctuated contradictory coverage prose must retain the positive stale-route finding"
+    );
+    assert!(
         !has_positive_stale_route_claim("Coverage does not run on PRs or merge queues."),
         "wholly negative coverage prose must remain allowed"
     );
@@ -494,6 +500,18 @@ fn coverage_workflow_is_manual_or_nightly_only_and_requires_receipts() {
     assert!(
         coverage_risk_pack_contract(&stale_risk_description, &economics_document).is_err(),
         "risk-pack contract must reject positive stale coverage prose"
+    );
+    let contradictory_risk_sentence =
+        format!("{risk_pack_doc}\nCoverage does not run on PRs but coverage runs on PRs.\n");
+    assert!(
+        coverage_risk_pack_docs_contract(&contradictory_risk_sentence).is_err(),
+        "risk-pack docs contract must reject contradictory stale coverage prose"
+    );
+    let negative_risk_sentence =
+        format!("{risk_pack_doc}\nCoverage does not run on PRs or merge queues.\n");
+    assert!(
+        coverage_risk_pack_docs_contract(&negative_risk_sentence).is_ok(),
+        "risk-pack docs contract must allow wholly negative coverage prose"
     );
     let weak_codecov_target = codecov_config.replacen("target: 95%", "target: 90%", 1);
     let weak_codecov_target: Value = must(serde_yaml_ng::from_str(&weak_codecov_target));
@@ -1145,11 +1163,32 @@ fn ensure_no_positive_stale_route_value(value: &TomlValue, context: &str) -> Res
 
 fn has_positive_stale_route_claim(text: &str) -> bool {
     let normalized = text.to_ascii_lowercase().replace(['_', '-'], " ");
-    normalized
-        .split(|character: char| matches!(character, '.' | ',' | ';' | ':' | '!' | '?'))
-        .map(str::trim)
-        .filter(|clause| !clause.is_empty())
-        .any(has_positive_stale_route_clause)
+    route_prose_clauses(&normalized).iter().any(|clause| has_positive_stale_route_clause(clause))
+        || has_positive_stale_route_clause(&normalized)
+}
+
+fn route_prose_clauses(normalized: &str) -> Vec<&str> {
+    let mut clauses = Vec::new();
+    for punctuation_clause in
+        normalized.split(|character: char| matches!(character, '.' | ',' | ';' | ':' | '!' | '?'))
+    {
+        let mut remaining = punctuation_clause;
+        loop {
+            let Some(separator) = remaining.find(" but ") else {
+                let clause = remaining.trim();
+                if !clause.is_empty() {
+                    clauses.push(clause);
+                }
+                break;
+            };
+            let clause = remaining[..separator].trim();
+            if !clause.is_empty() {
+                clauses.push(clause);
+            }
+            remaining = &remaining[separator + " but ".len()..];
+        }
+    }
+    clauses
 }
 
 fn has_positive_stale_route_clause(normalized: &str) -> bool {
@@ -1213,6 +1252,7 @@ fn has_negative_route_prose(normalized: &str) -> bool {
     let has_route_context = normalized.contains("coverage")
         || normalized.contains("codecov")
         || normalized.contains("pull request")
+        || (normalized.contains("full ci") && normalized.contains("label"))
         || normalized
             .split(|character: char| !character.is_ascii_alphanumeric())
             .any(|token| matches!(token, "pr" | "prs"));
@@ -1316,7 +1356,7 @@ fn coverage_risk_pack_docs_contract(document: &str) -> Result<()> {
         .find(|line| line.contains("| `parser` |"))
         .ok_or_else(|| anyhow!("risk-pack docs must contain the parser catalog row"))?;
     ensure!(
-        !parser_row.to_ascii_lowercase().contains("coverage"),
+        !has_positive_stale_route_claim(parser_row),
         "parser risk-pack docs must not advertise coverage as a PR deep lane"
     );
     let mut previous_coverage_line = false;
@@ -1325,12 +1365,7 @@ fn coverage_risk_pack_docs_contract(document: &str) -> Result<()> {
         let coverage_context =
             lower.contains("coverage") || lower.contains("codecov") || previous_coverage_line;
         if coverage_context && has_positive_stale_route_claim_in_context(line, coverage_context) {
-            ensure!(
-                ["absent", "must not", "not advertise", "not select"]
-                    .iter()
-                    .any(|marker| lower.contains(marker)),
-                "risk-pack docs contain stale coverage route wording: {line}"
-            );
+            ensure!(false, "risk-pack docs contain stale coverage route wording: {line}");
         }
         previous_coverage_line = !line.trim().is_empty()
             && (lower.contains("coverage")
