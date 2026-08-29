@@ -327,11 +327,32 @@ fn negative_metadata_must_match_the_schema_object_boundary() {
 
 #[test]
 fn negative_structured_credential_key_fails_closed() {
-    for key in ["api_key", "accessToken", "clientSecret", "credentials"] {
+    for key in [
+        "api_key",
+        "accessToken",
+        "clientSecret",
+        "credentials",
+        "tokenValue",
+        "clientSecretValue",
+        "apiKeyId",
+        "APIKeyId",
+        "nestedTokenValue",
+        "credentialRef",
+    ] {
         let violations = mutant(base_manifest(), |doc| {
             doc["metadata"] = json!({"nested": [{ key: "hunter2" }]});
         });
         assert_contains(&violations, "credential_in_payload");
+    }
+}
+
+#[test]
+fn normalized_credential_keys_require_segment_boundaries() {
+    for key in ["tokenValue", "clientSecretValue", "apiKeyId", "outer_token_value"] {
+        assert!(is_credential_key(key), "{key} must be rejected as a credential key");
+    }
+    for key in ["tokenized", "secretary", "credentialish"] {
+        assert!(!is_credential_key(key), "{key} is not a credential-key segment");
     }
 }
 

@@ -511,15 +511,16 @@ fn scan_hygiene(text: &str, where_: &str, violations: &mut Vec<Violation>) {
 
 fn is_credential_key(key: &str) -> bool {
     let normalized = normalize_credential_key(key);
-    CREDENTIAL_KEY_MARKERS
-        .iter()
-        .any(|marker| normalized == *marker || normalized.ends_with(&format!("_{marker}")))
+    let bounded = format!("_{normalized}_");
+    CREDENTIAL_KEY_MARKERS.iter().any(|marker| bounded.contains(&format!("_{marker}_")))
 }
 
 /// Normalize structured field names before comparing them with the closed
 /// credential vocabulary. JSON producers use both snake_case and camelCase
 /// (including acronym-bearing names such as `APIKey`), so lowercasing alone
-/// would let `accessToken` or `clientSecret` bypass the fail-closed check.
+/// would let `accessToken`, `tokenValue`, or `clientSecretValue` bypass the
+/// fail-closed check. The caller bounds marker matches to underscore-delimited
+/// segments so comparable prefix, suffix, and nested variants are rejected too.
 fn normalize_credential_key(key: &str) -> String {
     let chars: Vec<char> = key.chars().collect();
     let mut normalized = String::with_capacity(key.len());
