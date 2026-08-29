@@ -687,6 +687,25 @@ mod tests {
         assert!(actions.iter().any(|a| a.title.contains("error checking")));
     }
 
+    /// Regression guard for #9835: a file operation followed within the
+    /// error-checking lookahead window by multi-byte text used to panic the
+    /// `textDocument/codeAction` request, because the window was cut at a fixed
+    /// 50-*byte* offset that could land inside a UTF-8 sequence.
+    #[test]
+    fn test_add_error_checking_does_not_panic_on_multibyte_source() {
+        let source = format!("open my $fh, '<', 'f';\n#{}\n", "é".repeat(40));
+        let mut parser = Parser::new(&source);
+        let ast = must(parser.parse());
+
+        let provider = EnhancedCodeActionsProvider::new(source.clone());
+        let actions = provider.get_enhanced_refactoring_actions(&ast, (0, source.len()));
+
+        assert!(
+            actions.iter().any(|a| a.title.contains("error checking")),
+            "the action must still be offered for an unchecked open followed by non-ASCII text"
+        );
+    }
+
     #[test]
     fn test_convert_to_postfix() {
         let source = "if ($debug) { print \"Debug\\n\"; }";
