@@ -18,6 +18,70 @@ pub const CLAIM_CEILING: &str = "source_registration_observation";
 const EMACS_REPOSITORY: &str = "https://github.com/emacs-mirror/emacs";
 const LSP_MODE_REPOSITORY: &str = "https://github.com/emacs-lsp/lsp-mode";
 
+/// Audited exact identity for one named observation. Validation compares the
+/// rendered row against these values, so a replaced-but-shape-valid commit,
+/// tree, or blob fails closed instead of publishing a fabricated exact
+/// observation. The checked constructors and this table agree by construction;
+/// any one-sided edit fails `validate()` in the contract tests.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AuditedObservation {
+    observation_id: &'static str,
+    /// Canonical checked-manifest subject the row joins to, when one exists.
+    subject_id: Option<&'static str>,
+    commit: &'static str,
+    tree_sha1: &'static str,
+    /// `(path, blob)` for every observed file, in stable path order.
+    files: &'static [(&'static str, &'static str)],
+}
+
+const AUDITED_OBSERVATIONS: &[AuditedObservation] = &[
+    AuditedObservation {
+        observation_id: "eglot_released_1_24_stock_registry",
+        subject_id: Some("released_eglot_gnu_elpa_1_24"),
+        commit: "0d67e76b94e1f0af9fe364aed8aa5db1c494c206",
+        tree_sha1: "fa588e3cafbd43e97b3ac9cd1a0bc727430c4731",
+        files: &[("lisp/progmodes/eglot.el", "f701a38ab8bd9ad984c58320907cb8a93396ec69")],
+    },
+    AuditedObservation {
+        observation_id: "eglot_source_f4f249a2_stock_registry",
+        subject_id: None,
+        commit: "f4f249a2249a7047ba41a659b8fcdcd7e1caf4e0",
+        tree_sha1: "ffd5ed14f7cc689e22163527e47d6ae0d0acbea0",
+        files: &[("lisp/progmodes/eglot.el", "f2a9e36989cd90500e66900efe5138e6dee56668")],
+    },
+    AuditedObservation {
+        observation_id: "lsp_mode_released_10_0_0_clients",
+        subject_id: Some("released_lsp_mode_melpa_stable_10_0_0"),
+        commit: "913a6c07f163205cb568bc68d7dfe677dbc358ab",
+        tree_sha1: "0941b1b96aee881e5256bf2fce9ad75391c1abb4",
+        files: &[
+            ("clients/lsp-perl.el", "28569f7ecf22a5b02762976ef338693c655679ad"),
+            ("clients/lsp-perlnavigator.el", "51cbc768c960c40433d61299cc837b94f7830423"),
+            ("clients/lsp-pls.el", "f5437fbf739dd661d0850ede25ad7ef73dbf81d4"),
+            ("lsp-mode.el", "ee16b0ca0c999eb9ba6db25a46ec3c1a19330619"),
+        ],
+    },
+    AuditedObservation {
+        observation_id: "lsp_mode_source_e15b8205_clients",
+        subject_id: None,
+        commit: "e15b8205cbd0369df40b412909eb3ed3264e96a2",
+        tree_sha1: "51274cfa292c0b5ae0a70edb9c0c61b153b5f916",
+        files: &[
+            ("clients/lsp-perl.el", "28569f7ecf22a5b02762976ef338693c655679ad"),
+            ("clients/lsp-perlnavigator.el", "51cbc768c960c40433d61299cc837b94f7830423"),
+            ("clients/lsp-pls.el", "f5437fbf739dd661d0850ede25ad7ef73dbf81d4"),
+            ("lsp-mode.el", "9575875cd4c7ef49ab0bd8e5473e44f73c4a0c7d"),
+        ],
+    },
+];
+
+fn audited_observation(observation_id: &str) -> Result<&'static AuditedObservation> {
+    AUDITED_OBSERVATIONS
+        .iter()
+        .find(|row| row.observation_id == observation_id)
+        .ok_or_else(|| anyhow::anyhow!("unaudited observation_id {observation_id}"))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RegistrationSurface {
@@ -50,6 +114,12 @@ pub struct RegistrationEntry {
 #[serde(deny_unknown_fields)]
 pub struct StockDiscoveryObservation {
     pub observation_id: String,
+    /// Canonical checked-manifest subject this row joins to, when the checked
+    /// manifest owns this exact revision. Upstream-source rows observed at
+    /// commits no manifest row pins stay `None` rather than manufacturing an
+    /// alias unknown to `SubjectManifest::row_for` and the host registry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subject_id: Option<String>,
     pub client_kind: SubjectClientKind,
     pub client_version: String,
     pub source_state: ClientSourceState,
@@ -75,18 +145,9 @@ pub struct StockDiscoveryBaseline {
 
 impl StockDiscoveryBaseline {
     pub fn validate(&self) -> Result<()> {
-        ensure!(
-            self.schema_version == SCHEMA_VERSION,
-            "schema_version must be {SCHEMA_VERSION}"
-        );
-        ensure!(
-            self.claim_ceiling == CLAIM_CEILING,
-            "claim_ceiling must be {CLAIM_CEILING}"
-        );
-        ensure!(
-            self.observations.len() == 4,
-            "baseline must contain four exact observations"
-        );
+        ensure!(self.schema_version == SCHEMA_VERSION, "schema_version must be {SCHEMA_VERSION}");
+        ensure!(self.claim_ceiling == CLAIM_CEILING, "claim_ceiling must be {CLAIM_CEILING}");
+        ensure!(self.observations.len() == 4, "baseline must contain four exact observations");
 
         let mut ids = BTreeSet::new();
         for (index, observation) in self.observations.iter().enumerate() {
@@ -107,25 +168,30 @@ impl StockDiscoveryBaseline {
 
 impl StockDiscoveryObservation {
     fn validate(&self) -> Result<()> {
-        ensure!(
-            is_subject_token(&self.observation_id),
-            "observation_id must be a stable token"
-        );
-        ensure!(
-            !self.client_version.trim().is_empty(),
-            "client_version must be present"
-        );
+        ensure!(is_subject_token(&self.observation_id), "observation_id must be a stable token");
+        ensure!(!self.client_version.trim().is_empty(), "client_version must be present");
         ensure!(
             self.repository.starts_with("https://github.com/"),
             "repository must be an exact GitHub URL"
         );
+        ensure!(is_lower_hex(&self.commit, 40), "commit must be an exact 40-hex revision");
+        ensure!(is_lower_hex(&self.tree_sha1, 40), "tree_sha1 must be an exact 40-hex Git tree");
+        let audited = audited_observation(&self.observation_id)?;
         ensure!(
-            is_lower_hex(&self.commit, 40),
-            "commit must be an exact 40-hex revision"
+            self.commit == audited.commit,
+            "commit {} does not match the audited revision for {}",
+            self.commit,
+            self.observation_id
         );
         ensure!(
-            is_lower_hex(&self.tree_sha1, 40),
-            "tree_sha1 must be an exact 40-hex Git tree"
+            self.tree_sha1 == audited.tree_sha1,
+            "tree_sha1 does not match the audited tree for {}",
+            self.observation_id
+        );
+        ensure!(
+            self.subject_id.as_deref() == audited.subject_id,
+            "subject_id must bind the canonical checked-manifest subject for {}",
+            self.observation_id
         );
         ensure!(
             self.observation_complete,
@@ -137,6 +203,7 @@ impl StockDiscoveryObservation {
         );
         validate_sorted_tokens(&self.search_scope, "search_scope")?;
         validate_source_files(&self.observed_files)?;
+        bind_observed_files_to_audited_identity(&self.observed_files, audited)?;
 
         ensure!(
             !self.entries.is_empty(),
@@ -177,10 +244,7 @@ impl StockDiscoveryObservation {
             "Eglot rows must observe eglot-server-programs"
         );
         ensure!(
-            strings_equal(
-                &self.search_scope,
-                &["lisp/progmodes/eglot.el:eglot-server-programs"]
-            ),
+            strings_equal(&self.search_scope, &["lisp/progmodes/eglot.el:eglot-server-programs"]),
             "Eglot observation must cover the complete stock registry"
         );
         ensure!(
@@ -209,12 +273,7 @@ impl StockDiscoveryObservation {
         ensure!(
             strings_equal(
                 &entry.command_shape,
-                &[
-                    "perl",
-                    "-MPerl::LanguageServer",
-                    "-e",
-                    "Perl::LanguageServer::run",
-                ]
+                &["perl", "-MPerl::LanguageServer", "-e", "Perl::LanguageServer::run",]
             ),
             "Eglot legacy Perl command changed"
         );
@@ -239,24 +298,23 @@ impl StockDiscoveryObservation {
             "current exact lsp-mode subjects must retain three Perl clients"
         );
         ensure!(
-            self.entries
-                .iter()
-                .map(|entry| entry.entry_id.as_str())
-                .eq(["perlnavigator", "pls", "perl_language_server"]),
+            self.entries.iter().map(|entry| entry.entry_id.as_str()).eq([
+                "perlnavigator",
+                "pls",
+                "perl_language_server"
+            ]),
             "lsp-mode Perl client set/order changed"
         );
         ensure!(
-            self.entries
-                .iter()
-                .map(|entry| entry.priority)
-                .eq([Some(0), Some(-1), Some(-2)]),
+            self.entries.iter().map(|entry| entry.priority).eq([Some(0), Some(-1), Some(-2)]),
             "lsp-mode Perl priority order changed"
         );
         ensure!(
-            self.entries
-                .iter()
-                .map(|entry| entry.activation_language.as_deref())
-                .eq([Some("perl"), Some("perl"), None]),
+            self.entries.iter().map(|entry| entry.activation_language.as_deref()).eq([
+                Some("perl"),
+                Some("perl"),
+                None
+            ]),
             "lsp-mode activation-vs-major-mode language identity changed"
         );
 
@@ -264,6 +322,10 @@ impl StockDiscoveryObservation {
         ensure!(
             navigator.major_modes.is_empty(),
             "Perl Navigator uses language activation, not a major-mode list"
+        );
+        ensure!(
+            navigator.server_id.as_deref() == Some("perlnavigator"),
+            "Perl Navigator server id changed"
         );
         ensure!(
             strings_equal(
@@ -274,10 +336,8 @@ impl StockDiscoveryObservation {
         );
 
         let pls = self.entry("pls")?;
-        ensure!(
-            pls.major_modes.is_empty(),
-            "PLS uses language activation, not a major-mode list"
-        );
+        ensure!(pls.major_modes.is_empty(), "PLS uses language activation, not a major-mode list");
+        ensure!(pls.server_id.as_deref() == Some("pls"), "PLS server id changed");
         ensure!(
             strings_equal(
                 &pls.command_shape,
@@ -290,6 +350,10 @@ impl StockDiscoveryObservation {
         ensure!(
             strings_equal(&legacy.major_modes, &["perl-mode", "cperl-mode"]),
             "Perl::LanguageServer major modes changed"
+        );
+        ensure!(
+            legacy.server_id.as_deref() == Some("perl-language-server"),
+            "Perl::LanguageServer server id changed"
         );
         ensure!(
             strings_equal(
@@ -318,25 +382,17 @@ impl StockDiscoveryObservation {
 
 impl RegistrationEntry {
     fn validate(&self) -> Result<()> {
-        ensure!(
-            is_subject_token(&self.entry_id),
-            "entry_id must be a stable token"
-        );
+        ensure!(is_subject_token(&self.entry_id), "entry_id must be a stable token");
         ensure!(
             !self.major_modes.is_empty() || self.activation_language.is_some(),
             "entry must retain major modes or a language activation selector"
         );
         ensure!(
-            self.command_shape
-                .first()
-                .is_some_and(|program| !program.is_empty()),
+            self.command_shape.first().is_some_and(|program| !program.is_empty()),
             "registration command must have a program shape"
         );
         if let Some(server_id) = &self.server_id {
-            ensure!(
-                is_wire_identifier(server_id),
-                "server_id must be a stable wire identifier"
-            );
+            ensure!(is_wire_identifier(server_id), "server_id must be a stable wire identifier");
         }
         Ok(())
     }
@@ -344,10 +400,7 @@ impl RegistrationEntry {
     fn is_perllsp(&self) -> bool {
         self.entry_id == "perllsp"
             || self.server_id.as_deref() == Some("perllsp")
-            || self
-                .command_shape
-                .first()
-                .is_some_and(|program| program == "perllsp")
+            || self.command_shape.first().is_some_and(|program| program == "perllsp")
     }
 }
 
@@ -358,6 +411,7 @@ pub fn checked_baseline() -> StockDiscoveryBaseline {
         observations: vec![
             eglot_observation(
                 "eglot_released_1_24_stock_registry",
+                Some("released_eglot_gnu_elpa_1_24"),
                 "1.24",
                 ClientSourceState::Released,
                 "0d67e76b94e1f0af9fe364aed8aa5db1c494c206",
@@ -366,6 +420,7 @@ pub fn checked_baseline() -> StockDiscoveryBaseline {
             ),
             eglot_observation(
                 "eglot_source_f4f249a2_stock_registry",
+                None,
                 "1.24",
                 ClientSourceState::UpstreamSource,
                 "f4f249a2249a7047ba41a659b8fcdcd7e1caf4e0",
@@ -374,6 +429,7 @@ pub fn checked_baseline() -> StockDiscoveryBaseline {
             ),
             lsp_mode_observation(
                 "lsp_mode_released_10_0_0_clients",
+                Some("released_lsp_mode_melpa_stable_10_0_0"),
                 "10.0.0",
                 ClientSourceState::Released,
                 "913a6c07f163205cb568bc68d7dfe677dbc358ab",
@@ -382,6 +438,7 @@ pub fn checked_baseline() -> StockDiscoveryBaseline {
             ),
             lsp_mode_observation(
                 "lsp_mode_source_e15b8205_clients",
+                None,
                 "10.0.1",
                 ClientSourceState::UpstreamSource,
                 "e15b8205cbd0369df40b412909eb3ed3264e96a2",
@@ -402,6 +459,7 @@ pub fn render_checked_json() -> Result<String> {
 
 fn eglot_observation(
     observation_id: &str,
+    subject_id: Option<&str>,
     client_version: &str,
     source_state: ClientSourceState,
     commit: &str,
@@ -410,6 +468,7 @@ fn eglot_observation(
 ) -> StockDiscoveryObservation {
     StockDiscoveryObservation {
         observation_id: observation_id.to_string(),
+        subject_id: subject_id.map(str::to_string),
         client_kind: SubjectClientKind::ExternalEglot,
         client_version: client_version.to_string(),
         source_state,
@@ -443,6 +502,7 @@ fn eglot_observation(
 
 fn lsp_mode_observation(
     observation_id: &str,
+    subject_id: Option<&str>,
     client_version: &str,
     source_state: ClientSourceState,
     commit: &str,
@@ -451,6 +511,7 @@ fn lsp_mode_observation(
 ) -> StockDiscoveryObservation {
     StockDiscoveryObservation {
         observation_id: observation_id.to_string(),
+        subject_id: subject_id.map(str::to_string),
         client_kind: SubjectClientKind::LspMode,
         client_version: client_version.to_string(),
         source_state,
@@ -531,11 +592,32 @@ fn validate_sorted_tokens(values: &[String], field: &str) -> Result<()> {
     Ok(())
 }
 
-fn validate_source_files(files: &[ObservedSourceFile]) -> Result<()> {
+/// Bind every observed file's path and blob to the audited inventory, so a
+/// swapped-but-shape-valid blob cannot pass as an exact source observation.
+fn bind_observed_files_to_audited_identity(
+    files: &[ObservedSourceFile],
+    audited: &AuditedObservation,
+) -> Result<()> {
     ensure!(
-        !files.is_empty(),
-        "at least one exact observed source file is required"
+        files.len() == audited.files.len(),
+        "observed file set must match the audited inventory for {}",
+        audited.observation_id
     );
+    for file in files {
+        let audited_blob =
+            audited.files.iter().find(|(path, _)| *path == file.path).map(|(_, blob)| *blob);
+        ensure!(
+            audited_blob == Some(file.git_blob_sha1.as_str()),
+            "observed blob for {} does not match the audited identity for {}",
+            file.path,
+            audited.observation_id
+        );
+    }
+    Ok(())
+}
+
+fn validate_source_files(files: &[ObservedSourceFile]) -> Result<()> {
+    ensure!(!files.is_empty(), "at least one exact observed source file is required");
     let mut paths = BTreeSet::new();
     let mut previous_path: Option<&str> = None;
     for file in files {
@@ -543,15 +625,8 @@ fn validate_source_files(files: &[ObservedSourceFile]) -> Result<()> {
             !file.path.starts_with('/') && !file.path.contains(".."),
             "source paths must be bounded and relative"
         );
-        ensure!(
-            is_lower_hex(&file.git_blob_sha1, 40),
-            "source blob must be exact 40-hex SHA-1"
-        );
-        ensure!(
-            paths.insert(file.path.as_str()),
-            "duplicate observed source path {}",
-            file.path
-        );
+        ensure!(is_lower_hex(&file.git_blob_sha1, 40), "source blob must be exact 40-hex SHA-1");
+        ensure!(paths.insert(file.path.as_str()), "duplicate observed source path {}", file.path);
         if let Some(previous) = previous_path {
             ensure!(
                 previous < file.path.as_str(),
@@ -579,9 +654,7 @@ fn strings_equal(actual: &[String], expected: &[&str]) -> bool {
 
 fn is_lower_hex(value: &str, length: usize) -> bool {
     value.len() == length
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        && value.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
 }
 
 fn is_subject_token(value: &str) -> bool {
@@ -594,9 +667,6 @@ fn is_subject_token(value: &str) -> bool {
 fn is_wire_identifier(value: &str) -> bool {
     !value.is_empty()
         && value.bytes().all(|byte| {
-            byte.is_ascii_lowercase()
-                || byte.is_ascii_digit()
-                || byte == b'_'
-                || byte == b'-'
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_' || byte == b'-'
         })
 }
