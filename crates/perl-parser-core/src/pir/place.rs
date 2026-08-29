@@ -171,6 +171,12 @@ impl PirPlaceKind {
 }
 
 /// One source-anchored place record.
+///
+/// The two provenance fields are deliberately not redundant:
+/// [`PirSourceAnchor`] records *source-text* provenance (which source text and
+/// flat HIR item caused this place geometry), while [`PirPlaceOrigin`] records
+/// *canonical body-arena* provenance (which [`HirBodyId`]/[`HirExprId`]
+/// produced the place). Keep both until #13593 embeds places into `PirGraph`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct PirPlace {
@@ -178,9 +184,9 @@ pub struct PirPlace {
     pub id: PirPlaceId,
     /// Structural storage identity.
     pub kind: PirPlaceKind,
-    /// Source provenance for the place geometry.
+    /// Source-text / flat-HIR-item provenance for the place geometry.
     pub source_anchor: PirSourceAnchor,
-    /// Canonical HIR origin when available.
+    /// Canonical HIR body-arena origin when available.
     pub origin: PirPlaceOrigin,
     /// Dynamic-boundary node that qualifies this place, when any.
     pub dynamic_boundary: Option<PirId>,
@@ -235,11 +241,7 @@ mod tests {
             key: PirId::from_index(5),
         };
         let glob = PirPlaceKind::GlobSlot {
-            symbol: SymbolName {
-                sigil: "*".to_string(),
-                name: "entry".to_string(),
-                package: None,
-            },
+            symbol: SymbolName { sigil: "*".to_string(), name: "entry".to_string(), package: None },
             slot: PirGlobSlotKind::Scalar,
         };
         let dereferenced = PirPlaceKind::Dereferenced { reference: PirId::from_index(6) };
@@ -259,30 +261,45 @@ mod tests {
         let base = PirPlaceId::from_index(2);
         let selector = PirId::from_index(9);
 
+        // Round-trip equality: same base + same selector compare equal.
         assert_eq!(
             PirPlaceKind::ArrayElement { base, index: selector },
             PirPlaceKind::ArrayElement { base: PirPlaceId::from_index(2), index: selector }
         );
+        // Distinct bases and distinct selectors both break identity, so bases
+        // and selectors participate in place equality.
+        assert_ne!(
+            PirPlaceKind::ArrayElement { base, index: selector },
+            PirPlaceKind::ArrayElement { base: PirPlaceId::from_index(3), index: selector }
+        );
+        assert_ne!(
+            PirPlaceKind::ArrayElement { base, index: selector },
+            PirPlaceKind::ArrayElement { base, index: PirId::from_index(10) }
+        );
+        // Variant distinction: same payload under a different kind is not equal.
         assert_ne!(
             PirPlaceKind::ArrayElement { base, index: selector },
             PirPlaceKind::HashElement { base, key: selector }
+        );
+        assert_ne!(
+            PirPlaceKind::HashElement { base, key: selector },
+            PirPlaceKind::HashElement { base: PirPlaceId::from_index(3), key: selector }
+        );
+        assert_ne!(
+            PirPlaceKind::HashElement { base, key: selector },
+            PirPlaceKind::HashElement { base, key: PirId::from_index(10) }
         );
     }
 
     #[test]
     fn body_origin_keeps_body_and_expression_identity_together() {
-        let origin = PirPlaceOrigin::BodyExpression {
-            body: HirBodyId(2),
-            expression: HirExprId(11),
-        };
+        let origin =
+            PirPlaceOrigin::BodyExpression { body: HirBodyId(2), expression: HirExprId(11) };
 
         assert_eq!(origin.name(), "BodyExpression");
         assert_eq!(
             origin,
-            PirPlaceOrigin::BodyExpression {
-                body: HirBodyId(2),
-                expression: HirExprId(11),
-            }
+            PirPlaceOrigin::BodyExpression { body: HirBodyId(2), expression: HirExprId(11) }
         );
     }
 
