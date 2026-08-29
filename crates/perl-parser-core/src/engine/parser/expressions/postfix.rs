@@ -1210,6 +1210,31 @@ impl<'a> Parser<'a> {
                                                 break;
                                             }
                                             args.push(self.parse_assignment_or_declaration()?);
+                                            if scalar_filehandle
+                                                && matches!(
+                                                    args.last().map(|arg| &arg.kind),
+                                                    Some(NodeKind::Variable { sigil, name })
+                                                        if sigil == "%" && name.is_empty()
+                                                )
+                                            {
+                                                return Err(ParseError::syntax(
+                                                    "Incomplete hash variable",
+                                                    self.current_position(),
+                                                ));
+                                            }
+                                            if scalar_filehandle
+                                                && args.len() == 2
+                                                && matches!(
+                                                    args[1].kind,
+                                                    NodeKind::Number { .. }
+                                                )
+                                                && self.peek_kind() == Some(TokenKind::Number)
+                                            {
+                                                return Err(ParseError::syntax(
+                                                    "Adjacent numeric terms require an operator or separator",
+                                                    self.current_position(),
+                                                ));
+                                            }
                                         }
                                     }
 

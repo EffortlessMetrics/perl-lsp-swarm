@@ -521,9 +521,31 @@ impl<'a> Parser<'a> {
             // Use parse_assignment instead of parse_expression to avoid grouping by comma operator
             args.push(self.parse_assignment()?);
 
+            if matches!(method.as_str(), "print" | "printf" | "say")
+                && matches!(
+                    args.last().map(|arg| &arg.kind),
+                    Some(NodeKind::Variable { sigil, name })
+                        if sigil == "%" && name.is_empty()
+                )
+            {
+                return Err(ParseError::syntax(
+                    "Incomplete hash variable",
+                    self.current_position(),
+                ));
+            }
+
             // Check if we should continue (comma or fat arrow as separator in indirect syntax)
             if matches!(self.peek_kind(), Some(TokenKind::Comma | TokenKind::FatArrow)) {
                 self.tokens.next()?; // consume , or =>
+            } else if matches!(method.as_str(), "print" | "printf" | "say")
+                && args.len() == 1
+                && matches!(args[0].kind, NodeKind::Number { .. })
+                && self.peek_kind() == Some(TokenKind::Number)
+            {
+                return Err(ParseError::syntax(
+                    "Adjacent numeric terms require an operator or separator",
+                    self.current_position(),
+                ));
             } else if Self::is_statement_terminator(self.peek_kind())
                 || self.is_statement_modifier_keyword()
             {
@@ -531,7 +553,7 @@ impl<'a> Parser<'a> {
             }
         }
 
-        let end = self.previous_position();
+        let end = args.last().map_or(object.location.end, |arg| arg.location.end);
 
         // Return as an indirect call node (using MethodCall with a flag or separate node)
         Ok(Node::new(
