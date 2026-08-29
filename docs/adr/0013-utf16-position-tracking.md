@@ -19,10 +19,12 @@ For each line, source geometry distinguishes `line_start`, `line_content_end`, a
 `line_separator_end`. For `"abc\\r\\ndef"`, line 0 is `0..3` content and `0..5`
 including its separator; line 1 starts at byte 5.
 
-The `perl-position-tracking` line-index constructors and the `perl-line-index`
-constructor use this contract. Rope remains storage: Ropey's broader logical-line
-classification is not source-line authority. Parser byte points, Tree-sitter points,
-LSP positions, and DAP positions retain separate coordinate types and units.
+The `perl-position-tracking` line-index constructors use this contract. The
+`perl-line-index` crate remains a separate legacy coordinate surface until its
+own owner reconciles its CRLF edit semantics. Rope remains storage: Ropey's
+broader logical-line classification is not source-line authority for the
+constructors covered here. Parser byte points, Tree-sitter points, LSP positions,
+and DAP positions retain separate coordinate types and units.
 
 ## BOM and source subjects
 
@@ -63,8 +65,9 @@ it does not claim those downstream migrations are complete.
 
 ## Consequences
 
-- All three position-tracking constructors now derive line starts from the same LF
-  rule, including when the source is read through Rope chunks.
+- The position-tracking String, Rope, and owning-index constructors now derive
+  line starts from the same LF rule, including when the source is read through
+  Rope chunks.
 - Callers that relied on bare-CR or Unicode-separator line breaks must be classified
   as a separate internal domain or migrated by their owning issue.
 - No provider migration, source normalization, UTF-32 policy, or indexed-mapper
