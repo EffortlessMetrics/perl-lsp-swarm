@@ -2,6 +2,7 @@ use super::*;
 use crate::Parser;
 use anyhow::Result;
 use perl_ast::{Node, NodeKind, SourceLocation};
+use perl_lexer::Token;
 use proptest::prelude::*;
 
 #[derive(Clone, Debug)]
@@ -15,6 +16,44 @@ fn apply_edit_to_ground_truth(source: &mut String, edit: &FuzzEdit) {
     let start = edit.start.min(source.len());
     let old_end = (start + edit.delete_len).min(source.len());
     source.replace_range(start..old_end, &edit.insert_text);
+}
+
+fn assert_token_streams_equal(actual: &[Token], expected: &[Token]) {
+    assert_eq!(actual.len(), expected.len(), "token count diverged");
+    for (index, (actual, expected)) in actual.iter().zip(expected).enumerate() {
+        assert_eq!(actual.token_type, expected.token_type, "token kind {index}");
+        assert_eq!(actual.text, expected.text, "token payload {index}");
+        assert_eq!(actual.start, expected.start, "token start {index}");
+        assert_eq!(actual.end, expected.end, "token end {index}");
+    }
+}
+
+fn assert_incremental_matches_fresh(state: &IncrementalState) {
+    let mut fresh_parser = Parser::new(state.source());
+    let fresh_output = fresh_parser.parse_with_recovery();
+    let incremental_output = state.parse_output();
+
+    assert_eq!(incremental_output.ast, fresh_output.ast, "AST diverged from fresh parse");
+    assert_eq!(
+        incremental_output.diagnostics, fresh_output.diagnostics,
+        "diagnostics diverged from fresh parse"
+    );
+    assert_eq!(incremental_output.recovered_count, fresh_output.recovered_count);
+    assert_eq!(incremental_output.terminated_early(), fresh_output.terminated_early());
+    assert_eq!(incremental_output.stop_cause(), fresh_output.stop_cause());
+    assert_eq!(
+        state.snapshot().disposition(),
+        ParseSnapshot::from_output(
+            state.source(),
+            state.generation(),
+            ParseSnapshotStrategy::Fresh,
+            fresh_output.clone(),
+        )
+        .disposition()
+    );
+    assert!(state.snapshot().validate_against(state.source()).is_ok());
+    let fresh_state = IncrementalState::new(state.source().to_owned());
+    assert_token_streams_equal(state.tokens(), &fresh_state.tokens);
 }
 
 #[test]
@@ -65,17 +104,78 @@ proptest! {
             prop_assert!(apply_edits(&mut state, &[edit]).is_ok());
             prop_assert_eq!(state.source(), &expected);
 
-            let mut cold_parser = Parser::new(&expected);
-            let cold_ast = cold_parser.parse().map_err(|err| {
-                TestCaseError::fail(format!("cold parse failed after edit: {err}"))
-            })?;
-            prop_assert_eq!(
-                state.parse_output().ast.to_sexp(),
-                cold_ast.to_sexp(),
-                "incremental AST diverged from a fresh cold parse"
-            );
+            assert_incremental_matches_fresh(&state);
         }
     }
+}
+
+#[test]
+fn stateful_checkpoint_restart_matches_fresh_tokens_and_ast() -> Result<()> {
+    let prefix = "my $seed = 0;\n".repeat(24);
+    let source = format!(
+        "{prefix}my $value = $input =~ /a\\/b/ ? s{{old}}{{new}} : qq{{value}};\nmy $tail = 1;\n"
+    );
+    let edit_start = source
+        .find("a\\/b")
+        .ok_or_else(|| anyhow::anyhow!("regex fixture is missing"))?;
+    let edit = Edit {
+        start_byte: edit_start,
+        old_end_byte: edit_start + "a\\/b".len(),
+        new_end_byte: edit_start + "c\\/d".len(),
+        new_text: "c\\/d".to_string(),
+    };
+
+    let mut state = IncrementalState::new(source);
+    let result = apply_edits(&mut state, &[edit])?;
+
+    assert_eq!(result.lex_restart.strategy, LexRestartStrategy::StoredCheckpointToEof);
+    assert!(result.lex_restart.restart_byte > 0);
+    assert_incremental_matches_fresh(&state);
+    Ok(())
+}
+
+#[test]
+fn unicode_crlf_checkpoint_restart_preserves_spans() -> Result<()> {
+    let prefix = "my $seed = 0;\r\n".repeat(24);
+    let source = format!("{prefix}my $value = 'café';\r\nmy $tail = 1;\r\n");
+    let edit_start = source
+        .find("café")
+        .ok_or_else(|| anyhow::anyhow!("unicode fixture is missing"))?;
+    let edit = Edit {
+        start_byte: edit_start,
+        old_end_byte: edit_start + "café".len(),
+        new_end_byte: edit_start + "茶".len(),
+        new_text: "茶".to_string(),
+    };
+
+    let mut state = IncrementalState::new(source);
+    let result = apply_edits(&mut state, &[edit])?;
+
+    assert_eq!(result.lex_restart.strategy, LexRestartStrategy::StoredCheckpointToEof);
+    assert_incremental_matches_fresh(&state);
+    Ok(())
+}
+
+#[test]
+fn recovery_checkpoint_restart_matches_fresh_diagnostics() -> Result<()> {
+    let prefix = "my $seed = 0;\n".repeat(24);
+    let source = format!("{prefix}my $value = ;\nmy $tail = 1;\n");
+    let edit_start = source
+        .find("= ;")
+        .ok_or_else(|| anyhow::anyhow!("recovery fixture is missing"))?;
+    let edit = Edit {
+        start_byte: edit_start,
+        old_end_byte: edit_start + "= ;".len(),
+        new_end_byte: edit_start + "= 1;".len(),
+        new_text: "= 1;".to_string(),
+    };
+
+    let mut state = IncrementalState::new(source);
+    let result = apply_edits(&mut state, &[edit])?;
+
+    assert_eq!(result.lex_restart.strategy, LexRestartStrategy::StoredCheckpointToEof);
+    assert_incremental_matches_fresh(&state);
+    Ok(())
 }
 
 #[test]
