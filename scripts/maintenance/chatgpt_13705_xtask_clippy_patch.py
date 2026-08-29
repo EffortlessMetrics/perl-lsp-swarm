@@ -64,15 +64,25 @@ ripr_path = Path("xtask/src/tasks/ripr_evidence.rs")
 ripr = ripr_path.read_text(encoding="utf-8")
 ripr = replace_once(
     ripr,
-    '    let normalized = normalized.strip_prefix("//?/").unwrap_or(&normalized);',
-    '    let normalized = normalized.strip_prefix("//?/").unwrap_or(normalized.as_str());',
-    label="Windows verbatim prefix fallback",
+    """    let normalized = normalize_path_text(raw_path);
+    let normalized = normalized.strip_prefix("//?/").unwrap_or(&normalized);
+    let normalized = normalized.strip_prefix("./").unwrap_or(&normalized);""",
+    """    let normalized = normalize_path_text(raw_path);
+    let normalized = normalized.strip_prefix("//?/").unwrap_or(normalized.as_str());
+    let normalized = normalized.strip_prefix("./").unwrap_or(normalized);""",
+    label="surface path normalization chain",
 )
 ripr = replace_once(
     ripr,
-    '    let normalized = normalized.strip_prefix("./").unwrap_or(&normalized);',
-    '    let normalized = normalized.strip_prefix("./").unwrap_or(normalized);',
-    label="relative prefix fallback",
+    """fn normalize_repo_relative_path(path: &str) -> String {
+    let normalized = normalize_path_text(path);
+    normalized.strip_prefix("./").unwrap_or(&normalized).to_string()
+}""",
+    """fn normalize_repo_relative_path(path: &str) -> String {
+    let normalized = normalize_path_text(path);
+    normalized.strip_prefix("./").unwrap_or(normalized.as_str()).to_string()
+}""",
+    label="repo-relative path normalization",
 )
 ripr = replace_once(
     ripr,
