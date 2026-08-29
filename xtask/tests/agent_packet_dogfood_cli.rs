@@ -154,3 +154,30 @@ fn validate_cli_redacts_untrusted_structural_diagnostic_values() -> Result<()> {
     }
     Ok(())
 }
+
+#[test]
+fn validate_cli_redacts_credential_keys_from_hygiene_diagnostics() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+
+    for key in ["APIKey", "TOKEN"] {
+        let mut invalid = fixture_document()?;
+        invalid[key] = json!({"lease": true});
+        // Keep the caller-supplied path neutral: validation output includes the
+        // path, while the assertion targets diagnostic redaction of the JSON key.
+        let path = write_document(&temp, "invalid-hygiene.json", invalid)?;
+        let output = Command::cargo_bin("xtask")?
+            .args(["agent-dogfood", "validate", "--manifest"])
+            .arg(path)
+            .output()?;
+
+        assert!(!output.status.success(), "{key} must fail validation");
+        let stderr = String::from_utf8(output.stderr)?;
+        assert!(stderr.contains("credential_in_payload"), "missing credential reason: {stderr}");
+        assert!(
+            stderr.contains("mutable_state_embedded"),
+            "missing mutable-state reason: {stderr}"
+        );
+        assert!(!stderr.contains(key), "validation CLI leaked credential key {key}: {stderr}");
+    }
+    Ok(())
+}

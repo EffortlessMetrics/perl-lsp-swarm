@@ -520,6 +520,13 @@ fn is_named_key(key: &str, names: &[&str]) -> bool {
     names.iter().any(|name| normalized == *name)
 }
 
+/// Build a diagnostic path without echoing an object key supplied by the
+/// packet. Array indexes remain useful and bounded, while field names are
+/// untrusted input and must never appear in validation output.
+fn redacted_child_path(where_: &str) -> String {
+    format!("{where_}.<field>")
+}
+
 /// Normalize structured field names before comparing them with the closed
 /// credential vocabulary. JSON producers use both snake_case and camelCase
 /// (including acronym-bearing names such as `APIKey`), so lowercasing alone
@@ -575,11 +582,11 @@ fn scan_document_hygiene(value: &Value, where_: &str, violations: &mut Vec<Viola
         }
         Value::Object(object) => {
             for (key, child) in object {
-                let child_where = format!("{where_}.{key}");
+                let child_where = redacted_child_path(where_);
                 if is_named_key(key, COT_KEYS) {
                     violations.push(Violation::new(
                         "cot_key_in_payload",
-                        format!("{child_where}: chain-of-thought key {key} must never be retained"),
+                        format!("{child_where}: chain-of-thought key must never be retained"),
                     ));
                 }
                 if is_credential_key(key) {
@@ -604,10 +611,10 @@ fn contains_forbidden_mutable_state(value: &Value, where_: &str, violations: &mu
                 if is_named_key(key, MUTABLE_STATE_KEYS) {
                     violations.push(Violation::new(
                         "mutable_state_embedded",
-                        format!("{where_}: durable packet carries live-state field {key}"),
+                        format!("{where_}: durable packet carries a live-state field"),
                     ));
                 }
-                contains_forbidden_mutable_state(child, &format!("{where_}.{key}"), violations);
+                contains_forbidden_mutable_state(child, &redacted_child_path(where_), violations);
             }
         }
         Value::Array(items) => {
