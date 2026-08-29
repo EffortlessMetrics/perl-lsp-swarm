@@ -496,6 +496,10 @@ fn coverage_workflow_is_manual_or_nightly_only_and_requires_receipts() {
         "a positive conjunction must not be hidden by an unrelated negative clause"
     );
     assert!(
+        has_positive_stale_route_claim("Coverage does not run on PRs or coverage runs on PRs."),
+        "a positive disjunction must not be hidden by an unrelated negative clause"
+    );
+    assert!(
         !has_positive_stale_route_claim("Coverage does not run on PRs or merge queues."),
         "wholly negative coverage prose must remain allowed"
     );
@@ -1246,10 +1250,13 @@ fn route_prose_clauses(normalized: &str) -> Vec<&str> {
     {
         let mut remaining = punctuation_clause;
         loop {
-            let Some((separator, separator_text)) = [" but ", " without ", " never ", " and "]
-                .iter()
-                .filter_map(|separator| remaining.find(separator).map(|index| (index, *separator)))
-                .min_by_key(|(index, _)| *index)
+            let Some((separator, separator_text)) =
+                [" but ", " without ", " never ", " and ", " or "]
+                    .iter()
+                    .filter_map(|separator| {
+                        remaining.find(separator).map(|index| (index, *separator))
+                    })
+                    .min_by_key(|(index, _)| *index)
             else {
                 let clause = remaining.trim();
                 if !clause.is_empty() {
