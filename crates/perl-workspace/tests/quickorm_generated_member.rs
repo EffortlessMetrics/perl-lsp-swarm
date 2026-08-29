@@ -70,3 +70,32 @@ table users => sub {
 
     Ok(())
 }
+
+#[test]
+fn nested_package_generated_member_is_not_projected_to_outer_package()
+-> Result<(), Box<dyn std::error::Error>> {
+    let source = r#"
+package MyApp::Schema::Outer {
+    use DBIx::QuickORM type => 'table';
+    package MyApp::Schema::Inner {
+        use DBIx::QuickORM type => 'table';
+        table inner_users => sub {};
+    }
+}
+1;
+"#;
+
+    let index = WorkspaceIndex::new();
+    let uri = Url::parse("file:///lib/MyApp/Schema/Nested.pm")?;
+    index.index_file(uri, source.to_string()).map_err(std::io::Error::other)?;
+
+    let generated = index.search_generated_workspace_symbols("qorm_table", None);
+    assert_eq!(generated.len(), 1, "expected only the nested generated symbol: {generated:?}");
+    assert_eq!(generated[0].qualified_name.as_deref(), Some("MyApp::Schema::Inner::qorm_table"));
+    assert!(
+        index.get_generated_package_members("MyApp::Schema::Outer").is_empty(),
+        "the outer package must not receive a false generated member"
+    );
+    assert_eq!(index.get_generated_package_members("MyApp::Schema::Inner").len(), 1);
+    Ok(())
+}

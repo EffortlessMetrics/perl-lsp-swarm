@@ -323,3 +323,38 @@ table users => sub {};
     assert!(!labels.contains(&"qorm_table"));
     Ok(())
 }
+
+#[test]
+fn nested_package_completion_is_scoped_to_declared_package()
+-> Result<(), Box<dyn std::error::Error>> {
+    let index = Arc::new(WorkspaceIndex::new());
+    index.index_file(
+        Url::parse("file:///workspace/MyApp/Schema/Nested.pm")?,
+        r#"
+package MyApp::Schema::Outer {
+    use DBIx::QuickORM type => 'table';
+    package MyApp::Schema::Inner {
+        use DBIx::QuickORM type => 'table';
+        table inner_users => sub {};
+    }
+}
+1;
+"#
+        .to_string(),
+    )?;
+
+    let outer_items = completion_items(index.clone(), "MyApp::Schema::Outer->q")?;
+    let outer = labels(&outer_items);
+    assert!(
+        !outer.contains(&"qorm_table"),
+        "nested package facts must not surface as false outer-package completion: {outer:?}"
+    );
+
+    let inner_items = completion_items(index, "MyApp::Schema::Inner->q")?;
+    let inner = labels(&inner_items);
+    assert!(
+        inner.contains(&"qorm_table"),
+        "the nested package's earned generated member must remain available: {inner:?}"
+    );
+    Ok(())
+}

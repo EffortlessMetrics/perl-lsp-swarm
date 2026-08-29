@@ -472,6 +472,62 @@ table users => sub {};
 }
 
 #[test]
+fn nested_braced_package_is_attributed_to_inner_package() -> Result<(), Box<dyn std::error::Error>>
+{
+    let facts = generated_facts_from_source(
+        r#"
+package Outer::Package {
+    use DBIx::QuickORM type => 'table';
+    package Inner::Package {
+        use DBIx::QuickORM type => 'table';
+        table inner_users => sub {};
+    }
+}
+1;
+"#,
+    )?;
+
+    assert_eq!(canonical_names(&facts), vec!["Inner::Package::qorm_table"]);
+    assert!(
+        facts.iter().all(|fact| fact.entity.canonical_name != "Outer::Package::qorm_table"),
+        "nested compile-time declarations must not emit a false outer-package fact"
+    );
+    Ok(())
+}
+
+#[test]
+fn self_delimited_qw_table_import_invalidates_quickorm_authority()
+-> Result<(), Box<dyn std::error::Error>> {
+    let source = r#"
+package User;
+use DBIx::QuickORM type => 'table';
+use Other::DSL qw/table/;
+table users => sub {};
+1;
+"#;
+
+    let mut parser = Parser::new(source);
+    let ast = parser
+        .parse()
+        .map_err(|error| format!("failed to parse competing qw import: {error:?}"))?;
+    let competing_use = ast
+        .children()
+        .into_iter()
+        .find(|node| matches!(&node.kind, NodeKind::Use { module, .. } if module == "Other::DSL"))
+        .ok_or("missing competing Other::DSL use node")?;
+    let NodeKind::Use { args, .. } = &competing_use.kind else {
+        return Err("expected competing Other::DSL use node".into());
+    };
+    assert_eq!(args, &["qw/table/".to_string()]);
+
+    assert!(
+        generated_facts_from_source(source)?.is_empty(),
+        "the self-delimited qw/table/ import must invalidate QuickORM authority"
+    );
+    Ok(())
+}
+
+#[test]
 fn dynamic_builder_consumes_table_package_authority() -> Result<(), Box<dyn std::error::Error>> {
     let facts = generated_facts_from_source(
         r#"

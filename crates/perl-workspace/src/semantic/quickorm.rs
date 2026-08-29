@@ -263,6 +263,34 @@ fn walk_compile_time_descendants(
     source: Option<&str>,
 ) {
     match &node.kind {
+        NodeKind::Block { statements } => {
+            // Compile-time containers retain Perl's package state across
+            // semicolon-style declarations, but must restore the package that
+            // enclosed the container when they return.  Walking each child
+            // through this function also keeps direct runtime builders out of
+            // the compile-time-only path.
+            let saved_package = context.current_package.clone();
+            for statement in statements {
+                walk_compile_time_descendants(statement, file_id, context, facts, source);
+            }
+            context.current_package = saved_package;
+            return;
+        }
+        NodeKind::Package { name, block, .. } => {
+            // Package declarations can occur below a compile-time container,
+            // where the ordinary direct-statement walker is not involved.
+            // Attribute nested declarations to their package and restore the
+            // enclosing package after a braced declaration.  A semicolon-style
+            // declaration intentionally remains in effect for later siblings
+            // in the containing block, just as it does in Perl source order.
+            let saved_package = context.current_package.clone();
+            context.current_package = Some(name.clone());
+            if let Some(block) = block {
+                walk_compile_time_descendants(block, file_id, context, facts, source);
+                context.current_package = saved_package;
+            }
+            return;
+        }
         NodeKind::Use { module, args, .. } if module == QUICKORM_MODULE => {
             let package = current_package(context).to_string();
             let source_segment = source.and_then(|text| source_import_segment(text, node));
