@@ -15,7 +15,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fmt;
 use std::fs;
-use std::io::{BufReader, Read};
+use std::io::{BufReader, ErrorKind, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -821,6 +821,17 @@ fn run_ripr_check(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
 /// failure message is bounded because the payload itself is unbounded.
 fn run_ripr_streaming_to_file(args: &[String], out_path: &Path) -> Result<()> {
     let binary = ripr_binary()?;
+    // A failed rerun must not leave an older raw artifact available to the
+    // review-comments fallback.  The artifact is published only after the
+    // child succeeds and its complete stdout has been copied.
+    match fs::remove_file(out_path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("failed to remove stale {}", out_path.display()));
+        }
+    }
     let stdout_file =
         tempfile::NamedTempFile::new().context("failed to create RIPR stdout file")?;
     let mut child = Command::new(&binary)
@@ -888,11 +899,14 @@ fn ripr_check_ingestion_from_file(
         .with_context(|| format!("reading {}", raw_check_path.display()))?;
     let reader = BufReader::with_capacity(64 * 1024, raw_check);
     let mut buckets = RiprFindingBuckets::default();
-    let summary = stream_ripr_check_payload(reader, &mut |finding| {
-        buckets.absorb(finding, suppressions, head_extents, attribution, production_surface);
+    let payload = stream_ripr_check_payload_with_events(reader, &mut |event| match event {
+        StreamFindingsEvent::Start => buckets = RiprFindingBuckets::default(),
+        StreamFindingsEvent::Finding(finding) => {
+            buckets.absorb(finding, suppressions, head_extents, attribution, production_surface)
+        }
     })
     .context("ripr check output was not valid JSON")?;
-    let check_summary = summary.as_ref().and_then(Value::as_object);
+    let check_summary = payload.summary.as_ref().and_then(Value::as_object);
     Ok(RiprCheckIngestion {
         summary_counts: ripr_summary_counts_merge(
             ripr_summary_counts_seed(check_summary),
@@ -904,10 +918,10 @@ fn ripr_check_ingestion_from_file(
 }
 
 /// Streams one JSON document from `reader`, invoking `on_finding` for every
-/// element of the top-level `findings` array as it is parsed. Returns the raw
-/// top-level `summary` value, if present. Any other top-level shape (arrays,
-/// scalars) is still validated but carries no summary and no findings, which
-/// is what the previous DOM path saw through `Value::get`.
+/// element of the top-level `findings` array as it is parsed. Any other
+/// top-level shape (arrays, scalars) is still validated but carries no summary
+/// and no findings, which is what the previous DOM path saw through
+/// `Value::get`.
 fn stream_ripr_check_payload<R, F>(
     reader: R,
     on_finding: &mut F,
@@ -916,28 +930,56 @@ where
     R: Read,
     F: FnMut(&Value),
 {
+    stream_ripr_check_payload_with_events(reader, &mut |event| {
+        if let StreamFindingsEvent::Finding(finding) = event {
+            on_finding(finding);
+        }
+    })
+    .map(|payload| payload.summary)
+}
+
+/// Events emitted while streaming a top-level `findings` value.
+enum StreamFindingsEvent<'a> {
+    Start,
+    Finding(&'a Value),
+}
+
+/// Streaming payload parser with an event for top-level duplicate-key
+/// semantics. serde_json's retained map representation is last-key-wins.
+/// Emitting `Start` before every `findings` value lets a streaming sink discard
+/// the prior value before consuming the replacement, including when the
+/// replacement is not an array.
+fn stream_ripr_check_payload_with_events<R, F>(
+    reader: R,
+    on_event: &mut F,
+) -> serde_json::Result<RiprCheckPayload>
+where
+    R: Read,
+    F: for<'a> FnMut(StreamFindingsEvent<'a>),
+{
     let mut deserializer = serde_json::Deserializer::from_reader(reader);
-    let payload = deserializer.deserialize_any(RiprCheckPayloadVisitor { on_finding })?;
+    let payload = deserializer.deserialize_any(RiprCheckPayloadVisitor { on_event })?;
     deserializer.end()?;
-    Ok(payload.summary)
+    Ok(payload)
 }
 
 /// What a streaming parse of a `ripr check` payload retains.
 #[derive(Default)]
 struct RiprCheckPayload {
     summary: Option<Value>,
+    base: Option<Value>,
 }
 
 /// Hand-driven map visitor so `findings` elements are consumed one at a time;
 /// a typed `findings: Vec<...>` field would rebuild the unbounded array this
 /// ingestion exists to avoid.
 struct RiprCheckPayloadVisitor<'a, F> {
-    on_finding: &'a mut F,
+    on_event: &'a mut F,
 }
 
 impl<'de, F> Visitor<'de> for RiprCheckPayloadVisitor<'_, F>
 where
-    F: FnMut(&Value),
+    F: for<'a> FnMut(StreamFindingsEvent<'a>),
 {
     type Value = RiprCheckPayload;
 
@@ -954,8 +996,10 @@ where
             match key.as_str() {
                 "summary" => payload.summary = Some(map.next_value()?),
                 "findings" => {
-                    map.next_value_seed(StreamFindingsSeed { on_finding: self.on_finding })?;
+                    (self.on_event)(StreamFindingsEvent::Start);
+                    map.next_value_seed(StreamFindingsSeed { on_event: self.on_event })?;
                 }
+                "base" => payload.base = Some(map.next_value()?),
                 // Values the receipt never consumes are skipped in place —
                 // serde_json discards skipped tokens without buffering them.
                 _ => {
@@ -1002,12 +1046,12 @@ where
 /// [`DeserializeSeed`] streaming the elements of one `findings` value through
 /// the caller's callback.
 struct StreamFindingsSeed<'a, F> {
-    on_finding: &'a mut F,
+    on_event: &'a mut F,
 }
 
 impl<'de, F> DeserializeSeed<'de> for StreamFindingsSeed<'_, F>
 where
-    F: FnMut(&Value),
+    F: for<'a> FnMut(StreamFindingsEvent<'a>),
 {
     type Value = ();
 
@@ -1021,7 +1065,7 @@ where
 
 impl<'de, F> Visitor<'de> for StreamFindingsSeed<'_, F>
 where
-    F: FnMut(&Value),
+    F: for<'a> FnMut(StreamFindingsEvent<'a>),
 {
     type Value = ();
 
@@ -1034,7 +1078,7 @@ where
         A: SeqAccess<'de>,
     {
         while let Some(finding) = seq.next_element::<Value>()? {
-            (self.on_finding)(&finding);
+            (self.on_event)(StreamFindingsEvent::Finding(&finding));
         }
         Ok(())
     }
@@ -2819,18 +2863,6 @@ fn fallback_guidance_comments(
     repo: &Path,
     options: &ReviewCommentsOptions,
 ) -> Result<Option<(Vec<Value>, usize)>> {
-    let Ok(text) = fs::read_to_string(repo.join(PR_RAW_CHECK_JSON)) else {
-        return Ok(None);
-    };
-    let Ok(packet) = serde_json::from_str::<Value>(&text) else {
-        return Ok(None);
-    };
-    if packet.get("base").and_then(Value::as_str) != Some(options.base.as_str()) {
-        return Ok(None);
-    }
-    let Some(findings) = packet.get("findings").and_then(Value::as_array) else {
-        return Ok(None);
-    };
     let Ok(suppressions) = read_ripr_suppression_rules(repo, Path::new(DEFAULT_RIPR_SUPPRESSIONS))
     else {
         return Ok(None);
@@ -2858,22 +2890,102 @@ fn fallback_guidance_comments(
     let head_extents =
         diff_receipt.as_ref().map(|diff| HeadLineExtents::from_committed_diff(repo, diff));
 
-    let (mut seams, suppressed) = fallback_seam_entries(
-        findings,
-        &suppressions,
-        head_extents.as_ref(),
-        attribution.applied(),
-        production_surface.as_ref(),
+    let raw_check = fs::File::open(repo.join(PR_RAW_CHECK_JSON)).ok();
+    let Some(raw_check) = raw_check else { return Ok(None) };
+    let mut accumulator = FallbackGuidanceAccumulator::default();
+    let payload = stream_ripr_check_payload_with_events(
+        BufReader::with_capacity(64 * 1024, raw_check),
+        &mut |event| match event {
+            StreamFindingsEvent::Start => accumulator.reset(),
+            StreamFindingsEvent::Finding(finding) => accumulator.absorb(
+                finding,
+                &suppressions,
+                head_extents.as_ref(),
+                attribution.applied(),
+                production_surface.as_ref(),
+            ),
+        },
     );
+    let Ok(payload) = payload else { return Ok(None) };
+    if payload.base.as_ref().and_then(Value::as_str) != Some(options.base.as_str()) {
+        return Ok(None);
+    }
+    let (mut seams, suppressed) = accumulator.finish();
 
     seams.sort_by(|left, right| (&left.0, left.1, &left.2).cmp(&(&right.0, right.1, &right.2)));
+    // The accumulator already keeps the smallest bounded set by path/line;
+    // retain this final dedup as a defensive guard for future callers.
     seams.dedup_by(|next, previous| next.0 == previous.0 && next.1 == previous.1);
-    seams.truncate(FALLBACK_GUIDANCE_LIMIT);
     let comments = seams.into_iter().map(|(_, _, _, comment)| comment).collect::<Vec<_>>();
     if comments.is_empty() {
         return Ok(None);
     }
     Ok(Some((comments, suppressed)))
+}
+
+type FallbackSeam = (String, u64, String, Value);
+
+enum FallbackSeamDecision {
+    Ignore,
+    Suppressed,
+    Emit(FallbackSeam),
+}
+
+/// Keeps fallback guidance bounded while preserving the deterministic first
+/// `FALLBACK_GUIDANCE_LIMIT` path/line entries that the old sort/dedup/truncate
+/// implementation emitted. A later duplicate path/line replaces the retained
+/// entry only when its id sorts first, matching the old dedup order.
+#[derive(Default)]
+struct FallbackGuidanceAccumulator {
+    seams: Vec<FallbackSeam>,
+    suppressed: usize,
+}
+
+impl FallbackGuidanceAccumulator {
+    fn reset(&mut self) {
+        self.seams.clear();
+        self.suppressed = 0;
+    }
+
+    fn absorb(
+        &mut self,
+        finding: &Value,
+        suppressions: &RiprSuppressionRules,
+        head_extents: Option<&HeadLineExtents>,
+        attribution: Option<&DependencyAttribution>,
+        production_surface: Option<&ProductionSurface>,
+    ) {
+        match fallback_seam_decision(
+            finding,
+            suppressions,
+            head_extents,
+            attribution,
+            production_surface,
+        ) {
+            FallbackSeamDecision::Ignore => {}
+            FallbackSeamDecision::Suppressed => self.suppressed += 1,
+            FallbackSeamDecision::Emit(entry) => {
+                let key_matches =
+                    |existing: &FallbackSeam| existing.0 == entry.0 && existing.1 == entry.1;
+                if let Some(existing) = self.seams.iter_mut().find(|existing| key_matches(existing))
+                {
+                    if entry.2 < existing.2 {
+                        *existing = entry;
+                    }
+                    return;
+                }
+                self.seams.push(entry);
+                self.seams.sort_by(|left, right| {
+                    (&left.0, left.1, &left.2).cmp(&(&right.0, right.1, &right.2))
+                });
+                self.seams.truncate(FALLBACK_GUIDANCE_LIMIT);
+            }
+        }
+    }
+
+    fn finish(self) -> (Vec<FallbackSeam>, usize) {
+        (self.seams, self.suppressed)
+    }
 }
 
 /// Collect the gate-actionable seams fallback guidance should name, applying
@@ -2893,77 +3005,96 @@ fn fallback_seam_entries(
     let mut suppressed = 0usize;
     let mut seams: Vec<(String, u64, String, Value)> = Vec::new();
     for finding in findings {
-        // ripr 0.5.x: "classification"; ripr 0.9.x may emit "grip_class" with
-        // "weakly_gripped" folded into the counted reachable_unrevealed bucket
-        // (see ripr_pr_summary_counts). Accept both and name the counted class.
-        let raw_class = finding
-            .get("classification")
-            .and_then(Value::as_str)
-            .or_else(|| finding.get("grip_class").and_then(Value::as_str));
-        let canonical = match raw_class {
-            Some("weakly_gripped") => "reachable_unrevealed",
-            Some(other) => other,
-            None => continue,
-        };
-        if !gate_actionable_classification(canonical) {
-            continue;
+        match fallback_seam_decision(
+            finding,
+            suppressions,
+            head_extents,
+            attribution,
+            production_surface,
+        ) {
+            FallbackSeamDecision::Ignore => {}
+            FallbackSeamDecision::Suppressed => suppressed += 1,
+            FallbackSeamDecision::Emit(entry) => seams.push(entry),
         }
-        if suppression_matches_finding(suppressions, finding) {
-            suppressed += 1;
-            continue;
-        }
-        if head_extents.is_some_and(|extents| extents.finding_is_outside_head(finding)) {
-            continue;
-        }
-        if ripr_finding_path(finding)
-            .is_some_and(|path| classify_non_production(production_surface, &path).is_some())
-        {
-            continue;
-        }
-        if let Some(attribution) = attribution
-            && attribution.finding_is_out_of_graph(finding)
-        {
-            continue;
-        }
-        let Some(file) = ripr_finding_path(finding) else { continue };
-        let path = normalize_suppression_match_path(&file);
-        // Without a known anchor the normalized value is still an absolute host
-        // path; never emit CI-runner paths into receipts.
-        if path.starts_with('/') || path.as_bytes().get(1) == Some(&b':') {
-            continue;
-        }
-        let Some(line) = ripr_finding_line(finding) else { continue };
-        let id = finding
-            .get("id")
-            .and_then(Value::as_str)
-            .or_else(|| finding.pointer("/probe/id").and_then(Value::as_str))
-            .or_else(|| finding.pointer("/seam/id").and_then(Value::as_str))
-            .unwrap_or("unknown-seam");
-        let family = finding
-            .pointer("/probe/family")
-            .and_then(Value::as_str)
-            .or_else(|| finding.pointer("/seam/family").and_then(Value::as_str))
-            .unwrap_or(canonical);
-        let expression = finding
-            .pointer("/probe/expression")
-            .and_then(Value::as_str)
-            .or_else(|| finding.pointer("/seam/expression").and_then(Value::as_str))
-            .unwrap_or("");
-        let reach_summary = finding
-            .pointer("/ripr/reach/summary")
-            .and_then(Value::as_str)
-            .unwrap_or("no static test path found");
-        let comment = json!({
-            "id": id,
-            "path": path,
-            "line": line,
-            "seam": format!("{family}: {}", first_line(expression)),
-            "reason": format!("{canonical}: {reach_summary}"),
-            "suggested_test": fallback_suggested_test(canonical),
-        });
-        seams.push((path.clone(), line, id.to_string(), comment));
     }
     (seams, suppressed)
+}
+
+fn fallback_seam_decision(
+    finding: &Value,
+    suppressions: &RiprSuppressionRules,
+    head_extents: Option<&HeadLineExtents>,
+    attribution: Option<&DependencyAttribution>,
+    production_surface: Option<&ProductionSurface>,
+) -> FallbackSeamDecision {
+    // ripr 0.5.x: "classification"; ripr 0.9.x may emit "grip_class" with
+    // "weakly_gripped" folded into the counted reachable_unrevealed bucket
+    // (see ripr_pr_summary_counts). Accept both and name the counted class.
+    let raw_class = finding
+        .get("classification")
+        .and_then(Value::as_str)
+        .or_else(|| finding.get("grip_class").and_then(Value::as_str));
+    let canonical = match raw_class {
+        Some("weakly_gripped") => "reachable_unrevealed",
+        Some(other) => other,
+        None => return FallbackSeamDecision::Ignore,
+    };
+    if !gate_actionable_classification(canonical) {
+        return FallbackSeamDecision::Ignore;
+    }
+    if suppression_matches_finding(suppressions, finding) {
+        return FallbackSeamDecision::Suppressed;
+    }
+    if head_extents.is_some_and(|extents| extents.finding_is_outside_head(finding)) {
+        return FallbackSeamDecision::Ignore;
+    }
+    if ripr_finding_path(finding)
+        .is_some_and(|path| classify_non_production(production_surface, &path).is_some())
+    {
+        return FallbackSeamDecision::Ignore;
+    }
+    if let Some(attribution) = attribution
+        && attribution.finding_is_out_of_graph(finding)
+    {
+        return FallbackSeamDecision::Ignore;
+    }
+    let Some(file) = ripr_finding_path(finding) else { return FallbackSeamDecision::Ignore };
+    let path = normalize_suppression_match_path(&file);
+    // Without a known anchor the normalized value is still an absolute host
+    // path; never emit CI-runner paths into receipts.
+    if path.starts_with('/') || path.as_bytes().get(1) == Some(&b':') {
+        return FallbackSeamDecision::Ignore;
+    }
+    let Some(line) = ripr_finding_line(finding) else { return FallbackSeamDecision::Ignore };
+    let id = finding
+        .get("id")
+        .and_then(Value::as_str)
+        .or_else(|| finding.pointer("/probe/id").and_then(Value::as_str))
+        .or_else(|| finding.pointer("/seam/id").and_then(Value::as_str))
+        .unwrap_or("unknown-seam");
+    let family = finding
+        .pointer("/probe/family")
+        .and_then(Value::as_str)
+        .or_else(|| finding.pointer("/seam/family").and_then(Value::as_str))
+        .unwrap_or(canonical);
+    let expression = finding
+        .pointer("/probe/expression")
+        .and_then(Value::as_str)
+        .or_else(|| finding.pointer("/seam/expression").and_then(Value::as_str))
+        .unwrap_or("");
+    let reach_summary = finding
+        .pointer("/ripr/reach/summary")
+        .and_then(Value::as_str)
+        .unwrap_or("no static test path found");
+    let comment = json!({
+        "id": id,
+        "path": path,
+        "line": line,
+        "seam": format!("{family}: {}", first_line(expression)),
+        "reason": format!("{canonical}: {reach_summary}"),
+        "suggested_test": fallback_suggested_test(canonical),
+    });
+    FallbackSeamDecision::Emit((path, line, id.to_string(), comment))
 }
 
 /// Emit an `incomplete` guidance receipt that names the gate-actionable seams
@@ -6530,11 +6661,19 @@ paths = ["archive/["]
         if let Some(parent) = raw_check.parent() {
             fs::create_dir_all(parent)?;
         }
+        let mut large_finding = raw_check_finding(
+            "probe:large",
+            "reachable_unrevealed",
+            "/abs/repo/crates/foo/src/large.rs",
+            5,
+        );
+        large_finding["irrelevant_diagnostics"] = Value::String("x".repeat(4 * 1024 * 1024));
         fs::write(
             &raw_check,
             json!({
                 "base": "HEAD",
                 "findings": [
+                    large_finding,
                     raw_check_finding("probe:b20", "reachable_unrevealed", "/abs/repo/crates/foo/src/b.rs", 20),
                     raw_check_finding("probe:a10b", "no_static_path", "/abs/repo/crates/foo/src/a.rs", 10),
                     raw_check_finding("probe:a10a", "no_static_path", "/abs/repo/crates/foo/src/a.rs", 10),
@@ -6572,7 +6711,7 @@ paths = ["archive/["]
         let packet: Value =
             serde_json::from_str(&fs::read_to_string(repo.join(REVIEW_COMMENTS_JSON))?)?;
         assert_eq!(packet["status"], json!("incomplete"));
-        assert_eq!(packet.pointer("/summary/summary_only"), Some(&json!(3)));
+        assert_eq!(packet.pointer("/summary/summary_only"), Some(&json!(4)));
         assert_eq!(packet.pointer("/summary/suppressed"), Some(&json!(1)));
         assert_eq!(packet.pointer("/warnings/0/kind"), Some(&json!("tool_error")), "{packet}");
         assert_eq!(packet.pointer("/warnings/1/kind"), Some(&json!("guidance_fallback")));
@@ -6586,6 +6725,8 @@ paths = ["archive/["]
         assert_eq!(items[1]["path"], json!("crates/foo/src/b.rs"));
         assert_eq!(items[2]["path"], json!("crates/foo/src/e.rs"));
         assert_eq!(items[2]["line"], json!(50));
+        assert_eq!(items[3]["path"], json!("crates/foo/src/large.rs"));
+        assert_eq!(items[3]["line"], json!(5));
         for item in items {
             for key in ["id", "path", "seam", "reason", "suggested_test"] {
                 assert!(
@@ -7795,6 +7936,13 @@ esac
             r#"{"summary":{"weakly_exposed":"3","reachable_unrevealed":-2,"no_static_path":1.5},"findings":[]}"#,
             // Duplicate keys: DOM semantics keep the last occurrence.
             r#"{"summary":{"weakly_exposed":1},"summary":{"weakly_exposed":7},"findings":[],"findings":[]}"#,
+            // A non-empty duplicate findings value must replace, not add to,
+            // the earlier array (serde_json DOM maps are last-key-wins).
+            concat!(
+                r#"{"summary":{"reachable_unrevealed":1,"no_static_path":1},"findings":["#,
+                r#"{"classification":"no_static_path","probe":{"path":"first.rs","line":1}}],"findings":["#,
+                r#"{"classification":"reachable_unrevealed","probe":{"path":"last.rs","line":2}}]}"#
+            ),
             // Top-level non-object payloads validate but carry nothing.
             r#"[1,2,3]"#,
             r#""just a string""#,
@@ -7937,6 +8085,9 @@ paths = ["archive/**"]
         fs::create_dir_all(&stubs)?;
         let binary = write_ripr_stub(&stubs, "ripr-check-fail", "partial payload", 2)?;
         let _override = override_ripr_bin(&binary)?;
+        let raw_path = repo.join(PR_RAW_CHECK_JSON);
+        fs::create_dir_all(raw_path.parent().ok_or_else(|| eyre!("raw path has no parent"))?)?;
+        fs::write(&raw_path, "stale prior run")?;
         let options = PrEvidenceOptions {
             root: ".".to_string(),
             base: "origin/main".to_string(),
@@ -7952,8 +8103,8 @@ paths = ["archive/**"]
             "bounded stdout excerpt must aid diagnosis: {message}"
         );
         assert!(
-            !repo.join("target/ripr/pr/raw-check.json").exists(),
-            "artifact must not be written when ripr fails"
+            !raw_path.exists(),
+            "a failed run must remove a stale artifact rather than expose it to fallback"
         );
         Ok(())
     }
