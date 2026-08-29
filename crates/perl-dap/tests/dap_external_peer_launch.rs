@@ -20,7 +20,7 @@ type TestResult = Result<(), Box<dyn Error>>;
 
 use perl_dap::backend::capabilities::ControlMode;
 use perl_dap::backend::external_peer::ExternalDebuggerPeerBackend;
-use perl_dap::backend::peer_launch::{MirrorPeerBridge, run_mirror_listen_session_socket};
+use perl_dap::backend::peer_launch::MirrorPeerBridge;
 use perl_dap::backend::{DebugBackend, InitializeBackendParams};
 use perl_dap::debug_adapter::DapMessage;
 use perl_dap::peer_protocol::message::{
@@ -639,62 +639,4 @@ fn dap_external_peer_launch_terminate_does_not_duplicate_terminated_after_peer_c
     assert_eq!(cmd, "terminate");
     assert!(ok, "terminate itself must still succeed");
     Ok(())
-}
-
-#[test]
-fn dap_external_peer_launch_acceptor_timeout_surfaces_terminated_not_a_hang() {
-    // No peer ever connects: the peer-acceptor's handshake deadline elapses
-    // with no live backend. The editor session must be told the session
-    // ended (a `terminated` event) instead of hanging forever waiting on a
-    // peer that will never arrive (CodeRabbit finding: ~1051).
-    let peer_listener = must(TcpListener::bind(("127.0.0.1", 0)));
-
-    let editor_listener = must(TcpListener::bind(("127.0.0.1", 0)));
-    let editor_addr = must(editor_listener.local_addr());
-    let mut editor_client = must(TcpStream::connect(editor_addr));
-    let (editor_server, _) = must(editor_listener.accept());
-
-    let bridge = MirrorPeerBridge::new_pending(ControlMode::Mirror);
-    let session = std::thread::spawn(move || {
-        run_mirror_listen_session_socket(
-            editor_server,
-            peer_listener,
-            bridge,
-            Duration::from_millis(80),
-            Duration::from_millis(10),
-            None,
-        )
-    });
-
-    use perl_lsp_rs_core::transport::ContentLengthFramer;
-    let mut framer = ContentLengthFramer::new();
-    let mut buf = [0u8; 4096];
-    editor_client.set_read_timeout(Some(Duration::from_millis(200))).ok();
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let mut saw_terminated = false;
-    while Instant::now() < deadline && !saw_terminated {
-        match editor_client.read(&mut buf) {
-            Ok(0) => break,
-            Ok(n) => {
-                framer.push(&buf[..n]);
-                while let Ok(Some(body)) = framer.try_next() {
-                    if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&body)
-                        && v.get("event").and_then(|e| e.as_str()) == Some("terminated")
-                    {
-                        saw_terminated = true;
-                    }
-                }
-            }
-            Err(ref e)
-                if e.kind() == std::io::ErrorKind::WouldBlock
-                    || e.kind() == std::io::ErrorKind::TimedOut => {}
-            Err(_) => break,
-        }
-    }
-    assert!(
-        saw_terminated,
-        "an acceptor timeout with no peer must surface a terminated event, not hang forever"
-    );
-
-    let _ = session.join();
 }

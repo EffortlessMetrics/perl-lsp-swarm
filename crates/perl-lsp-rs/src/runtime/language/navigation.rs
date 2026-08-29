@@ -1218,9 +1218,19 @@ impl LspServer {
 
             // First, extract module reference info while holding the document lock briefly
             // We need to release the lock before calling resolve_module_to_path to avoid deadlock
-            let module_lookup_info: Option<(EarlyDefinitionTarget, String, usize)> = {
+            type Dancer2DefinitionProbe =
+                Option<(usize, std::sync::Arc<crate::state::ParsedSnapshot>, String)>;
+            let (module_lookup_info, dancer2_probe): (
+                Option<(EarlyDefinitionTarget, String, usize)>,
+                Dancer2DefinitionProbe,
+            ) = {
                 let documents = self.documents_guard();
-                if let Some(doc) = self.get_document(&documents, uri) {
+                let dancer2_probe = self.get_document(&documents, uri).and_then(|doc| {
+                    let offset = self.pos16_to_offset(doc, line, character);
+                    doc.current_parsed()
+                        .map(|snapshot| (offset, snapshot, doc.text_arc.to_string()))
+                });
+                let module_lookup = if let Some(doc) = self.get_document(&documents, uri) {
                     let offset = self.pos16_to_offset(doc, line, character);
 
                     // Skip go-to-definition inside comments — the cursor is not
@@ -1312,9 +1322,60 @@ impl LspServer {
                     }
                 } else {
                     None
-                }
+                };
+                (module_lookup, dancer2_probe)
             };
             // Lock is released here
+
+            // Canonical Dancer2 definition (#8928): a canonical route
+            // declaration resolves to its exact inline handler anchor (or
+            // resolved static-coderef declaration). One selected authority;
+            // no string-handler subroutine path exists. Computed after the
+            // lock is released because module resolution re-locks.
+            if let Some((dancer2_offset, dancer2_snapshot, dancer2_text)) = dancer2_probe
+                && let Some(ast) = dancer2_snapshot.ast()
+                && let Some((context, _package)) = self.dancer2_package_at(
+                    uri,
+                    &dancer2_text,
+                    dancer2_snapshot.content_hash(),
+                    ast,
+                    dancer2_offset,
+                )
+                && let Some(perl_lsp_rs_core::providers::dancer2::Dancer2DefinitionTarget::Anchor {
+                    start,
+                    end,
+                    ..
+                }) = perl_lsp_rs_core::providers::dancer2::definition_target_at(
+                    &context.activations,
+                    &context.facts,
+                    dancer2_offset,
+                )
+            {
+                let ((sl, sc), (el, ec)) = {
+                    let documents = self.documents_guard();
+                    self.get_document(&documents, uri)
+                        .map(|doc| {
+                            // Clamp against the CURRENT text: a didChange
+                            // racing the released lock must never push a
+                            // stale snapshot's byte offsets out of range.
+                            let text_len = doc.text.len();
+                            let clamp =
+                                |value: u32| usize::try_from(value).unwrap_or(0).min(text_len);
+                            (
+                                self.offset_to_pos16(doc, clamp(start)),
+                                self.offset_to_pos16(doc, clamp(end)),
+                            )
+                        })
+                        .unwrap_or(((0, 0), (0, 0)))
+                };
+                return Ok(Some(json!([{
+                    "uri": uri,
+                    "range": {
+                        "start": { "line": sl, "character": sc },
+                        "end": { "line": el, "character": ec },
+                    },
+                }])));
+            }
 
             // Now resolve module to path WITHOUT holding the document lock
             if let Some((lookup_target, doc_text, doc_offset)) = module_lookup_info {

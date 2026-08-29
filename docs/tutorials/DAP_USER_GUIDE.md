@@ -56,8 +56,9 @@ VS Code and other first-party clients spawn `perl-dap` as a child and speak DAP
 over inherited stdin/stdout. Attach host/port fields in a launch configuration
 select the debuggee/peer, not an editor-facing TCP listener.
 
-Stdio is the sole product editor transport. Native `--socket` is retired and is
-not a supported run mode.
+Stdio is the sole product editor transport. Native and external-peer `--socket`
+are retired and are not a supported run mode. Authenticated debugger-peer TCP
+remains a backend transport.
 
 ## Include Paths
 

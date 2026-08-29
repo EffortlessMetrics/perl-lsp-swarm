@@ -48,6 +48,16 @@ pub enum EmacsClientSubject {
     BundledEglotEmacs301,
     /// Standalone Eglot released as GNU ELPA 1.23 (slice 2).
     ReleasedEglotGnuElpa123,
+    /// Released GNU ELPA Eglot 1.24, manifest-bound (#11745).
+    ReleasedEglotGnuElpa124,
+    /// Upstream-source Eglot pinned to the emacs.git commit
+    /// `c1ad9d27207aff96a22d49ae4c6cab35a2619927` (#11745).
+    SourceEglotEmacsC1ad9d27,
+    /// Released lsp-mode 10.0.0 from MELPA Stable, manifest-bound (#11746).
+    ReleasedLspModeMelpaStable1000,
+    /// Upstream-source lsp-mode pinned to the emacs-lsp/lsp-mode commit
+    /// `6bfc593d7b1bc0dd656f09ffce52cc085ebced05` (#11746).
+    SourceLspModeGithub6bfc593,
 }
 
 impl EmacsClientSubject {
@@ -58,6 +68,10 @@ impl EmacsClientSubject {
             "bundled_eglot_emacs_29_4" => Ok(Self::BundledEglotEmacs294),
             "bundled_eglot_emacs_30_1" => Ok(Self::BundledEglotEmacs301),
             "released_eglot_gnu_elpa_1_23" => Ok(Self::ReleasedEglotGnuElpa123),
+            "released_eglot_gnu_elpa_1_24" => Ok(Self::ReleasedEglotGnuElpa124),
+            "source_eglot_emacs_c1ad9d27" => Ok(Self::SourceEglotEmacsC1ad9d27),
+            "released_lsp_mode_melpa_stable_10_0_0" => Ok(Self::ReleasedLspModeMelpaStable1000),
+            "source_lsp_mode_github_6bfc593" => Ok(Self::SourceLspModeGithub6bfc593),
             _ => bail!(
                 "unknown client subject {id}: known subjects are {}",
                 Self::known_ids().join(", ")
@@ -67,7 +81,15 @@ impl EmacsClientSubject {
 
     /// Every exact client subject the execution surface can run today.
     pub fn known_ids() -> &'static [&'static str] {
-        &["bundled_eglot_emacs_29_4", "bundled_eglot_emacs_30_1", "released_eglot_gnu_elpa_1_23"]
+        &[
+            "bundled_eglot_emacs_29_4",
+            "bundled_eglot_emacs_30_1",
+            "released_eglot_gnu_elpa_1_23",
+            "released_eglot_gnu_elpa_1_24",
+            "source_eglot_emacs_c1ad9d27",
+            "released_lsp_mode_melpa_stable_10_0_0",
+            "source_lsp_mode_github_6bfc593",
+        ]
     }
 
     pub fn id(self) -> &'static str {
@@ -75,6 +97,10 @@ impl EmacsClientSubject {
             Self::BundledEglotEmacs294 => "bundled_eglot_emacs_29_4",
             Self::BundledEglotEmacs301 => "bundled_eglot_emacs_30_1",
             Self::ReleasedEglotGnuElpa123 => "released_eglot_gnu_elpa_1_23",
+            Self::ReleasedEglotGnuElpa124 => "released_eglot_gnu_elpa_1_24",
+            Self::SourceEglotEmacsC1ad9d27 => "source_eglot_emacs_c1ad9d27",
+            Self::ReleasedLspModeMelpaStable1000 => "released_lsp_mode_melpa_stable_10_0_0",
+            Self::SourceLspModeGithub6bfc593 => "source_lsp_mode_github_6bfc593",
         }
     }
 
@@ -84,7 +110,12 @@ impl EmacsClientSubject {
     pub fn pinned_emacs_version_token(self) -> &'static str {
         match self {
             Self::BundledEglotEmacs294 => "29.4",
-            Self::BundledEglotEmacs301 | Self::ReleasedEglotGnuElpa123 => "30.1",
+            Self::BundledEglotEmacs301
+            | Self::ReleasedEglotGnuElpa123
+            | Self::ReleasedEglotGnuElpa124
+            | Self::SourceEglotEmacsC1ad9d27
+            | Self::ReleasedLspModeMelpaStable1000
+            | Self::SourceLspModeGithub6bfc593 => "30.1",
         }
     }
 
@@ -121,12 +152,30 @@ impl EmacsClientSubject {
                 // One bundled identity constructor: the manifest module
                 // owns the row-to-subject mapping so the resolver and the
                 // registry cannot drift apart.
-                Ok(crate::emacs_subject_manifest::runner_client_subject(row, source_sha256))
+                Ok(crate::emacs_subject_manifest::runner_client_subject(row, source_sha256, None))
             }
-            // The released row predates the subject manifest; its
-            // digest-bound package identity arrives with the
-            // external-subject rows (#11745), which extend the manifest
-            // without changing these landed mechanics.
+            // The manifest-bound external rows (#11745/#11746) draw every
+            // identity field from their checked rows the same way.
+            Self::ReleasedEglotGnuElpa124
+            | Self::SourceEglotEmacsC1ad9d27
+            | Self::ReleasedLspModeMelpaStable1000
+            | Self::SourceLspModeGithub6bfc593 => {
+                let row = manifest.row_for(self.id()).with_context(|| {
+                    format!(
+                        "external subject {} must be a row of the checked subject manifest",
+                        self.id()
+                    )
+                })?;
+                Ok(crate::emacs_subject_manifest::runner_client_subject(
+                    row,
+                    source_sha256,
+                    package_sha256,
+                ))
+            }
+            // The slice-2 released row predates the subject manifest and
+            // keeps its explicit-input identity; the digest-bound package
+            // rows (#11745) extend the manifest without changing these
+            // landed mechanics.
             Self::ReleasedEglotGnuElpa123 => Ok(emacs_host_runner::ClientSubject {
                 client_id: self.id().to_string(),
                 kind: EmacsClientKind::ExternalEglot,
@@ -139,13 +188,27 @@ impl EmacsClientSubject {
         }
     }
 
-    /// Checked-in adapter path relative to the repository root.
+    /// Checked-in adapter path relative to the repository root. The
+    /// external Eglot rows share the external-Eglot adapter: the released
+    /// rows arrive with their declared package input and the pinned
+    /// upstream-source row rides the same adapter package-free (#8776), so
+    /// one adapter services both external source states without a copied
+    /// journey. The #11746 lsp-mode rows have no adapter yet: lsp-mode
+    /// journey mechanics belong to the lsp-mode lanes, so plan construction
+    /// for these subjects fails closed on the missing adapter until that
+    /// lane lands one, while subject materialization through the manifest
+    /// resolver is complete without it.
     pub fn adapter_relative_path(self) -> &'static str {
         match self {
             Self::BundledEglotEmacs294 | Self::BundledEglotEmacs301 => {
                 "scripts/test/emacs-clients/eglot-bundled.el"
             }
-            Self::ReleasedEglotGnuElpa123 => "scripts/test/emacs-clients/eglot-released.el",
+            Self::ReleasedEglotGnuElpa123
+            | Self::ReleasedEglotGnuElpa124
+            | Self::SourceEglotEmacsC1ad9d27 => "scripts/test/emacs-clients/eglot-released.el",
+            Self::ReleasedLspModeMelpaStable1000 | Self::SourceLspModeGithub6bfc593 => {
+                "scripts/test/emacs-clients/lsp-mode.el"
+            }
         }
     }
 
@@ -155,7 +218,14 @@ impl EmacsClientSubject {
             Self::BundledEglotEmacs294 | Self::BundledEglotEmacs301 => {
                 "scripts/test/emacs-clients/eglot-bundled-config.el"
             }
-            Self::ReleasedEglotGnuElpa123 => "scripts/test/emacs-clients/eglot-released-config.el",
+            Self::ReleasedEglotGnuElpa123
+            | Self::ReleasedEglotGnuElpa124
+            | Self::SourceEglotEmacsC1ad9d27 => {
+                "scripts/test/emacs-clients/eglot-released-config.el"
+            }
+            Self::ReleasedLspModeMelpaStable1000 | Self::SourceLspModeGithub6bfc593 => {
+                "scripts/test/emacs-clients/lsp-mode-config.el"
+            }
         }
     }
 
@@ -163,7 +233,12 @@ impl EmacsClientSubject {
     pub fn journey_selector(self) -> &'static str {
         match self {
             Self::BundledEglotEmacs294 | Self::BundledEglotEmacs301 => "bundled_eglot_lifecycle.v1",
-            Self::ReleasedEglotGnuElpa123 => "released_eglot_lifecycle.v1",
+            Self::ReleasedEglotGnuElpa123 | Self::ReleasedEglotGnuElpa124 => {
+                "released_eglot_lifecycle.v1"
+            }
+            Self::SourceEglotEmacsC1ad9d27 => "source_eglot_lifecycle.v1",
+            Self::ReleasedLspModeMelpaStable1000 => "released_lsp_mode_lifecycle.v1",
+            Self::SourceLspModeGithub6bfc593 => "source_lsp_mode_lifecycle.v1",
         }
     }
 
@@ -171,7 +246,12 @@ impl EmacsClientSubject {
     pub fn fixture_id(self) -> &'static str {
         match self {
             Self::BundledEglotEmacs294 | Self::BundledEglotEmacs301 => "bundled_eglot_lifecycle_v1",
-            Self::ReleasedEglotGnuElpa123 => "released_eglot_lifecycle_v1",
+            Self::ReleasedEglotGnuElpa123 | Self::ReleasedEglotGnuElpa124 => {
+                "released_eglot_lifecycle_v1"
+            }
+            Self::SourceEglotEmacsC1ad9d27 => "source_eglot_lifecycle_v1",
+            Self::ReleasedLspModeMelpaStable1000 => "released_lsp_mode_lifecycle_v1",
+            Self::SourceLspModeGithub6bfc593 => "source_lsp_mode_lifecycle_v1",
         }
     }
 
@@ -179,8 +259,13 @@ impl EmacsClientSubject {
     /// cannot (`validate_client_subject` rejects that combination).
     pub fn requires_client_package(self) -> bool {
         match self {
-            Self::BundledEglotEmacs294 | Self::BundledEglotEmacs301 => false,
-            Self::ReleasedEglotGnuElpa123 => true,
+            Self::BundledEglotEmacs294
+            | Self::BundledEglotEmacs301
+            | Self::SourceEglotEmacsC1ad9d27
+            | Self::SourceLspModeGithub6bfc593 => false,
+            Self::ReleasedEglotGnuElpa123
+            | Self::ReleasedEglotGnuElpa124
+            | Self::ReleasedLspModeMelpaStable1000 => true,
         }
     }
 
@@ -189,7 +274,49 @@ impl EmacsClientSubject {
     pub fn resolves_client_source_from_installation(self) -> bool {
         match self {
             Self::BundledEglotEmacs294 | Self::BundledEglotEmacs301 => true,
+            Self::ReleasedEglotGnuElpa123
+            | Self::ReleasedEglotGnuElpa124
+            | Self::SourceEglotEmacsC1ad9d27
+            | Self::ReleasedLspModeMelpaStable1000
+            | Self::SourceLspModeGithub6bfc593 => false,
+        }
+    }
+
+    /// Whether run-plan construction routes this subject through the
+    /// checked subject manifest resolver (#11744). Every bundled row and
+    /// the manifest-bound external rows (#11745/#11746) do; the slice-2
+    /// released row predates the manifest and keeps its landed
+    /// explicit-input mechanics until it is superseded.
+    pub fn resolves_through_subject_manifest(self) -> bool {
+        match self {
+            Self::BundledEglotEmacs294
+            | Self::BundledEglotEmacs301
+            | Self::ReleasedEglotGnuElpa124
+            | Self::SourceEglotEmacsC1ad9d27
+            | Self::ReleasedLspModeMelpaStable1000
+            | Self::SourceLspModeGithub6bfc593 => true,
             Self::ReleasedEglotGnuElpa123 => false,
+        }
+    }
+
+    /// Whether an actual host run is supported by the current driver
+    /// adapters. The external Eglot adapter services the pinned
+    /// upstream-source subject package-free (#8776): the declared package
+    /// input reaches the adapter exactly for released subjects (the plan
+    /// builder enforces that shape before launch), and its absence selects
+    /// the upstream-source identity emission on the same shared journey,
+    /// so the launch table no longer refuses that row.
+    pub fn launches_with_current_driver(self) -> bool {
+        match self {
+            Self::BundledEglotEmacs294
+            | Self::BundledEglotEmacs301
+            | Self::ReleasedEglotGnuElpa123
+            | Self::ReleasedEglotGnuElpa124
+            | Self::SourceEglotEmacsC1ad9d27 => true,
+            // No lsp-mode adapter exists yet; plan construction already
+            // fails closed on the missing adapter file, and the host-run
+            // boundary refuses the launch with the same typed reason.
+            Self::ReleasedLspModeMelpaStable1000 | Self::SourceLspModeGithub6bfc593 => false,
         }
     }
 }
@@ -338,14 +465,10 @@ fn bounded_diagnostic(bytes: &[u8]) -> String {
 /// (the driver appends and restarts its sequence), so a retry into the same
 /// directory would either fail parsing or misattribute stale artifacts. The
 /// runner refuses instead of cleaning: nothing here owns destructive
-/// deletion of a caller-supplied path.
+/// deletion of a caller-supplied path. The stale-receipt law is owned by
+/// `crate::editor_host`.
 pub fn ensure_fresh_output_root(out_root: &Path) -> Result<()> {
-    ensure!(
-        !out_root.exists(),
-        "output root already exists; use a fresh directory for each host run: {}",
-        out_root.display()
-    );
-    Ok(())
+    crate::editor_host::FreshReceiptTarget::refuse_existing(out_root, "output root")
 }
 
 /// Extract a standalone 40-hex commit-like token from a version line, if it
@@ -443,19 +566,22 @@ pub fn build_client_subject_run_plan(
         ),
         (None, false) => None,
     };
-    // Bundled rows resolve through the subject manifest resolver so the
-    // plan binds exactly the audited library bytes and the exact Emacs
-    // build; the resolver's bounded cache entry is written under the run's
-    // fresh output root.  The released row predates the subject manifest
-    // and keeps its explicit-input identity until the external-subject
-    // rows (#11745/#11746) extend the manifest.
-    let (client, emacs_build_sha256) = if subject.resolves_client_source_from_installation() {
+    // Bundled rows and the manifest-bound external rows (#11745) resolve
+    // through the subject manifest resolver so the plan binds exactly the
+    // audited library bytes and the exact Emacs build; the resolver's
+    // bounded cache entry is written under the run's fresh output root, and
+    // a released subject additionally validates its exact package archive
+    // bytes before the plan exists. The slice-2 released row predates the
+    // subject manifest and keeps its explicit-input identity until it is
+    // superseded.
+    let (client, emacs_build_sha256) = if subject.resolves_through_subject_manifest() {
         let resolved = crate::emacs_subject_manifest::resolve(
             subject_manifest,
             subject.id(),
             &crate::emacs_subject_manifest::ResolveRequest {
                 emacs_executable: &run.emacs_executable,
                 client_source: Some(&run.client_source),
+                client_package: run.client_package.as_deref(),
                 cache_root: &run.out_root.join("subject-input-cache"),
                 probed_emacs_version: Some(emacs_version),
             },
@@ -616,6 +742,16 @@ pub fn host_run(
     subject: EmacsClientSubject,
     run: &EmacsHostRunInputs,
 ) -> Result<HostRunOutcome> {
+    // A subject whose materialization is complete but whose driver adapter
+    // does not exist yet is refused here, before any launch step: the
+    // lsp-mode rows have no adapter, so their launch would die inside the
+    // driver instead of refusing at the boundary. The refusal names the
+    // boundary; the lsp-mode adapter arrives with its journey lane.
+    ensure!(
+        subject.launches_with_current_driver(),
+        "subject {} has no driver adapter yet: materialization through the subject manifest is          complete, but an actual host run is unsupported until its journey lane lands an          adapter",
+        subject.id()
+    );
     ensure_fresh_output_root(&run.out_root)?;
     let commit = candidate_commit_identity(repo_root)?;
     let candidate_version =
@@ -715,9 +851,22 @@ pub fn host_run(
             subject.journey_selector()
         ),
     );
+    // Fresh-receipt law (#10894): the receipt is reserved by this run's
+    // identity composite, refuses any pre-existing file, and its write refuses
+    // to overwrite — a stale prior receipt can never satisfy this run.
     let receipt_path = run.out_root.join("receipt.json");
-    fs::write(&receipt_path, serde_json::to_vec_pretty(&receipt)?)
-        .with_context(|| format!("writing receipt {}", receipt_path.display()))?;
+    let subject_digest = crate::editor_host::sha256_bytes(
+        format!(
+            "{}\n{}\n{}\n",
+            plan.identity.candidate_sha,
+            plan.identity.candidate_artifact_sha256,
+            plan.identity.driver_sha256
+        )
+        .as_bytes(),
+    )?;
+    let receipt_target =
+        crate::editor_host::FreshReceiptTarget::reserve(receipt_path.clone(), subject_digest)?;
+    receipt_target.write(&serde_json::to_vec_pretty(&receipt)?)?;
     Ok(HostRunOutcome {
         receipt_path,
         result: outcome.result,
@@ -726,18 +875,50 @@ pub fn host_run(
     })
 }
 
-struct OutcomeJudgment {
-    result: ObservationResult,
-    failure_class: Option<FailureClass>,
-    runtime_digest_match: bool,
-    runtime_version_mismatch: Option<String>,
+pub struct OutcomeJudgment {
+    pub result: ObservationResult,
+    pub failure_class: Option<FailureClass>,
+    pub runtime_digest_match: bool,
+    pub runtime_version_mismatch: Option<String>,
+}
+
+/// Runtime version-evidence judgment for external client subjects
+/// (#8776 review repair): `version` is a required identity field for the
+/// released and upstream-source Eglot states, so the version header the
+/// adapter read from the loaded file must equal the registry pin byte for
+/// byte, and absent evidence is a mismatch — never a silent pass — because
+/// the external adapters fail their run on an unreadable header before
+/// this judgment is reached. Bundled subjects keep their looser law:
+/// installed builds ship compiled/compressed forms whose header can be
+/// unreadable, so their identity stays digest-authoritative.
+///
+/// Public so the adapter contract tests pin the judgment without a host.
+pub fn external_version_evidence_mismatch(
+    kind: emacs_host_runner::EmacsClientKind,
+    source_state: ClientSourceState,
+    observed: Option<&str>,
+    planned: &str,
+) -> Option<String> {
+    let external_eglot_state = kind == emacs_host_runner::EmacsClientKind::ExternalEglot
+        && matches!(source_state, ClientSourceState::Released | ClientSourceState::UpstreamSource);
+    if !external_eglot_state {
+        return None;
+    }
+    match observed {
+        Some(observed) if observed != planned => Some(format!(
+            "runtime client version {observed} does not match the pinned subject version {planned}"
+        )),
+        Some(_) => None,
+        None => Some("external Eglot client_loaded event carried no version evidence".to_string()),
+    }
 }
 
 /// Cross-check the adapter's runtime identity attestation (the loaded client
-/// library digest, and — for released subjects, where the version is a
+/// library digest, and — for external Eglot subjects, where the version is a
 /// required identity field — the observed version header) against the run
-/// plan, then judge the run.
-fn evaluate_observation(
+/// plan, then judge the run. Public so the contract suite can pin the
+/// cleanup-facet law against the Vim evaluator's identical semantics.
+pub fn evaluate_observation(
     plan: &EmacsHostRunPlan,
     observation: &ProcessObservation,
 ) -> Result<OutcomeJudgment> {
@@ -758,29 +939,19 @@ fn evaluate_observation(
         Some(observed) => observed == planned_digest,
         None => false,
     };
-    // `released` is a required identity field for released subjects: the
-    // version header the adapter read from the loaded file must equal the
-    // registry pin, byte for byte, or the run cannot be this subject.
-    let runtime_version_mismatch = (plan.identity.client.source_state
-        == ClientSourceState::Released)
-        .then(|| {
-            client_loaded
-                .and_then(|event| event.details.get("version"))
-                .map(|observed| (observed.to_string(), plan.identity.client.version.clone()))
-        })
-        .flatten()
-        .and_then(|(observed, planned)| {
-            (observed != planned).then(|| {
-                format!(
-                    "runtime client version {observed} does not match the pinned subject version \
-                     {planned}"
-                )
-            })
-        });
+    let runtime_version_mismatch = external_version_evidence_mismatch(
+        plan.identity.client.kind,
+        plan.identity.client.source_state,
+        client_loaded.and_then(|event| event.details.get("version")).map(String::as_str),
+        &plan.identity.client.version,
+    );
     let driver_failed = observation
         .events
         .iter()
         .any(|event| event.kind == emacs_host_runner::DriverEventKind::DriverFailed);
+    // Even an orderly exit-0 run that leaked the candidate is a failure, not
+    // a not-proven — same law as the Vim evaluator (#10894 cleanup facet).
+    let leaked = observation.cleanup == CleanupResult::Fail;
     let result = if observation.passed_process_boundary()
         && runtime_digest_match
         && runtime_version_mismatch.is_none()
@@ -788,6 +959,7 @@ fn evaluate_observation(
         ObservationResult::Pass
     } else if driver_failed
         || observation.timed_out
+        || leaked
         || observation.status_code.is_some_and(|code| code != 0)
     {
         ObservationResult::Fail
@@ -797,6 +969,8 @@ fn evaluate_observation(
     let failure_class = if driver_failed {
         Some(FailureClass::HostClient)
     } else if observation.cleanup != CleanupResult::Pass {
+        // An observed leak (Fail) and an unobserved shutdown (NotProven) are
+        // both cleanup-classified; only Fail demotes the overall verdict.
         Some(FailureClass::Cleanup)
     } else if !runtime_digest_match || runtime_version_mismatch.is_some() {
         Some(FailureClass::Environment)

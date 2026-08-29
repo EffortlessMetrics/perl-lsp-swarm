@@ -38,14 +38,7 @@ NATIVE_EDITOR_TRANSPORT = Path("crates/perl-dap/src/debug_adapter/transport.rs")
 NATIVE_EDITOR_LIFECYCLE = Path("crates/perl-dap/src/server/lifecycle.rs")
 FN_START_RE = re.compile(r"\bfn\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:<[^>]*>)?\s*\(")
 BIND_HELPER_CALL_RE = re.compile(r"\bbind_editor_listener\s*\(")
-# #10566 still owns these wrappers. Native admission in fn main must not call
-# bind_editor_listener, and no new helper may grow a native editor listener.
-EXTERNAL_PEER_EDITOR_BIND_FNS = frozenset(
-    {
-        "run_external_peer_bridge",
-        "run_external_peer_listen",
-    }
-)
+BIND_HELPER_FN_RE = re.compile(r"\bfn\s+bind_editor_listener\b")
 
 
 def production_source(text: str) -> str:
@@ -172,7 +165,7 @@ def scan_bind_sites(root: Path, inventory: Mapping[str, Any]) -> list[str]:
 
 
 def scan_retired_native_editor_listener(root: Path, inventory: Mapping[str, Any]) -> list[str]:
-    """Reject a returned native editor TCP listener after #10565."""
+    """Reject a returned native or external-peer editor TCP listener."""
     errors: list[str] = []
     for site in inventory.get("bind_sites", []):
         if not isinstance(site, dict):
@@ -181,6 +174,13 @@ def scan_retired_native_editor_listener(root: Path, inventory: Mapping[str, Any]
         if site.get("transport_id") == "native-editor-tcp" or ident == "native-editor-socket":
             errors.append(
                 f"native editor TCP bind site {ident!r} returned after #10565 retirement"
+            )
+        if (
+            site.get("transport_id") == "external-peer-editor-tcp"
+            or ident == "external-peer-editor-listener"
+        ):
+            errors.append(
+                f"external-peer editor TCP bind site {ident!r} returned after #10566 retirement"
             )
 
     for relative in (NATIVE_EDITOR_TRANSPORT, NATIVE_EDITOR_LIFECYCLE):
@@ -220,13 +220,20 @@ def scan_retired_native_editor_listener(root: Path, inventory: Mapping[str, Any]
                 f"{PERL_DAP_MAIN.as_posix()} fn main regained a native editor bind_editor_listener call after #10565"
             )
 
+    if BIND_HELPER_FN_RE.search(main_text):
+        errors.append(
+            f"{PERL_DAP_MAIN.as_posix()} fn bind_editor_listener returned after #10566"
+        )
+    if BIND_RE.search(main_text):
+        errors.append(
+            f"{PERL_DAP_MAIN.as_posix()} production source regained TcpListener::bind after #10566"
+        )
     for name, body in bodies.items():
         if name == "bind_editor_listener":
             continue
-        if BIND_HELPER_CALL_RE.search(body) and name not in EXTERNAL_PEER_EDITOR_BIND_FNS:
+        if BIND_HELPER_CALL_RE.search(body):
             errors.append(
-                f"{PERL_DAP_MAIN.as_posix()} fn {name} calls bind_editor_listener; "
-                "only #10566 external-peer wrappers may bind an editor listener"
+                f"{PERL_DAP_MAIN.as_posix()} fn {name} calls bind_editor_listener after #10566"
             )
     return errors
 

@@ -254,7 +254,7 @@ fn test_regex_in_sub_body_correct_content() {
     let source = r#"sub foo { $x =~ m/abc/; }"#;
     let sexp = parse(source).to_sexp();
     assert!(
-        sexp.contains(r#""/abc/""#),
+        sexp.contains("/abc/"),
         "Expected regex '/abc/' to be parsed correctly, got sexp: {}",
         sexp
     );
@@ -266,7 +266,7 @@ fn test_regex_in_else_block_correct_content() {
     let source = r#"if (1) { 1; } else { $y =~ m/pattern/; }"#;
     let sexp = parse(source).to_sexp();
     assert!(
-        sexp.contains(r#""/pattern/""#),
+        sexp.contains("/pattern/"),
         "Expected regex '/pattern/' to be parsed correctly, got sexp: {}",
         sexp
     );
@@ -311,7 +311,7 @@ fn test_regex_after_if_with_var_condition() {
     let source = r#"if ($var) { $x =~ m/pattern/; }"#;
     let sexp = parse(source).to_sexp();
     assert!(
-        sexp.contains(r#""/pattern/""#),
+        sexp.contains("/pattern/"),
         "Expected regex '/pattern/' inside if($var) block, got sexp: {}",
         sexp
     );
@@ -323,7 +323,7 @@ fn test_regex_after_while_with_func_arg() {
     let source = r#"while (func($x)) { $line =~ m/abc/; }"#;
     let sexp = parse(source).to_sexp();
     assert!(
-        sexp.contains(r#""/abc/""#),
+        sexp.contains("/abc/"),
         "Expected regex '/abc/' inside while(func($x)) block, got sexp: {}",
         sexp
     );

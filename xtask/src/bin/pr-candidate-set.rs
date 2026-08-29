@@ -606,39 +606,39 @@ fn validate_target_relationship(
     findings: &mut Vec<Finding>,
 ) {
     match candidate.relationship {
-        Relationship::Duplicate => {
+        Relationship::Duplicate
             if !matches!(
                 target.relationship,
                 Relationship::CurrentCandidate
                     | Relationship::DistinctSlice
                     | Relationship::SalvageSource
-            ) {
-                findings.push(candidate_error(
-                    claim,
-                    candidate,
-                    "DUPLICATE_TARGET_INVALID",
-                    format!(
-                        "duplicate must target the retained candidate, not another {:?}",
-                        target.relationship
-                    ),
-                ));
-            }
+            ) =>
+        {
+            findings.push(candidate_error(
+                claim,
+                candidate,
+                "DUPLICATE_TARGET_INVALID",
+                format!(
+                    "duplicate must target the retained candidate, not another {:?}",
+                    target.relationship
+                ),
+            ));
         }
-        Relationship::ExplicitStack => {
+        Relationship::ExplicitStack
             if !matches!(
                 target.relationship,
                 Relationship::CurrentCandidate | Relationship::DistinctSlice
-            ) {
-                findings.push(candidate_error(
-                    claim,
-                    candidate,
-                    "STACK_TARGET_INVALID",
-                    format!(
-                        "explicit_stack must target a mergeable current or distinct-slice parent, not {:?}",
-                        target.relationship
-                    ),
-                ));
-            }
+            ) =>
+        {
+            findings.push(candidate_error(
+                claim,
+                candidate,
+                "STACK_TARGET_INVALID",
+                format!(
+                    "explicit_stack must target a mergeable current or distinct-slice parent, not {:?}",
+                    target.relationship
+                ),
+            ));
         }
         _ => {}
     }

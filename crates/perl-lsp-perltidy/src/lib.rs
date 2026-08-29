@@ -11,6 +11,7 @@
 #![cfg_attr(test, allow(clippy::panic, clippy::unwrap_used, clippy::expect_used))]
 #![warn(rust_2018_idioms)]
 #![warn(missing_docs)]
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use perl_subprocess_runtime::SubprocessRuntime;
 use serde::{Deserialize, Serialize};
@@ -456,10 +457,10 @@ fn apply_delimiter_events_with_state(
     for delimiter in significant_delimiters_with_state(line, state) {
         match delimiter {
             opening @ ('{' | '(' | '[') => delimiter_stack.push(opening),
-            closer @ ('}' | ')' | ']') => {
-                if delimiter_stack.last().copied().and_then(matching_closer) == Some(closer) {
-                    delimiter_stack.pop();
-                }
+            closer @ ('}' | ')' | ']')
+                if delimiter_stack.last().copied().and_then(matching_closer) == Some(closer) =>
+            {
+                delimiter_stack.pop();
             }
             _ => {}
         }

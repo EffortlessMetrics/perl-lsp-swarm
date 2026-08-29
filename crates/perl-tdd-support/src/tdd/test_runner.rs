@@ -166,18 +166,18 @@ impl TestRunner {
             }
 
             NodeKind::Subroutine { name, .. } => {
-                if let Some(func_name) = name {
-                    if self.is_test_function(func_name) {
-                        let test_item = TestItem {
-                            id: format!("{}::{}", self.uri, func_name),
-                            label: func_name.clone(),
-                            uri: self.uri.clone(),
-                            range: self.node_to_range(node),
-                            kind: TestKind::Test,
-                            children: vec![],
-                        };
-                        tests.push(test_item);
-                    }
+                if let Some(func_name) = name
+                    && self.is_test_function(func_name)
+                {
+                    let test_item = TestItem {
+                        id: format!("{}::{}", self.uri, func_name),
+                        label: func_name.clone(),
+                        uri: self.uri.clone(),
+                        range: self.node_to_range(node),
+                        kind: TestKind::Test,
+                        children: vec![],
+                    };
+                    tests.push(test_item);
                 }
             }
 
@@ -230,18 +230,18 @@ impl TestRunner {
             }
 
             NodeKind::Subroutine { name, body, .. } => {
-                if let Some(func_name) = name {
-                    if self.is_test_function(func_name) {
-                        let test_item = TestItem {
-                            id: format!("{}::{}", self.uri, func_name),
-                            label: func_name.clone(),
-                            uri: self.uri.clone(),
-                            range: self.node_to_range(node),
-                            kind: TestKind::Test,
-                            children: vec![],
-                        };
-                        tests.push(test_item);
-                    }
+                if let Some(func_name) = name
+                    && self.is_test_function(func_name)
+                {
+                    let test_item = TestItem {
+                        id: format!("{}::{}", self.uri, func_name),
+                        label: func_name.clone(),
+                        uri: self.uri.clone(),
+                        range: self.node_to_range(node),
+                        kind: TestKind::Test,
+                        children: vec![],
+                    };
+                    tests.push(test_item);
                 }
 
                 // Still visit the body for nested tests
