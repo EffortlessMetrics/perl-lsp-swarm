@@ -404,9 +404,12 @@ The editor must be able to find and launch the `perllsp` binary. Symptoms includ
 
 3. **Test JSON-RPC communication** manually:
    ```bash
-   echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}' | perllsp --stdio
+   printf 'Content-Length: 75\r\n\r\n{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}' | perllsp --stdio
    ```
-   You should see a JSON response. If you see an error, the binary itself has a problem -- try reinstalling.
+   You should see a framed JSON response (`Content-Length: ...` followed by a
+   JSON object with `"id":1`). LSP stdio requires `Content-Length` framing, so a
+   bare `echo` of the JSON produces no response. If you see an error, the binary
+   itself has a problem -- try reinstalling.
 
 4. **VS Code specific**: ensure the extension is installed and enabled:
    ```bash
