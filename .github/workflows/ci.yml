@@ -475,9 +475,18 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     needs: [draft-pr-check, preflight-latest-check]
-    # `preflight-latest-check` is intentionally skipped for drafts. `always()`
-    # lets this cheap exact-head check run anyway while preserving the normal
-    # ready/push freshness route.
+    # `preflight-latest-check` is intentionally skipped for drafts, and GitHub
+    # reports a skipped need's outputs as empty strings. `always()` carries the
+    # evaluation past that skipped need while the disjunction routes each event
+    # class:
+    # - draft PR: run_ci is 'false' and the skipped preflight's is_latest is '',
+    #   so the needs branch is false and only the draft branch fires.
+    # - non-draft PR: run_ci='true' and is_latest='true'; the needs branch fires.
+    # - merge_group and push: the draft branch is false (`pull_request.draft` is
+    #   unset), so the needs branch is the only route; it fires because
+    #   is_latest='true' unless a superseded push SHA is skipped.
+    # Dropping either branch silently removes draft or push/merge_group runs;
+    # xtask/tests/draft_pr_feedback_contract.rs asserts both branches.
     if: >-
       always() &&
       (
