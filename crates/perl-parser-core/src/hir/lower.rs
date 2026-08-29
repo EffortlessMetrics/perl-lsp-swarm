@@ -67,6 +67,15 @@ struct Lowerer {
     /// Label inherited from an enclosing `LABEL:` statement, consumed by the
     /// loop it directly wraps.
     pending_label: Option<String>,
+    /// Nesting depth of enclosing Perl 5.38+ `class` bodies.
+    ///
+    /// The parser treats `field` as a declarator whenever the next token
+    /// starts a variable, with no class or feature gate, so legacy code
+    /// calling a `field` sub (`field $x;`) also parses as a
+    /// `VariableDeclaration`. Class-field storage is therefore only assigned
+    /// inside an actual class body; outside one, `field` keeps the ordinary
+    /// unknown-declarator treatment (#13817).
+    class_body_depth: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -103,6 +112,7 @@ impl Lowerer {
             pragma_environment,
             scope_stack: vec![file_scope],
             pending_label: None,
+            class_body_depth: 0,
         }
     }
 
@@ -881,7 +891,12 @@ impl Lowerer {
                     self.package_context.clone(),
                     Some(self.current_scope()),
                 );
+                // Track class-body nesting so `field` declarations inside this
+                // body can be told apart from a legacy `field $x;` call
+                // elsewhere in the file (#13817).
+                self.class_body_depth += 1;
                 self.visit_children(node, confidence);
+                self.class_body_depth -= 1;
             }
             NodeKind::Defer { .. } => {
                 self.push_item(
@@ -1284,7 +1299,7 @@ impl Lowerer {
         variables: &[VariableBinding],
         declaration_item: HirId,
     ) {
-        let storage = storage_class_for_declarator(declarator);
+        let storage = storage_class_for_declarator(declarator, self.class_body_depth > 0);
         for variable in variables {
             self.record_binding(
                 variable.sigil.clone(),
@@ -2349,16 +2364,25 @@ impl Lowerer {
     }
 }
 
-fn storage_class_for_declarator(declarator: &str) -> StorageClass {
+/// Storage class for a declaration, given whether it sits inside a Perl 5.38+
+/// `class` body.
+///
+/// `in_class_body` only affects `field`. The parser accepts `field` as a
+/// declarator wherever the next token starts a variable, so legacy code that
+/// calls a `field` sub (`field $x;`) produces the same AST shape as a real
+/// field declaration. Only a declaration lexically inside a class body earns
+/// class-field storage; outside one, `field` keeps the ordinary
+/// unknown-declarator fallback it had before (#13817).
+fn storage_class_for_declarator(declarator: &str, in_class_body: bool) -> StorageClass {
     match declarator {
         "my" => StorageClass::LexicalMy,
         "our" => StorageClass::PackageOur,
         "state" => StorageClass::LexicalState,
         "local" => StorageClass::LocalizedPackage,
-        // A `field` in a 5.38+ class body is per-object storage. Without this
-        // arm it fell to `PackageGlobal` below, which made `field $x`
+        // A `field` in a class body is per-object storage. Without this arm it
+        // fell to `PackageGlobal` below, which made `field $x`
         // indistinguishable from an undeclared package global (#13817).
-        "field" => StorageClass::ClassField,
+        "field" if in_class_body => StorageClass::ClassField,
         _ => StorageClass::PackageGlobal,
     }
 }
@@ -4203,52 +4227,43 @@ fn storage_class_for_decl(declarator: &str) -> DeclStorageClass {
         "our" => DeclStorageClass::Our,
         "local" => DeclStorageClass::Local,
         "state" => DeclStorageClass::State,
-        // Without this arm `field` fell to `My` below, contradicting the
-        // scope graph's answer for the same declaration (#13817).
-        "field" => DeclStorageClass::Field,
         _ => DeclStorageClass::My,
     }
 }
 
 #[cfg(test)]
 mod declarator_storage_tests {
-    use super::{
-        DeclStorageClass, StorageClass, storage_class_for_decl, storage_class_for_declarator,
-    };
+    use super::{StorageClass, storage_class_for_declarator};
 
-    /// Every declarator that carries storage meaning must be named in the
-    /// scope-graph table rather than reaching the `PackageGlobal` catch-all.
+    /// Declarators whose storage meaning does not depend on class context.
     #[test]
-    fn scope_graph_table_names_every_storage_declarator() {
-        assert_eq!(storage_class_for_declarator("my"), StorageClass::LexicalMy);
-        assert_eq!(storage_class_for_declarator("our"), StorageClass::PackageOur);
-        assert_eq!(storage_class_for_declarator("state"), StorageClass::LexicalState);
-        assert_eq!(storage_class_for_declarator("local"), StorageClass::LocalizedPackage);
-        assert_eq!(storage_class_for_declarator("field"), StorageClass::ClassField);
+    fn ordinary_declarators_are_context_independent() {
+        for in_class in [false, true] {
+            assert_eq!(storage_class_for_declarator("my", in_class), StorageClass::LexicalMy);
+            assert_eq!(storage_class_for_declarator("our", in_class), StorageClass::PackageOur);
+            assert_eq!(storage_class_for_declarator("state", in_class), StorageClass::LexicalState);
+            assert_eq!(
+                storage_class_for_declarator("local", in_class),
+                StorageClass::LocalizedPackage
+            );
+        }
     }
 
-    /// An unrecognized declarator keeps the existing catch-all behavior; this
-    /// fix does not widen the repair beyond `field`.
+    /// `field` earns class-field storage only inside a class body. Outside
+    /// one the parser still produces a `field` declarator for a legacy
+    /// `field $x;` call, which must keep its previous treatment.
+    #[test]
+    fn field_storage_requires_class_context() {
+        assert_eq!(storage_class_for_declarator("field", true), StorageClass::ClassField);
+        assert_eq!(storage_class_for_declarator("field", false), StorageClass::PackageGlobal);
+    }
+
+    /// An unrecognized declarator keeps the existing catch-all behavior in
+    /// both contexts; this fix does not widen the repair beyond `field`.
     #[test]
     fn unknown_declarator_still_falls_back_to_package_global() {
-        assert_eq!(storage_class_for_declarator("nonesuch"), StorageClass::PackageGlobal);
-    }
-
-    /// The body-arena declarator table must agree with the scope-graph table
-    /// about `field`, so the two HIR models cannot give one declaration two
-    /// different storage answers.
-    ///
-    /// Note: `class` bodies are not yet lowered into HIR body arenas, so this
-    /// table entry is not reachable end-to-end from a real `field`
-    /// declaration today. It is pinned here, at the table, so the two models
-    /// stay consistent when class-body lowering lands.
-    #[test]
-    fn body_arena_table_agrees_about_field() {
-        assert_eq!(storage_class_for_decl("field"), DeclStorageClass::Field);
-        assert_eq!(storage_class_for_decl("my"), DeclStorageClass::My);
-        assert_eq!(storage_class_for_decl("our"), DeclStorageClass::Our);
-        assert_eq!(storage_class_for_decl("local"), DeclStorageClass::Local);
-        assert_eq!(storage_class_for_decl("state"), DeclStorageClass::State);
+        assert_eq!(storage_class_for_declarator("nonesuch", false), StorageClass::PackageGlobal);
+        assert_eq!(storage_class_for_declarator("nonesuch", true), StorageClass::PackageGlobal);
     }
 }
 

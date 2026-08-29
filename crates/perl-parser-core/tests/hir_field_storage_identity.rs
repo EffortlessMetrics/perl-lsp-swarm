@@ -220,3 +220,56 @@ fn field_as_ordinary_identifier_records_no_field_binding() -> TestResult {
     );
     Ok(())
 }
+
+#[test]
+fn legacy_field_call_outside_a_class_is_not_class_field_storage() -> TestResult {
+    // The parser accepts `field` as a declarator whenever the next token
+    // starts a variable, with no class or feature gate. So a legacy program
+    // that calls its own `field` sub with a variable argument parses exactly
+    // like a field declaration.
+    //
+    // In Perl this is a call, and `$x` is the package variable — it must not
+    // acquire class-field storage, and `$x` in `show` must stay a package
+    // read. Ungated, this regressed to `Lexical`.
+    let source = "sub field { 1 }\nour $x;\nfield $x;\nsub show { $x }\n";
+    let file = lower_source(source);
+
+    assert!(
+        file.scope_graph.bindings.iter().all(|b| b.storage != StorageClass::ClassField),
+        "`field $x` outside a class body is a call, not a class-field declaration"
+    );
+
+    let body = file
+        .bodies
+        .iter()
+        .find(|b| matches!(&b.owner, BodyOwnerKind::Subroutine { name: Some(n) } if n == "show"))
+        .ok_or_else(|| "no lowered body for sub `show`".to_string())?;
+    assert_eq!(
+        variable_kind(body, "x")?,
+        VariableKind::Package,
+        "`$x` in a legacy sub must stay a package read"
+    );
+    Ok(())
+}
+
+#[test]
+fn field_in_a_nested_class_body_still_earns_class_field_storage() -> TestResult {
+    // Class-body depth must be restored correctly after leaving a class, so a
+    // later class in the same file is still recognized.
+    let file = lower_source(
+        "use feature 'class';\nclass A { field $a; }\nour $between;\nclass B { field $b; }\n",
+    );
+    for name in ["a", "b"] {
+        assert_eq!(
+            binding(&file, name)?.storage,
+            StorageClass::ClassField,
+            "`field ${name}` in its own class body must earn class-field storage"
+        );
+    }
+    assert_eq!(
+        binding(&file, "between")?.storage,
+        StorageClass::PackageOur,
+        "a declaration between two classes is not inside either body"
+    );
+    Ok(())
+}

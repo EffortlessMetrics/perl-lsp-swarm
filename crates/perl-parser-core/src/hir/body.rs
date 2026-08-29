@@ -493,11 +493,6 @@ pub enum DeclStorageClass {
     Local,
     /// `state` — persistent lexical.
     State,
-    /// `field` — per-object storage declared in a Perl 5.38+ `class` body.
-    ///
-    /// Distinct from [`DeclStorageClass::My`]: a field has no lexical slot.
-    /// See [`crate::hir::StorageClass::ClassField`].
-    Field,
 }
 
 impl DeclStorageClass {
@@ -507,7 +502,6 @@ impl DeclStorageClass {
             "our" => DeclStorageClass::Our,
             "local" => DeclStorageClass::Local,
             "state" => DeclStorageClass::State,
-            "field" => DeclStorageClass::Field,
             _ => DeclStorageClass::My,
         }
     }

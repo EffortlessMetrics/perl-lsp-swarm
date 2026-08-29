@@ -983,26 +983,8 @@ impl BodyLowerer {
                                 },
                             }
                         }
-                        // my / state → lexical write.
-                        //
-                        // `field` is listed explicitly rather than left to a
-                        // `_` arm so a declarator cannot silently inherit `my`
-                        // semantics (#13817). `local` previously reached the
-                        // wrong operation through exactly that catch-all, so
-                        // the match is now exhaustive: a future declarator
-                        // must choose its operation here instead of
-                        // defaulting to one.
-                        //
-                        // The emitted operation for `field` is deliberately
-                        // unchanged: a field declaration still anchors a write
-                        // at the declared variable, which is what
-                        // find-references consumes, and a field's name is
-                        // visible to the class body and its methods. A
-                        // field-specific PIR operation belongs to #6672's PIR
-                        // slice, not to this storage-identity fix.
-                        DeclStorageClass::My
-                        | DeclStorageClass::State
-                        | DeclStorageClass::Field => PirOperation::LexicalWrite {
+                        // my / state / any other declarator → lexical write
+                        _ => PirOperation::LexicalWrite {
                             name: LexicalName { sigil: sigil_str(sigil), name: name.clone() },
                         },
                     };
