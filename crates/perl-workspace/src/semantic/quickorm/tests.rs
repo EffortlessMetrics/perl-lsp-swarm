@@ -511,6 +511,59 @@ fn competing_table_import_invalidates_quickorm_authority() -> Result<(), Box<dyn
 }
 
 #[test]
+fn competing_quote_like_table_imports_invalidate_quickorm_authority()
+-> Result<(), Box<dyn std::error::Error>> {
+    for delimiter in ["/table/", "(table)", "[table]", "{table}", "<table>"] {
+        let source = format!(
+            "package User; use DBIx::QuickORM type => 'table'; use Other::DSL qw{delimiter}; table users => sub {{}};",
+            delimiter = delimiter
+        );
+        assert!(
+            generated_facts_from_source(&source)?.is_empty(),
+            "competing qw{delimiter} import must invalidate QuickORM authority: {source}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn malformed_quote_like_table_imports_remain_fail_closed() -> Result<(), Box<dyn std::error::Error>>
+{
+    for import in [
+        "use Other::DSL qw/table;",
+        "use Other::DSL qw{table] ;",
+        "use Other::DSL qw[table};",
+        "use Other::DSL qw(table] ;",
+    ] {
+        let source = format!(
+            "package User; use DBIx::QuickORM type => 'table'; {import} table users => sub {{}};"
+        );
+        assert_eq!(
+            canonical_names(&generated_facts_from_source(&source)?),
+            vec!["User::qorm_table"],
+            "malformed recovered import must not consume authority: {source}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn competing_quote_like_method_imports_invalidate_quickorm_authority()
+-> Result<(), Box<dyn std::error::Error>> {
+    for delimiter in ["/table/", "(table)", "[table]", "{table}", "<table>"] {
+        let source = format!(
+            "package User; use DBIx::QuickORM type => 'table'; Other::DSL->import(qw{delimiter}); table users => sub {{}};",
+            delimiter = delimiter
+        );
+        assert!(
+            generated_facts_from_source(&source)?.is_empty(),
+            "competing method qw{delimiter} import must invalidate QuickORM authority: {source}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn double_quoted_static_table_name_emits_qorm_table() -> Result<(), Box<dyn std::error::Error>> {
     let facts = generated_facts_from_source(
         r#"

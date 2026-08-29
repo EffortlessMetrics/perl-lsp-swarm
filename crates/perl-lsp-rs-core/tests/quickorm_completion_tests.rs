@@ -176,6 +176,35 @@ table users => sub {};
 }
 
 #[test]
+fn quote_like_competing_imports_do_not_surface_generated_completion()
+-> Result<(), Box<dyn std::error::Error>> {
+    for (name, delimiter) in [
+        ("Slash", "/table/"),
+        ("Paren", "(table)"),
+        ("Bracket", "[table]"),
+        ("Brace", "{table}"),
+        ("Angle", "<table>"),
+    ] {
+        let index = Arc::new(WorkspaceIndex::new());
+        index.index_file(
+            Url::parse(&format!("file:///workspace/MyApp/Schema/Competing{name}.pm"))?,
+            format!(
+                "package MyApp::Schema::Competing{name};\nuse DBIx::QuickORM type => 'table';\nuse Other::DSL qw{delimiter};\ntable users => sub {{}};\n1;\n",
+                name = name,
+                delimiter = delimiter
+            ),
+        )?;
+
+        let completions = completion_items(index, &format!("MyApp::Schema::Competing{name}->q"))?;
+        assert!(
+            !labels(&completions).contains(&"qorm_table"),
+            "competing qw{delimiter} import must not surface generated completion"
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn zero_argument_qualified_call_preserves_generated_completion()
 -> Result<(), Box<dyn std::error::Error>> {
     let index = Arc::new(WorkspaceIndex::new());

@@ -455,6 +455,29 @@ fn workspace_index_blocks_quickorm_rename_skip_and_unknown_options()
 }
 
 #[test]
+fn workspace_index_blocks_competing_quote_like_imports() -> Result<(), Box<dyn std::error::Error>> {
+    for (name, delimiter) in [
+        ("Slash", "/table/"),
+        ("Paren", "(table)"),
+        ("Bracket", "[table]"),
+        ("Brace", "{table}"),
+        ("Angle", "<table>"),
+    ] {
+        let index = WorkspaceIndex::new();
+        let uri = Url::parse(&format!("file:///lib/MyApp/Schema/Competing{name}.pm"))?;
+        let source = format!(
+            "package MyApp::Schema::Competing{name};\nuse DBIx::QuickORM type => 'table';\nuse Other::DSL qw{delimiter};\ntable users => sub {{}};\n1;\n",
+            name = name,
+            delimiter = delimiter
+        );
+
+        index.index_file(uri, source)?;
+        assert!(index.search_generated_workspace_symbols("qorm_table", None).is_empty());
+    }
+    Ok(())
+}
+
+#[test]
 fn workspace_index_invalidates_stale_qorm_table_after_dynamic_reconfiguration()
 -> Result<(), Box<dyn std::error::Error>> {
     let index = WorkspaceIndex::new();

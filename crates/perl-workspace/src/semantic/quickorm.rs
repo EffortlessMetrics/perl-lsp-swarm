@@ -319,29 +319,80 @@ fn current_package(context: &WalkContext) -> &str {
 }
 
 fn imports_table_builder(args: &[String]) -> bool {
-    args.iter().any(|arg| {
-        let value = arg.trim();
-        if matches!(value, "table" | "view" | "'table'" | "\"table\"" | "'view'" | "\"view\"") {
-            return true;
-        }
-
-        value.strip_prefix("qw(").and_then(|words| words.strip_suffix(')')).is_some_and(|words| {
-            words.split_whitespace().any(|word| matches!(word, "table" | "view"))
-        })
-    })
+    args.iter().any(|arg| imports_table_builder_value(arg))
 }
 
 fn imports_table_builder_from_nodes(args: &[Node]) -> bool {
     args.iter().any(|arg| match &arg.kind {
         NodeKind::String { value, .. } | NodeKind::Identifier { name: value } => {
-            matches!(value.trim_matches(['\'', '"']), "table" | "view")
-                || value.strip_prefix("qw(").and_then(|words| words.strip_suffix(')')).is_some_and(
-                    |words| words.split_whitespace().any(|word| matches!(word, "table" | "view")),
-                )
+            imports_table_builder_value(value)
         }
         NodeKind::ArrayLiteral { elements } => imports_table_builder_from_nodes(elements),
         _ => false,
     })
+}
+
+fn imports_table_builder_value(value: &str) -> bool {
+    let value = value.trim();
+    if matches!(value, "table" | "view" | "'table'" | "\"table\"" | "'view'" | "\"view\"") {
+        return true;
+    }
+
+    quote_like_words(value)
+        .is_some_and(|words| words.into_iter().any(|word| matches!(word, "table" | "view")))
+}
+
+/// Parse a Perl quote-like word list as retained by the parser's raw argument
+/// representation. This deliberately validates the complete delimiter pair:
+/// an incomplete or mismatched recovered token must not invalidate a valid
+/// QuickORM authority based on guessed text.
+fn quote_like_words(value: &str) -> Option<Vec<&str>> {
+    let remainder = value.strip_prefix("qw")?;
+    let delimiter = remainder.chars().next()?;
+    if delimiter.is_ascii_alphanumeric() || delimiter.is_ascii_whitespace() {
+        return None;
+    }
+
+    let (closing, paired) = match delimiter {
+        '(' => (')', true),
+        '[' => (']', true),
+        '{' => ('}', true),
+        '<' => ('>', true),
+        _ => (delimiter, false),
+    };
+    let content = &remainder[delimiter.len_utf8()..];
+    let mut depth = if paired { 1 } else { 0 };
+    let mut escaped = false;
+    let mut end = None;
+
+    for (offset, character) in content.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if character == '\\' {
+            escaped = true;
+            continue;
+        }
+        if paired && character == delimiter {
+            depth += 1;
+        } else if character == closing {
+            if paired {
+                depth -= 1;
+                if depth != 0 {
+                    continue;
+                }
+            }
+            end = Some(offset);
+            break;
+        }
+    }
+
+    let end = end?;
+    if !content[end + closing.len_utf8()..].trim().is_empty() {
+        return None;
+    }
+    Some(content[..end].split_whitespace().collect())
 }
 
 fn is_competing_import_call(expression: &Node) -> bool {
