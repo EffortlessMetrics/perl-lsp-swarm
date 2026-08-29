@@ -273,9 +273,7 @@ fn detect_moose(
             {
                 return AdapterDetectionResult::for_input(
                     input,
-                    DetectionOutcome::Unavailable {
-                        reason: UnavailableReason::MissingGeneration,
-                    },
+                    DetectionOutcome::Unavailable { reason: UnavailableReason::MissingGeneration },
                 );
             }
 
@@ -306,9 +304,7 @@ fn detect_moose(
             if version.generation != activation.generation {
                 return AdapterDetectionResult::for_input(
                     input,
-                    DetectionOutcome::Unavailable {
-                        reason: UnavailableReason::MissingGeneration,
-                    },
+                    DetectionOutcome::Unavailable { reason: UnavailableReason::MissingGeneration },
                 );
             }
 

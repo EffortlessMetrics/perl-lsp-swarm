@@ -11,8 +11,8 @@ use perl_semantic_analyzer::analysis::moose_activation::{
 use perl_semantic_facts::framework::{
     AdapterCancellation, AdapterDescriptor, AdapterDetectionInput, AdapterDetectionResult,
     AdapterDisposition, DetectionAbsenceReason, DetectionAuthorityError, DetectionEvidenceClass,
-    DetectionOutcome, ModuleActivationIdentity, ModuleObservationReceipt,
-    ModuleSelectorEvaluation, ModuleSelectorOutcome, ModuleVersionEvidence, UnavailableReason,
+    DetectionOutcome, ModuleActivationIdentity, ModuleObservationReceipt, ModuleSelectorEvaluation,
+    ModuleSelectorOutcome, ModuleVersionEvidence, UnavailableReason,
 };
 use perl_semantic_facts::framework_adapters::moose::{
     MOOSE_ACTIVATION_PROFILE_VERSION, MOOSE_VERSION_CONSTRAINT, MooseActivationKind,
@@ -26,6 +26,7 @@ fn descriptor(kind: MooseActivationKind) -> AdapterDescriptor {
     match kind {
         MooseActivationKind::Class => moose_class_descriptor(),
         MooseActivationKind::Role => moose_role_descriptor(),
+        _ => moose_class_descriptor(),
     }
 }
 
@@ -87,24 +88,18 @@ fn input(
     )
 }
 
-fn detect(
-    kind: MooseActivationKind,
-    input: &AdapterDetectionInput,
-) -> AdapterDetectionResult {
+fn detect(kind: MooseActivationKind, input: &AdapterDetectionInput) -> AdapterDetectionResult {
     match kind {
         MooseActivationKind::Class => detect_moose_class(input),
         MooseActivationKind::Role => detect_moose_role(input),
+        _ => detect_moose_class(input),
     }
 }
 
 fn sites(code: &str, file_id: u64, generation: &str) -> Vec<MooseActivationSite> {
     let mut parser = Parser::new(code);
     let ast = must(parser.parse());
-    extract_moose_activation_sites(
-        &ast,
-        FileId(file_id),
-        SourceGeneration::known(generation),
-    )
+    extract_moose_activation_sites(&ast, FileId(file_id), SourceGeneration::known(generation))
 }
 
 #[test]
@@ -115,14 +110,8 @@ fn descriptors_are_distinct_bounded_and_deterministic() {
     assert_ne!(first[0].adapter_id, first[1].adapter_id);
     assert_eq!(first[0].required_module_selectors, vec!["Moose"]);
     assert_eq!(first[1].required_module_selectors, vec!["Moose::Role"]);
-    assert_eq!(
-        first[0].framework_version_constraint.as_deref(),
-        Some(MOOSE_VERSION_CONSTRAINT)
-    );
-    assert_eq!(
-        first[1].framework_version_constraint.as_deref(),
-        Some(MOOSE_VERSION_CONSTRAINT)
-    );
+    assert_eq!(first[0].framework_version_constraint.as_deref(), Some(MOOSE_VERSION_CONSTRAINT));
+    assert_eq!(first[1].framework_version_constraint.as_deref(), Some(MOOSE_VERSION_CONSTRAINT));
     assert!(first.iter().all(|item| item.disposition == AdapterDisposition::Production));
     assert_eq!(MOOSE_ACTIVATION_PROFILE_VERSION, "moose.activation.2.v1");
 }
@@ -225,9 +214,7 @@ fn unsupported_version_and_name_only_identity_fail_closed() {
     let unsupported = detect_moose_class(&unsupported_input);
     assert_eq!(
         unsupported.outcome,
-        DetectionOutcome::Absent {
-            reason: DetectionAbsenceReason::VersionConstraintNotSatisfied,
-        }
+        DetectionOutcome::Absent { reason: DetectionAbsenceReason::VersionConstraintNotSatisfied }
     );
     assert!(
         unsupported.is_authoritative_against(&unsupported_input),
@@ -248,10 +235,7 @@ fn unsupported_version_and_name_only_identity_fail_closed() {
         "sha256:name-only",
     );
     let name_only = detect_moose_role(&name_only_input);
-    assert!(matches!(
-        name_only.outcome,
-        DetectionOutcome::Unsupported { .. }
-    ));
+    assert!(matches!(name_only.outcome, DetectionOutcome::Unsupported { .. }));
     assert!(!name_only.is_authoritative_against(&name_only_input));
 }
 
@@ -279,9 +263,7 @@ fn missing_version_ambiguous_module_and_duplicate_rows_stay_distinct() {
         MooseActivationKind::Class,
         vec![ModuleSelectorEvaluation::new(
             "Moose",
-            ModuleSelectorOutcome::Ambiguous {
-                reason: "two roots provide Moose".to_string(),
-            },
+            ModuleSelectorOutcome::Ambiguous { reason: "two roots provide Moose".to_string() },
         )],
         "gen-1",
         "root:a",
@@ -295,10 +277,7 @@ fn missing_version_ambiguous_module_and_duplicate_rows_stay_distinct() {
 
     let duplicate_input = input(
         MooseActivationKind::Class,
-        vec![
-            ModuleSelectorEvaluation::absent("Moose"),
-            ModuleSelectorEvaluation::absent("Moose"),
-        ],
+        vec![ModuleSelectorEvaluation::absent("Moose"), ModuleSelectorEvaluation::absent("Moose")],
         "gen-1",
         "root:a",
         "env:a",
@@ -373,14 +352,8 @@ fn import_removal_and_readdition_change_source_and_detection_identity() {
 
     let readded_sites = sites("package App;\nuse Moose;\n", 1, "gen-3");
     let readded = must_some(readded_sites.first());
-    assert_eq!(
-        &readded.anchor.source_generation,
-        &SourceGeneration::known("gen-3")
-    );
-    assert_ne!(
-        &initial_sites[0].anchor.source_generation,
-        &readded.anchor.source_generation
-    );
+    assert_eq!(&readded.anchor.source_generation, &SourceGeneration::known("gen-3"));
+    assert_ne!(&initial_sites[0].anchor.source_generation, &readded.anchor.source_generation);
 }
 
 #[test]
@@ -429,24 +402,26 @@ fn same_package_in_two_roots_remains_isolated_by_checked_input_identity() {
 
 #[test]
 fn unmodeled_import_and_dynamic_wrapper_cannot_establish_exact_activation() {
-    let unmodeled = sites(
-        "package App;\nuse Moose -traits => 'My::Trait';\n",
-        1,
-        "gen-1",
-    );
+    let unmodeled = sites("package App;\nuse Moose -traits => 'My::Trait';\n", 1, "gen-1");
     let site = must_some(unmodeled.first());
+    assert!(!site.is_exact());
+    assert!(matches!(&site.import_disposition, MooseImportDisposition::Unmodeled { .. }));
+
+    let dynamic =
+        sites("package Other;\nBEGIN { require Moose; Moose->import($options); }\n", 2, "gen-1");
+    assert!(dynamic.is_empty());
+}
+
+#[test]
+fn empty_import_list_is_not_activation() {
+    let found = sites("package App;\nuse Moose ();\n", 1, "gen-1");
+    let site = must_some(found.first());
     assert!(!site.is_exact());
     assert!(matches!(
         &site.import_disposition,
-        MooseImportDisposition::Unmodeled { .. }
+        MooseImportDisposition::Unmodeled { arguments }
+            if arguments == &["(".to_string(), ")".to_string()]
     ));
-
-    let dynamic = sites(
-        "package Other;\nBEGIN { require Moose; Moose->import($options); }\n",
-        2,
-        "gen-1",
-    );
-    assert!(dynamic.is_empty());
 }
 
 #[test]
@@ -495,10 +470,7 @@ fn cancelled_and_broken_instrumentation_are_terminal_non_authoritative_states() 
         "sha256:cancelled",
     );
     cancelled_input.cancellation = AdapterCancellation::cancelled();
-    assert_eq!(
-        detect_moose_class(&cancelled_input).outcome,
-        DetectionOutcome::Cancelled
-    );
+    assert_eq!(detect_moose_class(&cancelled_input).outcome, DetectionOutcome::Cancelled);
 
     let broken_input = input(
         MooseActivationKind::Class,

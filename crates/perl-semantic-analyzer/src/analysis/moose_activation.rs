@@ -174,11 +174,7 @@ fn exact_module_version(module: &str, expected: &str) -> Option<Option<String>> 
         return Some(None);
     }
     let version = suffix.strip_prefix(' ')?;
-    if is_version_spelling(version) {
-        Some(Some(version.to_string()))
-    } else {
-        None
-    }
+    if is_version_spelling(version) { Some(Some(version.to_string())) } else { None }
 }
 
 fn is_version_spelling(value: &str) -> bool {
@@ -191,10 +187,7 @@ fn is_version_spelling(value: &str) -> bool {
 fn normalize_import_args(args: &[String]) -> Vec<String> {
     args.iter()
         .map(|argument| argument.trim())
-        .filter(|argument| {
-            !argument.is_empty()
-                && !matches!(*argument, "," | "=>" | "(" | ")" | ";")
-        })
+        .filter(|argument| !argument.is_empty() && !matches!(*argument, "," | "=>" | ";"))
         .map(ToString::to_string)
         .collect()
 }
@@ -213,9 +206,7 @@ mod tests {
 
     #[test]
     fn exact_class_and_role_imports_keep_distinct_identity() {
-        let found = sites(
-            "package Classish;\nuse Moose;\npackage Roleish;\nuse Moose::Role;\n",
-        );
+        let found = sites("package Classish;\nuse Moose;\npackage Roleish;\nuse Moose::Role;\n");
         assert_eq!(found.len(), 2);
         assert_eq!(found[0].kind, MooseActivationKind::Class);
         assert_eq!(found[0].anchor.package.as_deref(), Some("Classish"));
@@ -273,10 +264,20 @@ mod tests {
     }
 
     #[test]
+    fn empty_import_list_does_not_activate_moose() {
+        let found = sites("package App;\nuse Moose ();\n");
+        let site = must_some(found.first());
+        assert!(!site.is_exact());
+        assert!(matches!(
+            &site.import_disposition,
+            MooseImportDisposition::Unmodeled { arguments }
+                if arguments == &["(".to_string(), ")".to_string()]
+        ));
+    }
+
+    #[test]
     fn lexical_block_package_state_is_restored() {
-        let found = sites(
-            "package Outer; { package Inner; use Moose; } use Moose::Role;\n",
-        );
+        let found = sites("package Outer; { package Inner; use Moose; } use Moose::Role;\n");
         assert_eq!(found.len(), 2);
         assert_eq!(found[0].anchor.package.as_deref(), Some("Inner"));
         assert_eq!(found[1].anchor.package.as_deref(), Some("Outer"));
@@ -291,9 +292,6 @@ mod tests {
         let end = site.anchor.span_end_byte as usize;
         assert!(end > start);
         assert!(code[start..end].contains("use Moose"));
-        assert_eq!(
-            site.anchor.source_generation,
-            SourceGeneration::known("gen-1")
-        );
+        assert_eq!(site.anchor.source_generation, SourceGeneration::known("gen-1"));
     }
 }
