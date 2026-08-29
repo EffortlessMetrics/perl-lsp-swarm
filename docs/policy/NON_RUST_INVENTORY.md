@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12395 |
-| Rust-family files | 3808 |
-| Non-Rust files | 8587 |
-| Allowlisted | 6352 |
+| Total tracked files | 12400 |
+| Rust-family files | 3811 |
+| Non-Rust files | 8589 |
+| Allowlisted | 6354 |
 | Unclassified | 2235 |
 
 ## Non-Rust files by category
@@ -17,7 +17,7 @@
 | Category | Count |
 |---|---|
 | config | 490 |
-| documentation | 2801 |
+| documentation | 2803 |
 | generated | 2 |
 | production | 346 |
 | test | 2052 |
@@ -2340,6 +2340,7 @@
 | `.changes/unreleased/product-13125-Fixed-021800.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-13157-Fixed-023317.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-13159-Fixed-023400.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-13169-Fixed-024536.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-13191-Fixed-062500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-13283-Fixed-122901.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3445-Added-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -2433,6 +2434,7 @@
 | `.changes/unreleased/product-7243-Added-090000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-7275-Fixed-064500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-7276-Changed-053500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-7291-Fixed-140000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-7310-Changed-051500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-7416-Fixed-075602.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-7462-Added-085300.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |

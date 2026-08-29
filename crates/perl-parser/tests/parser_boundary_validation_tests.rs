@@ -10,7 +10,7 @@
     reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
 )]
 
-use perl_parser::Parser;
+use perl_parser::{ErrorCategory, ErrorClass, Parser};
 use std::time::{Duration, Instant};
 
 /// Maximum recursion depth from parser implementation
@@ -194,24 +194,15 @@ fn test_timeout_boundary() {
     let result = parser.parse();
     let parse_time = start_time.elapsed();
 
-    // The parser has no wall-clock cutoff, so this must complete. Any error is
-    // a real parse outcome and must not be a timeout claim.
-    match result {
-        Ok(_ast) => {
-            println!("  ✓ Slow code: completed in {:?}", parse_time);
-            assert!(
-                parse_time < Duration::from_millis(BOUNDARY_FIXTURE_CEILING_MS),
-                "Should complete within the fixture ceiling"
-            );
-        }
-        Err(e) => {
-            let rendered = e.to_string();
-            assert!(
-                !rendered.contains("timed out") && !rendered.contains("timeout"),
-                "Parser must not report a wall-clock timeout (#7291): {rendered}"
-            );
-        }
-    }
+    // The parser has no wall-clock cutoff, and this fixture is ordinary valid
+    // Perl, so it must parse. Accepting any non-timeout error here would let a
+    // syntax regression pass unnoticed.
+    assert!(result.is_ok(), "Large but well-formed source must parse; got {:?}", result.err());
+    assert!(
+        parse_time < Duration::from_millis(BOUNDARY_FIXTURE_CEILING_MS),
+        "Should complete within the fixture ceiling"
+    );
+    println!("  ✓ Slow code: completed in {:?}", parse_time);
 
     // Test code that should definitely timeout
     let timeout_code = generate_timeout_code();
@@ -220,8 +211,9 @@ fn test_timeout_boundary() {
     let result = parser.parse();
     let parse_time = start_time.elapsed();
 
-    // Deeply nested but well-formed source terminates on its own deterministic
-    // limits, never on elapsed time.
+    // Deeply nested but well-formed source either parses or stops on one of the
+    // parser's own deterministic resource limits — never on elapsed time, and
+    // never on some unrelated syntax error.
     match result {
         Ok(_) => {
             println!("  ✓ Deeply nested code: completed in {:?}", parse_time);
@@ -229,9 +221,11 @@ fn test_timeout_boundary() {
         Err(e) => {
             let rendered = e.to_string();
             println!("  ✓ Deeply nested code: bounded in {:?}: {rendered}", parse_time);
-            assert!(
-                !rendered.contains("timed out") && !rendered.contains("timeout"),
-                "Parser must not report a wall-clock timeout (#7291): {rendered}"
+            assert_eq!(
+                e.error_class(),
+                ErrorCategory::ResourceLimit,
+                "Deeply nested source may only stop on a deterministic resource \
+                 limit (#7291), not a timeout or a syntax error: {rendered}"
             );
         }
     }

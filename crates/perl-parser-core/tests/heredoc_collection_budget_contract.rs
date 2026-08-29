@@ -15,6 +15,7 @@
 use perl_ast::NodeKind;
 use perl_parser_core::error::{ErrorCategory, ErrorClass, ParseBudget, ParseStopCause};
 use perl_parser_core::{ParseError, ParseOutput, Parser, ParserConfigIdentity};
+use perl_tdd_support::must_some;
 
 /// One heredoc-bearing statement. Kept separate so its exact charge can be
 /// measured on its own and reused as a boundary threshold below.
@@ -206,7 +207,7 @@ fn tracker_refuses_only_at_or_above_the_configured_limit() {
 fn zero_budget_refuses_the_first_collection_without_claiming_a_syntax_error() {
     let output = parse_with_budget(&two_heredoc_statements(), heredoc_scan_budget(0));
 
-    let cause = output.stop_cause().expect("a refused collection must record a typed terminal");
+    let cause = must_some(output.stop_cause());
     assert!(
         matches!(cause, ParseStopCause::HeredocBudgetExhausted { limit: 0, .. }),
         "expected a typed heredoc budget terminal, got {cause:?}"
@@ -217,35 +218,75 @@ fn zero_budget_refuses_the_first_collection_without_claiming_a_syntax_error() {
 
 /// The exact at/above pair on the real production drain path.
 ///
-/// `FIRST_STATEMENT` is measured on its own to learn what one drain charges,
-/// then that value is used as the threshold for the two-statement source: at
-/// the threshold the second drain is refused, one byte above it proceeds.
+/// The total charge for the source is measured under an unlimited budget, then
+/// used as the threshold: at exactly that limit the parse is reported as
+/// exhausted (the charge reaches the limit), and one byte above it the parse is
+/// ordinary and complete.
 #[test]
-fn second_drain_is_refused_at_the_threshold_and_admitted_one_byte_above() {
-    let first_only = parse_with_budget(FIRST_STATEMENT, unlimited_budget());
-    let first_drain_charge = first_only.budget_usage.heredoc_scan_bytes;
-    assert!(first_drain_charge > 0, "the measured statement must actually charge collection work");
-
+fn total_charge_is_exhausted_at_the_threshold_and_clean_one_byte_above() {
     let source = two_heredoc_statements();
 
-    let at_threshold = parse_with_budget(&source, heredoc_scan_budget(first_drain_charge));
+    let measured = parse_with_budget(&source, unlimited_budget());
+    let total_charge = measured.budget_usage.heredoc_scan_bytes;
+    assert!(total_charge > 0, "the fixture must actually charge collection work");
+
+    let at_threshold = parse_with_budget(&source, heredoc_scan_budget(total_charge));
     assert!(
         matches!(at_threshold.stop_cause(), Some(ParseStopCause::HeredocBudgetExhausted { .. })),
-        "at the threshold the second drain must be refused, got {:?}",
+        "at the threshold the parse must report exhaustion, got {:?}",
         at_threshold.stop_cause()
     );
 
     let above_threshold =
-        parse_with_budget(&source, heredoc_scan_budget(first_drain_charge.saturating_add(1)));
+        parse_with_budget(&source, heredoc_scan_budget(total_charge.saturating_add(1)));
     assert_eq!(
         above_threshold.stop_cause(),
         None,
-        "one byte above the threshold the second drain must proceed"
+        "one byte above the threshold the parse must be ordinary"
     );
     assert_eq!(
         heredoc_contents(&above_threshold),
         vec!["body a line one\nbody a line two".to_string(), "body b".to_string()],
-        "an admitted drain must still attach both bodies"
+        "an admitted parse must still attach both bodies"
+    );
+}
+
+/// A single drain that overruns the limit must still report exhaustion.
+///
+/// The before-work refusal alone cannot catch this: with one heredoc and no
+/// later drain, the pre-check sees zero usage, the collection runs to
+/// completion, and nothing would ever be reported — a budget silently spent.
+/// This is the falsifier for that hole, so it must use a source with exactly
+/// one heredoc and therefore exactly one drain.
+#[test]
+fn a_single_overrunning_drain_reports_exhaustion_without_a_later_drain() {
+    let measured = parse_with_budget(FIRST_STATEMENT, unlimited_budget());
+    let charge = measured.budget_usage.heredoc_scan_bytes;
+    assert!(charge > 1, "the fixture must charge more than the limit set below");
+    assert_eq!(
+        heredoc_contents(&measured).len(),
+        1,
+        "this control is only meaningful with exactly one heredoc, hence one drain"
+    );
+
+    // A positive limit, so the before-work check cannot fire: usage is 0 and
+    // 0 >= 1 is false. Only the after-work check can catch this.
+    let overrun = parse_with_budget(FIRST_STATEMENT, heredoc_scan_budget(1));
+    assert!(
+        matches!(overrun.stop_cause(), Some(ParseStopCause::HeredocBudgetExhausted { .. })),
+        "a single drain that overruns the limit must report exhaustion, got {:?}",
+        overrun.stop_cause()
+    );
+    assert!(
+        overrun
+            .diagnostics
+            .iter()
+            .any(|error| matches!(error, ParseError::HeredocBudgetExhausted { .. })),
+        "the overrun must also surface a typed diagnostic"
+    );
+    assert!(
+        overrun.budget_usage.heredoc_scan_bytes >= 1,
+        "the overrunning work must still be charged"
     );
 }
 
@@ -300,9 +341,13 @@ fn exhaustion_is_a_resource_limit_not_a_user_syntax_error() {
 fn refused_collection_cannot_masquerade_as_an_ordinary_empty_body() {
     let refused = parse_with_budget(&two_heredoc_statements(), heredoc_scan_budget(0));
 
-    assert!(
-        heredoc_contents(&refused).iter().all(|content| content.is_empty()),
-        "the fixture must leave placeholders unresolved for this control to be meaningful"
+    // Assert the placeholders are actually present before asserting they are
+    // empty: `all` is vacuously true on an empty list, so an implementation
+    // that dropped the queued heredoc nodes entirely would otherwise pass.
+    assert_eq!(
+        heredoc_contents(&refused),
+        vec![String::new(), String::new()],
+        "both placeholders must be retained and unresolved for this control to be meaningful"
     );
     assert!(
         refused.stop_cause().is_some(),
@@ -330,7 +375,7 @@ fn refused_collection_cannot_masquerade_as_an_ordinary_empty_body() {
 #[test]
 fn exhaustion_is_distinct_from_cancellation() {
     let output = parse_with_budget(&two_heredoc_statements(), heredoc_scan_budget(0));
-    let cause = output.stop_cause().expect("expected a terminal");
+    let cause = must_some(output.stop_cause());
 
     assert!(!cause.is_cancelled(), "budget exhaustion must not be reported as cancellation");
     assert_ne!(cause, ParseStopCause::Cancelled);

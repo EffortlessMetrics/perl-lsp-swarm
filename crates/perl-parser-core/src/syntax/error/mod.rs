@@ -515,7 +515,9 @@ pub enum ParseError {
     /// It must never be reported as an unterminated-heredoc syntax error, and
     /// the remaining queued declarations stay unresolved rather than being
     /// discarded into an ordinary successful parse.
-    #[error("Heredoc collection budget exhausted: {usage} > {limit} source bytes scanned")]
+    #[error(
+        "Heredoc collection budget exhausted: {usage} of {limit} permitted source bytes scanned"
+    )]
     HeredocBudgetExhausted {
         /// Configured heredoc scan limit in source bytes.
         limit: usize,
@@ -1236,6 +1238,10 @@ impl ParseError {
             ParseError::SyntaxError { location, .. } => Some(*location),
             ParseError::Advisory { location, .. } => Some(*location),
             ParseError::Recovered { location, .. } => Some(*location),
+            // Anchored at the declaration whose collection was refused, so
+            // `get_error_contexts` reports that line rather than falling back
+            // to EOF. Must stay consistent with `diagnostic_anchor`.
+            ParseError::HeredocBudgetExhausted { location, .. } => Some(*location),
             _ => None,
         }
     }

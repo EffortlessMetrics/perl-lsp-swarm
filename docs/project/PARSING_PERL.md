@@ -423,8 +423,8 @@ model**:
 
 - **Returns `Ok(ast)` with ERROR nodes** for most parse failures (recovered
   errors).
-- **Returns `Err`** only for catastrophic failures (recursion limits,
-  timeouts).
+- **Returns `Err`** only for catastrophic failures (recursion and nesting
+  limits, cancellation).
 
 This means the LSP server always gets a partial AST, even for incomplete
 or malformed code.  A developer typing `sub foo { if (` gets code completion,
@@ -437,7 +437,7 @@ The parser protects itself with multiple layers:
 | Recursion depth | 128 levels | Prevents stack overflow on deeply nested code |
 | Parse budget | Configurable | Caps error recovery iterations |
 | AST node count | 100,000 nodes | Memory protection |
-| Wall-clock timeout | 5 seconds | Prevents hangs on pathological input |
+| Heredoc collection budget | 64 MiB scanned | Bounds heredoc body collection deterministically |
 
 ### Checkpointing for Backtracking
 
@@ -513,7 +513,7 @@ perl-lsp's approach is pragmatic:
    navigation, completion, and diagnostics -- they might just be slightly
    wrong in pathological edge cases.
 
-3. **Never hang, never crash.**  Budget limits, timeouts, and recursion
+3. **Never hang, never crash.**  Byte budgets and recursion
    guards ensure the parser always terminates.  When limits are exceeded,
    an `UnknownRest` token preserves everything parsed so far.
 
@@ -546,8 +546,9 @@ ambiguity tables, no runtime costs.
 
 Real-world input is adversarial.  Fuzz testing will find the pathological
 heredoc, the 200-level nested regex, the 10 MB single-line string.  Set
-explicit byte budgets, recursion limits, and wall-clock timeouts from
-day one.  Emit a degraded token and move on.  A slow parser that eventually
+explicit byte budgets and recursion limits from
+day one -- deterministic ones, so the same source always parses the same way
+(a wall clock makes the result depend on the host, not the input).  Emit a degraded token and move on.  A slow parser that eventually
 produces output is worse than a fast parser that says "I gave up here" and
 keeps going.
 

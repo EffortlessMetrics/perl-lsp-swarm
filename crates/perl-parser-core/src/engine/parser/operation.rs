@@ -134,8 +134,16 @@ impl ParserOperationContext {
         std::mem::take(&mut self.tracker)
     }
 
+    /// Record the terminal cause for this operation, preserving the first.
+    ///
+    /// More than one `Ok`-path branch can record a terminal in a single parse:
+    /// a refused heredoc collection does not stop statement parsing, so a later
+    /// lexer-budget `UnknownRest` could otherwise overwrite the heredoc cause
+    /// and leave `stop_cause()` disagreeing with the diagnostic vector. The
+    /// first selected cause is the causal one and is immutable for the rest of
+    /// the operation; [`ParserOperationContext::begin`] clears it.
     pub(crate) fn record_terminal(&mut self, cause: ParseStopCause) {
-        self.terminal = Some(cause);
+        self.terminal.get_or_insert(cause);
     }
 
     pub(crate) fn take_terminal(&mut self) -> Option<ParseStopCause> {
@@ -199,6 +207,28 @@ impl ParserOperationContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A refused heredoc collection does not stop statement parsing, so a later
+    /// lexer-budget stop can be recorded in the same operation. The first cause
+    /// is the causal one: without this, `stop_cause()` could name a different
+    /// limit than the diagnostic vector reports.
+    #[test]
+    fn first_recorded_terminal_wins_and_begin_clears_it() {
+        let mut ctx = ParserOperationContext::new(ParserConfigIdentity::production_default(), None);
+
+        ctx.record_terminal(ParseStopCause::HeredocBudgetExhausted { limit: 4, usage: 9 });
+        ctx.record_terminal(ParseStopCause::LexerBudgetExhausted);
+
+        assert_eq!(
+            ctx.take_terminal(),
+            Some(ParseStopCause::HeredocBudgetExhausted { limit: 4, usage: 9 }),
+            "a later terminal must not overwrite the first causal one"
+        );
+
+        ctx.record_terminal(ParseStopCause::LexerBudgetExhausted);
+        ctx.begin();
+        assert_eq!(ctx.take_terminal(), None, "a new operation must start with no terminal");
+    }
 
     #[test]
     fn production_default_identity_is_stable() {

@@ -114,6 +114,27 @@ impl<'a> Parser<'a> {
         });
     }
 
+    /// Record the deterministic heredoc-budget terminal for this operation.
+    ///
+    /// Exhaustion is one event per parse, not one per affected declaration: the
+    /// diagnostic is emitted once and anchored at the first refused or
+    /// overrunning declaration, and the typed terminal is recorded so a
+    /// truncated parse can never be read as ordinary completion. Later
+    /// declarations in the same parse are still refused; they add no further
+    /// diagnostics, so consumers must treat the terminal — not the diagnostic
+    /// count — as the signal that heredoc content is incomplete.
+    fn report_heredoc_budget_exhausted(&mut self, location: usize) {
+        let (limit, usage) = self.operation.heredoc_scan_state();
+        let already_reported = self
+            .errors
+            .iter()
+            .any(|error| matches!(error, ParseError::HeredocBudgetExhausted { .. }));
+        if !already_reported {
+            self.errors.push(ParseError::HeredocBudgetExhausted { limit, usage, location });
+        }
+        self.operation.record_terminal(ParseStopCause::HeredocBudgetExhausted { limit, usage });
+    }
+
     /// Drain heredocs added after `pending_start` and retain any parent statement's queue.
     ///
     /// A compound statement can declare a heredoc in its condition before recursively
@@ -142,23 +163,18 @@ impl<'a> Parser<'a> {
         // typed resource-limit terminal, never a syntax claim, and the queue is
         // deliberately left intact so a truncated parse cannot be mistaken for
         // an ordinary complete one.
+        //
+        // Exhaustion is reported at both edges of the work. The check here
+        // refuses to *begin* another collection; the check after charging
+        // reports a drain that crossed the limit while running. Reporting only
+        // here would let a single oversized collection spend the whole budget
+        // silently whenever no later drain followed it.
         if self.operation.heredoc_scan_exhausted() {
-            let (limit, usage) = self.operation.heredoc_scan_state();
             let location =
                 self.pending_heredocs.get(pending_start).map_or(self.byte_cursor, |decl| {
                     decl.decl_span.start
                 });
-            // Exhaustion is one terminal event for the operation. Later drains
-            // are still refused, but they must not flood diagnostics with one
-            // entry per declaration; the anchor stays on the first refusal.
-            let already_reported = self
-                .errors
-                .iter()
-                .any(|error| matches!(error, ParseError::HeredocBudgetExhausted { .. }));
-            if !already_reported {
-                self.errors.push(ParseError::HeredocBudgetExhausted { limit, usage, location });
-            }
-            self.operation.record_terminal(ParseStopCause::HeredocBudgetExhausted { limit, usage });
+            self.report_heredoc_budget_exhausted(location);
             return;
         }
 
@@ -169,15 +185,26 @@ impl<'a> Parser<'a> {
         let pending: Vec<_> = queued.iter().cloned().collect();
 
         // Collection walks forward monotonically from the first queued body, so
-        // the span it advances over is an exact deterministic upper bound on
-        // the source it traversed. Charging after the work bounds a single
-        // drain's overshoot to the bytes that drain covers; the total stays a
-        // pure function of source and configuration.
+        // the span it advances over is a deterministic upper bound on the
+        // source it traversed. Charging after the work means one drain can
+        // overshoot the limit, bounded by a single monotone pass over the
+        // remaining source; the total stays a pure function of source and
+        // configuration, never of elapsed time.
         let scan_start = pending.first().map_or(self.byte_cursor, |decl| decl.body_start);
 
         let out = collect_at_declaration_offsets(self.src_bytes, queued);
 
         self.operation.record_heredoc_scan(out.next_offset.saturating_sub(scan_start));
+
+        // A drain that crossed the limit while running is itself an exhaustion
+        // event. Without this, an oversized first collection could consume the
+        // whole budget and report nothing at all when no later drain follows.
+        // The bodies this drain already collected are still attached below:
+        // work that was actually done is not discarded, it is only accounted.
+        if self.operation.heredoc_scan_exhausted() {
+            let location = pending.first().map_or(scan_start, |decl| decl.decl_span.start);
+            self.report_heredoc_budget_exhausted(location);
+        }
 
         // Zip 1:1 in order (collector preserves input order)
         for (decl, body) in pending.into_iter().zip(out.contents) {
