@@ -22,7 +22,7 @@ PRs buy the deep rungs.
 | Windows guardrails | yes (platform risk) | path / sandbox / module-separator regressions |
 | `ripr` | advisory first | static mutation-shaped oracle-gap signal |
 | bounded property tests | selective / label | input-space confidence |
-| coverage | main / `coverage` label | execution surface |
+| coverage | nightly / manual dispatch | execution surface |
 | mutation testing | nightly / `mutation` label | runtime adequacy confirmation |
 | fuzzing | nightly | robustness |
 | OS / hardware / Docker / model checks | main / label / release | platform and integration proof |

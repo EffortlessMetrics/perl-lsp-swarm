@@ -169,6 +169,10 @@ fn coverage_workflow_is_manual_or_nightly_only_and_requires_receipts() {
     let root = repo_root();
     let workflow = must(fs::read_to_string(root.join(".github/workflows/ci-nightly.yml")));
     let policy = must(fs::read_to_string(root.join(".ci/policies/required-checks.toml")));
+    let lane_whitelist = must(fs::read_to_string(root.join("policy/ci-lane-whitelist.toml")));
+    let evidence_lanes_doc = must(fs::read_to_string(root.join("docs/ci/test-evidence-lanes.md")));
+    let verification_ladder_doc =
+        must(fs::read_to_string(root.join("docs/ci/verification-ladder.md")));
     let justfile = must(fs::read_to_string(root.join("justfile")));
     let codecov_router = must(fs::read_to_string(root.join("scripts/ci/route-codecov-packs.py")));
     let coverage_start = must_some(workflow.find("  test-coverage:"));
@@ -193,6 +197,27 @@ fn coverage_workflow_is_manual_or_nightly_only_and_requires_receipts() {
             && !coverage_policy.contains("pull_request")
             && !coverage_policy.contains("labelled"),
         "coverage policy must describe only the executable schedule/manual route"
+    );
+    let lane_start = must_some(lane_whitelist.find("id = \"coverage\""));
+    let lane_tail = &lane_whitelist[lane_start..];
+    let lane_end = lane_tail.find("\n[[lane]]").unwrap_or(lane_tail.len());
+    let coverage_lane = &lane_tail[..lane_end];
+    assert!(
+        coverage_lane.contains("allowed_triggers = [\"schedule\", \"workflow_dispatch\"]")
+            && coverage_lane.contains("Codecov / Patch 95 is advisory")
+            && !coverage_lane.contains("pull_request")
+            && !coverage_lane.contains("merge_group")
+            && !coverage_lane.contains("required Codecov"),
+        "coverage lane whitelist must match the schedule/manual-only advisory workflow"
+    );
+    assert!(
+        evidence_lanes_doc.contains(
+            "| Coverage | scheduled nightly run or explicit `workflow_dispatch` with coverage enabled | Advisory Codecov upload; it is not a PR or merge-queue lane. |"
+        ) && verification_ladder_doc
+            .contains("| coverage | nightly / manual dispatch | execution surface |")
+            && !evidence_lanes_doc.contains("label-gated PR (`coverage`)")
+            && !verification_ladder_doc.contains("main / `coverage` label"),
+        "coverage reference docs must describe only scheduled/manual execution"
     );
     let checkout_ref = must_some(checkout_action_ref(coverage_job));
     assert!(
