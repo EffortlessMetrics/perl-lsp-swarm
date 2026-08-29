@@ -840,6 +840,10 @@ mod tests {
 
     #[test]
     fn binding_canonicalizes_relative_runtime_root() {
+        // `canonical_runtime_root` joins the *live* current directory, so this
+        // whole window -- read it, create below it, resolve against it -- must
+        // exclude any concurrent test that moves the process current directory.
+        let _lock = crate::api::CWD_TEST_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
         let current = std::env::current_dir().expect("current directory");
         let root = tempfile::tempdir_in(&current).expect("relative-root temporary directory");
         let relative = root.path().strip_prefix(&current).expect("root below current directory");
