@@ -109,6 +109,8 @@ pub(crate) struct LexedSource {
     pub(crate) stored_checkpoints: Vec<StoredLexCheckpoint>,
     #[cfg(test)]
     pub(crate) live_checkpoints: Vec<LiveLexerCheckpoint>,
+    #[cfg(test)]
+    pub(crate) terminal_checkpoint: LiveLexerCheckpoint,
 }
 
 fn summarize_checkpoint(checkpoint: &LiveLexerCheckpoint, line_index: &LineIndex) -> LexCheckpoint {
@@ -202,6 +204,8 @@ pub(crate) fn lex_source_with_checkpoints(source: &str, line_index: &LineIndex) 
     let mut checkpoint_spacing = INITIAL_CHECKPOINT_SPACING;
     #[cfg(test)]
     let mut live_checkpoints = Vec::new();
+    #[cfg(test)]
+    let mut terminal_checkpoint = None;
 
     loop {
         let live = lexer.checkpoint();
@@ -221,6 +225,10 @@ pub(crate) fn lex_source_with_checkpoints(source: &str, line_index: &LineIndex) 
         };
         if token.token_type == TokenType::EOF {
             let terminal = lexer.checkpoint();
+            #[cfg(test)]
+            {
+                terminal_checkpoint = Some(terminal.clone());
+            }
             push_summary(&mut checkpoints, &terminal, line_index);
             push_stored_checkpoint(
                 &source_digest,
@@ -240,6 +248,8 @@ pub(crate) fn lex_source_with_checkpoints(source: &str, line_index: &LineIndex) 
         stored_checkpoints,
         #[cfg(test)]
         live_checkpoints,
+        #[cfg(test)]
+        terminal_checkpoint: terminal_checkpoint.expect("lexer must capture terminal checkpoint"),
     }
 }
 
@@ -300,6 +310,8 @@ pub(crate) fn lex_from_live_checkpoint(
     let mut checkpoint_spacing = INITIAL_CHECKPOINT_SPACING;
     #[cfg(test)]
     let mut live_checkpoints = Vec::new();
+    #[cfg(test)]
+    let mut terminal_checkpoint = None;
     let mut last_position = checkpoint.position;
 
     loop {
@@ -320,6 +332,10 @@ pub(crate) fn lex_from_live_checkpoint(
         };
         if token.token_type == TokenType::EOF {
             let terminal = lexer.checkpoint();
+            #[cfg(test)]
+            {
+                terminal_checkpoint = Some(terminal.clone());
+            }
             push_summary(&mut checkpoints, &terminal, line_index);
             push_stored_checkpoint(
                 &source_digest,
@@ -343,6 +359,8 @@ pub(crate) fn lex_from_live_checkpoint(
         stored_checkpoints,
         #[cfg(test)]
         live_checkpoints,
+        #[cfg(test)]
+        terminal_checkpoint: terminal_checkpoint.expect("lexer must capture terminal checkpoint"),
     })
 }
 
