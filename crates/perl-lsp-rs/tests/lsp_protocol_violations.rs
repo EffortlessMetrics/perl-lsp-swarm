@@ -631,7 +631,9 @@ fn test_incomplete_message() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     server.stdin_writer().flush()?;
 
-    // Server should timeout or error
+    // Smoke test: the server must not panic on a truncated frame. No
+    // response is observed yet; a deadline-based reader assertion is
+    // tracked as follow-up wave work (see PR #13643 review).
     Ok(())
 }
 
