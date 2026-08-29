@@ -27,6 +27,12 @@ fn existing_long_tail_fixture_is_discovered_and_emits_exact_nodekinds() -> TestR
 
     let mut parser = Parser::new(&source);
     let output = parser.parse_with_recovery();
+    if output.terminated_early() {
+        return Err("the long-tail fixture must not terminate parsing early".into());
+    }
+    if output.stop_cause().is_some() {
+        return Err("the long-tail fixture must complete without a stop cause".into());
+    }
     if !output.diagnostics.is_empty() {
         return Err(format!(
             "the long-tail fixture must parse cleanly; observed {} diagnostic(s)",
@@ -35,9 +41,27 @@ fn existing_long_tail_fixture_is_discovered_and_emits_exact_nodekinds() -> TestR
         .into());
     }
 
-    for expected_span in ["%config{qw(host port)}", "%config{qw(user)}"] {
-        if !contains_key_value_slice(&output.ast, &source, expected_span) {
-            return Err(format!("the fixture must emit KeyValueSlice for `{expected_span}`").into());
+    for (expected_span, expected_keys_span, expected_keys, expected_key_spans) in [
+        (
+            "%config{qw(host port)}",
+            "qw(host port)",
+            ["host", "port"].as_slice(),
+            ["host", "port"].as_slice(),
+        ),
+        ("%config{qw(user)}", "qw(user)", ["user"].as_slice(), ["user"].as_slice()),
+    ] {
+        if !contains_key_value_slice(
+            &output.ast,
+            &source,
+            expected_span,
+            expected_keys_span,
+            expected_keys,
+            expected_key_spans,
+        ) {
+            return Err(format!(
+                "the fixture must emit the exact KeyValueSlice for `{expected_span}`"
+            )
+            .into());
         }
     }
     for expected_value in ["v65.66.67", "v76.111.111"] {
@@ -49,18 +73,57 @@ fn existing_long_tail_fixture_is_discovered_and_emits_exact_nodekinds() -> TestR
     Ok(())
 }
 
-fn contains_key_value_slice(node: &Node, source: &str, expected_span: &str) -> bool {
-    if let NodeKind::KeyValueSlice { target, .. } = &node.kind
+fn contains_key_value_slice(
+    node: &Node,
+    source: &str,
+    expected_span: &str,
+    expected_keys_span: &str,
+    expected_keys: &[&str],
+    expected_key_spans: &[&str],
+) -> bool {
+    if let NodeKind::KeyValueSlice { target, keys } = &node.kind
         && matches!(
             &target.kind,
             NodeKind::Variable { sigil, name } if sigil == "%" && name == "config"
         )
         && node_source(node, source) == Some(expected_span)
+        && node_source(keys, source) == Some(expected_keys_span)
+        && key_list_matches(keys, source, expected_keys, expected_key_spans)
     {
         return true;
     }
 
-    any_child(node, |child| contains_key_value_slice(child, source, expected_span))
+    any_child(node, |child| {
+        contains_key_value_slice(
+            child,
+            source,
+            expected_span,
+            expected_keys_span,
+            expected_keys,
+            expected_key_spans,
+        )
+    })
+}
+
+fn key_list_matches(
+    keys: &Node,
+    source: &str,
+    expected_keys: &[&str],
+    expected_key_spans: &[&str],
+) -> bool {
+    let NodeKind::ArrayLiteral { elements } = &keys.kind else {
+        return false;
+    };
+    elements.len() == expected_keys.len()
+        && expected_keys.len() == expected_key_spans.len()
+        && elements.iter().zip(expected_keys).zip(expected_key_spans).all(
+            |((element, expected_key), expected_key_span)| {
+                matches!(
+                    &element.kind,
+                    NodeKind::String { value, interpolated: false } if value == expected_key
+                ) && node_source(element, source) == Some(*expected_key_span)
+            },
+        )
 }
 
 fn contains_vstring(node: &Node, source: &str, expected_value: &str) -> bool {
