@@ -3,35 +3,45 @@ name: Legacy Authority Banners
 on:
   pull_request:
     paths:
-      - 'docs/reference/ORCHESTRATION_DOCTRINE.md'
-      - 'docs/reference/PIPELINE_GATES.md'
-      - 'docs/reference/OCTOPUS_CLUSTER.md'
+      - '.github/workflows/legacy-authority-banners.yml'
+      - '.spec/3988-merge-readiness/spec.md'
+      - 'docs/adr/0044-octopus-cluster-orchestration.md'
+      - 'docs/agents/authority_status.toml'
+      - 'docs/articles/PIPELINE_STATE_MACHINE.md'
+      - 'docs/ci/perl-lsp-rust-1.95-rollout.md'
+      - 'docs/development/RUST_1_95_PROACTIVE_GUARDS.md'
+      - 'docs/development/RUST_1_95_ROLLOUT.md'
+      - 'docs/development/STRONG_CLIPPY_LINTS_ROLLOUT.md'
+      - 'docs/handoff/SWARM_DESIGN.md'
+      - 'docs/project/RAILS_INDEX.md'
       - 'docs/reference/GLOSSARY.md'
       - 'docs/reference/LIVE_SIGNALS_VS_LABELS.md'
-      - 'docs/adr/0044-octopus-cluster-orchestration.md'
-      - 'docs/articles/PIPELINE_STATE_MACHINE.md'
-      - 'docs/handoff/SWARM_DESIGN.md'
-      - '.spec/3988-merge-readiness/spec.md'
-      - 'docs/agents/authority_status.toml'
+      - 'docs/reference/OCTOPUS_CLUSTER.md'
+      - 'docs/reference/ORCHESTRATION_DOCTRINE.md'
+      - 'docs/reference/PIPELINE_GATES.md'
       - 'scripts/migrate-legacy-authority-banners.py'
       - 'tests/test_legacy_authority_banners.py'
-      - '.github/workflows/legacy-authority-banners.yml'
   push:
     branches: [main]
     paths:
-      - 'docs/reference/ORCHESTRATION_DOCTRINE.md'
-      - 'docs/reference/PIPELINE_GATES.md'
-      - 'docs/reference/OCTOPUS_CLUSTER.md'
+      - '.github/workflows/legacy-authority-banners.yml'
+      - '.spec/3988-merge-readiness/spec.md'
+      - 'docs/adr/0044-octopus-cluster-orchestration.md'
+      - 'docs/agents/authority_status.toml'
+      - 'docs/articles/PIPELINE_STATE_MACHINE.md'
+      - 'docs/ci/perl-lsp-rust-1.95-rollout.md'
+      - 'docs/development/RUST_1_95_PROACTIVE_GUARDS.md'
+      - 'docs/development/RUST_1_95_ROLLOUT.md'
+      - 'docs/development/STRONG_CLIPPY_LINTS_ROLLOUT.md'
+      - 'docs/handoff/SWARM_DESIGN.md'
+      - 'docs/project/RAILS_INDEX.md'
       - 'docs/reference/GLOSSARY.md'
       - 'docs/reference/LIVE_SIGNALS_VS_LABELS.md'
-      - 'docs/adr/0044-octopus-cluster-orchestration.md'
-      - 'docs/articles/PIPELINE_STATE_MACHINE.md'
-      - 'docs/handoff/SWARM_DESIGN.md'
-      - '.spec/3988-merge-readiness/spec.md'
-      - 'docs/agents/authority_status.toml'
+      - 'docs/reference/OCTOPUS_CLUSTER.md'
+      - 'docs/reference/ORCHESTRATION_DOCTRINE.md'
+      - 'docs/reference/PIPELINE_GATES.md'
       - 'scripts/migrate-legacy-authority-banners.py'
       - 'tests/test_legacy_authority_banners.py'
-      - '.github/workflows/legacy-authority-banners.yml'
 
 permissions:
   contents: read
@@ -49,6 +59,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
 
       - name: Validate banners, registry agreement, and inert migrator
         run: |
