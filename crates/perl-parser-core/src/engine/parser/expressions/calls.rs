@@ -553,7 +553,15 @@ impl<'a> Parser<'a> {
             }
         }
 
-        let end = args.last().map_or(object.location.end, |arg| arg.location.end);
+        // Numeric scalar-filehandle output calls must own the span through their
+        // last argument so AST, HIR, and PIR ranges stay honest (#13079). Other
+        // indirect forms keep the current-main span that ends at the object;
+        // extending those is a separate production follow-up.
+        let end = if matches!(method.as_str(), "print" | "printf" | "say") {
+            args.last().map_or(object.location.end, |arg| arg.location.end)
+        } else {
+            self.previous_position()
+        };
 
         // Return as an indirect call node (using MethodCall with a flag or separate node)
         Ok(Node::new(
