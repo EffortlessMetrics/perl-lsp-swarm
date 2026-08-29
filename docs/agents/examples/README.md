@@ -94,12 +94,12 @@ put it in front of a reviewer rather than to settle it.
 
 ### feedback-repair-and-focused-rereview
 
-- **Status:** COVERED
-- **Worked lane:** `integration-trigger-and-proof-caller.md`
-- **Source receipts:** PR [#5717](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/5717)
-- **Terminal ruling:** [#4192](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/4192) — `PROMOTE` for the review-forward synthetic integration proof
+- **Status:** ABSENT
+- **Worked lane:** none
+- **Source receipts:** none
+- **Terminal ruling:** none
 - **Defining transition:** a directed review finding is verified against the candidate, repaired by the one writer already holding it, and answered with focused regression proof on the changed seam rather than a full replay.
-- **What remains unproved:** the lane does not show a finding refuted with evidence, a finding accepted as follow-up, or a human reviewer thread; every finding it records was repaired in candidate.
+- **What remains unproved:** no curated corpus document narrates the directed finding, the one-writer repair, and the focused re-review together. A future promotion must carry that transition on its own evidence rather than borrowing a nearby safety repair.
 
 ### clean-formal-review
 

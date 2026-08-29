@@ -130,7 +130,7 @@ def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
-def parse_ledger() -> list[tuple[str, dict[str, str]]]:
+def parse_ledger(text: str | None = None) -> list[tuple[str, dict[str, str]]]:
     """Return the ledger's category rows in document order.
 
     The parser is line-oriented and has no Markdown model -- no awareness of
@@ -148,7 +148,7 @@ def parse_ledger() -> list[tuple[str, dict[str, str]]]:
     hiding place; a line before a row's first field, which has no field to
     fold into, is a hard failure instead.
     """
-    lines = _read(LEDGER).splitlines()
+    lines = (text if text is not None else _read(LEDGER)).splitlines()
     try:
         start = lines.index(LEDGER_SECTION)
     except ValueError as error:  # pragma: no cover - guarded by its own test
@@ -174,6 +174,12 @@ def parse_ledger() -> list[tuple[str, dict[str, str]]]:
         field = FIELD_LINE.match(line)
         if field and current is not None:
             field_name = field.group(1).strip()
+            if field_name in fields:
+                raise AssertionError(
+                    f"{LEDGER.relative_to(ROOT)}:{offset}: duplicate field "
+                    f"{field_name!r} inside category {current!r}; duplicate "
+                    f"labels would silently replace checked evidence"
+                )
             fields[field_name] = field.group(2).strip()
             continue
         if not line.strip() or current is None:
@@ -295,6 +301,18 @@ class WorkedLaneLedgerTests(unittest.TestCase):
                 f"carries the same five-field accounting so that rows can be "
                 f"compared rather than read as free prose",
             )
+
+    def test_duplicate_fields_are_rejected(self) -> None:
+        duplicate = "\n".join(
+            (
+                LEDGER_SECTION,
+                "### fresh-semantic-change",
+                "- **Status:** ABSENT",
+                "- **Status:** COVERED",
+            )
+        )
+        with self.assertRaisesRegex(AssertionError, "duplicate field"):
+            parse_ledger(duplicate)
 
     def test_status_vocabulary_is_closed(self) -> None:
         for category, fields in self.rows:
