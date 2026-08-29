@@ -454,6 +454,14 @@ fn coverage_workflow_is_manual_or_nightly_only_and_requires_receipts() {
         "unpunctuated contradictory coverage prose must retain the positive stale-route finding"
     );
     assert!(
+        has_positive_stale_route_claim("Coverage runs on PRs, without labels."),
+        "positive stale coverage prose must not be hidden by a comma and `without`"
+    );
+    assert!(
+        has_positive_stale_route_claim("Coverage runs on PRs; never blocks."),
+        "positive stale coverage prose must not be hidden by a semicolon and `never`"
+    );
+    assert!(
         !has_positive_stale_route_claim("Coverage does not run on PRs or merge queues."),
         "wholly negative coverage prose must remain allowed"
     );
@@ -462,6 +470,10 @@ fn coverage_workflow_is_manual_or_nightly_only_and_requires_receipts() {
             "Coverage is advisory, and maintainers can run routed proof locally."
         ),
         "legitimate negative coverage prose must remain allowed"
+    );
+    assert!(
+        !has_positive_stale_route_claim("Coverage is advisory, never a PR gate."),
+        "legitimate negative coverage prose with `never` must remain allowed"
     );
     let stale_lane_alias_source = format!(
         "{lane_economics}\n[lane.coverage_alias]\nworkflow = \".github/workflows/ci-nightly.yml\"\njob = \"test-coverage\"\nlabels = [\"coverage-alias\"]\nbranches = [\"schedule\", \"workflow_dispatch\"]\n"
@@ -1174,7 +1186,11 @@ fn route_prose_clauses(normalized: &str) -> Vec<&str> {
     {
         let mut remaining = punctuation_clause;
         loop {
-            let Some(separator) = remaining.find(" but ") else {
+            let Some((separator, separator_text)) = [" but ", " without ", " never "]
+                .iter()
+                .filter_map(|separator| remaining.find(separator).map(|index| (index, *separator)))
+                .min_by_key(|(index, _)| *index)
+            else {
                 let clause = remaining.trim();
                 if !clause.is_empty() {
                     clauses.push(clause);
@@ -1185,7 +1201,7 @@ fn route_prose_clauses(normalized: &str) -> Vec<&str> {
             if !clause.is_empty() {
                 clauses.push(clause);
             }
-            remaining = &remaining[separator + " but ".len()..];
+            remaining = &remaining[separator + separator_text.len()..];
         }
     }
     clauses
