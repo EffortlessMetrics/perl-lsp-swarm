@@ -308,21 +308,7 @@ mod real_session_fixture_tests {
     fn launch_and_stop() -> Result<(DapWorkflowSession, i64), Box<dyn std::error::Error>> {
         let script = fixture_script_path()?;
         let mut session = DapWorkflowSession::new(workflow_timeout())?;
-        let launch = session.request(
-            "launch",
-            Some(json!({
-                "program": script.clone(),
-                "args": [],
-                "stopOnEntry": true,
-                "env": {
-                    "PERL_PERTURB_KEYS": "0",
-                    "PERL_HASH_SEED": "0",
-                    "LC_ALL": "C",
-                    "TZ": "UTC"
-                }
-            })),
-        );
-        session.expect_success(&launch, "launch")?;
+        session.launch_with_stop_on_entry(&script, true)?;
         session.set_breakpoints(&script, &[FIXTURE_BREAKPOINT_LINE])?;
         session.configuration_done()?;
         let mut stopped = session.wait_stopped()?;
