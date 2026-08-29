@@ -107,7 +107,7 @@ fn indented_heredoc_rejects_terminator_indented_beyond_body() -> R {
     let source = "my $x = <<~END;\n  body\n    END\nprint $x\n";
     let tokens = PerlLexer::with_body_tokens(source).collect_tokens();
 
-    require_unterminated_payload(&source, &tokens, "  body\n    END\nprint $x\n")
+    require_unterminated_payload(source, &tokens, "  body\n    END\nprint $x\n")
 }
 
 #[test]
