@@ -11,10 +11,7 @@ fn project_root() -> Result<PathBuf, Box<dyn Error>> {
         .to_path_buf())
 }
 
-fn assert_reasoned_reply<'a>(
-    skill: &'a str,
-    provider: &str,
-) -> Result<&'a str, Box<dyn Error>> {
+fn assert_reasoned_reply<'a>(skill: &'a str, provider: &str) -> Result<&'a str, Box<dyn Error>> {
     for marker in [
         "## Reply quality",
         "concise engineering decision record",
