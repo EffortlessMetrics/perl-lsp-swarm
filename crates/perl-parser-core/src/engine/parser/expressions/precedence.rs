@@ -222,7 +222,7 @@ impl<'a> Parser<'a> {
     /// chained ternaries (`$a ? $b : $c ? $d : $e`) are right-associative
     /// without accidentally capturing a surrounding assignment.
     fn parse_ternary(&mut self) -> ParseResult<Node> {
-        let mut expr = self.parse_or()?;
+        let mut expr = self.parse_range()?;
 
         if self.peek_kind() == Some(TokenKind::Question) {
             self.tokens.next()?; // consume ?
@@ -423,9 +423,9 @@ impl<'a> Parser<'a> {
     ///   `(our $AUTOLOAD =~ /pattern/)` — `=~` after the declaration
     ///   `(my $x || "default")`        — `||` after the declaration
     ///
-    /// The chain applies operators from highest to lowest precedence (shift → add →
-    /// mul → relational → equality → bitwise-and → range → bitwise-xor →
-    /// bitwise-or → logical-and → logical-or → ternary) so that the declaration
+    /// The chain applies operators from highest to lowest precedence (multiplicative →
+    /// additive → shift → relational → equality → bitwise-and → bitwise-xor →
+    /// bitwise-or → logical-and → logical-or → range → ternary) so that the declaration
     /// node is correctly used as the leftmost operand of whatever operator follows.
     ///
     /// Assignment operators (`=`, `+=`, …) are NOT applied here — they are handled
@@ -437,11 +437,11 @@ impl<'a> Parser<'a> {
         let expr = self.parse_relational_with(expr)?;
         let expr = self.parse_equality_with(expr)?;
         let expr = self.parse_bitwise_and_with(expr)?;
-        let expr = self.parse_range_with(expr)?;
         let expr = self.parse_bitwise_xor_with(expr)?;
         let expr = self.parse_bitwise_or_with(expr)?;
         let expr = self.parse_and_with(expr)?;
         let expr = self.parse_or_with(expr)?;
+        let expr = self.parse_range_with(expr)?;
         self.parse_ternary_with(expr)
     }
 
@@ -471,13 +471,13 @@ impl<'a> Parser<'a> {
 
     /// Parse range expression
     fn parse_range(&mut self) -> ParseResult<Node> {
-        let expr = self.parse_equality()?;
+        let expr = self.parse_or()?;
         self.parse_range_with(expr)
     }
 
     /// Parse bitwise AND expression
     fn parse_bitwise_and(&mut self) -> ParseResult<Node> {
-        let expr = self.parse_range()?;
+        let expr = self.parse_equality()?;
         self.parse_bitwise_and_with(expr)
     }
 
@@ -595,7 +595,7 @@ impl<'a> Parser<'a> {
             let right = if let Some(missing) = self.recover_missing_infix_rhs(op_token.start()) {
                 missing
             } else {
-                self.parse_equality()?
+                self.parse_or()?
             };
             let start = expr.location.start;
             let end = right.location.end;
@@ -619,7 +619,7 @@ impl<'a> Parser<'a> {
             let right = if let Some(missing) = self.recover_missing_infix_rhs(op_token.start()) {
                 missing
             } else {
-                self.parse_range()?
+                self.parse_equality()?
             };
             let start = expr.location.start;
             let end = right.location.end;

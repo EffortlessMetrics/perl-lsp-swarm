@@ -15,6 +15,8 @@ pub mod dancer2_handler_targets;
 pub mod dancer2_hooks;
 /// Dancer2 route-declaration extraction (#8918).
 pub mod dancer2_routes;
+/// Static DBIx::Class result-source extraction (#9736).
+pub mod dbix_class_result;
 /// Go-to-declaration support and parent map construction.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod declaration;

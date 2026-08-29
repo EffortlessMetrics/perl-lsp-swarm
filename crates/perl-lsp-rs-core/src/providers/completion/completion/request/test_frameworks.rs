@@ -183,7 +183,12 @@ fn looks_like_indirect_method_context(context: &CompletionContext, source: &str)
 
 fn collect_scoped_uses(source: &str) -> Option<Vec<ScopedUse>> {
     let mut parser = Parser::new(source);
-    let ast = parser.parse().ok()?;
+    // Import arguments can contain valid Perl expressions (including
+    // quote-like operators) that the strict parser may recover from only
+    // partially. The completion provider already operates on the recovery AST
+    // at this boundary; use the same source-preserving tree so a recoverable
+    // Test2 import does not lose its production completion facts.
+    let ast = parser.parse_with_recovery().ast;
     let mut imports = Vec::new();
     let mut current_package = "main".to_string();
     walk_scoped_uses(&ast, source, &mut current_package, &mut imports);
@@ -365,5 +370,19 @@ mod tests {
     fn string_path_flow_cannot_gain_test2_items() {
         let items = complete("use Test2::V0;\nmy $path = 'is|';\n", Some("t/example.t"));
         assert!(!labels(&items).contains(&"is"));
+    }
+
+    #[test]
+    fn compact_call_like_targets_preserve_explicit_completion_only() {
+        for source in
+            ["use Test2::V0 -target => foo(), ok;\no|", "use Test2::V0 -target => (foo()), ok;\no|"]
+        {
+            let items = complete(source, Some("t/example.t"));
+            let labels = labels(&items);
+            assert!(labels.contains(&"ok"), "ok missing: {source:?}");
+            for leaked in ["CLASS", "foo", "1", "2", "is"] {
+                assert!(!labels.contains(&leaked), "{leaked} leaked: {source:?}");
+            }
+        }
     }
 }

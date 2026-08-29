@@ -38,4 +38,21 @@ Scope notes:
 Dependency note: #11672's outcome vocabulary (PR #11989) is still open in
 another lane; the claim-local outcome type is shaped for retargeting.
 
-Base: `main@197d45cbb`.
+Retarget (landed after #11989 merged): `commit_document_symbols` now returns
+the shared `ParseEffectCommitOutcomeV1` (#11672); the claim-local
+`DocumentSymbolCommitOutcome` enum was removed. Sink-local mapping:
+
+- document absent from the map (closed or never opened) ->
+  `RejectedLifecycleState` (no live sink subject for the ticket);
+- different live instance (close/reopen ABA) -> `RejectedWrongDocumentInstance`;
+- same instance, newer generation accepted at the boundary -> `RejectedStaleTicket`;
+- currency passed but ledger already recorded a newer committed generation for
+  the instance -> `RejectedSinkGenerationAdvanced`.
+
+Behavior is unchanged: every rejection remains a typed non-application, and no
+transport/failure variant is reachable because the local store mutation cannot
+fail on its own.
+
+Base: `main@197d45cbb` (historical baseline for the original claim);
+retarget based on `main@805a43efb` (effective base for the landed #11989
+retarget).
