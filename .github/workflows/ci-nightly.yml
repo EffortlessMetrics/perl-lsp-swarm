@@ -246,6 +246,23 @@ jobs:
           --expect-id "parse_basic_substitution" \
           --expect-id "undo_redo/edit_undo_redo"
 
+        expected_ids=()
+        for family in delimited statement opaque refusal no-change; do
+          for units in 8 32 128; do
+            expected_ids+=("native_pipeline_document/${family}_n${units}_lf_tabs")
+          done
+          for line_ending in crlf bare-cr; do
+            expected_ids+=("native_pipeline_document/${family}_n32_${line_ending}_tabs")
+          done
+          for indent in spaces width-boundary; do
+            expected_ids+=("native_pipeline_document/${family}_n32_lf_${indent}")
+          done
+        done
+        python3 ./benchmarks/scripts/validate-native-pipeline-sidecar.py \
+          --sidecar target/criterion/native-pipeline-measurements.v1.json \
+          --expected-run-id "$NATIVE_PIPELINE_RUN_ID" \
+          "${expected_ids[@]/#/--expect-id }"
+
     - name: Real-repo first-diagnostics perf gate (Catalyst 5000+ lines)
       run: |
         cargo test -p perl-lsp-rs --test real_project_latency \
@@ -341,7 +358,6 @@ jobs:
         name: benchmark-results-${{ github.sha }}
         path: |
           benchmarks/results/latest.json
-          target/criterion/native-pipeline-measurements.v1.json
           benchmarks/results/raw-output.txt
           benchmarks/results/real-repo-perf.txt
           benchmark_receipt.txt
@@ -349,6 +365,15 @@ jobs:
           comparison.txt
           alert.md
         if-no-files-found: warn
+        retention-days: 30
+
+    - name: Upload native pipeline measurement sidecar
+      if: always()
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
+      with:
+        name: native-pipeline-measurements-${{ github.sha }}-${{ github.run_id }}
+        path: target/criterion/native-pipeline-measurements.v1.json
+        if-no-files-found: error
         retention-days: 30
 
   real-repo-latency:

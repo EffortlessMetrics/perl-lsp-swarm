@@ -45,7 +45,15 @@ fn write_subject_identities(rows: &[serde_json::Value]) {
             std::process::exit(2);
         });
     }
-    let payload = serde_json::json!({ "subjects": rows });
+    let run_id = std::env::var("NATIVE_PIPELINE_RUN_ID")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "local-unknown".to_string());
+    let payload = serde_json::json!({
+        "schema": "native-pipeline-measurements-v1",
+        "run_id": run_id,
+        "subjects": rows,
+    });
     std::fs::write(&output, serde_json::to_string_pretty(&payload).unwrap_or_default())
         .unwrap_or_else(|error| {
             eprintln!("native pipeline bench: cannot write {}: {error}", output.display());

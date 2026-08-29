@@ -26,6 +26,7 @@ from pathlib import Path
 _SCRIPTS_DIR = Path(__file__).parent
 _FORMAT_RESULTS = _SCRIPTS_DIR / "format-results.py"
 _COMPARE = _SCRIPTS_DIR / "compare.py"
+_SIDECAR = _SCRIPTS_DIR / "validate-native-pipeline-sidecar.py"
 
 
 def _run(script: Path, args: "list[str]") -> subprocess.CompletedProcess:
@@ -140,6 +141,50 @@ class CompareMissingBenchmarkGuardTests(unittest.TestCase):
             proc = _run(_COMPARE, [str(baseline), str(current), "--fail-on-regression"])
             self.assertNotEqual(proc.returncode, 0)
             self.assertIn("REGRESSION DETECTED", proc.stdout)
+
+
+class NativePipelineSidecarGuardTests(unittest.TestCase):
+    EXPECTED = ["native_pipeline_document/delimited_n8_lf_tabs",
+                "native_pipeline_document/delimited_n32_lf_tabs"]
+    RUN_ID = "123-abc"
+
+    def _row(self, bench_id: str, run_id: str | None = None, schema: str = "native-pipeline-counters-v1") -> dict:
+        return {"schema": schema, "run_id": run_id or self.RUN_ID, "bench_id": bench_id}
+
+    def _run(self, sidecar: Path, expected_ids: list[str] | None = None) -> subprocess.CompletedProcess:
+        args = [sys.executable, str(_SIDECAR), "--sidecar", str(sidecar),
+                "--expected-run-id", self.RUN_ID]
+        for bench_id in expected_ids or self.EXPECTED:
+            args.extend(["--expect-id", bench_id])
+        return subprocess.run(args, capture_output=True, text=True, check=False)
+
+    def _write(self, directory: Path, rows: list[dict], schema: str = "native-pipeline-measurements-v1") -> Path:
+        path = directory / "sidecar.json"
+        path.write_text(json.dumps({"schema": schema, "run_id": self.RUN_ID, "subjects": rows}))
+        return path
+
+    def test_complete_sidecar_is_accepted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write(Path(tmp), [self._row(bench_id) for bench_id in self.EXPECTED])
+            proc = self._run(path)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+
+    def test_missing_sidecar_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            proc = self._run(Path(tmp) / "missing.json")
+            self.assertNotEqual(proc.returncode, 0)
+
+    def test_schema_and_run_id_are_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write(Path(tmp), [self._row(bench_id, run_id="stale") for bench_id in self.EXPECTED], schema="wrong")
+            proc = self._run(path)
+            self.assertNotEqual(proc.returncode, 0)
+
+    def test_duplicate_or_missing_enrollment_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write(Path(tmp), [self._row(self.EXPECTED[0]), self._row(self.EXPECTED[0])])
+            proc = self._run(path)
+            self.assertNotEqual(proc.returncode, 0)
 
 
 if __name__ == "__main__":
