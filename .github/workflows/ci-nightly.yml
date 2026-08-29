@@ -52,13 +52,33 @@ on:
         required: false
         type: boolean
         default: false
-      run_api_checks:
-        description: 'Run API compatibility and public API checks'
+      run_tautology:
+        description: 'Run tautology detection'
         required: false
         type: boolean
         default: false
-      run_quality_checks:
-        description: 'Run tautology, scorecard, Clippy, and Kwalitee checks'
+      run_semver:
+        description: 'Run API compatibility checks'
+        required: false
+        type: boolean
+        default: false
+      run_public_api:
+        description: 'Run public API surface checks'
+        required: false
+        type: boolean
+        default: false
+      run_scorecard:
+        description: 'Run scorecard floor-metric ratchet checks'
+        required: false
+        type: boolean
+        default: false
+      run_clippy_strict:
+        description: 'Run strict Clippy checks'
+        required: false
+        type: boolean
+        default: false
+      run_perl_kwalitee:
+        description: 'Run Perl Kwalitee checks'
         required: false
         type: boolean
         default: false
@@ -746,7 +766,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     if: |
-      (github.event_name == 'workflow_dispatch' && inputs.run_quality_checks) ||
+      (github.event_name == 'workflow_dispatch' && inputs.run_tautology) ||
       (github.event_name == 'pull_request' &&
        contains(github.event.pull_request.labels.*.name, 'ci:strict'))
     steps:
@@ -780,7 +800,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     if: |
-      (github.event_name == 'workflow_dispatch' && inputs.run_api_checks) ||
+      (github.event_name == 'workflow_dispatch' && inputs.run_semver) ||
       github.event_name == 'schedule' ||
       (github.event_name == 'pull_request' &&
        contains(github.event.pull_request.labels.*.name, 'ci:semver'))
@@ -863,7 +883,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     if: |
-      (github.event_name == 'workflow_dispatch' && inputs.run_api_checks) ||
+      (github.event_name == 'workflow_dispatch' && inputs.run_public_api) ||
       github.event_name == 'schedule' ||
       (github.event_name == 'pull_request' &&
        contains(github.event.pull_request.labels.*.name, 'ci:public-api') &&
@@ -925,7 +945,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     if: |
-      (github.event_name == 'workflow_dispatch' && inputs.run_quality_checks) ||
+      (github.event_name == 'workflow_dispatch' && inputs.run_scorecard) ||
       github.event_name == 'schedule' ||
       (github.event_name == 'pull_request' &&
        contains(github.event.pull_request.labels.*.name, 'ci:metrics-ratchet'))
@@ -959,7 +979,7 @@ jobs:
     name: Clippy (Strict)
     timeout-minutes: 20
     if: |
-      (github.event_name == 'workflow_dispatch' && inputs.run_quality_checks) ||
+      (github.event_name == 'workflow_dispatch' && inputs.run_clippy_strict) ||
       (github.event_name == 'pull_request' &&
        contains(github.event.pull_request.labels.*.name, 'ci:strict'))
     runs-on: ubuntu-24.04
@@ -993,7 +1013,7 @@ jobs:
     # indicators are consistently green. See docs/reference/PERL_KWALITEE.md.
     continue-on-error: true
     if: |
-      (github.event_name == 'workflow_dispatch' && inputs.run_quality_checks) ||
+      (github.event_name == 'workflow_dispatch' && inputs.run_perl_kwalitee) ||
       github.event_name == 'schedule' ||
       (github.event_name == 'pull_request' &&
        contains(github.event.pull_request.labels.*.name, 'ci:kwalitee'))

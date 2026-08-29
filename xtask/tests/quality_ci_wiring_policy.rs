@@ -380,12 +380,12 @@ fn nightly_manual_dispatch_routes_each_expensive_job_through_its_typed_input() {
         ("corpus-differential", "run_corpus_differential"),
         ("lsp-memory-plateau", "run_memory"),
         ("test-coverage", "run_coverage"),
-        ("tautology-check", "run_quality_checks"),
-        ("semver-check", "run_api_checks"),
-        ("public-api-check", "run_api_checks"),
-        ("scorecard-ratchet-check", "run_quality_checks"),
-        ("clippy-strict", "run_quality_checks"),
-        ("perl-kwalitee", "run_quality_checks"),
+        ("tautology-check", "run_tautology"),
+        ("semver-check", "run_semver"),
+        ("public-api-check", "run_public_api"),
+        ("scorecard-ratchet-check", "run_scorecard"),
+        ("clippy-strict", "run_clippy_strict"),
+        ("perl-kwalitee", "run_perl_kwalitee"),
         ("fuzz", "run_fuzz"),
     ];
 
@@ -483,18 +483,21 @@ fn nightly_manual_dispatch_inputs_are_boolean_and_job_selectors_are_exclusive() 
         ("corpus-differential", "run_corpus_differential"),
         ("lsp-memory-plateau", "run_memory"),
         ("test-coverage", "run_coverage"),
-        ("tautology-check", "run_quality_checks"),
-        ("semver-check", "run_api_checks"),
-        ("public-api-check", "run_api_checks"),
-        ("scorecard-ratchet-check", "run_quality_checks"),
-        ("clippy-strict", "run_quality_checks"),
-        ("perl-kwalitee", "run_quality_checks"),
+        ("tautology-check", "run_tautology"),
+        ("semver-check", "run_semver"),
+        ("public-api-check", "run_public_api"),
+        ("scorecard-ratchet-check", "run_scorecard"),
+        ("clippy-strict", "run_clippy_strict"),
+        ("perl-kwalitee", "run_perl_kwalitee"),
         ("fuzz", "run_fuzz"),
     ];
 
+    // GitHub's workflow syntax reference documents a 25 top-level `inputs`
+    // maximum; this guards platform validity without forcing unrelated
+    // expensive packs into grouped selectors.
     ensure!(
-        inputs.as_mapping().is_some_and(|mapping| mapping.len() <= 10),
-        "workflow_dispatch must stay within GitHub's ten-input platform limit"
+        inputs.as_mapping().is_some_and(|mapping| mapping.len() <= 25),
+        "workflow_dispatch must stay within GitHub's 25-input platform limit"
     );
 
     for (_, input) in routed_jobs {
