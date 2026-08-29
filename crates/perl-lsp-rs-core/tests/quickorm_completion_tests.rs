@@ -224,3 +224,29 @@ table users => sub {};
     );
     Ok(())
 }
+
+#[test]
+fn required_competing_import_call_does_not_surface_generated_completion()
+-> Result<(), Box<dyn std::error::Error>> {
+    let index = Arc::new(WorkspaceIndex::new());
+    index.index_file(
+        Url::parse("file:///workspace/MyApp/Schema/RequiredImport.pm")?,
+        r#"
+package MyApp::Schema::RequiredImport;
+use DBIx::QuickORM type => 'table';
+require Other::DSL;
+Other::DSL->import('table');
+table users => sub {};
+1;
+"#
+        .to_string(),
+    )?;
+
+    let completions = completion_items(index, "MyApp::Schema::RequiredImport->q")?;
+    let labels = labels(&completions);
+    assert!(
+        !labels.contains(&"qorm_table"),
+        "a required competing import call must invalidate QuickORM authority: {labels:?}"
+    );
+    Ok(())
+}

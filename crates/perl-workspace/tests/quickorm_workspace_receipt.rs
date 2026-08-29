@@ -41,11 +41,10 @@ table "users" => sub {
     assert_eq!(anchor.provenance, perl_semantic_facts::Provenance::FrameworkSynthesis);
     assert!(anchor.span_end_byte > anchor.span_start_byte);
 
-    let generated = index.search_generated_workspace_symbols("qorm_table", None);
-    assert_eq!(generated.len(), 1);
-    assert_eq!(generated[0].name, "qorm_table [generated/framework]");
-    assert_eq!(generated[0].qualified_name.as_deref(), Some("MyApp::Schema::User::qorm_table"));
-    assert_eq!(generated[0].uri, uri.as_str());
+    assert!(
+        index.search_generated_workspace_symbols("qorm_table", None).is_empty(),
+        "Medium-confidence QuickORM facts remain below the live workspace-symbol admission bar"
+    );
 
     assert!(
         index.search_source_symbols("qorm_table", None).is_empty(),
@@ -90,14 +89,7 @@ table outer_users => sub {};
 "#;
 
     index.index_file(uri, source.to_string())?;
-    let generated = index.search_generated_workspace_symbols("qorm_table", None);
-    let mut qualified_names: Vec<_> =
-        generated.iter().filter_map(|symbol| symbol.qualified_name.as_deref()).collect();
-    qualified_names.sort_unstable();
-    assert_eq!(
-        qualified_names,
-        ["MyApp::Schema::Inner::qorm_table", "MyApp::Schema::Outer::qorm_table",]
-    );
+    assert!(index.search_generated_workspace_symbols("qorm_table", None).is_empty());
     Ok(())
 }
 
@@ -162,12 +154,7 @@ table "users" => sub {};
 "#;
 
     index.index_file(uri, source.to_string())?;
-    let generated = index.search_generated_workspace_symbols("qorm_table", None);
-    assert_eq!(generated.len(), 1);
-    assert_eq!(
-        generated[0].qualified_name.as_deref(),
-        Some("MyApp::Schema::UnrelatedQualified::qorm_table")
-    );
+    assert!(index.search_generated_workspace_symbols("qorm_table", None).is_empty());
     Ok(())
 }
 
@@ -206,7 +193,7 @@ table "users" => sub {};
 "#;
 
     index.index_file(uri, source.to_string())?;
-    assert_eq!(index.search_generated_workspace_symbols("qorm_table", None).len(), 1);
+    assert!(index.search_generated_workspace_symbols("qorm_table", None).is_empty());
     Ok(())
 }
 
@@ -224,7 +211,26 @@ table "users" => sub {};
 "#;
 
     index.index_file(uri, source.to_string())?;
-    assert_eq!(index.search_generated_workspace_symbols("qorm_table", None).len(), 1);
+    assert!(index.search_generated_workspace_symbols("qorm_table", None).is_empty());
+    Ok(())
+}
+
+#[test]
+fn workspace_index_blocks_required_competing_import_call() -> Result<(), Box<dyn std::error::Error>>
+{
+    let index = WorkspaceIndex::new();
+    let uri = Url::parse("file:///lib/MyApp/Schema/RequiredImport.pm")?;
+    let source = r#"
+package MyApp::Schema::RequiredImport;
+use DBIx::QuickORM type => 'table';
+require Other::DSL;
+Other::DSL->import('table');
+table "users" => sub {};
+1;
+"#;
+
+    index.index_file(uri, source.to_string())?;
+    assert!(index.search_generated_workspace_symbols("qorm_table", None).is_empty());
     Ok(())
 }
 
@@ -247,17 +253,7 @@ table "second_users" => sub {};
 "#;
 
     index.index_file(uri.clone(), source.to_string())?;
-    let generated = index.search_generated_workspace_symbols("qorm_table", None);
-    let a = generated
-        .iter()
-        .find(|symbol| symbol.qualified_name.as_deref() == Some("MyApp::Schema::A::qorm_table"))
-        .ok_or("missing re-entered package fact")?;
-    assert_eq!(source.get(a.range.start.byte..a.range.end.byte), Some("\"second_users\""));
-    let b = generated
-        .iter()
-        .find(|symbol| symbol.qualified_name.as_deref() == Some("MyApp::Schema::B::qorm_table"))
-        .ok_or("missing intermediate package fact")?;
-    assert_eq!(source.get(b.range.start.byte..b.range.end.byte), Some("\"other_users\""));
+    assert!(index.search_generated_workspace_symbols("qorm_table", None).is_empty());
     Ok(())
 }
 

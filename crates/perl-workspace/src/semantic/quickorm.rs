@@ -199,6 +199,11 @@ fn walk_direct_statement(
             context.table_package_authority.remove(&package);
             invalidate_qorm_table_fact(&package, facts);
         }
+        NodeKind::ExpressionStatement { expression } if is_competing_import_call(expression) => {
+            let package = current_package(context).to_string();
+            context.table_package_authority.remove(&package);
+            invalidate_qorm_table_fact(&package, facts);
+        }
         NodeKind::No { module, .. } if module == QUICKORM_MODULE => {
             let package = current_package(context).to_string();
             context.table_package_authority.remove(&package);
@@ -254,6 +259,40 @@ fn imports_table_builder(args: &[String]) -> bool {
             .and_then(|words| words.strip_suffix(')'))
             .is_some_and(|words| words.split_whitespace().any(|word| word == "table"))
     })
+}
+
+fn imports_table_builder_from_nodes(args: &[Node]) -> bool {
+    args.iter().any(|arg| match &arg.kind {
+        NodeKind::String { value, .. } | NodeKind::Identifier { name: value } => {
+            value.trim_matches(['\'', '"']) == "table"
+                || value
+                    .strip_prefix("qw(")
+                    .and_then(|words| words.strip_suffix(')'))
+                    .is_some_and(|words| words.split_whitespace().any(|word| word == "table"))
+        }
+        NodeKind::ArrayLiteral { elements } => imports_table_builder_from_nodes(elements),
+        _ => false,
+    })
+}
+
+fn is_competing_import_call(expression: &Node) -> bool {
+    let (module, args) = match &expression.kind {
+        NodeKind::MethodCall { object, method, args } if method == "import" => {
+            let NodeKind::Identifier { name: module } = &object.kind else {
+                return false;
+            };
+            (module.as_str(), args)
+        }
+        NodeKind::FunctionCall { name, args } => {
+            let Some(module) = name.strip_suffix("::import") else {
+                return false;
+            };
+            (module, args)
+        }
+        _ => return false,
+    };
+
+    module != QUICKORM_MODULE && imports_table_builder_from_nodes(args)
 }
 
 fn invalidate_qorm_table_fact(package: &str, facts: &mut Vec<GeneratedMemberFact>) {

@@ -122,6 +122,28 @@ fn later_quickorm_import_reestablishes_authority_after_builder_shadow()
 }
 
 #[test]
+fn required_competing_import_call_invalidates_quickorm_authority()
+-> Result<(), Box<dyn std::error::Error>> {
+    let facts = generated_facts_from_source(
+        "package User; use DBIx::QuickORM type => 'table'; require Other::DSL; Other::DSL->import('table'); table users => sub {};",
+    )?;
+
+    assert!(facts.is_empty());
+    Ok(())
+}
+
+#[test]
+fn qualified_competing_import_call_invalidates_quickorm_authority()
+-> Result<(), Box<dyn std::error::Error>> {
+    let facts = generated_facts_from_source(
+        "package User; use DBIx::QuickORM type => 'table'; require Other::DSL; Other::DSL::import('table'); table users => sub {};",
+    )?;
+
+    assert!(facts.is_empty());
+    Ok(())
+}
+
+#[test]
 fn parser_preserves_quickorm_configuration_as_key_value_args()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut parser = Parser::new("use DBIx::QuickORM type => 'table';");

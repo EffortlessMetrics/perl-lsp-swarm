@@ -4259,7 +4259,7 @@ impl WorkspaceIndex {
                 if entity.kind != EntityKind::GeneratedMember {
                     continue;
                 }
-                if !is_framework_generated_member_entity(entity) {
+                if !is_workspace_symbol_admissible_generated_member_entity(entity) {
                     continue;
                 }
                 if source_backed_qualified_names.contains(&entity.canonical_name) {
@@ -6780,6 +6780,16 @@ fn split_qualified_symbol_name(canonical_name: &str) -> Option<(&str, &str)> {
 fn is_framework_generated_member_entity(entity: &EntityFact) -> bool {
     entity.provenance == Provenance::FrameworkSynthesis
         && matches!(entity.confidence, Confidence::Medium | Confidence::High)
+}
+
+fn is_workspace_symbol_admissible_generated_member_entity(entity: &EntityFact) -> bool {
+    if !is_framework_generated_member_entity(entity) {
+        return false;
+    }
+    // QuickORM currently produces Medium-confidence facts.  The live policy
+    // requires high confidence for the labeled workspace-symbol surface, so
+    // keep that provider below this admission bar until it has stronger proof.
+    !(entity.canonical_name.ends_with("::qorm_table") && entity.confidence == Confidence::Medium)
 }
 
 fn sort_workspace_symbols(symbols: &mut [WorkspaceSymbol]) {
