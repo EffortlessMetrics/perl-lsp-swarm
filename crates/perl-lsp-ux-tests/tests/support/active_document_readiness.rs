@@ -1,3 +1,5 @@
+#![allow(dead_code)] // Separate integration crates consume different helper subsets.
+
 //! Generation-sensitive active-document readiness helpers for UX scenarios.
 //!
 //! These helpers keep the test oracle narrower than the runtime contract: they
