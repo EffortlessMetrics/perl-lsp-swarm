@@ -2112,19 +2112,31 @@ my $after = "op"#;
         assert!(is_in_regex(source, pattern));
         assert!(!is_in_string(source, pattern));
     }
-}
 
-#[test]
-fn is_in_regex_ignores_regex_like_text_in_non_code_regions_after_comment() {
-    let heredoc = "# docs\nmy $text = <<'END';\nqr{ unmatched\nEND\nmy $code = 1;\n";
-    assert!(
-        !is_in_regex(heredoc, heredoc.find("my $code").unwrap()),
-        "regex-like text inside a heredoc body must not leave literal state active"
-    );
+    #[test]
+    fn transliteration_replacement_section_is_string_like() {
+        // `tr///` and `y///` share the two-section regex-kind literal path
+        // with `s///`, so the replacement side pins the same classification.
+        for operator in ["tr", "y"] {
+            let source = format!("my $x = {operator};abc;replacement;;\n");
+            let replacement = source.find("replacement").unwrap();
+            assert!(is_in_string(&source, replacement), "{operator} replacement is string-like");
+            assert!(!is_in_regex(&source, replacement), "{operator} replacement is not regex");
+        }
+    }
 
-    let pod = "# docs\n=pod\nqr{ unmatched\n=cut\nmy $code = 1;\n";
-    assert!(
-        !is_in_regex(pod, pod.find("my $code").unwrap()),
-        "regex-like text inside a POD body must not leave literal state active"
-    );
+    #[test]
+    fn is_in_regex_ignores_regex_like_text_in_non_code_regions_after_comment() {
+        let heredoc = "# docs\nmy $text = <<'END';\nqr{ unmatched\nEND\nmy $code = 1;\n";
+        assert!(
+            !is_in_regex(heredoc, heredoc.find("my $code").unwrap()),
+            "regex-like text inside a heredoc body must not leave literal state active"
+        );
+
+        let pod = "# docs\n=pod\nqr{ unmatched\n=cut\nmy $code = 1;\n";
+        assert!(
+            !is_in_regex(pod, pod.find("my $code").unwrap()),
+            "regex-like text inside a POD body must not leave literal state active"
+        );
+    }
 }
