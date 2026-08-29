@@ -24,9 +24,7 @@ use super::model::{
 
 fn access_for_operation(operation: &PirOperation) -> PirAccessMode {
     match operation {
-        PirOperation::LexicalWrite { .. } | PirOperation::StashWrite { .. } => {
-            PirAccessMode::Write
-        }
+        PirOperation::LexicalWrite { .. } | PirOperation::StashWrite { .. } => PirAccessMode::Write,
         PirOperation::Modify { .. } | PirOperation::StashModify { .. } => {
             PirAccessMode::ReadModifyWrite
         }
