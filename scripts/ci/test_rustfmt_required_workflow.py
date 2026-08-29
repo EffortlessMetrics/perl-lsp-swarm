@@ -55,18 +55,33 @@ def load_workflow(text: str | None = None) -> dict[str, Any]:
     """
     source = WORKFLOW_PATH.read_text(encoding="utf-8") if text is None else text
     lines = source.splitlines()
-    triggers: dict[str, object] = {}
+    triggers: dict[str, dict[str, Any]] = {}
     job: dict[str, Any] = {"env": {}, "steps": []}
     section = ""
+    current_trigger: str | None = None
     current_step: dict[str, Any] | None = None
     nested: dict[str, str] | None = None
     index = 0
     while index < len(lines):
         parsed = yaml_structure._parse_key_line(lines[index])
-        if parsed and parsed.indent == 0 and parsed.key in {"on", "jobs"}:
-            section = parsed.key
+        if parsed and parsed.indent == 0:
+            # Any top-level key ends the previous section. Without this,
+            # `concurrency`, `permissions`, and `env` children leaked into the
+            # trigger set and were accepted as if they were workflow events.
+            section = parsed.key if parsed.key in {"on", "jobs"} else ""
+            current_trigger = None
         elif section == "on" and parsed and parsed.indent == 2:
+            current_trigger = parsed.key
             triggers[parsed.key] = {}
+        elif (
+            section == "on"
+            and parsed
+            and parsed.indent == 4
+            and current_trigger is not None
+        ):
+            # Trigger bodies must be captured, or the `paths`/`paths-ignore`
+            # guard in validate_contract can never fire.
+            triggers[current_trigger][parsed.key] = yaml_structure._strip_scalar(parsed.value)
         elif section in {"jobs", "other-job"} and parsed and parsed.indent == 2:
             section = "formatter" if parsed.key == JOB_ID else "other-job"
         elif section == "formatter" and parsed:
@@ -361,8 +376,50 @@ class GovernedContextSourceMutationTests(unittest.TestCase):
         validate_contract(load_workflow(workflow_text), load_policy(policy_text))
 
     def test_unmutated_source_satisfies_the_contract(self) -> None:
-        # Anti-vacuity: the mutations below must be the reason the contract fails.
+        # Anti-vacuity anchor: the mutations below must be the reason the contract
+        # fails. Also proves the optional-text path agrees with the disk path.
         self.validate_source(self.workflow_text, self.policy_text)
+
+    def test_trigger_parsing_does_not_absorb_unrelated_top_level_sections(self) -> None:
+        # Regression: the `on` section never terminated, so `concurrency`,
+        # `permissions`, and `env` children (`group`, `contents`,
+        # `CARGO_TERM_COLOR`, ...) were accepted as if they were workflow events.
+        triggers = load_workflow(self.workflow_text)["on"]
+        for leaked in ("group", "cancel-in-progress", "contents", "CARGO_TERM_COLOR"):
+            self.assertNotIn(leaked, triggers)
+        self.assertEqual(
+            set(triggers), {"pull_request", "merge_group", "push", "workflow_dispatch"}
+        )
+
+    def test_docs_only_path_filter_fails_closed(self) -> None:
+        # Regression: trigger bodies parsed as empty dicts, so validate_contract's
+        # docs-only guard was unreachable on real source no matter what it said.
+        broken = self.workflow_text.replace(
+            "  pull_request:\n    branches:",
+            "  pull_request:\n    paths:\n      - '**.rs'\n    branches:",
+            1,
+        )
+        self.assertNotEqual(broken, self.workflow_text)
+        with self.assertRaisesRegex(AssertionError, "terminal for docs-only"):
+            self.validate_source(broken, self.policy_text)
+
+    def test_paths_ignore_filter_fails_closed(self) -> None:
+        broken = self.workflow_text.replace(
+            "  pull_request:\n    branches:",
+            "  pull_request:\n    paths-ignore:\n      - '**.md'\n    branches:",
+            1,
+        )
+        self.assertNotEqual(broken, self.workflow_text)
+        with self.assertRaisesRegex(AssertionError, "terminal for docs-only"):
+            self.validate_source(broken, self.policy_text)
+
+    def test_dropping_a_required_trigger_from_source_fails_closed(self) -> None:
+        broken = self.workflow_text.replace(
+            "  push:\n    branches: [ main, master ]\n", "", 1
+        )
+        self.assertNotEqual(broken, self.workflow_text)
+        with self.assertRaisesRegex(AssertionError, "must report on push"):
+            self.validate_source(broken, self.policy_text)
 
     def test_dropping_the_governed_job_from_workflow_source_fails_closed(self) -> None:
         broken = drop_governed_job(self.workflow_text)
