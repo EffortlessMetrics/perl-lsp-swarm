@@ -97,6 +97,7 @@ impl ResolvedCorpusPaths {
     /// [`CorpusPaths`] is no longer evidence that the root was validated.
     ///
     /// ```
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// use perl_corpus::CorpusPaths;
     ///
     /// let root = tempfile::tempdir()?;
@@ -107,6 +108,7 @@ impl ResolvedCorpusPaths {
     /// assert_eq!(compatibility.root, authority_root);
     /// assert_eq!(compatibility.test_corpus, authority_root.join("test_corpus"));
     /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// # }
     /// ```
     #[must_use]
     pub fn into_paths(self) -> CorpusPaths {
