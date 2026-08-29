@@ -12,7 +12,7 @@ use std::collections::{BTreeSet, HashSet};
 
 /// A bounded limitation attached to a non-exact query result.
 #[non_exhaustive]
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum SemanticQueryLimitation {
     /// A required fact family was not complete.
     IncompleteFactFamily(SemanticFactFamily),
