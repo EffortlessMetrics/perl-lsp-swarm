@@ -1,0 +1,371 @@
+//! Exact subject identity for repository-only Perl::Critic compatibility runs.
+//!
+//! This module deliberately lives in the private conformance harness rather than
+//! in an LSP/runtime crate. A subject is made from redacted identities supplied by
+//! the harness; no filesystem path or ambient process environment is accepted.
+//! The cache is an ordinary value owned by a harness run, so production requests
+//! cannot populate or consult it.
+
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::fmt;
+
+use serde::Serialize;
+use sha2::{Digest, Sha256};
+
+const MAX_IDENTITY_LENGTH: usize = 256;
+
+/// The immutable identity of one complete Perl::Critic conformance subject.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+pub struct OracleSubject {
+    perl_identity: String,
+    critic_identity: String,
+    fixture_digest: String,
+    root_identity: String,
+    profile_digest: String,
+    options_digest: String,
+    environment_digest: String,
+    process_schema: String,
+    parser_schema: String,
+}
+
+impl OracleSubject {
+    /// Build a subject from redacted/content identities, rejecting private paths
+    /// and missing identity components before they can reach a cache or receipt.
+    pub fn new(
+        perl_identity: impl Into<String>,
+        critic_identity: impl Into<String>,
+        fixture_digest: impl Into<String>,
+        root_identity: impl Into<String>,
+        profile_digest: impl Into<String>,
+        options_digest: impl Into<String>,
+        environment_digest: impl Into<String>,
+        process_schema: impl Into<String>,
+        parser_schema: impl Into<String>,
+    ) -> Result<Self, OracleSubjectError> {
+        let subject = Self {
+            perl_identity: perl_identity.into(),
+            critic_identity: critic_identity.into(),
+            fixture_digest: fixture_digest.into(),
+            root_identity: root_identity.into(),
+            profile_digest: profile_digest.into(),
+            options_digest: options_digest.into(),
+            environment_digest: environment_digest.into(),
+            process_schema: process_schema.into(),
+            parser_schema: parser_schema.into(),
+        };
+        subject.validate()?;
+        Ok(subject)
+    }
+
+    /// Stable, path-free digest used as the cache key and receipt identity.
+    pub fn digest(&self) -> String {
+        let mut hasher = Sha256::new();
+        for (name, value) in self.fields() {
+            hasher.update(name.as_bytes());
+            hasher.update((value.len() as u64).to_le_bytes());
+            hasher.update(value.as_bytes());
+        }
+        format!("sha256:{}", hex_lower(&hasher.finalize()))
+    }
+
+    /// Validate all subject components and the redaction boundary.
+    pub fn validate(&self) -> Result<(), OracleSubjectError> {
+        for (field, value) in self.fields() {
+            if value.is_empty() {
+                return Err(OracleSubjectError::Empty { field });
+            }
+            if value.len() > MAX_IDENTITY_LENGTH {
+                return Err(OracleSubjectError::TooLong { field });
+            }
+            if value.contains('/') || value.contains('\\') || value.contains("..") {
+                return Err(OracleSubjectError::PrivatePath { field });
+            }
+        }
+        Ok(())
+    }
+
+    fn fields(&self) -> [(&'static str, &str); 9] {
+        [
+            ("perl_identity", &self.perl_identity),
+            ("critic_identity", &self.critic_identity),
+            ("fixture_digest", &self.fixture_digest),
+            ("root_identity", &self.root_identity),
+            ("profile_digest", &self.profile_digest),
+            ("options_digest", &self.options_digest),
+            ("environment_digest", &self.environment_digest),
+            ("process_schema", &self.process_schema),
+            ("parser_schema", &self.parser_schema),
+        ]
+    }
+}
+
+fn hex_lower(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for &byte in bytes {
+        output.push(HEX[(byte >> 4) as usize] as char);
+        output.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    output
+}
+
+/// A rejected subject identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OracleSubjectError {
+    /// A required identity component was absent.
+    Empty { field: &'static str },
+    /// An identity component exceeded the bounded receipt size.
+    TooLong { field: &'static str },
+    /// A private or path-shaped value was supplied where a redacted identity was required.
+    PrivatePath { field: &'static str },
+}
+
+impl fmt::Display for OracleSubjectError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Empty { field } => write!(formatter, "oracle subject field {field} is empty"),
+            Self::TooLong { field } => write!(formatter, "oracle subject field {field} is too long"),
+            Self::PrivatePath { field } => {
+                write!(formatter, "oracle subject field {field} contains a private path")
+            }
+        }
+    }
+}
+
+impl std::error::Error for OracleSubjectError {}
+
+/// Counters for deterministic cache observability.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct OracleCacheStats {
+    /// Number of exact subject hits.
+    pub hits: u64,
+    /// Number of exact subject misses.
+    pub misses: u64,
+    /// Number of explicitly retired subjects.
+    pub invalidations: u64,
+    /// Number of entries evicted at the configured bound.
+    pub evictions: u64,
+}
+
+/// A bounded, exact-subject cache for repository-only oracle results.
+#[derive(Debug)]
+pub struct OracleCache<T> {
+    capacity: usize,
+    entries: BTreeMap<String, T>,
+    order: VecDeque<String>,
+    retired: BTreeSet<String>,
+    stats: OracleCacheStats,
+}
+
+impl<T> OracleCache<T> {
+    /// Create a cache with a finite number of reusable complete results.
+    pub fn new(capacity: usize) -> Result<Self, OracleCacheError> {
+        if capacity == 0 {
+            return Err(OracleCacheError::ZeroCapacity);
+        }
+        Ok(Self {
+            capacity,
+            entries: BTreeMap::new(),
+            order: VecDeque::new(),
+            retired: BTreeSet::new(),
+            stats: OracleCacheStats::default(),
+        })
+    }
+
+    /// Return a result only for the exact complete subject.
+    pub fn get(&mut self, subject: &OracleSubject) -> Option<&T> {
+        let key = subject.digest();
+        if self.entries.contains_key(&key) {
+            self.stats.hits = self.stats.hits.saturating_add(1);
+            self.touch(&key);
+            self.entries.get(&key)
+        } else {
+            self.stats.misses = self.stats.misses.saturating_add(1);
+            None
+        }
+    }
+
+    /// Insert a complete result unless work for this retired subject arrived late.
+    pub fn insert(&mut self, subject: &OracleSubject, value: T) -> Result<(), OracleCacheError> {
+        subject.validate().map_err(OracleCacheError::InvalidSubject)?;
+        let key = subject.digest();
+        if self.retired.contains(&key) {
+            return Err(OracleCacheError::RetiredSubject);
+        }
+        self.entries.insert(key.clone(), value);
+        self.touch(&key);
+        while self.entries.len() > self.capacity {
+            if let Some(oldest) = self.order.pop_front() {
+                if oldest != key && self.entries.remove(&oldest).is_some() {
+                    self.stats.evictions = self.stats.evictions.saturating_add(1);
+                }
+            } else {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    /// Retire a subject so late/cancelled work cannot repopulate it.
+    pub fn retire(&mut self, subject: &OracleSubject) {
+        let key = subject.digest();
+        self.retired.insert(key.clone());
+        self.entries.remove(&key);
+        self.order.retain(|candidate| candidate != &key);
+        self.stats.invalidations = self.stats.invalidations.saturating_add(1);
+    }
+
+    /// Return deterministic cache counters.
+    #[must_use]
+    pub const fn stats(&self) -> OracleCacheStats {
+        self.stats
+    }
+
+    fn touch(&mut self, key: &str) {
+        self.order.retain(|candidate| candidate != key);
+        self.order.push_back(key.to_string());
+    }
+}
+
+/// Cache construction or insertion failure.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OracleCacheError {
+    /// The cache must have a finite positive bound.
+    ZeroCapacity,
+    /// The subject crossed the redaction/shape boundary.
+    InvalidSubject(OracleSubjectError),
+    /// A retired subject cannot be repopulated by late work.
+    RetiredSubject,
+}
+
+impl fmt::Display for OracleCacheError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ZeroCapacity => formatter.write_str("oracle cache capacity must be positive"),
+            Self::InvalidSubject(error) => error.fmt(formatter),
+            Self::RetiredSubject => formatter.write_str("oracle subject has been retired"),
+        }
+    }
+}
+
+impl std::error::Error for OracleCacheError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn subject(root: &str, profile: &str) -> OracleSubject {
+        OracleSubject::new(
+            "perl-5.40.2-build-a",
+            "perlcritic-1.152",
+            "sha256:fixture",
+            root,
+            profile,
+            "sha256:options",
+            "sha256:environment",
+            "process-plan.v1",
+            "perlcritic-parser.v2",
+        )
+        .expect("test subject should be valid")
+    }
+
+    #[test]
+    fn contradictory_roots_and_profiles_never_share_results() {
+        let first = subject("root-a", "sha256:profile-a");
+        let second = subject("root-b", "sha256:profile-b");
+        let mut cache = OracleCache::new(4).expect("positive capacity");
+        cache.insert(&first, "a").expect("first result");
+        cache.insert(&second, "b").expect("second result");
+        assert_eq!(cache.get(&first), Some(&"a"));
+        assert_eq!(cache.get(&second), Some(&"b"));
+        assert_ne!(first.digest(), second.digest());
+    }
+
+    #[test]
+    fn profile_content_movement_changes_the_subject() {
+        let before = subject("root", "sha256:profile-before");
+        let after = subject("root", "sha256:profile-after");
+        assert_ne!(before.digest(), after.digest());
+    }
+
+    #[test]
+    fn tool_and_environment_movement_changes_the_subject() {
+        let first = OracleSubject::new(
+            "perl-5.40.2-build-a",
+            "perlcritic-1.152",
+            "sha256:fixture",
+            "root",
+            "sha256:profile",
+            "sha256:options",
+            "sha256:environment-a",
+            "process-plan.v1",
+            "perlcritic-parser.v2",
+        )
+        .expect("first subject");
+        let second = OracleSubject::new(
+            "perl-5.40.2-build-b",
+            "perlcritic-1.153",
+            "sha256:fixture",
+            "root",
+            "sha256:profile",
+            "sha256:options",
+            "sha256:environment-b",
+            "process-plan.v1",
+            "perlcritic-parser.v2",
+        )
+        .expect("second subject");
+        assert_ne!(first.digest(), second.digest());
+    }
+
+    #[test]
+    fn execution_order_does_not_change_results() {
+        let first = subject("root-a", "sha256:profile-a");
+        let second = subject("root-b", "sha256:profile-b");
+        let mut left = OracleCache::new(4).expect("positive capacity");
+        left.insert(&first, "a").expect("first result");
+        left.insert(&second, "b").expect("second result");
+        let mut right = OracleCache::new(4).expect("positive capacity");
+        right.insert(&second, "b").expect("second result");
+        right.insert(&first, "a").expect("first result");
+        assert_eq!(left.get(&first), right.get(&first));
+        assert_eq!(left.get(&second), right.get(&second));
+    }
+
+    #[test]
+    fn retired_subject_rejects_late_completion() {
+        let current = subject("root", "sha256:profile");
+        let mut cache = OracleCache::new(1).expect("positive capacity");
+        cache.retire(&current);
+        assert_eq!(cache.insert(&current, "late"), Err(OracleCacheError::RetiredSubject));
+        assert_eq!(cache.stats().invalidations, 1);
+    }
+
+    #[test]
+    fn cache_is_bounded_and_reports_eviction() {
+        let first = subject("root-a", "sha256:profile-a");
+        let second = subject("root-b", "sha256:profile-b");
+        let mut cache = OracleCache::new(1).expect("positive capacity");
+        cache.insert(&first, "a").expect("first result");
+        cache.insert(&second, "b").expect("second result");
+        assert_eq!(cache.get(&first), None);
+        assert_eq!(cache.get(&second), Some(&"b"));
+        assert_eq!(cache.stats().evictions, 1);
+    }
+
+    #[test]
+    fn private_paths_are_not_receipt_identities() {
+        let error = OracleSubject::new(
+            "perl",
+            "critic",
+            "fixture",
+            "/private/fixture",
+            "profile",
+            "options",
+            "environment",
+            "process",
+            "parser",
+        )
+        .expect_err("private path must be rejected");
+        assert_eq!(error, OracleSubjectError::PrivatePath { field: "root_identity" });
+    }
+}
