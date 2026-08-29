@@ -32,6 +32,16 @@ pub struct ProjectShardState {
     /// Limitation ids owned by the shard and removed with it.
     #[serde(default)]
     pub limitation_ids: Vec<String>,
+    /// Fact classes the adopted shard actually populated. A class that was
+    /// requested but never populated cannot back a proven-empty denominator.
+    #[serde(default)]
+    pub populated: FactClasses,
+    /// Structural limitation-to-path association retained from the adopted
+    /// shard (limitation id -> relative paths it bounds). Limitations that
+    /// declare no paths are associated with the shard's own file, so path
+    /// scoping never has to be reconstructed from id text.
+    #[serde(default)]
+    pub limitation_paths: std::collections::BTreeMap<String, Vec<String>>,
 }
 
 /// All facts owned by one file at one producer generation.

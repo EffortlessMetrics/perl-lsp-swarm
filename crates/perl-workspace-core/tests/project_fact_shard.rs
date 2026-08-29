@@ -103,6 +103,7 @@ fn replacement_removes_limitations_owned_by_the_previous_shard() -> Result<(), B
         id: "parse-failed:lib/App.pm".to_string(),
         kind: "parse_failure".to_string(),
         message: "old limitation".to_string(),
+        paths: Vec::new(),
     });
     model.insert_or_replace(first)?;
 

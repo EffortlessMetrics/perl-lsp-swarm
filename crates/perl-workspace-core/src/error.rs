@@ -47,6 +47,12 @@ pub struct ModelLimitation {
     pub kind: String,
     /// A human-readable explanation.
     pub message: String,
+    /// Relative paths this limitation bounds, carried structurally so path
+    /// scoping never has to be reconstructed from the id text. Empty means
+    /// the association is only recoverable from the `<kind>:<path>` id
+    /// convention (legacy producers).
+    #[serde(default)]
+    pub paths: Vec<String>,
 }
 
 #[cfg(test)]
@@ -73,6 +79,7 @@ mod tests {
             id: "parse-failed:lib/App.pm".to_string(),
             kind: "parse_failure".to_string(),
             message: "could not parse".to_string(),
+            paths: Vec::new(),
         };
         let json = serde_json::to_string(&lim).unwrap();
         let back: ModelLimitation = serde_json::from_str(&json).unwrap();

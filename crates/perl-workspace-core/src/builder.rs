@@ -83,12 +83,17 @@ pub fn build_project_model(
             Ok(content) => content,
             Err(error) => {
                 // Never silently drop: a digest needs the content, so emit no
-                // file fact — just a limitation recording why.
+                // file fact — just a limitation recording why. The path stays
+                // in the model as discovered-but-unread so the source
+                // denominator still contains it (a fabricated legitimate
+                // empty is worse than a bounded denominator).
                 model.limitations.push(ModelLimitation {
                     id: format!("read-failed:{relative_path}"),
                     kind: "read_failure".to_string(),
                     message: format!("could not read `{relative_path}`: {error}"),
+                    paths: vec![relative_path.clone()],
                 });
+                model.unread_discovered.insert(relative_path);
                 continue;
             }
         };
@@ -184,6 +189,7 @@ fn extract_facts(
                 message: format!(
                     "could not parse `{relative_path}` as Perl; emitted the file fact with no symbols"
                 ),
+                paths: vec![relative_path.to_string()],
             });
             return ParseStatus::Failed;
         }
