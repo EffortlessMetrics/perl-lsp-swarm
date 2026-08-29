@@ -1,3 +1,5 @@
+#![deny(clippy::map_err_ignore)]
+// Cohort C1 activation (#12598): all production rows exact-excepted; new findings move the crate back to non-C1.
 //! Tests for real-world Perl patterns from popular CPAN modules.
 //!
 //! Covers areas not exercised by existing test files:
