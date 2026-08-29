@@ -1,2870 +1,2258 @@
-Warning: truncated output (original token count: 117980)
-Total output lines: 11574
-
-#![warn(missing_docs)]
-#![cfg_attr(clippy, allow(missing_docs))]
-
-//! Upstream Perl core harness integration scaffold.
-//!
-//! The scaffold can discover tests from a prepared Perl source tree and run the
-//! staged profile through a `t/perl` compatibility wrapper in parse and compile
-//! modes. Execute mode is limited to explicit selected base tests.
-
-pub mod artifacts;
-/// Exact, repository-only Perl::Critic oracle subjects and bounded reuse.
-pub mod critic_oracle;
-#[path = "target_contracts/contract.rs"]
-pub mod contract;
-#[path = "target_contracts/io.rs"]
-pub mod io;
-#[path = "target_contracts/matrix.rs"]
-pub mod matrix;
-#[path = "target_contracts/model.rs"]
-pub mod model;
-/// Typed contracts for the upstream Perl target topology.
-pub mod target_contracts {
-    pub use super::{contract, io, matrix, model};
-}
-
-#[cfg(test)]
-#[path = "target_contracts/tests.rs"]
-mod target_contract_tests;
-
-mod normalization;
-pub mod public_evidence;
-mod run_authority;
-mod series;
-pub mod transition;
-
-// The runner-plan authority modules are shared verbatim with the
-// `perl-core-harness-runner-plan` binary units; the observed-discovery receipt
-// surface reuses them so there is exactly one source-frame normalizer and one
-// target-selection vocabulary. Items unused by this unit remain compiled for
-// the other inclusion sites.
-#[allow(dead_code)]
-#[path = "runner_plan/build.rs"]
-pub(crate) mod build;
-#[allow(dead_code)]
-// The shared normalizer's own test module predates this inclusion site and
-// uses workspace-denied helpers; its tests remain exercised by their original
-// bin/test units.
-#[cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
-#[path = "runner_plan/normalize.rs"]
-pub(crate) mod normalize;
-#[allow(dead_code)]
-#[path = "runner_plan/model.rs"]
-pub(crate) mod runner_model;
-
-/// Strict immutable observed upstream-discovery receipts
-/// (`upstream_runner_discovery.v1`, #12281): byte-exact raw envelopes, typed
-/// terminal state, frame-aware decoded rows, membership dispositions, work
-/// accounting, and deterministic digests over canonical payloads.
-pub mod observed_discovery {
-    /// Strict constructors, payload digests, freshness, and matrix adapter.
-    #[path = "build.rs"]
-    pub mod build;
-    /// Exact supervised `t/TEST` capture route producing strict receipts
-    /// (#12283): selector argv from target-contract authority, one bounded
-    /// supervised process, byte-exact envelopes, and #12281 receipt assembly.
-    #[path = "capture.rs"]
-    pub mod capture;
-    /// Strict byte-level stream decoder and observation-state derivation.
-    #[path = "decode.rs"]
-    pub mod decode;
-    /// Receipt, envelope, row, disposition, subject, and work types.
-    #[path = "model.rs"]
-    pub mod model;
-    /// Fail-closed validation reconstructing rows from retained raw bytes.
-    #[path = "validate.rs"]
-    pub mod validate;
-
-    #[cfg(test)]
-    #[path = "tests.rs"]
-    mod tests;
-
-    pub use build::{
-        build_observed_discovery_receipt, check_observed_discovery_against,
-        discovery_payload_digest, receipt_freshness,
-    };
-    pub use capture::{ObserveDiscoveryConfig, observe_discovery, observe_discovery_command};
-    pub use decode::derive_observation_state;
-    // The runner-plan vocabulary is already part of this module's public
-    // payload types; re-export the two enums external consumers need to build
-    // or inspect receipts without reaching into the crate-private module.
-    pub use crate::runner_model::{DiscoveryFrame, RunnerKind};
-    pub use model::{
-        DiscoveryObservationState, DiscoveryPayload, DiscoverySubjectIdentity, EnvironmentIdentity,
-        EvidenceClass, InvocationObservation, LineFraming, MemberDisposition,
-        ObservedDiscoveryInput, ObservedDiscoveryRow, ProcessCompletion, RawStreamEnvelope,
-        ReceiptFreshness, RunnerArtifactIdentity, TerminalObservation,
-        UPSTREAM_DISCOVERY_SCHEMA_VERSION, UpstreamDiscoveryReceiptV1,
-    };
-    pub use validate::{validate_observed_discovery_receipt, validate_receipt_subject_binding};
-}
-
-/// Strict effective-invocation trace contract
-/// (`upstream_effective_invocation_trace.v1`, #12284): one bounded JSONL
-/// frame stream with typed per-field observation states, parent
-/// discovery-receipt re-binding, proven work accounting, deterministic
-/// digests, and the pure #8492 canonical-plan projection adapter.
-/// Representation only: no upstream instrumentation, process execution, or
-/// filesystem interaction.
-pub mod invocation_trace {
-    /// Pure checked adapter to canonical plan projections.
-    #[path = "adapter.rs"]
-    pub mod adapter;
-    /// Strict constructors, payload digests, freshness, and parent adapter.
-    #[path = "build.rs"]
-    pub mod build;
-    /// Strict byte-level frame decoder and row-state derivation.
-    #[path = "decode.rs"]
-    pub mod decode;
-    /// Receipt, frame, field-state, row, subject, and work types.
-    #[path = "model.rs"]
-    pub mod model;
-    /// Fail-closed validation reconstructing frames from retained raw bytes.
-    #[path = "validate.rs"]
-    pub mod validate;
-
-    #[cfg(test)]
-    #[path = "test_support.rs"]
-    pub(crate) mod test_support;
-
-    #[cfg(test)]
-    #[path = "tests.rs"]
-    mod tests;
-
-    pub use adapter::{
-        ExpectedFieldComparison, ExpectedFieldResult, ExpectedInvocationBinding,
-        ExpectedInvocationValues, ProjectionOutcome, ProjectionRejection, compare_expected,
-        project_effective_invocation,
-    };
-    pub use build::{
-        build_invocation_trace_receipt, check_invocation_trace_against, trace_payload_digest,
-        trace_receipt_freshness,
-    };
-    pub use decode::derive_row_state;
-    pub use model::{
-        CanonicalInvocationProjection, CapturePoint, EffectiveInvocationField,
-        EffectiveInvocationFields, EffectiveInvocationRow, EffectiveInvocationTraceReceiptV1,
-        FieldKey, FieldStateCounts, InvocationAuthority, InvocationObservationState,
-        ObservedInvocationTraceInput, ProjectionRecord, ProjectionRejectionKind, RowSubjectBinding,
-        ScriptRole, TaintMode, TestInitClass, TraceHeader, TracePayload, TraceRowDisposition,
-        TraceStreamEnvelope, TraceStreamOutcome, TraceSubjectIdentity, TraceTerminal, TraceWork,
-        UPSTREAM_INVOCATION_TRACE_SCHEMA_VERSION, Utf8Switch,
-    };
-    pub use validate::{validate_invocation_trace_receipt, validate_trace_receipt_subject_binding};
-}
-
-/// Strict pure fan-in join proving one complete observed runner subject
-/// (`observed_runner_subject.v1`, #12287): the observed `t/TEST` membership
-/// (#12281/#12283), its independently reconstructed plan (#7737), and the
-/// effective-invocation observation set (#12284/#12285) joined one-to-one
-/// under the exact #12286 transfer relation and #12158 producer identity.
-/// Representation only: no upstream execution, tracing, compiler invocation,
-/// production selection, or accepted-state transition.
-pub mod observed_subject {
-    /// Strict constructors, digests, freshness, and the join arithmetic.
-    #[path = "build.rs"]
-    pub mod build;
-    /// Receipt, binding, row, disposition, diagnostic, state, and work types.
-    #[path = "model.rs"]
-    pub mod model;
-    /// Fail-closed structural validation re-proving receipt-traveled laws.
-    #[path = "validate.rs"]
-    pub mod validate;
-
-    #[cfg(test)]
-    #[path = "tests.rs"]
-    mod tests;
-
-    pub use build::{
-        build_observed_runner_subject, check_observed_runner_subject, observed_subject_freshness,
-        observed_subject_payload_digest,
-    };
-    pub use model::{
-        JoinWork, OBSERVED_RUNNER_SUBJECT_SCHEMA_VERSION, OBSERVED_SUBJECT_CLAIM_BOUNDARY,
-        ObservedRunnerSubjectInput, ObservedRunnerSubjectPayload, ObservedRunnerSubjectRow,
-        ObservedRunnerSubjectV1, ObservedSubjectBindings, ObservedSubjectState,
-        OrdinaryInstrumentedEquivalenceIdentity, ProducerSubjectIdentity, SubjectDiagnostic,
-        SubjectJoinDisposition,
-    };
-    pub use validate::validate_observed_runner_subject_shape;
-}
-
-use chrono::Utc;
-use color_eyre::eyre::{Context, Result, bail};
-use perl_core_harness_types::{
-    BOUNDARY_RETIREMENT_SCHEMA_VERSION, BaselineComparison, BaselineViolation,
-    BaselineViolationKind, BoundaryRetirement, COMPILE_BASELINE_SCHEMA_VERSION,
-    COMPILE_BASELINE_V2_SCHEMA_VERSION, COMPILER_COMPATIBILITY_SCHEMA_VERSION,
-    CURRENT_AUTHORITY_INDEX_SCHEMA_VERSION, CompatibilityAcceptedRatchet,
-    CompatibilityClusterState, CompatibilityDebtState, CompatibilityObservation,
-    CompatibilityRailAvailability, CompatibilityRailState, CompatibilityRunState,
-    CompatibilitySeriesIdentity, CompatibilityTransition, CompatibilityTransitionCandidate,
-    CompileBaseline, CompileBaselineV2, CompilerCompatibilitySeries, CompilerCompatibilityState,
-    CurrentAuthorityEntry, CurrentAuthorityIndex, CurrentAuthorityStatus, DISCOVERY_SCHEMA_VERSION,
-    DiscoveredTest, DiscoveryReport, FAILURE_CLUSTER_HISTORY_SCHEMA_VERSION,
-    FAILURE_CLUSTER_SCHEMA_VERSION, FailureCluster, FailureClusterHistory,
-    FailureClusterHistoryEntry, FailureClusterHistoryPresence, FailureClusterHistoryStatus,
-    FailureClusterIdentityQuality, FailureClusterReport, FailureClusterSignature,
-    FailureDebtCandidate, GAP_MAP_SCHEMA_VERSION, GapMap, LANDED_LINEAGE_SCHEMA_VERSION,
-    LandedLineage, ObservedSemanticBoundary, PREPARE_SCHEMA_VERSION, PrepareReceipt, PrepareStatus,
-    RUN_REPORT_SCHEMA_VERSION, RunFailure, RunFileResult, RunReport, RunSummary, RunnerRecord,
-    RunnerStatus, SEMANTIC_BOUNDARY_REGISTRY_SCHEMA_VERSION, SMOKE_SCHEMA_VERSION,
-    SemanticBoundaryConfidence, SemanticBoundaryDisposition, SemanticBoundaryLockScope,
-    SemanticBoundaryRegistry, SemanticBoundaryRegistryEntry, SemanticBoundaryRegistryState,
-    SemanticBoundaryReplacementStrategy, SeriesManifest, SmokeFailureKind, SmokeReport,
-    SmokeStatus, SmokeStructuralFailure, lsp_impact_for_bucket, workstream_for_bucket,
-};
-pub use perl_core_harness_types::{HarnessMode, HarnessProfile, HarnessRunner};
-use run_authority::{
-    DirectDiagnosticReceipt, DirectDiagnosticSet, SettledDiagnosticProbe, UpstreamObservationSet,
-    direct_diagnostics_receipt, direct_diagnostics_receipt_path, settle_probe_context_rows,
-};
-pub use series::{SeriesManifestConfig, series_manifest};
-
-use normalization::{hex_lower, sha256_digest_bytes};
-use public_evidence::PublicStringClass;
-use serde::{Deserialize, de::DeserializeOwned};
-use series::{read_series_manifest, validate_series_manifest};
-use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, BTreeSet};
-use std::fs;
-use std::io::{self as std_io, Write};
-use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
-use std::sync::atomic::{AtomicU64, Ordering};
-
-const PERL_SOURCE_URL: &str = "https://github.com/Perl/perl5";
-const EXECUTE_BASE_ALLOWLIST: &[&str] =
-    &["base/if.t", "base/cond.t", "base/num.t", "base/pat.t", "base/translate.t", "base/while.t"];
-static RUN_COPY_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-pub(crate) fn project_root() -> Result<PathBuf> {
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    manifest_dir
-        .parent()
-        .and_then(|crates_dir| crates_dir.parent())
-        .map(Path::to_path_buf)
-        .ok_or_else(|| color_eyre::eyre::eyre!("perl-core-harness should live under crates/"))
-}
-
-fn profile_runner_args(
-    profile: HarnessProfile,
-    t_dir: &Path,
-    runner: HarnessRunner,
-) -> Result<Vec<String>> {
-    match runner {
-        HarnessRunner::Test => explicit_test_runner_args(t_dir, profile.roots()),
-        HarnessRunner::Harness => {
-            Ok(profile.roots().iter().map(|root| format!("{root}/*.t")).collect())
-        }
-    }
-}
-
-fn explicit_test_runner_args(t_dir: &Path, roots: &[&str]) -> Result<Vec<String>> {
-    let mut args = Vec::new();
-    for root in roots {
-        collect_test_files(t_dir, &t_dir.join(root), &mut args)?;
-    }
-    args.sort();
-    args.dedup();
-    Ok(args)
-}
-
-fn collect_test_files(t_dir: &Path, dir: &Path, args: &mut Vec<String>) -> Result<()> {
-    if !dir.exists() {
-        return Ok(());
-    }
-    let entries = fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))?;
-    for entry in entries {
-        let entry = entry.with_context(|| format!("reading entry in {}", dir.display()))?;
-        let path = entry.path();
-        let file_type = entry
-            .file_type()
-            .with_context(|| format!("reading file type for {}", path.display()))?;
-        if file_type.is_dir() {
-            collect_test_files(t_dir, &path, args)?;
-            continue;
-        }
-        if !file_type.is_file() || path.extension().and_then(|ext| ext.to_str()) != Some("t") {
-            continue;
-        }
-        let relative = path
-            .strip_prefix(t_dir)
-            .with_context(|| format!("normalizing test path {}", path.display()))?;
-        args.push(relative.display().to_string().replace('\\', "/"));
-    }
-    Ok(())
-}
-
-fn normalize_selected_tests(profile: HarnessProfile, tests: &[String]) -> Result<Vec<String>> {
-    let allowed_roots = profile.roots().iter().copied().collect::<BTreeSet<_>>();
-    let mut normalized = Vec::new();
-    for test in tests {
-        let path = normalize_test_path(test)
-            .ok_or_else(|| color_eyre::eyre::eyre!("invalid Perl core test path: {test}"))?;
-        if path.contains("..") || path.starts_with('/') || !path.ends_with(".t") {
-            bail!("invalid Perl core test path: {test}");
-        }
-        let Some((root, _rest)) = path.split_once('/') else {
-            bail!("selected Perl core test must include a profile root: {test}");
-        };
-        if !allowed_roots.contains(root) {
-            bail!(
-                "selected Perl core test {path} is outside profile {} roots {:?}",
-                profile,
-                profile.roots()
-            );
-        }
-        normalized.push(path);
-    }
-    normalized.sort();
-    normalized.dedup();
-    Ok(normalized)
-}
-
-fn validate_execute_selection(mode: HarnessMode, selected_tests: &[String]) -> Result<()> {
-    if mode != HarnessMode::Execute {
-        return Ok(());
-    }
-    if selected_tests.is_empty() {
-        bail!(
-            "perl-core-harness run --mode execute requires one or more explicit --test selections from {}",
-            EXECUTE_BASE_ALLOWLIST.join(", ")
-        );
-    }
-    if let Some(test) =
-        selected_tests.iter().find(|test| !EXECUTE_BASE_ALLOWLIST.contains(&test.as_str()))
-    {
-        bail!(
-            "perl-core-harness run --mode execute supports only selected base tests {}; rejected {test}",
-            EXECUTE_BASE_ALLOWLIST.join(", ")
-        );
-    }
-    Ok(())
-}
-
-fn filter_discovered_tests(
-    tests: Vec<DiscoveredTest>,
-    selected_tests: &[String],
-) -> Result<Vec<DiscoveredTest>> {
-    if selected_tests.is_empty() {
-        return Ok(tests);
-    }
-
-    let selected = selected_tests.iter().cloned().collect::<BTreeSet<_>>();
-    let filtered =
-        tests.into_iter().filter(|test| selected.contains(&test.path)).collect::<Vec<_>>();
-    let found = filtered.iter().map(|test| test.path.clone()).collect::<BTreeSet<_>>();
-    if let Some(missing) = selected.iter().find(|path| !found.contains(*path)) {
-        bail!("selected Perl core test {missing} was not discovered by upstream harness");
-    }
-    Ok(filtered)
-}
-
-/// Configuration for `perl-core-harness discover`.
-#[derive(Debug, Clone)]
-pub struct DiscoverConfig {
-    pub perl_tree: PathBuf,
-    pub host_perl: PathBuf,
-    pub runner: HarnessRunner,
-    pub profile: HarnessProfile,
-    pub output: Option<PathBuf>,
-}
-
-/// Configuration for `perl-core-harness prepare`.
-#[derive(Debug, Clone)]
-pub struct PrepareConfig {
-    pub perl_ref: String,
-    pub output_dir: Option<PathBuf>,
-}
-
-/// Configuration for `perl-core-harness run`.
-#[derive(Debug, Clone)]
-pub struct RunConfig {
-    pub perl_tree: PathBuf,
-    pub host_perl: PathBuf,
-    pub runner: HarnessRunner,
-    pub mode: HarnessMode,
-    pub profile: HarnessProfile,
-    pub tests: Vec<String>,
-    pub output: Option<PathBuf>,
-    pub runner_binary: Option<PathBuf>,
-    /// Whether missing upstream rows may be investigated by bounded direct
-    /// diagnostic probes after the upstream report is frozen (#8173).
-    ///
-    /// Diagnostics are retained under a separate receipt and can never change
-    /// the upstream result, totals, or verdict.
-    pub diagnostic_probes: bool,
-}
-
-/// Configuration for `perl-core-harness baseline`.
-#[derive(Debug, Clone)]
-pub struct BaselineConfig {
-    pub mode: HarnessMode,
-    pub profile: HarnessProfile,
-    pub report: Option<PathBuf>,
-    pub baseline: Option<PathBuf>,
-    pub accept: bool,
-    pub series: Option<PathBuf>,
-    pub previous_baseline: Option<PathBuf>,
-    pub boundary_retirements: Option<PathBuf>,
-    pub compiler_subject_identity: Option<String>,
-    pub invocation_identity: Option<String>,
-    pub capability_identity: Option<String>,
-    pub environment_identity: Option<String>,
-    pub accepted_transition_id: Option<String>,
-    pub evidence_bundle: Option<String>,
-}
-
-/// Configuration for `perl-core-harness boundaries`.
-#[derive(Debug, Clone)]
-pub struct BoundaryRegistryConfig {
-    pub registry: PathBuf,
-    pub baselines: Vec<PathBuf>,
-    pub bundles: Vec<PathBuf>,
-    pub output: Option<PathBuf>,
-    pub check: bool,
-    pub report: bool,
-    pub historical: bool,
-}
-
-/// Configuration for `perl-core-harness triage`.
-#[derive(Debug, Clone)]
-pub struct TriageConfig {
-    pub bundle: PathBuf,
-    pub output: PathBuf,
-    pub history: Option<PathBuf>,
-    pub write_history: bool,
-    pub check_history: bool,
-}
-
-/// Input receipts for one independently identified compatibility series.
-#[derive(Debug, Clone)]
-pub struct CompatibilitySeriesInput {
-    pub series_manifest: PathBuf,
-    pub parse_report: PathBuf,
-    pub compile_report: PathBuf,
-    pub compile_baseline: PathBuf,
-    /// Accepted ratchet to compare with the current observation.
-    pub accepted_baseline: Option<PathBuf>,
-    pub evidence_bundle: PathBuf,
-    pub boundary_registry: Option<PathBuf>,
-    pub cluster_history: Option<PathBuf>,
-    pub execute_report: Option<PathBuf>,
-    /// Optional #5234 current-authority admission proof.
-    pub current_authority: Option<CurrentAuthorityConfig>,
-}
-
-/// Configuration for loading typed compiler compatibility state.
-#[derive(Debug, Clone)]
-pub struct CompatibilityLoadConfig {
-    pub inputs: Vec<CompatibilitySeriesInput>,
-    pub repository_commit: String,
-}
-
-/// Configuration for `perl-core-harness smoke`.
-#[derive(Debug, Clone)]
-pub struct SmokeConfig {
-    pub perl_tree: PathBuf,
-    pub host_perl: PathBuf,
-    pub runner: HarnessRunner,
-    pub profile: HarnessProfile,
-    pub modes: Vec<HarnessMode>,
-    pub output_dir: Option<PathBuf>,
-    pub runner_binary: Option<PathBuf>,
-    pub perl_ref: Option<String>,
-}
-
-/// Discover test files from a prepared Perl tree and write a JSON manifest.
-pub fn discover(config: DiscoverConfig) -> Result<()> {
-    let perl_tree = canonicalize_existing_dir(&config.perl_tree, "prepared Perl tree")?;
-    let t_dir = perl_tree.join("t");
-    let script = validate_runner_script(&t_dir, config.runner)?;
-    let output_path = config.output.unwrap_or_else(|| default_discovery_path(config.profile));
-
-    let output = invoke_dumptests(
-        &config.host_perl,
-        &t_dir,
-        &script,
-        &profile_runner_args(config.profile, &t_dir, config.runner)?,
-    )
-    .with_context(|| {
-        format!("discovering Perl core tests via {} {}", config.runner, config.profile)
-    })?;
-
-    let tests = parse_dumptests_output(&output.stdout)?;
-    let report = DiscoveryReport {
-        schema_version: DISCOVERY_SCHEMA_VERSION.to_string(),
-        commit: current_commit(),
-        timestamp: Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
-        perl_ref: perl_tree_ref(&perl_tree),
-        prepared_tree: perl_tree.display().to_string(),
-        host_perl: config.host_perl.display().to_string(),
-        runner: config.runner,
-        profile: config.profile,
-        tests,
-    };
-
-    write_discovery_report(&output_path, &report)?;
-    tracing::info!(
-        "perl-core-harness: discovered {} tests for profile {} via {}",
-        report.tests.len(),
-        report.profile,
-        report.runner
-    );
-    tracing::info!("wrote {}", output_path.display());
-    Ok(())
-}
-
-/// Validate the semantic-boundary registry against accepted v2 baselines and
-/// optional durable evidence-bundle indexes.
-pub fn boundaries(config: BoundaryRegistryConfig) -> Result<()> {
-    let raw = fs::read_to_string(&config.registry)
-        .with_context(|| format!("reading boundary registry {}", config.registry.display()))?;
-    let registry: SemanticBoundaryRegistry = serde_json::from_str(&raw)
-        .with_context(|| format!("decoding boundary registry {}", config.registry.display()))?;
-
-    let mut violations = validate_boundary_registry_shape(&registry);
-    let mut baseline_data = Vec::new();
-    for path in &config.baselines {
-        match read_compile_baseline_v2(path) {
-            Ok(baseline) => baseline_data.push((path.clone(), baseline)),
-            Err(error) => violations.push(format!("{}: {error}", path.display())),
-        }
-    }
-
-    let mut bundle_data = Vec::new();
-    for path in &config.bundles {
-        match read_boundary_bundle(path) {
-            Ok(bundle) => bundle_data.push(bundle),
-            Err(error) => violations.push(format!("{}: {error}", path.display())),
-        }
-    }
-
-    for (path, baseline) in &baseline_data {
-        violations.extend(validate_registry_against_baseline(
-            &registry,
-            baseline,
-            config.historical,
-        ));
-        for bundle in bundle_data.iter().filter(|bundle| {
-            bundle.index.series_id == baseline.series_id && bundle.index.profile == baseline.profile
-        }) {
-            violations.extend(validate_bundle_against_baseline(bundle, baseline));
-        }
-        if !config.bundles.is_empty()
-            && !bundle_data.iter().any(|bundle| {
-                bundle.index.series_id == baseline.series_id
-                    && bundle.index.profile == baseline.profile
-            })
-        {
-            violations.push(format!(
-                "{}: no evidence bundle was supplied for series {} profile {}",
-                path.display(),
-                baseline.series_id,
-                baseline.profile
-            ));
-        }
-    }
-    for bundle in &bundle_data {
-        if !baseline_data.iter().any(|(_, baseline)| {
-            baseline.series_id == bundle.index.series_id && baseline.profile == bundle.index.profile
-        }) {
-            violations.push(format!(
-                "bundle {} has no matching accepted baseline authority",
-                bundle.index.bundle_id
-            ));
-        }
-    }
-
-    let report = boundary_registry_report(
-        &registry,
-        &baseline_data,
-        &bundle_data,
-        config.historical,
-        violations,
-    );
-    let json =
-        serde_json::to_string_pretty(&report).context("serializing boundary registry report")?;
-    if let Some(path) = &config.output {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).with_context(|| {
-                format!("creating boundary registry report directory {}", parent.display())
-            })?;
-        }
-        fs::write(path, format!("{json}\n"))
-            .with_context(|| format!("writing boundary registry report {}", path.display()))?;
-    } else if config.report {
-        std_io::stdout()
-            .write_all(format!("{json}\n").as_bytes())
-            .context("writing boundary registry report")?;
-    }
-
-    if !report.valid {
-        bail!(
-            "semantic-boundary registry validation failed with {} violation(s):\n{}",
-            report.violations.len(),
-            report.violations.join("\n")
-        );
-    }
-    Ok(())
-}
-
-/// Cluster typed failures and separate semantic-boundary debt from product failures.
-pub fn triage(config: TriageConfig) -> Result<()> {
-    let bundle = read_boundary_bundle(&config.bundle)?;
-    let compile_path = bundle_artifact_path(&bundle, "compile_report")?;
-    let raw = fs::read_to_string(&compile_path)
-        .with_context(|| format!("reading compile report {}", compile_path.display()))?;
-    let report: RunReport = serde_json::from_str(&raw)
-        .with_context(|| format!("decoding compile report {}", compile_path.display()))?;
-    validate_bundle_report_identity(&bundle, &report)?;
-    ensure_valid_report_shape(&report)?;
-    let cluster_report = build_failure_cluster_report(&bundle, &report)?;
-    fs::create_dir_all(&config.output)
-        .with_context(|| format!("creating triage output directory {}", config.output.display()))?;
-    let json =
-        serde_json::to_string_pretty(&cluster_report).context("serializing failure clusters")?;
-    fs::write(config.output.join("failure-clusters.json"), format!("{json}\n"))
-        .context("writing failure-clusters.json")?;
-    fs::write(
-        config.output.join("failure-clusters.md"),
-        render_failure_cluster_markdown(&cluster_report),
-    )
-    .context("writing failure-clusters.md")?;
-
-    if config.write_history || config.check_history {
-        let history_path = config.history.as_ref().ok_or_else(|| {
-            color_eyre::eyre::eyre!("history path is required for history checks")
-        })?;
-        let history = read_cluster_history(history_path, config.write_history)?;
-        let shape_violations = validate_cluster_history_shape(&history);
-        if !shape_violations.is_empty() {
-            bail!("cluster history is invalid:\n{}", shape_violations.join("\n"));
-        }
-        if config.check_history {
-            let violations = validate_history_against_report(&history, &cluster_report);
-            if !violations.is_empty() {
-                bail!("cluster history check failed:\n{}", violations.join("\n"));
-            }
-        } else {
-            let updated = merge_cluster_history(history, &cluster_report)?;
-            let updated_json =
-                serde_json::to_string_pretty(&updated).context("serializing cluster history")?;
-            if let Some(parent) = history_path.parent() {
-                fs::create_dir_all(parent).with_context(|| {
-                    format!("creating cluster history directory {}", parent.display())
-                })?;
-            }
-            fs::write(history_path, format!("{updated_json}\n"))
-                .with_context(|| format!("writing cluster history {}", history_path.display()))?;
-            fs::write(config.output.join("cluster-history.json"), format!("{updated_json}\n"))
-                .context("writing cluster-history.json")?;
-            fs::write(
-                config.output.join("cluster-history.md"),
-                render_cluster_history_markdown(&updated),
-            )
-            .context("writing cluster-history.md")?;
-        }
-    }
-    Ok(())
-}
-
-fn read_cluster_history(path: &Path, allow_missing: bool) -> Result<FailureClusterHistory> {
-    if !path.is_file() {
-        if allow_missing {
-            return Ok(FailureClusterHistory {
-                schema_version: FAILURE_CLUSTER_HISTORY_SCHEMA_VERSION.into(),
-                entries: Vec::new(),
-            });
-        }
-        bail!("cluster history {} is missing", path.display());
-    }
-    let raw = fs::read_to_string(path)
-        .with_context(|| format!("reading cluster history {}", path.display()))?;
-    serde_json::from_str(&raw)
-        .with_context(|| format!("decoding cluster history {}", path.display()))
-}
-
-/// Inputs for validating post-merge evidence lineage and current authority.
-#[derive(Debug, Clone)]
-pub struct CurrentAuthorityConfig {
-    /// Deterministic current-authority index.
-    pub index: PathBuf,
-    /// Landed-lineage records referenced by the index.
-    pub lineages: Vec<PathBuf>,
-    /// Repository tree containing the published evidence artifacts.
-    pub repository_root: PathBuf,
-    /// Exact Git commit containing the published authority records. Each
-    /// lineage record's `landed_sha` identifies the measured code commit.
-    pub landed_sha: String,
-}
-
-fn authority_status_rank(status: CurrentAuthorityStatus) -> u8 {
-    match status {
-        CurrentAuthorityStatus::Current => 0,
-        CurrentAuthorityStatus::Historical => 1,
-        CurrentAuthorityStatus::Superseded => 2,
-    }
-}
-
-fn authority_entry_key(entry: &CurrentAuthorityEntry) -> (&str, u8, &str) {
-    (
-        entry.series_id.as_str(),
-        authority_status_rank(entry.status),
-        entry.observation_bundle_id.as_str(),
-    )
-}
-
-/// Validate the immutable identity chain for a current-authority index.
-pub fn validate_current_authority(config: CurrentAuthorityConfig) -> Result<CurrentAuthorityIndex> {
-    if config.lineages.is_empty() {
-        bail!("current-authority validation requires at least one lineage record");
-    }
-    validate_git_sha(&config.landed_sha, "expected landed SHA")?;
-    validate_git_commit(&config.repository_root, &config.landed_sha)?;
-    let index_path = repository_relative_path(&config.repository_root, &config.index)?;
-    let index: CurrentAuthorityIndex = read_json_bytes(
-        &git_blob_at(&config.repository_root, &config.landed_sha, &index_path)?,
-        "current-authority index",
-    )?;
-    if index.schema_version != CURRENT_AUTHORITY_INDEX_SCHEMA_VERSION {
-        bail!("unsupported current-authority index schema {}", index.schema_version);
-    }
-    if index.entries.is_empty() {
-        bail!("current-authority index contains no series");
-    }
-    let mut declared_current_series = BTreeSet::new();
-    for entry in &index.entries {
-        if matches!(entry.status, CurrentAuthorityStatus::Current)
-            && !declared_current_series.insert(entry.series_id.clone())
-        {
-            bail!("duplicate current authority for series {}", entry.series_id);
-        }
-    }
-    if !index
-        .entries
-        .windows(2)
-        .all(|pair| authority_entry_key(&pair[0]) < authority_entry_key(&pair[1]))
-    {
-        bail!(
-            "current-authority index entries must be sorted by series, status, and observation bundle"
-        );
-    }
-
-    let mut lineages = Vec::new();
-    let mut lineage_paths = BTreeSet::new();
-    for path in &config.lineages {
-        let relative_path = repository_relative_path(&config.repository_root, path)?;
-        let lineage = read_json_bytes(
-            &git_blob_at(&config.repository_root, &config.landed_sha, &relative_path)?,
-            "landed lineage",
-        )?;
-        validate_landed_lineage_shape(&lineage)?;
-        validate_git_ancestor(&config.repository_root, &lineage.landed_sha, &config.landed_sha)?;
-        validate_git_ancestor(
-            &config.repository_root,
-            &lineage.publication_sha,
-            &config.landed_sha,
-        )?;
-        validate_publication_scope(&config.repository_root, &lineage)?;
-        if !lineage_paths.insert(relative_path.clone()) {
-            bail!("duplicate landed lineage path");
-        }
-        lineages.push((relative_path, lineage));
-    }
-    validate_supersession_graph(&lineages)?;
-
-    let indexed_series =
-        index.entries.iter().map(|entry| entry.series_id.clone()).collect::<BTreeSet<_>>();
-    let mut current_series = BTreeSet::new();
-    for entry in &index.entries {
-        if entry.series_id.trim().is_empty()
-            || entry.manifest_hash.trim().is_empty()
-            || entry.observation_bundle_id.trim().is_empty()
-            || entry.observation_bundle_digest.trim().is_empty()
-            || entry.claim_boundary.trim().is_empty()
-        {
-            bail!("current-authority entry has incomplete identity");
-        }
-        validate_public_path(&entry.observation_bundle_path, "observation bundle path")?;
-        validate_public_path(&entry.landed_lineage_path, "landed lineage path")?;
-        if let Some(path) = &entry.accepted_baseline_path {
-            validate_public_path(path, "accepted baseline path")?;
-        }
-        let (lineage_path, lineage) = lineages
-            .iter()
-            .find(|(path, lineage)| {
-                lineage.series_id == entry.series_id && path == &entry.landed_lineage_path
-            })
-            .ok_or_else(|| {
-                color_eyre::eyre::eyre!(
-                    "current-authority entry {} has no matching lineage",
-                    entry.series_id
-                )
-            })?;
-        if entry.profile != lineage.profile
-            || entry.manifest_hash != lineage.manifest_hash
-            || entry.observation_bundle_id != lineage.evidence_bundle_id
-            || entry.observation_bundle_digest != lineage.evidence_bundle_digest
-            || entry.observation_transition != lineage.observation_transition
-            || entry.accepted_transition_id != lineage.accepted_transition_id
-            || entry.accepted_baseline_digest != lineage.accepted_baseline_digest
-            || entry.accepted_baseline_evidence_bundle != lineage.accepted_baseline_evidence_bundle
-        {
-            bail!("current-authority entry {} disagrees with its lineage", entry.series_id);
-        }
-        if matches!(entry.status, CurrentAuthorityStatus::Current) {
-            current_series.insert(entry.series_id.clone());
-        }
-        if matches!(entry.status, CurrentAuthorityStatus::Current)
-            && matches!(lineage.observation_transition, CompatibilityTransition::Historical)
-        {
-            bail!("historical lineage {} cannot be current authority", entry.series_id);
-        }
-        if matches!(lineage.observation_transition, CompatibilityTransition::Regression)
-            && (entry.accepted_baseline_path.is_none() || entry.accepted_transition_id.is_none())
-        {
-            bail!(
-                "regression {} must retain an explicit accepted baseline and transition",
-                entry.series_id
-            );
-        }
-        if !lineage.authoritative_artifacts.contains_key(&entry.observation_bundle_path) {
-            bail!(
-                "observation bundle {} is absent from authoritative artifacts",
-                entry.observation_bundle_path
-            );
-        }
-        validate_bundle_identity(
-            &config.repository_root,
-            &entry.observation_bundle_path,
-            entry,
-            lineage,
-        )?;
-        validate_accepted_baseline(&config.repository_root, entry, lineage)?;
-        validate_artifact_digests(
-            &config.repository_root,
-            &index_path,
-            &lineage_paths,
-            lineage_path,
-            lineage,
-        )?;
-    }
-    if current_series.is_empty() {
-        bail!("current-authority index has no current series");
-    }
-    if current_series != indexed_series {
-        bail!("every indexed series must have exactly one current authority");
-    }
-    Ok(index)
-}
-
-fn read_json_bytes<T: DeserializeOwned>(bytes: &[u8], label: &str) -> Result<T> {
-    serde_json::from_slice(bytes).with_context(|| format!("decoding {label}"))
-}
-
-fn validate_landed_lineage_shape(lineage: &LandedLineage) -> Result<()> {
-    if lineage.schema_version != LANDED_LINEAGE_SCHEMA_VERSION {
-        bail!("unsupported landed-lineage schema {}", lineage.schema_version);
-    }
-    for (label, value) in [
-        ("series ID", &lineage.series_id),
-        ("manifest hash", &lineage.manifest_hash),
-        ("bundle ID", &lineage.evidence_bundle_id),
-        ("bundle digest", &lineage.evidence_bundle_digest),
-        ("measurement SHA", &lineage.measurement_sha),
-        ("publication SHA", &lineage.publication_sha),
-        ("landed SHA", &lineage.landed_sha),
-        ("publication base SHA", &lineage.publication_base_sha),
-        ("recorder schema version", &lineage.recorder_schema_version),
-        ("creation reason", &lineage.created_reason),
-    ] {
-        if value.trim().is_empty() {
-            bail!("landed lineage has empty {label}");
-        }
-    }
-    for (label, value) in [
-        ("measurement SHA", &lineage.measurement_sha),
-        ("publication SHA", &lineage.publication_sha),
-        ("landed SHA", &lineage.landed_sha),
-        ("publication base SHA", &lineage.publication_base_sha),
-    ] {
-        validate_git_sha(value, label)?;
-    }
-    validate_digest(&lineage.evidence_bundle_digest, "bundle digest")?;
-    if lineage.authoritative_artifacts.is_empty() {
-        bail!("landed lineage has no authoritative artifacts");
-    }
-    validate_publication_paths(&lineage.publication_paths)?;
-    for (path, digest) in &lineage.authoritative_artifacts {
-        validate_public_path(path, "authoritative artifact path")?;
-        validate_digest(digest, "authoritative artifact digest")?;
-        if lineage.publication_paths.iter().all(|published| published != path) {
-            bail!("authoritative artifact {path} is absent from publication paths");
-        }
-    }
-    let artifact_paths = lineage
-        .authoritative_artifacts
-        .keys()
-        .map(|path| path.replace('\\', "/"))
-        .collect::<BTreeSet<_>>();
-    let publication_paths = lineage
-        .publication_paths
-        .iter()
-        .map(|path| path.replace('\\', "/"))
-        .collect::<BTreeSet<_>>();
-    if artifact_paths != publication_paths {
-        bail!("publication paths and authoritative artifact digests must match exactly");
-    }
-    Ok(())
-}
-
-fn validate_bundle_identity(
-    root: &Path,
-    bundle_path: &str,
-    entry: &CurrentAuthorityEntry,
-    lineage: &LandedLineage,
-) -> Result<()> {
-    let bytes = git_blob_at(root, &lineage.landed_sha, bundle_path)?;
-    let actual_digest = sha256_digest_bytes(&bytes);
-    if actual_digest != lineage.evidence_bundle_digest
-        || actual_digest != entry.observation_bundle_digest
-    {
-        bail!("observation bundle digest does not match landed lineage");
-    }
-    let index: EvidenceBundleIndex = read_json_bytes(&bytes, "observation bundle")?;
-    if index.schema_version != "perl_core_harness.evidence_bundle.v1"
-        || index.bundle_id != lineage.evidence_bundle_id
-        || index.series_id != lineage.series_id
-        || index.series_id != entry.series_id
-        || index.manifest_hash != lineage.manifest_hash
-        || index.manifest_hash != entry.manifest_hash
-        || index.profile != lineage.profile
-        || index.lineage.measurement_sha != lineage.measurement_sha
-        || index.lifecycle != "published"
-        || index.completeness.status != "complete"
-        || !index.completeness.normalized_authority
-    {
-        bail!("observation bundle is not a complete normalized authority for its series");
-    }
-    let artifact =
-        index.artifacts.iter().find(|artifact| artifact.kind == "semantic_boundaries").ok_or_else(
-            || color_eyre::eyre::eyre!("observation bundle has no semantic-boundaries artifact"),
-        )?;
-    let artifact_path = Path::new(bundle_path)
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join(&artifact.logical_path);
-    let artifact_path = artifact_path.to_string_lossy().replace('\\', "/");
-    validate_public_path(&artifact_path, "evidence bundle artifact")?;
-    if !lineage.authoritative_artifacts.contains_key(&artifact_path) {
-        bail!("semantic-boundaries artifact is absent from authoritative artifacts");
-    }
-    let mut boundaries: Vec<ObservedSemanticBoundary> = read_json_bytes(
-        &git_blob_at(root, &lineage.landed_sha, &artifact_path)?,
-        "semantic-boundaries artifact",
-    )?;
-    boundaries.sort_by_key(semantic_boundary_key);
-    if boundaries
-        .windows(2)
-        .any(|pair| semantic_boundary_key(&pair[0]) == semantic_boundary_key(&pair[1]))
-    {
-        bail!("semantic-boundaries artifact contains a duplicate boundary key");
-    }
-    Ok(())
-}
-
-fn validate_accepted_baseline(
-    root: &Path,
-    entry: &CurrentAuthorityEntry,
-    lineage: &LandedLineage,
-) -> Result<()> {
-    let Some(path) = &entry.accepted_baseline_path else {
-        if entry.accepted_baseline_digest.is_some()
-            || entry.accepted_baseline_evidence_bundle.is_some()
-        {
-            bail!("accepted baseline metadata exists without an accepted baseline path");
-        }
-        return Ok(());
-    };
-    let bytes = git_blob_at(root, &lineage.landed_sha, path)?;
-    let actual_digest = sha256_digest_bytes(&bytes);
-    if entry.accepted_baseline_digest.as_deref() != Some(actual_digest.as_str())
-        || lineage.accepted_baseline_digest.as_deref() != Some(actual_digest.as_str())
-    {
-        bail!("accepted baseline {} digest is not bound to lineage", path);
-    }
-    if lineage.authoritative_artifacts.get(path) != Some(&actual_digest) {
-        bail!("accepted baseline {} is absent or mismatched in authoritative artifacts", path);
-    }
-    let baseline: CompileBaselineV2 = parse_compile_baseline_v2(
-        serde_json::from_slice(&bytes)
-            .with_context(|| format!("decoding accepted baseline envelope {path}"))?,
-        path,
-    )?;
-    if baseline.series_id != entry.series_id
-        || baseline.manifest_hash != entry.manifest_hash
-        || baseline.accepted_transition_id != entry.accepted_transition_id
-        || baseline.evidence_bundle.as_ref() != entry.accepted_baseline_evidence_bundle.as_ref()
-    {
-        bail!("accepted baseline {} disagrees with current authority", path);
-    }
-    Ok(())
-}
-
-fn validate_artifact_digests(
-    root: &Path,
-    index_path: &str,
-    lineage_paths: &BTreeSet<String>,
-    lineage_path: &str,
-    lineage: &LandedLineage,
-) -> Result<()> {
-    for path in lineage.authoritative_artifacts.keys() {
-        if path == index_path || path == lineage_path || lineage_paths.contains(path) {
-            bail!("authority artifacts cannot self-reference lineage or index");
-        }
-        let expected = lineage.authoritative_artifacts.get(path).ok_or_else(|| {
-            color_eyre::eyre::eyre!("missing digest for authoritative artifact {path}")
-        })?;
-        let actual = sha256_digest_bytes(&git_blob_at(root, &lineage.landed_sha, path)?);
-        if actual != *expected {
-            bail!("authoritative artifact {path} differs at landed SHA");
-        }
-    }
-    Ok(())
-}
-
-fn validate_supersession_graph(lineages: &[(String, LandedLineage)]) -> Result<()> {
-    let by_path =
-        lineages.iter().map(|(path, lineage)| (path.as_str(), lineage)).collect::<BTreeMap<_, _>>();
-    for (path, lineage) in &by_path {
-        let Some(supersedes) = lineage.supersedes.as_deref() else {
-            continue;
-        };
-        validate_public_path(supersedes, "superseded lineage path")?;
-        if supersedes == *path {
-            bail!("lineage {path} cannot supersede itself");
-        }
-        let superseded = by_path.get(supersedes).ok_or_else(|| {
-            color_eyre::eyre::eyre!("lineage {path} supersedes missing lineage {supersedes}")
-        })?;
-        if superseded.series_id != lineage.series_id {
-            bail!("lineage {path} supersedes a different series {}", superseded.series_id);
-        }
-    }
-    for start in by_path.keys() {
-        let mut seen = BTreeSet::new();
-        let mut current = *start;
-        while let Some(lineage) = by_path.get(current) {
-            if !seen.insert(current) {
-                bail!("supersession graph contains a cycle at lineage {current}");
-            }
-            let Some(next) = lineage.supersedes.as_deref() else {
-                break;
-            };
-            current = next;
-        }
-    }
-    Ok(())
-}
-
-fn validate_publication_scope(root: &Path, lineage: &LandedLineage) -> Result<()> {
-    validate_git_commit(root, &lineage.publication_sha)?;
-    validate_git_commit(root, &lineage.publication_base_sha)?;
-    validate_git_ancestor(root, &lineage.publication_base_sha, &lineage.publication_sha)?;
-    let output = Command::new("git")
-        .arg("--no-replace-objects")
-        .arg("-c")
-        .arg("core.quotePath=false")
-        .arg("-C")
-        .arg(root)
-        .args([
-            "diff",
-            "--no-renames",
-            "--name-only",
-            "-z",
-            "--diff-filter=ACDMRTUXB",
-            &lineage.publication_base_sha,
-            &lineage.publication_sha,
-            "--",
-        ])
-        .output()
-        .context("computing publication commit diff")?;
-    if !output.status.success() {
-        bail!(
-            "could not compute publication diff {}..{}: {}",
-            lineage.publication_base_sha,
-            lineage.publication_sha,
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-    }
-    let mut actual = String::from_utf8(output.stdout)
-        .context("publication diff contained invalid UTF-8")?
-        .split('\0')
-        .filter(|path| !path.is_empty())
-        .map(|path| path.replace('\\', "/"))
-        .collect::<Vec<_>>();
-    actual.sort();
-    actual.dedup();
-    let mut declared =
-        lineage.publication_paths.iter().map(|path| path.replace('\\', "/")).collect::<Vec<_>>();
-    declared.sort();
-    declared.dedup();
-    if actual != declared {
-        bail!(
-            "publication paths do not match Git diff: declared {:?}, actual {:?}",
-            declared,
-            actual
-        );
-    }
-    Ok(())
-}
-
-fn validate_publication_paths(paths: &[String]) -> Result<()> {
-    if paths.is_empty() {
-        bail!("publication lineage has no changed paths");
-    }
-    for path in paths {
-        validate_public_path(path, "publication path")?;
-        let normalized = path.replace('\\', "/");
-        let approved = normalized.starts_with(".ci/perl-core-harness/")
-            || normalized.starts_with("evidence/")
-            || normalized.starts_with("reports/")
-            || normalized.starts_with("docs/project/status/")
-            || normalized.starts_with("docs/project/compatibility/")
-            || normalized.starts_with("plans/");
-        if !approved {
-            bail!("publication path {path} is outside the evidence-only allowlist");
-        }
-    }
-    Ok(())
-}
-
-/// One nibble of a canonically serialized hexadecimal identity (#7725):
-/// lower-case ASCII digits and `a`-`f` only, so every load-bearing
-/// content-addressed receipt carries exactly one spelling per digest.
-pub(crate) fn is_lower_case_hex_byte(byte: u8) -> bool {
-    byte.is_ascii_digit() || matches!(byte, b'a'..=b'f')
-}
-
-/// A 64-character SHA-256 identity in its one canonical serialized form.
-pub(crate) fn is_canonical_sha256_hex(value: &str) -> bool {
-    value.len() == 64 && value.bytes().all(is_lower_case_hex_byte)
-}
-
-fn validate_git_sha(value: &str, label: &str) -> Result<()> {
-    if !(value.len() == 40 || value.len() == 64) || !value.bytes().all(is_lower_case_hex_byte) {
-        bail!("{label} must be a 40- or 64-character hexadecimal SHA ([0-9a-f] lower-case)");
-    }
-    Ok(())
-}
-
-fn validate_git_commit(root: &Path, sha: &str) -> Result<()> {
-    let object = format!("{sha}^{{commit}}");
-    let output = Command::new("git")
-        .arg("--no-replace-objects")
-        .arg("-C")
-        .arg(root)
-        .args(["cat-file", "-e", &object])
-        .output()
-        .with_context(|| format!("checking landed commit {sha}"))?;
-    if !output.status.success() {
-        bail!("landed SHA {sha} is not a reachable commit in {}", root.display());
-    }
-    Ok(())
-}
-
-fn validate_git_ancestor(root: &Path, ancestor: &str, descendant: &str) -> Result<()> {
-    let output = Command::new("git")
-        .arg("--no-replace-objects")
-        .arg("-C")
-        .arg(root)
-        .args(["merge-base", "--is-ancestor", ancestor, descendant])
-        .output()
-        .with_context(|| format!("checking Git ancestry {ancestor}..{descendant}"))?;
-    if !output.status.success() {
-        bail!("Git commit {ancestor} is not an ancestor of {descendant}");
-    }
-    Ok(())
-}
-
-fn git_blob_at(root: &Path, commit: &str, path: &str) -> Result<Vec<u8>> {
-    validate_public_path(path, "Git artifact path")?;
-    let object = format!("{commit}:{}", path.replace('\\', "/"));
-    let output = Command::new("git")
-        .arg("--no-replace-objects")
-        .arg("-C")
-        .arg(root)
-        .args(["show", &object])
-        .output()
-        .with_context(|| format!("reading Git artifact {object}"))?;
-    if !output.status.success() {
-        bail!(
-            "landed SHA {commit} does not contain Git artifact {path}: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-    }
-    Ok(output.stdout)
-}
-
-fn validate_digest(value: &str, label: &str) -> Result<()> {
-    let Some(hex) = value.strip_prefix("sha256:") else {
-        bail!("{label} must use the sha256:<hex> format");
-    };
-    if !is_canonical_sha256_hex(hex) {
-        bail!("{label} must contain 64 hexadecimal characters ([0-9a-f] lower-case)");
-    }
-    Ok(())
-}
-
-fn repository_relative_path(root: &Path, path: &Path) -> Result<String> {
-    let raw_path = path.to_string_lossy().replace('\\', "/");
-    if raw_path.split('/').any(|component| component == "..") {
-        bail!("repository-relative path contains a traversal component");
-    }
-
-    let root = normalize_windows_extended_path(
-        &fs::canonicalize(root)
-            .map_err(|_| color_eyre::eyre::eyre!("repository root could not be resolved"))?,
-    );
-    let candidate_input = if path.is_absolute() { path.to_path_buf() } else { root.join(path) };
-    if path_has_link_component(&candidate_input) {
-        bail!("repository path contains a link or reparse point");
-    }
-    let candidate =
-        normalize_windows_extended_path(&canonicalize_existing_prefix(&candidate_input)?);
-    let relative = candidate
-        .strip_prefix(&root)
-        .map_err(|_| color_eyre::eyre::eyre!("repository path is outside the repository"))?;
-    let relative = relative.to_string_lossy().replace('\\', "/");
-    validate_public_path(&relative, "repository-relative path")?;
-    Ok(relative)
-}
-
-fn path_has_link_component(path: &Path) -> bool {
-    let mut current = PathBuf::new();
-    for component in path.components() {
-        current.push(component.as_os_str());
-        let Ok(metadata) = fs::symlink_metadata(&current) else {
-            continue;
-        };
-        if metadata.file_type().is_symlink() {
-            return true;
-        }
-        #[cfg(windows)]
-        {
-            use std::os::windows::fs::MetadataExt;
-
-            const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
-            if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-                return true;
-            }
-        }
-    }
-    false
-}
-
-fn canonicalize_existing_prefix(path: &Path) -> Result<PathBuf> {
-    let mut existing = path.to_path_buf();
-    let mut missing = Vec::new();
-    while !existing.exists() {
-        let Some(component) = existing.file_name() else {
-            bail!("repository path could not be resolved");
-        };
-        missing.push(component.to_os_string());
-        if !existing.pop() {
-            bail!("repository path could not be resolved");
-        }
-    }
-
-    let mut canonical = fs::canonicalize(&existing)
-        .map_err(|_| color_eyre::eyre::eyre!("repository path could not be resolved"))?;
-    for component in missing.iter().rev() {
-        canonical.push(component);
-    }
-    Ok(canonical)
-}
-
-fn normalize_windows_extended_path(path: &Path) -> PathBuf {
-    let value = path.to_string_lossy();
-    if let Some(stripped) = value.strip_prefix(r"\\?\UNC\") {
-        return PathBuf::from(format!(r"\\{stripped}"));
-    }
-    PathBuf::from(value.strip_prefix(r"\\?\").unwrap_or(&value))
-}
-
-/// Load one or more independently identified compatibility series from typed
-/// harness receipts. This is the input contract for generated compatibility
-/// views; it does not render or mutate any status document.
-pub fn load_compatibility_state(
-    config: CompatibilityLoadConfig,
-) -> Result<CompilerCompatibilityState> {
-    if config.inputs.is_empty() {
-        bail!("compiler compatibility requires at least one series input");
-    }
-    if config.repository_commit.trim().is_empty() {
-        bail!("compiler compatibility requires a repository commit");
-    }
-    let mut series = config
-        .inputs
-        .iter()
-        .map(|input| load_compatibility_series(input, &config.repository_commit))
-        .collect::<Result<Vec<_>>>()?;
-    series.sort_by(|left, right| left.identity.series_id.cmp(&right.identity.series_id));
-    for pair in series.windows(2) {
-        if pair[0].identity.series_id == pair[1].identity.series_id {
-            bail!(
-                "compiler compatibility contains duplicate series {}",
-                pair[0].identity.series_id
-            );
-        }
-    }
-    Ok(CompilerCompatibilityState {
-        schema_version: COMPILER_COMPATIBILITY_SCHEMA_VERSION.into(),
-        repository_commit: config.repository_commit,
-        series,
-    })
-}
-
-const PARSE_BASELINE_SCHEMA_VERSION: &str = "not_available";
-
-fn load_compatibility_series(
-    input: &CompatibilitySeriesInput,
-    repository_commit: &str,
-) -> Result<CompilerCompatibilitySeries> {
-    let authority = input
-        .current_authority
-        .as_ref()
-        .map(|config| validate_current_authority(config.clone()))
-        .transpose()?;
-    let series = read_series_manifest(&input.series_manifest)?;
-    validate_series_manifest(&series)?;
-    if series.repository_commit != repository_commit {
-        bail!("series {} has a different repository subject", series.series_id);
-    }
-    let bundle = read_boundary_bundle(&input.evidence_bundle)?;
-    if bundle.index.series_id != series.series_id
-        || bundle.index.manifest_hash != series.manifest_hash
-        || bundle.index.repository_commit != series.repository_commit
-        || bundle.index.profile != series.profile
-        || bundle.index.runner != series.runner
-        || bundle.index.perl_resolved_ref != series.perl_resolved_ref
-        || bundle.index.lineage.measurement_sha != series.repository_commit
-    {
-        bail!("evidence bundle identity does not match series {}", series.series_id);
-    }
-    let declared_compile = bundle_artifact_path(&bundle, "compile_report")?;
-    if fs::canonicalize(&declared_compile).ok() != fs::canonicalize(&input.compile_report).ok() {
-        bail!("compile report input is not the bundle-declared compile report");
-    }
-    let parse_report = read_run_report(&input.parse_report)?;
-    let compile_report = read_run_report(&input.compile_report)?;
-    validate_report_for_compatibility(&parse_report, &series, HarnessMode::Parse)?;
-    validate_report_for_compatibility(&compile_report, &series, HarnessMode::Compile)?;
-    let compile_membership = report_membership(&compile_report)?;
-    if compile_membership != series.normalized_manifest.iter().cloned().collect() {
-        bail!("compile report membership differs from series {}", series.series_id);
-    }
-    let compile_baseline = read_compile_baseline_v2(&input.compile_baseline)?;
-    let baseline_comparison = compare_baseline_v2_with_identities(
-        &compile_baseline,
-        &compile_report,
-        &series,
-        Some(&V2Identities {
-            compiler_subject_identity: series.compiler_subject_identity.clone(),
-            invocation_identity: series.invocation_identity.clone(),
-            capability_identity: series.capability_identity.clone(),
-            environment_identity: series.environment_identity.clone(),
-        }),
-        None,
-        &[],
-    );
-    if !baseline_comparison.violations.is_empty() {
-        bail!(
-            "compile baseline is not an authoritative subject for series {}:\n{}",
-            series.series_id,
-            baseline_comparison
-                .violations
-                .iter()
-                .map(|violation| violation.message.clone())
-                .collect::<Vec<_>>()
-                .join("\n")
-        );
-    }
-    let Some(accepted_path) = input.accepted_baseline.as_ref() else {
-        bail!(
-            "compatibility series {} must identify an accepted baseline separately from its current observation",
-            series.series_id
-        );
-    };
-    let accepted_baseline = read_compile_baseline_v2(accepted_path)?;
-    validate_accepted_ratchet_identity(&accepted_baseline, &series)?;
-    let (transition, transition_reason, requires_acceptance) =
-        classify_compatibility_transition(&accepted_baseline, &compile_report);
-    if let Some(index) = &authority {
-        let current = index
-            .entries
-            .iter()
-            .filter(|entry| {
-                entry.series_id == series.series_id
-                    && entry.status == CurrentAuthorityStatus::Current
-            })
-            .collect::<Vec<_>>();
-        if current.len() != 1 {
-            bail!(
-                "current-authority admission for {} must contain exactly one current entry",
-                series.series_id
-            );
-        }
-        let entry = current[0];
-        if entry.manifest_hash != series.manifest_hash
-            || entry.observation_bundle_id != bundle.index.bundle_id
-        {
-            bail!("current-authority entry disagrees with series {}", series.series_id);
-        }
-        if entry.observation_transition != transition {
-            bail!(
-                "current-authority transition {:?} does not match measured transition {:?} for {}",
-                entry.observation_transition,
-                transition,
-                series.series_id
-            );
-        }
-        validate_authority_artifact_bindings(
-            &input.evidence_bundle,
-            accepted_path,
-            &entry.observation_bundle_path,
-            &entry.observation_bundle_digest,
-            entry.accepted_baseline_path.as_deref(),
-            entry.accepted_baseline_digest.as_deref(),
-            input.current_authority.as_ref().map(|config| config.repository_root.as_path()),
-        )?;
-    }
-    let mut parse_bundle = bundle.clone();
-    parse_bundle.semantic_boundaries = parse_report.semantic_boundaries.clone();
-    let parse_clusters = build_failure_cluster_report(&parse_bundle, &parse_report)?;
-    let compile_clusters = build_failure_cluster_report(&bundle, &compile_report)?;
-
-    let (history_rail, cluster_state) =
-        load_cluster_history_state(input.cluster_history.as_deref(), &compile_clusters, &series)?;
-    let registry_rail =
-        load_registry_state(input.boundary_registry.as_deref(), &compile_baseline, &bundle)?;
-    let debt = build_compatibility_debt_state(
-        &compile_baseline,
-        registry_rail.clone(),
-        history_rail.clone(),
-    );
-    let execution = match &input.execute_report {
-        Some(path) => load_execution_rail(path, &series, &bundle.index.bundle_id)?,
-        None => unavailable_rail("selected execution receipt was not supplied"),
-    };
-    let observation = CompatibilityObservation {
-        observation_bundle_id: bundle.index.bundle_id.clone(),
-        measurement_sha: bundle.index.lineage.measurement_sha.clone(),
-        parse: compatibility_run_state(
-            &parse_report,
-            PARSE_BASELINE_SCHEMA_VERSION,
-            &bundle.index.bundle_id,
-            parse_clusters.clusters.len(),
-        ),
-        compile: compatibility_run_state(
-            &compile_report,
-            &compile_baseline.schema_version,
-            &bundle.index.bundle_id,
-            compile_clusters.clusters.len(),
-        ),
-        debt: debt.clone(),
-        clusters: cluster_state.clone(),
-        execution: execution.clone(),
-        curated_gold: unavailable_rail("curated semantic-gold receipt was not supplied"),
-        differential_oracle: unavailable_rail("differential-oracle receipt was not supplied"),
-        eir: unavailable_rail("EIR evaluation receipt was not supplied"),
-        claim_boundary: "compile-harness and typed receipt state only; general semantics and runtime correctness are not implied".into(),
-    };
-    let accepted_ratchet = CompatibilityAcceptedRatchet {
-        baseline_schema_version: accepted_baseline.schema_version.clone(),
-        baseline_digest: sha256_diâ€¦87980 tokens truncatedâ€¦perl_tree_requiring_t_perl_for_dumptests(root: &Path) -> TestResult<PathBuf> {
-        let perl_tree = root.join("prepared-perl-requires-t-perl");
-        let t_dir = perl_tree.join("t");
-        fs::create_dir_all(t_dir.join("base"))?;
-        fs::write(t_dir.join("base").join("ok.t"), "1;\n")?;
-        let script = r#"#!/bin/sh
-set -eu
-if [ "${1:-}" = "--dumptests" ]; then
-  if [ ! -f ./perl ]; then
-    echo 'You need to run "make test_prep" first to set things up.' >&2
-    exit 2
-  fi
-  echo "base/ok.t"
-  exit 0
-fi
-./perl base/ok.t
-"#;
-        fs::write(t_dir.join("TEST"), script)?;
-        Ok(perl_tree)
-    }
-
-    #[cfg(unix)]
-    fn write_fake_perl_tree(root: &Path) -> TestResult<PathBuf> {
-        write_fake_perl_tree_with_run_body(
-            root,
-            r#"./perl base/ok.t
-"#,
-        )
-    }
-
-    #[cfg(unix)]
-    fn write_fake_perl_tree_with_two_base_tests(root: &Path) -> TestResult<PathBuf> {
-        let perl_tree = root.join("prepared-perl-two-base-tests");
-        let t_dir = perl_tree.join("t");
-        fs::create_dir_all(t_dir.join("base"))?;
-        fs::write(t_dir.join("base").join("ok.t"), "1;\n")?;
-        fs::write(t_dir.join("base").join("lex.t"), "1;\n")?;
-        let script = r#"#!/bin/sh
-set -eu
-if [ "${1:-}" = "--dumptests" ]; then
-  echo "base/ok.t"
-  echo "base/lex.t"
-  exit 0
-fi
-./perl base/ok.t
-./perl base/lex.t
-"#;
-        fs::write(t_dir.join("TEST"), script)?;
-        Ok(perl_tree)
-    }
-
-    #[cfg(unix)]
-    fn write_fake_perl_tree_with_base_if_test(root: &Path) -> TestResult<PathBuf> {
-        write_fake_perl_tree_with_base_if_test_and_body(root, "./perl base/if.t\n")
-    }
-
-    #[cfg(unix)]
-    fn write_fake_perl_tree_with_base_if_test_and_exit(
-        root: &Path,
-        status: i32,
-    ) -> TestResult<PathBuf> {
-        write_fake_perl_tree_with_base_if_test_and_body(
-            root,
-            &format!("./perl base/if.t\nexit {status}\n"),
-        )
-    }
-
-    #[cfg(unix)]
-    fn write_fake_perl_tree_with_base_if_test_and_body(
-        root: &Path,
-        run_body: &str,
-    ) -> TestResult<PathBuf> {
-        let perl_tree = root.join("prepared-perl-base-if");
-        let t_dir = perl_tree.join("t");
-        fs::create_dir_all(t_dir.join("base"))?;
-        fs::write(t_dir.join("base").join("if.t"), "1;\n")?;
-        let script = format!(
-            r#"#!/bin/sh
-set -eu
-if [ "${{1:-}}" = "--dumptests" ]; then
-  echo "base/if.t"
-  exit 0
-fi
-{run_body}"#
-        );
-        fs::write(t_dir.join("TEST"), script)?;
-        Ok(perl_tree)
-    }
-
-    #[cfg(unix)]
-    fn write_fake_perl_tree_with_base_execute_subset(root: &Path) -> TestResult<PathBuf> {
-        let perl_tree = root.join("prepared-perl-base-execute-subset");
-        let t_dir = perl_tree.join("t");
-        fs::create_dir_all(t_dir.join("base"))?;
-        fs::write(t_dir.join("base").join("if.t"), "1;\n")?;
-        fs::write(t_dir.join("base").join("cond.t"), "1;\n")?;
-        fs::write(t_dir.join("base").join("num.t"), "1;\n")?;
-        fs::write(t_dir.join("base").join("pat.t"), "1;\n")?;
-        fs::write(t_dir.join("base").join("translate.t"), "1;\n")?;
-        fs::write(t_dir.join("base").join("while.t"), "1;\n")?;
-        let script = r#"#!/bin/sh
-set -eu
-if [ "${1:-}" = "--dumptests" ]; then
-  echo "base/cond.t"
-  echo "base/if.t"
-  echo "base/num.t"
-  echo "base/pat.t"
-  echo "base/translate.t"
-  echo "base/while.t"
-  exit 0
-fi
-./perl base/cond.t
-./perl base/if.t
-./perl base/num.t
-./perl base/pat.t
-./perl base/translate.t
-./perl base/while.t
-"#;
-        fs::write(t_dir.join("TEST"), script)?;
-        Ok(perl_tree)
-    }
-
-    #[cfg(unix)]
-    fn write_fake_perl_tree_with_two_comp_tests(root: &Path) -> TestResult<PathBuf> {
-        let perl_tree = root.join("prepared-perl-two-comp-tests");
-        let t_dir = perl_tree.join("t");
-        fs::create_dir_all(t_dir.join("comp"))?;
-        fs::write(t_dir.join("comp").join("require.t"), "1;\n")?;
-        fs::write(t_dir.join("comp").join("use.t"), "1;\n")?;
-        let script = r#"#!/bin/sh
-set -eu
-if [ "${1:-}" = "--dumptests" ]; then
-  echo "comp/require.t"
-  echo "comp/use.t"
-  exit 0
-fi
-./perl comp/require.t
-./perl comp/use.t
-"#;
-        fs::write(t_dir.join("TEST"), script)?;
-        Ok(perl_tree)
-    }
-
-    #[cfg(unix)]
-    fn write_fake_perl_tree_with_two_run_tests(root: &Path) -> TestResult<PathBuf> {
-        let perl_tree = root.join("prepared-perl-two-run-tests");
-        let t_dir = perl_tree.join("t");
-        fs::create_dir_all(t_dir.join("run"))?;
-        fs::write(t_dir.join("run").join("import.t"), "1;\n")?;
-        fs::write(t_dir.join("run").join("switches.t"), "1;\n")?;
-        let script = r#"#!/bin/sh
-set -eu
-if [ "${1:-}" = "--dumptests" ]; then
-  echo "run/import.t"
-  echo "run/switches.t"
-  exit 0
-fi
-./perl run/import.t
-./perl run/switches.t
-"#;
-        fs::write(t_dir.join("TEST"), script)?;
-        Ok(perl_tree)
-    }
-
-    #[cfg(unix)]
-    fn write_fake_perl_tree_with_run_body(root: &Path, run_body: &str) -> TestResult<PathBuf> {
-        let perl_tree = root.join("prepared-perl");
-        let t_dir = perl_tree.join("t");
-        fs::create_dir_all(t_dir.join("base"))?;
-        fs::write(t_dir.join("base").join("ok.t"), "1;\n")?;
-        let stale_context_dir = perl_tree.join("target");
-        fs::create_dir_all(&stale_context_dir)?;
-        fs::write(
-            stale_context_dir.join("perl-lsp-runner-records.jsonl"),
-            r#"{"schema_version":"perl_core_harness.runner_record.v1","mode":"parse","path":"stale.t","status":"fail","assertions_passed":0,"assertions_total":1,"bucket":"parse_recovery","first_diagnostic":"stale"}"#,
-        )?;
-        let script = format!(
-            r#"#!/bin/sh
-set -eu
-if [ "${{1:-}}" = "--dumptests" ]; then
-  echo "base/ok.t"
-  exit 0
-fi
-{run_body}"#
-        );
-        fs::write(t_dir.join("TEST"), script)?;
-        Ok(perl_tree)
-    }
-
-    #[cfg(unix)]
-    fn write_fake_runner(root: &Path, status: RunnerStatus) -> TestResult<PathBuf> {
-        write_fake_runner_with_bucket(root, status, Some("parse_recovery"))
-    }
-
-    #[cfg(unix)]
-    fn write_fake_execute_runner(root: &Path) -> TestResult<PathBuf> {
-        let runner = root.join("fake-runner-execute-pass.sh");
-        let body = r#"#!/bin/sh
-set -eu
-script="${1:-unknown.t}"
-mode="${PERL_LSP_HARNESS_MODE:-execute}"
-mkdir -p "$(dirname "$PERL_LSP_HARNESS_CONTEXT")"
-case "$script" in
-  *base/cond.t)
-    printf '1..4\n'
-    printf 'ok 1 - operator eq\n'
-    printf 'ok 2 - operator ne\n'
-    printf 'ok 3 - operator ==\n'
-    printf 'ok 4 - operator !=\n'
-    printf '{"schema_version":"perl_core_harness.runner_record.v1","mode":"%s","path":"%s","status":"pass","assertions_passed":4,"assertions_total":4,"bucket":null,"first_diagnostic":null}\n' "$mode" "$script" >> "$PERL_LSP_HARNESS_CONTEXT"
-    ;;
-  *base/while.t)
-    printf '1..4\n'
-    printf 'ok 1\n'
-    printf 'ok 2\n'
-    printf 'ok 3\n'
-    printf 'ok 4\n'
-    printf '{"schema_version":"perl_core_harness.runner_record.v1","mode":"%s","path":"%s","status":"pass","assertions_passed":4,"assertions_total":4,"bucket":null,"first_diagnostic":null}\n' "$mode" "$script" >> "$PERL_LSP_HARNESS_CONTEXT"
-    ;;
-  *base/num.t)
-    printf '1..56\n'
-    i=1
-    while [ "$i" -le 56 ]; do
-      printf 'ok %s\n' "$i"
-      i=$((i + 1))
-    done
-    printf '{"schema_version":"perl_core_harness.runner_record.v1","mode":"%s","path":"%s","status":"pass","assertions_passed":56,"assertions_total":56,"bucket":null,"first_diagnostic":null}\n' "$mode" "$script" >> "$PERL_LSP_HARNESS_CONTEXT"
-    ;;
-  *base/pat.t)
-    printf '1..2\n'
-    printf 'ok 1 - match regex\n'
-    printf 'ok 2 - match regex\n'
-    printf '{"schema_version":"perl_core_harness.runner_record.v1","mode":"%s","path":"%s","status":"pass","assertions_passed":2,"assertions_total":2,"bucket":null,"first_diagnostic":null}\n' "$mode" "$script" >> "$PERL_LSP_HARNESS_CONTEXT"
-    ;;
-  *base/translate.t)
-    printf '1..257\n'
-    i=0
-    assertion=1
-    while [ "$i" -le 255 ]; do
-      printf 'ok %s - native_to_unicode %s\n' "$assertion" "$i"
-      i=$((i + 1))
-      assertion=$((assertion + 1))
-    done
-    printf 'ok 257 - native_to_unicode of large number\n'
-    printf '{"schema_version":"perl_core_harness.runner_record.v1","mode":"%s","path":"%s","status":"pass","assertions_passed":257,"assertions_total":257,"bucket":null,"first_diagnostic":null}\n' "$mode" "$script" >> "$PERL_LSP_HARNESS_CONTEXT"
-    ;;
-  *)
-    printf '1..2\n'
-    printf 'ok 1 - if eq\n'
-    printf 'ok 2 - if ne\n'
-    printf '{"schema_version":"perl_core_harness.runner_record.v1","mode":"%s","path":"%s","status":"pass","assertions_passed":2,"assertions_total":2,"bucket":null,"first_diagnostic":null}\n' "$mode" "$script" >> "$PERL_LSP_HARNESS_CONTEXT"
-    ;;
-esac
-"#;
-        fs::write(&runner, body)?;
-        set_executable(&runner)?;
-        Ok(runner)
-    }
-
-    #[cfg(unix)]
-    fn write_fake_runner_with_bucket(
-        root: &Path,
-        status: RunnerStatus,
-        bucket: Option<&str>,
-    ) -> TestResult<PathBuf> {
-        let runner = match status {
-            RunnerStatus::Pass => root.join("fake-runner-pass.sh"),
-            RunnerStatus::Fail => root.join("fake-runner-fail.sh"),
-        };
-        let body = match status {
-            RunnerStatus::Pass => {
-                r#"#!/bin/sh
-set -eu
-script="${1:-unknown.t}"
-mode="${PERL_LSP_HARNESS_MODE:-parse}"
-mkdir -p "$(dirname "$PERL_LSP_HARNESS_CONTEXT")"
-printf '1..1\n'
-printf 'ok 1 - %s %s\n' "$mode" "$script"
-printf '{"schema_version":"perl_core_harness.runner_record.v1","mode":"%s","path":"%s","status":"pass","assertions_passed":1,"assertions_total":1,"bucket":null,"first_diagnostic":null}\n' "$mode" "$script" >> "$PERL_LSP_HARNESS_CONTEXT"
-"#
-                .to_string()
-            }
-            RunnerStatus::Fail => {
-                let bucket_comment = bucket.unwrap_or("unknown");
-                let bucket_json = match bucket {
-                    Some(bucket) => format!(r#""{bucket}""#),
-                    None => "null".to_string(),
-                };
-                format!(
-                    r#"#!/bin/sh
-set -eu
-script="${{1:-unknown.t}}"
-mode="${{PERL_LSP_HARNESS_MODE:-parse}}"
-mkdir -p "$(dirname "$PERL_LSP_HARNESS_CONTEXT")"
-printf '1..1\n'
-printf 'not ok 1 - %s %s\n' "$mode" "$script"
-printf '# bucket: {bucket_comment}\n'
-printf '# first diagnostic: expected expression\n'
-printf '{{"schema_version":"perl_core_harness.runner_record.v1","mode":"%s","path":"%s","status":"fail","assertions_passed":0,"assertions_total":1,"bucket":{bucket_json},"first_diagnostic":"expected expression"}}\n' "$mode" "$script" >> "$PERL_LSP_HARNESS_CONTEXT"
-exit 1
-"#
-                )
-            }
-        };
-        fs::write(&runner, body)?;
-        set_executable(&runner)?;
-        Ok(runner)
-    }
-    fn current_authority_fixture() -> TestResult<(tempfile::TempDir, CurrentAuthorityConfig)> {
-        let temp = tempfile::tempdir()?;
-        let root = temp.path().to_path_buf();
-        fs::create_dir_all(root.join(".ci/perl-core-harness"))?;
-        let bundle_relative = ".ci/perl-core-harness/base-bundle.json";
-        let boundary_relative = ".ci/perl-core-harness/base-boundaries.json";
-        let report_relative = ".ci/perl-core-harness/base-report.json";
-        let baseline_relative = ".ci/perl-core-harness/base-baseline.json";
-        let lineage_relative = ".ci/perl-core-harness/base-lineage.json";
-        let index_relative = ".ci/perl-core-harness/current-authority.json";
-        let measurement_sha = "a".repeat(40);
-        fs::write(root.join(boundary_relative), b"[]\n")?;
-        fs::write(
-            root.join(bundle_relative),
-            serde_json::to_vec_pretty(&EvidenceBundleIndex {
-                schema_version: "perl_core_harness.evidence_bundle.v1".into(),
-                bundle_id: "bundle-base".into(),
-                series_id: "selected-base-perl-5.42.2".into(),
-                manifest_hash: "manifest-base".into(),
-                repository_commit: "repo-base".into(),
-                profile: HarnessProfile::Base,
-                runner: HarnessRunner::Test,
-                perl_resolved_ref: "perl-base".into(),
-                lineage: EvidenceBundleLineage {
-                    measurement_sha: measurement_sha.clone(),
-                    publication_sha: None,
-                    landed_sha: None,
-                },
-                artifacts: vec![EvidenceBundleArtifact {
-                    kind: "semantic_boundaries".into(),
-                    logical_path: "base-boundaries.json".into(),
-                }],
-                completeness: EvidenceBundleCompleteness {
-                    status: "complete".into(),
-                    normalized_authority: true,
-                },
-                lifecycle: "published".into(),
-            })?,
-        )?;
-        let bundle_digest = sha256_digest_bytes(&fs::read(root.join(bundle_relative))?);
-        fs::write(root.join(report_relative), b"normalized report\n")?;
-        fs::write(
-            root.join(baseline_relative),
-            serde_json::to_vec_pretty(&serde_json::json!({
-                "schema_version": "perl_core_harness.compile_baseline.v2",
-                "report_schema_version": RUN_REPORT_SCHEMA_VERSION,
-                "series_id": "selected-base-perl-5.42.2",
-                "manifest_hash": "manifest-base",
-                "repository_commit": "repo-base",
-                "perl_resolved_ref": "perl-base",
-                "preparation_receipt_id": "prepare-base",
-                "compiler_subject_identity": "compiler-base",
-                "invocation_identity": "invocation-base",
-                "capability_identity": "capability-base",
-                "environment_identity": "environment-base",
-                "source_report_digest": sha256_digest_bytes(&fs::read(root.join(report_relative))?),
-                "accepted_transition_id": null,
-                "evidence_bundle": "accepted-bundle-base",
-                "mode": "compile",
-                "profile": "base",
-                "runner": "test",
-                "file_membership": [],
-                "files_total": 0,
-                "files_passed": 0,
-                "files_failed": 0,
-                "tap_assertions_total": 0,
-                "tap_assertions_passed": 0,
-                "buckets": {},
-                "expected_failures": [],
-                "file_results": [],
-                "semantic_boundaries": [],
-                "boundary_retirements": []
-            }))?,
-        )?;
-        let run_git = |args: &[&str]| -> TestResult<String> {
-            let output = Command::new("git").arg("-C").arg(&root).args(args).output()?;
-            if !output.status.success() {
-                bail!(
-                    "fixture git command {:?} failed: {}",
-                    args,
-                    String::from_utf8_lossy(&output.stderr).trim()
-                );
-            }
-            Ok(String::from_utf8(output.stdout)?.trim().to_string())
-        };
-        run_git(&["init", "--quiet"])?;
-        run_git(&["config", "user.email", "compiler-harness@example.invalid"])?;
-        run_git(&["config", "user.name", "Compiler Harness Fixture"])?;
-        fs::write(root.join("fixture-base.txt"), b"base\n")?;
-        run_git(&["add", "fixture-base.txt"])?;
-        run_git(&["commit", "--quiet", "-m", "fixture base"])?;
-        let base_sha = run_git(&["rev-parse", "HEAD"])?;
-        run_git(&["add", ".ci/perl-core-harness"])?;
-        run_git(&["commit", "--quiet", "-m", "fixture evidence"])?;
-        let landed_sha = run_git(&["rev-parse", "HEAD"])?;
-        let mut authoritative_artifacts = BTreeMap::new();
-        for path in [bundle_relative, boundary_relative, report_relative, baseline_relative] {
-            authoritative_artifacts
-                .insert(path.to_string(), sha256_digest_bytes(&fs::read(root.join(path))?));
-        }
-        let lineage = LandedLineage {
-            schema_version: LANDED_LINEAGE_SCHEMA_VERSION.into(),
-            series_id: "selected-base-perl-5.42.2".into(),
-            profile: HarnessProfile::Base,
-            manifest_hash: "manifest-base".into(),
-            evidence_bundle_id: "bundle-base".into(),
-            evidence_bundle_digest: bundle_digest,
-            measurement_sha,
-            publication_sha: landed_sha.clone(),
-            landed_sha: landed_sha.clone(),
-            publication_base_sha: base_sha,
-            authoritative_artifacts,
-            publication_paths: vec![
-                bundle_relative.into(),
-                boundary_relative.into(),
-                report_relative.into(),
-                baseline_relative.into(),
-            ],
-            accepted_transition_id: None,
-            accepted_baseline_digest: Some(sha256_digest_bytes(&fs::read(
-                root.join(baseline_relative),
-            )?)),
-            accepted_baseline_evidence_bundle: Some("accepted-bundle-base".into()),
-            observation_transition: CompatibilityTransition::NoChange,
-            recorder_schema_version: LANDED_LINEAGE_SCHEMA_VERSION.into(),
-            created_reason: "post-merge lineage binding".into(),
-            supersedes: None,
-        };
-        fs::write(root.join(lineage_relative), serde_json::to_vec_pretty(&lineage)?)?;
-        let index = CurrentAuthorityIndex {
-            schema_version: CURRENT_AUTHORITY_INDEX_SCHEMA_VERSION.into(),
-            entries: vec![CurrentAuthorityEntry {
-                series_id: lineage.series_id.clone(),
-                profile: lineage.profile,
-                manifest_hash: lineage.manifest_hash.clone(),
-                observation_bundle_path: bundle_relative.into(),
-                observation_bundle_id: lineage.evidence_bundle_id.clone(),
-                observation_bundle_digest: lineage.evidence_bundle_digest.clone(),
-                observation_transition: lineage.observation_transition,
-                accepted_baseline_path: Some(baseline_relative.into()),
-                accepted_baseline_digest: lineage.accepted_baseline_digest.clone(),
-                accepted_baseline_evidence_bundle: lineage
-                    .accepted_baseline_evidence_bundle
-                    .clone(),
-                accepted_transition_id: None,
-                landed_lineage_path: lineage_relative.into(),
-                status: CurrentAuthorityStatus::Current,
-                claim_boundary: "parse_compile_acceptance".into(),
-                unavailable_rails: vec!["execution".into(), "curated_gold".into()],
-            }],
-        };
-        fs::write(root.join(index_relative), serde_json::to_vec_pretty(&index)?)?;
-        run_git(&["add", ".ci/perl-core-harness"])?;
-        run_git(&["commit", "--quiet", "-m", "fixture authority records"])?;
-        let authority_sha = run_git(&["rev-parse", "HEAD"])?;
-        Ok((
-            temp,
-            CurrentAuthorityConfig {
-                index: root.join(index_relative),
-                lineages: vec![root.join(lineage_relative)],
-                repository_root: root.to_path_buf(),
-                landed_sha: authority_sha,
-            },
-        ))
-    }
-
-    fn commit_fixture_authority(root: &Path) -> TestResult<String> {
-        let run_git = |args: &[&str]| -> TestResult<String> {
-            let output = Command::new("git").arg("-C").arg(root).args(args).output()?;
-            if !output.status.success() {
-                bail!(
-                    "fixture git command {:?} failed: {}",
-                    args,
-                    String::from_utf8_lossy(&output.stderr).trim()
-                );
-            }
-            Ok(String::from_utf8(output.stdout)?.trim().to_string())
-        };
-        run_git(&["add", ".ci/perl-core-harness"])?;
-        run_git(&["commit", "--quiet", "-m", "fixture authority update"])?;
-        run_git(&["rev-parse", "HEAD"])
-    }
-
-    #[test]
-    fn current_authority_validates_landed_lineage_and_artifact_digests() -> TestResult {
-        let (_temp, config) = current_authority_fixture()?;
-        validate_current_authority(config)?;
-        Ok(())
-    }
-
-    #[test]
-    fn current_authority_rejects_tampered_artifact_digest() -> TestResult {
-        let (_temp, mut config) = current_authority_fixture()?;
-        let lineage_path = config
-            .lineages
-            .first()
-            .cloned()
-            .ok_or_else(|| color_eyre::eyre::eyre!("fixture has no lineage"))?;
-        let mut lineage: LandedLineage =
-            read_json_bytes(&fs::read(&lineage_path)?, "landed lineage")?;
-        let artifact = lineage
-            .authoritative_artifacts
-            .get_mut(".ci/perl-core-harness/base-report.json")
-            .ok_or_else(|| color_eyre::eyre::eyre!("fixture has no report digest"))?;
-        *artifact = format!("sha256:{}", "c".repeat(64));
-        fs::write(&lineage_path, serde_json::to_vec_pretty(&lineage)?)?;
-        config.landed_sha = commit_fixture_authority(&config.repository_root)?;
-        let error = validate_current_authority(config)
-            .err()
-            .ok_or_else(|| color_eyre::eyre::eyre!("tampered artifact digest was accepted"))?;
-        if !error.to_string().contains("differs at landed SHA") {
-            bail!("tampered artifact digest produced an unclear error: {error}");
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn current_authority_rejects_duplicate_current_series() -> TestResult {
-        let (_temp, mut config) = current_authority_fixture()?;
-        let index: CurrentAuthorityIndex =
-            read_json_bytes(&fs::read(&config.index)?, "current-authority index")?;
-        let duplicate = index
-            .entries
-            .first()
-            .cloned()
-            .ok_or_else(|| color_eyre::eyre::eyre!("fixture has no current entry"))?;
-        let mut changed = index;
-        changed.entries.push(duplicate);
-        fs::write(&config.index, serde_json::to_vec_pretty(&changed)?)?;
-        config.landed_sha = commit_fixture_authority(&config.repository_root)?;
-        let error = validate_current_authority(config)
-            .err()
-            .ok_or_else(|| color_eyre::eyre::eyre!("duplicate current series was accepted"))?;
-        if !error.to_string().contains("duplicate current authority") {
-            bail!("duplicate current series produced an unclear error: {error}");
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn current_authority_rejects_wrong_landed_sha() -> TestResult {
-        let (_temp, mut config) = current_authority_fixture()?;
-        config.landed_sha = "e".repeat(40);
-        let error = validate_current_authority(config)
-            .err()
-            .ok_or_else(|| color_eyre::eyre::eyre!("wrong landed SHA was accepted"))?;
-        if !error.to_string().contains("landed SHA") {
-            bail!("wrong landed SHA produced an unclear error: {error}");
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn current_authority_uses_landed_git_blobs_not_worktree() -> TestResult {
-        let (_temp, config) = current_authority_fixture()?;
-        fs::write(
-            config.repository_root.join(".ci/perl-core-harness/base-report.json"),
-            b"changed report\n",
-        )?;
-        fs::write(
-            config.repository_root.join(".ci/perl-core-harness/current-authority.json"),
-            b"{}\n",
-        )?;
-        fs::write(config.repository_root.join(".ci/perl-core-harness/base-lineage.json"), b"{}\n")?;
-        validate_current_authority(config)?;
-        Ok(())
-    }
-
-    #[test]
-    fn current_authority_allows_historical_observations_for_one_series() -> TestResult {
-        let (_temp, mut config) = current_authority_fixture()?;
-        let index: CurrentAuthorityIndex =
-            read_json_bytes(&fs::read(&config.index)?, "current-authority index")?;
-        let current = index
-            .entries
-            .first()
-            .cloned()
-            .ok_or_else(|| color_eyre::eyre::eyre!("fixture has no current entry"))?;
-        let current_lineage_path = config
-            .lineages
-            .first()
-            .cloned()
-            .ok_or_else(|| color_eyre::eyre::eyre!("fixture has no lineage"))?;
-        let mut historical_lineage: LandedLineage =
-            read_json_bytes(&fs::read(&current_lineage_path)?, "landed lineage")?;
-        historical_lineage.observation_transition = CompatibilityTransition::Historical;
-        historical_lineage.supersedes = Some(".ci/perl-core-harness/base-lineage.json".into());
-        let historical_lineage_path =
-            config.repository_root.join(".ci/perl-core-harness/base-historical-lineage.json");
-        fs::write(&historical_lineage_path, serde_json::to_vec_pretty(&historical_lineage)?)?;
-        let mut historical = current.clone();
-        historical.observation_transition = CompatibilityTransition::Historical;
-        historical.landed_lineage_path =
-            ".ci/perl-core-harness/base-historical-lineage.json".into();
-        historical.status = CurrentAuthorityStatus::Historical;
-        let index = CurrentAuthorityIndex {
-            schema_version: index.schema_version,
-            entries: vec![current, historical],
-        };
-        fs::write(&config.index, serde_json::to_vec_pretty(&index)?)?;
-        config.lineages.push(historical_lineage_path);
-        let run_git = |args: &[&str]| -> TestResult<String> {
-            let output =
-                Command::new("git").arg("-C").arg(&config.repository_root).args(args).output()?;
-            if !output.status.success() {
-                bail!(
-                    "fixture git command {:?} failed: {}",
-                    args,
-                    String::from_utf8_lossy(&output.stderr).trim()
-                );
-            }
-            Ok(String::from_utf8(output.stdout)?.trim().to_string())
-        };
-        run_git(&["add", ".ci/perl-core-harness"])?;
-        run_git(&["commit", "--quiet", "-m", "fixture historical authority"])?;
-        config.landed_sha = run_git(&["rev-parse", "HEAD"])?;
-        validate_current_authority(config)?;
-        Ok(())
-    }
-
-    #[test]
-    fn supersession_graph_rejects_cycles() -> TestResult {
-        let (_temp, config) = current_authority_fixture()?;
-        let current_path = config
-            .lineages
-            .first()
-            .ok_or_else(|| color_eyre::eyre::eyre!("fixture has no lineage"))?;
-        let current: LandedLineage = read_json_bytes(&fs::read(current_path)?, "landed lineage")?;
-        let mut first = current.clone();
-        first.supersedes = Some("b".into());
-        let mut second = current;
-        second.supersedes = Some("a".into());
-        let error = validate_supersession_graph(&[("a".into(), first), ("b".into(), second)])
-            .err()
-            .ok_or_else(|| color_eyre::eyre::eyre!("supersession cycle was accepted"))?;
-        if !error.to_string().contains("cycle") {
-            bail!("supersession cycle produced an unclear error: {error}");
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn current_authority_rejects_measured_code_publication_path() -> TestResult {
-        let error = validate_publication_paths(&["crates/perl-parser/src/lib.rs".into()])
-            .err()
-            .ok_or_else(|| color_eyre::eyre::eyre!("measured code path was accepted"))?;
-        if !error.to_string().contains("evidence-only allowlist") {
-            bail!("measured code path produced an unclear error: {error}");
-        }
-        Ok(())
-    }
-
-    fn write_json_receipt<T: serde::Serialize>(path: &Path, value: &T) -> TestResult {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        let json = serde_json::to_string_pretty(value)?;
-        fs::write(path, format!("{json}\n"))?;
-        Ok(())
-    }
-
-    /// Materialize a published evidence bundle on disk whose compile receipt and
-    /// semantic-boundary artifact carry the bundle's subject identity, so
-    /// [`triage`] reads the same authority the CLI does.
-    fn write_triage_bundle(root: &Path, report: &RunReport) -> TestResult<PathBuf> {
-        let bundle_dir = root.join("bundles").join("bundle-1");
-        let mut index = sample_boundary_bundle().index;
-        index.artifacts = vec![
-            EvidenceBundleArtifact {
-                kind: "semantic_boundaries".into(),
-                logical_path: "semantic-boundaries.json".into(),
-            },
-            EvidenceBundleArtifact {
-                kind: "compile_report".into(),
-                logical_path: "compile-report.json".into(),
-            },
-        ];
-        let index_path = bundle_dir.join("index.json");
-        write_json_receipt(&index_path, &index)?;
-        write_json_receipt(
-            &bundle_dir.join("semantic-boundaries.json"),
-            &report.semantic_boundaries,
-        )?;
-        write_json_receipt(&bundle_dir.join("compile-report.json"), report)?;
-        Ok(index_path)
-    }
-
-    /// A structurally valid compile receipt in which both manifest files fail
-    /// with the same bucket, so triage must produce exactly one cluster.
-    fn two_file_parse_failure_report() -> RunReport {
-        let mut report = sample_compile_report();
-        mark_file_failed(&mut report, "base/lex.t", "parse_recovery");
-        mark_file_failed(&mut report, "base/ok.t", "parse_recovery");
-        report.buckets.insert("parse_recovery".into(), 2);
-        report
-    }
-
-    fn triage_config(bundle: PathBuf, output: PathBuf) -> TriageConfig {
-        TriageConfig { bundle, output, history: None, write_history: false, check_history: false }
-    }
-
-    #[test]
-    fn triage_writes_cluster_and_history_receipts_for_a_fresh_bundle() -> TestResult {
-        let temp = tempfile::tempdir()?;
-        let report = two_file_parse_failure_report();
-        let bundle = write_triage_bundle(temp.path(), &report)?;
-        let output = temp.path().join("triage");
-        let history = temp.path().join("history").join("cluster-history.json");
-
-        triage(TriageConfig {
-            history: Some(history.clone()),
-            write_history: true,
-            ..triage_config(bundle, output.clone())
-        })?;
-
-        let clusters: FailureClusterReport =
-            serde_json::from_str(&fs::read_to_string(output.join("failure-clusters.json"))?)?;
-        assert_eq!(clusters.clusters.len(), 1);
-        let cluster = &clusters.clusters[0];
-        assert_eq!(cluster.occurrence_count, 2);
-        assert_eq!(cluster.affected_files, vec!["base/lex.t", "base/ok.t"]);
-
-        // The Markdown receipt must carry the same identity as the JSON receipt,
-        // not a re-derived or truncated summary.
-        let cluster_markdown = fs::read_to_string(output.join("failure-clusters.md"))?;
-        assert!(cluster_markdown.starts_with("# Compiler failure clusters\n"));
-        assert!(cluster_markdown.contains("- Bundle: `bundle-1`\n"));
-        assert!(cluster_markdown.contains(&format!("### `{}`\n", cluster.cluster_id)));
-        assert!(cluster_markdown.contains(&format!("- Bucket: `{}`\n", cluster.signature.bucket)));
-        assert!(cluster_markdown.contains("- Occurrences: 2\n"));
-        assert!(cluster_markdown.contains("- Files: base/lex.t, base/ok.t\n"));
-        assert!(cluster_markdown.contains("## Semantic-boundary debt candidates\n"));
-
-        let persisted: FailureClusterHistory =
-            serde_json::from_str(&fs::read_to_string(&history)?)?;
-        assert_eq!(persisted.entries.len(), 1);
-        assert_eq!(persisted.entries[0].cluster_id, cluster.cluster_id);
-        assert_eq!(persisted.entries[0].occurrence_count, 2);
-
-        // The history mirror inside the triage output must match the durable file.
-        let mirrored = fs::read_to_string(output.join("cluster-history.json"))?;
-        assert_eq!(mirrored, fs::read_to_string(&history)?);
-
-        let history_markdown = fs::read_to_string(output.join("cluster-history.md"))?;
-        assert!(history_markdown.starts_with("# Compiler failure cluster history\n"));
-        assert!(history_markdown.contains("- Entries: 1\n"));
-        assert!(history_markdown.contains("## Status counts\n\n- unassigned: 1\n"));
-        assert!(history_markdown.contains(&format!(
-            "- {}: 2 occurrence(s), status unassigned, owner unassigned\n",
-            cluster.cluster_id
-        )));
-        Ok(())
-    }
-
-    #[test]
-    fn triage_reports_a_clean_compile_receipt_without_inventing_clusters() -> TestResult {
-        let temp = tempfile::tempdir()?;
-        let report = sample_compile_report();
-        let bundle = write_triage_bundle(temp.path(), &report)?;
-        let output = temp.path().join("triage");
-
-        triage(triage_config(bundle, output.clone()))?;
-
-        let clusters: FailureClusterReport =
-            serde_json::from_str(&fs::read_to_string(output.join("failure-clusters.json"))?)?;
-        assert!(clusters.clusters.is_empty());
-        let markdown = fs::read_to_string(output.join("failure-clusters.md"))?;
-        assert!(markdown.contains("No product failure clusters were observed.\n"));
-        // Without --write-history / --check-history no history receipt is produced.
-        assert!(!output.join("cluster-history.json").exists());
-        assert!(!output.join("cluster-history.md").exists());
-        Ok(())
-    }
-
-    fn sample_history_entry(cluster_id: &str) -> FailureClusterHistoryEntry {
-        FailureClusterHistoryEntry {
-            cluster_id: cluster_id.to_string(),
-            signature_schema_version: FAILURE_CLUSTER_SCHEMA_VERSION.into(),
-            identity_quality: FailureClusterIdentityQuality::Provisional,
-            series_id: "series-1".into(),
-            manifest_hash: "manifest-1".into(),
-            first_seen_series_id: "series-1".into(),
-            first_seen_manifest_hash: "manifest-1".into(),
-            last_seen_series_id: "series-1".into(),
-            last_seen_manifest_hash: "manifest-1".into(),
-            first_seen_bundle: "bundle-1".into(),
-            last_seen_bundle: "bundle-1".into(),
-            current_affected_files: vec!["base/ok.t".into()],
-            historical_affected_files: vec!["base/ok.t".into()],
-            current_fact_classes: vec!["parse_recovery".into()],
-            fact_classes: vec!["parse_recovery".into()],
-            current_lsp_surfaces: vec!["diagnostics".into()],
-            lsp_surfaces: vec!["diagnostics".into()],
-            occurrence_count: 1,
-            current_stage: Some("compile".into()),
-            current_authority_bundle: Some("bundle-1".into()),
-            observed_in_current_bundle: true,
-            absence_since_bundle: None,
-            presence: FailureClusterHistoryPresence::Observed,
-            impacted_layer: "parser".into(),
-            owner_issue: None,
-            status: FailureClusterHistoryStatus::Unassigned,
-            direct_reproduction: "bundle=bundle-1 series=series-1".into(),
-            proposed_transition: "compiler_semantics".into(),
-            stop_condition: "cluster no longer reproduces".into(),
-            accepted_debt_refs: Vec::new(),
-            resolution_pr: None,
-            resolution_bundle: None,
-            transitions: Vec::new(),
-        }
-    }
-
-    #[test]
-    fn triage_history_ordering_is_stable_and_bounded_to_ten_entries() -> TestResult {
-        // `render_cluster_history_markdown` promotes the highest-occurrence
-        // clusters, breaking ties by cluster id, and lists at most ten. Build a
-        // history whose insertion order contradicts both rules.
-        let mut entries = Vec::new();
-        for index in 0..12 {
-            let mut entry = sample_history_entry(&format!("failure-{index:02}"));
-            entry.occurrence_count = index + 1;
-            entries.push(entry);
-        }
-        let mut tied = sample_history_entry("failure-00-tied");
-        tied.occurrence_count = 12;
-        entries.insert(0, tied);
-        let history = FailureClusterHistory {
-            schema_version: FAILURE_CLUSTER_HISTORY_SCHEMA_VERSION.into(),
-            entries,
-        };
-
-        let markdown = render_cluster_history_markdown(&history);
-        let leverage = markdown
-            .split("## High leverage\n\n")
-            .nth(1)
-            .ok_or_else(|| color_eyre::eyre::eyre!("missing high-leverage section"))?
-            .split("\n## Clusters")
-            .next()
-            .unwrap_or_default()
-            .lines()
-            .filter(|line| !line.is_empty())
-            .collect::<Vec<_>>();
-
-        assert_eq!(leverage.len(), 10);
-        // 12 occurrences is a tie between `failure-00-tied` and `failure-11`;
-        // the lexicographically smaller cluster id wins.
-        assert!(leverage[0].starts_with("- failure-00-tied: 12 occurrence(s)"));
-        assert!(leverage[1].starts_with("- failure-11: 12 occurrence(s)"));
-        assert!(leverage[2].starts_with("- failure-10: 11 occurrence(s)"));
-        // The bounded section must not leak the low-occurrence tail.
-        assert!(!leverage.iter().any(|line| line.starts_with("- failure-00:")));
-        // The full cluster section still records every entry.
-        assert!(markdown.contains("- Entries: 13\n"));
-        assert!(markdown.contains("### failure-00\n"));
-        Ok(())
-    }
-
-    #[test]
-    fn cluster_history_markdown_renders_absent_transitions_and_missing_owners() -> TestResult {
-        let mut entry = sample_history_entry("failure-absent");
-        entry.owner_issue = None;
-        entry.current_stage = None;
-        entry.transitions.push(FailureClusterHistoryTransition {
-            transition_id: "transition-1".into(),
-            from_cluster_id: "failure-absent".into(),
-            to_cluster_id: None,
-            to_presence: FailureClusterHistoryPresence::Resolved,
-            from_stage: "compile_effect".into(),
-            to_stage: "absent".into(),
-            before_series_id: "series-1".into(),
-            before_manifest_hash: "manifest-1".into(),
-            before_bundle_id: "bundle-1".into(),
-            after_series_id: "series-2".into(),
-            after_manifest_hash: "manifest-2".into(),
-            after_bundle_id: "bundle-2".into(),
-            proof_plan: "replace symbolic reference lowering".into(),
-            stop_condition: "cluster no longer reproduces".into(),
-            implementation_pr: Some("#5300".into()),
-        });
-        let history = FailureClusterHistory {
-            schema_version: FAILURE_CLUSTER_HISTORY_SCHEMA_VERSION.into(),
-            entries: vec![entry],
-        };
-
-        let markdown = render_cluster_history_markdown(&history);
-
-        assert!(markdown.contains("- Owner: unassigned\n"));
-        assert!(markdown.contains("- Stage: absent\n"));
-        assert!(markdown.contains(
-            "- Transition transition-1: failure-absent -> <absence> (compile_effect -> absent)\n"
-        ));
-        Ok(())
-    }
-
-    #[test]
-    fn triage_check_history_requires_an_existing_history_receipt() -> TestResult {
-        let temp = tempfile::tempdir()?;
-        let report = two_file_parse_failure_report();
-        let bundle = write_triage_bundle(temp.path(), &report)?;
-        let missing = temp.path().join("history").join("cluster-history.json");
-
-        let Err(error) = triage(TriageConfig {
-            history: Some(missing.clone()),
-            check_history: true,
-            ..triage_config(bundle, temp.path().join("triage"))
-        }) else {
-            bail!("--check-history must fail closed when no history receipt exists");
-        };
-        // The absent receipt must be named directly. Silently substituting an
-        // empty history would also fail, but for the wrong reason â€” it would
-        // report a cluster-history mismatch instead of a missing receipt.
-        let message = error.to_string();
-        assert!(
-            message.contains(&format!("cluster history {} is missing", missing.display())),
-            "unclear error: {error}"
-        );
-        assert!(!message.contains("cluster history check failed"), "unclear error: {error}");
-        Ok(())
-    }
-
-    #[test]
-    fn triage_check_history_rejects_a_stale_history_receipt() -> TestResult {
-        let temp = tempfile::tempdir()?;
-        let report = two_file_parse_failure_report();
-        let bundle = write_triage_bundle(temp.path(), &report)?;
-        let output = temp.path().join("triage");
-        let history = temp.path().join("history").join("cluster-history.json");
-
-        triage(TriageConfig {
-            history: Some(history.clone()),
-            write_history: true,
-            ..triage_config(bundle, output.clone())
-        })?;
-
-        // Re-run the same bundle against a receipt whose failures moved to a
-        // different bucket: the persisted cluster identity no longer reproduces.
-        let mut moved = sample_compile_report();
-        mark_file_failed(&mut moved, "base/lex.t", "hir_lowering");
-        mark_file_failed(&mut moved, "base/ok.t", "hir_lowering");
-        moved.buckets.insert("hir_lowering".into(), 2);
-        let moved_bundle = write_triage_bundle(temp.path(), &moved)?;
-
-        let Err(error) = triage(TriageConfig {
-            history: Some(history),
-            check_history: true,
-            ..triage_config(moved_bundle, output)
-        }) else {
-            bail!("--check-history must reject a history that no longer reproduces");
-        };
-        assert!(
-            error.to_string().contains("cluster history check failed"),
-            "unclear error: {error}"
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn triage_rejects_a_compile_receipt_from_a_different_subject() -> TestResult {
-        let temp = tempfile::tempdir()?;
-        let mut report = two_file_parse_failure_report();
-        report.commit = "different-measurement-sha".into();
-        let bundle = write_triage_bundle(temp.path(), &report)?;
-
-        let Err(error) = triage(triage_config(bundle, temp.path().join("triage"))) else {
-            bail!("triage must reject a compile receipt from another subject");
-        };
-        assert!(
-            error.to_string().contains("compile report identity does not match evidence bundle"),
-            "unclear error: {error}"
-        );
-        Ok(())
-    }
-
-    fn write_boundary_registry(path: &Path, entry: SemanticBoundaryRegistryEntry) -> TestResult {
-        write_boundary_registry_entries(path, vec![entry])
-    }
-
-    fn write_boundary_registry_entries(
-        path: &Path,
-        entries: Vec<SemanticBoundaryRegistryEntry>,
-    ) -> TestResult {
-        write_json_receipt(
-            path,
-            &SemanticBoundaryRegistry {
-                schema_version: SEMANTIC_BOUNDARY_REGISTRY_SCHEMA_VERSION.into(),
-                entries,
-            },
-        )
-    }
-
-    /// Write an accepted V2 baseline for `report` and return its path.
-    fn write_accepted_baseline(path: &Path, report: &RunReport) -> TestResult {
-        let baseline = baseline_v2_from_report(
-            report,
-            &sample_registry_series(),
-            &sample_baseline_v2_config(),
-            None,
-            &[],
-        )?;
-        write_json_receipt(path, &baseline)
-    }
-
-    fn boundary_config(registry: PathBuf, output: PathBuf) -> BoundaryRegistryConfig {
-        BoundaryRegistryConfig {
-            registry,
-            baselines: Vec::new(),
-            bundles: Vec::new(),
-            output: Some(output),
-            check: false,
-            report: true,
-            historical: false,
-        }
-    }
-
-    fn read_boundary_report(path: &Path) -> TestResult<serde_json::Value> {
-        Ok(serde_json::from_str(&fs::read_to_string(path)?)?)
-    }
-
-    #[test]
-    fn boundary_registry_report_is_structural_without_accepted_baselines() -> TestResult {
-        let temp = tempfile::tempdir()?;
-        let registry = temp.path().join("registry.json");
-        write_boundary_registry(&registry, sample_registry_entry())?;
-        let output = temp.path().join("reports").join("boundary-registry.json");
-
-        boundaries(boundary_config(registry, output.clone()))?;
-
-        let report = read_boundary_report(&output)?;
-        // Without baselines the registry can only be checked for shape, and the
-        // receipt must say so rather than claiming current-evidence authority.
-        assert_eq!(report["mode"], "structural");
-        assert_eq!(report["valid"], true);
-        assert_eq!(report["registry_entries"], 1);
-        assert_eq!(report["baselines_checked"].as_array().map(Vec::len), Some(0));
-        assert_eq!(report["bundles_checked"].as_array().map(Vec::len), Some(0));
-        assert_eq!(report["counts"]["by_disposition"]["deferred_runtime"], 1);
-        assert_eq!(report["counts"]["by_state"]["active"], 1);
-        assert_eq!(report["counts"]["by_lock_scope"]["none"], 1);
-        assert_eq!(report["counts"]["by_replacement_strategy"]["hir_semantics"], 1);
-        assert_eq!(report["counts"]["by_profile"]["base"], 1);
-        assert_eq!(report["counts"]["by_owner_issue"]["#4753"], 1);
-        assert_eq!(report["counts"]["downstream_static_facts_blocked"], 1);
-        Ok(())
-    }
-
-    #[test]
-    fn boundary_registry_report_is_current_when_the_baseline_agrees() -> TestResult {
-        let temp = tempfile::tempdir()?;
-        let registry = temp.path().join("registry.json");
-        write_boundary_registry(&registry, sample_registry_entry())?;
-        let baseline = temp.path().join("baseline.json");
-        let mut report = sample_compile_report();
-        report.semantic_boundaries.push(sample_semantic_boundary());
-        write_accepted_baseline(&baseline, &report)?;
-        let output = temp.path().join("boundary-registry.json");
-
-        boundaries(BoundaryRegistryConfig {
-            baselines: vec![baseline.clone()],
-            ..boundary_config(registry, output.clone())
-        })?;
-
-        let receipt = read_boundary_report(&output)?;
-        assert_eq!(receipt["mode"], "current");
-        assert_eq!(receipt["valid"], true);
-        assert_eq!(receipt["violations"].as_array().map(Vec::len), Some(0));
-        assert_eq!(receipt["baselines_checked"][0], baseline.display().to_string());
-        Ok(())
-    }
-
-    #[test]
-    fn boundary_registry_report_separates_missing_active_boundaries() -> TestResult {
-        let temp = tempfile::tempdir()?;
-        let registry = temp.path().join("registry.json");
-        write_boundary_registry(&registry, sample_registry_entry())?;
-        let baseline = temp.path().join("baseline.json");
-        // The accepted baseline no longer emits the registered boundary.
-        write_accepted_baseline(&baseline, &sample_compile_report())?;
-        let output = temp.path().join("boundary-registry.json");
-
-        let Err(error) = boundaries(BoundaryRegistryConfig {
-            baselines: vec![baseline],
-            ..boundary_config(registry, output.clone())
-        }) else {
-            bail!("an active boundary absent from fresh evidence must fail closed");
-        };
-        assert!(
-            error.to_string().contains("semantic-boundary registry validation failed"),
-            "unclear error: {error}"
-        );
-
-        // The receipt is still written, and routes the violation to the
-        // dedicated missing-active channel rather than leaving it unclassified.
-        let receipt = read_boundary_report(&output)?;
-        assert_eq!(receipt["mode"], "current");
-        assert_eq!(receipt["valid"], false);
-        let missing = receipt["missing_active"]
-            .as_array()
-            .ok_or_else(|| color_eyre::eyre::eyre!("missing_active is not an array"))?;
-        assert_eq!(missing.len(), 1);
-        assert!(
-            missing[0]
-                .as_str()
-                .is_some_and(|violation| violation.contains("runtime_symbolic_reference")
-                    && violation.contains("absent from fresh baseline"))
-        );
-        assert_eq!(receipt["emitting_retired"].as_array().map(Vec::len), Some(0));
-        Ok(())
-    }
-
-    #[test]
-    fn boundary_registry_report_keeps_shape_violations_out_of_the_missing_active_channel()
-    -> TestResult {
-        let temp = tempfile::tempdir()?;
-        let registry = temp.path().join("registry.json");
-        // Two identical active entries produce a *duplicate* active-boundary
-        // violation. It mentions an active registry boundary but says nothing
-        // about absence, so it must stay in the general violation list.
-        write_boundary_registry_entries(
-            &registry,
-            vec![sample_registry_entry(), sample_registry_entry()],
-        )?;
-        let output = temp.path().join("boundary-registry.json");
-
-        let Err(_) = boundaries(boundary_config(registry, output.clone())) else {
-            bail!("a duplicate active registry boundary must fail closed");
-        };
-
-        let receipt = read_boundary_report(&output)?;
-        assert_eq!(receipt["valid"], false);
-        assert_eq!(receipt["missing_active"].as_array().map(Vec::len), Some(0));
-        assert_eq!(receipt["emitting_retired"].as_array().map(Vec::len), Some(0));
-        assert!(receipt["violations"].as_array().is_some_and(|violations| violations.iter().any(
-            |violation| {
-                violation
-                    .as_str()
-                    .is_some_and(|text| text.contains("duplicate active registry boundary key"))
-            }
-        )));
-        Ok(())
-    }
-
-    #[test]
-    fn boundary_registry_report_separates_retired_boundaries_that_still_emit() -> TestResult {
-        let temp = tempfile::tempdir()?;
-        let registry = temp.path().join("registry.json");
-        let mut entry = sample_registry_entry();
-        entry.state = SemanticBoundaryRegistryState::Retired;
-        entry.retirement_pr = Some("#5300".into());
-        entry.retirement_bundle = Some("bundle-sha256:example".into());
-        write_boundary_registry(&registry, entry)?;
-        let baseline = temp.path().join("baseline.json");
-        let mut report = sample_compile_report();
-        report.semantic_boundaries.push(sample_semantic_boundary());
-        write_accepted_baseline(&baseline, &report)?;
-        let output = temp.path().join("boundary-registry.json");
-
-        let Err(_) = boundaries(BoundaryRegistryConfig {
-            baselines: vec![baseline],
-            ..boundary_config(registry, output.clone())
-        }) else {
-            bail!("a retired boundary that still emits must fail closed");
-        };
-
-        let receipt = read_boundary_report(&output)?;
-        let emitting = receipt["emitting_retired"]
-            .as_array()
-            .ok_or_else(|| color_eyre::eyre::eyre!("emitting_retired is not an array"))?;
-        assert_eq!(emitting.len(), 1);
-        assert!(
-            emitting[0]
-                .as_str()
-                .is_some_and(|violation| violation.contains("still emits in baseline"))
-        );
-        assert_eq!(receipt["missing_active"].as_array().map(Vec::len), Some(0));
-        assert_eq!(receipt["counts"]["by_state"]["retired"], 1);
-        Ok(())
-    }
-
-    #[test]
-    fn boundary_registry_historical_mode_accepts_boundaries_absent_from_the_baseline() -> TestResult
-    {
-        let temp = tempfile::tempdir()?;
-        let registry = temp.path().join("registry.json");
-        write_boundary_registry(&registry, sample_registry_entry())?;
-        let baseline = temp.path().join("baseline.json");
-        write_accepted_baseline(&baseline, &sample_compile_report())?;
-        let output = temp.path().join("boundary-registry.json");
-
-        // Historical replay compares registry shape and identity but must not
-        // demand that a retained historical boundary still emits today.
-        boundaries(BoundaryRegistryConfig {
-            baselines: vec![baseline],
-            historical: true,
-            ..boundary_config(registry, output.clone())
-        })?;
-
-        let receipt = read_boundary_report(&output)?;
-        assert_eq!(receipt["mode"], "historical");
-        assert_eq!(receipt["valid"], true);
-        assert_eq!(receipt["missing_active"].as_array().map(Vec::len), Some(0));
-        Ok(())
-    }
-
-    #[test]
-    fn boundary_registry_report_records_unreadable_baselines_as_violations() -> TestResult {
-        let temp = tempfile::tempdir()?;
-        let registry = temp.path().join("registry.json");
-        write_boundary_registry(&registry, sample_registry_entry())?;
-        let baseline = temp.path().join("not-a-baseline.json");
-        fs::write(&baseline, "{ not json")?;
-        let output = temp.path().join("boundary-registry.json");
-
-        let Err(_) = boundaries(BoundaryRegistryConfig {
-            baselines: vec![baseline.clone()],
-            ..boundary_config(registry, output.clone())
-        }) else {
-            bail!("an undecodable baseline must fail closed");
-        };
-
-        let receipt = read_boundary_report(&output)?;
-        // An unreadable baseline is a violation, not a silently skipped input,
-        // and it must not be promoted to current-evidence authority.
-        assert_eq!(receipt["mode"], "structural");
-        assert_eq!(receipt["valid"], false);
-        assert!(
-            receipt["violations"][0]
-                .as_str()
-                .is_some_and(|violation| violation.contains("not-a-baseline.json"))
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn exact_retirement_requires_every_identity_field_to_match() -> TestResult {
-        let baseline = baseline_v2_from_report(
-            &sample_compile_report(),
-            &sample_registry_series(),
-            &sample_baseline_v2_config(),
-            None,
-            &[],
-        )?;
-        let mut entry = sample_registry_entry();
-        entry.state = SemanticBoundaryRegistryState::Retiring;
-
-        // Without a retirement bundle reference there is no exact evidence.
-        assert!(!has_exact_retirement(&baseline, &entry));
-
-        entry.retirement_bundle = Some("bundle-sha256:example".into());
-        let retirement = BoundaryRetirement {
-            schema_version: BOUNDARY_RETIREMENT_SCHEMA_VERSION.into(),
-            path: entry.path.clone(),
-            id: entry.id.clone(),
-            source_start: entry.source_span.start,
-            source_end: entry.source_span.end,
-            series_id: baseline.series_id.clone(),
-            manifest_hash: baseline.manifest_hash.clone(),
-            measurement_sha: baseline.repository_commit.clone(),
-            source_report_digest: baseline.source_report_digest.clone(),
-            transition_id: "transition-1".into(),
-            replacement_issue: "#5168".into(),
-            evidence_bundle: "bundle-sha256:example".into(),
-        };
-        let mut accepted = baseline.clone();
-        accepted.boundary_retirements = vec![retirement.clone()];
-        assert!(has_exact_retirement(&accepted, &entry));
-
-        // Every identity field participates: weakening any one of them must
-        // stop the retirement from counting as exact evidence.
-        let mutations: Vec<Box<dyn Fn(&mut BoundaryRetirement)>> = vec![
-            Box::new(|value| value.path = "base/other.t".into()),
-            Box::new(|value| value.id = "other_boundary".into()),
-            Box::new(|value| value.source_start = value.source_start.saturating_add(1)),
-            Box::new(|value| value.source_end = value.source_end.saturating_add(1)),
-            Box::new(|value| value.series_id = "series-other".into()),
-            Box::new(|value| value.manifest_hash = "manifest-other".into()),
-            Box::new(|value| value.measurement_sha = "sha-other".into()),
-            Box::new(|value| value.source_report_digest = "sha256:other".into()),
-            Box::new(|value| value.evidence_bundle = "bundle-sha256:other".into()),
-        ];
-        for (index, mutate) in mutations.iter().enumerate() {
-            let mut weakened = retirement.clone();
-            mutate(&mut weakened);
-            let mut candidate = baseline.clone();
-            candidate.boundary_retirements = vec![weakened];
-            assert!(
-                !has_exact_retirement(&candidate, &entry),
-                "mutation {index} was accepted as exact retirement evidence"
-            );
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn prepare_ref_validation_rejects_empty_and_path_like_refs() -> TestResult {
-        validate_prepare_ref("v5.42.0")?;
-        validate_prepare_ref("refs/heads/blead")?;
-
-        for rejected in ["", "   ", "../etc/passwd", "blead/../..", "windows\\path"] {
-            let Err(error) = validate_prepare_ref(rejected) else {
-                bail!("prepare --ref {rejected:?} must be rejected");
-            };
-            assert!(
-                error.to_string().contains("perl-core-harness prepare --ref"),
-                "unclear error for {rejected:?}: {error}"
-            );
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn prepare_paths_sanitize_ref_characters_into_a_single_component() {
-        assert_eq!(safe_path_component("refs/heads/blead"), "refs-heads-blead");
-        assert_eq!(safe_path_component("v5.42.0-RC1_x"), "v5.42.0-RC1_x");
-        assert_eq!(safe_path_component("a b:c"), "a-b-c");
-
-        let output_dir = default_prepare_output_dir("refs/heads/blead");
-        assert!(output_dir.ends_with("target/perl-core/upstream/refs-heads-blead"));
-        let receipt = default_prepare_receipt_path("refs/heads/blead");
-        assert!(receipt.ends_with("target/perl-core/prepare/refs-heads-blead/prepare.json"));
-        assert!(
-            default_baseline_path(HarnessMode::Compile, HarnessProfile::Base)
-                .ends_with(".ci/perl-core-harness/base-compile-baseline.json")
-        );
-    }
-
-    #[test]
-    fn rail_states_distinguish_available_evidence_from_absence() {
-        let available = available_rail(
-            RUN_REPORT_SCHEMA_VERSION,
-            "selected execution receipt validated".into(),
-            vec!["bundle:bundle-1".into()],
-        );
-        assert_eq!(available.availability, CompatibilityRailAvailability::Available);
-        assert_eq!(available.schema_version.as_deref(), Some(RUN_REPORT_SCHEMA_VERSION));
-        assert_eq!(available.evidence_refs, vec!["bundle:bundle-1"]);
-
-        let unavailable = unavailable_rail("no execution receipt was supplied");
-        assert_eq!(unavailable.availability, CompatibilityRailAvailability::NotAvailable);
-        // An unavailable rail must not advertise a schema or borrow evidence.
-        assert!(unavailable.schema_version.is_none());
-        assert!(unavailable.evidence_refs.is_empty());
-    }
-}
-
-#[cfg(test)]
-mod digest_intake_case_tests {
-    //! #7725: Git identities and sha256 digests accepted by the publication
-    //! and evidence intake validators must keep exactly one canonical
-    //! serialized spelling: lower-case hexadecimal.
-
-    use super::{validate_digest, validate_git_sha};
-
-    #[test]
-    fn git_shas_accept_only_canonical_lower_case_hex() {
-        assert!(validate_git_sha(&"cd".repeat(20), "landed commit").is_ok());
-        assert!(validate_git_sha(&"01".repeat(32), "landed commit").is_ok());
-        assert!(validate_git_sha(&"CD".repeat(20), "landed commit").is_err());
-        assert!(validate_git_sha(&"EF".repeat(32), "landed commit").is_err());
-        assert!(validate_git_sha(&"cD".repeat(20), "landed commit").is_err());
-        assert!(validate_git_sha(&"zz".repeat(20), "landed commit").is_err());
-        assert!(validate_git_sha(&"cd".repeat(19), "landed commit").is_err());
-    }
-
-    #[test]
-    fn sha256_digests_keep_prefix_policy_and_require_lower_case() {
-        assert!(validate_digest(&format!("sha256:{}", "ab".repeat(32)), "receipt digest").is_ok());
-        assert!(validate_digest(&format!("sha256:{}", "AB".repeat(32)), "receipt digest").is_err());
-        assert!(validate_digest(&format!("sha256:{}", "aB".repeat(32)), "receipt digest").is_err());
-        assert!(validate_digest(&"ab".repeat(32), "receipt digest").is_err());
-        assert!(validate_digest(&format!("sha1:{}", "ab".repeat(32)), "receipt digest").is_err());
-        assert!(validate_digest(&format!("sha256:{}", "ab".repeat(31)), "receipt digest").is_err());
-    }
-}
+YªçŠx-®éÜj×¢ëiºÚ+Š§j[h‘éÜ¢éí×÷ßÔèµ©hºÚn¶X§zÍHÈVİØ\›ŠZ\ÜÚ[™×ÙØÜÊWBˆÈVØÙ™×Ø]ŠÛ\K[İÊZ\ÜÚ[™×ÙØÜÊJWB‚‹ËÈH\İ™X[H\›ÛÜ™H\›™\ÜÈ[YÜ˜][ÛˆØØY™›Û‚‹ËÈB‹ËÈHHØØY™›ÛØ[ˆ\ØÛİ™\ˆ\İÈœ›ÛHH™\\™Y\›Ûİ\˜ÙH™YH[™[ˆB‹ËÈHİYÙY›Ùš[H›İYÚHÜ\›ÛÛ\]Xš[]HÜ˜\\ˆ[ˆ\œÙH[™ÛÛ\[B‹ËÈH[Ù\Ëˆ^Xİ]H[ÙH\È[Z]YÈ^XÚ]Ù[XİY˜\ÙH\İË‚‚œXˆ[Ù\Y˜XİÎÂ‹ËËÈ^Xİ™\ÜÚ]ÜK[Û›H\›Üš]XÈÜ˜XÛHİXš™XİÈ[™›İ[™Y™]\ÙK‚œXˆ[ÙÜš]X×ÛÜ˜XÛNÂˆÖÜ]H\™Ù]ØÛÛ˜XİËØÛÛ˜XİœœÈ—BœXˆ[ÙÛÛ˜XİÂˆÖÜ]H\™Ù]ØÛÛ˜XİËÚ[ËœœÈ—BœXˆ[Ù[ÎÂˆÖÜ]H\™Ù]ØÛÛ˜XİËÛX]š^œœÈ—BœXˆ[ÙX]š^ÂˆÖÜ]H\™Ù]ØÛÛ˜XİËÛ[Ù[œœÈ—BœXˆ[Ù[Ù[Â‹ËËÈ\YÛÛ˜XİÈ›ÜˆH\İ™X[H\›\™Ù]ÜÛÙŞK‚œXˆ[Ù\™Ù]ØÛÛ˜XİÈÂˆXˆ\ÙHİ\\ØÛÛ˜Xİ[ËX]š^[Ù[NÂŸB‚ˆÖØÙ™Ê\İ
+WBˆÖÜ]H\™Ù]ØÛÛ˜XİËİ\İËœœÈ—B›[Ù\™Ù]ØÛÛ˜Xİİ\İÎÂ‚›[Ù›Ü›X[^˜][ÛÂœXˆ[ÙX›X×Ù]šY[˜ÙNÂ›[Ù[—Ø]]Üš]NÂ›[ÙÙ\šY\ÎÂœXˆ[Ù˜[œÚ][ÛÂ‚‹ËÈH[›™\‹\[ˆ]]Üš]H[Ù[\È\™HÚ\™Y™\˜˜][HÚ]B‹ËÈ\›XÛÜ™KZ\›™\ÜË\[›™\‹\[˜š[˜\H[š]ÎÈHØœÙ\™YY\ØÛİ™\H™XÙZ\‹ËÈİ\™˜XÙH™]\Ù\È[HÛÈ\™H\È^XİHÛ™HÛİ\˜ÙKYœ˜[YH›Ü›X[^™\ˆ[™Û™B‹ËÈ\™Ù]\Ù[Xİ[Ûˆ›ØØX[\Kˆ][\È[\ÙYH\È[š]™[XZ[ˆÛÛ\[Y›Ü‚‹ËÈHİ\ˆ[˜Û\Ú[ÛˆÚ]\Ë‚ˆÖØ[İÊXYØÛÙJWBˆÖÜ]Hœ[›™\—Ü[‹ØZ[œœÈ—BœXŠÜ˜]JH[ÙZ[ÂˆÖØ[İÊXYØÛÙJWB‹ËÈHÚ\™Y›Ü›X[^™\‰ÜÈİÛˆ\İ[Ù[H™Y]\È\È[˜Û\Ú[ÛˆÚ]H[™‹ËÈ\Ù\ÈÛÜšÜÜXÙKY[šYY[\œÎÈ]È\İÈ™[XZ[ˆ^\˜Ú\ÙYHZ\ˆÜšYÚ[˜[‹ËÈš[‹İ\İ[š]Ë‚ˆÖØÙ™×Ø]Š\İ[İÊÛ\N[Ü˜\İ\ÙYÛ\N™^Xİİ\ÙYÛ\Nœ[šXÊJWBˆÖÜ]Hœ[›™\—Ü[‹Û›Ü›X[^™KœœÈ—BœXŠÜ˜]JH[Ù›Ü›X[^™NÂˆÖØ[İÊXYØÛÙJWBˆÖÜ]Hœ[›™\—Ü[‹Û[Ù[œœÈ—BœXŠÜ˜]JH[Ù[›™\—Û[Ù[Â‚‹ËËÈİšXİ[[]]X›HØœÙ\™Y\İ™X[KY\ØÛİ™\H™XÙZ\Â‹ËËÈ
+\İ™X[WÜ[›™\—Ù\ØÛİ™\KŒXÌLŒJNˆ]KY^Xİ˜]È[™[Ü\Ë\Y‹ËËÈ\›Z[˜[İ]Kœ˜[YKX]Ø\™HXÛÙY›İÜËY[X™\œÚ\\ÜÜÚ][ÛœËÛÜšÂ‹ËËÈXØÛİ[[™Ë[™]\›Z[š\İXÈYÙ\İÈİ™\ˆØ[›ÛšXØ[^[ØYË‚œXˆ[ÙØœÙ\™YÙ\ØÛİ™\HÂˆËËÈİšXİÛÛœİXİÜœË^[ØYYÙ\İËœ™\Ú™\ÜË[™X]š^Y\\‹‚ˆÖÜ]H˜Z[œœÈ—BˆXˆ[ÙZ[ÂˆËËÈ^Xİİ\\š\ÙYÕTÕØ\\™H›İ]H›ÙXÚ[™ÈİšXİ™XÙZ\ÂˆËËÈ
+ÌLŒÊNˆÙ[XİÜˆ\™İˆœ›ÛH\™Ù]XÛÛ˜Xİ]]Üš]KÛ™H›İ[™YˆËËÈİ\\š\ÙY›ØÙ\ÜË]KY^Xİ[™[Ü\Ë[™ÌLŒH™XÙZ\\ÜÙ[X›K‚ˆÖÜ]H˜Ø\\™KœœÈ—BˆXˆ[ÙØ\\™NÂˆËËÈİšXİ]K[]™[İ™X[HXÛÙ\ˆ[™ØœÙ\˜][Û‹\İ]H\š]˜][Û‹‚ˆÖÜ]H™XÛÙKœœÈ—BˆXˆ[ÙXÛÙNÂˆËËÈ™XÙZ\[™[ÜK›İË\ÜÜÚ][Û‹İXš™Xİ[™ÛÜšÈ\\Ë‚ˆÖÜ]H›[Ù[œœÈ—BˆXˆ[Ù[Ù[ÂˆËËÈ˜Z[XÛÜÙY˜[Y][Ûˆ™XÛÛœİXİ[™È›İÜÈœ›ÛH™]Z[™Y˜]È]\Ë‚ˆÖÜ]H˜[Y]KœœÈ—BˆXˆ[Ù˜[Y]NÂ‚ˆÖØÙ™Ê\İ
+WBˆÖÜ]H\İËœœÈ—Bˆ[Ù\İÎÂ‚ˆXˆ\ÙHZ[ÂˆZ[ÛØœÙ\™YÙ\ØÛİ™\WÜ™XÙZ\ÚXÚ×ÛØœÙ\™YÙ\ØÛİ™\WØYØZ[œİˆ\ØÛİ™\WÜ^[ØYÙYÙ\İ™XÙZ\Ùœ™\Ú™\ÜËˆNÂˆXˆ\ÙHØ\\™NÓØœÙ\™Q\ØÛİ™\PÛÛ™šYËØœÙ\™WÙ\ØÛİ™\KØœÙ\™WÙ\ØÛİ™\WØÛÛ[X[™NÂˆXˆ\ÙHXÛÙN™\š]™WÛØœÙ\˜][Û—Üİ]NÂˆËÈH[›™\‹\[ˆ›ØØX[\H\È[™XYH\Ùˆ\È[Ù[IÜÈX›XÂˆËÈ^[ØY\\ÎÈ™KY^ÜHÛÈ[[\È^\›˜[ÛÛœİ[Y\œÈ™YYÈZ[ˆËÈÜˆ[œÜXİ™XÙZ\ÈÚ]İ]™XXÚ[™È[ÈHÜ˜]K\š]˜]H[Ù[K‚ˆXˆ\ÙHÜ˜]Nœ[›™\—Û[Ù[Ñ\ØÛİ™\Qœ˜[YK[›™\’Ú[™NÂˆXˆ\ÙH[Ù[Âˆ\ØÛİ™\SØœÙ\˜][Û”İ]K\ØÛİ™\T^[ØY\ØÛİ™\TİXš™XİY[]K[š\›Û›Y[Y[]Kˆ]šY[˜ÙPÛ\ÜË[›ØØ][Û“ØœÙ\˜][Û‹[™Qœ˜[Z[™ËY[X™\‘\ÜÜÚ][Û‹ˆØœÙ\™Y\ØÛİ™\R[œ]ØœÙ\™Y\ØÛİ™\T›İË›ØÙ\ÜĞÛÛ\][Û‹˜]Ôİ™X[Q[™[ÜKˆ™XÙZ\œ™\Ú™\ÜË[›™\\Y˜XİY[]K\›Z[˜[ØœÙ\˜][Û‹ˆTÕ‘PSWÑTĞÓÕ‘T–WÔĞÒSPWÕ‘T”ÒSÓ‹\İ™X[Q\ØÛİ™\T™XÙZ\ŒKˆNÂˆXˆ\ÙH˜[Y]Nİ˜[Y]WÛØœÙ\™YÙ\ØÛİ™\WÜ™XÙZ\˜[Y]WÜ™XÙZ\ÜİXš™XİØš[™[™ßNÂŸB‚‹ËËÈİšXİY™™Xİ]™KZ[›ØØ][Ûˆ˜XÙHÛÛ˜Xİ‹ËËÈ
+\İ™X[WÙY™™Xİ]™WÚ[›ØØ][Û—İ˜XÙKŒXÌLŒ
+NˆÛ™H›İ[™Y”ÓÓ“‹ËËÈœ˜[YHİ™X[HÚ]\Y\‹YšY[ØœÙ\˜][Ûˆİ]\Ë\™[‹ËËÈ\ØÛİ™\K\™XÙZ\™KXš[™[™Ë›İ™[ˆÛÜšÈXØÛİ[[™Ë]\›Z[š\İXÂ‹ËËÈYÙ\İË[™H\™HÎLˆØ[›ÛšXØ[\[ˆ›Ú™Xİ[ÛˆY\\‹‚‹ËËÈ™\™\Ù[][ÛˆÛ›Nˆ›È\İ™X[H[œİ[Y[][Û‹›ØÙ\ÜÈ^Xİ][Û‹Ü‚‹ËËÈš[\Ş\İ[H[\˜Xİ[Û‹‚œXˆ[Ù[›ØØ][Û—İ˜XÙHÂˆËËÈ\™HÚXÚÙYY\\ˆÈØ[›ÛšXØ[[ˆ›Ú™Xİ[ÛœË‚ˆÖÜ]H˜Y\\‹œœÈ—BˆXˆ[ÙY\\ÂˆËËÈİšXİÛÛœİXİÜœË^[ØYYÙ\İËœ™\Ú™\ÜË[™\™[Y\\‹‚ˆÖÜ]H˜Z[œœÈ—BˆXˆ[ÙZ[ÂˆËËÈİšXİ]K[]™[œ˜[YHXÛÙ\ˆ[™›İË\İ]H\š]˜][Û‹‚ˆÖÜ]H™XÛÙKœœÈ—BˆXˆ[ÙXÛÙNÂˆËËÈ™XÙZ\œ˜[YKšY[\İ]K›İËİXš™Xİ[™ÛÜšÈ\\Ë‚ˆÖÜ]H›[Ù[œœÈ—BˆXˆ[Ù[Ù[ÂˆËËÈ˜Z[XÛÜÙY˜[Y][Ûˆ™XÛÛœİXİ[™Èœ˜[Y\Èœ›ÛH™]Z[™Y˜]È]\Ë‚ˆÖÜ]H˜[Y]KœœÈ—BˆXˆ[Ù˜[Y]NÂ‚ˆÖØÙ™Ê\İ
+WBˆÖÜ]H\İÜİ\ÜœœÈ—BˆXŠÜ˜]JH[Ù\İÜİ\ÜÂ‚ˆÖØÙ™Ê\İ
+WBˆÖÜ]H\İËœœÈ—Bˆ[Ù\İÎÂ‚ˆXˆ\ÙHY\\Âˆ^XİYšY[ÛÛ\\š\ÛÛ‹^XİYšY[™\İ[^XİY[›ØØ][Ûš[™[™Ëˆ^XİY[›ØØ][Û•˜[Y\Ë›Ú™Xİ[Û“İ]ÛÛYK›Ú™Xİ[Û”™Z™Xİ[Û‹ÛÛ\\™WÙ^XİYˆ›Ú™XİÙY™™Xİ]™WÚ[›ØØ][Û‹ˆNÂˆXˆ\ÙHZ[ÂˆZ[Ú[›ØØ][Û—İ˜XÙWÜ™XÙZ\ÚXÚ×Ú[›ØØ][Û—İ˜XÙWØYØZ[œİ˜XÙWÜ^[ØYÙYÙ\İˆ˜XÙWÜ™XÙZ\Ùœ™\Ú™\ÜËˆNÂˆXˆ\ÙHXÛÙN™\š]™WÜ›İ×Üİ]NÂˆXˆ\ÙH[Ù[ÂˆØ[›ÛšXØ[[›ØØ][Û”›Ú™Xİ[Û‹Ø\\™TÚ[Y™™Xİ]™R[›ØØ][Û‘šY[ˆY™™Xİ]™R[›ØØ][Û‘šY[ËY™™Xİ]™R[›ØØ][Û”›İËY™™Xİ]™R[›ØØ][Û•˜XÙT™XÙZ\ŒKˆšY[Ù^KšY[İ]PÛİ[Ë[›ØØ][Û]]Üš]K[›ØØ][Û“ØœÙ\˜][Û”İ]KˆØœÙ\™Y[›ØØ][Û•˜XÙR[œ]›Ú™Xİ[Û”™XÛÜ™›Ú™Xİ[Û”™Z™Xİ[Û’Ú[™›İÔİXš™Xİš[™[™ËˆØÜš\›ÛKZ[[ÙK\İ[š]Û\ÜË˜XÙRXY\‹˜XÙT^[ØY˜XÙT›İÑ\ÜÜÚ][Û‹ˆ˜XÙTİ™X[Q[™[ÜK˜XÙTİ™X[Sİ]ÛÛYK˜XÙTİXš™XİY[]K˜XÙU\›Z[˜[˜XÙUÛÜšËˆTÕ‘PSWÒS•“ĞĞUSÓ—ÕPÑWÔĞÒSPWÕ‘T”ÒSÓ‹]İÚ]ÚˆNÂˆXˆ\ÙH˜[Y]Nİ˜[Y]WÚ[›ØØ][Û—İ˜XÙWÜ™XÙZ\˜[Y]Wİ˜XÙWÜ™XÙZ\ÜİXš™XİØš[™[™ßNÂŸB‚‹ËËÈİšXİ\™H˜[‹Z[ˆ›Ú[ˆ›İš[™ÈÛ™HÛÛ\]HØœÙ\™Y[›™\ˆİXš™Xİ‹ËËÈ
+ØœÙ\™YÜ[›™\—ÜİXš™XİŒXÌLŒÊNˆHØœÙ\™YÕTÕY[X™\œÚ\‹ËËÈ
+ÌLŒKÈÌLŒÊK]È[™\[™[H™XÛÛœİXİY[ˆ
+ÍÍÌÍÊK[™B‹ËËÈY™™Xİ]™KZ[›ØØ][ÛˆØœÙ\˜][ÛˆÙ]
+ÌLŒÈÌLŒJH›Ú[™YÛ™K]Ë[Û™B‹ËËÈ[™\ˆH^XİÌLŒˆ˜[œÙ™\ˆ™[][Ûˆ[™ÌLŒMN›ÙXÙ\ˆY[]K‚‹ËËÈ™\™\Ù[][ÛˆÛ›Nˆ›È\İ™X[H^Xİ][Û‹˜XÚ[™ËÛÛ\[\ˆ[›ØØ][Û‹‹ËËÈ›ÙXİ[ÛˆÙ[Xİ[Û‹ÜˆXØÙ\Y\İ]H˜[œÚ][Û‹‚œXˆ[ÙØœÙ\™YÜİXš™XİÂˆËËÈİšXİÛÛœİXİÜœËYÙ\İËœ™\Ú™\ÜË[™H›Ú[ˆ\š]Y]XË‚ˆÖÜ]H˜Z[œœÈ—BˆXˆ[ÙZ[ÂˆËËÈ™XÙZ\š[™[™Ë›İË\ÜÜÚ][Û‹XYÛ›ÜİXËİ]K[™ÛÜšÈ\\Ë‚ˆÖÜ]H›[Ù[œœÈ—BˆXˆ[Ù[Ù[ÂˆËËÈ˜Z[XÛÜÙYİXİ\˜[˜[Y][Ûˆ™K\›İš[™È™XÙZ\]˜]™[Y]ÜË‚ˆÖÜ]H˜[Y]KœœÈ—BˆXˆ[Ù˜[Y]NÂ‚ˆÖØÙ™Ê\İ
+WBˆÖÜ]H\İËœœÈ—Bˆ[Ù\İÎÂ‚ˆXˆ\ÙHZ[ÂˆZ[ÛØœÙ\™YÜ[›™\—ÜİXš™XİÚXÚ×ÛØœÙ\™YÜ[›™\—ÜİXš™XİØœÙ\™YÜİXš™XİÙœ™\Ú™\ÜËˆØœÙ\™YÜİXš™XİÜ^[ØYÙYÙ\İˆNÂˆXˆ\ÙH[Ù[Âˆ›Ú[•ÛÜšËĞ”ÑT•‘QÔ•S“‘T—ÔÕP’‘PÕÔĞÒSPWÕ‘T”ÒSÓ‹Ğ”ÑT•‘QÔÕP’‘PÕĞÓRSWĞ“ÕS‘T–KˆØœÙ\™Y[›™\”İXš™Xİ[œ]ØœÙ\™Y[›™\”İXš™Xİ^[ØYØœÙ\™Y[›™\”İXš™Xİ›İËˆØœÙ\™Y[›™\”İXš™XİŒKØœÙ\™YİXš™Xİš[™[™ÜËØœÙ\™YİXš™Xİİ]KˆÜ™[˜\R[œİ[Y[Y\]Z]˜[[˜ÙRY[]K›ÙXÙ\”İXš™XİY[]KİXš™XİXYÛ›ÜİXËˆİXš™Xİ›Ú[‘\ÜÜÚ][Û‹ˆNÂˆXˆ\ÙH˜[Y]N˜[Y]WÛØœÙ\™YÜ[›™\—ÜİXš™XİÜÚ\NÂŸB‚\ÙHÚ›Û›Î•]ÎÂ\ÙHÛÛÜ—Ù^\™N™^\™NĞÛÛ^™\İ[˜Z[NÂ\ÙH\›ØÛÜ™WÚ\›™\Ü×İ\\ÎÂˆ“ÕS‘T–WÔ‘UT‘SQS•ÔĞÒSPWÕ‘T”ÒSÓ‹˜\Ù[[™PÛÛ\\š\ÛÛ‹˜\Ù[[™Uš[Û][Û‹ˆ˜\Ù[[™Uš[Û][Û’Ú[™›İ[™\T™]\™[Y[ÓÓTSWĞTÑSS‘WÔĞÒSPWÕ‘T”ÒSÓ‹ˆÓÓTSWĞTÑSS‘WÕŒ—ÔĞÒSPWÕ‘T”ÒSÓ‹ÓÓTST—ĞÓÓTUP’SUWÔĞÒSPWÕ‘T”ÒSÓ‹ˆÕT”‘S•ĞUUÔ’UWÒS‘VÔĞÒSPWÕ‘T”ÒSÓ‹ÛÛ\]Xš[]PXØÙ\Y˜]Ú]ˆÛÛ\]Xš[]PÛ\İ\”İ]KÛÛ\]Xš[]QXİ]KÛÛ\]Xš[]SØœÙ\˜][Û‹ˆÛÛ\]Xš[]T˜Z[]˜Z[Xš[]KÛÛ\]Xš[]T˜Z[İ]KÛÛ\]Xš[]T[”İ]KˆÛÛ\]Xš[]TÙ\šY\ÒY[]KÛÛ\]Xš[]U˜[œÚ][Û‹ÛÛ\]Xš[]U˜[œÚ][ÛØ[™Y]KˆÛÛ\[P˜\Ù[[™KÛÛ\[P˜\Ù[[™UŒ‹ÛÛ\[\ÛÛ\]Xš[]TÙ\šY\ËÛÛ\[\ÛÛ\]Xš[]Tİ]Kˆİ\œ™[]]Üš]Q[Kİ\œ™[]]Üš]R[™^İ\œ™[]]Üš]Tİ]\ËTĞÓÕ‘T–WÔĞÒSPWÕ‘T”ÒSÓ‹ˆ\ØÛİ™\™Y\İ\ØÛİ™\T™\ÜRST‘WĞÓTÕT—ÒTÕÔ–WÔĞÒSPWÕ‘T”ÒSÓ‹ˆRST‘WĞÓTÕT—ÔĞÒSPWÕ‘T”ÒSÓ‹˜Z[\™PÛ\İ\‹˜Z[\™PÛ\İ\’\İÜKˆ˜Z[\™PÛ\İ\’\İÜQ[K˜Z[\™PÛ\İ\’\İÜT™\Ù[˜ÙK˜Z[\™PÛ\İ\’\İÜTİ]\Ëˆ˜Z[\™PÛ\İ\’Y[]T]X[]K˜Z[\™PÛ\İ\”™\Ü˜Z[\™PÛ\İ\”ÚYÛ˜]\™Kˆ˜Z[\™QXØ[™Y]KĞTÓPTÔĞÒSPWÕ‘T”ÒSÓ‹Ø\X\S‘QÓS‘PQÑWÔĞÒSPWÕ‘T”ÒSÓ‹ˆ[™Y[™XYÙKØœÙ\™YÙ[X[XĞ›İ[™\K‘TT‘WÔĞÒSPWÕ‘T”ÒSÓ‹™\\™T™XÙZ\™\\™Tİ]\Ëˆ•S—Ô‘TÔ•ÔĞÒSPWÕ‘T”ÒSÓ‹[‘˜Z[\™K[‘š[T™\İ[[”™\Ü[”İ[[X\K[›™\”™XÛÜ™ˆ[›™\”İ]\ËÑSPS•P×Ğ“ÕS‘T–WÔ‘QÒTÕ–WÔĞÒSPWÕ‘T”ÒSÓ‹ÓSÒÑWÔĞÒSPWÕ‘T”ÒSÓ‹ˆÙ[X[XĞ›İ[™\PÛÛ™šY[˜ÙKÙ[X[XĞ›İ[™\Q\ÜÜÚ][Û‹Ù[X[XĞ›İ[™\SØÚÔØÛÜKˆÙ[X[XĞ›İ[™\T™YÚ\İKÙ[X[XĞ›İ[™\T™YÚ\İQ[KÙ[X[XĞ›İ[™\T™YÚ\İTİ]KˆÙ[X[XĞ›İ[™\T™\XÙ[Y[İ˜]YŞKÙ\šY\ÓX[šY™\İÛ[ÚÙQ˜Z[\™RÚ[™Û[ÚÙT™\ÜˆÛ[ÚÙTİ]\ËÛ[ÚÙTİXİ\˜[˜Z[\™KÜÚ[\XİÙ›Ü—ØXÚÙ]ÛÜšÜİ™X[WÙ›Ü—ØXÚÙ]ŸNÂœXˆ\ÙH\›ØÛÜ™WÚ\›™\Ü×İ\\ÎÒ\›™\ÜÓ[ÙK\›™\ÜÔ›Ùš[K\›™\ÜÔ[›™\ŸNÂ\ÙH[—Ø]]Üš]NÂˆ\™XİXYÛ›ÜİXÔ™XÙZ\\™XİXYÛ›ÜİXÔÙ]Ù]YXYÛ›ÜİXÔ›Ø™K\İ™X[SØœÙ\˜][Û”Ù]ˆ\™XİÙXYÛ›ÜİXÜ×Ü™XÙZ\\™XİÙXYÛ›ÜİXÜ×Ü™XÙZ\Ü]Ù]WÜ›Ø™WØÛÛ^Ü›İÜËŸNÂœXˆ\ÙHÙ\šY\ÎÔÙ\šY\ÓX[šY™\İÛÛ™šYËÙ\šY\×ÛX[šY™\İNÂ‚\ÙH›Ü›X[^˜][ÛÚ^ÛİÙ\‹ÚLM—ÙYÙ\İØ]\ßNÂ\ÙHX›X×Ù]šY[˜ÙN”X›XÔİš[™ĞÛ\ÜÎÂ\ÙHÙ\™NÑ\Ù\šX[^™KN‘\Ù\šX[^™SİÛ™YNÂ\ÙHÙ\šY\ÎÜ™XYÜÙ\šY\×ÛX[šY™\İ˜[Y]WÜÙ\šY\×ÛX[šY™\İNÂ\ÙHÚLÑYÙ\İÚLMŸNÂ\ÙHİ˜ÛÛXİ[ÛœÎĞ•™YSX\•™YTÙ]NÂ\ÙHİ™œÎÂ\ÙHİš[ÎÜÙ[ˆ\ÈİÚ[ËÜš]_NÂ\ÙHİœ]Ô]]YŸNÂ\ÙHİœ›ØÙ\ÜÎĞÛÛ[X[™İ]]NÂ\ÙHİœŞ[˜Î˜]ÛZXÎĞ]ÛZXÕMÜ™\š[™ßNÂ‚˜ÛÛœİT“ÔÓÕTÑWÕT“ˆ	œİˆHšÎ‹ËÙÚ]X‹˜ÛÛKÔ\›Ü\›HÂ˜ÛÛœİVPÕUWĞTÑWĞSÕÓTÕˆ	–Éœİ—HBˆ	–È˜˜\ÙKÚY‹‹˜˜\ÙKØÛÛ™‹˜˜\ÙKÛ[K‹˜˜\ÙKÜ]‹˜˜\ÙKİ˜[œÛ]K‹˜˜\ÙKİÚ[K—NÂœİ]XÈ•S—ĞÓÔWĞÓÕS•Tˆ]ÛZXÕMH]ÛZXÕM›™]Ê
+NÂ‚œXŠÜ˜]JH›ˆ›Ú™XİÜ›Ûİ
+
+HOˆ™\İ[]YˆÂˆ]X[šY™\İÙ\ˆH]Y™œ›ÛJ[ˆJĞT‘Ó×ÓPS’Q‘TÕÑTˆŠJNÂˆX[šY™\İÙ\‚ˆœ\™[
+
+Bˆ˜[™İ[ŠÜ˜]\×Ù\ŸÜ˜]\×Ù\‹œ\™[
+
+JBˆ›X\
+]×Ü]ØYŠBˆ›Ú×ÛÜ—Ù[ÙJÛÛÜ—Ù^\™N™^\™N™^\™HJœ\›XÛÜ™KZ\›™\ÜÈÚİ[]™H[™\ˆÜ˜]\ËÈŠJBŸB‚™›ˆ›Ùš[WÜ[›™\—Ø\™ÜÊˆ›Ùš[Nˆ\›™\ÜÔ›Ùš[KˆÙ\ˆ	”]ˆ[›™\ˆ\›™\ÜÔ[›™\‹ŠHOˆ™\İ[™XÏİš[™ÏˆÂˆX]Ú[›™\ˆÂˆ\›™\ÜÔ[›™\•\İOˆ^XÚ]İ\İÜ[›™\—Ø\™ÜÊÙ\‹›Ùš[Kœ›ÛİÊ
+JKˆ\›™\ÜÔ[›™\’\›™\ÜÈOˆÂˆÚÊ›Ùš[Kœ›ÛİÊ
+Kš]\Š
+K›X\
+›Ûİ›Ü›X]JÜ›ÛİKÊ‹ŠJK˜ÛÛXİ
+
+JBˆBˆBŸB‚™›ˆ^XÚ]İ\İÜ[›™\—Ø\™ÜÊÙ\ˆ	”]›ÛİÎˆ	–Éœİ—JHOˆ™\İ[™XÏİš[™ÏˆÂˆ]]]\™ÜÈH™XÎ›™]Ê
+NÂˆ›Üˆ›Ûİ[ˆ›ÛİÈÂˆÛÛXİİ\İÙš[\ÊÙ\‹	Ù\‹š›Ú[Š›Ûİ
+K	›]]\™ÜÊOÎÂˆBˆ\™ÜËœÛÜ
+
+NÂˆ\™ÜË™Y\
+
+NÂˆÚÊ\™ÜÊBŸB‚™›ˆÛÛXİİ\İÙš[\ÊÙ\ˆ	”]\ˆ	”]\™ÜÎˆ	›]]™XÏİš[™ÏŠHOˆ™\İ[
+
+OˆÂˆYˆY\‹™^\İÊ
+HÂˆ™]\›ˆÚÊ
+
+JNÂˆBˆ][šY\ÈHœÎœ™XYÙ\Š\ŠKÚ]ØÛÛ^
+›Ü›X]Jœ™XY[™ÈßH‹\‹™\Ü^J
+JJOÎÂˆ›Üˆ[H[ˆ[šY\ÈÂˆ][HH[KÚ]ØÛÛ^
+›Ü›X]Jœ™XY[™È[H[ˆßH‹\‹™\Ü^J
+JJOÎÂˆ]]H[Kœ]
+
+NÂˆ]š[Wİ\HH[Bˆ™š[Wİ\J
+BˆÚ]ØÛÛ^
+›Ü›X]Jœ™XY[™Èš[H\H›ÜˆßH‹]™\Ü^J
+JJOÎÂˆYˆš[Wİ\Kš\×Ù\Š
+HÂˆÛÛXİİ\İÙš[\ÊÙ\‹	œ]\™ÜÊOÎÂˆÛÛ[YNÂˆBˆYˆYš[Wİ\Kš\×Ùš[J
+H]™^[œÚ[ÛŠ
+K˜[™İ[Š^^×ÜİŠ
+JHOHÛÛYJŠHÂˆÛÛ[YNÂˆBˆ]™[]]™HH]ˆœİš\Ü™Yš^
+Ù\ŠBˆÚ]ØÛÛ^
+›Ü›X]J››Ü›X[^š[™È\İ]ßH‹]™\Ü^J
+JJOÎÂˆ\™ÜËœ\Ú
+™[]]™K™\Ü^J
+K×Üİš[™Ê
+Kœ™\XÙJ	×	Ë‹ÈŠJNÂˆBˆÚÊ
+
+JBŸB‚™›ˆ›Ü›X[^™WÜÙ[XİYİ\İÊ›Ùš[Nˆ\›™\ÜÔ›Ùš[K\İÎˆ	–Ôİš[™×JHOˆ™\İ[™XÏİš[™ÏˆÂˆ][İÙYÜ›ÛİÈH›Ùš[Kœ›ÛİÊ
+Kš]\Š
+K˜ÛÜYY
+
+K˜ÛÛXİ•™YTÙ]ÏŠ
+NÂˆ]]]›Ü›X[^™YH™XÎ›™]Ê
+NÂˆ›Üˆ\İ[ˆ\İÈÂˆ]]H›Ü›X[^™Wİ\İÜ]
+\İ
+Bˆ›Ú×ÛÜ—Ù[ÙJÛÛÜ—Ù^\™N™^\™N™^\™HJš[˜[Y\›ÛÜ™H\İ]ˆİ\İHŠJOÎÂˆYˆ]˜ÛÛZ[œÊ‹‹ˆŠH]œİ\×İÚ]
+	ËÉÊH\]™[™×İÚ]
+‹ŠHÂˆ˜Z[Jš[˜[Y\›ÛÜ™H\İ]ˆİ\İHŠNÂˆBˆ]ÛÛYJ
+›ÛİÜ™\İ
+JHH]œÜ]ÛÛ˜ÙJ	ËÉÊH[ÙHÂˆ˜Z[JœÙ[XİY\›ÛÜ™H\İ]\İ[˜ÛYHH›Ùš[H›Ûİˆİ\İHŠNÂˆNÂˆYˆX[İÙYÜ›ÛİË˜ÛÛZ[œÊ›Ûİ
+HÂˆ˜Z[JˆœÙ[XİY\›ÛÜ™H\İÜ]H\Èİ]ÚYH›Ùš[HßH›ÛİÈÎßH‹ˆ›Ùš[Kˆ›Ùš[Kœ›ÛİÊ
+Bˆ
+NÂˆBˆ›Ü›X[^™Yœ\Ú
+]
+NÂˆBˆ›Ü›X[^™YœÛÜ
+
+NÂˆ›Ü›X[^™Y™Y\
+
+NÂˆÚÊ›Ü›X[^™Y
+BŸB‚™›ˆ˜[Y]WÙ^Xİ]WÜÙ[Xİ[ÛŠ[ÙNˆ\›™\ÜÓ[ÙKÙ[XİYİ\İÎˆ	–Ôİš[™×JHOˆ™\İ[
+
+OˆÂˆYˆ[ÙHOH\›™\ÜÓ[ÙN‘^Xİ]HÂˆ™]\›ˆÚÊ
+
+JNÂˆBˆYˆÙ[XİYİ\İËš\×Ù[\J
+HÂˆ˜Z[Jˆœ\›XÛÜ™KZ\›™\ÜÈ[ˆK[[ÙH^Xİ]H™\]Z\™\ÈÛ™HÜˆ[Ü™H^XÚ]K]\İÙ[Xİ[ÛœÈœ›ÛHßH‹ˆVPÕUWĞTÑWĞSÕÓTÕš›Ú[Š‹ŠBˆ
+NÂˆBˆYˆ]ÛÛYJ\İ
+HBˆÙ[XİYİ\İËš]\Š
+K™š[™
+\İQVPÕUWĞTÑWĞSÕÓTÕ˜ÛÛZ[œÊ	\İ˜\×ÜİŠ
+JJBˆÂˆ˜Z[Jˆœ\›XÛÜ™KZ\›™\ÜÈ[ˆK[[ÙH^Xİ]Hİ\ÜÈÛ›HÙ[XİY˜\ÙH\İÈßNÈ™Z™XİYİ\İH‹ˆVPÕUWĞTÑWĞSÕÓTÕš›Ú[Š‹ŠBˆ
+NÂˆBˆÚÊ
+
+JBŸB‚™›ˆš[\—Ù\ØÛİ™\™Yİ\İÊˆ\İÎˆ™XÏ\ØÛİ™\™Y\İ‹ˆÙ[XİYİ\İÎˆ	–Ôİš[™×KŠHOˆ™\İ[™XÏ\ØÛİ™\™Y\İˆÂˆYˆÙ[XİYİ\İËš\×Ù[\J
+HÂˆ™]\›ˆÚÊ\İÊNÂˆB‚ˆ]Ù[XİYHÙ[XİYİ\İËš]\Š
+K˜ÛÛ™Y
+
+K˜ÛÛXİ•™YTÙ]ÏŠ
+NÂˆ]š[\™YBˆ\İËš[×Ú]\Š
+K™š[\Š\İÙ[XİY˜ÛÛZ[œÊ	\İœ]
+JK˜ÛÛXİ™XÏÏŠ
+NÂˆ]›İ[™Hš[\™Yš]\Š
+K›X\
+\İ\İœ]˜ÛÛ™J
+JK˜ÛÛXİ•™YTÙ]ÏŠ
+NÂˆYˆ]ÛÛYJZ\ÜÚ[™ÊHHÙ[XİYš]\Š
+K™š[™
+]Y›İ[™˜ÛÛZ[œÊ
+œ]
+JHÂˆ˜Z[JœÙ[XİY\›ÛÜ™H\İÛZ\ÜÚ[™ßHØ\È›İ\ØÛİ™\™YH\İ™X[H\›™\ÜÈŠNÂˆBˆÚÊš[\™Y
+BŸB‚‹ËËÈÛÛ™šYİ\˜][Ûˆ›Üˆ\›XÛÜ™KZ\›™\ÜÈ\ØÛİ™\˜‚ˆÖÙ\š]™JXYËÛÛ™JWBœXˆİXİ\ØÛİ™\ÛÛ™šYÈÂˆXˆ\›İ™YNˆ]Y‹ˆXˆÜİÜ\›ˆ]Y‹ˆXˆ[›™\ˆ\›™\ÜÔ[›™\‹ˆXˆ›Ùš[Nˆ\›™\ÜÔ›Ùš[KˆXˆİ]]ˆÜ[Û]Y‹ŸB‚‹ËËÈÛÛ™šYİ\˜][Ûˆ›Üˆ\›XÛÜ™KZ\›™\ÜÈ™\\™X‚ˆÖÙ\š]™JXYËÛÛ™JWBœXˆİXİ™\\™PÛÛ™šYÈÂˆXˆ\›Ü™Yˆİš[™ËˆXˆİ]]Ù\ˆÜ[Û]Y‹ŸB‚‹ËËÈÛÛ™šYİ\˜][Ûˆ›Üˆ\›XÛÜ™KZ\›™\ÜÈ[˜‚ˆÖÙ\š]™JXYËÛÛ™JWBœXˆİXİ[ÛÛ™šYÈÂˆXˆ\›İ™YNˆ]Y‹ˆXˆÜİÜ\›ˆ]Y‹ˆXˆ[›™\ˆ\›™\ÜÔ[›™\‹ˆXˆ[ÙNˆ\›™\ÜÓ[ÙKˆXˆ›Ùš[Nˆ\›™\ÜÔ›Ùš[KˆXˆ\İÎˆ™XÏİš[™Ï‹ˆXˆİ]]ˆÜ[Û]Y‹ˆXˆ[›™\—Øš[˜\NˆÜ[Û]Y‹ˆËËÈÚ]\ˆZ\ÜÚ[™È\İ™X[H›İÜÈX^H™H[™\İYØ]YH›İ[™Y\™XİˆËËÈXYÛ›ÜİXÈ›Ø™\ÈY\ˆH\İ™X[H™\Ü\Èœ›Ş™[ˆ
+ÎMÌÊK‚ˆËËÂˆËËÈXYÛ›ÜİXÜÈ\™H™]Z[™Y[™\ˆHÙ\\˜]H™XÙZ\[™Ø[ˆ™]™\ˆÚ[™ÙBˆËËÈH\İ™X[H™\İ[İ[ËÜˆ™\™Xİ‚ˆXˆXYÛ›ÜİX×Ü›Ø™\Îˆ›ÛÛŸB‚‹ËËÈÛÛ™šYİ\˜][Ûˆ›Üˆ\›XÛÜ™KZ\›™\ÜÈ˜\Ù[[™X‚ˆÖÙ\š]™JXYËÛÛ™JWBœXˆİXİ˜\Ù[[™PÛÛ™šYÈÂˆXˆ[ÙNˆ\›™\ÜÓ[ÙKˆXˆ›Ùš[Nˆ\›™\ÜÔ›Ùš[KˆXˆ™\ÜˆÜ[Û]Y‹ˆXˆ˜\Ù[[™NˆÜ[Û]Y‹ˆXˆXØÙ\ˆ›ÛÛˆXˆÙ\šY\ÎˆÜ[Û]Y‹ˆXˆ™]š[İ\×Ø˜\Ù[[™NˆÜ[Û]Y‹ˆXˆ›İ[™\WÜ™]\™[Y[ÎˆÜ[Û]Y‹ˆXˆÛÛ\[\—ÜİXš™XİÚY[]NˆÜ[Ûİš[™Ï‹ˆXˆ[›ØØ][Û—ÚY[]NˆÜ[Ûİš[™Ï‹ˆXˆØ\Xš[]WÚY[]NˆÜ[Ûİš[™Ï‹ˆXˆ[š\›Û›Y[ÚY[]NˆÜ[Ûİš[™Ï‹ˆXˆXØÙ\Yİ˜[œÚ][Û—ÚYˆÜ[Ûİš[™Ï‹ˆXˆ]šY[˜ÙWØ[™NˆÜ[Ûİš[™Ï‹ŸB‚‹ËËÈÛÛ™šYİ\˜][Ûˆ›Üˆ\›XÛÜ™KZ\›™\ÜÈ›İ[™\šY\Ø‚ˆÖÙ\š]™JXYËÛÛ™JWBœXˆİXİ›İ[™\T™YÚ\İPÛÛ™šYÈÂˆXˆ™YÚ\İNˆ]Y‹ˆXˆ˜\Ù[[™\Îˆ™XÏ]Y‹ˆXˆ[™\Îˆ™XÏ]Y‹ˆXˆİ]]ˆÜ[Û]Y‹ˆXˆÚXÚÎˆ›ÛÛˆXˆ™\Üˆ›ÛÛˆXˆ\İÜšXØ[ˆ›ÛÛŸB‚‹ËËÈÛÛ™šYİ\˜][Ûˆ›Üˆ\›XÛÜ™KZ\›™\ÜÈšXYÙX‚ˆÖÙ\š]™JXYËÛÛ™JWBœXˆİXİšXYÙPÛÛ™šYÈÂˆXˆ[™Nˆ]Y‹ˆXˆİ]]ˆ]Y‹ˆXˆ\İÜNˆÜ[Û]Y‹ˆXˆÜš]WÚ\İÜNˆ›ÛÛˆXˆÚXÚ×Ú\İÜNˆ›ÛÛŸB‚‹ËËÈ[œ]™XÙZ\È›ÜˆÛ™H[™\[™[HY[YšYYÛÛ\]Xš[]HÙ\šY\Ë‚ˆÖÙ\š]™JXYËÛÛ™JWBœXˆİXİÛÛ\]Xš[]TÙ\šY\Ò[œ]ÂˆXˆÙ\šY\×ÛX[šY™\İˆ]Y‹ˆXˆ\œÙWÜ™\Üˆ]Y‹ˆXˆÛÛ\[WÜ™\Üˆ]Y‹ˆXˆÛÛ\[WØ˜\Ù[[™Nˆ]Y‹ˆËËÈXØÙ\Y˜]Ú]ÈÛÛ\\™HÚ]Hİ\œ™[ØœÙ\˜][Û‹‚ˆXˆXØÙ\YØ˜\Ù[[™NˆÜ[Û]Y‹ˆXˆ]šY[˜ÙWØ[™Nˆ]Y‹ˆXˆ›İ[™\WÜ™YÚ\İNˆÜ[Û]Y‹ˆXˆÛ\İ\—Ú\İÜNˆÜ[Û]Y‹ˆXˆ^Xİ]WÜ™\ÜˆÜ[Û]Y‹ˆËËÈÜ[Û˜[ÍLŒÍİ\œ™[X]]Üš]HYZ\ÜÚ[Ûˆ›ÛÙ‹‚ˆXˆİ\œ™[Ø]]Üš]NˆÜ[Ûİ\œ™[]]Üš]PÛÛ™šYÏ‹ŸB‚‹ËËÈÛÛ™šYİ\˜][Ûˆ›ÜˆØY[™È\YÛÛ\[\ˆÛÛ\]Xš[]Hİ]K‚ˆÖÙ\š]™JXYËÛÛ™JWBœXˆİXİÛÛ\]Xš[]SØYÛÛ™šYÈÂˆXˆ[œ]Îˆ™XÏÛÛ\]Xš[]TÙ\šY\Ò[œ]‹ˆXˆ™\ÜÚ]ÜWØÛÛ[Z]ˆİš[™ËŸB‚‹ËËÈÛÛ™šYİ\˜][Ûˆ›Üˆ\›XÛÜ™KZ\›™\ÜÈÛ[ÚÙX‚ˆÖÙ\š]™JXYËÛÛ™JWBœXˆİXİÛ[ÚÙPÛÛ™šYÈÂˆXˆ\›İ™YNˆ]Y‹ˆXˆÜİÜ\›ˆ]Y‹ˆXˆ[›™\ˆ\›™\ÜÔ[›™\‹ˆXˆ›Ùš[Nˆ\›™\ÜÔ›Ùš[KˆXˆ[Ù\Îˆ™XÏ\›™\ÜÓ[ÙO‹ˆXˆİ]]Ù\ˆÜ[Û]Y‹ˆXˆ[›™\—Øš[˜\NˆÜ[Û]Y‹ˆXˆ\›Ü™YˆÜ[Ûİš[™Ï‹ŸB‚‹ËËÈ\ØÛİ™\ˆ\İš[\Èœ›ÛHH™\\™Y\›™YH[™Üš]HH”ÓÓˆX[šY™\İ‚œXˆ›ˆ\ØÛİ™\ŠÛÛ™šYÎˆ\ØÛİ™\ÛÛ™šYÊHOˆ™\İ[
+
+OˆÂˆ]\›İ™YHHØ[›ÛšXØ[^™WÙ^\İ[™×Ù\Š	˜ÛÛ™šYËœ\›İ™YKœ™\\™Y\›™YHŠOÎÂˆ]Ù\ˆH\›İ™YKš›Ú[ŠŠNÂˆ]ØÜš\H˜[Y]WÜ[›™\—ÜØÜš\
+	Ù\‹ÛÛ™šYËœ[›™\ŠOÎÂˆ]İ]]Ü]HÛÛ™šYË›İ]][Ü˜\ÛÜ—Ù[ÙJY˜][Ù\ØÛİ™\WÜ]
+ÛÛ™šYËœ›Ùš[JJNÂ‚ˆ]İ]]H[›ÚÙWÙ[\\İÊˆ	˜ÛÛ™šYËšÜİÜ\›ˆ	Ù\‹ˆ	œØÜš\ˆ	œ›Ùš[WÜ[›™\—Ø\™ÜÊÛÛ™šYËœ›Ùš[K	Ù\‹ÛÛ™šYËœ[›™\ŠOËˆ
+BˆÚ]ØÛÛ^
+Âˆ›Ü›X]J™\ØÛİ™\š[™È\›ÛÜ™H\İÈšXHßHßH‹ÛÛ™šYËœ[›™\‹ÛÛ™šYËœ›Ùš[JBˆJOÎÂ‚ˆ]\İÈH\œÙWÙ[\\İ×Ûİ]]
+	›İ]]œİİ]
+OÎÂˆ]™\ÜH\ØÛİ™\T™\ÜÂˆØÚ[XWİ™\œÚ[ÛˆTĞÓÕ‘T–WÔĞÒSPWÕ‘T”ÒSÓ‹×Üİš[™Ê
+KˆÛÛ[Z]ˆİ\œ™[ØÛÛ[Z]
+
+Kˆ[Y\İ[\ˆ]Î››İÊ
+K™›Ü›X]
+‰VKI[KIY	R‰SN‰TÖˆŠK×Üİš[™Ê
+Kˆ\›Ü™Yˆ\›İ™YWÜ™YŠ	œ\›İ™YJKˆ™\\™Yİ™YNˆ\›İ™YK™\Ü^J
+K×Üİš[™Ê
+KˆÜİÜ\›ˆÛÛ™šYËšÜİÜ\›™\Ü^J
+K×Üİš[™Ê
+Kˆ[›™\ˆÛÛ™šYËœ[›™\‹ˆ›Ùš[NˆÛÛ™šYËœ›Ùš[Kˆ\İËˆNÂ‚ˆÜš]WÙ\ØÛİ™\WÜ™\Ü
+	›İ]]Ü]	œ™\Ü
+OÎÂˆ˜XÚ[™Îš[™›ÈJˆœ\›XÛÜ™KZ\›™\ÜÎˆ\ØÛİ™\™YßH\İÈ›Üˆ›Ùš[HßHšXHßH‹ˆ™\Ü\İË›[Š
+Kˆ™\Üœ›Ùš[Kˆ™\Üœ[›™\‚ˆ
+NÂˆ˜XÚ[™Îš[™›ÈJÜ›İHßH‹İ]]Ü]™\Ü^J
+JNÂˆÚÊ
+
+JBŸB‚‹ËËÈ˜[Y]HHÙ[X[XËX›İ[™\H™YÚ\İHYØZ[œİXØÙ\YŒˆ˜\Ù[[™\È[™‹ËËÈÜ[Û˜[\˜X›H]šY[˜ÙKX[™H[™^\Ë‚œXˆ›ˆ›İ[™\šY\ÊÛÛ™šYÎˆ›İ[™\T™YÚ\İPÛÛ™šYÊHOˆ™\İ[
+
+OˆÂˆ]˜]ÈHœÎœ™XYİ×Üİš[™Ê	˜ÛÛ™šYËœ™YÚ\İJBˆÚ]ØÛÛ^
+›Ü›X]Jœ™XY[™È›İ[™\H™YÚ\İHßH‹ÛÛ™šYËœ™YÚ\İK™\Ü^J
+JJOÎÂˆ]™YÚ\İNˆÙ[X[XĞ›İ[™\T™YÚ\İHHÙ\™WÚœÛÛ™œ›ÛWÜİŠ	œ˜]ÊBˆÚ]ØÛÛ^
+›Ü›X]J™XÛÙ[™È›İ[™\H™YÚ\İHßH‹ÛÛ™šYËœ™YÚ\İK™\Ü^J
+JJOÎÂ‚ˆ]]]š[Û][ÛœÈH˜[Y]WØ›İ[™\WÜ™YÚ\İWÜÚ\J	œ™YÚ\İJNÂˆ]]]˜\Ù[[™WÙ]HH™XÎ›™]Ê
+NÂˆ›Üˆ][ˆ	˜ÛÛ™šYË˜˜\Ù[[™\ÈÂˆX]Ú™XYØÛÛ\[WØ˜\Ù[[™WİŒŠ]
+HÂˆÚÊ˜\Ù[[™JHOˆ˜\Ù[[™WÙ]Kœ\Ú
+
+]˜ÛÛ™J
+K˜\Ù[[™JJKˆ\œŠ\œ›ÜŠHOˆš[Û][ÛœËœ\Ú
+›Ü›X]JßNˆÙ\œ›ÜŸH‹]™\Ü^J
+JJKˆBˆB‚ˆ]]][™WÙ]HH™XÎ›™]Ê
+NÂˆ›Üˆ][ˆ	˜ÛÛ™šYË˜[™\ÈÂˆX]Ú™XYØ›İ[™\WØ[™J]
+HÂˆÚÊ[™JHOˆ[™WÙ]Kœ\Ú
+[™JKˆ\œŠ\œ›ÜŠHOˆš[Û][ÛœËœ\Ú
+›Ü›X]JßNˆÙ\œ›ÜŸH‹]™\Ü^J
+JJKˆBˆB‚ˆ›Üˆ
+]˜\Ù[[™JH[ˆ	˜˜\Ù[[™WÙ]HÂˆš[Û][ÛœË™^[™
+˜[Y]WÜ™YÚ\İWØYØZ[œİØ˜\Ù[[™Jˆ	œ™YÚ\İKˆ˜\Ù[[™KˆÛÛ™šYËš\İÜšXØ[ˆ
+JNÂˆ›Üˆ[™H[ˆ[™WÙ]Kš]\Š
+K™š[\Š[™_Âˆ[™Kš[™^œÙ\šY\×ÚYOH˜\Ù[[™KœÙ\šY\×ÚY	‰ˆ[™Kš[™^œ›Ùš[HOH˜\Ù[[™Kœ›Ùš[BˆJHÂˆš[Û][ÛœË™^[™
+˜[Y]WØ[™WØYØZ[œİØ˜\Ù[[™J[™K˜\Ù[[™JJNÂˆBˆYˆXÛÛ™šYË˜[™\Ëš\×Ù[\J
+Bˆ	‰ˆX[™WÙ]Kš]\Š
+K˜[J[™_Âˆ[™Kš[™^œÙ\šY\×ÚYOH˜\Ù[[™KœÙ\šY\×ÚYˆ	‰ˆ[™Kš[™^œ›Ùš[HOH˜\Ù[[™Kœ›Ùš[BˆJBˆÂˆš[Û][ÛœËœ\Ú
+›Ü›X]JˆßNˆ›È]šY[˜ÙH[™HØ\Èİ\YY›ÜˆÙ\šY\ÈßH›Ùš[HßH‹ˆ]™\Ü^J
+Kˆ˜\Ù[[™KœÙ\šY\×ÚYˆ˜\Ù[[™Kœ›Ùš[Bˆ
+JNÂˆBˆBˆ›Üˆ[™H[ˆ	˜[™WÙ]HÂˆYˆX˜\Ù[[™WÙ]Kš]\Š
+K˜[J
+Ë˜\Ù[[™J_Âˆ˜\Ù[[™KœÙ\šY\×ÚYOH[™Kš[™^œÙ\šY\×ÚY	‰ˆ˜\Ù[[™Kœ›Ùš[HOH[™Kš[™^œ›Ùš[BˆJHÂˆš[Û][ÛœËœ\Ú
+›Ü›X]Jˆ˜[™HßH\È›ÈX]Ú[™ÈXØÙ\Y˜\Ù[[™H]]Üš]H‹ˆ[™Kš[™^˜[™WÚYˆ
+JNÂˆBˆB‚ˆ]™\ÜH›İ[™\WÜ™YÚ\İWÜ™\Ü
+ˆ	œ™YÚ\İKˆ	˜˜\Ù[[™WÙ]Kˆ	˜[™WÙ]KˆÛÛ™šYËš\İÜšXØ[ˆš[Û][ÛœËˆ
+NÂˆ]œÛÛˆBˆÙ\™WÚœÛÛ×Üİš[™×Ü™]J	œ™\Ü
+K˜ÛÛ^
+œÙ\šX[^š[™È›İ[™\H™YÚ\İH™\ÜŠOÎÂˆYˆ]ÛÛYJ]
+HH	˜ÛÛ™šYË›İ]]ÂˆYˆ]ÛÛYJ\™[
+HH]œ\™[
+
+HÂˆœÎ˜Ü™X]WÙ\—Ø[
+\™[
+KÚ]ØÛÛ^
+Âˆ›Ü›X]J˜Ü™X][™È›İ[™\H™YÚ\İH™\Ü\™XİÜHßH‹\™[™\Ü^J
+JBˆJOÎÂˆBˆœÎÜš]J]›Ü›X]JÚœÛÛŸWˆŠJBˆÚ]ØÛÛ^
+›Ü›X]JÜš][™È›İ[™\H™YÚ\İH™\ÜßH‹]™\Ü^J
+JJOÎÂˆH[ÙHYˆÛÛ™šYËœ™\ÜÂˆİÚ[Îœİİ]
+
+BˆÜš]WØ[
+›Ü›X]JÚœÛÛŸWˆŠK˜\×Ø]\Ê
+JBˆ˜ÛÛ^
+Üš][™È›İ[™\H™YÚ\İH™\ÜŠOÎÂˆB‚ˆYˆ\™\Ü˜[YÂˆ˜Z[JˆœÙ[X[XËX›İ[™\H™YÚ\İH˜[Y][Ûˆ˜Z[YÚ]ßHš[Û][ÛŠÊN—ßH‹ˆ™\Üš[Û][ÛœË›[Š
+Kˆ™\Üš[Û][ÛœËš›Ú[Š—ˆŠBˆ
+NÂˆBˆÚÊ
+
+JBŸB‚‹ËËÈÛ\İ\ˆ\Y˜Z[\™\È[™Ù\\˜]HÙ[X[XËX›İ[™\HXœ›ÛH›ÙXİ˜Z[\™\Ë‚œXˆ›ˆšXYÙJÛÛ™šYÎˆšXYÙPÛÛ™šYÊHOˆ™\İ[
+
+OˆÂˆ][™HH™XYØ›İ[™\WØ[™J	˜ÛÛ™šYË˜[™JOÎÂˆ]ÛÛ\[WÜ]H[™WØ\Y˜XİÜ]
+	˜[™K˜ÛÛ\[WÜ™\ÜŠOÎÂˆ]˜]ÈHœÎœ™XYİ×Üİš[™Ê	˜ÛÛ\[WÜ]
+BˆÚ]ØÛÛ^
+›Ü›X]Jœ™XY[™ÈÛÛ\[H™\ÜßH‹ÛÛ\[WÜ]™\Ü^J
+JJOÎÂˆ]™\Üˆ[”™\ÜHÙ\™WÚœÛÛ™œ›ÛWÜİŠ	œ˜]ÊBˆÚ]ØÛÛ^
+›Ü›X]J™XÛÙ[™ÈÛÛ\[H™\ÜßH‹ÛÛ\[WÜ]™\Ü^J
+JJOÎÂˆ˜[Y]WØ[™WÜ™\ÜÚY[]J	˜[™K	œ™\Ü
+OÎÂˆ[œİ\™Wİ˜[YÜ™\ÜÜÚ\J	œ™\Ü
+OÎÂˆ]Û\İ\—Ü™\ÜHZ[Ù˜Z[\™WØÛ\İ\—Ü™\Ü
+	˜[™K	œ™\Ü
+OÎÂˆœÎ˜Ü™X]WÙ\—Ø[
+	˜ÛÛ™šYË›İ]]
+BˆÚ]ØÛÛ^
+›Ü›X]J˜Ü™X][™ÈšXYÙHİ]]\™XİÜHßH‹ÛÛ™šYË›İ]]™\Ü^J
+JJOÎÂˆ]œÛÛˆBˆÙ\™WÚœÛÛ×Üİš[™×Ü™]J	˜Û\İ\—Ü™\Ü
+K˜ÛÛ^
+œÙ\šX[^š[™È˜Z[\™HÛ\İ\œÈŠOÎÂˆœÎÜš]JÛÛ™šYË›İ]]š›Ú[Š™˜Z[\™KXÛ\İ\œËšœÛÛˆŠK›Ü›X]JÚœÛÛŸWˆŠJBˆ˜ÛÛ^
+Üš][™È˜Z[\™KXÛ\İ\œËšœÛÛˆŠOÎÂˆœÎÜš]JˆÛÛ™šYË›İ]]š›Ú[Š™˜Z[\™KXÛ\İ\œË›YŠKˆ™[™\—Ù˜Z[\™WØÛ\İ\—ÛX\šÙİÛŠ	˜Û\İ\—Ü™\Ü
+Kˆ
+Bˆ˜ÛÛ^
+Üš][™È˜Z[\™KXÛ\İ\œË›YŠOÎÂ‚ˆYˆÛÛ™šYËÜš]WÚ\İÜHÛÛ™šYË˜ÚXÚ×Ú\İÜHÂˆ]\İÜWÜ]HÛÛ™šYËš\İÜK˜\×Ü™YŠ
+K›Ú×ÛÜ—Ù[ÙJÂˆÛÛÜ—Ù^\™N™^\™N™^\™HJš\İÜH]\È™\]Z\™Y›Üˆ\İÜHÚXÚÜÈŠBˆJOÎÂˆ]\İÜHH™XYØÛ\İ\—Ú\İÜJ\İÜWÜ]ÛÛ™šYËÜš]WÚ\İÜJOÎÂˆ]Ú\Wİš[Û][ÛœÈH˜[Y]WØÛ\İ\—Ú\İÜWÜÚ\J	š\İÜJNÂˆYˆ\Ú\Wİš[Û][ÛœËš\×Ù[\J
+HÂˆ˜Z[J˜Û\İ\ˆ\İÜH\È[˜[Y—ßH‹Ú\Wİš[Û][ÛœËš›Ú[Š—ˆŠJNÂˆBˆYˆÛÛ™šYË˜ÚXÚ×Ú\İÜHÂˆ]š[Û][ÛœÈH˜[Y]WÚ\İÜWØYØZ[œİÜ™\Ü
+	š\İÜK	˜Û\İ\—Ü™\Ü
+NÂˆYˆ]š[Û][ÛœËš\×Ù[\J
+HÂˆ˜Z[J˜Û\İ\ˆ\İÜHÚXÚÈ˜Z[Y—ßH‹š[Û][ÛœËš›Ú[Š—ˆŠJNÂˆBˆH[ÙHÂˆ]\]YHY\™ÙWØÛ\İ\—Ú\İÜJ\İÜK	˜Û\İ\—Ü™\Ü
+OÎÂˆ]\]YÚœÛÛˆBˆÙ\™WÚœÛÛ×Üİš[™×Ü™]J	\]Y
+K˜ÛÛ^
+œÙ\šX[^š[™ÈÛ\İ\ˆ\İÜHŠOÎÂˆYˆ]ÛÛYJ\™[
+HH\İÜWÜ]œ\™[
+
+HÂˆœÎ˜Ü™X]WÙ\—Ø[
+\™[
+KÚ]ØÛÛ^
+Âˆ›Ü›X]J˜Ü™X][™ÈÛ\İ\ˆ\İÜH\™XİÜHßH‹\™[™\Ü^J
+JBˆJOÎÂˆBˆœÎÜš]J\İÜWÜ]›Ü›X]Jİ\]YÚœÛÛŸWˆŠJBˆÚ]ØÛÛ^
+›Ü›X]JÜš][™ÈÛ\İ\ˆ\İÜHßH‹\İÜWÜ]™\Ü^J
+JJOÎÂˆœÎÜš]JÛÛ™šYË›İ]]š›Ú[Š˜Û\İ\‹Z\İÜKšœÛÛˆŠK›Ü›X]Jİ\]YÚœÛÛŸWˆŠJBˆ˜ÛÛ^
+Üš][™ÈÛ\İ\‹Z\İÜKšœÛÛˆŠOÎÂˆœÎÜš]JˆÛÛ™šYË›İ]]š›Ú[Š˜Û\İ\‹Z\İÜK›YŠKˆ™[™\—ØÛ\İ\—Ú\İÜWÛX\šÙİÛŠ	\]Y
+Kˆ
+Bˆ˜ÛÛ^
+Üš][™ÈÛ\İ\‹Z\İÜK›YŠOÎÂˆBˆBˆÚÊ
+
+JBŸB‚™›ˆ™XYØÛ\İ\—Ú\İÜJ]ˆ	”][İ×ÛZ\ÜÚ[™Îˆ›ÛÛ
+HOˆ™\İ[˜Z[\™PÛ\İ\’\İÜOˆÂˆYˆ\]š\×Ùš[J
+HÂˆYˆ[İ×ÛZ\ÜÚ[™ÈÂˆ™]\›ˆÚÊ˜Z[\™PÛ\İ\’\İÜHÂˆØÚ[XWİ™\œÚ[ÛˆRST‘WĞÓTÕT—ÒTÕÔ–WÔĞÒSPWÕ‘T”ÒSÓ‹š[Ê
+Kˆ[šY\Îˆ™XÎ›™]Ê
+KˆJNÂˆBˆ˜Z[J˜Û\İ\ˆ\İÜHßH\ÈZ\ÜÚ[™È‹]™\Ü^J
+JNÂˆBˆ]˜]ÈHœÎœ™XYİ×Üİš[™Ê]
+BˆÚ]ØÛÛ^
+›Ü›X]Jœ™XY[™ÈÛ\İ\ˆ\İÜHßH‹]™\Ü^J
+JJOÎÂˆÙ\™WÚœÛÛ™œ›ÛWÜİŠ	œ˜]ÊBˆÚ]ØÛÛ^
+›Ü›X]J™XÛÙ[™ÈÛ\İ\ˆ\İÜHßH‹]™\Ü^J
+JJBŸB‚‹ËËÈ[œ]È›Üˆ˜[Y][™ÈÜİ[Y\™ÙH]šY[˜ÙH[™XYÙH[™İ\œ™[]]Üš]K‚ˆÖÙ\š]™JXYËÛÛ™JWBœXˆİXİİ\œ™[]]Üš]PÛÛ™šYÈÂˆËËÈ]\›Z[š\İXÈİ\œ™[X]]Üš]H[™^‚ˆXˆ[™^ˆ]Y‹ˆËËÈ[™Y[[™XYÙH™XÛÜ™È™Y™\™[˜ÙYHH[™^‚ˆXˆ[™XYÙ\Îˆ™XÏ]Y‹ˆËËÈ™\ÜÚ]ÜH™YHÛÛZ[š[™ÈHX›\ÚY]šY[˜ÙH\Y˜XİË‚ˆXˆ™\ÜÚ]ÜWÜ›Ûİˆ]Y‹ˆËËÈ^XİÚ]ÛÛ[Z]ÛÛZ[š[™ÈHX›\ÚY]]Üš]H™XÛÜ™ËˆXXÚˆËËÈ[™XYÙH™XÛÜ™	ÜÈ[™YÜÚXY[YšY\ÈHYX\İ\™YÛÙHÛÛ[Z]‚ˆXˆ[™YÜÚNˆİš[™ËŸB‚™›ˆ]]Üš]WÜİ]\×Ü˜[šÊİ]\Îˆİ\œ™[]]Üš]Tİ]\ÊHOˆNÂˆX]Úİ]\ÈÂˆİ\œ™[]]Üš]Tİ]\Îİ\œ™[Oˆˆİ\œ™[]]Üš]Tİ]\Î’\İÜšXØ[OˆKˆİ\œ™[]]Üš]Tİ]\Î”İ\\œÙYYOˆ‹ˆBŸB‚™›ˆ]]Üš]WÙ[WÚÙ^J[Nˆ	İ\œ™[]]Üš]Q[JHOˆ
+	œİ‹N	œİŠHÂˆ
+ˆ[KœÙ\šY\×ÚY˜\×ÜİŠ
+Kˆ]]Üš]WÜİ]\×Ü˜[šÊ[Kœİ]\ÊKˆ[K›ØœÙ\˜][Û—Ø[™WÚY˜\×ÜİŠ
+Kˆ
+BŸB‚‹ËËÈ˜[Y]HH[[]]X›HY[]HÚZ[ˆ›ÜˆHİ\œ™[X]]Üš]H[™^‚œXˆ›ˆ˜[Y]WØİ\œ™[Ø]]Üš]JÛÛ™šYÎˆİ\œ™[]]Üš]PÛÛ™šYÊHOˆ™\İ[İ\œ™[]]Üš]R[™^ˆÂˆYˆÛÛ™šYË›[™XYÙ\Ëš\×Ù[\J
+HÂˆ˜Z[J˜İ\œ™[X]]Üš]H˜[Y][Ûˆ™\]Z\™\È]X\İÛ™H[™XYÙH™XÛÜ™ŠNÂˆBˆ˜[Y]WÙÚ]ÜÚJ	˜ÛÛ™šYË›[™YÜÚK™^XİY[™YÒHŠOÎÂˆ˜[Y]WÙÚ]ØÛÛ[Z]
+	˜ÛÛ™šYËœ™\ÜÚ]ÜWÜ›Ûİ	˜ÛÛ™šYË›[™YÜÚJOÎÂˆ][™^Ü]H™\ÜÚ]ÜWÜ™[]]™WÜ]
+	˜ÛÛ™šYËœ™\ÜÚ]ÜWÜ›Ûİ	˜ÛÛ™šYËš[™^
+OÎÂˆ][™^ˆİ\œ™[]]Üš]R[™^H™XYÚœÛÛ—Ø]\Êˆ	™Ú]Ø›Ø—Ø]
+	˜ÛÛ™šYËœ™\ÜÚ]ÜWÜ›Ûİ	˜ÛÛ™šYË›[™YÜÚK	š[™^Ü]
+OËˆ˜İ\œ™[X]]Üš]H[™^‹ˆ
+OÎÂˆYˆ[™^œØÚ[XWİ™\œÚ[ÛˆOHÕT”‘S•ĞUUÔ’UWÒS‘VÔĞÒSPWÕ‘T”ÒSÓˆÂˆ˜Z[J[œİ\ÜYİ\œ™[X]]Üš]H[™^ØÚ[XHßH‹[™^œØÚ[XWİ™\œÚ[ÛŠNÂˆBˆYˆ[™^™[šY\Ëš\×Ù[\J
+HÂˆ˜Z[J˜İ\œ™[X]]Üš]H[™^ÛÛZ[œÈ›ÈÙ\šY\ÈŠNÂˆBˆ]]]XÛ\™YØİ\œ™[ÜÙ\šY\ÈH•™YTÙ]›™]Ê
+NÂˆ›Üˆ[H[ˆ	š[™^™[šY\ÈÂˆYˆX]Ú\ÈJ[Kœİ]\Ëİ\œ™[]]Üš]Tİ]\Îİ\œ™[
+Bˆ	‰ˆYXÛ\™YØİ\œ™[ÜÙ\šY\Ëš[œÙ\
+[KœÙ\šY\×ÚY˜ÛÛ™J
+JBˆÂˆ˜Z[J™\XØ]Hİ\œ™[]]Üš]H›ÜˆÙ\šY\ÈßH‹[KœÙ\šY\×ÚY
+NÂˆBˆBˆYˆZ[™^ˆ™[šY\ÂˆÚ[™İÜÊŠBˆ˜[
+Z\Ÿ]]Üš]WÙ[WÚÙ^J	œZ\–ÌJH]]Üš]WÙ[WÚÙ^J	œZ\–ÌWJJBˆÂˆ˜Z[Jˆ˜İ\œ™[X]]Üš]H[™^[šY\È]\İ™HÛÜYHÙ\šY\Ëİ]\Ë[™ØœÙ\˜][Ûˆ[™H‚ˆ
+NÂˆB‚ˆ]]][™XYÙ\ÈH™XÎ›™]Ê
+NÂˆ]]][™XYÙWÜ]ÈH•™YTÙ]›™]Ê
+NÂˆ›Üˆ][ˆ	˜ÛÛ™šYË›[™XYÙ\ÈÂˆ]™[]]™WÜ]H™\ÜÚ]ÜWÜ™[]]™WÜ]
+	˜ÛÛ™šYËœ™\ÜÚ]ÜWÜ›Ûİ]
+OÎÂˆ][™XYÙHH™XYÚœÛÛ—Ø]\Êˆ	™Ú]Ø›Ø—Ø]
+	˜ÛÛ™šYËœ™\ÜÚ]ÜWÜ›Ûİ	˜ÛÛ™šYË›[™YÜÚK	œ™[]]™WÜ]
+OËˆ›[™Y[™XYÙH‹ˆ
+OÎÂˆ˜[Y]WÛ[™YÛ[™XYÙWÜÚ\J	›[™XYÙJOÎÂˆ˜[Y]WÙÚ]Ø[˜Ù\İÜŠ	˜ÛÛ™šYËœ™\ÜÚ]ÜWÜ›Ûİ	›[™XYÙK›[™YÜÚK	˜ÛÛ™šYË›[™YÜÚJOÎÂˆ˜[Y]WÙÚ]Ø[˜Ù\İÜŠˆ	˜ÛÛ™šYËœ™\ÜÚ]ÜWÜ›Ûİˆ	›[™XYÙKœX›XØ][Û—ÜÚKˆ	˜ÛÛ™šYË›[™YÜÚKˆ
+OÎÂˆ˜[Y]WÜX›XØ][Û—ÜØÛÜJ	˜ÛÛ™šYËœ™\ÜÚ]ÜWÜ›Ûİ	›[™XYÙJOÎÂˆYˆ[[™XYÙWÜ]Ëš[œÙ\
+™[]]™WÜ]˜ÛÛ™J
+JHÂˆ˜Z[J™\XØ]H[™Y[™XYÙH]ŠNÂˆBˆ[™XYÙ\Ëœ\Ú
+
+™[]]™WÜ][™XYÙJJNÂˆBˆ˜[Y]WÜİ\\œÙ\ÜÚ[Û—ÙÜ˜\
+	›[™XYÙ\ÊOÎÂ‚ˆ][™^YÜÙ\šY\ÈBˆ[™^™[šY\Ëš]\Š
+K›X\
+[_[KœÙ\šY\×ÚY˜ÛÛ™J
+JK˜ÛÛXİ•™YTÙ]ÏŠ
+NÂˆ]]]İ\œ™[ÜÙ\šY\ÈH•™YTÙ]›™]Ê
+NÂˆ›Üˆ[H[ˆ	š[™^™[šY\ÈÂˆYˆ[KœÙ\šY\×ÚYš[J
+Kš\×Ù[\J
+Bˆ[K›X[šY™\İÚ\Úš[J
+Kš\×Ù[\J
+Bˆ[K›ØœÙ\˜][Û—Ø[™WÚYš[J
+Kš\×Ù[\J
+Bˆ[K›ØœÙ\˜][Û—Ø[™WÙYÙ\İš[J
+Kš\×Ù[\J
+Bˆ[K˜ÛZ[WØ›İ[™\Kš[J
+Kš\×Ù[\J
+BˆÂˆ˜Z[J˜İ\œ™[X]]Üš]H[H\È[˜ÛÛ\]HY[]HŠNÂˆBˆ˜[Y]WÜX›X×Ü]
+	™[K›ØœÙ\˜][Û—Ø[™WÜ]›ØœÙ\˜][Ûˆ[™H]ŠOÎÂˆ˜[Y]WÜX›X×Ü]
+	™[K›[™YÛ[™XYÙWÜ]›[™Y[™XYÙH]ŠOÎÂˆYˆ]ÛÛYJ]
+HH	™[K˜XØÙ\YØ˜\Ù[[™WÜ]Âˆ˜[Y]WÜX›X×Ü]
+]˜XØÙ\Y˜\Ù[[™H]ŠOÎÂˆBˆ]
+[™XYÙWÜ][™XYÙJHH[™XYÙ\Âˆš]\Š
+Bˆ™š[™
+
+][™XYÙJ_Âˆ[™XYÙKœÙ\šY\×ÚYOH[KœÙ\šY\×ÚY	‰ˆ]OH	™[K›[™YÛ[™XYÙWÜ]ˆJBˆ›Ú×ÛÜ—Ù[ÙJÂˆÛÛÜ—Ù^\™N™^\™N™^\™HJˆ˜İ\œ™[X]]Üš]H[HßH\È›ÈX]Ú[™È[™XYÙH‹ˆ[KœÙ\šY\×ÚYˆ
+BˆJOÎÂˆYˆ[Kœ›Ùš[HOH[™XYÙKœ›Ùš[Bˆ[K›X[šY™\İÚ\ÚOH[™XYÙK›X[šY™\İÚ\Úˆ[K›ØœÙ\˜][Û—Ø[™WÚYOH[™XYÙK™]šY[˜ÙWØ[™WÚYˆ[K›ØœÙ\˜][Û—Ø[™WÙYÙ\İOH[™XYÙK™]šY[˜ÙWØ[™WÙYÙ\İˆ[K›ØœÙ\˜][Û—İ˜[œÚ][ÛˆOH[™XYÙK›ØœÙ\˜][Û—İ˜[œÚ][Û‚ˆ[K˜XØÙ\Yİ˜[œÚ][Û—ÚYOH[™XYÙK˜XØÙ\Yİ˜[œÚ][Û—ÚYˆ[K˜XØÙ\YØ˜\Ù[[™WÙYÙ\İOH[™XYÙK˜XØÙ\YØ˜\Ù[[™WÙYÙ\İˆ[K˜XØÙ\YØ˜\Ù[[™WÙ]šY[˜ÙWØ[™HOH[™XYÙK˜XØÙ\YØ˜\Ù[[™WÙ]šY[˜ÙWØ[™BˆÂˆ˜Z[J˜İ\œ™[X]]Üš]H[HßH\ØYÜ™Y\ÈÚ]]È[™XYÙH‹[KœÙ\šY\×ÚY
+NÂˆBˆYˆX]Ú\ÈJ[Kœİ]\Ëİ\œ™[]]Üš]Tİ]\Îİ\œ™[
+HÂˆİ\œ™[ÜÙ\šY\Ëš[œÙ\
+[KœÙ\šY\×ÚY˜ÛÛ™J
+JNÂˆBˆYˆX]Ú\ÈJ[Kœİ]\Ëİ\œ™[]]Üš]Tİ]\Îİ\œ™[
+Bˆ	‰ˆX]Ú\ÈJ[™XYÙK›ØœÙ\˜][Û—İ˜[œÚ][Û‹ÛÛ\]Xš[]U˜[œÚ][Û’\İÜšXØ[
+BˆÂˆ˜Z[Jš\İÜšXØ[[™XYÙHßHØ[››İ™Hİ\œ™[]]Üš]H‹[KœÙ\šY\×ÚY
+NÂˆBˆYˆX]Ú\ÈJ[™XYÙK›ØœÙ\˜][Û—İ˜[œÚ][Û‹ÛÛ\]Xš[]U˜[œÚ][Û”™YÜ™\ÜÚ[ÛŠBˆ	‰ˆ
+[K˜XØÙ\YØ˜\Ù[[™WÜ]š\×Û›Û™J
+H[K˜XØÙ\Yİ˜[œÚ][Û—ÚYš\×Û›Û™J
+JBˆÂˆ˜Z[Jˆœ™YÜ™\ÜÚ[ÛˆßH]\İ™]Z[ˆ[ˆ^XÚ]XØÙ\Y˜\Ù[[™H[™˜[œÚ][Ûˆ‹ˆ[KœÙ\šY\×ÚYˆ
+NÂˆBˆYˆ[[™XYÙK˜]]Üš]]]™WØ\Y˜XİË˜ÛÛZ[œ×ÚÙ^J	™[K›ØœÙ\˜][Û—Ø[™WÜ]
+HÂˆ˜Z[Jˆ›ØœÙ\˜][Ûˆ[™HßH\ÈXœÙ[œ›ÛH]]Üš]]]™H\Y˜XİÈ‹ˆ[K›ØœÙ\˜][Û—Ø[™WÜ]ˆ
+NÂˆBˆ˜[Y]WØ[™WÚY[]Jˆ	˜ÛÛ™šYËœ™\ÜÚ]ÜWÜ›Ûİˆ	™[K›ØœÙ\˜][Û—Ø[™WÜ]ˆ[Kˆ[™XYÙKˆ
+OÎÂˆ˜[Y]WØXØÙ\YØ˜\Ù[[™J	˜ÛÛ™šYËœ™\ÜÚ]ÜWÜ›Ûİ[K[™XYÙJOÎÂˆ˜[Y]WØ\Y˜XİÙYÙ\İÊˆ	˜ÛÛ™šYËœ™\ÜÚ]ÜWÜ›Ûİˆ	š[™^Ü]ˆ	›[™XYÙWÜ]Ëˆ[™XYÙWÜ]ˆ[™XYÙKˆ
+OÎÂˆBˆYˆİ\œ™[ÜÙ\šY\Ëš\×Ù[\J
+HÂˆ˜Z[J˜İ\œ™[X]]Üš]H[™^\È›Èİ\œ™[Ù\šY\ÈŠNÂˆBˆYˆİ\œ™[ÜÙ\šY\ÈOH[™^YÜÙ\šY\ÈÂˆ˜Z[J™]™\H[™^YÙ\šY\È]\İ]™H^XİHÛ™Hİ\œ™[]]Üš]HŠNÂˆBˆÚÊ[™^
+BŸB‚™›ˆ™XYÚœÛÛ—Ø]\Ïˆ\Ù\šX[^™SİÛ™YŠ]\Îˆ	–İNKX™[ˆ	œİŠHOˆ™\İ[ˆÂˆÙ\™WÚœÛÛ™œ›ÛWÜÛXÙJ]\ÊKÚ]ØÛÛ^
+›Ü›X]J™XÛÙ[™ÈÛX™[HŠJBŸB‚™›ˆ˜[Y]WÛ[™YÛ[™XYÙWÜÚ\J[™XYÙNˆ	“[™Y[™XYÙJHOˆ™\İ[
+
+OˆÂˆYˆ[™XYÙKœØÚ[XWİ™\œÚ[ÛˆOHS‘QÓS‘PQÑWÔĞÒSPWÕ‘T”ÒSÓˆÂˆ˜Z[J[œİ\ÜY[™Y[[™XYÙHØÚ[XHßH‹[™XYÙKœØÚ[XWİ™\œÚ[ÛŠNÂˆBˆ›Üˆ
+X™[˜[YJH[ˆÂˆ
+œÙ\šY\ÈQ‹	›[™XYÙKœÙ\šY\×ÚY
+Kˆ
+›X[šY™\İ\Ú‹	›[™XYÙK›X[šY™\İÚ\Ú
+Kˆ
+˜[™HQ‹	›[™XYÙK™]šY[˜ÙWØ[™WÚY
+Kˆ
+˜[™HYÙ\İ‹	›[™XYÙK™]šY[˜ÙWØ[™WÙYÙ\İ
+Kˆ
+›YX\İ\™[Y[ÒH‹	›[™XYÙK›YX\İ\™[Y[ÜÚJKˆ
+œX›XØ][ÛˆÒH‹	›[™XYÙKœX›XØ][Û—ÜÚJKˆ
+›[™YÒH‹	›[™XYÙK›[™YÜÚJKˆ
+œX›XØ][Ûˆ˜\ÙHÒH‹	›[™XYÙKœX›XØ][Û—Ø˜\ÙWÜÚJKˆ
+œ™XÛÜ™\ˆØÚ[XH™\œÚ[Ûˆ‹	›[™XYÙKœ™XÛÜ™\—ÜØÚ[XWİ™\œÚ[ÛŠKˆ
+˜Ü™X][Ûˆ™X\ÛÛˆ‹	›[™XYÙK˜Ü™X]YÜ™X\ÛÛŠKˆHÂˆYˆ˜[YKš[J
+Kš\×Ù[\J
+HÂˆ˜Z[J›[™Y[™XYÙH\È[\HÛX™[HŠNÂˆBˆBˆ›Üˆ
+X™[˜[YJH[ˆÂˆ
+›YX\İ\™[Y[ÒH‹	›[™XYÙK›YX\İ\™[Y[ÜÚJKˆ
+œX›XØ][ÛˆÒH‹	›[™XYÙKœX›XØ][Û—ÜÚJKˆ
+›[™YÒH‹	›[™XYÙK›[™YÜÚJKˆ
+œX›XØ][Ûˆ˜\ÙHÒH‹	›[™XYÙKœX›XØ][Û—Ø˜\ÙWÜÚJKˆHÂˆ˜[Y]WÙÚ]ÜÚJ˜[YKX™[
+OÎÂˆBˆ˜[Y]WÙYÙ\İ
+	›[™XYÙK™]šY[˜ÙWØ[™WÙYÙ\İ˜[™HYÙ\İŠOÎÂˆYˆ[™XYÙK˜]]Üš]]]™WØ\Y˜XİËš\×Ù[\J
+HÂˆ˜Z[J›[™Y[™XYÙH\È›È]]Üš]]]™H\Y˜XİÈŠNÂˆBˆ˜[Y]WÜX›XØ][Û—Ü]Ê	›[™XYÙKœX›XØ][Û—Ü]ÊOÎÂˆ›Üˆ
+]YÙ\İ
+H[ˆ	›[™XYÙK˜]]Üš]]]™WØ\Y˜XİÈÂˆ˜[Y]WÜX›X×Ü]
+]˜]]Üš]]]™H\Y˜Xİ]ŠOÎÂˆ˜[Y]WÙYÙ\İ
+YÙ\İ˜]]Üš]]]™H\Y˜XİYÙ\İŠOÎÂˆYˆ[™XYÙKœX›XØ][Û—Ü]Ëš]\Š
+K˜[
+X›\ÚYX›\ÚYOH]
+HÂˆ˜Z[J˜]]Üš]]]™H\Y˜XİÜ]H\ÈXœÙ[œ›ÛHX›XØ][Ûˆ]ÈŠNÂˆBˆBˆ]\Y˜XİÜ]ÈH[™XYÙBˆ˜]]Üš]]]™WØ\Y˜XİÂˆšÙ^\Ê
+Bˆ›X\
+]]œ™\XÙJ	×	Ë‹ÈŠJBˆ˜ÛÛXİ•™YTÙ]ÏŠ
+NÂˆ]X›XØ][Û—Ü]ÈH[™XYÙBˆœX›XØ][Û—Ü]Âˆš]\Š
+Bˆ›X\
+]]œ™\XÙJ	×	Ë‹ÈŠJBˆ˜ÛÛXİ•™YTÙ]ÏŠ
+NÂˆYˆ\Y˜XİÜ]ÈOHX›XØ][Û—Ü]ÈÂˆ˜Z[JœX›XØ][Ûˆ]È[™]]Üš]]]™H\Y˜XİYÙ\İÈ]\İX]Ú^XİHŠNÂˆBˆÚÊ
+
+JBŸB‚™›ˆ˜[Y]WØ[™WÚY[]Jˆ›Ûİˆ	”]ˆ[™WÜ]ˆ	œİ‹ˆ[Nˆ	İ\œ™[]]Üš]Q[Kˆ[™XYÙNˆ	“[™Y[™XYÙKŠHOˆ™\İ[
+
+OˆÂˆ]]\ÈHÚ]Ø›Ø—Ø]
+›Ûİ	›[™XYÙK›[™YÜÚK[™WÜ]
+OÎÂˆ]XİX[ÙYÙ\İHÚLM—ÙYÙ\İØ]\Ê	˜]\ÊNÂˆYˆXİX[ÙYÙ\İOH[™XYÙK™]šY[˜ÙWØ[™WÙYÙ\İˆXİX[ÙYÙ\İOH[K›ØœÙ\˜][Û—Ø[™WÙYÙ\İˆÂˆ˜Z[J›ØœÙ\˜][Ûˆ[™HYÙ\İÙ\È›İX]Ú[™Y[™XYÙHŠNÂˆBˆ][™^ˆ]šY[˜ÙP[™R[™^H™XYÚœÛÛ—Ø]\Ê	˜]\Ë›ØœÙ\˜][Ûˆ[™HŠOÎÂˆYˆ[™^œØÚ[XWİ™\œÚ[ÛˆOHœ\›ØÛÜ™WÚ\›™\ÜË™]šY[˜ÙWØ[™KŒH‚ˆ[™^˜[™WÚYOH[™XYÙK™]šY[˜ÙWØ[™WÚYˆ[™^œÙ\šY\×ÚYOH[™XYÙKœÙ\šY\×ÚYˆ[™^œÙ\šY\×ÚYOH[KœÙ\šY\×ÚYˆ[™^›X[šY™\İÚ\ÚOH[™XYÙK›X[šY™\İÚ\Úˆ[™^›X[šY™\İÚ\ÚOH[K›X[šY™\İÚ\Úˆ[™^œ›Ùš[HOH[™XYÙKœ›Ùš[Bˆ[™^›[™XYÙK›YX\İ\™[Y[ÜÚHOH[™XYÙK›YX\İ\™[Y[ÜÚBˆ[™^›Y™XŞXÛHOHœX›\ÚY‚ˆ[™^˜ÛÛ\][™\ÜËœİ]\ÈOH˜ÛÛ\]H‚ˆZ[™^˜ÛÛ\][™\ÜË››Ü›X[^™YØ]]Üš]BˆÂˆ˜Z[J›ØœÙ\˜][Ûˆ[™H\È›İHÛÛ\]H›Ü›X[^™Y]]Üš]H›Üˆ]ÈÙ\šY\ÈŠNÂˆBˆ]\Y˜XİBˆ[™^˜\Y˜XİËš]\Š
+K™š[™
+\Y˜Xİ\Y˜XİšÚ[™OHœÙ[X[X×Ø›İ[™\šY\ÈŠK›Ú×ÛÜ—Ù[ÙJˆÛÛÜ—Ù^\™N™^\™N™^\™HJ›ØœÙ\˜][Ûˆ[™H\È›ÈÙ[X[XËX›İ[™\šY\È\Y˜XİŠKˆ
+OÎÂˆ]\Y˜XİÜ]H]›™]Ê[™WÜ]
+Bˆœ\™[
+
+Bˆ[Ü˜\ÛÜ—Ù[ÙJ]›™]Ê‹ˆŠJBˆš›Ú[Š	˜\Y˜Xİ›ÙÚXØ[Ü]
+NÂˆ]\Y˜XİÜ]H\Y˜XİÜ]×Üİš[™×ÛÜÜŞJ
+Kœ™\XÙJ	×	Ë‹ÈŠNÂˆ˜[Y]WÜX›X×Ü]
+	˜\Y˜XİÜ]™]šY[˜ÙH[™H\Y˜XİŠOÎÂˆYˆ[[™XYÙK˜]]Üš]]]™WØ\Y˜XİË˜ÛÛZ[œ×ÚÙ^J	˜\Y˜XİÜ]
+HÂˆ˜Z[JœÙ[X[XËX›İ[™\šY\È\Y˜Xİ\ÈXœÙ[œ›ÛH]]Üš]]]™H\Y˜XİÈŠNÂˆBˆ]]]›İ[™\šY\Îˆ™XÏØœÙ\™YÙ[X[XĞ›İ[™\OˆH™XYÚœÛÛ—Ø]\Êˆ	™Ú]Ø›Ø—Ø]
+›Ûİ	›[™XYÙK›[™YÜÚK	˜\Y˜XİÜ]
+OËˆœÙ[X[XËX›İ[™\šY\È\Y˜Xİ‹ˆ
+OÎÂˆ›İ[™\šY\ËœÛÜØWÚÙ^JÙ[X[X×Ø›İ[™\WÚÙ^JNÂˆYˆ›İ[™\šY\ÂˆÚ[™İÜÊŠBˆ˜[JZ\ŸÙ[X[X×Ø›İ[™\WÚÙ^J	œZ\–ÌJHOHÙ[X[X×Ø›İ[™\WÚÙ^J	œZ\–ÌWJJBˆÂˆ˜Z[JœÙ[X[XËX›İ[™\šY\È\Y˜XİÛÛZ[œÈH\XØ]H›İ[™\HÙ^HŠNÂˆBˆÚÊ
+
+JBŸB‚™›ˆ˜[Y]WØXØÙ\YØ˜\Ù[[™Jˆ›Ûİˆ	”]ˆ[Nˆ	İ\œ™[]]Üš]Q[Kˆ[™XYÙNˆ	“[™Y[™XYÙKŠHOˆ™\İ[
+
+OˆÂˆ]ÛÛYJ]
+HH	™[K˜XØÙ\YØ˜\Ù[[™WÜ][ÙHÂˆYˆ[K˜XØÙ\YØ˜\Ù[[™WÙYÙ\İš\×ÜÛÛYJ
+Bˆ[K˜XØÙ\YØ˜\Ù[[™WÙ]šY[˜ÙWØ[™Kš\×ÜÛÛYJ
+BˆÂˆ˜Z[J˜XØÙ\Y˜\Ù[[™HY]Y]H^\İÈÚ]İ][ˆXØÙ\Y˜\Ù[[™H]ŠNÂˆBˆ™]\›ˆÚÊ
+
+JNÂˆNÂˆ]]\ÈHÚ]Ø›Ø—Ø]
+›Ûİ	›[™XYÙK›[™YÜÚK]
+OÎÂˆ]XİX[ÙYÙ\İHÚLM—ÙYÙ\İØ]\Ê	˜]\ÊNÂˆYˆ[K˜XØÙ\YØ˜\Ù[[™WÙYÙ\İ˜\×Ù\™YŠ
+HOHÛÛYJXİX[ÙYÙ\İ˜\×ÜİŠ
+JBˆ[™XYÙK˜XØÙ\YØ˜\Ù[[™WÙYÙ\İ˜\×Ù\™YŠ
+HOHÛÛYJXİX[ÙYÙ\İ˜\×ÜİŠ
+JBˆÂˆ˜Z[J˜XØÙ\Y˜\Ù[[™HßHYÙ\İ\È›İ›İ[™È[™XYÙH‹]
+NÂˆBˆYˆ[™XYÙK˜]]Üš]]]™WØ\Y˜XİË™Ù]
+]
+HOHÛÛYJ	˜XİX[ÙYÙ\İ
+HÂˆ˜Z[J˜XØÙ\Y˜\Ù[[™HßH\ÈXœÙ[ÜˆZ\ÛX]ÚY[ˆ]]Üš]]]™H\Y˜XİÈ‹]
+NÂˆBˆ]˜\Ù[[™NˆÛÛ\[P˜\Ù[[™UŒˆH\œÙWØÛÛ\[WØ˜\Ù[[™WİŒŠˆÙ\™WÚœÛÛ™œ›ÛWÜÛXÙJ	˜]\ÊBˆÚ]ØÛÛ^
+›Ü›X]J™XÛÙ[™ÈXØÙ\Y˜\Ù[[™H[™[ÜHÜ]HŠJOËˆ]ˆ
+OÎÂˆYˆ˜\Ù[[™KœÙ\šY\×ÚYOH[KœÙ\šY\×ÚYˆ˜\Ù[[™K›X[šY™\İÚ\ÚOH[K›X[šY™\İÚ\Úˆ˜\Ù[[™K˜XØÙ\Yİ˜[œÚ][Û—ÚYOH[K˜XØÙ\Yİ˜[œÚ][Û—ÚYˆ˜\Ù[[™K™]šY[˜ÙWØ[™K˜\×Ü™YŠ
+HOH[K˜XØÙ\YØ˜\Ù[[™WÙ]šY[˜ÙWØ[™K˜\×Ü™YŠ
+BˆÂˆ˜Z[J˜XØÙ\Y˜\Ù[[™HßH\ØYÜ™Y\ÈÚ]İ\œ™[]]Üš]H‹]
+NÂˆBˆÚÊ
+
+JBŸB‚™›ˆ˜[Y]WØ\Y˜XİÙYÙ\İÊˆ›Ûİˆ	”]ˆ[™^Ü]ˆ	œİ‹ˆ[™XYÙWÜ]Îˆ	•™YTÙ]İš[™Ï‹ˆ[™XYÙWÜ]ˆ	œİ‹ˆ[™XYÙNˆ	“[™Y[™XYÙKŠHOˆ™\İ[
+
+OˆÂˆ›Üˆ][ˆ[™XYÙK˜]]Üš]]]™WØ\Y˜XİËšÙ^\Ê
+HÂˆYˆ]OH[™^Ü]]OH[™XYÙWÜ][™XYÙWÜ]Ë˜ÛÛZ[œÊ]
+HÂˆ˜Z[J˜]]Üš]H\Y˜XİÈØ[››İÙ[‹\™Y™\™[˜ÙH[™XYÙHÜˆ[™^ŠNÂˆBˆ]^XİYH[™XYÙK˜]]Üš]]]™WØ\Y˜XİË™Ù]
+]
+K›Ú×ÛÜ—Ù[ÙJÂˆÛÛÜ—Ù^\™N™^\™N™^\™HJ›Z\ÜÚ[™ÈYÙ\İ›Üˆ]]Üš]]]™H\Y˜XİÜ]HŠBˆJOÎÂˆ]XİX[HÚLM—ÙYÙ\İØ]\Ê	™Ú]Ø›Ø—Ø]
+›Ûİ	›[™XYÙK›[™YÜÚK]
+OÊNÂˆYˆXİX[OH
+™^XİYÂˆ˜Z[J˜]]Üš]]]™H\Y˜XİÜ]HY™™\œÈ][™YÒHŠNÂˆBˆBˆÚÊ
+
+JBŸB‚™›ˆ˜[Y]WÜİ\\œÙ\ÜÚ[Û—ÙÜ˜\
+[™XYÙ\Îˆ	–Êİš[™Ë[™Y[™XYÙJWJHOˆ™\İ[
+
+OˆÂˆ]WÜ]Bˆ[™XYÙ\Ëš]\Š
+K›X\
+
+][™XYÙJ_
+]˜\×ÜİŠ
+K[™XYÙJJK˜ÛÛXİ•™YSX\ËÏŠ
+NÂˆ›Üˆ
+][™XYÙJH[ˆ	˜WÜ]Âˆ]ÛÛYJİ\\œÙY\ÊHH[™XYÙKœİ\\œÙY\Ë˜\×Ù\™YŠ
+H[ÙHÂˆÛÛ[YNÂˆNÂˆ˜[Y]WÜX›X×Ü]
+İ\\œÙY\Ëœİ\\œÙYY[™XYÙH]ŠOÎÂˆYˆİ\\œÙY\ÈOH
+œ]Âˆ˜Z[J›[™XYÙHÜ]HØ[››İİ\\œÙYH]Ù[ˆŠNÂˆBˆ]İ\\œÙYYHWÜ]™Ù]
+İ\\œÙY\ÊK›Ú×ÛÜ—Ù[ÙJÂˆÛÛÜ—Ù^\™N™^\™N™^\™HJ›[™XYÙHÜ]Hİ\\œÙY\ÈZ\ÜÚ[™È[™XYÙHÜİ\\œÙY\ßHŠBˆJOÎÂˆYˆİ\\œÙYYœÙ\šY\×ÚYOH[™XYÙKœÙ\šY\×ÚYÂˆ˜Z[J›[™XYÙHÜ]Hİ\\œÙY\ÈHY™™\™[Ù\šY\ÈßH‹İ\\œÙYYœÙ\šY\×ÚY
+NÂˆBˆBˆ›Üˆİ\[ˆWÜ]šÙ^\Ê
+HÂˆ]]]ÙY[ˆH•™YTÙ]›™]Ê
+NÂˆ]]]İ\œ™[H
+œİ\ÂˆÚ[H]ÛÛYJ[™XYÙJHHWÜ]™Ù]
+İ\œ™[
+HÂˆYˆ\ÙY[‹š[œÙ\
+İ\œ™[
+HÂˆ˜Z[Jœİ\\œÙ\ÜÚ[ÛˆÜ˜\ÛÛZ[œÈHŞXÛH][™XYÙHØİ\œ™[HŠNÂˆBˆ]ÛÛYJ™^
+HH[™XYÙKœİ\\œÙY\Ë˜\×Ù\™YŠ
+H[ÙHÂˆœ™XZÎÂˆNÂˆİ\œ™[H™^ÂˆBˆBˆÚÊ
+
+JBŸB‚™›ˆ˜[Y]WÜX›XØ][Û—ÜØÛÜJ›Ûİˆ	”][™XYÙNˆ	“[™Y[™XYÙJHOˆ™\İ[
+
+OˆÂˆ˜[Y]WÙÚ]ØÛÛ[Z]
+›Ûİ	›[™XYÙKœX›XØ][Û—ÜÚJOÎÂˆ˜[Y]WÙÚ]ØÛÛ[Z]
+›Ûİ	›[™XYÙKœX›XØ][Û—Ø˜\ÙWÜÚJOÎÂˆ˜[Y]WÙÚ]Ø[˜Ù\İÜŠ›Ûİ	›[™XYÙKœX›XØ][Û—Ø˜\ÙWÜÚK	›[™XYÙKœX›XØ][Û—ÜÚJOÎÂˆ]İ]]HÛÛ[X[™›™]Ê™Ú]ŠBˆ˜\™Ê‹K[›Ë\™\XÙK[Øš™XİÈŠBˆ˜\™Ê‹XÈŠBˆ˜\™Ê˜ÛÜ™Kœ][İT]Y˜[ÙHŠBˆ˜\™Ê‹PÈŠBˆ˜\™Ê›Ûİ
+Bˆ˜\™ÜÊÂˆ™Y™ˆ‹ˆ‹K[›Ë\™[˜[Y\È‹ˆ‹K[˜[YK[Û›H‹ˆ‹^ˆ‹ˆ‹KYY™‹Yš[\PPÑT•Vˆ‹ˆ	›[™XYÙKœX›XØ][Û—Ø˜\ÙWÜÚKˆ	›[™XYÙKœX›XØ][Û—ÜÚKˆ‹KH‹ˆJBˆ›İ]]
+
+Bˆ˜ÛÛ^
+˜ÛÛ\][™ÈX›XØ][ÛˆÛÛ[Z]Y™ˆŠOÎÂˆYˆ[İ]]œİ]\ËœİXØÙ\ÜÊ
+HÂˆ˜Z[Jˆ˜Ûİ[›İÛÛ\]HX›XØ][ÛˆY™ˆßK‹ßNˆßH‹ˆ[™XYÙKœX›XØ][Û—Ø˜\ÙWÜÚKˆ[™XYÙKœX›XØ][Û—ÜÚKˆİš[™Î™œ›ÛWİ]ÛÜÜŞJ	›İ]]œİ\œŠKš[J
+Bˆ
+NÂˆBˆ]]]XİX[Hİš[™Î™œ›ÛWİ]
+İ]]œİİ]
+Bˆ˜ÛÛ^
+œX›XØ][ÛˆY™ˆÛÛZ[™Y[˜[YU‹NŠOÂˆœÜ]
+	×	ÊBˆ™š[\Š]\]š\×Ù[\J
+JBˆ›X\
+]]œ™\XÙJ	×	Ë‹ÈŠJBˆ˜ÛÛXİ™XÏÏŠ
+NÂˆXİX[œÛÜ
+
+NÂˆXİX[™Y\
+
+NÂˆ]]]XÛ\™YBˆ[™XYÙKœX›XØ][Û—Ü]Ëš]\Š
+K›X\
+]]œ™\XÙJ	×	Ë‹ÈŠJK˜ÛÛXİ™XÏÏŠ
+NÂˆXÛ\™YœÛÜ
+
+NÂˆXÛ\™Y™Y\
+
+NÂˆYˆXİX[OHXÛ\™YÂˆ˜Z[JˆœX›XØ][Ûˆ]ÈÈ›İX]ÚÚ]Y™ˆXÛ\™YÎßKXİX[ÎßH‹ˆXÛ\™YˆXİX[ˆ
+NÂˆBˆÚÊ
+
+JBŸB‚™›ˆ˜[Y]WÜX›XØ][Û—Ü]Ê]Îˆ	–Ôİš[™×JHOˆ™\İ[
+
+OˆÂˆYˆ]Ëš\×Ù[\J
+HÂˆ˜Z[JœX›XØ][Ûˆ[™XYÙH\È›ÈÚ[™ÙY]ÈŠNÂˆBˆ›Üˆ][ˆ]ÈÂˆ˜[Y]WÜX›X×Ü]
+]œX›XØ][Ûˆ]ŠOÎÂˆ]›Ü›X[^™YH]œ™\XÙJ	×	Ë‹ÈŠNÂˆ]\›İ™YH›Ü›X[^™Yœİ\×İÚ]
+‹˜ÚKÜ\›XÛÜ™KZ\›™\ÜËÈŠBˆ›Ü›X[^™Yœİ\×İÚ]
+™]šY[˜ÙKÈŠBˆ›Ü›X[^™Yœİ\×İÚ]
+œ™\ÜËÈŠBˆ›Ü›X[^™Yœİ\×İÚ]
+™ØÜËÜ›Ú™XİÜİ]\ËÈŠBˆ›Ü›X[^™Yœİ\×İÚ]
+™ØÜËÜ›Ú™XİØÛÛ\]Xš[]KÈŠBˆ›Ü›X[^™Yœİ\×İÚ]
+œ[œËÈŠNÂˆYˆX\›İ™YÂˆ˜Z[JœX›XØ][Ûˆ]Ü]H\Èİ]ÚYHH]šY[˜ÙK[Û›H[İÛ\İŠNÂˆBˆBˆÚÊ
+
+JBŸB‚‹ËËÈÛ™HšX˜›HÙˆHØ[›ÛšXØ[HÙ\šX[^™Y^YXÚ[X[Y[]H
+ÍÍÌJN‚‹ËËÈİÙ\‹XØ\ÙHTĞÒRHYÚ]È[™XX˜Û›KÛÈ]™\HØYX™X\š[™Â‹ËËÈÛÛ[XY™\ÜÙY™XÙZ\Ø\œšY\È^XİHÛ™HÜ[[™È\ˆYÙ\İ‚œXŠÜ˜]JH›ˆ\×ÛİÙ\—ØØ\ÙWÚ^Ø]J]NˆN
+HOˆ›ÛÛÂˆ]Kš\×Ø\ØÚZWÙYÚ]
+
+HX]Ú\ÈJ]K‰ØIË‹X‰Ù‰ÊBŸB‚‹ËËÈHXÚ\˜Xİ\ˆÒKLMˆY[]H[ˆ]ÈÛ™HØ[›ÛšXØ[Ù\šX[^™Y›Ü›K‚œXŠÜ˜]JH›ˆ\×ØØ[›ÛšXØ[ÜÚLM—Ú^
+˜[YNˆ	œİŠHOˆ›ÛÛÂˆ˜[YK›[Š
+HOH	‰ˆ˜[YK˜]\Ê
+K˜[
+\×ÛİÙ\—ØØ\ÙWÚ^Ø]JBŸB‚™›ˆ˜[Y]WÙÚ]ÜÚJ˜[YNˆ	œİ‹X™[ˆ	œİŠHOˆ™\İ[
+
+OˆÂˆYˆJ˜[YK›[Š
+HOH˜[YK›[Š
+HOH
+H]˜[YK˜]\Ê
+K˜[
+\×ÛİÙ\—ØØ\ÙWÚ^Ø]JHÂˆ˜Z[JÛX™[H]\İ™HHHÜˆXÚ\˜Xİ\ˆ^YXÚ[X[ÒH
+ÌNXKY—HİÙ\‹XØ\ÙJHŠNÂˆBˆÚÊ
+
+JBŸB‚™›ˆ˜[Y]WÙÚ]ØÛÛ[Z]
+›Ûİˆ	”]ÚNˆ	œİŠHOˆ™\İ[
+
+OˆÂˆ]Øš™XİH›Ü›X]JÜÚ_WŞØÛÛ[Z]_HŠNÂˆ]İ]]HÛÛ[X[™›™]Ê™Ú]ŠBˆ˜\™Ê‹K[›Ë\™\XÙK[Øš™XİÈŠBˆ˜\™Ê‹PÈŠBˆ˜\™Ê›Ûİ
+Bˆ˜\™ÜÊÈ˜Ø]Yš[H‹‹YH‹	›Øš™XİJBˆ›İ]]
+
+BˆÚ]ØÛÛ^
+›Ü›X]J˜ÚXÚÚ[™È[™YÛÛ[Z]ÜÚ_HŠJOÎÂˆYˆ[İ]]œİ]\ËœİXØÙ\ÜÊ
+HÂˆ˜Z[J›[™YÒHÜÚ_H\È›İH™XXÚX›HÛÛ[Z][ˆßH‹›Ûİ™\Ü^J
+JNÂˆBˆÚÊ
+
+JBŸB‚™›ˆ˜[Y]WÙÚ]Ø[˜Ù\İÜŠ›Ûİˆ	”][˜Ù\İÜˆ	œİ‹\ØÙ[™[ˆ	œİŠHOˆ™\İ[
+
+OˆÂˆ]İ]]HÛÛ[X[™›™]Ê™Ú]ŠBˆ˜\™Ê‹K[›Ë\™\XÙK[Øš™XİÈŠBˆ˜\™Ê‹PÈŠBˆ˜\™Ê›Ûİ
+Bˆ˜\™ÜÊÈ›Y\™ÙKX˜\ÙH‹‹KZ\ËX[˜Ù\İÜˆ‹[˜Ù\İÜ‹\ØÙ[™[JBˆ›İ]]
+
+BˆÚ]ØÛÛ^
+›Ü›X]J˜ÚXÚÚ[™ÈÚ][˜Ù\İHØ[˜Ù\İÜŸK‹Ù\ØÙ[™[HŠJOÎÂˆYˆ[İ]]œİ]\ËœİXØÙ\ÜÊ
+HÂˆ˜Z[J‘Ú]ÛÛ[Z]Ø[˜Ù\İÜŸH\È›İ[ˆ[˜Ù\İÜˆÙˆÙ\ØÙ[™[HŠNÂˆBˆÚÊ
+
+JBŸB‚™›ˆÚ]Ø›Ø—Ø]
+›Ûİˆ	”]ÛÛ[Z]ˆ	œİ‹]ˆ	œİŠHOˆ™\İ[™XÏNˆÂˆ˜[Y]WÜX›X×Ü]
+]‘Ú]\Y˜Xİ]ŠOÎÂˆ]Øš™XİH›Ü›X]JØÛÛ[Z]NßH‹]œ™\XÙJ	×	Ë‹ÈŠJNÂˆ]İ]]HÛÛ[X[™›™]Ê™Ú]ŠBˆ˜\™Ê‹K[›Ë\™\XÙK[Øš™XİÈŠBˆ˜\™Ê‹PÈŠBˆ˜\™Ê›Ûİ
+Bˆ˜\™ÜÊÈœÚİÈ‹	›Øš™XİJBˆ›İ]]
+
+BˆÚ]ØÛÛ^
+›Ü›X]Jœ™XY[™ÈÚ]\Y˜XİÛØš™XİHŠJOÎÂˆYˆ[İ]]œİ]\ËœİXØÙ\ÜÊ
+HÂˆ˜Z[Jˆ›[™YÒHØÛÛ[Z]HÙ\È›İÛÛZ[ˆÚ]\Y˜XİÜ]NˆßH‹ˆİš[™Î™œ›ÛWİ]ÛÜÜŞJ	›İ]]œİ\œŠKš[J
+Bˆ
+NÂˆBˆÚÊİ]]œİİ]
+BŸB‚™›ˆ˜[Y]WÙYÙ\İ
+˜[YNˆ	œİ‹X™[ˆ	œİŠHOˆ™\İ[
+
+OˆÂˆ]ÛÛYJ^
+HH˜[YKœİš\Ü™Yš^
+œÚLMˆŠH[ÙHÂˆ˜Z[JÛX™[H]\İ\ÙHHÚLM^ˆ›Ü›X]ŠNÂˆNÂˆYˆZ\×ØØ[›ÛšXØ[ÜÚLM—Ú^
+^
+HÂˆ˜Z[JÛX™[H]\İÛÛZ[ˆ^YXÚ[X[Ú\˜Xİ\œÈ
+ÌNXKY—HİÙ\‹XØ\ÙJHŠNÂˆBˆÚÊ
+
+JBŸB‚™›ˆ™\ÜÚ]ÜWÜ™[]]™WÜ]
+›Ûİˆ	”]]ˆ	”]
+HOˆ™\İ[İš[™ÏˆÂˆ]˜]×Ü]H]×Üİš[™×ÛÜÜŞJ
+Kœ™\XÙJ	×	Ë‹ÈŠNÂˆYˆ˜]×Ü]œÜ]
+	ËÉÊK˜[JÛÛ\Û™[ÛÛ\Û™[OH‹‹ˆŠHÂˆ˜Z[Jœ™\ÜÚ]ÜK\™[]]™H]ÛÛZ[œÈH˜]™\œØ[ÛÛ\Û™[ŠNÂˆB‚ˆ]›ÛİH›Ü›X[^™WİÚ[™İÜ×Ù^[™YÜ]
+ˆ	™œÎ˜Ø[›ÛšXØ[^™J›Ûİ
+Bˆ›X\Ù\œŠßÛÛÜ—Ù^\™N™^\™N™^\™HJœ™\ÜÚ]ÜH›ÛİÛİ[›İ™H™\ÛÛ™YŠJOËˆ
+NÂˆ]Ø[™Y]WÚ[œ]HYˆ]š\×ØXœÛÛ]J
+HÈ]×Ü]ØYŠ
+HH[ÙHÈ›Ûİš›Ú[Š]
+HNÂˆYˆ]Ú\×Û[š×ØÛÛ\Û™[
+	˜Ø[™Y]WÚ[œ]
+HÂˆ˜Z[Jœ™\ÜÚ]ÜH]ÛÛZ[œÈH[šÈÜˆ™\\œÙHÚ[ŠNÂˆBˆ]Ø[™Y]HBˆ›Ü›X[^™WİÚ[™İÜ×Ù^[™YÜ]
+	˜Ø[›ÛšXØ[^™WÙ^\İ[™×Ü™Yš^
+	˜Ø[™Y]WÚ[œ]
+OÊNÂˆ]™[]]™HHØ[™Y]Bˆœİš\Ü™Yš^
+	œ›Ûİ
+Bˆ›X\Ù\œŠßÛÛÜ—Ù^\™N™^\™N™^\™HJœ™\ÜÚ]ÜH]\Èİ]ÚYHH™\ÜÚ]ÜHŠJOÎÂˆ]™[]]™HH™[]]™K×Üİš[™×ÛÜÜŞJ
+Kœ™\XÙJ	×	Ë‹ÈŠNÂˆ˜[Y]WÜX›X×Ü]
+	œ™[]]™Kœ™\ÜÚ]ÜK\™[]]™H]ŠOÎÂˆÚÊ™[]]™JBŸB‚™›ˆ]Ú\×Û[š×ØÛÛ\Û™[
+]ˆ	”]
+HOˆ›ÛÛÂˆ]]]İ\œ™[H]Y›™]Ê
+NÂˆ›ÜˆÛÛ\Û™[[ˆ]˜ÛÛ\Û™[Ê
+HÂˆİ\œ™[œ\Ú
+ÛÛ\Û™[˜\×ÛÜ×ÜİŠ
+JNÂˆ]ÚÊY]Y]JHHœÎœŞ[[[š×ÛY]Y]J	˜İ\œ™[
+H[ÙHÂˆÛÛ[YNÂˆNÂˆYˆY]Y]K™š[Wİ\J
+Kš\×ÜŞ[[[šÊ
+HÂˆ™]\›ˆYNÂˆBˆÖØÙ™ÊÚ[™İÜÊWBˆÂˆ\ÙHİ›ÜÎÚ[™İÜÎ™œÎ“Y]Y]Q^Â‚ˆÛÛœİ’SWĞU’P•UWÔ‘TT”ÑWÔÒS•ˆLÌˆHÂˆYˆY]Y]K™š[WØ]šX]\Ê
+H	ˆ’SWĞU’P•UWÔ‘TT”ÑWÔÒS•OHÂˆ™]\›ˆYNÂˆBˆBˆBˆ˜[ÙBŸB‚™›ˆØ[›ÛšXØ[^™WÙ^\İ[™×Ü™Yš^
+]ˆ	”]
+HOˆ™\İ[]YˆÂˆ]]]^\İ[™ÈH]×Ü]ØYŠ
+NÂˆ]]]Z\ÜÚ[™ÈH™XÎ›™]Ê
+NÂˆÚ[HY^\İ[™Ë™^\İÊ
+HÂˆ]ÛÛYJÛÛ\Û™[
+HH^\İ[™Ë™š[WÛ˜[YJ
+H[ÙHÂˆ˜Z[Jœ™\ÜÚ]ÜH]Ûİ[›İ™H™\ÛÛ™YŠNÂˆNÂˆZ\ÜÚ[™Ëœ\Ú
+ÛÛ\Û™[×ÛÜ×Üİš[™Ê
+JNÂˆYˆY^\İ[™ËœÜ
+
+HÂˆ˜Z[Jœ™\ÜÚ]ÜH]Ûİ[›İ™H™\ÛÛ™YŠNÂˆBˆB‚ˆ]]]Ø[›ÛšXØ[HœÎ˜Ø[›ÛšXØ[^™J	™^\İ[™ÊBˆ›X\Ù\œŠßÛÛÜ—Ù^\™N™^\™N™^\™HJœ™\ÜÚ]ÜH]Ûİ[›İ™H™\ÛÛ™YŠJOÎÂˆ›ÜˆÛÛ\Û™[[ˆZ\ÜÚ[™Ëš]\Š
+Kœ™]Š
+HÂˆØ[›ÛšXØ[œ\Ú
+ÛÛ\Û™[
+NÂˆBˆÚÊØ[›ÛšXØ[
+BŸB‚™›ˆ›Ü›X[^™WİÚ[™İÜ×Ù^[™YÜ]
+]ˆ	”]
+HOˆ]YˆÂˆ]˜[YHH]×Üİš[™×ÛÜÜŞJ
+NÂˆYˆ]ÛÛYJİš\Y
+HH˜[YKœİš\Ü™Yš^
+ˆ—×S×ŠHÂˆ™]\›ˆ]Y™œ›ÛJ›Ü›X]Jˆ—Üİš\YHŠJNÂˆBˆ]Y™œ›ÛJ˜[YKœİš\Ü™Yš^
+ˆ—×ŠK[Ü˜\ÛÜŠ	˜[YJJBŸB‚‹ËËÈØYÛ™HÜˆ[Ü™H[™\[™[HY[YšYYÛÛ\]Xš[]HÙ\šY\Èœ›ÛH\Y‹ËËÈ\›™\ÜÈ™XÙZ\Ëˆ\È\ÈH[œ]ÛÛ˜Xİ›ÜˆÙ[™\˜]YÛÛ\]Xš[]B‹ËËÈšY]ÜÎÈ]Ù\È›İ™[™\ˆÜˆ]]]H[Hİ]\ÈØİ[Y[‚œXˆ›ˆØYØÛÛ\]Xš[]WÜİ]JˆÛÛ™šYÎˆÛÛ\]Xš[]SØYÛÛ™šYËŠHOˆ™\İ[ÛÛ\[\ÛÛ\]Xš[]Tİ]OˆÂˆYˆÛÛ™šYËš[œ]Ëš\×Ù[\J
+HÂˆ˜Z[J˜ÛÛ\[\ˆÛÛ\]Xš[]H™\]Z\™\È]X\İÛ™HÙ\šY\È[œ]ŠNÂˆBˆYˆÛÛ™šYËœ™\ÜÚ]ÜWØÛÛ[Z]š[J
+Kš\×Ù[\J
+HÂˆ˜Z[J˜ÛÛ\[\ˆÛÛ\]Xš[]H™\]Z\™\ÈH™\ÜÚ]ÜHÛÛ[Z]ŠNÂˆBˆ]]]Ù\šY\ÈHÛÛ™šYÂˆš[œ]Âˆš]\Š
+Bˆ›X\
+[œ]ØYØÛÛ\]Xš[]WÜÙ\šY\Ê[œ]	˜ÛÛ™šYËœ™\ÜÚ]ÜWØÛÛ[Z]
+JBˆ˜ÛÛXİ™\İ[™XÏÏŠ
+OÎÂˆÙ\šY\ËœÛÜØJYšYÚYšY[]KœÙ\šY\×ÚY˜Û\
+	œšYÚšY[]KœÙ\šY\×ÚY
+JNÂˆ›ÜˆZ\ˆ[ˆÙ\šY\ËÚ[™İÜÊŠHÂˆYˆZ\–ÌKšY[]KœÙ\šY\×ÚYOHZ\–ÌWKšY[]KœÙ\šY\×ÚYÂˆ˜Z[Jˆ˜ÛÛ\[\ˆÛÛ\]Xš[]HÛÛZ[œÈ\XØ]HÙ\šY\ÈßH‹ˆZ\–ÌKšY[]KœÙ\šY\×ÚYˆ
+NÂˆBˆBˆÚÊÛÛ\[\ÛÛ\]Xš[]Tİ]HÂˆØÚ[XWİ™\œÚ[ÛˆÓÓTST—ĞÓÓTUP’SUWÔĞÒSPWÕ‘T”ÒSÓ‹š[Ê
+Kˆ™\ÜÚ]ÜWØÛÛ[Z]ˆÛÛ™šYËœ™\ÜÚ]ÜWØÛÛ[Z]ˆÙ\šY\ËˆJBŸB‚˜ÛÛœİT”ÑWĞTÑSS‘WÔĞÒSPWÕ‘T”ÒSÓˆ	œİˆH››İØ]˜Z[X›HÂ‚™›ˆØYØÛÛ\]Xš[]WÜÙ\šY\Êˆ[œ]ˆ	ÛÛ\]Xš[]TÙ\šY\Ò[œ]ˆ™\ÜÚ]ÜWØÛÛ[Z]ˆ	œİ‹ŠHOˆ™\İ[ÛÛ\[\ÛÛ\]Xš[]TÙ\šY\ÏˆÂˆ]]]Üš]HH[œ]ˆ˜İ\œ™[Ø]]Üš]Bˆ˜\×Ü™YŠ
+Bˆ›X\
+ÛÛ™šYß˜[Y]WØİ\œ™[Ø]]Üš]JÛÛ™šYË˜ÛÛ™J
+JJBˆ˜[œÜÜÙJ
+OÎÂˆ]Ù\šY\ÈH™XYÜÙ\šY\×ÛX[šY™\İ
+	š[œ]œÙ\šY\×ÛX[šY™\İ
+OÎÂˆ˜[Y]WÜÙ\šY\×ÛX[šY™\İ
+	œÙ\šY\ÊOÎÂˆYˆÙ\šY\Ëœ™\ÜÚ]ÜWØÛÛ[Z]OH™\ÜÚ]ÜWØÛÛ[Z]Âˆ˜Z[JœÙ\šY\ÈßH\ÈHY™™\™[™\ÜÚ]ÜHİXš™Xİ‹Ù\šY\ËœÙ\šY\×ÚY
+NÂˆBˆ][™HH™XYØ›İ[™\WØ[™J	š[œ]™]šY[˜ÙWØ[™JOÎÂˆYˆ[™Kš[™^œÙ\šY\×ÚYOHÙ\šY\ËœÙ\šY\×ÚYˆ[™Kš[™^›X[šY™\İÚ\ÚOHÙ\šY\Ë›X[šY™\İÚ\Úˆ[™Kš[™^œ™\ÜÚ]ÜWØÛÛ[Z]OHÙ\šY\Ëœ™\ÜÚ]ÜWØÛÛ[Z]ˆ[™Kš[™^œ›Ùš[HOHÙ\šY\Ëœ›Ùš[Bˆ[™Kš[™^œ[›™\ˆOHÙ\šY\Ëœ[›™\‚ˆ[™Kš[™^œ\›Ü™\ÛÛ™YÜ™YˆOHÙ\šY\Ëœ\›Ü™\ÛÛ™YÜ™Y‚ˆ[™Kš[™^›[™XYÙK›YX\İ\™[Y[ÜÚHOHÙ\šY\Ëœ™\ÜÚ]ÜWØÛÛ[Z]ˆÂˆ˜Z[J™]šY[˜ÙH[™HY[]HÙ\È›İX]ÚÙ\šY\ÈßH‹Ù\šY\ËœÙ\šY\×ÚY
+NÂˆBˆ]XÛ\™YØÛÛ\[HH[™WØ\Y˜XİÜ]
+	˜[™K˜ÛÛ\[WÜ™\ÜŠOÎÂˆYˆœÎ˜Ø[›ÛšXØ[^™J	™XÛ\™YØÛÛ\[JK›ÚÊ
+HOHœÎ˜Ø[›ÛšXØ[^™J	š[œ]˜ÛÛ\[WÜ™\Ü
+K›ÚÊ
+HÂˆ˜Z[J˜ÛÛ\[H™\Ü[œ]\È›İH[™KYXÛ\™YÛÛ\[H™\ÜŠNÂˆBˆ]\œÙWÜ™\ÜH™XYÜ[—Ü™\Ü
+	š[œ]œ\œÙWÜ™\Ü
+OÎÂˆ]ÛÛ\[WÜ™\ÜH™XYÜ[—Ü™\Ü
+	š[œ]˜ÛÛ\[WÜ™\Ü
+OÎÂˆ˜[Y]WÜ™\ÜÙ›Ü—ØÛÛ\]Xš[]J	œ\œÙWÜ™\Ü	œÙ\šY\Ë\›™\ÜÓ[ÙN”\œÙJOÎÂˆ˜[Y]WÜ™\ÜÙ›Ü—ØÛÛ\]Xš[]J	˜ÛÛ\[WÜ™\Ü	œÙ\šY\Ë\›™\ÜÓ[ÙNÛÛ\[JOÎÂˆ]ÛÛ\[WÛY[X™\œÚ\H™\ÜÛY[X™\œÚ\
+	˜ÛÛ\[WÜ™\Ü
+OÎÂˆYˆÛÛ\[WÛY[X™\œÚ\OHÙ\šY\Ë››Ü›X[^™YÛX[šY™\İš]\Š
+K˜ÛÛ™Y
+
+K˜ÛÛXİ
+
+HÂˆ˜Z[J˜ÛÛ\[H™\ÜY[X™\œÚ\Y™™\œÈœ›ÛHÙ\šY\ÈßH‹Ù\šY\ËœÙ\šY\×ÚY
+NÂˆBˆ]ÛÛ\[WØ˜\Ù[[™HH™XYØÛÛ\[WØ˜\Ù[[™WİŒŠ	š[œ]˜ÛÛ\[WØ˜\Ù[[™JOÎÂˆ]˜\Ù[[™WØÛÛ\\š\ÛÛˆHÛÛ\\™WØ˜\Ù[[™WİŒ—İÚ]ÚY[]Y\Êˆ	˜ÛÛ\[WØ˜\Ù[[™Kˆ	˜ÛÛ\[WÜ™\Üˆ	œÙ\šY\ËˆÛÛYJ	•Œ’Y[]Y\ÈÂˆÛÛ\[\—ÜİXš™XİÚY[]NˆÙ\šY\Ë˜ÛÛ\[\—ÜİXš™XİÚY[]K˜ÛÛ™J
+Kˆ[›ØØ][Û—ÚY[]NˆÙ\šY\Ëš[›ØØ][Û—ÚY[]K˜ÛÛ™J
+KˆØ\Xš[]WÚY[]NˆÙ\šY\Ë˜Ø\Xš[]WÚY[]K˜ÛÛ™J
+Kˆ[š\›Û›Y[ÚY[]NˆÙ\šY\Ë™[š\›Û›Y[ÚY[]K˜ÛÛ™J
+KˆJKˆ›Û™Kˆ	–×Kˆ
+NÂˆYˆX˜\Ù[[™WØÛÛ\\š\ÛÛ‹š[Û][ÛœËš\×Ù[\J
+HÂˆ˜Z[Jˆ˜ÛÛ\[H˜\Ù[[™H\È›İ[ˆ]]Üš]]]™HİXš™Xİ›ÜˆÙ\šY\ÈßN—ßH‹ˆÙ\šY\ËœÙ\šY\×ÚYˆ˜\Ù[[™WØÛÛ\\š\ÛÛ‚ˆš[Û][ÛœÂˆš]\Š
+Bˆ›X\
+š[Û][ÛŸš[Û][Û‹›Y\ÜØYÙK˜ÛÛ™J
+JBˆ˜ÛÛXİ™XÏÏŠ
+Bˆš›Ú[Š—ˆŠBˆ
+NÂˆBˆ]ÛÛYJXØÙ\YÜ]
+HH[œ]˜XØÙ\YØ˜\Ù[[™K˜\×Ü™YŠ
+H[ÙHÂˆ˜Z[Jˆ˜ÛÛ\]Xš[]HÙ\šY\ÈßH]\İY[YH[ˆXØÙ\Y˜\Ù[[™HÙ\\˜][Hœ›ÛH]Èİ\œ™[ØœÙ\˜][Ûˆ‹ˆÙ\šY\ËœÙ\šY\×ÚYˆ
+NÂˆNÂˆ]XØÙ\YØ˜\Ù[[™HH™XYØÛÛ\[WØ˜\Ù[[™WİŒŠXØÙ\YÜ]
+OÎÂˆ˜[Y]WØXØÙ\YÜ˜]Ú]ÚY[]J	˜XØÙ\YØ˜\Ù[[™K	œÙ\šY\ÊOÎÂˆ]
+˜[œÚ][Û‹˜[œÚ][Û—Ü™X\ÛÛ‹™\]Z\™\×ØXØÙ\[˜ÙJHBˆÛ\ÜÚYWØÛÛ\]Xš[]Wİ˜[œÚ][ÛŠ	˜XØÙ\YØ˜\Ù[[™K	˜ÛÛ\[WÜ™\Ü
+NÂˆYˆ]ÛÛYJ[™^
+HH	˜]]Üš]HÂˆ]İ\œ™[H[™^ˆ™[šY\Âˆš]\Š
+Bˆ™š[\Š[_Âˆ[KœÙ\šY\×ÚYOHÙ\šY\ËœÙ\šY\×ÚYˆ	‰ˆ[Kœİ]\ÈOHİ\œ™[]]Üš]Tİ]\Îİ\œ™[ˆJBˆ˜ÛÛXİ™XÏÏŠ
+NÂˆYˆİ\œ™[›[Š
+HOHHÂˆ˜Z[Jˆ˜İ\œ™[X]]Üš]HYZ\ÜÚ[Ûˆ›ÜˆßH]\İÛÛZ[ˆ^XİHÛ™Hİ\œ™[[H‹ˆÙ\šY\ËœÙ\šY\×ÚYˆ
+NÂˆBˆ][HHİ\œ™[ÌNÂˆYˆ[K›X[šY™\İÚ\ÚOHÙ\šY\Ë›X[šY™\İÚ\Úˆ[K›ØœÙ\˜][Û—Ø[™WÚYOH[™Kš[™^˜[™WÚYˆÂˆ˜Z[J˜İ\œ™[X]]Üš]H[H\ØYÜ™Y\ÈÚ]Ù\šY\ÈßH‹Ù\šY\ËœÙ\šY\×ÚY
+NÂˆBˆYˆ[K›ØœÙ\˜][Û—İ˜[œÚ][ÛˆOH˜[œÚ][ÛˆÂˆ˜Z[Jˆ˜İ\œ™[X]]Üš]H˜[œÚ][ÛˆÎßHÙ\È›İX]ÚYX\İ\™Y˜[œÚ][ÛˆÎßH›ÜˆßH‹ˆ[K›ØœÙ\˜][Û—İ˜[œÚ][Û‹ˆ˜[œÚ][Û‹ˆÙ\šY\ËœÙ\šY\×ÚYˆ
+NÂˆBˆ˜[Y]WØ]]Üš]WØ\Y˜XİØš[™[™ÜÊˆ	š[œ]™]šY[˜ÙWØ[™KˆXØÙ\YÜ]ˆ	™[K›ØœÙ\˜][Û—Ø[™WÜ]ˆ	™[K›ØœÙ\˜][Û—Ø[™WÙYÙ\İˆ[K˜XØÙ\YØ˜\Ù[[™WÜ]˜\×Ù\™YŠ
+Kˆ[K˜XØÙ\YØ˜\Ù[[™WÙYÙ\İ˜\×Ù\™YŠ
+Kˆ[œ]˜İ\œ™[Ø]]Üš]K˜\×Ü™YŠ
+K›X\
+ÛÛ™šYßÛÛ™šYËœ™\ÜÚ]ÜWÜ›Ûİ˜\×Ü]
+
+JKˆ
+OÎÂˆBˆ]]]\œÙWØ[™HH[™K˜ÛÛ™J
+NÂˆ\œÙWØ[™KœÙ[X[X×Ø›İ[™\šY\ÈH\œÙWÜ™\ÜœÙ[X[X×Ø›İ[™\šY\Ë˜ÛÛ™J
+NÂˆ]\œÙWØÛ\İ\œÈHZ[Ù˜Z[\™WØÛ\İ\—Ü™\Ü
+	œ\œÙWØ[™K	œ\œÙWÜ™\Ü
+OÎÂˆ]ÛÛ\[WØÛ\İ\œÈHZ[Ù˜Z[\™WØÛ\İ\—Ü™\Ü
+	˜[™K	˜ÛÛ\[WÜ™\Ü
+OÎÂ‚ˆ]
+\İÜWÜ˜Z[Û\İ\—Üİ]JHBˆØYØÛ\İ\—Ú\İÜWÜİ]J[œ]˜Û\İ\—Ú\İÜK˜\×Ù\™YŠ
+K	˜ÛÛ\[WØÛ\İ\œË	œÙ\šY\ÊOÎÂˆ]™YÚ\İWÜ˜Z[BˆØYÜ™YÚ\İWÜİ]J[œ]˜›İ[™\WÜ™YÚ\İK˜\×Ù\™YŠ
+K	˜ÛÛ\[WØ˜\Ù[[™K	˜[™JOÎÂˆ]XHZ[ØÛÛ\]Xš[]WÙXÜİ]Jˆ	˜ÛÛ\[WØ˜\Ù[[™Kˆ™YÚ\İWÜ˜Z[˜ÛÛ™J
+Kˆ\İÜWÜ˜Z[˜ÛÛ™J
+Kˆ
+NÂˆ]^Xİ][ÛˆHX]Ú	š[œ]™^Xİ]WÜ™\ÜÂˆÛÛYJ]
+HOˆØYÙ^Xİ][Û—Ü˜Z[
+]	œÙ\šY\Ë	˜[™Kš[™^˜[™WÚY
+OËˆ›Û™HOˆ[˜]˜Z[X›WÜ˜Z[
+œÙ[XİY^Xİ][Ûˆ™XÙZ\Ø\È›İİ\YYŠKˆNÂˆ]ØœÙ\˜][ÛˆHÛÛ\]Xš[]SØœÙ\˜][ÛˆÂˆØœÙ\˜][Û—Ø[™WÚYˆ[™Kš[™^˜[™WÚY˜ÛÛ™J
+KˆYX\İ\™[Y[ÜÚNˆ[™Kš[™^›[™XYÙK›YX\İ\™[Y[ÜÚK˜ÛÛ™J
+Kˆ\œÙNˆÛÛ\]Xš[]WÜ[—Üİ]Jˆ	œ\œÙWÜ™\ÜˆT”ÑWĞTÑSS‘WÔĞÒSPWÕ‘T”ÒSÓ‹ˆ	˜[™Kš[™^˜[™WÚYˆ\œÙWØÛ\İ\œË˜Û\İ\œË›[Š
+Kˆ
+KˆÛÛ\[NˆÛÛ\]Xš[]WÜ[—Üİ]Jˆ	˜ÛÛ\[WÜ™\Üˆ	˜ÛÛ\[WØ˜\Ù[[™KœØÚ[XWİ™\œÚ[Û‹ˆ	˜[™Kš[™^˜[™WÚYˆÛÛ\[WØÛ\İ\œË˜Û\İ\œË›[Š
+Kˆ
+KˆXˆX˜ÛÛ™J
+KˆÛ\İ\œÎˆÛ\İ\—Üİ]K˜ÛÛ™J
+Kˆ^Xİ][Ûˆ^Xİ][Û‹˜ÛÛ™J
+Kˆİ\˜]YÙÛÛˆ[˜]˜Z[X›WÜ˜Z[
+˜İ\˜]YÙ[X[XËYÛÛ™XÙZ\Ø\È›İİ\YYŠKˆY™™\™[X[ÛÜ˜XÛNˆ[˜]˜Z[X›WÜ˜Z[
+™Y™™\™[X[[Ü˜XÛH™XÙZ\Ø\È›İİ\YYŠKˆZ\ˆ[˜]˜Z[X›WÜ˜Z[
+‘RTˆ]˜[X][Ûˆ™XÙZ\Ø\È›İİ\YYŠKˆÛZ[WØ›İ[™\Nˆ˜ÛÛ\[KZ\›™\ÜÈ[™\Y™XÙZ\İ]HÛ›NÈÙ[™\˜[Ù[X[XÜÈ[™[[YHÛÜœ™Xİ™\ÜÈ\™H›İ[\YY‹š[Ê
+KˆNÂˆ]XØÙ\YÜ˜]Ú]HÛÛ\]Xš[]PXØÙ\Y˜]Ú]Âˆ˜\Ù[[™WÜØÚ[XWİ™\œÚ[ÛˆXØÙ\YØ˜\Ù[[™KœØÚ[XWİ™\œÚ[Û‹˜ÛÛ™J
+Kˆ˜\Ù[[™WÙYÙ\İˆÚLM—ÙYÙ\İØ]\Ê	™œÎœ™XY
+XØÙ\YÜ]
+OÊKˆ˜\Ù[[™WÙ]šY[˜ÙWØ[™WÚYˆXØÙ\YØ˜\Ù[[™K™]šY[˜ÙWØ[™K˜ÛÛ™J
+KˆXØÙ\Yİ˜[œÚ][Û—ÚYˆXØÙ\YØ˜\Ù[[™K˜XØÙ\Yİ˜[œÚ][Û—ÚY˜ÛÛ™J
+Kˆš[\×İİ[ˆXØÙ\YØ˜\Ù[[™K™š[\×İİ[ˆš[\×Ü\ÜÙYˆXØÙ\YØ˜\Ù[[™K™š[\×Ü\ÜÙYˆNÂˆ]Y[]HHÛÛ\]Xš[]TÙ\šY\ÒY[]HÂˆÙ\šY\×ÚYˆÙ\šY\ËœÙ\šY\×ÚY˜ÛÛ™J
+Kˆ›Ùš[NˆÙ\šY\Ëœ›Ùš[Kˆ›Ùš[WÜ›ÛİÎˆÙ\šY\Ëœ›Ùš[WÜ›ÛİË˜ÛÛ™J
+KˆX[šY™\İÚ\ÚˆÙ\šY\Ë›X[šY™\İÚ\Ú˜ÛÛ™J
+Kˆ[›ÛZ[˜]ÜˆÙ\šY\Ë››Ü›X[^™YÛX[šY™\İ›[Š
+Kˆ™\ÜÚ]ÜWØÛÛ[Z]ˆÙ\šY\Ëœ™\ÜÚ]ÜWØÛÛ[Z]˜ÛÛ™J
+Kˆ\›Ü™\]Y\İYÜ™YˆÙ\šY\Ëœ\›Ü™\]Y\İYÜ™Y‹˜ÛÛ™J
+Kˆ\›Ü™\ÛÛ™YÜ™YˆÙ\šY\Ëœ\›Ü™\ÛÛ™YÜ™Y‹˜ÛÛ™J
+Kˆ[›™\ˆÙ\šY\Ëœ[›™\‹ˆÛÛ\[\—ÜİXš™XİÚY[]NˆÙ\šY\Ë˜ÛÛ\[\—ÜİXš™XİÚY[]K˜ÛÛ™J
+Kˆ[›ØØ][Û—ÚY[]NˆÙ\šY\Ëš[›ØØ][Û—ÚY[]K˜ÛÛ™J
+KˆØ\Xš[]WÚY[]NˆÙ\šY\Ë˜Ø\Xš[]WÚY[]K˜ÛÛ™J
+Kˆ[š\›Û›Y[ÚY[]NˆÙ\šY\Ë™[š\›Û›Y[ÚY[]K˜ÛÛ™J
+Kˆ™\\˜][Û—Ü™XÙZ\ÚYˆÙ\šY\Ëœ™\\˜][Û—Ü™XÙZ\ÚY˜ÛÛ™J
+Kˆ™\\˜][Û—Ü™XÙZ\ÙYÙ\İˆÙ\šY\Ëœ™\\˜][Û—Ü™XÙZ\ÙYÙ\İ˜ÛÛ™J
+KˆYX\İ\™[Y[ÜÚNˆ[™Kš[™^›[™XYÙK›YX\İ\™[Y[ÜÚK˜ÛÛ™J
+KˆX›XØ][Û—ÜÚNˆ[™Kš[™^›[™XYÙKœX›XØ][Û—ÜÚK˜ÛÛ™J
+Kˆ[™YÜÚNˆ[™Kš[™^›[™XYÙK›[™YÜÚK˜ÛÛ™J
+Kˆ]šY[˜ÙWØ[™WÚYˆ[™Kš[™^˜[™WÚY˜ÛÛ™J
+KˆNÂˆÚÊÛÛ\[\ÛÛ\]Xš[]TÙ\šY\ÈÂˆY[]Kˆİ\œ™[ÛØœÙ\˜][ÛˆØœÙ\˜][Û‹ˆ˜[œÚ][Û—ØØ[™Y]NˆÛÛ\]Xš[]U˜[œÚ][ÛØ[™Y]HÂˆ˜[œÚ][Û‹ˆ™X\ÛÛˆ˜[œÚ][Û—Ü™X\ÛÛ‹ˆ™\]Z\™\×ØXØÙ\[˜ÙKˆKˆXØÙ\YÜ˜]Ú]ˆ\œÙNˆÛÛ\]Xš[]WÜ[—Üİ]J	œ\œÙWÜ™\ÜT”ÑWĞTÑSS‘WÔĞÒSPWÕ‘T”ÒSÓ‹	˜[™Kš[™^˜[™WÚY\œÙWØÛ\İ\œË˜Û\İ\œË›[Š
+JKˆÛÛ\[NˆÛÛ\]Xš[]WÜ[—Üİ]Jˆ	˜ÛÛ\[WÜ™\Üˆ	˜ÛÛ\[WØ˜\Ù[[™KœØÚ[XWİ™\œÚ[Û‹ˆ	˜[™Kš[™^˜[™WÚYˆÛÛ\[WØÛ\İ\œË˜Û\İ\œË›[Š
+Kˆ
+KˆXˆÛ\İ\œÎˆÛ\İ\—Üİ]Kˆ^Xİ][Û‹ˆİ\˜]YÙÛÛˆ[˜]˜Z[X›WÜ˜Z[
+˜İ\˜]YÙ[X[XËYÛÛ™XÙZ\Ø\È›İİ\YYŠKˆY™™\™[X[ÛÜ˜XÛNˆ[˜]˜Z[X›WÜ˜Z[
+™Y™™\™[X[[Ü˜XÛH™XÙZ\Ø\È›İİ\YYŠKˆZ\ˆ[˜]˜Z[X›WÜ˜Z[
+‘RTˆ]˜[X][Ûˆ™XÙZ\Ø\È›İİ\YYŠKˆÛZ[WØ›İ[™\Nˆ˜ÛÛ\[KZ\›™\ÜÈ[™\Y™XÙZ\İ]HÛ›NÈÙ[™\˜[Ù[X[XÜÈ[™[[YHÛÜœ™Xİ™\ÜÈ\™H›İ[\YY‹š[Ê
+KˆJBŸB‚™›ˆ˜[Y]WØ]]Üš]WØ\Y˜XİØš[™[™ÜÊˆØœÙ\˜][Û—Ü]ˆ	”]ˆXØÙ\YÜ]ˆ	”]ˆ^XİYÛØœÙ\˜][Û—Ü]ˆ	œİ‹ˆ^XİYÛØœÙ\˜][Û—ÙYÙ\İˆ	œİ‹ˆ^XİYØXØÙ\YÜ]ˆÜ[Û	œİ‹ˆ^XİYØXØÙ\YÙYÙ\İˆÜ[Û	œİ‹ˆ™\ÜÚ]ÜWÜ›ÛİˆÜ[Û	”]‹ŠHOˆ™\İ[
+
+OˆÂˆ]ÛÛYJ›Ûİ
+HH™\ÜÚ]ÜWÜ›Ûİ[ÙHÂˆ˜Z[J˜İ\œ™[X]]Üš]H\Y˜Xİš[™[™È™\]Z\™\ÈH™\ÜÚ]ÜH›ÛİŠNÂˆNÂˆ]ØœÙ\˜][Û—Ü™[]]™HH™\ÜÚ]ÜWÜ™[]]™WÜ]
+›ÛİØœÙ\˜][Û—Ü]
+OÎÂˆYˆØœÙ\˜][Û—Ü™[]]™HOH^XİYÛØœÙ\˜][Û—Ü]Âˆ˜Z[J˜İ\œ™[X]]Üš]HØœÙ\˜][Ûˆ]Ù\È›İX]ÚHİ\YY[™HŠNÂˆBˆ]ØœÙ\˜][Û—ÙYÙ\İHÚLM—ÙYÙ\İØ]\Ê	™œÎœ™XY
+ØœÙ\˜][Û—Ü]
+OÊNÂˆYˆØœÙ\˜][Û—ÙYÙ\İOH^XİYÛØœÙ\˜][Û—ÙYÙ\İÂˆ˜Z[J˜İ\œ™[X]]Üš]HØœÙ\˜][ÛˆYÙ\İÙ\È›İX]ÚHİ\YY[™HŠNÂˆBˆ]ÛÛYJ^XİYØXØÙ\YÜ]
+HH^XİYØXØÙ\YÜ][ÙHÂˆ˜Z[J˜İ\œ™[X]]Üš]H[HÛZ]È]ÈXØÙ\Y˜\Ù[[™H]ŠNÂˆNÂˆ]ÛÛYJ^XİYØXØÙ\YÙYÙ\İ
+HH^XİYØXØÙ\YÙYÙ\İ[ÙHÂˆ˜Z[J˜İ\œ™[X]]Üš]H[HÛZ]È]ÈXØÙ\Y˜\Ù[[™HYÙ\İŠNÂˆNÂˆ]XØÙ\YÜ™[]]™HH™\ÜÚ]ÜWÜ™[]]™WÜ]
+›ÛİXØÙ\YÜ]
+OÎÂˆYˆXØÙ\YÜ™[]]™HOH^XİYØXØÙ\YÜ]Âˆ˜Z[J˜İ\œ™[X]]Üš]HXØÙ\YX˜\Ù[[™H]Ù\È›İX]ÚHİ\YY˜\Ù[[™HŠNÂˆBˆ]XØÙ\YÙYÙ\İHÚLM—ÙYÙ\İØ]\Ê	™œÎœ™XY
+XØÙ\YÜ]
+OÊNÂˆYˆXØÙ\YÙYÙ\İOH^XİYØXØÙ\YÙYÙ\İÂˆ˜Z[J˜İ\œ™[X]]Üš]HXØÙ\YX˜\Ù[[™HYÙ\İÙ\È›İX]ÚHİ\YY˜\Ù[[™HŠNÂˆBˆÚÊ
+
+JBŸB‚™›ˆ˜[Y]WØXØÙ\YÜ˜]Ú]ÚY[]Jˆ˜\Ù[[™Nˆ	ÛÛ\[P˜\Ù[[™UŒ‹ˆÙ\šY\Îˆ	”Ù\šY\ÓX[šY™\İŠHOˆ™\İ[
+
+OˆÂˆYˆ˜\Ù[[™KœØÚ[XWİ™\œÚ[ÛˆOHÓÓTSWĞTÑSS‘WÕŒ—ÔĞÒSPWÕ‘T”ÒSÓ‚ˆ˜\Ù[[™KœÙ\šY\×ÚYOHÙ\šY\ËœÙ\šY\×ÚYˆ˜\Ù[[™K›X[šY™\İÚ\ÚOHÙ\šY\Ë›X[šY™\İÚ\Úˆ˜\Ù[[™Kœ™\ÜÚ]ÜWØÛÛ[Z]OHÙ\šY\Ëœ™\ÜÚ]ÜWØÛÛ[Z]ˆ˜\Ù[[™Kœ\›Ü™\ÛÛ™YÜ™YˆOHÙ\šY\Ëœ\›Ü™\ÛÛ™YÜ™Y‚ˆ˜\Ù[[™Kœ›Ùš[HOHÙ\šY\Ëœ›Ùš[Bˆ˜\Ù[[™Kœ[›™\ˆOHÙ\šY\Ëœ[›™\‚ˆ˜\Ù[[™K›[ÙHOH\›™\ÜÓ[ÙNÛÛ\[Bˆ˜\Ù[[™K™š[WÛY[X™\œÚ\OHÙ\šY\Ë››Ü›X[^™YÛX[šY™\İˆ˜\Ù[[™K™š[\×İİ[OHÙ\šY\Ë››Ü›X[^™YÛX[šY™\İ›[Š
+BˆÂˆ˜Z[J˜XØÙ\Y˜\Ù[[™H\È›İ[ˆY[]HX]Ú›ÜˆÙ\šY\ÈßH‹Ù\šY\ËœÙ\šY\×ÚY
+NÂˆBˆ˜[Y]WÜ™\İ[Üİ[[X\WÜÚ\Jˆ˜\Ù[[™K™š[\×İİ[ˆ˜\Ù[[™K™š[\×Ü\ÜÙYˆ˜\Ù[[™K™š[\×Ù˜Z[Yˆ˜\Ù[[™K\Ø\ÜÙ\[Ûœ×İİ[ˆ˜\Ù[[™K\Ø\ÜÙ\[Ûœ×Ü\ÜÙYˆ	˜˜\Ù[[™K™š[WÜ™\İ[Ëˆ˜XØÙ\Y˜\Ù[[™H‹ˆ
+OÎÂˆ]Y[X™\œÚ\Hš[WÜ™\İ[ÛY[X™\œÚ\
+	˜˜\Ù[[™K™š[WÜ™\İ[ÊOÎÂˆ]^XİYHÙ\šY\Ë››Ü›X[^™YÛX[šY™\İš]\Š
+K˜ÛÛ™Y
+
+K˜ÛÛXİ•™YTÙ]ÏŠ
+NÂˆYˆY[X™\œÚ\OH^XİYÂˆ˜Z[J˜XØÙ\Y˜\Ù[[™Hš[H™\İ[ÈÈ›İX]ÚÙ\šY\ÈßH‹Ù\šY\ËœÙ\šY\×ÚY
+NÂˆBˆ]š[Û][ÛœÈH˜[Y]WØXØÙ\YÜÙ[X[X×Ø›İ[™\WÚ[™[ÜJ	˜˜\Ù[[™KœÙ[X[X×Ø›İ[™\šY\ÊNÂˆYˆ]š[Û][ÛœËš\×Ù[\J
+HÂˆ˜Z[Jˆ˜XØÙ\Y˜\Ù[[™H\È[˜[Y—ßH‹ˆš[Û][ÛœÂˆš]\Š
+Bˆ›X\
+š[Û][ÛŸš[Û][Û‹›Y\ÜØYÙK˜\×ÜİŠ
+JBˆ˜ÛÛXİ™XÏÏŠ
+Bˆš›Ú[Š—ˆŠBˆ
+NÂˆBˆÚÊ
+
+JBŸB‚™›ˆÛ\ÜÚYWØÛÛ\]Xš[]Wİ˜[œÚ][ÛŠˆXØÙ\Yˆ	ÛÛ\[P˜\Ù[[™UŒ‹ˆİ\œ™[ˆ	”[”™\ÜŠHOˆ
+ÛÛ\]Xš[]U˜[œÚ][Û‹İš[™Ë›ÛÛ
+HÂˆYˆİ\œ™[œİ[[X\K™š[\×Ü\ÜÙYˆXØÙ\Y™š[\×Ü\ÜÙYÂˆ™]\›ˆ
+ˆÛÛ\]Xš[]U˜[œÚ][Û’[\›İ™[Y[Ø[™Y]Kˆ›Ü›X]Jˆ˜İ\œ™[ÛÛ\[HØœÙ\˜][Ûˆ[\›İ™Yœ›ÛHßKŞßHÈßKŞßH‹ˆXØÙ\Y™š[\×Ü\ÜÙYˆXØÙ\Y™š[\×İİ[ˆİ\œ™[œİ[[X\K™š[\×Ü\ÜÙYˆİ\œ™[œİ[[X\K™š[\×İİ[ˆ
+KˆYKˆ
+NÂˆBˆYˆİ\œ™[œİ[[X\K™š[\×Ü\ÜÙYXØÙ\Y™š[\×Ü\ÜÙYÂˆ™]\›ˆ
+ˆÛÛ\]Xš[]U˜[œÚ][Û”™YÜ™\ÜÚ[Û‹ˆ›Ü›X]Jˆ˜İ\œ™[ÛÛ\[HØœÙ\˜][Ûˆ™YÜ™\ÜÙYœ›ÛHßKŞßHÈßKŞßH‹ˆXØÙ\Y™š[\×Ü\ÜÙYˆXØÙ\Y™š[\×İİ[ˆİ\œ™[œİ[[X\K™š[\×Ü\ÜÙYˆİ\œ™[œİ[[X\K™š[\×İİ[ˆ
+Kˆ˜[ÙKˆ
+NÂˆBˆ]]]XØÙ\YØ›İ[™\šY\ÈHXØÙ\YœÙ[X[X×Ø›İ[™\šY\Ë˜ÛÛ™J
+NÂˆ]]]İ\œ™[Ø›İ[™\šY\ÈHİ\œ™[œÙ[X[X×Ø›İ[™\šY\Ë˜ÛÛ™J
+NÂˆXØÙ\YØ›İ[™\šY\ËœÛÜØWÚÙ^JÙ[X[X×Ø›İ[™\WÚÙ^JNÂˆİ\œ™[Ø›İ[™\šY\ËœÛÜØWÚÙ^JÙ[X[X×Ø›İ[™\WÚÙ^JNÂˆYˆXØÙ\YØ›İ[™\šY\ÈOHİ\œ™[Ø›İ[™\šY\ÈÂˆ™]\›ˆ
+ˆÛÛ\]Xš[]U˜[œÚ][ÛÛÛ˜XİÛÜœ™Xİ[ÛØ[™Y]Kˆ˜ÛÛ\[HØÛÜ™H\È[˜Ú[™ÙY]Ù[X[XËX›İ[™\H]šY[˜ÙHÚ[™ÙY‹š[Ê
+KˆYKˆ
+NÂˆBˆ
+ˆÛÛ\]Xš[]U˜[œÚ][Û“›ĞÚ[™ÙKˆ˜İ\œ™[ÛÛ\[HØœÙ\˜][ÛˆX]Ú\ÈHXØÙ\Y˜]Ú]‹š[Ê
+Kˆ˜[ÙKˆ
+BŸB‚™›ˆ˜[Y]WÜ™\ÜÙ›Ü—ØÛÛ\]Xš[]Jˆ™\Üˆ	”[”™\ÜˆÙ\šY\Îˆ	”Ù\šY\ÓX[šY™\İˆ[ÙNˆ\›™\ÜÓ[ÙKŠHOˆ™\İ[
+
+OˆÂˆ˜[Y]WÜ™\ÜØYØZ[œİÜÙ\šY\Ê™\ÜÙ\šY\Ë[ÙJOÎÂˆ[œİ\™Wİ˜[YÜ™\ÜÜÚ\J™\Ü
+OÎÂˆ]Y[X™\œÚ\H™\ÜÛY[X™\œÚ\
+™\Ü
+OÎÂˆ]^XİYHÙ\šY\Ë››Ü›X[^™YÛX[šY™\İš]\Š
+K˜ÛÛ™Y
+
+K˜ÛÛXİ•™YTÙ]ÏŠ
+NÂˆYˆY[X™\œÚ\OH^XİYÂˆ˜Z[JßH™\ÜY[X™\œÚ\Y™™\œÈœ›ÛHÙ\šY\ÈßH‹[ÙKÙ\šY\ËœÙ\šY\×ÚY
+NÂˆBˆÚÊ
+
+JBŸB‚™›ˆ™\ÜÛY[X™\œÚ\
+™\Üˆ	”[”™\Ü
+HOˆ™\İ[•™YTÙ]İš[™ÏˆÂˆš[WÜ™\İ[ÛY[X™\œÚ\
+	œ™\Ü™š[WÜ™\İ[ÊBŸB‚™›ˆš[WÜ™\İ[ÛY[X™\œÚ\
+š[WÜ™\İ[Îˆ	–Ô[‘š[T™\İ[JHOˆ™\İ[•™YTÙ]İš[™ÏˆÂˆ]]]Y[X™\œÚ\H•™YTÙ]›™]Ê
+NÂˆ›Üˆ™\İ[[ˆš[WÜ™\İ[ÈÂˆ]]H›Ü›X[^™Wİ\İÜ]
+	œ™\İ[œ]
+Bˆ›Ú×ÛÜ—Ù[ÙJÛÛÜ—Ù^\™N™^\™N™^\™HJœ™\ÜÛÛZ[œÈ[ˆ[˜[Y\İ]ŠJOÎÂˆYˆ[Y[X™\œÚ\š[œÙ\
+]
+HÂˆ˜Z[Jœ™\ÜÛÛZ[œÈ\XØ]Hš[HY[X™\œÚ\ŠNÂˆBˆBˆÚÊY[X™\œÚ\
+BŸB‚™›ˆÛÛ\]Xš[]WÜ[—Üİ]Jˆ™\Üˆ	”[”™\Üˆ˜\Ù[[™WÜØÚ[XWİ™\œÚ[Ûˆ	œİ‹ˆ[™WÚYˆ	œİ‹ˆÛ\İ\—ØÛİ[ˆ\Ú^™KŠHOˆÛÛ\]Xš[]T[”İ]HÂˆÛÛ\]Xš[]T[”İ]HÂˆØÚ[XWİ™\œÚ[Ûˆ•S—Ô‘TÔ•ÔĞÒSPWÕ‘T”ÒSÓ‹š[Ê
+Kˆ[ÙNˆ™\Ü›[ÙKˆš[\×İİ[ˆ™\Üœİ[[X\K™š[\×İİ[ˆš[\×Ü\ÜÙYˆ™\Üœİ[[X\K™š[\×Ü\ÜÙYˆš[\×Ù˜Z[Yˆ™\Üœİ[[X\K™š[\×Ù˜Z[Yˆ\Ø\ÜÙ\[Ûœ×İİ[ˆ™\Üœİ[[X\K\Ø\ÜÙ\[Ûœ×İİ[ˆ\Ø\ÜÙ\[Ûœ×Ü\ÜÙYˆ™\Üœİ[[X\K\Ø\ÜÙ\[Ûœ×Ü\ÜÙYˆ˜\Ù[[™WÜØÚ[XWİ™\œÚ[Ûˆ˜\Ù[[™WÜØÚ[XWİ™\œÚ[Û‹š[Ê
+Kˆ™\ÜÜØÚ[XWİ™\œÚ[Ûˆ™\ÜœØÚ[XWİ™\œÚ[Û‹˜ÛÛ™J
+Kˆ]šY[˜ÙWØ[™WÚYˆ[™WÚYš[Ê
+KˆÛ\İ\—ØÛİ[ˆBŸB‚™›ˆØYÜ™YÚ\İWÜİ]Jˆ]ˆÜ[Û	”]‹ˆ˜\Ù[[™Nˆ	ÛÛ\[P˜\Ù[[™UŒ‹ˆ[™Nˆ	›İ[™\P[™KŠHOˆ™\İ[ÛÛ\]Xš[]T˜Z[İ]OˆÂˆ]ÛÛYJ]
+HH][ÙHÂˆ™]\›ˆÚÊ[˜]˜Z[X›WÜ˜Z[
+œÙ[X[XËX›İ[™\H™YÚ\İHØ\È›İİ\YYŠJNÂˆNÂˆ]˜]ÈHœÎœ™XYİ×Üİš[™Ê]
+BˆÚ]ØÛÛ^
+›Ü›X]Jœ™XY[™ÈÛÛ\]Xš[]H›İ[™\H™YÚ\İHßH‹]™\Ü^J
+JJOÎÂˆ]™YÚ\İNˆÙ[X[XĞ›İ[™\T™YÚ\İHHÙ\™WÚœÛÛ™œ›ÛWÜİŠ	œ˜]ÊBˆÚ]ØÛÛ^
+›Ü›X]J™XÛÙ[™ÈÛÛ\]Xš[]H›İ[™\H™YÚ\İHßH‹]™\Ü^J
+JJOÎÂˆ]]]š[Û][ÛœÈH˜[Y]WØ›İ[™\WÜ™YÚ\İWÜÚ\J	œ™YÚ\İJNÂˆš[Û][ÛœË™^[™
+˜[Y]WÜ™YÚ\İWØYØZ[œİØ˜\Ù[[™J	œ™YÚ\İK˜\Ù[[™K˜[ÙJJNÂˆš[Û][ÛœË™^[™
+˜[Y]WØ[™WØYØZ[œİØ˜\Ù[[™J[™K˜\Ù[[™JJNÂˆYˆ]š[Û][ÛœËš\×Ù[\J
+HÂˆ˜Z[Jˆ˜›İ[™\H™YÚ\İH\È›İ]]Üš]]]™H›ÜˆßN—ßH‹ˆ˜\Ù[[™KœÙ\šY\×ÚYˆš[Û][ÛœËš›Ú[Š—ˆŠBˆ
+NÂˆBˆÚÊ]˜Z[X›WÜ˜Z[
+ˆÑSPS•P×Ğ“ÕS‘T–WÔ‘QÒTÕ–WÔĞÒSPWÕ‘T”ÒSÓ‹ˆ›Ü›X]J˜[Y]YßH™YÚ\İH[šY\È‹™YÚ\İK™[šY\Ë›[Š
+JKˆ™XÈVÙ›Ü›X]JœÙ\šY\ÎßH‹˜\Ù[[™KœÙ\šY\×ÚY
+WKˆ
+JBŸB‚™›ˆØYØÛ\İ\—Ú\İÜWÜİ]Jˆ]ˆÜ[Û	”]‹ˆÛ\İ\œÎˆ	‘˜Z[\™PÛ\İ\”™\ÜˆÙ\šY\Îˆ	”Ù\šY\ÓX[šY™\İŠHOˆ™\İ[
+ÛÛ\]Xš[]T˜Z[İ]KÛÛ\]Xš[]PÛ\İ\”İ]JOˆÂˆ]ÛÛYJ]
+HH][ÙHÂˆ™]\›ˆÚÊ
+ˆ[˜]˜Z[X›WÜ˜Z[
+™˜Z[\™KXÛ\İ\ˆ\İÜHØ\È›İİ\YYŠKˆÛÛ\]Xš[]PÛ\İ\”İ]HÂˆXİ]™WØÛİ[ˆÛ\İ\œË˜Û\İ\œË›[Š
+Kˆ[˜\ÜÚYÛ™YØÛİ[ˆÛ\İ\œË˜Û\İ\œË›[Š
+KˆWÜİ]\Îˆ•™YSX\™œ›ÛJÊ[˜\ÜÚYÛ™Y‹š[Ê
+KÛ\İ\œË˜Û\İ\œË›[Š
+JWJKˆ\İÜWØ[™WÚYˆ›Û™KˆKˆ
+JNÂˆNÂˆ]\İÜHH™XYØÛ\İ\—Ú\İÜJ]˜[ÙJOÎÂˆ]š[Û][ÛœÈH˜[Y]WØÛ\İ\—Ú\İÜWÜÚ\J	š\İÜJNÂˆYˆ]š[Û][ÛœËš\×Ù[\J
+HÂˆ˜Z[J˜Û\İ\ˆ\İÜH\È›İ]]Üš]]]™N—ßH‹š[Û][ÛœËš›Ú[Š—ˆŠJNÂˆBˆ]İ\œ™[İš[Û][ÛœÈH˜[Y]WÚ\İÜWØYØZ[œİÜ™\Ü
+	š\İÜKÛ\İ\œÊNÂˆYˆXİ\œ™[İš[Û][ÛœËš\×Ù[\J
+HÂˆ˜Z[Jˆ˜Û\İ\ˆ\İÜH\Èİ[H›ÜˆÙ\šY\ÈßN—ßH‹ˆÙ\šY\ËœÙ\šY\×ÚYˆİ\œ™[İš[Û][ÛœËš›Ú[Š—ˆŠBˆ
+NÂˆBˆ]İ\œ™[ÚYÈHÛ\İ\œÂˆ˜Û\İ\œÂˆš]\Š
+Bˆ›X\
+Û\İ\ŸÛ\İ\‹˜Û\İ\—ÚY˜\×ÜİŠ
+JBˆ˜ÛÛXİ•™YTÙ]ÏŠ
+NÂˆ]İ\œ™[Ù[šY\ÈBˆ\İÜK™[šY\Ëš]\Š
+K™š[\Š[_İ\œ™[ÚYË˜ÛÛZ[œÊ[K˜Û\İ\—ÚY˜\×ÜİŠ
+JJNÂˆ]]]WÜİ]\ÈH•™YSX\›™]Ê
+NÂˆ]]][˜\ÜÚYÛ™YØÛİ[HÂˆ]]]\İÜWØ[™WÚYH›Û™NÂˆ›Üˆ[H[ˆİ\œ™[Ù[šY\ÈÂˆ
+˜WÜİ]\Ë™[J[[WÛX™[
+[Kœİ]\ÊJK›Ü—Ú[œÙ\
+
+H
+ÏHNÂˆYˆ[Kœİ]\ÈOH˜Z[\™PÛ\İ\’\İÜTİ]\Î•[˜\ÜÚYÛ™YÂˆ[˜\ÜÚYÛ™YØÛİ[
+ÏHNÂˆBˆ\İÜWØ[™WÚYHÛÛYJ[K›\İÜÙY[—Ø[™K˜ÛÛ™J
+JNÂˆBˆÚÊ
+ˆ]˜Z[X›WÜ˜Z[
+ˆRST‘WĞÓTÕT—ÒTÕÔ–WÔĞÒSPWÕ‘T”ÒSÓ‹ˆ›Ü›X]J˜[Y]YßH\İÜH[šY\È‹\İÜK™[šY\Ë›[Š
+JKˆ\İÜWØ[™WÚY˜ÛÛ™J
+Kš[×Ú]\Š
+K˜ÛÛXİ
+
+Kˆ
+KˆÛÛ\]Xš[]PÛ\İ\”İ]HÂˆXİ]™WØÛİ[ˆÛ\İ\œË˜Û\İ\œË›[Š
+Kˆ[˜\ÜÚYÛ™YØÛİ[ˆWÜİ]\Ëˆ\İÜWØ[™WÚYˆKˆ
+JBŸB‚™›ˆØYÙ^Xİ][Û—Ü˜Z[
+ˆ]ˆ	”]ˆÙ\šY\Îˆ	”Ù\šY\ÓX[šY™\İˆ[™WÚYˆ	œİ‹ŠHOˆ™\İ[ÛÛ\]Xš[]T˜Z[İ]OˆÂˆ]™\ÜH™XYÜ[—Ü™\Ü
+]
+OÎÂˆYˆ™\Ü›[ÙHOH\›™\ÜÓ[ÙN‘^Xİ]HÂˆ˜Z[J™^Xİ][Ûˆ˜Z[™\Ü\È›İ^Xİ]H[ÙHŠNÂˆBˆYˆ™\Ü˜ÛÛ[Z]OHÙ\šY\Ëœ™\ÜÚ]ÜWØÛÛ[Z]ˆ™\Üœ\›Ü™YˆOHÙ\šY\Ëœ\›Ü™\ÛÛ™YÜ™Y‚ˆ™\Üœ›Ùš[HOHÙ\šY\Ëœ›Ùš[Bˆ™\Üœ[›™\ˆOHÙ\šY\Ëœ[›™\‚ˆÂˆ˜Z[J™^Xİ][Ûˆ˜Z[Y[]HÙ\È›İX]ÚÙ\šY\ÈßH‹Ù\šY\ËœÙ\šY\×ÚY
+NÂˆBˆ[œİ\™Wİ˜[YÜ™\ÜÜÚ\J	œ™\Ü
+OÎÂˆÚÊ]˜Z[X›WÜ˜Z[
+ˆ•S—Ô‘TÔ•ÔĞÒSPWÕ‘T”ÒSÓ‹ˆœÙ[XİY^Xİ][Ûˆ™XÙZ\˜[Y]Y‹š[Ê
+Kˆ™XÈVÙ›Ü›X]J˜[™NØ[™WÚYHŠWKˆ
+JBŸB‚™›ˆZ[ØÛÛ\]Xš[]WÙXÜİ]Jˆ˜\Ù[[™Nˆ	ÛÛ\[P˜\Ù[[™UŒ‹ˆ™YÚ\İNˆÛÛ\]Xš[]T˜Z[İ]Kˆ\İÜNˆÛÛ\]Xš[]T˜Z[İ]KŠHOˆÛÛ\]Xš[]QXİ]HÂˆ]]]WÙ\ÜÜÚ][ÛˆH•™YSX\›™]Ê
+NÂˆ]]]WÛØÚ×ÜØÛÜHH•™YSX\›™]Ê
+NÂˆ]]]Ûİ\˜ÙWÛØÚÙYØÛİ[HÂˆ]]]İÛœİ™X[WØ›ØÚÚ[™×ØÛİ[HÂˆ›Üˆ›İ[™\H[ˆ	˜˜\Ù[[™KœÙ[X[X×Ø›İ[™\šY\ÈÂˆ
+˜WÙ\ÜÜÚ][Û‹™[J[[WÛX™[
+›İ[™\K™\ÜÜÚ][ÛŠJK›Ü—Ú[œÙ\
+
+H
+ÏHNÂˆ
+˜WÛØÚ×ÜØÛÜK™[J[[WÛX™[
+›İ[™\K›ØÚ×ÜØÛÜJJK›Ü—Ú[œÙ\
+
+H
+ÏHNÂˆYˆ›İ[™\K™\ÜÜÚ][ÛˆOHÙ[X[XĞ›İ[™\Q\ÜÜÚ][Û”Ûİ\˜ÙSØÚÙYÛÛ\]Xš[]HÂˆÛİ\˜ÙWÛØÚÙYØÛİ[
+ÏHNÂˆBˆYˆ›İ[™\K˜›ØÚÜ×ÙİÛœİ™X[WÜİ]X×Ù˜XİÈÂˆİÛœİ™X[WØ›ØÚÚ[™×ØÛİ[
+ÏHNÂˆBˆBˆÛÛ\]Xš[]QXİ]HÂˆ›İ[™\WØÛİ[ˆ˜\Ù[[™KœÙ[X[X×Ø›İ[™\šY\Ë›[Š
+KˆÛİ\˜ÙWÛØÚÙYØÛİ[ˆİÛœİ™X[WØ›ØÚÚ[™×ØÛİ[ˆWÙ\ÜÜÚ][Û‹ˆWÛØÚ×ÜØÛÜKˆ™YÚ\İKˆ\İÜKˆBŸB‚™›ˆ[˜]˜Z[X›WÜ˜Z[
+™X\ÛÛˆ	œİŠHOˆÛÛ\]Xš[]T˜Z[İ]HÂˆÛÛ\]Xš[]T˜Z[İ]HÂˆ]˜Z[Xš[]NˆÛÛ\]Xš[]T˜Z[]˜Z[Xš[]N“›İ]˜Z[X›Kˆ™X\ÛÛˆ™X\ÛÛ‹š[Ê
+KˆØÚ[XWİ™\œÚ[Ûˆ›Û™Kˆ]šY[˜ÙWÜ™YœÎˆ™XÎ›™]Ê
+KˆBŸB‚™›ˆ]˜Z[X›WÜ˜Z[
+ˆØÚ[XWİ™\œÚ[Ûˆ	œİ‹ˆ™X\ÛÛˆİš[™Ëˆ]šY[˜ÙWÜ™YœÎˆ™XÏİš[™Ï‹ŠHOˆÛÛ\]Xš[]T˜Z[İ]HÂˆÛÛ\]Xš[]T˜Z[İ]HÂˆ]˜Z[Xš[]NˆÛÛ\]Xš[]T˜Z[]˜Z[Xš[]N]˜Z[X›Kˆ™X\ÛÛ‹ˆØÚ[XWİ™\œÚ[ÛˆÛÛYJØÚ[XWİ™\œÚ[Û‹š[Ê
+JKˆ]šY[˜ÙWÜ™YœËˆBŸB‚™›ˆ˜[Y]WØÛ\İ\—Ú\İÜWÜÚ\J\İÜNˆ	‘˜Z[\™PÛ\İ\’\İÜJHOˆ™XÏİš[™ÏˆÂˆ]]]š[Û][ÛœÈH™XÎ›™]Ê
+NÂˆYˆ\İÜKœØÚ[XWİ™\œÚ[ÛˆOHRST‘WĞÓTÕT—ÒTÕÔ–WÔĞÒSPWÕ‘T”ÒSÓˆÂˆš[Û][ÛœËœ\Ú
+›Ü›X]Jˆš\İÜHØÚ[XHßH\È›İßH‹ˆ\İÜKœØÚ[XWİ™\œÚ[Û‹RST‘WĞÓTÕT—ÒTÕÔ–WÔĞÒSPWÕ‘T”ÒSÓ‚ˆ
+JNÂˆBˆ]]]Û\İ\—ÚYÈH•™YTÙ]›™]Ê
+NÂˆ›Üˆ[H[ˆ	š\İÜK™[šY\ÈÂˆYˆXÛ\İ\—ÚYËš[œÙ\
+[K˜Û\İ\—ÚY˜ÛÛ™J
+JHÂˆš[Û][ÛœËœ\Ú
+›Ü›X]J™\XØ]HÛ\İ\ˆ\İÜH[HßH‹[K˜Û\İ\—ÚY
+JNÂˆBˆ›Üˆ
+X™[˜[YJH[ˆÂˆ
+˜Û\İ\—ÚY‹[K˜Û\İ\—ÚY˜\×ÜİŠ
+JKˆ
+œÚYÛ˜]\™WÜØÚ[XWİ™\œÚ[Ûˆ‹[KœÚYÛ˜]\™WÜØÚ[XWİ™\œÚ[Û‹˜\×ÜİŠ
+JKˆ
+œÙ\šY\×ÚY‹[KœÙ\šY\×ÚY˜\×ÜİŠ
+JKˆ
+›X[šY™\İÚ\Ú‹[K›X[šY™\İÚ\Ú˜\×ÜİŠ
+JKˆ
+™š\œİÜÙY[—ÜÙ\šY\×ÚY‹[K™š\œİÜÙY[—ÜÙ\šY\×ÚY˜\×ÜİŠ
+JKˆ
+™š\œİÜÙY[—ÛX[šY™\İÚ\Ú‹[K™š\œİÜÙY[—ÛX[šY™\İÚ\Ú˜\×ÜİŠ
+JKˆ
+›\İÜÙY[—ÜÙ\šY\×ÚY‹[K›\İÜÙY[—ÜÙ\šY\×ÚY˜\×ÜİŠ
+JKˆ
+›\İÜÙY[—ÛX[šY™\İÚ\Ú‹[K›\İÜÙY[—ÛX[šY™\İÚ\Ú˜\×ÜİŠ
+JKˆ
+™š\œİÜÙY[—Ø[™H‹[K™š\œİÜÙY[—Ø[™K˜\×ÜİŠ
+JKˆ
+›\İÜÙY[—Ø[™H‹[K›\İÜÙY[—Ø[™K˜\×ÜİŠ
+JKˆ
+š[\XİYÛ^Y\ˆ‹[Kš[\XİYÛ^Y\‹˜\×ÜİŠ
+JKˆ
+™\™XİÜ™\›ÙXİ[Ûˆ‹[K™\™XİÜ™\›ÙXİ[Û‹˜\×ÜİŠ
+JKˆ
+œ›ÜÜÙYİ˜[œÚ][Ûˆ‹[Kœ›ÜÜÙYİ˜[œÚ][Û‹˜\×ÜİŠ
+JKˆ
+œİÜØÛÛ™][Ûˆ‹[KœİÜØÛÛ™][Û‹˜\×ÜİŠ
+JKˆHÂˆYˆ˜[YKš[J
+Kš\×Ù[\J
+HÂˆš[Û][ÛœËœ\Ú
+›Ü›X]J˜Û\İ\ˆßH\È[\HÛX™[H‹[K˜Û\İ\—ÚY
+JNÂˆBˆBˆYˆ[K˜İ\œ™[ÜİYÙK˜\×Ù\™YŠ
+Kš\×ÜÛÛYWØ[™
+İYÙ_İYÙKš[J
+Kš\×Ù[\J
+JHÂˆš[Û][ÛœËœ\Ú
+›Ü›X]J˜Û\İ\ˆßH\È[\Hİ\œ™[ÜİYÙH‹[K˜Û\İ\—ÚY
+JNÂˆBˆX]Ú[Kœ™\Ù[˜ÙHÂˆ˜Z[\™PÛ\İ\’\İÜT™\Ù[˜ÙN“ØœÙ\™YOˆÂˆYˆY[K›ØœÙ\™YÚ[—Øİ\œ™[Ø[™Bˆ[K˜İ\œ™[Ø]]Üš]WØ[™K˜\×Ù\™YŠ
+Kš\×Û›Û™WÛÜŠİš\×Ù[\JBˆ[K˜XœÙ[˜ÙWÜÚ[˜ÙWØ[™Kš\×ÜÛÛYJ
+Bˆ[K˜İ\œ™[ÜİYÙKš\×Û›Û™J
+BˆÂˆš[Û][ÛœËœ\Ú
+›Ü›X]Jˆ›ØœÙ\™YÛ\İ\ˆßHXÚÜÈİ\œ™[X]]Üš]Hİ]H‹ˆ[K˜Û\İ\—ÚYˆ
+JNÂˆBˆBˆ˜Z[\™PÛ\İ\’\İÜT™\Ù[˜ÙNXœÙ[[œ™\ÛÛ™Yˆ˜Z[\™PÛ\İ\’\İÜT™\Ù[˜ÙN”™\ÛÛ™Yˆ˜Z[\™PÛ\İ\’\İÜT™\Ù[˜ÙNXØÙ\YXOˆÂˆYˆ[K›ØœÙ\™YÚ[—Øİ\œ™[Ø[™Bˆ[K˜İ\œ™[Ø]]Üš]WØ[™Kš\×ÜÛÛYJ
+Bˆ[K˜XœÙ[˜ÙWÜÚ[˜ÙWØ[™K˜\×Ù\™YŠ
+Kš\×Û›Û™WÛÜŠİš\×Ù[\JBˆ[K˜İ\œ™[ÜİYÙKš\×ÜÛÛYJ
+BˆY[K˜İ\œ™[ØY™™XİYÙš[\Ëš\×Ù[\J
+BˆY[K˜İ\œ™[Ù˜XİØÛ\ÜÙ\Ëš\×Ù[\J
+BˆY[K˜İ\œ™[ÛÜÜİ\™˜XÙ\Ëš\×Ù[\J
+BˆÂˆš[Û][ÛœËœ\Ú
+›Ü›X]Jˆ˜XœÙ[Û\İ\ˆßH™]Z[œÈİ\œ™[X]]Üš]Hİ]H‹ˆ[K˜Û\İ\—ÚYˆ
+JNÂˆBˆBˆBˆYˆ[Kœİ]\ÈOH˜Z[\™PÛ\İ\’\İÜTİ]\Î”™\ÛÛ™Yˆ	‰ˆ[Kœ™\Ù[˜ÙHOH˜Z[\™PÛ\İ\’\İÜT™\Ù[˜ÙN”™\ÛÛ™YˆÂˆš[Û][ÛœÂˆœ\Ú
+›Ü›X]Jœ™\ÛÛ™YÛ\İ\ˆßH\È›Û‹\™\ÛÛ™Y™\Ù[˜ÙH‹[K˜Û\İ\—ÚY
+JNÂˆBˆYˆ[Kœİ]\ÈOH˜Z[\™PÛ\İ\’\İÜTİ]\ÎXØÙ\YXˆ	‰ˆ[Kœ™\Ù[˜ÙHOH˜Z[\™PÛ\İ\’\İÜT™\Ù[˜ÙNXØÙ\YXˆÂˆš[Û][ÛœÂˆœ\Ú
+›Ü›X]J˜XØÙ\YYXÛ\İ\ˆßH\È›Û‹YX™\Ù[˜ÙH‹[K˜Û\İ\—ÚY
+JNÂˆBˆYˆ[Kœİ]\ÈOH˜Z[\™PÛ\İ\’\İÜTİ]\Î•[˜\ÜÚYÛ™Yˆ	‰ˆY[K›İÛ™\—Ú\ÜİYK˜\×Ù\™YŠ
+Kš\×ÜÛÛYWØ[™
+\×Ú\ÜİYWÜ™Y™\™[˜ÙJBˆÂˆš[Û][ÛœËœ\Ú
+›Ü›X]Jˆ˜Û\İ\ˆßH™\]Z\™\È[ˆ\ÜİYHİÛ™\ˆÜˆ^XÚ][˜\ÜÚYÛ™Yİ]\È‹ˆ[K˜Û\İ\—ÚYˆ
+JNÂˆBˆYˆ[Kœ™\Ù[˜ÙHOH˜Z[\™PÛ\İ\’\İÜT™\Ù[˜ÙN”™\ÛÛ™Yˆ	‰ˆ[Kœİ]\ÈOH˜Z[\™PÛ\İ\’\İÜTİ]\Î”™\ÛÛ™YˆÂˆš[Û][ÛœËœ\Ú
+›Ü›X]Jˆœ™\ÛÛ™Y\™\Ù[˜ÙHÛ\İ\ˆßH\È›Û‹\™\ÛÛ™Yİ]\È‹ˆ[K˜Û\İ\—ÚYˆ
+JNÂˆBˆYˆ[Kœ™\Ù[˜ÙHOH˜Z[\™PÛ\İ\’\İÜT™\Ù[˜ÙNXØÙ\YXˆ	‰ˆ[Kœİ]\ÈOH˜Z[\™PÛ\İ\’\İÜTİ]\ÎXØÙ\YXˆÂˆš[Û][ÛœËœ\Ú
+›Ü›X]Jˆ˜XØÙ\YYX™\Ù[˜ÙHÛ\İ\ˆßH\È›Û‹YXİ]\È‹ˆ[K˜Û\İ\—ÚYˆ
+JNÂˆBˆYˆ[Kœİ]\ÈOH˜Z[\™PÛ\İ\’\İÜTİ]\ÎXØÙ\YXˆ	‰ˆ[K˜XØÙ\YÙXÜ™YœËš\×Ù[\J
+BˆÂˆš[Û][ÛœËœ\Ú
+›Ü›X]Jˆ˜XØÙ\YYXÛ\İ\ˆßH\È›È™YÚ\İH™Y™\™[˜ÙH‹ˆ[K˜Û\İ\—ÚYˆ
+JNÂˆBˆYˆ[Kœİ]\ÈOH˜Z[\™PÛ\İ\’\İÜTİ]\Î”™\ÛÛ™YÂˆYˆ[Kœ™\ÛÛ][Û—Ü‹˜\×Ù\™YŠ
+Kš\×Û›Û™WÛÜŠ˜[Y_Z\×Ü—Ü™Y™\™[˜ÙJ˜[YJJHÂˆš[Û][ÛœÂˆœ\Ú
+›Ü›X]Jœ™\ÛÛ™YÛ\İ\ˆßH\È›È™\ÛÛ][Ûˆˆ‹[K˜Û\İ\—ÚY
+JNÂˆBˆYˆ[Kœ™\ÛÛ][Û—Ø[™K˜\×Ù\™YŠ
+Kš\×Û›Û™WÛÜŠ˜[Y_˜[YKš[J
+Kš\×Ù[\J
+JHÂˆš[Û][ÛœËœ\Ú
+›Ü›X]Jˆœ™\ÛÛ™YÛ\İ\ˆßH\È›È™\ÛÛ][Ûˆ[™H‹ˆ[K˜Û\İ\—ÚYˆ
+JNÂˆBˆBˆ˜[Y]WÜÛÜYİ[š\]YJˆ	™[K˜İ\œ™[ØY™™XİYÙš[\Ëˆ	™›Ü›X]J˜Û\İ\ˆßHİ\œ™[Y™™XİYš[\È‹[K˜Û\İ\—ÚY
+Kˆ	›]]š[Û][ÛœËˆ
+NÂˆ˜[Y]WÜÛÜYİ[š\]YJˆ	™[Kš\İÜšXØ[ØY™™XİYÙš[\Ëˆ	™›Ü›X]J˜Û\İ\ˆßHY™™XİYš[\È‹[K˜Û\İ\—ÚY
+Kˆ	›]]š[Û][ÛœËˆ
+NÂˆ˜[Y]WÜÛÜYİ[š\]YJˆ	™[K˜İ\œ™[Ù˜XİØÛ\ÜÙ\Ëˆ	™›Ü›X]J˜Û\İ\ˆßHİ\œ™[˜XİÛ\ÜÙ\È‹[K˜Û\İ\—ÚY
+Kˆ	›]]š[Û][ÛœËˆ
+NÂˆ˜[Y]WÜÛÜYİ[š\]YJˆ	™[K™˜XİØÛ\ÜÙ\Ëˆ	™›Ü›X]J˜Û\İ\ˆßH˜XİÛ\ÜÙ\È‹[K˜Û\İ\—ÚY
+Kˆ	›]]š[Û][ÛœËˆ
+NÂˆ˜[Y]WÜÛÜYİ[š\]YJˆ	™[K˜İ\œ™[ÛÜÜİ\™˜XÙ\Ëˆ	™›Ü›X]J˜Û\İ\ˆßHİ\œ™[Ôİ\™˜XÙ\È‹[K˜Û\İ\—ÚY
+Kˆ	›]]š[Û][ÛœËˆ
+NÂˆ˜[Y]WÜÛÜYİ[š\]YJˆ	™[K›ÜÜİ\™˜XÙ\Ëˆ	™›Ü›X]J˜Û\İ\ˆßHÔİ\™˜XÙ\È‹[K˜Û\İ\—ÚY
+Kˆ	›]]š[Û][ÛœËˆ
+NÂˆ›Üˆ][‚ˆ[K˜İ\œ™[ØY™™XİYÙš[\Ëš]\Š
+K˜ÚZ[Š[Kš\İÜšXØ[ØY™™XİYÙš[\Ëš]\Š
+JBˆÂˆYˆ˜[Y]WÜX›X×Ü]
+]˜Û\İ\ˆ\İÜHš[HŠKš\×Ù\œŠ
+HÂˆš[Û][ÛœËœ\Ú
+›Ü›X]Jˆ˜Û\İ\ˆßH\È[˜[YY™™XİYš[HßH‹ˆ[K˜Û\İ\—ÚY]ˆ
+JNÂˆBˆBˆ]]]˜[œÚ][Û—ÚYÈH•™YTÙ]›™]Ê
+NÂˆ›Üˆ˜[œÚ][Ûˆ[ˆ	™[K˜[œÚ][ÛœÈÂˆYˆ]˜[œÚ][Û—ÚYËš[œÙ\
+˜[œÚ][Û‹˜[œÚ][Û—ÚY˜ÛÛ™J
+JHÂˆš[Û][ÛœËœ\Ú
+›Ü›X]Jˆ˜Û\İ\ˆßH\È\XØ]H˜[œÚ][ÛˆßH‹ˆ[K˜Û\İ\—ÚY˜[œÚ][Û‹˜[œÚ][Û—ÚYˆ
+JNÂˆBˆ›Üˆ
+X™[˜[YJH[ˆÂˆ
+˜[œÚ][Û—ÚY‹˜[œÚ][Û‹˜[œÚ][Û—ÚY˜\×ÜİŠ
+JKˆ
+™œ›ÛWØÛ\İ\—ÚY‹˜[œÚ][Û‹™œ›ÛWØÛ\İ\—ÚY˜\×ÜİŠ
+JKˆ
+™œ›ÛWÜİYÙH‹˜[œÚ][Û‹™œ›ÛWÜİYÙK˜\×ÜİŠ
+JKˆ
+×ÜİYÙH‹˜[œÚ][Û‹×ÜİYÙK˜\×ÜİŠ
+JKˆ
+˜™Y›Ü™WÜÙ\šY\×ÚY‹˜[œÚ][Û‹˜™Y›Ü™WÜÙ\šY\×ÚY˜\×ÜİŠ
+JKˆ
+˜™Y›Ü™WÛX[šY™\İÚ\Ú‹˜[œÚ][Û‹˜™Y›Ü™WÛX[šY™\İÚ\Ú˜\×ÜİŠ
+JKˆ
+˜™Y›Ü™WØ[™WÚY‹˜[œÚ][Û‹˜™Y›Ü™WØ[™WÚY˜\×ÜİŠ
+JKˆ
+˜Y\—ÜÙ\šY\×ÚY‹˜[œÚ][Û‹˜Y\—ÜÙ\šY\×ÚY˜\×ÜİŠ
+JKˆ
+˜Y\—ÛX[šY™\İÚ\Ú‹˜[œÚ][Û‹˜Y\—ÛX[šY™\İÚ\Ú˜\×ÜİŠ
+JKˆ
+˜Y\—Ø[™WÚY‹˜[œÚ][Û‹˜Y\—Ø[™WÚY˜\×ÜİŠ
+JKˆ
+œ›ÛÙ—Ü[ˆ‹˜[œÚ][Û‹œ›ÛÙ—Ü[‹˜\×ÜİŠ
+JKˆ
+œİÜØÛÛ™][Ûˆ‹˜[œÚ][Û‹œİÜØÛÛ™][Û‹˜\×ÜİŠ
+JKˆHÂˆYˆ˜[YKš[J
+Kš\×Ù[\J
+HÂˆš[Û][ÛœËœ\Ú
+›Ü›X]Jˆ˜Û\İ\ˆßH˜[œÚ][ÛˆßH\È[\HÛX™[H‹ˆ[K˜Û\İ\—ÚY˜[œÚ][Û‹˜[œÚ][Û—ÚYˆ
+JNÂˆBˆBˆYˆ˜[œÚ][Û‹×ØÛ\İ\—ÚYš\×Û›Û™J
+Bˆ	‰ˆ˜[œÚ][Û‹×Ü™\Ù[˜ÙHOH˜Z[\™PÛ\İ\’\İÜT™\Ù[˜ÙN“ØœÙ\™YˆÂˆš[Û][ÛœËœ\Ú
+›Ü›X]Jˆ˜[œÚ][ÛˆßHÚ]İ]H\™Ù]Û\İ\ˆ]\İ›İ™XÛÛYHØœÙ\™Y‹ˆ˜[œÚ][Û‹˜[œÚ][Û—ÚYˆ
+JNÂˆBˆYˆ˜[œÚ][Û‹×ØÛ\İ\—ÚY˜\×Ù\™YŠ
+HOHÛÛYJ˜[œÚ][Û‹™œ›ÛWØÛ\İ\—ÚY˜\×ÜİŠ
+JHÂˆš[Û][ÛœËœ\Ú
+›Ü›X]Jˆ˜[œÚ][ÛˆßH\ÈY[XØ[Ûİ\˜ÙH[™\™Ù]Û\İ\œÈ‹ˆ˜[œÚ][Û‹˜[œÚ][Û—ÚYˆ
+JNÂˆBˆYˆ˜[œÚ][Û‹™œ›ÛWÜİYÙHOH˜[œÚ][Û‹×ÜİYÙHÂˆš[Û][ÛœËœ\Ú
+›Ü›X]Jˆ˜[œÚ][ÛˆßH\È›ÈİYÙHÜˆ›ÛİXØ]\ÙHÚ[™ÙH‹ˆ˜[œÚ][Û‹˜[œÚ][Û—ÚYˆ
+JNÂˆBˆBˆYˆ[Kœİ]\ÈOH˜Z[\™PÛ\İ\’\İÜTİ]\Î”™\ÛÛ™Yˆ	‰ˆY[K˜[œÚ][ÛœËš]\Š
+K˜[J˜[œÚ][ÛŸÂˆ˜[œÚ][Û‹™œ›ÛWØÛ\İ\—ÚYOH[K˜Û\İ\—ÚYˆ	‰ˆ˜[œÚ][Û‹˜™Y›Ü™WÜÙ\šY\×ÚYOH[K™š\œİÜÙY[—ÜÙ\šY\×ÚYˆ	‰ˆ˜[œÚ][Û‹˜™Y›Ü™WÛX[šY™\İÚ\ÚOH[K™š\œİÜÙY[—ÛX[šY™\İÚ\Úˆ	‰ˆ˜[œÚ][Û‹˜™Y›Ü™WØ[™WÚYOH[K™š\œİÜÙY[—Ø[™Bˆ	‰ˆ˜[œÚ][Û‹×ØÛ\İ\—ÚYš\×Û›Û™J
+Bˆ	‰ˆ˜[œÚ][Û‹×Ü™\Ù[˜ÙHOH˜Z[\™PÛ\İ\’\İÜT™\Ù[˜ÙN”™\ÛÛ™Yˆ	‰ˆ˜[œÚ][Û‹˜Y\—ÜÙ\šY\×ÚYOH[KœÙ\šY\×ÚYˆ	‰ˆ˜[œÚ][Û‹˜Y\—ÛX[šY™\İÚ\ÚOH[K›X[šY™\İÚ\Úˆ	‰ˆ˜[œÚ][Û‹˜Y\—Ø[™WÚYˆOH[Kœ™\ÛÛ][Û—Ø[™K˜\×Ù\™YŠ
+K[Ü˜\ÛÜ—ÙY˜][
+
+BˆJBˆÂˆš[Û][ÛœËœ\Ú
+›Ü›X]Jˆœ™\ÛÛ™YÛ\İ\ˆßHXÚÜÈHX]Ú[™È™Y›Ü™KØY\ˆ˜[œÚ][Ûˆ‹ˆ[K˜Û\İ\—ÚYˆ
+JNÂˆBˆBˆš[Û][ÛœÂŸB‚™›ˆ˜[Y]WÜÛÜYİ[š\]YJ˜[Y\Îˆ	–Ôİš[™×KX™[ˆ	œİ‹š[Û][ÛœÎˆ	›]]™XÏİš[™ÏŠHÂˆ]]]ÛÜYH˜[Y\Ë×İ™XÊ
+NÂˆÛÜYœÛÜ
+
+NÂˆÛÜY™Y\
+
+NÂˆYˆÛÜYOH˜[Y\ÈÂˆš[Û][ÛœËœ\Ú
+›Ü›X]JÛX™[H]\İ™HÛÜY[™[š\]YHŠJNÂˆBŸB‚™›ˆ\×Ü—Ü™Y™\™[˜ÙJ˜[YNˆ	œİŠHOˆ›ÛÛÂˆ˜[YKœİš\Ü™Yš^
+	ÈÉÊKš\×ÜÛÛYWØ[™
+YÚ]ßÂˆYYÚ]Ëš\×Ù[\J
+H	‰ˆYÚ]Ë˜Ú\œÊ
+K˜[
+Ú\˜Xİ\ŸÚ\˜Xİ\‹š\×Ø\ØÚZWÙYÚ]
+
+JBˆJBŸB‚™›ˆY\™ÙWØÛ\İ\—Ú\İÜJˆ]]\İÜNˆ˜Z[\™PÛ\İ\’\İÜKˆ™\Üˆ	‘˜Z[\™PÛ\İ\”™\ÜŠHOˆ™\İ[˜Z[\™PÛ\İ\’\İÜOˆÂˆ]İ\œ™[ÚYÈBˆ™\Ü˜Û\İ\œËš]\Š
+K›X\
+Û\İ\ŸÛ\İ\‹˜Û\İ\—ÚY˜\×ÜİŠ
+JK˜ÛÛXİ•™YTÙ]ÏŠ
+NÂˆ›Üˆ[H[ˆ	›]]\İÜK™[šY\ÈÂˆYˆİ\œ™[ÚYË˜ÛÛZ[œÊ[K˜Û\İ\—ÚY˜\×ÜİŠ
+JHÂˆÛÛ[YNÂˆBˆYˆ[Kœ™\Ù[˜ÙHOH˜Z[\™PÛ\İ\’\İÜT™\Ù[˜ÙN“ØœÙ\™YÂˆ[Kœ™\Ù[˜ÙHH˜Z[\™PÛ\İ\’\İÜT™\Ù[˜ÙNXœÙ[[œ™\ÛÛ™YÂˆ[K›ØœÙ\™YÚ[—Øİ\œ™[Ø[™HH˜[ÙNÂˆ[K˜İ\œ™[Ø]]Üš]WØ[™HH›Û™NÂˆ[K˜XœÙ[˜ÙWÜÚ[˜ÙWØ[™HHÛÛYJ™\Ü˜[™WÚY˜ÛÛ™J
+JNÂˆ[K˜İ\œ™[ØY™™XİYÙš[\Ë˜ÛX\Š
+NÂˆ[K˜İ\œ™[Ù˜XİØÛ\ÜÙ\Ë˜ÛX\Š
+NÂˆ[K˜İ\œ™[ÛÜÜİ\™˜XÙ\Ë˜ÛX\Š
+NÂˆ[K˜İ\œ™[ÜİYÙHH›Û™NÂˆBˆBˆ›ÜˆÛ\İ\ˆ[ˆ	œ™\Ü˜Û\İ\œÈÂˆYˆ]ÛÛYJ[JHBˆ\İÜK™[šY\Ëš]\—Û]]
+
+K™š[™
+[_[K˜Û\İ\—ÚYOHÛ\İ\‹˜Û\İ\—ÚY
+BˆÂˆYˆ[KœÙ\šY\×ÚYOH™\ÜœÙ\šY\×ÚY[K›X[šY™\İÚ\ÚOH™\Ü›X[šY™\İÚ\ÚÂˆ˜Z[Jˆ˜Û\İ\ˆßH\İÜHY[]HY™™\œÈœ›ÛHİ\œ™[™\Ü‹ˆÛ\İ\‹˜Û\İ\—ÚYˆ
+NÂˆBˆYˆX]Ú\ÈJˆ[Kœİ]\Ëˆ˜Z[\™PÛ\İ\’\İÜTİ]\Î”™\ÛÛ™Y˜Z[\™PÛ\İ\’\İÜTİ]\ÎXØÙ\YXˆ
+HÂˆ˜Z[Jˆ˜Û\İ\ˆßH\È™XÛÜ™Y\ÈßH]\ÈXİ]™H[ˆHİ\œ™[[™H‹ˆÛ\İ\‹˜Û\İ\—ÚYˆ[[WÛX™[
+[Kœİ]\ÊBˆ
+NÂˆBˆ[K›\İÜÙY[—Ø[™HH™\Ü˜[™WÚY˜ÛÛ™J
+NÂˆ[KœÙ\šY\×ÚYH™\ÜœÙ\šY\×ÚY˜ÛÛ™J
+NÂˆ[K›X[šY™\İÚ\ÚH™\Ü›X[šY™\İÚ\Ú˜ÛÛ™J
+NÂˆ[K›\İÜÙY[—ÜÙ\šY\×ÚYH™\ÜœÙ\šY\×ÚY˜ÛÛ™J
+NÂˆ[K›\İÜÙY[—ÛX[šY™\İÚ\ÚH™\Ü›X[šY™\İÚ\Ú˜ÛÛ™J
+NÂˆ[K˜İ\œ™[ØY™™XİYÙš[\ÈHÛ\İ\‹˜Y™™XİYÙš[\Ë˜ÛÛ™J
+NÂˆY\™ÙWÜÛÜYİ[š\]YJ	›]][Kš\İÜšXØ[ØY™™XİYÙš[\Ë	˜Û\İ\‹˜Y™™XİYÙš[\ÊNÂˆ[K˜İ\œ™[Ù˜XİØÛ\ÜÙ\ÈHÛ\İ\‹™˜XİØÛ\ÜÙ\Ë˜ÛÛ™J
+NÂˆY\™ÙWÜÛÜYİ[š\]YJ	›]][K™˜XİØÛ\ÜÙ\Ë	˜Û\İ\‹™˜XİØÛ\ÜÙ\ÊNÂˆ[K˜İ\œ™[ÛÜÜİ\™˜XÙ\ÈHÛ\İ\‹›ÜÜİ\™˜XÙ\Ë˜ÛÛ™J
+NÂˆY\™ÙWÜÛÜYİ[š\]YJ	›]][K›ÜÜİ\™˜XÙ\Ë	˜Û\İ\‹›ÜÜİ\™˜XÙ\ÊNÂˆ[K›ØØİ\œ™[˜ÙWØÛİ[HÛ\İ\‹›ØØİ\œ™[˜ÙWØÛİ[Âˆ[K˜İ\œ™[ÜİYÙHHÛÛYJÛ\İ\‹œÚYÛ˜]\™KœİYÙK˜ÛÛ™J
+JNÂˆ[Kš[\XİYÛ^Y\ˆHÛ\İ\‹š[\XİYÛ^Y\‹˜ÛÛ™J
+NÂˆ[K™\™XİÜ™\›ÙXİ[ÛˆHÛ\İ\‹™\™XİÜ™\›ÙXİ[Û‹˜ÛÛ™J
+NÂˆ[K˜İ\œ™[Ø]]Üš]WØ[™HHÛÛYJ™\Ü˜[™WÚY˜ÛÛ™J
+JNÂˆ[K›ØœÙ\™YÚ[—Øİ\œ™[Ø[™HH½ï}ı¶‰ËkºwµçHİ]]ˆÛÛYJİ]]˜ÛÛ™J
+JKˆ[›™\—Øš[˜\NˆÛÛYJ[›™\ŠKˆXYÛ›ÜİX×Ü›Ø™\ÎˆYKˆJOÎÂ‚ˆ]˜]ÈHœÎœ™XYİ×Üİš[™Êİ]]
+OÎÂˆ]™\Üˆ[”™\ÜHÙ\™WÚœÛÛ™œ›ÛWÜİŠ	œ˜]ÊOÎÂˆ\ÜÙ\Ù\HJ™\Ü›[ÙK\›™\ÜÓ[ÙNÛÛ\[JNÂˆ\ÜÙ\Ù\HJ™\Üœİ[[X\K™š[\×İİ[ŠNÂˆ\ÜÙ\Ù\HJ™\Üœİ[[X\K™š[\×Ü\ÜÙYŠNÂˆ\ÜÙ\Ù\HJ™\Üœİ[[X\K™š[\×Ù˜Z[Y
+NÂˆ]]]]ÈBˆ™\Ü™š[WÜ™\İ[Ëš]\Š
+K›X\
+™\İ[™\İ[œ]˜\×ÜİŠ
+JK˜ÛÛXİ™XÏÏŠ
+NÂˆ]ËœÛÜİ[œİX›J
+NÂˆ\ÜÙ\Ù\HJ]Ë™XÈVÈ˜˜\ÙKÛ^‹˜˜\ÙKÛÚË—JNÂˆ\ÜÙ\J™\Ü™š[WÜ™\İ[Ëš]\Š
+K˜[
+™\İ[™\İ[œİ]\ÈOH[›™\”İ]\Î”\ÜÊJNÂˆ\ÜÙ\J\\›İ™YKš›Ú[ŠŠKš›Ú[Šœ\›ŠK™^\İÊ
+KœÛİ\˜ÙH\›™YH]\İ›İ™H]]]YŠNÂˆÚÊ
+
+JBˆB‚ˆÖØÙ™Ê[š^
+WBˆÖİ\İBˆ›ˆ[—Û[ÙWÙ^Xİ]WÜ[œ×ÜÙ[XİYØ˜\ÙWÚY—İ\İ
+
+HOˆ\İ™\İ[Âˆ][\H[\š[N[\\Š
+OÎÂˆ]\›İ™YHHÜš]WÙ˜ZÙWÜ\›İ™YWİÚ]Ø˜\ÙWÚY—İ\İ
+[\œ]
+
+JOÎÂˆ][›™\ˆHÜš]WÙ˜ZÙWÙ^Xİ]WÜ[›™\Š[\œ]
+
+JOÎÂˆ]İ]]H[\œ]
+
+Kš›Ú[Š™^Xİ]K\™\ÜšœÛÛˆŠNÂ‚ˆ[—Û[ÙJ[ÛÛ™šYÈÂˆ\›İ™YNˆ\›İ™YK˜ÛÛ™J
+KˆÜİÜ\›ˆ]Y™œ›ÛJ‹Øš[‹ÜÚŠKˆ[›™\ˆ\›™\ÜÔ[›™\•\İˆ[ÙNˆ\›™\ÜÓ[ÙN‘^Xİ]Kˆ›Ùš[Nˆ\›™\ÜÔ›Ùš[N˜\ÙKˆ\İÎˆ™XÈVÈ˜˜\ÙKÚY‹‹š[Ê
+WKˆİ]]ˆÛÛYJİ]]˜ÛÛ™J
+JKˆ[›™\—Øš[˜\NˆÛÛYJ[›™\ŠKˆXYÛ›ÜİX×Ü›Ø™\ÎˆYKˆJOÎÂ‚ˆ]˜]ÈHœÎœ™XYİ×Üİš[™Êİ]]
+OÎÂˆ]™\Üˆ[”™\ÜHÙ\™WÚœÛÛ™œ›ÛWÜİŠ	œ˜]ÊOÎÂˆ\ÜÙ\Ù\HJ™\Ü›[ÙK\›™\ÜÓ[ÙN‘^Xİ]JNÂˆ\ÜÙ\Ù\HJ™\Üœİ[[X\K™š[\×İİ[JNÂˆ\ÜÙ\Ù\HJ™\Üœİ[[X\K™š[\×Ü\ÜÙYJNÂˆ\ÜÙ\Ù\HJ™\Üœİ[[X\K™š[\×Ù˜Z[Y
+NÂˆ\ÜÙ\Ù\HJ™\Üœİ[[X\K\Ø\ÜÙ\[Ûœ×İİ[ŠNÂˆ\ÜÙ\Ù\HJ™\Üœİ[[X\K\Ø\ÜÙ\[Ûœ×Ü\ÜÙYŠNÂˆ\ÜÙ\Ù\HJ™\Ü™š[WÜ™\İ[ÖÌKœ]˜˜\ÙKÚY‹ŠNÂˆ\ÜÙ\Ù\HJ™\Ü™š[WÜ™\İ[ÖÌK˜\ÜÙ\[Ûœ×İİ[ŠNÂˆ\ÜÙ\J\\›İ™YKš›Ú[ŠŠKš›Ú[Šœ\›ŠK™^\İÊ
+KœÛİ\˜ÙH\›™YH]\İ›İ™H]]]YŠNÂˆÚÊ
+
+JBˆB‚ˆÖØÙ™Ê[š^
+WBˆÖİ\İBˆ›ˆ[—Û[ÙWÙ^Xİ]WØXØÙ\×İWÜ™XÛÙÛš^™YÜØÚY[\—Üİ]\Ê
+HOˆ\İ™\İ[Âˆ][\H[\š[N[\\Š
+OÎÂˆ]\›İ™YHHÜš]WÙ˜ZÙWÜ\›İ™YWİÚ]Ø˜\ÙWÚY—İ\İØ[™Ù^]
+[\œ]
+
+KJOÎÂˆ][›™\ˆHÜš]WÙ˜ZÙWÙ^Xİ]WÜ[›™\Š[\œ]
+
+JOÎÂˆ]İ]]H[\œ]
+
+Kš›Ú[Š™^Xİ]K\™\ÜšœÛÛˆŠNÂ‚ˆ[—Û[ÙJ[ÛÛ™šYÈÂˆ\›İ™YKˆÜİÜ\›ˆ]Y™œ›ÛJ‹Øš[‹ÜÚŠKˆ[›™\ˆ\›™\ÜÔ[›™\•\İˆ[ÙNˆ\›™\ÜÓ[ÙN‘^Xİ]Kˆ›Ùš[Nˆ\›™\ÜÔ›Ùš[N˜\ÙKˆ\İÎˆ™XÈVÈ˜˜\ÙKÚY‹‹š[Ê
+WKˆİ]]ˆÛÛYJİ]]˜ÛÛ™J
+JKˆ[›™\—Øš[˜\NˆÛÛYJ[›™\ŠKˆXYÛ›ÜİX×Ü›Ø™\ÎˆYKˆJOÎÂ‚ˆ]™\Üˆ[”™\ÜHÙ\™WÚœÛÛ™œ›ÛWÜİŠ	™œÎœ™XYİ×Üİš[™Êİ]]
+OÊOÎÂˆ\ÜÙ\Ù\HJ™\Üš\›™\Ü×Üİ]\ËÛÛYJJJNÂˆ\ÜÙ\Ù\HJ™\Üœİ[[X\K™š[\×Ù˜Z[Y
+NÂˆÚÊ
+
+JBˆB‚ˆÖØÙ™Ê[š^
+WBˆÖİ\İBˆ›ˆ[—Û[ÙWÙ^Xİ]WÜ[œ×ÜÙ[XİYØ˜\ÙWÜİXœÙ]
+
+HOˆ\İ™\İ[Âˆ][\H[\š[N[\\Š
+OÎÂˆ]\›İ™YHHÜš]WÙ˜ZÙWÜ\›İ™YWİÚ]Ø˜\ÙWÙ^Xİ]WÜİXœÙ]
+[\œ]
+
+JOÎÂˆ][›™\ˆHÜš]WÙ˜ZÙWÙ^Xİ]WÜ[›™\Š[\œ]
+
+JOÎÂˆ]İ]]H[\œ]
+
+Kš›Ú[Š™^Xİ]K\™\ÜšœÛÛˆŠNÂ‚ˆ[—Û[ÙJ[ÛÛ™šYÈÂˆ\›İ™YNˆ\›İ™YK˜ÛÛ™J
+KˆÜİÜ\›ˆ]Y™œ›ÛJ‹Øš[‹ÜÚŠKˆ[›™\ˆ\›™\ÜÔ[›™\•\İˆ[ÙNˆ\›™\ÜÓ[ÙN‘^Xİ]Kˆ›Ùš[Nˆ\›™\ÜÔ›Ùš[N˜\ÙKˆ\İÎˆ™XÈVÂˆ˜˜\ÙKÚY‹‹š[Ê
+Kˆ˜˜\ÙKØÛÛ™‹š[Ê
+Kˆ˜˜\ÙKÛ[K‹š[Ê
+Kˆ˜˜\ÙKÜ]‹š[Ê
+Kˆ˜˜\ÙKİ˜[œÛ]K‹š[Ê
+Kˆ˜˜\ÙKİÚ[K‹š[Ê
+KˆKˆİ]]ˆÛÛYJİ]]˜ÛÛ™J
+JKˆ[›™\—Øš[˜\NˆÛÛYJ[›™\ŠKˆXYÛ›ÜİX×Ü›Ø™\ÎˆYKˆJOÎÂ‚ˆ]˜]ÈHœÎœ™XYİ×Üİš[™Êİ]]
+OÎÂˆ]™\Üˆ[”™\ÜHÙ\™WÚœÛÛ™œ›ÛWÜİŠ	œ˜]ÊOÎÂˆ\ÜÙ\Ù\HJ™\Ü›[ÙK\›™\ÜÓ[ÙN‘^Xİ]JNÂˆ\ÜÙ\Ù\HJ™\Üœİ[[X\K™š[\×İİ[ŠNÂˆ\ÜÙ\Ù\HJ™\Üœİ[[X\K™š[\×Ü\ÜÙYŠNÂˆ\ÜÙ\Ù\HJ™\Üœİ[[X\K™š[\×Ù˜Z[Y
+NÂˆ\ÜÙ\Ù\HJ™\Üœİ[[X\K\Ø\ÜÙ\[Ûœ×İİ[ÌJNÂˆ\ÜÙ\Ù\HJ™\Üœİ[[X\K\Ø\ÜÙ\[Ûœ×Ü\ÜÙYÌJNÂˆ]]]]ÈBˆ™\Ü™š[WÜ™\İ[Ëš]\Š
+K›X\
+™\İ[™\İ[œ]˜\×ÜİŠ
+JK˜ÛÛXİ™XÏÏŠ
+NÂˆ]ËœÛÜİ[œİX›J
+NÂˆ\ÜÙ\Ù\HJˆ]Ëˆ™XÈVÂˆ˜˜\ÙKØÛÛ™‹ˆ˜˜\ÙKÚY‹‹ˆ˜˜\ÙKÛ[K‹ˆ˜˜\ÙKÜ]‹ˆ˜˜\ÙKİ˜[œÛ]K‹ˆ˜˜\ÙKİÚ[K‹ˆBˆ
+NÂˆ\ÜÙ\J\\›İ™YKš›Ú[ŠŠKš›Ú[Šœ\›ŠK™^\İÊ
+KœÛİ\˜ÙH\›™YH]\İ›İ™H]]]YŠNÂˆÚÊ
+
+JBˆB‚ˆÖØÙ™Ê[š^
+WBˆÖİ\İBˆ›ˆÛ[ÚÙWİÜš]\×Ù\ØÛİ™\WÜ\œÙWØÛÛ\[WØ[™Üİ[[X\WÜ™\ÜÊ
+HOˆ\İ™\İ[Âˆ][\H[\š[N[\\Š
+OÎÂˆ]\›İ™YHHÜš]WÙ˜ZÙWÜ\›İ™YWİÚ]İÛ×Ø˜\ÙWİ\İÊ[\œ]
+
+JOÎÂˆ][›™\ˆHÜš]WÙ˜ZÙWÜ[›™\Š[\œ]
+
+K[›™\”İ]\Î”\ÜÊOÎÂˆ]İ]]Ù\ˆH[\œ]
+
+Kš›Ú[ŠœÛ[ÚÙHŠNÂ‚ˆÛ[ÚÙJÛ[ÚÙPÛÛ™šYÈÂˆ\›İ™YNˆ\›İ™YK˜ÛÛ™J
+KˆÜİÜ\›ˆ]Y™œ›ÛJ‹Øš[‹ÜÚŠKˆ[›™\ˆ\›™\ÜÔ[›™\•\İˆ›Ùš[Nˆ\›™\ÜÔ›Ùš[N˜\ÙKˆ[Ù\Îˆ™XÈVÒ\›™\ÜÓ[ÙN”\œÙK\›™\ÜÓ[ÙNÛÛ\[WKˆİ]]Ù\ˆÛÛYJİ]]Ù\‹˜ÛÛ™J
+JKˆ[›™\—Øš[˜\NˆÛÛYJ[›™\ŠKˆ\›Ü™YˆÛÛYJ™˜ZÙK\™Yˆ‹š[Ê
+JKˆJOÎÂ‚ˆ›Üˆš[H[ˆÈ™\ØÛİ™\KšœÛÛˆ‹œ\œÙKšœÛÛˆ‹˜ÛÛ\[KšœÛÛˆ‹™Ø\[X\šœÛÛˆ‹œÛ[ÚÙKšœÛÛˆ—HÂˆ\ÜÙ\Jİ]]Ù\‹š›Ú[Šš[JKš\×Ùš[J
+KÙš[_HÚİ[™HÜš][ˆŠNÂˆBˆ]˜]ÈHœÎœ™XYİ×Üİš[™Êİ]]Ù\‹š›Ú[ŠœÛ[ÚÙKšœÛÛˆŠJOÎÂˆ]™\ÜˆÛ[ÚÙT™\ÜHÙ\™WÚœÛÛ™œ›ÛWÜİŠ	œ˜]ÊOÎÂˆ\ÜÙ\Ù\HJ™\ÜœØÚ[XWİ™\œÚ[Û‹ÓSÒÑWÔĞÒSPWÕ‘T”ÒSÓŠNÂˆ\ÜÙ\Ù\HJ™\Üœİ]\ËÛ[ÚÙTİ]\Î”\ÜÊNÂˆ\ÜÙ\Ù\HJ™\Ü™\ØÛİ™\Wİİ[ŠNÂˆ\ÜÙ\Ù\HJ™\Üœ\œÙWÙš[\×İİ[ÛÛYJŠJNÂˆ\ÜÙ\Ù\HJ™\Üœ\œÙWÙš[\×Ü\ÜÙYÛÛYJŠJNÂˆ\ÜÙ\Ù\HJ™\Ü˜ÛÛ\[WÙš[\×İİ[ÛÛYJŠJNÂˆ\ÜÙ\Ù\HJ™\Ü˜ÛÛ\[WÙš[\×Ü\ÜÙYÛÛYJŠJNÂˆ\ÜÙ\J™\ÜœİXİ\˜[Ù˜Z[\™\Ëš\×Ù[\J
+JNÂˆ\ÜÙ\J\\›İ™YKš›Ú[ŠŠKš›Ú[Šœ\›ŠK™^\İÊ
+KœÛİ\˜ÙH\›™YH]\İ›İ™H]]]YŠNÂˆÚÊ
+
+JBˆB‚ˆÖØÙ™Ê[š^
+WBˆÖİ\İBˆ›ˆÛ[ÚÙWİÜš]\×ØÛÛ\Ü›Ùš[WÜ™XÙZ\Ê
+HOˆ\İ™\İ[Âˆ][\H[\š[N[\\Š
+OÎÂˆ]\›İ™YHHÜš]WÙ˜ZÙWÜ\›İ™YWİÚ]İÛ×ØÛÛ\İ\İÊ[\œ]
+
+JOÎÂˆ][›™\ˆHÜš]WÙ˜ZÙWÜ[›™\Š[\œ]
+
+K[›™\”İ]\Î”\ÜÊOÎÂˆ]İ]]Ù\ˆH[\œ]
+
+Kš›Ú[ŠœÛ[ÚÙKXÛÛ\ŠNÂ‚ˆÛ[ÚÙJÛ[ÚÙPÛÛ™šYÈÂˆ\›İ™YNˆ\›İ™YK˜ÛÛ™J
+KˆÜİÜ\›ˆ]Y™œ›ÛJ‹Øš[‹ÜÚŠKˆ[›™\ˆ\›™\ÜÔ[›™\•\İˆ›Ùš[Nˆ\›™\ÜÔ›Ùš[NÛÛ\ˆ[Ù\Îˆ™XÈVÒ\›™\ÜÓ[ÙN”\œÙK\›™\ÜÓ[ÙNÛÛ\[WKˆİ]]Ù\ˆÛÛYJİ]]Ù\‹˜ÛÛ™J
+JKˆ[›™\—Øš[˜\NˆÛÛYJ[›™\ŠKˆ\›Ü™YˆÛÛYJ™˜ZÙK\™Yˆ‹š[Ê
+JKˆJOÎÂ‚ˆ›Üˆš[H[ˆÈ™\ØÛİ™\KšœÛÛˆ‹œ\œÙKšœÛÛˆ‹˜ÛÛ\[KšœÛÛˆ‹™Ø\[X\šœÛÛˆ‹œÛ[ÚÙKšœÛÛˆ—HÂˆ\ÜÙ\Jİ]]Ù\‹š›Ú[Šš[JKš\×Ùš[J
+KÙš[_HÚİ[™HÜš][ˆŠNÂˆB‚ˆ]\ØÛİ™\Nˆ\ØÛİ™\T™\ÜBˆÙ\™WÚœÛÛ™œ›ÛWÜİŠ	™œÎœ™XYİ×Üİš[™Êİ]]Ù\‹š›Ú[Š™\ØÛİ™\KšœÛÛˆŠJOÊOÎÂˆ\ÜÙ\Ù\HJ\ØÛİ™\Kœ›Ùš[K\›™\ÜÔ›Ùš[NÛÛ\
+NÂˆ]]]\ØÛİ™\™YBˆ\ØÛİ™\K\İËš]\Š
+K›X\
+\İ\İœ]˜\×ÜİŠ
+JK˜ÛÛXİ™XÏÏŠ
+NÂˆ\ØÛİ™\™YœÛÜİ[œİX›J
+NÂˆ\ÜÙ\Ù\HJ\ØÛİ™\™Y™XÈVÈ˜ÛÛ\Ü™\]Z\™K‹˜ÛÛ\İ\ÙK—JNÂ‚ˆ]Û[ÚÙWÜ™\ÜˆÛ[ÚÙT™\ÜBˆÙ\™WÚœÛÛ™œ›ÛWÜİŠ	™œÎœ™XYİ×Üİš[™Êİ]]Ù\‹š›Ú[ŠœÛ[ÚÙKšœÛÛˆŠJOÊOÎÂˆ\ÜÙ\Ù\HJÛ[ÚÙWÜ™\Üœ›Ùš[K\›™\ÜÔ›Ùš[NÛÛ\
+NÂˆ\ÜÙ\Ù\HJÛ[ÚÙWÜ™\Üœİ]\ËÛ[ÚÙTİ]\Î”\ÜÊNÂˆ\ÜÙ\Ù\HJÛ[ÚÙWÜ™\Ü™\ØÛİ™\Wİİ[ŠNÂˆ\ÜÙ\Ù\HJÛ[ÚÙWÜ™\Üœ\œÙWÙš[\×Ü\ÜÙYÛÛYJŠJNÂˆ\ÜÙ\Ù\HJÛ[ÚÙWÜ™\Ü˜ÛÛ\[WÙš[\×Ü\ÜÙYÛÛYJŠJNÂˆ\ÜÙ\JÛ[ÚÙWÜ™\ÜœİXİ\˜[Ù˜Z[\™\Ëš\×Ù[\J
+JNÂˆ\ÜÙ\J\\›İ™YKš›Ú[ŠŠKš›Ú[Šœ\›ŠK™^\İÊ
+KœÛİ\˜ÙH\›™YH]\İ›İ™H]]]YŠNÂˆÚÊ
+
+JBˆB‚ˆÖØÙ™Ê[š^
+WBˆÖİ\İBˆ›ˆÛ[ÚÙWİÜš]\×Ü[—Ü›Ùš[WÜ™XÙZ\Ê
+HOˆ\İ™\İ[Âˆ][\H[\š[N[\\Š
+OÎÂˆ]\›İ™YHHÜš]WÙ˜ZÙWÜ\›İ™YWİÚ]İÛ×Ü[—İ\İÊ[\œ]
+
+JOÎÂˆ][›™\ˆHÜš]WÙ˜ZÙWÜ[›™\Š[\œ]
+
+K[›™\”İ]\Î”\ÜÊOÎÂˆ]İ]]Ù\ˆH[\œ]
+
+Kš›Ú[ŠœÛ[ÚÙK\[ˆŠNÂ‚ˆÛ[ÚÙJÛ[ÚÙPÛÛ™šYÈÂˆ\›İ™YNˆ\›İ™YK˜ÛÛ™J
+KˆÜİÜ\›ˆ]Y™œ›ÛJ‹Øš[‹ÜÚŠKˆ[›™\ˆ\›™\ÜÔ[›™\•\İˆ›Ùš[Nˆ\›™\ÜÔ›Ùš[N”[‹ˆ[Ù\Îˆ™XÈVÒ\›™\ÜÓ[ÙN”\œÙK\›™\ÜÓ[ÙNÛÛ\[WKˆİ]]Ù\ˆÛÛYJİ]]Ù\‹˜ÛÛ™J
+JKˆ[›™\—Øš[˜\NˆÛÛYJ[›™\ŠKˆ\›Ü™YˆÛÛYJ™˜ZÙK\™Yˆ‹š[Ê
+JKˆJOÎÂ‚ˆ›Üˆš[H[ˆÈ™\ØÛİ™\KšœÛÛˆ‹œ\œÙKšœÛÛˆ‹˜ÛÛ\[KšœÛÛˆ‹™Ø\[X\šœÛÛˆ‹œÛ[ÚÙKšœÛÛˆ—HÂˆ\ÜÙ\Jİ]]Ù\‹š›Ú[Šš[JKš\×Ùš[J
+KÙš[_HÚİ[™HÜš][ˆŠNÂˆB‚ˆ]\ØÛİ™\Nˆ\ØÛİ™\T™\ÜBˆÙ\™WÚœÛÛ™œ›ÛWÜİŠ	™œÎœ™XYİ×Üİš[™Êİ]]Ù\‹š›Ú[Š™\ØÛİ™\KšœÛÛˆŠJOÊOÎÂˆ\ÜÙ\Ù\HJ\ØÛİ™\Kœ›Ùš[K\›™\ÜÔ›Ùš[N”[ŠNÂˆ]]]\ØÛİ™\™YBˆ\ØÛİ™\K\İËš]\Š
+K›X\
+\İ\İœ]˜\×ÜİŠ
+JK˜ÛÛXİ™XÏÏŠ
+NÂˆ\ØÛİ™\™YœÛÜİ[œİX›J
+NÂˆ\ÜÙ\Ù\HJ\ØÛİ™\™Y™XÈVÈœ[‹Ú[\Ü‹œ[‹ÜİÚ]Ú\Ë—JNÂ‚ˆ]Û[ÚÙWÜ™\ÜˆÛ[ÚÙT™\ÜBˆÙ\™WÚœÛÛ™œ›ÛWÜİŠ	™œÎœ™XYİ×Üİš[™Êİ]]Ù\‹š›Ú[ŠœÛ[ÚÙKšœÛÛˆŠJOÊOÎÂˆ\ÜÙ\Ù\HJÛ[ÚÙWÜ™\Üœ›Ùš[K\›™\ÜÔ›Ùš[N”[ŠNÂˆ\ÜÙ\Ù\HJÛ[ÚÙWÜ™\Üœİ]\ËÛ[ÚÙTİ]\Î”\ÜÊNÂˆ\ÜÙ\Ù\HJÛ[ÚÙWÜ™\Ü™\ØÛİ™\Wİİ[ŠNÂˆ\ÜÙ\Ù\HJÛ[ÚÙWÜ™\Üœ\œÙWÙš[\×Ü\ÜÙYÛÛYJŠJNÂˆ\ÜÙ\Ù\HJÛ[ÚÙWÜ™\Ü˜ÛÛ\[WÙš[\×Ü\ÜÙYÛÛYJŠJNÂˆ\ÜÙ\JÛ[ÚÙWÜ™\ÜœİXİ\˜[Ù˜Z[\™\Ëš\×Ù[\J
+JNÂˆ\ÜÙ\J\\›İ™YKš›Ú[ŠŠKš›Ú[Šœ\›ŠK™^\İÊ
+KœÛİ\˜ÙH\›™YH]\İ›İ™H]]]YŠNÂˆÚÊ
+
+JBˆB‚ˆÖØÙ™Ê[š^
+WBˆÖİ\İBˆ›ˆÛ[ÚÙWÜ™\Ù\™\×ØXÚÙ]YÜ\œÙWÙ˜Z[\™\×Ø\×ÙØ\Ü™XÙZ\Ê
+HOˆ\İ™\İ[Âˆ][\H[\š[N[\\Š
+OÎÂˆ]\›İ™YHHÜš]WÙ˜ZÙWÜ\›İ™YJ[\œ]
+
+JOÎÂˆ][›™\ˆHÜš]WÙ˜ZÙWÜ[›™\Š[\œ]
+
+K[›™\”İ]\Î‘˜Z[
+OÎÂˆ]İ]]Ù\ˆH[\œ]
+
+Kš›Ú[ŠœÛ[ÚÙHŠNÂ‚ˆÛ[ÚÙJÛ[ÚÙPÛÛ™šYÈÂˆ\›İ™YKˆÜİÜ\›ˆ]Y™œ›ÛJ‹Øš[‹ÜÚŠKˆ[›™\ˆ\›™\ÜÔ[›™\•\İˆ›Ùš[Nˆ\›™\ÜÔ›Ùš[N˜\ÙKˆ[Ù\Îˆ™XÈVÒ\›™\ÜÓ[ÙN”\œÙWKˆİ]]Ù\ˆÛÛYJİ]]Ù\‹˜ÛÛ™J
+JKˆ[›™\—Øš[˜\NˆÛÛYJ[›™\ŠKˆ\›Ü™YˆÛÛYJ™˜ZÙK\™Yˆ‹š[Ê
+JKˆJOÎÂ‚ˆ]˜]ÈHœÎœ™XYİ×Üİš[™Êİ]]Ù\‹š›Ú[ŠœÛ[ÚÙKšœÛÛˆŠJOÎÂˆ]™\ÜˆÛ[ÚÙT™\ÜHÙ\™WÚœÛÛ™œ›ÛWÜİŠ	œ˜]ÊOÎÂˆ\ÜÙ\Ù\HJ™\Üœİ]\ËÛ[ÚÙTİ]\Î”\ÜÊNÂˆ\ÜÙ\Ù\HJ™\Üœ\œÙWÙš[\×Ù˜Z[YÛÛYJJJNÂˆ\ÜÙ\Ù\HJˆ™\Üœ\œÙWØXÚÙ]Ë˜\×Ü™YŠ
+K˜[™İ[ŠXÚÙ]ßXÚÙ]Ë™Ù]
+œ\œÙWÜ™XÛİ™\HŠJKˆÛÛYJ	ŒJBˆ
+NÂˆ\ÜÙ\Jİ]]Ù\‹š›Ú[Šœ\œÙKšœÛÛˆŠKš\×Ùš[J
+JNÂˆÚÊ
+
+JBˆB‚ˆÖØÙ™Ê[š^
+WBˆÖİ\İBˆ›ˆÛ[ÚÙWÜ™\Ù\™\×ØXÚÙ]YØÛÛ\[WÙ˜Z[\™\×Ø\×ÙØ\Ü™XÙZ\Ê
+HOˆ\İ™\İ[Âˆ][\H[\š[N[\\Š
+OÎÂˆ]\›İ™YHHÜš]WÙ˜ZÙWÜ\›İ™YJ[\œ]
+
+JOÎÂˆ][›™\ˆBˆÜš]WÙ˜ZÙWÜ[›™\—İÚ]ØXÚÙ]
+[\œ]
+
+K[›™\”İ]\Î‘˜Z[ÛÛYJ˜ÛÛ\[WÙY™™XİŠJOÎÂˆ]İ]]Ù\ˆH[\œ]
+
+Kš›Ú[ŠœÛ[ÚÙHŠNÂ‚ˆÛ[ÚÙJÛ[ÚÙPÛÛ™šYÈÂˆ\›İ™YKˆÜİÜ\›ˆ]Y™œ›ÛJ‹Øš[‹ÜÚŠKˆ[›™\ˆ\›™\ÜÔ[›™\•\İˆ›Ùš[Nˆ\›™\ÜÔ›Ùš[N˜\ÙKˆ[Ù\Îˆ™XÈVÒ\›™\ÜÓ[ÙNÛÛ\[WKˆİ]]Ù\ˆÛÛYJİ]]Ù\‹˜ÛÛ™J
+JKˆ[›™\—Øš[˜\NˆÛÛYJ[›™\ŠKˆ\›Ü™YˆÛÛYJ™˜ZÙK\™Yˆ‹š[Ê
+JKˆJOÎÂ‚ˆ]˜]ÈHœÎœ™XYİ×Üİš[™Êİ]]Ù\‹š›Ú[ŠœÛ[ÚÙKšœÛÛˆŠJOÎÂˆ]™\ÜˆÛ[ÚÙT™\ÜHÙ\™WÚœÛÛ™œ›ÛWÜİŠ	œ˜]ÊOÎÂˆ\ÜÙ\Ù\HJ™\Üœİ]\ËÛ[ÚÙTİ]\Î”\ÜÊNÂˆ\ÜÙ\Ù\HJ™\Ü˜ÛÛ\[WÙš[\×Ù˜Z[YÛÛYJJJNÂˆ\ÜÙ\Ù\HJˆ™\Ü˜ÛÛ\[WØXÚÙ]Ë˜\×Ü™YŠ
+K˜[™İ[ŠXÚÙ]ßXÚÙ]Ë™Ù]
+˜ÛÛ\[WÙY™™XİŠJKˆÛÛYJ	ŒJBˆ
+NÂˆ\ÜÙ\Jİ]]Ù\‹š›Ú[Š˜ÛÛ\[KšœÛÛˆŠKš\×Ùš[J
+JNÂˆÚÊ
+
+JBˆB‚ˆÖØÙ™Ê[š^
+WBˆÖİ\İBˆ›ˆÛ[ÚÙWÙ˜Z[×İÚ[—Ü[›™\—Ù[Z]×İ[šÛ›İÛ—ØXÚÙ]
+
+HOˆ\İ™\İ[Âˆ][\H[\š[N[\\Š
+OÎÂˆ]\›İ™YHHÜš]WÙ˜ZÙWÜ\›İ™YJ[\œ]
+
+JOÎÂˆ][›™\ˆBˆÜš]WÙ˜ZÙWÜ[›™\—İÚ]ØXÚÙ]
+[\œ]
+
+K[›™\”İ]\Î‘˜Z[ÛÛYJ[šÛ›İÛˆŠJOÎÂˆ]İ]]Ù\ˆH[\œ]
+
+Kš›Ú[ŠœÛ[ÚÙHŠNÂ‚ˆ]\œŠ\œŠHHÛ[ÚÙJÛ[ÚÙPÛÛ™šYÈÂˆ\›İ™YKˆÜİÜ\›ˆ]Y™œ›ÛJ‹Øš[‹ÜÚŠKˆ[›™\ˆ\›™\ÜÔ[›™\•\İˆ›Ùš[Nˆ\›™\ÜÔ›Ùš[N˜\ÙKˆ[Ù\Îˆ™XÈVÒ\›™\ÜÓ[ÙNÛÛ\[WKˆİ]]Ù\ˆÛÛYJİ]]Ù\‹˜ÛÛ™J
+JKˆ[›™\—Øš[˜\NˆÛÛYJ[›™\ŠKˆ\›Ü™YˆÛÛYJ™˜ZÙK\™Yˆ‹š[Ê
+JKˆJH[ÙHÂˆ˜Z[J[šÛ›İÛˆXÚÙ]Úİ[˜Z[Û[ÚÙH™XÙZ\[YÜš]HŠNÂˆNÂ‚ˆ\ÜÙ\J\œ‹×Üİš[™Ê
+K˜ÛÛZ[œÊœ™XÙZ\[YÜš]HŠJNÂˆ]˜]ÈHœÎœ™XYİ×Üİš[™Êİ]]Ù\‹š›Ú[ŠœÛ[ÚÙKšœÛÛˆŠJOÎÂˆ]™\ÜˆÛ[ÚÙT™\ÜHÙ\™WÚœÛÛ™œ›ÛWÜİŠ	œ˜]ÊOÎÂˆ\ÜÙ\Ù\HJ™\Üœİ]\ËÛ[ÚÙTİ]\Î‘˜Z[
+NÂˆ\ÜÙ\Jˆ™\ÜˆœİXİ\˜[Ù˜Z[\™\Âˆš]\Š
+Bˆ˜[J˜Z[\™_˜Z[\™KšÚ[™OHÛ[ÚÙQ˜Z[\™RÚ[™•[šÛ›İÛXÚÙ]
+Bˆ
+NÂˆÚÊ
+
+JBˆB‚ˆÖØÙ™Ê[š^
+WBˆÖİ\İBˆ›ˆÛ[ÚÙWÙ˜Z[×İÚ[—Ü[›™\—ÛÛZ]×ØXÚÙ]
+
+HOˆ\İ™\İ[Âˆ][\H[\š[N[\\Š
+OÎÂˆ]\›İ™YHHÜš]WÙ˜ZÙWÜ\›İ™YJ[\œ]
+
+JOÎÂˆ][›™\ˆHÜš]WÙ˜ZÙWÜ[›™\—İÚ]ØXÚÙ]
+[\œ]
+
+K[›™\”İ]\Î‘˜Z[›Û™JOÎÂˆ]İ]]Ù\ˆH[\œ]
+
+Kš›Ú[ŠœÛ[ÚÙHŠNÂ‚ˆ]\œŠ\œŠHHÛ[ÚÙJÛ[ÚÙPÛÛ™šYÈÂˆ\›İ™YKˆÜİÜ\›ˆ]Y™œ›ÛJ‹Øš[‹ÜÚŠKˆ[›™\ˆ\›™\ÜÔ[›™\•\İˆ›Ùš[Nˆ\›™\ÜÔ›Ùš[N˜\ÙKˆ[Ù\Îˆ™XÈVÒ\›™\ÜÓ[ÙNÛÛ\[WKˆİ]]Ù\ˆÛÛYJİ]]Ù\‹˜ÛÛ™J
+JKˆ[›™\—Øš[˜\NˆÛÛYJ[›™\ŠKˆ\›Ü™YˆÛÛYJ™˜ZÙK\™Yˆ‹š[Ê
+JKˆJH[ÙHÂˆ˜Z[J›Z\ÜÚ[™ÈXÚÙ]Úİ[˜Z[Û[ÚÙH™XÙZ\[YÜš]HŠNÂˆNÂ‚ˆ\ÜÙ\J\œ‹×Üİš[™Ê
+K˜ÛÛZ[œÊœ™XÙZ\[YÜš]HŠJNÂˆ]˜]ÈHœÎœ™XYİ×Üİš[™Êİ]]Ù\‹š›Ú[ŠœÛ[ÚÙKšœÛÛˆŠJOÎÂˆ]™\ÜˆÛ[ÚÙT™\ÜHÙ\™WÚœÛÛ™œ›ÛWÜİŠ	œ˜]ÊOÎÂˆ\ÜÙ\Ù\HJ™\Üœİ]\ËÛ[ÚÙTİ]\Î‘˜Z[
+NÂˆ\ÜÙ\Jˆ™\ÜˆœİXİ\˜[Ù˜Z[\™\Âˆš]\Š
+Bˆ˜[J˜Z[\™_˜Z[\™KšÚ[™OHÛ[ÚÙQ˜Z[\™RÚ[™•[šÛ›İÛXÚÙ]
+Bˆ
+NÂˆÚÊ
+
+JBˆB‚ˆÖİ\İBˆ›ˆÛ[ÚÙWÜ™Z™Xİ×ÛZ\ÜÚ[™×Ü™\\™Yİ™YJ
+HOˆ\İ™\İ[Âˆ][\H[\š[N[\\Š
+OÎÂ‚ˆ]\œŠ\œŠHHÛ[ÚÙJÛ[ÚÙPÛÛ™šYÈÂˆ\›İ™YNˆ[\œ]
+
+Kš›Ú[Š›Z\ÜÚ[™ÈŠKˆÜİÜ\›ˆ]Y™œ›ÛJœ\›ŠKˆ[›™\ˆ\›™\ÜÔ[›™\•\İˆ›Ùš[Nˆ\›™\ÜÔ›Ùš[N˜\ÙKˆ[Ù\Îˆ™XÈVÒ\›™\ÜÓ[ÙN”\œÙK\›™\ÜÓ[ÙNÛÛ\[WKˆİ]]Ù\ˆÛÛYJ[\œ]
+
+Kš›Ú[ŠœÛ[ÚÙHŠJKˆ[›™\—Øš[˜\Nˆ›Û™Kˆ\›Ü™YˆÛÛYJ™˜ZÙK\™Yˆ‹š[Ê
+JKˆJH[ÙHÂˆ˜Z[J›Z\ÜÚ[™È™\\™Y™YHÚİ[˜Z[ŠNÂˆNÂ‚ˆ\ÜÙ\J\œ‹×Üİš[™Ê
+K˜ÛÛZ[œÊœ™\\™Y\›™YHŠJNÂˆÚÊ
+
+JBˆB‚ˆÖİ\İBˆ›ˆÛ[ÚÙWÜ™Z™Xİ×ÛZ\ÜÚ[™×Ü[›™\—ÜØÜš\
+
+HOˆ\İ™\İ[Âˆ][\H[\š[N[\\Š
+OÎÂˆ]\›İ™YHH[\œ]
+
+Kš›Ú[Šœ™\\™Y\\›ŠNÂˆœÎ˜Ü™X]WÙ\—Ø[
+\›İ™YKš›Ú[ŠŠKš›Ú[Š˜˜\ÙHŠJOÎÂ‚ˆ]\œŠ\œŠHHÛ[ÚÙJÛ[ÚÙPÛÛ™šYÈÂˆ\›İ™YKˆÜİÜ\›ˆ]Y™œ›ÛJœ\›ŠKˆ[›™\ˆ\›™\ÜÔ[›™\•\İˆ›Ùš[Nˆ\›™\ÜÔ›Ùš[N˜\ÙKˆ[Ù\Îˆ™XÈVÒ\›™\ÜÓ[ÙN”\œÙK\›™\ÜÓ[ÙNÛÛ\[WKˆİ]]Ù\ˆÛÛYJ[\œ]
+
+Kš›Ú[ŠœÛ[ÚÙHŠJKˆ[›™\—Øš[˜\Nˆ›Û™Kˆ\›Ü™YˆÛÛYJ™˜ZÙK\™Yˆ‹š[Ê
+JKˆJH[ÙHÂˆ˜Z[J›Z\ÜÚ[™ÈÕTÕÚİ[˜Z[ŠNÂˆNÂ‚ˆ\ÜÙ\J\œ‹×Üİš[™Ê
+K˜ÛÛZ[œÊ›Z\ÜÚ[™ÈÕTÕŠJNÂˆÚÊ
+
+JBˆB‚ˆÖØÙ™Ê[š^
+WBˆÖİ\İBˆ›ˆ[—Û[ÙWØXÚÙ]×Ü[›™\—Ù˜Z[\™WÜ™XÛÜ™Ê
+HOˆ\İ™\İ[Âˆ][\H[\š[N[\\Š
+OÎÂˆ]\›İ™YHHÜš]WÙ˜ZÙWÜ\›İ™YJ[\œ]
+
+JOÎÂˆ][›™\ˆHÜš]WÙ˜ZÙWÜ[›™\Š[\œ]
+
+K[›™\”İ]\Î‘˜Z[
+OÎÂˆ]İ]]H[\œ]
+
+Kš›Ú[Šœ\œÙK\™\ÜšœÛÛˆŠNÂ‚ˆ]\œŠ\œŠHH[—Û[ÙJ[ÛÛ™šYÈÂˆ\›İ™YKˆÜİÜ\›ˆ]Y™œ›ÛJ‹Øš[‹ÜÚŠKˆ[›™\ˆ\›™\ÜÔ[›™\•\İˆ[ÙNˆ\›™\ÜÓ[ÙN”\œÙKˆ›Ùš[Nˆ\›™\ÜÔ›Ùš[N˜\ÙKˆ\İÎˆ™XÎ›™]Ê
+Kˆİ]]ˆÛÛYJİ]]˜ÛÛ™J
+JKˆ[›™\—Øš[˜\NˆÛÛYJ[›™\ŠKˆXYÛ›ÜİX×Ü›Ø™\ÎˆYKˆJH[ÙHÂˆ˜Z[J™˜Z[[™È[›™\ˆ™XÛÜ™Úİ[˜Z[H\›™\ÜÈ[ˆŠNÂˆNÂ‚ˆ\ÜÙ\J\œ‹×Üİš[™Ê
+K˜ÛÛZ[œÊ\İ™X[H\›™\ÜÈ\›Z[˜[İ]\ÈŠJNÂˆ]˜]ÈHœÎœ™XYİ×Üİš[™Êİ]]
+OÎÂˆ]™\Üˆ[”™\ÜHÙ\™WÚœÛÛ™œ›ÛWÜİŠ	œ˜]ÊOÎÂˆ\ÜÙ\Ù\HJ™\Üœİ[[X\K™š[\×İİ[JNÂˆ\ÜÙ\Ù\HJ™\Üœİ[[X\K™š[\×Ü\ÜÙY
+NÂˆ\ÜÙ\Ù\HJ™\Üœİ[[X\K™š[\×Ù˜Z[YJNÂˆ\ÜÙ\Ù\HJ™\Ü˜XÚÙ]Ë™Ù]
+œ\œÙWÜ™XÛİ™\HŠKÛÛYJ	ŒJJNÂˆ\ÜÙ\Ù\HJ™\Ü™˜Z[\™\ÖÌKÛÜšÜİ™X[Kœ\œÙ\—Ü™XÛİ™\HŠNÂˆ\ÜÙ\Ù\HJˆ™\Ü™˜Z[\™\ÖÌK›ÜÚ[\Xİˆ™XÈVÈ™XYÛ›ÜİXÜÈ‹œŞ[^İ™YH‹œÙ[X[X×İÚÙ[œÈ—Bˆ
+NÂˆÚÊ
+
+JBˆB‚ˆÖØÙ™Ê[š^
+WBˆÖİ\İBˆ›ˆ[—Û[ÙWÜ™Z™Xİ×Û›Û™\›×Ú\›™\Ü×Üİ]\×İÚ]İ]Ùš[WÙ˜Z[\™\Ê
+HOˆ\İ™\İ[Âˆ][\H[\š[N[\\Š
+OÎÂˆ]\›İ™YHHÜš]WÙ˜ZÙWÜ\›İ™YWİÚ]Ü[—Ø›ÙJˆ[\œ]
+
+KˆˆÈ‹‹Ü\›˜\ÙKÛÚË™^]ÂˆˆËˆ
+OÎÂˆ][›™\ˆHÜš]WÙ˜ZÙWÜ[›™\Š[\œ]
+
+K[›™\”İ]\Î”\ÜÊOÎÂˆ]İ]]H[\œ]
+
+Kš›Ú[Šœ\œÙK\™\ÜšœÛÛˆŠNÂ‚ˆ]\œŠ\œŠHH[—Û[ÙJ[ÛÛ™šYÈÂˆ\›İ™YKˆÜİÜ\›ˆ]Y™œ›ÛJ‹Øš[‹ÜÚŠKˆ[›™\ˆ\›™\ÜÔ[›™\•\İˆ[ÙNˆ\›™\ÜÓ[ÙN”\œÙKˆ›Ùš[Nˆ\›™\ÜÔ›Ùš[N˜\ÙKˆ\İÎˆ™XÎ›™]Ê
+Kˆİ]]ˆÛÛYJİ]]˜ÛÛ™J
+JKˆ[›™\—Øš[˜\NˆÛÛYJ[›™\ŠKˆXYÛ›ÜİX×Ü›Ø™\ÎˆYKˆJH[ÙHÂˆ˜Z[J[œ›İ™[ˆ›Û™\›È\›™\ÜÈİ]\ÈÚİ[˜Z[]™[ˆÚ[ˆ[›™\ˆ™XÛÜ™È\ÜÈŠNÂˆNÂ‚ˆ\ÜÙ\J\œ‹×Üİš[™Ê
+K˜ÛÛZ[œÊ\›Z[˜[İ]\ÈŠJNÂˆ]˜]ÈHœÎœ™XYİ×Üİš[™Êİ]]
+OÎÂˆ]™\Üˆ[”™\ÜHÙ\™WÚœÛÛ™œ›ÛWÜİŠ	œ˜]ÊOÎÂˆ\ÜÙ\Ù\HJ™\Üœİ[[X\K™š[\×Ü\ÜÙYJNÂˆ\ÜÙ\Ù\HJ™\Üœİ[[X\K™š[\×Ù˜Z[Y
+NÂˆ\ÜÙ\Ù\HJ™\Üš\›™\Ü×Üİ]\ËÛÛYJÊJNÂˆÚÊ
+
+JBˆB‚ˆÖØÙ™Ê[š^
+WBˆÖİ\İBˆ›ˆ[—Û[ÙWÚÙY\×Ø[Ü\Ü×Ù\™XİÜ›Ø™\×ÙXYÛ›ÜİX×ÛÛ›WİÚ[—Ú\›™\Ü×İÜš]\×Û›×Ü™XÛÜ™Ê
+BˆOˆ\İ™\İ[Âˆ][\H[\š[N[\\Š
+OÎÂˆËÈ\İ™X[H\›™\ÜÈ^]È›Û™\›È[™Üš]\È›È™XÛÜ™Îˆ]™\H^XİYˆËÈ›İÈ\ÈZ\ÜÚ[™ÈY\ˆHœ›Ş™[ˆ[ˆ
+ÎMÌÊK‚ˆ]\›İ™YHHÜš]WÙ˜ZÙWÜ\›İ™YWİÚ]Ü[—Ø›ÙJˆ[\œ]
+
+KˆˆÈˆÈ[X™\˜][HÈ›İ[›ÚÙH‹Ü\›ÈH\İ™X[HÙ[Xİ[Ûˆİ^\È[œ›İ™[‹‚™^]ÂˆˆËˆ
+OÎÂˆ][›™\ˆHÜš]WÙ˜ZÙWÜ[›™\Š[\œ]
+
+K[›™\”İ]\Î”\ÜÊOÎÂˆ]İ]]H[\œ]
+
+Kš›Ú[Šœ\œÙK\™\ÜšœÛÛˆŠNÂ‚ˆ]\œŠ\œŠHH[—Û[ÙJ[ÛÛ™šYÈÂˆ\›İ™YKˆÜİÜ\›ˆ]Y™œ›ÛJ‹Øš[‹ÜÚŠKˆ[›™\ˆ\›™\ÜÔ[›™\•\İˆ[ÙNˆ\›™\ÜÓ[ÙN”\œÙKˆ›Ùš[Nˆ\›™\ÜÔ›Ùš[N˜\ÙKˆ\İÎˆ™XÎ›™]Ê
+Kˆİ]]ˆÛÛYJİ]]˜ÛÛ™J
+JKˆ[›™\—Øš[˜\NˆÛÛYJ[›™\‹˜ÛÛ™J
+JKˆXYÛ›ÜİX×Ü›Ø™\ÎˆYKˆJH[ÙHÂˆ˜Z[J˜[\\ÜÈ\™Xİ›Ø™\È]\İ›İ\›ˆHZ\ÜÚ[™È\İ™X[H[ˆ[ÈİXØÙ\ÜÈŠNÂˆNÂˆ\ÜÙ\Jˆ\œ‹×Üİš[™Ê
+K˜ÛÛZ[œÊš\È›İYZ]YŠKˆ[œ›İ™[ˆ›Û™\›È\İ™X[H\›Z[˜[]\İ˜Z[ÛÜÙYˆÙ\œŸH‚ˆ
+NÂ‚ˆËÈH]]Üš]]]™H™\ÜÙY\ÈH\İ™X[H™\™XİˆZ\ÜÚ[™È›İËˆËÈ›Û™\›È\›Z[˜[›È\™Xİ\XÚ\][Ûˆ[ˆİ[Ë‚ˆ]˜]ÈHœÎœ™XYİ×Üİš[™Ê	›İ]]
+OÎÂˆ]™\Üˆ[”™\ÜHÙ\™WÚœÛÛ™œ›ÛWÜİŠ	œ˜]ÊOÎÂˆ\ÜÙ\Ù\HJ™\Üœİ[[X\K™š[\×İİ[JNÂˆ\ÜÙ\Ù\HJ™\Üœİ[[X\K™š[\×Ü\ÜÙY
+NÂˆ\ÜÙ\Ù\HJ™\Üœİ[[X\K™š[\×Ù˜Z[YJNÂˆ\ÜÙ\Ù\HJ™\Üš\›™\Ü×Üİ]\ËÛÛYJÊJNÂˆ\ÜÙ\Ù\HJ™\Ü™˜Z[\™\Ë›[Š
+KJNÂˆ\ÜÙ\Ù\HJ™\Ü™˜Z[\™\ÖÌK˜XÚÙ]š\›™\Ü×Ü™\\™HŠNÂ‚ˆËÈH\™Xİ›Ø™\È\™H™]Z[™YÙ\\˜][H\È\™HXYÛ›ÜÚ\Ë‚ˆ]™XÙZ\Ü]H[\œ]
+
+Kš›Ú[Šœ\œÙK\™\ÜšœÛÛ‹™\™XİYXYÛ›ÜİXÜËšœÛÛˆŠNÂˆ]™XÙZ\Ü˜]ÈHœÎœ™XYİ×Üİš[™Ê™XÙZ\Ü]
+OÎÂˆ]™XÙZ\ˆÙ\™WÚœÛÛ•˜[YHHÙ\™WÚœÛÛ™œ›ÛWÜİŠ	œ™XÙZ\Ü˜]ÊOÎÂˆ\ÜÙ\Ù\HJ™XÙZ\ÈœØÚ[XWİ™\œÚ[Ûˆ—Kœ\›ØÛÜ™WÚ\›™\ÜË™\™XİÙXYÛ›ÜİXÜËŒHŠNÂˆ\ÜÙ\Ù\HJ™XÙZ\Èœ›Ø™\È—K˜\×Ø\œ˜^J
+K›X\
+™XÎ›[ŠKÛÛYJJJNÂˆ\ÜÙ\Ù\HJ™XÙZ\Èœ›Ø™\È—VÌVÈ˜]]Üš]H—K™\™XİÜ›Ø™HŠNÂˆ\ÜÙ\Ù\HJ™XÙZ\Èœ›Ø™\È—VÌVÈœ]—K˜˜\ÙKÛÚËŠNÂˆ\ÜÙ\Ù\HJ™XÙZ\Èœ›Ø™\È—VÌVÈ›İ]ÛÛYH—Kœ™\›ÙXÙYÜ\ÜÈŠNÂˆ\ÜÙ\Ù\HJ™XÙZ\È™XÛ\™YÛ›Û—ØÛZ[\È—VÈœ›İÜ×ØÛÛœÚY\™YØWÜ™\Üİİ[È—K
+NÂˆ\ÜÙ\Ù\HJ™XÙZ\Èœ\™[ÛØœÙ\˜][Ûˆ—VÈ›Z\ÜÚ[™×Ü›İÜÈ—KJNÂˆÚÊ
+
+JBˆB‚ˆÖØÙ™Ê[š^
+WBˆÖİ\İBˆ›ˆ[—Û[ÙWÙ\ØX›[™×ÙXYÛ›ÜİXÜ×ÜÚÚ\×Ü›Ø™WÜ™XÙZ\İÚ]İ]ØÚ[™Ú[™×İ™\™Xİ
+
+HOˆ\İ™\İ[Âˆ][\H[\š[N[\\Š
+OÎÂˆ]\›İ™YHHÜš]WÙ˜ZÙWÜ\›İ™YWİÚ]Ü[—Ø›ÙJ[\œ]
+
+K™^]×ˆŠOÎÂˆ][›™\ˆHÜš]WÙ˜ZÙWÜ[›™\Š[\œ]
+
+K[›™\”İ]\Î”\ÜÊOÎÂˆ]İ]]H[\œ]
+
+Kš›Ú[Šœ\œÙK\™\ÜšœÛÛˆŠNÂ‚ˆ]\œŠÙ\œŠHH[—Û[ÙJ[ÛÛ™šYÈÂˆ\›İ™YKˆÜİÜ\›ˆ]Y™œ›ÛJ‹Øš[‹ÜÚŠKˆ[›™\ˆ\›™\ÜÔ[›™\•\İˆ[ÙNˆ\›™\ÜÓ[ÙN”\œÙKˆ›Ùš[Nˆ\›™\ÜÔ›Ùš[N˜\ÙKˆ\İÎˆ™XÎ›™]Ê
+Kˆİ]]ˆÛÛYJİ]]˜ÛÛ™J
+JKˆ[›™\—Øš[˜\NˆÛÛYJ[›™\ŠKˆXYÛ›ÜİX×Ü›Ø™\Îˆ˜[ÙKˆJH[ÙHÂˆ˜Z[J\İ™X[H˜Z[\™H]\İ˜Z[ÛÜÙYÚ]XYÛ›ÜİXÜÈ\ØX›YÛÈŠNÂˆNÂ‚ˆ]˜]ÈHœÎœ™XYİ×Üİš[™Ê	›İ]]
+OÎÂˆ]™\Üˆ[”™\ÜHÙ\™WÚœÛÛ™œ›ÛWÜİŠ	œ˜]ÊOÎÂˆ\ÜÙ\Ù\HJ™\Üœİ[[X\K™š[\×Ù˜Z[YJNÂˆ\ÜÙ\Ù\HJ™\Üš\›™\Ü×Üİ]\ËÛÛYJÊJNÂˆ\ÜÙ\J][\œ]
+
+Kš›Ú[Šœ\œÙK\™\ÜšœÛÛ‹™\™XİYXYÛ›ÜİXÜËšœÛÛˆŠK™^\İÊ
+JNÂˆÚÊ
+
+JBˆB‚ˆÖØÙ™Ê[š^
+WBˆÖİ\İBˆ›ˆ[—Û[ÙWØÛÛ\]\×İ\İ™X[WÜ[—İÚ]İ]Ù\™XİÜ›ØÙ\ÜÙ\×ÛÜ—Ü™XÙZ\
+
+HOˆ\İ™\İ[Âˆ][\H[\š[N[\\Š
+OÎÂˆ]\›İ™YHHÜš]WÙ˜ZÙWÜ\›İ™YJ[\œ]
+
+JOÎÂˆ][›™\ˆHÜš]WÙ˜ZÙWÜ[›™\Š[\œ]
+
+K[›™\”İ]\Î”\ÜÊOÎÂˆ]İ]]H[\œ]
+
+Kš›Ú[Šœ\œÙK\™\ÜšœÛÛˆŠNÂ‚ˆ[—Û[ÙJ[ÛÛ™šYÈÂˆ\›İ™YKˆÜİÜ\›ˆ]Y™œ›ÛJ‹Øš[‹ÜÚŠKˆ[›™\ˆ\›™\ÜÔ[›™\•\İˆ[ÙNˆ\›™\ÜÓ[ÙN”\œÙKˆ›Ùš[Nˆ\›™\ÜÔ›Ùš[N˜\ÙKˆ\İÎˆ™XÎ›™]Ê
+Kˆİ]]ˆÛÛYJİ]]˜ÛÛ™J
+JKˆ[›™\—Øš[˜\NˆÛÛYJ[›™\ŠKˆXYÛ›ÜİX×Ü›Ø™\ÎˆYKˆJOÎÂ‚ˆ]™\Üˆ[”™\ÜHÙ\™WÚœÛÛ™œ›ÛWÜİŠ	™œÎœ™XYİ×Üİš[™Êİ]]
+OÊOÎÂˆ\ÜÙ\Ù\HJ™\Üœİ[[X\K™š[\×Ü\ÜÙYJNÂˆ\ÜÙ\Ù\HJ™\Üœİ[[X\K™š[\×Ù˜Z[Y
+NÂˆ\ÜÙ\J™\Ü˜XÚÙ]Ëš\×Ù[\J
+JNÂˆ\ÜÙ\J™\Ü™˜Z[\™\Ëš\×Ù[\J
+JNÂˆ\ÜÙ\Ù\HJ™\Üš\›™\Ü×Üİ]\ËÛÛYJ
+JNÂˆ\ÜÙ\J][\œ]
+
+Kš›Ú[Šœ\œÙK\™\ÜšœÛÛ‹™\™XİYXYÛ›ÜİXÜËšœÛÛˆŠK™^\İÊ
+JNÂˆÚÊ
+
+JBˆB‚ˆÖØÙ™Ê[š^
+WBˆÖİ\İBˆ›ˆ[—Û[ÙWÜ™[[İ™\×Üİ[WÜÚYXØ\—Ø™Y›Ü™WØWØÛX[—Û›×ÙXYÛ›ÜİX×Ü[Š
+HOˆ\İ™\İ[Âˆ][\H[\š[N[\\Š
+OÎÂˆ]\›İ™YHHÜš]WÙ˜ZÙWÜ\›İ™YJ[\œ]
+
+JOÎÂˆ][›™\ˆHÜš]WÙ˜ZÙWÜ[›™\Š[\œ]
+
+K[›™\”İ]\Î”\ÜÊOÎÂˆ]İ]]H[\œ]
+
+Kš›Ú[Šœ\œÙK\™\ÜšœÛÛˆŠNÂ‚ˆËÈHYİ™\ˆ™XÙZ\œ›ÛHH™]š[İ\È[›ØØ][Ûˆ]HØ[YHİ]]ˆËÈ]]\İ›İİ\š]™HHœ™\Ú]]Üš]]]™HX›XØ][Ûˆ
+ÎMÌÊK‚ˆ]İ[WÜÚYXØ\ˆH[\œ]
+
+Kš›Ú[Šœ\œÙK\™\ÜšœÛÛ‹™\™XİYXYÛ›ÜİXÜËšœÛÛˆŠNÂˆœÎÜš]Jˆ	œİ[WÜÚYXØ\‹ˆˆÈÈœØÚ[XWİ™\œÚ[Ûˆˆœ\›ØÛÜ™WÚ\›™\ÜË™\™XİÙXYÛ›ÜİXÜËŒHŸHˆËˆ
+OÎÂ‚ˆ[—Û[ÙJ[ÛÛ™šYÈÂˆ\›İ™YKˆÜİÜ\›ˆ]Y™œ›ÛJ‹Øš[‹ÜÚŠKˆ[›™\ˆ\›™\ÜÔ[›™\•\İˆ[ÙNˆ\›™\ÜÓ[ÙN”\œÙKˆ›Ùš[Nˆ\›™\ÜÔ›Ùš[N˜\ÙKˆ\İÎˆ™XÎ›™]Ê
+Kˆİ]]ˆÛÛYJİ]]˜ÛÛ™J
+JKˆ[›™\—Øš[˜\NˆÛÛYJ[›™\ŠKˆXYÛ›ÜİX×Ü›Ø™\ÎˆYKˆJOÎÂ‚ˆ]™\Üˆ[”™\ÜHÙ\™WÚœÛÛ™œ›ÛWÜİŠ	™œÎœ™XYİ×Üİš[™Êİ]]
+OÊOÎÂˆ\ÜÙ\Ù\HJ™\Üœİ[[X\K™š[\×Ü\ÜÙYJNÂˆ\ÜÙ\Jˆ\İ[WÜÚYXØ\‹™^\İÊ
+Kˆ˜HÛÛ\]H\İ™X[H[ˆ]\İX]™H›Èİ[HXYÛ›ÜİXÈÚYXØ\ˆ‚ˆ
+NÂˆÚÊ
+
+JBˆB‚ˆÖØÙ™Ê[š^
+WBˆÖİ\İBˆ›ˆ[—Û[ÙWÜ™[[İ™\×Üİ[WÜÚYXØ\—İÚ[—ÙXYÛ›ÜİXÜ×Ø\™WÙ\ØX›Y
+
+HOˆ\İ™\İ[Âˆ][\H[\š[N[\\Š
+OÎÂˆ]\›İ™YHHÜš]WÙ˜ZÙWÜ\›İ™YJ[\œ]
+
+JOÎÂˆ][›™\ˆHÜš]WÙ˜ZÙWÜ[›™\Š[\œ]
+
+K[›™\”İ]\Î”\ÜÊOÎÂˆ]İ]]H[\œ]
+
+Kš›Ú[Šœ\œÙK\™\ÜšœÛÛˆŠNÂ‚ˆ]İ[WÜÚYXØ\ˆH[\œ]
+
+Kš›Ú[Šœ\œÙK\™\ÜšœÛÛ‹™\™XİYXYÛ›ÜİXÜËšœÛÛˆŠNÂˆœÎÜš]Jˆ	œİ[WÜÚYXØ\‹ˆˆÈÈœØÚ[XWİ™\œÚ[Ûˆˆœ\›ØÛÜ™WÚ\›™\ÜË™\™XİÙXYÛ›ÜİXÜËŒHŸHˆËˆ
+OÎÂ‚ˆ[—Û[ÙJ[ÛÛ™šYÈÂˆ\›İ™YKˆÜİÜ\›ˆ]Y™œ›ÛJ‹Øš[‹ÜÚŠKˆ[›™\ˆ\›™\ÜÔ[›™\•\İˆ[ÙNˆ\›™\ÜÓ[ÙN”\œÙKˆ›Ùš[Nˆ\›™\ÜÔ›Ùš[N˜\ÙKˆ\İÎˆ™XÎ›™]Ê
+Kˆİ]]ˆÛÛYJİ]]˜ÛÛ™J
+JKˆ[›™\—Øš[˜\NˆÛÛYJ[›™\ŠKˆXYÛ›ÜİX×Ü›Ø™\Îˆ˜[ÙKˆJOÎÂ‚ˆ]™\Üˆ[”™\ÜHÙ\™WÚœÛÛ™œ›ÛWÜİŠ	™œÎœ™XYİ×Üİš[™Êİ]]
+OÊOÎÂˆ\ÜÙ\Ù\HJ™\Üœİ[[X\K™š[\×Ü\ÜÙYJNÂˆ\ÜÙ\Jˆ\İ[WÜÚYXØ\‹™^\İÊ
+Kˆ™XYÛ›ÜİXÜËY\ØX›Y[œÈ]\İİ[ÛX\ˆHİ[HXYÛ›ÜİXÈÚYXØ\ˆ‚ˆ
+NÂˆÚÊ
+
+JBˆB‚ˆÖØÙ™Ê[š^
+WBˆÖİ\İBˆ›ˆ[—Û[ÙWÜ™XÛÜ™×İ[˜]˜Z[X›WÜ›Ø™WİÚ[—Ù\™XİÜ[›™\—İÜš]\×Û›İ[™Ê
+HOˆ\İ™\İ[Âˆ][\H[\š[N[\\Š
+OÎÂˆ]\›İ™YHHÜš]WÙ˜ZÙWÜ\›İ™YWİÚ]Ü[—Ø›ÙJ[\œ]
+
+K™^]×ˆŠOÎÂˆ][›™\ˆH›ÛİÚ›Ú[—ÜØÜš\
+[\œ]
+
+JOÎÂˆ]İ]]H[\œ]
+
+Kš›Ú[Šœ\œÙK\™\ÜšœÛÛˆŠNÂ‚ˆ]\œŠ\œŠHH[—Û[ÙJ[ÛÛ™šYÈÂˆ\›İ™YKˆÜİÜ\›ˆ]Y™œ›ÛJ‹Øš[‹ÜÚŠKˆ[›™\ˆ\›™\ÜÔ[›™\•\İˆ[ÙNˆ\›™\ÜÓ[ÙN”\œÙKˆ›Ùš[Nˆ\›™\ÜÔ›Ùš[N˜\ÙKˆ\İÎˆ™XÎ›™]Ê
+Kˆİ]]ˆÛÛYJİ]]˜ÛÛ™J
+JKˆ[›™\—Øš[˜\NˆÛÛYJ[›™\ŠKˆXYÛ›ÜİX×Ü›Ø™\ÎˆYKˆJH[ÙHÂˆ˜Z[J˜[ˆ[˜]˜Z[X›H›Ø™HØ[››İ™\Z\ˆH\İ™X[H™\İ[ŠNÂˆNÂˆ\ÜÙ\Jˆ\œ‹×Üİš[™Ê
+K˜ÛÛZ[œÊš\È›İYZ]YŠKˆ[œ›İ™[ˆ›Û™\›È\İ™X[H\›Z[˜[]\İ˜Z[ÛÜÙYˆÙ\œŸH‚ˆ
+NÂ‚ˆ]™XÙZ\Ü˜]ÈBˆœÎœ™XYİ×Üİš[™Ê[\œ]
+
+Kš›Ú[Šœ\œÙK\™\ÜšœÛÛ‹™\™XİYXYÛ›ÜİXÜËšœÛÛˆŠJOÎÂˆ]™XÙZ\ˆÙ\™WÚœÛÛ•˜[YHHÙ\™WÚœÛÛ™œ›ÛWÜİŠ	œ™XÙZ\Ü˜]ÊOÎÂˆ\ÜÙ\Ù\HJ™XÙZ\Èœ›Ø™\È—VÌVÈ›İ]ÛÛYH—K[˜]˜Z[X›HŠNÂˆ\ÜÙ\Ù\HJˆ™XÙZ\Èœ›Ø™\È—VÌVÈ›[Z]][ÛœÈ—VÌKˆ™\™XİÜ›Ø™WÜ›ÙXÙYÛ›×Ü[›™\—Ü™XÛÜ™‚ˆ
+NÂˆÚÊ
+
+JBˆB‚ˆËËÈHXYÛ›ÜİXÈ[›™\ˆ]^Xİ]\ÈÛX[›H]™]™\ˆ™XÛÜ™È[][™Ë‚ˆÖØÙ™Ê[š^
+WBˆ›ˆ›ÛİÚ›Ú[—ÜØÜš\
+›Ûİˆ	”]
+HOˆ\İ™\İ[]YˆÂˆ][›™\ˆH›Ûİš›Ú[Š™˜ZÙK\[›™\‹\Ú[[œÚŠNÂˆ]›ÙHHˆÈˆÈKØš[‹ÜÚœÙ]Y]Bœš[ˆ	Û›È™XÛÜ™ÈÚ[™HÜš][—‰Â™^]ÂˆˆÎÂˆœÎÜš]J	œ[›™\‹›ÙJOÎÂˆÙ]Ù^Xİ]X›J	œ[›™\ŠOÎÂˆÚÊ[›™\ŠBˆB‚ˆÖØÙ™Ê[š^
+WBˆ›ˆÜš]WÙ˜ZÙWÜ\›İ™YWÜ™\]Z\š[™×İÜ\›Ù›Ü—Ù[\\İÊ›Ûİˆ	”]
+HOˆ\İ™\İ[]YˆÂˆ]\›İ™YHH›Ûİš›Ú[Šœ™\\™Y\\›\™\]Z\™\Ë]\\›ŠNÂˆ]Ù\ˆH\›İ™YKš›Ú[ŠŠNÂˆœÎ˜Ü™X]WÙ\—Ø[
+Ù\‹š›Ú[Š˜˜\ÙHŠJOÎÂˆœÎÜš]JÙ\‹š›Ú[Š˜˜\ÙHŠKš›Ú[Š›ÚËŠKŒN×ˆŠOÎÂˆ]ØÜš\HˆÈˆÈKØš[‹ÜÚœÙ]Y]BšYˆÈ‰ÌN‹_HˆH‹KY[\\İÈˆNÈ[‚ˆYˆÈHYˆ‹Ü\›NÈ[‚ˆXÚÈ	Ö[İH™YYÈ[ˆ›XZÙH\İÜ™\ˆš\œİÈÙ][™ÜÈ\‰È‰Œ‚ˆ^]‚ˆšBˆXÚÈ˜˜\ÙKÛÚË‚ˆ^]™šB‹‹Ü\›˜\ÙKÛÚËˆˆÎÂˆœÎÜš]JÙ\‹š›Ú[Š•TÕŠKØÜš\
+OÎÂˆÚÊ\›İ™YJBˆB‚ˆÖØÙ™Ê[š^
+WBˆ›ˆÜš]WÙ˜ZÙWÜ\›İ™YJ›Ûİˆ	”]
+HOˆ\İ™\İ[]YˆÂˆÜš]WÙ˜ZÙWÜ\›İ™YWİÚ]Ü[—Ø›ÙJˆ›ÛİˆˆÈ‹‹Ü\›˜\ÙKÛÚËˆˆËˆ
+BˆB‚ˆÖØÙ™Ê[š^
+WBˆ›ˆÜš]WÙ˜ZÙWÜ\›İ™YWİÚ]İÛ×Ø˜\ÙWİ\İÊ›Ûİˆ	”]
+HOˆ\İ™\İ[]YˆÂˆ]\›İ™YHH›Ûİš›Ú[Šœ™\\™Y\\›]ÛËX˜\ÙK]\İÈŠNÂˆ]Ù\ˆH\›İ™YKš›Ú[ŠŠNÂˆœÎ˜Ü™X]WÙ\—Ø[
+Ù\‹š›Ú[Š˜˜\ÙHŠJOÎÂˆœÎÜš]JÙ\‹š›Ú[Š˜˜\ÙHŠKš›Ú[Š›ÚËŠKŒN×ˆŠOÎÂˆœÎÜš]JÙ\‹š›Ú[Š˜˜\ÙHŠKš›Ú[Š›^ŠKŒN×ˆŠOÎÂˆ]ØÜš\HˆÈˆÈKØš[‹ÜÚœÙ]Y]BšYˆÈ‰ÌN‹_HˆH‹KY[\\İÈˆNÈ[‚ˆXÚÈ˜˜\ÙKÛÚË‚ˆXÚÈ˜˜\ÙKÛ^‚ˆ^]™šB‹‹Ü\›˜\ÙKÛÚË‹‹Ü\›˜\ÙKÛ^ˆˆÎÂˆœÎÜš]JÙ\‹š›Ú[Š•TÕŠKØÜš\
+OÎÂˆÚÊ\›İ™YJBˆB‚ˆÖØÙ™Ê[š^
+WBˆ›ˆÜš]WÙ˜ZÙWÜ\›İ™YWİÚ]Ø˜\ÙWÚY—İ\İ
+›Ûİˆ	”]
+HOˆ\İ™\İ[]YˆÂˆÜš]WÙ˜ZÙWÜ\›İ™YWİÚ]Ø˜\ÙWÚY—İ\İØ[™Ø›ÙJ›Ûİ‹‹Ü\›˜\ÙKÚY‹ˆŠBˆB‚ˆÖØÙ™Ê[š^
+WBˆ›ˆÜš]WÙ˜ZÙWÜ\›İ™YWİÚ]Ø˜\ÙWÚY—İ\İØ[™Ù^]
+ˆ›Ûİˆ	”]ˆİ]\ÎˆLÌ‹ˆ
+HOˆ\İ™\İ[]YˆÂˆÜš]WÙ˜ZÙWÜ\›İ™YWİÚ]Ø˜\ÙWÚY—İ\İØ[™Ø›ÙJˆ›Ûİˆ	™›Ü›X]J‹‹Ü\›˜\ÙKÚY‹™^]Üİ]\ßWˆŠKˆ
+BˆB‚ˆÖØÙ™Ê[š^
+WBˆ›ˆÜš]WÙ˜ZÙWÜ\›İ™YWİÚ]Ø˜\ÙWÚY—İ\İØ[™Ø›ÙJˆ›Ûİˆ	”]ˆ[—Ø›ÙNˆ	œİ‹ˆ
+HOˆ\İ™\İ[]YˆÂˆ]\›İ™YHH›Ûİš›Ú[Šœ™\\™Y\\›X˜\ÙKZYˆŠNÂˆ]Ù\ˆH\›İ™YKš›Ú[ŠŠNÂˆœÎ˜Ü™X]WÙ\—Ø[
+Ù\‹š›Ú[Š˜˜\ÙHŠJOÎÂˆœÎÜš]JÙ\‹š›Ú[Š˜˜\ÙHŠKš›Ú[ŠšY‹ŠKŒN×ˆŠOÎÂˆ]ØÜš\H›Ü›X]JˆˆÈˆÈKØš[‹ÜÚœÙ]Y]BšYˆÈ‰ŞÌN‹__HˆH‹KY[\\İÈˆNÈ[‚ˆXÚÈ˜˜\ÙKÚY‹‚ˆ^]™šBÜ[—Ø›Ù_HˆÂˆ
+NÂˆœÎÜš]JÙ\‹š›Ú[Š•TÕŠKØÜš\
+OÎÂˆÚÊ\›İ™YJBˆB‚ˆÖØÙ™Ê[š^
+WBˆ›ˆÜš]WÙ˜ZÙWÜ\›İ™YWİÚ]Ø˜\ÙWÙ^Xİ]WÜİXœÙ]
+›Ûİˆ	”]
+HOˆ\İ™\İ[]YˆÂˆ]\›İ™YHH›Ûİš›Ú[Šœ™\\™Y\\›X˜\ÙKY^Xİ]K\İXœÙ]ŠNÂˆ]Ù\ˆH\›İ™YKš›Ú[ŠŠNÂˆœÎ˜Ü™X]WÙ\—Ø[
+Ù\‹š›Ú[Š˜˜\ÙHŠJOÎÂˆœÎÜš]JÙ\‹š›Ú[Š˜˜\ÙHŠKš›Ú[ŠšY‹ŠKŒN×ˆŠOÎÂˆœÎÜš]JÙ\‹š›Ú[Š˜˜\ÙHŠKš›Ú[Š˜ÛÛ™ŠKŒN×ˆŠOÎÂˆœÎÜš]JÙ\‹š›Ú[Š˜˜\ÙHŠKš›Ú[Š›[KŠKŒN×ˆŠOÎÂˆœÎÜš]JÙ\‹š›Ú[Š˜˜\ÙHŠKš›Ú[Šœ]ŠKŒN×ˆŠOÎÂˆœÎÜš]JÙ\‹š›Ú[Š˜˜\ÙHŠKš›Ú[Š˜[œÛ]KŠKŒN×ˆŠOÎÂˆœÎÜš]JÙ\‹š›Ú[Š˜˜\ÙHŠKš›Ú[ŠÚ[KŠKŒN×ˆŠOÎÂˆ]ØÜš\HˆÈˆÈKØš[‹ÜÚœÙ]Y]BšYˆÈ‰ÌN‹_HˆH‹KY[\\İÈˆNÈ[‚ˆXÚÈ˜˜\ÙKØÛÛ™‚ˆXÚÈ˜˜\ÙKÚY‹‚ˆXÚÈ˜˜\ÙKÛ[K‚ˆXÚÈ˜˜\ÙKÜ]‚ˆXÚÈ˜˜\ÙKİ˜[œÛ]K‚ˆXÚÈ˜˜\ÙKİÚ[K‚ˆ^]™šB‹‹Ü\›˜\ÙKØÛÛ™‹‹Ü\›˜\ÙKÚY‹‹‹Ü\›˜\ÙKÛ[K‹‹Ü\›˜\ÙKÜ]‹‹Ü\›˜\ÙKİ˜[œÛ]K‹‹Ü\›˜\ÙKİÚ[KˆˆÎÂˆœÎÜš]JÙ\‹š›Ú[Š•TÕŠKØÜš\
+OÎÂˆÚÊ\›İ™YJBˆB‚ˆÖØÙ™Ê[š^
+WBˆ›ˆÜš]WÙ˜ZÙWÜ\›İ™YWİÚ]İÛ×ØÛÛ\İ\İÊ›Ûİˆ	”]
+HOˆ\İ™\İ[]YˆÂˆ]\›İ™YHH›Ûİš›Ú[Šœ™\\™Y\\›]ÛËXÛÛ\]\İÈŠNÂˆ]Ù\ˆH\›İ™YKš›Ú[ŠŠNÂˆœÎ˜Ü™X]WÙ\—Ø[
+Ù\‹š›Ú[Š˜ÛÛ\ŠJOÎÂˆœÎÜš]JÙ\‹š›Ú[Š˜ÛÛ\ŠKš›Ú[Šœ™\]Z\™KŠKŒN×ˆŠOÎÂˆœÎÜš]JÙ\‹š›Ú[Š˜ÛÛ\ŠKš›Ú[Š\ÙKŠKŒN×ˆŠOÎÂˆ]ØÜš\HˆÈˆÈKØš[‹ÜÚœÙ]Y]BšYˆÈ‰ÌN‹_HˆH‹KY[\\İÈˆNÈ[‚ˆXÚÈ˜ÛÛ\Ü™\]Z\™K‚ˆXÚÈ˜ÛÛ\İ\ÙK‚ˆ^]™šB‹‹Ü\›ÛÛ\Ü™\]Z\™K‹‹Ü\›ÛÛ\İ\ÙKˆˆÎÂˆœÎÜš]JÙ\‹š›Ú[Š•TÕŠKØÜš\
+OÎÂˆÚÊ\›İ™YJBˆB‚ˆÖØÙ™Ê[š^
+WBˆ›ˆÜš]WÙ˜ZÙWÜ\›İ™YWİÚ]İÛ×Ü[—İ\İÊ›Ûİˆ	”]
+HOˆ\İ™\İ[]YˆÂˆ]\›İ™YHH›Ûİš›Ú[Šœ™\\™Y\\›]ÛË\[‹]\İÈŠNÂˆ]Ù\ˆH\›İ™YKš›Ú[ŠŠNÂˆœÎ˜Ü™X]WÙ\—Ø[
+Ù\‹š›Ú[Šœ[ˆŠJOÎÂˆœÎÜš]JÙ\‹š›Ú[Šœ[ˆŠKš›Ú[Šš[\ÜŠKŒN×ˆŠOÎÂˆœÎÜš]JÙ\‹š›Ú[Šœ[ˆŠKš›Ú[ŠœİÚ]Ú\ËŠKŒN×ˆŠOÎÂˆ]ØÜš\HˆÈˆÈKØš[‹ÜÚœÙ]Y]BšYˆÈ‰ÌN‹_HˆH‹KY[\\İÈˆNÈ[‚ˆXÚÈœ[‹Ú[\Ü‚ˆXÚÈœ[‹ÜİÚ]Ú\Ë‚ˆ^]™šB‹‹Ü\›[‹Ú[\Ü‹‹Ü\›[‹ÜİÚ]Ú\ËˆˆÎÂˆœÎÜš]JÙ\‹š›Ú[Š•TÕŠKØÜš\
+OÎÂˆÚÊ\›İ™YJBˆB‚ˆÖØÙ™Ê[š^
+WBˆ›ˆÜš]WÙ˜ZÙWÜ\›İ™YWİÚ]Ü[—Ø›ÙJ›Ûİˆ	”][—Ø›ÙNˆ	œİŠHOˆ\İ™\İ[]YˆÂˆ]\›İ™YHH›Ûİš›Ú[Šœ™\\™Y\\›ŠNÂˆ]Ù\ˆH\›İ™YKš›Ú[ŠŠNÂˆœÎ˜Ü™X]WÙ\—Ø[
+Ù\‹š›Ú[Š˜˜\ÙHŠJOÎÂˆœÎÜš]JÙ\‹š›Ú[Š˜˜\ÙHŠKš›Ú[Š›ÚËŠKŒN×ˆŠOÎÂˆ]İ[WØÛÛ^Ù\ˆH\›İ™YKš›Ú[Š\™Ù]ŠNÂˆœÎ˜Ü™X]WÙ\—Ø[
+	œİ[WØÛÛ^Ù\ŠOÎÂˆœÎÜš]Jˆİ[WØÛÛ^Ù\‹š›Ú[Šœ\›[Ü\[›™\‹\™XÛÜ™ËšœÛÛ›ŠKˆˆÈÈœØÚ[XWİ™\œÚ[Ûˆˆœ\›ØÛÜ™WÚ\›™\ÜËœ[›™\—Ü™XÛÜ™ŒH‹›[ÙHˆœ\œÙH‹œ]ˆœİ[K‹œİ]\Èˆ™˜Z[‹˜\ÜÙ\[Ûœ×Ü\ÜÙYŒ˜\ÜÙ\[Ûœ×İİ[ŒK˜XÚÙ]ˆœ\œÙWÜ™XÛİ™\H‹™š\œİÙXYÛ›ÜİXÈˆœİ[HŸHˆËˆ
+OÎÂˆ]ØÜš\H›Ü›X]JˆˆÈˆÈKØš[‹ÜÚœÙ]Y]BšYˆÈ‰ŞÌN‹__HˆH‹KY[\\İÈˆNÈ[‚ˆXÚÈ˜˜\ÙKÛÚË‚ˆ^]™šBÜ[—Ø›Ù_HˆÂˆ
+NÂˆœÎÜš]JÙ\‹š›Ú[Š•TÕŠKØÜš\
+OÎÂˆÚÊ\›İ™YJBˆB‚ˆÖØÙ™Ê[š^
+WBˆ›ˆÜš]WÙ˜ZÙWÜ[›™\Š›Ûİˆ	”]İ]\Îˆ[›™\”İ]\ÊHOˆ\İ™\İ[]YˆÂˆÜš]WÙ˜ZÙWÜ[›™\—İÚ]ØXÚÙ]
+›Ûİİ]\ËÛÛYJœ\œÙWÜ™XÛİ™\HŠJBˆB‚ˆÖØÙ™Ê[š^
+WBˆ›ˆÜš]WÙ˜ZÙWÙ^Xİ]WÜ[›™\Š›Ûİˆ	”]
+HOˆ\İ™\İ[]YˆÂˆ][›™\ˆH›Ûİš›Ú[Š™˜ZÙK\[›™\‹Y^Xİ]K\\ÜËœÚŠNÂˆ]›ÙHHˆÈˆÈKØš[‹ÜÚœÙ]Y]BœØÜš\H‰ÌN‹][šÛ›İÛ‹H‚›[ÙOH‰ÔT“ÓÔÒT“‘TÔ×ÓSÑN‹Y^Xİ]_H‚›ZÙ\ˆ\‰
+\›˜[YH‰T“ÓÔÒT“‘TÔ×ĞÓÓ•VŠH‚˜Ø\ÙH‰ØÜš\ˆ[‚ˆ
+˜˜\ÙKØÛÛ™
+Bˆš[ˆ	ÌK‹‰Âˆš[ˆ	ÛÚÈHHÜ\˜]Üˆ\W‰Âˆš[ˆ	ÛÚÈˆHÜ\˜]Üˆ™W‰Âˆš[ˆ	ÛÚÈÈHÜ\˜]ÜˆOW‰Âˆš[ˆ	ÛÚÈHÜ\˜]ÜˆOW‰Âˆš[ˆ	ŞÈœØÚ[XWİ™\œÚ[Ûˆˆœ\›ØÛÜ™WÚ\›™\ÜËœ[›™\—Ü™XÛÜ™ŒH‹›[ÙHˆ‰\È‹œ]ˆ‰\È‹œİ]\Èˆœ\ÜÈ‹˜\ÜÙ\[Ûœ×Ü\ÜÙY˜\ÜÙ\[Ûœ×İİ[˜XÚÙ]›[™š\œİÙXYÛ›ÜİXÈ›[W‰È‰[ÙHˆ‰ØÜš\ˆˆ‰T“ÓÔÒT“‘TÔ×ĞÓÓ•V‚ˆÎÂˆ
+˜˜\ÙKİÚ[K
+Bˆš[ˆ	ÌK‹‰Âˆš[ˆ	ÛÚÈW‰Âˆš[ˆ	ÛÚÈ—‰Âˆš[ˆ	ÛÚÈ×‰Âˆš[ˆ	ÛÚÈ‰Âˆš[ˆ	ŞÈœØÚ[XWİ™\œÚ[Ûˆˆœ\›ØÛÜ™WÚ\›™\ÜËœ[›™\—Ü™XÛÜ™ŒH‹›[ÙHˆ‰\È‹œ]ˆ‰\È‹œİ]\Èˆœ\ÜÈ‹˜\ÜÙ\[Ûœ×Ü\ÜÙY˜\ÜÙ\[Ûœ×İİ[˜XÚÙ]›[™š\œİÙXYÛ›ÜİXÈ›[W‰È‰[ÙHˆ‰ØÜš\ˆˆ‰T“ÓÔÒT“‘TÔ×ĞÓÓ•V‚ˆÎÂˆ
+˜˜\ÙKÛ[K
+Bˆš[ˆ	ÌK‹M—‰ÂˆOLBˆÚ[HÈ‰Hˆ[HMˆNÈÂˆš[ˆ	ÛÚÈ	\×‰È‰H‚ˆOI
+
+H
+ÈJJBˆÛ™Bˆš[ˆ	ŞÈœØÚ[XWİ™\œÚ[Ûˆˆœ\›ØÛÜ™WÚ\›™\ÜËœ[›™\—Ü™XÛÜ™ŒH‹›[ÙHˆ‰\È‹œ]ˆ‰\È‹œİ]\Èˆœ\ÜÈ‹˜\ÜÙ\[Ûœ×Ü\ÜÙYM‹˜\ÜÙ\[Ûœ×İİ[M‹˜XÚÙ]›[™š\œİÙXYÛ›ÜİXÈ›[W‰È‰[ÙHˆ‰ØÜš\ˆˆ‰T“ÓÔÒT“‘TÔ×ĞÓÓ•V‚ˆÎÂˆ
+˜˜\ÙKÜ]
+Bˆš[ˆ	ÌK‹Œ—‰Âˆš[ˆ	ÛÚÈHHX]Ú™YÙ^‰Âˆš[ˆ	ÛÚÈˆHX]Ú™YÙ^‰Âˆš[ˆ	ŞÈœØÚ[XWİ™\œÚ[Ûˆˆœ\›ØÛÜ™WÚ\›™\ÜËœ[›™\—Ü™XÛÜ™ŒH‹›[ÙHˆ‰\È‹œ]ˆ‰\È‹œİ]\Èˆœ\ÜÈ‹˜\ÜÙ\[Ûœ×Ü\ÜÙYŒ‹˜\ÜÙ\[Ûœ×İİ[Œ‹˜XÚÙ]›[™š\œİÙXYÛ›ÜİXÈ›[W‰È‰[ÙHˆ‰ØÜš\ˆˆ‰T“ÓÔÒT“‘TÔ×ĞÓÓ•V‚ˆÎÂˆ
+˜˜\ÙKİ˜[œÛ]K
+Bˆš[ˆ	ÌK‹ŒM×‰ÂˆOLˆ\ÜÙ\[ÛLBˆÚ[HÈ‰Hˆ[HMHNÈÂˆš[ˆ	ÛÚÈ	\ÈH˜]]™Wİ×İ[šXÛÙH	\×‰È‰\ÜÙ\[Ûˆˆ‰H‚ˆOI
+
+H
+ÈJJBˆ\ÜÙ\[ÛI
+
+\ÜÙ\[Ûˆ
+ÈJJBˆÛ™Bˆš[ˆ	ÛÚÈMÈH˜]]™Wİ×İ[šXÛÙHÙˆ\™ÙH[X™\—‰Âˆš[ˆ	ŞÈœØÚ[XWİ™\œÚ[Ûˆˆœ\›ØÛÜ™WÚ\›™\ÜËœ[›™\—Ü™XÛÜ™ŒH‹›[ÙHˆ‰\È‹œ]ˆ‰\È‹œİ]\Èˆœ\ÜÈ‹˜\ÜÙ\[Ûœ×Ü\ÜÙYŒMË˜\ÜÙ\[Ûœ×İİ[ŒMË˜XÚÙ]›[™š\œİÙXYÛ›ÜİXÈ›[W‰È‰[ÙHˆ‰ØÜš\ˆˆ‰T“ÓÔÒT“‘TÔ×ĞÓÓ•V‚ˆÎÂˆ
+ŠBˆš[ˆ	ÌK‹Œ—‰Âˆš[ˆ	ÛÚÈHHYˆ\W‰Âˆš[ˆ	ÛÚÈˆHYˆ™W‰Âˆš[ˆ	ŞÈœØÚ[XWİ™\œÚ[Ûˆˆœ\›ØÛÜ™WÚ\›™\ÜËœ[›™\—Ü™XÛÜ™ŒH‹›[ÙHˆ‰\È‹œ]ˆ‰\È‹œİ]\Èˆœ\ÜÈ‹˜\ÜÙ\[Ûœ×Ü\ÜÙYŒ‹˜\ÜÙ\[Ûœ×İİ[Œ‹˜XÚÙ]›[™š\œİÙXYÛ›ÜİXÈ›[W‰È‰[ÙHˆ‰ØÜš\ˆˆ‰T“ÓÔÒT“‘TÔ×ĞÓÓ•V‚ˆÎÂ™\ØXÂˆˆÎÂˆœÎÜš]J	œ[›™\‹›ÙJOÎÂˆÙ]Ù^Xİ]X›J	œ[›™\ŠOÎÂˆÚÊ[›™\ŠBˆB‚ˆÖØÙ™Ê[š^
+WBˆ›ˆÜš]WÙ˜ZÙWÜ[›™\—İÚ]ØXÚÙ]
+ˆ›Ûİˆ	”]ˆİ]\Îˆ[›™\”İ]\ËˆXÚÙ]ˆÜ[Û	œİ‹ˆ
+HOˆ\İ™\İ[]YˆÂˆ][›™\ˆHX]Úİ]\ÈÂˆ[›™\”İ]\Î”\ÜÈOˆ›Ûİš›Ú[Š™˜ZÙK\[›™\‹\\ÜËœÚŠKˆ[›™\”İ]\Î‘˜Z[Oˆ›Ûİš›Ú[Š™˜ZÙK\[›™\‹Y˜Z[œÚŠKˆNÂˆ]›ÙHHX]Úİ]\ÈÂˆ[›™\”İ]\Î”\ÜÈOˆÂˆˆÈˆÈKØš[‹ÜÚœÙ]Y]BœØÜš\H‰ÌN‹][šÛ›İÛ‹H‚›[ÙOH‰ÔT“ÓÔÒT“‘TÔ×ÓSÑN‹\\œÙ_H‚›ZÙ\ˆ\‰
+\›˜[YH‰T“ÓÔÒT“‘TÔ×ĞÓÓ•VŠH‚œš[ˆ	ÌK‹ŒW‰Âœš[ˆ	ÛÚÈHH	\È	\×‰È‰[ÙHˆ‰ØÜš\‚œš[ˆ	ŞÈœØÚ[XWİ™\œÚ[Ûˆˆœ\›ØÛÜ™WÚ\›™\ÜËœ[›™\—Ü™XÛÜ™ŒH‹›[ÙHˆ‰\È‹œ]ˆ‰\È‹œİ]\Èˆœ\ÜÈ‹˜\ÜÙ\[Ûœ×Ü\ÜÙYŒK˜\ÜÙ\[Ûœ×İİ[ŒK˜XÚÙ]›[™š\œİÙXYÛ›ÜİXÈ›[W‰È‰[ÙHˆ‰ØÜš\ˆˆ‰T“ÓÔÒT“‘TÔ×ĞÓÓ•V‚ˆˆÂˆ×Üİš[™Ê
+BˆBˆ[›™\”İ]\Î‘˜Z[OˆÂˆ]XÚÙ]ØÛÛ[Y[HXÚÙ][Ü˜\ÛÜŠ[šÛ›İÛˆŠNÂˆ]XÚÙ]ÚœÛÛˆHX]ÚXÚÙ]ÂˆÛÛYJXÚÙ]
+HOˆ›Ü›X]JˆÈˆØXÚÙ]HˆˆÊKˆ›Û™HOˆ›[‹×Üİš[™Ê
+KˆNÂˆ›Ü›X]JˆˆÈˆÈKØš[‹ÜÚœÙ]Y]BœØÜš\H‰ŞÌN‹][šÛ›İÛ‹_H‚›[ÙOH‰ŞÔT“ÓÔÒT“‘TÔ×ÓSÑN‹\\œÙ__H‚›ZÙ\ˆ\‰
+\›˜[YH‰T“ÓÔÒT“‘TÔ×ĞÓÓ•VŠH‚œš[ˆ	ÌK‹ŒW‰Âœš[ˆ	Û›İÚÈHH	\È	\×‰È‰[ÙHˆ‰ØÜš\‚œš[ˆ	ÈÈXÚÙ]ˆØXÚÙ]ØÛÛ[Y[W‰Âœš[ˆ	ÈÈš\œİXYÛ›ÜİXÎˆ^XİY^™\ÜÚ[Û—‰Âœš[ˆ	ŞŞÈœØÚ[XWİ™\œÚ[Ûˆˆœ\›ØÛÜ™WÚ\›™\ÜËœ[›™\—Ü™XÛÜ™ŒH‹›[ÙHˆ‰\È‹œ]ˆ‰\È‹œİ]\Èˆ™˜Z[‹˜\ÜÙ\[Ûœ×Ü\ÜÙYŒ˜\ÜÙ\[Ûœ×İİ[ŒK˜XÚÙ]ØXÚÙ]ÚœÛÛŸK™š\œİÙXYÛ›ÜİXÈˆ™^XİY^™\ÜÚ[ÛˆŸ_W‰È‰[ÙHˆ‰ØÜš\ˆˆ‰T“ÓÔÒT“‘TÔ×ĞÓÓ•V‚™^]BˆˆÂˆ
+BˆBˆNÂˆœÎÜš]J	œ[›™\‹›ÙJOÎÂˆÙ]Ù^Xİ]X›J	œ[›™\ŠOÎÂˆÚÊ[›™\ŠBˆBˆ›ˆİ\œ™[Ø]]Üš]WÙš^\™J
+HOˆ\İ™\İ[
+[\š[N•[\\‹İ\œ™[]]Üš]PÛÛ™šYÊOˆÂˆ][\H[\š[N[\\Š
+OÎÂˆ]›ÛİH[\œ]
+
+K×Ü]ØYŠ
+NÂˆœÎ˜Ü™X]WÙ\—Ø[
+›Ûİš›Ú[Š‹˜ÚKÜ\›XÛÜ™KZ\›™\ÜÈŠJOÎÂˆ][™WÜ™[]]™HH‹˜ÚKÜ\›XÛÜ™KZ\›™\ÜËØ˜\ÙKX[™KšœÛÛˆÂˆ]›İ[™\WÜ™[]]™HH‹˜ÚKÜ\›XÛÜ™KZ\›™\ÜËØ˜\ÙKX›İ[™\šY\ËšœÛÛˆÂˆ]™\ÜÜ™[]]™HH‹˜ÚKÜ\›XÛÜ™KZ\›™\ÜËØ˜\ÙK\™\ÜšœÛÛˆÂˆ]˜\Ù[[™WÜ™[]]™HH‹˜ÚKÜ\›XÛÜ™KZ\›™\ÜËØ˜\ÙKX˜\Ù[[™KšœÛÛˆÂˆ][™XYÙWÜ™[]]™HH‹˜ÚKÜ\›XÛÜ™KZ\›™\ÜËØ˜\ÙK[[™XYÙKšœÛÛˆÂˆ][™^Ü™[]]™HH‹˜ÚKÜ\›XÛÜ™KZ\›™\ÜËØİ\œ™[X]]Üš]KšœÛÛˆÂˆ]YX\İ\™[Y[ÜÚHH˜H‹œ™\X]
+
+NÂˆœÎÜš]J›Ûİš›Ú[Š›İ[™\WÜ™[]]™JKˆ–×WˆŠOÎÂˆœÎÜš]Jˆ›Ûİš›Ú[Š[™WÜ™[]]™JKˆÙ\™WÚœÛÛ×İ™X×Ü™]J	‘]šY[˜ÙP[™R[™^ÂˆØÚ[XWİ™\œÚ[Ûˆœ\›ØÛÜ™WÚ\›™\ÜË™]šY[˜ÙWØ[™KŒH‹š[Ê
+Kˆ[™WÚYˆ˜[™KX˜\ÙH‹š[Ê
+KˆÙ\šY\×ÚYˆœÙ[XİYX˜\ÙK\\›MK‹Œˆ‹š[Ê
+KˆX[šY™\İÚ\Úˆ›X[šY™\İX˜\ÙH‹š[Ê
+Kˆ™\ÜÚ]ÜWØÛÛ[Z]ˆœ™\ËX˜\ÙH‹š[Ê
+Kˆ›Ùš[Nˆ\›™\ÜÔ›Ùš[N˜\ÙKˆ[›™\ˆ\›™\ÜÔ[›™\•\İˆ\›Ü™\ÛÛ™YÜ™Yˆœ\›X˜\ÙH‹š[Ê
+Kˆ[™XYÙNˆ]šY[˜ÙP[™S[™XYÙHÂˆYX\İ\™[Y[ÜÚNˆYX\İ\™[Y[ÜÚK˜ÛÛ™J
+KˆX›XØ][Û—ÜÚNˆ›Û™Kˆ[™YÜÚNˆ›Û™KˆKˆ\Y˜XİÎˆ™XÈVÑ]šY[˜ÙP[™P\Y˜XİÂˆÚ[™ˆœÙ[X[X×Ø›İ[™\šY\È‹š[Ê
+KˆÙÚXØ[Ü]ˆ˜˜\ÙKX›İ[™\šY\ËšœÛÛˆ‹š[Ê
+KˆWKˆÛÛ\][™\ÜÎˆ]šY[˜ÙP[™PÛÛ\][™\ÜÈÂˆİ]\Îˆ˜ÛÛ\]H‹š[Ê
+Kˆ›Ü›X[^™YØ]]Üš]NˆYKˆKˆY™XŞXÛNˆœX›\ÚY‹š[Ê
+KˆJOËˆ
+OÎÂˆ][™WÙYÙ\İHÚLM—ÙYÙ\İØ]\Ê	™œÎœ™XY
+›Ûİš›Ú[Š[™WÜ™[]]™JJOÊNÂˆœÎÜš]J›Ûİš›Ú[Š™\ÜÜ™[]]™JKˆ››Ü›X[^™Y™\ÜˆŠOÎÂˆœÎÜš]Jˆ›Ûİš›Ú[Š˜\Ù[[™WÜ™[]]™JKˆÙ\™WÚœÛÛ×İ™X×Ü™]J	œÙ\™WÚœÛÛšœÛÛˆJÂˆœØÚ[XWİ™\œÚ[Ûˆˆœ\›ØÛÜ™WÚ\›™\ÜË˜ÛÛ\[WØ˜\Ù[[™KŒˆ‹ˆœ™\ÜÜØÚ[XWİ™\œÚ[Ûˆˆ•S—Ô‘TÔ•ÔĞÒSPWÕ‘T”ÒSÓ‹ˆœÙ\šY\×ÚYˆœÙ[XİYX˜\ÙK\\›MK‹Œˆ‹ˆ›X[šY™\İÚ\Úˆ›X[šY™\İX˜\ÙH‹ˆœ™\ÜÚ]ÜWØÛÛ[Z]ˆœ™\ËX˜\ÙH‹ˆœ\›Ü™\ÛÛ™YÜ™Yˆˆœ\›X˜\ÙH‹ˆœ™\\˜][Û—Ü™XÙZ\ÚYˆœ™\\™KX˜\ÙH‹ˆ˜ÛÛ\[\—ÜİXš™XİÚY[]Hˆ˜ÛÛ\[\‹X˜\ÙH‹ˆš[›ØØ][Û—ÚY[]Hˆš[›ØØ][Û‹X˜\ÙH‹ˆ˜Ø\Xš[]WÚY[]Hˆ˜Ø\Xš[]KX˜\ÙH‹ˆ™[š\›Û›Y[ÚY[]Hˆ™[š\›Û›Y[X˜\ÙH‹ˆœÛİ\˜ÙWÜ™\ÜÙYÙ\İˆÚLM—ÙYÙ\İØ]\Ê	™œÎœ™XY
+›Ûİš›Ú[Š™\ÜÜ™[]]™JJOÊKˆ˜XØÙ\Yİ˜[œÚ][Û—ÚYˆ[ˆ™]šY[˜ÙWØ[™Hˆ˜XØÙ\YX[™KX˜\ÙH‹ˆ›[ÙHˆ˜ÛÛ\[H‹ˆœ›Ùš[Hˆ˜˜\ÙH‹ˆœ[›™\ˆˆ\İ‹ˆ™š[WÛY[X™\œÚ\ˆ×Kˆ™š[\×İİ[ˆˆ™š[\×Ü\ÜÙYˆˆ™š[\×Ù˜Z[Yˆˆ\Ø\ÜÙ\[Ûœ×İİ[ˆˆ\Ø\ÜÙ\[Ûœ×Ü\ÜÙYˆˆ˜XÚÙ]ÈˆßKˆ™^XİYÙ˜Z[\™\Èˆ×Kˆ™š[WÜ™\İ[Èˆ×KˆœÙ[X[X×Ø›İ[™\šY\Èˆ×Kˆ˜›İ[™\WÜ™]\™[Y[Èˆ×BˆJJOËˆ
+OÎÂˆ][—ÙÚ]H\™ÜÎˆ	–Éœİ—_Oˆ\İ™\İ[İš[™ÏˆÂˆ]İ]]HÛÛ[X[™›™]Ê™Ú]ŠK˜\™Ê‹PÈŠK˜\™Ê	œ›Ûİ
+K˜\™ÜÊ\™ÜÊK›İ]]
+
+OÎÂˆYˆ[İ]]œİ]\ËœİXØÙ\ÜÊ
+HÂˆ˜Z[Jˆ™š^\™HÚ]ÛÛ[X[™ÎßH˜Z[YˆßH‹ˆ\™ÜËˆİš[™Î™œ›ÛWİ]ÛÜÜŞJ	›İ]]œİ\œŠKš[J
+Bˆ
+NÂˆBˆÚÊİš[™Î™œ›ÛWİ]
+İ]]œİİ]
+OËš[J
+K×Üİš[™Ê
+JBˆNÂˆ[—ÙÚ]
+	–Èš[š]‹‹K\]ZY]—JOÎÂˆ[—ÙÚ]
+	–È˜ÛÛ™šYÈ‹\Ù\‹™[XZ[‹˜ÛÛ\[\‹Z\›™\ÜĞ^[\Kš[˜[Y—JOÎÂˆ[—ÙÚ]
+	–È˜ÛÛ™šYÈ‹\Ù\‹›˜[YH‹ÛÛ\[\ˆ\›™\ÜÈš^\™H—JOÎÂˆœÎÜš]J›Ûİš›Ú[Š™š^\™KX˜\ÙKŠKˆ˜˜\ÙWˆŠOÎÂˆ[—ÙÚ]
+	–È˜Y‹™š^\™KX˜\ÙK—JOÎÂˆ[—ÙÚ]
+	–È˜ÛÛ[Z]‹‹K\]ZY]‹‹[H‹™š^\™H˜\ÙH—JOÎÂˆ]˜\ÙWÜÚHH[—ÙÚ]
+	–Èœ™]‹\\œÙH‹’PQ—JOÎÂˆ[—ÙÚ]
+	–È˜Y‹‹˜ÚKÜ\›XÛÜ™KZ\›™\ÜÈ—JOÎÂˆ[—ÙÚ]
+	–È˜ÛÛ[Z]‹‹K\]ZY]‹‹[H‹™š^\™H]šY[˜ÙH—JOÎÂˆ][™YÜÚHH[—ÙÚ]
+	–Èœ™]‹\\œÙH‹’PQ—JOÎÂˆ]]]]]Üš]]]™WØ\Y˜XİÈH•™YSX\›™]Ê
+NÂˆ›Üˆ][ˆØ[™WÜ™[]]™K›İ[™\WÜ™[]]™K™\ÜÜ™[]]™K˜\Ù[[™WÜ™[]]™WHÂˆ]]Üš]]]™WØ\Y˜XİÂˆš[œÙ\
+]×Üİš[™Ê
+KÚLM—ÙYÙ\İØ]\Ê	™œÎœ™XY
+›Ûİš›Ú[Š]
+JOÊJNÂˆBˆ][™XYÙHH[™Y[™XYÙHÂˆØÚ[XWİ™\œÚ[ÛˆS‘QÓS‘PQÑWÔĞÒSPWÕ‘T”ÒSÓ‹š[Ê
+KˆÙ\šY\×ÚYˆœÙ[XİYX˜\ÙK\\›MK‹Œˆ‹š[Ê
+Kˆ›Ùš[Nˆ\›™\ÜÔ›Ùš[N˜\ÙKˆX[šY™\İÚ\Úˆ›X[šY™\İX˜\ÙH‹š[Ê
+Kˆ]šY[˜ÙWØ[™WÚYˆ˜[™KX˜\ÙH‹š[Ê
+Kˆ]šY[˜ÙWØ[™WÙYÙ\İˆ[™WÙYÙ\İˆYX\İ\™[Y[ÜÚKˆX›XØ][Û—ÜÚNˆ[™YÜÚK˜ÛÛ™J
+Kˆ[™YÜÚNˆ[™YÜÚK˜ÛÛ™J
+KˆX›XØ][Û—Ø˜\ÙWÜÚNˆ˜\ÙWÜÚKˆ]]Üš]]]™WØ\Y˜XİËˆX›XØ][Û—Ü]Îˆ™XÈVÂˆ[™WÜ™[]]™Kš[Ê
+Kˆ›İ[™\WÜ™[]]™Kš[Ê
+Kˆ™\ÜÜ™[]]™Kš[Ê
+Kˆ˜\Ù[[™WÜ™[]]™Kš[Ê
+KˆKˆXØÙ\Yİ˜[œÚ][Û—ÚYˆ›Û™KˆXØÙ\YØ˜\Ù[[™WÙYÙ\İˆÛÛYJÚLM—ÙYÙ\İØ]\Ê	™œÎœ™XY
+ˆ›Ûİš›Ú[Š˜\Ù[[™WÜ™[]]™JKˆ
+OÊJKˆXØÙ\YØ˜\Ù[[™WÙ]šY[˜ÙWØ[™NˆÛÛYJ˜XØÙ\YX[™KX˜\ÙH‹š[Ê
+JKˆØœÙ\˜][Û—İ˜[œÚ][ÛˆÛÛ\]Xš[]U˜[œÚ][Û“›ĞÚ[™ÙKˆ™XÛÜ™\—ÜØÚ[XWİ™\œÚ[ÛˆS‘QÓS‘PQÑWÔĞÒSPWÕ‘T”ÒSÓ‹š[Ê
+KˆÜ™X]YÜ™X\ÛÛˆœÜİ[Y\™ÙH[™XYÙHš[™[™È‹š[Ê
+Kˆİ\\œÙY\Îˆ›Û™KˆNÂˆœÎÜš]J›Ûİš›Ú[Š[™XYÙWÜ™[]]™JKÙ\™WÚœÛÛ×İ™X×Ü™]J	›[™XYÙJOÊOÎÂˆ][™^Hİ\œ™[]]Üš]R[™^ÂˆØÚ[XWİ™\œÚ[ÛˆÕT”‘S•ĞUUÔ’UWÒS‘VÔĞÒSPWÕ‘T”ÒSÓ‹š[Ê
+Kˆ[šY\Îˆ™XÈVĞİ\œ™[]]Üš]Q[HÂˆÙ\šY\×ÚYˆ[™XYÙKœÙ\šY\×ÚY˜ÛÛ™J
+Kˆ›Ùš[Nˆ[™XYÙKœ›Ùš[KˆX[šY™\İÚ\Úˆ[™XYÙK›X[šY™\İÚ\Ú˜ÛÛ™J
+KˆØœÙ\˜][Û—Ø[™WÜ]ˆ[™WÜ™[]]™Kš[Ê
+KˆØœÙ\˜][Û—Ø[™WÚYˆ[™XYÙK™]šY[˜ÙWØ[™WÚY˜ÛÛ™J
+KˆØœÙ\˜][Û—Ø[™WÙYÙ\İˆ[™XYÙK™]šY[˜ÙWØ[™WÙYÙ\İ˜ÛÛ™J
+KˆØœÙ\˜][Û—İ˜[œÚ][Ûˆ[™XYÙK›ØœÙ\˜][Û—İ˜[œÚ][Û‹ˆXØÙ\YØ˜\Ù[[™WÜ]ˆÛÛYJ˜\Ù[[™WÜ™[]]™Kš[Ê
+JKˆXØÙ\YØ˜\Ù[[™WÙYÙ\İˆ[™XYÙK˜XØÙ\YØ˜\Ù[[™WÙYÙ\İ˜ÛÛ™J
+KˆXØÙ\YØ˜\Ù[[™WÙ]šY[˜ÙWØ[™Nˆ[™XYÙBˆ˜XØÙ\YØ˜\Ù[[™WÙ]šY[˜ÙWØ[™Bˆ˜ÛÛ™J
+KˆXØÙ\Yİ˜[œÚ][Û—ÚYˆ›Û™Kˆ[™YÛ[™XYÙWÜ]ˆ[™XYÙWÜ™[]]™Kš[Ê
+Kˆİ]\Îˆİ\œ™[]]Üš]Tİ]\Îİ\œ™[ˆÛZ[WØ›İ[™\Nˆœ\œÙWØÛÛ\[WØXØÙ\[˜ÙH‹š[Ê
+Kˆ[˜]˜Z[X›WÜ˜Z[Îˆ™XÈVÈ™^Xİ][Ûˆ‹š[Ê
+K˜İ\˜]YÙÛÛ‹š[Ê
+WKˆWKˆNÂˆœÎÜš]J›Ûİš›Ú[Š[™^Ü™[]]™JKÙ\™WÚœÛÛ×İ™X×Ü™]J	š[™^
+OÊOÎÂˆ[—ÙÚ]
+	–È˜Y‹‹˜ÚKÜ\›XÛÜ™KZ\›™\ÜÈ—JOÎÂˆ[—ÙÚ]
+	–È˜ÛÛ[Z]‹‹K\]ZY]‹‹[H‹™š^\™H]]Üš]H™XÛÜ™È—JOÎÂˆ]]]Üš]WÜÚHH[—ÙÚ]
+	–Èœ™]‹\\œÙH‹’PQ—JOÎÂˆÚÊ
+ˆ[\ˆİ\œ™[]]Üš]PÛÛ™šYÈÂˆ[™^ˆ›Ûİš›Ú[Š[™^Ü™[]]™JKˆ[™XYÙ\Îˆ™XÈVÜ›Ûİš›Ú[Š[™XYÙWÜ™[]]™JWKˆ™\ÜÚ]ÜWÜ›Ûİˆ›Ûİ×Ü]ØYŠ
+Kˆ[™YÜÚNˆ]]Üš]WÜÚKˆKˆ
+JBˆB‚ˆ›ˆÛÛ[Z]Ùš^\™WØ]]Üš]J›Ûİˆ	”]
+HOˆ\İ™\İ[İš[™ÏˆÂˆ][—ÙÚ]H\™ÜÎˆ	–Éœİ—_Oˆ\İ™\İ[İš[™ÏˆÂˆ]İ]]HÛÛ[X[™›™]Ê™Ú]ŠK˜\™Ê‹PÈŠK˜\™Ê›Ûİ
+K˜\™ÜÊ\™ÜÊK›İ]]
+
+OÎÂˆYˆ[İ]]œİ]\ËœİXØÙ\ÜÊ
+HÂˆ˜Z[Jˆ™š^\™HÚ]ÛÛ[X[™ÎßH˜Z[YˆßH‹ˆ\™ÜËˆİš[™Î™œ›ÛWİ]ÛÜÜŞJ	›İ]]œİ\œŠKš[J
+Bˆ
+NÂˆBˆÚÊİš[™Î™œ›ÛWİ]
+İ]]œİİ]
+OËš[J
+K×Üİš[™Ê
+JBˆNÂˆ[—ÙÚ]
+	–È˜Y‹‹˜ÚKÜ\›XÛÜ™KZ\›™\ÜÈ—JOÎÂˆ[—ÙÚ]
+	–È˜ÛÛ[Z]‹‹K\]ZY]‹‹[H‹™š^\™H]]Üš]H\]H—JOÎÂˆ[—ÙÚ]
+	–Èœ™]‹\\œÙH‹’PQ—JBˆB‚ˆÖİ\İBˆ›ˆİ\œ™[Ø]]Üš]Wİ˜[Y]\×Û[™YÛ[™XYÙWØ[™Ø\Y˜XİÙYÙ\İÊ
+HOˆ\İ™\İ[Âˆ]
+İ[\ÛÛ™šYÊHHİ\œ™[Ø]]Üš]WÙš^\™J
+OÎÂˆ˜[Y]WØİ\œ™[Ø]]Üš]JÛÛ™šYÊOÎÂˆÚÊ
+
+JBˆB‚ˆÖİ\İBˆ›ˆİ\œ™[Ø]]Üš]WÜ™Z™Xİ×İ[\\™YØ\Y˜XİÙYÙ\İ
+
+HOˆ\İ™\İ[Âˆ]
+İ[\]]ÛÛ™šYÊHHİ\œ™[Ø]]Üš]WÙš^\™J
+OÎÂˆ][™XYÙWÜ]HÛÛ™šYÂˆ›[™XYÙ\Âˆ™š\œİ
+
+Bˆ˜ÛÛ™Y
+
+Bˆ›Ú×ÛÜ—Ù[ÙJÛÛÜ—Ù^\™N™^\™N™^\™HJ™š^\™H\È›È[™XYÙHŠJOÎÂˆ]]][™XYÙNˆ[™Y[™XYÙHBˆ™XYÚœÛÛ—Ø]\Ê	™œÎœ™XY
+	›[™XYÙWÜ]
+OË›[™Y[™XYÙHŠOÎÂˆ]\Y˜XİH[™XYÙBˆ˜]]Üš]]]™WØ\Y˜XİÂˆ™Ù]Û]]
+‹˜ÚKÜ\›XÛÜ™KZ\›™\ÜËØ˜\ÙK\™\ÜšœÛÛˆŠBˆ›Ú×ÛÜ—Ù[ÙJÛÛÜ—Ù^\™N™^\™N™^\™HJ™š^\™H\È›È™\ÜYÙ\İŠJOÎÂˆ
+˜\Y˜XİH›Ü›X]JœÚLMßH‹˜È‹œ™\X]
+
+JNÂˆœÎÜš]J	›[™XYÙWÜ]Ù\™WÚœÛÛ×İ™X×Ü™]J	›[™XYÙJOÊOÎÂˆÛÛ™šYË›[™YÜÚHHÛÛ[Z]Ùš^\™WØ]]Üš]J	˜ÛÛ™šYËœ™\ÜÚ]ÜWÜ›Ûİ
+OÎÂˆ]\œ›ÜˆH˜[Y]WØİ\œ™[Ø]]Üš]JÛÛ™šYÊBˆ™\œŠ
+Bˆ›Ú×ÛÜ—Ù[ÙJÛÛÜ—Ù^\™N™^\™N™^\™HJ[\\™Y\Y˜XİYÙ\İØ\ÈXØÙ\YŠJOÎÂˆYˆY\œ›Ü‹×Üİš[™Ê
+K˜ÛÛZ[œÊ™Y™™\œÈ][™YÒHŠHÂˆ˜Z[J[\\™Y\Y˜XİYÙ\İ›ÙXÙY[ˆ[˜ÛX\ˆ\œ›ÜˆÙ\œ›ÜŸHŠNÂˆBˆÚÊ
+
+JBˆB‚ˆÖİ\İBˆ›ˆİ\œ™[Ø]]Üš]WÜ™Z™Xİ×Ù\XØ]WØİ\œ™[ÜÙ\šY\Ê
+HOˆ\İ™\İ[Âˆ]
+İ[\]]ÛÛ™šYÊHHİ\œ™[Ø]]Üš]WÙš^\™J
+OÎÂˆ][™^ˆİ\œ™[]]Üš]R[™^Bˆ™XYÚœÛÛ—Ø]\Ê	™œÎœ™XY
+	˜ÛÛ™šYËš[™^
+OË˜İ\œ™[X]]Üš]H[™^ŠOÎÂˆ]\XØ]HH[™^ˆ™[šY\Âˆ™š\œİ
+
+Bˆ˜ÛÛ™Y
+
+Bˆ›Ú×ÛÜ—Ù[ÙJÛÛÜ—Ù^\™N™^\™N™^\™HJ™š^\™H\È›Èİ\œ™[[HŠJOÎÂˆ]]]Ú[™ÙYH[™^ÂˆÚ[™ÙY™[šY\Ëœ\Ú
+\XØ]JNÂˆœÎÜš]J	˜ÛÛ™šYËš[™^Ù\™WÚœÛÛ×İ™X×Ü™]J	˜Ú[™ÙY
+OÊOÎÂˆÛÛ™šYË›[™YÜÚHHÛÛ[Z]Ùš^\™WØ]]Üš]J	˜ÛÛ™šYËœ™\ÜÚ]ÜWÜ›Ûİ
+OÎÂˆ]\œ›ÜˆH˜[Y]WØİ\œ™[Ø]]Üš]JÛÛ™šYÊBˆ™\œŠ
+Bˆ›Ú×ÛÜ—Ù[ÙJÛÛÜ—Ù^\™N™^\™N™^\™HJ™\XØ]Hİ\œ™[Ù\šY\ÈØ\ÈXØÙ\YŠJOÎÂˆYˆY\œ›Ü‹×Üİš[™Ê
+K˜ÛÛZ[œÊ™\XØ]Hİ\œ™[]]Üš]HŠHÂˆ˜Z[J™\XØ]Hİ\œ™[Ù\šY\È›ÙXÙY[ˆ[˜ÛX\ˆ\œ›ÜˆÙ\œ›ÜŸHŠNÂˆBˆÚÊ
+
+JBˆB‚ˆÖİ\İBˆ›ˆİ\œ™[Ø]]Üš]WÜ™Z™Xİ×İÜ›Û™×Û[™YÜÚJ
+HOˆ\İ™\İ[Âˆ]
+İ[\]]ÛÛ™šYÊHHİ\œ™[Ø]]Üš]WÙš^\™J
+OÎÂˆÛÛ™šYË›[™YÜÚHH™H‹œ™\X]
+
+NÂˆ]\œ›ÜˆH˜[Y]WØİ\œ™[Ø]]Üš]JÛÛ™šYÊBˆ™\œŠ
+Bˆ›Ú×ÛÜ—Ù[ÙJÛÛÜ—Ù^\™N™^\™N™^\™HJÜ›Û™È[™YÒHØ\ÈXØÙ\YŠJOÎÂˆYˆY\œ›Ü‹×Üİš[™Ê
+K˜ÛÛZ[œÊ›[™YÒHŠHÂˆ˜Z[JÜ›Û™È[™YÒH›ÙXÙY[ˆ[˜ÛX\ˆ\œ›ÜˆÙ\œ›ÜŸHŠNÂˆBˆÚÊ
+
+JBˆB‚ˆÖİ\İBˆ›ˆİ\œ™[Ø]]Üš]Wİ\Ù\×Û[™YÙÚ]Ø›Øœ×Û›İİÛÜšİ™YJ
+HOˆ\İ™\İ[Âˆ]
+İ[\ÛÛ™šYÊHHİ\œ™[Ø]]Üš]WÙš^\™J
+OÎÂˆœÎÜš]JˆÛÛ™šYËœ™\ÜÚ]ÜWÜ›Ûİš›Ú[Š‹˜ÚKÜ\›XÛÜ™KZ\›™\ÜËØ˜\ÙK\™\ÜšœÛÛˆŠKˆˆ˜Ú[™ÙY™\Üˆ‹ˆ
+OÎÂˆœÎÜš]JˆÛÛ™šYËœ™\ÜÚ]ÜWÜ›Ûİš›Ú[Š‹˜ÚKÜ\›XÛÜ™KZ\›™\ÜËØİ\œ™[X]]Üš]KšœÛÛˆŠKˆˆßWˆ‹ˆ
+OÎÂˆœÎÜš]JÛÛ™šYËœ™\ÜÚ]ÜWÜ›Ûİš›Ú[Š‹˜ÚKÜ\›XÛÜ™KZ\›™\ÜËØ˜\ÙK[[™XYÙKšœÛÛˆŠKˆßWˆŠOÎÂˆ˜[Y]WØİ\œ™[Ø]]Üš]JÛÛ™šYÊOÎÂˆÚÊ
+
+JBˆB‚ˆÖİ\İBˆ›ˆİ\œ™[Ø]]Üš]WØ[İÜ×Ú\İÜšXØ[ÛØœÙ\˜][Ûœ×Ù›Ü—ÛÛ™WÜÙ\šY\Ê
+HOˆ\İ™\İ[Âˆ]
+İ[\]]ÛÛ™šYÊHHİ\œ™[Ø]]Üš]WÙš^\™J
+OÎÂˆ][™^ˆİ\œ™[]]Üš]R[™^Bˆ™XYÚœÛÛ—Ø]\Ê	™œÎœ™XY
+	˜ÛÛ™šYËš[™^
+OË˜İ\œ™[X]]Üš]H[™^ŠOÎÂˆ]İ\œ™[H[™^ˆ™[šY\Âˆ™š\œİ
+
+Bˆ˜ÛÛ™Y
+
+Bˆ›Ú×ÛÜ—Ù[ÙJÛÛÜ—Ù^\™N™^\™N™^\™HJ™š^\™H\È›Èİ\œ™[[HŠJOÎÂˆ]İ\œ™[Û[™XYÙWÜ]HÛÛ™šYÂˆ›[™XYÙ\Âˆ™š\œİ
+
+Bˆ˜ÛÛ™Y
+
+Bˆ›Ú×ÛÜ—Ù[ÙJÛÛÜ—Ù^\™N™^\™N™^\™HJ™š^\™H\È›È[™XYÙHŠJOÎÂˆ]]]\İÜšXØ[Û[™XYÙNˆ[™Y[™XYÙHBˆ™XYÚœÛÛ—Ø]\Ê	™œÎœ™XY
+	˜İ\œ™[Û[™XYÙWÜ]
+OË›[™Y[™XYÙHŠOÎÂˆ\İÜšXØ[Û[™XYÙK›ØœÙ\˜][Û—İ˜[œÚ][ÛˆHÛÛ\]Xš[]U˜[œÚ][Û’\İÜšXØ[Âˆ\İÜšXØ[Û[™XYÙKœİ\\œÙY\ÈHÛÛYJ‹˜ÚKÜ\›XÛÜ™KZ\›™\ÜËØ˜\ÙK[[™XYÙKšœÛÛˆ‹š[Ê
+JNÂˆ]\İÜšXØ[Û[™XYÙWÜ]BˆÛÛ™šYËœ™\ÜÚ]ÜWÜ›Ûİš›Ú[Š‹˜ÚKÜ\›XÛÜ™KZ\›™\ÜËØ˜\ÙKZ\İÜšXØ[[[™XYÙKšœÛÛˆŠNÂˆœÎÜš]J	š\İÜšXØ[Û[™XYÙWÜ]Ù\™WÚœÛÛ×İ™X×Ü™]J	š\İÜšXØ[Û[™XYÙJOÊOÎÂˆ]]]\İÜšXØ[Hİ\œ™[˜ÛÛ™J
+NÂˆ\İÜšXØ[›ØœÙ\˜][Û—İ˜[œÚ][ÛˆHÛÛ\]Xš[]U˜[œÚ][Û’\İÜšXØ[Âˆ\İÜšXØ[›[™YÛ[™XYÙWÜ]Bˆ‹˜ÚKÜ\›XÛÜ™KZ\›™\ÜËØ˜\ÙKZ\İÜšXØ[[[™XYÙKšœÛÛˆ‹š[Ê
+NÂˆ\İÜšXØ[œİ]\ÈHİ\œ™[]]Üš]Tİ]\Î’\İÜšXØ[Âˆ][™^Hİ\œ™[]]Üš]R[™^ÂˆØÚ[XWİ™\œÚ[Ûˆ[™^œØÚ[XWİ™\œÚ[Û‹ˆ[šY\Îˆ™XÈVØİ\œ™[\İÜšXØ[KˆNÂˆœÎÜš]J	˜ÛÛ™šYËš[™^Ù\™WÚœÛÛ×İ™X×Ü™]J	š[™^
+OÊOÎÂˆÛÛ™šYË›[™XYÙ\Ëœ\Ú
+\İÜšXØ[Û[™XYÙWÜ]
+NÂˆ][—ÙÚ]H\™ÜÎˆ	–Éœİ—_Oˆ\İ™\İ[İš[™ÏˆÂˆ]İ]]BˆÛÛ[X[™›™]Ê™Ú]ŠK˜\™Ê‹PÈŠK˜\™Ê	˜ÛÛ™šYËœ™\ÜÚ]ÜWÜ›Ûİ
+K˜\™ÜÊ\™ÜÊK›İ]]
+
+OÎÂˆYˆ[İ]]œİ]\ËœİXØÙ\ÜÊ
+HÂˆ˜Z[Jˆ™š^\™HÚ]ÛÛ[X[™ÎßH˜Z[YˆßH‹ˆ\™ÜËˆİš[™Î™œ›ÛWİ]ÛÜÜŞJ	›İ]]œİ\œŠKš[J
+Bˆ
+NÂˆBˆÚÊİš[™Î™œ›ÛWİ]
+İ]]œİİ]
+OËš[J
+K×Üİš[™Ê
+JBˆNÂˆ[—ÙÚ]
+	–È˜Y‹‹˜ÚKÜ\›XÛÜ™KZ\›™\ÜÈ—JOÎÂˆ[—ÙÚ]
+	–È˜ÛÛ[Z]‹‹K\]ZY]‹‹[H‹™š^\™H\İÜšXØ[]]Üš]H—JOÎÂˆÛÛ™šYË›[™YÜÚHH[—ÙÚ]
+	–Èœ™]‹\\œÙH‹’PQ—JOÎÂˆ˜[Y]WØİ\œ™[Ø]]Üš]JÛÛ™šYÊOÎÂˆÚÊ
+
+JBˆB‚ˆÖİ\İBˆ›ˆİ\\œÙ\ÜÚ[Û—ÙÜ˜\Ü™Z™Xİ×ØŞXÛ\Ê
+HOˆ\İ™\İ[Âˆ]
+İ[\ÛÛ™šYÊHHİ\œ™[Ø]]Üš]WÙš^\™J
+OÎÂˆ]İ\œ™[Ü]HÛÛ™šYÂˆ›[™XYÙ\Âˆ™š\œİ
+
+Bˆ›Ú×ÛÜ—Ù[ÙJÛÛÜ—Ù^\™N™^\™N™^\™HJ™š^\™H\È›È[™XYÙHŠJOÎÂˆ]İ\œ™[ˆ[™Y[™XYÙHH™XYÚœÛÛ—Ø]\Ê	™œÎœ™XY
+İ\œ™[Ü]
+OË›[™Y[™XYÙHŠOÎÂˆ]]]š\œİHİ\œ™[˜ÛÛ™J
+NÂˆš\œİœİ\\œÙY\ÈHÛÛYJ˜ˆ‹š[Ê
+JNÂˆ]]]ÙXÛÛ™Hİ\œ™[ÂˆÙXÛÛ™œİ\\œÙY\ÈHÛÛYJ˜H‹š[Ê
+JNÂˆ]\œ›ÜˆH˜[Y]WÜİ\\œÙ\ÜÚ[Û—ÙÜ˜\
+	–Ê˜H‹š[Ê
+Kš\œİ
+K
+˜ˆ‹š[Ê
+KÙXÛÛ™
+WJBˆ™\œŠ
+Bˆ›Ú×ÛÜ—Ù[ÙJÛÛÜ—Ù^\™N™^\™N™^\™HJœİ\\œÙ\ÜÚ[ÛˆŞXÛHØ\ÈXØÙ\YŠJOÎÂˆYˆY\œ›Ü‹×Üİš[™Ê
+K˜ÛÛZ[œÊ˜ŞXÛHŠHÂˆ˜Z[Jœİ\\œÙ\ÜÚ[ÛˆŞXÛH›ÙXÙY[ˆ[˜ÛX\ˆ\œ›ÜˆÙ\œ›ÜŸHŠNÂˆBˆÚÊ
+
+JBˆB‚ˆÖİ\İBˆ›ˆİ\œ™[Ø]]Üš]WÜ™Z™Xİ×ÛYX\İ\™YØÛÙWÜX›XØ][Û—Ü]
+
+HOˆ\İ™\İ[Âˆ]\œ›ÜˆH˜[Y]WÜX›XØ][Û—Ü]Ê	–È˜Ü˜]\ËÜ\›\\œÙ\‹ÜÜ˜ËÛX‹œœÈ‹š[Ê
+WJBˆ™\œŠ
+Bˆ›Ú×ÛÜ—Ù[ÙJÛÛÜ—Ù^\™N™^\™N™^\™HJ›YX\İ\™YÛÙH]Ø\ÈXØÙ\YŠJOÎÂˆYˆY\œ›Ü‹×Üİš[™Ê
+K˜ÛÛZ[œÊ™]šY[˜ÙK[Û›H[İÛ\İŠHÂˆ˜Z[J›YX\İ\™YÛÙH]›ÙXÙY[ˆ[˜ÛX\ˆ\œ›ÜˆÙ\œ›ÜŸHŠNÂˆBˆÚÊ
+
+JBˆB‚ˆ›ˆÜš]WÚœÛÛ—Ü™XÙZ\ˆÙ\™N”Ù\šX[^™OŠ]ˆ	”]˜[YNˆ	•
+HOˆ\İ™\İ[ÂˆYˆ]ÛÛYJ\™[
+HH]œ\™[
+
+HÂˆœÎ˜Ü™X]WÙ\—Ø[
+\™[
+OÎÂˆBˆ]œÛÛˆHÙ\™WÚœÛÛ×Üİš[™×Ü™]J˜[YJOÎÂˆœÎÜš]J]›Ü›X]JÚœÛÛŸWˆŠJOÎÂˆÚÊ
+
+JBˆB‚ˆËËÈX]\šX[^™HHX›\ÚY]šY[˜ÙH[™HÛˆ\ÚÈÚÜÙHÛÛ\[H™XÙZ\[™ˆËËÈÙ[X[XËX›İ[™\H\Y˜XİØ\œHH[™IÜÈİXš™XİY[]KÛÂˆËËÈØšXYÙXH™XYÈHØ[YH]]Üš]HHÓHÙ\Ë‚ˆ›ˆÜš]WİšXYÙWØ[™J›Ûİˆ	”]™\Üˆ	”[”™\Ü
+HOˆ\İ™\İ[]YˆÂˆ][™WÙ\ˆH›Ûİš›Ú[Š˜[™\ÈŠKš›Ú[Š˜[™KLHŠNÂˆ]]][™^HØ[\WØ›İ[™\WØ[™J
+Kš[™^Âˆ[™^˜\Y˜XİÈH™XÈVÂˆ]šY[˜ÙP[™P\Y˜XİÂˆÚ[™ˆœÙ[X[X×Ø›İ[™\šY\È‹š[Ê
+KˆÙÚXØ[Ü]ˆœÙ[X[XËX›İ[™\šY\ËšœÛÛˆ‹š[Ê
+KˆKˆ]šY[˜ÙP[™P\Y˜XİÂˆÚ[™ˆ˜ÛÛ\[WÜ™\Ü‹š[Ê
+KˆÙÚXØ[Ü]ˆ˜ÛÛ\[K\™\ÜšœÛÛˆ‹š[Ê
+KˆKˆNÂˆ][™^Ü]H[™WÙ\‹š›Ú[Šš[™^šœÛÛˆŠNÂˆÜš]WÚœÛÛ—Ü™XÙZ\
+	š[™^Ü]	š[™^
+OÎÂˆÜš]WÚœÛÛ—Ü™XÙZ\
+ˆ	˜[™WÙ\‹š›Ú[ŠœÙ[X[XËX›İ[™\šY\ËšœÛÛˆŠKˆ	œ™\ÜœÙ[X[X×Ø›İ[™\šY\Ëˆ
+OÎÂˆÜš]WÚœÛÛ—Ü™XÙZ\
+	˜[™WÙ\‹š›Ú[Š˜ÛÛ\[K\™\ÜšœÛÛˆŠK™\Ü
+OÎÂˆÚÊ[™^Ü]
+BˆB‚ˆËËÈHİXİ\˜[H˜[YÛÛ\[H™XÙZ\[ˆÚXÚ›İX[šY™\İš[\È˜Z[ˆËËÈÚ]HØ[YHXÚÙ]ÛÈšXYÙH]\İ›ÙXÙH^XİHÛ™HÛ\İ\‹‚ˆ›ˆÛ×Ùš[WÜ\œÙWÙ˜Z[\™WÜ™\Ü
+
+HOˆ[”™\ÜÂˆ]]]™\ÜHØ[\WØÛÛ\[WÜ™\Ü
+
+NÂˆX\š×Ùš[WÙ˜Z[Y
+	›]]™\Ü˜˜\ÙKÛ^‹œ\œÙWÜ™XÛİ™\HŠNÂˆX\š×Ùš[WÙ˜Z[Y
+	›]]™\Ü˜˜\ÙKÛÚË‹œ\œÙWÜ™XÛİ™\HŠNÂˆ™\Ü˜XÚÙ]Ëš[œÙ\
+œ\œÙWÜ™XÛİ™\H‹š[Ê
+KŠNÂˆ™\ÜˆB‚ˆ›ˆšXYÙWØÛÛ™šYÊ[™Nˆ]Y‹İ]]ˆ]YŠHOˆšXYÙPÛÛ™šYÈÂˆšXYÙPÛÛ™šYÈÈ[™Kİ]]\İÜNˆ›Û™KÜš]WÚ\İÜNˆ˜[ÙKÚXÚ×Ú\İÜNˆ˜[ÙHBˆB‚ˆÖİ\İBˆ›ˆšXYÙWİÜš]\×ØÛ\İ\—Ø[™Ú\İÜWÜ™XÙZ\×Ù›Ü—ØWÙœ™\ÚØ[™J
+HOˆ\İ™\İ[Âˆ][\H[\š[N[\\Š
+OÎÂˆ]™\ÜHÛ×Ùš[WÜ\œÙWÙ˜Z[\™WÜ™\Ü
+
+NÂˆ][™HHÜš]WİšXYÙWØ[™J[\œ]
+
+K	œ™\Ü
+OÎÂˆ]İ]]H[\œ]
+
+Kš›Ú[ŠšXYÙHŠNÂˆ]\İÜHH[\œ]
+
+Kš›Ú[Šš\İÜHŠKš›Ú[Š˜Û\İ\‹Z\İÜKšœÛÛˆŠNÂ‚ˆšXYÙJšXYÙPÛÛ™šYÈÂˆ\İÜNˆÛÛYJ\İÜK˜ÛÛ™J
+JKˆÜš]WÚ\İÜNˆYKˆ‹šXYÙWØÛÛ™šYÊ[™Kİ]]˜ÛÛ™J
+JBˆJOÎÂ‚ˆ]Û\İ\œÎˆ˜Z[\™PÛ\İ\”™\ÜBˆÙ\™WÚœÛÛ™œ›ÛWÜİŠ	™œÎœ™XYİ×Üİš[™Êİ]]š›Ú[Š™˜Z[\™KXÛ\İ\œËšœÛÛˆŠJOÊOÎÂˆ\ÜÙ\Ù\HJÛ\İ\œË˜Û\İ\œË›[Š
+KJNÂˆ]Û\İ\ˆH	˜Û\İ\œË˜Û\İ\œÖÌNÂˆ\ÜÙ\Ù\HJÛ\İ\‹›ØØİ\œ™[˜ÙWØÛİ[ŠNÂˆ\ÜÙ\Ù\HJÛ\İ\‹˜Y™™XİYÙš[\Ë™XÈVÈ˜˜\ÙKÛ^‹˜˜\ÙKÛÚË—JNÂ‚ˆËÈHX\šÙİÛˆ™XÙZ\]\İØ\œHHØ[YHY[]H\ÈH”ÓÓˆ™XÙZ\ˆËÈ›İH™KY\š]™YÜˆ[˜Ø]Yİ[[X\K‚ˆ]Û\İ\—ÛX\šÙİÛˆHœÎœ™XYİ×Üİš[™Êİ]]š›Ú[Š™˜Z[\™KXÛ\İ\œË›YŠJOÎÂˆ\ÜÙ\JÛ\İ\—ÛX\šÙİÛ‹œİ\×İÚ]
+ˆÈÛÛ\[\ˆ˜Z[\™HÛ\İ\œ×ˆŠJNÂˆ\ÜÙ\JÛ\İ\—ÛX\šÙİÛ‹˜ÛÛZ[œÊ‹H[™Nˆ[™KLXˆŠJNÂˆ\ÜÙ\JÛ\İ\—ÛX\šÙİÛ‹˜ÛÛZ[œÊ	™›Ü›X]JˆÈÈÈßXˆ‹Û\İ\‹˜Û\İ\—ÚY
+JJNÂˆ\ÜÙ\JÛ\İ\—ÛX\šÙİÛ‹˜ÛÛZ[œÊ	™›Ü›X]J‹HXÚÙ]ˆßXˆ‹Û\İ\‹œÚYÛ˜]\™K˜XÚÙ]
+JJNÂˆ\ÜÙ\JÛ\İ\—ÛX\šÙİÛ‹˜ÛÛZ[œÊ‹HØØİ\œ™[˜Ù\Îˆ—ˆŠJNÂˆ\ÜÙ\JÛ\İ\—ÛX\šÙİÛ‹˜ÛÛZ[œÊ‹Hš[\Îˆ˜\ÙKÛ^˜\ÙKÛÚËˆŠJNÂˆ\ÜÙ\JÛ\İ\—ÛX\šÙİÛ‹˜ÛÛZ[œÊˆÈÈÙ[X[XËX›İ[™\HXØ[™Y]\×ˆŠJNÂ‚ˆ]\œÚ\İYˆ˜Z[\™PÛ\İ\’\İÜHBˆÙ\™WÚœÛÛ™œ›ÛWÜİŠ	™œÎœ™XYİ×Üİš[™Ê	š\İÜJOÊOÎÂˆ\ÜÙ\Ù\HJ\œÚ\İY™[šY\Ë›[Š
+KJNÂˆ\ÜÙ\Ù\HJ\œÚ\İY™[šY\ÖÌK˜Û\İ\—ÚYÛ\İ\‹˜Û\İ\—ÚY
+NÂˆ\ÜÙ\Ù\HJ\œÚ\İY™[šY\ÖÌK›ØØİ\œ™[˜ÙWØÛİ[ŠNÂ‚ˆËÈH\İÜHZ\œ›Üˆ[œÚYHHšXYÙHİ]]]\İX]ÚH\˜X›Hš[K‚ˆ]Z\œ›Ü™YHœÎœ™XYİ×Üİš[™Êİ]]š›Ú[Š˜Û\İ\‹Z\İÜKšœÛÛˆŠJOÎÂˆ\ÜÙ\Ù\HJZ\œ›Ü™YœÎœ™XYİ×Üİš[™Ê	š\İÜJOÊNÂ‚ˆ]\İÜWÛX\šÙİÛˆHœÎœ™XYİ×Üİš[™Êİ]]š›Ú[Š˜Û\İ\‹Z\İÜK›YŠJOÎÂˆ\ÜÙ\J\İÜWÛX\šÙİÛ‹œİ\×İÚ]
+ˆÈÛÛ\[\ˆ˜Z[\™HÛ\İ\ˆ\İÜWˆŠJNÂˆ\ÜÙ\J\İÜWÛX\šÙİÛ‹˜ÛÛZ[œÊ‹H[šY\ÎˆWˆŠJNÂˆ\ÜÙ\J\İÜWÛX\šÙİÛ‹˜ÛÛZ[œÊˆÈÈİ]\ÈÛİ[×—‹H[˜\ÜÚYÛ™YˆWˆŠJNÂˆ\ÜÙ\J\İÜWÛX\šÙİÛ‹˜ÛÛZ[œÊ	™›Ü›X]Jˆ‹HßNˆˆØØİ\œ™[˜ÙJÊKİ]\È[˜\ÜÚYÛ™YİÛ™\ˆ[˜\ÜÚYÛ™Yˆ‹ˆÛ\İ\‹˜Û\İ\—ÚYˆ
+JJNÂˆÚÊ
+
+JBˆB‚ˆÖİ\İBˆ›ˆšXYÙWÜ™\Ü×ØWØÛX[—ØÛÛ\[WÜ™XÙZ\İÚ]İ]Ú[™[[™×ØÛ\İ\œÊ
+HOˆ\İ™\İ[Âˆ][\H[\š[N[\\Š
+OÎÂˆ]™\ÜHØ[\WØÛÛ\[WÜ™\Ü
+
+NÂˆ][™HHÜš]WİšXYÙWØ[™J[\œ]
+
+K	œ™\Ü
+OÎÂˆ]İ]]H[\œ]
+
+Kš›Ú[ŠšXYÙHŠNÂ‚ˆšXYÙJšXYÙWØÛÛ™šYÊ[™Kİ]]˜ÛÛ™J
+JJOÎÂ‚ˆ]Û\İ\œÎˆ˜Z[\™PÛ\İ\”™\ÜBˆÙ\™WÚœÛÛ™œ›ÛWÜİŠ	™œÎœ™XYİ×Üİš[™Êİ]]š›Ú[Š™˜Z[\™KXÛ\İ\œËšœÛÛˆŠJOÊOÎÂˆ\ÜÙ\JÛ\İ\œË˜Û\İ\œËš\×Ù[\J
+JNÂˆ]X\šÙİÛˆHœÎœ™XYİ×Üİš[™Êİ]]š›Ú[Š™˜Z[\™KXÛ\İ\œË›YŠJOÎÂˆ\ÜÙ\JX\šÙİÛ‹˜ÛÛZ[œÊ“›È›ÙXİ˜Z[\™HÛ\İ\œÈÙ\™HØœÙ\™Y—ˆŠJNÂˆËÈÚ]İ]K]Üš]KZ\İÜHÈKXÚXÚËZ\İÜH›È\İÜH™XÙZ\\È›ÙXÙY‚ˆ\ÜÙ\J[İ]]š›Ú[Š˜Û\İ\‹Z\İÜKšœÛÛˆŠK™^\İÊ
+JNÂˆ\ÜÙ\J[İ]]š›Ú[Š˜Û\İ\‹Z\İÜK›YŠK™^\İÊ
+JNÂˆÚÊ
+
+JBˆB‚ˆ›ˆØ[\WÚ\İÜWÙ[JÛ\İ\—ÚYˆ	œİŠHOˆ˜Z[\™PÛ\İ\’\İÜQ[HÂˆ˜Z[\™PÛ\İ\’\İÜQ[HÂˆÛ\İ\—ÚYˆÛ\İ\—ÚY×Üİš[™Ê
+KˆÚYÛ˜]\™WÜØÚ[XWİ™\œÚ[ÛˆRST‘WĞÓTÕT—ÔĞÒSPWÕ‘T”ÒSÓ‹š[Ê
+KˆY[]WÜ]X[]Nˆ˜Z[\™PÛ\İ\’Y[]T]X[]N”›İš\Ú[Û˜[ˆÙ\šY\×ÚYˆœÙ\šY\ËLH‹š[Ê
+KˆX[šY™\İÚ\Úˆ›X[šY™\İLH‹š[Ê
+Kˆš\œİÜÙY[—ÜÙ\šY\×ÚYˆœÙ\šY\ËLH‹š[Ê
+Kˆš\œİÜÙY[—ÛX[šY™\İÚ\Úˆ›X[šY™\İLH‹š[Ê
+Kˆ\İÜÙY[—ÜÙ\šY\×ÚYˆœÙ\šY\ËLH‹š[Ê
+Kˆ\İÜÙY[—ÛX[šY™\İÚ\Úˆ›X[šY™\İLH‹š[Ê
+Kˆš\œİÜÙY[—Ø[™Nˆ˜[™KLH‹š[Ê
+Kˆ\İÜÙY[—Ø[™Nˆ˜[™KLH‹š[Ê
+Kˆİ\œ™[ØY™™XİYÙš[\Îˆ™XÈVÈ˜˜\ÙKÛÚË‹š[Ê
+WKˆ\İÜšXØ[ØY™™XİYÙš[\Îˆ™XÈVÈ˜˜\ÙKÛÚË‹š[Ê
+WKˆİ\œ™[Ù˜XİØÛ\ÜÙ\Îˆ™XÈVÈœ\œÙWÜ™XÛİ™\H‹š[Ê
+WKˆ˜XİØÛ\ÜÙ\Îˆ™XÈVÈœ\œÙWÜ™XÛİ™\H‹š[Ê
+WKˆİ\œ™[ÛÜÜİ\™˜XÙ\Îˆ™XÈVÈ™XYÛ›ÜİXÜÈ‹š[Ê
+WKˆÜÜİ\™˜XÙ\Îˆ™XÈVÈ™XYÛ›ÜİXÜÈ‹š[Ê
+WKˆØØİ\œ™[˜ÙWØÛİ[ˆKˆİ\œ™[ÜİYÙNˆÛÛYJ˜ÛÛ\[H‹š[Ê
+JKˆİ\œ™[Ø]]Üš]WØ[™NˆÛÛYJ˜[™KLH‹š[Ê
+JKˆØœÙ\™YÚ[—Øİ\œ™[Ø[™NˆYKˆXœÙ[˜ÙWÜÚ[˜ÙWØ[™Nˆ›Û™Kˆ™\Ù[˜ÙNˆ˜Z[\™PÛ\İ\’\İÜT™\Ù[˜ÙN“ØœÙ\™Yˆ[\XİYÛ^Y\ˆœ\œÙ\ˆ‹š[Ê
+KˆİÛ™\—Ú\ÜİYNˆ›Û™Kˆİ]\Îˆ˜Z[\™PÛ\İ\’\İÜTİ]\Î•[˜\ÜÚYÛ™Yˆ\™XİÜ™\›ÙXİ[Ûˆ˜[™OX[™KLHÙ\šY\Ï\Ù\šY\ËLH‹š[Ê
+Kˆ›ÜÜÙYİ˜[œÚ][Ûˆ˜ÛÛ\[\—ÜÙ[X[XÜÈ‹š[Ê
+KˆİÜØÛÛ™][Ûˆ˜Û\İ\ˆ›ÈÛ™Ù\ˆ™\›ÙXÙ\È‹š[Ê
+KˆXØÙ\YÙXÜ™YœÎˆ™XÎ›™]Ê
+Kˆ™\ÛÛ][Û—Üˆ›Û™Kˆ™\ÛÛ][Û—Ø[™Nˆ›Û™Kˆ˜[œÚ][ÛœÎˆ™XÎ›™]Ê
+KˆBˆB‚ˆÖİ\İBˆ›ˆšXYÙWÚ\İÜWÛÜ™\š[™×Ú\×ÜİX›WØ[™Ø›İ[™Yİ×İ[—Ù[šY\Ê
+HOˆ\İ™\İ[ÂˆËÈ™[™\—ØÛ\İ\—Ú\İÜWÛX\šÙİÛ˜›Û[İ\ÈHYÚ\İ[ØØİ\œ™[˜ÙBˆËÈÛ\İ\œËœ™XZÚ[™ÈY\ÈHÛ\İ\ˆY[™\İÈ][Üİ[‹ˆZ[BˆËÈ\İÜHÚÜÙH[œÙ\[ÛˆÜ™\ˆÛÛ˜YXİÈ›İ[\Ë‚ˆ]]][šY\ÈH™XÎ›™]Ê
+NÂˆ›Üˆ[™^[ˆ‹ŒLˆÂˆ]]][HHØ[\WÚ\İÜWÙ[J	™›Ü›X]J™˜Z[\™K^Ú[™^ŒŸHŠJNÂˆ[K›ØØİ\œ™[˜ÙWØÛİ[H[™^
+ÈNÂˆ[šY\Ëœ\Ú
+[JNÂˆBˆ]]]YYHØ[\WÚ\İÜWÙ[J™˜Z[\™KL]YYŠNÂˆYY›ØØİ\œ™[˜ÙWØÛİ[HLÂˆ[šY\Ëš[œÙ\
+YY
+NÂˆ]\İÜHH˜Z[\™PÛ\İ\’\İÜHÂˆØÚ[XWİ™\œÚ[ÛˆRST‘WĞÓTÕT—ÒTÕÔ–WÔĞÒSPWÕ‘T”ÒSÓ‹š[Ê
+Kˆ[šY\ËˆNÂ‚ˆ]X\šÙİÛˆH™[™\—ØÛ\İ\—Ú\İÜWÛX\šÙİÛŠ	š\İÜJNÂˆ]]™\˜YÙHHX\šÙİÛ‚ˆœÜ]
+ˆÈÈYÚ]™\˜YÙW—ˆŠBˆ›
+JBˆ›Ú×ÛÜ—Ù[ÙJÛÛÜ—Ù^\™N™^\™N™^\™HJ›Z\ÜÚ[™ÈYÚ[]™\˜YÙHÙXİ[ÛˆŠJOÂˆœÜ]
+—ˆÈÈÛ\İ\œÈŠBˆ›™^
+
+Bˆ[Ü˜\ÛÜ—ÙY˜][
+
+Bˆ›[™\Ê
+Bˆ™š[\Š[™_[[™Kš\×Ù[\J
+JBˆ˜ÛÛXİ™XÏÏŠ
+NÂ‚ˆ\ÜÙ\Ù\HJ]™\˜YÙK›[Š
+KL
+NÂˆËÈLˆØØİ\œ™[˜Ù\È\ÈHYH™]ÙY[ˆ˜Z[\™KL]YY[™˜Z[\™KLLXÂˆËÈH^XÛÙÜ˜\XØ[HÛX[\ˆÛ\İ\ˆYÚ[œË‚ˆ\ÜÙ\J]™\˜YÙVÌKœİ\×İÚ]
+‹H˜Z[\™KL]YYˆLˆØØİ\œ™[˜ÙJÊHŠJNÂˆ\ÜÙ\J]™\˜YÙVÌWKœİ\×İÚ]
+‹H˜Z[\™KLLNˆLˆØØİ\œ™[˜ÙJÊHŠJNÂˆ\ÜÙ\J]™\˜YÙVÌ—Kœİ\×İÚ]
+‹H˜Z[\™KLLˆLHØØİ\œ™[˜ÙJÊHŠJNÂˆËÈH›İ[™YÙXİ[Ûˆ]\İ›İXZÈHİË[ØØİ\œ™[˜ÙHZ[‚ˆ\ÜÙ\J[]™\˜YÙKš]\Š
+K˜[J[™_[™Kœİ\×İÚ]
+‹H˜Z[\™KLˆŠJJNÂˆËÈH[Û\İ\ˆÙXİ[Ûˆİ[™XÛÜ™È]™\H[K‚ˆ\ÜÙ\JX\šÙİÛ‹˜ÛÛZ[œÊ‹H[šY\ÎˆL×ˆŠJNÂˆ\ÜÙ\JX\šÙİÛ‹˜ÛÛZ[œÊˆÈÈÈ˜Z[\™KLˆŠJNÂˆÚÊ
+
+JBˆB‚ˆÖİ\İBˆ›ˆÛ\İ\—Ú\İÜWÛX\šÙİÛ—Ü™[™\œ×ØXœÙ[İ˜[œÚ][Ûœ×Ø[™ÛZ\ÜÚ[™×ÛİÛ™\œÊ
+HOˆ\İ™\İ[Âˆ]]][HHØ[\WÚ\İÜWÙ[J™˜Z[\™KXXœÙ[ŠNÂˆ[K›İÛ™\—Ú\ÜİYHH›Û™NÂˆ[K˜İ\œ™[ÜİYÙHH›Û™NÂˆ[K˜[œÚ][ÛœËœ\Ú
+˜Z[\™PÛ\İ\’\İÜU˜[œÚ][ÛˆÂˆ˜[œÚ][Û—ÚYˆ˜[œÚ][Û‹LH‹š[Ê
+Kˆœ›ÛWØÛ\İ\—ÚYˆ™˜Z[\™KXXœÙ[‹š[Ê
+Kˆ×ØÛ\İ\—ÚYˆ›Û™Kˆ×Ü™\Ù[˜ÙNˆ˜Z[\™PÛ\İ\’\İÜT™\Ù[˜ÙN”™\ÛÛ™Yˆœ›ÛWÜİYÙNˆ˜ÛÛ\[WÙY™™Xİ‹š[Ê
+Kˆ×ÜİYÙNˆ˜XœÙ[‹š[Ê
+Kˆ™Y›Ü™WÜÙ\šY\×ÚYˆœÙ\šY\ËLH‹š[Ê
+Kˆ™Y›Ü™WÛX[šY™\İÚ\Úˆ›X[šY™\İLH‹š[Ê
+Kˆ™Y›Ü™WØ[™WÚYˆ˜[™KLH‹š[Ê
+KˆY\—ÜÙ\šY\×ÚYˆœÙ\šY\ËLˆ‹š[Ê
+KˆY\—ÛX[šY™\İÚ\Úˆ›X[šY™\İLˆ‹š[Ê
+KˆY\—Ø[™WÚYˆ˜[™KLˆ‹š[Ê
+Kˆ›ÛÙ—Ü[ˆœ™\XÙHŞ[X›ÛXÈ™Y™\™[˜ÙHİÙ\š[™È‹š[Ê
+KˆİÜØÛÛ™][Ûˆ˜Û\İ\ˆ›ÈÛ™Ù\ˆ™\›ÙXÙ\È‹š[Ê
+Kˆ[\[Y[][Û—ÜˆÛÛYJˆÍLÌ‹š[Ê
+JKˆJNÂˆ]\İÜHH˜Z[\™PÛ\İ\’\İÜHÂˆØÚ[XWİ™\œÚ[ÛˆRST‘WĞÓTÕT—ÒTÕÔ–WÔĞÒSPWÕ‘T”ÒSÓ‹š[Ê
+Kˆ[šY\Îˆ™XÈVÙ[WKˆNÂ‚ˆ]X\šÙİÛˆH™[™\—ØÛ\İ\—Ú\İÜWÛX\šÙİÛŠ	š\İÜJNÂ‚ˆ\ÜÙ\JX\šÙİÛ‹˜ÛÛZ[œÊ‹HİÛ™\ˆ[˜\ÜÚYÛ™YˆŠJNÂˆ\ÜÙ\JX\šÙİÛ‹˜ÛÛZ[œÊ‹HİYÙNˆXœÙ[ˆŠJNÂˆ\ÜÙ\JX\šÙİÛ‹˜ÛÛZ[œÊˆ‹H˜[œÚ][Ûˆ˜[œÚ][Û‹LNˆ˜Z[\™KXXœÙ[OˆXœÙ[˜ÙOˆ
+ÛÛ\[WÙY™™XİOˆXœÙ[
+Wˆ‚ˆ
+JNÂˆÚÊ
+
+JBˆB‚ˆÖİ\İBˆ›ˆšXYÙWØÚXÚ×Ú\İÜWÜ™\]Z\™\×Ø[—Ù^\İ[™×Ú\İÜWÜ™XÙZ\
+
+HOˆ\İ™\İ[Âˆ][\H[\š[N[\\Š
+OÎÂˆ]™\ÜHÛ×Ùš[WÜ\œÙWÙ˜Z[\™WÜ™\Ü
+
+NÂˆ][™HHÜš]WİšXYÙWØ[™J[\œ]
+
+K	œ™\Ü
+OÎÂˆ]Z\ÜÚ[™ÈH[\œ]
+
+Kš›Ú[Šš\İÜHŠKš›Ú[Š˜Û\İ\‹Z\İÜKšœÛÛˆŠNÂ‚ˆ]\œŠ\œ›ÜŠHHšXYÙJšXYÙPÛÛ™šYÈÂˆ\İÜNˆÛÛYJZ\ÜÚ[™Ë˜ÛÛ™J
+JKˆÚXÚ×Ú\İÜNˆYKˆ‹šXYÙWØÛÛ™šYÊ[™K[\œ]
+
+Kš›Ú[ŠšXYÙHŠJBˆJH[ÙHÂˆ˜Z[J‹KXÚXÚËZ\İÜH]\İ˜Z[ÛÜÙYÚ[ˆ›È\İÜH™XÙZ\^\İÈŠNÂˆNÂˆËÈHXœÙ[™XÙZ\]\İ™H˜[YY\™XİKˆÚ[[HİXœİ]][™È[‚ˆËÈ[\H\İÜHÛİ[[ÛÈ˜Z[]›ÜˆHÜ›Û™È™X\ÛÛˆ8 %]Ûİ[ˆËÈ™\ÜHÛ\İ\‹Z\İÜHZ\ÛX]Ú[œİXYÙˆHZ\ÜÚ[™È™XÙZ\‚ˆ]Y\ÜØYÙHH\œ›Ü‹×Üİš[™Ê
+NÂˆ\ÜÙ\JˆY\ÜØYÙK˜ÛÛZ[œÊ	™›Ü›X]J˜Û\İ\ˆ\İÜHßH\ÈZ\ÜÚ[™È‹Z\ÜÚ[™Ë™\Ü^J
+JJKˆ[˜ÛX\ˆ\œ›ÜˆÙ\œ›ÜŸH‚ˆ
+NÂˆ\ÜÙ\J[Y\ÜØYÙK˜ÛÛZ[œÊ˜Û\İ\ˆ\İÜHÚXÚÈ˜Z[YŠK[˜ÛX\ˆ\œ›ÜˆÙ\œ›ÜŸHŠNÂˆÚÊ
+
+JBˆB‚ˆÖİ\İBˆ›ˆšXYÙWØÚXÚ×Ú\İÜWÜ™Z™Xİ×ØWÜİ[WÚ\İÜWÜ™XÙZ\
+
+HOˆ\İ™\İ[Âˆ][\H[\š[N[\\Š
+OÎÂˆ]™\ÜHÛ×Ùš[WÜ\œÙWÙ˜Z[\™WÜ™\Ü
+
+NÂˆ][™HHÜš]WİšXYÙWØ[™J[\œ]
+
+K	œ™\Ü
+OÎÂˆ]İ]]H[\œ]
+
+Kš›Ú[ŠšXYÙHŠNÂˆ]\İÜHH[\œ]
+
+Kš›Ú[Šš\İÜHŠKš›Ú[Š˜Û\İ\‹Z\İÜKšœÛÛˆŠNÂ‚ˆšXYÙJšXYÙPÛÛ™šYÈÂˆ\İÜNˆÛÛYJ\İÜK˜ÛÛ™J
+JKˆÜš]WÚ\İÜNˆYKˆ‹šXYÙWØÛÛ™šYÊ[™Kİ]]˜ÛÛ™J
+JBˆJOÎÂ‚ˆËÈ™K\[ˆHØ[YH[™HYØZ[œİH™XÙZ\ÚÜÙH˜Z[\™\È[İ™YÈBˆËÈY™™\™[XÚÙ]ˆH\œÚ\İYÛ\İ\ˆY[]H›ÈÛ™Ù\ˆ™\›ÙXÙ\Ë‚ˆ]]][İ™YHØ[\WØÛÛ\[WÜ™\Ü
+
+NÂˆX\š×Ùš[WÙ˜Z[Y
+	›]][İ™Y˜˜\ÙKÛ^‹š\—ÛİÙ\š[™ÈŠNÂˆX\š×Ùš[WÙ˜Z[Y
+	›]][İ™Y˜˜\ÙKÛÚË‹š\—ÛİÙ\š[™ÈŠNÂˆ[İ™Y˜XÚÙ]Ëš[œÙ\
+š\—ÛİÙ\š[™È‹š[Ê
+KŠNÂˆ][İ™YØ[™HHÜš]WİšXYÙWØ[™J[\œ]
+
+K	›[İ™Y
+OÎÂ‚ˆ]\œŠ\œ›ÜŠHHšXYÙJšXYÙPÛÛ™šYÈÂˆ\İÜNˆÛÛYJ\İÜJKˆÚXÚ×Ú\İÜNˆYKˆ‹šXYÙWØÛÛ™šYÊ[İ™YØ[™Kİ]]
+BˆJH[ÙHÂˆ˜Z[J‹KXÚXÚËZ\İÜH]\İ™Z™XİH\İÜH]›ÈÛ™Ù\ˆ™\›ÙXÙ\ÈŠNÂˆNÂˆ\ÜÙ\Jˆ\œ›Ü‹×Üİš[™Ê
+K˜ÛÛZ[œÊ˜Û\İ\ˆ\İÜHÚXÚÈ˜Z[YŠKˆ[˜ÛX\ˆ\œ›ÜˆÙ\œ›ÜŸH‚ˆ
+NÂˆÚÊ
+
+JBˆB‚ˆÖİ\İBˆ›ˆšXYÙWÜ™Z™Xİ×ØWØÛÛ\[WÜ™XÙZ\Ùœ›ÛWØWÙY™™\™[ÜİXš™Xİ
+
+HOˆ\İ™\İ[Âˆ][\H[\š[N[\\Š
+OÎÂˆ]]]™\ÜHÛ×Ùš[WÜ\œÙWÙ˜Z[\™WÜ™\Ü
+
+NÂˆ™\Ü˜ÛÛ[Z]H™Y™™\™[[YX\İ\™[Y[\ÚH‹š[Ê
+NÂˆ][™HHÜš]WİšXYÙWØ[™J[\œ]
+
+K	œ™\Ü
+OÎÂ‚ˆ]\œŠ\œ›ÜŠHHšXYÙJšXYÙWØÛÛ™šYÊ[™K[\œ]
+
+Kš›Ú[ŠšXYÙHŠJJH[ÙHÂˆ˜Z[JšXYÙH]\İ™Z™XİHÛÛ\[H™XÙZ\œ›ÛH[›İ\ˆİXš™XİŠNÂˆNÂˆ\ÜÙ\Jˆ\œ›Ü‹×Üİš[™Ê
+K˜ÛÛZ[œÊ˜ÛÛ\[H™\ÜY[]HÙ\È›İX]Ú]šY[˜ÙH[™HŠKˆ[˜ÛX\ˆ\œ›ÜˆÙ\œ›ÜŸH‚ˆ
+NÂˆÚÊ
+
+JBˆB‚ˆ›ˆÜš]WØ›İ[™\WÜ™YÚ\İJ]ˆ	”][NˆÙ[X[XĞ›İ[™\T™YÚ\İQ[JHOˆ\İ™\İ[ÂˆÜš]WØ›İ[™\WÜ™YÚ\İWÙ[šY\Ê]™XÈVÙ[WJBˆB‚ˆ›ˆÜš]WØ›İ[™\WÜ™YÚ\İWÙ[šY\Êˆ]ˆ	”]ˆ[šY\Îˆ™XÏÙ[X[XĞ›İ[™\T™YÚ\İQ[O‹ˆ
+HOˆ\İ™\İ[ÂˆÜš]WÚœÛÛ—Ü™XÙZ\
+ˆ]ˆ	”Ù[X[XĞ›İ[™\T™YÚ\İHÂˆØÚ[XWİ™\œÚ[ÛˆÑSPS•P×Ğ“ÕS‘T–WÔ‘QÒTÕ–WÔĞÒSPWÕ‘T”ÒSÓ‹š[Ê
+Kˆ[šY\ËˆKˆ
+BˆB‚ˆËËÈÜš]H[ˆXØÙ\YŒˆ˜\Ù[[™H›Üˆ™\Ü[™™]\›ˆ]È]‚ˆ›ˆÜš]WØXØÙ\YØ˜\Ù[[™J]ˆ	”]™\Üˆ	”[”™\Ü
+HOˆ\İ™\İ[Âˆ]˜\Ù[[™HH˜\Ù[[™WİŒ—Ùœ›ÛWÜ™\Ü
+ˆ™\Üˆ	œØ[\WÜ™YÚ\İWÜÙ\šY\Ê
+Kˆ	œØ[\WØ˜\Ù[[™WİŒ—ØÛÛ™šYÊ
+Kˆ›Û™Kˆ	–×Kˆ
+OÎÂˆÜš]WÚœÛÛ—Ü™XÙZ\
+]	˜˜\Ù[[™JBˆB‚ˆ›ˆ›İ[™\WØÛÛ™šYÊ™YÚ\İNˆ]Y‹İ]]ˆ]YŠHOˆ›İ[™\T™YÚ\İPÛÛ™šYÈÂˆ›İ[™\T™YÚ\İPÛÛ™šYÈÂˆ™YÚ\İKˆ˜\Ù[[™\Îˆ™XÎ›™]Ê
+Kˆ[™\Îˆ™XÎ›™]Ê
+Kˆİ]]ˆÛÛYJİ]]
+KˆÚXÚÎˆ˜[ÙKˆ™\ÜˆYKˆ\İÜšXØ[ˆ˜[ÙKˆBˆB‚ˆ›ˆ™XYØ›İ[™\WÜ™\Ü
+]ˆ	”]
+HOˆ\İ™\İ[Ù\™WÚœÛÛ•˜[YOˆÂˆÚÊÙ\™WÚœÛÛ™œ›ÛWÜİŠ	™œÎœ™XYİ×Üİš[™Ê]
+OÊOÊBˆB‚ˆÖİ\İBˆ›ˆ›İ[™\WÜ™YÚ\İWÜ™\ÜÚ\×ÜİXİ\˜[İÚ]İ]ØXØÙ\YØ˜\Ù[[™\Ê
+HOˆ\İ™\İ[Âˆ][\H[\š[N[\\Š
+OÎÂˆ]™YÚ\İHH[\œ]
+
+Kš›Ú[Šœ™YÚ\İKšœÛÛˆŠNÂˆÜš]WØ›İ[™\WÜ™YÚ\İJ	œ™YÚ\İKØ[\WÜ™YÚ\İWÙ[J
+JOÎÂˆ]İ]]H[\œ]
+
+Kš›Ú[Šœ™\ÜÈŠKš›Ú[Š˜›İ[™\K\™YÚ\İKšœÛÛˆŠNÂ‚ˆ›İ[™\šY\Ê›İ[™\WØÛÛ™šYÊ™YÚ\İKİ]]˜ÛÛ™J
+JJOÎÂ‚ˆ]™\ÜH™XYØ›İ[™\WÜ™\Ü
+	›İ]]
+OÎÂˆËÈÚ]İ]˜\Ù[[™\ÈH™YÚ\İHØ[ˆÛ›H™HÚXÚÙY›ÜˆÚ\K[™BˆËÈ™XÙZ\]\İØ^HÛÈ˜]\ˆ[ˆÛZ[Z[™Èİ\œ™[Y]šY[˜ÙH]]Üš]K‚ˆ\ÜÙ\Ù\HJ™\ÜÈ›[ÙH—KœİXİ\˜[ŠNÂˆ\ÜÙ\Ù\HJ™\ÜÈ˜[Y—KYJNÂˆ\ÜÙ\Ù\HJ™\ÜÈœ™YÚ\İWÙ[šY\È—KJNÂˆ\ÜÙ\Ù\HJ™\ÜÈ˜˜\Ù[[™\×ØÚXÚÙY—K˜\×Ø\œ˜^J
+K›X\
+™XÎ›[ŠKÛÛYJ
+JNÂˆ\ÜÙ\Ù\HJ™\ÜÈ˜[™\×ØÚXÚÙY—K˜\×Ø\œ˜^J
+K›X\
+™XÎ›[ŠKÛÛYJ
+JNÂˆ\ÜÙ\Ù\HJ™\ÜÈ˜Ûİ[È—VÈ˜WÙ\ÜÜÚ][Ûˆ—VÈ™Y™\œ™YÜ[[YH—KJNÂˆ\ÜÙ\Ù\HJ™\ÜÈ˜Ûİ[È—VÈ˜WÜİ]H—VÈ˜Xİ]™H—KJNÂˆ\ÜÙ\Ù\HJ™\ÜÈ˜Ûİ[È—VÈ˜WÛØÚ×ÜØÛÜH—VÈ››Û™H—KJNÂˆ\ÜÙ\Ù\HJ™\ÜÈ˜Ûİ[È—VÈ˜WÜ™\XÙ[Y[Üİ˜]YŞH—VÈš\—ÜÙ[X[XÜÈ—KJNÂˆ\ÜÙ\Ù\HJ™\ÜÈ˜Ûİ[È—VÈ˜WÜ›Ùš[H—VÈ˜˜\ÙH—KJNÂˆ\ÜÙ\Ù\HJ™\ÜÈ˜Ûİ[È—VÈ˜WÛİÛ™\—Ú\ÜİYH—VÈˆÍÍLÈ—KJNÂˆ\ÜÙ\Ù\HJ™\ÜÈ˜Ûİ[È—VÈ™İÛœİ™X[WÜİ]X×Ù˜Xİ×Ø›ØÚÙY—KJNÂˆÚÊ
+
+JBˆB‚ˆÖİ\İBˆ›ˆ›İ[™\WÜ™YÚ\İWÜ™\ÜÚ\×Øİ\œ™[İÚ[—İWØ˜\Ù[[™WØYÜ™Y\Ê
+HOˆ\İ™\İ[Âˆ][\H[\š[N[\\Š
+OÎÂˆ]™YÚ\İHH[\œ]
+
+Kš›Ú[Šœ™YÚ\İKšœÛÛˆŠNÂˆÜš]WØ›İ[™\WÜ™YÚ\İJ	œ™YÚ\İKØ[\WÜ™YÚ\İWÙ[J
+JOÎÂˆ]˜\Ù[[™HH[\œ]
+
+Kš›Ú[Š˜˜\Ù[[™KšœÛÛˆŠNÂˆ]]]™\ÜHØ[\WØÛÛ\[WÜ™\Ü
+
+NÂˆ™\ÜœÙ[X[X×Ø›İ[™\šY\Ëœ\Ú
+Ø[\WÜÙ[X[X×Ø›İ[™\J
+JNÂˆÜš]WØXØÙ\YØ˜\Ù[[™J	˜˜\Ù[[™K	œ™\Ü
+OÎÂˆ]İ]]H[\œ]
+
+Kš›Ú[Š˜›İ[™\K\™YÚ\İKšœÛÛˆŠNÂ‚ˆ›İ[™\šY\Ê›İ[™\T™YÚ\İPÛÛ™šYÈÂˆ˜\Ù[[™\Îˆ™XÈVØ˜\Ù[[™K˜ÛÛ™J
+WKˆ‹˜›İ[™\WØÛÛ™šYÊ™YÚ\İKİ]]˜ÛÛ™J
+JBˆJOÎÂ‚ˆ]™XÙZ\H™XYØ›İ[™\WÜ™\Ü
+	›İ]]
+OÎÂˆ\ÜÙ\Ù\HJ™XÙZ\È›[ÙH—K˜İ\œ™[ŠNÂˆ\ÜÙ\Ù\HJ™XÙZ\È˜[Y—KYJNÂˆ\ÜÙ\Ù\HJ™XÙZ\Èš[Û][ÛœÈ—K˜\×Ø\œ˜^J
+K›X\
+™XÎ›[ŠKÛÛYJ
+JNÂˆ\ÜÙ\Ù\HJ™XÙZ\È˜˜\Ù[[™\×ØÚXÚÙY—VÌK˜\Ù[[™K™\Ü^J
+K×Üİš[™Ê
+JNÂˆÚÊ
+
+JBˆB‚ˆÖİ\İBˆ›ˆ›İ[™\WÜ™YÚ\İWÜ™\ÜÜÙ\\˜]\×ÛZ\ÜÚ[™×ØXİ]™WØ›İ[™\šY\Ê
+HOˆ\İ™\İ[Âˆ][\H[\š[N[\\Š
+OÎÂˆ]™YÚ\İHH[\œ]
+
+Kš›Ú[Šœ™YÚ\İKšœÛÛˆŠNÂˆÜš]WØ›İ[™\WÜ™YÚ\İJ	œ™YÚ\İKØ[\WÜ™YÚ\İWÙ[J
+JOÎÂˆ]˜\Ù[[™HH[\œ]
+
+Kš›Ú[Š˜˜\Ù[[™KšœÛÛˆŠNÂˆËÈHXØÙ\Y˜\Ù[[™H›ÈÛ™Ù\ˆ[Z]ÈH™YÚ\İ\™Y›İ[™\K‚ˆÜš]WØXØÙ\YØ˜\Ù[[™J	˜˜\Ù[[™K	œØ[\WØÛÛ\[WÜ™\Ü
+
+JOÎÂˆ]İ]]H[\œ]
+
+Kš›Ú[Š˜›İ[™\K\™YÚ\İKšœÛÛˆŠNÂ‚ˆ]\œŠ\œ›ÜŠHH›İ[™\šY\Ê›İ[™\T™YÚ\İPÛÛ™šYÈÂˆ˜\Ù[[™\Îˆ™XÈVØ˜\Ù[[™WKˆ‹˜›İ[™\WØÛÛ™šYÊ™YÚ\İKİ]]˜ÛÛ™J
+JBˆJH[ÙHÂˆ˜Z[J˜[ˆXİ]™H›İ[™\HXœÙ[œ›ÛHœ™\Ú]šY[˜ÙH]\İ˜Z[ÛÜÙYŠNÂˆNÂˆ\ÜÙ\Jˆ\œ›Ü‹×Üİš[™Ê
+K˜ÛÛZ[œÊœÙ[X[XËX›İ[™\H™YÚ\İH˜[Y][Ûˆ˜Z[YŠKˆ[˜ÛX\ˆ\œ›ÜˆÙ\œ›ÜŸH‚ˆ
+NÂ‚ˆËÈH™XÙZ\\Èİ[Üš][‹[™›İ]\ÈHš[Û][ÛˆÈBˆËÈYXØ]YZ\ÜÚ[™ËXXİ]™HÚ[›™[˜]\ˆ[ˆX]š[™È][˜Û\ÜÚYšYY‚ˆ]™XÙZ\H™XYØ›İ[™\WÜ™\Ü
+	›İ]]
+OÎÂˆ\ÜÙ\Ù\HJ™XÙZ\È›[ÙH—K˜İ\œ™[ŠNÂˆ\ÜÙ\Ù\HJ™XÙZ\È˜[Y—K˜[ÙJNÂˆ]Z\ÜÚ[™ÈH™XÙZ\È›Z\ÜÚ[™×ØXİ]™H—Bˆ˜\×Ø\œ˜^J
+Bˆ›Ú×ÛÜ—Ù[ÙJÛÛÜ—Ù^\™N™^\™N™^\™HJ›Z\ÜÚ[™×ØXİ]™H\È›İ[ˆ\œ˜^HŠJOÎÂˆ\ÜÙ\Ù\HJZ\ÜÚ[™Ë›[Š
+KJNÂˆ\ÜÙ\JˆZ\ÜÚ[™ÖÌBˆ˜\×ÜİŠ
+Bˆš\×ÜÛÛYWØ[™
+š[Û][ÛŸš[Û][Û‹˜ÛÛZ[œÊœ[[YWÜŞ[X›ÛX×Ü™Y™\™[˜ÙHŠBˆ	‰ˆš[Û][Û‹˜ÛÛZ[œÊ˜XœÙ[œ›ÛHœ™\Ú˜\Ù[[™HŠJBˆ
+NÂˆ\ÜÙ\Ù\HJ™XÙZ\È™[Z][™×Ü™]\™Y—K˜\×Ø\œ˜^J
+K›X\
+™XÎ›[ŠKÛÛYJ
+JNÂˆÚÊ
+
+JBˆB‚ˆÖİ\İBˆ›ˆ›İ[™\WÜ™YÚ\İWÜ™\ÜÚÙY\×ÜÚ\Wİš[Û][Ûœ×Ûİ]ÛÙ—İWÛZ\ÜÚ[™×ØXİ]™WØÚ[›™[
+
+BˆOˆ\İ™\İ[Âˆ][\H[\š[N[\\Š
+OÎÂˆ]™YÚ\İHH[\œ]
+
+Kš›Ú[Šœ™YÚ\İKšœÛÛˆŠNÂˆËÈÛÈY[XØ[Xİ]™H[šY\È›ÙXÙHH
+™\XØ]JˆXİ]™KX›İ[™\BˆËÈš[Û][Û‹ˆ]Y[[ÛœÈ[ˆXİ]™H™YÚ\İH›İ[™\H]Ø^\È›İ[™ÂˆËÈX›İ]XœÙ[˜ÙKÛÈ]]\İİ^H[ˆHÙ[™\˜[š[Û][Ûˆ\İ‚ˆÜš]WØ›İ[™\WÜ™YÚ\İWÙ[šY\Êˆ	œ™YÚ\İKˆ™XÈVÜØ[\WÜ™YÚ\İWÙ[J
+KØ[\WÜ™YÚ\İWÙ[J
+WKˆ
+OÎÂˆ]İ]]H[\œ]
+
+Kš›Ú[Š˜›İ[™\K\™YÚ\İKšœÛÛˆŠNÂ‚ˆ]\œŠÊHH›İ[™\šY\Ê›İ[™\WØÛÛ™šYÊ™YÚ\İKİ]]˜ÛÛ™J
+JJH[ÙHÂˆ˜Z[J˜H\XØ]HXİ]™H™YÚ\İH›İ[™\H]\İ˜Z[ÛÜÙYŠNÂˆNÂ‚ˆ]™XÙZ\H™XYØ›İ[™\WÜ™\Ü
+	›İ]]
+OÎÂˆ\ÜÙ\Ù\HJ™XÙZ\È˜[Y—K˜[ÙJNÂˆ\ÜÙ\Ù\HJ™XÙZ\È›Z\ÜÚ[™×ØXİ]™H—K˜\×Ø\œ˜^J
+K›X\
+™XÎ›[ŠKÛÛYJ
+JNÂˆ\ÜÙ\Ù\HJ™XÙZ\È™[Z][™×Ü™]\™Y—K˜\×Ø\œ˜^J
+K›X\
+™XÎ›[ŠKÛÛYJ
+JNÂˆ\ÜÙ\J™XÙZ\Èš[Û][ÛœÈ—K˜\×Ø\œ˜^J
+Kš\×ÜÛÛYWØ[™
+š[Û][Ûœßš[Û][ÛœËš]\Š
+K˜[Jˆš[Û][ÛŸÂˆš[Û][Û‚ˆ˜\×ÜİŠ
+Bˆš\×ÜÛÛYWØ[™
+^^˜ÛÛZ[œÊ™\XØ]HXİ]™H™YÚ\İH›İ[™\HÙ^HŠJBˆBˆ
+JJNÂˆÚÊ
+
+JBˆB‚ˆÖİ\İBˆ›ˆ›İ[™\WÜ™YÚ\İWÜ™\ÜÜÙ\\˜]\×Ü™]\™YØ›İ[™\šY\×İ]Üİ[Ù[Z]
+
+HOˆ\İ™\İ[Âˆ][\H[\š[N[\\Š
+OÎÂˆ]™YÚ\İHH[\œ]
+
+Kš›Ú[Šœ™YÚ\İKšœÛÛˆŠNÂˆ]]][HHØ[\WÜ™YÚ\İWÙ[J
+NÂˆ[Kœİ]HHÙ[X[XĞ›İ[™\T™YÚ\İTİ]N”™]\™YÂˆ[Kœ™]\™[Y[ÜˆHÛÛYJˆÍLÌ‹š[Ê
+JNÂˆ[Kœ™]\™[Y[Ø[™HHÛÛYJ˜[™K\ÚLM™^[\H‹š[Ê
+JNÂˆÜš]WØ›İ[™\WÜ™YÚ\İJ	œ™YÚ\İK[JOÎÂˆ]˜\Ù[[™HH[\œ]
+
+Kš›Ú[Š˜˜\Ù[[™KšœÛÛˆŠNÂˆ]]]™\ÜHØ[\WØÛÛ\[WÜ™\Ü
+
+NÂˆ™\ÜœÙ[X[X×Ø›İ[™\šY\Ëœ\Ú
+Ø[\WÜÙ[X[X×Ø›İ[™\J
+JNÂˆÜš]WØXØÙ\YØ˜\Ù[[™J	˜˜\Ù[[™K	œ™\Ü
+OÎÂˆ]İ]]H[\œ]
+
+Kš›Ú[Š˜›İ[™\K\™YÚ\İKšœÛÛˆŠNÂ‚ˆ]\œŠÊHH›İ[™\šY\Ê›İ[™\T™YÚ\İPÛÛ™šYÈÂˆ˜\Ù[[™\Îˆ™XÈVØ˜\Ù[[™WKˆ‹˜›İ[™\WØÛÛ™šYÊ™YÚ\İKİ]]˜ÛÛ™J
+JBˆJH[ÙHÂˆ˜Z[J˜H™]\™Y›İ[™\H]İ[[Z]È]\İ˜Z[ÛÜÙYŠNÂˆNÂ‚ˆ]™XÙZ\H™XYØ›İ[™\WÜ™\Ü
+	›İ]]
+OÎÂˆ][Z][™ÈH™XÙZ\È™[Z][™×Ü™]\™Y—Bˆ˜\×Ø\œ˜^J
+Bˆ›Ú×ÛÜ—Ù[ÙJÛÛÜ—Ù^\™N™^\™N™^\™HJ™[Z][™×Ü™]\™Y\È›İ[ˆ\œ˜^HŠJOÎÂˆ\ÜÙ\Ù\HJ[Z][™Ë›[Š
+KJNÂˆ\ÜÙ\Jˆ[Z][™ÖÌBˆ˜\×ÜİŠ
+Bˆš\×ÜÛÛYWØ[™
+š[Û][ÛŸš[Û][Û‹˜ÛÛZ[œÊœİ[[Z]È[ˆ˜\Ù[[™HŠJBˆ
+NÂˆ\ÜÙ\Ù\HJ™XÙZ\È›Z\ÜÚ[™×ØXİ]™H—K˜\×Ø\œ˜^J
+K›X\
+™XÎ›[ŠKÛÛYJ
+JNÂˆ\ÜÙ\Ù\HJ™XÙZ\È˜Ûİ[È—VÈ˜WÜİ]H—VÈœ™]\™Y—KJNÂˆÚÊ
+
+JBˆB‚ˆÖİ\İBˆ›ˆ›İ[™\WÜ™YÚ\İWÚ\İÜšXØ[Û[ÙWØXØÙ\×Ø›İ[™\šY\×ØXœÙ[Ùœ›ÛWİWØ˜\Ù[[™J
+HOˆ\İ™\İ[ˆÂˆ][\H[\š[N[\\Š
+OÎÂˆ]™YÚ\İHH[\œ]
+
+Kš›Ú[Šœ™YÚ\İKšœÛÛˆŠNÂˆÜš]WØ›İ[™\WÜ™YÚ\İJ	œ™YÚ\İKØ[\WÜ™YÚ\İWÙ[J
+JOÎÂˆ]˜\Ù[[™HH[\œ]
+
+Kš›Ú[Š˜˜\Ù[[™KšœÛÛˆŠNÂˆÜš]WØXØÙ\YØ˜\Ù[[™J	˜˜\Ù[[™K	œØ[\WØÛÛ\[WÜ™\Ü
+
+JOÎÂˆ]İ]]H[\œ]
+
+Kš›Ú[Š˜›İ[™\K\™YÚ\İKšœÛÛˆŠNÂ‚ˆËÈ\İÜšXØ[™\^HÛÛ\\™\È™YÚ\İHÚ\H[™Y[]H]]\İ›İˆËÈ[X[™]H™]Z[™Y\İÜšXØ[›İ[™\Hİ[[Z]ÈÙ^K‚ˆ›İ[™\šY\Ê›İ[™\T™YÚ\İPÛÛ™šYÈÂˆ˜\Ù[[™\Îˆ™XÈVØ˜\Ù[[™WKˆ\İÜšXØ[ˆYKˆ‹˜›İ[™\WØÛÛ™šYÊ™YÚ\İKİ]]˜ÛÛ™J
+JBˆJOÎÂ‚ˆ]™XÙZ\H™XYØ›İ[™\WÜ™\Ü
+	›İ]]
+OÎÂˆ\ÜÙ\Ù\HJ™XÙZ\È›[ÙH—Kš\İÜšXØ[ŠNÂˆ\ÜÙ\Ù\HJ™XÙZ\È˜[Y—KYJNÂˆ\ÜÙ\Ù\HJ™XÙZ\È›Z\ÜÚ[™×ØXİ]™H—K˜\×Ø\œ˜^J
+K›X\
+™XÎ›[ŠKÛÛYJ
+JNÂˆÚÊ
+
+JBˆB‚ˆÖİ\İBˆ›ˆ›İ[™\WÜ™YÚ\İWÜ™\ÜÜ™XÛÜ™×İ[œ™XYX›WØ˜\Ù[[™\×Ø\×İš[Û][ÛœÊ
+HOˆ\İ™\İ[Âˆ][\H[\š[N[\\Š
+OÎÂˆ]™YÚ\İHH[\œ]
+
+Kš›Ú[Šœ™YÚ\İKšœÛÛˆŠNÂˆÜš]WØ›İ[™\WÜ™YÚ\İJ	œ™YÚ\İKØ[\WÜ™YÚ\İWÙ[J
+JOÎÂˆ]˜\Ù[[™HH[\œ]
+
+Kš›Ú[Š››İXKX˜\Ù[[™KšœÛÛˆŠNÂˆœÎÜš]J	˜˜\Ù[[™KÈ›İœÛÛˆŠOÎÂˆ]İ]]H[\œ]
+
+Kš›Ú[Š˜›İ[™\K\™YÚ\İKšœÛÛˆŠNÂ‚ˆ]\œŠÊHH›İ[™\šY\Ê›İ[™\T™YÚ\İPÛÛ™šYÈÂˆ˜\Ù[[™\Îˆ™XÈVØ˜\Ù[[™K˜ÛÛ™J
+WKˆ‹˜›İ[™\WØÛÛ™šYÊ™YÚ\İKİ]]˜ÛÛ™J
+JBˆJH[ÙHÂˆ˜Z[J˜[ˆ[™XÛÙX›H˜\Ù[[™H]\İ˜Z[ÛÜÙYŠNÂˆNÂ‚ˆ]™XÙZ\H™XYØ›İ[™\WÜ™\Ü
+	›İ]]
+OÎÂˆËÈ[ˆ[œ™XYX›H˜\Ù[[™H\ÈHš[Û][Û‹›İHÚ[[HÚÚ\Y[œ]ˆËÈ[™]]\İ›İ™H›Û[İYÈİ\œ™[Y]šY[˜ÙH]]Üš]K‚ˆ\ÜÙ\Ù\HJ™XÙZ\È›[ÙH—KœİXİ\˜[ŠNÂˆ\ÜÙ\Ù\HJ™XÙZ\È˜[Y—K˜[ÙJNÂˆ\ÜÙ\Jˆ™XÙZ\Èš[Û][ÛœÈ—VÌBˆ˜\×ÜİŠ
+Bˆš\×ÜÛÛYWØ[™
+š[Û][ÛŸš[Û][Û‹˜ÛÛZ[œÊ››İXKX˜\Ù[[™KšœÛÛˆŠJBˆ
+NÂˆÚÊ
+
+JBˆB‚ˆÖİ\İBˆ›ˆ^XİÜ™]\™[Y[Ü™\]Z\™\×Ù]™\WÚY[]WÙšY[İ×ÛX]Ú
+
+HOˆ\İ™\İ[Âˆ]˜\Ù[[™HH˜\Ù[[™WİŒ—Ùœ›ÛWÜ™\Ü
+ˆ	œØ[\WØÛÛ\[WÜ™\Ü
+
+Kˆ	œØ[\WÜ™YÚ\İWÜÙ\šY\Ê
+Kˆ	œØ[\WØ˜\Ù[[™WİŒ—ØÛÛ™šYÊ
+Kˆ›Û™Kˆ	–×Kˆ
+OÎÂˆ]]][HHØ[\WÜ™YÚ\İWÙ[J
+NÂˆ[Kœİ]HHÙ[X[XĞ›İ[™\T™YÚ\İTİ]N”™]\š[™ÎÂ‚ˆËÈÚ]İ]H™]\™[Y[[™H™Y™\™[˜ÙH\™H\È›È^Xİ]šY[˜ÙK‚ˆ\ÜÙ\JZ\×Ù^XİÜ™]\™[Y[
+	˜˜\Ù[[™K	™[JJNÂ‚ˆ[Kœ™]\™[Y[Ø[™HHÛÛYJ˜[™K\ÚLM™^[\H‹š[Ê
+JNÂˆ]™]\™[Y[H›İ[™\T™]\™[Y[ÂˆØÚ[XWİ™\œÚ[Ûˆ“ÕS‘T–WÔ‘UT‘SQS•ÔĞÒSPWÕ‘T”ÒSÓ‹š[Ê
+Kˆ]ˆ[Kœ]˜ÛÛ™J
+KˆYˆ[KšY˜ÛÛ™J
+KˆÛİ\˜ÙWÜİ\ˆ[KœÛİ\˜ÙWÜÜ[‹œİ\ˆÛİ\˜ÙWÙ[™ˆ[KœÛİ\˜ÙWÜÜ[‹™[™ˆÙ\šY\×ÚYˆ˜\Ù[[™KœÙ\šY\×ÚY˜ÛÛ™J
+KˆX[šY™\İÚ\Úˆ˜\Ù[[™K›X[šY™\İÚ\Ú˜ÛÛ™J
+KˆYX\İ\™[Y[ÜÚNˆ˜\Ù[[™Kœ™\ÜÚ]ÜWØÛÛ[Z]˜ÛÛ™J
+KˆÛİ\˜ÙWÜ™\ÜÙYÙ\İˆ˜\Ù[[™KœÛİ\˜ÙWÜ™\ÜÙYÙ\İ˜ÛÛ™J
+Kˆ˜[œÚ][Û—ÚYˆ˜[œÚ][Û‹LH‹š[Ê
+Kˆ™\XÙ[Y[Ú\ÜİYNˆˆÍLM‹š[Ê
+Kˆ]šY[˜ÙWØ[™Nˆ˜[™K\ÚLM™^[\H‹š[Ê
+KˆNÂˆ]]]XØÙ\YH˜\Ù[[™K˜ÛÛ™J
+NÂˆXØÙ\Y˜›İ[™\WÜ™]\™[Y[ÈH™XÈVÜ™]\™[Y[˜ÛÛ™J
+WNÂˆ\ÜÙ\J\×Ù^XİÜ™]\™[Y[
+	˜XØÙ\Y	™[JJNÂ‚ˆËÈ]™\HY[]HšY[\XÚ\]\ÎˆÙXZÙ[š[™È[HÛ™HÙˆ[H]\İˆËÈİÜH™]\™[Y[œ›ÛHÛİ[[™È\È^Xİ]šY[˜ÙK‚ˆ]]]][ÛœÎˆ™XÏ›Ş[ˆ›Š	›]]›İ[™\T™]\™[Y[
+OˆH™XÈVÂˆ›Ş›™]Ê˜[Y_˜[YKœ]H˜˜\ÙKÛİ\‹‹š[Ê
+JKˆ›Ş›™]Ê˜[Y_˜[YKšYH›İ\—Ø›İ[™\H‹š[Ê
+JKˆ›Ş›™]Ê˜[Y_˜[YKœÛİ\˜ÙWÜİ\H˜[YKœÛİ\˜ÙWÜİ\œØ]\˜][™×ØY
+JJKˆ›Ş›™]Ê˜[Y_˜[YKœÛİ\˜ÙWÙ[™H˜[YKœÛİ\˜ÙWÙ[™œØ]\˜][™×ØY
+JJKˆ›Ş›™]Ê˜[Y_˜[YKœÙ\šY\×ÚYHœÙ\šY\Ë[İ\ˆ‹š[Ê
+JKˆ›Ş›™]Ê˜[Y_˜[YK›X[šY™\İÚ\ÚH›X[šY™\İ[İ\ˆ‹š[Ê
+JKˆ›Ş›™]Ê˜[Y_˜[YK›YX\İ\™[Y[ÜÚHHœÚK[İ\ˆ‹š[Ê
+JKˆ›Ş›™]Ê˜[Y_˜[YKœÛİ\˜ÙWÜ™\ÜÙYÙ\İHœÚLM›İ\ˆ‹š[Ê
+JKˆ›Ş›™]Ê˜[Y_˜[YK™]šY[˜ÙWØ[™HH˜[™K\ÚLM›İ\ˆ‹š[Ê
+JKˆNÂˆ›Üˆ
+[™^]]]JH[ˆ]]][ÛœËš]\Š
+K™[[Y\˜]J
+HÂˆ]]]ÙXZÙ[™YH™]\™[Y[˜ÛÛ™J
+NÂˆ]]]J	›]]ÙXZÙ[™Y
+NÂˆ]]]Ø[™Y]HH˜\Ù[[™K˜ÛÛ™J
+NÂˆØ[™Y]K˜›İ[™\WÜ™]\™[Y[ÈH™XÈVİÙXZÙ[™YNÂˆ\ÜÙ\JˆZ\×Ù^XİÜ™]\™[Y[
+	˜Ø[™Y]K	™[JKˆ›]]][ÛˆÚ[™^HØ\ÈXØÙ\Y\È^Xİ™]\™[Y[]šY[˜ÙH‚ˆ
+NÂˆBˆÚÊ
+
+JBˆB‚ˆÖİ\İBˆ›ˆ™\\™WÜ™Y—İ˜[Y][Û—Ü™Z™Xİ×Ù[\WØ[™Ü]ÛZÙWÜ™YœÊ
+HOˆ\İ™\İ[Âˆ˜[Y]WÜ™\\™WÜ™YŠK‹ŒŠOÎÂˆ˜[Y]WÜ™\\™WÜ™YŠœ™YœËÚXYËØ›XYŠOÎÂ‚ˆ›Üˆ™Z™XİY[ˆÈˆ‹ˆ‹‹‹‹Ù]ËÜ\ÜİÙ‹˜›XYË‹‹Ë‹ˆ‹Ú[™İÜ×]—HÂˆ]\œŠ\œ›ÜŠHH˜[Y]WÜ™\\™WÜ™YŠ™Z™XİY
+H[ÙHÂˆ˜Z[Jœ™\\™HK\™YˆÜ™Z™XİYßH]\İ™H™Z™XİYŠNÂˆNÂˆ\ÜÙ\Jˆ\œ›Ü‹×Üİš[™Ê
+K˜ÛÛZ[œÊœ\›XÛÜ™KZ\›™\ÜÈ™\\™HK\™YˆŠKˆ[˜ÛX\ˆ\œ›Üˆ›ÜˆÜ™Z™XİYßNˆÙ\œ›ÜŸH‚ˆ
+NÂˆBˆÚÊ
+
+JBˆB‚ˆÖİ\İBˆ›ˆ™\\™WÜ]×ÜØ[š]^™WÜ™Y—ØÚ\˜Xİ\œ×Ú[×ØWÜÚ[™ÛWØÛÛ\Û™[
+
+HÂˆ\ÜÙ\Ù\HJØY™WÜ]ØÛÛ\Û™[
+œ™YœËÚXYËØ›XYŠKœ™YœËZXYËX›XYŠNÂˆ\ÜÙ\Ù\HJØY™WÜ]ØÛÛ\Û™[
+K‹ŒTÌWŞŠKK‹ŒTÌWŞŠNÂˆ\ÜÙ\Ù\HJØY™WÜ]ØÛÛ\Û™[
+˜H˜ÈŠK˜KX‹XÈŠNÂ‚ˆ]İ]]Ù\ˆHY˜][Ü™\\™WÛİ]]Ù\Šœ™YœËÚXYËØ›XYŠNÂˆ\ÜÙ\Jİ]]Ù\‹™[™×İÚ]
+\™Ù]Ü\›XÛÜ™Kİ\İ™X[KÜ™YœËZXYËX›XYŠJNÂˆ]™XÙZ\HY˜][Ü™\\™WÜ™XÙZ\Ü]
+œ™YœËÚXYËØ›XYŠNÂˆ\ÜÙ\J™XÙZ\™[™×İÚ]
+\™Ù]Ü\›XÛÜ™KÜ™\\™KÜ™YœËZXYËX›XYÜ™\\™KšœÛÛˆŠJNÂˆ\ÜÙ\JˆY˜][Ø˜\Ù[[™WÜ]
+\›™\ÜÓ[ÙNÛÛ\[K\›™\ÜÔ›Ùš[N˜\ÙJBˆ™[™×İÚ]
+‹˜ÚKÜ\›XÛÜ™KZ\›™\ÜËØ˜\ÙKXÛÛ\[KX˜\Ù[[™KšœÛÛˆŠBˆ
+NÂˆB‚ˆÖİ\İBˆ›ˆ˜Z[Üİ]\×Ù\İ[™İZ\ÚØ]˜Z[X›WÙ]šY[˜ÙWÙœ›ÛWØXœÙ[˜ÙJ
+HÂˆ]]˜Z[X›HH]˜Z[X›WÜ˜Z[
+ˆ•S—Ô‘TÔ•ÔĞÒSPWÕ‘T”ÒSÓ‹ˆœÙ[XİY^Xİ][Ûˆ™XÙZ\˜[Y]Y‹š[Ê
+Kˆ™XÈVÈ˜[™N˜[™KLH‹š[Ê
+WKˆ
+NÂˆ\ÜÙ\Ù\HJ]˜Z[X›K˜]˜Z[Xš[]KÛÛ\]Xš[]T˜Z[]˜Z[Xš[]N]˜Z[X›JNÂˆ\ÜÙ\Ù\HJ]˜Z[X›KœØÚ[XWİ™\œÚ[Û‹˜\×Ù\™YŠ
+KÛÛYJ•S—Ô‘TÔ•ÔĞÒSPWÕ‘T”ÒSÓŠJNÂˆ\ÜÙ\Ù\HJ]˜Z[X›K™]šY[˜ÙWÜ™YœË™XÈVÈ˜[™N˜[™KLH—JNÂ‚ˆ][˜]˜Z[X›HH[˜]˜Z[X›WÜ˜Z[
+››È^Xİ][Ûˆ™XÙZ\Ø\Èİ\YYŠNÂˆ\ÜÙ\Ù\HJ[˜]˜Z[X›K˜]˜Z[Xš[]KÛÛ\]Xš[]T˜Z[]˜Z[Xš[]N“›İ]˜Z[X›JNÂˆËÈ[ˆ[˜]˜Z[X›H˜Z[]\İ›İY™\\ÙHHØÚ[XHÜˆ›Üœ›İÈ]šY[˜ÙK‚ˆ\ÜÙ\J[˜]˜Z[X›KœØÚ[XWİ™\œÚ[Û‹š\×Û›Û™J
+JNÂˆ\ÜÙ\J[˜]˜Z[X›K™]šY[˜ÙWÜ™YœËš\×Ù[\J
+JNÂˆBŸB‚ˆÖØÙ™Ê\İ
+WB›[ÙYÙ\İÚ[ZÙWØØ\ÙWİ\İÈÂˆËÈHÍÍÌNˆÚ]Y[]Y\È[™ÚLMˆYÙ\İÈXØÙ\YHHX›XØ][Û‚ˆËÈH[™]šY[˜ÙH[ZÙH˜[Y]ÜœÈ]\İÙY\^XİHÛ™HØ[›ÛšXØ[ˆËÈHÙ\šX[^™YÜ[[™ÎˆİÙ\‹XØ\ÙH^YXÚ[X[‚‚ˆ\ÙHİ\\İ˜[Y]WÙYÙ\İ˜[Y]WÙÚ]ÜÚ_NÂ‚ˆÖİ\İBˆ›ˆÚ]ÜÚ\×ØXØÙ\ÛÛ›WØØ[›ÛšXØ[ÛİÙ\—ØØ\ÙWÚ^
+
+HÂˆ\ÜÙ\J˜[Y]WÙÚ]ÜÚJ	ˆ˜Ù‹œ™\X]
+Œ
+K›[™YÛÛ[Z]ŠKš\×ÛÚÊ
+JNÂˆ\ÜÙ\J˜[Y]WÙÚ]ÜÚJ	ˆŒH‹œ™\X]
+ÌŠK›[™YÛÛ[Z]ŠKš\×ÛÚÊ
+JNÂˆ\ÜÙ\J˜[Y]WÙÚ]ÜÚJ	ˆÑ‹œ™\X]
+Œ
+K›[™YÛÛ[Z]ŠKš\×Ù\œŠ
+JNÂˆ\ÜÙ\J˜[Y]WÙÚ]ÜÚJ	ˆ‘Qˆ‹œ™\X]
+ÌŠK›[™YÛÛ[Z]ŠKš\×Ù\œŠ
+JNÂˆ\ÜÙ\J˜[Y]WÙÚ]ÜÚJ	ˆ˜Ñ‹œ™\X]
+Œ
+K›[™YÛÛ[Z]ŠKš\×Ù\œŠ
+JNÂˆ\ÜÙ\J˜[Y]WÙÚ]ÜÚJ	ˆˆ‹œ™\X]
+Œ
+K›[™YÛÛ[Z]ŠKš\×Ù\œŠ
+JNÂˆ\ÜÙ\J˜[Y]WÙÚ]ÜÚJ	ˆ˜Ù‹œ™\X]
+NJK›[™YÛÛ[Z]ŠKš\×Ù\œŠ
+JNÂˆB‚ˆÖİ\İBˆ›ˆÚLM—ÙYÙ\İ×ÚÙY\Ü™Yš^ÜÛXŞWØ[™Ü™\]Z\™WÛİÙ\—ØØ\ÙJ
+HÂˆ\ÜÙ\J˜[Y]WÙYÙ\İ
+	™›Ü›X]JœÚLMßH‹˜Xˆ‹œ™\X]
+ÌŠJKœ™XÙZ\YÙ\İŠKš\×ÛÚÊ
+JNÂˆ\ÜÙ\J˜[Y]WÙYÙ\İ
+	™›Ü›X]JœÚLMßH‹Pˆ‹œ™\X]
+ÌŠJKœ™XÙZ\YÙ\İŠKš\×Ù\œŠ
+JNÂˆ\ÜÙ\J˜[Y]WÙYÙ\İ
+	™›Ü›X]JœÚLMßH‹˜Pˆ‹œ™\X]
+ÌŠJKœ™XÙZ\YÙ\İŠKš\×Ù\œŠ
+JNÂˆ\ÜÙ\J˜[Y]WÙYÙ\İ
+	ˆ˜Xˆ‹œ™\X]
+ÌŠKœ™XÙZ\YÙ\İŠKš\×Ù\œŠ
+JNÂˆ\ÜÙ\J˜[Y]WÙYÙ\İ
+	™›Ü›X]JœÚLNßH‹˜Xˆ‹œ™\X]
+ÌŠJKœ™XÙZ\YÙ\İŠKš\×Ù\œŠ
+JNÂˆ\ÜÙ\J˜[Y]WÙYÙ\İ
+	™›Ü›X]JœÚLMßH‹˜Xˆ‹œ™\X]
+ÌJJKœ™XÙZ\YÙ\İŠKš\×Ù\œŠ
+JNÂˆBŸB
