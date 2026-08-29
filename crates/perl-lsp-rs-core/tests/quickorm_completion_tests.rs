@@ -149,3 +149,28 @@ Other::table users => sub {};
     );
     Ok(())
 }
+
+#[test]
+fn competing_imported_table_builder_does_not_surface_generated_completion()
+-> Result<(), Box<dyn std::error::Error>> {
+    let index = Arc::new(WorkspaceIndex::new());
+    index.index_file(
+        Url::parse("file:///workspace/MyApp/Schema/Competing.pm")?,
+        r#"
+package MyApp::Schema::Competing;
+use DBIx::QuickORM type => 'table';
+use Other::DSL qw(table);
+table users => sub {};
+1;
+"#
+        .to_string(),
+    )?;
+
+    let completions = completion_items(index, "MyApp::Schema::Competing->q")?;
+    let labels = labels(&completions);
+    assert!(
+        !labels.contains(&"qorm_table"),
+        "a competing imported table builder must not reach canonical completion: {labels:?}"
+    );
+    Ok(())
+}

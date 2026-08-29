@@ -482,9 +482,44 @@ fn classify_import_shape(args: &[String], source: Option<&str>) -> QuickOrmImpor
 
 fn source_import_segment<'a>(source: &'a str, node: &Node) -> Option<&'a str> {
     let remainder = source.get(node.location.start..)?;
-    let end =
-        remainder.find(';').map_or(node.location.end - node.location.start, |index| index + 1);
+    let end = source_statement_end(remainder)
+        .unwrap_or_else(|| node.location.end.saturating_sub(node.location.start));
     remainder.get(..end)
+}
+
+fn source_statement_end(source: &str) -> Option<usize> {
+    let mut quote = None;
+    let mut escaped = false;
+    let mut comment = false;
+
+    for (index, character) in source.char_indices() {
+        if comment {
+            if matches!(character, '\r' | '\n') {
+                comment = false;
+            }
+            continue;
+        }
+
+        if let Some(delimiter) = quote {
+            if escaped {
+                escaped = false;
+            } else if character == '\\' {
+                escaped = true;
+            } else if character == delimiter {
+                quote = None;
+            }
+            continue;
+        }
+
+        match character {
+            '#' => comment = true,
+            '\'' | '"' => quote = Some(character),
+            ';' => return Some(index + character.len_utf8()),
+            _ => {}
+        }
+    }
+
+    None
 }
 
 fn exact_source_import_pair(source: &str) -> Option<(&str, &str)> {

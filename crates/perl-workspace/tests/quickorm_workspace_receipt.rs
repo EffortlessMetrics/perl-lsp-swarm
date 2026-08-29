@@ -172,6 +172,27 @@ table "users" => sub {};
 }
 
 #[test]
+fn workspace_index_blocks_competing_imported_table_builder()
+-> Result<(), Box<dyn std::error::Error>> {
+    let index = WorkspaceIndex::new();
+    let uri = Url::parse("file:///lib/MyApp/Schema/Competing.pm")?;
+    let source = r#"
+package MyApp::Schema::Competing;
+use DBIx::QuickORM type => 'table';
+use Other::DSL qw(table);
+table "users" => sub {};
+1;
+"#;
+
+    index.index_file(uri, source.to_string())?;
+    assert!(
+        index.search_generated_workspace_symbols("qorm_table", None).is_empty(),
+        "a competing imported table builder must invalidate QuickORM authority in the production index"
+    );
+    Ok(())
+}
+
+#[test]
 fn workspace_index_receipts_cover_package_reentry_and_fresh_anchor()
 -> Result<(), Box<dyn std::error::Error>> {
     let index = WorkspaceIndex::new();

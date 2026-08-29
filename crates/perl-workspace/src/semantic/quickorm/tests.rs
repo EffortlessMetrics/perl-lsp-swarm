@@ -86,6 +86,20 @@ fn compact_and_comment_separated_fat_arrow_imports_are_source_backed()
 }
 
 #[test]
+fn semicolons_inside_import_comments_do_not_truncate_source_backed_shape()
+-> Result<(), Box<dyn std::error::Error>> {
+    let source =
+        "package User; use DBIx::QuickORM type # fixed; mode\n => 'table'; table users => sub {};";
+    let specs = import_specs_from_source(source)?;
+    let spec = quickorm_spec(&specs)?;
+
+    assert_eq!(spec.confidence, Confidence::Medium);
+    assert_eq!(spec.symbols, ImportSymbols::Default);
+    assert_eq!(canonical_names(&generated_facts_from_source(source)?), vec!["User::qorm_table"]);
+    Ok(())
+}
+
+#[test]
 fn parser_preserves_quickorm_configuration_as_key_value_args()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut parser = Parser::new("use DBIx::QuickORM type => 'table';");
