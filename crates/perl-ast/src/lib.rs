@@ -100,6 +100,11 @@ pub use ast::{
     NativeDebugSexpInstrumentCause, NativeDebugSexpLimits, NativeDebugSexpOmitted,
     NativeDebugSexpResult, NativeDebugSexpTruncation, NativeDebugSexpWork, Node, NodeKind,
 };
+/// Shared owner-neutral source syntax for a declaration VERSION (`package`/`class` headers).
+pub use ast::{
+    DeclarationVersionDisposition, DeclarationVersionForm, DeclarationVersionSyntax,
+    DeclarationVersionSyntaxError,
+};
 /// Exhaustive AST invariant policy types and registry.
 pub use invariant_policy::{
     AST_NODE_POLICIES, AST_NODE_POLICY_SCHEMA_VERSION, AstChildContainmentPolicy,
