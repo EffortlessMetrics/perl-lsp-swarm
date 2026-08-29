@@ -470,8 +470,11 @@ pub enum UxCaseKind {
 /// One test executable reported by `cargo test --no-run --message-format=json`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CargoTestArtifact {
-    /// Cargo package id exactly as reported.
+    /// Cargo package id exactly as reported. Machine-local: it embeds the
+    /// absolute checkout path, so it never reaches the durable projection.
     pub package_id: String,
+    /// Durable name, version, and source role parsed from the package id.
+    pub package_identity: CargoPackageIdentity,
     /// Package name extracted from the package id.
     pub package_name: String,
     /// Cargo target name.
@@ -498,24 +501,86 @@ impl CargoTestArtifact {
     }
 }
 
-/// Extract the package name from a Cargo package id.
+/// Where Cargo resolved a package from, as a durable role rather than a locator.
 ///
-/// Handles both the current `path+file:///…#name@version` and
-/// `path+file:///…/name#version` spellings, plus the legacy
-/// `name version (source)` form.
-fn package_name_from_id(package_id: &str) -> Option<String> {
+/// The raw package id embeds the absolute checkout path, which cannot appear in
+/// a portable projection; the role plus name and version is the durable part.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum UxPackageSource {
+    /// A workspace/path dependency.
+    WorkspacePath,
+    /// A registry dependency.
+    Registry,
+    /// A git dependency.
+    Git,
+    /// A source Cargo spelled in a way this parser does not classify.
+    Unknown,
+}
+
+/// Name, version, and source role parsed out of a Cargo package id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CargoPackageIdentity {
+    /// Package name.
+    pub name: String,
+    /// Package version, when the id carries one.
+    pub version: Option<String>,
+    /// Durable source role.
+    pub source: UxPackageSource,
+}
+
+/// Parse a Cargo package id into its durable parts.
+///
+/// Handles the current `path+file:///…#name@version` and
+/// `path+file:///…/name#version` spellings plus the legacy
+/// `name version (source)` form. The absolute locator itself is deliberately
+/// not returned: it is machine-local detail.
+#[must_use]
+pub fn parse_package_id(package_id: &str) -> Option<CargoPackageIdentity> {
+    let source = if package_id.starts_with("path+") {
+        UxPackageSource::WorkspacePath
+    } else if package_id.starts_with("registry+") {
+        UxPackageSource::Registry
+    } else if package_id.starts_with("git+") {
+        UxPackageSource::Git
+    } else {
+        UxPackageSource::Unknown
+    };
+
     if let Some((locator, fragment)) = package_id.rsplit_once('#') {
-        if let Some((name, _version)) = fragment.rsplit_once('@') {
-            return Some(name.to_string());
+        if let Some((name, version)) = fragment.rsplit_once('@') {
+            return Some(CargoPackageIdentity {
+                name: name.to_string(),
+                version: Some(version.to_string()),
+                source,
+            });
         }
         // `…/crates/perl-lsp-ux-tests#0.1.0` — the name is the last path segment.
         if fragment.chars().next().is_some_and(|ch| ch.is_ascii_digit()) {
-            let trimmed = locator.trim_end_matches('/');
-            return trimmed.rsplit('/').next().map(str::to_string);
+            let name = locator.trim_end_matches('/').rsplit('/').next()?;
+            return Some(CargoPackageIdentity {
+                name: name.to_string(),
+                version: Some(fragment.to_string()),
+                source,
+            });
         }
-        return Some(fragment.to_string());
+        return Some(CargoPackageIdentity { name: fragment.to_string(), version: None, source });
     }
-    package_id.split_whitespace().next().map(str::to_string)
+
+    let mut parts = package_id.split_whitespace();
+    let name = parts.next()?.to_string();
+    let version = parts.next().map(str::to_string);
+    let source = if package_id.contains("(path+") {
+        UxPackageSource::WorkspacePath
+    } else if package_id.contains("(registry+") {
+        UxPackageSource::Registry
+    } else if package_id.contains("(git+") {
+        UxPackageSource::Git
+    } else {
+        source
+    };
+    Some(CargoPackageIdentity { name, version, source })
 }
 
 /// Parse `cargo test --no-run --message-format=json` stdout into test artifacts.
@@ -568,12 +633,13 @@ pub fn parse_cargo_test_artifacts(
                     reason: "compiler-artifact has no package_id".to_string(),
                 }
             })?;
-        let package_name = package_name_from_id(package_id).ok_or_else(|| {
+        let package_identity = parse_package_id(package_id).ok_or_else(|| {
             UxDiscoveryFailure::MalformedCargoMessage {
                 line_number,
-                reason: format!("could not extract a package name from `{package_id}`"),
+                reason: format!("could not extract a package identity from `{package_id}`"),
             }
         })?;
+        let package_name = package_identity.name.clone();
         if package_name != package {
             continue;
         }
@@ -617,6 +683,7 @@ pub fn parse_cargo_test_artifacts(
 
         let artifact = CargoTestArtifact {
             package_id: package_id.to_string(),
+            package_identity,
             package_name,
             target_name,
             target_kind: UxTargetKind::from_cargo_kind(raw_kind),
@@ -657,21 +724,26 @@ pub struct ListedCase {
     pub kind: UxCaseKind,
 }
 
-/// Parse `--list --format terse` output from one libtest executable.
+/// Parse `--list` output from one libtest executable.
 ///
-/// The terse format is `<name>: test` / `<name>: benchmark` lines followed by
-/// a `N tests, M benchmarks` summary. Both the per-line format and the trailing
+/// The format is `<name>: test` / `<name>: benchmark` lines followed by a
+/// `N tests, M benchmarks` summary. Both the per-line shape and the trailing
 /// summary are required: an output with no summary is rejected rather than read
 /// as an empty target, which is what stops a different runner's output, a
 /// truncated capture, or a silent tool substitution from shrinking the
 /// denominator to zero.
+///
+/// Note that `--list --format terse` prints the same case lines but **omits**
+/// the summary, which is why [`LIST_ARGV_SUFFIX`] uses libtest's default list
+/// format: dropping the summary would drop the only cross-check that the
+/// listing is complete.
 ///
 /// # Errors
 ///
 /// Returns [`UxDiscoveryFailure::MalformedListOutput`],
 /// [`UxDiscoveryFailure::MissingListSummary`], or
 /// [`UxDiscoveryFailure::ListCountMismatch`].
-pub fn parse_libtest_terse_list(
+pub fn parse_libtest_list(
     target: &str,
     output: &str,
 ) -> Result<Vec<ListedCase>, UxDiscoveryFailure> {
@@ -876,9 +948,14 @@ pub struct UxTargetInventory {
 pub struct UxDiscoverySubject {
     /// Package whose executables form the denominator.
     pub package: String,
-    /// Cargo package id, when at least one artifact was observed.
+    /// Package version, when at least one artifact was observed.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub package_id: Option<String>,
+    pub package_version: Option<String>,
+    /// Durable source role of the package.
+    ///
+    /// The raw Cargo package id embeds the absolute checkout path and is kept
+    /// in [`UxLocalExecution`] instead.
+    pub package_source: UxPackageSource,
     /// Repository SHA under discovery.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub repository_sha: Option<String>,
@@ -938,6 +1015,9 @@ pub struct UxLocalExecution {
     /// When discovery ran, when the caller supplied a clock reading.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub generated_at: Option<String>,
+    /// Raw Cargo package id, which embeds the absolute checkout path.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub package_id: Option<String>,
     /// Absolute workspace root at discovery time.
     pub workspace_root: String,
     /// Absolute executable path per target identity.
@@ -1131,7 +1211,12 @@ impl UxDiscoveryRequest {
 }
 
 /// Argv suffix appended to each test executable to list its cases.
-pub const LIST_ARGV_SUFFIX: &[&str] = &["--list", "--format", "terse"];
+///
+/// Deliberately libtest's default list format rather than `--format terse`:
+/// terse prints the same `<name>: test` lines but omits the trailing
+/// `N tests, M benchmarks` summary, and that summary is the only cross-check
+/// that the captured listing is complete. See [`parse_libtest_list`].
+pub const LIST_ARGV_SUFFIX: &[&str] = &["--list"];
 
 /// Exact `cargo` argv that compiles the discovery population for one profile.
 #[must_use]
@@ -1176,8 +1261,12 @@ pub fn discover_cases(
         });
     }
 
-    let expected_features: Vec<String> =
+    // Sorted to match the artifact-side normalization: a feature population is
+    // a set, and ordering must never decide whether an executable is stale.
+    let mut expected_features: Vec<String> =
         profile_features(request.tier).iter().map(|feature| (*feature).to_string()).collect();
+    expected_features.sort();
+    expected_features.dedup();
     let list_suffix: Vec<String> =
         LIST_ARGV_SUFFIX.iter().map(|part| (*part).to_string()).collect();
 
@@ -1186,6 +1275,7 @@ pub fn discover_cases(
     let mut zero_case_targets: Vec<String> = Vec::new();
     let mut local_executables: BTreeMap<String, String> = BTreeMap::new();
     let mut package_id: Option<String> = None;
+    let mut package_identity: Option<CargoPackageIdentity> = None;
 
     for artifact in artifacts {
         let identity = artifact.target_identity();
@@ -1206,7 +1296,7 @@ pub fn discover_cases(
 
         let digest = commands.executable_digest(&identity, &artifact.executable)?;
         let listing = commands.list_cases(&identity, &artifact.executable, &list_suffix)?;
-        let listed = parse_libtest_terse_list(&identity, &listing)?;
+        let listed = parse_libtest_list(&identity, &listing)?;
 
         let scenario_prefix = scenario_prefix(&artifact.target_name);
         let mut cases: Vec<UxCase> = Vec::with_capacity(listed.len());
@@ -1242,6 +1332,7 @@ pub fn discover_cases(
         }
         if package_id.is_none() {
             package_id = Some(artifact.package_id.clone());
+            package_identity = Some(artifact.package_identity.clone());
         }
         local_executables
             .insert(identity.clone(), artifact.executable.to_string_lossy().into_owned());
@@ -1292,7 +1383,7 @@ pub fn discover_cases(
         cases_per_target,
     };
 
-    let subject = build_subject(request, package_id, &expected_features)?;
+    let subject = build_subject(request, package_identity.as_ref(), &expected_features)?;
 
     let mut inventory = UxCaseInventory {
         schema: UX_CASE_INVENTORY_SCHEMA.to_string(),
@@ -1306,6 +1397,7 @@ pub fn discover_cases(
         inventory_digest: String::new(),
         local_execution: request.include_local_execution.then(|| UxLocalExecution {
             generated_at: request.generated_at.clone(),
+            package_id,
             workspace_root: normalize_path(&request.workspace_root),
             target_executables: local_executables,
         }),
@@ -1317,12 +1409,14 @@ pub fn discover_cases(
 
 fn build_subject(
     request: &UxDiscoveryRequest,
-    package_id: Option<String>,
+    package_identity: Option<&CargoPackageIdentity>,
     selected_features: &[String],
 ) -> Result<UxDiscoverySubject, UxDiscoveryFailure> {
     let mut subject = UxDiscoverySubject {
         package: UX_INVENTORY_PACKAGE.to_string(),
-        package_id,
+        package_version: package_identity.and_then(|identity| identity.version.clone()),
+        package_source: package_identity
+            .map_or(UxPackageSource::Unknown, |identity| identity.source),
         repository_sha: request.repository_sha.clone(),
         repository_dirty_state: request.repository_dirty_state,
         cargo_lock_digest: request.cargo_lock_digest.clone(),

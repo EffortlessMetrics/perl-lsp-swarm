@@ -109,7 +109,7 @@ fn artifact_line(
     let features =
         features.iter().map(|feature| format!("\"{feature}\"")).collect::<Vec<_>>().join(",");
     format!(
-        r#"{{"reason":"compiler-artifact","package_id":"path+file:///work%20space/perl-lsp/crates/{package}#0.1.0","target":{{"kind":["{kind}"],"crate_types":["bin"],"name":"{target}","src_path":"/work space/perl-lsp/crates/{package}/tests/{target}.rs"}},"profile":{{"opt_level":"0","debuginfo":2,"debug_assertions":true,"overflow_checks":true,"test":true}},"features":[{features}],"filenames":["{executable}"],"executable":"{executable}","fresh":false}}"#
+        r#"{{"reason":"compiler-artifact","package_id":"path+file:///work space/perl-lsp/crates/{package}#0.1.0","target":{{"kind":["{kind}"],"crate_types":["bin"],"name":"{target}","src_path":"/work space/perl-lsp/crates/{package}/tests/{target}.rs"}},"profile":{{"opt_level":"0","debuginfo":2,"debug_assertions":true,"overflow_checks":true,"test":true}},"features":[{features}],"filenames":["{executable}"],"executable":"{executable}","fresh":false}}"#
     )
 }
 
@@ -117,7 +117,7 @@ fn lib_artifact_line(package: &str, target: &str, executable: &str, features: &[
     let features =
         features.iter().map(|feature| format!("\"{feature}\"")).collect::<Vec<_>>().join(",");
     format!(
-        r#"{{"reason":"compiler-artifact","package_id":"path+file:///work%20space/perl-lsp/crates/{package}#0.1.0","target":{{"kind":["lib"],"crate_types":["lib"],"name":"{target}","src_path":"/work space/perl-lsp/crates/{package}/src/lib.rs"}},"profile":{{"test":true}},"features":[{features}],"filenames":["{executable}"],"executable":"{executable}","fresh":false}}"#
+        r#"{{"reason":"compiler-artifact","package_id":"path+file:///work space/perl-lsp/crates/{package}#0.1.0","target":{{"kind":["lib"],"crate_types":["lib"],"name":"{target}","src_path":"/work space/perl-lsp/crates/{package}/src/lib.rs"}},"profile":{{"test":true}},"features":[{features}],"filenames":["{executable}"],"executable":"{executable}","fresh":false}}"#
     )
 }
 
@@ -317,28 +317,36 @@ fn non_test_artifacts_and_non_json_progress_lines_are_ignored() -> TestResult {
 }
 
 #[test]
-fn package_names_parse_from_both_cargo_package_id_spellings() -> TestResult {
-    assert_eq!(
-        package_name_from_id("path+file:///x/crates/perl-lsp-ux-tests#0.1.0").as_deref(),
-        Some("perl-lsp-ux-tests")
-    );
-    assert_eq!(
-        package_name_from_id("path+file:///x/crates/renamed-dir#perl-lsp-ux-tests@0.1.0")
-            .as_deref(),
-        Some("perl-lsp-ux-tests")
-    );
-    assert_eq!(
-        package_name_from_id("perl-lsp-ux-tests 0.1.0 (path+file:///x)").as_deref(),
-        Some("perl-lsp-ux-tests")
-    );
+fn package_ids_parse_from_every_cargo_spelling() -> TestResult {
+    let directory_named =
+        parse_package_id("path+file:///x/crates/perl-lsp-ux-tests#0.1.0").ok_or("parse")?;
+    assert_eq!(directory_named.name, "perl-lsp-ux-tests");
+    assert_eq!(directory_named.version.as_deref(), Some("0.1.0"));
+    assert_eq!(directory_named.source, UxPackageSource::WorkspacePath);
+
+    let explicitly_named =
+        parse_package_id("path+file:///x/crates/renamed-dir#perl-lsp-ux-tests@0.1.0")
+            .ok_or("parse")?;
+    assert_eq!(explicitly_named.name, "perl-lsp-ux-tests");
+    assert_eq!(explicitly_named.version.as_deref(), Some("0.1.0"));
+
+    let legacy = parse_package_id("perl-lsp-ux-tests 0.1.0 (path+file:///x)").ok_or("parse")?;
+    assert_eq!(legacy.name, "perl-lsp-ux-tests");
+    assert_eq!(legacy.version.as_deref(), Some("0.1.0"));
+    assert_eq!(legacy.source, UxPackageSource::WorkspacePath);
+
+    let registry =
+        parse_package_id("registry+https://github.com/rust-lang/crates.io-index#serde@1.0.0")
+            .ok_or("parse")?;
+    assert_eq!(registry.source, UxPackageSource::Registry);
     Ok(())
 }
 
 // ── libtest list parsing ─────────────────────────────────────────────────
 
 #[test]
-fn terse_listing_accepts_tests_and_benchmarks() -> TestResult {
-    let listed = parse_libtest_terse_list(
+fn list_output_accepts_tests_and_benchmarks() -> TestResult {
+    let listed = parse_libtest_list(
         "t",
         "alpha: test\nbeta::nested: test\ngamma: benchmark\n\n2 tests, 1 benchmark\n",
     )?;
@@ -348,8 +356,8 @@ fn terse_listing_accepts_tests_and_benchmarks() -> TestResult {
 }
 
 #[test]
-fn terse_listing_accepts_the_singular_summary_spelling() -> TestResult {
-    let listed = parse_libtest_terse_list("t", "alpha: test\n\n1 test, 0 benchmarks\n")?;
+fn list_output_accepts_the_singular_summary_spelling() -> TestResult {
+    let listed = parse_libtest_list("t", "alpha: test\n\n1 test, 0 benchmarks\n")?;
     assert_eq!(listed.len(), 1);
     Ok(())
 }
@@ -760,6 +768,18 @@ fn absolute_paths_and_timestamps_stay_out_of_the_durable_projection() -> TestRes
     let serialized = serde_json::to_string(&local.durable_projection()?)?;
     assert!(!serialized.contains("2026-08-29T20:00:00Z"), "no timestamp in the durable projection");
     assert!(!serialized.contains(WORKSPACE_ROOT), "no absolute checkout path either");
+    // The Cargo package id embeds the absolute checkout path in whatever
+    // encoding Cargo chose, so the locator itself must be absent rather than
+    // merely unrecognizable.
+    assert!(!serialized.contains("path+file:"), "no Cargo locator in the durable projection");
+    assert!(!serialized.contains("file://"), "no file URL in the durable projection");
+    assert_eq!(local.subject.package_source, UxPackageSource::WorkspacePath);
+    assert_eq!(local.subject.package_version.as_deref(), Some("0.1.0"));
+    assert_eq!(
+        local_execution.package_id.as_deref(),
+        Some("path+file:///work space/perl-lsp/crates/perl-lsp-ux-tests#0.1.0"),
+        "the raw locator is retained, but only in the machine-local section"
+    );
     Ok(())
 }
 
@@ -794,13 +814,15 @@ fn totals_are_derived_from_the_rows_rather_than_asserted() -> TestResult {
 fn canonical_replay_records_the_exact_commands() -> TestResult {
     let inventory = discover_cases(&healthy_fixture(), &request(UxCiTier::Pr))?;
     assert_eq!(inventory.canonical_replay.compile_argv, compile_argv(UxCiTier::Pr));
-    assert_eq!(inventory.canonical_replay.list_argv_suffix, vec!["--list", "--format", "terse"]);
+    // Not `--format terse`: terse omits the `N tests, M benchmarks` summary
+    // that `missing_list_summary` depends on.
+    assert_eq!(inventory.canonical_replay.list_argv_suffix, vec!["--list"]);
+    assert!(
+        !LIST_ARGV_SUFFIX.contains(&"terse"),
+        "the terse list format drops the completeness cross-check"
+    );
     for target in &inventory.targets {
-        assert!(target.list_argv.ends_with(&[
-            "--list".to_string(),
-            "--format".to_string(),
-            "terse".to_string()
-        ]));
+        assert!(target.list_argv.ends_with(&["--list".to_string()]));
         assert_eq!(
             target.list_argv.first().map(String::as_str),
             target.executable.workspace_relative_path.as_deref(),
