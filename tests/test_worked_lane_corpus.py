@@ -130,8 +130,11 @@ def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
-def parse_ledger() -> list[tuple[str, dict[str, str]]]:
+def parse_ledger(text: str | None = None) -> list[tuple[str, dict[str, str]]]:
     """Return the ledger's category rows in document order.
+
+    `text` overrides the committed ledger so the parser's own rules can be
+    driven by a test directly; production callers read the real file.
 
     The parser is line-oriented and has no Markdown model -- no awareness of
     fenced code blocks, HTML comments, or nested headings. That is affordable
@@ -148,7 +151,7 @@ def parse_ledger() -> list[tuple[str, dict[str, str]]]:
     hiding place; a line before a row's first field, which has no field to
     fold into, is a hard failure instead.
     """
-    lines = _read(LEDGER).splitlines()
+    lines = (_read(LEDGER) if text is None else text).splitlines()
     try:
         start = lines.index(LEDGER_SECTION)
     except ValueError as error:  # pragma: no cover - guarded by its own test
@@ -174,6 +177,17 @@ def parse_ledger() -> list[tuple[str, dict[str, str]]]:
         field = FIELD_LINE.match(line)
         if field and current is not None:
             field_name = field.group(1).strip()
+            if field_name in fields:
+                # Last-write-wins would let a row state a claim twice and have
+                # only the second one checked, while Markdown shows a reader
+                # both. A fabricated receipt placed above the real one is the
+                # concrete case: every check reads the survivor and passes.
+                raise AssertionError(
+                    f"{LEDGER.relative_to(ROOT)}:{offset}: category "
+                    f"{current!r} repeats the field {field_name!r}; a row "
+                    f"states each field once, or the checks below read one "
+                    f"value while the page shows another"
+                )
             fields[field_name] = field.group(2).strip()
             continue
         if not line.strip() or current is None:
@@ -472,6 +486,37 @@ class WorkedLaneLedgerTests(unittest.TestCase):
                 f"{category}: ABSENT must say what a lane would have to "
                 f"demonstrate, so the gap stays actionable",
             )
+
+    def test_a_repeated_field_label_is_rejected(self) -> None:
+        """Parsing is the oracle's only view of the ledger; it must not lose a line.
+
+        A row that states a field twice renders both lines to a reader while a
+        last-write-wins parser checks only the survivor -- a fabricated receipt
+        placed above the real one passed every other check. The committed
+        ledger cannot exercise that, so this drives the rule on a synthetic
+        body, and the accepted case below keeps the rule from rejecting a
+        well-formed row.
+        """
+        def row(*extra: str) -> str:
+            lines = [f"- **{name}:** a sufficiently long placeholder value" for name in REQUIRED_FIELDS]
+            return "\n".join([LEDGER_SECTION, "", "### example", "", *extra, *lines, ""])
+
+        for duplicate in ("Status", "Source receipts", "Defining transition"):
+            with self.subTest(field=duplicate):
+                with self.assertRaises(AssertionError) as caught:
+                    parse_ledger(row(f"- **{duplicate}:** an earlier, contradictory value"))
+                self.assertIn(
+                    duplicate,
+                    str(caught.exception),
+                    "the failure must name the repeated field",
+                )
+
+        parsed = parse_ledger(row())
+        self.assertEqual(
+            [category for category, _ in parsed],
+            ["example"],
+            "a row that states each field once must still parse",
+        )
 
     def test_lane_paths_cannot_escape_the_corpus(self) -> None:
         """A ledger path is a child of the corpus, and the pattern proves it.

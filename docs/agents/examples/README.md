@@ -94,12 +94,12 @@ put it in front of a reviewer rather than to settle it.
 
 ### feedback-repair-and-focused-rereview
 
-- **Status:** COVERED
-- **Worked lane:** `integration-trigger-and-proof-caller.md`
-- **Source receipts:** PR [#5717](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/5717)
-- **Terminal ruling:** [#4192](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/4192) — `PROMOTE` for the review-forward synthetic integration proof
-- **Defining transition:** a directed review finding is verified against the candidate, repaired by the one writer already holding it, and answered with focused regression proof on the changed seam rather than a full replay.
-- **What remains unproved:** the lane does not show a finding refuted with evidence, a finding accepted as follow-up, or a human reviewer thread; every finding it records was repaired in candidate.
+- **Status:** ABSENT
+- **Worked lane:** none
+- **Source receipts:** none
+- **Terminal ruling:** none
+- **Defining transition:** a bot or human finding is verified against primary evidence, given an explicit disposition, repaired by the one integrating writer, and answered by rerunning only the affected proof while unchanged areas keep their current evidence.
+- **What remains unproved:** the material is strong and the lane document does not carry it. #4192 records a `PROMOTE` for the review-forward synthetic integration proof on PR #5717, whose directed review produced four findings that were verified and repaired before merge. But `integration-trigger-and-proof-caller.md` narrates only that "the later repair pass found a concrete safety gap" and "added focused regression tests" — it never identifies the review as the source, names a disposition, or shows the one-writer boundary. This row was `COVERED` until review caught that the ledger's author had imported the finding from #5717's threads rather than reading it in the lane.
 
 ### clean-formal-review
 
