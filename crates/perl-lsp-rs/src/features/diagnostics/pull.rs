@@ -849,7 +849,14 @@ impl PullDiagnosticsProvider {
         if !run.is_publishable() {
             return;
         }
-        take_critic_overlap_observations(core_diagnostics);
+        // Surrender the carriers only when the run actually normalized the
+        // observations. A `Disabled` accepted state is publishable but
+        // evaluates nothing, so draining here would delete ordinary core rows
+        // (for example the PL603 shell-injection warning) merely because the
+        // critic was switched off (#13304).
+        if run.superseded_overlap_carriers() {
+            take_critic_overlap_observations(core_diagnostics);
+        }
         for finding in run.findings() {
             critic_rows.push(self.normalized_finding_to_lsp_diagnostic(uri, content, finding));
         }
@@ -2880,6 +2887,42 @@ mod tests {
                 Some(unchanged.unchanged_document_diagnostic_report.result_id.clone())
             }
         }
+    }
+
+    /// Review probe: a disabled accepted state must not delete ordinary core
+    /// rows. `PL603` is a core security lint about shell injection; it carries
+    /// a critic overlap observation (#11918) only so a merged logical row can
+    /// replace it when the native critic actually runs. With critic disabled no
+    /// replacement is produced, so the ordinary row must survive.
+    #[test]
+    fn disabled_critic_state_retains_core_overlap_carrier_rows()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = PullDiagnosticsProvider::new();
+        let uri: Uri = "file:///disabled_carrier.pl".parse()?;
+        let source = "my $path = 'f.txt';
+system($path);
+";
+
+        let mut context = PullDiagnosticsContext::new();
+        context.critic_engine = CriticEngine::Native;
+        context.accepted_critic_state = EffectiveCriticState::Disabled;
+        context.perlcritic_enabled = false;
+
+        let items = get_full_items(
+            provider.get_document_diagnostics_with_context(&uri, source, None, &context, None),
+        );
+
+        let has_pl603 = items.iter().any(|diag| {
+            diag.code
+                .as_ref()
+                .is_some_and(|code| matches!(code, NumberOrString::String(v) if v == "PL603"))
+        });
+        assert!(
+            has_pl603,
+            "disabling the native critic must not delete the core PL603 security row; got: {:?}",
+            items.iter().filter_map(|d| d.code.clone()).collect::<Vec<_>>()
+        );
+        Ok(())
     }
 
     // ── accepted-state currentness at the pull result boundary (#13304) ────

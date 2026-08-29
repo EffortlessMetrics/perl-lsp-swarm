@@ -311,6 +311,23 @@ impl NativeCriticRun {
     pub fn is_publishable(&self) -> bool {
         self.completeness.is_publishable()
     }
+
+    /// Whether the caller's producer-declared overlap observations (#11918)
+    /// actually entered this run's normalization, so the ordinary carrier rows
+    /// are represented in [`Self::findings`].
+    ///
+    /// This is NOT the same question as [`Self::is_publishable`]. A `Disabled`
+    /// run is publishable -- it is the deliberate configured contribution --
+    /// but it evaluates no rule and consumes no observation, so it supersedes
+    /// nothing. A transport that surrenders carrier rows on publishability
+    /// alone deletes ordinary core diagnostics whenever critic is switched off.
+    #[must_use]
+    pub fn superseded_overlap_carriers(&self) -> bool {
+        matches!(
+            self.completeness,
+            NativeCriticRunCompleteness::Complete | NativeCriticRunCompleteness::Partial { .. }
+        )
+    }
 }
 
 /// The one production entrypoint for native critic-rule evaluation (#9062).

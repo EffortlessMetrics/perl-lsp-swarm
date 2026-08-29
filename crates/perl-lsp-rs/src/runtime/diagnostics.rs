@@ -2413,7 +2413,14 @@ impl LspServer {
         if !run.is_publishable() {
             return NativeCriticContribution::Withheld;
         }
-        take_critic_overlap_observations(diagnostics);
+        // Surrender the carriers only when the run actually normalized the
+        // observations. A `Disabled` accepted state is publishable but
+        // evaluates nothing, so draining here would delete ordinary core rows
+        // (for example the PL603 shell-injection warning) merely because the
+        // critic was switched off (#13304).
+        if run.superseded_overlap_carriers() {
+            take_critic_overlap_observations(diagnostics);
+        }
         diagnostics.extend(run.findings().iter().map(normalized_critic_finding_to_diagnostic));
 
         // The rows above are only meaningful under this exact accepted policy.
@@ -2840,8 +2847,11 @@ fn push_diagnostic_source(code: Option<&str>) -> &'static str {
 /// current answer.
 enum NativeCriticContribution {
     /// No native row in this report depends on live critic configuration: the
-    /// legacy engine (whose removal is #9068), or an accepted state that is
-    /// disabled by configuration (#8253).
+    /// legacy engine, whose removal is #9068.
+    ///
+    /// A disabled accepted state is deliberately NOT here: it still carries a
+    /// fingerprint, and binding it is what makes a later enable invalidate a
+    /// cached report.
     PolicyIndependent,
     /// Rows were published under exactly this accepted policy.
     Published(AcceptedCriticPolicy),
@@ -4800,6 +4810,49 @@ print \"unreachable\\n\";\n";
                 }
             ),
             "an unrooted snapshot is compared against the unrooted live policy"
+        );
+    }
+
+    /// #13304: switching the critic off must not delete ordinary core rows on
+    /// the push path either. PL603 is a core shell-injection warning that
+    /// carries a critic overlap observation (#11918) purely so a merged logical
+    /// row can replace it when the critic runs. A `Disabled` accepted state is
+    /// publishable but evaluates nothing, so a transport that surrenders
+    /// carriers on publishability alone silently drops a security diagnostic.
+    #[test]
+    fn disabled_critic_state_retains_core_overlap_carrier_rows_on_push() {
+        let (server, _buf) = make_server_with_capture();
+        server.test_configure_critic_engine(perl_lsp_rs_core::config::CriticEngine::Native);
+        server.test_configure_perlcritic(false, 3, None);
+        let uri = "file:///disabled_carrier_push.pl";
+        server
+            .test_handle_did_open(Some(json!({
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "perl",
+                    "version": 1,
+                    "text": "my $path = 'f.txt';
+system($path);
+"
+                }
+            })))
+            .expect("did_open must succeed");
+
+        let report = server
+            .test_handle_document_diagnostic(Some(json!({ "textDocument": { "uri": uri } })))
+            .expect("document diagnostic must succeed")
+            .unwrap_or_default();
+        let codes: Vec<String> = report["items"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|row| row["code"].as_str().map(str::to_string))
+            .collect();
+
+        assert!(
+            codes.iter().any(|code| code == "PL603"),
+            "disabling the critic must not delete the core PL603 security row; got: {codes:?}"
         );
     }
 
