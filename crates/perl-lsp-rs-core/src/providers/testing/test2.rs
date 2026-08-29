@@ -435,6 +435,7 @@ pub fn resolve_import(module: &str, raw_args: &str) -> Option<ResolvedImport> {
                 let mut expect_key = true;
                 let mut nested_value_depth = None;
                 let mut hash_closed = false;
+                let mut value_expression_unprovable = false;
                 let mut pending_helpers: BTreeSet<String> = BTreeSet::new();
                 while let Some(value) = atoms.get(atom_index) {
                     atom_index += 1;
@@ -533,6 +534,14 @@ pub fn resolve_import(module: &str, raw_args: &str) -> Option<ResolvedImport> {
                         if expect_key && is_bareword(candidate) {
                             pending_helpers.insert(candidate.to_string());
                             expect_key = false;
+                        } else if !expect_key && LIST_ARITY_OPERATORS.contains(&candidate) {
+                            // A list operator's argument list consumes its own
+                            // comma-separated terms, so a top-level comma after
+                            // it is an argument separator, not a hash-pair
+                            // separator (`join '-', 'Widget'`). The remaining
+                            // pairing is a guess: fail closed for the whole
+                            // hash instead of inventing helpers (#13305).
+                            value_expression_unprovable = true;
                         }
                     }
                     brace_depth -= closes;
@@ -545,7 +554,7 @@ pub fn resolve_import(module: &str, raw_args: &str) -> Option<ResolvedImport> {
                         break;
                     }
                 }
-                if hash_closed {
+                if hash_closed && !value_expression_unprovable {
                     target_helpers.extend(pending_helpers);
                 }
             }
@@ -674,6 +683,15 @@ impl Test2Facts {
 
 /// Whether `s` is a plain Perl identifier (bareword), optionally quoted by the
 /// caller before this check.
+/// Operators whose argument lists consume comma-separated terms (perlop list
+/// operators). A top-level comma after one of these, in a target-hash value
+/// position, is an argument separator rather than a hash-pair separator, which
+/// makes the remaining key/value pairing unprovable at the atom level.
+const LIST_ARITY_OPERATORS: [&str; 14] = [
+    "join", "sprintf", "printf", "split", "map", "grep", "sort", "push", "unshift", "splice",
+    "reverse", "say", "die", "warn",
+];
+
 fn is_bareword(s: &str) -> bool {
     !s.is_empty()
         && s.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')

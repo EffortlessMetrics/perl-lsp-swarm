@@ -339,11 +339,9 @@ fn nested_hash_target_restores_outer_key_value_parity() -> TestResult {
 
 #[test]
 fn expression_hash_values_preserve_key_value_parity() -> TestResult {
-    // A multi-atom expression value (`uc 'Widget'`) must not shift the
+    // A unary multi-atom expression value (`uc 'Widget'`) must not shift the
     // alternating key/value scan: the real `other` key stays a helper and the
-    // expression's operand does not leak as one. (List operators whose argument
-    // list itself contains a top-level comma remain a known boundary; see the
-    // expression-value parity follow-up issue.)
+    // expression's operand does not leak as one.
     for value in ["uc 'Widget'", "scalar 'Widget'"] {
         let args = format!("-target => {{ pkg => {value}, other => 'Gadget' }}, ok");
         let resolved = resolve_import("Test2::V0", &args)
@@ -353,6 +351,28 @@ fn expression_hash_values_preserve_key_value_parity() -> TestResult {
         assert!(resolved.symbols.contains("ok"), "value {value:?}");
         for leaked in ["Widget", "Gadget", "uc", "scalar"] {
             assert!(!resolved.symbols.contains(leaked), "{leaked} leaked from {value:?}");
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn list_operator_value_hash_targets_fail_closed() -> TestResult {
+    // A list operator's argument list carries its own top-level comma, which
+    // is indistinguishable from a hash-pair separator at the atom level
+    // (`join '-', 'Widget'` would leak Widget and drop other if pairing were
+    // guessed). The whole target hash fails closed: no helpers are invented,
+    // while the explicit export after the target stays visible. See #13305.
+    for value in ["join '-', 'Widget'", "split ',', 'Widget'", "map { uc } 'Widget'"] {
+        let args = format!("-target => {{ pkg => {value}, other => 'Gadget' }}, ok");
+        let resolved = resolve_import("Test2::V0", &args)
+            .ok_or_else(|| io::Error::other("Test2::V0 must be recognized"))?;
+        assert!(resolved.symbols.contains("ok"), "value {value:?}");
+        for not_invented in ["pkg", "other", "Widget", "Gadget", "CLASS"] {
+            assert!(
+                !resolved.symbols.contains(not_invented),
+                "{not_invented} must not be invented from list-operator value {value:?}"
+            );
         }
     }
     Ok(())
