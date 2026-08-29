@@ -216,9 +216,8 @@ fn active_cpanfile_phase(block_stack: &[CpanfileBlock]) -> Option<Option<&str>> 
 fn handle_cpanfile_statement(buf: &str, block_phase: Option<&str>, out: &mut Vec<Prereq>) {
     let statement = buf.trim();
     // Longest keyword first so `configure_requires` isn't matched by `requires`.
-    let Some((_kw, relation, kw_phase)) = CPANFILE_KEYWORDS
-        .iter()
-        .find(|(kw, _, _)| starts_with_cpanfile_keyword(statement, kw))
+    let Some((_kw, relation, kw_phase)) =
+        CPANFILE_KEYWORDS.iter().find(|(kw, _, _)| starts_with_cpanfile_keyword(statement, kw))
     else {
         return;
     };
@@ -238,9 +237,7 @@ fn starts_with_cpanfile_keyword(statement: &str, keyword: &str) -> bool {
     let Some(rest) = statement.strip_prefix(keyword) else {
         return false;
     };
-    rest.chars().next().is_none_or(|ch| {
-        ch.is_whitespace() || matches!(ch, '(' | '\'' | '"')
-    })
+    rest.chars().next().is_none_or(|ch| ch.is_whitespace() || matches!(ch, '(' | '\'' | '"'))
 }
 
 /// Extract a canonical phase from an `on 'phase' => sub` block header.
