@@ -156,7 +156,12 @@ describe('support command implementations', () => {
       }),
     );
     const url = (vscode.env.openExternal as jest.Mock).mock.calls[0]?.[0].toString();
-    expect(url).toContain('https://github.com/EffortlessMetrics/perl-lsp/issues/new');
+    // Pin the canonical public repository and template, not just the host: #7862
+    // requires Open Issue Form to target the canonical public issue form, and a
+    // silent retarget to another repo or template would otherwise pass unnoticed.
+    expect(url).toBe(
+      'https://github.com/EffortlessMetrics/perl-lsp/issues/new?template=bug_report.yml',
+    );
     expect(url).not.toContain('Support%20packet');
     expect(vscode.env.clipboard.writeText).not.toHaveBeenCalled();
   });
