@@ -1,10 +1,68 @@
-//! Line index for efficient UTF-16 position calculations.
+//! Line indexes for UTF-8 source snapshots and UTF-16 protocol positions.
+//!
+//! Source lines are LF-delimited: CRLF is one separator whose LF terminates
+//! the line, while bare CR and Unicode separator characters remain content.
+//! This module indexes the supplied source subject without normalizing it.
 use ropey::Rope;
 
 /// Returns true if `b` is a UTF-8 continuation byte (0b10xxxxxx).
 #[inline]
 fn is_utf8_continuation(b: u8) -> bool {
     (b & 0b1100_0000) == 0b1000_0000
+}
+
+/// Build line starts from the shared LF-delimited source-line contract.
+fn lf_line_starts(text: &str) -> Vec<usize> {
+    let mut line_starts = vec![0];
+    for (offset, byte) in text.bytes().enumerate() {
+        if byte == b'\n' {
+            line_starts.push(offset + 1);
+        }
+    }
+    line_starts
+}
+
+/// Build the same line starts while reading Rope chunks without using Ropey's
+/// broader logical-line classification.
+fn lf_line_starts_rope(rope: &Rope) -> Vec<usize> {
+    let mut line_starts = vec![0];
+    let mut offset = 0;
+    for chunk in rope.chunks() {
+        for (chunk_offset, byte) in chunk.bytes().enumerate() {
+            if byte == b'\n' {
+                line_starts.push(offset + chunk_offset + 1);
+            }
+        }
+        offset += chunk.len();
+    }
+    line_starts
+}
+
+/// Return the end of line content before an LF or CRLF separator.
+fn line_content_end(text: &str, line_start: usize, separator_end: usize) -> usize {
+    let bytes = text.as_bytes();
+    let mut end = separator_end.min(bytes.len()).max(line_start.min(bytes.len()));
+    if end > line_start && bytes[end - 1] == b'\n' {
+        end -= 1;
+        if end > line_start && bytes[end - 1] == b'\r' {
+            end -= 1;
+        }
+    }
+    end
+}
+
+/// Rope equivalent of [`line_content_end`].
+fn rope_line_content_end(rope: &Rope, line_start: usize, separator_end: usize) -> usize {
+    let len = rope.len_bytes();
+    let start = line_start.min(len);
+    let mut end = separator_end.min(len).max(start);
+    if end > start && rope.byte(end - 1) == b'\n' {
+        end -= 1;
+        if end > start && rope.byte(end - 1) == b'\r' {
+            end -= 1;
+        }
+    }
+    end
 }
 
 /// Caches byte offsets for line starts to speed up coordinate conversion.
@@ -23,35 +81,16 @@ impl LineStartsCache {
     }
 
     /// Builds a cache from UTF-8 source text.
+    ///
+    /// Only LF starts a new line. CRLF is one separator and a bare CR is
+    /// ordinary source content.
     pub fn new(text: &str) -> Self {
-        let mut ls = vec![0];
-        let mut i = 0;
-        let b = text.as_bytes();
-        while i < b.len() {
-            if b[i] == b'\n' {
-                ls.push(i + 1);
-            } else if b[i] == b'\r' {
-                if i + 1 < b.len() && b[i + 1] == b'\n' {
-                    ls.push(i + 2);
-                    i += 1;
-                } else {
-                    ls.push(i + 1);
-                }
-            }
-            i += 1;
-        }
-        Self { line_starts: ls }
+        Self { line_starts: lf_line_starts(text) }
     }
 
     /// Builds a cache from a [`Rope`] buffer.
     pub fn new_rope(rope: &Rope) -> Self {
-        let mut ls = vec![0];
-        for li in 0..rope.len_lines() {
-            if li > 0 {
-                ls.push(rope.line_to_byte(li));
-            }
-        }
-        Self { line_starts: ls }
+        Self { line_starts: lf_line_starts_rope(rope) }
     }
 
     /// Converts a byte offset in `text` to `(line, column_utf16)`.
@@ -69,17 +108,8 @@ impl LineStartsCache {
             return text.len();
         }
         let ls = self.line_starts[line];
-        let le = if line + 1 < self.line_starts.len() {
-            let ns = self.line_starts[line + 1];
-            let mut end = ns.saturating_sub(1);
-            let b = text.as_bytes();
-            while end > ls && (b[end] == b'\n' || b[end] == b'\r') {
-                end = end.saturating_sub(1);
-            }
-            end + 1
-        } else {
-            text.len()
-        };
+        let separator_end = self.line_starts.get(line + 1).copied().unwrap_or(text.len());
+        let le = line_content_end(text, ls, separator_end);
         let lt = &text[ls..le];
         let mut uc = 0;
         let mut bo = 0;
@@ -132,11 +162,8 @@ impl LineStartsCache {
             return rope.len_bytes();
         }
         let ls = self.line_starts[line];
-        let le = if line + 1 < self.line_starts.len() {
-            self.line_starts[line + 1]
-        } else {
-            rope.len_bytes()
-        };
+        let separator_end = self.line_starts.get(line + 1).copied().unwrap_or(rope.len_bytes());
+        let le = rope_line_content_end(rope, ls, separator_end);
         // Clamp the slice bounds: `Rope::byte_slice` panics if `ls`/`le` exceed
         // the rope length or if `ls > le`, which a corrupt cache could trigger.
         let len = rope.len_bytes();
@@ -174,23 +201,7 @@ pub struct LineIndex {
 impl LineIndex {
     /// Create a new LineIndex from source text
     pub fn new(text: String) -> Self {
-        let mut line_starts = vec![0];
-        let bytes = text.as_bytes();
-        let mut i = 0;
-        while i < bytes.len() {
-            if bytes[i] == b'\n' {
-                line_starts.push(i + 1);
-            } else if bytes[i] == b'\r' {
-                if i + 1 < bytes.len() && bytes[i + 1] == b'\n' {
-                    line_starts.push(i + 2);
-                    i += 1;
-                } else {
-                    line_starts.push(i + 1);
-                }
-            }
-            i += 1;
-        }
-
+        let line_starts = lf_line_starts(&text);
         Self { line_starts, text }
     }
 
@@ -222,14 +233,8 @@ impl LineIndex {
         }
 
         let line_start = self.line_starts[line];
-        let line_end = if line + 1 < self.line_starts.len() {
-            // Don't subtract 1 - include the newline in the line
-            self.line_starts[line + 1]
-        } else {
-            self.text.len()
-        };
-
-        // Get the full line including newline
+        let separator_end = self.line_starts.get(line + 1).copied().unwrap_or(self.text.len());
+        let line_end = line_content_end(&self.text, line_start, separator_end);
         let line_text = &self.text[line_start..line_end];
 
         // Find the byte offset for the UTF-16 character position
@@ -403,5 +408,78 @@ mod overflow_hardening_tests {
         let cache = LineStartsCache::new_rope(&rope);
         // Line 1 ("cd"), character 2 -> byte offset 3 (start of line 1) + 2 = 5.
         assert_eq!(cache.position_to_offset_rope(&rope, 1, 2), 5);
+    }
+}
+
+#[cfg(test)]
+mod newline_policy_tests {
+    use super::*;
+
+    fn assert_constructor_parity(text: &str, expected_starts: &[usize]) {
+        let string_cache = LineStartsCache::new(text);
+        let rope = Rope::from_str(text);
+        let rope_cache = LineStartsCache::new_rope(&rope);
+        let owning_index = LineIndex::new(text.to_owned());
+
+        assert_eq!(string_cache.line_starts, expected_starts);
+        assert_eq!(rope_cache.line_starts, expected_starts);
+        assert_eq!(owning_index.line_starts, expected_starts);
+    }
+
+    #[test]
+    fn constructors_share_lf_delimited_line_starts() {
+        assert_constructor_parity("", &[0]);
+        assert_constructor_parity("a\nb", &[0, 2]);
+        assert_constructor_parity("a\r\nb", &[0, 3]);
+        assert_constructor_parity("a\rb", &[0]);
+        assert_constructor_parity("a\r\nb\n", &[0, 3, 5]);
+        assert_constructor_parity("a\u{000b}b\u{000c}c\u{0085}d\u{2028}e\u{2029}f", &[0]);
+    }
+
+    #[test]
+    fn rope_chunks_do_not_inherit_ropey_unicode_separator_policy() {
+        let text = "a\u{000b}b\u{000c}c\u{0085}d\u{2028}e\u{2029}f\ng";
+        let cache = LineStartsCache::new_rope(&Rope::from_str(text));
+        assert_eq!(cache.line_starts, vec![0, 17]);
+    }
+
+    #[test]
+    fn bare_cr_remains_addressable_content() {
+        let text = "a\rb";
+        let cache = LineStartsCache::new(text);
+        let index = LineIndex::new(text.to_owned());
+
+        assert_eq!(cache.offset_to_position(text, 2), (0, 2));
+        assert_eq!(index.offset_to_position(2), (0, 2));
+        assert_eq!(cache.position_to_offset(text, 0, 2), 2);
+        assert_eq!(index.position_to_offset(0, 2), Some(2));
+    }
+
+    #[test]
+    fn crlf_separator_is_not_part_of_position_content() {
+        let text = "ab\r\ncd";
+        let rope = Rope::from_str(text);
+        let cache = LineStartsCache::new(text);
+        let rope_cache = LineStartsCache::new_rope(&rope);
+        let index = LineIndex::new(text.to_owned());
+
+        assert_eq!(cache.position_to_offset(text, 0, 2), 2);
+        assert_eq!(rope_cache.position_to_offset_rope(&rope, 0, 2), 2);
+        assert_eq!(index.position_to_offset(0, 2), Some(2));
+        assert_eq!(index.position_to_offset(0, 3), None);
+        assert_eq!(cache.position_to_offset(text, 1, 2), text.len());
+        assert_eq!(rope_cache.position_to_offset_rope(&rope, 1, 2), text.len());
+    }
+
+    #[test]
+    fn leading_bom_is_preserved_by_the_generic_index() {
+        let text = "\u{feff}x";
+        let cache = LineStartsCache::new(text);
+        let index = LineIndex::new(text.to_owned());
+
+        assert_eq!(cache.offset_to_position(text, 3), (0, 1));
+        assert_eq!(index.offset_to_position(3), (0, 1));
+        assert_eq!(cache.position_to_offset(text, 0, 1), 3);
+        assert_eq!(index.position_to_offset(0, 1), Some(3));
     }
 }
