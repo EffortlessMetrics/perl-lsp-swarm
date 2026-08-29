@@ -75,7 +75,8 @@ fn expired_waiver_error_preserves_debt_identity() -> Result<()> {
         issue: 5779,
         expires_after: "2020-01-01".to_owned(),
     })
-    .expect_err("expired waiver must remain a validation error");
+    .err()
+    .context("expired waiver must remain a validation error")?;
     let message = format!("{error:#}");
     ensure!(message.contains("project=mojolicious"), "missing project identity: {message}");
     ensure!(
@@ -130,28 +131,68 @@ fn protocol_crashes_are_preserved_in_the_rollup() -> Result<()> {
 }
 
 #[test]
-fn lifecycle_error_cannot_be_promoted_to_current() -> Result<()> {
-    let mut row = test_workload_row("error", "readiness timeout");
-    row.readiness_state = "active_document_not_observed".to_owned();
-    let row = apply_lifecycle_receipt(row);
-    ensure!(row.freshness == "not_observed");
-    ensure!(row.proof_class == "baseline_only");
-    ensure!(row.fallback_or_blocker == "readiness timeout");
+fn close_reopen_uses_tracked_restore_and_generation_two() -> Result<()> {
+    if !binary_available() {
+        return Ok(());
+    }
+
+    let project = test_plain_project();
+    let harness = create_harness(&project, &[])?;
+    harness.open_file(&project.active_file, PLAIN_SOURCE)?;
+
+    let observation = run_close_reopen_pending(&harness, &project, PLAIN_SOURCE)?;
+    ensure!(
+        harness.tracked_document_version(&project.active_file) == Some(2),
+        "lifecycle helper must leave the tracked buffer at restored version 2"
+    );
+    ensure!(
+        observation.readiness_state.contains("reopened_generation=1")
+            && observation.readiness_state.contains("restored_generation=2"),
+        "lifecycle receipt omitted the two generation barriers: {}",
+        observation.readiness_state
+    );
+    ensure!(observation.evidence["readiness"]["observed_generation"] == 1);
+    ensure!(observation.evidence["readiness"]["restored_generation"] == 2);
     Ok(())
 }
 
 #[test]
-fn edit_burst_receipt_cannot_inherit_current_freshness() -> Result<()> {
-    let mut row = test_workload_row("partial", "not_observed");
-    row.readiness_state =
-        "active_document_pending_during_request;restored_generation=22;restored_readiness_ordinal=4"
-            .to_owned();
-    row.freshness = "current".to_owned();
-    row.proof_class = "provider_receipt".to_owned();
-    let row = apply_edit_burst_receipt_boundary(row);
-    ensure!(row.freshness == "not_proven");
-    ensure!(row.proof_class == "baseline_only");
-    ensure!(row.fallback_or_blocker == "response_decision_correlation_not_proven");
+fn close_reopen_rejects_untracked_buffer_before_current_evidence() -> Result<()> {
+    if !binary_available() {
+        return Ok(());
+    }
+
+    let project = test_plain_project();
+    let harness = create_harness(&project, &[])?;
+    let error = run_close_reopen_pending(&harness, &project, PLAIN_SOURCE)
+        .err()
+        .context("close/reopen must not bypass the tracked-buffer owner")?;
+    let message = format!("{error:#}");
+    ensure!(message.contains("cannot change editor buffer before open"), "{message}");
+    ensure!(harness.tracked_document_version(&project.active_file).is_none());
+    Ok(())
+}
+
+#[test]
+fn edit_burst_restoration_is_pending_until_real_generation_barrier() -> Result<()> {
+    if !binary_available() {
+        return Ok(());
+    }
+
+    let project = test_plain_project();
+    let harness = create_harness(&project, &[])?;
+    harness.open_file(&project.active_file, PLAIN_SOURCE)?;
+    let cursor = position_after(PLAIN_SOURCE, "$self->")?;
+    let observation =
+        run_edit_burst_completion(&harness, &project.active_file, PLAIN_SOURCE, cursor)?;
+
+    ensure!(
+        observation.readiness_state.starts_with("active_document_pending_during_request;"),
+        "edit burst retained initial readiness: {}",
+        observation.readiness_state
+    );
+    ensure!(observation.readiness_state.contains("restored_generation=22"));
+    ensure!(harness.tracked_document_version(&project.active_file) == Some(22));
     Ok(())
 }
 
@@ -193,6 +234,19 @@ fn test_workload_row(actual_result_class: &str, fallback_or_blocker: &str) -> Wo
         readiness_state: "active_document_ready".to_owned(),
         latency_ms: 1.0,
         unsafe_edit: false,
+    }
+}
+
+#[cfg(test)]
+fn test_plain_project() -> ProjectSpec {
+    ProjectSpec {
+        name: "plain_modern_oo".to_owned(),
+        fixture: "inline_plain_modern_oo".to_owned(),
+        active_file: PLAIN_ACTIVE_FILE.to_owned(),
+        completion_needle: "$self->".to_owned(),
+        definition_needle: "run".to_owned(),
+        reference_needle: "$value".to_owned(),
+        safe_rename_needle: "$value".to_owned(),
     }
 }
 
@@ -411,6 +465,7 @@ fn scenario_67_golden_editor_workload_receipt() {
                     project,
                     &source,
                     &harness,
+                    initial_readiness,
                     &mut rows,
                 )?;
                 let runtime = wait_for_runtime_receipt(&harness, Duration::from_secs(10))
@@ -664,6 +719,7 @@ fn run_project_workload(
     project: &ProjectSpec,
     source: &str,
     harness: &UxHarness,
+    initial_readiness: ReadyObservation,
     rows: &mut Vec<WorkloadRow>,
 ) -> Result<()> {
     let completion_cursor = position_after(source, &project.completion_needle)?;
@@ -684,7 +740,7 @@ fn run_project_workload(
                     completion_cursor.character,
                 )),
                 Value::Null,
-                "active_document_ready".to_owned(),
+                readiness_state_for(initial_readiness),
             ),
             "hover_after_ready" => (
                 reference_cursor,
@@ -698,7 +754,7 @@ fn run_project_workload(
                         .map(|value| value.unwrap_or(Value::Null)),
                 ),
                 Value::Null,
-                "active_document_ready".to_owned(),
+                readiness_state_for(initial_readiness),
             ),
             "definition_local_or_imported" => (
                 definition_cursor,
@@ -708,7 +764,7 @@ fn run_project_workload(
                     definition_cursor.character,
                 )),
                 Value::Null,
-                "active_document_ready".to_owned(),
+                readiness_state_for(initial_readiness),
             ),
             "references_lexical" => (
                 reference_cursor,
@@ -719,17 +775,12 @@ fn run_project_workload(
                     true,
                 )),
                 Value::Null,
-                "active_document_ready".to_owned(),
+                readiness_state_for(initial_readiness),
             ),
             "rename_safe_lexical" => {
                 let result = capture(request_rename(harness, &project.active_file, rename_cursor));
                 let edits = result.clone();
-                (
-                    rename_cursor,
-                    result,
-                    edits,
-                    "active_document_ready".to_owned(),
-                )
+                (rename_cursor, result, edits, readiness_state_for(initial_readiness))
             }
             "diagnostics_present_import" => {
                 let diagnostics =
@@ -738,14 +789,14 @@ fn run_project_workload(
                     CursorReceipt { line: 0, character: 0 },
                     json!(diagnostics),
                     Value::Null,
-                    "active_document_ready".to_owned(),
+                    readiness_state_for(initial_readiness),
                 )
             }
             "workspace_symbols_after_ready" => (
                 CursorReceipt { line: 0, character: 0 },
                 capture(harness.workspace_symbols("new")),
                 Value::Null,
-                "active_document_ready".to_owned(),
+                readiness_state_for(initial_readiness),
             ),
             "edit_burst_completion" => {
                 let observed = run_edit_burst_completion(
@@ -754,22 +805,12 @@ fn run_project_workload(
                     source,
                     completion_cursor,
                 )?;
-                (
-                    completion_cursor,
-                    observed.response,
-                    Value::Null,
-                    observed.readiness_state,
-                )
+                (completion_cursor, observed.response, Value::Null, observed.readiness_state)
             }
             "edit_burst_hover" => {
                 let observed =
                     run_edit_burst_hover(harness, &project.active_file, source, reference_cursor)?;
-                (
-                    reference_cursor,
-                    observed.response,
-                    Value::Null,
-                    observed.readiness_state,
-                )
+                (reference_cursor, observed.response, Value::Null, observed.readiness_state)
             }
             "close_reopen_pending" => match run_close_reopen_pending(harness, project, source) {
                 Ok(observed) => (
@@ -816,10 +857,7 @@ fn run_project_workload(
                 cursor,
             )?;
             let row = apply_provider_receipt(row, Ok(provider_receipt));
-            if matches!(
-                journey.id.as_str(),
-                "edit_burst_completion" | "edit_burst_hover"
-            ) {
+            if matches!(journey.id.as_str(), "edit_burst_completion" | "edit_burst_hover") {
                 apply_edit_burst_receipt_boundary(row)
             } else {
                 row
@@ -847,7 +885,8 @@ fn run_edit_burst_completion(
     cursor: CursorReceipt,
 ) -> Result<EditBurstObservation> {
     for edit in 0..20 {
-        harness.change_editor_buffer_full(file, &format!("{source}\n# golden editor burst {edit}"))?;
+        harness
+            .change_editor_buffer_full(file, &format!("{source}\n# golden editor burst {edit}"))?;
     }
     let response = capture(harness.completion(file, cursor.line, cursor.character));
     let readiness_state = restore_after_edit_burst(harness, file, source)?;
@@ -861,7 +900,8 @@ fn run_edit_burst_hover(
     cursor: CursorReceipt,
 ) -> Result<EditBurstObservation> {
     for edit in 0..20 {
-        harness.change_editor_buffer_full(file, &format!("{source}\n# golden editor burst {edit}"))?;
+        harness
+            .change_editor_buffer_full(file, &format!("{source}\n# golden editor burst {edit}"))?;
     }
     let response = capture(
         harness
@@ -902,14 +942,15 @@ fn run_close_reopen_pending(
     let ready_cursor = ready_event_count(harness, &uri);
     harness.close_file(&project.active_file)?;
     harness.open_editor_buffer(&project.active_file, &reopened_source)?;
+    ensure!(
+        harness.tracked_document_version(&project.active_file) == Some(1),
+        "reopen must restore the tracked buffer owner at version 1"
+    );
 
-    let readiness =
+    let reopened_readiness =
         wait_for_generation_after(harness, &uri, 1, ready_cursor, READY_TIMEOUT)?;
     let symbols = harness.document_symbols(&project.active_file)?;
-    let names = document_symbol_names(&symbols)
-        .into_iter()
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
+    let names = document_symbol_names(&symbols).into_iter().map(str::to_owned).collect::<Vec<_>>();
 
     ensure!(
         contains_symbol_name(&names, REOPENED_SYMBOL),
@@ -931,14 +972,30 @@ fn run_close_reopen_pending(
         project.name
     );
 
+    let restored_cursor = ready_event_count(harness, &uri);
+    let restored_generation = harness.change_editor_buffer_full(&project.active_file, source)?;
+    ensure!(
+        restored_generation == 2,
+        "tracked source restore must use client version 2, got {restored_generation}"
+    );
+    let restored_readiness = wait_for_generation_after(
+        harness,
+        &uri,
+        u64::try_from(restored_generation)?,
+        restored_cursor,
+        READY_TIMEOUT,
+    )?;
+
     let symbol_response = Value::Array(symbols);
     let provider_result_class = classify_result(&symbol_response, "document_symbols");
     let evidence = json!({
         "readiness": {
             "pre_close_matching_count": ready_cursor,
             "expected_generation": 1,
-            "observed_generation": readiness.generation,
-            "matching_ordinal": readiness.matching_ordinal
+            "observed_generation": reopened_readiness.generation,
+            "matching_ordinal": reopened_readiness.matching_ordinal,
+            "restored_generation": restored_readiness.generation,
+            "restored_matching_ordinal": restored_readiness.matching_ordinal
         },
         "provider": {
             "method": "textDocument/documentSymbol",
@@ -958,8 +1015,11 @@ fn run_close_reopen_pending(
     Ok(LifecycleObservation {
         evidence,
         readiness_state: format!(
-            "active_document_ready;generation={};readiness_ordinal={}",
-            readiness.generation, readiness.matching_ordinal
+            "active_document_ready;reopened_generation={};reopened_readiness_ordinal={};restored_generation={};restored_readiness_ordinal={}",
+            reopened_readiness.generation,
+            reopened_readiness.matching_ordinal,
+            restored_readiness.generation,
+            restored_readiness.matching_ordinal
         ),
     })
 }
@@ -967,13 +1027,7 @@ fn run_close_reopen_pending(
 fn lifecycle_source(phase: &str, project_name: &str, symbol: &str) -> String {
     let package_component = project_name
         .chars()
-        .map(|character| {
-            if character.is_ascii_alphanumeric() {
-                character
-            } else {
-                '_'
-            }
-        })
+        .map(|character| if character.is_ascii_alphanumeric() { character } else { '_' })
         .collect::<String>();
     format!(
         "package Golden::{phase}::{package_component};\nuse strict;\nuse warnings;\n\nsub {symbol} {{\n    return 1;\n}}\n\n1;\n"
@@ -981,9 +1035,14 @@ fn lifecycle_source(phase: &str, project_name: &str, symbol: &str) -> String {
 }
 
 fn contains_symbol_name(names: &[String], expected: &str) -> bool {
-    names
-        .iter()
-        .any(|name| name == expected || name.rsplit("::").next() == Some(expected))
+    names.iter().any(|name| name == expected || name.rsplit("::").next() == Some(expected))
+}
+
+fn readiness_state_for(observation: ReadyObservation) -> String {
+    format!(
+        "active_document_ready;generation={};readiness_ordinal={}",
+        observation.generation, observation.matching_ordinal
+    )
 }
 
 fn request_rename(harness: &UxHarness, file: &str, cursor: CursorReceipt) -> Result<Value> {
@@ -1027,14 +1086,12 @@ fn response_row(
                 }
             },
         );
-    let actual_locations = if matches!(
-        journey.provider.as_str(),
-        "definition" | "references" | "lifecycle"
-    ) {
-        harness.normalize_response(&response)
-    } else {
-        Value::Array(Vec::new())
-    };
+    let actual_locations =
+        if matches!(journey.provider.as_str(), "definition" | "references" | "lifecycle") {
+            harness.normalize_response(&response)
+        } else {
+            Value::Array(Vec::new())
+        };
     let normalized_edits = harness.normalize_response(&actual_edits);
     let active_uri = harness.workspace.uri(&project.active_file);
     let unsafe_edit = journey.provider == "rename"
