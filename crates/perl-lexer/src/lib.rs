@@ -209,17 +209,30 @@ impl<'a> PerlLexer<'a> {
         line_start: usize,
         label: &str,
         allow_indent: bool,
+        body_indent: Option<&[u8]>,
+        body_has_content: bool,
     ) -> Option<usize> {
         // A delimiter line is not part of the body budget, but probing it must
         // still be bounded. Reuse the body cap as the maximum delimiter-line
-        // inspection window; pathological indentation or trailing whitespace
-        // therefore cannot restore an unbounded scan.
+        // inspection window. `<<~` may indent the label, but the label itself
+        // must be followed immediately by a line ending or EOF.
         let scan_end = line_start.saturating_add(MAX_HEREDOC_BYTES).min(self.input_bytes.len());
         let mut cursor = line_start;
 
         if allow_indent {
             while cursor < scan_end && matches!(self.input_bytes[cursor], b' ' | b'\t') {
                 cursor += 1;
+            }
+
+            // Perl's indented heredoc form permits the terminator to be less
+            // indented than the body, but its indentation must still be a
+            // prefix of every non-blank body line. Without this relationship,
+            // a terminator indented farther than the body would be accepted.
+            let terminator_indent = &self.input_bytes[line_start..cursor];
+            if body_has_content
+                && !body_indent.is_some_and(|indent| indent.starts_with(terminator_indent))
+            {
+                return None;
             }
         }
 
@@ -228,10 +241,6 @@ impl<'a> PerlLexer<'a> {
             return None;
         }
         cursor = label_end;
-
-        while cursor < scan_end && matches!(self.input_bytes[cursor], b' ' | b'\t') {
-            cursor += 1;
-        }
 
         if cursor == self.input_bytes.len()
             || (cursor < self.input_bytes.len()
@@ -286,6 +295,9 @@ impl<'a> PerlLexer<'a> {
                     };
 
                 if body_start > 0 {
+                    let mut body_indent: Option<Vec<u8>> = None;
+                    let mut body_has_content = false;
+
                     // Include exactly the first byte above the accepted body budget.
                     // All physical-line searches use this absolute endpoint, so a
                     // missing newline cannot scan the remainder of a large document.
@@ -312,10 +324,22 @@ impl<'a> PerlLexer<'a> {
                             continue;
                         }
 
-                        let line_start = self.position;
-                        if let Some(line_end) =
-                            self.heredoc_terminator_line_end(line_start, &label, allow_indent)
-                        {
+                        // `skip_whitespace_and_comments` may have consumed
+                        // indentation on the first body line before the
+                        // pending-heredoc loop runs. Restore that physical
+                        // line start so `<<~` can compare the real prefixes.
+                        let line_start = if self.line_start_offset == body_start {
+                            body_start
+                        } else {
+                            self.position
+                        };
+                        if let Some(line_end) = self.heredoc_terminator_line_end(
+                            line_start,
+                            &label,
+                            allow_indent,
+                            body_indent.as_deref(),
+                            body_has_content,
+                        ) {
                             self.pending_heredocs.remove(0);
                             found_terminator = true;
                             self.position = line_end;
@@ -342,6 +366,31 @@ impl<'a> PerlLexer<'a> {
                             Self::find_line_end(&self.input_bytes[..body_scan_end], self.position);
                         if line_end - body_start > MAX_HEREDOC_BYTES {
                             return Some(self.heredoc_budget_recovery(body_start));
+                        }
+
+                        if allow_indent {
+                            let mut content_start = line_start;
+                            while content_start < line_end
+                                && matches!(self.input_bytes[content_start], b' ' | b'\t')
+                            {
+                                content_start += 1;
+                            }
+
+                            if content_start < line_end {
+                                let line_indent = &self.input_bytes[line_start..content_start];
+                                body_has_content = true;
+                                match body_indent.as_mut() {
+                                    Some(common) => {
+                                        let common_len = common
+                                            .iter()
+                                            .zip(line_indent.iter())
+                                            .take_while(|(left, right)| left == right)
+                                            .count();
+                                        common.truncate(common_len);
+                                    }
+                                    None => body_indent = Some(line_indent.to_vec()),
+                                }
+                            }
                         }
 
                         self.position = line_end;
@@ -898,6 +947,27 @@ impl<'a> PerlLexer<'a> {
         let start = self.position;
         let quote = self.current_char()?;
 
+        // Punctuation typeglob names (`*"`, `*'`, *`): after a glob sigil in
+        // term position, a quote character immediately followed by `;` is the
+        // punctuation-variable typeglob name (English.pm, e.g.
+        // `*PREMATCH = *`;`), never the start of a string. String-lexing it
+        // runs the unterminated-quote recovery, which consumes through
+        // end-of-line: it errors when a newline follows (#12363) and silently
+        // swallows the rest of the line otherwise. A multiplication such as
+        // `$a * ";"` is excluded by requiring a non-operand before the star.
+        if matches!(quote, '"' | '\'' | '`')
+            && self.peek_char(1) == Some(';')
+            && self.glob_sigil_precedes()
+        {
+            self.advance();
+            return Some(Token {
+                token_type: TokenType::Operator(Arc::from(&self.input[start..start + 1])),
+                text: Arc::from(&self.input[start..start + 1]),
+                start,
+                end: start + 1,
+            });
+        }
+
         match quote {
             '"' => self.parse_double_quoted_string(start),
             '\'' => self.parse_single_quoted_string(start),
@@ -905,6 +975,33 @@ impl<'a> PerlLexer<'a> {
             'q' if self.peek_char(1) == Some('{') => self.parse_q_string(start),
             _ => None,
         }
+    }
+
+    /// Whether the previous significant character is a `*` in glob-sigil
+    /// position (preceded by an operator or the start of input, not by an
+    /// operand — `$a * x` is multiplication, `= *x` is a glob).
+    fn glob_sigil_precedes(&self) -> bool {
+        let bytes = self.input.as_bytes();
+        let mut index = self.position;
+        while index > 0 && bytes[index - 1].is_ascii_whitespace() {
+            index -= 1;
+        }
+        if index == 0 || bytes[index - 1] != b'*' {
+            return false;
+        }
+        index -= 1;
+        while index > 0 && bytes[index - 1].is_ascii_whitespace() {
+            index -= 1;
+        }
+        if index == 0 {
+            return true;
+        }
+        let before = bytes[index - 1] as char;
+        !(before.is_ascii_alphanumeric()
+            || matches!(
+                before,
+                '_' | '$' | '@' | '%' | '&' | '*' | ')' | ']' | '}' | '\'' | '"' | '`'
+            ))
     }
 
     #[inline]
@@ -1819,7 +1916,6 @@ impl<'a> PerlLexer<'a> {
 
             // Check for substitution/transliteration operators
             // Skip if after '->'  -- these are method names, not operators.
-            #[allow(clippy::collapsible_if)]
             if !self.after_sub
                 && !self.after_arrow
                 && !follows_sigil_prefix
@@ -1959,16 +2055,15 @@ impl<'a> PerlLexer<'a> {
                                 self.skip_quote_operator_delimiter_gap();
 
                                 // Get the delimiter
-                                #[allow(clippy::collapsible_if)]
-                                if let Some(delim) = self.current_char() {
-                                    if !delim.is_alphanumeric() {
-                                        self.advance();
-                                        if let Some(ref mut info) = self.current_quote_op {
-                                            info.delimiter = delim;
-                                        }
-                                        // Parse the quote operator content and return the complete token
-                                        return self.parse_quote_operator(delim);
+                                if let Some(delim) = self.current_char()
+                                    && !delim.is_alphanumeric()
+                                {
+                                    self.advance();
+                                    if let Some(ref mut info) = self.current_quote_op {
+                                        info.delimiter = delim;
                                     }
+                                    // Parse the quote operator content and return the complete token
+                                    return self.parse_quote_operator(delim);
                                 }
                             } else {
                                 // Not a quote operator here → treat as IDENTIFIER
@@ -2259,31 +2354,30 @@ impl<'a> PerlLexer<'a> {
                 }
                 self.advance();
                 // Check for compound operators
-                #[allow(clippy::collapsible_if)]
-                if let Some(next) = self.current_char() {
-                    if is_compound_operator(ch, next) {
-                        self.advance();
+                if let Some(next) = self.current_char()
+                    && is_compound_operator(ch, next)
+                {
+                    self.advance();
 
-                        // Check for three-character operators like **=, <<=, >>=
-                        if self.position < self.input.len() {
-                            let third = self.current_char();
-                            // Check for three-character operators
-                            if matches!(
-                                (ch, next, third),
-                                ('*', '*', Some('='))
-                                    | ('<', '<', Some('='))
-                                    | ('>', '>', Some('='))
-                                    | ('&', '&', Some('='))
-                                    | ('|', '|', Some('='))
-                                    | ('/', '/', Some('='))
-                            ) {
-                                self.advance(); // consume the =
-                            } else if ch == '<' && next == '=' && third == Some('>') {
-                                self.advance(); // consume the >
-                            // Special case: <=> spaceship operator
-                            } else if ch == '.' && next == '.' && third == Some('.') {
-                                self.advance(); // consume the third .
-                            }
+                    // Check for three-character operators like **=, <<=, >>=
+                    if self.position < self.input.len() {
+                        let third = self.current_char();
+                        // Check for three-character operators
+                        if matches!(
+                            (ch, next, third),
+                            ('*', '*', Some('='))
+                                | ('<', '<', Some('='))
+                                | ('>', '>', Some('='))
+                                | ('&', '&', Some('='))
+                                | ('|', '|', Some('='))
+                                | ('/', '/', Some('='))
+                        ) {
+                            self.advance(); // consume the =
+                        } else if ch == '<' && next == '=' && third == Some('>') {
+                            self.advance(); // consume the >
+                        // Special case: <=> spaceship operator
+                        } else if ch == '.' && next == '.' && third == Some('.') {
+                            self.advance(); // consume the third .
                         }
                     }
                 }
@@ -2292,29 +2386,28 @@ impl<'a> PerlLexer<'a> {
             | '\\' => {
                 self.advance();
                 // Check for compound operators
-                #[allow(clippy::collapsible_if)]
-                if let Some(next) = self.current_char() {
-                    if is_compound_operator(ch, next) {
-                        self.advance();
+                if let Some(next) = self.current_char()
+                    && is_compound_operator(ch, next)
+                {
+                    self.advance();
 
-                        // Check for three-character operators like **=, <<=, >>=
-                        if self.position < self.input.len() {
-                            let third = self.current_char();
-                            // Check for three-character operators
-                            if matches!(
-                                (ch, next, third),
-                                ('*', '*', Some('='))
-                                    | ('<', '<', Some('='))
-                                    | ('>', '>', Some('='))
-                                    | ('&', '&', Some('='))
-                                    | ('|', '|', Some('='))
-                                    | ('/', '/', Some('='))
-                            ) {
-                                self.advance(); // consume the =
-                            } else if ch == '<' && next == '=' && third == Some('>') {
-                                self.advance(); // consume the >
-                                // Special case: <=> spaceship operator
-                            }
+                    // Check for three-character operators like **=, <<=, >>=
+                    if self.position < self.input.len() {
+                        let third = self.current_char();
+                        // Check for three-character operators
+                        if matches!(
+                            (ch, next, third),
+                            ('*', '*', Some('='))
+                                | ('<', '<', Some('='))
+                                | ('>', '>', Some('='))
+                                | ('&', '&', Some('='))
+                                | ('|', '|', Some('='))
+                                | ('/', '/', Some('='))
+                        ) {
+                            self.advance(); // consume the =
+                        } else if ch == '<' && next == '=' && third == Some('>') {
+                            self.advance(); // consume the >
+                            // Special case: <=> spaceship operator
                         }
                     }
                 }

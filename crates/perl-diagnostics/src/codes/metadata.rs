@@ -99,6 +99,9 @@ impl DiagnosticCode {
             Self::SecurityExecCall => "PL604",
             Self::SecurityPipeOpen => "PL605",
             Self::SecurityReadpipe => "PL606",
+            Self::SecuritySqlInjection => "PL607",
+            Self::SecuritySubstitutionEval => "PL608",
+            Self::SecurityEmbeddedRegexCode => "PL609",
             Self::UnusedImport => "PL700",
             Self::ModuleNotFound => "PL701",
             Self::SourceFilterModule => "PL702",
@@ -164,6 +167,17 @@ impl DiagnosticCode {
             "PL604" => "https://docs.perl-lsp.org/errors/PL604",
             "PL605" => "https://docs.perl-lsp.org/errors/PL605",
             "PL606" => "https://docs.perl-lsp.org/errors/PL606",
+            // PL607 is the reviewed external-reference exception (#5035): the
+            // storyboarded `security.sql_injection` wire format pins
+            // codeDescription to the OWASP SQL injection reference
+            // (crates/perl-lsp-rs/tests/lsp_critical_user_stories.rs, "TEST 4:
+            // Security Vulnerability Detection"), so the href is the external
+            // security authority rather than a docs.perl-lsp.org error page.
+            // `documentation_url_format_consistency` carries this exception as
+            // an explicit allowlist so the deviation stays reviewed.
+            "PL607" => "https://owasp.org/www-community/attacks/SQL_Injection",
+            "PL608" => "https://docs.perl-lsp.org/errors/PL608",
+            "PL609" => "https://docs.perl-lsp.org/errors/PL609",
             "PL700" => "https://docs.perl-lsp.org/errors/PL700",
             "PL701" => "https://docs.perl-lsp.org/errors/PL701",
             "PL702" => "https://docs.perl-lsp.org/errors/PL702",
@@ -227,6 +241,9 @@ impl DiagnosticCode {
             | Self::SecurityExecCall
             | Self::SecurityPipeOpen
             | Self::SecurityReadpipe
+            | Self::SecuritySqlInjection
+            | Self::SecuritySubstitutionEval
+            | Self::SecurityEmbeddedRegexCode
             | Self::ModuleNotFound
             | Self::SourceFilterModule
             | Self::VersionIncompatFeature
@@ -448,6 +465,22 @@ impl DiagnosticCode {
                 "`readpipe()` executes a shell command (equivalent to backticks/qx//). \
                 Use `open(my $fh, '-|', $cmd, @args)` or IPC::Run for safer command execution.",
             ),
+            Self::SecuritySqlInjection => Some(
+                "Interpolating or concatenating values into the SQL text passed to \
+                `prepare`/`do` allows crafted input to change the statement. \
+                Keep the SQL literal static and pass values as bind values: \
+                `$dbh->prepare('... WHERE id = ?')->execute($user_id)`.",
+            ),
+            Self::SecuritySubstitutionEval => Some(
+                "The `e`/`ee` modifier evaluates the substitution replacement as Perl code, \
+                like string `eval`. Compute the replacement without `/e`, or keep untrusted \
+                input out of the evaluated expression.",
+            ),
+            Self::SecurityEmbeddedRegexCode => Some(
+                "An embedded `(?{ ... })` or `(??{ ... })` block runs Perl code while \
+                the pattern is evaluated. Remove the code block from the regex or keep \
+                untrusted patterns away from it.",
+            ),
             Self::UnusedImport => Some(
                 "This module is imported but none of its exports appear to be used. \
                 Remove the `use` statement to reduce unnecessary dependencies.",
@@ -628,6 +661,9 @@ impl DiagnosticCode {
             "PL604" => Some(Self::SecurityExecCall),
             "PL605" => Some(Self::SecurityPipeOpen),
             "PL606" => Some(Self::SecurityReadpipe),
+            "PL607" => Some(Self::SecuritySqlInjection),
+            "PL608" => Some(Self::SecuritySubstitutionEval),
+            "PL609" => Some(Self::SecurityEmbeddedRegexCode),
             "PL700" => Some(Self::UnusedImport),
             "PL701" => Some(Self::ModuleNotFound),
             "PL702" => Some(Self::SourceFilterModule),

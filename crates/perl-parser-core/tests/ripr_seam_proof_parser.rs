@@ -26,7 +26,7 @@
 //!   which only detects `(?{...})` inline code blocks.  The `e`/`ee` modifiers
 //!   evaluate the replacement as Perl code (equivalent to `eval`) but were never
 //!   consulted.  Fix: OR in `modifiers.contains('e')` at both originating sites.
-//!   The `(risk:code)` sexp marker is the discriminating signal — a mutation
+//!   The `(has_embedded_code true)` sexp marker is the discriminating signal — a mutation
 //!   removing `|| modifiers.contains('e')` would make it disappear for s///e.
 
 mod cpan_test_helpers;
@@ -68,12 +68,15 @@ fn first_expr_kind(src: &str) -> NodeKind {
 // ── BOUNDARY A: sigil present + bare name → Readline, NOT Glob ───────────────
 
 /// `<$fh>` — the canonical case that triggered the bug.
-/// Verified sexp: `(source_file (my_declaration (variable $ x)(readline $fh)))`
+/// Verified sexp: `(source_file (my_declaration (variable (sigil $) (name x))(readline (filehandle $fh))))`
 /// Pinned boundary: `is_simple_scalar_variable` returns true for `$fh`.
 #[test]
 fn seam1_angle_simple_scalar_lowercase_is_readline() {
     let s = sexp("my $x = <$fh>;");
-    assert!(s.contains("(readline $fh)"), "expected (readline $fh) but got: {s}");
+    assert!(
+        s.contains("(readline (filehandle $fh))"),
+        "expected (readline (filehandle $fh)) but got: {s}"
+    );
     assert!(!s.contains("(glob"), "<$fh> must NOT be Glob; got: {s}");
 }
 
@@ -82,7 +85,10 @@ fn seam1_angle_simple_scalar_lowercase_is_readline() {
 #[test]
 fn seam1_angle_simple_scalar_uppercase_sigil_is_readline() {
     let s = sexp("my $x = <$FH>;");
-    assert!(s.contains("(readline $FH)"), "expected (readline $FH) but got: {s}");
+    assert!(
+        s.contains("(readline (filehandle $FH))"),
+        "expected (readline (filehandle $FH)) but got: {s}"
+    );
     assert!(!s.contains("(glob"), "<$FH> must NOT be Glob; got: {s}");
 }
 
@@ -91,7 +97,10 @@ fn seam1_angle_simple_scalar_uppercase_sigil_is_readline() {
 #[test]
 fn seam1_angle_simple_scalar_pattern_name_is_readline() {
     let s = sexp("my $x = <$pattern>;");
-    assert!(s.contains("(readline $pattern)"), "expected (readline $pattern) but got: {s}");
+    assert!(
+        s.contains("(readline (filehandle $pattern))"),
+        "expected (readline (filehandle $pattern)) but got: {s}"
+    );
     assert!(!s.contains("(glob"), "<$pattern> must NOT be Glob; got: {s}");
 }
 
@@ -100,7 +109,10 @@ fn seam1_angle_simple_scalar_pattern_name_is_readline() {
 #[test]
 fn seam1_angle_qualified_scalar_is_readline() {
     let s = sexp("my $x = <$Foo::bar>;");
-    assert!(s.contains("(readline $Foo::bar)"), "expected (readline $Foo::bar) but got: {s}");
+    assert!(
+        s.contains("(readline (filehandle $Foo::bar))"),
+        "expected (readline (filehandle $Foo::bar)) but got: {s}"
+    );
     assert!(!s.contains("(glob"), "<$Foo::bar> must NOT be Glob; got: {s}");
 }
 
@@ -129,7 +141,7 @@ fn seam1_angle_hash_subscript_is_glob() {
 #[test]
 fn seam1_angle_bareword_glob_pattern_is_glob() {
     let s = sexp(r"my @f = <conf/*.ini>;");
-    assert!(s.contains("(glob conf/*.ini)"), "<conf/*.ini> must be Glob; got: {s}");
+    assert!(s.contains("(glob (pattern conf/*.ini))"), "<conf/*.ini> must be Glob; got: {s}");
     assert!(!s.contains("(readline"), "<conf/*.ini> must NOT be Readline; got: {s}");
 }
 
@@ -138,7 +150,7 @@ fn seam1_angle_bareword_glob_pattern_is_glob() {
 #[test]
 fn seam1_angle_star_pattern_is_glob() {
     let s = sexp(r"my @f = <*.pm>;");
-    assert!(s.contains("(glob *.pm)"), "<*.pm> must be Glob; got: {s}");
+    assert!(s.contains("(glob (pattern *.pm))"), "<*.pm> must be Glob; got: {s}");
     assert!(!s.contains("(readline"), "<*.pm> must NOT be Readline; got: {s}");
 }
 
@@ -148,14 +160,20 @@ fn seam1_angle_star_pattern_is_glob() {
 #[test]
 fn seam1_angle_stdin_bareword_is_readline() {
     let s = sexp("my $x = <STDIN>;");
-    assert!(s.contains("(readline STDIN)"), "expected (readline STDIN) but got: {s}");
+    assert!(
+        s.contains("(readline (filehandle STDIN))"),
+        "expected (readline (filehandle STDIN)) but got: {s}"
+    );
 }
 
 /// `<FH>` — short uppercase bareword → Readline (pre-fix path).
 #[test]
 fn seam1_angle_fh_bareword_is_readline() {
     let s = sexp("my $x = <FH>;");
-    assert!(s.contains("(readline FH)"), "expected (readline FH) but got: {s}");
+    assert!(
+        s.contains("(readline (filehandle FH))"),
+        "expected (readline (filehandle FH)) but got: {s}"
+    );
 }
 
 // ── BOUNDARY D: diamond operators ────────────────────────────────────────────
@@ -264,11 +282,11 @@ fn seam1_all_glob_forms_parse_cleanly() {
 // ── BOUNDARY A: version forms produce a Class node with a Block ──────────────
 
 /// `class Foo 1.0 {}` — decimal version consumed, Block preserved.
-/// Verified sexp: `(source_file (class Foo (block )))`
+/// Verified sexp: `(source_file (class (name Foo) (block)))`
 #[test]
 fn seam2_class_decimal_version_produces_class_block() {
     let s = sexp("class Foo 1.0 {}");
-    assert!(s.contains("(class Foo"), "expected class Foo node; got: {s}");
+    assert!(s.contains("(class (name Foo)"), "expected class Foo node; got: {s}");
     assert!(s.contains("(block"), "class body block must be present; got: {s}");
     assert!(!s.contains("ERROR"), "class with decimal version must not error; got: {s}");
 }
@@ -277,7 +295,7 @@ fn seam2_class_decimal_version_produces_class_block() {
 #[test]
 fn seam2_class_vstring_version_produces_class_block() {
     let s = sexp("class Foo v1.2.3 {}");
-    assert!(s.contains("(class Foo"), "expected class Foo node; got: {s}");
+    assert!(s.contains("(class (name Foo)"), "expected class Foo node; got: {s}");
     assert!(s.contains("(block"), "class body block must be present; got: {s}");
     assert!(!s.contains("ERROR"), "class with v-string must not error; got: {s}");
 }
@@ -286,7 +304,7 @@ fn seam2_class_vstring_version_produces_class_block() {
 #[test]
 fn seam2_class_integer_version_produces_class_block() {
     let s = sexp("class Foo 2 {}");
-    assert!(s.contains("(class Foo"), "expected class Foo node; got: {s}");
+    assert!(s.contains("(class (name Foo)"), "expected class Foo node; got: {s}");
     assert!(s.contains("(block"), "class body block must be present; got: {s}");
     assert!(!s.contains("ERROR"), "class with integer version must not error; got: {s}");
 }
@@ -331,7 +349,7 @@ fn seam2_class_version_then_attribute_no_errors() {
 #[test]
 fn seam2_class_no_version_unchanged() {
     let s = sexp("class Foo {}");
-    assert!(s.contains("(class Foo"), "class without version must produce Class; got: {s}");
+    assert!(s.contains("(class (name Foo)"), "class without version must produce Class; got: {s}");
     assert!(s.contains("(block"), "class without version must have Block body; got: {s}");
     assert_clean_parse("class Foo {}");
 }
@@ -340,7 +358,7 @@ fn seam2_class_no_version_unchanged() {
 #[test]
 fn seam2_class_attribute_no_version_unchanged() {
     let s = sexp("class Foo :isa(Bar) {}");
-    assert!(s.contains(":isa(Bar)"), "isa attribute must survive; got: {s}");
+    assert!(s.contains("(parents Bar)"), "isa parent must survive; got: {s}");
     assert!(s.contains("(block"), "class body must be present; got: {s}");
     assert_clean_parse("class Foo :isa(Bar) {}");
 }
@@ -376,8 +394,8 @@ fn seam2_class_version_nodekind_is_class_with_block() -> Result<(), String> {
 //
 // Key sexp shapes (verified against binary):
 //   chr($x) ? 1 : 0    → (ternary (ambiguous_function_call_expression ...) ...)
-//   defined($x) ? ...  → (ternary (call defined (...)) ...)
-//   ref($x) ? ...      → (ternary (call ref (...)) ...)
+//   defined($x) ? ...  → (ternary (call (name defined) (...)) ...)
+//   ref($x) ? ...      → (ternary (call (name ref) (...)) ...)
 //   length($s) ? ...   → (ternary (ambiguous_function_call_expression ...) ...)
 
 // ── BOUNDARY A: ternary is at the root (call is the CONDITION) ────────────────
@@ -389,10 +407,7 @@ fn seam3_chr_paren_ternary_at_root() {
     let s = sexp("chr($x) ? 1 : 0;");
     assert!(s.contains("(ternary"), "expected ternary at root for chr($x) ? 1 : 0; got: {s}");
     // The call must NOT absorb the ternary as an argument
-    assert!(
-        !s.contains("(ambiguous_function_call_expression (function) (ternary"),
-        "chr must NOT absorb ternary into args; got: {s}"
-    );
+    assert!(!s.contains("(args (ternary"), "chr must NOT absorb ternary into args; got: {s}");
 }
 
 /// `defined($x) ? $x : "d"` — defined uses `(call defined ...)` format.
@@ -401,7 +416,7 @@ fn seam3_defined_paren_ternary_at_root() {
     let s = sexp(r#"defined($x) ? $x : "d";"#);
     assert!(s.contains("(ternary"), "expected ternary at root for defined($x) ternary; got: {s}");
     assert!(
-        !s.contains("(call defined ((ternary"),
+        !s.contains("(call (name defined) (args (ternary"),
         "defined must NOT absorb ternary into args; got: {s}"
     );
 }
@@ -411,7 +426,10 @@ fn seam3_defined_paren_ternary_at_root() {
 fn seam3_ref_paren_ternary_at_root() {
     let s = sexp("ref($x) ? 1 : 0;");
     assert!(s.contains("(ternary"), "expected ternary at root for ref($x) ternary; got: {s}");
-    assert!(!s.contains("(call ref ((ternary"), "ref must NOT absorb ternary into args; got: {s}");
+    assert!(
+        !s.contains("(call (name ref) (args (ternary"),
+        "ref must NOT absorb ternary into args; got: {s}"
+    );
 }
 
 /// `length($s) ? "a" : "b"` — length uses ambiguous_function_call_expression.
@@ -419,10 +437,7 @@ fn seam3_ref_paren_ternary_at_root() {
 fn seam3_length_paren_ternary_at_root() {
     let s = sexp(r#"length($s) ? "a" : "b";"#);
     assert!(s.contains("(ternary"), "expected ternary at root for length($s) ternary; got: {s}");
-    assert!(
-        !s.contains("(ambiguous_function_call_expression (function) (ternary"),
-        "length must NOT absorb ternary into args; got: {s}"
-    );
+    assert!(!s.contains("(args (ternary"), "length must NOT absorb ternary into args; got: {s}");
 }
 
 // ── BOUNDARY B: call structure is correct inside the ternary condition ────────
@@ -433,9 +448,9 @@ fn seam3_length_paren_ternary_at_root() {
 fn seam3_chr_ternary_condition_is_call() {
     let s = sexp("chr($x) ? 1 : 0;");
     // Verified exact sexp:
-    // (ternary (ambiguous_function_call_expression (function) (variable $ x)) (number 1) (number 0))
+    // (ternary (ambiguous_function_call_expression (function) (variable (sigil $) (name x))) (number (value 1)) (number (value 0)))
     assert!(
-        s.contains("(ternary (ambiguous_function_call_expression (function) (variable $ x))"),
+        s.contains("(ternary (condition (ambiguous_function_call_expression (name chr) (args (variable (sigil $) (name x)))))"),
         "ternary condition must be the chr call; got: {s}"
     );
 }
@@ -445,9 +460,11 @@ fn seam3_chr_ternary_condition_is_call() {
 fn seam3_defined_ternary_exact_sexp() {
     let s = sexp(r#"defined($x) ? $x : "d";"#);
     // Verified exact sexp (outer source_file wrapper stripped by assertion):
-    // (ternary (call defined ((variable $ x))) (variable $ x) (string_interpolated "\"d\""))
+    // (ternary (call (name defined) (args (variable (sigil $) (name x)))) (variable (sigil $) (name x)) (string_interpolated "\"d\""))
     assert!(
-        s.contains("(ternary (call defined ((variable $ x)))"),
+        s.contains(
+            "(ternary (condition (call (name defined) (args (variable (sigil $) (name x)))))"
+        ),
         "defined ternary must have (call defined ...) as condition; got: {s}"
     );
 }
@@ -460,7 +477,7 @@ fn seam3_chr_no_ternary_parses_as_call() {
     let s = sexp("chr($x);");
     assert!(!s.contains("(ternary"), "chr($x) alone must NOT produce ternary; got: {s}");
     assert!(
-        s.contains("(ambiguous_function_call_expression (function)"),
+        s.contains("(ambiguous_function_call_expression (name chr)"),
         "chr($x) must parse as a call; got: {s}"
     );
     assert_clean_parse("chr($x);");
@@ -471,7 +488,7 @@ fn seam3_chr_no_ternary_parses_as_call() {
 fn seam3_defined_no_ternary_parses_as_call() {
     let s = sexp("defined($x);");
     assert!(!s.contains("(ternary"), "defined($x) alone must NOT produce ternary; got: {s}");
-    assert!(s.contains("(call defined"), "defined($x) must parse as call; got: {s}");
+    assert!(s.contains("(call (name defined)"), "defined($x) must parse as call; got: {s}");
     assert_clean_parse("defined($x);");
 }
 
@@ -500,52 +517,61 @@ fn seam3_all_builtin_ternary_forms_parse_cleanly() {
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Key sexp shapes verified against the binary:
-//   $$ref          → (unary_${} (variable $ ref))
-//   @$ref          → (unary_@{} (variable $ ref))
-//   %$ref          → (unary_%{} (variable $ ref))
-//   $$self{field}  → (binary_{} (unary_${} (variable $ self)) (identifier field))
-//   ${$self}{field}→ (binary_{} (unary_${} (variable $ self)) (identifier field))
-//   $$             → (variable $ $)   [PID special var]
-//   $ref           → (variable $ ref)
-//   catfile $$self, $_ → (indirect_call catfile (unary_${} (variable $ self)) ((variable $ _)))
+//   $$ref          → (unary_${} (variable (sigil $) (name ref)))
+//   @$ref          → (unary_@{} (variable (sigil $) (name ref)))
+//   %$ref          → (unary_%{} (variable (sigil $) (name ref)))
+//   $$self{field}  → (binary_{} (unary_${} (variable (sigil $) (name self))) (identifier field))
+//   ${$self}{field}→ (binary_{} (unary_${} (variable (sigil $) (name self))) (identifier field))
+//   $$             → (variable (sigil $) (name $))   [PID special var]
+//   $ref           → (variable (sigil $) (name ref))
+//   catfile $$self, $_ → (indirect_call catfile (unary_${} (variable (sigil $) (name self))) ((variable (sigil $) (name _))))
 
 // ── BOUNDARY A: unbraced scalar deref → Unary node (not wrong Variable) ──────
 
 /// `$$ref` — must be Unary dereference, NOT `Variable{name:"$ref"}`.
-/// Verified sexp: `(unary_${} (variable $ ref))`
+/// Verified sexp: `(unary_${} (variable (sigil $) (name ref)))`
 /// Boundary: `$` followed by another `$` triggers unary deref path.
 #[test]
 fn seam4_unbraced_scalar_deref_is_unary() {
     let s = sexp("$$ref;");
     assert!(
-        s.contains("(unary_${} (variable $ ref))"),
-        "$$ref must be (unary_${{}} (variable $ ref)); got: {s}"
+        s.contains("(unary_${} (op ${}) (operand (variable (sigil $) (name ref))))"),
+        "$$ref must be (unary_${{}} (op ${{}}) (operand (variable (sigil $) (name ref)))); got: {s}"
     );
-    assert!(!s.contains("(variable $ $ref)"), "$$ref must NOT be (variable $ $ref); got: {s}");
+    assert!(
+        !s.contains("(variable (sigil $) (name $ref))"),
+        "$$ref must NOT be (variable (sigil $) (name $ref)); got: {s}"
+    );
 }
 
 /// `@$ref` — unbraced array deref → Unary.
-/// Verified sexp: `(unary_@{} (variable $ ref))`
+/// Verified sexp: `(unary_@{} (variable (sigil $) (name ref)))`
 #[test]
 fn seam4_unbraced_array_deref_is_unary() {
     let s = sexp("@$ref;");
     assert!(
-        s.contains("(unary_@{} (variable $ ref))"),
-        "@$ref must be (unary_@{{}} (variable $ ref)); got: {s}"
+        s.contains("(unary_@{} (op @{}) (operand (variable (sigil $) (name ref))))"),
+        "@$ref must be (unary_@{{}} (op @{{}}) (operand (variable (sigil $) (name ref)))); got: {s}"
     );
-    assert!(!s.contains("(variable @ $ref)"), "@$ref must NOT be (variable @ $ref); got: {s}");
+    assert!(
+        !s.contains("(variable (sigil @) (name $ref))"),
+        "@$ref must NOT be (variable (sigil @) (name $ref)); got: {s}"
+    );
 }
 
 /// `%$ref` — unbraced hash deref → Unary.
-/// Verified sexp: `(unary_%{} (variable $ ref))`
+/// Verified sexp: `(unary_%{} (variable (sigil $) (name ref)))`
 #[test]
 fn seam4_unbraced_hash_deref_is_unary() {
     let s = sexp("%$ref;");
     assert!(
-        s.contains("(unary_%{} (variable $ ref))"),
-        "%$ref must be (unary_%{{}} (variable $ ref)); got: {s}"
+        s.contains("(unary_%{} (op %{}) (operand (variable (sigil $) (name ref))))"),
+        "%$ref must be (unary_%{{}} (op %{{}}) (operand (variable (sigil $) (name ref)))); got: {s}"
     );
-    assert!(!s.contains("(variable % $ref)"), "%$ref must NOT be (variable % $ref); got: {s}");
+    assert!(
+        !s.contains("(variable (sigil %) (name $ref))"),
+        "%$ref must NOT be (variable (sigil %) (name $ref)); got: {s}"
+    );
 }
 
 // ── BOUNDARY B: unbraced form matches braced form exactly ────────────────────
@@ -578,7 +604,7 @@ fn seam4_unbraced_hash_equals_braced() {
 // ── BOUNDARY C: hash subscript after unbraced deref ──────────────────────────
 
 /// `$$self{field}` — subscript after unbraced deref matches braced form.
-/// Verified sexp: `(binary_{} (unary_${} (variable $ self)) (identifier field))`
+/// Verified sexp: `(binary_{} (unary_${} (variable (sigil $) (name self))) (identifier (name field)))`
 #[test]
 fn seam4_unbraced_self_hash_subscript_matches_braced() {
     let unbraced = sexp("$$self{field};");
@@ -594,11 +620,11 @@ fn seam4_unbraced_self_hash_subscript_matches_braced() {
 fn seam4_unbraced_self_hash_subscript_not_wrong_variable() {
     let s = sexp("$$self{field};");
     assert!(
-        !s.contains("(variable $ $self)"),
+        !s.contains("(variable (sigil $) (name $self))"),
         "$$self{{field}} must NOT produce (variable $ $self); got: {s}"
     );
     assert!(
-        s.contains("(unary_${} (variable $ self))"),
+        s.contains("(unary_${} (op ${}) (operand (variable (sigil $) (name self))))"),
         "$$self{{field}} must use unary_${{}} node; got: {s}"
     );
 }
@@ -606,12 +632,15 @@ fn seam4_unbraced_self_hash_subscript_not_wrong_variable() {
 // ── BOUNDARY D: $$ (PID) special variable must not be affected ───────────────
 
 /// `$$` alone — PID special variable, NOT a deref.
-/// Verified sexp: `(variable $ $)`
+/// Verified sexp: `(variable (sigil $) (name $))`
 /// Boundary: `$$` with nothing following is the special var, not `$` + deref.
 #[test]
 fn seam4_dollar_dollar_pid_is_special_var() {
     let s = sexp("$$;");
-    assert!(s.contains("(variable $ $)"), "$$ must be special var (variable $ $); got: {s}");
+    assert!(
+        s.contains("(variable (sigil $) (name $))"),
+        "$$ must be special var (variable (sigil $) (name $)); got: {s}"
+    );
     assert!(!s.contains("(unary_${}"), "$$ (PID) must NOT be parsed as unary deref; got: {s}");
 }
 
@@ -620,7 +649,10 @@ fn seam4_dollar_dollar_pid_is_special_var() {
 fn seam4_dollar_dollar_pid_in_declaration_clean() {
     let s = sexp("my $pid = $$;");
     assert!(!s.contains("ERROR"), "my $pid = $$ must parse cleanly; got: {s}");
-    assert!(s.contains("(variable $ $)"), "my $pid = $$ must preserve PID var; got: {s}");
+    assert!(
+        s.contains("(variable (sigil $) (name $))"),
+        "my $pid = $$ must preserve PID var; got: {s}"
+    );
 }
 
 // ── BOUNDARY E: plain scalar unchanged ───────────────────────────────────────
@@ -631,7 +663,8 @@ fn seam4_dollar_dollar_pid_in_declaration_clean() {
 fn seam4_plain_scalar_unchanged() {
     let s = sexp("$ref;");
     assert_eq!(
-        s, "(source_file (variable $ ref))",
+        s,
+        "(source_file (statements (expression_statement (expression (variable (sigil $) (name ref))))))",
         "$ref must still be a plain variable; got: {s}"
     );
 }
@@ -640,7 +673,7 @@ fn seam4_plain_scalar_unchanged() {
 //
 // Historical note: an earlier version of the parser classified `catfile $$self, $_`
 // as `indirect_call` (verified sexp at the time:
-//   `(indirect_call catfile (unary_${} (variable $ self)) ((variable $ _)))`).
+//   `(indirect_call catfile (unary_${} (variable (sigil $) (name self))) ((variable (sigil $) (name _))))`).
 // The current parser emits `ambiguous_function_call_expression` for unknown
 // lowercase barewords followed by sigiled arguments separated by a comma, because
 // `is_unknown_lowercase_bareword_call_pattern` returns false when the third token
@@ -649,7 +682,7 @@ fn seam4_plain_scalar_unchanged() {
 // the ambiguous shape avoids classifying an unknown user-defined call as an
 // `IndirectCall`, whose downstream consumers assign different semantics.  The seam
 // boundary being protected here is that the deref of `$$self` is correctly
-// represented as `(unary_${} (variable $ self))` rather than being split into `$$`
+// represented as `(unary_${} (variable (sigil $) (name self)))` rather than being split into `$$`
 // (PID) and `self`, and that the comma-separated second argument `$_` is retained.
 
 /// `catfile $$self, $_` — both arguments must be preserved and `$$self` must be
@@ -659,7 +692,7 @@ fn seam4_indirect_call_with_deref_keeps_both_args() {
     let s = sexp("catfile $$self, $_;");
     assert!(
         s.contains(
-            "(ambiguous_function_call_expression (function) (unary_${} (variable $ self)) (variable $ _))"
+            "(ambiguous_function_call_expression (name catfile) (args (unary_${} (op ${}) (operand (variable (sigil $) (name self))))) (args (variable (sigil $) (name _)))"
         ),
         "catfile call must retain both args in one ambiguous call shape; got: {s}"
     );
@@ -676,7 +709,7 @@ fn seam4_indirect_call_exact_sexp() {
     // Current parser output: one ambiguous call node with both args intact.
     assert!(
         s.contains(
-            "(ambiguous_function_call_expression (function) (unary_${} (variable $ self)) (variable $ _))"
+            "(ambiguous_function_call_expression (name catfile) (args (unary_${} (op ${}) (operand (variable (sigil $) (name self))))) (args (variable (sigil $) (name _)))"
         ),
         "catfile sexp must retain both args in one ambiguous call shape; got: {s}"
     );
@@ -731,25 +764,28 @@ fn seam4_all_deref_forms_parse_cleanly() {
 //   primary.rs — s/// as a standalone expression (bound via =~ later)
 //   quotes.rs  — s{}{} quote-operator form (no =~)
 //
-// Discriminating signal: `(risk:code)` marker in the sexp.
+// Discriminating signal: `(has_embedded_code true)` marker in the sexp.
 // A mutation that removes `|| modifiers.contains('e')` causes every e-modifier
-// test below to fail — the `(risk:code)` annotation disappears from the sexp.
+// test below to fail — the `(has_embedded_code true)` annotation disappears from the sexp.
 //
 // Key sexp shapes:
-//   $s =~ s/a/b/e;   → (substitution (variable $ s) "a" "b" "e" (risk:code))
-//   $s =~ s/a/b/g;   → (substitution (variable $ s) "a" "b" "g")   [no marker]
+//   $s =~ s/a/b/e;   → (substitution (variable (sigil $) (name s)) "a" "b" "e" (risk:code))
+//   $s =~ s/a/b/g;   → (substitution (variable (sigil $) (name s)) "a" "b" "g")   [no marker]
 //   s{a}{b}e;        → (substitution (identifier $_) "a" "b" "e" (risk:code))
 //   s{a}{b}g;        → (substitution (identifier $_) "a" "b" "g")   [no marker]
 
 // ── BOUNDARY A: Site 1 (primary.rs) — e modifier → risk:code present ─────────
 
-/// `$s =~ s/a/b/e` — single `e` modifier must emit `(risk:code)` in the sexp.
+/// `$s =~ s/a/b/e` — single `e` modifier must emit `(has_embedded_code true)` in the sexp.
 /// Pinned boundary: `modifiers.contains('e')` true → `has_embedded_code = true`.
 /// A mutation removing `|| modifiers.contains('e')` makes this test fail.
 #[test]
 fn seam5_primary_e_modifier_emits_risk_code_marker() {
     let s = sexp(r#"$s =~ s/a/b/e;"#);
-    assert!(s.contains("(risk:code)"), "s///e must emit (risk:code) in sexp; got: {s}");
+    assert!(
+        s.contains("(has_embedded_code true)"),
+        "s///e must emit (has_embedded_code true) in sexp; got: {s}"
+    );
     assert!(s.contains("(substitution"), "must produce a substitution node; got: {s}");
 }
 
@@ -758,7 +794,10 @@ fn seam5_primary_e_modifier_emits_risk_code_marker() {
 #[test]
 fn seam5_primary_ee_modifier_emits_risk_code_marker() {
     let s = sexp(r#"$s =~ s/a/b/ee;"#);
-    assert!(s.contains("(risk:code)"), "s///ee must emit (risk:code) in sexp; got: {s}");
+    assert!(
+        s.contains("(has_embedded_code true)"),
+        "s///ee must emit (has_embedded_code true) in sexp; got: {s}"
+    );
 }
 
 // ── BOUNDARY B: Site 1 (primary.rs) — no e modifier → risk:code absent ───────
@@ -769,7 +808,10 @@ fn seam5_primary_ee_modifier_emits_risk_code_marker() {
 #[test]
 fn seam5_primary_no_e_modifier_no_risk_code_marker() {
     let s = sexp(r#"$s =~ s/a/b/g;"#);
-    assert!(!s.contains("(risk:code)"), "s///g must NOT emit (risk:code) in sexp; got: {s}");
+    assert!(
+        !s.contains("(has_embedded_code true)"),
+        "s///g must NOT emit (has_embedded_code true) in sexp; got: {s}"
+    );
     assert!(s.contains("(substitution"), "must still produce a substitution node; got: {s}");
 }
 
@@ -782,7 +824,10 @@ fn seam5_primary_no_e_modifier_no_risk_code_marker() {
 #[test]
 fn seam5_quotes_e_modifier_emits_risk_code_marker() {
     let s = sexp(r#"s{a}{b}e;"#);
-    assert!(s.contains("(risk:code)"), "s{{}}{{}}e must emit (risk:code) in sexp; got: {s}");
+    assert!(
+        s.contains("(has_embedded_code true)"),
+        "s{{}}{{}}e must emit (has_embedded_code true) in sexp; got: {s}"
+    );
     assert!(s.contains("(substitution"), "must produce a substitution node; got: {s}");
 }
 
@@ -790,7 +835,10 @@ fn seam5_quotes_e_modifier_emits_risk_code_marker() {
 #[test]
 fn seam5_quotes_ee_modifier_emits_risk_code_marker() {
     let s = sexp(r#"s{a}{b}ee;"#);
-    assert!(s.contains("(risk:code)"), "s{{}}{{}}ee must emit (risk:code) in sexp; got: {s}");
+    assert!(
+        s.contains("(has_embedded_code true)"),
+        "s{{}}{{}}ee must emit (has_embedded_code true) in sexp; got: {s}"
+    );
 }
 
 // ── BOUNDARY D: Site 2 (quotes.rs) — no e modifier → risk:code absent ────────
@@ -800,7 +848,10 @@ fn seam5_quotes_ee_modifier_emits_risk_code_marker() {
 #[test]
 fn seam5_quotes_no_e_modifier_no_risk_code_marker() {
     let s = sexp(r#"s{a}{b}g;"#);
-    assert!(!s.contains("(risk:code)"), "s{{}}{{}}g must NOT emit (risk:code) in sexp; got: {s}");
+    assert!(
+        !s.contains("(has_embedded_code true)"),
+        "s{{}}{{}}g must NOT emit (has_embedded_code true) in sexp; got: {s}"
+    );
 }
 
 // ── BOUNDARY E: pattern-body `(?{...})` path unchanged ───────────────────────
@@ -812,7 +863,7 @@ fn seam5_quotes_no_e_modifier_no_risk_code_marker() {
 fn seam5_pattern_body_embedded_code_unchanged() {
     let s = sexp(r#"$s =~ s/(?{1+1})/b/g;"#);
     assert!(
-        s.contains("(risk:code)"),
+        s.contains("(has_embedded_code true)"),
         "s///g with (?{{...}}) in pattern must still emit (risk:code); got: {s}"
     );
 }

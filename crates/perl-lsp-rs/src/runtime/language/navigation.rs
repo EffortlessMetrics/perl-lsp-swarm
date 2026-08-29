@@ -453,6 +453,70 @@ fn normalize_framework_module_reference(
     FrameworkModuleReference { module_name, kind }
 }
 
+/// Extract a module name from a literal-path `require "Foo/Bar.pm"` statement
+/// whose quoted path literal spans `offset` (#12559).
+///
+/// The bareword `use`/`require` extraction chain
+/// (`extract_module_reference_extended` → `parse_module_token`) requires an
+/// identifier-start byte, so the leading quote of a file-path require never
+/// yields a module target and the @INC-aware resolver is unreachable for this
+/// form. This helper closes that gap by reusing the in-repo normalization rule
+/// — [`perl_module::ModuleImportHead::token_as_module_name`], the same rule
+/// document links and completion consume — instead of forking another
+/// path-to-module spelling.
+///
+/// Boundaries (mirroring hover's `find_require_module_at_offset` discipline):
+/// - the full logical line containing `offset` is parsed with
+///   `parse_module_import_head`; only `RequireForm::FilePath` statements
+///   qualify;
+/// - the cursor must sit on or inside the quoted literal (inclusive of both
+///   quote bytes), matching the bareword form's inclusive token-span rule;
+/// - non-`.pm` paths (e.g. `require "script.pl"`) and dynamic forms
+///   (`require $var`) never resolve here, so they keep their documented
+///   non-resolution behavior.
+fn literal_require_path_module_at_offset(text: &str, offset: usize) -> Option<String> {
+    let mut cursor = offset.min(text.len());
+    while cursor > 0 && !text.is_char_boundary(cursor) {
+        cursor -= 1;
+    }
+
+    let line_start = text[..cursor].rfind('\n').map_or(0, |idx| idx + 1);
+    let line_end = text[cursor..].find('\n').map_or(text.len(), |idx| cursor + idx);
+    let line = &text[line_start..line_end];
+    let cursor_in_line = cursor.saturating_sub(line_start);
+
+    let head = perl_module::parse_module_import_head(line)?;
+    if head.kind != perl_module::ModuleImportKind::Require
+        || head.require_form() != Some(perl_module::RequireForm::FilePath)
+    {
+        return None;
+    }
+
+    // `token_start`/`token_end` span the unquoted path content, so the opening
+    // quote sits one byte before and the closing quote one byte at `token_end`.
+    // Accept the cursor from the opening quote through just past the closing
+    // quote (the bareword arm likewise accepts one past its token end).
+    let open_quote = head.token_start.saturating_sub(1);
+    let close_quote = head.token_end;
+    if cursor_in_line < open_quote || cursor_in_line > close_quote + 1 {
+        return None;
+    }
+
+    let module_name = head.token_as_module_name();
+    // `token_as_module_name` leaves non-`.pm` file paths (and therefore
+    // non-module tokens) unchanged; those are not module names and must not
+    // enter module resolution. Guard with `is_lookup_safe_module_name` as
+    // well: quoted paths are the only way this arm can receive dot/traversal-
+    // shaped text (e.g. `require "../../x.pm"`), and unsafe values must not
+    // reach the resolver's filesystem existence checks (external @INC roots
+    // join the mapped relative path without traversal validation).
+    if module_name == head.token || !perl_module::is_lookup_safe_module_name(&module_name) {
+        return None;
+    }
+
+    Some(module_name)
+}
+
 #[derive(Debug, Clone, Copy)]
 enum FrameworkModuleKind {
     Package,
@@ -496,7 +560,8 @@ fn find_label_declaration_span(
 
 #[derive(Debug, Clone)]
 enum EarlyDefinitionTarget {
-    /// Cursor is on a `use Module` / `require Module` statement.
+    /// Cursor is on a `use Module` / `require Module` statement, or on the
+    /// quoted path literal of `require "Path/To/Module.pm"` (#12559).
     /// @INC filtering applies: if file-system resolution fails, the workspace
     /// index must also be filtered through `EffectiveIncContext`.
     UseModule(String),
@@ -1153,9 +1218,19 @@ impl LspServer {
 
             // First, extract module reference info while holding the document lock briefly
             // We need to release the lock before calling resolve_module_to_path to avoid deadlock
-            let module_lookup_info: Option<(EarlyDefinitionTarget, String, usize)> = {
+            type Dancer2DefinitionProbe =
+                Option<(usize, std::sync::Arc<crate::state::ParsedSnapshot>, String)>;
+            let (module_lookup_info, dancer2_probe): (
+                Option<(EarlyDefinitionTarget, String, usize)>,
+                Dancer2DefinitionProbe,
+            ) = {
                 let documents = self.documents_guard();
-                if let Some(doc) = self.get_document(&documents, uri) {
+                let dancer2_probe = self.get_document(&documents, uri).and_then(|doc| {
+                    let offset = self.pos16_to_offset(doc, line, character);
+                    doc.current_parsed()
+                        .map(|snapshot| (offset, snapshot, doc.text_arc.to_string()))
+                });
+                let module_lookup = if let Some(doc) = self.get_document(&documents, uri) {
                     let offset = self.pos16_to_offset(doc, line, character);
 
                     // Skip go-to-definition inside comments — the cursor is not
@@ -1205,6 +1280,17 @@ impl LspServer {
                             offset,
                         ))
                     } else if let Some(module_name) =
+                        literal_require_path_module_at_offset(text, offset)
+                    {
+                        // Literal-path require (`require "Foo/Bar.pm"`): the
+                        // quoted form cannot enter the bareword extraction
+                        // chain, so normalize it here (#12559).
+                        Some((
+                            EarlyDefinitionTarget::UseModule(module_name),
+                            doc.text_arc.to_string(),
+                            offset,
+                        ))
+                    } else if let Some(module_name) =
                         quoted_framework_module_at_cursor(&text_around, cursor_in_text)?
                     {
                         Some((
@@ -1236,9 +1322,60 @@ impl LspServer {
                     }
                 } else {
                     None
-                }
+                };
+                (module_lookup, dancer2_probe)
             };
             // Lock is released here
+
+            // Canonical Dancer2 definition (#8928): a canonical route
+            // declaration resolves to its exact inline handler anchor (or
+            // resolved static-coderef declaration). One selected authority;
+            // no string-handler subroutine path exists. Computed after the
+            // lock is released because module resolution re-locks.
+            if let Some((dancer2_offset, dancer2_snapshot, dancer2_text)) = dancer2_probe
+                && let Some(ast) = dancer2_snapshot.ast()
+                && let Some((context, _package)) = self.dancer2_package_at(
+                    uri,
+                    &dancer2_text,
+                    dancer2_snapshot.content_hash(),
+                    ast,
+                    dancer2_offset,
+                )
+                && let Some(perl_lsp_rs_core::providers::dancer2::Dancer2DefinitionTarget::Anchor {
+                    start,
+                    end,
+                    ..
+                }) = perl_lsp_rs_core::providers::dancer2::definition_target_at(
+                    &context.activations,
+                    &context.facts,
+                    dancer2_offset,
+                )
+            {
+                let ((sl, sc), (el, ec)) = {
+                    let documents = self.documents_guard();
+                    self.get_document(&documents, uri)
+                        .map(|doc| {
+                            // Clamp against the CURRENT text: a didChange
+                            // racing the released lock must never push a
+                            // stale snapshot's byte offsets out of range.
+                            let text_len = doc.text.len();
+                            let clamp =
+                                |value: u32| usize::try_from(value).unwrap_or(0).min(text_len);
+                            (
+                                self.offset_to_pos16(doc, clamp(start)),
+                                self.offset_to_pos16(doc, clamp(end)),
+                            )
+                        })
+                        .unwrap_or(((0, 0), (0, 0)))
+                };
+                return Ok(Some(json!([{
+                    "uri": uri,
+                    "range": {
+                        "start": { "line": sl, "character": sc },
+                        "end": { "line": el, "character": ec },
+                    },
+                }])));
+            }
 
             // Now resolve module to path WITHOUT holding the document lock
             if let Some((lookup_target, doc_text, doc_offset)) = module_lookup_info {
@@ -1256,12 +1393,14 @@ impl LspServer {
                         }
                     }
                     EarlyDefinitionTarget::UseModule(module_name) => {
-                        // Cursor is on a `use Module` / `require Module` statement.
-                        // Resolution is authoritative: if the file-system resolver (which
-                        // honours position-aware @INC including `no lib` cancellations) finds
-                        // a path, return it. If not, return empty rather than falling through
-                        // to the workspace-index lookup — the index is @INC-unaware and would
-                        // surface files that `no lib` has cancelled. Fixes #8537.
+                        // Cursor is on a `use Module` / `require Module` statement, or on
+                        // the quoted path of `require "Path/To/Module.pm"` (normalized to a
+                        // module name upstream). Resolution is authoritative: if the
+                        // file-system resolver (which honours position-aware @INC including
+                        // `no lib` cancellations) finds a path, return it. If not, return
+                        // empty rather than falling through to the workspace-index lookup —
+                        // the index is @INC-unaware and would surface files that `no lib`
+                        // has cancelled. Fixes #8537.
                         if let Some(module_path) = self.resolve_module_to_path_with_doc_at_offset(
                             &module_name,
                             Some(&doc_text),

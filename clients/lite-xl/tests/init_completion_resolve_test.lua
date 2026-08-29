@@ -230,6 +230,11 @@ package.preload["plugins.lsp.listbox"] = function()
   }
 end
 
+-- Local patch (#11172): the staged modules fold their capability
+-- advertisement and command projection through the exact manifest source.
+package.preload["plugins.lsp.capability_manifest"] = function()
+  return dofile(here .. "/../upstream/capability_manifest.lua")
+end
 package.preload["plugins.lsp.diagnostics"] = function()
   return {
     note_provider = function() end,
@@ -708,6 +713,11 @@ do
   else
     ok(resolve_entry.timeout_callback ~= nil,
       "caseF: resolve request carries its timeout disposition seam")
+    -- #10657 review pin: the pending resolve defers applying the selection,
+    -- so it must carry the explicit short window instead of falling through
+    -- to the patient single-send default policy.
+    ok(resolve_entry.timeout == 2,
+      "caseF: resolve keeps the explicit short responsiveness window")
     for index = #server.outbound, 1, -1 do
       if server.outbound[index].method == "completionItem/resolve" then
         table.remove(server.outbound, index)

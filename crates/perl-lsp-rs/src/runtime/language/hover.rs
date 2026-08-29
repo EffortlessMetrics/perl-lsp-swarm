@@ -221,6 +221,50 @@ impl LspServer {
                     let live_compiler_context =
                         Self::live_hover_compiler_context(uri, &text, offset, source_region_kind);
                     if let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) {
+                        // Canonical Dancer2 hover (#8928): one selected
+                        // authority. Under exact activation the canonical
+                        // route/hook/keyword projection answers before the
+                        // generic hover paths; without activation the
+                        // generic paths run unchanged.
+                        if let Some(snapshot) = parsed.as_ref()
+                            && let Some((context, package)) = self.dancer2_package_at(
+                                uri,
+                                &text,
+                                snapshot.content_hash(),
+                                ast,
+                                offset,
+                            )
+                            && let Some(projection) =
+                                perl_lsp_rs_core::providers::dancer2::hover_projection_at(
+                                    &context.activations,
+                                    &context.facts,
+                                    ast,
+                                    &package,
+                                    offset,
+                                )
+                        {
+                            let content = match &projection {
+                                perl_lsp_rs_core::providers::dancer2::RouteHoverProjection::Route {
+                                    content,
+                                    ..
+                                }
+                                | perl_lsp_rs_core::providers::dancer2::RouteHoverProjection::Keyword {
+                                    content,
+                                }
+                                | perl_lsp_rs_core::providers::dancer2::RouteHoverProjection::Hook {
+                                    content,
+                                    ..
+                                } => content.clone(),
+                                _ => "Dancer2 framework projection".to_string(),
+                            };
+                            let value = serde_json::json!({
+                                "contents": {
+                                    "kind": "markdown",
+                                    "value": content,
+                                }
+                            });
+                            return Ok(Self::inject_hover_range_opt(value, &range));
+                        }
                         // Check for `use Module` at this offset first
                         let extracted = if let Some(module_name) =
                             Self::find_use_module_at_offset(ast, offset)
@@ -1255,7 +1299,11 @@ impl LspServer {
         if let NodeKind::Use { module, .. } = &node.kind
             && !module.is_empty()
         {
-            return Some(module.clone());
+            // The parser retains a version directive in the module field for
+            // `use Foo 1.23`. Hover resolution must use only the module head;
+            // the version remains parser/compiler data, not a filesystem name.
+            let module_head = module.split_ascii_whitespace().next()?;
+            return Self::lookup_safe_module_name(module_head);
         }
 
         // Recurse into container nodes
@@ -1314,10 +1362,8 @@ impl LspServer {
                     }
                 }
             }
-            NodeKind::Package { block, .. } => {
-                if let Some(b) = block {
-                    return Self::find_phase_block_at_offset(b, offset);
-                }
+            NodeKind::Package { block: Some(b), .. } => {
+                return Self::find_phase_block_at_offset(b, offset);
             }
             NodeKind::PhaseBlock { block, .. } => {
                 return Self::find_phase_block_at_offset(block, offset);
@@ -1349,7 +1395,18 @@ impl LspServer {
             return None;
         }
 
-        Some(perl_module::normalize_package_separator(head.token).into_owned())
+        Self::lookup_safe_module_name(head.token)
+    }
+
+    /// Normalize and validate a module name before it can reach resolution or hover building.
+    ///
+    /// Token scanning intentionally accepts the parser's broader Unicode identifier surface,
+    /// while filesystem/module lookup uses the stricter shared `perl_module` authority. Keeping
+    /// this boundary in one helper prevents AST-backed `use` and text-backed `require` paths from
+    /// silently diverging.
+    fn lookup_safe_module_name(module_name: &str) -> Option<String> {
+        let normalized = perl_module::normalize_package_separator(module_name);
+        perl_module::is_lookup_safe_module_name(&normalized).then(|| normalized.into_owned())
     }
 
     fn is_static_require_module(

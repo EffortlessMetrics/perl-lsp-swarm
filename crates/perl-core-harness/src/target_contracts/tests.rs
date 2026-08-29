@@ -244,6 +244,52 @@ fn compared_drift_is_recomputed_from_the_observed_matrix() -> Result<()> {
 }
 
 #[test]
+fn receipt_identities_reject_casing_only_mutations() -> Result<()> {
+    // #7725 final control: an equivalent byte value under a different
+    // textual spelling cannot produce another valid authoritative receipt.
+    // The only mutation below is identity casing.
+    let matrix = matrix_fixture(vec![entry(
+        physical_contract_with_id("component_base", "base"),
+        TargetDisposition::Implemented,
+    )]);
+    let fingerprint = matrix.fingerprint().map_err(|error| color_eyre::eyre::eyre!(error))?;
+    let mut uppercased_fingerprint = fingerprint.clone();
+    let first_nibble = uppercased_fingerprint.remove(0);
+    uppercased_fingerprint.insert(0, first_nibble.to_ascii_uppercase());
+
+    let lowercased_blob_sha = "1111111111111111111111111111111111111111".to_string();
+    let mut uppercased_blob_sha = lowercased_blob_sha.clone();
+    uppercased_blob_sha.replace_range(0..1, "A");
+
+    let drift = |fingerprint: String, blob_sha: String| TargetTopologyDrift {
+        schema_version: TARGET_TOPOLOGY_DRIFT_SCHEMA_VERSION.to_string(),
+        status: TargetTopologyDriftStatus::NotProven,
+        pinned_matrix_fingerprint: fingerprint,
+        observed_matrix_fingerprint: None,
+        observed_perl_ref: "blead".to_string(),
+        observed_perl_resolved_ref: "2222222222222222222222222222222222222222".to_string(),
+        observed_topology_sources: BTreeMap::from([("t/TEST".to_string(), blob_sha)]),
+        added_target_ids: vec![],
+        removed_target_ids: vec![],
+        changed_target_ids: vec![],
+        not_proven_reason: Some("fixture casing control".to_string()),
+        claim_boundary: "fixture casing control".to_string(),
+    };
+
+    let canonical = drift(fingerprint.clone(), lowercased_blob_sha.clone());
+    canonical
+        .validate_against(&matrix, canonical.pinned_matrix_fingerprint.as_str(), None)
+        .map_err(|error| color_eyre::eyre::eyre!(error))?;
+
+    let fingerprint_mutation = drift(uppercased_fingerprint.clone(), lowercased_blob_sha.clone());
+    assert!(fingerprint_mutation.validate_against(&matrix, &uppercased_fingerprint, None).is_err());
+
+    let referenced_identity_mutation = drift(fingerprint.clone(), uppercased_blob_sha);
+    assert!(referenced_identity_mutation.validate_against(&matrix, &fingerprint, None).is_err());
+    Ok(())
+}
+
+#[test]
 fn matrix_validation_rejects_duplicate_target_id_rows() -> Result<()> {
     let mut matrix = read_matrix(&repo_file(".ci/perl-core-harness/upstream-targets-5.42.2.v1"))?;
     matrix.targets.push(matrix.targets[0].clone());

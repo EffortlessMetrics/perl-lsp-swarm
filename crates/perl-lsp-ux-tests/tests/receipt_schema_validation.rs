@@ -234,20 +234,20 @@ fn validate_operation_timing(timing: &serde_json::Value, context: &str) {
 
     assert_non_empty_string(&obj["operation"], &format!("{context}.operation"));
 
-    if let Some(ms) = obj.get("time_to_first_useful_result_ms") {
-        if !ms.is_null() {
-            assert_non_negative_number(ms, &format!("{context}.time_to_first_useful_result_ms"));
-        }
+    if let Some(ms) = obj.get("time_to_first_useful_result_ms")
+        && !ms.is_null()
+    {
+        assert_non_negative_number(ms, &format!("{context}.time_to_first_useful_result_ms"));
     }
 
-    if let Some(status) = obj.get("timing_status") {
-        if !status.is_null() {
-            assert_eq!(
-                status.as_str(),
-                Some("missing_request_start"),
-                "{context}.timing_status: must be \"missing_request_start\""
-            );
-        }
+    if let Some(status) = obj.get("timing_status")
+        && !status.is_null()
+    {
+        assert_eq!(
+            status.as_str(),
+            Some("missing_request_start"),
+            "{context}.timing_status: must be \"missing_request_start\""
+        );
     }
 }
 
@@ -284,10 +284,10 @@ fn validate_receipt_against_schema(json: &serde_json::Value) {
     assert_non_empty_string(&obj["friendly_repro"], "friendly_repro");
 
     // component: optional enum
-    if let Some(component) = obj.get("component") {
-        if !component.is_null() {
-            assert_enum_value(component, VALID_COMPONENTS, "component");
-        }
+    if let Some(component) = obj.get("component")
+        && !component.is_null()
+    {
+        assert_enum_value(component, VALID_COMPONENTS, "component");
     }
 
     // ci_tier: enum
@@ -300,10 +300,10 @@ fn validate_receipt_against_schema(json: &serde_json::Value) {
     assert_non_negative_number(&obj["duration_ms"], "duration_ms");
 
     // time_to_first_useful_result_ms: optional number >= 0
-    if let Some(ms) = obj.get("time_to_first_useful_result_ms") {
-        if !ms.is_null() {
-            assert_non_negative_number(ms, "time_to_first_useful_result_ms");
-        }
+    if let Some(ms) = obj.get("time_to_first_useful_result_ms")
+        && !ms.is_null()
+    {
+        assert_non_negative_number(ms, "time_to_first_useful_result_ms");
     }
 
     // operation_timings: optional array
@@ -321,17 +321,17 @@ fn validate_receipt_against_schema(json: &serde_json::Value) {
     validate_assertions(&obj["assertions"], "assertions");
 
     // failure_class: optional enum
-    if let Some(fc) = obj.get("failure_class") {
-        if !fc.is_null() {
-            assert_enum_value(fc, VALID_FAILURE_CLASSES, "failure_class");
-        }
+    if let Some(fc) = obj.get("failure_class")
+        && !fc.is_null()
+    {
+        assert_enum_value(fc, VALID_FAILURE_CLASSES, "failure_class");
     }
 
     // route: optional enum
-    if let Some(route) = obj.get("route") {
-        if !route.is_null() {
-            assert_enum_value(route, VALID_ROUTES, "route");
-        }
+    if let Some(route) = obj.get("route")
+        && !route.is_null()
+    {
+        assert_enum_value(route, VALID_ROUTES, "route");
     }
 
     // skip_reason: required for skipped receipts, omitted otherwise.

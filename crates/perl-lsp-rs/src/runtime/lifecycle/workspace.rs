@@ -17,11 +17,14 @@ use crate::perl_remediation::PERL_REMEDIATION;
 /// Message for "Perl was found, but only via an OS fallback path".
 ///
 /// Kept separate from the emitting code so the wording is directly testable.
-fn perl_fallback_message(path: &std::path::Path, label: &str) -> String {
+/// The label (e.g. "Homebrew Perl (Apple Silicon)") already identifies which
+/// Perl will be used; the discovered install path is the server's filesystem
+/// view and stays out of the client-facing `window/logMessage` (#1755). The
+/// emitter records the full path server-side via `tracing`.
+fn perl_fallback_message(label: &str) -> String {
     format!(
-        "Perl LSP: Perl not found on PATH; using {label} at {}. \
-         Add Perl to PATH to suppress this message.",
-        path.display()
+        "Perl LSP: Perl not found on PATH; using the {label} installation. \
+         Add Perl to PATH to suppress this message."
     )
 }
 
@@ -100,7 +103,7 @@ impl LspServer {
                 tracing::debug!(path = %path.display(), "Perl interpreter: found on PATH");
             }
             PerlInterpreterResult::FoundViaFallback { ref path, ref label } => {
-                let msg = perl_fallback_message(path, label);
+                let msg = perl_fallback_message(label);
                 tracing::info!(path = %path.display(), label = %label, "Perl interpreter found via fallback");
                 if let Err(e) = self.log_message(MessageType::Info, &msg) {
                     tracing::warn!(error = %e, "Failed to send logMessage for perl fallback");
@@ -377,7 +380,7 @@ mod tests {
     /// Every user-facing interpreter message, for the "must not mention" guards.
     fn all_perl_interpreter_messages() -> Vec<String> {
         vec![
-            perl_fallback_message(std::path::Path::new("/usr/local/bin/perl"), "Homebrew"),
+            perl_fallback_message("Homebrew Perl (Apple Silicon)"),
             perl_not_found_message(None),
             perl_not_found_message(Some("/opt/custom/perl")),
         ]
@@ -510,12 +513,28 @@ mod tests {
 
     #[test]
     fn fallback_message_names_the_interpreter_and_how_to_silence_it() {
-        let msg = perl_fallback_message(std::path::Path::new("/opt/homebrew/bin/perl"), "Homebrew");
-        assert!(msg.contains("/opt/homebrew/bin/perl"), "must name the interpreter, got: {msg}");
+        let msg = perl_fallback_message("Homebrew Perl (Apple Silicon)");
         assert!(msg.contains("Homebrew"), "must name the fallback source, got: {msg}");
         assert!(
             msg.contains("Add Perl to PATH"),
             "must give the one action that suppresses it, got: {msg}"
+        );
+    }
+
+    /// #1755: the OS-fallback interpreter path is the server's filesystem view
+    /// and must not reach the client via `window/logMessage`. The label keeps
+    /// the message identifying (which Perl will run) without the install
+    /// location, so any path-shaped content here is a regression.
+    #[test]
+    fn fallback_message_leaks_no_filesystem_path() {
+        let msg = perl_fallback_message("Strawberry Perl (Program Files)");
+        assert!(
+            !msg.contains('/') && !msg.contains('\\'),
+            "fallback message must not embed a filesystem path, got: {msg}"
+        );
+        assert!(
+            !msg.contains("C:") && !msg.contains("/opt") && !msg.contains("/usr"),
+            "fallback message must not name an install location, got: {msg}"
         );
     }
 

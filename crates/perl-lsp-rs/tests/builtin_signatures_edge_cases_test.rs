@@ -1,6 +1,5 @@
 //! Edge case tests for built-in function signatures
 //! Tests special cases, error conditions, and unusual usage patterns
-#![allow(clippy::collapsible_if)]
 // Integration tests print diagnostic output for CI troubleshooting; this is
 // not the LSP server's stdio transport, so print_stdout/print_stderr don't
 // apply the way they do to production code.
@@ -53,16 +52,16 @@ fn test_nested_function_calls() -> Result<(), Box<dyn std::error::Error>> {
         let ast = Parser::new(code).parse().or_else(|_| Parser::new("").parse())?;
         let provider = SignatureHelpProvider::new(&ast);
 
-        if let Some(help) = provider.get_signature_help(code, position) {
-            if let Some(sig) = help.signatures.first() {
-                assert!(
-                    sig.label.contains(expected_func),
-                    "Expected function '{}' in signature for '{}' at position {}",
-                    expected_func,
-                    code,
-                    position
-                );
-            }
+        if let Some(help) = provider.get_signature_help(code, position)
+            && let Some(sig) = help.signatures.first()
+        {
+            assert!(
+                sig.label.contains(expected_func),
+                "Expected function '{}' in signature for '{}' at position {}",
+                expected_func,
+                code,
+                position
+            );
         }
     }
     Ok(())
