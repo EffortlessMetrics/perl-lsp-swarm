@@ -2057,11 +2057,12 @@ mod tests {
     #[test]
     fn seam_parse_inventory_missing_audited_anchor() {
         let doc = committed_doc();
-        let error =
-            parse_inventory("# Install Claim Surface Inventory
+        let error = parse_inventory(
+            "# Install Claim Surface Inventory
 
-no anchors here")
-                .expect_err("anchor-less doc must fail");
+no anchors here",
+        )
+        .expect_err("anchor-less doc must fail");
         assert!(format!("{error}").contains("could not locate the `**Audited against:**`"));
     }
 
@@ -2118,7 +2119,11 @@ no anchors here")
     #[test]
     fn seam_parse_claim_row_malformed() {
         let doc = committed_doc();
-        let doctored = doctored(&doc, "| C801 | TROUBLESHOOTING.md:3-16 | If basic probes fail, fix binary installation and `PATH` first before deeper debugging | `current` | Route-recommendation claim (diagnostic-surface class) |", "| C801 | only-two-cells |");
+        let doctored = doctored(
+            &doc,
+            "| C801 | TROUBLESHOOTING.md:3-16 | If basic probes fail, fix binary installation and `PATH` first before deeper debugging | `current` | Route-recommendation claim (diagnostic-surface class) |",
+            "| C801 | only-two-cells |",
+        );
         assert_err_containing(parse_inventory(&doctored).map(|_| ()), "malformed claim row");
     }
 
