@@ -1,0 +1,14 @@
+{
+  "schema": "fixture.v1",
+  "packet_id": "sec-a",
+  "selector": "fixture.subject",
+  "rail_id": "fixture.security",
+  "subject": "security@fixture-tree",
+  "source_result": "pass",
+  "state": "current",
+  "supersedes": null,
+  "digest": "sha256:82df49d14d93651d4db2ed1c68614c4754fbc17d12fec0c0b894cd41e9ddd7ea",
+  "limitations": [],
+  "nonclaims": [],
+  "detail": {}
+}
