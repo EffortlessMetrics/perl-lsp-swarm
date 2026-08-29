@@ -6,22 +6,22 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12296 |
-| Rust-family files | 3766 |
-| Non-Rust files | 8530 |
-| Allowlisted | 6295 |
+| Total tracked files | 12328 |
+| Rust-family files | 3776 |
+| Non-Rust files | 8552 |
+| Allowlisted | 6317 |
 | Unclassified | 2235 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 480 |
-| documentation | 2783 |
-| generated | 2 |
+| config | 492 |
+| documentation | 2791 |
+| generated | 3 |
 | production | 339 |
 | test | 2033 |
-| tooling | 658 |
+| tooling | 659 |
 | unclassified | 2235 |
 
 ## Unclassified files
@@ -2602,6 +2602,23 @@
 | `.ci/fix-forward/playbooks.toml` | config | `non-rust-ci-config` | release/ci |
 | `.ci/fixtures/lite-xl-perl-upstream/receipts/public-replay.v1.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/fixtures/lite-xl-perl-upstream/upstream-acceptance.toml` | config | `non-rust-ci-config` | release/ci |
+| `.ci/fixtures/perl-kwalitee-legacy-parity/expected/explain_all.txt` | config | `non-rust-ci-config` | release/ci |
+| `.ci/fixtures/perl-kwalitee-legacy-parity/expected/legacy_reader.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/fixtures/perl-kwalitee-legacy-parity/expected/migration_reference.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.ci/fixtures/perl-kwalitee-legacy-parity/expected/nightly_non_strict.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/fixtures/perl-kwalitee-legacy-parity/expected/nightly_non_strict.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.ci/fixtures/perl-kwalitee-legacy-parity/expected/nightly_strict.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/fixtures/perl-kwalitee-legacy-parity/expected/nightly_strict.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.ci/fixtures/perl-kwalitee-legacy-parity/expected/pr_non_strict.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/fixtures/perl-kwalitee-legacy-parity/expected/pr_non_strict.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.ci/fixtures/perl-kwalitee-legacy-parity/expected/pr_strict.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/fixtures/perl-kwalitee-legacy-parity/expected/pr_strict.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.ci/fixtures/perl-kwalitee-legacy-parity/expected/release_non_strict.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/fixtures/perl-kwalitee-legacy-parity/expected/release_non_strict.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.ci/fixtures/perl-kwalitee-legacy-parity/expected/release_strict.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/fixtures/perl-kwalitee-legacy-parity/expected/release_strict.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.ci/fixtures/perl-kwalitee-legacy-parity/input/legacy_receipt_v1.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/fixtures/perl-kwalitee-legacy-parity/manifest.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/fixtures/zed-perl-upstream/codex-train.v1.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/fixtures/zed-perl-upstream/convergence.v1.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/fixtures/zed-perl-upstream/default-order.v1.json` | config | `non-rust-ci-config` | release/ci |
@@ -3151,6 +3168,7 @@
 | `.spec/11392-native-neovim-train-graph/invalid/unknown_edge_target.json` | tooling | `non-rust-spec-tree` | developer-experience |
 | `.spec/11392-native-neovim-train-graph/shuffled/train.manifest.json` | tooling | `non-rust-spec-tree` | developer-experience |
 | `.spec/11392-native-neovim-train-graph/train.manifest.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/11548-inventory-derivative/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11625-module-train-graph/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11625-module-train-graph/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11625-module-train-graph/context.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -4319,6 +4337,8 @@
 | `deny.toml` | config | `non-rust-deny-toml` | release/ci |
 | `dist-workspace.toml` | config | `non-rust-dist-workspace` | release/ci |
 | `distribution/linux/README.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `distribution/public_release_claims.v2.json` | generated | `non-rust-public-release-claims-v2-catalog` | release/ci |
+| `distribution/release_receipts/v0.17.0.assets.json` | config | `non-rust-release-receipt-asset-manifest` | release/ci |
 | `distribution/windows/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `docker-compose.yml` | config | `non-rust-docker-compose` | release/ci |
 | `docs/CHANGELOG_WORKFLOW.md` | documentation | `non-rust-docs-tree` | docs |
@@ -6354,6 +6374,7 @@
 | `schemas/perl_core_harness_target_topology_drift.v1.schema.json` | config | `non-rust-core-harness-target-topology-drift-schema` | compiler |
 | `schemas/perl_core_harness_upstream_effective_invocation_trace.v1.schema.json` | config | `non-rust-core-harness-upstream-effective-invocation-trace-schema` | compiler |
 | `schemas/perl_core_harness_upstream_runner_discovery.v1.schema.json` | config | `non-rust-core-harness-upstream-runner-discovery-schema` | compiler |
+| `schemas/public_release_claims.v2.schema.json` | config | `non-rust-public-release-claims-v2-schema` | release/ci |
 | `schemas/publication_runtime_identity.v1.schema.json` | config | `non-rust-publication-runtime-identity-schema` | release/ci |
 | `schemas/release_topology.v1.schema.json` | config | `non-rust-release-topology-schema` | release/ci |
 | `schemas/stage_closure_projection.v1.schema.json` | config | `non-rust-stage-closure-projection-schema` | tooling/agent-review |
@@ -6837,6 +6858,7 @@
 | `scripts/validate-release-scope.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/validate-workspace-exclusions.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/validate_public_release_claims.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/validate_public_release_claims_v2.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/validate_swarm_findings.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/verify-docs-rs.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/verify-publication-facts.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
