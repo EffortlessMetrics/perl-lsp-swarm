@@ -365,6 +365,215 @@ $obj->  # Complete methods
     Ok(())
 }
 
+/// The POD/literal completion rules must survive the production LSP request boundary.
+#[test]
+fn test_e2e_http_completion_respects_pod_and_heredoc_boundaries() -> TestResult {
+    fn assert_post_completion(ctx: &mut TestContext, uri: &str, source: &str) -> TestResult {
+        ctx.open_document(uri, source);
+        let line = source.lines().count().saturating_sub(1) as u32;
+        let character =
+            source.lines().last().ok_or("completion source has no final line")?.len() as u32;
+        let result = ctx
+            .send_request(
+                "textDocument/completion",
+                Some(json!({
+                    "textDocument": { "uri": uri },
+                    "position": { "line": line, "character": character }
+                })),
+            )
+            .ok_or("production completion request returned no result")?;
+        let items = result["items"].as_array().ok_or("expected completion items")?;
+        assert!(
+            items.iter().any(|item| item["label"] == "post"),
+            "expected HTTP::Tiny post completion for {source:?}, got {items:?}"
+        );
+        Ok(())
+    }
+
+    fn assert_no_post_completion(ctx: &mut TestContext, uri: &str, source: &str) -> TestResult {
+        ctx.open_document(uri, source);
+        let line = source.lines().count().saturating_sub(1) as u32;
+        let character =
+            source.lines().last().ok_or("completion source has no final line")?.len() as u32;
+        let result = ctx
+            .send_request(
+                "textDocument/completion",
+                Some(json!({
+                    "textDocument": { "uri": uri },
+                    "position": { "line": line, "character": character }
+                })),
+            )
+            .ok_or("production completion request returned no result")?;
+        let items = result["items"].as_array().ok_or("expected completion items")?;
+        assert!(
+            !items.iter().any(|item| item["label"] == "post"),
+            "POD/heredoc content must not offer HTTP::Tiny methods for {source:?}, got {items:?}"
+        );
+        Ok(())
+    }
+
+    fn assert_label_completion(
+        ctx: &mut TestContext,
+        uri: &str,
+        source: &str,
+        label: &str,
+    ) -> TestResult {
+        ctx.open_document(uri, source);
+        let line = source.lines().count().saturating_sub(1) as u32;
+        let character =
+            source.lines().last().ok_or("completion source has no final line")?.len() as u32;
+        let result = ctx
+            .send_request(
+                "textDocument/completion",
+                Some(json!({
+                    "textDocument": { "uri": uri },
+                    "position": { "line": line, "character": character }
+                })),
+            )
+            .ok_or("production completion request returned no result")?;
+        let items = result["items"].as_array().ok_or("expected completion items")?;
+        assert!(
+            items.iter().any(|item| item["label"] == label),
+            "completion label {label:?} should be offered for {source:?}, got {items:?}"
+        );
+        Ok(())
+    }
+
+    let mut ctx = TestContext::new();
+    ctx.initialize();
+
+    assert_no_post_completion(
+        &mut ctx,
+        "file:///test/http-pod-begin.pl",
+        "use HTTP::Tiny;\nmy $http = HTTP::Tiny->new;\n=begin comment\ndocumentation\n=end comment\n$http->po",
+    )?;
+    assert_post_completion(
+        &mut ctx,
+        "file:///test/http-pod-begin-cut.pl",
+        "use HTTP::Tiny;\nmy $http = HTTP::Tiny->new;\n=begin comment\ndocumentation\n=end comment\n=cut\n$http->po",
+    )?;
+    assert_post_completion(
+        &mut ctx,
+        "file:///test/http-pod-for.pl",
+        "use HTTP::Tiny;\nmy $http = HTTP::Tiny->new;\n=for comment\ndocumentation\n\n=cut\n$http->po",
+    )?;
+    assert_no_post_completion(
+        &mut ctx,
+        "file:///test/http-pod-for-blank-line.pl",
+        "use HTTP::Tiny;\nmy $http = HTTP::Tiny->new;\n=for comment\ndocumentation\n\n$http->po",
+    )?;
+    assert_no_post_completion(
+        &mut ctx,
+        "file:///test/http-pod-for-inside.pl",
+        "use HTTP::Tiny;\nmy $http = HTTP::Tiny->new;\n=for comment\ndocumentation\n$http->po",
+    )?;
+    assert_no_post_completion(
+        &mut ctx,
+        "file:///test/http-heredoc-inside.pl",
+        "use HTTP::Tiny;\nmy $http = HTTP::Tiny->new;\nmy $text = <<'END';\n$http->po",
+    )?;
+    assert_post_completion(
+        &mut ctx,
+        "file:///test/http-heredoc-pod-looking.pl",
+        "use HTTP::Tiny;\nmy $http = HTTP::Tiny->new;\nmy $text = <<'END';\n=begin comment\nEND\n$http->po",
+    )?;
+    assert_post_completion(
+        &mut ctx,
+        "file:///test/http-indented-pod.pl",
+        "use HTTP::Tiny;\nmy $http = HTTP::Tiny->new;\n  =begin comment\n  =for comment\n  =cut\n$http->po",
+    )?;
+    assert_no_post_completion(
+        &mut ctx,
+        "file:///test/http-malformed-pod.pl",
+        "use HTTP::Tiny;\nmy $http = HTTP::Tiny->new;\n=begin\nnot a valid POD region\n$http->po",
+    )?;
+    assert_no_post_completion(
+        &mut ctx,
+        "file:///test/http-pod-cutlery.pl",
+        "use HTTP::Tiny;\nmy $http = HTTP::Tiny->new;\n=pod\ndocs\n=cutlery\nnot code\n$http->po",
+    )?;
+    assert_no_post_completion(
+        &mut ctx,
+        "file:///test/http-paired-qr.pl",
+        "use HTTP::Tiny;\nmy $pattern = qr{$http = HTTP::Tiny->new()};\n$http->po",
+    )?;
+    assert_no_post_completion(
+        &mut ctx,
+        "file:///test/http-trailing-constructor.pl",
+        "use HTTP::Tiny;\nmy $http = HTTP::Tiny->new()->get($url);\n$http->po",
+    )?;
+    assert_no_post_completion(
+        &mut ctx,
+        "file:///test/http-dynamic-target.pl",
+        "use HTTP::Tiny;\nmy $http = HTTP::Tiny->new;\n$http = make_other();\n$http->po",
+    )?;
+    assert_no_post_completion(
+        &mut ctx,
+        "file:///test/http-nested-subroutine.pl",
+        "use HTTP::Tiny;\nmy $http = Other::Client->new;\nsub reset { $http = HTTP::Tiny->new; }\n$http->po",
+    )?;
+    assert_no_post_completion(
+        &mut ctx,
+        "file:///test/http-alias-target.pl",
+        "use HTTP::Tiny;\nmy $http = HTTP::Tiny->new;\nmy $alias = $http;\n$alias->po",
+    )?;
+    assert_no_post_completion(
+        &mut ctx,
+        "file:///test/http-pod-encoding.pl",
+        "use HTTP::Tiny;\n=encoding utf8\n$http = HTTP::Tiny->new;\n$http->po",
+    )?;
+    assert_no_post_completion(
+        &mut ctx,
+        "file:///test/http-pod-unknown-command.pl",
+        "use HTTP::Tiny;\n=foobar custom\n$http = HTTP::Tiny->new;\n$http->po",
+    )?;
+    assert_no_post_completion(
+        &mut ctx,
+        "file:///test/http-data-section.pl",
+        "use HTTP::Tiny;\nmy $http;\n__DATA__\n$http = HTTP::Tiny->new;\n$http->po",
+    )?;
+    assert_no_post_completion(
+        &mut ctx,
+        "file:///test/http-end-section.pl",
+        "use HTTP::Tiny;\nmy $http;\n__END__\n$http = HTTP::Tiny->new;\n$http->po",
+    )?;
+    assert_label_completion(
+        &mut ctx,
+        "file:///test/lwp-put.pl",
+        "use LWP::UserAgent;\nmy $ua = LWP::UserAgent->new;\n$ua->put",
+        "put",
+    )?;
+    assert_label_completion(
+        &mut ctx,
+        "file:///test/lwp-delete.pl",
+        "use LWP::UserAgent;\nmy $ua = LWP::UserAgent->new;\n$ua->delete",
+        "delete",
+    )?;
+
+    for (index, operator) in [
+        ".=", "x=", "+=", "-=", "*=", "/=", "%=", "**=", "<<=", ">>=", "&=", "|=", "^=", "&&=",
+        "||=", "//=",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        assert_no_post_completion(
+            &mut ctx,
+            &format!("file:///test/http-compound-{index}.pl"),
+            &format!(
+                "use HTTP::Tiny;\nmy $http = HTTP::Tiny->new;\n$http {operator} 1;\n$http->po"
+            ),
+        )?;
+    }
+    assert_no_post_completion(
+        &mut ctx,
+        "file:///test/http-list-assignment.pl",
+        "use HTTP::Tiny;\nmy ($http, $other) = (HTTP::Tiny->new, 1);\n$http->po",
+    )?;
+
+    Ok(())
+}
+
 /// Test 4: Go to Definition
 #[test]
 fn test_e2e_go_to_definition() -> TestResult {
