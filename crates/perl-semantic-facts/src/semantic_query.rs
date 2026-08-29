@@ -45,6 +45,8 @@ pub struct SemanticQueryEvidence {
     pub workspace_generation: crate::SourceGeneration,
     /// Versioned semantic-query contract identity.
     pub query_schema: String,
+    /// Stable query-family identity for the operation.
+    pub query_family: String,
     /// Producer that supplied the evidence.
     pub producer: crate::SemanticProducer,
     /// Producer provenance for the returned facts.
@@ -70,6 +72,7 @@ impl SemanticQueryEvidence {
         source_generation: crate::SourceGeneration,
         workspace_generation: crate::SourceGeneration,
         query_schema: impl Into<String>,
+        query_family: impl Into<String>,
         producer: crate::SemanticProducer,
         provenance: crate::SemanticProvenance,
         confidence: crate::SemanticConfidence,
@@ -84,6 +87,7 @@ impl SemanticQueryEvidence {
             source_generation,
             workspace_generation,
             query_schema: query_schema.into(),
+            query_family: query_family.into(),
             producer,
             provenance,
             confidence,
@@ -102,6 +106,7 @@ impl SemanticQueryEvidence {
             ("project_identity", self.project_identity.as_str()),
             ("root_identity", self.root_identity.as_str()),
             ("query_schema", self.query_schema.as_str()),
+            ("query_family", self.query_family.as_str()),
         ] {
             if value.trim().is_empty() {
                 return Err(SemanticQueryContractError::EmptyIdentity(name));
@@ -139,8 +144,9 @@ impl SemanticQueryEvidence {
             && self.workspace_generation.is_known()
             && self.covers_required_families()
             && self.limitations.is_empty()
-            && self.provenance != crate::SemanticProvenance::Unknown
-            && self.confidence != crate::SemanticConfidence::Unknown
+            && self.provenance
+                == crate::SemanticProvenance::Known(crate::Provenance::SemanticAnalyzer)
+            && self.confidence == crate::SemanticConfidence::Known(crate::Confidence::High)
     }
 }
 
@@ -187,7 +193,8 @@ impl SemanticQueryRequirement {
         if evidence.query_schema != self.schema {
             return Err(SemanticQueryContractError::SchemaMismatch);
         }
-        if evidence.required_fact_families != self.required_fact_families
+        if evidence.query_family != self.query_family
+            || !same_families(&evidence.required_fact_families, &self.required_fact_families)
             || (self.exact_empty_requires_complete && !evidence.covers_required_families())
         {
             return Err(SemanticQueryContractError::IncompleteDenominator);
@@ -293,10 +300,26 @@ impl<T> SemanticQueryOutcome<T> {
         Ok(())
     }
 
+    /// Validate an outcome against a registered query-family requirement.
+    pub fn validate_against(
+        &self,
+        requirement: &SemanticQueryRequirement,
+    ) -> Result<(), SemanticQueryContractError> {
+        self.validate()?;
+        match self {
+            Self::Complete { evidence, .. } | Self::LegitimateEmpty { evidence } => {
+                requirement.validate_evidence(evidence)?;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
     /// Whether the outcome is safe to consume as an exact result.
     #[must_use]
     pub fn is_exact(&self) -> bool {
         matches!(self, Self::Complete { .. } | Self::LegitimateEmpty { .. })
+            && self.validate().is_ok()
     }
 }
 
@@ -351,6 +374,12 @@ fn duplicate_families(families: &[SemanticFactFamily]) -> bool {
     families.iter().any(|family| !seen.insert(*family))
 }
 
+fn same_families(left: &[SemanticFactFamily], right: &[SemanticFactFamily]) -> bool {
+    let left: HashSet<_> = left.iter().copied().collect();
+    let right: HashSet<_> = right.iter().copied().collect();
+    left == right
+}
+
 fn has_duplicates<T: Ord>(values: &[T]) -> bool {
     let mut seen = BTreeSet::new();
     values.iter().any(|value| !seen.insert(value))
@@ -368,6 +397,7 @@ mod tests {
             crate::SourceGeneration::known("doc-1"),
             crate::SourceGeneration::known("ws-1"),
             "semantic-query-v1",
+            "definitions",
             crate::SemanticProducer::SemanticAnalyzer,
             crate::SemanticProvenance::Known(crate::Provenance::SemanticAnalyzer),
             crate::SemanticConfidence::Known(crate::Confidence::High),
@@ -452,6 +482,7 @@ mod tests {
             crate::SourceGeneration::known("doc-1"),
             crate::SourceGeneration::known("ws-1"),
             "semantic-query-v1",
+            "definitions",
             crate::SemanticProducer::SemanticAnalyzer,
             crate::SemanticProvenance::Known(crate::Provenance::SemanticAnalyzer),
             crate::SemanticConfidence::Known(crate::Confidence::High),
