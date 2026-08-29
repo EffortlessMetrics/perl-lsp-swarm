@@ -237,6 +237,12 @@ impl LspServer {
                         global_configs.push((folder.display_name().to_string(), project_config));
                     }
                     Err(msg) => {
+                        // A malformed replacement is still a new accepted
+                        // configuration state. Advance the folder-local
+                        // generation so cached reports from the prior valid
+                        // config cannot be returned as unchanged.
+                        folder.project_config_generation =
+                            folder.project_config_generation.saturating_add(1);
                         let user_msg = format!(
                             "Perl LSP: {msg} \
                              Fix the error in .perl-lsp.toml and reload the window \

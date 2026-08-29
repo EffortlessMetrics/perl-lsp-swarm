@@ -1878,6 +1878,7 @@ impl LspServer {
             std::sync::Arc<std::sync::atomic::AtomicU32>,
             u32,
             u64,
+            Option<u64>,
         )> = {
             let documents = self.documents.lock();
             documents
@@ -1885,7 +1886,15 @@ impl LspServer {
                 .map(|(k, v)| {
                     let generation_arc = std::sync::Arc::clone(&v.generation);
                     let gen_val = v.generation.load(std::sync::atomic::Ordering::SeqCst);
-                    (k.clone(), v.clone(), generation_arc, gen_val, workspace_gen_at_snapshot)
+                    let config_generation = project_config_generation_for_doc(self, k);
+                    (
+                        k.clone(),
+                        v.clone(),
+                        generation_arc,
+                        gen_val,
+                        workspace_gen_at_snapshot,
+                        config_generation,
+                    )
                 })
                 .collect()
         };
@@ -1911,8 +1920,17 @@ impl LspServer {
             hook();
         }
 
-        for (i, (uri_str, doc, generation, gen_at_snapshot, workspace_gen_at_snapshot)) in
-            docs_snapshot.iter().enumerate()
+        for (
+            i,
+            (
+                uri_str,
+                doc,
+                generation,
+                gen_at_snapshot,
+                workspace_gen_at_snapshot,
+                config_generation_at_snapshot,
+            ),
+        ) in docs_snapshot.iter().enumerate()
         {
             // Cooperative yield every 8 documents
             if i & 0x7 == 0 {
@@ -2068,6 +2086,18 @@ impl LspServer {
                         gen_at_snapshot,
                         current_gen = generation.load(std::sync::atomic::Ordering::SeqCst),
                         "Skipping stale workspace diagnostic (generation advanced during computation)"
+                    );
+                    continue;
+                }
+                if project_config_generation_for_doc(self, uri_str)
+                    != *config_generation_at_snapshot
+                {
+                    tracing::debug!(
+                        uri = uri_str,
+                        config_generation_at_snapshot,
+                        current_config_generation =
+                            project_config_generation_for_doc(self, uri_str),
+                        "Skipping stale workspace diagnostic (folder configuration changed)"
                     );
                     continue;
                 }
@@ -3265,6 +3295,12 @@ mod tests {
                 .with_path(folder.clone()),
         );
         server.load_and_apply_project_config();
+        let initial_config_generation = server
+            .workspace_folders
+            .lock()
+            .first()
+            .ok_or("folder state missing after initial config load")?
+            .project_config_generation;
         server.test_handle_did_open(Some(json!({
             "textDocument": {"uri": uri, "languageId": "perl", "version": 1, "text": "sub f ($x) { return $x; }\n"}
         })))?;
@@ -3283,6 +3319,16 @@ mod tests {
 
         std::fs::write(&config_path, "[perl]\nversion = \"5.20.1\"\n")?;
         server.load_and_apply_project_config();
+        assert_eq!(
+            server
+                .workspace_folders
+                .lock()
+                .first()
+                .ok_or("folder state missing after malformed config")?
+                .project_config_generation,
+            initial_config_generation + 1,
+            "malformed config must advance the folder-local report generation"
+        );
         let warning_output = String::from_utf8(output.lock().clone())?;
         assert!(
             warning_output.contains("invalid [perl].version")
@@ -3467,6 +3513,79 @@ mod tests {
             report["items"].as_array().map(Vec::len),
             Some(0),
             "a reload during the snapshot must discard the stale PL900 report"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn workspace_diagnostics_drops_only_the_folder_with_in_flight_config_reload()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let first_folder = temp.path().join("first-project");
+        let second_folder = temp.path().join("second-project");
+        std::fs::create_dir_all(&first_folder)?;
+        std::fs::create_dir_all(&second_folder)?;
+        for folder in [&first_folder, &second_folder] {
+            std::fs::write(folder.join(".perl-lsp.toml"), "[perl]\nversion = \"5.20\"\n")?;
+        }
+        let first_file = first_folder.join("main.pl");
+        let second_file = second_folder.join("main.pl");
+        let first_uri = url::Url::from_file_path(&first_file)
+            .map_err(|()| "failed to build first file URI")?
+            .to_string();
+        let second_uri = url::Url::from_file_path(&second_file)
+            .map_err(|()| "failed to build second file URI")?
+            .to_string();
+        let first_folder_uri = url::Url::from_directory_path(&first_folder)
+            .map_err(|()| "failed to build first folder URI")?
+            .to_string();
+        let second_folder_uri = url::Url::from_directory_path(&second_folder)
+            .map_err(|()| "failed to build second folder URI")?
+            .to_string();
+        let (server, _) = make_server_with_capture();
+        let first_folder_path = first_folder.clone();
+        server.workspace_folders.lock().extend([
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(first_folder_uri)
+                .with_path(first_folder),
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(second_folder_uri)
+                .with_path(second_folder),
+        ]);
+        server.load_and_apply_project_config();
+        for uri in [&first_uri, &second_uri] {
+            server.test_handle_did_open(Some(json!({
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "perl",
+                    "version": 1,
+                    "text": "sub f ($x) { return $x; }\n"
+                }
+            })))?;
+        }
+
+        let folders = std::sync::Arc::clone(&server.workspace_folders);
+        *server.diagnostic_after_snapshot_hook.lock() = Some(Box::new(move || {
+            if let Some(folder) = folders
+                .lock()
+                .iter_mut()
+                .find(|folder| folder.path.as_ref() == Some(&first_folder_path))
+            {
+                folder.project_config_generation =
+                    folder.project_config_generation.saturating_add(1);
+            }
+        }));
+        let first_uri_key = server.normalize_uri_key(&first_uri);
+        let second_uri_key = server.normalize_uri_key(&second_uri);
+        let report = server
+            .handle_workspace_diagnostic(Some(json!({"previousResultIds": []})))?
+            .ok_or("in-flight per-folder reload response missing")?;
+        let items = report["items"].as_array().ok_or("workspace items missing")?;
+        assert!(
+            items.iter().all(|item| item["uri"].as_str() != Some(first_uri_key.as_str())),
+            "changed folder must be dropped from mixed-generation response: {report}"
+        );
+        assert!(
+            items.iter().any(|item| item["uri"].as_str() == Some(second_uri_key.as_str())),
+            "unrelated folder must remain current: {report}"
         );
         Ok(())
     }
