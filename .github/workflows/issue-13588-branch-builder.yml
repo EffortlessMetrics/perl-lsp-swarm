@@ -1,0 +1,127 @@
+name: Build issue 13588 candidate
+
+on:
+  push:
+    branches:
+      - fix/13588-contextual-legacy-resolution
+
+concurrency:
+  group: issue-13588-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  BASE_SHA: 39e19545a7fae642d4b36e7469bec82e0f99eae2
+  SOURCE: crates/perl-lsp-rs/src/runtime/lifecycle/module_resolution.rs
+  APPLY_SCRIPT: .github/issue-13588-apply.py
+  BUILDER_WORKFLOW: .github/workflows/issue-13588-branch-builder.yml
+
+jobs:
+  build:
+    name: Cut legacy resolver to canonical @INC context
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout exact candidate branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          ref: fix/13588-contextual-legacy-resolution
+
+      - name: Verify accepted base and scaffold
+        shell: bash
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor "$BASE_SHA" HEAD
+          test -f "$APPLY_SCRIPT"
+          test -f "$BUILDER_WORKFLOW"
+          test "$(git rev-list --count "$BASE_SHA"..HEAD)" -eq 2
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable (master)
+        with:
+          toolchain: 1.95.0
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          cache-on-failure: true
+          cache-all-crates: true
+          shared-key: issue-13588-${{ hashFiles('Cargo.lock') }}
+
+      - name: Apply contextual resolver cutover
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 "$APPLY_SCRIPT"
+          rm "$APPLY_SCRIPT" "$BUILDER_WORKFLOW"
+          cargo fmt --all
+          git diff --check
+
+      - name: Prove canonical route and stored startup-INC reuse
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test -p perl-lsp-rs --lib --locked \
+            resolve_module_path_with_uri_consumes_the_canonical_inc_context
+          cargo test -p perl-lsp-rs --lib --locked \
+            resolve_module_path_with_uri_reuses_stored_system_inc_after_probe_binary_disappears
+          cargo test -p perl-lsp-rs --lib --locked resolve_module_path_with_uri
+          cargo test -p perl-lsp-rs --lib --locked effective_inc_context
+
+      - name: Run full runtime library regression
+        shell: bash
+        run: cargo test -p perl-lsp-rs --lib --locked
+
+      - name: Lint the modified runtime library
+        shell: bash
+        run: cargo clippy -p perl-lsp-rs --lib --locked -- -D warnings
+
+      - name: Seal the one-file production claim
+        shell: bash
+        run: |
+          set -euo pipefail
+          SOURCE="$SOURCE" python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          source = Path(os.environ["SOURCE"])
+          text = source.read_text(encoding="utf-8")
+          for retired in [
+              "fn workspace_config_for_doc(",
+              "fn resolution_root(",
+              "fn prepend_use_lib_paths(",
+          ]:
+              if retired in text:
+                  raise SystemExit(f"live legacy helper remains: {retired}")
+          required = [
+              "self.effective_inc_context_for_doc(doc_uri, doc_text, None)",
+              "resolve_module_path_with_uri_reuses_stored_system_inc_after_probe_binary_disappears",
+              "#[cfg(test)]\nfn append_system_inc_paths(",
+              "#[cfg(test)]\nfn append_system_inc_paths_from(",
+              "#[cfg(test)]\nfn normalized_inc_key(",
+          ]
+          for needle in required:
+              if needle not in text:
+                  raise SystemExit(f"missing cutover proof: {needle}")
+          PY
+
+          mapfile -t changed < <(git diff --name-only "$BASE_SHA")
+          test "${#changed[@]}" -eq 1
+          test "${changed[0]}" = "$SOURCE"
+          git diff --stat "$BASE_SHA"
+          git diff --check "$BASE_SHA"
+
+      - name: Commit only the accepted source claim
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "EffortlessSteven"
+          git config user.email "git@effortlesssteven.com"
+          git add -A
+          git commit -m "fix(module-runtime): route legacy fallbacks through canonical @INC context (#13588)"
+          git push origin HEAD:fix/13588-contextual-legacy-resolution
