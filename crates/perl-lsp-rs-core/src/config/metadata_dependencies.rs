@@ -285,7 +285,7 @@ fn collect_from_file(
 }
 
 fn push_unique(into: &mut Vec<DeclaredDependency>, dependency: DeclaredDependency) {
-    if into.iter().any(|existing| existing.module == dependency.module) {
+    if into.contains(&dependency) {
         return;
     }
     into.push(dependency);
@@ -732,6 +732,43 @@ mod tests {
 
     fn missing(message: &'static str) -> std::io::Error {
         std::io::Error::other(message)
+    }
+
+    #[test]
+    fn push_unique_uses_complete_fact_identity() {
+        let runtime = DeclaredDependency::new(
+            "Shared::Module",
+            Some("1.0"),
+            "runtime.requires",
+            DeclaredDependencySource::MetaJson,
+        );
+        let test = DeclaredDependency::new(
+            "Shared::Module",
+            Some("1.0"),
+            "test.requires",
+            DeclaredDependencySource::MetaJson,
+        );
+        let newer = DeclaredDependency::new(
+            "Shared::Module",
+            Some("2.0"),
+            "runtime.requires",
+            DeclaredDependencySource::MetaJson,
+        );
+        let cpanfile = DeclaredDependency::new(
+            "Shared::Module",
+            Some("1.0"),
+            "requires",
+            DeclaredDependencySource::Cpanfile,
+        );
+
+        let mut dependencies = Vec::new();
+        push_unique(&mut dependencies, runtime.clone());
+        push_unique(&mut dependencies, runtime.clone());
+        push_unique(&mut dependencies, test.clone());
+        push_unique(&mut dependencies, newer.clone());
+        push_unique(&mut dependencies, cpanfile.clone());
+
+        assert_eq!(dependencies, vec![runtime, test, newer, cpanfile]);
     }
 
     #[test]
