@@ -59,8 +59,9 @@ the direct-bypass failure under the full Clippy gate.
 
 See also:
 
+- DF-1 through DF-4 sequencing remains issue-owned by
+  [#9850](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/9850).
 - [`docs/CLIPPY_POLICY.md`](CLIPPY_POLICY.md) for the active policy and suppression
-  rules; issue [#9850](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/9850)
-  owns current product-Clippy sequencing.
+  rules.
 - [`policy/clippy-lints.d/00-active.toml`](../policy/clippy-lints.d/00-active.toml)
   for the active lint row and explicit empty-state marker.
