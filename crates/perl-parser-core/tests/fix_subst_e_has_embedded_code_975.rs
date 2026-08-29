@@ -100,15 +100,15 @@ fn subst_quote_operator_form_e_sets_has_embedded_code() -> Result<(), Box<dyn st
 
 // ── Sexp marker test ─────────────────────────────────────────────────────────
 
-/// The `(risk:code)` marker must appear in the sexp for `s///e`.
+/// The `(has_embedded_code true)` marker must appear in the sexp for `s///e`.
 #[test]
 fn subst_e_sexp_contains_risk_code_marker() {
     let mut parser = Parser::new(r#"$s =~ s/(\w+)/uc($1)/e;"#);
     let ast = must(parser.parse());
     let sexp = ast.to_sexp();
     assert!(
-        sexp.contains("risk:code"),
-        "sexp for s///e must contain '(risk:code)' marker; got:\n{}",
+        sexp.contains("(has_embedded_code true)"),
+        "sexp for s///e must contain '(has_embedded_code true)' marker; got:\n{}",
         sexp
     );
 }

@@ -152,6 +152,12 @@ armed auto-merge—record the exact pending fact and wake event once when useful
 return `PR_IN_FLIGHT`. Do not poll unchanged state or call the wider goal blocked. A
 remote integration wait does not make a still-current substantive review stale.
 
+An armed auto-merge that appears stalled is usually waiting on the slowest required
+context, not broken: `ripr+ New Gap Gate` is the tail of the required union. The
+manual probe merge mechanism, its compare-and-swap SHA guard, and the waiver bar are
+single-sourced in `$merge-reconcile` — follow that skill's text rather than a second
+copy here.
+
 ## Useful GitHub boundary
 
 Publish candidate-wide route/proof/limitation changes in the PR body or a compact PR

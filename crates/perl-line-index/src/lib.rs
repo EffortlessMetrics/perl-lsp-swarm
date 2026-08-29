@@ -6,6 +6,7 @@
 #![deny(unsafe_code)]
 #![warn(rust_2018_idioms)]
 #![warn(missing_docs)]
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 /// Line index for byte <-> (line, col) mapping.
 #[derive(Clone, Debug)]

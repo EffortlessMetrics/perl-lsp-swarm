@@ -101,9 +101,13 @@ jobs:
 
             check_gate(q{say}, 5.010, q{use feature q(say); say q(ok); 1;});
             check_gate(q{state}, 5.010, q{use feature q(state); state $x = 1; $x++; 1;});
+            # Subroutine signatures compile as an experimental feature from
+            # Perl 5.20 (stabilized at 5.36), so the floor for the probe is
+            # 5.020: every version at or above it must compile the probe, and
+            # every version below it must fail to compile it.
             check_gate(
               q{signatures},
-              5.036,
+              5.020,
               q{use feature q(signatures); no warnings q(experimental::signatures); sub f ($x) { $x }; 1;}
             );
             check_gate(q{class}, 5.038, q{use feature q(class); no warnings q(experimental::class); class Probe { }; 1;});

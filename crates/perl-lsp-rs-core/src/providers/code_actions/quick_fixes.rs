@@ -1430,11 +1430,28 @@ pub fn fix_parse_error(
                     .map(|p| range_start + p)
                     .unwrap_or(source.len());
 
-                // Insert before trailing whitespace
+                // Insert before trailing whitespace. When the diagnostic
+                // range itself sits at EOF (PL003's shape), range_start is at
+                // or past the content end, so the trim must be bounded by the
+                // start of source rather than by range_start — otherwise the
+                // semicolon lands after the trailing newline (#12798).
+                let trim_floor = if range_start >= source.len() { 0 } else { range_start };
                 let mut end_pos = line_end;
-                while end_pos > range_start && source.as_bytes()[end_pos - 1].is_ascii_whitespace()
-                {
+                while end_pos > trim_floor && source.as_bytes()[end_pos - 1].is_ascii_whitespace() {
                     end_pos -= 1;
+                }
+
+                // A trailing line comment swallows a semicolon appended after
+                // it (`my $value = 1 # why;` — the statement never
+                // terminates). In the EOF case insert before the comment
+                // instead, then re-trim the whitespace ahead of it (#12803).
+                if trim_floor == 0
+                    && let Some(comment_start) = trailing_line_comment_start(&source[..end_pos])
+                {
+                    end_pos = comment_start;
+                    while end_pos > 0 && source.as_bytes()[end_pos - 1].is_ascii_whitespace() {
+                        end_pos -= 1;
+                    }
                 }
 
                 actions.push(CodeAction {
@@ -1612,6 +1629,46 @@ fn has_unclosed_brace(source: &str) -> bool {
     }
 
     depth == 1 && paren_depth == 0 && bracket_depth == 0 && !in_single && !in_double && !in_comment
+}
+
+/// Byte offset of the first `#` that starts a line comment inside `slice`,
+/// tracking single/double quotes and backslash escapes. A `#` immediately
+/// preceded by `$` is skipped: `$#foo` is the last-index sigil, not a
+/// comment. Returns `None` when the slice has no comment opener, so callers
+/// can distinguish "no trailing comment" from "comment at offset 0".
+fn trailing_line_comment_start(slice: &str) -> Option<usize> {
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut escaped = false;
+    let mut previous: Option<char> = None;
+
+    for (index, ch) in slice.char_indices() {
+        if escaped {
+            escaped = false;
+            previous = Some(ch);
+            continue;
+        }
+        if (in_single || in_double) && ch == '\\' {
+            escaped = true;
+            previous = Some(ch);
+            continue;
+        }
+        if !in_double && ch == '\'' {
+            in_single = !in_single;
+            previous = Some(ch);
+            continue;
+        }
+        if !in_single && ch == '"' {
+            in_double = !in_double;
+            previous = Some(ch);
+            continue;
+        }
+        if !in_single && !in_double && ch == '#' && previous != Some('$') {
+            return Some(index);
+        }
+        previous = Some(ch);
+    }
+    None
 }
 
 /// Fix unused parameter by adding underscore prefix
@@ -2387,10 +2444,8 @@ fn split_two_top_level_args(input: &str) -> Option<(&str, &str)> {
             '\'' | '"' | '`' => quote = Some(ch),
             '(' | '[' | '{' => depth += 1,
             ')' | ']' | '}' => depth = depth.saturating_sub(1),
-            ',' if depth == 0 => {
-                if split.replace(idx).is_some() {
-                    return None;
-                }
+            ',' if depth == 0 && split.replace(idx).is_some() => {
+                return None;
             }
             _ => {}
         }

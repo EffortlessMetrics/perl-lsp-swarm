@@ -4,6 +4,7 @@
 //! parser-error baselines, etc.) used by the `just` recipes and CI gates.
 // CLI binary: println!/eprintln! are intentional user-facing output.
 #![allow(clippy::print_stderr, clippy::print_stdout)]
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use perl_ci_hygiene::version_sync;
 use perl_ci_hygiene::walk_rs_files;
@@ -97,7 +98,6 @@ fn run() -> Result<i32> {
         CliCommand::CargoPackageWorkspaceDryRun { crates } => {
             cmd_cargo_package_workspace_dry_run(&repo_root, &crates)?
         }
-        CliCommand::TestWithOverride => cmd_test_with_override(&repo_root)?,
         CliCommand::SimpleLspTest => cmd_simple_lsp_test(&repo_root)?,
         CliCommand::CheckVersionSync => cmd_check_version_sync(&repo_root)?,
         CliCommand::BumpVersion { version } => cmd_bump_version(&repo_root, &version)?,
@@ -1275,28 +1275,6 @@ fn cmd_compare_benchmarks(repo_root: &Path, args: &[String]) -> Result<i32> {
     argv.extend_from_slice(args);
     let refs: Vec<&str> = argv.iter().map(String::as_str).collect();
     command_status_strict(repo_root, "python3", &refs, &[])?;
-    Ok(0)
-}
-
-fn cmd_test_with_override(repo_root: &Path) -> Result<i32> {
-    println!("Testing with minimal features catalog...");
-    command_status_strict(
-        repo_root,
-        "cargo",
-        &["test", "-p", "perl-parser", "--test", "lsp_feature_gating_test", "--", "--nocapture"],
-        &[("FEATURES_TOML_OVERRIDE", "crates/perl-parser/tests/data/features_minimal.toml")],
-    )?;
-
-    println!();
-    println!("Testing with disabled features catalog...");
-    command_status_strict(
-        repo_root,
-        "cargo",
-        &["test", "-p", "perl-parser", "--test", "lsp_features_snapshot_test", "--", "--nocapture"],
-        &[("FEATURES_TOML_OVERRIDE", "crates/perl-parser/tests/data/features_disabled_test.toml")],
-    )?;
-
-    println!("✅ Override testing complete!");
     Ok(0)
 }
 
@@ -4015,11 +3993,11 @@ mod tests {
     }
 
     #[test]
-    fn adjacent_safety_comment_matches_directly_above() {
-        let safety_re = Regex::new(r"^\s*//\s*SAFETY:").unwrap();
-        let attr_re = Regex::new(r"^\s*#\[").unwrap();
-        let comment_re = Regex::new(r"^\s*//").unwrap();
-        let unsafe_impl_re = Regex::new(r"unsafe[[:space:]]+impl").unwrap();
+    fn adjacent_safety_comment_matches_directly_above() -> Result<()> {
+        let safety_re = Regex::new(r"^\s*//\s*SAFETY:")?;
+        let attr_re = Regex::new(r"^\s*#\[")?;
+        let comment_re = Regex::new(r"^\s*//")?;
+        let unsafe_impl_re = Regex::new(r"unsafe[[:space:]]+impl")?;
         let lines = vec!["// SAFETY: Win32 API".to_string(), "unsafe { api(); }".to_string()];
         assert!(has_adjacent_safety_comment(
             &lines,
@@ -4029,14 +4007,15 @@ mod tests {
             &comment_re,
             &unsafe_impl_re,
         ));
+        Ok(())
     }
 
     #[test]
-    fn adjacent_safety_comment_does_not_cross_intervening_code() {
-        let safety_re = Regex::new(r"^\s*//\s*SAFETY:").unwrap();
-        let attr_re = Regex::new(r"^\s*#\[").unwrap();
-        let comment_re = Regex::new(r"^\s*//").unwrap();
-        let unsafe_impl_re = Regex::new(r"unsafe[[:space:]]+impl").unwrap();
+    fn adjacent_safety_comment_does_not_cross_intervening_code() -> Result<()> {
+        let safety_re = Regex::new(r"^\s*//\s*SAFETY:")?;
+        let attr_re = Regex::new(r"^\s*#\[")?;
+        let comment_re = Regex::new(r"^\s*//")?;
+        let unsafe_impl_re = Regex::new(r"unsafe[[:space:]]+impl")?;
         let lines = vec![
             "// SAFETY: first block".to_string(),
             "unsafe { first(); }".to_string(),
@@ -4051,14 +4030,15 @@ mod tests {
             &comment_re,
             &unsafe_impl_re,
         ));
+        Ok(())
     }
 
     #[test]
-    fn adjacent_safety_comment_covers_back_to_back_unsafe_impls() {
-        let safety_re = Regex::new(r"^\s*//\s*SAFETY:").unwrap();
-        let attr_re = Regex::new(r"^\s*#\[").unwrap();
-        let comment_re = Regex::new(r"^\s*//").unwrap();
-        let unsafe_impl_re = Regex::new(r"unsafe[[:space:]]+impl").unwrap();
+    fn adjacent_safety_comment_covers_back_to_back_unsafe_impls() -> Result<()> {
+        let safety_re = Regex::new(r"^\s*//\s*SAFETY:")?;
+        let attr_re = Regex::new(r"^\s*#\[")?;
+        let comment_re = Regex::new(r"^\s*//")?;
+        let unsafe_impl_re = Regex::new(r"unsafe[[:space:]]+impl")?;
         let lines = vec![
             "// SAFETY: shared Send/Sync justification".to_string(),
             "#[allow(unsafe_code)]".to_string(),
@@ -4074,5 +4054,6 @@ mod tests {
             &comment_re,
             &unsafe_impl_re,
         ));
+        Ok(())
     }
 }
