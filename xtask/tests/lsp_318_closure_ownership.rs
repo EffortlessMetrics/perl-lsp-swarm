@@ -12,7 +12,7 @@ const MATRIX_PATH: &str = "docs/specs/lsp-318-conformance-matrix.md";
 const LEDGER_PATH: &str = "docs/specs/lsp-318-closure-ownership.md";
 const CLOSED_DISPOSITIONS: &[&str] = &["implementation-owner", "accepted-disposition"];
 const LEDGER_HEADER: &[&str] =
-    &["ID", "Matrix feature", "Disposition", "Owner / evidence", "Dependency", "Rationale"];
+    &["ID", "Matrix feature", "Disposition", "Owner", "Evidence", "Dependency", "Rationale"];
 const EXPECTED_LEDGER_IDS: &[&str] = &[
     "command-tooltip-non-codelens",
     "generated-code-action-tags",
@@ -28,7 +28,8 @@ struct LedgerRow<'a> {
     id: &'a str,
     feature: &'a str,
     disposition: &'a str,
-    owner_or_evidence: &'a str,
+    owner: &'a str,
+    evidence: &'a str,
     dependency: &'a str,
     rationale: &'a str,
 }
@@ -44,10 +45,45 @@ fn read(relative: &str) -> Result<String, String> {
     fs::read_to_string(&path).map_err(|error| format!("failed to read {}: {error}", path.display()))
 }
 
+fn table_cells(line: &str) -> Vec<&str> {
+    let trimmed = line.trim();
+    let body = trimmed.strip_prefix('|').unwrap_or(trimmed);
+    let body = body.strip_suffix('|').unwrap_or(body);
+    let mut cells = Vec::new();
+    let mut start = 0;
+    let mut in_code_span = false;
+    let mut escaped = false;
+
+    for (index, ch) in body.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' {
+            escaped = true;
+            continue;
+        }
+        if ch == '`' {
+            in_code_span = !in_code_span;
+            continue;
+        }
+        if ch == '|' && !in_code_span {
+            cells.push(body[start..index].trim());
+            start = index + ch.len_utf8();
+        }
+    }
+    cells.push(body[start..].trim());
+    cells
+}
+
 fn table_rows(source: &str, expected_cells: usize) -> Result<Vec<Vec<&str>>, String> {
     let mut rows = Vec::new();
-    for line in source.lines().filter(|line| line.starts_with("| ")) {
-        let cells: Vec<_> = line.trim_matches('|').split('|').map(str::trim).collect();
+    for line in source.lines() {
+        let trimmed = line.trim();
+        if !trimmed.starts_with('|') {
+            continue;
+        }
+        let cells = table_cells(trimmed);
         if cells.iter().all(|cell| cell.chars().all(|ch| ch == '-' || ch == ' ')) {
             continue;
         }
@@ -61,9 +97,8 @@ fn table_rows(source: &str, expected_cells: usize) -> Result<Vec<Vec<&str>>, Str
     }
     Ok(rows)
 }
-
 fn parse_ledger(ledger: &str) -> Result<Vec<LedgerRow<'_>>, String> {
-    let mut rows = table_rows(ledger, 6)?;
+    let mut rows = table_rows(ledger, 7)?;
     if rows.first().map(Vec::as_slice) != Some(LEDGER_HEADER) {
         return Err("closure ledger must keep the reviewed six-column header".to_owned());
     }
@@ -75,9 +110,10 @@ fn parse_ledger(ledger: &str) -> Result<Vec<LedgerRow<'_>>, String> {
             id: cells[0],
             feature: cells[1],
             disposition: cells[2],
-            owner_or_evidence: cells[3],
-            dependency: cells[4],
-            rationale: cells[5],
+            owner: cells[3],
+            evidence: cells[4],
+            dependency: cells[5],
+            rationale: cells[6],
         })
         .collect())
 }
@@ -100,13 +136,19 @@ fn parse_matrix(matrix: &str) -> Result<BTreeMap<&str, Vec<&str>>, String> {
 }
 
 fn has_issue_reference(value: &str) -> bool {
-    value.split(|ch: char| ch.is_whitespace() || matches!(ch, ',' | ';' | '/' | '(' | ')')).any(
-        |token| {
-            token.strip_prefix('#').is_some_and(|digits| {
-                !digits.is_empty() && digits.chars().all(|ch| ch.is_ascii_digit())
-            })
-        },
-    )
+    value.char_indices().any(|(index, ch)| {
+        ch == '#'
+            && value
+                .get(index + 1..)
+                .and_then(|rest| rest.chars().next())
+                .is_some_and(|next| next.is_ascii_digit())
+    })
+}
+
+fn is_single_issue_reference(value: &str) -> bool {
+    value.trim().strip_prefix('#').is_some_and(|digits| {
+        !digits.is_empty() && digits.chars().all(|ch| ch.is_ascii_digit())
+    })
 }
 
 fn unresolved_matrix_features<'a>(matrix: &BTreeMap<&'a str, Vec<&'a str>>) -> BTreeSet<&'a str> {
@@ -117,13 +159,40 @@ fn unresolved_matrix_features<'a>(matrix: &BTreeMap<&'a str, Vec<&'a str>>) -> B
             let notes = cells[9].to_ascii_lowercase();
             let unresolved =
                 matches!(status, "negative-gated+documented" | "not-applicable+documented")
-                    || notes.contains("unclaimed")
-                    || notes.contains("negative-gated");
+                    || notes.contains("remains unclaimed");
             unresolved.then_some(feature)
         })
         .collect()
 }
 
+#[test]
+fn markdown_table_parser_handles_indentation_trailing_space_and_code_pipes() -> Result<(), Box<dyn std::error::Error>> {
+    let rows = table_rows(
+        "  | ID | Feature | Disposition | Owner | Evidence | Dependency | Rationale |  \n  | --- | --- | --- | --- | --- | --- | --- |\n  | row | feature | accepted-disposition | n/a | compare `a | b` (#123). | none | material rationale here |  ",
+        7,
+    )?;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0][4], "compare `a | b` (#123).");
+    Ok(())
+}
+
+#[test]
+fn issue_reference_detection_accepts_markdown_and_sentence_punctuation() {
+    assert!(has_issue_reference("[#1234]."));
+    assert!(has_issue_reference("PR #42)"));
+    assert!(!has_issue_reference("hash #"));
+    assert!(!has_issue_reference("no issue reference"));
+}
+
+#[test]
+fn implementation_owner_is_separate_from_historical_evidence() -> Result<(), Box<dyn std::error::Error>> {
+    let rows = parse_ledger(
+        "| ID | Matrix feature | Disposition | Owner | Evidence | Dependency | Rationale |\n| --- | --- | --- | --- | --- | --- | --- |\n| row | feature | implementation-owner | #123 | boundary #9 | none | material rationale here |",
+    )?;
+    assert_eq!(rows[0].owner, "#123");
+    assert_eq!(rows[0].evidence, "boundary #9");
+    Ok(())
+}
 #[test]
 fn unresolved_lsp_318_surfaces_have_closure_owners() -> Result<(), Box<dyn std::error::Error>> {
     let ledger_text = read(LEDGER_PATH)?;
@@ -164,7 +233,7 @@ fn unresolved_lsp_318_surfaces_have_closure_owners() -> Result<(), Box<dyn std::
             row.feature
         );
         assert!(
-            has_issue_reference(row.owner_or_evidence),
+            has_issue_reference(row.evidence),
             "closure-ledger row `{}` must name issue or PR evidence",
             row.id
         );
@@ -181,8 +250,8 @@ fn unresolved_lsp_318_surfaces_have_closure_owners() -> Result<(), Box<dyn std::
 
         if row.disposition == "implementation-owner" {
             assert!(
-                row.owner_or_evidence.contains('#'),
-                "implementation-owner row `{}` must name at least one owning issue",
+                is_single_issue_reference(row.owner),
+                "implementation-owner row `{}` must pin exactly one owning issue in Owner",
                 row.id
             );
         }
