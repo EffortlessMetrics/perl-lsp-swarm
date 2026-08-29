@@ -313,7 +313,12 @@ fn flush_section(doc: &mut PodDoc, section: &Option<Section>, body: &str, in_ove
             doc.name = Some(strip_pod_formatting_display_text(trimmed));
         }
         Section::Synopsis => {
-            doc.synopsis = Some(cleaned);
+            // Synopsis feeds the same plain-text hover/virtual-content
+            // surfaces as NAME, so links render as display text there too.
+            // The markdown `L<>` rendering percent-encodes link targets and
+            // made a cleaned synopsis longer than its source, tripping the
+            // `pod_extraction` fuzz invariant (#12824 family).
+            doc.synopsis = Some(strip_pod_formatting_display_text(trimmed));
         }
         Section::Description => {
             // Take only the first paragraph
