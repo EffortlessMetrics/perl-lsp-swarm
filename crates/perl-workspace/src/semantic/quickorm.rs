@@ -207,7 +207,7 @@ fn walk_direct_statement(
             let package = current_package(context).to_string();
             if !context.table_package_authority.contains(&package)
                 || context.shadowed_builders.contains(&package)
-                || !is_table_or_view_call(expression)
+                || !is_table_or_view_call(expression, &package)
             {
                 return;
             }
@@ -267,13 +267,15 @@ fn is_direct_table_or_view_call(expression: &Node) -> bool {
     matches!(name.as_str(), "table" | "view") && !args.is_empty()
 }
 
-fn is_table_or_view_call(expression: &Node) -> bool {
+fn is_table_or_view_call(expression: &Node, package: &str) -> bool {
     let NodeKind::FunctionCall { name, .. } = &expression.kind else {
         return false;
     };
-    is_direct_table_or_view_call(expression)
-        || name.ends_with("::table")
-        || name.ends_with("::view")
+    is_direct_table_or_view_call(expression) || is_current_package_qualified_call(name, package)
+}
+
+fn is_current_package_qualified_call(name: &str, package: &str) -> bool {
+    name.strip_suffix("::table") == Some(package) || name.strip_suffix("::view") == Some(package)
 }
 
 fn direct_table_or_view_builder_anchor(expression: &Node) -> Option<&Node> {

@@ -100,3 +100,52 @@ table users => sub {};
     );
     Ok(())
 }
+
+#[test]
+fn current_package_qualified_builder_does_not_surface_generated_completion()
+-> Result<(), Box<dyn std::error::Error>> {
+    let index = Arc::new(WorkspaceIndex::new());
+    index.index_file(
+        Url::parse("file:///workspace/MyApp/Schema/Qualified.pm")?,
+        r#"
+package MyApp::Schema::Qualified;
+use DBIx::QuickORM type => 'table';
+MyApp::Schema::Qualified::table users => sub {};
+table later_users => sub {};
+1;
+"#
+        .to_string(),
+    )?;
+
+    let completions = completion_items(index, "MyApp::Schema::Qualified->q")?;
+    let labels = labels(&completions);
+    assert!(
+        !labels.contains(&"qorm_table"),
+        "a qualified current-package builder must consume authority without promoting qorm_table: {labels:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn unrelated_qualified_builder_does_not_surface_generated_completion()
+-> Result<(), Box<dyn std::error::Error>> {
+    let index = Arc::new(WorkspaceIndex::new());
+    index.index_file(
+        Url::parse("file:///workspace/MyApp/Schema/UnrelatedQualified.pm")?,
+        r#"
+package MyApp::Schema::UnrelatedQualified;
+use DBIx::QuickORM type => 'table';
+Other::table users => sub {};
+1;
+"#
+        .to_string(),
+    )?;
+
+    let completions = completion_items(index, "MyApp::Schema::UnrelatedQualified->q")?;
+    let labels = labels(&completions);
+    assert!(
+        !labels.contains(&"qorm_table"),
+        "an unrelated qualified builder must not earn qorm_table completion: {labels:?}"
+    );
+    Ok(())
+}

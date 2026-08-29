@@ -128,14 +128,14 @@ fn workspace_index_receipts_keep_perl_interpolation_dynamic()
 }
 
 #[test]
-fn workspace_index_consumes_qualified_quickorm_builder_authority()
+fn workspace_index_consumes_current_package_qualified_builder_authority()
 -> Result<(), Box<dyn std::error::Error>> {
     let index = WorkspaceIndex::new();
     let uri = Url::parse("file:///lib/MyApp/Schema/Qualified.pm")?;
     let source = r#"
 package MyApp::Schema::Qualified;
 use DBIx::QuickORM type => 'table';
-A::table "qualified_users" => sub {};
+MyApp::Schema::Qualified::table "qualified_users" => sub {};
 table "later_users" => sub {};
 1;
 "#;
@@ -143,7 +143,30 @@ table "later_users" => sub {};
     index.index_file(uri, source.to_string())?;
     assert!(
         index.search_generated_workspace_symbols("qorm_table", None).is_empty(),
-        "a qualified table call must consume authority without earning a direct package fact"
+        "a current-package qualified table call must consume authority without earning a direct package fact"
+    );
+    Ok(())
+}
+
+#[test]
+fn workspace_index_ignores_unrelated_qualified_builder_for_authority()
+-> Result<(), Box<dyn std::error::Error>> {
+    let index = WorkspaceIndex::new();
+    let uri = Url::parse("file:///lib/MyApp/Schema/UnrelatedQualified.pm")?;
+    let source = r#"
+package MyApp::Schema::UnrelatedQualified;
+use DBIx::QuickORM type => 'table';
+Other::table "other_users" => sub {};
+table "users" => sub {};
+1;
+"#;
+
+    index.index_file(uri, source.to_string())?;
+    let generated = index.search_generated_workspace_symbols("qorm_table", None);
+    assert_eq!(generated.len(), 1);
+    assert_eq!(
+        generated[0].qualified_name.as_deref(),
+        Some("MyApp::Schema::UnrelatedQualified::qorm_table")
     );
     Ok(())
 }
