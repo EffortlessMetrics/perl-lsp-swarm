@@ -445,6 +445,16 @@ fn coverage_workflow_is_manual_or_nightly_only_and_requires_receipts() {
         .is_err(),
         "coverage documentation contract must reject stale route wording across three wrapped lines"
     );
+    let wrapped_three_line_connector_on_second_line =
+        "Coverage is advisory,\nbut runs through the\nfull CI deep lane.";
+    assert!(
+        coverage_reference_rows_contract(
+            wrapped_three_line_connector_on_second_line,
+            "three-line connector continuation"
+        )
+        .is_err(),
+        "coverage documentation contract must reject connector-led three-line route wording"
+    );
     let wrapped_boundary_control =
         "Coverage is advisory, but\nthis sentence ends here.\nfull CI deep lane.";
     assert!(
