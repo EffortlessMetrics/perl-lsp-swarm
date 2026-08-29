@@ -212,6 +212,7 @@ fn coverage_workflow_is_manual_or_nightly_only_and_requires_receipts() {
     must(coverage_required_check_contract(&required_checks_document));
     must(coverage_whitelist_contract(&whitelist_document));
     must(coverage_risk_pack_contract(&risk_pack_document, &economics_document));
+    must(codecov_posture_contract(&codecov_document));
     must(codecov_threshold_contract(&codecov_document));
     let coverage_whitelist_table = must_some(toml_lane(&whitelist_document, "coverage"));
     let allowed_triggers =
@@ -354,8 +355,6 @@ fn coverage_workflow_is_manual_or_nightly_only_and_requires_receipts() {
     must(coverage_baseline_contract(coverage_job, coverage_yaml_job, &justfile));
 
     let workflow_mutations = [
-        ("push trigger", "on:\n", "on:\n  push:\n    branches: [main]\n"),
-        ("merge-group trigger", "on:\n", "on:\n  merge_group:\n"),
         (
             "label route",
             "      (github.event_name == 'workflow_dispatch' && inputs.run_coverage)",
@@ -365,6 +364,11 @@ fn coverage_workflow_is_manual_or_nightly_only_and_requires_receipts() {
             "branch route",
             "      (github.event_name == 'workflow_dispatch' && inputs.run_coverage)",
             "      (github.event_name == 'workflow_dispatch' && inputs.run_coverage) ||\n      (github.ref == 'refs/heads/main' && inputs.run_coverage)",
+        ),
+        (
+            "push route",
+            "      (github.event_name == 'workflow_dispatch' && inputs.run_coverage)",
+            "      (github.event_name == 'workflow_dispatch' && inputs.run_coverage) ||\n      (github.event_name == 'push' && inputs.run_coverage)",
         ),
     ];
     for (route, original, replacement) in workflow_mutations {
@@ -376,6 +380,13 @@ fn coverage_workflow_is_manual_or_nightly_only_and_requires_receipts() {
             "coverage workflow contract must reject {route}"
         );
     }
+    let shared_trigger_workflow =
+        workflow.replacen("on:\n", "on:\n  push:\n    branches: [main]\n  merge_group:\n", 1);
+    let shared_trigger_workflow: Value = must(serde_yaml_ng::from_str(&shared_trigger_workflow));
+    assert!(
+        coverage_workflow_contract(&shared_trigger_workflow).is_ok(),
+        "coverage contract must preserve legitimate shared workflow triggers"
+    );
     let duplicate_checks_source = format!(
         "{policy}\n[[checks]]\nname = \"Codecov / Patch 95 (nightly alias)\"\nworkflow = \".github/workflows/ci-nightly.yml\"\njob = \"test-coverage\"\nevents = [\"schedule\", \"workflow_dispatch\"]\n"
     );
@@ -471,6 +482,13 @@ fn coverage_workflow_is_manual_or_nightly_only_and_requires_receipts() {
         codecov_threshold_contract(&blocking_codecov_status).is_err(),
         "Codecov contract must reject a blocking status regression"
     );
+    let blocking_codecov_root =
+        codecov_config.replacen("require_ci_to_pass: false", "require_ci_to_pass: true", 1);
+    let blocking_codecov_root: Value = must(serde_yaml_ng::from_str(&blocking_codecov_root));
+    assert!(
+        codecov_posture_contract(&blocking_codecov_root).is_err(),
+        "Codecov contract must reject a blocking top-level CI posture"
+    );
     let proof_recipe_start = must_some(justfile.find("coverage-proof base='origin/main':"));
     let (justfile_prefix, proof_recipe) = justfile.split_at(proof_recipe_start);
     let weak_baseline_enforcement = format!(
@@ -492,10 +510,11 @@ fn coverage_workflow_is_manual_or_nightly_only_and_requires_receipts() {
             && coverage_job.contains("github.event_name == 'workflow_dispatch'")
             && !coverage_job.contains("github.event_name == 'pull_request'")
             && !coverage_job.contains("github.event.pull_request")
+            && !coverage_job.contains("github.event_name == 'push'")
             && !coverage_job.contains("ci:coverage")
             && !coverage_job.contains("github.event_name == 'merge_group'")
-            && !workflow.contains("\n  merge_group:"),
-        "patch coverage must be advisory: schedule/workflow_dispatch only, with no PR or merge_group path"
+            && workflow.contains("\n  pull_request:"),
+        "patch coverage must be advisory: only the coverage job is schedule/workflow_dispatch-only"
     );
     let route_step =
         must_some(coverage_job.find("- name: Emit changed-file coverage route summary"));
@@ -946,14 +965,6 @@ fn coverage_workflow_contract(workflow: &Value) -> Result<()> {
         schedule.as_sequence().is_some_and(|entries| !entries.is_empty()),
         "coverage workflow must declare a non-empty top-level schedule trigger"
     );
-    ensure!(
-        mapping_value(triggers, "push").is_none(),
-        "coverage workflow must not declare a push trigger"
-    );
-    ensure!(
-        mapping_value(triggers, "merge_group").is_none(),
-        "coverage workflow must not declare a merge-group trigger"
-    );
     yaml_mapping_entry(triggers, "workflow_dispatch")?;
 
     let jobs = yaml_mapping_entry(workflow, "jobs")?;
@@ -1010,7 +1021,7 @@ fn coverage_required_check_contract(policy: &TomlValue) -> Result<()> {
             && coverage.get("enforcement").and_then(TomlValue::as_str) == Some("neither"),
         "coverage required-check entry must remain advisory and conditional"
     );
-    ensure_no_stale_route_wording(coverage, "required-check coverage entry")?;
+    ensure_no_positive_stale_route_claim(coverage, "required-check coverage entry")?;
     Ok(())
 }
 
@@ -1050,7 +1061,7 @@ fn coverage_whitelist_contract(policy: &TomlValue) -> Result<()> {
             ),
         }
     }
-    ensure_no_stale_route_wording(coverage, "coverage whitelist entry")?;
+    ensure_no_positive_stale_route_claim(coverage, "coverage whitelist entry")?;
     Ok(())
 }
 
@@ -1074,7 +1085,7 @@ fn toml_target_tables<'a>(
         .collect())
 }
 
-fn ensure_no_stale_route_wording(table: &toml::value::Table, context: &str) -> Result<()> {
+fn ensure_no_positive_stale_route_claim(table: &toml::value::Table, context: &str) -> Result<()> {
     for value in table.values() {
         ensure_no_stale_route_value(value, context)?;
     }
@@ -1085,8 +1096,8 @@ fn ensure_no_stale_route_value(value: &TomlValue, context: &str) -> Result<()> {
     match value {
         TomlValue::String(text) => {
             ensure!(
-                !has_stale_route_wording(text),
-                "{context} contains stale PR, push, merge-group, label, full-ci, or master wording"
+                !has_positive_stale_route_claim(text),
+                "{context} contains a positive stale PR, merge-queue, label, or branch claim"
             );
             Ok(())
         }
@@ -1106,22 +1117,75 @@ fn ensure_no_stale_route_value(value: &TomlValue, context: &str) -> Result<()> {
     }
 }
 
-fn has_stale_route_wording(text: &str) -> bool {
+fn has_positive_stale_route_claim(text: &str) -> bool {
     let normalized = text.to_ascii_lowercase().replace(['_', '-'], " ");
+    if has_negative_route_prose(&normalized) {
+        return false;
+    }
+    let has_route_term =
+        ["pull request", "merge queue", "merge group", "label", "full ci", "master"]
+            .iter()
+            .any(|marker| normalized.contains(marker));
+    let has_coverage_term = normalized.contains("coverage") || normalized.contains("codecov");
     [
-        "pull request",
-        "merge group",
-        "push",
-        "label",
-        "label gated",
-        "labeled",
-        "labels",
-        "full ci",
-        "master",
-        "ci coverage",
+        "pull request coverage",
+        "pull requests coverage",
+        "coverage pull request",
+        "coverage runs on pull request",
+        "coverage required for pull request",
+        "merge queue coverage",
+        "merge group coverage",
+        "coverage merge queue",
+        "coverage merge group",
+        "label gated coverage",
+        "labeled coverage",
+        "coverage label",
+        "coverage labels",
+        "full ci coverage",
+        "coverage on master",
+        "coverage branch master",
     ]
     .iter()
     .any(|marker| normalized.contains(marker))
+        || (has_route_term && has_coverage_term)
+}
+
+fn has_negative_route_prose(normalized: &str) -> bool {
+    [
+        "not a pr",
+        "not pr",
+        "not a pull request",
+        "not a merge",
+        "not merge",
+        "must not",
+        "does not",
+        "without",
+        "never",
+        "absent",
+        "neither",
+        "no pr",
+        "no pull request",
+    ]
+    .iter()
+    .any(|marker| normalized.contains(marker))
+}
+
+fn has_positive_stale_route_claim_in_context(text: &str, coverage_context: bool) -> bool {
+    if has_positive_stale_route_claim(text) || !coverage_context {
+        return has_positive_stale_route_claim(text);
+    }
+    let normalized = text.to_ascii_lowercase().replace(['_', '-'], " ");
+    if has_negative_route_prose(&normalized) {
+        return false;
+    }
+    (normalized.contains("full ci") && normalized.contains("label"))
+        || ((normalized.contains("pull request")
+            || normalized.contains("merge queue")
+            || normalized.contains("merge group")
+            || normalized.contains("label"))
+            && ["run", "runs", "required", "select", "selected", "route", "trigger"]
+                .iter()
+                .any(|marker| normalized.contains(marker)))
 }
 
 fn coverage_reference_rows_contract(document: &str, context: &str) -> Result<()> {
@@ -1129,7 +1193,7 @@ fn coverage_reference_rows_contract(document: &str, context: &str) -> Result<()>
         let lower = line.to_ascii_lowercase();
         if lower.contains("coverage") || lower.contains("codecov") {
             ensure!(
-                !has_stale_route_wording(line),
+                !has_positive_stale_route_claim(line),
                 "{context} contains stale coverage route wording: {line}"
             );
         }
@@ -1202,7 +1266,7 @@ fn coverage_risk_pack_docs_contract(document: &str) -> Result<()> {
         let lower = line.to_ascii_lowercase();
         let coverage_context =
             lower.contains("coverage") || lower.contains("codecov") || previous_coverage_line;
-        if coverage_context && has_stale_route_wording(line) {
+        if coverage_context && has_positive_stale_route_claim_in_context(line, coverage_context) {
             ensure!(
                 ["absent", "must not", "not advertise", "not select"]
                     .iter()
@@ -1213,7 +1277,7 @@ fn coverage_risk_pack_docs_contract(document: &str) -> Result<()> {
         previous_coverage_line = !line.trim().is_empty()
             && (lower.contains("coverage")
                 || lower.contains("codecov")
-                || (previous_coverage_line && !has_stale_route_wording(line)));
+                || (previous_coverage_line && !has_positive_stale_route_claim(line)));
     }
     Ok(())
 }
@@ -1222,6 +1286,15 @@ fn coverage_rollout_docs_contract(document: &str) -> Result<()> {
     ensure!(
         !document.to_ascii_lowercase().contains("master"),
         "Codecov rollout docs must use the live main branch"
+    );
+    Ok(())
+}
+
+fn codecov_posture_contract(config: &Value) -> Result<()> {
+    let codecov = yaml_mapping_entry(config, "codecov")?;
+    ensure!(
+        mapping_value(codecov, "require_ci_to_pass").and_then(Value::as_bool) == Some(false),
+        "Codecov must remain independent of unrelated CI failures"
     );
     Ok(())
 }
