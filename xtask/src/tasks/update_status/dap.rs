@@ -69,6 +69,9 @@ pub(super) fn count_dap_tests(root: &Path) -> DapTestCounts {
                         && !e.file_name().to_string_lossy().starts_with("breakpoints_multiline")
                         && !e.file_name().to_string_lossy().starts_with("breakpoints_pod")
                         && e.file_name().to_string_lossy() != "dap_real_session_data.pl"
+                        // `value_format_stdio_matrix.pl` backs `dap_value_format_stdio_proof`,
+                        // not the five-fixture launch scorecard in `dap_scorecard_harness.rs`.
+                        && e.file_name().to_string_lossy() != "value_format_stdio_matrix.pl"
                 })
                 .count()
         })
@@ -232,14 +235,39 @@ mod tests {
     fn test_count_dap_tests() -> Result<()> {
         let root = crate::utils::project_root()?;
         let counts = count_dap_tests(&root);
+        const SCORECARD_FIXTURES: &[&str] =
+            &["args.pl", "breakpoints_begin_end.pl", "eval.pl", "hello.pl", "loops.pl"];
+        let fixture_dir = root.join("crates/perl-dap/tests/fixtures");
+        for name in SCORECARD_FIXTURES {
+            assert!(
+                fixture_dir.join(name).is_file(),
+                "launch-scorecard DAP fixture {name} must remain present"
+            );
+        }
         assert!(
-            counts.integration_test_targets >= 1,
-            "expected at least 1 [[test]] target in perl-dap/Cargo.toml, got {}",
-            counts.integration_test_targets
+            fixture_dir.join("value_format_stdio_matrix.pl").is_file(),
+            "stdio-proof fixture must remain present but is not a launch-scorecard fixture"
         );
         assert_eq!(
-            counts.scorecard_fixtures, 5,
-            "expected 5 scorecard fixtures (hello, loops, eval, args, breakpoints_begin_end), got {}",
+            counts.integration_test_targets, 69,
+            "expected 69 [[test]] targets in perl-dap/Cargo.toml (67 + error_class_fixed_origin from #8739 + debugger_output_origin from #8746), got {}",
+            counts.integration_test_targets
+        );
+        // The count alone cannot prove the two named targets are present — an
+        // unrelated addition could keep the total at 69 while either one goes
+        // missing. Assert both names exist in their [[test]] declarations.
+        let manifest = fs::read_to_string(root.join("crates/perl-dap/Cargo.toml"))?;
+        for target in ["error_class_fixed_origin", "debugger_output_origin"] {
+            assert!(
+                manifest.contains(&format!("name = \"{target}\"")),
+                "expected a [[test]] target named {target} in perl-dap/Cargo.toml"
+            );
+        }
+        assert_eq!(
+            counts.scorecard_fixtures,
+            SCORECARD_FIXTURES.len(),
+            "expected {} launch-scorecard fixtures (hello, loops, eval, args, begin_end), got {}",
+            SCORECARD_FIXTURES.len(),
             counts.scorecard_fixtures
         );
         Ok(())

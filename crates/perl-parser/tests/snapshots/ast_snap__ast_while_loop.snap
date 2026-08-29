@@ -1,5 +1,5 @@
 ---
-source: crates/perl-parser/tests/ast_snapshot_tests.rs
+source: crates/perl-parser/tests/ast_snap.rs
 expression: "parse_sexp(\"while (my $line = <STDIN>) { chomp $line; print $line; }\")"
 ---
-(source_file (while (my_declaration (variable $ line)(readline STDIN)) (block (expression_statement (ambiguous_function_call_expression (function) (variable $ line))) (expression_statement (call print ((variable $ line)))))))
+(source_file (statements (while (condition (my_declaration (declarator my) (variable (variable (sigil $) (name line))) (initializer (readline (filehandle STDIN))))) (body (block (statements (expression_statement (expression (ambiguous_function_call_expression (name chomp) (args (variable (sigil $) (name line))))))) (statements (expression_statement (expression (call (name print) (args (variable (sigil $) (name line))))))))))))

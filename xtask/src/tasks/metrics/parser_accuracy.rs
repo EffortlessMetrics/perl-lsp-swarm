@@ -2982,10 +2982,10 @@ fn collect_parser_tokens(source: &str) -> Result<Vec<String>> {
     loop {
         let token =
             stream.next().map_err(|err| eyre!("tokenizing parser accuracy fixture: {err}"))?;
-        if token.kind == TokenKind::Eof {
+        if token.kind() == TokenKind::Eof {
             break;
         }
-        tokens.push(format!("{:?}:{}", token.kind, token.text));
+        tokens.push(format!("{:?}:{}", token.kind(), token.text));
     }
     Ok(tokens)
 }

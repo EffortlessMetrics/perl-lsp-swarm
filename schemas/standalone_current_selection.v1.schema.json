@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/EffortlessMetrics/perl-lsp-swarm/schemas/standalone_current_selection.v1.schema.json",
+  "title": "standalone_current_selection.v1",
+  "description": "One current-selection record for a first-party standalone installation (#11179). It names one immutable complete candidate from the verified catalog, never loose executable paths; generations are monotonic within one logical install root and preserved prior-state records keep the current generation. The record stores role and digest identities only - never private paths, environments, or credentials.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "selection_policy_version",
+    "install_root",
+    "selection_generation",
+    "selected_candidate_id",
+    "selected_manifest_sha256",
+    "previous_known_good",
+    "operation",
+    "transaction_id",
+    "attempt_id",
+    "commit_result",
+    "bounded_reason"
+  ],
+  "properties": {
+    "schema_version": { "const": "standalone_current_selection.v1" },
+    "selection_policy_version": { "$ref": "#/$defs/bounded_text_64" },
+    "install_root": { "$ref": "#/$defs/install_root" },
+    "selection_generation": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Monotonic within one logical install root; identifies selection state, not attempts."
+    },
+    "selected_candidate_id": { "$ref": "#/$defs/sha256" },
+    "selected_manifest_sha256": { "$ref": "#/$defs/sha256" },
+    "previous_known_good": {
+      "oneOf": [
+        { "$ref": "#/$defs/candidate_ref" },
+        { "type": "null" }
+      ]
+    },
+    "operation": { "enum": ["install", "repair", "update", "rollback"] },
+    "transaction_id": { "$ref": "#/$defs/bounded_id" },
+    "attempt_id": { "$ref": "#/$defs/bounded_id" },
+    "commit_result": {
+      "enum": ["committed", "preserved_prior_state"],
+      "description": "committed records strictly advance the generation; preserved_prior_state records keep the current state unchanged."
+    },
+    "bounded_reason": { "type": "string", "minLength": 1, "maxLength": 512 }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-fA-F]{64}$" },
+    "bounded_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "bounded_text_64": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "install_root": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["root_role", "root_identity_sha256"],
+      "properties": {
+        "root_role": { "enum": ["user_local", "system_shared"] },
+        "root_identity_sha256": {
+          "$ref": "#/$defs/sha256",
+          "description": "Logical install-root identity digest; concrete locations are bound locally by platform implementations."
+        }
+      }
+    },
+    "candidate_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["candidate_id", "manifest_sha256"],
+      "properties": {
+        "candidate_id": { "$ref": "#/$defs/sha256" },
+        "manifest_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    }
+  }
+}

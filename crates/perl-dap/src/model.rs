@@ -20,6 +20,8 @@
 //! [`crate::types`] (`Source`, `StackFrame`, `Variable`) so the two layers never
 //! get confused during translation.
 
+#[cfg(test)]
+use perl_tdd_support::{must, must_some};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
@@ -388,14 +390,14 @@ mod tests {
     #[test]
     fn stop_reason_unknown_round_trips() {
         let r = StopReason::Unknown("watchpoint-ish".to_string());
-        let json = serde_json::to_string(&r).expect("serialize");
-        let back: StopReason = serde_json::from_str(&json).expect("deserialize");
+        let json = must(serde_json::to_string(&r));
+        let back: StopReason = must(serde_json::from_str(&json));
         assert_eq!(r, back);
     }
 
     #[test]
     fn stop_reason_known_variants_are_camel_case() {
-        let json = serde_json::to_string(&StopReason::FunctionBreakpoint).expect("serialize");
+        let json = must(serde_json::to_string(&StopReason::FunctionBreakpoint));
         assert_eq!(json, "\"functionBreakpoint\"");
     }
 
@@ -404,11 +406,11 @@ mod tests {
         let mut p = DebugSessionPacket::new("/work/script.pl");
         p.source_facts.insert(PathBuf::from("/z.pl"), SourceDebugFacts::default());
         p.source_facts.insert(PathBuf::from("/a.pl"), SourceDebugFacts::default());
-        let json = serde_json::to_string(&p).expect("serialize");
+        let json = must(serde_json::to_string(&p));
         assert!(json.contains(DebugSessionPacket::SCHEMA));
         // BTreeMap guarantees deterministic key ordering: /a.pl before /z.pl.
-        let a = json.find("/a.pl").expect("a present");
-        let z = json.find("/z.pl").expect("z present");
+        let a = must_some(json.find("/a.pl"));
+        let z = must_some(json.find("/z.pl"));
         assert!(a < z, "source_facts must serialize in sorted path order");
     }
 
@@ -423,8 +425,8 @@ mod tests {
                 column: Some(1),
             }),
         };
-        let json = serde_json::to_string(&ev).expect("serialize");
-        let back: DebugEvent = serde_json::from_str(&json).expect("deserialize");
+        let json = must(serde_json::to_string(&ev));
+        let back: DebugEvent = must(serde_json::from_str(&json));
         assert_eq!(ev, back);
     }
 

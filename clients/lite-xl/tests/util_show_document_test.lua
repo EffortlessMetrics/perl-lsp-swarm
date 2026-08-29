@@ -24,6 +24,12 @@
 --
 -- No framework: plain asserts, one process, deterministic, exit code carries
 -- the result. Compatible with the Lite XL Lua runtime family (5.4).
+--
+-- Truthful-outcome extension (#10873): async decision mode (confirm returns
+-- nil and settles later through answered(accepted)), an alive generation gate
+-- making replaced-server prompts inert, exactly-one outcome delivery through
+-- the outcome hook, and typed internal reveal dispositions. Red-first against
+-- current main and mutation falsifiers documented at the async section below.
 
 local util_module_path = arg and arg[1] or nil
 
@@ -318,6 +324,138 @@ do
   -- patched module never touched it. Re-run one full flow explicitly.
   local success = select(1, launch_on("Windows", 'https://x.test/q"z|w&v'))
   ok(success == true, "metacharacter target still completes through argv")
+end
+
+-- ---------------------------------------------------------------------------
+-- Async truthful-outcome mode (#10873): nothing answers before the user/open
+-- terminal outcome; deferred transitions are generation-gated.
+--
+-- Red-first baseline: run this suite against CURRENT MAIN before the #10873
+-- patch (confirm(scheme, uri) -> boolean only). There an async prompt fake
+-- returning nil is read as a synchronous decline, so the pending-shape,
+-- deferred-outcome and generation-gate cases MUST fail there (and calling
+-- `answered` raises). Mutation falsifier of the PATCHED module: drop the
+-- settle/alive gating so answered(true) launches without the alive check -
+-- the staleness case fails again.
+-- ---------------------------------------------------------------------------
+
+do
+  local function async_world()
+    reset_calls()
+    local world = {
+      outcomes = {},
+      prompts = {},
+      live = true,
+    }
+    local server = { name = "perllsp LSP Server" }
+    local hooks = {
+      alive = function() return world.live end,
+      outcome = function(success, reason)
+        world.outcomes[#world.outcomes + 1] =
+          { success = success, reason = reason }
+      end,
+      confirm = function(scheme, uri_shown, answered)
+        world.prompts[#world.prompts + 1] =
+          { scheme = scheme, uri = uri_shown, answered = answered }
+        return nil
+      end,
+    }
+    return server, hooks, world
+  end
+
+  -- Pending window: no outcome exists before the user decision.
+  do
+    local server, hooks, world = async_world()
+    local success, reason = safe_show(server,
+      { uri = "https://example.test/doc", external = true }, hooks)
+    ok(success == nil and reason == "pending",
+      "async external request enters the pending window without answering")
+    ok(#world.outcomes == 0, "zero responses before the user action")
+    ok(#process_calls == 0, "nothing launches before the user action")
+    ok(world.prompts[1] ~= nil
+      and world.prompts[1].scheme == "https"
+      and world.prompts[1].uri == "https://example.test/doc",
+      "prompt seam receives exact scheme and verbatim target")
+
+    world.prompts[1].answered(true)
+    ok(#world.outcomes == 1 and world.outcomes[1].success == true,
+      "accept then open success reports one truthful success")
+    ok(#process_calls == 1, "accepted target launches exactly once")
+  end
+
+  do
+    -- Decline and prompt close/cancel both reach the same declined terminal
+    -- decision: the host wrapper maps any non-accept answer to answered(false),
+    -- so both shapes are exercised explicitly.
+    for _, label in ipairs({ "decline", "cancel" }) do
+      local server, hooks, world = async_world()
+      safe_show(server,
+        { uri = "https://example.test/x", external = true }, hooks)
+      world.prompts[1].answered(false)
+      ok(#world.outcomes == 1 and world.outcomes[1].success == false
+        and world.outcomes[1].reason == "user_declined",
+        label .. " yields exactly one success=false outcome")
+      ok(#process_calls == 0, label .. " target never launches")
+    end
+  end
+
+  do
+    -- A repeated host answer is inert (#10873 review): settle runs at most
+    -- once, so Yes/Yes cannot start two launches or report two outcomes.
+    local server, hooks, world = async_world()
+    safe_show(server,
+      { uri = "https://example.test/double", external = true }, hooks)
+    world.prompts[1].answered(true)
+    world.prompts[1].answered(true)
+    ok(#process_calls == 1, "double accept launches the target once")
+    ok(#world.outcomes == 1 and world.outcomes[1].success == true,
+      "double accept reports exactly one success outcome")
+  end
+
+  do
+    -- Observable external-open failure after acceptance reports false.
+    local server, hooks, world = async_world()
+    safe_show(server, { uri = "https://example.test/x", external = true },
+      hooks)
+    fail_next = true
+    world.prompts[1].answered(true)
+    ok(#world.outcomes == 1 and world.outcomes[1].success == false
+      and world.outcomes[1].reason == "launch_failed",
+      "launch failure after acceptance reports one success=false")
+  end
+
+  do
+    -- Generation replacement while the prompt is open: the stale sequence is
+    -- inert and answers nothing, for either terminal decision.
+    for _, decision in ipairs({ true, false }) do
+      local server, hooks, world = async_world()
+      local success, reason = safe_show(server,
+        { uri = "https://example.test/y", external = true }, hooks)
+      world.live = false
+      world.prompts[1].answered(decision)
+      ok(success == nil and reason == "pending"
+        and #world.outcomes == 0 and #process_calls == 0,
+        "stale prompt after server replacement cannot answer (" ..
+        tostring(decision) .. ")")
+    end
+  end
+
+  do
+    -- Typed internal reveal reasons stay distinguishable from success.
+    local server = { name = "t" }
+    local outcomes = {}
+    local ok_open, why = safe_show(server, {
+      uri = "file:///tmp/x", external = false,
+    }, {
+      reveal = function() return nil, "selection_failed" end,
+      outcome = function(success, reason)
+        outcomes[#outcomes + 1] = { success = success, reason = reason }
+      end,
+    })
+    ok(ok_open == false and why == "selection_failed"
+      and outcomes[1] and outcomes[1].reason == "selection_failed",
+      "typed internal disposition surfaces through the outcome hook")
+  end
 end
 
 print(string.format("%d passed, %d failed", passed, failed))
