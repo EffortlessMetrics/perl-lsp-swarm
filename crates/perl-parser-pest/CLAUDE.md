@@ -1,133 +1,109 @@
-# CLAUDE.md
+# perl-parser-pest
 
-This file provides guidance to Claude Code when working with code in this repository.
+Experimental Pest-based Perl parser used as a comparison instrument, legacy
+compatibility reference, and benchmark substrate. It is not the production parser,
+an LSP fallback, default-gate authority, or evidence of Tree-sitter compatibility.
 
-## Crate Overview
+## Authority and scope
 
-- **Crate**: `perl-parser-pest`
-- **Version**: `0.17.0`, declared literally in this crate's own `Cargo.toml` (not inherited — see "Standalone manifest" below)
-- **Tier**: 7 (Legacy/testing)
-- **Purpose**: Legacy Pest-based Perl parser (v2) -- maintained as a learning tool, compatibility reference, and benchmark baseline. NOT in the default CI gate.
+The checked-in repository-root `CLAUDE.md` and `AGENTS.md`, as classified by
+`docs/agents/AUTHORITY_STATUS.md` and `docs/agents/authority_status.toml`, are the
+current repository authority for routes, orchestration, review, proof currentness, and
+result vocabulary. Current source, manifests, tests, fixtures, and applicable recipes
+own the exact API, dependency, module, and file inventory. This file narrows those
+contracts to the crate's role, claim limits, change hazards, and proof routes; it does
+not establish a competing repository contract.
 
-## Commands
+Keep this file durable. Update it when the instrument contract, evidence identity,
+compatibility boundary, or proof route changes. Do not mirror workspace versions,
+dependency lists, exhaustive type/module inventories, or temporary migration state.
+
+## Proof routes
 
 ```bash
-cargo build -p perl-parser-pest          # Build
-cargo test -p perl-parser-pest           # Run tests
-cargo clippy -p perl-parser-pest         # Lint
-cargo doc -p perl-parser-pest --open     # View docs
+cargo build -p perl-parser-pest
+cargo test -p perl-parser-pest
+cargo test -p perl-parser-pest --test fixture_manifest
+cargo clippy -p perl-parser-pest
+cargo doc -p perl-parser-pest --open
 ```
 
-## Architecture
+The legacy `ci-v2-bundle-sync` recipe and its archived comparison remain active
+repository machinery while the retirement work in #8814 remains open, but they are not
+a package-local proof requirement. If that active check is investigated or run, treat it
+as bounded evidence of byte equality only; it does not establish current correctness, a
+second design authority, or a requirement to keep the live crate synchronized with the
+archive.
 
-### Source Modules
+## Instrument contract
 
-| Module | Purpose |
-|--------|---------|
-| `pure_rust_parser` | `PerlParser` (Pest grammar), `PureRustPerlParser` (high-level API), `AstNode` enum |
-| `pratt_parser` | `PrattParser` for Perl operator precedence (Pratt/TDOP algorithm) |
-| `sexp_formatter` | `SexpFormatter` and `SexpBuilder` for tree-sitter-compatible S-expression output |
-| `error` | `ParseError`, `ParseResult`, `ScannerError`, `UnicodeError` types |
-| `outcome` | Typed parse outcome / diagnostic / original-source range vocabulary (`#8427`). Substrate only; does not change `parse()` |
+The current implementation has three useful stages:
 
-### Key Types (re-exported from `lib.rs`)
+1. Pest parses `grammar.pest` into parser pairs.
+2. AST construction projects those pairs into crate-local `AstNode` values, with Pratt
+   parsing for operator precedence.
+3. `SexpFormatter` serializes that AST into a crate-local comparison projection.
 
-- `PureRustPerlParser` -- main entry point: `new()`, `parse()`, `to_sexp()`
-- `PerlParser` -- Pest-derived parser struct (generates `Rule` enum via `#[grammar = "grammar.pest"]`)
-- `AstNode` -- large enum covering program structure, declarations, control flow, expressions, variables, literals, regex, heredocs, modern Perl (try/catch, class, field, method, role), and error recovery nodes
-- `PrattParser` -- operator-precedence parser with `Precedence`, `Associativity`, `OpInfo`
-- `SexpFormatter` -- configurable formatter with `.with_positions()` and `.compact()` builder methods
-- `ParseError` / `ParseResult<T>` -- serializable error types with `thiserror` derives
-- `ParseOutcome` / `ParseAttempt` / `StrictParseError` / `ParserFailure` / `SourceRange` -- typed completeness, rejection, and instrument-failure vocabulary (`#8427`). Not consumed by `parse()` yet
+The live crate API documentation describes this output as a Tree-sitter-compatible
+S-expression. That is a bounded serialized-format claim, not a promise that this crate
+produces a Tree-sitter syntax tree, ABI, node schema, source ranges, or semantic parity.
+Do not promote matching text shapes into any broader compatibility claim. The larger
+compatibility decision and its evidence belong to #9214; benchmark and corpus evidence
+must identify this provider/package and the grammar/projection revision needed to
+reproduce the observation.
 
-### Dependencies
+`parse()` remains the operative parser API. Typed outcome, attempt, diagnostic, failure,
+and source-range types are substrate until a current production path and discriminating
+tests prove integration. Do not turn type presence or re-export into an integration
+claim, and do not claim complete source spans where the AST does not carry them.
 
-Every dependency is a published ecosystem crate pinned to an explicit version in
-this crate's manifest. There are no path or workspace-alias dependencies.
+## Fixture evidence
 
-- `pest`, `pest_derive` -- PEG parser generator (grammar in `src/grammar.pest`)
-- `stacker` -- stack overflow protection for deep recursion
-- `thiserror` -- error derive macros
-- `serde` (with `derive`) -- serialization (always enabled; the `serde` feature flag is a no-op alias)
-- `regex` -- pattern matching within parser
+Package-local fixture identity lives under `tests/fixtures/`; the reusable runner lives
+under `tests/support/` and is exercised by
+`cargo test -p perl-parser-pest --test fixture_manifest`.
 
-Dev-dependencies: `serde_json`, `sha2`, `tempfile`, `toml` -- all published.
+Fixture rows record current parse observations. They do not declare the parser correct,
+define a language-support matrix, or replace targeted tests. Load and select through a
+caller-supplied package root such as `CARGO_MANIFEST_DIR`, not the workspace root.
+Duplicate IDs, path escape, missing sources, empty selection, and parser panics must
+fail closed as instrument errors rather than being counted as parser results.
 
-### Three-Stage Pipeline
+## Compatibility boundary
 
-1. **Pest Parsing** -- PEG grammar (`grammar.pest`) produces a parse tree
-2. **AST Building** -- `build_ast()` / `build_node()` construct typed `AstNode` tree with Pratt parsing for operator expressions
-3. **S-Expression Output** -- `SexpFormatter::format()` generates tree-sitter-compatible strings
+Issue #8814 records the accepted direction for this boundary: the live crate is the
+canonical source for this experimental parser, while the archived `tree-sitter-perl-rs`
+v2 bundle is historical evidence and compatibility debt. The `ci-v2-bundle-sync` route
+and its archive comparison remain active transitional machinery until #8814 lands, but
+their presence does not make the archive current authority. Do not expand the old
+synchronized set, copy new architecture into the archive, or treat archive equality as
+product correctness.
 
-## Usage
+Changes here should improve comparison reliability, evidence honesty, legacy
+compatibility, or retirement readiness. Do not widen the crate into a competing
+production parser or infer production reachability from package-local green tests.
 
-```rust
-use perl_parser_pest::PureRustPerlParser;
+## Self-description hazard
 
-let mut parser = PureRustPerlParser::new();
-let ast = parser.parse("my $x = 42;")?;
-let sexp = parser.to_sexp(&ast);
-```
+This package describes itself. Its manifest carries literal identity, MSRV, dependency
+versions, and a literal `[lints]` policy instead of `*.workspace = true`, and no
+dependency or dev-dependency is path-only (#8771). Two edits would silently undo that:
 
-## Fixture manifest (test substrate)
+- reintroducing `workspace = true` in any manifest key, and
+- adding a path dependency, including a shared test helper.
 
-Package-local fixture identity for the pest train lives under `tests/fixtures/`.
-The reusable runner is `tests/support/` and is exercised by
-`cargo test -p perl-parser-pest --test fixture_manifest`. Rows record current
-parse observations only; they do not declare the parser correct or replace
-existing inline tests.
+`tests/standalone_package.rs` fails closed on both, on a dropped lint denial, on a
+falsely-external `repository`/`homepage`, and on an unpackaged load-bearing asset. It
+also diffs the crate's `[lints]` against the root `[workspace.lints]` while the package
+is still embedded, so promoting a lint at the root without mirroring it here fails
+rather than drifting.
 
-```text
-tests/fixtures/manifest.toml
-tests/fixtures/sources/**
-tests/fixture_manifest.rs
-tests/support/**
-```
+Assertion-boundary helpers are package-local in `tests/support/assert.rs`; the unit
+tests inside `src/pure_rust_parser.rs` carry their own copy so that file stays
+byte-identical to its archived twin while `ci-v2-bundle-sync` remains active machinery.
+`examples/parse_basic.rs` is the compiled public example, because `[lib] doctest = false`
+leaves the README snippet unchecked.
 
-Load and select through a caller-supplied package root (`CARGO_MANIFEST_DIR`),
-not the workspace root. Duplicate IDs, path escape, missing sources, empty
-selection, and parser panics fail closed as instrument errors.
-
-## Standalone manifest (`#8771`)
-
-This package describes and tests itself without borrowing from the workspace.
-`Cargo.toml` carries literal identity, MSRV, dependency versions, and a literal
-`[lints.clippy]` / `[lints.rust]` policy instead of `*.workspace = true`, and no
-dependency or dev-dependency is path-only. `tests/standalone_package.rs` is the
-guard: it fails closed on reintroduced workspace inheritance, a path dependency,
-a dropped lint denial, a falsely-external `repository`/`homepage`, an unpackaged
-load-bearing asset, or a returning swarm test-helper import.
-
-Two consequences for anyone editing this crate:
-
-- **Do not reintroduce `workspace = true` here.** When root `[workspace.lints]`
-  changes, mirror the change into this manifest deliberately.
-- **Do not add a path dependency**, including test helpers. `perl-tdd-support`
-  is replaced by `tests/support/assert.rs` (`must` / `must_err`, same
-  `#[track_caller]` and type-name diagnostics), included per test binary via
-  `#[path = "support/assert.rs"] mod assert;`. The `src/pure_rust_parser.rs`
-  unit tests carry their own file-local copy so the v2 bundle twin stays
-  byte-identical.
-
-`repository`/`homepage` deliberately still name the current swarm/public
-lineage; the external `perl-parser-pest` repository does not exist yet. The
-pending owner is recorded under `[package.metadata.extraction]`, not by
-hard-coding a future URL.
-
-Known limitation: the package's `include` set and manifest are proven
-structurally. Executing an unpacked copy outside the workspace is the next
-train row's claim, not this one's.
-
-## Public example
-
-`examples/parse_basic.rs` is the compiled proof that the documented entry point
-still type-checks — `[lib] doctest = false` means the README snippet is not.
-Keep them in step.
-
-## Important Notes
-
-- **NOT in default gate** -- excluded from `just ci-gate`; build and test independently
-- **v2 bundle sync** -- `grammar.pest`, `pure_rust_parser.rs`, `pratt_parser.rs`, `sexp_formatter.rs`, and `error.rs` are shared with `tree-sitter-perl-rs`; always sync both copies (verify with `just ci-v2-bundle-sync`)
-- **No new features** -- this crate is frozen; use `perl-parser` (v3) for active development
-- **doctest disabled** -- `[lib] doctest = false` in Cargo.toml
-- The `serde` feature flag is a backward-compatible no-op; serde support is always compiled in
+`repository` and `homepage` name the current lineage; the external repository does not
+exist yet, and the pending owner is recorded under `[package.metadata.extraction]`
+rather than as a future URL.
