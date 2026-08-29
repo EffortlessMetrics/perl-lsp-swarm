@@ -12,6 +12,7 @@ type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 
 const PERL_TIMEOUT: Duration = Duration::from_secs(10);
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
+const MAX_DIAGNOSTIC_CHARS: usize = 200;
 const IMPORT_PROBE: &str = r#"
 my $file = shift @ARGV;
 my $loaded = do $file;
@@ -28,6 +29,17 @@ print "fixture-ok\n";
 
 fn failure(message: impl Into<String>) -> Box<dyn Error> {
     io::Error::other(message.into()).into()
+}
+
+fn bounded_diagnostic(bytes: &[u8]) -> String {
+    let decoded = String::from_utf8_lossy(bytes);
+    let Some(line) = decoded.lines().map(str::trim).find(|line| !line.is_empty()) else {
+        return String::new();
+    };
+
+    let mut chars = line.chars();
+    let bounded = chars.by_ref().take(MAX_DIAGNOSTIC_CHARS).collect::<String>();
+    if chars.next().is_some() { format!("{bounded}…") } else { bounded }
 }
 
 fn fixture_root() -> PathBuf {
@@ -99,7 +111,7 @@ fn run_bounded(mut command: Command, operation: &str) -> TestResult<Output> {
             return Err(failure(format!(
                 "{operation} timed out after {} ms; stderr: {}",
                 PERL_TIMEOUT.as_millis(),
-                String::from_utf8_lossy(&output.stderr).trim()
+                bounded_diagnostic(&output.stderr)
             )));
         }
 
@@ -115,8 +127,8 @@ fn require_success(output: &Output, operation: &str) -> TestResult {
     Err(failure(format!(
         "{operation} failed with {}; stdout: {}; stderr: {}",
         output.status,
-        String::from_utf8_lossy(&output.stdout).trim(),
-        String::from_utf8_lossy(&output.stderr).trim()
+        bounded_diagnostic(&output.stdout),
+        bounded_diagnostic(&output.stderr)
     )))
 }
 
@@ -134,6 +146,17 @@ fn assert_not_contains(haystack: &str, needle: &str, subject: &str) -> TestResul
     } else {
         Ok(())
     }
+}
+
+#[test]
+fn bounded_diagnostic_selects_one_line_and_preserves_character_boundaries() {
+    let long_unicode_line = "é".repeat(MAX_DIAGNOSTIC_CHARS + 1);
+    let output = format!("\n  \n{long_unicode_line}\nignored");
+    let diagnostic = bounded_diagnostic(output.as_bytes());
+
+    assert_eq!(diagnostic.chars().count(), MAX_DIAGNOSTIC_CHARS + 1);
+    assert!(diagnostic.ends_with('…'));
+    assert!(!diagnostic.contains("ignored"));
 }
 
 #[test]
