@@ -412,8 +412,13 @@ for my $sub (qw(Oracle::Demo::proto)) {
     #[test]
     fn compiler_oracle_negative_control_tracks_removed_source_fact() -> Result<()> {
         let source_without_ordinary = FIXTURE_SOURCE.replace("sub ordinary { 1 }\n", "");
+        let rust_facts = normalize_rust_compile_effects(&lower_source(&source_without_ordinary));
         let observed = run_perl_oracle(&source_without_ordinary)?;
 
+        assert!(
+            !rust_facts.contains(&normalized("sub", "Oracle::Demo::ordinary".to_string())),
+            "the Rust normalizer must change when the source fact is removed"
+        );
         assert!(
             !observed.facts.contains(&normalized("sub", "Oracle::Demo::ordinary".to_string())),
             "the Perl oracle must change when the source fact is removed"
