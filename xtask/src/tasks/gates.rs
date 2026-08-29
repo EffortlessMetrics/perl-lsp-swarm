@@ -2891,6 +2891,12 @@ fn parse_test_metrics(output: &str) -> Option<GateMetrics> {
 /// one whose Cargo output includes an unrelated occurrence of the word
 /// "running" — will not produce that line. `test result:` is the harness
 /// footer; either marker alone proves the binary was reached.
+///
+/// The receipt wires the log-streaming variant (`log_reaches_test_execution`)
+/// so the verdict covers the complete on-disk log; this in-memory variant has
+/// no production caller and remains as the marker-semantics surface the
+/// regression suite below pins.
+#[cfg(test)]
 fn parse_test_execution_reached(command: &str, output: &str) -> Option<bool> {
     if !is_cargo_test_command(command) {
         return None;
@@ -5005,6 +5011,38 @@ gates:
             .flatten(),
             Some(true),
             "the lsp_smoke env-wrapped shape must gain the receipt diagnostic"
+        );
+    }
+
+    #[test]
+    fn log_reaches_test_execution_finds_a_marker_after_invalid_bytes() {
+        // Gate logs carry arbitrary subprocess bytes, so a line can fail
+        // UTF-8 decoding. The scan must skip such a line and keep reading:
+        // a tempting `map_while(Result::ok)` rewrite stops at the first
+        // InvalidData error and loses every later marker, misreporting a
+        // binary that ran as a compile-only overrun (#13705). The marker
+        // here appears only after the invalid line, so early termination
+        // fails this test.
+        let tmp = tempdir().expect("test tempdir");
+        let log_path = tmp.path().join("gate.log");
+        let mut body = b"Compiling \xff\xfe garbage probe\n".to_vec();
+        body.extend_from_slice(b"running 3 tests\n");
+        body.extend_from_slice(b"test result: ok. 3 passed; 0 failed\n");
+        std::fs::write(&log_path, &body).expect("write gate log");
+        assert_eq!(
+            log_reaches_test_execution(CARGO_COMMAND, &log_path).ok().flatten(),
+            Some(true),
+            "a marker after an invalid-UTF-8 line must still prove the binary ran"
+        );
+        // The same log without any marker stays compile-only evidence: the
+        // skip must not fabricate a positive verdict.
+        let mut compile_only = b"\xff\xfe Compiling probe with invalid bytes\n".to_vec();
+        compile_only.extend_from_slice(b"warning: unused import\n");
+        std::fs::write(&log_path, &compile_only).expect("rewrite gate log");
+        assert_eq!(
+            log_reaches_test_execution(CARGO_COMMAND, &log_path).ok().flatten(),
+            Some(false),
+            "skipping invalid lines must not invent an execution marker"
         );
     }
 

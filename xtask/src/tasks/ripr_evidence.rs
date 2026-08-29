@@ -728,16 +728,18 @@ fn write_pr_evidence(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
     let production_surface = metadata
         .as_ref()
         .and_then(|metadata| production_surface_from_metadata(repo, metadata).ok());
-    let packet = pr_evidence_packet_with_count(
+    let packet = pr_evidence_packet_with_context(
         options,
         &check_value,
         &base_sha,
         &head_sha,
         &suppressions,
-        changed_file_count,
-        Some(&head_extents),
-        attribution_scope.as_ref(),
-        production_surface.as_ref(),
+        PacketContext {
+            changed_file_count,
+            head_extents: Some(&head_extents),
+            attribution_scope: attribution_scope.as_ref(),
+            production_surface: production_surface.as_ref(),
+        },
     );
     validate_pr_evidence_packet(&packet, options, changed_file_count, true, &base_sha, &head_sha)?;
     write_text(&repo.join(PR_EVIDENCE_JSON), &format_json(&packet)?)?;
@@ -1534,7 +1536,7 @@ fn repo_relative_surface_path(surface: &ProductionSurface, raw_path: &str) -> Op
     // tools must not defeat the root-prefix match against cargo's plain
     // `F:/...` workspace root.
     let normalized = normalized.strip_prefix("//?/").unwrap_or(&normalized);
-    let normalized = normalized.strip_prefix("./").unwrap_or(&normalized);
+    let normalized = normalized.strip_prefix("./").unwrap_or(normalized);
     let absolute = normalized.starts_with('/') || normalized.as_bytes().get(1) == Some(&b':');
     if !absolute {
         return Some(normalized.to_string());
@@ -1755,9 +1757,9 @@ fn lexically_join(dir: &str, relative: &str) -> Option<String> {
         match component {
             "." | "" => {}
             ".." => {
-                if components.pop().is_none() {
-                    return None;
-                }
+                // Root-escape refusal: `?` propagates `None` when there is no
+                // component left to pop.
+                components.pop()?;
             }
             other => components.push(other),
         }
@@ -1788,6 +1790,18 @@ fn non_production_stamp(surface: Option<&ProductionSurface>) -> Value {
     })
 }
 
+/// Packet-context facts that travel together from the caller's diff and
+/// attribution passes into the receipt packet. Grouping them keeps the
+/// packet helper under the configured argument limit while every fact stays
+/// explicit at its construction site — a caller that omits one fails to
+/// compile rather than silently defaulting it (#13705).
+struct PacketContext<'a> {
+    changed_file_count: usize,
+    head_extents: Option<&'a HeadLineExtents>,
+    attribution_scope: Option<&'a AttributionScope>,
+    production_surface: Option<&'a ProductionSurface>,
+}
+
 #[cfg(test)]
 fn pr_evidence_packet(
     options: &PrEvidenceOptions,
@@ -1797,16 +1811,18 @@ fn pr_evidence_packet(
     head_sha: &str,
     suppressions: &RiprSuppressionRules,
 ) -> Value {
-    pr_evidence_packet_with_count(
+    pr_evidence_packet_with_context(
         options,
         check_value,
         base_sha,
         head_sha,
         suppressions,
-        changed_files.len(),
-        None,
-        None,
-        None,
+        PacketContext {
+            changed_file_count: changed_files.len(),
+            head_extents: None,
+            attribution_scope: None,
+            production_surface: None,
+        },
     )
 }
 
@@ -1820,30 +1836,31 @@ fn pr_evidence_packet_on_surface(
     suppressions: &RiprSuppressionRules,
     production_surface: Option<&ProductionSurface>,
 ) -> Value {
-    pr_evidence_packet_with_count(
+    pr_evidence_packet_with_context(
         options,
         check_value,
         base_sha,
         head_sha,
         suppressions,
-        changed_files.len(),
-        None,
-        None,
-        production_surface,
+        PacketContext {
+            changed_file_count: changed_files.len(),
+            head_extents: None,
+            attribution_scope: None,
+            production_surface,
+        },
     )
 }
 
-fn pr_evidence_packet_with_count(
+fn pr_evidence_packet_with_context(
     options: &PrEvidenceOptions,
     check_value: &Value,
     base_sha: &str,
     head_sha: &str,
     suppressions: &RiprSuppressionRules,
-    changed_file_count: usize,
-    head_extents: Option<&HeadLineExtents>,
-    attribution_scope: Option<&AttributionScope>,
-    production_surface: Option<&ProductionSurface>,
+    context: PacketContext<'_>,
 ) -> Value {
+    let PacketContext { changed_file_count, head_extents, attribution_scope, production_surface } =
+        context;
     let check_summary = check_value.get("summary").and_then(Value::as_object);
     let summary = ripr_pr_summary_counts(
         check_value,
@@ -3661,6 +3678,69 @@ mod tests {
         Ok(())
     }
 
+    /// #13705 falsifier: a Windows verbatim host path must keep its current
+    /// normalization — backslashes fold to slashes, the `//?/` prefix strips,
+    /// and the result resolves against the plain drive-letter workspace root.
+    #[test]
+    fn repo_relative_surface_path_normalizes_windows_verbatim_prefix() {
+        let surface = ProductionSurface::from_parts("F:/ws", &[]);
+
+        let resolved = repo_relative_surface_path(&surface, r"\\?\F:\ws\crates\x\src\lib.rs");
+
+        assert_eq!(resolved.as_deref(), Some("crates/x/src/lib.rs"));
+    }
+
+    /// A host-absolute path inside the root strips the root prefix; a
+    /// repo-relative path passes through untouched.
+    #[test]
+    fn repo_relative_surface_path_strips_root_or_passes_relative_through() {
+        let surface = ProductionSurface::from_parts("F:/ws", &[]);
+
+        assert_eq!(
+            repo_relative_surface_path(&surface, "F:/ws/crates/x/src/lib.rs").as_deref(),
+            Some("crates/x/src/lib.rs")
+        );
+        assert_eq!(
+            repo_relative_surface_path(&surface, "crates/x/src/lib.rs").as_deref(),
+            Some("crates/x/src/lib.rs")
+        );
+    }
+
+    /// An absolute path outside the root resolves to `None` — fail closed —
+    /// because no repo-relative classification is possible.
+    #[test]
+    fn repo_relative_surface_path_fails_closed_outside_root() {
+        let surface = ProductionSurface::from_parts("F:/ws", &[]);
+
+        assert_eq!(repo_relative_surface_path(&surface, "F:/elsewhere/leak.rs"), None);
+    }
+
+    /// `.` and `..` resolve lexically; the include closure relies on this to
+    /// follow `#[path]`/`mod` targets without touching the filesystem.
+    #[test]
+    fn lexically_join_resolves_dot_and_dotdot_components() {
+        assert_eq!(
+            lexically_join("crates/x/src", "../include/mod.rs").as_deref(),
+            Some("crates/x/include/mod.rs")
+        );
+        assert_eq!(
+            lexically_join("crates/x/src", "./mod.rs").as_deref(),
+            Some("crates/x/src/mod.rs")
+        );
+    }
+
+    /// #13705 falsifier: an include path that climbs above the root must
+    /// return `None` (root-escape refusal). A `..` with no component left to
+    /// pop escapes; climbing to exactly the root level stays allowed, but
+    /// draining every component resolves to nothing.
+    #[test]
+    fn lexically_join_refuses_paths_above_the_root() {
+        assert_eq!(lexically_join("crates/x", "../../../escape.rs"), None);
+        assert_eq!(lexically_join("", "../escape.rs"), None);
+        assert_eq!(lexically_join("crates/x", "../../escape.rs").as_deref(), Some("escape.rs"));
+        assert_eq!(lexically_join("crates/x", "../.."), None);
+    }
+
     #[test]
     fn ripr_plus_top_files_rank_repo_seams_across_path_shapes() {
         let seams = [
@@ -4598,16 +4678,18 @@ paths = ["archive/["]
             head: "HEAD".to_string(),
             pr_head_sha: None,
         };
-        pr_evidence_packet_with_count(
+        pr_evidence_packet_with_context(
             &options,
             check_value,
             "base-sha",
             "head-sha",
             suppressions,
-            1,
-            Some(extents),
-            None,
-            None,
+            PacketContext {
+                changed_file_count: 1,
+                head_extents: Some(extents),
+                attribution_scope: None,
+                production_surface: None,
+            },
         )
     }
 
@@ -6044,16 +6126,18 @@ paths = ["archive/["]
             ],
         );
         let scope = attribution_for(&metadata, &["crates/perl-core-harness/src/contract.rs"])?;
-        let packet = pr_evidence_packet_with_count(
+        let packet = pr_evidence_packet_with_context(
             &options,
             &check_value,
             "base-sha",
             "head-sha",
             &suppressions,
-            5,
-            None,
-            Some(&scope),
-            Some(&surface),
+            PacketContext {
+                changed_file_count: 5,
+                head_extents: None,
+                attribution_scope: Some(&scope),
+                production_surface: Some(&surface),
+            },
         );
 
         assert_eq!(packet.pointer("/summary/reachable_unrevealed"), Some(&json!(2)));
@@ -6072,16 +6156,18 @@ paths = ["archive/["]
         // structural non-production filter (#11690): the archived seam drops
         // there too, while the non-dependent perl-dap seam only drops via the
         // graph — 3 versus the pre-#11690 basis of 4.
-        let unfiltered = pr_evidence_packet_with_count(
+        let unfiltered = pr_evidence_packet_with_context(
             &options,
             &check_value,
             "base-sha",
             "head-sha",
             &suppressions,
-            5,
-            None,
-            None,
-            Some(&surface),
+            PacketContext {
+                changed_file_count: 5,
+                head_extents: None,
+                attribution_scope: None,
+                production_surface: Some(&surface),
+            },
         );
         assert_eq!(unfiltered.pointer("/summary/severe_gaps"), Some(&json!(3)));
         assert_eq!(unfiltered.pointer("/summary/non_production_excluded"), Some(&json!(1)));
@@ -6103,16 +6189,18 @@ paths = ["archive/["]
             "summary": { "weakly_exposed": 0, "reachable_unrevealed": 1, "no_static_path": 0 },
             "findings": [raw_check_finding("probe:x", "reachable_unrevealed", "crates/a/src/lib.rs", 5)]
         });
-        let mut packet = pr_evidence_packet_with_count(
+        let mut packet = pr_evidence_packet_with_context(
             &options,
             &check_value,
             "base-sha",
             "head-sha",
             &suppressions,
-            1,
-            None,
-            None,
-            None,
+            PacketContext {
+                changed_file_count: 1,
+                head_extents: None,
+                attribution_scope: None,
+                production_surface: None,
+            },
         );
         let Some(packet_object) = packet.as_object_mut() else {
             bail!("packet must be a JSON object");
