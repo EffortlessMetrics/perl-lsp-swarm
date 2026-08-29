@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12345 |
-| Rust-family files | 3786 |
-| Non-Rust files | 8559 |
-| Allowlisted | 6324 |
+| Total tracked files | 12348 |
+| Rust-family files | 3788 |
+| Non-Rust files | 8560 |
+| Allowlisted | 6325 |
 | Unclassified | 2235 |
 
 ## Non-Rust files by category
@@ -21,7 +21,7 @@
 | generated | 2 |
 | production | 346 |
 | test | 2033 |
-| tooling | 658 |
+| tooling | 659 |
 | unclassified | 2235 |
 
 ## Unclassified files
@@ -6729,6 +6729,7 @@
 | `scripts/test/vim-host-diagnostics-driver.vim` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test/vim-host-driver.vim` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test/vim-host-freshness-driver.vim` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/test/vim-host-recovery-driver.vim` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test/vim-host-save-format-driver.vim` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test_edge_cases.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test_generate_release_topology.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
