@@ -38,6 +38,8 @@ REQUIRED_PATHS = {
     "scripts/tests/test-agent-flow-control-plane-trigger.sh",
     ".github/workflows/agent-flow-control-plane.yml",
 }
+# Keep the overlapping paths synchronized with REQUIRED_WORKFLOW_PATHS in
+# xtask/tests/shift_left_publication_contract.rs; the spec path is trigger-only.
 TARGETS = (
     "docs/specs/PLSP-SPEC-0006-pr-queue-disposition.md",
     ".github/PULL_REQUEST_TEMPLATE.md",
