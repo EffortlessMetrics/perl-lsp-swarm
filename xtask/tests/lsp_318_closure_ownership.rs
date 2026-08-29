@@ -14,14 +14,39 @@ const PARTIAL_CLOSURE_MARKER: &str = "<!-- closure: partly-unclaimed -->";
 const CLOSED_DISPOSITIONS: &[&str] = &["implementation-owner", "accepted-disposition"];
 const LEDGER_HEADER: &[&str] =
     &["ID", "Matrix feature", "Disposition", "Owner", "Evidence", "Dependency", "Rationale"];
-const EXPECTED_LEDGER_IDS: &[&str] = &[
-    "command-tooltip-non-codelens",
-    "generated-code-action-tags",
-    "markdown-command-theme-icons",
-    "multi-range-formatting",
-    "notebook-318-additions",
-    "relative-pattern-document-selector",
-    "string-value-object-form",
+/// Reviewed closure-ledger decisions pinned per ID as
+/// `(ID, Matrix feature, Disposition, Owner)`. Pinning the whole decision
+/// (rather than the ID and feature sets independently) preserves which
+/// decision belongs to which surface, so a swapped feature cell, a flipped
+/// disposition, or a replaced owner cannot pass while both sets stay equal.
+const EXPECTED_LEDGER_DECISIONS: &[(&str, &str, &str, &str)] = &[
+    ("command-tooltip-non-codelens", "`Command.tooltip`", "implementation-owner", "#13633"),
+    (
+        "generated-code-action-tags",
+        "`CodeAction.tags` and `CodeActionTag.LLMGenerated`",
+        "accepted-disposition",
+        "n/a",
+    ),
+    (
+        "markdown-command-theme-icons",
+        "Markdown command links and theme-icon syntax guard",
+        "accepted-disposition",
+        "n/a",
+    ),
+    ("multi-range-formatting", "Multi-range formatting", "implementation-owner", "#7089"),
+    ("notebook-318-additions", "Notebook 3.18 additions", "accepted-disposition", "n/a"),
+    (
+        "relative-pattern-document-selector",
+        "`RelativePattern` watcher registrations",
+        "accepted-disposition",
+        "n/a",
+    ),
+    (
+        "string-value-object-form",
+        "Object-form `StringValue` inline insert text",
+        "implementation-owner",
+        "#858",
+    ),
 ];
 
 #[derive(Debug)]
@@ -96,7 +121,16 @@ fn table_cells(line: &str) -> Vec<&str> {
 fn table_rows(source: &str, expected_cells: usize) -> Result<Vec<Vec<&str>>, String> {
     let mut rows = Vec::new();
     for line in source.lines() {
-        let indentation = line.chars().take_while(|ch| *ch == ' ' || *ch == '\t').count();
+        // Markdown expands each leading tab to the next four-column tab stop,
+        // so indentation must be measured in visual columns, not characters.
+        let mut indentation = 0_usize;
+        for ch in line.chars() {
+            match ch {
+                ' ' => indentation += 1,
+                '\t' => indentation += 4 - (indentation % 4),
+                _ => break,
+            }
+        }
         if indentation > 3 {
             continue;
         }
@@ -188,10 +222,10 @@ fn unresolved_matrix_features<'a>(matrix: &BTreeMap<&'a str, Vec<&'a str>>) -> B
 }
 
 #[test]
-fn markdown_table_parser_handles_indentation_trailing_space_and_code_pipes(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn markdown_table_parser_handles_indentation_trailing_space_and_code_pipes()
+-> Result<(), Box<dyn std::error::Error>> {
     let rows = table_rows(
-        "  | ID | Feature | Disposition | Owner | Evidence | Dependency | Rationale |  \n  | --- | --- | --- | --- | --- | --- | --- |\n  | row | feature | accepted-disposition | n/a | compare `a | b` and ``c | d`` (#123). | none | material rationale here |  \n    | fake | feature | accepted-disposition | n/a | indented code | none | material rationale here |  ",
+        "  | row | feature | accepted-disposition | n/a | compare `a | b` and ``c | d`` (#123). | none | material rationale here |  \n    | fake | feature | accepted-disposition | n/a | indented code | none | material rationale here |  \n\t| fake | feature | accepted-disposition | n/a | tab indented code | none | material rationale here |  \n \t| fake | feature | accepted-disposition | n/a | space tab code | none | material rationale here |  ",
         7,
     )?;
     assert_eq!(rows.len(), 1);
@@ -208,8 +242,8 @@ fn issue_reference_detection_accepts_markdown_and_sentence_punctuation() {
 }
 
 #[test]
-fn implementation_owner_is_separate_from_historical_evidence(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn implementation_owner_is_separate_from_historical_evidence()
+-> Result<(), Box<dyn std::error::Error>> {
     let rows = parse_ledger(
         "| ID | Matrix feature | Disposition | Owner | Evidence | Dependency | Rationale |\n| --- | --- | --- | --- | --- | --- | --- |\n| row | feature | implementation-owner | #123 | boundary #9 | none | material rationale here |",
     )?;
@@ -224,10 +258,10 @@ fn unresolved_lsp_318_surfaces_have_closure_owners() -> Result<(), Box<dyn std::
     let matrix_text = read(MATRIX_PATH)?;
     let matrix = parse_matrix(&matrix_text)?;
 
-    let expected_ids: BTreeSet<_> = EXPECTED_LEDGER_IDS.iter().copied().collect();
+    let expected_ids: BTreeSet<_> = EXPECTED_LEDGER_DECISIONS.iter().map(|(id, ..)| *id).collect();
     assert_eq!(
         expected_ids.len(),
-        EXPECTED_LEDGER_IDS.len(),
+        EXPECTED_LEDGER_DECISIONS.len(),
         "reviewed closure-ledger IDs must be unique"
     );
 
@@ -235,9 +269,31 @@ fn unresolved_lsp_318_surfaces_have_closure_owners() -> Result<(), Box<dyn std::
     let mut observed_features = BTreeSet::new();
     for row in &ledger {
         assert!(observed_ids.insert(row.id), "duplicate closure-ledger ID `{}`", row.id);
+        let Some(expected) = EXPECTED_LEDGER_DECISIONS.iter().find(|(id, ..)| *id == row.id) else {
+            return Err(format!(
+                "closure-ledger row `{}` is not in the reviewed decision table",
+                row.id
+            )
+            .into());
+        };
         assert!(
             row.id.chars().all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-'),
             "closure-ledger ID `{}` must use lowercase kebab-case tokens",
+            row.id
+        );
+        assert_eq!(
+            row.feature, expected.1,
+            "closure-ledger row `{}` must keep its reviewed matrix feature",
+            row.id
+        );
+        assert_eq!(
+            row.disposition, expected.2,
+            "closure-ledger row `{}` must keep its reviewed disposition",
+            row.id
+        );
+        assert_eq!(
+            row.owner, expected.3,
+            "closure-ledger row `{}` must keep its reviewed owner",
             row.id
         );
         assert!(

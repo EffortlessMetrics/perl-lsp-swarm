@@ -259,7 +259,7 @@ const ROWS: &[MatrixRow] = &[
         proof: "`lsp_codelens_tests`; `lsp_318_negative_claims`; `check-lsp-318-claims`",
         owner: "`crates/perl-lsp-rs-core/src/providers/code_lens/`; CodeLens handlers",
         priority: "P3",
-        notes: "CodeLens command tooltips are plain text; non-CodeLens command tooltips remain unclaimed and negative-gated.",
+        notes: "CodeLens command tooltips are plain text; non-CodeLens command tooltips remain unclaimed and negative-gated. <!-- closure: partly-unclaimed -->",
     },
     MatrixRow {
         feature: "`RelativePattern` watcher registrations",
