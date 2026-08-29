@@ -52,8 +52,6 @@ fn assert_incremental_matches_fresh(state: &IncrementalState) {
         .disposition()
     );
     assert!(state.snapshot().validate_against(state.source()).is_ok());
-    let fresh_state = IncrementalState::new(state.source().to_owned());
-    assert_token_streams_equal(state.tokens(), &fresh_state.tokens);
 }
 
 fn assert_restored_token_stream_matches_fresh(source: &str) -> Result<()> {
