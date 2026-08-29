@@ -260,7 +260,7 @@ blocks = [
   "ambiguous_identity",
   "unsupported_fact_class",
 ]
-claim_boundary = "DBIx::QuickORM emits only the source-anchored qorm_table generated member for exact unfiltered table-package builders; the generated-member package query, workspace-symbol, and method-completion consumers may present that fact, while generic source-only package-member queries, filtered configuration, runtime-controlled builders, local method catalogues, and manual column metadata remain blocked or unmodeled."
+claim_boundary = "DBIx::QuickORM emits only the source-anchored, bounded Medium-confidence qorm_table generated member for exact unfiltered table-package builders; the generated-member package query, workspace-symbol, and method-completion consumers may present that fact, while generic source-only package-member queries, filtered configuration, runtime-controlled builders, local method catalogues, and manual column metadata remain blocked or unmodeled."
 
 [[adapter]]
 framework = "Catalyst"

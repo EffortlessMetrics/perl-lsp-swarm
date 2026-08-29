@@ -4342,7 +4342,7 @@ impl WorkspaceIndex {
             .iter()
             .find(|anchor| anchor.id == anchor_id && anchor.file_id == shard.file_id)?;
         if anchor.provenance != Provenance::FrameworkSynthesis
-            || !matches!(anchor.confidence, Confidence::Medium | Confidence::High)
+            || anchor.confidence != Confidence::Medium
         {
             return None;
         }
@@ -6778,8 +6778,7 @@ fn split_qualified_symbol_name(canonical_name: &str) -> Option<(&str, &str)> {
 }
 
 fn is_framework_generated_member_entity(entity: &EntityFact) -> bool {
-    entity.provenance == Provenance::FrameworkSynthesis
-        && matches!(entity.confidence, Confidence::Medium | Confidence::High)
+    entity.provenance == Provenance::FrameworkSynthesis && entity.confidence == Confidence::Medium
 }
 
 fn sort_workspace_symbols(symbols: &mut [WorkspaceSymbol]) {

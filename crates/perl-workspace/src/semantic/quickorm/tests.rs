@@ -188,6 +188,20 @@ fn competing_view_method_import_invalidates_quickorm_authority()
 }
 
 #[test]
+fn dynamic_hash_competing_import_invalidates_quickorm_authority()
+-> Result<(), Box<dyn std::error::Error>> {
+    let facts = generated_facts_from_source(
+        "package User; use DBIx::QuickORM type => 'table'; Other::DSL->import(table => sub {}); table users => sub {};",
+    )?;
+
+    assert!(
+        facts.is_empty(),
+        "an unknown hash-shaped competing importer must consume QuickORM authority"
+    );
+    Ok(())
+}
+
+#[test]
 fn compile_time_quickorm_import_inside_subroutine_enables_following_builder()
 -> Result<(), Box<dyn std::error::Error>> {
     let facts = generated_facts_from_source(

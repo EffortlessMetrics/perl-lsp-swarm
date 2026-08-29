@@ -35,7 +35,7 @@ when all of these are true:
 
 - the query is non-empty
 - the workspace index is ready and fresh
-- the fact is Medium or High confidence (the bounded pilot band)
+- the fact is Medium confidence for the bounded pilot claim
 - the fact is source-backed generated/framework evidence
 - a framework declaration source anchor exists
 - the result carries an explicit generated/framework label
@@ -131,8 +131,8 @@ Invalid PRs include:
 
 A workspace-symbol generated-label PR satisfies this spec when:
 
-- live generated results are fresh, Medium-or-High-confidence, source-backed,
-  and labeled; Low-confidence facts remain blocked
+- live generated results are fresh, bounded Medium-confidence, source-backed,
+  and labeled
 - the source anchor is a framework declaration
 - generated/no-source, dynamic, stale, low-confidence, ambiguous, partial-index,
   and open-document fallback candidates stay gated

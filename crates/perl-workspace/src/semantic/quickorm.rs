@@ -396,23 +396,28 @@ fn quote_like_words(value: &str) -> Option<Vec<&str>> {
 }
 
 fn is_competing_import_call(expression: &Node) -> bool {
-    let (module, args) = match &expression.kind {
-        NodeKind::MethodCall { object, method, args } if method == "import" => {
-            let NodeKind::Identifier { name: module } = &object.kind else {
-                return false;
-            };
-            (module.as_str(), args)
+    let module = match &expression.kind {
+        NodeKind::MethodCall { object, method, .. } if method == "import" => {
+            // An unknown receiver may still own the imported DSL. Only an
+            // explicitly named QuickORM receiver is known not to compete;
+            // variable-held, computed, and otherwise unknown receivers
+            // invalidate authority. The argument shape may be a hash/binary
+            // expression or another parser form that is not statically
+            // enumerable, so unknown external imports are fail-closed.
+            let is_quickorm_receiver =
+                matches!(&object.kind, NodeKind::Identifier { name } if name == QUICKORM_MODULE);
+            if is_quickorm_receiver { QUICKORM_MODULE } else { "<dynamic>" }
         }
-        NodeKind::FunctionCall { name, args } => {
+        NodeKind::FunctionCall { name, .. } => {
             let Some(module) = name.strip_suffix("::import") else {
                 return false;
             };
-            (module, args)
+            module
         }
         _ => return false,
     };
 
-    module != QUICKORM_MODULE && imports_table_builder_from_nodes(args)
+    module != QUICKORM_MODULE
 }
 
 fn invalidate_qorm_table_fact(package: &str, facts: &mut Vec<GeneratedMemberFact>) {

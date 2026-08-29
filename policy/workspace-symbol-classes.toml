@@ -49,8 +49,8 @@ fact_provenance = "SourceBackedGenerated"
 live = true
 requires_non_empty_query = true
 requires_ready_index = true
-# The labeled pilot admits the bounded Medium-or-High fact band; the
-# mandatory low_confidence blocker still excludes Low-confidence facts.
+# The bounded pilot admits only the claim's Medium-confidence facts; High is
+# not inferred or promoted by this shared class.
 requires_high_confidence = false
 requires_source_anchor = true
 requires_generated_label = true

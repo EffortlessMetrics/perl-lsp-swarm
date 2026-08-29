@@ -271,6 +271,26 @@ view "users" => sub {};
 }
 
 #[test]
+fn workspace_index_blocks_hash_shaped_competing_import() -> Result<(), Box<dyn std::error::Error>> {
+    let index = WorkspaceIndex::new();
+    let uri = Url::parse("file:///lib/MyApp/Schema/CompetingHashImport.pm")?;
+    let source = r#"
+package MyApp::Schema::CompetingHashImport;
+use DBIx::QuickORM type => 'table';
+Other::DSL->import(table => sub {});
+table "users" => sub {};
+1;
+"#;
+
+    index.index_file(uri, source.to_string())?;
+    assert!(
+        index.search_generated_workspace_symbols("qorm_table", None).is_empty(),
+        "an unknown hash-shaped competing importer must invalidate authority in the production index"
+    );
+    Ok(())
+}
+
+#[test]
 fn workspace_index_blocks_nested_qualified_builder_initializer()
 -> Result<(), Box<dyn std::error::Error>> {
     let index = WorkspaceIndex::new();

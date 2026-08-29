@@ -260,9 +260,9 @@ fn validate_source_backed_generated_class(
         violations
             .push(format!("{key} is SourceBackedGenerated but requires_ready_index is false"));
     }
-    // The generated-label pilot is allowed to admit Medium-or-High facts.
-    // `low_confidence` remains a mandatory blocker below, so Low-confidence
-    // and dynamic candidates stay excluded from the live surface.
+    // The generated-label pilot admits only the bounded Medium-confidence
+    // claim. `low_confidence` remains a mandatory blocker below, so Low-
+    // confidence and dynamic candidates stay excluded from the live surface.
     if !class.requires_source_anchor {
         violations
             .push(format!("{key} is SourceBackedGenerated but requires_source_anchor is false"));
@@ -458,7 +458,7 @@ mod tests {
     }
 
     #[test]
-    fn accepts_bounded_medium_or_high_generated_confidence_band() -> TestResult {
+    fn accepts_bounded_medium_generated_confidence_band() -> TestResult {
         let policy = policy();
         let class = live_generated_class();
         let mut violations = Vec::new();
@@ -467,7 +467,7 @@ mod tests {
 
         assert!(
             violations.is_empty(),
-            "Medium-or-High generated pilot with low_confidence blocked should pass: {violations:?}"
+            "Medium generated pilot with low_confidence blocked should pass: {violations:?}"
         );
         Ok(())
     }
@@ -483,7 +483,7 @@ mod tests {
 
         assert!(
             violations.iter().any(|violation| violation.contains("low_confidence")),
-            "Medium-or-High admission without the low_confidence blocker must fail: {violations:?}"
+            "Medium admission without the low_confidence blocker must fail: {violations:?}"
         );
         Ok(())
     }
