@@ -3940,6 +3940,22 @@ review_after = "2027-02-20"
 
 
 [[allow]]
+id = "non-rust-product-health-status-fixtures"
+glob = "fixtures/product_health_status/**/*.json"
+kind = "test_fixture"
+language = "json"
+surface = "fixtures"
+classification = "test"
+owner = "tooling/product-health"
+reason = "Synthetic product-health rail registry, source packets, and the immutable golden product_health_status.v1 snapshot (#12360); the golden bytes are re-assembled deterministically and compared byte-for-byte by tests, and the closed packet envelope is fail-closed validated."
+covered_by = [
+  "cargo test -p xtask --locked product_health_status",
+  "cargo run -p xtask -- product-health check fixtures/product_health_status/expected/status.json",
+]
+created = "2026-08-26"
+review_after = "2027-02-26"
+
+[[allow]]
 id = "non-rust-ci-route-plan-golden-vectors"
 path = "xtask/tests/fixtures/ci-route-plan/semantic-baseline.json"
 kind = "test_fixture"

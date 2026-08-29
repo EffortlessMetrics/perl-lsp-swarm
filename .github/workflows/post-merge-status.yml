@@ -74,7 +74,7 @@ jobs:
           shared-key: post-merge-status-${{ hashFiles('Cargo.lock') }}
 
       - name: Regenerate status subsystem files and roadmap
-        run: cargo run -p xtask -- update-status --write
+        run: cargo run --locked -p xtask -- update-status --write
 
       # Merge-time non-Rust inventory refresh (#11731): any merge that changes
       # tracked file counts drifts docs/policy/NON_RUST_INVENTORY.md, and the
@@ -82,7 +82,7 @@ jobs:
       # unit_routed_full. Regenerating here lands the drift with the same
       # reviewable PR as the status documents instead of on an unlucky branch.
       - name: Regenerate the non-Rust inventory
-        run: cargo run -p xtask -- non-rust inventory --write
+        run: cargo run --locked -p xtask -- non-rust inventory --write
 
       - name: Validate and stage exact generated payload
         id: payload
@@ -115,7 +115,16 @@ jobs:
           # rest, so the abort below is scoped to writes that escape the
           # generator-owned surface entirely (source, workflows, scripts, ...).
           owned_prefixes = ("docs/project/status/",)
-          owned_paths = {"docs/project/ROADMAP.md", "docs/policy/NON_RUST_INVENTORY.md"}
+          # Cargo.lock churns whenever the checked-out manifests and the
+          # committed lock disagree: that refresh is the generator's own
+          # `cargo run` build state, not an escape into the repository surface,
+          # and it never reaches the payload — the artifact below and the
+          # privileged writer stay bounded to the canonical files. (#13355)
+          owned_paths = {
+              "docs/project/ROADMAP.md",
+              "docs/policy/NON_RUST_INVENTORY.md",
+              "Cargo.lock",
+          }
           root = Path.cwd().resolve()
           payload_root = root / "target" / "post-merge-status-payload"
           files_root = payload_root / "files"
@@ -513,7 +522,10 @@ jobs:
           token: ${{ github.token }}
           branch: automation/post-merge-status
           base: ${{ github.event.repository.default_branch }}
-          delete-branch: true
+          # No delete-branch: an open PR that names this generated branch
+          # as its base is a live dependency on it, and deleting the base
+          # auto-closes that child (#12885). Cleanup is a separate admitted
+          # decision via `xtask branch-deletion-admission admit`.
           title: "chore(docs): regenerate post-merge status and inventory (#6012, #11731)"
           commit-message: "chore(docs): regenerate post-merge status and inventory (#6012, #11731)"
           body: |
@@ -553,14 +565,31 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           BRANCH: automation/post-merge-status
+          BASE_SHA: ${{ github.sha }}
+          GENERATED_HEAD_SHA: ${{ steps.create-pr.outputs.pull-request-head-sha }}
         run: |
+          # ci.yml's workflow_dispatch declares required inputs (since #13019):
+          # the dispatched subject's exact base and head SHAs. Dispatching it
+          # bare fails with HTTP 422 "Required input 'base_sha' not provided",
+          # so the generated PR's required checks never populate (#13355).
+          # base_sha is this run's event SHA — the freshness gate above proved
+          # it equals the live default-branch tip, i.e. the generated PR's
+          # base. head_sha is the automation branch head the create-pr step
+          # just wrote, which is the same commit the --ref below dispatches.
+          # The other three workflows declare no dispatch inputs and stay bare.
           # Keep attempting every required workflow so one transient dispatch
           # failure cannot strand the later required checks. The final status
           # remains failing when any dispatch failed.
           set +e
           failed=0
           for workflow in ci.yml em-ci-routed-rust.yml ripr.yml pr-title-check.yml; do
-            if gh workflow run "$workflow" --ref "$BRANCH"; then
+            if [ "$workflow" = ci.yml ]; then
+              if gh workflow run "$workflow" --ref "$BRANCH" \
+                -f "base_sha=$BASE_SHA" \
+                -f "head_sha=$GENERATED_HEAD_SHA"; then
+                continue
+              fi
+            elif gh workflow run "$workflow" --ref "$BRANCH"; then
               continue
             fi
             echo "::error::Failed to dispatch $workflow"
