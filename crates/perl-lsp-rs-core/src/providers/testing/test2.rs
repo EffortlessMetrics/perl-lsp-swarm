@@ -31,6 +31,9 @@
 //! are trusted verbatim (added to scope even if not in our table), which keeps
 //! the LSP from emitting false "unknown subroutine" diagnostics for tools we do
 //! not enumerate. Exclusions and renames are applied on top of the default set.
+//! The one open-world exception is `REMOVED_BUNDLES`: first-party bundle names
+//! proven absent from the pinned `Test2::Suite` distribution resolve to no
+//! facts at all rather than manufacturing imports.
 
 use regex::Regex;
 use std::collections::BTreeSet;
@@ -201,6 +204,32 @@ static V0_DEFAULT: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
 /// ("Only 1 export by default: T2()").
 const V1_DEFAULT: &[&str] = &["T2"];
 
+/// First-party `Test2::Bundle::*` names that current `Test2::Suite` no longer
+/// ships: `Bundle::More` and `Bundle::Simple` moved to the separate
+/// `Test2-deprecated` distribution, and `Bundle::Extended` is the deprecated
+/// former name of `Test2::V0`. Oracle: metacpan `Test2::Suite` / `Test2::V0`
+/// ("This bundle has been renamed to Test2::V0") and the `Test2-deprecated`
+/// distribution. This is an open-world *negative* table: it only removes
+/// proven first-party names from structural recognition, so it must never
+/// grow a name that any extant distribution could legitimately provide.
+const REMOVED_BUNDLES: &[&str] = &[
+    "Test2::Bundle::More",
+    "Test2::Bundle::Simple",
+    "Test2::Bundle::Extended",
+];
+
+/// Whether `module` is a first-party Test2 bundle proven absent from the
+/// pinned `Test2::Suite` distribution (see `REMOVED_BUNDLES`). Such names have
+/// no reviewed export table, so trusting their explicit imports verbatim would
+/// manufacture Test2 completion facts (imports, strict/warnings) for modules
+/// the framework does not ship. The predicate is consulted by every structural
+/// recognition path (`is_test2_bundle`, `is_test2_module`), which is the first
+/// check `resolve_import` performs, so a removed name resolves to `None` — no
+/// facts, no invented exports.
+fn is_removed_bundle(module: &str) -> bool {
+    REMOVED_BUNDLES.contains(&module)
+}
+
 // ---------------------------------------------------------------------------
 // Module classification.
 // ---------------------------------------------------------------------------
@@ -216,10 +245,14 @@ pub fn is_test2_module(module: &str) -> bool {
 /// Whether `module` is a Test2 *bundle* module. Bundles are the recommended
 /// entry points (`Test2::V0`, `Test2::V1`, `Test2::Bundle::*`). Note that being
 /// a bundle does **not** imply pragmas are on by default — `Test2::V0` enables
-/// them by default while `Test2::V1` does not (see `resolve_import`).
+/// them by default while `Test2::V1` does not (see `resolve_import`). Bundles
+/// proven absent from the pinned first-party distribution (see
+/// `REMOVED_BUNDLES`) are not recognized: an unknown `Test2::Bundle::*` name
+/// stays open-world, but a name upstream removed must not manufacture facts.
 pub fn is_test2_bundle(module: &str) -> bool {
-    matches!(module, "Test2::V0" | "Test2::V1" | "Test2::Suite")
-        || module.starts_with("Test2::Bundle::")
+    (matches!(module, "Test2::V0" | "Test2::V1" | "Test2::Suite")
+        || module.starts_with("Test2::Bundle::"))
+        && !is_removed_bundle(module)
 }
 
 /// The default export set for a known Test2 module, or `None` if the module is

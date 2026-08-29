@@ -6,7 +6,9 @@ use super::*;
 fn test2_imports_recognizes_bundles_and_tools() {
     assert!(is_test2_module("Test2::V0"));
     assert!(is_test2_module("Test2::V1"));
-    assert!(is_test2_module("Test2::Bundle::Extended"));
+    // `Test2::Bundle::Extended` is the deprecated former name of `Test2::V0`;
+    // the removed first-party name must not be structurally recognized.
+    assert!(!is_test2_module("Test2::Bundle::Extended"));
     assert!(is_test2_module("Test2::Tools::Basic"));
     assert!(is_test2_module("Test2::Tools::Compare"));
     assert!(is_test2_module("Test2::Plugin::UTF8"));
@@ -21,13 +23,70 @@ fn test2_imports_recognizes_bundles_and_tools() {
 fn test2_imports_bundle_classification() {
     assert!(is_test2_bundle("Test2::V0"));
     assert!(is_test2_bundle("Test2::V1"));
-    assert!(is_test2_bundle("Test2::Bundle::Extended"));
+    // Removed first-party bundle: deprecated former name of `Test2::V0`.
+    assert!(!is_test2_bundle("Test2::Bundle::Extended"));
     assert!(is_test2_bundle("Test2::Suite"));
 
     // Individual tool modules do NOT turn on strict/warnings.
     assert!(!is_test2_bundle("Test2::Tools::Basic"));
     assert!(!is_test2_bundle("Test2::Plugin::UTF8"));
     assert!(!is_test2_bundle("Test2::API"));
+}
+
+#[test]
+fn test2_removed_bundles_produce_no_facts() {
+    // Oracle: metacpan `Test2::Suite` — `Bundle::More`/`Bundle::Simple` moved
+    // to the separate `Test2-deprecated` distribution and `Bundle::Extended`
+    // is the deprecated former name of `Test2::V0`. A removed first-party name
+    // must resolve to `None` even when the import list spells symbols
+    // explicitly: trusting positive imports for a proven-absent module would
+    // manufacture arbitrary Test2 facts (issue #13551).
+    for module in ["Test2::Bundle::More", "Test2::Bundle::Simple", "Test2::Bundle::Extended"] {
+        assert!(!is_test2_module(module), "{module} is not a recognized Test2 module");
+        assert!(!is_test2_bundle(module), "{module} is not a recognized Test2 bundle");
+        assert!(
+            resolve_import(module, "qw(custom_helper)").is_none(),
+            "{module} must not resolve imports"
+        );
+
+        let src = format!("use {module} qw(custom_helper);\nok(1);\n");
+        let facts = Test2Facts::from_source(&src);
+        assert!(!facts.uses_test2(), "{module} must not register as a Test2 module");
+        assert!(
+            !facts.modules.iter().any(|m| m == module),
+            "{module} must not appear in Test2 modules"
+        );
+        assert!(
+            !facts.is_imported("custom_helper"),
+            "{module} must not manufacture the explicitly spelled import"
+        );
+        assert!(!facts.is_imported("ok"), "{module} must not manufacture Test2 facts for ok");
+        assert_eq!(
+            (facts.strict, facts.warnings),
+            (false, false),
+            "{module} must not claim strict/warnings"
+        );
+        assert!(!facts.uses_test2_bundle(), "{module} must not count as a Test2 bundle");
+    }
+}
+
+#[test]
+fn test2_unknown_bundle_stays_open_world() {
+    // The negative table only removes *proven first-party* names. A genuinely
+    // unknown bundle keeps the existing open-world behavior: structurally
+    // recognized, explicit imports trusted verbatim, bundle pragmas on by
+    // default (like every non-V1 bundle).
+    assert!(is_test2_module("Test2::Bundle::Unknown"));
+    assert!(is_test2_bundle("Test2::Bundle::Unknown"));
+
+    let resolved = resolve_import("Test2::Bundle::Unknown", "qw(custom_helper)")
+        .expect("unknown bundle stays recognized");
+    assert!(resolved.symbols.contains("custom_helper"), "explicit import is trusted verbatim");
+
+    let facts = Test2Facts::from_source("use Test2::Bundle::Unknown qw(custom_helper);\n");
+    assert!(facts.uses_test2(), "unknown bundle still registers as a Test2 module");
+    assert!(facts.is_imported("custom_helper"));
+    assert!(facts.strict && facts.warnings, "unknown bundle keeps default pragmas");
 }
 
 #[test]
