@@ -468,10 +468,10 @@ pub fn non_rust_inventory_write_docs(root: &Path) -> Result<()> {
 
 /// Check the tracked-file classification against the allowlist.
 ///
-/// The committed Markdown inventory is generated documentation, so it may be
-/// behind a concurrent merge. The scan and classification must still complete;
-/// stale generated documentation and the existing unclassified backlog are
-/// reported as warnings. A newly added unclassified file is a blocking error.
+/// The committed Markdown inventory is generated documentation and must match
+/// the current tree. The existing unclassified backlog is reported as a warning,
+/// while newly added unclassified files and stale generated documentation are
+/// blocking errors.
 pub fn non_rust_inventory_check(root: &Path) -> Result<()> {
     let baseline = resolve_inventory_baseline(root);
     non_rust_inventory_check_with_baseline(root, baseline.as_deref())
@@ -536,8 +536,8 @@ fn non_rust_inventory_check_with_baseline(root: &Path, baseline: Option<&str>) -
         );
     }
     if normalize_line_endings(&actual) != normalize_line_endings(&expected) {
-        eprintln!(
-            "warning: non-Rust inventory documentation is stale at {}; run `cargo xtask non-rust inventory --write` to regenerate it",
+        bail!(
+            "non-Rust inventory documentation is stale at {}; run `cargo xtask non-rust inventory --write` to regenerate it",
             docs_path.display()
         );
     }
@@ -2199,6 +2199,7 @@ fn render_migration_candidates_markdown(candidates: &[MigrationCandidate]) -> St
 #[cfg(test)]
 mod tests {
     use super::*;
+    use color_eyre::eyre::ensure;
 
     fn make_entry(
         id: &str,
@@ -2533,7 +2534,7 @@ mod tests {
     }
 
     #[test]
-    fn non_rust_inventory_check_accepts_current_and_stale_docs() -> Result<()> {
+    fn non_rust_inventory_check_accepts_current_and_normalized_docs() -> Result<()> {
         let temp = tempfile::tempdir()?;
         init_tracked_fixture(temp.path(), &[("README.md", "# Fixture\n")])?;
         write_readme_allowlist(temp.path(), "policy/non-rust-allowlist.toml")?;
@@ -2546,8 +2547,26 @@ mod tests {
         fs::write(&docs_path, current.replace('\n', "\r\n"))?;
         non_rust_inventory_check(temp.path())?;
 
-        fs::write(&docs_path, "stale\n")?;
-        non_rust_inventory_check(temp.path())?;
+        Ok(())
+    }
+
+    #[test]
+    fn non_rust_inventory_check_rejects_valid_but_stale_docs() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        init_tracked_fixture(temp.path(), &[("README.md", "# Fixture\n")])?;
+        write_readme_allowlist(temp.path(), "policy/non-rust-allowlist.toml")?;
+        non_rust_inventory_write_docs(temp.path())?;
+
+        write_fixture(temp.path(), "src/lib.rs", "pub fn fixture() {}\n")?;
+        run_git(temp.path(), &["add", "src/lib.rs"])?;
+
+        let error = non_rust_inventory_check(temp.path())
+            .err()
+            .ok_or_else(|| eyre!("valid but stale inventory documentation must fail"))?;
+        ensure!(
+            error.to_string().contains("inventory documentation is stale"),
+            "unexpected stale-inventory error: {error}"
+        );
         Ok(())
     }
 
@@ -2702,8 +2721,8 @@ surface = "docs"
 classification = "generated"
 owner = "release/ci"
 reason = "Generated badge data."
-generated_by = "cargo xtask badges"
-covered_by = []
+generated_by = "python3 scripts/generate-badges.py"
+covered_by = ["python3 scripts/generate-badges.py --check"]
 created = "2026-05-13"
 review_after = "2026-08-13"
 "#,

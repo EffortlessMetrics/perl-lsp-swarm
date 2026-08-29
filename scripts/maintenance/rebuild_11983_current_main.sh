@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# This entrypoint invokes cargo (fmt/test below), so it must run the shared
+# toolchain guard first — otherwise a cargo older than the workspace
+# rust-version surfaces as a manifest parse error instead of a typed refusal
+# (#12593). Ported from the verified patch on #12997: it is the only remaining
+# failure in the guard self-test on current main, and no PR carries it yet.
 . "$(dirname -- "${BASH_SOURCE[0]}")/../lib/cargo-toolchain-guard.sh" && cargo_toolchain_guard
 
 first_commit="d174ec1e9845056b8e1a193001ce88a2ea9eaebe"
