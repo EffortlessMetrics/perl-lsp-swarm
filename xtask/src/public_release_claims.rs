@@ -2056,7 +2056,6 @@ mod tests {
     /// Seam: parse_inventory fails when the audited-commit anchor is absent.
     #[test]
     fn seam_parse_inventory_missing_audited_anchor() {
-        let doc = committed_doc();
         let error = parse_inventory(
             "# Install Claim Surface Inventory
 
