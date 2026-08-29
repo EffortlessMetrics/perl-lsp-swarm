@@ -29,7 +29,7 @@ The implemented slice lives in `crates/perl-parser-core/src/pir/` and lowers a
 [`HirFile`](../../crates/perl-parser-core/src/hir/mod.rs) into a `PirGraph`:
 
 - the PIR v0 data model from the [Target Code Shape](#target-code-shape)
-  (`PirNode`, `PirId`, `PirContext`, `PirOperation`, `PirCallee`/`PirReceiver`/
+  (`PirNode`, `PirId`, `PirContext`, `PirEvaluationDemand`, `PirAccessMode`, `PirOperation`, `PirCallee`/`PirReceiver`/
   `PirMethod`, `PirSourceAnchor`, `PirEdge`, `PirReceipt`);
 - HIR-to-PIR lowering for the data-access, call, and dynamic-boundary operation
   families HIR can prove from source (`LexicalWrite`, `StashWrite`, `Assign`,
@@ -46,10 +46,11 @@ The implemented slice lives in `crates/perl-parser-core/src/pir/` and lowers a
 
 Branch lowering from HIR `BranchShell` (`if`/`unless`/ternary) is now
 implemented (PR #8196): an `if`/`unless` statement lowers to a
-`PirOperation::Branch { condition: None }` node in `PirContext::Void`, while a
+`PirOperation::Branch { condition: None }` node in `PirContext::Void` with
+`PirEvaluationDemand::TruthTest`, while a
 ternary lowers to the same operation in `PirContext::Unknown`. A ternary is a
 value-producing conditional expression that may participate in an lvalue
-context, but the flat path cannot prove its enclosing Scalar/List/Lvalue
+context, but the flat path cannot prove its enclosing Scalar/List
 context, so `Unknown` is the fail-closed context. The condition
 expression and then/else arm edges (`PirEdgeKind::Branch`) are named follow-ups;
 the node records that a branch exists and anchors it.
@@ -94,7 +95,9 @@ PIR v0 must:
 
 - preserve source anchors for every node that comes from source
 - preserve dynamic-boundary links instead of guessing exact behavior
-- preserve scalar, list, void, and lvalue context where known
+- preserve scalar, list, void, and unknown value context where known
+- represent evaluation demand (`Value`, `TruthTest`, `DefinednessTest`) separately
+- represent place access (`Read`, `Write`, `ReadModifyWrite`) separately from value context
 - model lexical and stash reads and writes
 - model calls and method calls without executing Perl
 - model branches, loops, assignment, returns, and control-flow edges
@@ -120,6 +123,8 @@ pub struct PirNode {
     pub source_anchor: Option<SourceRange>,
     pub operation: PirOperation,
     pub context: PirContext,
+    pub demand: PirEvaluationDemand,
+    pub access: PirAccessMode,
     pub dynamic_boundary: Option<DynamicBoundaryId>,
 }
 
@@ -127,8 +132,19 @@ pub enum PirContext {
     Scalar,
     List,
     Void,
-    Lvalue,
     Unknown,
+}
+
+pub enum PirEvaluationDemand {
+    Value,
+    TruthTest,
+    DefinednessTest,
+}
+
+pub enum PirAccessMode {
+    Read,
+    Write,
+    ReadModifyWrite,
 }
 
 pub enum PirOperation {
