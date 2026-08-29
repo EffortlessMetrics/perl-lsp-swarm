@@ -14,6 +14,7 @@ pub mod compiler_lexical_cutline;
 pub mod compiler_profile_contract;
 pub mod compiler_profile_initial_rows;
 pub mod compiler_profile_observation;
+pub mod compiler_profile_oracle_adapter;
 pub mod contributor_topology;
 pub mod editor_client_compat;
 pub mod editor_host;
