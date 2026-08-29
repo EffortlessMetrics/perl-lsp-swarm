@@ -33,7 +33,13 @@ fn released_and_source_rows_stay_independent_for_both_clients() {
     let dimensions = baseline
         .observations
         .iter()
-        .map(|row| (row.client_kind, row.source_state, row.subject_id.as_str()))
+        .map(|row| {
+            (
+                row.client_kind,
+                row.source_state,
+                row.observation_id.as_str(),
+            )
+        })
         .collect::<Vec<_>>();
 
     assert_eq!(
@@ -42,26 +48,50 @@ fn released_and_source_rows_stay_independent_for_both_clients() {
             (
                 SubjectClientKind::ExternalEglot,
                 ClientSourceState::Released,
-                "released_eglot_gnu_elpa_1_24",
+                "eglot_released_1_24_stock_registry",
             ),
             (
                 SubjectClientKind::ExternalEglot,
                 ClientSourceState::UpstreamSource,
-                "source_eglot_emacs_f4f249a2",
+                "eglot_source_f4f249a2_stock_registry",
             ),
             (
                 SubjectClientKind::LspMode,
                 ClientSourceState::Released,
-                "released_lsp_mode_10_0_0",
+                "lsp_mode_released_10_0_0_clients",
             ),
             (
                 SubjectClientKind::LspMode,
                 ClientSourceState::UpstreamSource,
-                "source_lsp_mode_e15b8205",
+                "lsp_mode_source_e15b8205_clients",
             ),
         ],
-        "a current source candidate must not overwrite or relabel the released subject"
+        "a current source observation must not overwrite or relabel a released row"
     );
+}
+
+#[test]
+fn exact_rows_bind_commit_tree_and_complete_search_scope() {
+    let baseline = checked_baseline();
+    for row in baseline.observations {
+        assert_eq!(row.commit.len(), 40, "commit must be exact");
+        assert_eq!(row.tree_sha1.len(), 40, "tree must be exact");
+        assert!(
+            row.observation_complete,
+            "{} must be a complete source observation",
+            row.observation_id
+        );
+        assert!(
+            !row.search_scope.is_empty(),
+            "{} must retain the exhaustive search scope",
+            row.observation_id
+        );
+        assert!(
+            !row.observed_files.is_empty(),
+            "{} must retain exact source blobs",
+            row.observation_id
+        );
+    }
 }
 
 #[test]
@@ -69,25 +99,21 @@ fn exact_rows_require_manual_registration_for_perllsp() {
     let baseline = checked_baseline();
     for row in baseline.observations {
         assert!(
-            row.observation_complete,
-            "{} must be a complete source observation",
-            row.subject_id
-        );
-        assert!(
             !row.manual_registration_injected,
             "{} must not contain repository setup",
-            row.subject_id
+            row.observation_id
         );
         assert!(
             !row.perllsp_present,
             "{} unexpectedly contains a stock perllsp entry",
-            row.subject_id
+            row.observation_id
         );
         assert!(
             row.entries.iter().all(|entry| {
-                entry.server_id.as_deref() != Some("perllsp")
+                entry.entry_id != "perllsp"
+                    && entry.server_id.as_deref() != Some("perllsp")
                     && entry
-                        .command
+                        .command_shape
                         .first()
                         .is_none_or(|program| program != "perllsp")
             }),
@@ -105,15 +131,20 @@ fn eglot_rows_retain_the_existing_perl_language_server_contact() {
         .filter(|row| row.client_kind == SubjectClientKind::ExternalEglot)
     {
         assert_eq!(row.entries.len(), 1);
-        let entry = &row.entries[0];
+        let entry = row.entries.first().expect("Eglot Perl contact");
         assert_eq!(entry.entry_id, "perl_language_server");
         assert_eq!(
-            entry.modes.iter().map(String::as_str).collect::<Vec<_>>(),
+            entry
+                .major_modes
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
             vec!["perl-mode", "cperl-mode"]
         );
+        assert!(entry.activation_language.is_none());
         assert_eq!(
             entry
-                .command
+                .command_shape
                 .iter()
                 .map(String::as_str)
                 .collect::<Vec<_>>(),
@@ -143,18 +174,25 @@ fn lsp_mode_rows_retain_competing_clients_and_priority_order() {
                     entry.entry_id.as_str(),
                     entry.server_id.as_deref(),
                     entry.priority,
+                    entry.activation_language.as_deref(),
                 )
             })
             .collect::<Vec<_>>();
         assert_eq!(
             observed,
             vec![
-                ("perlnavigator", Some("perlnavigator"), Some(0)),
-                ("pls", Some("pls"), Some(-1)),
+                (
+                    "perlnavigator",
+                    Some("perlnavigator"),
+                    Some(0),
+                    Some("perl"),
+                ),
+                ("pls", Some("pls"), Some(-1), Some("perl")),
                 (
                     "perl_language_server",
                     Some("perl-language-server"),
                     Some(-2),
+                    None,
                 ),
             ],
             "lsp-mode selection context must not be flattened to one generic Perl client"
@@ -187,9 +225,9 @@ fn hidden_perllsp_entry_must_change_the_derived_presence_field() {
     let mut baseline = checked_baseline();
     baseline.observations[0].entries.push(RegistrationEntry {
         entry_id: "perllsp".to_string(),
-        modes: vec!["perl-mode".to_string(), "cperl-mode".to_string()],
-        language_id: Some("perl".to_string()),
-        command: vec!["perllsp".to_string(), "--stdio".to_string()],
+        major_modes: vec!["perl-mode".to_string(), "cperl-mode".to_string()],
+        activation_language: None,
+        command_shape: vec!["perllsp".to_string(), "--stdio".to_string()],
         server_id: Some("perllsp".to_string()),
         priority: None,
     });
@@ -210,6 +248,16 @@ fn floating_source_ref_is_rejected() {
         .validate()
         .expect_err("floating upstream source must fail");
     assert!(error.to_string().contains("40-hex"));
+}
+
+#[test]
+fn missing_tree_identity_cannot_support_an_absence_claim() {
+    let mut baseline = checked_baseline();
+    baseline.observations[3].tree_sha1.clear();
+    let error = baseline
+        .validate()
+        .expect_err("absence must bind the complete repository tree");
+    assert!(error.to_string().contains("tree_sha1"));
 }
 
 #[test]
