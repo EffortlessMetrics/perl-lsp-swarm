@@ -477,6 +477,81 @@ describe('StreamingCompletionController — request identity and cache correctne
     expect((mockClient.sendRequest as jest.Mock).mock.calls).toHaveLength(1);
   });
 
+  test('a settled stream releases the identity so re-invocation can retry', async () => {
+    const provider = getStreamAdapter();
+    const doc = makeMockDoc('file:///a.pl', 1);
+    const pos = makeMockPos(5, 10);
+
+    provider.provideInlineCompletionItems(
+      doc,
+      pos,
+      {} as vscode.InlineCompletionContext,
+      {} as vscode.CancellationToken,
+    );
+    expect(controller.snapshotStreamCounters().streamGenerationsStarted).toBe(1);
+
+    // Let the request promise resolve: the generation is no longer in flight.
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // The re-query guard covers in-flight generations only. A stream that
+    // settled without a candidate must not suppress an explicit re-invocation
+    // at the same cursor forever.
+    provider.provideInlineCompletionItems(
+      doc,
+      pos,
+      {} as vscode.InlineCompletionContext,
+      {} as vscode.CancellationToken,
+    );
+    expect(controller.snapshotStreamCounters().streamGenerationsStarted).toBe(2);
+  });
+
+  test('a late completion from a superseded stream cannot settle its successor', async () => {
+    let resolveFirst: (value: unknown) => void = () => {};
+    const firstRequest = new Promise((resolve) => {
+      resolveFirst = resolve;
+    });
+    // The second generation never settles, so only a wrongly-unconditional
+    // settle could clear its in-flight marker.
+    (mockClient.sendRequest as jest.Mock)
+      .mockReturnValueOnce(firstRequest)
+      .mockReturnValue(new Promise(() => {}));
+
+    const provider = getStreamAdapter();
+    const doc = makeMockDoc('file:///a.pl', 1);
+    const posA = makeMockPos(5, 10);
+    const posB = makeMockPos(6, 0);
+
+    provider.provideInlineCompletionItems(
+      doc,
+      posA,
+      {} as vscode.InlineCompletionContext,
+      {} as vscode.CancellationToken,
+    );
+    provider.provideInlineCompletionItems(
+      doc,
+      posB,
+      {} as vscode.InlineCompletionContext,
+      {} as vscode.CancellationToken,
+    );
+    expect(controller.snapshotStreamCounters().streamGenerationsStarted).toBe(2);
+
+    // The superseded first request completes late.
+    resolveFirst({});
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // The second generation is still in flight, so its identity must survive
+    // and a re-query at that cursor must still be deduplicated.
+    provider.provideInlineCompletionItems(
+      doc,
+      posB,
+      {} as vscode.InlineCompletionContext,
+      {} as vscode.CancellationToken,
+    );
+    expect(controller.snapshotStreamCounters().streamGenerationsStarted).toBe(2);
+  });
+
   test('a new cursor position does start a distinct backend generation', () => {
     const provider = getStreamAdapter();
     const doc = makeMockDoc('file:///a.pl', 1);

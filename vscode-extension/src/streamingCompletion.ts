@@ -403,14 +403,54 @@ export class StreamingCompletionController implements vscode.Disposable, InlineS
 
     this.client
       .sendRequest('textDocument/perlInlineCompletionStream', params, this.activeTokenSource.token)
-      .catch((err: unknown) => {
-        // Silently ignore cancellation errors (expected on cursor movement)
-        if (err instanceof Error && err.message.includes('cancelled')) {
-          return;
-        }
-        // Non-cancellation errors are suppressed — the stream will be
-        // retried on the next inline completion trigger.
-      });
+      .then(
+        () => this.settleActiveStream(requestIdentity),
+        (err: unknown) => {
+          this.settleActiveStream(requestIdentity);
+          // Silently ignore cancellation errors (expected on cursor movement)
+          if (err instanceof Error && err.message.includes('cancelled')) {
+            return;
+          }
+          // Non-cancellation errors are suppressed — the stream will be
+          // retried on the next inline completion trigger.
+        },
+      );
+  }
+
+  /**
+   * Release the in-flight marker for a generation that has finished.
+   *
+   * The re-query guard suppresses a second backend generation only while one
+   * is *in flight*. Without this, a stream that settled without producing a
+   * candidate would leave `activeRequestIdentity` set forever, and every later
+   * invocation at that cursor — including an explicit re-invocation the user
+   * asked for — would be suppressed until they moved or edited.
+   *
+   * Unlike `cancelActiveStream` this preserves `cachedCandidate`, so a
+   * successful final candidate stays servable from the cache while no live
+   * request, progress registration, or cancellation resource remains.
+   *
+   * No-ops when the generation was already superseded, so a late completion
+   * cannot settle its successor.
+   */
+  private settleActiveStream(requestIdentity: RequestIdentity): void {
+    if (this.activeRequestIdentity !== requestIdentity) {
+      return;
+    }
+    this.activeRequestIdentity = null;
+    if (this.activeCancellationSubscription) {
+      this.activeCancellationSubscription.dispose();
+      this.activeCancellationSubscription = null;
+    }
+    if (this.activeProgressDisposable) {
+      this.activeProgressDisposable.dispose();
+      this.activeProgressDisposable = null;
+    }
+    this.activeProgressToken = null;
+    if (this.activeTokenSource) {
+      this.activeTokenSource.dispose();
+      this.activeTokenSource = null;
+    }
   }
 
   private cancelActiveStream(): void {
