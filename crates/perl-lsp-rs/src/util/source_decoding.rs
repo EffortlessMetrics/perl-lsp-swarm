@@ -102,10 +102,7 @@ pub(crate) enum OriginalByteMapping {
 }
 
 /// Typed result of decoding one exact source-byte payload.
-#[allow(
-    dead_code,
-    reason = "metadata consumers land under #10581, #10077, and #8612 after #13530"
-)]
+#[allow(dead_code, reason = "metadata consumers land under #10581, #10077, and #8612 after #13530")]
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub(crate) struct DecodedText {
     /// Exact valid UTF-8 text produced by the decoder.
@@ -417,10 +414,7 @@ mod tests {
 
         assert_eq!(decoded.text, "\u{00FF}\u{00FE}m\0y");
         assert_eq!(decoded.encoding, SourceEncoding::Latin1Fallback);
-        assert_eq!(
-            decoded.selection_reason,
-            DecodeSelectionReason::OddLengthUtf16LeLatin1Fallback
-        );
+        assert_eq!(decoded.selection_reason, DecodeSelectionReason::OddLengthUtf16LeLatin1Fallback);
         assert_eq!(decoded.bom, SourceBomDisposition::Utf16LePreservedByFallback);
         assert_eq!(decoded.fidelity, DecodeFidelity::FallbackDecode);
     }
@@ -446,10 +440,7 @@ mod tests {
 
         assert_eq!(decoded.text, "café");
         assert_eq!(decoded.encoding, SourceEncoding::Latin1Fallback);
-        assert_eq!(
-            decoded.selection_reason,
-            DecodeSelectionReason::InvalidUtf8Latin1Fallback
-        );
+        assert_eq!(decoded.selection_reason, DecodeSelectionReason::InvalidUtf8Latin1Fallback);
         assert_eq!(decoded.fidelity, DecodeFidelity::FallbackDecode);
         assert_eq!(decoded.original_mapping, OriginalByteMapping::ReencodedUnavailable);
         assert_ne!(decoded.original_byte_len, decoded.decoded_utf8_byte_len);
