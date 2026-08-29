@@ -9,8 +9,8 @@
 | Total tracked files | 12406 |
 | Rust-family files | 3814 |
 | Non-Rust files | 8592 |
-| Allowlisted | 6356 |
-| Unclassified | 2236 |
+| Allowlisted | 6357 |
+| Unclassified | 2235 |
 
 ## Non-Rust files by category
 
@@ -20,9 +20,9 @@
 | documentation | 2804 |
 | generated | 2 |
 | production | 346 |
-| test | 2052 |
+| test | 2053 |
 | tooling | 661 |
-| unclassified | 2236 |
+| unclassified | 2235 |
 
 ## Unclassified files
 
@@ -2022,7 +2022,6 @@
 | `tests/test_review_claim_fail_closed.py` | `py` |
 | `tests/test_review_claim_hidden_comments.py` | `py` |
 | `tests/test_semantic_review_currentness.py` | `py` |
-| `tests/test_worked_lane_corpus.py` | `py` |
 | `tokmd.toml` | `toml` |
 | `tree-sitter-perl/.clang-format` | `` |
 | `tree-sitter-perl/.editorconfig` | `` |
@@ -8237,6 +8236,7 @@
 | `tests/test_active_authority_contract.py` | test | `non-rust-active-authority-contract-test` | release/ci |
 | `tests/test_agent_authority_status.py` | test | `non-rust-agent-authority-status-test` | release/ci |
 | `tests/test_legacy_authority_banners.py` | test | `non-rust-legacy-authority-banners-test` | release/ci |
+| `tests/test_worked_lane_corpus.py` | test | `non-rust-worked-lane-corpus-test` | release/ci |
 | `tree-sitter-perl/.gitignore` | config | `non-rust-gitignore-family` | release/ci |
 | `tree-sitter-perl/PURE_RUST_PERFORMANCE_ANALYSIS.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `tree-sitter-perl/README.md` | documentation | `non-rust-root-governance-docs` | docs |

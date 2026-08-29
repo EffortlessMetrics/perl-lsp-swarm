@@ -26,8 +26,8 @@ not phrase templates or a replacement for the active skills.
 
 - [Worked-lane corpus ledger](examples/README.md) — which of #5247's eight required
   example categories the corpus covers, on what receipt, and what each covered lane
-  still does not establish. Read this before treating the corpus as complete: six of
-  the eight categories are currently `ABSENT`.
+  still does not establish. Read this before treating the corpus as complete: 6 of 8
+  categories are currently `ABSENT`.
 - [Integration trigger and bounded proof caller](examples/integration-trigger-and-proof-caller.md)
   — a pure trigger authority followed by a bounded synthetic-proof caller, including a
   later instrument failure that remained `NOT_PROVEN`.

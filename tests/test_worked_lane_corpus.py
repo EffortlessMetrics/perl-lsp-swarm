@@ -89,12 +89,28 @@ REQUIRED_FIELDS = (
 # A bare category label restated as a sentence fragment does not, and the
 # cheapest way to keep that honest is a floor on how much was actually said.
 MIN_TRANSITION_CHARS = 60
+MIN_TRANSITION_TERMS = 12
 MIN_UNPROVED_CHARS = 30
 
 CATEGORY_HEADING = re.compile(r"^### ([a-z0-9-]+)\s*$")
 FIELD_LINE = re.compile(r"^- \*\*([^:*]+):\*\* (.+)$")
 LANE_FILE = re.compile(r"^`([A-Za-z0-9_.-]+\.md)`$")
-RECEIPT = re.compile(r"#(\d+)")
+
+# A receipt is an issue/PR reference or a commit. Both are checked, because a
+# ledger that verified only `#NNNN` while a row also listed a squash SHA would
+# let the unverified half of the citation say anything -- the row would look
+# more precise than it had been checked to be.
+ISSUE_REF = re.compile(r"#(\d+)")
+COMMIT_REF = re.compile(r"\b([0-9a-f]{7,40})\b")
+# Git abbreviates: a ledger row may carry the full squash SHA while the lane
+# document carries a short head. Prefix matching in either direction is the
+# comparison git itself uses.
+MIN_ABBREV = 7
+
+# The front door states how many categories are open. A hard-coded count there
+# goes stale silently the moment a row is promoted, and it is the first thing a
+# reader sees, so it is derived and checked rather than trusted.
+README_ABSENT_COUNT = re.compile(r"(\d+) of (\d+) categories are currently `ABSENT`")
 
 LEDGER_SECTION = "## Category ledger"
 
@@ -108,11 +124,20 @@ def _read(path: Path) -> str:
 def parse_ledger() -> list[tuple[str, dict[str, str]]]:
     """Return the ledger's category rows in document order.
 
-    Parsing is deliberately strict. A field line that does not match
-    `FIELD_LINE` is invisible to every check below, so a typo in a bold label
-    would silently drop an oracle rather than fail one. The required-field
-    check in `test_every_category_declares_every_field` is what converts that
-    silence into a failure.
+    The parser is line-oriented and has no Markdown model -- no awareness of
+    fenced code blocks, HTML comments, or nested headings. That is affordable
+    only because nothing inside the ledger section is discarded: a line that
+    matches neither a category heading nor a field label is folded into the
+    field it follows, so every character between one field label and the next
+    is part of some value that the checks below read.
+
+    Silently dropping such a line was the original shape, and it was wrong. A
+    field value soft-wrapped onto a second physical line renders identically
+    and reviews identically, but the continuation matched no pattern and
+    vanished -- so a row could carry a fabricated receipt or lose half its
+    defining transition while the suite stayed green. Folding removes the
+    hiding place; a line before a row's first field, which has no field to
+    fold into, is a hard failure instead.
     """
     lines = _read(LEDGER).splitlines()
     try:
@@ -125,7 +150,8 @@ def parse_ledger() -> list[tuple[str, dict[str, str]]]:
     rows: list[tuple[str, dict[str, str]]] = []
     current: str | None = None
     fields: dict[str, str] = {}
-    for line in lines[start + 1 :]:
+    field_name: str | None = None
+    for offset, line in enumerate(lines[start + 1 :], start=start + 2):
         if line.startswith("## "):
             break
         heading = CATEGORY_HEADING.match(line)
@@ -134,13 +160,55 @@ def parse_ledger() -> list[tuple[str, dict[str, str]]]:
                 rows.append((current, fields))
             current = heading.group(1)
             fields = {}
+            field_name = None
             continue
         field = FIELD_LINE.match(line)
         if field and current is not None:
-            fields[field.group(1).strip()] = field.group(2).strip()
+            field_name = field.group(1).strip()
+            fields[field_name] = field.group(2).strip()
+            continue
+        if not line.strip() or current is None:
+            continue
+        if field_name is None:
+            raise AssertionError(
+                f"{LEDGER.relative_to(ROOT)}:{offset}: text inside category "
+                f"{current!r} before its first field label; every line in a "
+                f"category row must belong to a labelled field, or it is "
+                f"content no check reads"
+            )
+        fields[field_name] = f"{fields[field_name]} {line.strip()}".strip()
     if current is not None:
         rows.append((current, fields))
     return rows
+
+
+def receipt_tokens(text: str) -> tuple[set[str], set[str]]:
+    """Split receipt references into issue/PR numbers and commit ids."""
+    issues = set(ISSUE_REF.findall(text))
+    # An issue reference is not also a commit: strip them before matching hex
+    # so `#5717` cannot masquerade as a short SHA, and ignore anything that is
+    # all digits for the same reason.
+    without_issues = ISSUE_REF.sub(" ", text)
+    commits = {
+        token
+        for token in COMMIT_REF.findall(without_issues)
+        if not token.isdigit()
+    }
+    return issues, commits
+
+
+def commit_is_bound(cited: str, used: set[str]) -> bool:
+    """Is a cited commit the same commit as one the lane document names?
+
+    Git abbreviates, so the ledger may hold a full squash SHA where the lane
+    holds a short head. Either being a prefix of the other is the same
+    comparison git makes.
+    """
+    return any(
+        (cited.startswith(seen) or seen.startswith(cited))
+        and min(len(cited), len(seen)) >= MIN_ABBREV
+        for seen in used
+    )
 
 
 def example_documents() -> set[str]:
@@ -172,8 +240,12 @@ def workflow_paths(event: str) -> set[str]:
         if stripped == "paths:":
             in_paths = True
             continue
-        if in_paths and stripped.startswith("- '") and stripped.endswith("'"):
-            paths.add(stripped[3:-1])
+        if in_paths and stripped.startswith("- "):
+            # Quote style is the author's choice and does not change what the
+            # workflow matches, so accept single, double, and bare items. A
+            # style-only reformat should not produce a drift failure that
+            # looks like a real one.
+            paths.add(stripped[2:].strip().strip("'\""))
         elif in_paths and indent <= 4:
             in_paths = False
     return paths
@@ -248,7 +320,7 @@ class WorkedLaneLedgerTests(unittest.TestCase):
                 continue
             receipts = fields.get("Source receipts", "")
             self.assertTrue(
-                RECEIPT.search(receipts),
+                ISSUE_REF.search(receipts),
                 f"{category}: COVERED must cite at least one durable issue or "
                 f"PR reference, got {receipts!r}",
             )
@@ -272,6 +344,24 @@ class WorkedLaneLedgerTests(unittest.TestCase):
                 f"short to be a claim; #5247 requires the example to name the "
                 f"transition its evidence demonstrates, not restate the "
                 f"category name",
+            )
+            # A length floor alone is satisfied by padding the category name
+            # out to 60 characters. Requiring vocabulary the category name
+            # does not already supply costs nothing and rejects the laziest
+            # form of that, without pretending to judge the narrative.
+            own_words = set(category.split("-"))
+            fresh = {
+                word
+                for word in re.findall(r"[a-z]+", transition.lower())
+                if word not in own_words and len(word) > 2
+            }
+            self.assertGreaterEqual(
+                len(fresh),
+                MIN_TRANSITION_TERMS,
+                f"{category}: the defining transition uses only "
+                f"{len(fresh)} word(s) the category name does not already "
+                f"supply; it restates the label instead of naming the "
+                f"transition the evidence demonstrates",
             )
             unproved = fields.get("What remains unproved", "")
             self.assertGreaterEqual(
@@ -323,9 +413,16 @@ class WorkedLaneLedgerTests(unittest.TestCase):
             if not document.is_file():
                 continue  # reported by test_covered_rows_name_an_existing_lane_document
             body = _read(document)
-            cited = set(RECEIPT.findall(fields.get("Source receipts", "")))
-            used = set(RECEIPT.findall(body))
-            borrowed = sorted(cited - used, key=int)
+            cited_issues, cited_commits = receipt_tokens(
+                fields.get("Source receipts", "")
+            )
+            used_issues, used_commits = receipt_tokens(body)
+            borrowed = sorted(cited_issues - used_issues, key=int)
+            borrowed += sorted(
+                commit
+                for commit in cited_commits
+                if not commit_is_bound(commit, used_commits)
+            )
             self.assertEqual(
                 borrowed,
                 [],
@@ -399,15 +496,46 @@ class WorkedLaneLedgerTests(unittest.TestCase):
             "covered",
         )
 
+    def test_agents_readme_absent_count_matches_the_ledger(self) -> None:
+        """The front door's headline number is derived, not trusted.
+
+        It is the one sentence most readers see, and promoting a row does not
+        otherwise touch `docs/agents/README.md` -- so without this the summary
+        would keep announcing an old count while the ledger said otherwise.
+        """
+        # Normalized, because the sentence is soft-wrapped prose and where the
+        # line break falls is not part of the claim.
+        match = README_ABSENT_COUNT.search(" ".join(_read(AGENTS_README).split()))
+        self.assertIsNotNone(
+            match,
+            "docs/agents/README.md must state the open-category count in the "
+            "form 'N of M categories are currently `ABSENT`' so it can be "
+            "checked against the ledger",
+        )
+        assert match is not None  # narrowed by the assertion above
+        absent = sum(1 for _, fields in self.rows if fields.get("Status") == ABSENT)
+        self.assertEqual(
+            (int(match.group(1)), int(match.group(2))),
+            (absent, len(self.rows)),
+            f"docs/agents/README.md says {match.group(1)} of {match.group(2)} "
+            f"categories are ABSENT; the ledger has {absent} of "
+            f"{len(self.rows)}",
+        )
+
 
 class WorkedLaneWorkflowTests(unittest.TestCase):
     """The ledger only holds if the check runs on the files it constrains."""
 
+    # Derived from the files the oracle actually reads, not typed a second
+    # time. A hand-maintained duplicate of the workflow's own list would only
+    # prove the two lists agree with each other; deriving it from the paths
+    # `parse_ledger`, `example_documents`, and the checks above depend on
+    # means a new dependency cannot be added without appearing here.
     REQUIRED_PATHS = {
         WORKFLOW_PATH,
         TEST_PATH,
-        "docs/agents/README.md",
-        "docs/agents/examples/**",
+        str(AGENTS_README.relative_to(ROOT)),
+        f"{EXAMPLES.relative_to(ROOT)}/**",
     }
 
     def test_workflow_exists(self) -> None:

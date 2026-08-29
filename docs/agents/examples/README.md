@@ -30,6 +30,9 @@ defining transition on cited evidence. Two things that are not coverage:
   real, the corpus still does not carry the category;
 - a nearby pilot demonstrates something adjacent — adjacency is not the transition.
 
+`Source receipts` names only artifacts the lane document itself cites, issue/PR references and
+commits alike, because a row may not claim evidence its lane never used.
+
 `ABSENT` rows therefore name no lane, no receipt, and no ruling, and instead record what
 a lane would have to demonstrate. Where strong uncurated material is known, the row
 points at it so the next slice starts from evidence rather than from a survey.
@@ -78,7 +81,7 @@ put it in front of a reviewer rather than to settle it.
 - **Source receipts:** none
 - **Terminal ruling:** none
 - **Defining transition:** a non-executable claim receives proportionate issue and candidate review, fabricates no red test or build artifact, and publishes and reconciles honestly.
-- **What remains unproved:** no curated lane. Candidate material (docs-only PRs such as #5311) is thin on directed-review receipts, and a lane that shows only "there was nothing to run" would not demonstrate the proportionate-review half of the transition.
+- **What remains unproved:** no curated lane, though candidate material is stronger than a docs PR usually is — #5311 carries dispositioned bot findings and named-lens member reviews. What a lane still has to establish is the proportionate-review half: that the review was independent enough to be review rather than author-side self-disposition, on a claim with nothing to run.
 
 ### proof-invalidates-plan
 
@@ -93,7 +96,7 @@ put it in front of a reviewer rather than to settle it.
 
 - **Status:** COVERED
 - **Worked lane:** `integration-trigger-and-proof-caller.md`
-- **Source receipts:** PR [#5717](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/5717), squash `ebae77f9851d5fc4804d95299b7acb1ea5194a6f`
+- **Source receipts:** PR [#5717](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/5717)
 - **Terminal ruling:** [#4192](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/4192) — `PROMOTE` for the review-forward synthetic integration proof
 - **Defining transition:** a directed review finding is verified against the candidate, repaired by the one writer already holding it, and answered with focused regression proof on the changed seam rather than a full replay.
 - **What remains unproved:** the lane does not show a finding refuted with evidence, a finding accepted as follow-up, or a human reviewer thread; every finding it records was repaired in candidate.
@@ -105,13 +108,13 @@ put it in front of a reviewer rather than to settle it.
 - **Source receipts:** none
 - **Terminal ruling:** none
 - **Defining transition:** a fixed-candidate review closes with no material finding, states why no change was invented to prove the review happened, and states what the review did and did not establish.
-- **What remains unproved:** #4192 records a `PROMOTE` for clean formal review on a current claim with PR #5672 / #5220 as the receipt, so the ruling exists without a curated lane. A lane would also have to be honest about the shape of the receipt rather than implying a conventional approval.
+- **What remains unproved:** #4192 records a `PROMOTE` for clean formal review on a current claim, carried by PR #5672 and reconciled on issue #5220 (32/32 convergence fixtures), so the ruling exists without a curated lane. A lane would also have to be honest about the shape of the receipt rather than implying a conventional approval.
 
 ### ci-instrument-failure
 
 - **Status:** COVERED
 - **Worked lane:** `integration-trigger-and-proof-caller.md`
-- **Source receipts:** PR [#5717](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/5717), focused rerun on head `3f67c30f9`
+- **Source receipts:** PR [#5717](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/5717)
 - **Terminal ruling:** [#4192](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/4192) — `PROMOTE` for the review-forward synthetic integration proof
 - **Defining transition:** a check that produced no verdict — a focused rerun that timed out after 305 seconds without output — is retained as `NOT_PROVEN` instead of being read as a product pass or a product failure, and the merge that followed is not treated as supplying the missing receipt.
 - **What remains unproved:** the lane covers a timeout only. It does not show a check that failed to spawn, one that evaluated an older head, or one that lost output, and it does not show disjoint work continuing around an instrument failure.
