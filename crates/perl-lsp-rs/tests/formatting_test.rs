@@ -209,6 +209,58 @@ fn test_range_formatting_uses_utf16_columns_for_non_bmp_text() {
 }
 
 #[test]
+fn test_public_range_formatting_replay_preserves_non_bmp_prefix_and_crlf() {
+    let formatter = CodeFormatter::new();
+    let options = FormattingOptions {
+        tab_size: 4,
+        insert_spaces: true,
+        trim_trailing_whitespace: None,
+        insert_final_newline: None,
+        trim_final_newlines: None,
+    };
+    let source = "my $emoji = \"😀\";\r\nwhile($n){next;}\r\n";
+    let range = WireRange {
+        start: WirePosition::new(1, 0),
+        end: WirePosition::new(1, "while($n){next;}".encode_utf16().count() as u32),
+    };
+
+    let edits = must(formatter.format_range(source, &range, &options));
+    assert_eq!(edits.len(), 1);
+    let edit = &edits[0];
+    let start = utf16_offset(source, edit.range.start.line, edit.range.start.character);
+    let end = utf16_offset(source, edit.range.end.line, edit.range.end.character);
+    let mut replayed = source.to_string();
+    replayed.replace_range(start..end, &edit.new_text);
+
+    assert_eq!(replayed, "my $emoji = \"😀\";\r\nwhile ($n) {\r\n    next;\r\n}\r\n");
+}
+
+fn utf16_offset(source: &str, line: u32, character: u32) -> usize {
+    let mut offset = 0;
+    for (line_index, line_text) in source.split_inclusive('\n').enumerate() {
+        if line_index == line as usize {
+            let content = line_text.strip_suffix('\n').unwrap_or(line_text);
+            let content = content.strip_suffix('\r').unwrap_or(content);
+            return offset
+                + content
+                    .char_indices()
+                    .scan(0, |units, (byte, ch)| {
+                        if *units >= character as usize {
+                            None
+                        } else {
+                            *units += ch.len_utf16();
+                            Some(byte + ch.len_utf8())
+                        }
+                    })
+                    .last()
+                    .unwrap_or(0);
+        }
+        offset += line_text.len();
+    }
+    offset
+}
+
+#[test]
 fn test_formatting_returns_no_edits_for_literal_preserve_regions() {
     let formatter = CodeFormatter::new();
     let options = FormattingOptions {

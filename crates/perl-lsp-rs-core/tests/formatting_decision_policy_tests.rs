@@ -417,7 +417,32 @@ fn native_projection_insert_final_newline_preserves_crlf_after_generated_layout(
 }
 
 #[test]
-fn native_projection_insert_final_newline_uses_last_mixed_ending()
+fn native_projection_insert_final_newline_uses_last_lf_then_crlf_ending()
+-> Result<(), Box<dyn std::error::Error>> {
+    let provider =
+        FormattingProvider::new(RecordingRuntime { invoked: Arc::new(AtomicBool::new(false)) });
+    let mut formatting_options = options();
+    formatting_options.insert_final_newline = Some(true);
+    formatting_options.trim_final_newlines = Some(true);
+    let source = "my $before=1;\nwhile($n){next;}\r\n";
+
+    let decision = provider.format_document_decision(
+        source,
+        &formatting_options,
+        &FormatContext::default(),
+    )?;
+
+    let expected = "my $before = 1;\nwhile ($n) {\r\n    next;\r\n}\r\n";
+    assert_eq!(decision.document.text, expected);
+    assert_eq!(decision.document.edits.len(), 1);
+    assert_eq!(decision.document.edits[0].new_text, expected);
+    assert!(decision.document.text.ends_with("}\r\n"));
+    assert!(!decision.document.text.ends_with("}\n"));
+    Ok(())
+}
+
+#[test]
+fn native_projection_insert_final_newline_uses_last_crlf_then_lf_ending()
 -> Result<(), Box<dyn std::error::Error>> {
     let provider =
         FormattingProvider::new(RecordingRuntime { invoked: Arc::new(AtomicBool::new(false)) });
@@ -436,8 +461,8 @@ fn native_projection_insert_final_newline_uses_last_mixed_ending()
     assert_eq!(decision.document.text, expected);
     assert_eq!(decision.document.edits.len(), 1);
     assert_eq!(decision.document.edits[0].new_text, expected);
-    assert!(!decision.document.text.ends_with("}\r\n"));
     assert!(decision.document.text.ends_with("}\n"));
+    assert!(!decision.document.text.ends_with("}\r\n"));
     Ok(())
 }
 
