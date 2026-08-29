@@ -581,6 +581,17 @@ fn competing_table_import_invalidates_quickorm_authority() -> Result<(), Box<dyn
 }
 
 #[test]
+fn comment_separated_quickorm_import_retains_authority() -> Result<(), Box<dyn std::error::Error>>
+{
+    let facts = generated_facts_from_source(
+        "package User; use# comment\nDBIx::QuickORM type => 'table'; table users => sub {};",
+    )?;
+
+    assert_eq!(canonical_names(&facts), vec!["User::qorm_table"]);
+    Ok(())
+}
+
+#[test]
 fn competing_quote_like_table_imports_invalidate_quickorm_authority()
 -> Result<(), Box<dyn std::error::Error>> {
     for delimiter in ["/table/", "(table)", "[table]", "{table}", "<table>"] {

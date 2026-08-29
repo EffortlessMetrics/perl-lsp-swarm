@@ -727,7 +727,7 @@ fn source_statement_end(source: &str) -> Option<usize> {
 fn exact_source_import_pair(source: &str) -> Option<(&str, &str)> {
     let mut rest = trim_source_trivia(source);
     let use_keyword = rest.strip_prefix("use")?;
-    if !use_keyword.chars().next().is_none_or(|c| c.is_ascii_whitespace()) {
+    if !use_keyword.chars().next().is_none_or(|c| c.is_ascii_whitespace() || c == '#') {
         return None;
     }
     rest = trim_source_trivia(use_keyword);
