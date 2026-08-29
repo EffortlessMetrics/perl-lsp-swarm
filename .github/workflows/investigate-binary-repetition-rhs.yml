@@ -1,0 +1,209 @@
+name: Investigate binary repetition RHS matrix
+
+on:
+  push:
+    branches:
+      - investigate/binary-repetition-rhs-matrix
+    paths:
+      - .github/workflows/investigate-binary-repetition-rhs.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: investigate-binary-repetition-rhs
+  cancel-in-progress: false
+
+jobs:
+  classify:
+    if: github.repository == 'EffortlessMetrics/perl-lsp-swarm'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: 1.95.0
+
+      - name: Restore Cargo cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          cache-on-failure: true
+          cache-all-crates: true
+
+      - name: Classify syntax with system Perl
+        shell: bash
+        run: |
+          python3 - <<'PY' | tee perl-matrix.tsv
+          import pathlib
+          import subprocess
+          import tempfile
+
+          cases = [
+              ("number", 'my $value = "x" x 3;'),
+              ("vstring", 'my $value = "x" x v1.2.3;'),
+              ("string", 'my $value = "x" x "3";'),
+              ("single_quote", 'my $value = "x" x q{3};'),
+              ("double_quote", 'my $value = "x" x qq{3};'),
+              ("quote_words", 'my @value = "x" x qw(3 4);'),
+              ("quote_command", 'my $value = "x" x qx{printf 3};'),
+              ("regex_slash", 'my $value = "x" x /3/;'),
+              ("regex_m", 'my $value = "x" x m{3};'),
+              ("regex_qr", 'my $value = "x" x qr{3};'),
+              ("substitution", 'my $value = "x" x s/a/b/;'),
+              ("transliteration", 'my $value = "x" x tr/a/b/;'),
+              ("scalar", 'my $n = 3; my $value = "x" x $n;'),
+              ("array", 'my @n = (3); my @value = "x" x @n;'),
+              ("hash", 'my %n = (n => 3); my $value = "x" x %n;'),
+              ("paren", 'my $value = "x" x (1 + 2);'),
+              ("arrayref", 'my $value = "x" x [3];'),
+              ("hashref", 'my $value = "x" x { n => 3 };'),
+              ("undef", 'my $value = "x" x undef;'),
+              ("do_block", 'my $value = "x" x do { 3 };'),
+              ("eval_block", 'my $value = "x" x eval { 3 };'),
+              ("eval_string", 'my $value = "x" x eval "3";'),
+              ("anonymous_sub", 'my $value = "x" x sub { 3 };'),
+              ("identifier_call", 'sub width { 3 } my $value = "x" x width();'),
+              ("unary_plus", 'my $value = "x" x +3;'),
+              ("unary_minus", 'my $value = "x" x -3;'),
+              ("logical_not", 'my $value = "x" x !0;'),
+              ("word_not", 'my $value = "x" x not 0;'),
+              ("bitwise_not", 'my $value = "x" x ~0;'),
+              ("reference", 'my $value = "x" x \\3;'),
+              ("preincrement", 'my $n = 2; my $value = "x" x ++$n;'),
+              ("predecrement", 'my $n = 4; my $value = "x" x --$n;'),
+              ("diamond", 'my $value = "x" x <>;'),
+              ("readline_handle", 'my $value = "x" x <STDIN>;'),
+              ("glob", 'my @value = "x" x <*.pm>;'),
+              ("heredoc", 'my $value = "x" x <<\'END\';\n3\nEND\n'),
+              ("ellipsis", 'my $value = "x" x ...;'),
+              ("magic_line", 'my $value = "x" x __LINE__;'),
+              ("magic_file", 'my $value = "x" x __FILE__;'),
+              ("magic_package", 'my $value = "x" x __PACKAGE__;'),
+              ("fat_arrow_key", 'sub configure; configure x => 3;'),
+              ("hash_key", 'my %h = (x => 3);'),
+              ("method_name", 'my $obj; $obj->x(3);'),
+              ("package_call", 'Pkg::x(3);'),
+              ("hash_subscript", 'my %h; my $value = $h{x};'),
+              ("direct_call", 'sub x { 3 } my $value = x();'),
+              ("missing_rhs", 'my $value = "x" x;'),
+          ]
+
+          with tempfile.TemporaryDirectory() as temp:
+              root = pathlib.Path(temp)
+              print("label\tperl_ok\tdiagnostic")
+              for label, source in cases:
+                  path = root / f"{label}.pl"
+                  path.write_text(source, encoding="utf-8")
+                  result = subprocess.run(
+                      ["perl", "-c", str(path)],
+                      text=True,
+                      stdout=subprocess.PIPE,
+                      stderr=subprocess.PIPE,
+                      check=False,
+                  )
+                  diagnostic = " ".join(result.stderr.strip().splitlines())
+                  print(f"{label}\t{str(result.returncode == 0).lower()}\t{diagnostic}")
+          PY
+
+      - name: Classify the same matrix with perl-parser-core
+        shell: bash
+        run: |
+          cat > crates/perl-parser-core/tests/binary_repetition_rhs_inventory.rs <<'RS'
+          use perl_parser_core::{Node, NodeKind, Parser};
+
+          fn contains_string_repetition(node: &Node) -> bool {
+              matches!(&node.kind, NodeKind::Binary { op, .. } if op == "x")
+                  || node.children().into_iter().any(contains_string_repetition)
+          }
+
+          #[test]
+          fn inventory_binary_repetition_rhs_terms_and_ambiguities() {
+              let cases = [
+                  ("number", r##"my $value = "x" x 3;"##),
+                  ("vstring", r##"my $value = "x" x v1.2.3;"##),
+                  ("string", r##"my $value = "x" x "3";"##),
+                  ("single_quote", r##"my $value = "x" x q{3};"##),
+                  ("double_quote", r##"my $value = "x" x qq{3};"##),
+                  ("quote_words", r##"my @value = "x" x qw(3 4);"##),
+                  ("quote_command", r##"my $value = "x" x qx{printf 3};"##),
+                  ("regex_slash", r##"my $value = "x" x /3/;"##),
+                  ("regex_m", r##"my $value = "x" x m{3};"##),
+                  ("regex_qr", r##"my $value = "x" x qr{3};"##),
+                  ("substitution", r##"my $value = "x" x s/a/b/;"##),
+                  ("transliteration", r##"my $value = "x" x tr/a/b/;"##),
+                  ("scalar", r##"my $n = 3; my $value = "x" x $n;"##),
+                  ("array", r##"my @n = (3); my @value = "x" x @n;"##),
+                  ("hash", r##"my %n = (n => 3); my $value = "x" x %n;"##),
+                  ("paren", r##"my $value = "x" x (1 + 2);"##),
+                  ("arrayref", r##"my $value = "x" x [3];"##),
+                  ("hashref", r##"my $value = "x" x { n => 3 };"##),
+                  ("undef", r##"my $value = "x" x undef;"##),
+                  ("do_block", r##"my $value = "x" x do { 3 };"##),
+                  ("eval_block", r##"my $value = "x" x eval { 3 };"##),
+                  ("eval_string", r##"my $value = "x" x eval "3";"##),
+                  ("anonymous_sub", r##"my $value = "x" x sub { 3 };"##),
+                  ("identifier_call", r##"sub width { 3 } my $value = "x" x width();"##),
+                  ("unary_plus", r##"my $value = "x" x +3;"##),
+                  ("unary_minus", r##"my $value = "x" x -3;"##),
+                  ("logical_not", r##"my $value = "x" x !0;"##),
+                  ("word_not", r##"my $value = "x" x not 0;"##),
+                  ("bitwise_not", r##"my $value = "x" x ~0;"##),
+                  ("reference", r##"my $value = "x" x \3;"##),
+                  ("preincrement", r##"my $n = 2; my $value = "x" x ++$n;"##),
+                  ("predecrement", r##"my $n = 4; my $value = "x" x --$n;"##),
+                  ("diamond", r##"my $value = "x" x <>;"##),
+                  ("readline_handle", r##"my $value = "x" x <STDIN>;"##),
+                  ("glob", r##"my @value = "x" x <*.pm>;"##),
+                  ("heredoc", "my $value = \"x\" x <<'END';\n3\nEND\n"),
+                  ("ellipsis", r##"my $value = "x" x ...;"##),
+                  ("magic_line", r##"my $value = "x" x __LINE__;"##),
+                  ("magic_file", r##"my $value = "x" x __FILE__;"##),
+                  ("magic_package", r##"my $value = "x" x __PACKAGE__;"##),
+                  ("fat_arrow_key", r##"sub configure; configure x => 3;"##),
+                  ("hash_key", r##"my %h = (x => 3);"##),
+                  ("method_name", r##"my $obj; $obj->x(3);"##),
+                  ("package_call", r##"Pkg::x(3);"##),
+                  ("hash_subscript", r##"my %h; my $value = $h{x};"##),
+                  ("direct_call", r##"sub x { 3 } my $value = x();"##),
+                  ("missing_rhs", r##"my $value = "x" x;"##),
+              ];
+
+              println!("label\tparse_ok\tclean\tbinary_x\tdiagnostics");
+              for (label, source) in cases {
+                  let mut parser = Parser::new(source);
+                  match parser.parse() {
+                      Ok(ast) => {
+                          let diagnostics = parser.errors().len();
+                          println!(
+                              "{label}\ttrue\t{}\t{}\t{diagnostics}",
+                              diagnostics == 0,
+                              contains_string_repetition(&ast),
+                          );
+                      }
+                      Err(error) => {
+                          println!("{label}\tfalse\tfalse\tfalse\t{error}");
+                      }
+                  }
+              }
+          }
+          RS
+          cargo test --locked -p perl-parser-core --test binary_repetition_rhs_inventory -- --nocapture \
+            2>&1 | tee parser-matrix.log
+
+      - name: Upload matrix receipts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: binary-repetition-rhs-matrix-${{ github.sha }}
+          path: |
+            perl-matrix.tsv
+            parser-matrix.log
+          if-no-files-found: error
+          retention-days: 14
