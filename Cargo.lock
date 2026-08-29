@@ -1971,6 +1971,7 @@ dependencies = [
  "anyhow",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "tracing",
  "url",
