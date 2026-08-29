@@ -20,7 +20,7 @@ impl<'a> Parser<'a> {
         }
         // In non-stmt-start context for print/etc., only allow the unambiguous forms:
         // 1. `{ $fh }` block-form filehandle
-        // 2. `$var $something` (two sigiled tokens, no comma) — indirect $fh
+        // 2. `$var $something` (two consecutive sigiled tokens, no comma) — indirect $fh
         if !self.at_stmt_start && is_filehandle_builtin {
             // Clone the needed info to avoid multiple borrows of self.tokens.
             let next_kind = self.tokens.peek_second().ok().map(|t| t.kind());
@@ -37,14 +37,17 @@ impl<'a> Parser<'a> {
                         }
                 // Form 2: variable filehandle `print $fh $msg` (no comma after $fh)
                 if next_text.as_deref().unwrap_or("").starts_with('$') {
-                    // If next-next starts with $ or @ or is a string, it's likely
-                    // `print $fh $msg` — no comma between filehandle and message.
-                    // A comma means it's a regular `print $var, $other` list.
+                    // If next-next starts with a sigil or string, or is a numeric term
+                    // accepted by an output builtin, it is likely `print $fh EXPR`.
+                    // A comma means it is a regular `print $var, $other` list.
                     if third_kind != Some(TokenKind::Comma)
                         && let Some(ref txt) = third_text
                             && (txt.starts_with('$')
                                 || txt.starts_with('@')
-                                || third_kind == Some(TokenKind::String))
+                                || txt.starts_with('%')
+                                || third_kind == Some(TokenKind::String)
+                                || (third_kind == Some(TokenKind::Number)
+                                    && matches!(name, "print" | "printf" | "say")))
                             {
                                 return true;
                             }
@@ -135,7 +138,9 @@ impl<'a> Parser<'a> {
                         third.kind(),
                         TokenKind::String       // print $fh "x"
                         | TokenKind::LeftParen    // print $fh ($x)
-                    ) || third_text.starts_with('$')    // print $fh $x
+                    ) || (third.kind() == TokenKind::Number
+                        && matches!(name, "print" | "printf" | "say")) // print $fh 1
+                      || third_text.starts_with('$')    // print $fh $x
                       || third_text.starts_with('@')    // print $fh @array
                       || third_text.starts_with('%'); // print $fh %hash
                 }
@@ -208,6 +213,48 @@ impl<'a> Parser<'a> {
         }
 
         false
+    }
+
+    /// Check the expression-context form of a scalar-filehandle output call.
+    ///
+    /// At this point in `parse_postfix_chain`, the builtin name has already been
+    /// parsed and the current token is the prospective filehandle. Keep the
+    /// admission deliberately narrow so the generic expression parser does not
+    /// consume `$fh %hash` as a modulo expression before the indirect-call route
+    /// can see it.
+    fn is_expression_scalar_filehandle_pattern(&mut self, name: &str) -> bool {
+        if !matches!(name, "print" | "printf" | "say") {
+            return false;
+        }
+
+        let Some(filehandle) = self.tokens.peek().ok() else {
+            return false;
+        };
+        if !filehandle.text.starts_with('$') || filehandle.text.len() <= 1 {
+            return false;
+        }
+
+        let Some(argument) = self.tokens.peek_second().ok() else {
+            return false;
+        };
+        if matches!(
+            argument.kind(),
+            TokenKind::Comma
+                | TokenKind::FatArrow
+                | TokenKind::RightParen
+                | TokenKind::RightBrace
+                | TokenKind::RightBracket
+                | TokenKind::Eof
+        ) {
+            return false;
+        }
+
+        argument.kind() == TokenKind::String
+            || argument.kind() == TokenKind::LeftParen
+            || argument.kind() == TokenKind::Number
+            || argument.text.starts_with('$')
+            || argument.text.starts_with('@')
+            || argument.text.starts_with('%')
     }
 
     /// Statement-start unknown lowercase bareword followed by sigiled arguments.
