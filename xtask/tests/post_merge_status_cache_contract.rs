@@ -21,7 +21,7 @@ fn status_generator_keeps_target_artifacts_out_of_the_shared_cache()
         .and_then(Value::as_mapping)
         .ok_or("post-merge-status.yml must declare jobs")?;
 
-    let exact_generator_command = "cargo run -p xtask -- update-status --write";
+    let exact_generator_command = "cargo run --locked -p xtask -- update-status --write";
     let generator_jobs: Vec<_> = jobs
         .iter()
         .filter(|(_, job)| {
