@@ -1,8 +1,8 @@
-//! Exact native-parser proof for the remaining ordinary corpus NodeKind gaps (#13655).
+//! Exact native-parser proof for the existing long-tail NodeKind corpus fixture (#13655).
 //!
-//! The broad corpus audit is reachability evidence, not parser-accuracy gold. This
-//! focused test prevents the new fixture from satisfying that reachability count
-//! through a different nearby node shape.
+//! The broad corpus audit already proves reachability and parent-context diversity.
+//! This focused test binds that evidence to the intended source spans and payloads
+//! so a nearby node cannot preserve the aggregate count accidentally.
 
 use perl_parser::{Node, NodeKind, Parser};
 use std::fs;
@@ -11,9 +11,9 @@ use std::path::{Path, PathBuf};
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 #[test]
-fn long_tail_fixture_is_discovered_and_emits_exact_nodekinds() -> TestResult {
+fn existing_long_tail_fixture_is_discovered_and_emits_exact_nodekinds() -> TestResult {
     let workspace_root = fs::canonicalize(workspace_root())?;
-    let fixture_path = workspace_root.join("test_corpus/nodekind_long_tail.pl");
+    let fixture_path = workspace_root.join("test_corpus/key_value_slice_and_vstring.pl");
     let source = fs::read_to_string(&fixture_path)?;
     let corpus_paths = perl_corpus::files::CorpusPaths::from_root(workspace_root);
 
@@ -30,37 +30,44 @@ fn long_tail_fixture_is_discovered_and_emits_exact_nodekinds() -> TestResult {
         output.diagnostics.len()
     );
 
-    assert!(
-        contains_key_value_slice(&output.ast, &source),
-        "the fixture must emit KeyValueSlice for `%pairs{{qw(alpha beta)}}`"
-    );
-    assert!(contains_vstring(&output.ast, &source), "the fixture must emit VString for `v1.2.3`");
+    for expected_span in ["%config{qw(host port)}", "%config{qw(user)}"] {
+        assert!(
+            contains_key_value_slice(&output.ast, &source, expected_span),
+            "the fixture must emit KeyValueSlice for `{expected_span}`"
+        );
+    }
+    for expected_value in ["v65.66.67", "v76.111.111"] {
+        assert!(
+            contains_vstring(&output.ast, &source, expected_value),
+            "the fixture must emit VString for `{expected_value}`"
+        );
+    }
 
     Ok(())
 }
 
-fn contains_key_value_slice(node: &Node, source: &str) -> bool {
+fn contains_key_value_slice(node: &Node, source: &str, expected_span: &str) -> bool {
     if let NodeKind::KeyValueSlice { target, .. } = &node.kind
         && matches!(
             &target.kind,
-            NodeKind::Variable { sigil, name } if sigil == "%" && name == "pairs"
+            NodeKind::Variable { sigil, name } if sigil == "%" && name == "config"
         )
-        && node_source(node, source) == Some("%pairs{qw(alpha beta)}")
+        && node_source(node, source) == Some(expected_span)
     {
         return true;
     }
 
-    any_child(node, |child| contains_key_value_slice(child, source))
+    any_child(node, |child| contains_key_value_slice(child, source, expected_span))
 }
 
-fn contains_vstring(node: &Node, source: &str) -> bool {
-    if matches!(&node.kind, NodeKind::VString { value } if value == "v1.2.3")
-        && node_source(node, source) == Some("v1.2.3")
+fn contains_vstring(node: &Node, source: &str, expected_value: &str) -> bool {
+    if matches!(&node.kind, NodeKind::VString { value } if value == expected_value)
+        && node_source(node, source) == Some(expected_value)
     {
         return true;
     }
 
-    any_child(node, |child| contains_vstring(child, source))
+    any_child(node, |child| contains_vstring(child, source, expected_value))
 }
 
 fn any_child(node: &Node, mut predicate: impl FnMut(&Node) -> bool) -> bool {
