@@ -38,7 +38,17 @@ compatibility_apis = ["index_file", "index_file_str", "index_file_with_generatio
 # duplicate #11940 @ 254f0e214): the document_access gen-0 builder fixture
 # dropped one .index_file_with_generation(...) call; the scorecard coordinator
 # re-seed added a canonical index_live_file caller identity (not counted).
-compatibility_baseline = 696
+# Growth 696 -> 701 by #12652 (best matched key per row, #10645, branch
+# agent/10645-best-matched-key-retention): five new .index_file() call sites,
+# all negative-control tests in
+# crates/perl-workspace/src/workspace/workspace_index.rs, attributed per site:
+#   ws_best_bare_exact_survives_qualified_substring_across_hash_seeds (+2)
+#   ws_best_identical_spelling_double_push_is_not_multikey (+1)
+#   ws_best_document_replacement_retires_old_keys (+2)
+# Sites inherit the existing crates/perl-workspace/src [[owner]] block
+# (successor index_initial_file / index_initial_files_batch). Checker-
+# equivalent count at head f8ef28ef8 = 701 (merge-base 8aaadee46 = 696).
+compatibility_baseline = 701
 
 # Structural recurrence control (#11305): files under these prefixes must
 # never call compatibility source APIs at all -- live commits go through

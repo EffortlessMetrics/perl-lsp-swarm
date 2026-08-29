@@ -104,8 +104,10 @@ pub use crate::workspace::monitoring::{
     IndexStateKind, IndexStateTransition, ResourceKind,
 };
 use crate::workspace_symbol_query::{
-    WorkspaceSymbolMatchTier, WorkspaceSymbolQueryProfile, WorkspaceSymbolSearchKeyRole,
-    legacy_index_match_rank, match_searchable_key,
+    BestRowMatchAccumulator, BestWorkspaceSymbolRowMatch, WorkspaceSymbolBestKeyReceipt,
+    WorkspaceSymbolBestKeyReceiptBuilder, WorkspaceSymbolMatchTier, WorkspaceSymbolQueryProfile,
+    WorkspaceSymbolSearchKeyRole, legacy_index_match_rank, match_searchable_key,
+    select_best_row_match,
 };
 pub use perl_symbol::MIN_LOOSE_MATCH_QUERY_CHARS;
 use perl_symbol::surface::decl::extract_symbol_decls;
@@ -1097,6 +1099,42 @@ pub struct WorkspaceSymbol {
 
 fn default_has_body() -> bool {
     true
+}
+
+/// One matched canonical retained workspace-symbol row with its winning typed
+/// evidence (#10645).
+///
+/// The row payload stays index-owned; the evidence is the transport-neutral
+/// handoff the final cross-row composer (#10642) consumes. Match affinity
+/// never becomes entity identity, resolution authority, or edit authority.
+#[derive(Debug, Clone)]
+pub struct RankedWorkspaceSymbolMatch {
+    /// The retained row payload as stored in the index.
+    pub symbol: WorkspaceSymbol,
+    /// Winning per-key evidence under the request's profile generation.
+    pub best_match: BestWorkspaceSymbolRowMatch,
+}
+
+/// Total deterministic order over retained rows: every payload field
+/// participates, so map construction, insertion order, and hash seed cannot
+/// influence result order (#10645).
+fn compare_workspace_symbols_total(a: &WorkspaceSymbol, b: &WorkspaceSymbol) -> std::cmp::Ordering {
+    a.name
+        .cmp(&b.name)
+        .then_with(|| a.qualified_name.cmp(&b.qualified_name))
+        .then_with(|| a.container_name.cmp(&b.container_name))
+        .then_with(|| a.documentation.cmp(&b.documentation))
+        .then_with(|| a.uri.cmp(&b.uri))
+        .then_with(|| a.range.start.byte.cmp(&b.range.start.byte))
+        .then_with(|| a.range.start.line.cmp(&b.range.start.line))
+        .then_with(|| a.range.start.column.cmp(&b.range.start.column))
+        .then_with(|| a.range.end.byte.cmp(&b.range.end.byte))
+        .then_with(|| a.range.end.line.cmp(&b.range.end.line))
+        .then_with(|| a.range.end.column.cmp(&b.range.end.column))
+        .then_with(|| a.kind.to_lsp_kind().cmp(&b.kind.to_lsp_kind()))
+        .then_with(|| a.workspace_folder_uri.cmp(&b.workspace_folder_uri))
+        .then_with(|| a.has_body.cmp(&b.has_body))
+        .then_with(|| a.is_lexical.cmp(&b.is_lexical))
 }
 
 // Re-export the unified symbol types from perl-symbol
@@ -4149,8 +4187,10 @@ impl WorkspaceIndex {
     /// but distinct Perl packages (`Foo::Bar` vs `foo::bar`) remain separate
     /// index buckets and do not cross-match. (#5016)
     /// A symbol that is stored under both its bare name key and its qualified
-    /// name key is deduplicated by `(uri, start_byte)` so each `WorkspaceSymbol`
-    /// appears at most once in the result.
+    /// name key appears exactly once in the result. (#10645) Every admitted
+    /// key of a row is evaluated before the row materializes, and the row
+    /// retains its strongest deterministic match evidence instead of whichever
+    /// key `HashMap` iteration visited first.
     ///
     /// Queries shorter than [`MIN_LOOSE_MATCH_QUERY_CHARS`] characters match
     /// only by exact name or prefix; the substring and subsequence tiers are
@@ -4164,28 +4204,127 @@ impl WorkspaceIndex {
     /// [`WorkspaceSymbolQueryProfile`] (#10794).
     ///
     /// One logical request compiles its query once and passes the same
-    /// profile/digest through every matching path. Admission and tiers are
-    /// owned by [`match_searchable_key`]; this method owns only iteration,
-    /// `(uri, start_byte)` dedup, and the legacy rank/name aggregation order.
+    /// profile/digest through every matching path. Admission is owned by
+    /// [`match_searchable_key`]; per-row best-key aggregation is owned by
+    /// [`BestRowMatchAccumulator`] (#10645). This method owns only iteration,
+    /// whole-payload row grouping, and the legacy rank/name aggregation order.
     pub fn search_source_symbols_with_profile(
         &self,
         profile: &WorkspaceSymbolQueryProfile,
         cap: Option<usize>,
     ) -> Vec<WorkspaceSymbol> {
+        self.search_source_symbols_ranked_with_profile(profile, cap)
+            .into_iter()
+            .map(|matched| matched.symbol)
+            .collect()
+    }
+
+    /// [`Self::search_source_symbols_with_profile`] keeping each retained
+    /// row's winning typed match evidence (#10645).
+    ///
+    /// The transport-neutral handoff for the final cross-row composer
+    /// (#10642): one row plus one [`BestWorkspaceSymbolRowMatch`] carrying the
+    /// winning key identity/role/tier/positions and the originating profile
+    /// version/digest. No cross-row deduplication, ranking beyond the legacy
+    /// order, or budgeting happens here.
+    pub fn search_source_symbols_ranked_with_profile(
+        &self,
+        profile: &WorkspaceSymbolQueryProfile,
+        cap: Option<usize>,
+    ) -> Vec<RankedWorkspaceSymbolMatch> {
+        self.search_source_symbols_ranked_with_receipt(profile, cap).0
+    }
+
+    /// Aggregates every admitted searchable key per row before materializing
+    /// rows, retaining the strongest deterministic evidence (#10645).
+    ///
+    /// Replacement contract for the former first-key/`(uri, start_byte)`
+    /// dedup:
+    ///
+    /// - every unique name key is admitted once through
+    ///   [`match_searchable_key`]; key iteration order carries no semantics;
+    /// - an admitted key contributes evidence to a row at most once:
+    ///   declarations whose bare and qualified spellings are identical
+    ///   (packages, labels) are pushed twice into one bucket by index
+    ///   construction, and whole-payload row identity collapses that
+    ///   index-internal duplicate before accumulation, so row counters stay
+    ///   consistent with the distinct matching-key count;
+    /// - matched bucket entries group by whole-payload value identity — the
+    ///   strictest duplicate detection available in this index — so distinct
+    ///   projections sharing one `(uri, start_byte)` anchor stay distinct
+    ///   while true index-internal clones still collapse;
+    /// - each row accumulates its evidence through
+    ///   [`BestRowMatchAccumulator`], which refuses foreign-profile evidence;
+    /// - rows whose every key returns `None` stay absent;
+    /// - output ordering is a total order over rank + all payload fields, so
+    ///   map construction, insertion order, and hash seed cannot change it;
+    /// - the request cap applies only after per-row selection.
+    ///
+    /// Returns the ranked matches with bounded work counters. Counters that
+    /// this path does not instrument stay `not_proven` (`None`), never zero.
+    pub fn search_source_symbols_ranked_with_receipt(
+        &self,
+        profile: &WorkspaceSymbolQueryProfile,
+        cap: Option<usize>,
+    ) -> (Vec<RankedWorkspaceSymbolMatch>, WorkspaceSymbolBestKeyReceipt) {
+        // Lock order: always acquire `symbols` before `search_index`.
         let search_idx = self.search_index.read();
-        let mut seen: HashSet<(String, usize)> = HashSet::new();
-        // Collect results with a relevance score for ranking. (#5087)
-        // Match priority: exact > substring/prefix > subsequence (fuzzy).
-        //
-        // An empty query still lists everything: the browse disposition of the
-        // profile admits every key at the prefix slot -- the same set, and the
-        // same score, that `contains("")` produced before. That is the desired
-        // "list everything" behavior for an empty `workspace/symbol` query.
-        let mut scored: Vec<(u8, WorkspaceSymbol)> = Vec::new();
-        for (name_key, symbols) in search_idx.iter() {
-            // Admission/tier policy is owned by the compiled query profile;
-            // comparison stays case-insensitive here so distinct Perl packages
-            // remain separate index buckets that do not cross-match.
+        let mut receipt = WorkspaceSymbolBestKeyReceiptBuilder::default();
+
+        // Whole-payload value identity for index-internal duplicate detection.
+        // This never serves as semantic entity identity: it groups only exact
+        // clones of one indexed declaration that appear under several search
+        // keys, and it collapses strictly fewer rows than the former
+        // `(uri, start_byte)` geometry key. (Tuple arity stays ≤ 12 so the
+        // standard-library Hash/Eq impls apply.)
+        type RowValueKey<'a> = (
+            &'a str,
+            std::mem::Discriminant<SymbolKind>,
+            &'a str,
+            (usize, u32, u32, usize, u32, u32),
+            Option<&'a str>,
+            Option<&'a str>,
+            Option<&'a str>,
+            bool,
+            Option<&'a str>,
+            bool,
+        );
+        fn row_value_key(sym: &WorkspaceSymbol) -> RowValueKey<'_> {
+            (
+                sym.name.as_str(),
+                std::mem::discriminant(&sym.kind),
+                sym.uri.as_str(),
+                (
+                    sym.range.start.byte,
+                    sym.range.start.line,
+                    sym.range.start.column,
+                    sym.range.end.byte,
+                    sym.range.end.line,
+                    sym.range.end.column,
+                ),
+                sym.qualified_name.as_deref(),
+                sym.documentation.as_deref(),
+                sym.container_name.as_deref(),
+                sym.has_body,
+                sym.workspace_folder_uri.as_deref(),
+                sym.is_lexical,
+            )
+        }
+
+        // One pass — admit every unique name key and immediately group its
+        // matched bucket entries per row. No row materializes inside the loop:
+        // rows buffer here and materialize only after every admitted key was
+        // examined. An empty query still lists everything: the browse
+        // disposition admits every key at the prefix slot, exactly as before
+        // (#10794).
+        let mut rows: HashMap<RowValueKey<'_>, usize> = HashMap::new();
+        let mut payloads: Vec<WorkspaceSymbol> = Vec::new();
+        let mut accumulators: Vec<BestRowMatchAccumulator> = Vec::new();
+        for (name_key, bucket) in search_idx.iter() {
+            receipt.record_key_examined();
+            // Comparison stays case-insensitive inside the matcher so distinct
+            // Perl packages remain separate index buckets that do not
+            // cross-match. (#5016)
             let key_role = if name_key.contains("::") || name_key.contains('\'') {
                 WorkspaceSymbolSearchKeyRole::QualifiedName
             } else {
@@ -4194,17 +4333,55 @@ impl WorkspaceIndex {
             let Some(evidence) = match_searchable_key(profile, name_key, key_role) else {
                 continue;
             };
-            let score = legacy_index_match_rank(evidence.tier());
-            for sym in symbols {
-                let dedup_key = (sym.uri.clone(), sym.range.start.byte);
-                if seen.insert(dedup_key) {
-                    scored.push((score, sym.clone()));
+            receipt.record_matching_key();
+            // Row slots already given this key's evidence: index construction
+            // stores one declaration under identical bare/qualified spellings,
+            // so one bucket can hold whole-payload clones of the same row.
+            let mut considered_in_bucket: HashSet<usize> = HashSet::new();
+            for sym in bucket {
+                let slot = match rows.entry(row_value_key(sym)) {
+                    std::collections::hash_map::Entry::Occupied(occupied) => *occupied.get(),
+                    std::collections::hash_map::Entry::Vacant(vacant) => {
+                        vacant.insert(payloads.len());
+                        payloads.push(sym.clone());
+                        accumulators.push(BestRowMatchAccumulator::for_profile(profile));
+                        payloads.len() - 1
+                    }
+                };
+                if !considered_in_bucket.insert(slot) {
+                    continue;
                 }
+                let update = accumulators[slot].consider(&evidence);
+                receipt.record_update(update);
             }
         }
-        // Sort by relevance (descending), then by name for stable ordering.
-        scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.name.cmp(&b.1.name)));
-        scored.into_iter().map(|(_, s)| s).take(cap.unwrap_or(usize::MAX)).collect()
+        for accumulator in &accumulators {
+            let considered = accumulator.considered_match_count();
+            receipt.record_row(considered.saturating_sub(1));
+        }
+
+        // Materialize only after every admitted key of every row was examined.
+        let mut ranked: Vec<(u8, RankedWorkspaceSymbolMatch)> =
+            Vec::with_capacity(accumulators.len());
+        for (symbol, accumulator) in payloads.into_iter().zip(accumulators) {
+            // Unreachable in practice: rows exist only because an admitted key
+            // contributed evidence; a refusal-only row must not materialize.
+            if let Some(best_match) = accumulator.into_best_match() {
+                let rank = legacy_index_match_rank(best_match.winning_evidence().tier());
+                ranked.push((rank, RankedWorkspaceSymbolMatch { symbol, best_match }));
+            }
+        }
+
+        // Sort by relevance (descending), then a total payload order so map
+        // construction, insertion order, and hash seed cannot affect output.
+        ranked.sort_by(|a, b| {
+            b.0.cmp(&a.0).then_with(|| compare_workspace_symbols_total(&a.1.symbol, &b.1.symbol))
+        });
+
+        let take = cap.unwrap_or(usize::MAX);
+        receipt.record_rows_materialized(ranked.len().min(take) as u64);
+        let matches = ranked.into_iter().map(|(_, matched)| matched).take(take).collect();
+        (matches, receipt.finish())
     }
 
     /// Search labeled generated/framework members backed by semantic source anchors.
@@ -4238,6 +4415,26 @@ impl WorkspaceIndex {
         profile: &WorkspaceSymbolQueryProfile,
         cap: Option<usize>,
     ) -> Vec<WorkspaceSymbol> {
+        self.search_generated_workspace_symbols_ranked_with_profile(profile, cap)
+            .into_iter()
+            .map(|matched| matched.symbol)
+            .collect()
+    }
+
+    /// [`Self::search_generated_workspace_symbols_with_profile`] keeping each
+    /// retained row's winning typed match evidence (#10645).
+    ///
+    /// Both projection keys of one generated row (bare member name and
+    /// canonical qualified name) compete through one best-key selection; the
+    /// subsequence rejection that preserves this path's historical membership
+    /// applies to the winning tier, which is non-subsequence exactly when some
+    /// key admitted non-subsequence evidence. Ordering and cap behavior are
+    /// unchanged.
+    pub fn search_generated_workspace_symbols_ranked_with_profile(
+        &self,
+        profile: &WorkspaceSymbolQueryProfile,
+        cap: Option<usize>,
+    ) -> Vec<RankedWorkspaceSymbolMatch> {
         if profile.is_browse() {
             return Vec::new();
         }
@@ -4250,7 +4447,7 @@ impl WorkspaceIndex {
         // preserves this path's contains/starts_with-only membership.
         let source_backed_qualified_names = self.source_backed_qualified_names();
         let shards = self.fact_shards.read();
-        let mut results = Vec::new();
+        let mut results: Vec<RankedWorkspaceSymbolMatch> = Vec::new();
 
         'outer: for shard in shards.values() {
             for entity in &shard.entities {
@@ -4268,19 +4465,20 @@ impl WorkspaceIndex {
                 else {
                     continue;
                 };
-                let admits = |candidate: &str| -> bool {
-                    match_searchable_key(
-                        profile,
-                        candidate,
+                let candidate_keys = [
+                    (bare_name, WorkspaceSymbolSearchKeyRole::GeneratedFrameworkProjection),
+                    (
+                        entity.canonical_name.as_str(),
                         WorkspaceSymbolSearchKeyRole::GeneratedFrameworkProjection,
-                    )
-                    .is_some_and(|evidence| {
-                        evidence.tier() != WorkspaceSymbolMatchTier::Subsequence
+                    ),
+                ];
+                let Some(best_match) =
+                    select_best_row_match(profile, &candidate_keys).filter(|best| {
+                        best.winning_evidence().tier() != WorkspaceSymbolMatchTier::Subsequence
                     })
-                };
-                if !admits(bare_name) && !admits(&entity.canonical_name) {
+                else {
                     continue;
-                }
+                };
                 let Some(anchor_id) = entity.anchor_id else {
                     continue;
                 };
@@ -4288,20 +4486,23 @@ impl WorkspaceIndex {
                     continue;
                 };
 
-                results.push(WorkspaceSymbol {
-                    name: format!("{bare_name} [generated/framework]"),
-                    kind: SymbolKind::Method,
-                    uri: shard.source_uri.clone(),
-                    range,
-                    qualified_name: Some(entity.canonical_name.clone()),
-                    documentation: Some(
-                        "Generated/framework member; virtual symbol anchored to source declaration"
-                            .to_string(),
-                    ),
-                    container_name: Some(format!("{container_name} [generated/framework]")),
-                    has_body: false,
-                    workspace_folder_uri: self.determine_folder_uri(&shard.source_uri),
-                    is_lexical: false,
+                results.push(RankedWorkspaceSymbolMatch {
+                    symbol: WorkspaceSymbol {
+                        name: format!("{bare_name} [generated/framework]"),
+                        kind: SymbolKind::Method,
+                        uri: shard.source_uri.clone(),
+                        range,
+                        qualified_name: Some(entity.canonical_name.clone()),
+                        documentation: Some(
+                            "Generated/framework member; virtual symbol anchored to source declaration"
+                                .to_string(),
+                        ),
+                        container_name: Some(format!("{container_name} [generated/framework]")),
+                        has_body: false,
+                        workspace_folder_uri: self.determine_folder_uri(&shard.source_uri),
+                        is_lexical: false,
+                    },
+                    best_match,
                 });
                 if cap.is_some_and(|c| results.len() >= c) {
                     break 'outer;
@@ -4309,7 +4510,18 @@ impl WorkspaceIndex {
             }
         }
 
-        sort_workspace_symbols(&mut results);
+        // Same ordering contract as `sort_workspace_symbols`, applied to the
+        // row payloads so ranked output order is identical to before (#10645).
+        results.sort_by(|left, right| {
+            let (left, right) = (&left.symbol, &right.symbol);
+            left.name
+                .cmp(&right.name)
+                .then_with(|| left.uri.cmp(&right.uri))
+                .then_with(|| left.range.start.line.cmp(&right.range.start.line))
+                .then_with(|| left.range.start.column.cmp(&right.range.start.column))
+                .then_with(|| left.range.end.line.cmp(&right.range.end.line))
+                .then_with(|| left.range.end.column.cmp(&right.range.end.column))
+        });
         results
     }
 
@@ -12529,6 +12741,370 @@ mod entity_id_file_scoped_tests {
             vec![Some("file:///repo/svc-a"), Some("file:///repo/svc-b")],
             "same-name workspace symbols must preserve both workspace folder owners"
         );
+    }
+
+    // ── #10645: per-row best matched key retention ──────────────────────────
+
+    /// Builds one crafted row for direct search-index seeding.
+    fn ws_row(
+        name: &str,
+        kind: SymbolKind,
+        uri: &str,
+        byte: usize,
+        qualified: Option<&str>,
+        container: Option<&str>,
+        folder: Option<&str>,
+    ) -> WorkspaceSymbol {
+        let start = Position::new(byte, 1, byte as u32 + 1);
+        let end = Position::new(byte + 4, 1, byte as u32 + 5);
+        WorkspaceSymbol {
+            name: name.to_string(),
+            kind,
+            uri: uri.to_string(),
+            range: Range::new(start, end),
+            qualified_name: qualified.map(str::to_string),
+            documentation: None,
+            container_name: container.map(str::to_string),
+            has_body: true,
+            workspace_folder_uri: folder.map(str::to_string),
+            is_lexical: false,
+        }
+    }
+
+    /// Seeds crafted rows into `files` + `search_index` exactly as production
+    /// rebuild does, without going through source parsing.
+    fn seed_search_rows(index: &WorkspaceIndex, uri: &str, symbols: Vec<WorkspaceSymbol>) {
+        let key = DocumentStore::uri_key(uri);
+        let mut files = index.files.write();
+        files.insert(
+            key,
+            FileIndex {
+                source_uri: uri.to_string(),
+                content_hash: 0,
+                symbols,
+                ..Default::default()
+            },
+        );
+        let mut search_idx = index.search_index.write();
+        WorkspaceIndex::rebuild_search_index(&files, &mut search_idx);
+    }
+
+    /// Metamorphic invariant for the bare-exact-versus-qualified-substring
+    /// counterexample (#10645), exercised under fresh hash seeds.
+    ///
+    /// Each fixture pairs two rows whose bare keys match `run` exactly and
+    /// whose qualified keys only substring-match. Both rows must retain their
+    /// bare exact evidence under every map iteration order: equal rank,
+    /// ordered by name bytes, so the uncapped order and the cap-1 winner are
+    /// fixed. Pre-repair, whichever qualified bucket iterated first poisoned
+    /// its row to substring rank and flipped an observation with the hash
+    /// seed; each spawned thread reseeds `RandomState`. The two spellings
+    /// make each fixture's detectable poisoning direction different.
+    #[test]
+    fn ws_best_bare_exact_survives_qualified_substring_across_hash_seeds() {
+        for _ in 0..16 {
+            let handle = std::thread::spawn(|| {
+                for (first_name, second_name) in [("RUN", "Run"), ("run", "Run")] {
+                    let index = WorkspaceIndex::new();
+                    must(index.index_file(
+                        must(url::Url::parse("file:///lib/P.pm")),
+                        format!("package P;\nsub {first_name} {{ 1 }}\n1;\n"),
+                    ));
+                    must(index.index_file(
+                        must(url::Url::parse("file:///lib/Q.pm")),
+                        format!("package Q;\nsub {second_name} {{ 2 }}\n1;\n"),
+                    ));
+
+                    let expected: Vec<(&str, &str)> = if first_name < second_name {
+                        vec![(first_name, "file:///lib/P.pm"), (second_name, "file:///lib/Q.pm")]
+                    } else {
+                        vec![(second_name, "file:///lib/Q.pm"), (first_name, "file:///lib/P.pm")]
+                    };
+                    let uncapped = index.search_source_symbols("run", None);
+                    let identities: Vec<(&str, &str)> =
+                        uncapped.iter().map(|s| (s.name.as_str(), s.uri.as_str())).collect();
+                    assert_eq!(
+                        identities, expected,
+                        "both rows keep exact evidence regardless of hash seed"
+                    );
+
+                    let capped = index.search_source_symbols("run", Some(1));
+                    assert_eq!(
+                        capped.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
+                        vec![expected[0].0],
+                        "cap applies after per-row selection"
+                    );
+                }
+            });
+            must(handle.join());
+        }
+    }
+
+    /// The ranked handoff retains the bare exact evidence (winner) plus the
+    /// bounded weaker qualified alternative for the same row, with work
+    /// counters proving multiple matching keys were examined (#10645).
+    #[test]
+    fn ws_best_ranked_api_retains_bare_exact_evidence_for_qualified_row() {
+        let index = WorkspaceIndex::new();
+        seed_search_rows(
+            &index,
+            "file:///lib/P.pm",
+            vec![ws_row(
+                "run",
+                SymbolKind::Subroutine,
+                "file:///lib/P.pm",
+                20,
+                Some("P::run"),
+                Some("P"),
+                None,
+            )],
+        );
+
+        let profile = WorkspaceSymbolQueryProfile::compile("run");
+        let (matches, receipt) = index.search_source_symbols_ranked_with_receipt(&profile, None);
+        assert_eq!(matches.len(), 1);
+        let best = &matches[0].best_match;
+        assert_eq!(best.profile_version(), profile.version());
+        assert_eq!(best.profile_digest(), profile.digest());
+        assert_eq!(best.winning_evidence().searchable_key(), "run");
+        assert_eq!(
+            best.winning_evidence().tier(),
+            crate::workspace_symbol_query::WorkspaceSymbolMatchTier::Exact
+        );
+        assert_eq!(best.winning_evidence().key_role(), WorkspaceSymbolSearchKeyRole::BareName);
+        assert_eq!(
+            best.runner_up_evidence().map(|e| e.searchable_key()),
+            Some("P::run"),
+            "weaker qualified alias retained as bounded runner-up evidence"
+        );
+        assert_eq!(receipt.searchable_keys_examined, Some(2));
+        assert_eq!(receipt.matching_keys, Some(2));
+        assert_eq!(receipt.canonical_rows_matched, Some(1));
+        assert_eq!(receipt.rows_with_multiple_matching_keys, Some(1));
+        // Whether the stronger alias arrives first or last depends on hash
+        // iteration order; the counter is instrumented either way.
+        assert!(receipt.better_alias_replacements.is_some());
+        assert_eq!(receipt.rows_materialized, Some(1));
+        assert_eq!(receipt.geometry_dedup_attempts, Some(0));
+        assert_eq!(
+            receipt.stale_key_contributions_rejected, None,
+            "uninstrumented counters stay not_proven, never zero"
+        );
+    }
+
+    /// WS-BEST-002 at the seam: a row whose qualified key matches the
+    /// qualified query exactly and whose bare key only substring-matches
+    /// keeps the qualified exact winner.
+    #[test]
+    fn ws_best_qualified_exact_replaces_weaker_bare_prefix() {
+        let index = WorkspaceIndex::new();
+        seed_search_rows(
+            &index,
+            "file:///lib/Run.pm",
+            vec![ws_row(
+                "run",
+                SymbolKind::Subroutine,
+                "file:///lib/Run.pm",
+                20,
+                Some("Run::run"),
+                Some("Run"),
+                None,
+            )],
+        );
+
+        let profile = WorkspaceSymbolQueryProfile::compile("Run::run");
+        let matches = index.search_source_symbols_ranked_with_profile(&profile, None);
+        assert_eq!(matches.len(), 1);
+        let evidence = matches[0].best_match.winning_evidence();
+        assert_eq!(evidence.searchable_key(), "Run::run");
+        assert_eq!(evidence.tier(), crate::workspace_symbol_query::WorkspaceSymbolMatchTier::Exact);
+        assert_eq!(evidence.key_role(), WorkspaceSymbolSearchKeyRole::QualifiedName);
+    }
+
+    /// Review disposition (#10645 thread on bucket-level consistency): a
+    /// package declaration's bare and qualified spellings are identical, so
+    /// index construction pushes one clone twice into the same bucket. One
+    /// admitted key must contribute evidence to its row exactly once — the
+    /// receipt may not fabricate a multi-key row or an equal-evidence tie
+    /// from an index-internal duplicate.
+    #[test]
+    fn ws_best_identical_spelling_double_push_is_not_multikey() {
+        let index = WorkspaceIndex::new();
+        must(index.index_file(
+            must(url::Url::parse("file:///lib/Foo.pm")),
+            "package Foo;\n1;\n".to_string(),
+        ));
+
+        let profile = WorkspaceSymbolQueryProfile::compile("Foo");
+        let (matches, receipt) = index.search_source_symbols_ranked_with_receipt(&profile, None);
+        assert_eq!(matches.len(), 1);
+        let best = &matches[0].best_match;
+        assert_eq!(best.winning_evidence().searchable_key(), "Foo");
+        assert_eq!(receipt.searchable_keys_examined, Some(1));
+        assert_eq!(receipt.matching_keys, Some(1));
+        assert_eq!(receipt.canonical_rows_matched, Some(1));
+        assert_eq!(
+            receipt.rows_with_multiple_matching_keys,
+            Some(0),
+            "one map key admitted once is not multiple matching keys"
+        );
+        assert_eq!(
+            receipt.equal_evidence_ties,
+            Some(0),
+            "the same key's duplicate bucket entry must not fabricate a tie"
+        );
+        assert_eq!(receipt.better_alias_replacements, Some(0));
+    }
+
+    /// WS-BEST-006: two intentionally distinct projection rows sharing one
+    /// `(uri, start_byte)` anchor remain two rows; geometry coincidence may
+    /// neither merge them nor borrow evidence between them.
+    #[test]
+    fn ws_best_distinct_projection_rows_sharing_anchor_stay_distinct() {
+        let index = WorkspaceIndex::new();
+        seed_search_rows(
+            &index,
+            "file:///gen/Alias.pm",
+            vec![
+                ws_row("run", SymbolKind::Subroutine, "file:///gen/Alias.pm", 40, None, None, None),
+                ws_row(
+                    "generated_run",
+                    SymbolKind::Method,
+                    "file:///gen/Alias.pm",
+                    40,
+                    None,
+                    None,
+                    None,
+                ),
+            ],
+        );
+
+        // Browse admits every key; both rows must materialize despite
+        // identical geometry. The former first-key `(uri, start_byte)` dedup
+        // dropped the second row entirely.
+        let browse_profile = WorkspaceSymbolQueryProfile::compile("");
+        let browse_matches = index.search_source_symbols_ranked_with_profile(&browse_profile, None);
+        assert_eq!(browse_matches.len(), 2, "distinct projections stay distinct");
+        let query_profile = WorkspaceSymbolQueryProfile::compile("run");
+        let matches = index.search_source_symbols_ranked_with_profile(&query_profile, None);
+        let winners: Vec<&str> =
+            matches.iter().map(|m| m.best_match.winning_evidence().searchable_key()).collect();
+        assert_eq!(
+            winners,
+            vec!["run", "generated_run"],
+            "each row carries its own winning key; no evidence borrowed across geometry"
+        );
+    }
+
+    /// WS-BEST-007: identical name/range spellings under two root incarnations
+    /// stay separate rows with independent winning evidence.
+    #[test]
+    fn ws_best_same_looking_geometry_in_two_roots_keeps_both() {
+        let index = WorkspaceIndex::new();
+        seed_search_rows(
+            &index,
+            "file:///repo-a/lib/Svc.pm",
+            vec![ws_row(
+                "shared_action",
+                SymbolKind::Subroutine,
+                "file:///repo-a/lib/Svc.pm",
+                30,
+                Some("Svc::shared_action"),
+                Some("Svc"),
+                Some("file:///repo-a"),
+            )],
+        );
+        seed_search_rows(
+            &index,
+            "file:///repo-b/lib/Svc.pm",
+            vec![ws_row(
+                "shared_action",
+                SymbolKind::Subroutine,
+                "file:///repo-b/lib/Svc.pm",
+                30,
+                Some("Svc::shared_action"),
+                Some("Svc"),
+                Some("file:///repo-b"),
+            )],
+        );
+
+        let profile = WorkspaceSymbolQueryProfile::compile("shared_action");
+        let matches = index.search_source_symbols_ranked_with_profile(&profile, None);
+        assert_eq!(matches.len(), 2, "same-looking rows in different roots stay distinct");
+        let folders: Vec<Option<&str>> =
+            matches.iter().map(|m| m.symbol.workspace_folder_uri.as_deref()).collect();
+        assert_eq!(
+            folders,
+            vec![Some("file:///repo-a"), Some("file:///repo-b")],
+            "no row borrows another root's evidence or disappears"
+        );
+    }
+
+    /// WS-BEST-011: replacing a document contribution retires every old key
+    /// and any winning-evidence state atomically with it.
+    #[test]
+    fn ws_best_document_replacement_retires_old_keys() {
+        let index = WorkspaceIndex::new();
+        let uri = must(url::Url::parse("file:///lib/P.pm"));
+        must(index.index_file(uri.clone(), "package P;\nsub run { 1 }\n1;\n".to_string()));
+        let before = index.search_source_symbols("run", None);
+        assert_eq!(before.len(), 1);
+
+        must(index.index_file(uri, "package P;\nsub walk { 2 }\n1;\n".to_string()));
+
+        let profile = WorkspaceSymbolQueryProfile::compile("run");
+        let (after, receipt) = index.search_source_symbols_ranked_with_receipt(&profile, None);
+        assert!(
+            after.is_empty(),
+            "old keys and winners retire atomically on replacement; got {:?}",
+            after.iter().map(|m| &m.symbol.name).collect::<Vec<_>>()
+        );
+        assert_eq!(receipt.canonical_rows_matched, Some(0));
+    }
+
+    /// WS-BEST-012: the request cap applies after per-row best-key selection,
+    /// so a cap can never preserve a weaker-evidenced row over an exact one.
+    #[test]
+    fn ws_best_cap_cannot_preserve_weaker_row_over_exact_row() {
+        let index = WorkspaceIndex::new();
+        seed_search_rows(
+            &index,
+            "file:///lib/Sub.pm",
+            vec![ws_row(
+                "rerun_helper",
+                SymbolKind::Subroutine,
+                "file:///lib/Sub.pm",
+                10,
+                None,
+                None,
+                None,
+            )],
+        );
+        seed_search_rows(
+            &index,
+            "file:///lib/Exact.pm",
+            vec![ws_row(
+                "run",
+                SymbolKind::Subroutine,
+                "file:///lib/Exact.pm",
+                10,
+                None,
+                None,
+                None,
+            )],
+        );
+
+        let profile = WorkspaceSymbolQueryProfile::compile("run");
+        let capped = index.search_source_symbols_ranked_with_profile(&profile, Some(1));
+        assert_eq!(capped.len(), 1);
+        assert_eq!(capped[0].symbol.name, "run");
+        assert_eq!(
+            capped[0].best_match.winning_evidence().tier(),
+            crate::workspace_symbol_query::WorkspaceSymbolMatchTier::Exact
+        );
+        let (_, receipt) = index.search_source_symbols_ranked_with_receipt(&profile, Some(1));
+        assert_eq!(receipt.canonical_rows_matched, Some(2), "aggregation precedes cap");
+        assert_eq!(receipt.rows_materialized, Some(1));
     }
 
     /// Verify that `search_source_symbols` via the indexed path is correct after

@@ -515,6 +515,351 @@ pub const fn legacy_index_match_rank(tier: WorkspaceSymbolMatchTier) -> u8 {
     }
 }
 
+/// Reviewed tie-breaker order for equal-intrinsic evidence (#10645): lower
+/// ordinal wins. This is presentation-role preference only — it never promotes
+/// a weaker tier, and key text/tier/positions are already compared by
+/// [`WorkspaceSymbolMatchEvidence::compare`] before this ordinal participates.
+#[must_use]
+pub const fn role_tiebreak_order(role: WorkspaceSymbolSearchKeyRole) -> u8 {
+    match role {
+        WorkspaceSymbolSearchKeyRole::BareName => 0,
+        WorkspaceSymbolSearchKeyRole::QualifiedName => 1,
+        WorkspaceSymbolSearchKeyRole::CompatibilityAlias => 2,
+        WorkspaceSymbolSearchKeyRole::GeneratedFrameworkProjection => 3,
+        WorkspaceSymbolSearchKeyRole::Other => 4,
+    }
+}
+
+/// Outcome of offering one evidence value to a [`BestRowMatchAccumulator`].
+///
+/// Exposed so callers can turn accumulation into bounded work evidence without
+/// re-deriving comparison outcomes (and therefore without a second comparator).
+/// "Stronger" always means the shared best-first ordering ranks it smaller.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BestRowMatchUpdate {
+    /// First admitted evidence for this row.
+    FirstMatch,
+    /// Stronger intrinsic evidence replaced the incumbent.
+    ReplacedWeaker,
+    /// Equal intrinsic evidence; the reviewed role ordinal chose the arrival.
+    TieResolvedByRole,
+    /// Weaker-than-incumbent arrival retained only as bounded runner-up work.
+    KeptIncumbent,
+    /// Equal intrinsic evidence with no better role ordinal: idempotent
+    /// duplicate/equal loser ignored in favor of the incumbent.
+    KeptEqualDuplicate,
+    /// Evidence from another profile generation: typed refusal, never mixed
+    /// into the row and never downgraded to insertion-order fallback.
+    RefusedProfileMismatch,
+}
+
+/// One row's best-match accumulator over its admitted searchable keys.
+///
+/// The single aggregation authority for #10645: it consumes
+/// [`WorkspaceSymbolMatchEvidence::compare`] plus [`role_tiebreak_order`] and
+/// nothing else. It defines no tiers, no query logic, and no per-profile-version
+/// branching, so later reviewed profile versions (#10806/#10827) need no new
+/// aggregator. Retains at most winning + one runner-up evidence as bounded
+/// alternative/work evidence.
+#[derive(Debug)]
+pub struct BestRowMatchAccumulator {
+    profile_version: u32,
+    profile_digest: u64,
+    winner: Option<WorkspaceSymbolMatchEvidence>,
+    runner_up: Option<WorkspaceSymbolMatchEvidence>,
+    considered_matches: u64,
+}
+
+impl BestRowMatchAccumulator {
+    /// Binds the accumulator to one compiled profile generation. Evidence from
+    /// any other generation is refused for the lifetime of this accumulator.
+    #[must_use]
+    pub fn for_profile(profile: &WorkspaceSymbolQueryProfile) -> Self {
+        Self {
+            profile_version: profile.version(),
+            profile_digest: profile.digest(),
+            winner: None,
+            runner_up: None,
+            considered_matches: 0,
+        }
+    }
+
+    /// Offers one admitted match evidence to the row. The evidence is cloned
+    /// only when retained (winner or bounded runner-up), so examining many
+    /// keys per row stays cheap.
+    pub fn consider(&mut self, evidence: &WorkspaceSymbolMatchEvidence) -> BestRowMatchUpdate {
+        if evidence.profile_version != self.profile_version
+            || evidence.profile_digest != self.profile_digest
+        {
+            return BestRowMatchUpdate::RefusedProfileMismatch;
+        }
+
+        let Some(current) = self.winner.as_ref() else {
+            self.considered_matches = self.considered_matches.saturating_add(1);
+            self.winner = Some(evidence.clone());
+            return BestRowMatchUpdate::FirstMatch;
+        };
+
+        let update = match evidence.compare(current) {
+            // The shared comparator orders best-first: a smaller ordering is
+            // the stronger match.
+            Ordering::Less => {
+                self.runner_up = self.winner.take();
+                self.winner = Some(evidence.clone());
+                BestRowMatchUpdate::ReplacedWeaker
+            }
+            Ordering::Greater => {
+                let becomes_runner_up = self
+                    .runner_up
+                    .as_ref()
+                    .is_none_or(|runner| evidence.compare(runner) == Ordering::Less);
+                if becomes_runner_up {
+                    self.runner_up = Some(evidence.clone());
+                }
+                BestRowMatchUpdate::KeptIncumbent
+            }
+            Ordering::Equal => {
+                if role_tiebreak_order(evidence.key_role())
+                    < role_tiebreak_order(current.key_role())
+                {
+                    self.runner_up = self.winner.take();
+                    self.winner = Some(evidence.clone());
+                    BestRowMatchUpdate::TieResolvedByRole
+                } else {
+                    BestRowMatchUpdate::KeptEqualDuplicate
+                }
+            }
+        };
+
+        if !matches!(update, BestRowMatchUpdate::RefusedProfileMismatch) {
+            self.considered_matches = self.considered_matches.saturating_add(1);
+        }
+        update
+    }
+
+    /// Number of admitted matches considered for this row (refusals excluded).
+    ///
+    /// This is the row's distinct matching-key count: every arrival from an
+    /// admitted key counts, including arrivals that only became runner-up
+    /// work evidence.
+    #[must_use]
+    pub const fn considered_match_count(&self) -> u64 {
+        self.considered_matches
+    }
+
+    /// The strongest admitted evidence for this row, if any key matched.
+    #[must_use]
+    pub const fn winning_evidence(&self) -> Option<&WorkspaceSymbolMatchEvidence> {
+        self.winner.as_ref()
+    }
+
+    /// Bounded runner-up work evidence (at most one), weaker than the winner.
+    #[must_use]
+    pub const fn runner_up_evidence(&self) -> Option<&WorkspaceSymbolMatchEvidence> {
+        self.runner_up.as_ref()
+    }
+
+    /// Consumes the accumulator into the transport-neutral per-row result
+    /// handed to the final composer consumer. `None` when no key matched:
+    /// such rows are absent, never materialized with fallback evidence.
+    #[must_use]
+    pub fn into_best_match(self) -> Option<BestWorkspaceSymbolRowMatch> {
+        let winner = self.winner?;
+        Some(BestWorkspaceSymbolRowMatch {
+            profile_version: winner.profile_version,
+            profile_digest: winner.profile_digest,
+            winning_evidence: winner,
+            runner_up_evidence: self.runner_up,
+        })
+    }
+}
+
+/// Transport-neutral per-row result of evaluating every admitted searchable
+/// key of one canonical retained workspace-symbol row under one compiled
+/// profile (#10645).
+///
+/// Carries winning key identity/role/tier/positions plus the originating
+/// profile version/digest so the downstream cross-row composer can consume the
+/// handoff without reconstructing any query logic or LSP types. The row
+/// payload/identity itself stays caller-owned: this type is identity-agnostic.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BestWorkspaceSymbolRowMatch {
+    profile_version: u32,
+    profile_digest: u64,
+    winning_evidence: WorkspaceSymbolMatchEvidence,
+    runner_up_evidence: Option<WorkspaceSymbolMatchEvidence>,
+}
+
+impl BestWorkspaceSymbolRowMatch {
+    /// Profile/schema version the winner was produced under.
+    #[must_use]
+    pub const fn profile_version(&self) -> u32 {
+        self.profile_version
+    }
+
+    /// Profile digest the winner was produced under.
+    #[must_use]
+    pub const fn profile_digest(&self) -> u64 {
+        self.profile_digest
+    }
+
+    /// Winning per-key match evidence (key text, role, tier, positions).
+    #[must_use]
+    pub const fn winning_evidence(&self) -> &WorkspaceSymbolMatchEvidence {
+        &self.winning_evidence
+    }
+
+    /// Bounded runner-up work evidence, weaker than the winner.
+    #[must_use]
+    pub const fn runner_up_evidence(&self) -> Option<&WorkspaceSymbolMatchEvidence> {
+        self.runner_up_evidence.as_ref()
+    }
+}
+
+/// Selects the best match across one row's searchable keys under one profile.
+///
+/// Convenience fold of [`match_searchable_key`] +
+/// [`BestRowMatchAccumulator`] for callers that hold a small explicit key set
+/// (for example generated/framework projection keys). Rows whose every key
+/// returns `None` yield `None` and stay absent.
+#[must_use]
+pub fn select_best_row_match(
+    profile: &WorkspaceSymbolQueryProfile,
+    keys: &[(&str, WorkspaceSymbolSearchKeyRole)],
+) -> Option<BestWorkspaceSymbolRowMatch> {
+    let mut accumulator = BestRowMatchAccumulator::for_profile(profile);
+    for (key, role) in keys {
+        if let Some(evidence) = match_searchable_key(profile, key, *role) {
+            accumulator.consider(&evidence);
+        }
+    }
+    accumulator.into_best_match()
+}
+
+/// Bounded work counters for per-row best-key aggregation (#10645).
+///
+/// Absent instrumentation is `not_proven` (`None`), never zero.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceSymbolBestKeyReceipt {
+    /// Searchable keys examined by the request.
+    pub searchable_keys_examined: Option<u64>,
+    /// Distinct searchable keys whose admission returned evidence.
+    pub matching_keys: Option<u64>,
+    /// Canonical retained rows with at least one matching key.
+    pub canonical_rows_matched: Option<u64>,
+    /// Rows reached through more than one matching key.
+    pub rows_with_multiple_matching_keys: Option<u64>,
+    /// Times stronger (or role-resolved equal) evidence replaced an incumbent.
+    pub better_alias_replacements: Option<u64>,
+    /// Equal-evidence encounters resolved by the reviewed tie-breaker or kept
+    /// idempotently.
+    pub equal_evidence_ties: Option<u64>,
+    /// Evidence refused because it came from another profile generation.
+    pub profile_mismatch_refusals: Option<u64>,
+    /// Rows materialized after per-row selection (cap applied afterwards).
+    pub rows_materialized: Option<u64>,
+    /// Geometry-based dedup attempts on the canonical path: structurally zero
+    /// because aggregation never consults `(uri, byte)` geometry.
+    pub geometry_dedup_attempts: Option<u64>,
+    /// Stale key contributions rejected during lifecycle replacement. Not yet
+    /// instrumented here (`not_proven`); lifecycle retirement is proven by the
+    /// index parity/update/remove suites until #10641 supplies row ownership.
+    pub stale_key_contributions_rejected: Option<u64>,
+}
+
+impl WorkspaceSymbolBestKeyReceipt {
+    /// Receipt with every counter unset (`not_proven`).
+    #[must_use]
+    pub const fn unproven() -> Self {
+        Self {
+            searchable_keys_examined: None,
+            matching_keys: None,
+            canonical_rows_matched: None,
+            rows_with_multiple_matching_keys: None,
+            better_alias_replacements: None,
+            equal_evidence_ties: None,
+            profile_mismatch_refusals: None,
+            rows_materialized: None,
+            geometry_dedup_attempts: None,
+            stale_key_contributions_rejected: None,
+        }
+    }
+}
+
+/// Accumulates [`WorkspaceSymbolBestKeyReceipt`] counters while one request
+/// aggregates rows.
+#[derive(Debug, Default)]
+pub struct WorkspaceSymbolBestKeyReceiptBuilder {
+    keys_examined: u64,
+    matching_keys: u64,
+    canonical_rows_matched: u64,
+    rows_with_multiple_matching_keys: u64,
+    better_alias_replacements: u64,
+    equal_evidence_ties: u64,
+    profile_mismatch_refusals: u64,
+    rows_materialized: u64,
+}
+
+impl WorkspaceSymbolBestKeyReceiptBuilder {
+    /// Records one searchable-key examination (matched or not).
+    pub const fn record_key_examined(&mut self) {
+        self.keys_examined = self.keys_examined.saturating_add(1);
+    }
+
+    /// Records one admission that returned evidence.
+    pub const fn record_matching_key(&mut self) {
+        self.matching_keys = self.matching_keys.saturating_add(1);
+    }
+
+    /// Records one aggregated row and how many distinct keys contributed.
+    pub const fn record_row(&mut self, contributing_keys_excluding_first: u64) {
+        self.canonical_rows_matched = self.canonical_rows_matched.saturating_add(1);
+        if contributing_keys_excluding_first > 0 {
+            self.rows_with_multiple_matching_keys =
+                self.rows_with_multiple_matching_keys.saturating_add(1);
+        }
+    }
+
+    /// Records one accumulation outcome.
+    pub const fn record_update(&mut self, update: BestRowMatchUpdate) {
+        match update {
+            BestRowMatchUpdate::FirstMatch | BestRowMatchUpdate::KeptIncumbent => {}
+            BestRowMatchUpdate::ReplacedWeaker | BestRowMatchUpdate::TieResolvedByRole => {
+                self.better_alias_replacements = self.better_alias_replacements.saturating_add(1);
+            }
+            BestRowMatchUpdate::KeptEqualDuplicate => {
+                self.equal_evidence_ties = self.equal_evidence_ties.saturating_add(1);
+            }
+            BestRowMatchUpdate::RefusedProfileMismatch => {
+                self.profile_mismatch_refusals = self.profile_mismatch_refusals.saturating_add(1);
+            }
+        }
+    }
+
+    /// Records `count` materialized rows (after any caller-side cap).
+    pub const fn record_rows_materialized(&mut self, count: u64) {
+        self.rows_materialized = self.rows_materialized.saturating_add(count);
+    }
+
+    /// Snapshot receipt. Geometry dedup attempts are reported as a structural
+    /// zero on this path; lifecycle rejection stays `not_proven`.
+    #[must_use]
+    pub fn finish(&self) -> WorkspaceSymbolBestKeyReceipt {
+        WorkspaceSymbolBestKeyReceipt {
+            searchable_keys_examined: Some(self.keys_examined),
+            matching_keys: Some(self.matching_keys),
+            canonical_rows_matched: Some(self.canonical_rows_matched),
+            rows_with_multiple_matching_keys: Some(self.rows_with_multiple_matching_keys),
+            better_alias_replacements: Some(self.better_alias_replacements),
+            equal_evidence_ties: Some(self.equal_evidence_ties),
+            profile_mismatch_refusals: Some(self.profile_mismatch_refusals),
+            rows_materialized: Some(self.rows_materialized),
+            geometry_dedup_attempts: Some(0),
+            stale_key_contributions_rejected: None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -724,6 +1069,172 @@ mod tests {
         assert_eq!(short_prefix.compare(&long_prefix), std::cmp::Ordering::Less);
     }
 
+    /// Feeds `keys` to a fresh accumulator under `profile` in the given order.
+    fn accumulate(
+        profile: &WorkspaceSymbolQueryProfile,
+        keys: &[(&str, Role)],
+    ) -> super::BestRowMatchAccumulator {
+        let mut accumulator = super::BestRowMatchAccumulator::for_profile(profile);
+        for (key, role) in keys {
+            if let Some(evidence) = match_searchable_key(profile, key, *role) {
+                accumulator.consider(&evidence);
+            }
+        }
+        accumulator
+    }
+
+    fn winning_of(
+        profile: &WorkspaceSymbolQueryProfile,
+        keys: &[(&str, Role)],
+    ) -> Option<(String, Tier, Role)> {
+        let best = accumulate(profile, keys).into_best_match()?;
+        let evidence = best.winning_evidence();
+        Some((evidence.searchable_key().to_string(), evidence.tier(), evidence.key_role()))
+    }
+
+    /// WS-BEST-001: bare exact replaces qualified substring for one row,
+    /// regardless of key examination order.
+    #[test]
+    fn ws_best_001_bare_exact_beats_qualified_substring_under_both_orders() {
+        let profile = WorkspaceSymbolQueryProfile::compile("run");
+        let forward = [("Package::run", Role::QualifiedName), ("run", Role::BareName)];
+        let reversed = [("run", Role::BareName), ("Package::run", Role::QualifiedName)];
+        for order in [&forward, &reversed] {
+            let (key, tier, role) = winning_of(&profile, order).expect("row matched");
+            assert_eq!(key, "run");
+            assert_eq!(tier, Tier::Exact);
+            assert_eq!(role, Role::BareName);
+        }
+    }
+
+    /// WS-BEST-002: qualified exact replaces weaker bare evidence. A
+    /// qualified key is exact only when the query itself carries the
+    /// qualification (`P::run`); the bare `run` key then still admits as a
+    /// weaker substring and must lose.
+    #[test]
+    fn ws_best_002_qualified_exact_beats_weaker_bare_match() {
+        let profile = WorkspaceSymbolQueryProfile::compile("P::run");
+        let keys = [("run", Role::BareName), ("P::run", Role::QualifiedName)];
+        let (key, tier, role) = winning_of(&profile, &keys).expect("row matched");
+        assert_eq!(key, "P::run");
+        assert_eq!(tier, Tier::Exact);
+        assert_eq!(role, Role::QualifiedName);
+
+        // Both examination orders agree.
+        let reversed = [keys[1], keys[0]];
+        let (key, tier, _) = winning_of(&profile, &reversed).expect("row matched");
+        assert_eq!((key.as_str(), tier), ("P::run", Tier::Exact));
+    }
+
+    /// WS-BEST-003: legacy separator alias competes deterministically; the
+    /// equal-tier winner is chosen by the total comparator, never by order.
+    #[test]
+    fn ws_best_003_legacy_separator_alias_tie_is_deterministic() {
+        let profile = WorkspaceSymbolQueryProfile::compile("run");
+        let keys = [
+            ("Package'run", Role::CompatibilityAlias),
+            ("Package::run", Role::QualifiedName),
+            ("Package::run", Role::QualifiedName),
+        ];
+        // Both orders must pick the same winner (`'` sorts before `:`).
+        let forward = [keys[0], keys[1]];
+        let reversed = [keys[1], keys[0]];
+        let expected = ("Package'run".to_string(), Tier::Substring);
+        let (key, tier, _) = winning_of(&profile, &forward).expect("row matched");
+        assert_eq!((key, tier), expected);
+        let (key, tier, _) = winning_of(&profile, &reversed).expect("row matched");
+        assert_eq!((key, tier), expected);
+
+        // Equal-comparing duplicate arrivals are idempotent.
+        let accumulator = accumulate(&profile, &keys);
+        assert_eq!(accumulator.considered_match_count(), 3);
+        let best = accumulator.into_best_match().expect("row matched");
+        assert_eq!(best.winning_evidence().searchable_key(), "Package'run");
+    }
+
+    /// WS-BEST-004: browse admits every key at one row-level disposition;
+    /// the retained evidence is independent of alias count/order.
+    #[test]
+    fn ws_best_004_browse_winner_is_alias_count_and_order_independent() {
+        let profile = WorkspaceSymbolQueryProfile::compile("");
+        let few = [("run", Role::BareName)];
+        let many = [
+            ("longest_alias_spelling", Role::Other),
+            ("middle_alias", Role::CompatibilityAlias),
+            ("a", Role::BareName),
+            ("run", Role::BareName),
+        ];
+        for (keys, expected_key) in [(&few[..], "run"), (&many[..], "a")] {
+            let (key, tier, _) = winning_of(&profile, keys).expect("browse matches every key");
+            assert_eq!(tier, Tier::Prefix);
+            assert_eq!(key, expected_key, "shortest admitted key wins by total comparator");
+        }
+    }
+
+    /// WS-BEST-008/014: evidence from another profile generation is refused
+    /// as a typed outcome and never mixed into the row.
+    #[test]
+    fn ws_best_008_profile_mismatch_evidence_is_refused_not_mixed() {
+        let profile = WorkspaceSymbolQueryProfile::compile("run");
+        let stale = match_searchable_key(
+            &WorkspaceSymbolQueryProfile::compile("ru"),
+            "run",
+            Role::BareName,
+        )
+        .expect("control evidence exists");
+
+        let mut accumulator = super::BestRowMatchAccumulator::for_profile(&profile);
+        assert_eq!(accumulator.consider(&stale), super::BestRowMatchUpdate::RefusedProfileMismatch);
+        assert!(
+            accumulator.into_best_match().is_none(),
+            "refused evidence must not materialize a row"
+        );
+
+        // A current first match followed by stale evidence keeps the winner.
+        let mut accumulator = super::BestRowMatchAccumulator::for_profile(&profile);
+        accumulator.consider(
+            &match_searchable_key(&profile, "P::run", Role::QualifiedName).expect("admitted"),
+        );
+        assert_eq!(
+            accumulator.consider(
+                &match_searchable_key(
+                    &WorkspaceSymbolQueryProfile::compile("un"),
+                    "run",
+                    Role::BareName
+                )
+                .expect("control evidence exists")
+            ),
+            super::BestRowMatchUpdate::RefusedProfileMismatch
+        );
+        let best = accumulator.into_best_match().expect("winner survives refusal");
+        assert_eq!(best.winning_evidence().searchable_key(), "P::run");
+        assert_eq!(best.profile_digest(), profile.digest());
+    }
+
+    /// A row whose every key returns `None` stays absent: no fallback
+    /// evidence may materialize it (negative control M8).
+    #[test]
+    fn ws_best_all_keys_nonmatching_row_is_absent() {
+        let profile = WorkspaceSymbolQueryProfile::compile("zq");
+        let keys = [("alpha", Role::BareName), ("Package::alpha", Role::QualifiedName)];
+        assert!(winning_of(&profile, &keys).is_none());
+        assert!(super::select_best_row_match(&profile, &keys).is_none());
+    }
+
+    /// The public convenience selector agrees with manual accumulation.
+    #[test]
+    fn ws_best_selector_matches_manual_accumulation() {
+        let profile = WorkspaceSymbolQueryProfile::compile("run");
+        let keys = [("Package::run", Role::QualifiedName), ("run", Role::BareName)];
+        let selected = super::select_best_row_match(&profile, &keys).expect("matched");
+        let manual = accumulate(&profile, &keys).into_best_match().expect("matched");
+        assert_eq!(selected, manual);
+        assert_eq!(
+            selected.runner_up_evidence().map(super::WorkspaceSymbolMatchEvidence::searchable_key),
+            Some("Package::run")
+        );
+    }
+
     proptest! {
         /// Repeated compilation is deterministic; membership/order-relevant
         /// fields depend only on the trimmed/folded query.
@@ -767,6 +1278,29 @@ mod tests {
             ) {
                 prop_assert_eq!(ea.compare(&eb), eb.compare(&ea).reverse());
             }
+        }
+
+        /// WS-BEST-005: the retained winner is invariant under key-examination
+        /// permutation — first-key/last-key order cannot choose it.
+        #[test]
+        fn ws_best_prop_winner_invariant_under_key_permutation(
+            keys in proptest::collection::vec("[a-zA-Z:']{1,12}", 1..8),
+            query in "[a-zA-Z]{0,6}",
+        ) {
+            let profile = WorkspaceSymbolQueryProfile::compile(&query);
+            let owned: std::collections::HashMap<String, ()> =
+                keys.iter().map(|k| (k.clone(), ())).collect();
+            let unique: Vec<(&str, Role)> =
+                owned.keys().map(|k| (k.as_str(), Role::Other)).collect();
+            let forward: Vec<(&str, Role)> = unique.clone();
+            let reversed: Vec<(&str, Role)> = unique.iter().rev().copied().collect();
+            // Rotation is always a bijection, so this stays a real permutation.
+            let rotated: Vec<(&str, Role)> = (0..unique.len())
+                .map(|i| unique[(i + unique.len() / 2) % unique.len()])
+                .collect();
+            let expected = super::select_best_row_match(&profile, &forward);
+            prop_assert_eq!(expected.clone(), super::select_best_row_match(&profile, &reversed));
+            prop_assert_eq!(expected, super::select_best_row_match(&profile, &rotated));
         }
     }
 }
