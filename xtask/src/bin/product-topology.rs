@@ -463,14 +463,22 @@ fn validate_mcp_stage(
                 ));
             }
         }
-        McpStage::Admitted | McpStage::Required => validate_package_shape(
-            packages,
-            publish_order,
-            mcp_package,
-            &policy.targets.mcp_adapter,
-            &[],
-            findings,
-        ),
+        McpStage::Admitted | McpStage::Required => {
+            if !packages.contains_key(&policy.packages.transport_service) {
+                findings.insert(format!(
+                    "stage={}: governed workspace package missing={}",
+                    policy.mcp_stage, policy.packages.transport_service
+                ));
+            }
+            validate_package_shape(
+                packages,
+                publish_order,
+                mcp_package,
+                &policy.targets.mcp_adapter,
+                &[],
+                findings,
+            );
+        }
     }
 }
 
@@ -1028,6 +1036,31 @@ mod tests {
             &report,
             "required workspace package missing=perl-mcp"
         ));
+    }
+
+    #[test]
+    fn admitted_or_required_stage_requires_governed_transport_workspace_package() {
+        for stage in [McpStage::Admitted, McpStage::Required] {
+            let (policy, mut metadata, mut manifest) = fixture(stage);
+            metadata
+                .packages
+                .retain(|package| package.name != "perl-code-intelligence");
+            metadata.workspace_members.retain(|member| member != "service");
+            manifest
+                .workspace
+                .metadata
+                .publish
+                .allow
+                .retain(|package| package != "perl-code-intelligence");
+
+            let report = validate(&policy, &metadata, &manifest);
+            assert!(has_finding(
+                &report,
+                &format!(
+                    "stage={stage}: governed workspace package missing=perl-code-intelligence"
+                )
+            ));
+        }
     }
 
     #[test]
