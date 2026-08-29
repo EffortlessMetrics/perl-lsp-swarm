@@ -888,6 +888,29 @@ mod explicit_pin_tests {
         Ok(())
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn path_candidate_with_extension_does_not_gain_pathext_suffix() -> Result<(), String> {
+        let controls = tempfile::tempdir().map_err(|error| error.to_string())?;
+        let misleading = controls.path().join("perl.cmd.EXE");
+        fs::write(&misleading, b"path candidate").map_err(|error| error.to_string())?;
+        let search_path =
+            std::env::join_paths([controls.path()]).map_err(|error| error.to_string())?;
+        let error = match resolve_debuggee_candidate(
+            Path::new("perl.cmd"),
+            Some(search_path.as_os_str()),
+        ) {
+            Ok(resolved) => {
+                return Err(format!("extended candidate unexpectedly resolved to {resolved:?}"));
+            }
+            Err(error) => error,
+        };
+        if !error.contains("was not found") {
+            return Err(format!("unexpected failure reason: {error}"));
+        }
+        Ok(())
+    }
+
     #[cfg(unix)]
     #[test]
     fn non_utf8_pin_is_rejected_before_launch() -> Result<(), String> {
@@ -2454,6 +2477,9 @@ fn is_bare_program_name(path: &Path) -> bool {
 #[cfg(windows)]
 fn bare_name_lookup_variants(name: &std::ffi::OsStr) -> Vec<std::ffi::OsString> {
     let mut variants = vec![name.to_os_string()];
+    if Path::new(name).extension().is_some() {
+        return variants;
+    }
     let path_ext = std::env::var_os("PATHEXT")
         .unwrap_or_else(|| std::ffi::OsString::from(".COM;.EXE;.BAT;.CMD"));
     for extension in path_ext.to_string_lossy().split(';') {
