@@ -13,20 +13,52 @@ from pathlib import Path
 
 path = Path(sys.argv[1])
 text = path.read_text(encoding="utf-8")
-match = re.search(r"(?ms)^  ci:public-api:\s*\n(?P<body>(?:^    .*\n?)*)", text)
-if match is None:
+lines = text.splitlines()
+anchors = [
+    index
+    for index, line in enumerate(lines)
+    if re.fullmatch(r"  ci:public-api:\s*", line)
+]
+if len(anchors) != 1:
     raise SystemExit("ci:public-api metadata is missing from .github/ci-config.yml")
 
 metadata = {}
-for line in match.group("body").splitlines():
-    field = re.fullmatch(r"    (color|description):\s*'([^']*)'\s*", line)
-    if field is not None:
-        metadata[field.group(1)] = field.group(2)
+for line in lines[anchors[0] + 1 :]:
+    stripped = line.strip()
+    if not stripped or stripped.startswith("#"):
+        continue
+
+    indent = len(line) - len(line.lstrip(" "))
+    if indent <= 2:
+        break
+    if indent != 4:
+        raise SystemExit("ci:public-api metadata contains an invalid indentation")
+
+    field = re.fullmatch(r" {4}([A-Za-z0-9_-]+):\s*(.*)", line)
+    if field is None:
+        raise SystemExit("ci:public-api metadata contains a malformed field")
+    key, raw_value = field.groups()
+    if key not in {"color", "description"}:
+        raise SystemExit(f"ci:public-api metadata contains unknown field: {key}")
+    if key in metadata:
+        raise SystemExit(f"ci:public-api metadata contains duplicate field: {key}")
+
+    value = re.fullmatch(r"'([^']*)'", raw_value)
+    if value is None:
+        raise SystemExit(f"ci:public-api {key} must be a single-quoted scalar")
+    metadata[key] = value.group(1)
 
 if set(metadata) != {"color", "description"}:
     raise SystemExit("ci:public-api metadata must define exactly color and description")
 
-print(f"{metadata['color']}\t{metadata['description']}")
+color = metadata["color"]
+description = metadata["description"]
+if re.fullmatch(r"[0-9a-fA-F]{6}", color) is None:
+    raise SystemExit("ci:public-api color must be exactly six hexadecimal digits")
+if not description.strip() or any(ord(char) < 32 or char == "\t" for char in description):
+    raise SystemExit("ci:public-api description must be non-empty and free of control characters")
+
+print(f"{color}\t{description}")
 PY
 }
 
