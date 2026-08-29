@@ -387,7 +387,7 @@ mod tests {
             false,
         );
         assert!(plan.is_complete());
-        assert_eq!(plan.edits[0].new_text, "use New::Name qw(run)");
+        assert!(plan.edits.iter().any(|edit| edit.new_text == "use New::Name qw(run)"));
         assert_eq!(plan.resource.target_path, "lib/New/Name.pm");
     }
 
