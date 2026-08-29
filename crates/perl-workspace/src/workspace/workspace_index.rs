@@ -3747,9 +3747,17 @@ impl WorkspaceIndex {
         let source_uri = new_shard.source_uri.clone();
 
         // ── Update cross-file semantic indexes per category ──
-        // Occurrences and edges are both managed by the ReferenceIndex.
-        // When either changes we must remove+re-add the file in that index.
-        if replacement.occurrences_updated || replacement.edges_updated {
+        // Occurrences, edges, and entities all feed the ReferenceIndex: it
+        // synthesizes one edge per non-definition occurrence, takes target
+        // candidates from `EdgeKind::References`, and derives each edge's
+        // canonical name from the shard's entity rows. Because that name
+        // decides which projection an occurrence lands in — named or
+        // unresolved — an entity-only change moves rows just as an
+        // occurrence or edge change does, and must rebuild the file here.
+        if replacement.occurrences_updated
+            || replacement.edges_updated
+            || replacement.entities_updated
+        {
             let mut ref_idx = self.semantic_reference_index.write();
             if old_shard.is_some() {
                 ref_idx.remove_file(&source_uri);
@@ -5907,10 +5915,8 @@ impl IndexVisitor {
                     self.visit_node(value, file_index);
                 }
             }
-            NodeKind::Return { value } => {
-                if let Some(val) = value {
-                    self.visit_node(val, file_index);
-                }
+            NodeKind::Return { value: Some(val) } => {
+                self.visit_node(val, file_index);
             }
             NodeKind::Eval { block } | NodeKind::Do { block } | NodeKind::Defer { block } => {
                 self.visit_node(block, file_index);
@@ -11531,6 +11537,81 @@ MixedMod->import(qw(qw_one qw_two));
         assert!(!result.entities_updated, "entities hash unchanged → skip");
         assert!(result.occurrences_updated, "occurrences hash changed → update");
         assert!(result.edges_updated, "edges hash changed → update");
+        Ok(())
+    }
+
+    /// An entity-only shard replacement must refresh the reference index.
+    ///
+    /// `ReferenceIndex::add_file` derives each occurrence's canonical name from
+    /// `shard.entities`, so which projection an occurrence lands in — named or
+    /// unresolved — depends on the entity category, not only on occurrences and
+    /// edges. Adding the declaring entity row while the occurrence and edge
+    /// facts stay byte-identical must move the occurrence into the name
+    /// projection; skipping the rebuild leaves a stale row the current shard
+    /// contradicts.
+    #[test]
+    fn incremental_replace_refreshes_reference_index_on_entity_only_change()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let index = WorkspaceIndex::new();
+        let uri = "file:///lib/EntityOnly.pm";
+        let key = DocumentStore::uri_key(uri);
+        let entity_id = EntityId(700);
+        let occ_id = OccurrenceId(701);
+        let anchor_id = AnchorId(702);
+
+        // The occurrence names its entity, but v1 carries no entity row: the
+        // canonical name cannot be derived, so the reference is unresolved.
+        let occurrences = vec![OccurrenceFact {
+            id: occ_id,
+            kind: OccurrenceKind::Call,
+            entity_id: Some(entity_id),
+            anchor_id,
+            scope_id: None,
+            provenance: Provenance::ExactAst,
+            confidence: Confidence::High,
+        }];
+        let mut shard_v1 = make_shard(uri, 1, Some(10), Some(20), Some(30), Some(40));
+        shard_v1.occurrences.clone_from(&occurrences);
+        let file_id = shard_v1.file_id;
+        index.replace_fact_shard_incremental(&key, shard_v1);
+
+        let unresolved_key =
+            crate::semantic::references::UnresolvedOccurrenceKey::new(file_id, occ_id, anchor_id);
+        assert_eq!(
+            index.semantic_reference_index.read().get_unresolved(&unresolved_key).len(),
+            1,
+            "v1 has no entity row, so the occurrence starts unresolved"
+        );
+
+        // v2 adds only the declaring entity row: occurrences and edges keep
+        // their exact v1 hashes.
+        let mut shard_v2 = make_shard(uri, 2, Some(10), Some(21), Some(30), Some(40));
+        shard_v2.occurrences = occurrences;
+        shard_v2.entities.push(EntityFact {
+            id: entity_id,
+            kind: EntityKind::Subroutine,
+            canonical_name: "EntityOnly::run".to_string(),
+            anchor_id: None,
+            scope_id: None,
+            provenance: Provenance::ExactAst,
+            confidence: Confidence::High,
+        });
+        let result = index.replace_fact_shard_incremental(&key, shard_v2);
+
+        assert!(result.entities_updated, "entities hash changed → update");
+        assert!(!result.occurrences_updated, "occurrences hash is deliberately unchanged");
+        assert!(!result.edges_updated, "edges hash is deliberately unchanged");
+
+        let ref_idx = index.semantic_reference_index.read();
+        assert_eq!(
+            ref_idx.get_by_name("EntityOnly::run").len(),
+            1,
+            "the newly declared entity must make the occurrence findable by name"
+        );
+        assert!(
+            ref_idx.get_unresolved(&unresolved_key).is_empty(),
+            "the stale unresolved row must not survive its own entity's arrival"
+        );
         Ok(())
     }
 

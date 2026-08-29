@@ -152,6 +152,34 @@ struct ExplainProviderDecisionRequest {
     request_position: Option<ProviderDecisionRequestPosition>,
 }
 
+/// Maximum accepted length of one client-supplied identifier echo field
+/// (`receipt_id`, `scenario`) in `perl.explainProviderDecision` (#2758).
+///
+/// The bound applies after the generic request has been materialized. It limits
+/// the response/explanation amplification from these fields, not the transport
+/// frame or the initial JSON deserialization allocation.
+const MAX_EXPLANATION_ECHO_LENGTH: usize = 1024;
+
+/// Fail closed on an empty or oversized client-supplied identifier echo field,
+/// naming the offending field in the diagnostic (#2758). The v1 schema treats
+/// these fields as caller-preserved strings, so this validation deliberately
+/// does not impose a narrower lexical vocabulary or rewrite their contents.
+fn validate_explanation_echo(value: &str, field: &str) -> Result<(), String> {
+    if value.is_empty() {
+        return Err(format!(
+            "Invalid explain-provider-decision argument: {field} must not be empty"
+        ));
+    }
+    if value.len() > MAX_EXPLANATION_ECHO_LENGTH {
+        return Err(format!(
+            "Invalid explain-provider-decision argument: {field} too long ({}, max \
+             {MAX_EXPLANATION_ECHO_LENGTH})",
+            value.len()
+        ));
+    }
+    Ok(())
+}
+
 impl Default for ExecuteCommandProvider {
     fn default() -> Self {
         Self::new()
@@ -338,9 +366,11 @@ impl ExecuteCommandProvider {
         let mut explanation = default_provider_decision_explanation(request.provider);
 
         if let Some(receipt_id) = request.receipt_id {
+            validate_explanation_echo(&receipt_id, "receipt_id")?;
             explanation = explanation.with_receipt_id(receipt_id);
         }
         if let Some(scenario) = request.scenario {
+            validate_explanation_echo(&scenario, "scenario")?;
             explanation = explanation.with_scenario(scenario);
         }
         if let Some(request_receipt) = request.request_receipt {

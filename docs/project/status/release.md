@@ -9,14 +9,20 @@
 **Release track**: Public beta; this is not a stable/GA claim
 **Workspace version line**: `v0.17.0`
 **Published crate surface**: 34 crates
-**Release target**: `v0.18.0` is the next public-beta train; no version bump or candidate is staged here
+**Release target**: `v0.18.0` is the next public-beta train. A product-inert `0.18.0-rc.1` preparation exists on `release/0.18` at [`f4e32500b639f858470499ae6104c04e92a3cd3d`](https://github.com/EffortlessMetrics/perl-lsp-swarm/commit/f4e32500b639f858470499ae6104c04e92a3cd3d) from [PR #12426](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/12426), but that prepared branch subject is not projected, qualified or publishable, tagged, or published
 **Authority**: development `perl-lsp-swarm/main`; release lineage and publication `perl-lsp/master`
 **Ship readiness**: GitHub Release `v0.17.0` was published on 2026-06-28 and observed on 2026-07-17 at `ffee2824938f415e54923112c7b79e3f22040699` with seven platform archives, VSIX, `SHA256SUMS`, and SPDX SBOM. Other channels remain independent facts and are not proven by that receipt.
 
 ## Active Blockers
 
-- crates.io, VS Code Marketplace, Open VSX, Docker, and Homebrew receipts remain pending or not proven in this repository ledger.
+- [#12876](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/12876) is the current product-policy blocker: the prepared subject retains a selectable external Perl::Critic runtime path, so it cannot feed release actions. An accepted repair requires a new freeze and preparation identity.
+- Publication-context projection remains blocked and unproduced under [#12230](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/12230); preparation alone does not establish a qualified or publishable candidate.
+- The [release controller #4343](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/4343) remains `NO-GO`. No `v0.18` tag, artifact, installed behavior, public-channel publication, or release approval is claimed here.
 - Remaining work is operational: verify the existing `v0.17.0` release receipt and close the remaining channel receipts; do not dispatch release orchestration for an already-shipped train.
+
+## Shipped v0.17.0 Closeout
+
+This closeout applies only to the already-shipped `v0.17.0` train; it is not the `v0.18` readiness call.
 
 ## 0.15.2 Hotfix Receipts (2026-05-26)
 
@@ -117,4 +123,4 @@ Native + Bridge remain preview within the overall public-beta distribution. Hard
 
 ---
 
-*Last Updated: 2026-07-17*
+*Last Updated: 2026-08-27*

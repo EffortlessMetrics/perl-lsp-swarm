@@ -305,7 +305,7 @@ fn looks_absolute(value: &str) -> bool {
             && bytes.get(1) == Some(&b':'))
 }
 
-fn validate_target_id(target_id: &str) -> Result<(), String> {
+pub(crate) fn validate_target_id(target_id: &str) -> Result<(), String> {
     if target_id.is_empty()
         || !target_id
             .bytes()
@@ -316,7 +316,7 @@ fn validate_target_id(target_id: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_reference(
+pub(crate) fn validate_reference(
     value: &str,
     label: &str,
     min_len: usize,
@@ -327,7 +327,7 @@ fn validate_reference(
         return Err(format!("{label} must be {min_len}-{max_len} characters"));
     }
     if lowercase_hex {
-        if !value.bytes().all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f')) {
+        if !value.bytes().all(crate::is_lower_case_hex_byte) {
             return Err(format!("{label} must be lower-case hexadecimal"));
         }
         return Ok(());
@@ -358,9 +358,11 @@ fn validate_environment_value(value: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_sha256_field(value: &str, label: &str) -> Result<(), String> {
-    if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Err(format!("{label} must be a 64-character hexadecimal digest: {value}"));
+pub(crate) fn validate_sha256_field(value: &str, label: &str) -> Result<(), String> {
+    if !crate::is_canonical_sha256_hex(value) {
+        return Err(format!(
+            "{label} must be a 64-character hexadecimal digest ([0-9a-f] lower-case): {value}"
+        ));
     }
     Ok(())
 }
@@ -533,5 +535,28 @@ mod contract_tests {
         ];
         expected.sort_unstable();
         assert_eq!(required_limitations(), expected);
+    }
+
+    /// #7725: referenced raw-discovery identities must be spelled with the
+    /// one canonical serialized form, lower-case hexadecimal.
+    #[test]
+    fn discovery_digests_accept_only_canonical_lower_case_hex() {
+        assert!(validate_sha256_field(&"ab".repeat(32), "raw discovery digest").is_ok());
+        assert!(rejected_as(
+            validate_sha256_field(&"AB".repeat(32), "raw discovery digest"),
+            "raw discovery digest"
+        ));
+        assert!(rejected_as(
+            validate_sha256_field(&"aB".repeat(32), "raw discovery digest"),
+            "raw discovery digest"
+        ));
+        assert!(rejected_as(
+            validate_sha256_field(&"zz".repeat(32), "raw discovery digest"),
+            "raw discovery digest"
+        ));
+        assert!(rejected_as(
+            validate_sha256_field(&"ab".repeat(31), "raw discovery digest"),
+            "raw discovery digest"
+        ));
     }
 }
