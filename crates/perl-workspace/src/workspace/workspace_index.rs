@@ -5907,10 +5907,8 @@ impl IndexVisitor {
                     self.visit_node(value, file_index);
                 }
             }
-            NodeKind::Return { value } => {
-                if let Some(val) = value {
-                    self.visit_node(val, file_index);
-                }
+            NodeKind::Return { value: Some(val) } => {
+                self.visit_node(val, file_index);
             }
             NodeKind::Eval { block } | NodeKind::Do { block } | NodeKind::Defer { block } => {
                 self.visit_node(block, file_index);

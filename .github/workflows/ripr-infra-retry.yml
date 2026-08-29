@@ -13,6 +13,8 @@
 # (`gh run rerun <run-id> --failed`, printed by the gate itself). The bound
 # needs no state: re-running failed jobs increments run_attempt, and the
 # workflow_run event for the retried completion arrives with run_attempt >= 2.
+# Deliveries are serialized per source run (concurrency group + live re-read
+# before arming) so duplicate events cannot double-arm the single retry.
 #
 # Security posture: this workflow runs in the default-branch context with an
 # actions:write token, so it must never check out or execute candidate code.
@@ -36,6 +38,13 @@ permissions:
   contents: read
   # rerun-failed-jobs and artifact download.
   actions: write
+
+# Serialize duplicate completed-event deliveries for the same source run so a
+# racing second responder observes the already-armed attempt (run_attempt >= 2)
+# and exits on the bound instead of issuing a second rerun (review round 2).
+concurrency:
+  group: ripr-infra-retry-${{ github.event.workflow_run.id }}
+  cancel-in-progress: false
 
 jobs:
   retry-on-eviction:
@@ -67,8 +76,14 @@ jobs:
           # Bound: exactly one automatic retry. A retried completion arrives
           # here with run_attempt >= 2 and takes the manual path instead.
           if [ "${RUN_ATTEMPT}" != "1" ]; then
+            # #12563: surface the exhausted bound loudly as NOT_PROVEN — no
+            # terminal receipt exists for this SHA and no further automation
+            # will run for it.
+            echo "RIPR_GATE_VERDICT=not-proven-infra-retry-exhausted"
+            echo "::error::NOT_PROVEN (#12563): ripr run ${RUN_ID} was still infra-evicted on attempt ${RUN_ATTEMPT}; the single automatic same-head retry is exhausted. No proof exists for this SHA until a manual \`gh run rerun ${RUN_ID} --failed\` completes."
             echo "::notice::run attempt ${RUN_ATTEMPT} — automatic retry is exhausted; use the gate's documented manual rerun for this head."
-            summary "decision: \`skip (retry bound reached — manual rerun path applies)\`"
+            summary "decision: \`skip (retry bound reached — manual rerun path applies)\`" \
+                    "verdict: \`not-proven-infra-retry-exhausted (NOT_PROVEN)\`"
             exit 0
           fi
 
@@ -119,6 +134,20 @@ jobs:
           fi
 
           echo "::notice::gate classified run ${RUN_ID} as infra-no-proof (lane: ${lane_name:-unknown}, job: ${lane_job_id:-unknown}); re-running failed jobs for the same evaluated tree."
+          # Re-read the live run immediately before arming (review round 2):
+          # a duplicate delivery that queued behind the concurrency group must
+          # observe the bumped attempt / in-flight status and skip, so the
+          # one-retry bound holds even under racing event deliveries. The
+          # rerun API additionally rejects non-completed runs server-side.
+          live_state=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}" \
+            --jq '"\(.run_attempt) \(.status)"')
+          live_attempt=${live_state%% *}
+          live_status=${live_state#* }
+          if [ "${live_attempt}" != "1" ] || [ "${live_status}" != "completed" ]; then
+            echo "::notice::run ${RUN_ID} is attempt ${live_attempt:-unknown}/status ${live_status:-unknown} before arming — the retry is already armed or consumed; no second automatic retry."
+            summary "decision: \`skip (bound already armed or consumed — race with another delivery)\`"
+            exit 0
+          fi
           gh api -X POST "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/rerun-failed-jobs"
 
           summary \
