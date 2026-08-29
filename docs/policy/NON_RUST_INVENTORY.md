@@ -6,22 +6,22 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12403 |
+| Total tracked files | 12406 |
 | Rust-family files | 3811 |
-| Non-Rust files | 8592 |
-| Allowlisted | 6357 |
+| Non-Rust files | 8595 |
+| Allowlisted | 6360 |
 | Unclassified | 2235 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 490 |
-| documentation | 2802 |
+| config | 491 |
+| documentation | 2803 |
 | generated | 2 |
 | production | 348 |
 | test | 2054 |
-| tooling | 661 |
+| tooling | 662 |
 | unclassified | 2235 |
 
 ## Unclassified files
@@ -2711,6 +2711,7 @@
 | `.ci/policies/required-checks.toml` | config | `non-rust-ci-config` | release/ci |
 | `.ci/policies/tokmd-cockpit.toml` | config | `non-rust-ci-config` | release/ci |
 | `.ci/policy-checks-inventory.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/postfix-conformance/postfix-modifiers.pl` | config | `non-rust-ci-config` | release/ci |
 | `.ci/public-api-baselines/perl-dap.txt` | config | `non-rust-ci-config` | release/ci |
 | `.ci/public-api-baselines/perl-lsp-rs.txt` | config | `non-rust-ci-config` | release/ci |
 | `.ci/public-api-baselines/perl-parser.txt` | config | `non-rust-ci-config` | release/ci |
@@ -5331,6 +5332,7 @@
 | `docs/reference/PERL_KWALITEE_MIGRATION.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/reference/PIPELINE_GATES.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/reference/POSITION_TRACKING_GUIDE.md` | documentation | `non-rust-docs-tree` | docs |
+| `docs/reference/POSTFIX_CONFORMANCE.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/reference/PROCESS_LESSONS.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/reference/PROPERTY_TESTING.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/reference/PROVIDER_READINESS_CONTRACT.md` | documentation | `non-rust-docs-tree` | docs |
@@ -6450,6 +6452,7 @@
 | `scripts/ci-audit-workflows.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci-cost-monitor.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/aggregate_lane_history.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/ci/check-postfix-conformance.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/check-pr-claim-currentness` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/check-pr-review-convergence` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/check-pr-review-convergence-core` | tooling | `non-rust-ci-scripts-tree` | release/ci |
