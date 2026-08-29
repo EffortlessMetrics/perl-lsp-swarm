@@ -161,19 +161,20 @@ fn recovery_checkpoint_restart_matches_fresh_diagnostics() -> Result<()> {
     let prefix = "my $seed = 0;\n".repeat(24);
     let source = format!("{prefix}my $value = ;\nmy $tail = 1;\n");
     let edit_start = source
-        .find("= ;")
+        .find("1;")
         .ok_or_else(|| anyhow::anyhow!("recovery fixture is missing"))?;
     let edit = Edit {
         start_byte: edit_start,
-        old_end_byte: edit_start + "= ;".len(),
-        new_end_byte: edit_start + "= 1;".len(),
-        new_text: "= 1;".to_string(),
+        old_end_byte: edit_start + "1".len(),
+        new_end_byte: edit_start + "2".len(),
+        new_text: "2".to_string(),
     };
 
     let mut state = IncrementalState::new(source);
     let result = apply_edits(&mut state, &[edit])?;
 
     assert_eq!(result.lex_restart.strategy, LexRestartStrategy::StoredCheckpointToEof);
+    assert!(!state.parse_output().diagnostics.is_empty());
     assert_incremental_matches_fresh(&state);
     Ok(())
 }
