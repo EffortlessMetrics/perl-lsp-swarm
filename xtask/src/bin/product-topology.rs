@@ -528,6 +528,14 @@ fn validate_dependencies(
                 findings,
             );
         }
+        if policy.mcp_stage == McpStage::Admitted {
+            forbid_dependencies(
+                product,
+                std::slice::from_ref(&policy.packages.mcp_adapter),
+                "stage=admitted product",
+                findings,
+            );
+        }
         if policy.mcp_stage == McpStage::Absent {
             forbid_dependencies(
                 product,
@@ -956,6 +964,21 @@ mod tests {
         assert!(has_finding(
             &report,
             "stage=required product package=perllsp requires normal dependency=perl-mcp"
+        ));
+    }
+
+    #[test]
+    fn admitted_stage_rejects_product_mcp_adapter_dependency() {
+        let (policy, mut metadata, manifest) = fixture(McpStage::Admitted);
+        if let Some(product) =
+            metadata.packages.iter_mut().find(|package| package.name == "perllsp")
+        {
+            product.dependencies.push(dependency("perl-mcp"));
+        }
+        let report = validate(&policy, &metadata, &manifest);
+        assert!(has_finding(
+            &report,
+            "stage=admitted product package=perllsp forbids dependency=perl-mcp"
         ));
     }
 
