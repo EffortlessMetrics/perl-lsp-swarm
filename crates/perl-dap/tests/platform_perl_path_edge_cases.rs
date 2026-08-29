@@ -15,6 +15,7 @@ use perl_dap::platform::{
 };
 #[cfg(not(windows))]
 use perl_dap::platform::{detect_perlbrew_perl, detect_plenv_perl};
+#[cfg(not(windows))]
 use perl_tdd_support::{must, must_some};
 use serial_test::serial;
 use std::path::PathBuf;
@@ -276,6 +277,35 @@ fn find_perl_interpreter_cached_respects_configured_path_changes() -> TestResult
     assert!(
         matches!(not_found, PerlInterpreterResult::NotFound { .. }),
         "missing configured path should not be replaced by cached previous result, got: {not_found:?}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn find_perl_interpreter_cached_revalidates_configured_file_changes() -> TestResult {
+    let tmp = tempfile::tempdir()?;
+    let fake_perl = tmp.path().join("cached-perl");
+    let configured = fake_perl.to_string_lossy().to_string();
+
+    let missing = find_perl_interpreter_cached(Some(&configured));
+    assert!(
+        matches!(missing, PerlInterpreterResult::NotFound { .. }),
+        "missing configured path should be cached as NotFound, got: {missing:?}"
+    );
+
+    std::fs::write(&fake_perl, b"#!/usr/bin/env perl\n")?;
+    let found = find_perl_interpreter_cached(Some(&configured));
+    assert!(
+        matches!(found, PerlInterpreterResult::ConfiguredPath(ref path) if *path == fake_perl),
+        "creating a configured interpreter without changing its key must invalidate NotFound, got: {found:?}"
+    );
+
+    std::fs::remove_file(&fake_perl)?;
+    let removed = find_perl_interpreter_cached(Some(&configured));
+    assert!(
+        matches!(removed, PerlInterpreterResult::NotFound { .. }),
+        "deleting a configured interpreter without changing its key must invalidate ConfiguredPath, got: {removed:?}"
     );
 
     Ok(())
