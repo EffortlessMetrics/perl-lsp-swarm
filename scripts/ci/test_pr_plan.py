@@ -78,11 +78,20 @@ class PrPlanTests(unittest.TestCase):
 
     def test_full_ci_does_not_select_schedule_manual_coverage(self) -> None:
         lanes = {
-            "coverage": {"base_lem": 45, "blocking": False},
+            "coverage_alias": {
+                "base_lem": 45,
+                "blocking": False,
+                "workflow": ".github/workflows/ci-nightly.yml",
+                "job": "test-coverage",
+                "labels": ["coverage-alias"],
+            },
             "mutation": {"base_lem": 60, "blocking": False},
         }
         risk_packs = {
-            "parser": {"deep_lanes": ["coverage", "mutation"]},
+            "parser": {
+                "lanes": ["coverage_alias"],
+                "deep_lanes": ["coverage_alias", "mutation"],
+            },
         }
 
         selected, skipped = pr_plan.select_lanes(

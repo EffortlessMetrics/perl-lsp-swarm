@@ -206,11 +206,12 @@ fn coverage_workflow_is_manual_or_nightly_only_and_requires_receipts() {
 
     let whitelist_document: TomlValue = must(toml::from_str(&lane_whitelist));
     let required_checks_document: TomlValue = must(toml::from_str(&policy));
+    let economics_document: TomlValue = must(toml::from_str(&lane_economics));
     let risk_pack_document: TomlValue = must(toml::from_str(&risk_pack_policy));
     let codecov_document: Value = must(serde_yaml_ng::from_str(&codecov_config));
     must(coverage_required_check_contract(&required_checks_document));
     must(coverage_whitelist_contract(&whitelist_document));
-    must(coverage_risk_pack_contract(&risk_pack_document));
+    must(coverage_risk_pack_contract(&risk_pack_document, &economics_document));
     must(codecov_threshold_contract(&codecov_document));
     let coverage_whitelist_table = must_some(toml_lane(&whitelist_document, "coverage"));
     let allowed_triggers =
@@ -229,7 +230,6 @@ fn coverage_workflow_is_manual_or_nightly_only_and_requires_receipts() {
         "coverage whitelist must not carry label or branch selectors"
     );
 
-    let economics_document: TomlValue = must(toml::from_str(&lane_economics));
     let coverage_economics_table = must_some(
         economics_document
             .get("lane")
@@ -245,6 +245,13 @@ fn coverage_workflow_is_manual_or_nightly_only_and_requires_receipts() {
     assert!(
         coverage_economics_table.get("default_pr").and_then(TomlValue::as_bool) == Some(false),
         "coverage economics must remain outside the default PR lane"
+    );
+    assert!(
+        coverage_economics_table.get("workflow").and_then(TomlValue::as_str)
+            == Some(".github/workflows/ci-nightly.yml")
+            && coverage_economics_table.get("job").and_then(TomlValue::as_str)
+                == Some("test-coverage"),
+        "coverage economics must bind the planner lane to the executable job"
     );
 
     assert!(
@@ -324,6 +331,12 @@ fn coverage_workflow_is_manual_or_nightly_only_and_requires_receipts() {
             .contains("Codecov patch gate remains advisory; project coverage remains burn-down:")
             && !codecov_rollout.contains("Codecov patch gate remains blocking"),
         "Codecov rollout checklist must keep patch coverage advisory"
+    );
+    must(coverage_rollout_docs_contract(&codecov_rollout));
+    let stale_codecov_rollout = codecov_rollout.replacen("origin/main", "origin/master", 1);
+    assert!(
+        coverage_rollout_docs_contract(&stale_codecov_rollout).is_err(),
+        "Codecov rollout documentation contract must reject stale master guidance"
     );
     assert!(
         inventory.contains(
@@ -412,6 +425,19 @@ fn coverage_workflow_is_manual_or_nightly_only_and_requires_receipts() {
         coverage_risk_pack_docs_contract(&stale_risk_doc).is_err(),
         "risk-pack documentation contract must reject coverage as a full-ci lane"
     );
+    let stale_risk_sentence = risk_pack_doc.replacen("must not select it", "must select it", 1);
+    assert!(
+        coverage_risk_pack_docs_contract(&stale_risk_sentence).is_err(),
+        "risk-pack documentation contract must reject stale coverage route wording"
+    );
+    let stale_lane_alias_source = format!(
+        "{lane_economics}\n[lane.coverage_alias]\nworkflow = \".github/workflows/ci-nightly.yml\"\njob = \"test-coverage\"\nlabels = [\"coverage-alias\"]\nbranches = [\"schedule\", \"workflow_dispatch\"]\n"
+    );
+    let stale_lane_alias: TomlValue = must(toml::from_str(&stale_lane_alias_source));
+    assert!(
+        coverage_risk_pack_contract(&risk_pack_document, &stale_lane_alias).is_err(),
+        "risk-pack contract must reject renamed semantic coverage lanes"
+    );
     let stale_deep_lane_source = risk_pack_policy.replacen(
         "deep_lanes = [\"mutation\", \"fuzz\"]",
         "deep_lanes = [\"mutation\", \"fuzz\", \"coverage\"]",
@@ -419,7 +445,7 @@ fn coverage_workflow_is_manual_or_nightly_only_and_requires_receipts() {
     );
     let stale_deep_lanes: TomlValue = must(toml::from_str(&stale_deep_lane_source));
     assert!(
-        coverage_risk_pack_contract(&stale_deep_lanes).is_err(),
+        coverage_risk_pack_contract(&stale_deep_lanes, &economics_document).is_err(),
         "risk-pack contract must reject coverage as a full-ci deep lane"
     );
     let stale_risk_label_source = risk_pack_policy.replacen(
@@ -429,7 +455,7 @@ fn coverage_workflow_is_manual_or_nightly_only_and_requires_receipts() {
     );
     let stale_risk_labels: TomlValue = must(toml::from_str(&stale_risk_label_source));
     assert!(
-        coverage_risk_pack_contract(&stale_risk_labels).is_err(),
+        coverage_risk_pack_contract(&stale_risk_labels, &economics_document).is_err(),
         "risk-pack contract must reject coverage label routing"
     );
     let weak_codecov_target = codecov_config.replacen("target: 95%", "target: 90%", 1);
@@ -1111,7 +1137,25 @@ fn coverage_reference_rows_contract(document: &str, context: &str) -> Result<()>
     Ok(())
 }
 
-fn coverage_risk_pack_contract(policy: &TomlValue) -> Result<()> {
+fn coverage_risk_pack_contract(policy: &TomlValue, lane_policy: &TomlValue) -> Result<()> {
+    let lanes = lane_policy
+        .get("lane")
+        .and_then(TomlValue::as_table)
+        .ok_or_else(|| anyhow!("lane policy must contain a lane table"))?;
+    let coverage_lanes = lanes
+        .iter()
+        .filter_map(|(id, lane)| {
+            let lane = lane.as_table()?;
+            (lane.get("workflow").and_then(TomlValue::as_str)
+                == Some(".github/workflows/ci-nightly.yml")
+                && lane.get("job").and_then(TomlValue::as_str) == Some("test-coverage"))
+            .then_some((id.as_str(), lane))
+        })
+        .collect::<Vec<_>>();
+    ensure!(
+        coverage_lanes.len() == 1 && coverage_lanes[0].0 == "coverage",
+        "lane policy must contain exactly one canonical test-coverage lane"
+    );
     let packs = policy
         .get("risk_pack")
         .and_then(TomlValue::as_table)
@@ -1120,11 +1164,21 @@ fn coverage_risk_pack_contract(policy: &TomlValue) -> Result<()> {
         let Some(pack) = pack.as_table() else {
             continue;
         };
-        for field in ["deep_lanes", "labels"] {
+        for field in ["lanes", "deep_lanes", "labels"] {
             if let Some(values) = pack.get(field).and_then(TomlValue::as_array) {
                 ensure!(
                     !values.iter().filter_map(TomlValue::as_str).any(|value| {
-                        value == "coverage" || value.eq_ignore_ascii_case("ci:coverage")
+                        value == "coverage"
+                            || (field == "labels" && value.eq_ignore_ascii_case("ci:coverage"))
+                            || (field != "labels"
+                                && lanes.get(value).and_then(TomlValue::as_table).is_some_and(
+                                    |lane| {
+                                        lane.get("workflow").and_then(TomlValue::as_str)
+                                            == Some(".github/workflows/ci-nightly.yml")
+                                            && lane.get("job").and_then(TomlValue::as_str)
+                                                == Some("test-coverage")
+                                    },
+                                ))
                     }),
                     "risk pack `{pack_id}` must not route schedule/manual-only coverage through `{field}`"
                 );
@@ -1140,9 +1194,34 @@ fn coverage_risk_pack_docs_contract(document: &str) -> Result<()> {
         .find(|line| line.contains("| `parser` |"))
         .ok_or_else(|| anyhow!("risk-pack docs must contain the parser catalog row"))?;
     ensure!(
-        !parser_row.to_ascii_lowercase().contains("coverage")
-            && !has_stale_route_wording(parser_row),
+        !parser_row.to_ascii_lowercase().contains("coverage"),
         "parser risk-pack docs must not advertise coverage as a PR deep lane"
+    );
+    let mut previous_coverage_line = false;
+    for line in document.lines() {
+        let lower = line.to_ascii_lowercase();
+        let coverage_context =
+            lower.contains("coverage") || lower.contains("codecov") || previous_coverage_line;
+        if coverage_context && has_stale_route_wording(line) {
+            ensure!(
+                ["absent", "must not", "not advertise", "not select"]
+                    .iter()
+                    .any(|marker| lower.contains(marker)),
+                "risk-pack docs contain stale coverage route wording: {line}"
+            );
+        }
+        previous_coverage_line = !line.trim().is_empty()
+            && (lower.contains("coverage")
+                || lower.contains("codecov")
+                || (previous_coverage_line && !has_stale_route_wording(line)));
+    }
+    Ok(())
+}
+
+fn coverage_rollout_docs_contract(document: &str) -> Result<()> {
+    ensure!(
+        !document.to_ascii_lowercase().contains("master"),
+        "Codecov rollout docs must use the live main branch"
     );
     Ok(())
 }
