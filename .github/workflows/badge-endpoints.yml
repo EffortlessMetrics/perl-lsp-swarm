@@ -68,9 +68,16 @@ jobs:
         env:
           RIPR_RECEIPT: ${{ github.event_name == 'workflow_run' && format('{0}/ripr-badge/target/receipts/quality/ripr-plus.json', runner.temp) || '' }}
           RIPR_PRODUCER: ${{ github.event_name == 'workflow_run' && format('{0}/ripr-badge/target/receipts/quality/ripr-badge-producer.json', runner.temp) || '' }}
-        run: >-
-          python3 scripts/generate-badges.py
-          ${{ github.event_name == 'workflow_run' && format('--ripr-receipt "{0}/ripr-badge/target/receipts/quality/ripr-plus.json" --producer-receipt "{0}/ripr-badge/target/receipts/quality/ripr-badge-producer.json"', runner.temp) || '' }}
+        run: |
+          set -euo pipefail
+          if [ -n "${RIPR_RECEIPT:-}" ]; then
+            python3 scripts/generate-badges.py \
+              --ripr-receipt "$RIPR_RECEIPT" \
+              --producer-receipt "$RIPR_PRODUCER" \
+              --source-sha "$SOURCE_SHA"
+          else
+            python3 scripts/generate-badges.py
+          fi
 
       - name: Validate and stage exact badge snapshot
         run: |
