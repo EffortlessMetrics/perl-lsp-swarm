@@ -309,9 +309,7 @@ fn hash_receiver_fact(
     };
 
     let base = receiver_base_label(left);
-    let kind = if matches!(&receiver.kind, NodeKind::Binary { op, .. } if op == "->{}")
-        || receiver_text(receiver, context.source).is_some_and(|text| text.contains("->{"))
-    {
+    let kind = if matches!(&receiver.kind, NodeKind::Binary { op, .. } if op == "->{}") {
         ReceiverKind::HashRefSlot
     } else {
         ReceiverKind::HashSlot
@@ -422,8 +420,7 @@ fn receiver_container_fact(left: &Node, context: ReceiverFactContext<'_>) -> Opt
             };
 
             let base = receiver_base_label(container);
-            let is_hashref = op == "->{}"
-                || receiver_text(left, context.source).is_some_and(|text| text.contains("->{"));
+            let is_hashref = op == "->{}";
             let evidence = if is_hashref {
                 TypeEvidence::HashRefSlot { base, key }
             } else {
@@ -605,10 +602,6 @@ fn static_array_index(node: &Node) -> Option<usize> {
         NodeKind::Number { value } => value.parse().ok(),
         _ => None,
     }
-}
-
-fn receiver_text<'a>(receiver: &Node, source: Option<&'a str>) -> Option<&'a str> {
-    source?.get(receiver.location.start..receiver.location.end)
 }
 
 fn package_from_type_fact(fact: &TypeFact) -> Option<String> {
