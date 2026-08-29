@@ -47,12 +47,16 @@ const LOOKAHEAD_CHARS: usize = 50;
 pub fn has_error_checking_nearby(source: &str, pos: usize) -> bool {
     // Scan the next `LOOKAHEAD_CHARS` *characters* for "or", "||", "die", "warn".
     //
-    // `pos` is normally a node end offset, but a stale AST against edited text can
-    // supply an offset that is past the end or inside a multi-byte sequence, so the
-    // window start is taken with `get` rather than indexed. The window end is
-    // measured in characters (not bytes) so it can never bisect a multi-byte
-    // character — the fixed 50-*byte* window this replaced panicked whenever
-    // non-ASCII text followed a file operation within 50 bytes.
+    // The window end is measured in characters (not bytes) so it can never bisect a
+    // multi-byte character — the fixed 50-*byte* window this replaced panicked
+    // whenever non-ASCII text followed a file operation within 50 bytes (#9835).
+    //
+    // `pos` comes from a node end offset, which is a valid boundary within the
+    // source the AST was parsed from. Taking the window start with `get` rather
+    // than indexing keeps this function total for any `(source, pos)` pair anyway,
+    // so it is the window width — not the caller — that decides the result. Note
+    // this makes only *this* function total: the surrounding walk still indexes
+    // `source` by raw node offsets in several places (#13874).
     let Some(rest) = source.get(pos..) else {
         return false;
     };
