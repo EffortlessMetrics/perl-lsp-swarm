@@ -117,8 +117,7 @@ fn validate_disallowed_fields_policy(config: &Value, ledger: &LintLedger) -> Res
         }
     }
 
-    let Some(lint) = ledger.lint.iter().find(|lint| lint.name == DISALLOWED_FIELDS_LINT)
-    else {
+    let Some(lint) = ledger.lint.iter().find(|lint| lint.name == DISALLOWED_FIELDS_LINT) else {
         bail!(
             "{LINT_LEDGER} must contain an active or debt {DISALLOWED_FIELDS_LINT} row; removing or demoting the policy identity together with its Cargo/config hooks is not a valid rollback"
         );

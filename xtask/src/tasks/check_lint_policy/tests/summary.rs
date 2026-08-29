@@ -30,7 +30,5 @@ fn summary_surfaces_empty_by_design_configuration() {
     lint.configuration_state = Some(ConfigurationState::EmptyByDesign);
     let summary = render_policy_summary(&ledger_with(vec![lint]), &empty_debt());
 
-    assert!(
-        summary.contains("configuration-empty-by-design (1): clippy::disallowed_fields")
-    );
+    assert!(summary.contains("configuration-empty-by-design (1): clippy::disallowed_fields"));
 }
