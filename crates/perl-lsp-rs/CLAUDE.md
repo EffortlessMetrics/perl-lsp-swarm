@@ -71,7 +71,8 @@ Primary seam:
 ## Proof routes
 
 ```bash
-cargo fmt --all
+# Non-mutating package-scoped formatting check:
+cargo fmt -p perl-lsp-rs -- --check
 
 # Hosted clippy_scoped / clippy_full:
 cargo clippy --locked --lib -p perllsp -- -D warnings -A missing_docs
