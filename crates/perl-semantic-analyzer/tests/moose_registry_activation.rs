@@ -99,7 +99,7 @@ fn detect(kind: MooseActivationKind, input: &AdapterDetectionInput) -> AdapterDe
 fn sites(code: &str, file_id: u64, generation: &str) -> Vec<MooseActivationSite> {
     let mut parser = Parser::new(code);
     let ast = must(parser.parse());
-    extract_moose_activation_sites(&ast, FileId(file_id), SourceGeneration::known(generation))
+    extract_moose_activation_sites(&ast, code, FileId(file_id), SourceGeneration::known(generation))
 }
 
 #[test]

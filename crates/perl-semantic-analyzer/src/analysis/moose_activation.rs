@@ -42,17 +42,19 @@ impl MooseActivationSite {
 #[must_use]
 pub fn extract_moose_activation_sites(
     ast: &Node,
+    source: &str,
     file_id: FileId,
     generation: SourceGeneration,
 ) -> Vec<MooseActivationSite> {
     let mut sites = Vec::new();
     let mut current_package = Some("main".to_string());
-    walk_activation_sites(ast, file_id, generation, &mut current_package, &mut sites);
+    walk_activation_sites(ast, source, file_id, generation, &mut current_package, &mut sites);
     sites
 }
 
 fn walk_activation_sites(
     node: &Node,
+    source: &str,
     file_id: FileId,
     generation: SourceGeneration,
     current_package: &mut Option<String>,
@@ -60,8 +62,9 @@ fn walk_activation_sites(
 ) {
     match &node.kind {
         NodeKind::Use { module, args, .. } => {
+            let source_span = source.get(node.location.start..node.location.end);
             if let Some((kind, requested_version, import_disposition)) =
-                classify_moose_import(module, args)
+                classify_moose_import(module, args, source_span)
             {
                 sites.push(MooseActivationSite {
                     file_id,
@@ -79,7 +82,7 @@ fn walk_activation_sites(
             }
         }
         NodeKind::Package { name, block: Some(block), .. } => {
-            walk_package_block(block, name, file_id, generation, sites);
+            walk_package_block(block, name, source, file_id, generation, sites);
             return;
         }
         NodeKind::Package { name, block: None, .. } => {
@@ -89,6 +92,7 @@ fn walk_activation_sites(
             for statement in statements {
                 walk_activation_sites(
                     statement,
+                    source,
                     file_id,
                     generation.clone(),
                     current_package,
@@ -102,6 +106,7 @@ fn walk_activation_sites(
             for statement in statements {
                 walk_activation_sites(
                     statement,
+                    source,
                     file_id,
                     generation.clone(),
                     &mut block_package,
@@ -114,13 +119,14 @@ fn walk_activation_sites(
     }
 
     for child in node.children() {
-        walk_activation_sites(child, file_id, generation.clone(), current_package, sites);
+        walk_activation_sites(child, source, file_id, generation.clone(), current_package, sites);
     }
 }
 
 fn walk_package_block(
     block: &Node,
     name: &str,
+    source: &str,
     file_id: FileId,
     generation: SourceGeneration,
     sites: &mut Vec<MooseActivationSite>,
@@ -130,6 +136,7 @@ fn walk_package_block(
         for statement in statements {
             walk_activation_sites(
                 statement,
+                source,
                 file_id,
                 generation.clone(),
                 &mut package_scope,
@@ -142,11 +149,25 @@ fn walk_package_block(
 fn classify_moose_import(
     module: &str,
     args: &[String],
+    source_span: Option<&str>,
 ) -> Option<(MooseActivationKind, Option<String>, MooseImportDisposition)> {
     let (kind, mut requested_version) = classify_module(module)?;
+    let Some(source_span) = source_span else {
+        return Some((
+            kind,
+            requested_version,
+            MooseImportDisposition::Unmodeled {
+                arguments: vec!["<invalid-source-span>".to_string()],
+            },
+        ));
+    };
     let normalized = normalize_import_args(args);
     let import_disposition = if normalized.is_empty() {
-        MooseImportDisposition::Exact
+        if source_span.contains('(') {
+            MooseImportDisposition::Unmodeled { arguments: vec!["(".to_string(), ")".to_string()] }
+        } else {
+            MooseImportDisposition::Exact
+        }
     } else if requested_version.is_none()
         && normalized.len() == 1
         && is_version_spelling(&normalized[0])
@@ -201,7 +222,7 @@ mod tests {
     fn sites(code: &str) -> Vec<MooseActivationSite> {
         let mut parser = Parser::new(code);
         let ast = must(parser.parse());
-        extract_moose_activation_sites(&ast, FileId(1), SourceGeneration::known("gen-1"))
+        extract_moose_activation_sites(&ast, code, FileId(1), SourceGeneration::known("gen-1"))
     }
 
     #[test]
