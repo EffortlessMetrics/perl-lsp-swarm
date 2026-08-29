@@ -73,6 +73,18 @@ The README is a front door, not the metric source of truth. Current release post
 code --install-extension EffortlessMetrics.perl-lsp-rs
 ```
 
+**Cargo** (any platform, Rust 1.95 or newer) — installs the `perllsp`
+language-server binary from crates.io. This installs `perllsp` only, not the
+`perl-dap` debug adapter; use a release archive if you need the debugger.
+crates.io is an independently versioned channel, so compare
+`perllsp --version` with the latest
+[release](https://github.com/EffortlessMetrics/perl-lsp/releases) before
+relying on it:
+
+```bash
+cargo install perllsp
+```
+
 **macOS and Linux** — use a manual archive from
 [GitHub Releases](https://github.com/EffortlessMetrics/perl-lsp/releases) until
 the release closeout publishes an immutable installer ref and the reviewed
@@ -94,6 +106,10 @@ curl -fsSL "https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/$INSTAL
 ```bash
 brew install effortlessmetrics/tap/perllsp
 ```
+
+The tap is an independently versioned channel and can lag the GitHub release;
+check `brew info effortlessmetrics/tap/perllsp` to confirm the formula version
+matches the release you expect before installing.
 
 **Windows** (x86_64) — download
 `perllsp-<version>-x86_64-pc-windows-msvc.zip` from
