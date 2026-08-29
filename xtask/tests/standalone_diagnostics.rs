@@ -794,3 +794,122 @@ fn rejects_a_non_canonical_registry_file() -> TestResult {
     assert!(error.contains("is not canonical"), "got:\n{error}");
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// The registry schema is the structural authority (#13800 review)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn rejects_a_manifest_that_violates_the_registry_schema() -> TestResult {
+    let root = staged_root("schema-invalid")?;
+    let manifest_path = root.join(MANIFEST_PATH);
+    let mut manifest: Value = serde_json::from_slice(&std::fs::read(&manifest_path)?)?;
+    // `applicability` is required by the schema but is not one of the semantic
+    // rules the handwritten validator enforces, so only applying the schema
+    // catches this.
+    manifest["actions"]
+        .as_array_mut()
+        .and_then(|actions| actions.first_mut())
+        .and_then(Value::as_object_mut)
+        .ok_or("missing action")?
+        .remove("applicability");
+    std::fs::write(&manifest_path, format!("{}\n", serde_json::to_string_pretty(&manifest)?))?;
+
+    let error = validation_error(diagnostics::validate_manifest_file(&root));
+    std::fs::remove_dir_all(&root).ok();
+    assert!(error.contains("registry schema violation"), "got:\n{error}");
+    Ok(())
+}
+
+#[test]
+fn rejects_a_reason_row_with_an_unknown_field() -> TestResult {
+    let root = staged_root("schema-unknown-key")?;
+    let manifest_path = root.join(MANIFEST_PATH);
+    let mut manifest: Value = serde_json::from_slice(&std::fs::read(&manifest_path)?)?;
+    manifest["primary_reasons"]
+        .as_array_mut()
+        .and_then(|reasons| reasons.first_mut())
+        .ok_or("missing reason")?["severity"] = json!("critical");
+    std::fs::write(&manifest_path, format!("{}\n", serde_json::to_string_pretty(&manifest)?))?;
+
+    let error = validation_error(diagnostics::validate_manifest_file(&root));
+    std::fs::remove_dir_all(&root).ok();
+    assert!(error.contains("registry schema violation"), "got:\n{error}");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Packet admission is total over the input contract (#13800 review)
+// ---------------------------------------------------------------------------
+
+fn admission_error(subject: &Value) -> String {
+    match diagnostics::read_packet(subject) {
+        Ok(_) => "packet unexpectedly admitted".to_string(),
+        Err(error) => error.to_string(),
+    }
+}
+
+fn valid_packet() -> Value {
+    packet(
+        "selection_committed",
+        json!({
+            "product_units": "installed",
+            "cleanup": "completed",
+            "process_startup": "verified",
+            "path_persistence": "persisted"
+        }),
+        "installed cleanly",
+    )
+}
+
+#[test]
+fn rejects_a_packet_with_an_arbitrary_route_mode() -> TestResult {
+    let mut subject = valid_packet();
+    subject["route_mode"] = json!("../../etc/passwd or any unbounded operator text");
+    let error = admission_error(&subject);
+    assert!(error.contains("`route_mode` value"), "got: {error}");
+    assert!(error.contains("may not carry arbitrary text"), "got: {error}");
+    Ok(())
+}
+
+#[test]
+fn rejects_a_packet_with_an_unknown_field() -> TestResult {
+    let mut subject = valid_packet();
+    subject
+        .as_object_mut()
+        .ok_or("packet is not an object")?
+        .insert("severity".to_string(), json!("critical"));
+    let error = admission_error(&subject);
+    assert!(error.contains("unknown field `severity`"), "got: {error}");
+    Ok(())
+}
+
+#[test]
+fn rejects_a_packet_missing_required_transaction_identity() -> TestResult {
+    for key in ["transaction_id", "attempt_id"] {
+        let mut subject = valid_packet();
+        subject.as_object_mut().ok_or("packet is not an object")?.remove(key);
+        let error = admission_error(&subject);
+        assert!(error.contains(&format!("missing `{key}`")), "for {key}, got: {error}");
+    }
+    Ok(())
+}
+
+#[test]
+fn rejects_a_packet_with_a_malformed_candidate_digest() -> TestResult {
+    let mut subject = valid_packet();
+    subject["candidate_id"] = json!("not-a-sha256");
+    let error = admission_error(&subject);
+    assert!(error.contains("must be a sha256 digest or null"), "got: {error}");
+    Ok(())
+}
+
+#[test]
+fn an_admitted_packet_renders_only_its_bounded_route_mode() -> TestResult {
+    let manifest = diagnostics::load_manifest(&repo_root())?;
+    let admitted = diagnostics::read_packet(&valid_packet())?;
+    assert_eq!(admitted.route_mode, "first_party_posix");
+    let projection = diagnostics::project_packet(&manifest, &valid_packet())?;
+    assert_eq!(projection.get("route_mode").and_then(Value::as_str), Some("first_party_posix"));
+    Ok(())
+}
