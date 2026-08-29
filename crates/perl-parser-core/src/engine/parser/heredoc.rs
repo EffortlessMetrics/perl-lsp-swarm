@@ -86,7 +86,6 @@ fn map_heredoc_quote_kind(text: &str, _interpolated: bool) -> heredoc_collector:
 }
 
 const MAX_HEREDOC_DEPTH: usize = 100;
-const HEREDOC_TIMEOUT_MS: u64 = 5000;
 
 impl<'a> Parser<'a> {
     /// Enqueue a heredoc declaration for later content collection
@@ -104,10 +103,6 @@ impl<'a> Parser<'a> {
                 decl_start,
             ));
             return;
-        }
-
-        if self.pending_heredocs.is_empty() {
-            self.heredoc_start_time = Some(Instant::now());
         }
 
         self.pending_heredocs.push_back(PendingHeredoc {
@@ -132,18 +127,40 @@ impl<'a> Parser<'a> {
             return;
         }
 
-        // Check for timeout
-        if let Some(start) = self.heredoc_start_time
-            && start.elapsed().as_millis() > HEREDOC_TIMEOUT_MS as u128 {
-                self.errors.push(ParseError::syntax(
-                    format!("Heredoc parsing timed out (> {}ms)", HEREDOC_TIMEOUT_MS),
-                    self.byte_cursor,
-                ));
-                // Clear pending to prevent further processing/hanging
-                self.pending_heredocs.clear();
-                self.heredoc_start_time = None;
-                return;
+        // Deterministic collection bound (#7291).
+        //
+        // Heredoc collection was previously abandoned when more than five
+        // wall-clock seconds had elapsed since the queue became non-empty. That
+        // timer spanned the whole enclosing statement — including nested blocks
+        // containing no heredocs at all — so tracing, sanitizers, a debugger
+        // pause, or a loaded host could drop bodies from source that is
+        // perfectly valid, and report the loss as a syntax error against the
+        // user's code.
+        //
+        // The bound is now charged in source bytes, so identical source and
+        // configuration consume identical budget on every host. Exhaustion is a
+        // typed resource-limit terminal, never a syntax claim, and the queue is
+        // deliberately left intact so a truncated parse cannot be mistaken for
+        // an ordinary complete one.
+        if self.operation.heredoc_scan_exhausted() {
+            let (limit, usage) = self.operation.heredoc_scan_state();
+            let location =
+                self.pending_heredocs.get(pending_start).map_or(self.byte_cursor, |decl| {
+                    decl.decl_span.start
+                });
+            // Exhaustion is one terminal event for the operation. Later drains
+            // are still refused, but they must not flood diagnostics with one
+            // entry per declaration; the anchor stays on the first refusal.
+            let already_reported = self
+                .errors
+                .iter()
+                .any(|error| matches!(error, ParseError::HeredocBudgetExhausted { .. }));
+            if !already_reported {
+                self.errors.push(ParseError::HeredocBudgetExhausted { limit, usage, location });
             }
+            self.operation.record_terminal(ParseStopCause::HeredocBudgetExhausted { limit, usage });
+            return;
+        }
 
         // Keep a copy of the suffix declarations so we can match outputs back to inputs.
         // The prefix belongs to an enclosing statement and must remain queued until that
@@ -151,7 +168,16 @@ impl<'a> Parser<'a> {
         let queued = self.pending_heredocs.split_off(pending_start);
         let pending: Vec<_> = queued.iter().cloned().collect();
 
+        // Collection walks forward monotonically from the first queued body, so
+        // the span it advances over is an exact deterministic upper bound on
+        // the source it traversed. Charging after the work bounds a single
+        // drain's overshoot to the bytes that drain covers; the total stays a
+        // pure function of source and configuration.
+        let scan_start = pending.first().map_or(self.byte_cursor, |decl| decl.body_start);
+
         let out = collect_at_declaration_offsets(self.src_bytes, queued);
+
+        self.operation.record_heredoc_scan(out.next_offset.saturating_sub(scan_start));
 
         // Zip 1:1 in order (collector preserves input order)
         for (decl, body) in pending.into_iter().zip(out.contents) {
@@ -212,9 +238,6 @@ impl<'a> Parser<'a> {
         // attaches an earlier declaration. Never move the cursor backwards when the
         // parent queue is finally drained.
         self.byte_cursor = self.byte_cursor.max(out.next_offset);
-        if self.pending_heredocs.is_empty() {
-            self.heredoc_start_time = None;
-        }
     }
 
     /// Attach collected heredoc content to its declaration node by matching declaration span

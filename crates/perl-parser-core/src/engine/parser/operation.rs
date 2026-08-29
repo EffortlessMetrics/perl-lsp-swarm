@@ -46,6 +46,18 @@ impl ParserConfigIdentity {
         self.budget
     }
 
+    /// Select an explicit resource budget for this configuration identity.
+    ///
+    /// Budget policy is part of the configuration identity, so two parsers with
+    /// different budgets are different configurations and may legitimately
+    /// reach different typed terminals for the same source (#7291). Recursion
+    /// and block-nesting limits are unchanged: they remain the historical
+    /// production values, not [`ParseBudget`] fields.
+    #[must_use]
+    pub fn with_budget(self, budget: ParseBudget) -> Self {
+        Self { budget, ..self }
+    }
+
     /// Production recursion-depth limit checked by the live context API.
     pub fn max_recursion_depth(self) -> usize {
         self.max_recursion_depth
@@ -162,6 +174,25 @@ impl ParserOperationContext {
 
     pub(crate) fn exit_recursion(&mut self) {
         self.tracker.exit_depth();
+    }
+
+    /// Whether the deterministic heredoc collection budget is already spent.
+    ///
+    /// This is the before-work half of the #7291 charge rule: the parser
+    /// refuses to begin another heredoc collection once the charged total
+    /// reaches the configured limit.
+    pub(crate) fn heredoc_scan_exhausted(&self) -> bool {
+        self.tracker.heredoc_scan_exhausted(&self.config.budget())
+    }
+
+    /// Configured heredoc scan limit and the usage charged so far.
+    pub(crate) fn heredoc_scan_state(&self) -> (usize, usize) {
+        (self.config.budget().max_heredoc_scan_bytes, self.tracker.heredoc_scan_bytes)
+    }
+
+    /// Charge source bytes traversed by heredoc collection (after-work half).
+    pub(crate) fn record_heredoc_scan(&mut self, bytes: usize) {
+        self.tracker.record_heredoc_scan(bytes);
     }
 }
 

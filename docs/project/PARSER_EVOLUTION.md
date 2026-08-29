@@ -267,7 +267,7 @@ denial-of-service on pathological input:
 - `MAX_REGEX_BYTES`: 64 KB per regex literal
 - `MAX_HEREDOC_BYTES`: 256 KB per heredoc
 - `MAX_DELIM_NEST`: 128 levels of delimiter nesting
-- `HEREDOC_TIMEOUT_MS`: 5-second timeout
+- `ParseBudget::max_heredoc_scan_bytes`: 64 MiB of heredoc body collection
 
 The lexer supports **checkpointing** for incremental parsing, allowing the
 parser to save and restore lexer state for efficient re-parsing.

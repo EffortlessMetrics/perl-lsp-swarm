@@ -111,7 +111,7 @@ The lexer implements multiple protections:
 |------------|-------|---------|
 | `MAX_REGEX_BYTES` | 64KB | Limits regex pattern size |
 | `MAX_DELIM_NEST` | 128 | Limits delimiter nesting depth |
-| `HEREDOC_TIMEOUT_MS` | 5000ms | Timeout for heredoc parsing |
+| `max_heredoc_scan_bytes` | 64 MiB | Deterministic budget for heredoc body collection |
 
 **Attack Vectors**
 

@@ -1,0 +1,337 @@
+//! Deterministic heredoc collection budget contract (#7291).
+//!
+//! Parser-core previously abandoned heredoc collection when more than five
+//! wall-clock seconds had elapsed since the pending queue became non-empty. The
+//! timer spanned the whole enclosing statement — including nested blocks that
+//! declare no heredocs — so tracing, a sanitizer, a debugger pause, or a loaded
+//! host could drop bodies from valid source and report the loss as a syntax
+//! error against the user's code.
+//!
+//! These tests pin the replacement contract: collection work is charged in
+//! source bytes, exhaustion is a typed resource-limit terminal rather than a
+//! syntax claim, and identical source plus configuration yields identical AST,
+//! diagnostics, and usage on every host.
+
+use perl_ast::NodeKind;
+use perl_parser_core::error::{ErrorCategory, ErrorClass, ParseBudget, ParseStopCause};
+use perl_parser_core::{ParseError, ParseOutput, Parser, ParserConfigIdentity};
+
+/// One heredoc-bearing statement. Kept separate so its exact charge can be
+/// measured on its own and reused as a boundary threshold below.
+const FIRST_STATEMENT: &str = "my $a = <<EOF;\nbody a line one\nbody a line two\nEOF\n";
+
+/// A second, independently drained heredoc statement.
+const SECOND_STATEMENT: &str = "my $b = <<EOF2;\nbody b\nEOF2\n";
+
+fn two_heredoc_statements() -> String {
+    format!("{FIRST_STATEMENT}{SECOND_STATEMENT}")
+}
+
+fn parse_with_budget(source: &str, budget: ParseBudget) -> ParseOutput {
+    let config = ParserConfigIdentity::production_default().with_budget(budget);
+    let mut parser = Parser::with_production_config(source, config);
+    parser.parse_with_recovery()
+}
+
+fn unlimited_budget() -> ParseBudget {
+    ParseBudget::unlimited()
+}
+
+/// Budget that only constrains heredoc scanning, so an exhausted heredoc budget
+/// cannot be confused with an error/recovery/depth limit firing instead.
+fn heredoc_scan_budget(max_heredoc_scan_bytes: usize) -> ParseBudget {
+    let mut budget = ParseBudget::unlimited();
+    budget.max_heredoc_scan_bytes = max_heredoc_scan_bytes;
+    budget
+}
+
+fn heredoc_contents(output: &ParseOutput) -> Vec<String> {
+    fn walk(node: &perl_ast::Node, found: &mut Vec<String>) {
+        if let NodeKind::Heredoc { content, .. } = &node.kind {
+            found.push(content.clone());
+        }
+        node.for_each_child(|child| walk(child, found));
+    }
+
+    let mut found = Vec::new();
+    walk(&output.ast, &mut found);
+    found
+}
+
+// ---------------------------------------------------------------------------
+// The wall clock is gone from heredoc source semantics.
+// ---------------------------------------------------------------------------
+
+/// Architecture ratchet mirroring `perl-lexer`'s
+/// `production_heredoc_scanning_contains_no_wall_clock_cutoff`.
+///
+/// This is the direct proof of #7291's first acceptance line: no parser-owned
+/// wall clock participates in heredoc source semantics. A behavioural test
+/// cannot establish this — it would have to wait out a real timeout to observe
+/// the branch it is trying to prove absent — so the production source is the
+/// oracle, exactly as the lexer proves the same property.
+#[test]
+fn production_heredoc_parsing_contains_no_wall_clock_cutoff() {
+    const HEREDOC: &str = include_str!("../src/engine/parser/heredoc.rs");
+    const PARSER_MOD: &str = include_str!("../src/engine/parser/mod.rs");
+    const OPERATION: &str = include_str!("../src/engine/parser/operation.rs");
+
+    for (name, source) in [
+        ("engine/parser/heredoc.rs", HEREDOC),
+        ("engine/parser/mod.rs", PARSER_MOD),
+        ("engine/parser/operation.rs", OPERATION),
+    ] {
+        // Comments in these files discuss the removed timer by name, so the
+        // ratchet targets executable spellings rather than the bare words.
+        for forbidden in [
+            "HEREDOC_TIMEOUT_MS",
+            "heredoc_start_time",
+            "Instant::now",
+            ".elapsed()",
+            "std::time::Instant",
+        ] {
+            assert!(
+                !source.contains(forbidden),
+                "{name} must not reintroduce wall-clock heredoc control: found `{forbidden}`"
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Ordinary source is unaffected and deterministic.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn ordinary_heredocs_attach_bodies_and_report_no_terminal() {
+    let output = parse_with_budget(&two_heredoc_statements(), unlimited_budget());
+
+    assert_eq!(output.stop_cause(), None, "valid heredoc source must not terminate early");
+    assert_eq!(
+        heredoc_contents(&output),
+        vec!["body a line one\nbody a line two".to_string(), "body b".to_string()],
+        "both heredoc bodies must attach"
+    );
+    assert!(
+        output.budget_usage.heredoc_scan_bytes > 0,
+        "collection work must actually be charged, not silently uncounted"
+    );
+}
+
+/// The determinism claim: usage is a pure function of source and configuration.
+///
+/// Under the wall clock this could not hold — charged "usage" was elapsed time,
+/// which varies per run. Repeating the parse pins that the replacement carries
+/// no host-dependent input.
+#[test]
+fn repeated_parses_are_byte_identical_in_ast_diagnostics_and_usage() {
+    let source = two_heredoc_statements();
+
+    let first = parse_with_budget(&source, unlimited_budget());
+    let baseline_contents = heredoc_contents(&first);
+    let baseline_usage = first.budget_usage.heredoc_scan_bytes;
+    let baseline_diagnostics = format!("{:?}", first.diagnostics);
+
+    for run in 0..16 {
+        let repeat = parse_with_budget(&source, unlimited_budget());
+        assert_eq!(
+            heredoc_contents(&repeat),
+            baseline_contents,
+            "AST content drifted on run {run}"
+        );
+        assert_eq!(
+            repeat.budget_usage.heredoc_scan_bytes, baseline_usage,
+            "charged usage drifted on run {run}"
+        );
+        assert_eq!(
+            format!("{:?}", repeat.diagnostics),
+            baseline_diagnostics,
+            "diagnostics drifted on run {run}"
+        );
+        assert_eq!(repeat.stop_cause(), first.stop_cause(), "terminal drifted on run {run}");
+    }
+}
+
+/// An exhausted operation must leave no residue for a later ordinary parse.
+///
+/// #7291 requires that exhaustion unwind cleanly rather than poisoning
+/// subsequent work through any shared or static route.
+#[test]
+fn an_exhausted_operation_leaves_no_residue_for_a_later_parse() {
+    let source = two_heredoc_statements();
+
+    let exhausted = parse_with_budget(&source, heredoc_scan_budget(0));
+    assert!(exhausted.stop_cause().is_some(), "the fixture must actually exhaust first");
+
+    let ordinary = parse_with_budget(&source, unlimited_budget());
+    assert_eq!(
+        ordinary.stop_cause(),
+        None,
+        "a later ordinary parse must be unaffected by an earlier exhaustion"
+    );
+    assert_eq!(
+        heredoc_contents(&ordinary),
+        vec!["body a line one\nbody a line two".to_string(), "body b".to_string()],
+        "a later ordinary parse must attach every body"
+    );
+    assert!(
+        ordinary
+            .diagnostics
+            .iter()
+            .all(|error| !matches!(error, ParseError::HeredocBudgetExhausted { .. })),
+        "no budget diagnostic may carry over into a later parse"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Boundary matrix on the before-work refusal rule.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn tracker_refuses_only_at_or_above_the_configured_limit() {
+    let budget = heredoc_scan_budget(100);
+    let mut tracker = perl_parser_core::error::BudgetTracker::new();
+
+    tracker.record_heredoc_scan(99);
+    assert!(!tracker.heredoc_scan_exhausted(&budget), "limit - 1 must still admit collection");
+
+    tracker.record_heredoc_scan(1);
+    assert!(tracker.heredoc_scan_exhausted(&budget), "limit must refuse further collection");
+
+    tracker.record_heredoc_scan(1);
+    assert!(tracker.heredoc_scan_exhausted(&budget), "limit + 1 must remain refused");
+}
+
+#[test]
+fn zero_budget_refuses_the_first_collection_without_claiming_a_syntax_error() {
+    let output = parse_with_budget(&two_heredoc_statements(), heredoc_scan_budget(0));
+
+    let cause = output.stop_cause().expect("a refused collection must record a typed terminal");
+    assert!(
+        matches!(cause, ParseStopCause::HeredocBudgetExhausted { limit: 0, .. }),
+        "expected a typed heredoc budget terminal, got {cause:?}"
+    );
+    assert!(cause.is_budget_exhaustion(), "the terminal must classify as budget exhaustion");
+    assert_eq!(cause.as_str(), "heredoc_budget_exhausted");
+}
+
+/// The exact at/above pair on the real production drain path.
+///
+/// `FIRST_STATEMENT` is measured on its own to learn what one drain charges,
+/// then that value is used as the threshold for the two-statement source: at
+/// the threshold the second drain is refused, one byte above it proceeds.
+#[test]
+fn second_drain_is_refused_at_the_threshold_and_admitted_one_byte_above() {
+    let first_only = parse_with_budget(FIRST_STATEMENT, unlimited_budget());
+    let first_drain_charge = first_only.budget_usage.heredoc_scan_bytes;
+    assert!(first_drain_charge > 0, "the measured statement must actually charge collection work");
+
+    let source = two_heredoc_statements();
+
+    let at_threshold = parse_with_budget(&source, heredoc_scan_budget(first_drain_charge));
+    assert!(
+        matches!(at_threshold.stop_cause(), Some(ParseStopCause::HeredocBudgetExhausted { .. })),
+        "at the threshold the second drain must be refused, got {:?}",
+        at_threshold.stop_cause()
+    );
+
+    let above_threshold =
+        parse_with_budget(&source, heredoc_scan_budget(first_drain_charge.saturating_add(1)));
+    assert_eq!(
+        above_threshold.stop_cause(),
+        None,
+        "one byte above the threshold the second drain must proceed"
+    );
+    assert_eq!(
+        heredoc_contents(&above_threshold),
+        vec!["body a line one\nbody a line two".to_string(), "body b".to_string()],
+        "an admitted drain must still attach both bodies"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Negative controls: exhaustion must not be laundered into other outcomes.
+// ---------------------------------------------------------------------------
+
+/// Exhaustion is a statement about resources, never about the user's syntax.
+///
+/// The removed branch pushed `ParseError::syntax("Heredoc parsing timed out")`,
+/// which routes to [`ErrorCategory::UserError`] — the parser blamed the source
+/// for a host-speed event. This pins the corrected routing.
+#[test]
+fn exhaustion_is_a_resource_limit_not_a_user_syntax_error() {
+    let output = parse_with_budget(&two_heredoc_statements(), heredoc_scan_budget(0));
+
+    let budget_errors: Vec<&ParseError> = output
+        .diagnostics
+        .iter()
+        .filter(|error| matches!(error, ParseError::HeredocBudgetExhausted { .. }))
+        .collect();
+    assert_eq!(budget_errors.len(), 1, "exactly one typed budget diagnostic must be emitted");
+
+    let error = budget_errors[0];
+    assert_eq!(
+        error.error_class(),
+        ErrorCategory::ResourceLimit,
+        "budget exhaustion must not route as a user error"
+    );
+    assert!(
+        !matches!(error, ParseError::SyntaxError { .. }),
+        "budget exhaustion must not be spelled as a syntax error"
+    );
+
+    for diagnostic in &output.diagnostics {
+        let rendered = diagnostic.to_string();
+        assert!(
+            !rendered.contains("timed out") && !rendered.contains("timeout"),
+            "no diagnostic may claim a timeout: {rendered}"
+        );
+        assert!(
+            !rendered.contains("Unterminated heredoc"),
+            "a refused collection must not be reported as unterminated source: {rendered}"
+        );
+    }
+}
+
+/// The specific failure the wall clock produced: the queue was cleared and the
+/// parse continued, so unresolved placeholders became indistinguishable from
+/// heredocs that genuinely declared an empty body.
+#[test]
+fn refused_collection_cannot_masquerade_as_an_ordinary_empty_body() {
+    let refused = parse_with_budget(&two_heredoc_statements(), heredoc_scan_budget(0));
+
+    assert!(
+        heredoc_contents(&refused).iter().all(|content| content.is_empty()),
+        "the fixture must leave placeholders unresolved for this control to be meaningful"
+    );
+    assert!(
+        refused.stop_cause().is_some(),
+        "empty heredoc content must never be returned as a clean, complete parse"
+    );
+    assert!(refused.terminated_early(), "a refused collection must project as early termination");
+
+    // A genuinely empty body is a different, ordinary outcome: same empty
+    // content, but no terminal. Without this control the assertion above could
+    // be satisfied by simply always terminating.
+    let genuinely_empty = parse_with_budget("my $x = <<EOF;\nEOF\n", unlimited_budget());
+    assert_eq!(
+        heredoc_contents(&genuinely_empty),
+        vec![String::new()],
+        "an empty heredoc body is still empty content"
+    );
+    assert_eq!(
+        genuinely_empty.stop_cause(),
+        None,
+        "a genuinely empty body is an ordinary complete parse, not a terminal"
+    );
+}
+
+/// Exhaustion must stay distinct from cooperative cancellation.
+#[test]
+fn exhaustion_is_distinct_from_cancellation() {
+    let output = parse_with_budget(&two_heredoc_statements(), heredoc_scan_budget(0));
+    let cause = output.stop_cause().expect("expected a terminal");
+
+    assert!(!cause.is_cancelled(), "budget exhaustion must not be reported as cancellation");
+    assert_ne!(cause, ParseStopCause::Cancelled);
+}

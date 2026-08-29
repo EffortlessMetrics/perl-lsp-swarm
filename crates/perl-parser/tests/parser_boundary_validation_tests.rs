@@ -19,8 +19,15 @@ const MAX_RECURSION_DEPTH: usize = 128;
 /// Maximum heredoc depth from parser implementation
 const MAX_HEREDOC_DEPTH: usize = 100;
 
-/// Heredoc timeout from parser implementation
-const HEREDOC_TIMEOUT_MS: u64 = 5000;
+/// Test-owned wall-clock ceiling for these boundary fixtures.
+///
+/// This is deliberately **not** a mirror of a parser constant. The parser owns
+/// no wall-clock cutoff: heredoc collection is bounded by the deterministic
+/// `ParseBudget::max_heredoc_scan_bytes` charge (#7291), and recursion and
+/// nesting are bounded by their own deterministic limits. This value only
+/// asserts that the fixtures below stay fast enough to be a useful regression
+/// signal.
+const BOUNDARY_FIXTURE_CEILING_MS: u64 = 5000;
 
 /// Test parser at exact recursion depth boundary
 #[test]
@@ -187,20 +194,21 @@ fn test_timeout_boundary() {
     let result = parser.parse();
     let parse_time = start_time.elapsed();
 
-    // Should either complete or timeout gracefully
+    // The parser has no wall-clock cutoff, so this must complete. Any error is
+    // a real parse outcome and must not be a timeout claim.
     match result {
         Ok(_ast) => {
             println!("  ✓ Slow code: completed in {:?}", parse_time);
             assert!(
-                parse_time < Duration::from_millis(HEREDOC_TIMEOUT_MS),
-                "Should complete before heredoc timeout"
+                parse_time < Duration::from_millis(BOUNDARY_FIXTURE_CEILING_MS),
+                "Should complete within the fixture ceiling"
             );
         }
         Err(e) => {
-            println!("  ✓ Slow code: timed out gracefully: {:?}", e);
+            let rendered = e.to_string();
             assert!(
-                e.to_string().contains("timeout") || e.to_string().contains("time"),
-                "Should fail with timeout-related error"
+                !rendered.contains("timed out") && !rendered.contains("timeout"),
+                "Parser must not report a wall-clock timeout (#7291): {rendered}"
             );
         }
     }
@@ -212,20 +220,18 @@ fn test_timeout_boundary() {
     let result = parser.parse();
     let parse_time = start_time.elapsed();
 
-    // Should timeout gracefully
+    // Deeply nested but well-formed source terminates on its own deterministic
+    // limits, never on elapsed time.
     match result {
         Ok(_) => {
-            println!("  ⚠ Timeout code: unexpectedly succeeded in {:?}", parse_time);
+            println!("  ✓ Deeply nested code: completed in {:?}", parse_time);
         }
         Err(e) => {
-            println!("  ✓ Timeout code: timed out as expected in {:?}: {:?}", parse_time, e);
+            let rendered = e.to_string();
+            println!("  ✓ Deeply nested code: bounded in {:?}: {rendered}", parse_time);
             assert!(
-                e.to_string().contains("timeout") || e.to_string().contains("time"),
-                "Should fail with timeout-related error"
-            );
-            assert!(
-                parse_time >= Duration::from_millis(HEREDOC_TIMEOUT_MS),
-                "Should take at least the timeout duration"
+                !rendered.contains("timed out") && !rendered.contains("timeout"),
+                "Parser must not report a wall-clock timeout (#7291): {rendered}"
             );
         }
     }

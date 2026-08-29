@@ -371,10 +371,19 @@ Safety limits prevent pathological input from causing hangs:
 
 - `MAX_HEREDOC_BYTES`: 256 KB per heredoc body
 - `MAX_HEREDOC_DEPTH`: 100 nested heredocs
-- `HEREDOC_TIMEOUT_MS`: 5-second wall-clock timeout
+- `ParseBudget::max_heredoc_scan_bytes`: 64 MiB of heredoc body collection
+  per parse, charged in source bytes
 
-When any limit is exceeded, the lexer emits an `UnknownRest` token and
-continues, preserving all previously parsed tokens for IDE features.
+Every limit is deterministic: the same source and configuration reach the same
+outcome on every host, so tracing, sanitizers, or a loaded machine cannot change
+what a file parses to.
+
+When a lexer limit is exceeded, the lexer emits an `UnknownRest` token and
+continues, preserving all previously parsed tokens for IDE features. When the
+parser's heredoc collection budget is exhausted, the parse stops with the typed
+`ParseStopCause::HeredocBudgetExhausted` terminal and leaves the affected
+heredoc placeholders unresolved — consumers must not read that empty content as
+a heredoc that declared an empty body.
 
 ### Quote Operator Parsing with Delimiter Tracking
 
