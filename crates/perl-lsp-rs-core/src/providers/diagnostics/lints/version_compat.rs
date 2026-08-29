@@ -188,10 +188,16 @@ pub fn check_version_compat_with_project_version(
     let using_project_version = declared_version.is_none();
     let declared_version = match declared_version {
         Some(v) => v,
-        None => match project_version.and_then(parse_configured_project_version) {
-            Some(v) => v,
-            None => return,
-        },
+        None => {
+            let Some(project_version) = project_version else {
+                return;
+            };
+            let Some(version) = parse_configured_project_version(project_version) else {
+                diagnostics.push(invalid_project_version_diagnostic(project_version));
+                return;
+            };
+            version
+        }
     };
 
     let pragma_map = PragmaTracker::build(node);
@@ -530,6 +536,25 @@ fn parse_configured_project_version(value: &str) -> Option<PerlVersion> {
     }
 
     parse_perl_version(value)
+}
+
+fn invalid_project_version_diagnostic(value: &str) -> Diagnostic {
+    Diagnostic {
+        range: (0, 0),
+        severity: DiagnosticSeverity::Error,
+        code: Some(DiagnosticCode::VersionIncompatFeature.as_str().to_string()),
+        message: format!(
+            "Invalid project [perl].version value {value:?}; expected a major.minor Perl version such as 5.38"
+        ),
+        related_information: vec![],
+        tags: vec![],
+        suggestion: Some(
+            "Set [perl].version to a supported major.minor Perl version, for example \"5.38\"."
+                .to_string(),
+        ),
+        fixable: false,
+        critic_observation: None,
+    }
 }
 
 /// Return the minimum (major, minor) for a named feature from the table.
@@ -950,21 +975,37 @@ mod tests {
     }
 
     #[test]
-    fn invalid_project_version_fails_closed() {
+    fn invalid_project_version_reports_one_actionable_diagnostic_and_fails_closed() {
         let diags = version_compat_diags_with_project_version(
-            "sub f ($x) { return $x; }",
+            "use builtin 'inf'; builtin::inf();",
             Some("not-a-version"),
         );
-        assert!(diags.is_empty());
+        assert_eq!(diags.len(), 1, "invalid project values must report once: {diags:?}");
+        let diagnostic = &diags[0];
+        assert_eq!(diagnostic.code.as_deref(), Some("PL900"));
+        assert_eq!(diagnostic.severity, DiagnosticSeverity::Error);
+        assert!(diagnostic.message.contains("Invalid project [perl].version"));
+        assert!(diagnostic.suggestion.is_some());
+        assert!(
+            diags.iter().all(|diagnostic| !diagnostic.message.contains("requires Perl")),
+            "invalid project values must not run PL900: {diags:?}"
+        );
     }
 
     #[test]
-    fn malformed_project_version_suffix_fails_closed() {
-        let diags = version_compat_diags_with_project_version(
-            "sub f ($x) { return $x; }",
-            Some("5.20.garbage"),
-        );
-        assert!(diags.is_empty());
+    fn malformed_project_version_suffix_reports_once_without_runtime_fallback() {
+        for value in ["5.20.garbage", "5.20.1", " 5.20"] {
+            let diags = version_compat_diags_with_project_version(
+                "use builtin 'inf'; builtin::inf();",
+                Some(value),
+            );
+            assert_eq!(diags.len(), 1, "malformed value {value:?}: {diags:?}");
+            assert!(diags[0].message.contains("Invalid project [perl].version"));
+            assert!(
+                !diags[0].message.contains("requires Perl"),
+                "malformed value {value:?} must not use a runtime/implicit PL900 target"
+            );
+        }
     }
 
     #[test]
@@ -972,11 +1013,27 @@ mod tests {
         for value in ["5.20.1", "v5.20.1", "5.20_1", "v5.20_1", " 5.20", "5.20 ", " 5.20 "] {
             let diags =
                 version_compat_diags_with_project_version("sub f ($x) { return $x; }", Some(value));
-            assert!(
-                diags.is_empty(),
-                "project version {value:?} must be rejected after major.minor"
-            );
+            assert_eq!(diags.len(), 1, "project version {value:?} must report once");
+            assert!(diags[0].message.contains("Invalid project [perl].version"));
         }
+    }
+
+    #[test]
+    fn invalid_project_version_is_ignored_when_source_declares_a_version() {
+        let diags = version_compat_diags_with_project_version(
+            "use v5.40; use builtin 'inf'; builtin::inf();",
+            Some("not-a-version"),
+        );
+        assert!(
+            diags.iter().all(|diagnostic| {
+                !diagnostic.message.contains("Invalid project [perl].version")
+            }),
+            "source authority must prevent an invalid fallback diagnostic: {diags:?}"
+        );
+        assert!(
+            diags.iter().all(|diagnostic| diagnostic.code.as_deref() != Some("PL900")),
+            "the valid source target should support builtin::inf: {diags:?}"
+        );
     }
 
     #[test]
