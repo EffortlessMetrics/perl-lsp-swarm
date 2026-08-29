@@ -153,8 +153,26 @@ pub fn parse_cpanfile(file_id: FileId, content: &str) -> DistMetadataFacts {
     let mut prereqs = Vec::new();
     let mut block_stack: Vec<CpanfileBlock> = Vec::new();
     let mut buf = String::new();
+    let mut quote = None;
+    let mut escaped = false;
     for ch in cleaned.chars() {
+        if let Some(delimiter) = quote {
+            buf.push(ch);
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == delimiter {
+                quote = None;
+            }
+            continue;
+        }
+
         match ch {
+            '\'' | '"' => {
+                quote = Some(ch);
+                buf.push(ch);
+            }
             ';' => {
                 if let Some(block_phase) = active_cpanfile_phase(&block_stack) {
                     handle_cpanfile_statement(&buf, block_phase, &mut prereqs);
@@ -244,7 +262,7 @@ fn starts_with_cpanfile_keyword(statement: &str, keyword: &str) -> bool {
 fn parse_on_phase(buf: &str) -> Option<String> {
     let rest = buf.trim().strip_prefix("on")?;
     // `on` must be followed by whitespace or a quote, not be part of a longer word.
-    if !rest.starts_with(|c: char| c.is_whitespace() || c == '\'' || c == '"') {
+    if !rest.starts_with(|c: char| c.is_whitespace() || matches!(c, '(' | '\'' | '"')) {
         return None;
     }
     // Prefer a quoted phase (`on 'test'`); fall back to a bareword (`on test`).
@@ -529,6 +547,29 @@ mod tests {
         assert!(
             facts.prereqs.iter().any(|p| p.module == "Perl::Critic" && p.phase == "develop"),
             "develop block phase"
+        );
+    }
+
+    #[test]
+    fn cpanfile_quoted_delimiters_do_not_change_block_state() {
+        let content = r#"
+            my $open = '{';
+            my $close = "}";
+            my $separator = ";";
+            requires 'Path::Tiny';
+            on('test') => sub { requires 'Test::More'; };
+        "#;
+        let facts = parse_cpanfile(FileId::new("cpanfile", &Digest::of("x")), content);
+
+        assert!(
+            facts.prereqs.iter().any(|p| p.module == "Path::Tiny" && p.phase == "runtime"),
+            "quoted braces and semicolons must remain statement text: {:?}",
+            facts.prereqs
+        );
+        assert!(
+            facts.prereqs.iter().any(|p| p.module == "Test::More" && p.phase == "test"),
+            "parenthesized on blocks retain their canonical phase: {:?}",
+            facts.prereqs
         );
     }
 
