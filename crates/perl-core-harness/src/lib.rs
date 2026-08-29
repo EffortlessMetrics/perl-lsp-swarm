@@ -8,6 +8,8 @@
 //! modes. Execute mode is limited to explicit selected base tests.
 
 pub mod artifacts;
+
+pub mod critic_oracle;
 #[path = "target_contracts/contract.rs"]
 pub mod contract;
 #[path = "target_contracts/io.rs"]
