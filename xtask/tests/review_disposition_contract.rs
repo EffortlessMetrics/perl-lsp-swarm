@@ -257,8 +257,16 @@ fn terminal_dispositions_resolve_and_live_blockers_do_not() -> Result<(), Box<dy
         "prerequisite disposition failed: {}",
         output_text(&prerequisite)
     );
-    assert!(prerequisite_calls.contains("addPullRequestReviewThreadReply"));
-    assert!(prerequisite_calls.contains("unresolveReviewThread"));
+    let reopen_position = prerequisite_calls
+        .find("unresolveReviewThread")
+        .ok_or("prerequisite blocker did not reopen the thread")?;
+    let reply_position = prerequisite_calls
+        .find("addPullRequestReviewThreadReply")
+        .ok_or("prerequisite blocker did not post its disposition")?;
+    assert!(
+        reopen_position < reply_position,
+        "the thread must reopen before evidence posting can fail"
+    );
     assert!(!prerequisite_calls.lines().any(|line| line.contains(" resolveReviewThread")));
     assert!(output_text(&prerequisite).contains("reopened thread"));
 
