@@ -103,22 +103,20 @@ fn parser_430_ac4_error_nodes_have_context() {
 
     // Navigate to the error node inside the if block
     let mut found_error = false;
-    if let NodeKind::Program { statements } = &ast.kind {
-        if let Some(stmt) = statements.first() {
-            if let NodeKind::If { then_branch, .. } = &stmt.kind {
-                if let NodeKind::Block { statements } = &then_branch.kind {
-                    for inner_stmt in statements {
-                        if let NodeKind::Error { message, .. } = &inner_stmt.kind {
-                            // Verify contextual information - Error nodes have message field
-                            assert!(!message.is_empty(), "Error should have descriptive message");
-                            // Note: expected may be empty, error message provides context
-                            println!("AC4: Error in context - message: {}", message);
-                            // AC4 validated: create_error_node provides contextual information
-                            found_error = true;
-                            break;
-                        }
-                    }
-                }
+    if let NodeKind::Program { statements } = &ast.kind
+        && let Some(stmt) = statements.first()
+        && let NodeKind::If { then_branch, .. } = &stmt.kind
+        && let NodeKind::Block { statements } = &then_branch.kind
+    {
+        for inner_stmt in statements {
+            if let NodeKind::Error { message, .. } = &inner_stmt.kind {
+                // Verify contextual information - Error nodes have message field
+                assert!(!message.is_empty(), "Error should have descriptive message");
+                // Note: expected may be empty, error message provides context
+                println!("AC4: Error in context - message: {}", message);
+                // AC4 validated: create_error_node provides contextual information
+                found_error = true;
+                break;
             }
         }
     }
@@ -220,26 +218,22 @@ fn parser_430_ac7_partial_if_statement() {
     let ast = must(parser.parse());
 
     let mut found_if = false;
-    if let NodeKind::Program { statements } = &ast.kind {
-        if let Some(stmt) = statements.first() {
-            if let NodeKind::If { condition, then_branch, else_branch, .. } = &stmt.kind {
-                // Verify we have valid condition and then branch
-                assert!(
-                    matches!(condition.kind, NodeKind::Binary { .. }),
-                    "Should have valid condition"
-                );
-                assert!(
-                    matches!(then_branch.kind, NodeKind::Block { .. }),
-                    "Should have valid then branch"
-                );
+    if let NodeKind::Program { statements } = &ast.kind
+        && let Some(stmt) = statements.first()
+        && let NodeKind::If { condition, then_branch, else_branch, .. } = &stmt.kind
+    {
+        // Verify we have valid condition and then branch
+        assert!(matches!(condition.kind, NodeKind::Binary { .. }), "Should have valid condition");
+        assert!(
+            matches!(then_branch.kind, NodeKind::Block { .. }),
+            "Should have valid then branch"
+        );
 
-                // else_branch is optional, so it being None is fine
-                println!("AC7: If statement with condition and then-branch: OK");
-                println!("AC7: Has else branch: {}", else_branch.is_some());
+        // else_branch is optional, so it being None is fine
+        println!("AC7: If statement with condition and then-branch: OK");
+        println!("AC7: Has else branch: {}", else_branch.is_some());
 
-                found_if = true;
-            }
-        }
+        found_if = true;
     }
 
     assert!(found_if, "Should find valid if statement with condition and then-branch");

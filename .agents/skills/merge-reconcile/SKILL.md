@@ -131,7 +131,33 @@ of legacy branch-protection checks and merges past a still-pending required cont
 probe ONLY once the required union is green on the head SHA — `ripr+ New Gap Gate` is
 its last reporter — or an explicit waiver is recorded on the PR or issue naming every
 unmet requirement (#12289's probe merged 42 minutes before the required check failed;
-#12565 confirmed the mechanism).
+#12565 confirmed the mechanism). This section is the single source for the probe
+mechanism; `$finish-pr` points here rather than restating it.
+
+The waiver bar: prose alone never suffices. A waiver is recorded on the PR or issue by
+the accountable lane root, names every unmet requirement individually, and states why
+each is safe to outrun — with the evidence that makes it safe, not the assertion. A
+waiver recorded merely to save wall-clock is not a waiver; it is an unreviewed merge.
+
+When the protected-merge conjunction holds, the lane owns the transition: merge, or
+arm auto-merge (`gh pr merge <n> --auto --squash --match-head-commit
+<current-head-sha>`, the same compare-and-swap guard as the probe — if it rejects,
+the branch moved and the candidate must be re-read before arming) and record the
+GitHub-owned wait. A
+green ready PR with `autoMergeRequest` null and no named owner is a process gap, not a
+platform stall — #12184 sat green for 16h and #12098 for 7h because nobody owned the
+transition (#12565 census).
+
+Both the armed and the probe path require checks that can actually report on the head.
+For automation-authored PRs whose `pull_request` runs sit in `action_required` (the
+app-authored trust class), green `workflow_dispatch` runs on the same head do not
+count: the PR rollup ignores them, so required contexts read "expected" forever and
+neither auto-merge nor an honest probe can fire (#12399). A same-head rerun replays
+the same awaiting-approval event and cannot clear it. The sanctioned clearances are a
+trusted actor approving the awaiting runs, or a trusted-identity push only where a
+refresh is independently required under the no-churn contract — never merely to
+manufacture a current status; where neither is possible the candidate is `NOT_PROVEN`
+for integration. Never read dispatch-run greens as mergeable evidence.
 
 ## Reconciliation
 

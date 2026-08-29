@@ -32,6 +32,7 @@
 //! [`Diagnostic`]: crate::types::Diagnostic
 //! [`RelatedInformation`]: crate::types::RelatedInformation
 //! [`StaleSourceAnchor`]: crate::anchor::StaleSourceAnchor
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 /// Parser diagnostic anchors for stale-source detection and once-per-batch freshness.
 pub mod anchor;

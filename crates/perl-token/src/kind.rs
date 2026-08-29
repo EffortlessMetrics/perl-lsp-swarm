@@ -3,6 +3,11 @@
 /// The set is intentionally simplified for fast parser matching while covering
 /// keywords, operators, delimiters, literals, identifiers, and special tokens.
 ///
+/// This enum is an explicitly **closed / exhaustive** public API: adding a
+/// variant is a breaking change, and downstream crates may match without a
+/// wildcard. That closed contract is the #2898 evolution disposition for
+/// `TokenKind` (parser matching is the product).
+///
 /// Use [`TokenKind::display_name`] to get a human-readable string suitable for
 /// error messages shown to the user.
 ///
@@ -299,7 +304,22 @@ pub enum TokenKind {
 ///
 /// This enum is `#[non_exhaustive]`: external code must include a wildcard `_`
 /// arm when matching on it. This allows new categories to be added in future
-/// releases without breaking downstream crates.
+/// releases without breaking downstream crates. That marker is the #2898
+/// evolution disposition for [`TokenCategory`].
+///
+/// ```compile_fail
+/// use perl_token::TokenCategory;
+/// fn classify(category: TokenCategory) {
+///     match category {
+///         TokenCategory::Keyword => {}
+///         TokenCategory::Operator => {}
+///         TokenCategory::Delimiter => {}
+///         TokenCategory::Literal => {}
+///         TokenCategory::Identifier => {}
+///         TokenCategory::Special => {}
+///     }
+/// }
+/// ```
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TokenCategory {
@@ -322,7 +342,16 @@ pub enum TokenCategory {
 /// This struct is `#[non_exhaustive]`: external code must not construct it
 /// using struct literal syntax. Use [`TokenKind::metadata`] to obtain
 /// instances. Additional fields may be added in future releases without
-/// constituting a breaking change.
+/// constituting a breaking change. That marker is the #2898 evolution
+/// disposition for [`TokenKindMetadata`].
+///
+/// ```compile_fail
+/// use perl_token::{TokenCategory, TokenKindMetadata};
+/// let _ = TokenKindMetadata {
+///     category: TokenCategory::Keyword,
+///     display_name: "x",
+/// };
+/// ```
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TokenKindMetadata {

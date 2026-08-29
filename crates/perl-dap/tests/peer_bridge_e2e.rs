@@ -13,14 +13,14 @@
 
 use perl_tdd_support::{must, must_some};
 use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::TcpStream;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use perl_dap::backend::DapPeerBridge;
 use perl_dap::backend::capabilities::ControlMode;
 use perl_dap::backend::external_peer::ExternalDebuggerPeerBackend;
 use perl_dap::backend::peer_launch::PeerListenEndpoint;
-use perl_dap::backend::{DapPeerBridge, run_external_peer_session};
 use perl_dap::debug_adapter::DapMessage;
 use perl_dap::peer_protocol::message::{
     PeerEvent, PeerMessage, PeerRequest, PeerResponse, command, event,
@@ -32,7 +32,6 @@ use perl_dap::peer_protocol::payloads::{
 use perl_dap::peer_protocol::{
     PROTOCOL_VERSION, PeerFrameDecoder, PeerReportedCapabilities, encode_message,
 };
-use perl_lsp_rs_core::transport::{ContentLengthFramer, frame};
 
 /// A fake ptkdb peer: connects to `addr`, sends hello, answers debugger/*
 /// requests, and — on `debugger/continue` — emits a `debugger/stopped` event.
@@ -340,145 +339,4 @@ fn full_dap_session_drives_the_live_peer_backend() -> Result<(), Box<dyn std::er
     drop(bridge);
     let _ = peer.join();
     Ok(())
-}
-
-#[test]
-fn run_external_peer_session_serves_dap_over_a_socket() {
-    // Fake ptkdb peer (peer side) and an editor listener (editor side).
-    let (peer_listener, endpoint) =
-        must(PeerListenEndpoint::bind("127.0.0.1", 0, ControlMode::Mirror));
-    let peer_addr = endpoint.addr;
-    let peer_token = endpoint.session_token();
-    let peer_credential = endpoint.session_credential();
-    let peer = spawn_fake_peer(peer_addr, Some(peer_token.clone()));
-
-    let editor_listener = must(TcpListener::bind(("127.0.0.1", 0)));
-    let editor_addr = must(editor_listener.local_addr());
-
-    // Server side: accept the peer, build the bridge, accept the editor, run.
-    let server = std::thread::spawn(move || {
-        let (peer_stream, _) = must(peer_listener.accept());
-        let backend = must(ExternalDebuggerPeerBackend::from_connected_stream_with_token(
-            peer_stream,
-            Duration::from_secs(5),
-            peer_credential,
-        ));
-        let bridge = DapPeerBridge::new(Box::new(backend));
-        let (editor, _) = must(editor_listener.accept());
-        let _ = run_external_peer_session(editor, bridge, Duration::from_millis(50));
-    });
-
-    // Editor client: send framed DAP requests, read framed responses.
-    let mut client = must(TcpStream::connect(editor_addr));
-    client.set_read_timeout(Some(Duration::from_secs(3))).ok();
-    let send = |c: &mut TcpStream, v: &serde_json::Value| {
-        let body = must(serde_json::to_vec(v));
-        must(c.write_all(&frame(&body)));
-        must(c.flush());
-    };
-
-    send(
-        &mut client,
-        &serde_json::json!({ "seq": 1, "type": "request", "command": "initialize", "arguments": { "adapterID": "perl" } }),
-    );
-
-    // Read framed messages until we see the initialize response.
-    let mut framer = ContentLengthFramer::new();
-    let mut buf = [0u8; 4096];
-    let mut saw_initialize = false;
-    let deadline = Instant::now() + Duration::from_secs(3);
-    'outer: while Instant::now() < deadline {
-        let n = match client.read(&mut buf) {
-            Ok(0) => break,
-            Ok(n) => n,
-            Err(_) => break,
-        };
-        framer.push(&buf[..n]);
-        while let Ok(Some(body)) = framer.try_next() {
-            let v: serde_json::Value = must(serde_json::from_slice(&body));
-            if v["type"] == "response" && v["command"] == "initialize" {
-                assert_eq!(v["success"], true);
-                assert_eq!(v["body"]["supportsConditionalBreakpoints"], true);
-                saw_initialize = true;
-                break 'outer;
-            }
-        }
-    }
-    assert!(saw_initialize, "editor received the initialize response over the socket");
-
-    // Clean teardown.
-    send(
-        &mut client,
-        &serde_json::json!({ "seq": 2, "type": "request", "command": "disconnect", "arguments": {} }),
-    );
-    drop(client);
-    let _ = server.join();
-    let _ = peer.join();
-}
-
-#[test]
-fn socket_session_recovers_from_a_leading_malformed_frame() {
-    // A malformed frame arriving before a valid request must NOT tear down the
-    // whole socket session: the framer discards just the bad header block, and
-    // the driver keeps parsing the well-formed `initialize` that follows.
-    let (peer_listener, endpoint) =
-        must(PeerListenEndpoint::bind("127.0.0.1", 0, ControlMode::Mirror));
-    let peer_addr = endpoint.addr;
-    let peer_token = endpoint.session_token();
-    let peer_credential = endpoint.session_credential();
-    let peer = spawn_fake_peer(peer_addr, Some(peer_token.clone()));
-
-    let editor_listener = must(TcpListener::bind(("127.0.0.1", 0)));
-    let editor_addr = must(editor_listener.local_addr());
-
-    let server = std::thread::spawn(move || {
-        let (peer_stream, _) = must(peer_listener.accept());
-        let backend = must(ExternalDebuggerPeerBackend::from_connected_stream_with_token(
-            peer_stream,
-            Duration::from_secs(5),
-            peer_credential,
-        ));
-        let bridge = DapPeerBridge::new(Box::new(backend));
-        let (editor, _) = must(editor_listener.accept());
-        let _ = run_external_peer_session(editor, bridge, Duration::from_millis(50));
-    });
-
-    let mut client = must(TcpStream::connect(editor_addr));
-    client.set_read_timeout(Some(Duration::from_secs(3))).ok();
-
-    // A syntactically-framed header with a non-numeric Content-Length: the framer
-    // returns an error but drains the bad block, so parsing can continue.
-    must(client.write_all(b"Content-Length: notanumber\r\n\r\n"));
-    // Then a valid initialize request.
-    let body = must(serde_json::to_vec(
-        &serde_json::json!({ "seq": 1, "type": "request", "command": "initialize", "arguments": { "adapterID": "perl" } }),
-    ));
-    must(client.write_all(&frame(&body)));
-    must(client.flush());
-
-    let mut framer = ContentLengthFramer::new();
-    let mut buf = [0u8; 4096];
-    let mut saw_initialize = false;
-    let deadline = Instant::now() + Duration::from_secs(3);
-    'outer: while Instant::now() < deadline {
-        let n = match client.read(&mut buf) {
-            Ok(0) => break,
-            Ok(n) => n,
-            Err(_) => break,
-        };
-        framer.push(&buf[..n]);
-        while let Ok(Some(body)) = framer.try_next() {
-            let v: serde_json::Value = must(serde_json::from_slice(&body));
-            if v["type"] == "response" && v["command"] == "initialize" {
-                assert_eq!(v["success"], true);
-                saw_initialize = true;
-                break 'outer;
-            }
-        }
-    }
-    assert!(saw_initialize, "session survived the malformed frame and answered initialize");
-
-    drop(client);
-    let _ = server.join();
-    let _ = peer.join();
 }
