@@ -18,6 +18,7 @@ pub use result::{
     FormatDiagnostic, FormatDiagnosticSeverity, FormatResult, TextEdit, TextPosition, TextRange,
 };
 
+use super::line_ending::generated_line_ending;
 use result::utf16_len;
 
 const PARSE_ERROR_CODE: &str = "native.format.parse_error";
@@ -99,16 +100,16 @@ impl NativeFormatter {
 
     fn format_safe_subset(source: &str, config: &FormatConfig) -> String {
         let mut formatted = String::with_capacity(source.len());
-        let inferred_line_ending = inferred_generated_line_ending(source);
+        let inferred_line_ending = generated_line_ending(source);
 
         for line in source.split_inclusive('\n') {
             let (body, line_ending) = split_line_ending(line);
-            let generated_line_ending =
+            let emitted_line_ending =
                 if line_ending.is_empty() { inferred_line_ending } else { line_ending };
             let formatted_body =
                 format_simple_line(body, config).unwrap_or_else(|| body.to_string());
             formatted
-                .push_str(&preserve_generated_line_endings(formatted_body, generated_line_ending));
+                .push_str(&preserve_generated_line_endings(formatted_body, emitted_line_ending));
             formatted.push_str(line_ending);
         }
 
@@ -122,12 +123,12 @@ impl NativeFormatter {
     ) -> (String, Vec<TextEdit>) {
         let mut formatted = String::with_capacity(source.len());
         let mut edits = Vec::new();
-        let inferred_line_ending = inferred_generated_line_ending(source);
+        let inferred_line_ending = generated_line_ending(source);
 
         for (line_index, line) in source.split_inclusive('\n').enumerate() {
             let line_index = line_index as u32;
             let (body, line_ending) = split_line_ending(line);
-            let generated_line_ending =
+            let emitted_line_ending =
                 if line_ending.is_empty() { inferred_line_ending } else { line_ending };
             let formatted_body = if range_includes_line(range, line_index) {
                 format_simple_line(body, config)
@@ -137,7 +138,7 @@ impl NativeFormatter {
 
             if let Some(formatted_line) = formatted_body {
                 let formatted_line =
-                    preserve_generated_line_endings(formatted_line, generated_line_ending);
+                    preserve_generated_line_endings(formatted_line, emitted_line_ending);
                 if formatted_line != body {
                     edits.push(TextEdit::new(
                         TextRange::new(
@@ -164,7 +165,7 @@ impl NativeFormatter {
             FinalNewline::Preserve => source.to_string(),
             FinalNewline::Insert => {
                 let trimmed = source.trim_end_matches(['\n', '\r']);
-                format!("{trimmed}{}", inferred_generated_line_ending(source))
+                format!("{trimmed}{}", generated_line_ending(source))
             }
             FinalNewline::Trim => source.trim_end_matches(['\n', '\r']).to_string(),
         }
@@ -271,15 +272,6 @@ fn split_line_ending(line: &str) -> (&str, &str) {
     } else {
         (line, "")
     }
-}
-
-fn inferred_generated_line_ending(source: &str) -> &'static str {
-    let bytes = source.as_bytes();
-    let Some(last_lf) = bytes.iter().rposition(|byte| *byte == b'\n') else {
-        return "\n";
-    };
-
-    if last_lf > 0 && bytes[last_lf - 1] == b'\r' { "\r\n" } else { "\n" }
 }
 
 fn preserve_generated_line_endings(formatted: String, source_line_ending: &str) -> String {

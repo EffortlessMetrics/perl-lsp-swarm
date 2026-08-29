@@ -15,6 +15,7 @@ use crate::providers::formatting::range_admission::{
 pub use crate::providers::formatting_types::{
     FormatPosition, FormatRange, FormatTextEdit, FormattedDocument, FormattingOptions,
 };
+use crate::tooling::perltidy::native::generated_line_ending;
 use crate::tooling::perltidy::native::{
     FormatChangeSummary, FormatContext, FormatDisposition, FormatEngine, FormatEvidenceState,
     FormatIdentity, FormatLineEndingDisposition, FormatOutcome, FormatReasonCode,
@@ -580,7 +581,7 @@ fn whitespace_within_admitted(
                     .is_some_and(|prefix| prefix.ends_with(['\r', '\n'])),
             )
         {
-            projected.push_str(inferred_line_ending(content));
+            projected.push_str(generated_line_ending(content));
         }
     }
     if projected == slice {
@@ -771,7 +772,7 @@ fn apply_lsp_whitespace_options_with_eof(
     line_ending_source: &str,
 ) -> String {
     let mut output = content.to_string();
-    let document_line_ending = inferred_line_ending(line_ending_source);
+    let document_line_ending = generated_line_ending(line_ending_source);
 
     if options.trim_trailing_whitespace.unwrap_or(false) {
         output = trim_trailing_whitespace_in_slice(&output, trim_tail);
@@ -787,15 +788,6 @@ fn apply_lsp_whitespace_options_with_eof(
     }
 
     output
-}
-
-fn inferred_line_ending(content: &str) -> &'static str {
-    let bytes = content.as_bytes();
-    let Some(last_lf) = bytes.iter().rposition(|byte| *byte == b'\n') else {
-        return "\n";
-    };
-
-    if last_lf > 0 && bytes[last_lf - 1] == b'\r' { "\r\n" } else { "\n" }
 }
 
 /// Whether the document tail is already line-terminated after projection.
