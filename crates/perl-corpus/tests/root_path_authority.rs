@@ -127,6 +127,50 @@ fn required_layout_rejects_non_directory_intermediate_component() -> TestResult 
 }
 
 #[test]
+fn explicit_downgrade_remains_the_supported_compatibility_boundary() -> TestResult {
+    let root = tempfile::tempdir()?;
+    create_repository_layout(root.path())?;
+
+    let resolved = CorpusPaths::try_from_root(root.path())?;
+    let authority_root = resolved.root_authority().path().to_path_buf();
+    let borrowed = resolved.as_paths().clone();
+
+    let downgraded = resolved.into_paths();
+    if borrowed != downgraded {
+        return Err(failure("borrowed compatibility view and explicit downgrade disagreed"));
+    }
+
+    if downgraded.root != authority_root {
+        return Err(failure(format!(
+            "downgraded root {:?} did not retain the validated root {authority_root:?}",
+            downgraded.root
+        )));
+    }
+    if downgraded.test_corpus != authority_root.join("test_corpus") {
+        return Err(failure(format!(
+            "downgraded test_corpus layer was not derived from the validated root: {:?}",
+            downgraded.test_corpus
+        )));
+    }
+    if downgraded.fuzz != authority_root.join("crates/perl-corpus/fuzz") {
+        return Err(failure(format!(
+            "downgraded fuzz layer was not derived from the validated root: {:?}",
+            downgraded.fuzz
+        )));
+    }
+
+    // The downgrade is a one-way authority loss: the resulting value carries no
+    // root capability and must be re-validated to become authority again.
+    let mut mutated = downgraded;
+    mutated.root = PathBuf::from("relative-compatibility-root");
+    expect_error(
+        CorpusRoot::explicit(&mutated.root),
+        |error| matches!(error, CorpusRootError::RelativePath { .. }),
+        "downgraded paths remain unchecked",
+    )
+}
+
+#[test]
 fn unchecked_compatibility_paths_require_explicit_validation_upgrade() -> TestResult {
     let unchecked = CorpusPaths::from_root(PathBuf::from("relative-compatibility-root"));
     if unchecked.root.as_path() != Path::new("relative-compatibility-root") {
