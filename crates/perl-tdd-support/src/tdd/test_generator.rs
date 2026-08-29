@@ -20,7 +20,7 @@
 //! ## Usage Examples
 //!
 //! ```rust,ignore
-//! use perl_parser::test_generator::{TestGenerator, TestFramework};
+//! use perl_tdd_support::test_generator::{TestGenerator, TestFramework};
 //! use perl_parser::{Parser, ast::Node};
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -125,7 +125,7 @@ impl TestGenerator {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::{TestGenerator, TestFramework};
+    /// use perl_tdd_support::test_generator::{TestGenerator, TestFramework};
     ///
     /// let generator = TestGenerator::new(TestFramework::TestMore);
     /// // Generator ready for Perl parsing workflow test generation
@@ -935,10 +935,13 @@ impl RefactoringSuggester {
             | NodeKind::Ternary { .. } => {
                 *complexity += 1;
             }
-            NodeKind::Binary { op: operator, .. } => {
-                if operator == "&&" || operator == "||" || operator == "and" || operator == "or" {
-                    *complexity += 1;
-                }
+            NodeKind::Binary { op: operator, .. }
+                if operator == "&&"
+                    || operator == "||"
+                    || operator == "and"
+                    || operator == "or" =>
+            {
+                *complexity += 1;
             }
             _ => {}
         }

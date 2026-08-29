@@ -2305,6 +2305,9 @@ public-api-check:
     set -euo pipefail
     just _public-api-install
     echo "Checking public API surface for facade crates..."
+    # Evidence: record the rustdoc-JSON toolchain the comparison runs under
+    # (CI pins this channel; see the workflow install steps).
+    rustc +nightly --version || echo "WARN: no nightly toolchain visible to cargo-public-api"
     FAILED=0
     for crate in perl-lsp-rs perl-parser perl-uri perl-dap perllsp; do
         BASELINE=".ci/public-api-baselines/${crate}.txt"
@@ -2313,7 +2316,24 @@ public-api-check:
             FAILED=1
             continue
         fi
-        ./scripts/cargo-safe public-api -p "$crate" --simplified 2>/dev/null | grep "^pub " > "/tmp/${crate}-current.txt" || true
+        # Instrument failure must never become a semantic verdict: a failed
+        # or empty generation is INSTRUMENT-FAIL, not an API diff (#12861 —
+        # CI without a nightly toolchain produced empty surfaces that
+        # reported as ~6.6k phantom API removals).
+        if ! ./scripts/cargo-safe public-api -p "$crate" --simplified > "/tmp/${crate}-raw.txt" 2> "/tmp/${crate}-err.txt"; then
+            echo "INSTRUMENT-FAIL ${crate}: cargo public-api failed; stderr:"
+            cat "/tmp/${crate}-err.txt"
+            FAILED=1
+            continue
+        fi
+        # grep exits 1 on no matches; under set -e that would abort before
+        # the named INSTRUMENT-FAIL classification below — tolerate it here.
+        grep "^pub " "/tmp/${crate}-raw.txt" > "/tmp/${crate}-current.txt" || true
+        if [ ! -s "/tmp/${crate}-current.txt" ]; then
+            echo "INSTRUMENT-FAIL ${crate}: generated API surface is empty (nightly toolchain missing?) — an empty surface is never a diff"
+            FAILED=1
+            continue
+        fi
         if ! diff -u "$BASELINE" "/tmp/${crate}-current.txt" > "/tmp/${crate}-diff.txt" 2>&1; then
             echo "FAIL Public API changed in ${crate}:"
             cat "/tmp/${crate}-diff.txt"
@@ -2332,8 +2352,22 @@ public-api-update:
     echo "Regenerating public API baselines..."
     mkdir -p .ci/public-api-baselines
     for crate in perl-lsp-rs perl-parser perl-uri perl-dap perllsp; do
-        ./scripts/cargo-safe public-api -p "$crate" --simplified 2>/dev/null | grep "^pub " \
-            > ".ci/public-api-baselines/${crate}.txt" || true
+        # Fail closed: never overwrite a baseline with a failed or empty
+        # generation — an empty baseline would make the ratchet vacuous
+        # (#12861).
+        if ! ./scripts/cargo-safe public-api -p "$crate" --simplified > "/tmp/${crate}-raw.txt" 2> "/tmp/${crate}-err.txt"; then
+            echo "INSTRUMENT-FAIL ${crate}: cargo public-api failed; refusing to overwrite the baseline:" >&2
+            cat "/tmp/${crate}-err.txt" >&2
+            exit 1
+        fi
+        # grep exits 1 on no matches; under set -e that would abort before
+        # the named INSTRUMENT-FAIL classification below — tolerate it here.
+        grep "^pub " "/tmp/${crate}-raw.txt" > "/tmp/${crate}-new-baseline.txt" || true
+        if [ ! -s "/tmp/${crate}-new-baseline.txt" ]; then
+            echo "INSTRUMENT-FAIL ${crate}: generated API surface is empty; refusing to overwrite the baseline" >&2
+            exit 1
+        fi
+        mv "/tmp/${crate}-new-baseline.txt" ".ci/public-api-baselines/${crate}.txt"
         echo "Updated ${crate}: $(wc -l < .ci/public-api-baselines/${crate}.txt) lines"
     done
     echo "Commit .ci/public-api-baselines/ with your PR."
@@ -3090,7 +3124,7 @@ ci-metrics-ratchet:
     cargo run -p xtask -- metrics ratchet-check engineering_health
     cargo run -p xtask -- metrics ratchet-check parser_accuracy
     cargo run -p xtask -- metrics ratchet-check token
-    cargo run -p xtask -- metrics ratchet-check editor_ux
+    cargo run -p xtask -- ux-scorecard --format json --ratchet-check
     @echo "Scorecard ratchet passed"
 
 # Tier C: full suite (nightly, all integration tests)
