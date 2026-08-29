@@ -12,11 +12,6 @@
 //! the discrimination working.
 
 #![cfg(test)]
-#![expect(
-    clippy::unwrap_used,
-    reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
-)]
-
 use super::super::{LspServer, json};
 use super::capabilities::{apply_disabled_feature_id, disabled_feature_ids_from_init_options};
 use perl_lsp_rs_core::features::policy::FeatureProfile;
