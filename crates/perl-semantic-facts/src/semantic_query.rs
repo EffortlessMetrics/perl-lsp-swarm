@@ -5,7 +5,8 @@
 //! exact value; it does not execute queries or decide how a transport renders
 //! them.
 
-use crate::{BoundaryKind, FactId, SemanticFactFamily};
+use crate::{BoundaryKind, FactId};
+use crate::semantic_identity::SemanticFactFamily;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashSet};
 
