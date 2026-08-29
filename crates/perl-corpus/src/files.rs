@@ -99,15 +99,14 @@ impl ResolvedCorpusPaths {
     /// ```
     /// use perl_corpus::CorpusPaths;
     ///
-    /// # fn example(root: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
-    /// let resolved = CorpusPaths::try_from_root(root)?;
+    /// let root = tempfile::tempdir()?;
+    /// let resolved = CorpusPaths::try_from_root(root.path())?;
     /// let authority_root = resolved.root_authority().path().to_path_buf();
     ///
     /// let compatibility = resolved.into_paths();
     /// assert_eq!(compatibility.root, authority_root);
     /// assert_eq!(compatibility.test_corpus, authority_root.join("test_corpus"));
-    /// # Ok(())
-    /// # }
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     #[must_use]
     pub fn into_paths(self) -> CorpusPaths {

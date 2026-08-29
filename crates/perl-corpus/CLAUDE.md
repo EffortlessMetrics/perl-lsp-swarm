@@ -37,7 +37,7 @@ cargo doc -p perl-corpus --open
 - `CorpusRoot::require_repository_layout()` proves only the `test_corpus/` and `crates/perl-corpus/fuzz/` directory chains. It does not recurse, select extensions, inspect leaves, or redefine `CorpusTopology`.
 - `CorpusPaths::discover()` and `CorpusPaths::from_root()` remain unchecked compatibility APIs. Their raw mutable paths are never authority.
 - `CorpusPaths::try_from_root`, `try_discover`, and `resolve_authoritative` return immutable `ResolvedCorpusPaths`; `into_paths()` is an explicit authority downgrade.
-- `ResolvedCorpusPaths` must not implement `Deref`, `AsRef<CorpusPaths>`, `Borrow<CorpusPaths>`, or any other implicit conversion into `CorpusPaths`. The downgrade is written down at the call site as `as_paths()` (borrowed view) or `into_paths()` (consuming). A `compile_fail` example in `files.rs` holds this boundary.
+- `ResolvedCorpusPaths` must not implement `Deref`, `AsRef<CorpusPaths>`, `Borrow<CorpusPaths>`, or any other implicit conversion into `CorpusPaths`. The downgrade is written down at the call site as `as_paths()` (borrowed view) or `into_paths()` (consuming). `tests/root_path_authority.rs` holds this boundary with `assert_does_not_implement!`, which breaks the build of that test target if such an impl reappears; a `compile_fail` example in `files.rs` documents the resulting call-site error. Put the enforcement in the integration test, not only the doctest: the gates run `cargo test --locked --tests` and never `cargo test --doc`.
 - Component-by-component selected-member opening must consume the retained root capability. Do not add another root-opening path.
 - The published package ships APIs and deliberately included crate assets. Repository corpus data remains an external root.
 

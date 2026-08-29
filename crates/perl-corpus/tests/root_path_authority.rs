@@ -9,6 +9,41 @@ use std::path::{Path, PathBuf};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
+/// Fail the build when `$type` implements `$bound`.
+///
+/// Two blanket impls are in scope for every type. The second one additionally
+/// requires `$bound`, so it applies only when `$type` satisfies it. When both
+/// apply the associated-function reference below is ambiguous and this file
+/// stops compiling; when only the unconditional one applies, inference picks it
+/// and the assertion costs nothing at runtime.
+///
+/// This lives in an integration test rather than a `compile_fail` doctest on
+/// purpose: the repository's gates run `cargo test --locked --tests`, which
+/// builds this target, and never run `cargo test --doc`. A boundary that is
+/// only guarded by a doctest is not actually guarded here.
+macro_rules! assert_does_not_implement {
+    ($type:ty: $bound:path) => {
+        const _: fn() = || {
+            trait AmbiguousIfImplemented<Discriminant> {
+                fn probe() {}
+            }
+            impl<T: ?Sized> AmbiguousIfImplemented<()> for T {}
+            impl<T: ?Sized + $bound> AmbiguousIfImplemented<u8> for T {}
+
+            <$type as AmbiguousIfImplemented<_>>::probe();
+        };
+    };
+}
+
+// `ResolvedCorpusPaths` must reach `CorpusPaths` only through the explicit
+// `as_paths()` / `into_paths()` downgrade. Any implicit conversion would let a
+// validated resolution satisfy a path-based compatibility API without the call
+// site recording that the root authority was dropped. Re-introducing one of
+// these impls breaks the build of this test target.
+assert_does_not_implement!(ResolvedCorpusPaths: std::ops::Deref);
+assert_does_not_implement!(ResolvedCorpusPaths: AsRef<CorpusPaths>);
+assert_does_not_implement!(ResolvedCorpusPaths: std::borrow::Borrow<CorpusPaths>);
+
 fn failure(message: impl Into<String>) -> Box<dyn Error> {
     io::Error::other(message.into()).into()
 }
