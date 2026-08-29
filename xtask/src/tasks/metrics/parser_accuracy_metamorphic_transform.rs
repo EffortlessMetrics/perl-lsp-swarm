@@ -74,21 +74,14 @@ impl ContentAddressedSource {
     pub fn from_claimed(identity: String, bytes: Vec<u8>) -> Result<Self, TransformError> {
         let observed = sha256_hex(&bytes);
         if identity != observed {
-            return Err(TransformError::StaleSourceIdentity {
-                claimed: identity,
-                observed,
-            });
+            return Err(TransformError::StaleSourceIdentity { claimed: identity, observed });
         }
 
         let source = str::from_utf8(&bytes).map_err(TransformError::InvalidSourceUtf8)?;
         let line_table: LineRecordTable =
             source.parse().map_err(TransformError::InvalidSourceGeometry)?;
 
-        Ok(Self {
-            identity,
-            bytes,
-            line_count: line_table.line_count(),
-        })
+        Ok(Self { identity, bytes, line_count: line_table.line_count() })
     }
 
     /// Verified exact source identity.
@@ -130,13 +123,7 @@ impl ExactEdit {
         expected_old: Vec<u8>,
         replacement: Vec<u8>,
     ) -> Self {
-        Self {
-            edit_id,
-            base_start,
-            base_end,
-            expected_old,
-            replacement,
-        }
+        Self { edit_id, base_start, base_end, expected_old, replacement }
     }
 
     /// Stable edit identity.
@@ -307,12 +294,7 @@ impl CoordinateMap {
         }
 
         for segment in &self.segments {
-            if let CoordinateSegment::Edit {
-                removed_base,
-                inserted_transformed,
-                ..
-            } = segment
-            {
+            if let CoordinateSegment::Edit { removed_base, inserted_transformed, .. } = segment {
                 if removed_base.is_empty() && offset == removed_base.start {
                     return PositionRelation::Ambiguous {
                         lower: inserted_transformed.start,
@@ -357,12 +339,7 @@ impl CoordinateMap {
         }
 
         for segment in &self.segments {
-            if let CoordinateSegment::Edit {
-                removed_base,
-                inserted_transformed,
-                ..
-            } = segment
-            {
+            if let CoordinateSegment::Edit { removed_base, inserted_transformed, .. } = segment {
                 if inserted_transformed.is_empty() && offset == inserted_transformed.start {
                     return PositionRelation::Ambiguous {
                         lower: removed_base.start,
@@ -425,11 +402,9 @@ impl CoordinateMap {
                     let mapped = ByteRange::new(start, end);
                     return range_relation(range, mapped);
                 }
-                CoordinateSegment::Edit {
-                    removed_base,
-                    inserted_transformed,
-                    ..
-                } if !removed_base.is_empty() && removed_base.contains_range_closed(range) => {
+                CoordinateSegment::Edit { removed_base, inserted_transformed, .. }
+                    if !removed_base.is_empty() && removed_base.contains_range_closed(range) =>
+                {
                     return RangeRelation::RemovedOnly {
                         base: range,
                         transformed: *inserted_transformed,
@@ -459,26 +434,19 @@ impl CoordinateMap {
                 {
                     let start_delta = range.start.saturating_sub(transformed.start);
                     let end_delta = range.end.saturating_sub(transformed.start);
-                    let (Some(start), Some(end)) = (
-                        base.start.checked_add(start_delta),
-                        base.start.checked_add(end_delta),
-                    ) else {
+                    let (Some(start), Some(end)) =
+                        (base.start.checked_add(start_delta), base.start.checked_add(end_delta))
+                    else {
                         return RangeRelation::Invalid;
                     };
                     let mapped = ByteRange::new(start, end);
                     return range_relation(range, mapped);
                 }
-                CoordinateSegment::Edit {
-                    removed_base,
-                    inserted_transformed,
-                    ..
-                } if !inserted_transformed.is_empty()
-                    && inserted_transformed.contains_range_closed(range) =>
+                CoordinateSegment::Edit { removed_base, inserted_transformed, .. }
+                    if !inserted_transformed.is_empty()
+                        && inserted_transformed.contains_range_closed(range) =>
                 {
-                    return RangeRelation::InsertedOnly {
-                        transformed: range,
-                        base: *removed_base,
-                    };
+                    return RangeRelation::InsertedOnly { transformed: range, base: *removed_base };
                 }
                 _ => {}
             }
@@ -625,37 +593,32 @@ impl fmt::Display for TransformError {
                 formatter,
                 "source identity {claimed:?} does not match exact bytes {observed:?}"
             ),
-            Self::InvalidSourceUtf8(source) => write!(formatter, "base source is not UTF-8: {source}"),
+            Self::InvalidSourceUtf8(source) => {
+                write!(formatter, "base source is not UTF-8: {source}")
+            }
             Self::InvalidSourceGeometry(source) => {
                 write!(formatter, "base source geometry is invalid: {source}")
             }
             Self::InvalidProfileId { profile_id } => {
                 write!(formatter, "invalid transformation profile {profile_id:?}")
             }
-            Self::EmptyEditPlan => write!(formatter, "exact transformation requires at least one edit"),
+            Self::EmptyEditPlan => {
+                write!(formatter, "exact transformation requires at least one edit")
+            }
             Self::InvalidEditId { edit_id } => write!(formatter, "invalid edit id {edit_id:?}"),
             Self::DuplicateEditId { edit_id } => write!(formatter, "duplicate edit id {edit_id:?}"),
             Self::ReversedRange { edit_id, start, end } => {
                 write!(formatter, "edit {edit_id:?} has reversed range {start}..{end}")
             }
-            Self::OutOfBounds {
-                edit_id,
-                range,
-                source_len,
-            } => write!(
+            Self::OutOfBounds { edit_id, range, source_len } => write!(
                 formatter,
                 "edit {edit_id:?} range {}..{} exceeds source length {source_len}",
                 range.start, range.end
             ),
-            Self::InteriorUtf8Boundary { edit_id, offset } => write!(
-                formatter,
-                "edit {edit_id:?} boundary {offset} is inside a UTF-8 scalar"
-            ),
-            Self::WrongExpectedBytes {
-                edit_id,
-                expected_identity,
-                observed_identity,
-            } => write!(
+            Self::InteriorUtf8Boundary { edit_id, offset } => {
+                write!(formatter, "edit {edit_id:?} boundary {offset} is inside a UTF-8 scalar")
+            }
+            Self::WrongExpectedBytes { edit_id, expected_identity, observed_identity } => write!(
                 formatter,
                 "edit {edit_id:?} expected {expected_identity}, observed {observed_identity}"
             ),
@@ -665,22 +628,16 @@ impl fmt::Display for TransformError {
             Self::NoOpEdit { edit_id } => {
                 write!(formatter, "edit {edit_id:?} does not change exact bytes")
             }
-            Self::OverlappingEdits {
-                first_edit_id,
-                second_edit_id,
-            } => write!(
-                formatter,
-                "edits {first_edit_id:?} and {second_edit_id:?} overlap"
-            ),
-            Self::AmbiguousEditBoundary {
-                insertion_edit_id,
-                other_edit_id,
-                offset,
-            } => write!(
+            Self::OverlappingEdits { first_edit_id, second_edit_id } => {
+                write!(formatter, "edits {first_edit_id:?} and {second_edit_id:?} overlap")
+            }
+            Self::AmbiguousEditBoundary { insertion_edit_id, other_edit_id, offset } => write!(
                 formatter,
                 "insertion {insertion_edit_id:?} shares byte boundary {offset} with edit {other_edit_id:?}"
             ),
-            Self::ArithmeticOverflow => write!(formatter, "transformation byte arithmetic overflowed"),
+            Self::ArithmeticOverflow => {
+                write!(formatter, "transformation byte arithmetic overflowed")
+            }
             Self::InvalidFinalUtf8(source) => {
                 write!(formatter, "transformed source is not UTF-8: {source}")
             }
@@ -700,7 +657,9 @@ impl Error for TransformError {
             Self::InvalidSourceUtf8(source)
             | Self::InvalidFinalUtf8(source)
             | Self::InvalidReplacementUtf8 { source, .. } => Some(source),
-            Self::InvalidSourceGeometry(source) | Self::InvalidFinalGeometry(source) => Some(source),
+            Self::InvalidSourceGeometry(source) | Self::InvalidFinalGeometry(source) => {
+                Some(source)
+            }
             Self::Serialize(source) => Some(source),
             Self::StaleSourceIdentity { .. }
             | Self::InvalidProfileId { .. }
@@ -747,9 +706,7 @@ pub fn apply_exact_edits(
     mut edits: Vec<ExactEdit>,
 ) -> Result<ValidatedTransformation, TransformError> {
     if !stable_id_is_valid(profile_id) {
-        return Err(TransformError::InvalidProfileId {
-            profile_id: profile_id.to_owned(),
-        });
+        return Err(TransformError::InvalidProfileId { profile_id: profile_id.to_owned() });
     }
     if edits.is_empty() {
         return Err(TransformError::EmptyEditPlan);
@@ -767,14 +724,10 @@ pub fn apply_exact_edits(
     let mut edit_ids = BTreeSet::new();
     for edit in &edits {
         if !stable_id_is_valid(&edit.edit_id) {
-            return Err(TransformError::InvalidEditId {
-                edit_id: edit.edit_id.clone(),
-            });
+            return Err(TransformError::InvalidEditId { edit_id: edit.edit_id.clone() });
         }
         if !edit_ids.insert(edit.edit_id.clone()) {
-            return Err(TransformError::DuplicateEditId {
-                edit_id: edit.edit_id.clone(),
-            });
+            return Err(TransformError::DuplicateEditId { edit_id: edit.edit_id.clone() });
         }
         validate_edit(source_text, source.bytes(), edit)?;
     }
@@ -828,10 +781,8 @@ pub fn apply_exact_edits(
     }
 
     if base_cursor < source.bytes().len() {
-        let unchanged = source
-            .bytes()
-            .get(base_cursor..)
-            .ok_or(TransformError::ArithmeticOverflow)?;
+        let unchanged =
+            source.bytes().get(base_cursor..).ok_or(TransformError::ArithmeticOverflow)?;
         let transformed_start = final_bytes.len();
         final_bytes.extend_from_slice(unchanged);
         segments.push(CoordinateSegment::Unchanged {
@@ -938,9 +889,7 @@ fn validate_edit(
         source,
     })?;
     if observed == edit.replacement {
-        return Err(TransformError::NoOpEdit {
-            edit_id: edit.edit_id.clone(),
-        });
+        return Err(TransformError::NoOpEdit { edit_id: edit.edit_id.clone() });
     }
 
     Ok(())
@@ -983,13 +932,9 @@ fn validate_edit_relations(edits: &[ExactEdit]) -> Result<(), TransformError> {
 
 fn point_relation(source_offset: usize, target_offset: usize) -> PositionRelation {
     if source_offset == target_offset {
-        PositionRelation::Exact {
-            offset: target_offset,
-        }
+        PositionRelation::Exact { offset: target_offset }
     } else {
-        PositionRelation::Mapped {
-            offset: target_offset,
-        }
+        PositionRelation::Mapped { offset: target_offset }
     }
 }
 
@@ -1003,20 +948,18 @@ fn range_relation(source: ByteRange, target: ByteRange) -> RangeRelation {
 
 fn zero_range_relation(relation: PositionRelation, queried: ByteRange) -> RangeRelation {
     match relation {
-        PositionRelation::Exact { offset } => RangeRelation::Exact {
-            range: ByteRange::new(offset, offset),
-        },
-        PositionRelation::Mapped { offset } => RangeRelation::Mapped {
-            range: ByteRange::new(offset, offset),
-        },
-        PositionRelation::InsertedOnly { base, .. } => RangeRelation::InsertedOnly {
-            transformed: queried,
-            base,
-        },
-        PositionRelation::RemovedOnly { transformed, .. } => RangeRelation::RemovedOnly {
-            base: queried,
-            transformed,
-        },
+        PositionRelation::Exact { offset } => {
+            RangeRelation::Exact { range: ByteRange::new(offset, offset) }
+        }
+        PositionRelation::Mapped { offset } => {
+            RangeRelation::Mapped { range: ByteRange::new(offset, offset) }
+        }
+        PositionRelation::InsertedOnly { base, .. } => {
+            RangeRelation::InsertedOnly { transformed: queried, base }
+        }
+        PositionRelation::RemovedOnly { transformed, .. } => {
+            RangeRelation::RemovedOnly { base: queried, transformed }
+        }
         PositionRelation::Ambiguous { .. } => RangeRelation::Ambiguous,
         PositionRelation::Invalid => RangeRelation::Invalid,
     }
@@ -1032,13 +975,7 @@ mod tests {
         ContentAddressedSource::from_bytes(source.as_bytes().to_vec())
     }
 
-    fn edit(
-        id: &str,
-        start: usize,
-        end: usize,
-        expected: &str,
-        replacement: &str,
-    ) -> ExactEdit {
+    fn edit(id: &str, start: usize, end: usize, expected: &str, replacement: &str) -> ExactEdit {
         ExactEdit::new(
             id.to_owned(),
             start,
@@ -1066,20 +1003,13 @@ mod tests {
         Ok(())
     }
 
-
     #[test]
     fn final_and_transformation_identities_commit_to_exact_replacement_bytes() -> TestResult {
         let source = subject("abc")?;
-        let upper_b = apply_exact_edits(
-            &source,
-            "test.profile.v1",
-            vec![edit("replace-b", 1, 2, "b", "B")],
-        )?;
-        let upper_c = apply_exact_edits(
-            &source,
-            "test.profile.v1",
-            vec![edit("replace-b", 1, 2, "b", "C")],
-        )?;
+        let upper_b =
+            apply_exact_edits(&source, "test.profile.v1", vec![edit("replace-b", 1, 2, "b", "B")])?;
+        let upper_c =
+            apply_exact_edits(&source, "test.profile.v1", vec![edit("replace-b", 1, 2, "b", "C")])?;
 
         assert_eq!(upper_b.final_source_identity, sha256_hex(b"aBc"));
         assert_eq!(upper_c.final_source_identity, sha256_hex(b"aCc"));
@@ -1122,15 +1052,11 @@ mod tests {
         );
         assert_eq!(
             transformed.coordinate_map.map_base_range(ByteRange::new(0, 3)),
-            RangeRelation::Exact {
-                range: ByteRange::new(0, 3),
-            }
+            RangeRelation::Exact { range: ByteRange::new(0, 3) }
         );
         assert_eq!(
             transformed.coordinate_map.map_base_range(ByteRange::new(3, 6)),
-            RangeRelation::Mapped {
-                range: ByteRange::new(4, 7),
-            }
+            RangeRelation::Mapped { range: ByteRange::new(4, 7) }
         );
 
         Ok(())
@@ -1139,11 +1065,8 @@ mod tests {
     #[test]
     fn multiline_bijective_range_round_trips_while_insertion_point_stays_ambiguous() -> TestResult {
         let source = subject("aa\nbb\ncc")?;
-        let transformed = apply_exact_edits(
-            &source,
-            "test.profile.v1",
-            vec![edit("prefix", 0, 0, "", "!")],
-        )?;
+        let transformed =
+            apply_exact_edits(&source, "test.profile.v1", vec![edit("prefix", 0, 0, "", "!")])?;
 
         let base = ByteRange::new(3, 8);
         let mapped = ByteRange::new(4, 9);
@@ -1198,10 +1121,7 @@ mod tests {
         let transformed = apply_exact_edits(
             &source,
             "test.profile.v1",
-            vec![
-                edit("insert", 1, 1, "", "XY"),
-                edit("remove", 3, 5, "de", ""),
-            ],
+            vec![edit("insert", 1, 1, "", "XY"), edit("remove", 3, 5, "de", "")],
         )?;
 
         assert_eq!(
@@ -1210,17 +1130,11 @@ mod tests {
         );
         assert_eq!(
             transformed.coordinate_map.map_transformed_position(2),
-            PositionRelation::InsertedOnly {
-                transformed_offset: 2,
-                base: ByteRange::new(1, 1),
-            }
+            PositionRelation::InsertedOnly { transformed_offset: 2, base: ByteRange::new(1, 1) }
         );
         assert_eq!(
             transformed.coordinate_map.map_base_position(4),
-            PositionRelation::RemovedOnly {
-                base_offset: 4,
-                transformed: ByteRange::new(5, 5),
-            }
+            PositionRelation::RemovedOnly { base_offset: 4, transformed: ByteRange::new(5, 5) }
         );
         assert_eq!(
             transformed.coordinate_map.map_transformed_position(5),
@@ -1241,18 +1155,14 @@ mod tests {
 
         assert_eq!(
             transformed.coordinate_map.map_base_range(ByteRange::new(4, 6)),
-            RangeRelation::Mapped {
-                range: ByteRange::new(5, 7),
-            }
+            RangeRelation::Mapped { range: ByteRange::new(5, 7) }
         );
         assert_eq!(
             transformed.coordinate_map.map_base_range(ByteRange::new(1, 5)),
             RangeRelation::Ambiguous
         );
         assert_eq!(
-            transformed
-                .coordinate_map
-                .map_transformed_range(ByteRange::new(2, 5)),
+            transformed.coordinate_map.map_transformed_range(ByteRange::new(2, 5)),
             RangeRelation::InsertedOnly {
                 transformed: ByteRange::new(2, 5),
                 base: ByteRange::new(2, 4),
@@ -1267,27 +1177,18 @@ mod tests {
         let source_text = "\u{feff}a\r\nβ\rc";
         let source = subject(source_text)?;
         let eof = source.bytes().len();
-        let transformed = apply_exact_edits(
-            &source,
-            "test.profile.v1",
-            vec![edit("eof", eof, eof, "", "\n")],
-        )?;
+        let transformed =
+            apply_exact_edits(&source, "test.profile.v1", vec![edit("eof", eof, eof, "", "\n")])?;
 
         assert_eq!(source.line_count(), 2);
         assert_eq!(transformed.base_line_count, 2);
         assert_eq!(transformed.transformed_line_count, 3);
         assert_eq!(
             transformed.coordinate_map.map_base_position(eof),
-            PositionRelation::Ambiguous {
-                lower: eof,
-                upper: eof + 1,
-            }
+            PositionRelation::Ambiguous { lower: eof, upper: eof + 1 }
         );
         assert_eq!(transformed.final_bytes, format!("{source_text}\n").as_bytes());
-        assert_eq!(
-            transformed.final_source_identity,
-            sha256_hex(&transformed.final_bytes)
-        );
+        assert_eq!(transformed.final_source_identity, sha256_hex(&transformed.final_bytes));
 
         Ok(())
     }
@@ -1298,13 +1199,7 @@ mod tests {
         let result = apply_exact_edits(
             &source,
             "test.profile.v1",
-            vec![ExactEdit::new(
-                "inside-beta".to_owned(),
-                2,
-                3,
-                vec![0xb2],
-                b"x".to_vec(),
-            )],
+            vec![ExactEdit::new("inside-beta".to_owned(), 2, 3, vec![0xb2], b"x".to_vec())],
         );
 
         assert!(matches!(
@@ -1323,11 +1218,7 @@ mod tests {
         let source = subject("abcdef")?;
 
         assert!(matches!(
-            apply_exact_edits(
-                &source,
-                "test.profile.v1",
-                vec![edit("wrong", 1, 2, "x", "B")]
-            ),
+            apply_exact_edits(&source, "test.profile.v1", vec![edit("wrong", 1, 2, "x", "B")]),
             Err(TransformError::WrongExpectedBytes { .. })
         ));
         assert!(matches!(
@@ -1361,18 +1252,9 @@ mod tests {
         let result = apply_exact_edits(
             &source,
             "test.profile.v1",
-            vec![ExactEdit::new(
-                "invalid-utf8".to_owned(),
-                1,
-                2,
-                b"b".to_vec(),
-                vec![0xff],
-            )],
+            vec![ExactEdit::new("invalid-utf8".to_owned(), 1, 2, b"b".to_vec(), vec![0xff])],
         );
-        assert!(matches!(
-            result,
-            Err(TransformError::InvalidReplacementUtf8 { .. })
-        ));
+        assert!(matches!(result, Err(TransformError::InvalidReplacementUtf8 { .. })));
 
         Ok(())
     }
@@ -1382,27 +1264,15 @@ mod tests {
         let source = subject("abc")?;
 
         assert!(matches!(
-            apply_exact_edits(
-                &source,
-                "test.profile.v1",
-                vec![edit("reversed", 2, 1, "", "x")]
-            ),
+            apply_exact_edits(&source, "test.profile.v1", vec![edit("reversed", 2, 1, "", "x")]),
             Err(TransformError::ReversedRange { .. })
         ));
         assert!(matches!(
-            apply_exact_edits(
-                &source,
-                "test.profile.v1",
-                vec![edit("outside", 3, 4, "", "x")]
-            ),
+            apply_exact_edits(&source, "test.profile.v1", vec![edit("outside", 3, 4, "", "x")]),
             Err(TransformError::OutOfBounds { .. })
         ));
         assert!(matches!(
-            apply_exact_edits(
-                &source,
-                "test.profile.v1",
-                vec![edit("noop", 1, 2, "b", "b")]
-            ),
+            apply_exact_edits(&source, "test.profile.v1", vec![edit("noop", 1, 2, "b", "b")]),
             Err(TransformError::NoOpEdit { .. })
         ));
         assert!(matches!(

@@ -19,13 +19,7 @@ fn exact_bytes_drive_the_public_map_surface() -> TestResult {
     let transformed = apply_exact_edits(
         &source,
         "trailing-horizontal-whitespace.v1",
-        vec![ExactEdit::new(
-            "line-0-space".to_owned(),
-            3,
-            3,
-            Vec::new(),
-            b" ".to_vec(),
-        )],
+        vec![ExactEdit::new("line-0-space".to_owned(), 3, 3, Vec::new(), b" ".to_vec())],
     )?;
 
     assert_eq!(transformed.final_bytes, b"abc \r\n");
@@ -37,9 +31,7 @@ fn exact_bytes_drive_the_public_map_surface() -> TestResult {
     );
     assert_eq!(
         transformed.coordinate_map.map_base_range(ByteRange::new(3, 5)),
-        RangeRelation::Mapped {
-            range: ByteRange::new(4, 6),
-        }
+        RangeRelation::Mapped { range: ByteRange::new(4, 6) }
     );
 
     Ok(())
@@ -47,7 +39,6 @@ fn exact_bytes_drive_the_public_map_surface() -> TestResult {
 
 #[test]
 fn stale_subject_identity_is_rejected_before_edit_validation() {
-    let result =
-        ContentAddressedSource::from_claimed("sha256:stale".to_owned(), b"abc".to_vec());
+    let result = ContentAddressedSource::from_claimed("sha256:stale".to_owned(), b"abc".to_vec());
     assert!(result.is_err());
 }
