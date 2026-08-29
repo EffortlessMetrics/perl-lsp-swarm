@@ -29,6 +29,8 @@ jobs:
     if: >-
       (github.event_name == 'workflow_run' &&
        github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.repository.full_name == github.repository &&
        github.event.workflow_run.head_branch == github.event.repository.default_branch) ||
       (github.event_name == 'workflow_dispatch' && inputs.source_sha == github.sha)
     runs-on: ubuntu-24.04
@@ -202,6 +204,8 @@ jobs:
     if: >-
       github.event_name == 'workflow_run' &&
       github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.repository.full_name == github.repository &&
       github.event.workflow_run.head_branch == github.event.repository.default_branch &&
       vars.BADGE_ENDPOINTS_AUTO_PR == 'true'
     runs-on: ubuntu-24.04

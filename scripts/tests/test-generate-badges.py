@@ -60,6 +60,8 @@ def validate_workflow_contract(text: str) -> None:
         "github.event_name == 'workflow_dispatch' && inputs.source_sha == github.sha",
         "workflow_run",
         "github.event.workflow_run.conclusion == 'success'",
+        "github.event.workflow_run.event == 'push'",
+        "github.event.workflow_run.repository.full_name == github.repository",
         "ref: ${{ env.SOURCE_SHA }}",
         "timeout-minutes: 20",
         "python3 scripts/generate-badges.py",
@@ -75,6 +77,8 @@ def validate_workflow_contract(text: str) -> None:
     writer_required = [
         "github.event_name == 'workflow_run'",
         "github.event.workflow_run.head_branch == github.event.repository.default_branch",
+        "github.event.workflow_run.event == 'push'",
+        "github.event.workflow_run.repository.full_name == github.repository",
         "contents: write",
         "pull-requests: write",
     ]
