@@ -38,7 +38,12 @@ compatibility_apis = ["index_file", "index_file_str", "index_file_with_generatio
 # duplicate #11940 @ 254f0e214): the document_access gen-0 builder fixture
 # dropped one .index_file_with_generation(...) call; the scorecard coordinator
 # re-seed added a canonical index_live_file caller identity (not counted).
-compatibility_baseline = 696
+# compatibility_baseline reconciled 696 -> 699 after the post-#12750 merge
+# wave. Explicit attribution of every added call site, all from reviewed
+# squash-merged PRs (checker-equivalent count, base 7fbcc04f6 = 696):
+#   runtime/workspace.rs +3 index_file: #13183 (#13185 extensionless Perl
+#     shebang discovery indexes three newly discovered scripts)
+compatibility_baseline = 699
 
 # Structural recurrence control (#11305): files under these prefixes must
 # never call compatibility source APIs at all -- live commits go through

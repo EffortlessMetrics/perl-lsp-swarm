@@ -1132,9 +1132,7 @@ fn qw_is_target_value(raw: &str, index: usize) -> bool {
             depth = depth.saturating_add(1);
         } else if matches!(ch, ')' | '}' | ']') {
             depth = depth.saturating_sub(1);
-        } else if ch == ',' && depth == 0 {
-            return false;
-        } else if ch == ';' {
+        } else if (ch == ',' && depth == 0) || ch == ';' {
             return false;
         }
     }
@@ -1251,9 +1249,8 @@ fn consume_parenthesized_scalar(atoms: &[String], start: usize) -> Option<(usize
             ")" => {
                 depth = depth.checked_sub(1)?;
                 if depth == 0 {
-                    let truthy = !nested_expression
-                        && inner.len() == 1
-                        && scalar_target_is_truthy(&inner[0]);
+                    let truthy =
+                        !nested_expression && inner.len() == 1 && scalar_target_is_truthy(inner[0]);
                     return Some((index + 1, truthy));
                 }
             }
