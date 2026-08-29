@@ -12,12 +12,14 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 #[test]
 fn long_tail_fixture_is_discovered_and_emits_exact_nodekinds() -> TestResult {
-    let fixture_path = workspace_root().join("test_corpus/nodekind_long_tail.pl");
+    let workspace_root = fs::canonicalize(workspace_root())?;
+    let fixture_path = workspace_root.join("test_corpus/nodekind_long_tail.pl");
     let source = fs::read_to_string(&fixture_path)?;
+    let corpus_paths = perl_corpus::files::CorpusPaths::from_root(workspace_root);
 
     assert!(
-        perl_corpus::get_test_files().iter().any(|path| path.ends_with("nodekind_long_tail.pl")),
-        "the long-tail fixture must be part of the governed project-corpus population"
+        perl_corpus::files::get_test_files_from(&corpus_paths).contains(&fixture_path),
+        "the checkout fixture must be part of the explicitly rooted project-corpus population"
     );
 
     let mut parser = Parser::new(&source);
