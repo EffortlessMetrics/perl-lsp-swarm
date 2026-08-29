@@ -325,6 +325,22 @@ impl UxHarness {
     /// Returns `None` if the server returned a null/empty result (degraded mode is OK).
     /// Returns `Err` only if the server returned a JSON-RPC error or timed out.
     pub fn hover(&self, relative_path: &str, line: u32, character: u32) -> Result<Option<Value>> {
+        self.hover_with_timeout(relative_path, line, character, self.config.timeout)
+    }
+
+    /// Request hover information with an explicit per-request timeout.
+    ///
+    /// Deadline-polling callers pass the remaining wall-clock budget so one
+    /// blocking request cannot outrun the caller's own deadline (the default
+    /// `ScenarioConfig::timeout` is 30 s and is independent of any local
+    /// polling deadline).
+    pub fn hover_with_timeout(
+        &self,
+        relative_path: &str,
+        line: u32,
+        character: u32,
+        timeout: Duration,
+    ) -> Result<Option<Value>> {
         let uri = self.workspace.uri(relative_path);
         let resp = self.client.request(
             "textDocument/hover",
@@ -332,7 +348,7 @@ impl UxHarness {
                 "textDocument": { "uri": uri },
                 "position": { "line": line, "character": character }
             }),
-            self.config.timeout,
+            timeout,
         )?;
         if resp["result"].is_null() {
             return Ok(None);
@@ -342,6 +358,22 @@ impl UxHarness {
 
     /// Request completion at `(line, character)`.
     pub fn completion(&self, relative_path: &str, line: u32, character: u32) -> Result<Vec<Value>> {
+        self.completion_with_timeout(relative_path, line, character, self.config.timeout)
+    }
+
+    /// Request completion with an explicit per-request timeout.
+    ///
+    /// Deadline-polling callers pass the remaining wall-clock budget so one
+    /// blocking request cannot outrun the caller's own deadline (the default
+    /// `ScenarioConfig::timeout` is 30 s and is independent of any local
+    /// polling deadline).
+    pub fn completion_with_timeout(
+        &self,
+        relative_path: &str,
+        line: u32,
+        character: u32,
+        timeout: Duration,
+    ) -> Result<Vec<Value>> {
         let uri = self.workspace.uri(relative_path);
         let resp = self.client.request(
             "textDocument/completion",
@@ -350,7 +382,7 @@ impl UxHarness {
                 "position": { "line": line, "character": character },
                 "context": { "triggerKind": 1 }
             }),
-            self.config.timeout,
+            timeout,
         )?;
         if resp.get("error").is_some() {
             return Err(anyhow!("completion returned error: {}", resp["error"]));
