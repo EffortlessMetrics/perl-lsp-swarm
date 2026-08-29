@@ -128,19 +128,36 @@ impl Default for PragmaState {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct PragmaSnapshot {
     state: PragmaState,
+    perl_version: Option<PerlVersion>,
 }
 
 impl PragmaSnapshot {
     /// Create a snapshot from a concrete state value.
+    ///
+    /// A standalone state value has no retained version-declaration authority.
     #[must_use]
     pub fn from_state(state: PragmaState) -> Self {
-        Self { state }
+        Self { state, perl_version: None }
+    }
+
+    /// Create a snapshot from the complete internally tracked state.
+    pub(crate) fn from_parts(state: PragmaState, perl_version: Option<PerlVersion>) -> Self {
+        Self { state, perl_version }
     }
 
     /// Borrow the underlying state.
     #[must_use]
     pub fn state(&self) -> &PragmaState {
         &self.state
+    }
+
+    /// Return the lexical Perl version selected at this source position.
+    ///
+    /// `None` means no version declaration is retained for the snapshot; it
+    /// does not assert which Perl interpreter will execute the file.
+    #[must_use]
+    pub fn perl_version(&self) -> Option<PerlVersion> {
+        self.perl_version
     }
 
     /// Whether all strict categories are active in this snapshot.

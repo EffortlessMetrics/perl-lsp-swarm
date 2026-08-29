@@ -1,12 +1,14 @@
-use super::directives::{apply_no_directive, apply_use_directive};
-use crate::{PragmaState, enable_effective_version_semantics, parse_perl_version};
+use super::{
+    TrackedPragmaState,
+    directives::{apply_no_directive, apply_use_directive},
+};
 use perl_ast::ast::{Node, NodeKind};
 use std::ops::Range;
 
 pub(crate) fn build_ranges(
     node: &Node,
-    current_state: &mut PragmaState,
-    ranges: &mut Vec<(Range<usize>, PragmaState)>,
+    current_state: &mut TrackedPragmaState,
+    ranges: &mut Vec<(Range<usize>, TrackedPragmaState)>,
 ) {
     match &node.kind {
         NodeKind::Use { module, args, .. } => {
@@ -87,18 +89,6 @@ pub(crate) fn build_ranges(
         NodeKind::Package { block: Some(pkg_block), .. } => {
             build_scoped_body(pkg_block, current_state, ranges);
         }
-        // Handle `require VERSION` — in Perl, this enables the version's
-        // feature bundle and strict/warnings lexically, just like `use VERSION`.
-        // The parser produces FunctionCall { name: "require", args: [version] }.
-        // (#5106)
-        NodeKind::FunctionCall { name, args } if name == "require" => {
-            if let Some(version_str) = extract_require_version(args)
-                && let Some(version) = parse_perl_version(&version_str)
-            {
-                enable_effective_version_semantics(current_state, version);
-                ranges.push((node.location.start..node.location.end, current_state.clone()));
-            }
-        }
         NodeKind::ExpressionStatement { expression } => {
             build_ranges(expression, current_state, ranges);
         }
@@ -106,24 +96,10 @@ pub(crate) fn build_ranges(
     }
 }
 
-/// Extract the version string from a `require VERSION` call's arguments.
-/// Handles Number nodes (e.g. `require 5.036`), String nodes (e.g.
-/// `require "v5.36"`), and bareword-identifier nodes (e.g. `require v5.36`).
-fn extract_require_version(args: &[Node]) -> Option<String> {
-    let first = args.first()?;
-    match &first.kind {
-        NodeKind::Number { value } => Some(value.clone()),
-        NodeKind::String { value, .. } => Some(value.clone()),
-        NodeKind::VString { value } => Some(value.clone()),
-        NodeKind::Identifier { name } => Some(name.clone()),
-        _ => None,
-    }
-}
-
 fn build_scoped_body(
     body: &Node,
-    current_state: &mut PragmaState,
-    ranges: &mut Vec<(Range<usize>, PragmaState)>,
+    current_state: &mut TrackedPragmaState,
+    ranges: &mut Vec<(Range<usize>, TrackedPragmaState)>,
 ) {
     let saved_state = current_state.clone();
     build_ranges(body, current_state, ranges);
@@ -136,8 +112,8 @@ fn build_scoped_body(
 fn build_statement_block(
     statements: &[Node],
     end: usize,
-    current_state: &mut PragmaState,
-    ranges: &mut Vec<(Range<usize>, PragmaState)>,
+    current_state: &mut TrackedPragmaState,
+    ranges: &mut Vec<(Range<usize>, TrackedPragmaState)>,
 ) {
     let saved_state = current_state.clone();
     for stmt in statements {
@@ -156,7 +132,7 @@ mod tests {
 
     #[test]
     fn changed_scoped_body_emits_restore_entry_and_restores_state() {
-        let saved_state = PragmaState::default();
+        let saved_state = TrackedPragmaState::default();
         let mut current_state = saved_state.clone();
         let body = Node::new(
             NodeKind::Use {

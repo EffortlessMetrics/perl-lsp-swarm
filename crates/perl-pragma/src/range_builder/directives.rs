@@ -1,7 +1,8 @@
+use super::TrackedPragmaState;
 use crate::{
     PragmaState, add_disabled_warning_category, apply_builtin_imports_if_changed,
-    apply_feature_state, conditional_pragma_target, enable_effective_version_semantics,
-    normalized_pragma_token, parse_perl_version, pragma_arg_items,
+    apply_feature_state, conditional_pragma_target, normalized_pragma_token, parse_perl_version,
+    pragma_arg_items,
 };
 use std::ops::Range;
 
@@ -9,37 +10,37 @@ pub(super) fn apply_use_directive(
     range: Range<usize>,
     module: &str,
     args: &[String],
-    state: &mut PragmaState,
-    ranges: &mut Vec<(Range<usize>, PragmaState)>,
+    tracked: &mut TrackedPragmaState,
+    ranges: &mut Vec<(Range<usize>, TrackedPragmaState)>,
 ) {
-    if apply_conditional_use(module, args, range.clone(), state, ranges) {
+    if apply_conditional_use(module, args, range.clone(), tracked, ranges) {
         return;
     }
 
     match module {
         "strict" => {
-            set_strict_categories(state, args, true);
-            push_state(range, state, ranges);
+            set_strict_categories(&mut tracked.state, args, true);
+            push_state(range, tracked, ranges);
         }
         "warnings" => {
-            apply_use_warnings(range, args, state, ranges);
+            apply_use_warnings(range, args, tracked, ranges);
         }
         "utf8" => {
-            state.utf8 = true;
-            push_state(range, state, ranges);
+            tracked.state.utf8 = true;
+            push_state(range, tracked, ranges);
         }
         "encoding" => {
-            state.encoding = first_normalized_arg(args);
-            push_state(range, state, ranges);
+            tracked.state.encoding = first_normalized_arg(args);
+            push_state(range, tracked, ranges);
         }
         "locale" => {
-            state.locale = true;
-            state.locale_scope = first_normalized_arg(args);
-            push_state(range, state, ranges);
+            tracked.state.locale = true;
+            tracked.state.locale_scope = first_normalized_arg(args);
+            push_state(range, tracked, ranges);
         }
         "feature" => {
-            if apply_feature_state(state, args, true) {
-                push_state(range, state, ranges);
+            if apply_feature_state(&mut tracked.state, args, true) {
+                push_state(range, tracked, ranges);
             }
         }
         "experimental" => {
@@ -52,19 +53,19 @@ pub(super) fn apply_use_directive(
                 .flat_map(|arg| crate::pragma_arg_items(arg))
                 .map(|item| format!("'{item}'"))
                 .collect();
-            if apply_feature_state(state, &feature_args, true) {
-                push_state(range, state, ranges);
+            if apply_feature_state(&mut tracked.state, &feature_args, true) {
+                push_state(range, tracked, ranges);
             }
         }
         "builtin" => {
-            if apply_builtin_imports_if_changed(state, args) {
-                push_state(range, state, ranges);
+            if apply_builtin_imports_if_changed(&mut tracked.state, args) {
+                push_state(range, tracked, ranges);
             }
         }
         _ => {
             if let Some(version) = parse_perl_version(module) {
-                enable_effective_version_semantics(state, version);
-                push_state(range, state, ranges);
+                tracked.enable_version_semantics(version);
+                push_state(range, tracked, ranges);
             }
         }
     }
@@ -74,39 +75,39 @@ pub(super) fn apply_no_directive(
     range: Range<usize>,
     module: &str,
     args: &[String],
-    state: &mut PragmaState,
-    ranges: &mut Vec<(Range<usize>, PragmaState)>,
+    tracked: &mut TrackedPragmaState,
+    ranges: &mut Vec<(Range<usize>, TrackedPragmaState)>,
 ) {
-    if apply_conditional_no(module, args, range.clone(), state, ranges) {
+    if apply_conditional_no(module, args, range.clone(), tracked, ranges) {
         return;
     }
 
     match module {
         "strict" => {
-            set_strict_categories(state, args, false);
-            push_state(range, state, ranges);
+            set_strict_categories(&mut tracked.state, args, false);
+            push_state(range, tracked, ranges);
         }
         "warnings" => {
-            apply_no_warnings(range, args, state, ranges);
+            apply_no_warnings(range, args, tracked, ranges);
         }
         "utf8" => {
-            state.utf8 = false;
-            push_state(range, state, ranges);
+            tracked.state.utf8 = false;
+            push_state(range, tracked, ranges);
         }
         "encoding" => {
-            state.encoding = None;
-            push_state(range, state, ranges);
+            tracked.state.encoding = None;
+            push_state(range, tracked, ranges);
         }
         "locale" => {
-            state.locale = false;
-            state.locale_scope = None;
-            push_state(range, state, ranges);
+            tracked.state.locale = false;
+            tracked.state.locale_scope = None;
+            push_state(range, tracked, ranges);
         }
-        "feature" if apply_feature_state(state, args, false) => {
-            push_state(range, state, ranges);
+        "feature" if apply_feature_state(&mut tracked.state, args, false) => {
+            push_state(range, tracked, ranges);
         }
-        "experimental" if apply_feature_state(state, args, false) => {
-            push_state(range, state, ranges);
+        "experimental" if apply_feature_state(&mut tracked.state, args, false) => {
+            push_state(range, tracked, ranges);
         }
         "builtin" => {}
         _ => {}
@@ -117,15 +118,15 @@ fn apply_conditional_use(
     module: &str,
     args: &[String],
     range: Range<usize>,
-    state: &mut PragmaState,
-    ranges: &mut Vec<(Range<usize>, PragmaState)>,
+    tracked: &mut TrackedPragmaState,
+    ranges: &mut Vec<(Range<usize>, TrackedPragmaState)>,
 ) -> bool {
     if !matches!(module, "if" | "unless") {
         return false;
     }
 
     if let Some((target, target_args)) = conditional_pragma_target(args) {
-        apply_conditional_use_target(range, target, target_args, state, ranges);
+        apply_conditional_use_target(range, target, target_args, tracked, ranges);
     }
     true
 }
@@ -134,15 +135,15 @@ fn apply_conditional_no(
     module: &str,
     args: &[String],
     range: Range<usize>,
-    state: &mut PragmaState,
-    ranges: &mut Vec<(Range<usize>, PragmaState)>,
+    tracked: &mut TrackedPragmaState,
+    ranges: &mut Vec<(Range<usize>, TrackedPragmaState)>,
 ) -> bool {
     if !matches!(module, "if" | "unless") {
         return false;
     }
 
     if let Some((target, target_args)) = conditional_pragma_target(args) {
-        apply_conditional_no_target(range, target, target_args, state, ranges);
+        apply_conditional_no_target(range, target, target_args, tracked, ranges);
     }
     true
 }
@@ -151,66 +152,66 @@ fn apply_conditional_use_target(
     range: Range<usize>,
     module: &str,
     args: &[String],
-    state: &mut PragmaState,
-    ranges: &mut Vec<(Range<usize>, PragmaState)>,
+    tracked: &mut TrackedPragmaState,
+    ranges: &mut Vec<(Range<usize>, TrackedPragmaState)>,
 ) {
     match module {
-        "strict" => set_strict_categories(state, args, true),
+        "strict" => set_strict_categories(&mut tracked.state, args, true),
         "warnings" => {
-            enable_warnings_categories(args, state);
+            enable_warnings_categories(args, &mut tracked.state);
         }
-        "utf8" => state.utf8 = true,
-        "encoding" => state.encoding = first_normalized_arg(args),
+        "utf8" => tracked.state.utf8 = true,
+        "encoding" => tracked.state.encoding = first_normalized_arg(args),
         "locale" => {
-            state.locale = true;
-            state.locale_scope = first_normalized_arg(args);
+            tracked.state.locale = true;
+            tracked.state.locale_scope = first_normalized_arg(args);
         }
         "feature" => {
-            if !apply_feature_state(state, args, true) {
+            if !apply_feature_state(&mut tracked.state, args, true) {
                 return;
             }
         }
         "builtin" => {
-            if !apply_builtin_imports_if_changed(state, args) {
+            if !apply_builtin_imports_if_changed(&mut tracked.state, args) {
                 return;
             }
         }
         _ => {
             if let Some(version) = parse_perl_version(module) {
-                enable_effective_version_semantics(state, version);
+                tracked.enable_version_semantics(version);
             } else {
                 return;
             }
         }
     }
-    push_state(range, state, ranges);
+    push_state(range, tracked, ranges);
 }
 
 fn apply_conditional_no_target(
     range: Range<usize>,
     module: &str,
     args: &[String],
-    state: &mut PragmaState,
-    ranges: &mut Vec<(Range<usize>, PragmaState)>,
+    tracked: &mut TrackedPragmaState,
+    ranges: &mut Vec<(Range<usize>, TrackedPragmaState)>,
 ) {
     match module {
-        "strict" => set_strict_categories(state, args, false),
-        "warnings" => disable_warnings_categories(args, state),
-        "utf8" => state.utf8 = false,
-        "encoding" => state.encoding = None,
+        "strict" => set_strict_categories(&mut tracked.state, args, false),
+        "warnings" => disable_warnings_categories(args, &mut tracked.state),
+        "utf8" => tracked.state.utf8 = false,
+        "encoding" => tracked.state.encoding = None,
         "locale" => {
-            state.locale = false;
-            state.locale_scope = None;
+            tracked.state.locale = false;
+            tracked.state.locale_scope = None;
         }
         "feature" => {
-            if !apply_feature_state(state, args, false) {
+            if !apply_feature_state(&mut tracked.state, args, false) {
                 return;
             }
         }
         "builtin" => return,
         _ => return,
     }
-    push_state(range, state, ranges);
+    push_state(range, tracked, ranges);
 }
 
 fn set_strict_categories(state: &mut PragmaState, args: &[String], enabled: bool) {
@@ -236,11 +237,11 @@ fn set_strict_categories(state: &mut PragmaState, args: &[String], enabled: bool
 fn apply_use_warnings(
     range: Range<usize>,
     args: &[String],
-    state: &mut PragmaState,
-    ranges: &mut Vec<(Range<usize>, PragmaState)>,
+    tracked: &mut TrackedPragmaState,
+    ranges: &mut Vec<(Range<usize>, TrackedPragmaState)>,
 ) {
-    enable_warnings_categories(args, state);
-    push_state(range, state, ranges);
+    enable_warnings_categories(args, &mut tracked.state);
+    push_state(range, tracked, ranges);
 }
 
 fn enable_warnings_categories(args: &[String], state: &mut PragmaState) {
@@ -270,21 +271,21 @@ fn enable_warnings_categories(args: &[String], state: &mut PragmaState) {
 fn apply_no_warnings(
     range: Range<usize>,
     args: &[String],
-    state: &mut PragmaState,
-    ranges: &mut Vec<(Range<usize>, PragmaState)>,
+    tracked: &mut TrackedPragmaState,
+    ranges: &mut Vec<(Range<usize>, TrackedPragmaState)>,
 ) {
-    let warnings_before = state.warnings;
-    let had_disabled_before = !state.disabled_warning_categories.is_empty();
-    let before = state.disabled_warning_categories.len();
-    disable_warnings_categories(args, state);
+    let warnings_before = tracked.state.warnings;
+    let had_disabled_before = !tracked.state.disabled_warning_categories.is_empty();
+    let before = tracked.state.disabled_warning_categories.len();
+    disable_warnings_categories(args, &mut tracked.state);
 
     let changed = if args.is_empty() {
         warnings_before || had_disabled_before
     } else {
-        state.disabled_warning_categories.len() != before
+        tracked.state.disabled_warning_categories.len() != before
     };
     if changed {
-        push_state(range, state, ranges);
+        push_state(range, tracked, ranges);
     }
 }
 
@@ -308,8 +309,8 @@ fn first_normalized_arg(args: &[String]) -> Option<String> {
 
 fn push_state(
     range: Range<usize>,
-    state: &PragmaState,
-    ranges: &mut Vec<(Range<usize>, PragmaState)>,
+    tracked: &TrackedPragmaState,
+    ranges: &mut Vec<(Range<usize>, TrackedPragmaState)>,
 ) {
-    ranges.push((range, state.clone()));
+    ranges.push((range, tracked.clone()));
 }
