@@ -1207,6 +1207,9 @@ fn has_positive_stale_route_claim(text: &str) -> bool {
             && (normalized.contains("deep lane") || normalized.contains("label")))
         || (normalized.contains("coverage")
             && has_pr_token
+            && (normalized.contains("deep lane")
+                || normalized.contains("risk pack")
+                || normalized.contains("pr smoke"))
             && !has_negative_route_prose(&normalized))
 }
 
