@@ -709,6 +709,275 @@ function exitCodeFor(overall) {
   return overall === 'failed' ? 1 : 2;
 }
 
+/**
+ * Stage-truth projection onto the GitHub check surface (#6883).
+ *
+ * The receipt already keeps package creation, package inventory, and installed
+ * behaviour as separate typed facts, but that evidence only exists inside an
+ * uploaded artifact. A reviewer reading the check itself sees one aggregate
+ * colour, so a blocking package-inventory transition still reads as though the
+ * behavioural smoke failed — including when the behavioural smoke passed, or
+ * never ran at all.
+ *
+ * Everything below is presentation derived from the finished receipt. It never
+ * decides a stage verdict, never changes the aggregate, and never changes the
+ * process exit code; `composeCheckSummary` is pure so the wording it produces
+ * can be proven directly against a receipt.
+ */
+const CHECK_STAGE_ORDER = [
+  'package_creation',
+  'package_inventory',
+  'behavioral_smoke',
+  'activation_failure_journey',
+  'crash_recovery_journey',
+];
+
+const CHECK_STAGE_LABELS = {
+  package_creation: 'package creation',
+  package_inventory: 'package inventory',
+  behavioral_smoke: 'behavioral smoke',
+  activation_failure_journey: 'activation-failure journey',
+  crash_recovery_journey: 'crash-recovery journey',
+};
+
+/** The receipt's typed stage vocabulary, rendered as English. */
+const CHECK_VERDICT_WORDS = {
+  pass: 'passed',
+  failed: 'failed',
+  not_run: 'not run',
+  not_proven: 'not proven',
+};
+
+/** Stages whose verdict describes the package rather than installed behaviour. */
+const CHECK_PACKAGE_STAGES = ['package_creation', 'package_inventory'];
+
+function checkVerdictWord(status) {
+  return CHECK_VERDICT_WORDS[status] ?? String(status);
+}
+
+/**
+ * Why a stage reached its verdict, in one line, without repeating the verdict.
+ *
+ * @param {SmokeStage | undefined} stage
+ */
+function checkStageDetail(stage) {
+  if (!stage) {
+    return 'stage absent from the receipt';
+  }
+  const parts = [];
+  if (stage.classification && stage.classification !== stage.status) {
+    parts.push(stage.classification);
+  }
+  if (stage.transition_state) {
+    parts.push(stage.transition_state);
+  }
+  if (stage.reason) {
+    parts.push(stage.reason);
+  }
+  if (typeof stage.exit_code === 'number') {
+    parts.push(`exit ${stage.exit_code}`);
+  }
+  for (const violation of Array.isArray(stage.violations) ? stage.violations : []) {
+    parts.push(violation);
+  }
+  // The stage label and verdict already carry the fact; a stage that recorded
+  // nothing further gets a placeholder rather than invented prose.
+  return parts.length > 0 ? parts.join('; ') : '—';
+}
+
+/**
+ * The package half of the headline: which package proposition actually
+ * rejected, or that neither did.
+ */
+function checkPackagePhrase(stages) {
+  const rejected = [];
+  for (const key of CHECK_PACKAGE_STAGES) {
+    const stage = stages[key];
+    if (!stage) {
+      // A missing stage is reported as missing, never quietly as passing.
+      rejected.push(`${CHECK_STAGE_LABELS[key]} absent from the receipt`);
+    } else if (stage.status !== 'pass') {
+      rejected.push(`${CHECK_STAGE_LABELS[key]} ${checkVerdictWord(stage.status)}`);
+    }
+  }
+  return rejected.length > 0
+    ? rejected.join(' and ')
+    : 'package creation and package inventory passed';
+}
+
+/**
+ * The behavioural half of the headline. `not_run` and `not_proven` carry their
+ * reason, because "did not run" and "ran and failed" are the two facts this
+ * projection exists to keep apart.
+ */
+function checkBehavioralPhrase(stage) {
+  if (!stage) {
+    return 'behavioral smoke absent from the receipt';
+  }
+  const phrase = `behavioral smoke ${checkVerdictWord(stage.status)}`;
+  if (stage.status === 'pass' || stage.status === 'failed' || !stage.reason) {
+    return phrase;
+  }
+  return `${phrase}: ${stage.reason}`;
+}
+
+/**
+ * One sentence naming the proposition that actually decided the run. This is
+ * the line a reviewer reads instead of "Current-source Linux smoke failed".
+ */
+function checkHeadline(receipt) {
+  const stages = receipt.stages ?? {};
+  const segments = [checkPackagePhrase(stages), checkBehavioralPhrase(stages.behavioral_smoke)];
+  if (receipt.instrument_failure) {
+    segments.push(`smoke instrument failed: ${receipt.instrument_failure}`);
+  }
+  if (receipt.cleanup_failure) {
+    segments.push(`cleanup failed: ${Object.keys(receipt.cleanup_failure).sort().join(', ')}`);
+  }
+  return segments.join('; ');
+}
+
+/** Stages that carry no verdict yet, so the summary can say what is still owed. */
+function checkRemainingProof(stages) {
+  return CHECK_STAGE_ORDER.filter((key) => {
+    const status = stages[key]?.status;
+    return status === 'not_run' || status === 'not_proven';
+  }).map(
+    (key) => `${CHECK_STAGE_LABELS[key]} (${stages[key].status}): ${checkStageDetail(stages[key])}`,
+  );
+}
+
+/** Workflow-command data escaping, per GitHub's documented encoding. */
+function escapeAnnotationData(value) {
+  return String(value).replace(/%/g, '%25').replace(/\r/g, '%0D').replace(/\n/g, '%0A');
+}
+
+function escapeAnnotationProperty(value) {
+  return escapeAnnotationData(value).replace(/:/g, '%3A').replace(/,/g, '%2C');
+}
+
+/** Keep a cell inside its row: a pipe or newline would otherwise reshape the table. */
+function markdownCell(value) {
+  return String(value)
+    .replace(/\|/g, '\\|')
+    .replace(/[\r\n]+/g, ' ');
+}
+
+/**
+ * Compose the check-surface projection of a finished receipt.
+ *
+ * @param {SmokeReceipt} receipt
+ * @returns {{headline: string, markdown: string, annotations: string[]}}
+ */
+function composeCheckSummary(receipt) {
+  const stages = receipt.stages ?? {};
+  const headline = checkHeadline(receipt);
+  const overall = receipt.overall ?? 'not_proven';
+  const present = CHECK_STAGE_ORDER.filter((key) => stages[key]);
+
+  const annotations = [
+    `::notice title=VS Code current-source smoke::${escapeAnnotationData(headline)}`,
+  ];
+  for (const key of present) {
+    const stage = stages[key];
+    if (stage.status === 'pass' || stage.status === 'not_run') {
+      continue;
+    }
+    const level = stage.status === 'failed' ? 'error' : 'warning';
+    const title = `${CHECK_STAGE_LABELS[key]} ${checkVerdictWord(stage.status)}`;
+    annotations.push(
+      `::${level} title=${escapeAnnotationProperty(title)}::${escapeAnnotationData(checkStageDetail(stage))}`,
+    );
+  }
+
+  const rows = present.map(
+    (key) =>
+      `| ${markdownCell(CHECK_STAGE_LABELS[key])} | \`${markdownCell(stages[key].status)}\` | ${markdownCell(checkStageDetail(stages[key]))} |`,
+  );
+  const remaining = checkRemainingProof(stages);
+  const lines = [
+    `### VS Code current-source smoke — ${receipt.vscode_version ?? 'unknown'}`,
+    '',
+    headline,
+    '',
+    `Aggregate: \`${overall}\` · subject \`${receipt.repository_sha ?? 'unknown'}\``,
+    '',
+    '| stage | result | detail |',
+    '| --- | --- | --- |',
+    ...rows,
+    '',
+  ];
+  if (remaining.length > 0) {
+    lines.push('Remaining proof:', '', ...remaining.map((entry) => `- ${entry}`), '');
+  }
+  lines.push(
+    'Stage results are independent: a blocking package result does not assert anything about installed behavior, and vice versa.',
+    '',
+  );
+
+  return { headline, markdown: `${lines.join('\n')}\n`, annotations };
+}
+
+/**
+ * Emit the projection to the live check surface.
+ *
+ * Presentation must not be able to change a verdict, so a failure to write the
+ * job summary is reported and then dropped: the receipt remains the evidence,
+ * and a summary-write error must never turn a proven run red or manufacture an
+ * instrument failure.
+ */
+function publishCheckSummary(receipt, options = {}) {
+  const {
+    summaryPath = (process.env.GITHUB_STEP_SUMMARY || '').trim(),
+    appendSummary = (target, text) => fs.appendFileSync(target, text),
+    writeAnnotation = (line) => process.stdout.write(`${line}\n`),
+    writeDiagnostic = (line) => process.stderr.write(`${line}\n`),
+  } = options;
+
+  const summary = composeCheckSummary(receipt);
+  for (const annotation of summary.annotations) {
+    writeAnnotation(annotation);
+  }
+  if (summaryPath) {
+    try {
+      appendSummary(summaryPath, summary.markdown);
+    } catch (error) {
+      writeDiagnostic(
+        `Unable to append the smoke stage summary: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+  return summary;
+}
+
+/**
+ * The single terminal join: publish the stage projection, then return the
+ * aggregate exit code the receipt already decided.
+ *
+ * Publishing is contained: presentation is the last thing a run does, and a
+ * defect in it must not be able to convert a decided aggregate into an
+ * uncaught exception. The receipt is already persisted, so a lost summary
+ * costs readability, never evidence.
+ *
+ * @param {SmokeReceipt} receipt
+ * @param {number} [exitCode] the code a completed run already finalized
+ * @param {(receipt: SmokeReceipt) => unknown} [publish]
+ */
+function concludeRun(
+  receipt,
+  exitCode = exitCodeFor(receipt.overall),
+  publish = publishCheckSummary,
+) {
+  try {
+    publish(receipt);
+  } catch (error) {
+    process.stderr.write(
+      `Unable to publish the smoke stage summary: ${error instanceof Error ? error.message : String(error)}\n`,
+    );
+  }
+  return exitCode;
+}
+
 const ACTIVATION_FAILURE_LEG_SCHEMA = 'vscode_activation_recovery_leg.v1';
 const ACTIVATION_FAILURE_RECEIPTS = {
   failure: 'activation_failure_journey_failure_receipt.json',
@@ -1907,7 +2176,7 @@ function main() {
         'PERL_LSP_FIRST_HOUR_SERVER_PATH must point to an existing server built from the current source revision.',
       ),
     );
-    return exitCodeFor(receipt.overall);
+    return concludeRun(receipt);
   }
   if (!serverSourceRevision) {
     failInstrument(
@@ -1915,7 +2184,7 @@ function main() {
         'PERL_LSP_SERVER_SOURCE_SHA must identify the source revision used to build the server.',
       ),
     );
-    return exitCodeFor(receipt.overall);
+    return concludeRun(receipt);
   }
 
   try {
@@ -1930,7 +2199,7 @@ function main() {
     }
   } catch (error) {
     failInstrument(error);
-    return exitCodeFor(receipt.overall);
+    return concludeRun(receipt);
   }
 
   const packageJson = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
@@ -2146,7 +2415,8 @@ function main() {
   };
 
   runStageBody();
-  return finalizeSmokeRun(destination, receipt, vsixPath, restoreStagedServer);
+  const exitCode = finalizeSmokeRun(destination, receipt, vsixPath, restoreStagedServer);
+  return concludeRun(receipt, exitCode);
 }
 
 if (require.main === module) {
@@ -2160,13 +2430,16 @@ module.exports = {
   bundleTargetForPlatform,
   childReceiptPath,
   composeActivationRecoveryReceipt,
+  composeCheckSummary,
   composeCrashRecoveryReceipt,
   computeOverallStatus,
+  concludeRun,
   crashRecoveryLegEnv,
   finalizeSmokeRun,
   initialReceipt,
   interpretBehavioralSmokeExit,
   interpretTransitionResult,
+  publishCheckSummary,
   readHostResolutionFailureReceipt,
   receiptPath,
   scanBundledServerProcesses,

@@ -7,12 +7,15 @@ const {
   activationFailureLegEnv,
   bundleTargetForPlatform,
   composeActivationRecoveryReceipt,
+  composeCheckSummary,
   composeCrashRecoveryReceipt,
   computeOverallStatus,
+  concludeRun,
   crashRecoveryLegEnv,
   finalizeSmokeRun,
   interpretBehavioralSmokeExit,
   interpretTransitionResult,
+  publishCheckSummary,
   shouldRunBehavioralSmoke,
   shouldRunCrashRecoveryJourney,
   stageServerForPackage,
@@ -1397,4 +1400,417 @@ void test('parsed-but-unbound crash children cannot fail the joined receipt', ()
   assert.equal(joined.verdict, 'not_proven');
   assert.equal(joined.negative_controls.user_restart_not_used_for_failure_injection, null);
   assert.equal(joined.negative_controls.budget_exhaustion_spawned_no_background_server, null);
+});
+
+// ---------------------------------------------------------------------------
+// Check-surface stage projection (#6883)
+//
+// The receipt has carried separate typed stage results since #7041, but that
+// evidence only existed inside the uploaded artifact: the check itself showed
+// one aggregate colour, so a blocking package-inventory transition still read
+// as though the behavioural smoke had failed. These tests pin the wording a
+// reviewer actually sees, and pin that producing it can never move a verdict.
+// The cases follow #6883's own negative controls.
+// ---------------------------------------------------------------------------
+
+/**
+ * A complete orchestration receipt, so the projection is proven against the
+ * same shape the run actually persists.
+ *
+ * @returns {import('./run-local-vsix-smoke').SmokeReceipt}
+ */
+function checkReceipt(overrides = {}) {
+  const { stages: stageOverrides = {}, ...rest } = overrides;
+  return {
+    schema_version: 'vscode_current_source_smoke.v1',
+    receipt_kind: 'vscode_current_source_smoke',
+    repository_sha: 'abc123',
+    platform: 'linux',
+    architecture: 'x64',
+    vscode_version: 'stable',
+    source_label: 'hosted-linux-current-source',
+    server: { source_sha: 'abc123', path: '/tmp/perllsp', sha256: 'deadbeef' },
+    vsix: { path: '/tmp/perl-lsp-rs-0.17.0.vsix', sha256: 'cafebabe' },
+    stages: {
+      package_creation: { status: 'pass', exit_code: 0 },
+      package_inventory: { status: 'pass', classification: 'pass', behavior_safe: true },
+      behavioral_smoke: { status: 'pass', exit_code: 0 },
+      activation_failure_journey: { status: 'pass' },
+      crash_recovery_journey: { status: 'pass' },
+      ...stageOverrides,
+    },
+    instrument_failure: null,
+    cleanup_failure: null,
+    overall: 'pass',
+    ...rest,
+  };
+}
+
+// Negative control 1: a size-only inventory rejection with a passing installed
+// smoke. This is the exact shape that produced the original misreading.
+void test('a size-only inventory rejection reports the passing behavioral smoke', () => {
+  const summary = composeCheckSummary(
+    checkReceipt({
+      overall: 'failed',
+      stages: {
+        package_inventory: {
+          status: 'failed',
+          classification: 'size_only',
+          behavior_safe: true,
+          transition_state: 'undeclared_transition',
+          violations: ['total bytes grew from 1550736 to 1551627'],
+        },
+      },
+    }),
+  );
+
+  assert.equal(summary.headline, 'package inventory failed; behavioral smoke passed');
+  assert.match(summary.markdown, /\| behavioral smoke \| `pass` \|/);
+  assert.match(summary.markdown, /total bytes grew from 1550736 to 1551627/);
+  // The decisive negative: nothing may assert that behaviour failed.
+  assert.doesNotMatch(summary.headline, /behavioral smoke failed/);
+  assert.equal(
+    summary.annotations.some((line) => /::error/.test(line) && /behavioral smoke/.test(line)),
+    false,
+  );
+  assert.equal(
+    summary.annotations.some((line) => line.startsWith('::error title=package inventory failed')),
+    true,
+  );
+});
+
+// Negative control 2: package creation fails, so behaviour is not_run — which
+// is a different fact from a behavioural failure and must read that way.
+void test('a failed package creation reports behavioral smoke as not run, with its reason', () => {
+  const summary = composeCheckSummary(
+    checkReceipt({
+      overall: 'failed',
+      stages: {
+        package_creation: { status: 'failed', exit_code: 1, reason: 'vsce_package_failed' },
+        package_inventory: {
+          status: 'not_proven',
+          classification: 'not_proven',
+          behavior_safe: false,
+          reason: 'package_creation_failed',
+        },
+        behavioral_smoke: { status: 'not_run', reason: 'package_creation_not_passed' },
+        activation_failure_journey: { status: 'not_run', reason: 'package_creation_not_passed' },
+        crash_recovery_journey: { status: 'not_run', reason: 'package_creation_not_passed' },
+      },
+    }),
+  );
+
+  assert.equal(
+    summary.headline,
+    'package creation failed and package inventory not proven; ' +
+      'behavioral smoke not run: package_creation_not_passed',
+  );
+  assert.doesNotMatch(summary.headline, /behavioral smoke failed/);
+  assert.match(summary.markdown, /Remaining proof:/);
+  assert.match(summary.markdown, /- behavioral smoke \(not_run\): package_creation_not_passed/);
+});
+
+// Negative control 3: structural rejection declines execution with its reason.
+void test('a structural package rejection names the declined behavioral execution', () => {
+  const summary = composeCheckSummary(
+    checkReceipt({
+      overall: 'failed',
+      stages: {
+        package_inventory: {
+          status: 'failed',
+          classification: 'structural',
+          behavior_safe: false,
+          violations: ['file out/extension.js is missing from the package'],
+        },
+        behavioral_smoke: { status: 'not_run', reason: 'inventory_structural' },
+      },
+    }),
+  );
+
+  assert.equal(
+    summary.headline,
+    'package inventory failed; behavioral smoke not run: inventory_structural',
+  );
+  assert.match(summary.markdown, /structural; file out\/extension.js is missing/);
+});
+
+// Negative control 4: with the package clean, a behavioural defect is the
+// proposition on the headline and is not attributed to packaging.
+void test('a behavioral failure under a clean package is attributed to behavior', () => {
+  const summary = composeCheckSummary(
+    checkReceipt({
+      overall: 'failed',
+      stages: {
+        behavioral_smoke: {
+          status: 'failed',
+          exit_code: 1,
+          reason: 'published_extension_smoke_failed',
+        },
+      },
+    }),
+  );
+
+  assert.equal(
+    summary.headline,
+    'package creation and package inventory passed; behavioral smoke failed',
+  );
+  assert.equal(
+    summary.annotations.some((line) => line.startsWith('::error title=behavioral smoke failed')),
+    true,
+  );
+  assert.equal(
+    summary.annotations.some((line) => /::error/.test(line) && /package /.test(line)),
+    false,
+  );
+});
+
+void test('an all-green run states that every stage passed and owes no proof', () => {
+  const summary = composeCheckSummary(checkReceipt());
+
+  assert.equal(
+    summary.headline,
+    'package creation and package inventory passed; behavioral smoke passed',
+  );
+  assert.doesNotMatch(summary.markdown, /Remaining proof:/);
+  assert.equal(summary.annotations.filter((line) => !line.startsWith('::notice')).length, 0);
+});
+
+// Negative control 5/7: instrument and cleanup failure stay visible as their
+// own propositions rather than colouring a product stage.
+void test('instrument and cleanup failures appear as their own propositions', () => {
+  const summary = composeCheckSummary(
+    checkReceipt({
+      overall: 'not_proven',
+      instrument_failure: 'receipt persistence failed',
+      cleanup_failure: { vsix_deletion: 'EBUSY', staged_server_restoration: 'EACCES' },
+    }),
+  );
+
+  assert.equal(
+    summary.headline,
+    'package creation and package inventory passed; behavioral smoke passed; ' +
+      'smoke instrument failed: receipt persistence failed; ' +
+      'cleanup failed: staged_server_restoration, vsix_deletion',
+  );
+  assert.match(summary.markdown, /Aggregate: `not_proven`/);
+});
+
+void test('a not_proven stage annotates as a warning rather than an error', () => {
+  const summary = composeCheckSummary(
+    checkReceipt({
+      overall: 'not_proven',
+      stages: {
+        package_inventory: {
+          status: 'not_proven',
+          classification: 'not_proven',
+          behavior_safe: false,
+          reason: 'transition report could not be parsed',
+        },
+        behavioral_smoke: { status: 'not_run', reason: 'inventory_not_proven' },
+      },
+    }),
+  );
+
+  assert.equal(
+    summary.annotations.some((line) =>
+      line.startsWith('::warning title=package inventory not proven'),
+    ),
+    true,
+  );
+  assert.equal(
+    summary.annotations.some((line) => line.startsWith('::error')),
+    false,
+  );
+});
+
+void test('every stage present in the receipt reaches the summary table', () => {
+  const summary = composeCheckSummary(checkReceipt());
+
+  for (const label of [
+    'package creation',
+    'package inventory',
+    'behavioral smoke',
+    'activation-failure journey',
+    'crash-recovery journey',
+  ]) {
+    assert.match(summary.markdown, new RegExp(`\\| ${label} \\| \``));
+  }
+});
+
+void test('annotation and table content is escaped rather than able to forge structure', () => {
+  const summary = composeCheckSummary(
+    checkReceipt({
+      overall: 'failed',
+      stages: {
+        package_inventory: {
+          status: 'failed',
+          classification: 'size_only',
+          behavior_safe: true,
+          reason: 'grew 50% ,: over\nbaseline',
+          violations: ['a | b'],
+        },
+      },
+    }),
+  );
+
+  const inventoryAnnotation = summary.annotations.find((line) =>
+    line.startsWith('::error title=package inventory failed'),
+  );
+  assert.ok(inventoryAnnotation, 'the failing inventory stage must carry an error annotation');
+  // Message data escapes %, CR and LF, so receipt text cannot forge a second
+  // workflow command. ':' and ',' are literal in message position and are only
+  // escaped inside a property value.
+  assert.match(inventoryAnnotation, /grew 50%25 ,: over%0Abaseline/);
+  for (const annotation of summary.annotations) {
+    assert.doesNotMatch(annotation, /[\r\n]/);
+  }
+  assert.match(summary.markdown, /a \\\| b/);
+});
+
+// Presentation must never be able to change a verdict.
+void test('publishing emits annotations and the summary without mutating the receipt', () => {
+  const receipt = checkReceipt({ overall: 'failed' });
+  const before = JSON.stringify(receipt);
+  const annotations = [];
+  const appended = [];
+
+  const summary = publishCheckSummary(receipt, {
+    summaryPath: '/tmp/step-summary',
+    appendSummary: (target, text) => appended.push([target, text]),
+    writeAnnotation: (line) => annotations.push(line),
+  });
+
+  assert.equal(JSON.stringify(receipt), before);
+  assert.deepEqual(annotations, summary.annotations);
+  assert.equal(appended.length, 1);
+  assert.equal(appended[0][0], '/tmp/step-summary');
+  assert.equal(appended[0][1], summary.markdown);
+});
+
+void test('a summary write failure is reported without changing the verdict', () => {
+  const receipt = checkReceipt();
+  const diagnostics = [];
+  const annotations = [];
+
+  const summary = publishCheckSummary(receipt, {
+    summaryPath: '/tmp/step-summary',
+    appendSummary: () => {
+      throw new Error('EROFS: read-only file system');
+    },
+    writeAnnotation: (line) => annotations.push(line),
+    writeDiagnostic: (line) => diagnostics.push(line),
+  });
+
+  assert.equal(summary.headline.length > 0, true);
+  assert.equal(annotations.length > 0, true);
+  assert.match(diagnostics[0], /Unable to append the smoke stage summary: EROFS/);
+  assert.equal(receipt.overall, 'pass');
+  assert.equal(receipt.instrument_failure, null);
+});
+
+void test('annotations are still emitted when no job summary destination exists', () => {
+  const annotations = [];
+  let appendCalls = 0;
+
+  publishCheckSummary(checkReceipt(), {
+    summaryPath: '',
+    appendSummary: () => {
+      appendCalls += 1;
+    },
+    writeAnnotation: (line) => annotations.push(line),
+  });
+
+  assert.equal(appendCalls, 0);
+  assert.equal(annotations.length > 0, true);
+});
+
+// The projection is emitted on the terminal path and reports the aggregate the
+// receipt already decided; it never gets a vote on the exit code.
+void test('concluding a run publishes once and returns the receipt-derived exit code', () => {
+  for (const [overall, expected] of [
+    ['pass', 0],
+    ['failed', 1],
+    ['not_proven', 2],
+    ['unrecognized_future_state', 2],
+  ]) {
+    const receipt = checkReceipt({ overall });
+    const published = [];
+
+    const code = concludeRun(receipt, undefined, (publishedReceipt) => {
+      published.push(publishedReceipt);
+    });
+
+    assert.equal(code, expected);
+    assert.deepEqual(published, [receipt]);
+  }
+});
+
+void test('concluding a run reports an explicitly finalized exit code unchanged', () => {
+  const receipt = checkReceipt({ overall: 'failed' });
+  const published = [];
+
+  // finalizeSmokeRun computes the code after cleanup; concludeRun reports it.
+  const code = concludeRun(receipt, 1, (publishedReceipt) => {
+    published.push(publishedReceipt);
+  });
+
+  assert.equal(code, 1);
+  assert.equal(published.length, 1);
+});
+
+// The projection runs last, after the aggregate is decided. A defect in it must
+// cost readability only — never the exit code, and never the persisted receipt.
+void test('a throwing projection cannot change the exit code the run decided', () => {
+  for (const [overall, expected] of [
+    ['pass', 0],
+    ['failed', 1],
+    ['not_proven', 2],
+  ]) {
+    const receipt = checkReceipt({ overall });
+
+    const code = concludeRun(receipt, undefined, () => {
+      throw new Error('projection defect');
+    });
+
+    assert.equal(code, expected);
+    assert.equal(receipt.overall, overall);
+  }
+});
+
+void test('a package stage missing from the receipt reads as absent, never as passing', () => {
+  const receipt = checkReceipt({ overall: 'not_proven' });
+  // Deliberately malformed: the stage the receipt promises is simply not there.
+  const { package_inventory: omitted, ...remainingStages } = receipt.stages;
+  void omitted;
+  receipt.stages = /** @type {typeof receipt.stages} */ (remainingStages);
+
+  const summary = composeCheckSummary(receipt);
+
+  assert.equal(
+    summary.headline,
+    'package inventory absent from the receipt; behavioral smoke passed',
+  );
+  assert.doesNotMatch(summary.headline, /package inventory passed/);
+  assert.doesNotMatch(summary.markdown, /\| package inventory \|/);
+});
+
+void test('multi-line stage detail cannot reshape the summary table', () => {
+  const summary = composeCheckSummary(
+    checkReceipt({
+      overall: 'failed',
+      stages: {
+        behavioral_smoke: {
+          status: 'failed',
+          reason: 'host failed\n| forged | row |\nafter restart',
+        },
+      },
+    }),
+  );
+
+  const tableRows = summary.markdown
+    .split('\n')
+    .filter((line) => line.startsWith('|') && !line.startsWith('| ---'));
+  // One header row plus exactly the five stage rows.
+  assert.equal(tableRows.length, 6);
+  assert.match(summary.markdown, /host failed \\\| forged \\\| row \\\| after restart/);
 });
