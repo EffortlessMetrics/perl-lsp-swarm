@@ -248,6 +248,53 @@ describe('support command implementations', () => {
     expect(vscode.env.openExternal).toHaveBeenCalledTimes(1);
   });
 
+  test('clipboard-failure recovery can show the packet instead of opening the browser', async () => {
+    const deps = dependencies();
+    (vscode.window.showInformationMessage as jest.Mock).mockResolvedValueOnce(
+      'Copy Support Packet',
+    );
+    (vscode.env.clipboard.writeText as jest.Mock).mockRejectedValueOnce(
+      new Error('clipboard unavailable'),
+    );
+    (vscode.window.showWarningMessage as jest.Mock).mockResolvedValueOnce('Show Support Packet');
+
+    await reportIssueCommand(deps);
+
+    const expectedPacket = formatSupportPacketHuman(
+      buildBasicSupportPacket({
+        serverVersion: 'perllsp 0.17.0',
+        extensionVersion: '0.17.0',
+        editorVersion: '1.128.1',
+        platform: 'win32',
+        arch: 'x64',
+        editorName: 'Visual Studio Code',
+      }),
+    );
+    expect(vscode.workspace.openTextDocument).toHaveBeenCalledWith(
+      expect.objectContaining({ content: expectedPacket }),
+    );
+    // The whole point of this recovery branch is a non-browser way to reach the
+    // packet: swapping it for the issue form would otherwise pass unnoticed.
+    expect(vscode.env.openExternal).not.toHaveBeenCalled();
+  });
+
+  test('a failure opening the packet document stays bounded and still reaches the issue form', async () => {
+    const deps = dependencies();
+    (vscode.window.showInformationMessage as jest.Mock).mockResolvedValueOnce(
+      'Show Support Packet',
+    );
+    (vscode.workspace.openTextDocument as jest.Mock).mockRejectedValueOnce(
+      new Error('editor host unavailable'),
+    );
+    (vscode.window.showWarningMessage as jest.Mock).mockResolvedValueOnce('Open Issue Form');
+
+    await expect(reportIssueCommand(deps)).resolves.toBeUndefined();
+
+    const [warning] = (vscode.window.showWarningMessage as jest.Mock).mock.calls[0] as [string];
+    expect(warning).not.toContain('editor host unavailable');
+    expect(vscode.env.openExternal).toHaveBeenCalledTimes(1);
+  });
+
   test('dismissing the prompt copies, shows, and opens nothing', async () => {
     const deps = dependencies();
     (vscode.window.showInformationMessage as jest.Mock).mockResolvedValueOnce(undefined);

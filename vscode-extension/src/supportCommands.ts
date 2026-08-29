@@ -227,13 +227,29 @@ async function openIssueForm(): Promise<void> {
   await vscode.env.openExternal(vscode.Uri.parse(PUBLIC_BUG_REPORT_URL));
 }
 
-/** Show the packet in a native, inspectable editor document before the user shares it. */
+/**
+ * Show the packet in a native, inspectable editor document before the user shares it.
+ *
+ * Opening an untitled document can fail (host teardown, editor limits), and letting
+ * that reject would dead-end the command the same way an unguarded packet render did.
+ * Report it bounded and keep the issue form reachable instead.
+ */
 async function showSupportPacket(humanPacket: string): Promise<void> {
-  const document = await vscode.workspace.openTextDocument({
-    content: humanPacket,
-    language: 'plaintext',
-  });
-  await vscode.window.showTextDocument(document, { preview: true });
+  try {
+    const document = await vscode.workspace.openTextDocument({
+      content: humanPacket,
+      language: 'plaintext',
+    });
+    await vscode.window.showTextDocument(document, { preview: true });
+  } catch {
+    const recovery = await vscode.window.showWarningMessage(
+      'Could not open the support packet in an editor tab. You can still open the issue form and describe the problem.',
+      'Open Issue Form',
+    );
+    if (recovery === 'Open Issue Form') {
+      await openIssueForm();
+    }
+  }
 }
 
 async function copySupportPacket(humanPacket: string): Promise<void> {
