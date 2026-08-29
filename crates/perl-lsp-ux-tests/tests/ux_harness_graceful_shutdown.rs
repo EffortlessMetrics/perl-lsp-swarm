@@ -17,7 +17,13 @@ fn explicit_shutdown_waits_for_response_then_zero_exit() -> Result<()> {
         ..Default::default()
     })?;
 
-    harness.client.shutdown_and_exit(Duration::from_secs(10))?;
+    let evidence = harness.client.shutdown_and_exit(Duration::from_secs(10))?;
+    assert!(
+        evidence.status.success(),
+        "explicit completion returned non-zero evidence: {}",
+        evidence.status
+    );
+
     let duplicate = harness.client.shutdown_and_exit(Duration::from_secs(1));
     assert!(
         duplicate.is_err(),
