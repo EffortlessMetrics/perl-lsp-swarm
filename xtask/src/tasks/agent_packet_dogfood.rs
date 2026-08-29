@@ -109,7 +109,27 @@ const CREDENTIAL_KEY_MARKERS: &[&str] = &[
 ];
 
 /// Machine-local path markers that must never survive into retained packets.
-const LOCAL_PATH_MARKERS: &[&str] = &["\\users\\", "/users/", "/home/", "/root/", "%userprofile%"];
+///
+/// These are checked lexically, with non-`file` URI paths excluded so a URL
+/// such as `https://example.test/C:/tmp` remains ordinary documentation.
+const LOCAL_PATH_MARKERS: &[&str] = &[
+    "\\users\\",
+    "/users/",
+    "/home/",
+    "/root/",
+    "/tmp/",
+    "/var/",
+    "/etc/",
+    "/private/tmp/",
+    "/private/var/",
+    "/mnt/",
+    "/media/",
+    "/volumes/",
+    "%userprofile%",
+];
+
+const LOCAL_PATH_ROOTS: &[&str] =
+    &["/users", "/home", "/root", "/tmp", "/var", "/etc", "/private", "/mnt", "/media", "/volumes"];
 
 /// Mutable live-state key family banned at any depth (borrowed shape of the
 /// shared packet contracts): durable packets never embed scheduler state.
@@ -483,6 +503,136 @@ fn is_lowercase_sha256_hex(text: &str) -> bool {
         && text.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
+fn extract_uri_scheme(text: &str, colon: usize) -> Option<&str> {
+    let before = &text[..colon];
+    let start = before
+        .rfind(|character: char| {
+            !(character.is_ascii_alphanumeric() || matches!(character, '+' | '-' | '.'))
+        })
+        .map_or(0, |index| index + 1);
+    let scheme = &before[start..];
+    if scheme.is_empty()
+        || !scheme.as_bytes()[0].is_ascii_alphabetic()
+        || !scheme
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'-' | b'.'))
+    {
+        return None;
+    }
+    Some(scheme)
+}
+
+/// Return the URI scheme governing a path-like token, if any. The second
+/// branch handles the `//host/path` portion immediately following `https:`.
+fn uri_scheme_for_path(text: &str, start: usize) -> Option<&str> {
+    let prefix = &text[..start];
+    if let Some(colon) = prefix.rfind("://") {
+        return extract_uri_scheme(text, colon);
+    }
+    if start >= 1
+        && text.as_bytes().get(start - 1) == Some(&b':')
+        && text.as_bytes().get(start..start + 2) == Some(b"//")
+    {
+        return extract_uri_scheme(text, start - 1);
+    }
+    None
+}
+
+fn is_non_file_uri_path(text: &str, start: usize) -> bool {
+    uri_scheme_for_path(text, start).is_some_and(|scheme| !scheme.eq_ignore_ascii_case("file"))
+}
+
+fn has_path_boundary(text: &str, start: usize) -> bool {
+    start == 0 || !text.as_bytes()[start - 1].is_ascii_alphanumeric()
+}
+
+fn has_path_end_boundary(text: &str, end: usize) -> bool {
+    text.as_bytes()
+        .get(end)
+        .is_none_or(|byte| !byte.is_ascii_alphanumeric() && *byte != b'_' && *byte != b'-')
+}
+
+fn contains_local_path(text: &str) -> bool {
+    let lowered = text.to_ascii_lowercase();
+
+    for marker in LOCAL_PATH_MARKERS {
+        let mut search_from = 0;
+        while let Some(relative) = lowered[search_from..].find(marker) {
+            let start = search_from + relative;
+            let is_environment_marker = marker.starts_with('%');
+            if (is_environment_marker || has_path_boundary(&lowered, start))
+                && !is_non_file_uri_path(&lowered, start)
+            {
+                return true;
+            }
+            search_from = start + marker.len();
+        }
+    }
+
+    for root in LOCAL_PATH_ROOTS {
+        let mut search_from = 0;
+        while let Some(relative) = lowered[search_from..].find(root) {
+            let start = search_from + relative;
+            let end = start + root.len();
+            if has_path_boundary(&lowered, start)
+                && has_path_end_boundary(&lowered, end)
+                && !is_non_file_uri_path(&lowered, start)
+            {
+                return true;
+            }
+            search_from = end;
+        }
+    }
+
+    for (index, _) in lowered.match_indices("file:") {
+        if has_path_boundary(&lowered, index) {
+            return true;
+        }
+    }
+
+    let bytes = lowered.as_bytes();
+    for index in 0..bytes.len().saturating_sub(2) {
+        let drive_like = bytes[index].is_ascii_lowercase()
+            && bytes[index + 1] == b':'
+            && (bytes[index + 2] == b'\\' || bytes[index + 2] == b'/');
+        if drive_like
+            && has_path_boundary(&lowered, index)
+            && !is_non_file_uri_path(&lowered, index)
+        {
+            return true;
+        }
+    }
+
+    for index in 0..bytes.len().saturating_sub(3) {
+        let unc_like = (bytes[index] == b'\\' && bytes[index + 1] == b'\\')
+            || (bytes[index] == b'/' && bytes[index + 1] == b'/');
+        let has_share = bytes[index + 2..]
+            .iter()
+            .position(|byte| *byte == b'/' || *byte == b'\\')
+            .is_some_and(|separator| separator > 0);
+        if unc_like
+            && has_share
+            && has_path_boundary(&lowered, index)
+            && !is_non_file_uri_path(&lowered, index)
+        {
+            return true;
+        }
+    }
+
+    for marker in ["../", "..\\"] {
+        let mut search_from = 0;
+        while let Some(relative) = lowered[search_from..].find(marker) {
+            let start = search_from + relative;
+            if has_path_boundary(&lowered, start) && !is_non_file_uri_path(&lowered, start) {
+                return true;
+            }
+            search_from = start + marker.len();
+        }
+    }
+
+    false
+}
+
 /// Hygiene guard: credentials/machine-local paths inside one retained string.
 fn scan_hygiene(text: &str, where_: &str, violations: &mut Vec<Violation>) {
     let lowered = text.to_lowercase();
@@ -492,26 +642,11 @@ fn scan_hygiene(text: &str, where_: &str, violations: &mut Vec<Violation>) {
             format!("{where_}: retained evidence contains a credential marker"),
         ));
     }
-    if LOCAL_PATH_MARKERS.iter().any(|marker| lowered.contains(marker)) {
+    if contains_local_path(text) {
         violations.push(Violation::new(
             "local_path_in_payload",
             format!("{where_}: retained evidence contains a machine-local path"),
         ));
-    }
-    let chars: Vec<_> = lowered.chars().collect();
-    for (index, pair) in chars.windows(3).enumerate() {
-        let at_path_boundary = index == 0 || !chars[index - 1].is_ascii_alphanumeric();
-        if at_path_boundary
-            && pair[0].is_ascii_lowercase()
-            && pair[1] == ':'
-            && (pair[2] == '\\' || (pair[2] == '/' && chars.get(index + 3) != Some(&'/')))
-        {
-            violations.push(Violation::new(
-                "local_path_in_payload",
-                format!("{where_}: retained evidence contains a drive-letter path"),
-            ));
-            break;
-        }
     }
 }
 
@@ -1064,10 +1199,9 @@ struct RunRow {
 }
 
 fn load_manifest(path: &Path) -> Result<(String, Value)> {
-    let text =
-        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
-    let doc: Value = serde_json::from_str(&text)
-        .with_context(|| format!("failed to parse {}", path.display()))?;
+    let text = fs::read_to_string(path).context("failed to read caller-supplied manifest")?;
+    let doc: Value =
+        serde_json::from_str(&text).context("failed to parse caller-supplied manifest")?;
     let source = path
         .file_name()
         .map(|name| name.to_string_lossy().to_string())
@@ -1344,15 +1478,15 @@ fn run_validate(manifests: &[PathBuf], update_golden: bool) -> Result<()> {
 
 fn validate_supplied(manifests: &[PathBuf]) -> Result<()> {
     let mut had_failure = false;
-    for path in manifests {
+    for (index, path) in manifests.iter().enumerate() {
         let (_, doc) = load_manifest(path)?;
         let violations = validate_manifest(&doc);
         if violations.is_empty() {
-            println!("PASS {}: valid {} packet", path.display(), SCHEMA_NAME);
+            println!("PASS manifest[{index}]: valid {SCHEMA_NAME} packet");
         } else {
             had_failure = true;
             for violation in &violations {
-                eprintln!("FAIL {}: {} ({})", path.display(), violation.code, violation.detail);
+                eprintln!("FAIL manifest[{index}]: {} ({})", violation.code, violation.detail);
             }
         }
     }

@@ -397,6 +397,13 @@ fn negative_machine_local_path_in_payload_fails_closed() {
         "C:/Users/dev/secret.log",
         "D:/Temp/raw-dump.txt",
         "/home/dev/.ssh/id_rsa.pub",
+        "/tmp/agent-secret.json",
+        "/var/run/agent.sock",
+        "\\\\build-server\\share\\secret.log",
+        "//build-server/share/secret.log",
+        "file:///tmp/agent-secret.json",
+        "../private/secret.json",
+        "..\\private\\secret.json",
         "%USERPROFILE%\\notes.md",
     ] {
         let violations = mutant(base_manifest(), |doc| {
@@ -412,6 +419,9 @@ fn positive_uri_text_is_not_misclassified_as_a_drive_path() {
         doc["metadata"] = json!({
             "documentation": "https://example.test/perl-lsp",
             "endpoint": "http://localhost:3000/status",
+            "drive_like_url": "https://example.test/C:/tmp",
+            "posix_like_url": "https://example.test/home/dev/docs",
+            "traversal_like_url": "https://example.test/../docs",
         });
     });
     assert!(

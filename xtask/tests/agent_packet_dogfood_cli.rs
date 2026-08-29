@@ -1,8 +1,8 @@
 //! Executable CLI coverage for the agent-packet dogfood report and validation paths.
 
 use assert_cmd::Command;
-use color_eyre::eyre::{eyre, Context, Result};
-use serde_json::{json, Value};
+use color_eyre::eyre::{Context, Result, eyre};
+use serde_json::{Value, json};
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::PathBuf;
@@ -194,5 +194,41 @@ fn validate_cli_redacts_credential_keys_from_hygiene_diagnostics() -> Result<()>
         );
         assert!(!stderr.contains(key), "validation CLI leaked credential key {key}: {stderr}");
     }
+    Ok(())
+}
+
+#[test]
+fn validate_cli_does_not_echo_caller_controlled_manifest_paths() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let leaked = "api_key=hunter2";
+    let mut invalid = fixture_document()?;
+    invalid["metadata"] = json!({"api_key": "hunter2"});
+    let path = write_document(&temp, "api_key=hunter2.json", invalid)?;
+    let output = Command::cargo_bin("xtask")?
+        .args(["agent-dogfood", "validate", "--manifest"])
+        .arg(&path)
+        .output()?;
+
+    assert!(!output.status.success(), "credential manifest must fail validation");
+    let stderr = String::from_utf8(output.stderr)?;
+    let path_text = path.to_string_lossy().into_owned();
+    assert!(stderr.contains("manifest[0]"), "missing bounded manifest label: {stderr}");
+    assert!(!stderr.contains(leaked), "validation CLI leaked path content: {stderr}");
+    assert!(!stderr.contains(&path_text), "validation CLI echoed manifest path: {stderr}");
+
+    let missing = temp.path().join("api_key=hunter2-missing.json");
+    let output = Command::cargo_bin("xtask")?
+        .args(["agent-dogfood", "validate", "--manifest"])
+        .arg(&missing)
+        .output()?;
+    assert!(!output.status.success(), "missing manifest must fail validation");
+    let stderr = String::from_utf8(output.stderr)?;
+    assert!(
+        stderr.contains("failed to read caller-supplied manifest"),
+        "missing generic read error: {stderr}"
+    );
+    let missing_text = missing.to_string_lossy().into_owned();
+    assert!(!stderr.contains("api_key=hunter2"), "read error leaked manifest path: {stderr}");
+    assert!(!stderr.contains(&missing_text), "read error echoed manifest path: {stderr}");
     Ok(())
 }
