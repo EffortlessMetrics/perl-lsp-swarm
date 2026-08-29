@@ -17,7 +17,7 @@
 )]
 mod common;
 
-use common::{DapWorkflowSession, perl_available, workflow_timeout};
+use common::{DapWorkflowSession, debuggee_perl_or_typed_skip, workflow_timeout};
 use perl_dap::debug_adapter::{DapMessage, DebugAdapter};
 use perl_tdd_support::must_some;
 use serde_json::{Value, json};
@@ -68,10 +68,10 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 /// and each assertion documents the adapter contract it validates.
 #[test]
 fn test_lifecycle_full_ordered_sequence() -> TestResult {
-    if !perl_available() {
-        eprintln!("Skipping test_lifecycle_full_ordered_sequence - perl not available");
+    let Some(debuggee_perl) = debuggee_perl_or_typed_skip("test_lifecycle_full_ordered_sequence")
+    else {
         return Ok(());
-    }
+    };
 
     let workspace = tempdir()?;
     let script = workspace.path().join("lifecycle_matrix.pl");
@@ -87,7 +87,7 @@ fn test_lifecycle_full_ordered_sequence() -> TestResult {
 
     // ── Step 2: launch ─────────────────────────────────────────────
     // stopOnEntry=false: adapter does NOT emit stopped until configurationDone.
-    session.launch(&script_str)?;
+    session.launch_pinned(&debuggee_perl.binary, &script_str)?;
 
     // ── Step 3: setBreakpoints (verified=true) ──────────────────────────────────
     // DAP protocol ordering: setBreakpoints MUST be called before configurationDone.
@@ -214,12 +214,11 @@ fn test_lifecycle_full_ordered_sequence() -> TestResult {
 /// frames without a client request, this test would catch the race.
 #[test]
 fn test_lifecycle_stopped_event_precedes_stack_trace() -> TestResult {
-    if !perl_available() {
-        eprintln!(
-            "Skipping test_lifecycle_stopped_event_precedes_stack_trace - perl not available"
-        );
+    let Some(debuggee_perl) =
+        debuggee_perl_or_typed_skip("test_lifecycle_stopped_event_precedes_stack_trace")
+    else {
         return Ok(());
-    }
+    };
 
     let workspace = tempdir()?;
     let script = workspace.path().join("lifecycle_ordering.pl");
@@ -229,7 +228,7 @@ fn test_lifecycle_stopped_event_precedes_stack_trace() -> TestResult {
     let timeout = workflow_timeout();
     let mut session = DapWorkflowSession::new(timeout)?;
 
-    session.launch(&script_str)?;
+    session.launch_pinned(&debuggee_perl.binary, &script_str)?;
     session.set_breakpoints_checked(&script_str, &[BP_LINE])?;
     session.configuration_done()?;
 
@@ -296,10 +295,10 @@ fn test_lifecycle_stopped_event_precedes_stack_trace() -> TestResult {
 /// re-exposes the internal-frame bug.
 #[test]
 fn test_lifecycle_scopes_locals_contract() -> TestResult {
-    if !perl_available() {
-        eprintln!("Skipping test_lifecycle_scopes_locals_contract - perl not available");
+    let Some(debuggee_perl) = debuggee_perl_or_typed_skip("test_lifecycle_scopes_locals_contract")
+    else {
         return Ok(());
-    }
+    };
 
     // Breakpoint line for THIS fixture only — one line past the first lexical
     // assignment so that `my $x = 10` has already executed when we stop.
@@ -324,7 +323,7 @@ fn test_lifecycle_scopes_locals_contract() -> TestResult {
     let timeout = workflow_timeout();
     let mut session = DapWorkflowSession::new(timeout)?;
 
-    session.launch(&script_str)?;
+    session.launch_pinned(&debuggee_perl.binary, &script_str)?;
     let resolved = session.set_breakpoints_checked(&script_str, &[SCOPES_BP_LINE])?;
     let resolved_line =
         resolved.first().copied().ok_or("set_breakpoints_checked returned empty resolved lines")?;
@@ -420,12 +419,11 @@ fn test_lifecycle_scopes_locals_contract() -> TestResult {
 /// currently expose a `terminate` handler beyond this natural-exit path.
 #[test]
 fn test_lifecycle_continue_leads_to_terminated_event() -> TestResult {
-    if !perl_available() {
-        eprintln!(
-            "Skipping test_lifecycle_continue_leads_to_terminated_event - perl not available"
-        );
+    let Some(debuggee_perl) =
+        debuggee_perl_or_typed_skip("test_lifecycle_continue_leads_to_terminated_event")
+    else {
         return Ok(());
-    }
+    };
 
     let workspace = tempdir()?;
     let script = workspace.path().join("lifecycle_exit.pl");
@@ -435,7 +433,7 @@ fn test_lifecycle_continue_leads_to_terminated_event() -> TestResult {
     let timeout = workflow_timeout();
     let mut session = DapWorkflowSession::new(timeout)?;
 
-    session.launch(&script_str)?;
+    session.launch_pinned(&debuggee_perl.binary, &script_str)?;
     session.set_breakpoints_checked(&script_str, &[BP_LINE])?;
     session.configuration_done()?;
 
@@ -468,10 +466,11 @@ fn test_lifecycle_continue_leads_to_terminated_event() -> TestResult {
 ///   name (string), value (string), variablesReference (number >= 0)
 #[test]
 fn test_lifecycle_variables_non_empty_at_stop() -> TestResult {
-    if !perl_available() {
-        eprintln!("Skipping test_lifecycle_variables_non_empty_at_stop - perl not available");
+    let Some(debuggee_perl) =
+        debuggee_perl_or_typed_skip("test_lifecycle_variables_non_empty_at_stop")
+    else {
         return Ok(());
-    }
+    };
 
     let workspace = tempdir()?;
     let script = workspace.path().join("lifecycle_vars.pl");
@@ -481,7 +480,7 @@ fn test_lifecycle_variables_non_empty_at_stop() -> TestResult {
     let timeout = workflow_timeout();
     let mut session = DapWorkflowSession::new(timeout)?;
 
-    session.launch(&script_str)?;
+    session.launch_pinned(&debuggee_perl.binary, &script_str)?;
     session.set_breakpoints_checked(&script_str, &[BP_LINE])?;
     session.configuration_done()?;
 

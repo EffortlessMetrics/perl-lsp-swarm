@@ -779,6 +779,14 @@ pub enum DriverEventKind {
     /// before the shutdown barriers, when the host exits while a recovery is
     /// pending (old generation dead, replacement not started).
     ShutdownDuringPendingObserved,
+    /// #11396 save-format events. Same repeating law as the #11390 kinds: the
+    /// save journey walks several ordinary saves in one host run, each with
+    /// exactly one configured-owner settlement, plus stale-result holds. Each
+    /// carries a monotone 1-based per-kind index with a cap; the earlier
+    /// journeys never emit them.
+    SaveOwnerConfigured,
+    SaveSettlementObserved,
+    StaleResultHoldObserved,
     ShutdownStarted,
     ShutdownCompleted,
     DriverFailed,
@@ -832,6 +840,10 @@ pub fn validate_driver_events(events: &[DriverEvent], require_complete: bool) ->
     let mut recovery_disposition_index = 0_u32;
     let mut recovery_replay_index = 0_u32;
     let mut recovery_rejection_index = 0_u32;
+    // Monotone last-seen indexes for the #11396 repeating save-format kinds.
+    let mut save_owner_index = 0_u32;
+    let mut save_settlement_index = 0_u32;
+    let mut save_hold_index = 0_u32;
 
     for (index, event) in events.iter().enumerate() {
         ensure!(event.schema_version == DRIVER_SCHEMA_VERSION, "unexpected driver event schema");
@@ -1227,6 +1239,120 @@ pub fn validate_driver_events(events: &[DriverEvent], require_complete: bool) ->
                 );
                 update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
             }
+            DriverEventKind::SaveOwnerConfigured => {
+                validate_repeating_save_event(
+                    event,
+                    "owner_index",
+                    SAVE_OWNER_CONFIGURED_CAP,
+                    &mut save_owner_index,
+                )?;
+                ensure!(
+                    event
+                        .details
+                        .get("owner_count")
+                        .is_some_and(|value| value.parse::<u32>().is_ok()),
+                    "save_owner_configured must report a numeric owner_count"
+                );
+                ensure!(
+                    matches!(
+                        event.details.get("route").map(String::as_str),
+                        Some("bufwritepre_autocmd") | Some("none")
+                    ),
+                    "save_owner_configured must name the bufwritepre_autocmd route or its absence"
+                );
+                ensure!(
+                    event.details.get("action").map(String::as_str)
+                        == Some("lsp_document_format_sync")
+                        || event.details.get("route").map(String::as_str) == Some("none"),
+                    "save_owner_configured must delegate to the canonical sync format action"
+                );
+                ensure!(
+                    event
+                        .details
+                        .get("timeout_ms")
+                        .is_some_and(|value| value.parse::<u64>().is_ok()),
+                    "save_owner_configured must report a numeric bounded sync timeout"
+                );
+                update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
+            }
+            DriverEventKind::SaveSettlementObserved => {
+                validate_repeating_save_event(
+                    event,
+                    "save_index",
+                    SAVE_SETTLEMENT_CAP,
+                    &mut save_settlement_index,
+                )?;
+                ensure!(
+                    matches!(
+                        event.details.get("trigger").map(String::as_str),
+                        Some("bufwritepre_save") | Some("manual_comparator") | Some("none")
+                    ),
+                    "save_settlement_observed must name the bufwritepre_save, manual_comparator, \
+                     or no trigger"
+                );
+                ensure!(
+                    matches!(
+                        event.details.get("disposition").map(String::as_str),
+                        Some("applied")
+                            | Some("no_change")
+                            | Some("disabled")
+                            | Some("refused")
+                            | Some("failure")
+                            | Some("stale_rejected")
+                    ),
+                    "save_settlement_observed must name a declared save disposition"
+                );
+                ensure!(
+                    matches!(
+                        event.details.get("response_kind").map(String::as_str),
+                        Some("edits") | Some("empty") | Some("error") | Some("absent")
+                    ),
+                    "save_settlement_observed must name the settled response kind"
+                );
+                for key in ["requests_before", "requests_after", "owner_count"] {
+                    ensure!(
+                        event.details.get(key).is_some_and(|value| value.parse::<u32>().is_ok()),
+                        "save_settlement_observed must report a numeric {key}"
+                    );
+                }
+                for key in ["buffer_sha256", "file_sha256"] {
+                    ensure!(
+                        event
+                            .details
+                            .get(key)
+                            .is_some_and(|value| validate_sha256(value, key).is_ok()),
+                        "save_settlement_observed must report the exact {key} bytes identity"
+                    );
+                }
+                update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
+            }
+            DriverEventKind::StaleResultHoldObserved => {
+                validate_repeating_save_event(
+                    event,
+                    "hold_index",
+                    STALE_RESULT_HOLD_CAP,
+                    &mut save_hold_index,
+                )?;
+                ensure!(
+                    event
+                        .details
+                        .get("window_ms")
+                        .and_then(|value| value.parse::<u64>().ok())
+                        .is_some_and(|window| window >= MIN_STALE_WINDOW_MS),
+                    "stale_result_hold_observed must carry a bounded observation window of at \
+                     least {MIN_STALE_WINDOW_MS}ms"
+                );
+                ensure!(
+                    event.details.get("bytes_held") == Some(&"1".to_string()),
+                    "stale_result_hold_observed must prove the byte state held for the whole window"
+                );
+                ensure!(
+                    event.details.get("late_response_rejected") == Some(&"1".to_string()),
+                    "stale_result_hold_observed must prove the late result was released and \
+                     never applied"
+                );
+                update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
+            }
             kind => {
                 ensure!(singleton.insert(kind), "duplicate singleton driver event");
                 let rank = lifecycle_rank(kind);
@@ -1285,11 +1411,16 @@ fn lifecycle_rank(kind: DriverEventKind) -> u8 {
         // one rank (their phases interleave legitimately — a mutation, its
         // stale-hold window, its materialization, its current observation),
         // with per-kind monotone indexes carrying the order. All strictly
-        // before shutdown.
+        // before shutdown. The #11396 save-format kinds join the same tier for
+        // the same reason: source/config mutations and materializations
+        // interleave with save settlements inside one journey.
         DriverEventKind::ExternalMutationApplied
         | DriverEventKind::StaleGenerationHeld
         | DriverEventKind::ClientMaterializationApplied
-        | DriverEventKind::GenerationCurrentObserved => 44,
+        | DriverEventKind::GenerationCurrentObserved
+        | DriverEventKind::SaveOwnerConfigured
+        | DriverEventKind::SaveSettlementObserved
+        | DriverEventKind::StaleResultHoldObserved => 44,
         // The #11398 recovery kinds share that same tier: the recovery
         // journey legitimately interleaves its restarts, stimuli,
         // dispositions, replays, and rejections with the shared
@@ -1329,6 +1460,13 @@ pub const RECOVERY_STIMULUS_CAP: u32 = 3;
 pub const RECOVERY_DISPOSITION_CAP: u32 = 3;
 pub const GENERATION_REPLAY_CAP: u32 = 4;
 pub const OLD_GENERATION_REJECTION_CAP: u32 = 2;
+/// Per-kind occurrence caps for the #11396 repeating save-format events: the
+/// authored journey re-arms the owner a bounded number of times (single,
+/// removed for the disabled leg, re-armed after each restart) and walks seven
+/// settlements plus one stale-result hold.
+pub const SAVE_OWNER_CONFIGURED_CAP: u32 = 8;
+pub const SAVE_SETTLEMENT_CAP: u32 = 10;
+pub const STALE_RESULT_HOLD_CAP: u32 = 4;
 /// The minimum honest absence-observation window for a stale-generation hold:
 /// below this the "no spontaneous republish" claim carries no observation.
 pub const MIN_STALE_WINDOW_MS: u64 = 2000;
@@ -1342,18 +1480,37 @@ fn validate_repeating_freshness_event(
     cap: u32,
     last_index: &mut u32,
 ) -> Result<()> {
+    validate_repeating_index(event, index_key, cap, last_index)
+}
+
+/// Validate one repeating #11396 save-format event with the same law.
+fn validate_repeating_save_event(
+    event: &DriverEvent,
+    index_key: &str,
+    cap: u32,
+    last_index: &mut u32,
+) -> Result<()> {
+    validate_repeating_index(event, index_key, cap, last_index)
+}
+
+fn validate_repeating_index(
+    event: &DriverEvent,
+    index_key: &str,
+    cap: u32,
+    last_index: &mut u32,
+) -> Result<()> {
     let index = event
         .details
         .get(index_key)
         .and_then(|value| value.parse::<u32>().ok())
-        .with_context(|| format!("freshness event omitted a numeric {index_key}"))?;
+        .with_context(|| format!("repeating event omitted a numeric {index_key}"))?;
     ensure!(
         index == *last_index + 1,
-        "freshness event {index_key} {} is not exactly one greater than the last seen {}",
+        "repeating event {index_key} {} is not exactly one greater than the last seen {}",
         index,
         *last_index
     );
-    ensure!(index <= cap, "freshness event {index_key} {index} exceeds the journey cap {cap}");
+    ensure!(index <= cap, "repeating event {index_key} {index} exceeds the journey cap {cap}");
     *last_index = index;
     Ok(())
 }
@@ -1739,10 +1896,11 @@ fn walk_wire_value(
                             evidence.publish_diagnostics_batches.push(batch);
                         }
                     }
+                    // Set-once latch on the FIRST didChange line: `get_or_insert`
+                    // is the shape #12910 asks for here, and states the
+                    // keep-the-earliest intent the nested `if` only implied.
                     "textDocument/didChange" => {
-                        if evidence.did_change_line.is_none() {
-                            evidence.did_change_line = Some(line_index);
-                        }
+                        evidence.did_change_line.get_or_insert(line_index);
                     }
                     _ => {}
                 }

@@ -422,12 +422,16 @@ mutex_atomic = "warn"
 # Seven crates retain historical blanket allows over 257 force-warn-measured
 # sites; those residuals are owned by #12730-#12736.
 collapsible_if = "deny"
-# collapsible_match: ~20 lib sites across perl-lsp-rs-core; tracked in #8561; defer to post-0.14.0 cleanup.
-collapsible_match = { level = "allow", priority = 1 }
+# collapsible_match: activated by #6113 after the behavior-preserving burn-down
+# of all measured sites and removal of the workspace allow plus six crate-root
+# and one test-target masks.
+collapsible_match = "deny"
 decimal_bitwise_operands = "warn"
 duration_suboptimal_units = "warn"
 needless_type_cast = "warn"
-manual_ilog2 = "warn"
+# manual_ilog2: promoted to deny by #9896 after a zero-site confirmation on a
+# complete workspace --all-targets measurement (force-warn pierces allows).
+manual_ilog2 = "deny"
 manual_take = "deny"
 unnecessary_trailing_comma = "warn"
 # wildcard_imports: Phase 1 (warn) — measures violations before crate-by-crate fix (#2333).

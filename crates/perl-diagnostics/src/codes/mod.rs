@@ -150,6 +150,13 @@ pub enum DiagnosticCode {
     /// Interpolated or concatenated variables form the SQL text passed to a
     /// DBI statement-taking method (`prepare`/`prepare_cached`/`do`) (#5035)
     SecuritySqlInjection,
+    /// Substitution replacement is evaluated as Perl code by the `e`/`ee`
+    /// modifier (`s/pat/repl/e`) (#9818)
+    SecuritySubstitutionEval,
+    /// Regular expression pattern embeds immediate `(?{ ... })` or deferred
+    /// `(??{ ... })` executable code in `m//`, `qr//`, a bare regex literal,
+    /// or a substitution pattern (#9818)
+    SecurityEmbeddedRegexCode,
 
     // Import (PL700-PL799)
     /// Module appears to be unused

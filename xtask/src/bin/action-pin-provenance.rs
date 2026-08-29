@@ -23,14 +23,40 @@ const DEFAULT_LEDGER: &str = ".ci/policies/action-pin-provenance.toml";
 struct Args {
     #[arg(long)]
     root: Option<PathBuf>,
+    /// Exact recorded comparator tree (event-time base SHA for push/merge_group).
     #[arg(long)]
     base: Option<String>,
+    /// Compare against the true merge base of this git revision and HEAD,
+    /// resolved at run time so the scanned result's own incorporated base side
+    /// is used even after intervening merges rebuilt it (#10194). Fails closed
+    /// when ancestry cannot be proven.
+    #[arg(long, conflicts_with = "base")]
+    merge_base: Option<String>,
+    /// Bind the scanned checkout to the PR subject: HEAD must be GitHub's
+    /// two-parent simulated merge ref whose second parent equals this candidate
+    /// head SHA. Fails closed on any other topology.
+    #[arg(long)]
+    expect_merge_of: Option<String>,
+    /// Bind the scanned repository: the normalized origin remote must name this
+    /// owner/repository slug.
+    #[arg(long)]
+    expect_origin: Option<String>,
     #[arg(long)]
     receipt: Option<PathBuf>,
     #[arg(long)]
     strict_all: bool,
     #[arg(long, default_value = DEFAULT_LEDGER)]
     ledger: PathBuf,
+}
+
+/// Where the effective comparator came from, recorded verbatim in the receipt.
+#[derive(Clone, Debug)]
+enum BaseSource {
+    /// Caller supplied the exact comparator commit (`--base`).
+    Recorded,
+    /// Comparator resolved at run time as merge-base(revision, HEAD); carries
+    /// the revision so the receipt shows the exact resolution request.
+    MergeBase(String),
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -111,6 +137,7 @@ struct Receipt {
     schema_version: &'static str,
     receipt_kind: &'static str,
     base: Option<String>,
+    base_source: Option<String>,
     base_compared: bool,
     strict_all: bool,
     passed: bool,
@@ -126,16 +153,27 @@ fn main() -> Result<()> {
     color_eyre::install()?;
     let args = Args::parse();
     let root = args.root.unwrap_or_else(default_root);
+    verify_subject_binding(&root, args.expect_merge_of.as_deref(), args.expect_origin.as_deref())?;
     let ledger_path = if args.ledger.is_absolute() { args.ledger } else { root.join(args.ledger) };
     let ledger = load_ledger(&ledger_path)?;
     let pattern = uses_pattern()?;
     let current = scan_worktree(&root, &pattern)?;
-    let (base, compared) = match args.base.as_deref().filter(|v| !v.trim().is_empty()) {
-        Some(base) => (scan_git_ref(&root, base, &pattern)?, true),
+    let comparator = if let Some(spec) = non_empty(args.merge_base.as_deref()) {
+        // The scanned worktree is a merge result; compare it against the base
+        // tree actually incorporated into that result, resolved now.
+        Some((resolve_merge_base(&root, spec)?, BaseSource::MergeBase(spec.to_owned())))
+    } else if let Some(recorded) = non_empty(args.base.as_deref()) {
+        Some((recorded.to_owned(), BaseSource::Recorded))
+    } else {
+        None
+    };
+    let (base, compared) = match &comparator {
+        Some((comparator_sha, _)) => (scan_git_ref(&root, comparator_sha, &pattern)?, true),
         None => (Vec::new(), false),
     };
     let mut receipt = validate(current, base, compared, args.strict_all, &ledger);
-    receipt.base = args.base;
+    receipt.base = comparator.as_ref().map(|(sha, _)| sha.clone());
+    receipt.base_source = comparator.as_ref().map(|(sha, source)| base_source_label(sha, source));
     for issue in &receipt.issues {
         eprintln!(
             "::{} file={},line={}::[{}] {}",
@@ -156,7 +194,124 @@ fn main() -> Result<()> {
         "Action-pin provenance passed ({} external use(s), {} new/changed, {} warning(s))",
         receipt.occurrence_count, receipt.new_or_changed_count, receipt.warning_count
     );
+    if let Some((sha, source)) = &comparator {
+        println!("Comparator: {} ({})", sha, base_source_label(sha, source));
+    }
     Ok(())
+}
+
+fn non_empty(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|v| !v.is_empty())
+}
+
+fn base_source_label(comparator_sha: &str, source: &BaseSource) -> String {
+    match source {
+        BaseSource::Recorded => format!("recorded:{comparator_sha}"),
+        BaseSource::MergeBase(revision) => {
+            format!("merge_base(git merge-base {revision} HEAD):{comparator_sha}")
+        }
+    }
+}
+
+/// Verifies the optional subject bindings before any scan output is produced.
+/// Every check fails closed: a binding that cannot be evaluated is an error,
+/// never a silent skip, so a drifted or relocated checkout cannot be scanned
+/// under a claimed identity.
+fn verify_subject_binding(
+    root: &Path,
+    expect_merge_of: Option<&str>,
+    expect_origin: Option<&str>,
+) -> Result<()> {
+    if let Some(expected_head) = non_empty(expect_merge_of) {
+        let expected_head = expected_head.to_ascii_lowercase();
+        let head_parents = git_stdout(
+            root,
+            ["rev-list", "--parents", "-n", "1", "HEAD"],
+            "git rev-list --parents -n 1 HEAD",
+        )?;
+        let tokens: Vec<&str> = head_parents.split_whitespace().collect();
+        let [head, parent1, parent2] = tokens.as_slice() else {
+            bail!(
+                "expected HEAD to be GitHub's simulated merge ref for candidate {expected_head}, found {} parents",
+                tokens.len().saturating_sub(1)
+            );
+        };
+        if !parent2.eq_ignore_ascii_case(&expected_head) {
+            bail!(
+                "HEAD {head} is a merge of {parent1} and {parent2}, not of the expected candidate {expected_head}"
+            );
+        }
+    }
+    if let Some(expected_slug) = non_empty(expect_origin) {
+        let url = git_stdout(root, ["remote", "get-url", "origin"], "git remote get-url origin")?;
+        let actual = normalized_repo_slug(&url)
+            .ok_or_else(|| eyre!("origin remote {url} does not name an owner/repository"))?;
+        let expected = normalized_repo_slug(expected_slug).ok_or_else(|| {
+            eyre!("--expect-origin {expected_slug} does not name an owner/repository")
+        })?;
+        if actual != expected {
+            bail!("origin remote {url} does not match expected repository {expected_slug}");
+        }
+    }
+    Ok(())
+}
+
+fn git_stdout<const N: usize>(root: &Path, arguments: [&str; N], what: &str) -> Result<String> {
+    let output = Command::new("git").current_dir(root).args(arguments).output()?;
+    if !output.status.success() {
+        return Err(eyre!("{what} failed: {}", String::from_utf8_lossy(&output.stderr).trim()));
+    }
+    String::from_utf8(output.stdout)
+        .with_context(|| format!("{what} returned non-UTF-8 output"))
+        .map(|value| value.trim().to_owned())
+}
+
+/// Reduces a remote URL to its owner/repository slug so https, ssh, scp, and
+/// bare `owner/repo` forms of the same repository compare equal. A leading
+/// segment is treated as a host only when it looks like one (contains a dot).
+fn normalized_repo_slug(url: &str) -> Option<String> {
+    let trimmed = url.trim().trim_end_matches('/');
+    let without_scheme = trimmed.split_once("://").map_or(trimmed, |(_, rest)| rest);
+    let without_user = without_scheme.rsplit_once('@').map_or(without_scheme, |(_, rest)| rest);
+    let path = match without_user.split_once(':') {
+        Some((host, rest)) if host.contains('.') => rest,
+        _ => match without_user.split_once('/') {
+            Some((host, rest)) if host.contains('.') => rest,
+            _ => without_user,
+        },
+    };
+    let path = path.strip_suffix(".git").unwrap_or(path);
+    if path.is_empty() || !path.contains('/') { None } else { Some(path.to_ascii_lowercase()) }
+}
+
+/// Resolves the exact commit describing the shared history of `revision` and
+/// HEAD inside the repository rooted at `root`. Fails closed so an unprovable
+/// comparator can never silently degrade into no comparison or a stale one.
+fn resolve_merge_base(root: &Path, revision: &str) -> Result<String> {
+    let output =
+        Command::new("git").current_dir(root).args(["merge-base", revision, "HEAD"]).output()?;
+    if !output.status.success() {
+        return Err(eyre!(
+            "git merge-base {revision} HEAD failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let sha = String::from_utf8(output.stdout)?.trim().to_ascii_lowercase();
+    if sha.len() != 40 || !sha.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(eyre!("git merge-base {revision} HEAD returned unexpected output: {sha}"));
+    }
+    for probe in
+        [["--is-ancestor", sha.as_str(), "HEAD"], ["--is-ancestor", sha.as_str(), revision]]
+    {
+        let output =
+            Command::new("git").current_dir(root).args(["merge-base"]).args(probe).output()?;
+        if !output.status.success() {
+            return Err(eyre!(
+                "resolved comparator {sha} is not a common ancestor of {revision} and HEAD"
+            ));
+        }
+    }
+    Ok(sha)
 }
 
 fn default_root() -> PathBuf {
@@ -321,6 +476,7 @@ fn validate(
         schema_version: RECEIPT_SCHEMA,
         receipt_kind: "action_pin_provenance",
         base: None,
+        base_source: None,
         base_compared: compared,
         strict_all: strict,
         passed: error_count == 0,

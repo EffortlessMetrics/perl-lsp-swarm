@@ -245,6 +245,7 @@ const BUNDLE_5_42_FEATURES: &[&str] = &[
 ];
 
 pub(crate) fn enable_effective_version_semantics(state: &mut PragmaState, version: PerlVersion) {
+    state.perl_version = Some(version);
     if version_implies_strict(version) {
         state.strict_vars = true;
         state.strict_subs = true;
