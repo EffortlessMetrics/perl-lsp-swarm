@@ -158,13 +158,41 @@ const _commands = new Map<string, CommandCallback>();
 export const commands = {
   registerCommand: jest.fn((command: string, callback: CommandCallback) => {
     _commands.set(command, callback);
-    return { dispose: jest.fn() };
+    return {
+      // Real extension-host semantics: disposing a registration unregisters the
+      // command, so a later executeCommand cannot reach a disposed callback.
+      // The identity guard keeps a stale disposable from unregistering a newer
+      // registration of the same command (for example after a retry).
+      dispose: jest.fn(() => {
+        if (_commands.get(command) === callback) {
+          _commands.delete(command);
+        }
+      }),
+    };
   }),
   executeCommand: jest.fn(async (command: string, ...args: unknown[]) => {
     const handler = _commands.get(command);
     if (handler) return handler(...args);
   }),
 };
+
+/**
+ * Test-only view of the mocked command registry: the commands a disposed
+ * extension registration can no longer reach (#7855).
+ */
+export function _registeredCommandsForTest(): string[] {
+  return [..._commands.keys()];
+}
+
+/**
+ * Test-only identity view of the mocked command registry: which exact
+ * callback the host would currently dispatch for each command. Lets a test
+ * prove a retry REPLACED a stale registration instead of merely re-registering
+ * alongside it (#7855).
+ */
+export function _registeredCommandEntriesForTest(): Map<string, CommandCallback> {
+  return new Map(_commands);
+}
 
 function createMockOutputChannel() {
   const appendLine = jest.fn();
@@ -313,6 +341,12 @@ export class DebugAdapterExecutable {
 export const env = {
   clipboard: { writeText: jest.fn() },
   openExternal: jest.fn(),
+  /**
+   * Extension-host session identity for the managed host-reference wiring
+   * (#10083). Tests that simulate a second window can overwrite it before
+   * exercising reference persistence.
+   */
+  sessionId: 'mock-extension-host-session',
 };
 
 export const extensions = {
@@ -325,6 +359,13 @@ export class Disposable {
   dispose() {
     this.callOnDispose();
   }
+}
+
+export class RelativePattern {
+  constructor(
+    public base: unknown,
+    public pattern: string,
+  ) {}
 }
 
 export class EventEmitter {

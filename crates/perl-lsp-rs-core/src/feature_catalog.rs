@@ -28,28 +28,56 @@ pub struct Meta {
     pub compliance_percent: Option<u32>,
 }
 
-/// Feature maturity state used to drive advertising and tracking behavior.
+/// Feature maturity state used to record earned claims (#7029).
+///
+/// Maturity is an evidence-backed claim about a row, independent of the
+/// `advertised` runtime fact on the same row. Only [`Maturity::Proven`] may be
+/// claimed from qualifying behavior evidence; every other value records an
+/// explicit weaker state so later PRs can earn promotion without silently
+/// inheriting green.
 #[derive(
     Debug, Clone, Copy, serde::Deserialize, serde::Serialize, PartialEq, Eq, PartialOrd, Ord, Hash,
 )]
-#[serde(rename_all = "lowercase")]
 pub enum Maturity {
-    /// Early-stage feature.
-    Experimental,
-    /// Feature can be tested but not yet stable.
+    /// Claimed and backed by qualifying behavior evidence plus complete
+    /// ownership metadata (validated by [`Catalog::validate`]).
+    #[serde(rename = "proven", alias = "ga", alias = "production")]
+    Proven,
+    /// Working surface with partial evidence or bounded claims.
+    #[serde(rename = "preview")]
     Preview,
-    /// Fully released and advertizable feature.
-    Ga,
-    /// Planned work item, not yet implemented or measured.
+    /// Acknowledged work item that is not implemented.
+    #[serde(rename = "planned")]
     Planned,
-    /// Fully production-ready and typically exposed like GA.
-    Production,
+    /// Explicitly not implemented; must never advertise.
+    #[serde(rename = "unsupported")]
+    Unsupported,
+    /// Fail-closed default: available evidence does not qualify the row for
+    /// any stronger claim (#7029).
+    #[serde(rename = "not_proven", alias = "experimental")]
+    NotProven,
 }
 
 impl Maturity {
-    /// Returns `true` when the feature contributes to advertised API coverage.
-    pub const fn is_advertised(self) -> bool {
-        matches!(self, Self::Ga | Self::Production)
+    /// Pre-#7029 spelling of [`Maturity::Proven`].
+    #[deprecated(note = "#7029 renamed catalog maturity to `proven`; use Maturity::Proven")]
+    #[allow(non_upper_case_globals)]
+    pub const Ga: Self = Self::Proven;
+    /// Pre-#7029 spelling of [`Maturity::Proven`].
+    #[deprecated(note = "#7029 merged `production` into `proven`; use Maturity::Proven")]
+    #[allow(non_upper_case_globals)]
+    pub const Production: Self = Self::Proven;
+    /// Pre-#7029 spelling now recorded as [`Maturity::NotProven`].
+    #[deprecated(note = "#7029 records unevidenced rows as `not_proven`; use Maturity::NotProven")]
+    #[allow(non_upper_case_globals)]
+    pub const Experimental: Self = Self::NotProven;
+
+    /// Returns `true` when this maturity may back a runtime advertisement.
+    ///
+    /// Advertisement is primarily the per-row `advertised` fact; planned and
+    /// unsupported rows can never advertise even if mis-flagged (#7029).
+    pub const fn may_advertise(self) -> bool {
+        !matches!(self, Self::Planned | Self::Unsupported)
     }
 
     /// Returns `true` when the feature participates in the compatibility grid.
@@ -60,13 +88,23 @@ impl Maturity {
     /// Human-readable lowercase label.
     pub const fn label(self) -> &'static str {
         match self {
-            Self::Experimental => "experimental",
+            Self::Proven => "proven",
             Self::Preview => "preview",
-            Self::Ga => "ga",
             Self::Planned => "planned",
-            Self::Production => "production",
+            Self::Unsupported => "unsupported",
+            Self::NotProven => "not_proven",
         }
     }
+}
+
+/// One recorded evidence citation for a feature row (#7029).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+pub struct EvidenceEntry {
+    /// Evidence class (for example `integration_test`). Classes are classified
+    /// qualifying or non-qualifying by the catalog's `[evidence_classes]`.
+    pub class: String,
+    /// Citation identifying the evidence (usually a repo-relative test path).
+    pub id: String,
 }
 
 /// Per-feature catalog entry.
@@ -80,14 +118,49 @@ pub struct Feature {
     /// Area bucket (`text_document`, `workspace`, `debug`, etc.).
     #[serde(default)]
     pub area: String,
-    /// Maturity state.
+    /// Minimum-evidence policy class used for promotion decisions (#7029).
+    #[serde(default)]
+    pub policy_class: String,
+    /// Earned-claim maturity state; independent of [`Feature::advertised`].
     pub maturity: Maturity,
-    /// Whether this feature is advertised/visible to clients.
+    /// Whether this feature is advertised/visible to clients (runtime fact).
     #[serde(default)]
     pub advertised: bool,
-    /// Test cases validating the feature.
+    /// Wire direction (`client_to_server`, `server_to_client`,
+    /// `bidirectional`); recorded as `missing` when unverified.
+    #[serde(default)]
+    pub direction: String,
+    /// Capability field gating the feature, or `none`; `missing` when
+    /// unverified.
+    #[serde(default)]
+    pub capability_gate: String,
+    /// Advertisement/registration route (`static_capabilities`,
+    /// `dynamic_registration`, `client_capability_gated`); `missing` when
+    /// unverified.
+    #[serde(default)]
+    pub registration: String,
+    /// Source path owning the implementation; literal `missing` when
+    /// unverified (#7029 records missing rather than guessing).
+    #[serde(default)]
+    pub implementation_owner: String,
+    /// Owner of retained cross-request state; literal `missing` when
+    /// unverified.
+    #[serde(default)]
+    pub state_owner: String,
+    /// Test cases historically associated with the feature. Presence is not
+    /// behavior evidence on its own (#7029).
     #[serde(default)]
     pub tests: Vec<String>,
+    /// Classified evidence citations. Only qualifying classes may promote a
+    /// row to [`Maturity::Proven`].
+    #[serde(default)]
+    pub evidence: Vec<EvidenceEntry>,
+    /// Known limitations of the claim or implementation.
+    #[serde(default)]
+    pub limitations: Vec<String>,
+    /// Explicit non-claims boundary; required for `proven` rows.
+    #[serde(default)]
+    pub claim_boundary: String,
     /// Include this feature in coverage/compliance accounting.
     #[serde(default = "default_counts_in_coverage")]
     pub counts_in_coverage: bool,
@@ -107,6 +180,15 @@ pub struct Catalog {
     pub meta: Meta,
     /// Ordered feature rows.
     pub feature: Vec<Feature>,
+    /// Minimum-evidence policy per feature class (#7029). Maps a
+    /// `policy_class` to the evidence classes that qualify a row of that
+    /// class for `proven`.
+    #[serde(default)]
+    pub evidence_policy: BTreeMap<String, Vec<String>>,
+    /// Evidence-class taxonomy (#7029). Maps a class name to its qualifier:
+    /// values starting with `non_qualifying` can never promote a row.
+    #[serde(default)]
+    pub evidence_classes: BTreeMap<String, String>,
 }
 
 impl Catalog {
@@ -115,12 +197,17 @@ impl Catalog {
         &self.feature
     }
 
-    /// IDs for advertised trackable features (GA/production + `advertised = true`).
+    /// IDs for advertised trackable features (#7029).
+    ///
+    /// Advertisement is the per-row `advertised` runtime fact, gated only by
+    /// maturities that can never advertise (planned/unsupported). Earned-claim
+    /// maturity deliberately does NOT gate this list: downgrading a claim must
+    /// not silently remove a working capability from clients.
     pub fn advertised_feature_ids(&self) -> Vec<&str> {
         let mut ids = self
             .feature
             .iter()
-            .filter(|feature| feature.advertised && feature.maturity.is_advertised())
+            .filter(|feature| feature.advertised && feature.maturity.may_advertise())
             .map(|feature| feature.id.as_str())
             .collect::<Vec<_>>();
         ids.sort_unstable();
@@ -154,7 +241,7 @@ impl Catalog {
         self.feature
             .iter()
             .filter(|feature| {
-                feature.advertised && feature.maturity.is_advertised() && feature.counts_in_coverage
+                feature.advertised && feature.maturity.may_advertise() && feature.counts_in_coverage
             })
             .count()
     }
@@ -186,7 +273,7 @@ impl Catalog {
     pub fn advertised_trackable_count(&self) -> usize {
         self.feature
             .iter()
-            .filter(|feature| feature.advertised && feature.maturity.is_advertised())
+            .filter(|feature| feature.advertised && feature.maturity.may_advertise())
             .count()
     }
 
@@ -217,11 +304,11 @@ impl Catalog {
             }
 
             match feature.maturity {
-                Maturity::Ga => entry.ga += 1,
-                Maturity::Production => entry.production += 1,
+                Maturity::Proven => entry.proven += 1,
                 Maturity::Preview => entry.preview += 1,
-                Maturity::Experimental => entry.experimental += 1,
+                Maturity::NotProven => entry.not_proven += 1,
                 Maturity::Planned => entry.planned += 1,
+                Maturity::Unsupported => entry.unsupported += 1,
             }
         }
 
@@ -229,6 +316,12 @@ impl Catalog {
     }
 
     /// Validate constraints not captured by serde parsing alone.
+    ///
+    /// #7029 fail-closed rules: a row may hold `maturity = "proven"` only when
+    /// it carries at least one qualifying evidence citation for its policy
+    /// class AND complete ownership metadata. Advertisement, helper presence,
+    /// method counts, file names, and non-qualifying citations can never
+    /// promote a row.
     pub fn validate(&self) -> Result<(), CatalogError> {
         let mut seen = BTreeSet::new();
         let mut issues = Vec::new();
@@ -241,6 +334,9 @@ impl Catalog {
             );
         }
 
+        let known_classes: BTreeSet<&str> =
+            self.evidence_classes.keys().map(String::as_str).collect();
+
         for feature in &self.feature {
             if feature.id.trim().is_empty() {
                 issues.push("feature id must not be empty".to_string());
@@ -249,9 +345,84 @@ impl Catalog {
             if !seen.insert(&feature.id) {
                 issues.push(format!("duplicate feature id: {}", feature.id));
             }
+
+            if feature.advertised && !feature.maturity.may_advertise() {
+                issues.push(format!(
+                    "feature {} is advertised but maturity {} can never advertise (#7029)",
+                    feature.id,
+                    feature.maturity.label()
+                ));
+            }
+
+            if matches!(feature.maturity, Maturity::Proven) {
+                if feature.policy_class.is_empty() {
+                    issues.push(format!(
+                        "proven feature {} must declare its policy_class (#7029)",
+                        feature.id
+                    ));
+                } else {
+                    let required = self.evidence_policy.get(feature.policy_class.as_str());
+                    match required {
+                        None => issues.push(format!(
+                            "proven feature {} names unknown policy_class {:?} (#7029)",
+                            feature.id, feature.policy_class
+                        )),
+                        Some(required) => {
+                            let has_qualifying = feature.evidence.iter().any(|entry| {
+                                required.contains(&entry.class)
+                                    && !self.evidence_non_qualifying(&entry.class)
+                            });
+                            if !has_qualifying {
+                                issues.push(format!(
+                                    "proven feature {} lacks a qualifying {:?} evidence entry \
+                                     for policy_class {:?} (#7029)",
+                                    feature.id, required, feature.policy_class
+                                ));
+                            }
+                        }
+                    }
+                }
+
+                for (field, value) in [
+                    ("direction", &feature.direction),
+                    ("capability_gate", &feature.capability_gate),
+                    ("registration", &feature.registration),
+                    ("implementation_owner", &feature.implementation_owner),
+                    ("state_owner", &feature.state_owner),
+                ] {
+                    if value.is_empty() || value == "missing" {
+                        issues.push(format!(
+                            "proven feature {} must record {field}; found {value:?} (#7029)",
+                            feature.id
+                        ));
+                    }
+                }
+
+                if feature.claim_boundary.trim().is_empty() {
+                    issues.push(format!(
+                        "proven feature {} must state its claim_boundary (#7029)",
+                        feature.id
+                    ));
+                }
+
+                for entry in &feature.evidence {
+                    if !known_classes.contains(entry.class.as_str()) {
+                        issues.push(format!(
+                            "proven feature {} cites unknown evidence class {:?} (#7029)",
+                            feature.id, entry.class
+                        ));
+                    }
+                }
+            }
         }
 
         if issues.is_empty() { Ok(()) } else { Err(CatalogError::Validation(issues.join(", "))) }
+    }
+
+    fn evidence_non_qualifying(&self, class: &str) -> bool {
+        self.evidence_classes
+            .get(class)
+            .is_some_and(|qualifier| qualifier.starts_with("non_qualifying"))
     }
 }
 
@@ -262,16 +433,16 @@ pub struct AreaStats {
     pub total: usize,
     /// Advertised row count in the area.
     pub advertised: usize,
-    /// Experimental count.
-    pub experimental: usize,
+    /// Proven count (earned claims).
+    pub proven: usize,
     /// Preview count.
     pub preview: usize,
-    /// GA count.
-    pub ga: usize,
-    /// Production count.
-    pub production: usize,
+    /// Not-proven count (fail-closed baseline).
+    pub not_proven: usize,
     /// Planned count.
     pub planned: usize,
+    /// Unsupported count.
+    pub unsupported: usize,
 }
 
 impl AreaStats {
@@ -455,7 +626,7 @@ pub fn render_lsp_feature_catalog_module(catalog: &Catalog, source_comment: &str
     code.push_str("    /// Functional area for this feature\n");
     code.push_str("    pub area: &'static str,\n");
     code.push_str(
-        "    /// Maturity level (`experimental`, `preview`, `ga`, `planned`, `production`)\n",
+        "    /// Maturity level (`proven`, `preview`, `planned`, `unsupported`, `not_proven`)\n",
     );
     code.push_str("    pub maturity: &'static str,\n");
     code.push_str("    /// Advertised feature flag\n");
@@ -513,13 +684,13 @@ pub fn render_navigation_table(catalog: &Catalog) -> String {
     for feature in &catalog.feature {
         let entry = by_area.entry(feature.area.as_str()).or_default();
         entry.1 += 1;
-        if matches!(feature.maturity, Maturity::Ga | Maturity::Production | Maturity::Preview) {
+        if matches!(feature.maturity, Maturity::Proven | Maturity::Preview) {
             entry.0 += 1;
         }
     }
 
     let mut lines = vec![
-        "| Area | Declared ga/production/preview rows | Total rows |".to_string(),
+        "| Area | Declared proven/preview rows | Total rows |".to_string(),
         "|------|---------------------------|------------|".to_string(),
     ];
     let mut declared = 0;
@@ -569,10 +740,66 @@ pub fn render_dap_fallback_module(default_features: &[&str]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use perl_tdd_support::{must, must_some};
+    use perl_tdd_support::{must, must_err, must_some};
     use tempfile::TempDir;
 
+    /// Fully-defaulted row so tests only name the fields under assertion.
+    fn base_feature(id: &str) -> Feature {
+        Feature {
+            id: id.to_string(),
+            spec: "LSP 3.18".to_string(),
+            area: "text_document".to_string(),
+            policy_class: String::new(),
+            maturity: Maturity::NotProven,
+            advertised: true,
+            direction: String::new(),
+            capability_gate: String::new(),
+            registration: String::new(),
+            implementation_owner: String::new(),
+            state_owner: String::new(),
+            tests: vec![],
+            evidence: vec![],
+            limitations: vec![],
+            claim_boundary: String::new(),
+            counts_in_coverage: true,
+            description: String::new(),
+        }
+    }
+
+    fn proven_feature(id: &str) -> Feature {
+        let mut feature = base_feature(id);
+        feature.maturity = Maturity::Proven;
+        feature.policy_class = "request_response".to_string();
+        feature.direction = "client_to_server".to_string();
+        feature.capability_gate = "hoverProvider".to_string();
+        feature.registration = "static_capabilities".to_string();
+        feature.implementation_owner = "crates/example.rs".to_string();
+        feature.state_owner = "document_store".to_string();
+        feature.claim_boundary = "No cross-workspace claims.".to_string();
+        feature.evidence =
+            vec![EvidenceEntry { class: "integration_test".to_string(), id: format!("{id}.rs") }];
+        feature
+    }
+
+    fn policy_maps() -> (BTreeMap<String, Vec<String>>, BTreeMap<String, String>) {
+        let mut policy = BTreeMap::new();
+        policy.insert("request_response".to_string(), vec!["integration_test".to_string()]);
+        let mut classes = BTreeMap::new();
+        classes.insert("integration_test".to_string(), "qualifying".to_string());
+        classes.insert("declaration_only".to_string(), "non_qualifying".to_string());
+        (policy, classes)
+    }
+
     fn sample_catalog() -> Catalog {
+        let (evidence_policy, evidence_classes) = policy_maps();
+        let mut completion = proven_feature("lsp.completion");
+        completion.tests = vec!["crates/perl-lsp-rs/tests/completion.rs".to_string()];
+        completion.description = "Completion support".to_string();
+
+        let mut references = base_feature("lsp.references");
+        references.area = "workspace".to_string();
+        references.description = "References downgraded to not_proven (#7029)".to_string();
+
         Catalog {
             meta: Meta {
                 version: "0.42.0".to_string(),
@@ -580,54 +807,61 @@ mod tests {
                 compliance_percent: None,
             },
             feature: vec![
-                Feature {
-                    id: "lsp.completion".to_string(),
-                    spec: "LSP 3.18".to_string(),
-                    area: "text_document".to_string(),
-                    maturity: Maturity::Ga,
-                    advertised: true,
-                    tests: vec!["crates/perl-lsp-rs/tests/completion.rs".to_string()],
-                    counts_in_coverage: true,
-                    description: "Completion support".to_string(),
+                completion,
+                {
+                    let mut f = base_feature("lsp.semanticTokens");
+                    f.maturity = Maturity::Preview;
+                    f.description = "Semantic token support".to_string();
+                    f
                 },
-                Feature {
-                    id: "lsp.semanticTokens".to_string(),
-                    spec: "LSP 3.18".to_string(),
-                    area: "text_document".to_string(),
-                    maturity: Maturity::Preview,
-                    advertised: true,
-                    tests: vec!["crates/perl-lsp-rs/tests/semantic_tokens.rs".to_string()],
-                    counts_in_coverage: true,
-                    description: "Semantic token support".to_string(),
+                {
+                    let mut f = base_feature("lsp.codeAction");
+                    f.area = "workspace".to_string();
+                    f.advertised = false;
+                    f.counts_in_coverage = false;
+                    f.maturity = Maturity::Planned;
+                    f.description = "Code actions planned".to_string();
+                    f
                 },
-                Feature {
-                    id: "lsp.codeAction".to_string(),
-                    spec: "LSP 3.18".to_string(),
-                    area: "workspace".to_string(),
-                    maturity: Maturity::Planned,
-                    advertised: true,
-                    tests: vec![],
-                    counts_in_coverage: false,
-                    description: "Code actions".to_string(),
-                },
-                Feature {
-                    id: "lsp.references".to_string(),
-                    spec: "LSP 3.18".to_string(),
-                    area: "workspace".to_string(),
-                    maturity: Maturity::Production,
-                    advertised: true,
-                    tests: vec!["crates/perl-lsp-rs/tests/references.rs".to_string()],
-                    counts_in_coverage: true,
-                    description: "References".to_string(),
-                },
+                references,
             ],
+            evidence_policy,
+            evidence_classes,
         }
     }
 
     #[test]
-    fn advertised_ids_are_sorted_and_filter_preview_and_planned() {
+    fn advertisement_survives_claim_downgrade() {
+        // #7029 core invariant: downgrading an earned claim must not silently
+        // remove a working capability from clients. A preview row that is
+        // advertised also stays in the runtime set.
         let catalog = sample_catalog();
-        assert_eq!(catalog.advertised_feature_ids(), vec!["lsp.completion", "lsp.references"]);
+        assert_eq!(
+            catalog.advertised_feature_ids(),
+            vec!["lsp.completion", "lsp.references", "lsp.semanticTokens"]
+        );
+    }
+
+    #[test]
+    fn planned_and_unsupported_rows_can_never_advertise() {
+        let mut catalog = sample_catalog();
+        catalog.feature[2].advertised = true; // planned row mis-flagged
+        catalog.feature.push({
+            let mut f = base_feature("lsp.never");
+            f.maturity = Maturity::Unsupported;
+            f.advertised = true;
+            f
+        });
+        let err = must_err(catalog.validate());
+        assert!(err.to_string().contains("can never advertise"), "unexpected refusal: {err}");
+        assert!(
+            !catalog.advertised_feature_ids().contains(&"lsp.codeAction"),
+            "planned rows must stay out of the runtime advertisement set"
+        );
+        assert!(
+            !catalog.advertised_feature_ids().contains(&"lsp.never"),
+            "unsupported rows must stay out of the runtime advertisement set"
+        );
     }
 
     #[test]
@@ -635,34 +869,9 @@ mod tests {
     fn compliance_math_uses_trackable_features_only() {
         let catalog = sample_catalog();
         assert_eq!(catalog.trackable_feature_count_for_grid(), 3);
-        assert_eq!(catalog.advertised_trackable_count_for_grid(), 2);
-        assert_eq!(catalog.compliance_percent_for_grid(), 67.0);
+        assert_eq!(catalog.advertised_trackable_count_for_grid(), 3);
         assert_eq!(catalog.trackable_feature_count(), 3);
-        assert_eq!(catalog.advertised_trackable_count(), 2);
-        assert_eq!(catalog.compliance_percent(), 67.0);
-    }
-
-    #[test]
-    #[allow(deprecated)]
-    fn compatibility_compliance_preserves_pre_6731_counts() {
-        let mut catalog = sample_catalog();
-        catalog.feature.push(Feature {
-            id: "lsp.compatibility_only".to_string(),
-            spec: "LSP 3.18".to_string(),
-            area: "text_document".to_string(),
-            maturity: Maturity::Ga,
-            advertised: true,
-            tests: vec![],
-            counts_in_coverage: false,
-            description: "Compatibility-only catalog row".to_string(),
-        });
-
-        assert_eq!(catalog.trackable_feature_count_for_grid(), 3);
-        assert_eq!(catalog.advertised_trackable_count_for_grid(), 2);
-        assert_eq!(catalog.compliance_percent_for_grid(), 67.0);
-        assert_eq!(catalog.trackable_feature_count(), 4);
         assert_eq!(catalog.advertised_trackable_count(), 3);
-        assert_eq!(catalog.compliance_percent(), 75.0);
     }
 
     #[test]
@@ -672,66 +881,111 @@ mod tests {
 
         let text_doc = must_some(stats.get("text_document"));
         assert_eq!(text_doc.total, 2);
-        assert_eq!(text_doc.advertised, 2);
-        assert_eq!(text_doc.ga, 1);
+        assert_eq!(text_doc.proven, 1);
         assert_eq!(text_doc.preview, 1);
-        assert_eq!(text_doc.production, 0);
-        assert_eq!(text_doc.trackable_coverage_percent(), 100);
 
         let workspace = must_some(stats.get("workspace"));
-        assert_eq!(workspace.total, 2);
-        assert_eq!(workspace.production, 1);
+        assert_eq!(workspace.not_proven, 1);
         assert_eq!(workspace.planned, 1);
-        assert_eq!(workspace.trackable(), 1);
-        assert_eq!(workspace.trackable_coverage_percent(), 200);
     }
 
     #[test]
-    fn validation_rejects_duplicate_feature_ids() -> Result<(), Box<dyn std::error::Error>> {
+    fn validation_rejects_duplicate_feature_ids() {
         let mut catalog = sample_catalog();
-        catalog.feature.push(Feature {
-            id: "lsp.completion".to_string(),
-            spec: "LSP 3.18".to_string(),
-            area: "text_document".to_string(),
-            maturity: Maturity::Ga,
-            advertised: true,
-            tests: vec![],
-            counts_in_coverage: true,
-            description: "duplicate row".to_string(),
-        });
+        catalog.feature.push(proven_feature("lsp.completion"));
 
-        let err = catalog.validate().err().ok_or("duplicate id must fail validation")?;
-        let message = err.to_string();
-        assert!(message.contains("duplicate feature id: lsp.completion"));
-        Ok(())
+        let err = must_err(catalog.validate());
+        assert!(err.to_string().contains("duplicate feature id: lsp.completion"));
     }
 
     #[test]
-    fn validation_refuses_declared_aggregate_compliance_percent()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn validation_refuses_declared_aggregate_compliance_percent() {
         // #6731 recurrence control: a declared aggregate percentage in the
         // catalog must fail validation instead of silently re-entering
         // authoritative status as a compliance claim.
         let mut catalog = sample_catalog();
         catalog.meta.compliance_percent = Some(98);
 
-        let err = catalog.validate().err().ok_or("declared aggregate must fail validation")?;
+        let err = must_err(catalog.validate());
         let message = err.to_string();
         assert!(
             message.contains("meta.compliance_percent is refused"),
             "unexpected refusal message: {message}"
         );
         assert!(message.contains("#6731"), "refusal must cite its claim: {message}");
-        Ok(())
+    }
+
+    #[test]
+    fn proven_row_requires_qualifying_evidence() {
+        // #7029 negative control: stripping the citation demotes nothing — it
+        // makes the catalog invalid instead of inheriting a green label.
+        let mut catalog = sample_catalog();
+        catalog.feature[0].evidence.clear();
+        let err = must_err(catalog.validate());
+        assert!(err.to_string().contains("lacks a qualifying"), "unexpected refusal: {err}");
+    }
+
+    #[test]
+    fn proven_row_rejects_non_qualifying_evidence_class() {
+        let mut catalog = sample_catalog();
+        catalog.feature[0].evidence = vec![EvidenceEntry {
+            class: "declaration_only".to_string(),
+            id: "somewhere.toml".to_string(),
+        }];
+        let err = must_err(catalog.validate());
+        assert!(
+            err.to_string().contains("lacks a qualifying"),
+            "non-qualifying classes cannot promote (#7029): {err}"
+        );
+    }
+
+    #[test]
+    fn proven_row_requires_complete_ownership_metadata() {
+        for field in
+            ["direction", "capability_gate", "registration", "implementation_owner", "state_owner"]
+        {
+            let mut catalog = sample_catalog();
+            match field {
+                "direction" => catalog.feature[0].direction = "missing".to_string(),
+                "capability_gate" => catalog.feature[0].capability_gate = String::new(),
+                "registration" => catalog.feature[0].registration = "missing".to_string(),
+                "implementation_owner" => {
+                    catalog.feature[0].implementation_owner = "missing".to_string()
+                }
+                _ => catalog.feature[0].state_owner = "missing".to_string(),
+            }
+            let err = must_err(catalog.validate());
+            assert!(
+                err.to_string().contains(&format!("must record {field}")),
+                "empty {field} must block proven (#7029): {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn proven_row_requires_claim_boundary() {
+        let mut catalog = sample_catalog();
+        catalog.feature[0].claim_boundary = " ".to_string();
+        let err = must_err(catalog.validate());
+        assert!(err.to_string().contains("claim_boundary"), "{err}");
+    }
+
+    #[test]
+    fn not_proven_rows_validate_without_evidence_or_ownership() {
+        // Fail-closed baseline: recording less than proven is valid as long as
+        // the row does not claim more than its evidence supports.
+        let mut catalog = sample_catalog();
+        catalog.feature[0].maturity = Maturity::NotProven;
+        catalog.feature[0].direction = "missing".to_string();
+        catalog.validate().expect("not_proven row must validate");
     }
 
     #[test]
     fn shipped_vendored_catalogs_pass_validation_without_declared_percent()
     -> Result<(), Box<dyn std::error::Error>> {
-        // #6731 recurrence control: every crate-local features_sot.toml that a
-        // standalone/packaged build can resolve to must still parse and pass
-        // validation. A reintroduced meta.compliance_percent fails here instead
-        // of poisoning vendored builds into silent zero-feature advertisement.
+        // #6731/#7029 recurrence control: every crate-local features_sot.toml
+        // that a standalone/packaged build can resolve to must parse and pass
+        // validation, including the fail-closed #7029 rules.
         let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .ancestors()
             .nth(2)
@@ -749,10 +1003,36 @@ mod tests {
                 !raw.contains("compliance_percent"),
                 "{relative} must not declare meta.compliance_percent (#6731)"
             );
+            assert!(
+                raw.contains("GENERATED PROJECTIONS"),
+                "{relative} is a generated projection and must say so (#7029)"
+            );
             let catalog = read_catalog(&path).map_err(|e| format!("parsing {relative}: {e}"))?;
             catalog.validate().map_err(|e| format!("validating {relative}: {e}"))?;
         }
         Ok(())
+    }
+
+    #[test]
+    fn legacy_maturity_spellings_parse_as_new_vocabulary() {
+        let text = "\
+[meta]
+version = 't'
+lsp_version = '3.18'
+[[feature]]
+id = 'a'
+maturity = 'ga'
+[[feature]]
+id = 'b'
+maturity = 'production'
+[[feature]]
+id = 'c'
+maturity = 'experimental'
+";
+        let catalog: Catalog = toml::from_str(text).expect("legacy spellings parse");
+        assert_eq!(catalog.feature[0].maturity, Maturity::Proven);
+        assert_eq!(catalog.feature[1].maturity, Maturity::Proven);
+        assert_eq!(catalog.feature[2].maturity, Maturity::NotProven);
     }
 
     #[test]
@@ -800,7 +1080,11 @@ mod tests {
         assert!(!rendered.contains("COMPLIANCE_PERCENT"));
         assert!(!rendered.contains("compliance_percent()"));
         assert!(
-            rendered.contains("pub const ADVERTISED_LSP_FEATURES: &[&str] = &[\n    \"lsp.completion\",\n    \"lsp.references\",\n];")
+            rendered.contains("pub const ADVERTISED_LSP_FEATURES: &[&str] = &[\n    \"lsp.completion\",\n    \"lsp.references\",\n    \"lsp.semanticTokens\",\n];")
+        );
+        assert!(
+            rendered.contains("maturity: \"proven\""),
+            "generated module must carry #7029 vocabulary"
         );
 
         let code_action_idx = must_some(rendered.find("id: \"lsp.codeAction\""));
@@ -810,5 +1094,40 @@ mod tests {
         assert!(completion_idx < semantic_idx);
         assert!(semantic_idx < code_action_idx);
         assert!(code_action_idx < references_idx);
+    }
+
+    #[test]
+    fn checked_in_override_fixtures_parse_and_validate() {
+        // crates/perl-parser/tests/data/*.toml are consumed through this
+        // catalog loader via FEATURES_TOML_OVERRIDE, not by any perl-parser
+        // test target (#2006 review finding): they must parse and validate
+        // here, where the real consumer lives. Enumerate every TOML the
+        // allowlist glob admits so a future fixture cannot escape coverage
+        // (#12721 review).
+        let parser_data = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .map(|crates| crates.join("perl-parser/tests/data"))
+            .unwrap_or_else(|| PathBuf::from("../perl-parser/tests/data"));
+        let mut fixture_names: Vec<String> = must(fs::read_dir(&parser_data))
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.ends_with(".toml"))
+            .collect();
+        fixture_names.sort();
+        assert!(!fixture_names.is_empty(), "override fixture directory must not be empty");
+        for name in &fixture_names {
+            must(read_catalog(&parser_data.join(name)));
+        }
+        // The gating scenarios these fixtures exist for:
+        let minimal = must(read_catalog(&parser_data.join("features_minimal.toml")));
+        assert!(
+            minimal.feature.iter().any(|feature| feature.id == "lsp.hover" && !feature.advertised),
+            "features_minimal.toml must disable lsp.hover for the gating test"
+        );
+        let disabled = must(read_catalog(&parser_data.join("features_disabled_test.toml")));
+        assert!(
+            disabled.feature.iter().any(|feature| !feature.advertised),
+            "features_disabled_test.toml must disable at least one feature"
+        );
     }
 }

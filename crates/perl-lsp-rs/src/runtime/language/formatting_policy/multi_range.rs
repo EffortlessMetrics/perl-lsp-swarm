@@ -4,6 +4,10 @@
 
 use serde::Serialize;
 
+use perl_lsp_rs_core::providers::formatting::range_admission::{
+    RangePositionError, SourceGeometry, admit_wire_endpoints,
+};
+
 use super::super::{
     FormatContext, FormatDisposition, FormatTextEdit, FormattingDecision, JsonRpcError, JsonRpcId,
     LspServer, RequestCleanupGuard, Snapshot, Surface, Value, WirePosition, WireRange,
@@ -88,22 +92,9 @@ impl PlanError {
         Self { reason, message: message.into() }
     }
 
-    fn outside_document(line: u32) -> Self {
-        Self::new("invalid_position", format!("line {line} is outside the current document"))
-    }
-
-    fn surrogate_split(line: u32, character: u32) -> Self {
-        Self::new(
-            "invalid_position",
-            format!("UTF-16 character {character} on line {line} splits a surrogate pair"),
-        )
-    }
-
-    fn outside_line(line: u32, character: u32, length: usize) -> Self {
-        Self::new(
-            "invalid_position",
-            format!("UTF-16 character {character} is outside line {line} (length {length})"),
-        )
+    #[cfg(test)]
+    fn from_position_error(error: RangePositionError) -> Self {
+        Self::new(error.reason(), error.message())
     }
 
     fn reversed_range(label: impl std::fmt::Display) -> Self {
@@ -135,77 +126,6 @@ impl PlanError {
     }
 }
 
-struct SourceGeometry {
-    line_starts: Vec<usize>,
-}
-
-impl SourceGeometry {
-    fn new(source: &str) -> Self {
-        let mut line_starts = vec![0];
-        let bytes = source.as_bytes();
-        let mut i = 0;
-        while i < bytes.len() {
-            if bytes[i] == b'\n' {
-                line_starts.push(i + 1);
-            } else if bytes[i] == b'\r' {
-                if i + 1 < bytes.len() && bytes[i + 1] == b'\n' {
-                    line_starts.push(i + 2);
-                    i += 1;
-                } else {
-                    line_starts.push(i + 1);
-                }
-            }
-            i += 1;
-        }
-        Self { line_starts }
-    }
-
-    fn line_content_end(&self, source: &str, line_index: usize) -> usize {
-        let Some(&next) = self.line_starts.get(line_index + 1) else {
-            return source.len();
-        };
-        let bytes = source.as_bytes();
-        if next >= 2 && bytes.get(next - 2) == Some(&b'\r') && bytes.get(next - 1) == Some(&b'\n') {
-            next - 2
-        } else if next >= 1 && matches!(bytes.get(next - 1), Some(&b'\n') | Some(&b'\r')) {
-            next - 1
-        } else {
-            next
-        }
-    }
-
-    fn byte_offset(&self, source: &str, line: u32, character: u32) -> Result<usize, PlanError> {
-        let line_index = line as usize;
-        let start = self
-            .line_starts
-            .get(line_index)
-            .copied()
-            .ok_or_else(|| PlanError::outside_document(line))?;
-        let end = self.line_content_end(source, line_index);
-
-        let target = character as usize;
-        let mut units = 0usize;
-        for (relative, ch) in source[start..end].char_indices() {
-            if units == target {
-                return Ok(start + relative);
-            }
-            let next = units.saturating_add(ch.len_utf16());
-            if target < next {
-                return Err(PlanError::surrogate_split(line, character));
-            }
-            units = next;
-        }
-        if units == target { Ok(end) } else { Err(PlanError::outside_line(line, character, units)) }
-    }
-
-    fn line_byte_span(&self, source: &str, line: u32) -> Result<(usize, usize), PlanError> {
-        let line_index = line as usize;
-        let start =
-            *self.line_starts.get(line_index).ok_or_else(|| PlanError::outside_document(line))?;
-        Ok((start, self.line_content_end(source, line_index)))
-    }
-}
-
 fn admit_wire_range(
     geometry: &SourceGeometry,
     source: &str,
@@ -214,14 +134,21 @@ fn admit_wire_range(
 ) -> Result<NormalizedRange, PlanError> {
     let wire = parse_range(value, label)
         .map_err(|error| PlanError::new("invalid_range", error.message))?;
-    let start_byte = geometry.byte_offset(source, wire.start.line, wire.start.character)?;
-    let end_byte = geometry.byte_offset(source, wire.end.line, wire.end.character)?;
-    if end_byte < start_byte {
-        return Err(PlanError::reversed_range(label));
-    }
+    let admitted = admit_wire_endpoints(
+        geometry,
+        source,
+        (wire.start.line, wire.start.character),
+        (wire.end.line, wire.end.character),
+    )
+    .map_err(|error| match error {
+        perl_lsp_rs_core::providers::formatting::RangeAdmissionError::Reversed => {
+            PlanError::reversed_range(label)
+        }
+        error => PlanError::new(error.reason(), error.message()),
+    })?;
     Ok(NormalizedRange::between(
-        PositionRecord::at(wire.start.line, wire.start.character, start_byte),
-        PositionRecord::at(wire.end.line, wire.end.character, end_byte),
+        PositionRecord::at(wire.start.line, wire.start.character, admitted.start_byte),
+        PositionRecord::at(wire.end.line, wire.end.character, admitted.end_byte),
     ))
 }
 
@@ -326,11 +253,12 @@ fn compose_edits(
             // Formatter-emitted positions are instrument output, not client
             // request params. Remap byte_offset failures so the client sees
             // -32603 / formatting_outcome_contract instead of -32602.
-            let reclassify = |error: PlanError| {
+            let reclassify = |error: RangePositionError| {
                 PlanError::new(
                     "instrument_failure",
                     format!(
-                        "formatter edit for normalized range {owner} has an unresolvable position: {error}"
+                        "formatter edit for normalized range {owner} has an unresolvable position: {}",
+                        error.message()
                     ),
                 )
             };
@@ -346,27 +274,15 @@ fn compose_edits(
                     format!("formatter edit for normalized range {owner} is reversed"),
                 ));
             }
-            // Native range formatting is line-oriented: a partial-line request
-            // may legitimately produce an edit covering the touched lines. Keep
-            // the safety boundary at those lines while still rejecting edits
-            // that escape the admitted line set.
-            let (allowed_start, allowed_end) = if admitted.start.line == admitted.end.line
-                && admitted.end.character == admitted.start.character
-            {
-                (admitted.start.byte, admitted.end.byte)
-            } else if admitted.end.character == 0 {
-                let (start, _) = geometry.line_byte_span(source, admitted.start.line)?;
-                (start, admitted.end.byte)
-            } else {
-                let (start, _) = geometry.line_byte_span(source, admitted.start.line)?;
-                let (_, end) = geometry.line_byte_span(source, admitted.end.line)?;
-                (start, end)
-            };
+            // Every formatter edit must stay within the exact byte interval
+            // admitted for its owning request. A line-oriented formatter that
+            // widens a partial request is therefore downgraded, not clipped.
+            let (allowed_start, allowed_end) = (admitted.start.byte, admitted.end.byte);
             if start_byte < allowed_start || end_byte > allowed_end {
                 return Err(PlanError::new(
                     "edit_outside_range",
                     format!(
-                        "formatter edit {start_byte}..{end_byte} escapes admitted line span {allowed_start}..{allowed_end}"
+                        "formatter edit {start_byte}..{end_byte} escapes admitted range {allowed_start}..{allowed_end}"
                     ),
                 ));
             }
@@ -717,7 +633,7 @@ mod tests {
     // unwraps; the workspace-wide deny is a production-code rule.
     #![allow(clippy::expect_used)]
     use super::*;
-    use perl_lsp_rs_core::providers::formatting_types::{FormatPosition, FormatRange};
+    use crate::features::formatting::{FormatPosition, FormatRange};
 
     fn range(sl: u32, sc: u32, el: u32, ec: u32) -> Value {
         json!({
@@ -769,53 +685,6 @@ mod tests {
         )?;
         assert_ne!(digest_one, digest_generation);
         assert_ne!(digest_one, digest_config);
-        Ok(())
-    }
-
-    #[test]
-    fn compose_edits_accepts_empty_point_and_rejects_escape()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let source = "abcdef\n";
-        let plan = compose_plan(source, &[range(0, 3, 0, 3)]);
-        let (edits, _) =
-            compose_edits(source, &plan, vec![vec![edit(0, 3, 0, 3, "X")]], 1, "config")?;
-        assert_eq!(edits.len(), 1);
-
-        let escaped = compose_edits(source, &plan, vec![vec![edit(0, 4, 0, 4, "X")]], 1, "config")
-            .err()
-            .ok_or("empty-point escape was accepted")?;
-        assert_eq!(escaped.reason, "edit_outside_range");
-
-        let left_escape =
-            compose_edits(source, &plan, vec![vec![edit(0, 2, 0, 3, "X")]], 1, "config")
-                .err()
-                .ok_or("empty-point span must reject lower-bound escape")?;
-        assert_eq!(left_escape.reason, "edit_outside_range");
-
-        let right_escape =
-            compose_edits(source, &plan, vec![vec![edit(0, 3, 0, 4, "X")]], 1, "config")
-                .err()
-                .ok_or("empty-point span must reject upper-bound escape")?;
-        assert_eq!(right_escape.reason, "edit_outside_range");
-        Ok(())
-    }
-
-    #[test]
-    fn compose_edits_sorts_reverse_order_adjacent_edits() -> Result<(), Box<dyn std::error::Error>>
-    {
-        let source = "abcdefgh\n";
-        let plan = compose_plan(source, &[range(0, 0, 0, 8)]);
-        let (edits, digest) = compose_edits(
-            source,
-            &plan,
-            vec![vec![edit(0, 4, 0, 8, "BBBB"), edit(0, 0, 0, 4, "AAAA")]],
-            7,
-            "config-fingerprint",
-        )?;
-        assert_eq!(edits.len(), 2);
-        assert_eq!(edits[0].new_text, "AAAA");
-        assert_eq!(edits[1].new_text, "BBBB");
-        assert!(!digest.is_empty(), "composed edit digest must be non-empty");
         Ok(())
     }
 
@@ -989,16 +858,24 @@ mod tests {
 
     #[test]
     fn plan_error_constructors_name_geometry_failures() {
-        assert_eq!(
-            PlanError::outside_document(9).message,
-            "line 9 is outside the current document"
-        );
+        let outside =
+            PlanError::from_position_error(RangePositionError::OutsideDocument { line: 9 });
+        assert_eq!(outside.message, "line 9 is outside the current document");
+        let surrogate = PlanError::from_position_error(RangePositionError::SurrogateSplit {
+            line: 0,
+            character: 2,
+        });
         assert!(
-            PlanError::surrogate_split(0, 2).message.contains("splits a surrogate pair"),
+            surrogate.message.contains("splits a surrogate pair"),
             "surrogate constructor must keep discriminant text"
         );
+        let past = PlanError::from_position_error(RangePositionError::PastLineEnd {
+            line: 0,
+            character: 99,
+            length: 4,
+        });
         assert!(
-            PlanError::outside_line(0, 99, 4).message.contains("outside line 0"),
+            past.message.contains("outside line 0"),
             "outside-line constructor must keep discriminant text"
         );
         assert_eq!(
@@ -1018,25 +895,25 @@ mod tests {
             .byte_offset(source, 9, 0)
             .err()
             .ok_or("outside-document byte_offset succeeded")?;
-        assert_eq!(outside.reason, "invalid_position");
-        assert_eq!(outside.message, "line 9 is outside the current document");
+        assert_eq!(outside.reason(), "invalid_position");
+        assert_eq!(outside.message(), "line 9 is outside the current document");
         let surrogate = geometry
             .byte_offset(source, 0, 2)
             .err()
             .ok_or("surrogate-splitting byte_offset succeeded")?;
-        assert_eq!(surrogate.reason, "invalid_position");
+        assert_eq!(surrogate.reason(), "invalid_position");
         assert!(
-            surrogate.message.contains("splits a surrogate pair"),
+            surrogate.message().contains("splits a surrogate pair"),
             "surrogate byte offset must reject a split pair: {}",
-            surrogate.message
+            surrogate.message()
         );
         let past =
             geometry.byte_offset(source, 0, 99).err().ok_or("past-end byte_offset succeeded")?;
-        assert_eq!(past.reason, "invalid_position");
+        assert_eq!(past.reason(), "invalid_position");
         assert!(
-            past.message.contains("outside line 0"),
+            past.message().contains("outside line 0"),
             "byte offset must reject a character past line end: {}",
-            past.message
+            past.message()
         );
         assert_eq!(geometry.byte_offset(source, 0, 0)?, 0);
         assert_eq!(geometry.byte_offset(source, 0, 1)?, 1);
@@ -1056,34 +933,31 @@ mod tests {
         Ok(())
     }
 
-    fn text_edit(sl: u32, sc: u32, el: u32, ec: u32, new_text: &str) -> FormatTextEdit {
-        use crate::features::formatting::{FormatPosition, FormatRange};
-        FormatTextEdit {
-            range: FormatRange::new(FormatPosition::new(sl, sc), FormatPosition::new(el, ec)),
-            new_text: new_text.to_string(),
-        }
-    }
-
     #[test]
     fn empty_point_compose_keeps_zero_width_bound() -> Result<(), Box<dyn std::error::Error>> {
         let source = "abcdef\n";
         let plan = build_plan(source, &[range(0, 3, 0, 3)])?;
-        let ok = compose_edits(source, &plan, vec![vec![text_edit(0, 3, 0, 3, "X")]], 1, "cfg")?;
+        let ok = compose_edits(source, &plan, vec![vec![edit(0, 3, 0, 3, "X")]], 1, "cfg")?;
         assert_eq!(ok.0.len(), 1);
         assert_eq!(ok.0[0].new_text, "X");
 
         // Bound each side independently so a one-sided gate regression cannot hide.
-        let left_escape =
-            compose_edits(source, &plan, vec![vec![text_edit(0, 2, 0, 3, "X")]], 1, "cfg")
-                .err()
-                .ok_or("empty-point span must reject lower-bound escape")?;
+        let left_escape = compose_edits(source, &plan, vec![vec![edit(0, 2, 0, 3, "X")]], 1, "cfg")
+            .err()
+            .ok_or("empty-point span must reject lower-bound escape")?;
         assert_eq!(left_escape.reason, "edit_outside_range");
 
         let right_escape =
-            compose_edits(source, &plan, vec![vec![text_edit(0, 3, 0, 4, "X")]], 1, "cfg")
+            compose_edits(source, &plan, vec![vec![edit(0, 3, 0, 4, "X")]], 1, "cfg")
                 .err()
                 .ok_or("empty-point span must reject upper-bound escape")?;
         assert_eq!(right_escape.reason, "edit_outside_range");
+
+        let outside_point =
+            compose_edits(source, &plan, vec![vec![edit(0, 4, 0, 4, "X")]], 1, "cfg")
+                .err()
+                .ok_or("empty-point escape was accepted")?;
+        assert_eq!(outside_point.reason, "edit_outside_range");
         Ok(())
     }
 
@@ -1095,7 +969,7 @@ mod tests {
         let (edits, digest) = compose_edits(
             source,
             &plan,
-            vec![vec![text_edit(0, 4, 0, 8, "BBBB"), text_edit(0, 0, 0, 4, "AAAA")]],
+            vec![vec![edit(0, 4, 0, 8, "BBBB"), edit(0, 0, 0, 4, "AAAA")]],
             7,
             "cfg-fingerprint",
         )?;
@@ -1107,7 +981,7 @@ mod tests {
         let conflict = compose_edits(
             source,
             &plan,
-            vec![vec![text_edit(0, 0, 0, 5, "AAAAA"), text_edit(0, 4, 0, 8, "BBBB")]],
+            vec![vec![edit(0, 0, 0, 5, "AAAAA"), edit(0, 4, 0, 8, "BBBB")]],
             7,
             "cfg-fingerprint",
         )

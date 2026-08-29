@@ -1,0 +1,68 @@
+{
+  "schema_version": 1,
+  "case_id": "E35-ownership-theater-clone-wrapper",
+  "family": "structural_ownership_theater",
+  "purpose": "Clones, allocations, or wrappers added only to satisfy ownership/style checks add cost without semantics.",
+  "incident_reference": null,
+  "subject": {
+    "scope": "workspace",
+    "target_kinds": [
+      "lib",
+      "bin",
+      "test"
+    ],
+    "profile": "all",
+    "platforms": [
+      "linux",
+      "windows",
+      "macos"
+    ],
+    "features": "default"
+  },
+  "governed_lint": null,
+  "dishonest_mutation": {
+    "kind": "source-snippet",
+    "language": "rust",
+    "trigger_evidence": [
+      "to_owned()",
+      "clone only to satisfy the borrow checker"
+    ],
+    "content": "pub fn longest(a: &str, b: &str) -> String {\n    let candidate = a.to_owned(); // clone only to satisfy the borrow checker\n    if candidate.len() >= b.len() { candidate } else { b.to_string() }\n}\n",
+    "sha256": "0a1d2598ec21766fa21af36b36740eb3a9910770e53382dba41d346adddd98b3"
+  },
+  "rejecting_authority": {
+    "status": "pending_owner",
+    "owner_issue": 11336,
+    "unresolved_reason": "Pedantic/nursery convergence train (#11336) open; redundant-clone classes ungoverned."
+  },
+  "expected_result": {
+    "result_class": "reject",
+    "reason_code": "ownership_satisfying_clone"
+  },
+  "positive_counterpart": {
+    "sanctioned_evidence": [
+      "longest<'a>"
+    ],
+    "note": "Lifetime carries the choice without copies.",
+    "content": "pub fn longest<'a>(a: &'a str, b: &'a str) -> &'a str {\n    if a.len() >= b.len() { a } else { b }\n}\n",
+    "sha256": "bf9839aa5a07eed1473493cd5568391f5c9ec605e34eb2c14f89ec84dbd874e8"
+  },
+  "applicability": {
+    "packet_classes": [
+      "qualification",
+      "foundation",
+      "migration",
+      "activation",
+      "review"
+    ],
+    "domains": [
+      "clippy-core"
+    ]
+  },
+  "delta_provenance": {
+    "change_reason": "initial corpus freeze (#11649)",
+    "owning_issue": 11649,
+    "historical_interpretability": true
+  },
+  "claim_boundary": "Clone-for-compliance identities stay challengeable across trains."
+}

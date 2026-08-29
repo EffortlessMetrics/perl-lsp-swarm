@@ -3,7 +3,9 @@ use same_file::Handle;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
+use std::error::Error;
 use std::ffi::OsStr;
+use std::fmt;
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Component, Path, PathBuf};
@@ -143,7 +145,7 @@ impl SidecarValidationContext {
     /// Open, read, digest, and validate one sidecar/fixture pair without later
     /// reopening either path for parsing.
     pub fn resolve_pair(&self, sidecar_path: &Path) -> Result<ValidatedSidecarPair> {
-        let sidecar_relative = self.relative_identity(sidecar_path)?;
+        let sidecar_relative = relative_identity(&self.root, sidecar_path)?;
         let expected = if let Some(selected) = &self.selected_pairs {
             Some(selected.get(&sidecar_relative).ok_or_else(|| {
                 anyhow::anyhow!(
@@ -249,16 +251,6 @@ impl SidecarValidationContext {
         Ok(selected)
     }
 
-    fn relative_identity(&self, path: &Path) -> Result<PathBuf> {
-        let relative = if path.is_absolute() {
-            path.strip_prefix(&self.root)
-                .map_err(|_| anyhow::anyhow!("path is outside the bound corpus root"))?
-        } else {
-            path
-        };
-        normalize_relative(relative)
-    }
-
     fn open_regular_member(&self, relative: &Path, role: &str) -> Result<OpenedMember> {
         let relative = normalize_relative(relative)?;
         let path = self.root.join(&relative);
@@ -333,6 +325,39 @@ impl SidecarValidationContext {
         }
         Ok(())
     }
+}
+
+/// Internal source for an absolute path that is not under the bound sidecar root.
+///
+/// Matches the topology `PathOutsideRoot { path, root }` payload shape. The error
+/// type stays module-private; callers still see `anyhow::Error`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PathOutsideRoot {
+    path: PathBuf,
+    root: PathBuf,
+}
+
+impl fmt::Display for PathOutsideRoot {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "path {} is outside the bound corpus root {}",
+            self.path.display(),
+            self.root.display()
+        )
+    }
+}
+
+impl Error for PathOutsideRoot {}
+
+fn relative_identity(root: &Path, path: &Path) -> Result<PathBuf> {
+    let relative = if path.is_absolute() {
+        path.strip_prefix(root)
+            .map_err(|_| PathOutsideRoot { path: path.to_path_buf(), root: root.to_path_buf() })?
+    } else {
+        path
+    };
+    normalize_relative(relative)
 }
 
 fn expected_fixture_relative(sidecar: &Path) -> Result<PathBuf> {
@@ -430,4 +455,101 @@ fn digest_bytes(bytes: &[u8]) -> String {
 
 fn has_sidecar_suffix(file_name: &OsStr) -> bool {
     file_name.as_encoded_bytes().ends_with(SIDECAR_SUFFIX)
+}
+
+#[cfg(test)]
+mod relative_identity_tests {
+    use super::*;
+
+    fn platform_absolute(unix: &str, windows: &str) -> PathBuf {
+        PathBuf::from(if cfg!(windows) { windows } else { unix })
+    }
+
+    fn require_error(result: Result<PathBuf>, message: &'static str) -> Result<anyhow::Error> {
+        result.err().ok_or_else(|| anyhow::anyhow!("{message}"))
+    }
+
+    fn outside_root_payload(root: &Path, path: &Path) -> Result<PathOutsideRoot> {
+        let error = require_error(relative_identity(root, path), "path must fail closed")?;
+        error.downcast::<PathOutsideRoot>().map_err(|error| {
+            anyhow::anyhow!("outside-root failure must carry PathOutsideRoot, got {error}")
+        })
+    }
+
+    #[test]
+    fn outside_absolute_path_error_names_path_and_root() -> Result<()> {
+        let root = platform_absolute("/bound/root", r"C:\bound\root");
+        let path = platform_absolute("/other/escaped.meta.toml", r"C:\other\escaped.meta.toml");
+        let payload = outside_root_payload(&root, &path)?;
+        assert_eq!(payload.path, path);
+        assert_eq!(payload.root, root);
+
+        let message = payload.to_string();
+        assert!(
+            message.contains(&path.display().to_string()),
+            "error must name the offending path: {message}"
+        );
+        assert!(
+            message.contains(&root.display().to_string()),
+            "error must name the bound root: {message}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn string_prefix_sibling_is_outside_the_bound_root() -> Result<()> {
+        let root = platform_absolute("/bound/root", r"C:\bound\root");
+        let path = platform_absolute(
+            "/bound/root-extra/escaped.meta.toml",
+            r"C:\bound\root-extra\escaped.meta.toml",
+        );
+        assert!(
+            path.to_string_lossy().starts_with(root.to_string_lossy().as_ref()),
+            "fixture must be a string-prefix sibling, not a path-prefix child"
+        );
+        let payload = outside_root_payload(&root, &path)?;
+        assert_eq!(payload.path, path);
+        assert_eq!(payload.root, root);
+        Ok(())
+    }
+
+    #[test]
+    fn in_root_absolute_and_relative_paths_still_resolve() -> Result<()> {
+        let root = platform_absolute("/bound/root", r"C:\bound\root");
+        let absolute = platform_absolute(
+            "/bound/root/nested/case.meta.toml",
+            r"C:\bound\root\nested\case.meta.toml",
+        );
+        assert_eq!(relative_identity(&root, &absolute)?, Path::new("nested/case.meta.toml"));
+        assert_eq!(
+            relative_identity(&root, Path::new("nested/case.meta.toml"))?,
+            Path::new("nested/case.meta.toml")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn traversal_and_root_identity_are_not_outside_root_payloads() -> Result<()> {
+        let root = platform_absolute("/bound/root", r"C:\bound\root");
+        let traversal = require_error(
+            relative_identity(&root, Path::new("../escaped.meta.toml")),
+            "relative traversal must fail",
+        )?;
+        assert!(
+            traversal.downcast_ref::<PathOutsideRoot>().is_none(),
+            "relative traversal is normalize_relative, not strip_prefix: {traversal}"
+        );
+        assert!(traversal.to_string().contains("parent component"));
+
+        let empty = require_error(
+            relative_identity(&root, &root),
+            "root itself is not a relative identity",
+        )?;
+        assert!(
+            empty.downcast_ref::<PathOutsideRoot>().is_none(),
+            "strip_prefix of the root itself is empty identity, not PathOutsideRoot: {empty}"
+        );
+        assert!(empty.to_string().contains("nonempty relative"));
+        Ok(())
+    }
 }

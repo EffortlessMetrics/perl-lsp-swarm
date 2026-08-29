@@ -26,7 +26,7 @@ use crate::{
 use perl_lexer::LSP_RUNTIME_COMPLETION_KEYWORDS;
 #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
 use perl_lsp_rs_core::providers::completion::completion_shadow::completion_visibility_shadow;
-use perl_module::resolution::{IncRoot, IncRootKind};
+use perl_module::{IncRoot, IncRootKind};
 use serde_json::{Value, json};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -71,6 +71,63 @@ static COMPLETION_ANALYSIS_STARTED_OBSERVER: std::sync::Mutex<
 // `COMPLETION_ANALYSIS_STARTED_OBSERVER`, which only `pub(crate)` in-crate test
 // code can reach), so under a plain `expose_lsp_test_api`-only build (no
 // `cfg(test)`) this would otherwise be genuinely unused (clippy::dead_code).
+
+/// Word prefix for the Dancer2 keyword gate (mirrors the core provider's
+/// `word_prefix` shape; kept local to avoid widening the core API).
+fn dancer2_word_prefix(source: &str, position: usize) -> (String, usize) {
+    let bounded = &source[..position.min(source.len())];
+    let start = bounded
+        .char_indices()
+        .rev()
+        .take_while(|(_, character)| character.is_alphanumeric() || *character == '_')
+        .last()
+        .map(|(index, _)| index)
+        .unwrap_or(position);
+    (bounded[start..].to_string(), start)
+}
+
+/// Whether the text before the cursor ends inside a quoted string.
+fn dancer2_line_starts_in_string(before_cursor: &str) -> bool {
+    let mut quote: Option<char> = None;
+    for character in before_cursor.chars() {
+        match quote {
+            Some(open) if character == open => quote = None,
+            Some(_) => {}
+            None if character == '\'' || character == '"' => quote = Some(character),
+            None => {}
+        }
+    }
+    quote.is_some()
+}
+
+/// `(package, name)` pairs of subroutine declarations in the file.
+///
+/// Shadowing is package-scoped: a `sub get` in one package does not own the
+/// name for a Dancer2-activated sibling package.
+pub(crate) fn dancer2_declared_sub_names(
+    node: &perl_parser::ast::Node,
+) -> std::collections::HashSet<(String, String)> {
+    let mut names = std::collections::HashSet::new();
+    fn walk(
+        node: &perl_parser::ast::Node,
+        package: &mut String,
+        names: &mut std::collections::HashSet<(String, String)>,
+    ) {
+        if let perl_parser::ast::NodeKind::Package { name, .. } = &node.kind {
+            *package = name.clone();
+        }
+        if let perl_parser::ast::NodeKind::Subroutine { name: Some(name), .. } = &node.kind {
+            names.insert((package.clone(), name.clone()));
+        }
+        for child in node.children() {
+            walk(child, package, names);
+        }
+    }
+    let mut package = "main".to_string();
+    walk(node, &mut package, &mut names);
+    names
+}
+
 #[cfg(test)]
 pub(crate) fn set_completion_analysis_started_observer(
     uri: &str,
@@ -867,6 +924,87 @@ impl LspServer {
         }
     }
 
+    /// Adds canonical Dancer2 keyword completions (#8928).
+    ///
+    /// Offers imported default-DSL keywords from the canonical import facts
+    /// under exact activation only. Ranking keeps ordinary results ahead
+    /// (keyword items carry a trailing sort key), locally declared
+    /// subroutine names win over same-named keywords, and the slice stays
+    /// silent in member-access, string, and `use`/`require` contexts.
+    fn add_dancer2_keyword_completions(
+        &self,
+        completions: &mut Vec<crate::completion::CompletionItem>,
+        uri: &str,
+        text: &str,
+        offset: usize,
+        snapshot: &crate::state::ParsedSnapshot,
+        ast: &perl_parser::ast::Node,
+    ) {
+        use perl_lsp_rs_core::providers::dancer2::keyword_completion_candidates;
+        use std::borrow::Cow;
+
+        // Word prefix gating: keywords are offered only against a non-empty
+        // identifier prefix so an empty prefix page is never swamped.
+        let (prefix, token_start) = dancer2_word_prefix(text, offset);
+        if prefix.is_empty() {
+            return;
+        }
+        // No keywords in member-access position, module-import position, or
+        // string contexts.
+        if Self::is_member_subscript_completion_context(&text[..offset], token_start) {
+            return;
+        }
+        if Self::is_module_import_completion_context(text, offset) {
+            return;
+        }
+        if text[..offset].lines().next_back().is_some_and(dancer2_line_starts_in_string) {
+            return;
+        }
+        let Some((context, package)) =
+            self.dancer2_package_at(uri, text, snapshot.content_hash(), ast, offset)
+        else {
+            return;
+        };
+        let declared = dancer2_declared_sub_names(ast);
+        let candidates = keyword_completion_candidates(
+            &context.activations,
+            &context.facts,
+            &package,
+            offset,
+            &|name| declared.contains(&(package.clone(), name.to_string())),
+        );
+        for candidate in candidates {
+            if !candidate.label.starts_with(prefix.as_str()) {
+                continue;
+            }
+            completions.push(crate::completion::CompletionItem {
+                label: Cow::Owned(candidate.label.clone()),
+                kind: crate::completion::CompletionItemKind::Keyword,
+                detail: Some(Cow::Owned(candidate.detail.clone())),
+                documentation: Some(Cow::Owned(format!(
+                    "Dancer2 DSL keyword ({}); canonical import fact",
+                    match candidate.scope {
+                        perl_semantic_facts::framework_adapters::dancer2::DslKeywordScope::Global =>
+                            "global",
+                        perl_semantic_facts::framework_adapters::dancer2::DslKeywordScope::RouteHandlerOnly =>
+                            "route handler only",
+                        _ => "unknown",
+                    }
+                ))),
+                insert_text: None,
+                insert_text_format: crate::completion::InsertTextFormat::PlainText,
+                // Keywords sort after every ordinary result: the framework
+                // slice must never outrank lexical/workspace candidates.
+                sort_text: Some(Cow::Owned(format!("zzz-dancer2-{}", candidate.label))),
+                filter_text: None,
+                additional_edits: Vec::new(),
+                text_edit_range: None,
+                commit_characters: None,
+                label_details: None,
+            });
+        }
+    }
+
     /// Adds workspace-index completions.
     ///
     /// Takes the request's shared `@INC` context rather than a loose
@@ -1011,6 +1149,22 @@ impl LspServer {
                             && symbol.uri.as_str() != doc_uri
                             && self.normalize_uri_key(&symbol.uri) != doc_uri_key;
                     if is_cross_file_variable && symbol.is_lexical {
+                        continue;
+                    }
+
+                    // Same-document lexicals are owned by cursor-visibility
+                    // admission (#8941): the core provider paths already emitted
+                    // every cursor-visible same-document variable matching this
+                    // prefix, so anything reaching this fallback was rejected
+                    // before candidate construction (sibling/child/ended scope,
+                    // future declaration). Re-admitting it here would encode an
+                    // invisible lexical as a low-priority workspace candidate,
+                    // which admission forbids at any rank.
+                    let is_same_document_lexical_variable =
+                        matches!(symbol.kind, crate::workspace_index::SymbolKind::Variable(_))
+                            && !is_cross_file_variable
+                            && symbol.is_lexical;
+                    if is_same_document_lexical_variable {
                         continue;
                     }
 
@@ -1908,6 +2062,22 @@ impl LspServer {
                         message: "Request cancelled during completion enrichment".to_string(),
                         data: None,
                     });
+                }
+
+                // Canonical Dancer2 keyword slice (#8928): imported
+                // default-DSL keywords under exact activation, ranked after
+                // ordinary results; zero framework output without activation.
+                if let Some(snapshot) = parsed.as_ref()
+                    && let Some(ast) = snapshot.ast()
+                {
+                    self.add_dancer2_keyword_completions(
+                        &mut completions,
+                        uri,
+                        &doc.text,
+                        offset,
+                        snapshot,
+                        ast,
+                    );
                 }
 
                 let (completions, is_incomplete) =
@@ -3925,7 +4095,7 @@ mod tests {
     #[test]
     fn test_module_completion_roots_match_effective_inc_context_for_workspace_doc()
     -> Result<(), Box<dyn std::error::Error>> {
-        use perl_module::resolution::IncRootKind;
+        use perl_module::IncRootKind;
         use tempfile::TempDir;
         use url::Url;
 
@@ -5186,6 +5356,56 @@ our $single_root_var;
             "a variable declared in the open document is already in scope bare"
         );
         assert!(text_edit_range.is_none(), "a bare insert_text must carry no replace range");
+    }
+
+    /// A same-document `my` lexical rejected by cursor-visibility admission
+    /// (#8941) must stay withdrawn in the runtime workspace fallback: the core
+    /// provider already emitted every visible same-document variable matching
+    /// this prefix, so anything reaching this pass was rejected before
+    /// candidate construction. Re-admitting it here would encode an invisible
+    /// lexical as a low-priority workspace candidate.
+    ///
+    /// The prefix is the bare sigil `$`, so the candidate set is exactly the
+    /// variables under assertion. The two vacuity guards pin the neighbors the
+    /// skip must NOT swallow — the same-document `our` stays bare and the
+    /// cross-file `our` stays qualified in the very same response — so the
+    /// withdrawal below is a decision, not an empty or over-broad gate.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn same_document_lexical_variable_is_withdrawn_from_runtime_fallback() {
+        let items = run_workspace_pass_over_secrets_module(
+            "file:///project/bin/app.pl",
+            "package App;\nmy $same_doc_lexical = 3;\nour $api_local = 1;\n$",
+            Some("package App;\nmy $same_doc_lexical = 3;\nour $api_local = 1;\n"),
+        );
+        let labels: Vec<&str> = items.iter().map(|(label, _, _)| label.as_str()).collect();
+
+        assert!(
+            !labels.contains(&"$same_doc_lexical"),
+            "a same-document `my` lexical withdrawn by cursor-visibility admission must not \
+             re-enter through the runtime fallback; got {items:?}"
+        );
+
+        let (_, our_insert, our_range) =
+            items.iter().find(|(label, _, _)| label == "$api_local").cloned().unwrap_or_else(
+                || panic!("vacuity guard: expected the same-document `$api_local`; got {items:?}"),
+            );
+        assert_eq!(
+            our_insert.as_deref(),
+            Some("$api_local"),
+            "a same-document `our` variable stays bare (current behavior)"
+        );
+        assert!(our_range.is_none(), "a bare insertion carries no replace range");
+
+        let (_, cross_file_insert, _) =
+            items.iter().find(|(label, _, _)| label == "$api_token").cloned().unwrap_or_else(
+                || panic!("vacuity guard: expected the cross-file `$api_token`; got {items:?}"),
+            );
+        assert_eq!(
+            cross_file_insert.as_deref(),
+            Some("$Secrets::api_token"),
+            "a cross-file `our` variable stays qualified in the same response"
+        );
     }
 
     /// Same-document identity is `perl_uri::uri_key`, not raw string equality.

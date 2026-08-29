@@ -1,3 +1,5 @@
+#![deny(clippy::map_err_ignore)]
+// Cohort C1 activation (#12598): all production rows exact-excepted; new findings move the crate back to non-C1.
 //! Framework semantic extraction tests for Dancer2/Mojolicious route definitions.
 //!
 //! These tests verify that route handler symbols are synthesized when a web
@@ -45,12 +47,69 @@ fn symbol_attrs(table: &SymbolTable, name: &str, kind: SymbolKind) -> Vec<String
         .unwrap_or_default()
 }
 
-// === Dancer2 route detection ===
+// === Dancer2 route detection (retired to canonical facts, #8928) ===
+//
+// The admitted Dancer2 route forms are owned by the canonical route facts
+// (#8918/#8921/#8924) minted under exact #8914 activation. The legacy
+// route-path `Subroutine` synthesis is retired for exactly those forms:
+// these tests assert the retirement boundary and the containment
+// properties. Parity evidence for the retirement lives in
+// `dancer2_provider_cutover_parity.rs`; the labeled canonical symbol shape
+// is served by the provider slice in `perl-lsp-rs-core`.
 
 #[test]
-fn dancer2_get_route_emits_subroutine_symbol() {
+fn dancer2_admitted_route_forms_retire_legacy_synthesis() {
+    // Every admitted verb form retires the legacy route-path symbol.
+    for code in [
+        "use Dancer2;
+get '/hello' => sub { 'Hello World' };",
+        "use Dancer2;
+post '/api/users' => sub { 1 };",
+        "use Dancer2;
+put '/api/users/:id' => sub { 'updated' };",
+        "use Dancer2;
+del '/api/users/:id' => sub { 'deleted' };",
+        "use Dancer2;
+patch '/api/users/:id' => sub { 'patched' };",
+        "use Dancer2;
+any '/multi' => sub { 'multi' };",
+    ] {
+        let table = extract_symbols(code);
+        assert!(
+            table.symbols.keys().all(|name| !name.starts_with('/')),
+            "admitted Dancer2 form must not synthesize a legacy route-path symbol: {code}"
+        );
+    }
+}
+
+#[test]
+fn dancer2_multiple_admitted_routes_all_retired() {
     let code = r#"
 use Dancer2;
+
+get '/foo' => sub { my $foo_local = 'foo'; };
+post '/bar' => sub { my $bar_local = 'bar'; };
+get '/baz' => sub { 'baz' };
+"#;
+    let table = extract_symbols(code);
+    assert!(
+        table.symbols.keys().all(|name| !name.starts_with('/')),
+        "every admitted route retires the legacy synthesis"
+    );
+    // Positive control: the table is not empty and handler-local lexical
+    // symbols stay indexed, so the negative assertion above cannot pass
+    // vacuously (an extractor that dropped everything would fail here).
+    assert!(table.symbols.contains_key("foo_local"), "handler-local symbols stay indexed");
+    assert!(table.symbols.contains_key("bar_local"), "handler-local symbols stay indexed");
+}
+
+#[test]
+fn dancer2_excluded_keyword_keeps_legacy_boundary() {
+    // `!get` at the activating import: the canonical path owns nothing
+    // (the keyword was never imported), so the legacy path keeps this
+    // unadmitted form — the recorded retirement boundary.
+    let code = r#"
+use Dancer2 '!get';
 
 get '/hello' => sub {
     return 'Hello World';
@@ -59,118 +118,27 @@ get '/hello' => sub {
     let table = extract_symbols(code);
     assert!(
         has_symbol(&table, "/hello", SymbolKind::Subroutine),
-        "expected route symbol `/hello` as Subroutine for `get '/hello' => sub`"
+        "excluded-keyword form stays on the legacy path (retirement boundary)"
     );
 }
 
 #[test]
-fn dancer2_post_route_emits_subroutine_symbol() {
+fn dancer2_custom_dsl_keeps_legacy_boundary() {
+    // A custom DSL owns its keyword vocabulary; the canonical path is a
+    // dynamic boundary and admits nothing, so the legacy path keeps the
+    // form — the recorded retirement boundary.
     let code = r#"
-use Dancer2;
+use Dancer2 dsl => 'My::DSL';
 
-post '/api/users' => sub {
-    my $body = request->body;
-    return $body;
+get '/hello' => sub {
+    return 'Hello World';
 };
 "#;
     let table = extract_symbols(code);
     assert!(
-        has_symbol(&table, "/api/users", SymbolKind::Subroutine),
-        "expected route symbol `/api/users` as Subroutine for `post '/api/users' => sub`"
+        has_symbol(&table, "/hello", SymbolKind::Subroutine),
+        "custom-DSL form stays on the legacy path (retirement boundary)"
     );
-}
-
-#[test]
-fn dancer2_put_route_emits_subroutine_symbol() {
-    let code = r#"
-use Dancer2;
-
-put '/api/users/:id' => sub {
-    return 'updated';
-};
-"#;
-    let table = extract_symbols(code);
-    assert!(
-        has_symbol(&table, "/api/users/:id", SymbolKind::Subroutine),
-        "expected route symbol `/api/users/:id` from `put` route"
-    );
-}
-
-#[test]
-fn dancer2_del_route_emits_subroutine_symbol() {
-    let code = r#"
-use Dancer2;
-
-del '/api/users/:id' => sub {
-    return 'deleted';
-};
-"#;
-    let table = extract_symbols(code);
-    assert!(
-        has_symbol(&table, "/api/users/:id", SymbolKind::Subroutine),
-        "expected route symbol `/api/users/:id` from `del` route"
-    );
-}
-
-#[test]
-fn dancer2_patch_route_emits_subroutine_symbol() {
-    let code = r#"
-use Dancer2;
-
-patch '/api/users/:id' => sub {
-    return 'patched';
-};
-"#;
-    let table = extract_symbols(code);
-    assert!(
-        has_symbol(&table, "/api/users/:id", SymbolKind::Subroutine),
-        "expected route symbol `/api/users/:id` from `patch` route"
-    );
-}
-
-#[test]
-fn dancer2_route_symbol_has_http_method_attribute() {
-    let code = r#"
-use Dancer2;
-
-get '/status' => sub { return 'ok' };
-"#;
-    let table = extract_symbols(code);
-    let attrs = symbol_attrs(&table, "/status", SymbolKind::Subroutine);
-    assert!(
-        attrs.iter().any(|a| a == "http_method=GET"),
-        "expected `http_method=GET` attribute on route symbol, got: {attrs:?}"
-    );
-}
-
-#[test]
-fn dancer2_route_symbol_has_documentation() {
-    let code = r#"
-use Dancer2;
-
-get '/status' => sub { return 'ok' };
-"#;
-    let table = extract_symbols(code);
-    let doc = symbol_doc(&table, "/status", SymbolKind::Subroutine);
-    assert!(
-        doc.is_some_and(|d| d.contains("GET") && d.contains("/status")),
-        "expected documentation mentioning GET and /status"
-    );
-}
-
-#[test]
-fn dancer2_multiple_routes_emit_distinct_symbols() {
-    let code = r#"
-use Dancer2;
-
-get '/foo' => sub { 'foo' };
-post '/bar' => sub { 'bar' };
-get '/baz' => sub { 'baz' };
-"#;
-    let table = extract_symbols(code);
-    assert!(has_symbol(&table, "/foo", SymbolKind::Subroutine), "expected /foo route symbol");
-    assert!(has_symbol(&table, "/bar", SymbolKind::Subroutine), "expected /bar route symbol");
-    assert!(has_symbol(&table, "/baz", SymbolKind::Subroutine), "expected /baz route symbol");
 }
 
 #[test]
@@ -241,20 +209,8 @@ post '/submit' => sub { my $c = shift };
 
 // === any route (Dancer2) ===
 
-#[test]
-fn dancer2_any_route_emits_subroutine_symbol() {
-    let code = r#"
-use Dancer2;
-
-any '/multi' => sub { return 'multi' };
-"#;
-    let table = extract_symbols(code);
-    assert!(
-        has_symbol(&table, "/multi", SymbolKind::Subroutine),
-        "expected route symbol `/multi` from `any` route"
-    );
-}
-
+// Dancer v1 keeps string-target references: upstream Dancer v1 allows an action to
+// be the name of a subroutine (#8910 containment keeps the families separate).
 #[test]
 fn dancer_route_target_string_adds_subroutine_reference() {
     let code = r#"
@@ -273,8 +229,10 @@ sub show_about {
     );
 }
 
+// Dancer2 route construction requires a CodeRef handler; a string target must not
+// become an exact subroutine reference or definition (#8910).
 #[test]
-fn dancer2_route_target_string_adds_subroutine_reference() {
+fn dancer2_route_target_string_does_not_add_subroutine_reference() {
     let code = r#"
 use Dancer2;
 
@@ -286,8 +244,66 @@ sub show_status {
 "#;
     let table = extract_symbols(code);
     assert!(
-        has_reference(&table, "show_status", SymbolKind::Subroutine),
-        "expected route target string `show_status` to be recorded as a Subroutine reference"
+        !has_reference(&table, "show_status", SymbolKind::Subroutine),
+        "Dancer2 string target `show_status` must NOT be recorded as a Subroutine reference"
+    );
+}
+
+// `Dancer2::Core` is not the DSL module and must not activate Dancer2 semantics (#8910).
+#[test]
+fn dancer2_core_use_does_not_activate_route_semantics() {
+    let code = r#"
+use Dancer2::Core;
+
+get '/x' => sub { 1 };
+"#;
+    let table = extract_symbols(code);
+    assert!(
+        !has_symbol(&table, "/x", SymbolKind::Subroutine),
+        "`use Dancer2::Core` must not activate Dancer2 route synthesis"
+    );
+}
+
+// A locally defined same-named sub keeps `get` ordinary Perl without activation.
+#[test]
+fn same_named_local_get_without_activation_is_ordinary_perl() {
+    let code = r#"
+sub get { return 'local' }
+
+get '/x' => sub { 1 };
+"#;
+    let table = extract_symbols(code);
+    assert!(
+        !has_symbol(&table, "/x", SymbolKind::Subroutine),
+        "same-named `get` without framework activation must stay ordinary Perl"
+    );
+    assert!(
+        has_symbol(&table, "get", SymbolKind::Subroutine),
+        "the local `sub get` itself should still be indexed"
+    );
+}
+
+// Activation is per-package: another package in the same file does not inherit it.
+// `App` is exactly activated, so its admitted route retires legacy synthesis;
+// `Other` has no activation and must not synthesize either.
+#[test]
+fn dancer2_activation_does_not_leak_across_packages() {
+    let code = r#"
+package App;
+use Dancer2;
+get '/activated' => sub { 1 };
+
+package Other;
+get '/not_activated' => sub { 1 };
+"#;
+    let table = extract_symbols(code);
+    assert!(
+        !has_symbol(&table, "/activated", SymbolKind::Subroutine),
+        "exact `use Dancer2` in `App` retires the legacy synthesis (canonical owns it)"
+    );
+    assert!(
+        !has_symbol(&table, "/not_activated", SymbolKind::Subroutine),
+        "package `Other` must not inherit Dancer2 activation"
     );
 }
 

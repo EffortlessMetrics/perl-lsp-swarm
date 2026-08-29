@@ -8,7 +8,7 @@ const REGRESS_DIR: &str =
 
 #[cfg(test)]
 mod tests {
-    use perl_parser::Parser;
+    use perl_parser::{Node, NodeKind, Parser};
     use proptest::prelude::*;
 
     // Import utilities from parent module
@@ -17,6 +17,50 @@ mod tests {
         quote_payload_no_interp_safe, quote_payload_safe, regex_pattern, s_modifiers, shape,
         tr_modifiers,
     };
+
+    fn qw_list_inner(token: &str) -> Option<&str> {
+        let rest = token.strip_prefix("qw")?;
+        let mut chars = rest.chars();
+        let open = chars.next()?;
+        let close = match open {
+            '(' => ')',
+            '[' => ']',
+            '{' => '}',
+            '<' => '>',
+            _ => open,
+        };
+        rest.strip_prefix(open)?.strip_suffix(close)
+    }
+
+    fn token_contains_name(token: &str, name: &str) -> bool {
+        if token == name {
+            return true;
+        }
+        if let Some(inner) = qw_list_inner(token) {
+            return inner.split_whitespace().any(|word| word == name);
+        }
+        token.split_whitespace().any(|word| word == name)
+    }
+
+    fn typed_use_args_contain(node: &Node, name: &str) -> bool {
+        let mut found = false;
+        inspect_use_args(node, name, &mut found);
+        found
+    }
+
+    fn inspect_use_args(node: &Node, name: &str, found: &mut bool) {
+        match &node.kind {
+            NodeKind::Use { args, .. } | NodeKind::No { args, .. }
+                if args.iter().any(|arg| token_contains_name(arg, name)) =>
+            {
+                *found = true;
+            }
+            NodeKind::Identifier { name: ident } if ident == name => *found = true,
+            NodeKind::String { value, .. } if token_contains_name(value, name) => *found = true,
+            _ => {}
+        }
+        node.for_each_child(|child| inspect_use_args(child, name, found));
+    }
 
     proptest! {
         #![proptest_config(ProptestConfig {
@@ -50,15 +94,12 @@ mod tests {
 
             prop_assert!(ast.is_ok(), "Failed to parse: {}", code);
 
-            // Extract constants from the AST
+            // Typed walk: bounded Debug is not a discovery oracle.
             if let Ok(ast_value) = ast {
-                let ast_str = format!("{:?}", ast_value);
-
-                // All names should be discoverable in the AST
                 for name in &names {
                     prop_assert!(
-                        ast_str.contains(name),
-                        "Constant '{}' not found in AST for: {}",
+                        typed_use_args_contain(&ast_value, name),
+                        "Constant '{}' not found in Use.args for: {}",
                         name, code
                     );
                 }

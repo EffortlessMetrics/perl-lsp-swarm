@@ -1,0 +1,11 @@
+{
+  "unknown_edge_kind.json": "unknown_edge_kind",
+  "unknown_selecting_authority.json": "unknown_selecting_authority",
+  "two_active_conditional_alternatives.json": "contradictory_conditional_selection",
+  "sidecar_in_core_spine.json": "sidecar_in_core_requirement_set",
+  "fan_in_from_github_state.json": "manufactured_child_success",
+  "external_stage_satisfied_internally.json": "internal_state_cannot_satisfy_external_stage",
+  "mutable_github_state.json": "mutable_state_embedded",
+  "optional_edge_in_required_set.json": "optional_edge_in_required_set",
+  "missing_reason_class.json": "missing_reason_class"
+}

@@ -74,6 +74,19 @@ Do **not** translate these into `killed` / `survived`. They mean something diffe
 
 ## Behavior
 
+- When a ripr evidence lane is killed by platform runner teardown instead of
+  failing on findings (#6807, #12563, #12771), the gate classifies the lane log
+  through `scripts/ci/classify-ripr-lane-termination` and emits a
+  machine-checkable `RIPR_GATE_VERDICT` into its run log. The boundary: a
+  genuine gap receipt ("quality gate failed") always classifies ripr-failure,
+  so real reds are never auto-retried; only positive teardown evidence (runner
+  shutdown signal, exit-143, or operation-canceled) yields
+  `classification=infra-no-proof`, handed to `ripr-infra-retry.yml` strictly as
+  data for exactly one automatic same-head retry while run attempt is 1. A
+  second eviction surfaces `RIPR_GATE_VERDICT=not-proven-infra-retry-exhausted`
+  loudly and falls back to the documented manual rerun. Silenced or unreadable
+  lane logs fail closed to ripr-failure. The gate never greens on absent
+  evidence.
 - Produces diff-scoped PR evidence under `target/ripr/pr/`.
 - Produces the repo-wide RIPR+ baseline receipt at
   `target/receipts/quality/ripr-plus.json`.
@@ -87,9 +100,46 @@ Do **not** translate these into `killed` / `survived`. They mean something diffe
   lives on the upstream receipts: `ripr_pr.receipt_head_sha` is the PR head,
   `head` is the evaluated merge-test SHA, and `review_guidance.changed_production_files`
   records the production scope used for the required-vs-advisory decision.
+- Attributes diff-scoped findings through the real workspace dependency graph
+  rather than the analyzer's caller expansion (#11690). Counted and named seams
+  must sit in a changed workspace package or one of its transitive dependents,
+  derived from `cargo metadata` resolve edges; archived sources under
+  `archive/**` and non-dependent crates drop out of the per-PR count. The
+  packet records this as `attribution.basis =
+  changed_plus_workspace_dependents` with `graph_source = cargo_metadata` plus
+  a per-run status. Fail-open rules keep the gate honest: shared workspace
+  inputs (root `Cargo.toml`, `Cargo.lock`, `.cargo/**`) and unreadable metadata
+  exclude nothing, and paths that cannot be tied to the repository stay
+  counted, so the gate never under-attributes a genuinely reachable gap.
 - Applies the documented suppression policy to diff-scoped PR evidence as well
   as repo-wide RIPR+ receipts. Suppressed paths remain visible in receipts, but
   they do not count as new blocking gaps.
+- Production-scopes the new-gap basis structurally, independent of the mutable
+  suppression policy (#11690): seams on archived sources (the repository's
+  `archive/**`, anchored at the workspace root so an ancestor checkout directory
+  named `archive` never classifies active sources) and on files under a Cargo
+  integration-test directory (a `tests/` path component, e.g.
+  `crates/*/tests/**`, the recurring `test_receipt_surface` class behind #6842)
+  are dropped from the blocking buckets before counting and reported as
+  `summary.non_production_excluded` in the PR evidence receipt and the quality
+  gate receipt. Classification is by compiled-into-production status, not
+  pathname shape (#12267): a `tests/`-located file that a workspace artifact
+  compiles — an explicit production target path, or a `#[path]`/`mod` include
+  from one (the `xtask::emacs_host_run` runner substrate and the
+  `validate-zed-*` validator substrates under `xtask/tests/support/`) — keeps
+  counting. The packet stamps the basis (`non_production.basis =
+  compiled_into_workspace_artifacts`, `source =
+  cargo_metadata_target_membership`); when cargo metadata cannot be read,
+  nothing is classified non-production (fail closed). Production seams keep
+  counting, and suppression policy keeps precedence when both mechanisms match
+  one finding: a suppressed finding does not count, and a non-production file
+  does not inflate the basis. The non-production filter also takes precedence
+  over dependency-graph attribution — an archived seam reports as
+  `non_production_excluded`, never silently as `out_of_dependency_graph` — and
+  the degraded fallback guidance receipt applies the same filter before
+  sorting and truncation, so excluded seams cannot crowd out a production seam
+  from the named-evidence list. Findings with no resolvable path are never
+  classified non-production (fail closed).
 - In CI, review guidance has an explicit timeout. When the guidance pass does
   not finish, the harness emits an `incomplete` receipt that names the
   gate-actionable seams (`reachable_unrevealed` / `no_static_path`) from the
@@ -104,6 +154,11 @@ Do **not** translate these into `killed` / `survived`. They mean something diffe
 - Uploads the `ripr-pr-evidence` artifact with required-artifact semantics.
 - Appends `target/ripr/pr/summary.md` and
   `target/receipts/quality/quality-gate-ripr.md` to the GitHub step summary.
+- Queues newer PR heads behind an active RIPR run. RIPR is evidence production,
+  so normal synchronization must not terminate the current analysis and turn
+  the resulting no-verdict into a false required-check failure. A lane that is
+  still externally or manually cancelled remains blocking because it produced
+  no proof.
 
 The evaluated `HEAD` in CI is a merge-test ref. It is not silently presented as
 the contributor's PR head: PR runs pass both identities to `xtask`, while

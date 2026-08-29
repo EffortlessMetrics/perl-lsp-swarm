@@ -14,6 +14,8 @@
 //! through the existing DAP path, and this backend surfaces them as
 //! [`BackendError::Unsupported`] rather than faking data.
 
+#[cfg(test)]
+use perl_tdd_support::{must, must_err};
 use serde_json::{Value, json};
 
 use super::capabilities::{CatalogDapFlags, DebugBackendCapabilities, intersect_dap_capabilities};
@@ -306,39 +308,37 @@ mod tests {
     #[test]
     fn set_breakpoints_validates_via_ast_without_a_process() {
         // setBreakpoints uses the AST validator + on-disk source, no live perl.
-        let mut file = tempfile::NamedTempFile::new().expect("temp file");
-        writeln!(file, "# a comment line").expect("write");
-        writeln!(file, "my $x = 1;").expect("write");
-        writeln!(file, "print $x;").expect("write");
+        let mut file = must(tempfile::NamedTempFile::new());
+        must(writeln!(file, "# a comment line"));
+        must(writeln!(file, "my $x = 1;"));
+        must(writeln!(file, "print $x;"));
         let path = file.path().to_path_buf();
 
         let mut backend = NativePerlDbBackend::new();
         let source = DebugSource::from_path(&path);
-        let out = backend
-            .set_breakpoints(SetBackendBreakpointsParams {
-                source: source.clone(),
-                breakpoints: vec![
-                    DebugBreakpoint {
-                        id: None,
-                        source: source.clone(),
-                        line: 2, // executable
-                        column: None,
-                        condition: None,
-                        hit_condition: None,
-                        log_message: None,
-                    },
-                    DebugBreakpoint {
-                        id: None,
-                        source,
-                        line: 3, // executable
-                        column: None,
-                        condition: None,
-                        hit_condition: None,
-                        log_message: None,
-                    },
-                ],
-            })
-            .expect("set breakpoints");
+        let out = must(backend.set_breakpoints(SetBackendBreakpointsParams {
+            source: source.clone(),
+            breakpoints: vec![
+                DebugBreakpoint {
+                    id: None,
+                    source: source.clone(),
+                    line: 2, // executable
+                    column: None,
+                    condition: None,
+                    hit_condition: None,
+                    log_message: None,
+                },
+                DebugBreakpoint {
+                    id: None,
+                    source,
+                    line: 3, // executable
+                    column: None,
+                    condition: None,
+                    hit_condition: None,
+                    log_message: None,
+                },
+            ],
+        }));
         assert_eq!(out.len(), 2, "same-order resolved set");
         assert!(out[0].actual_position.line >= 2);
     }
@@ -346,7 +346,7 @@ mod tests {
     #[test]
     fn deferred_data_methods_are_honest_unsupported() {
         let mut backend = NativePerlDbBackend::new();
-        let err = backend.scopes(FrameId(1)).expect_err("deferred");
+        let err = must_err(backend.scopes(FrameId(1)));
         assert!(matches!(err, BackendError::Unsupported(_)));
     }
 }

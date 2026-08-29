@@ -15,6 +15,17 @@ A candidate publishes ready only when all applicable local preparation is curren
 - relevant negative, stale, failure, and recovery protection exists;
 - test hardening, simplification, and mutable local candidate review are complete;
 - the worktree contains no accidental or unsalvaged changes;
+- the published file set matches the intended worktree change set: before publishing
+  (or immediately after creation), compare `gh pr diff --name-only <n>` (or the created
+  PR's file list) against the intended changed paths — a squash or partial stage must
+  not silently drop an intended file (#12279 merged only `lower.rs` while its
+  consumer-test alignment stayed uncommitted and reddened main until #12357);
+- `cargo fmt -p <pkg> -- --check` passes at the branch head, and its merge-base result
+  is classified: post-#12320 the branch-only check is sufficient for gating, but the
+  base check names inherited base-redness honestly at publish time instead of
+  discovering it as a red required check after publishing (#12273/#12275 inherited
+  drift until #12278) — the head check is binding and the base check diagnostic, so a
+  drift-repair candidate whose base is red by construction still publishes (#12278);
 - the controlling issue, claim boundary, and governing contract are current;
 - Changie/changelog, support, migration, and release dispositions are complete or explicitly not applicable;
 - the candidate is one coherent acceptance-and-rollback claim.
@@ -35,6 +46,12 @@ Record the exact draft reason and its completion condition in the PR body.
 For an existing draft, inspect that named condition. When it is complete, re-evaluate the full ready-publication threshold and explicitly mark the PR ready through the provider's native GitHub action (for example `gh pr ready <n>` or the equivalent connector operation). Do not leave a completed draft in a self-repeating `DRAFT` state. If the threshold is no longer met, return to candidate repair instead of marking ready.
 
 ## PR review index
+
+Proportionality mirrors `$review-pr`'s carve-out: a candidate whose cumulative diff is
+mechanical — generated regeneration, lint-site collapse, allowlist row removal,
+comment-only edits — may publish a reduced index of three sections: **Claim**,
+**Proof**, and **What this does not establish**. The full index remains the default
+for anything crossing a production seam.
 
 ```markdown
 ## Claim
@@ -73,8 +90,10 @@ still presents as one coherent candidate.
 
 Where a reviewer has already pushed, read what landed and verify it against observed
 behavior before adopting it — a reviewer's push carries no proof, so restate it — or
-replace it and say why in the thread. Treat the result as a new authored candidate and
-invalidate the affected review dimensions.
+replace it and say why in the thread. Adopt by fast-forwarding onto the foreign head
+plus re-proving the affected dimensions; do not force-push over a foreign commit —
+rebase the branch so the foreign head remains an ancestor. Treat the result as a new
+authored candidate and invalidate the affected review dimensions.
 
 Recreating a closed PR is separate. If the existing head and base branches still exist
 and GitHub permits reopening, reopen and preserve the review record. A fresh PR is needed

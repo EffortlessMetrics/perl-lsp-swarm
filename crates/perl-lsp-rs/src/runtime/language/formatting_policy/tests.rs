@@ -833,7 +833,7 @@ fn on_type_out_of_document_trigger_is_a_deterministic_no_change()
 }
 
 #[test]
-fn live_dispatch_routes_all_four_surfaces_through_one_receipt_policy()
+fn live_dispatch_keeps_document_live_and_refuses_withdrawn_surfaces()
 -> Result<(), Box<dyn std::error::Error>> {
     let server = LspServer::new();
     initialize(&server)?;
@@ -842,14 +842,9 @@ fn live_dispatch_routes_all_four_surfaces_through_one_receipt_policy()
     server.test_apply_did_open(document_uri, "my$x=1;\nmy$y=2;\n", 1)?;
     server.test_apply_did_open(on_type_uri, "if ($ok) {\n\n", 1)?;
 
-    let cases = [
-        (
-            "textDocument/formatting",
-            json!({
-                "textDocument": { "uri": document_uri, "version": 1 },
-                "options": { "tabSize": 4, "insertSpaces": true }
-            }),
-        ),
+    // Withdrawn surfaces (#11955): every default-profile request must receive
+    // the truthful method-not-advertised refusal before any admission work.
+    let withdrawn = [
         (
             "textDocument/rangeFormatting",
             json!({
@@ -889,65 +884,53 @@ fn live_dispatch_routes_all_four_surfaces_through_one_receipt_policy()
         ),
     ];
 
-    for (offset, (method, params)) in cases.into_iter().enumerate() {
+    for (offset, (method, params)) in withdrawn.into_iter().enumerate() {
         let response = server
             .handle_request(request(100 + offset as i64, method, params))
             .ok_or_else(|| format!("{method} returned no response"))?;
-        if let Some(error) = response.error {
-            return Err(format!("{method} failed: {error:?}").into());
-        }
-        assert!(response.result.is_some(), "{method} must return an edit array");
-        let trace = receipt(&server)?;
-        assert_eq!(trace["provider"], PROVIDER);
-        assert_eq!(trace["provider_action"], method);
-        assert!(
-            trace["source_generation"].is_u64(),
-            "{method} receipt must carry a numeric source_generation"
-        );
-        assert!(
-            trace["config_fingerprint"].is_string(),
-            "{method} receipt must carry a config_fingerprint string"
-        );
-        if method == "textDocument/rangesFormatting" {
-            let edits = response
-                .result
-                .as_ref()
-                .and_then(Value::as_array)
-                .ok_or("rangesFormatting must return an edit array")?;
-            assert_eq!(edits.len(), 2);
-            assert_eq!(
-                edits[0],
-                json!({
-                    "range": {
-                        "start": { "line": 0, "character": 0 },
-                        "end": { "line": 0, "character": 7 }
-                    },
-                    "newText": "my $x = 1;"
-                })
-            );
-            assert_eq!(
-                edits[1],
-                json!({
-                    "range": {
-                        "start": { "line": 1, "character": 0 },
-                        "end": { "line": 1, "character": 7 }
-                    },
-                    "newText": "my $y = 2;"
-                })
-            );
-            assert_eq!(trace["result_count"], 2);
-        }
+        let error = response.error.ok_or_else(|| format!("{method} must be refused"))?;
+        assert_eq!(error.code, crate::protocol::METHOD_NOT_FOUND, "{method} refusal code");
+        assert!(response.result.is_none(), "{method} refusal cannot carry edits");
     }
+
+    // The proven manual surface stays live through one receipt policy.
+    let response = server
+        .handle_request(request(
+            199,
+            "textDocument/formatting",
+            json!({
+                "textDocument": { "uri": document_uri, "version": 1 },
+                "options": { "tabSize": 4, "insertSpaces": true }
+            }),
+        ))
+        .ok_or("formatting returned no response")?;
+    if let Some(error) = response.error {
+        return Err(format!("textDocument/formatting failed: {error:?}").into());
+    }
+    assert!(response.result.is_some(), "textDocument/formatting must return an edit array");
+    let trace = receipt(&server)?;
+    assert_eq!(trace["provider"], PROVIDER);
+    assert_eq!(trace["provider_action"], "textDocument/formatting");
+    assert!(
+        trace["source_generation"].is_u64(),
+        "formatting receipt must carry a numeric source_generation"
+    );
+    assert!(
+        trace["config_fingerprint"].is_string(),
+        "formatting receipt must carry a config_fingerprint string"
+    );
 
     Ok(())
 }
 
 #[test]
-fn live_external_partial_range_returns_typed_refusal_not_native_edits()
+fn live_external_partial_range_cannot_execute_any_formatter_edits()
 -> Result<(), Box<dyn std::error::Error>> {
     let server = LspServer::new();
     initialize(&server)?;
     server.config.lock().formatting_engine = FormatterMode::ExternalLegacy;
+    let runtime = Arc::new(MockSubprocessRuntime::new());
+    server.test_install_formatter_runtime(runtime.clone());
     let uri = "file:///live-external-range.pl";
     server.test_apply_did_open(uri, "my$x=1;\nmy$y=2;\n", 1)?;
 
@@ -966,13 +949,16 @@ fn live_external_partial_range_returns_typed_refusal_not_native_edits()
         ))
         .ok_or("rangeFormatting returned no response")?;
 
-    assert!(response.error.is_none(), "range formatting should return a typed refusal");
-    assert_eq!(response.result, Some(json!([])));
-    let trace = receipt(&server)?;
-    assert_eq!(trace["decision"], "blocked");
-    assert_eq!(trace["reason"], "unsafe_range");
-    assert_eq!(trace["requested_mode"], "external-legacy");
-    assert_eq!(trace["actual_engine"], "unknown");
+    // Withdrawal containment (#11955): the route refuses before engine
+    // selection, so an external partial request can never silently execute
+    // the native formatter nor produce edits of any origin.
+    let error = response.error.ok_or("withdrawn rangeFormatting must refuse")?;
+    assert_eq!(error.code, crate::protocol::METHOD_NOT_FOUND);
+    assert_eq!(response.result, None);
+    assert!(
+        runtime.invocations().is_empty(),
+        "no formatter subprocess may run for a withdrawn route"
+    );
     Ok(())
 }
 
@@ -1255,9 +1241,143 @@ fn live_dispatch_receipt_carries_canonical_provider_identity()
     );
     // config_fingerprint must be a non-empty string.
     let fingerprint =
-        trace["config_fingerprint"].as_str().ok_or("config_fingerprint must be a string")?;
+        trace["config_fingerprint"].as_str().ok_or("config_fingerprint must not be empty")?;
     assert!(!fingerprint.is_empty(), "config_fingerprint must not be empty");
     // dynamic_boundary is a static invariant.
     assert_eq!(trace["dynamic_boundary"], json!(false));
+    Ok(())
+}
+
+/// Single-range and one-element multi-range requests must share one strict
+/// admission geometry: the same endpoint rows admit or refuse on both
+/// surfaces, and neither surface clamps invalid geometry into edits.
+#[test]
+fn single_range_and_one_element_multi_range_share_admission_geometry()
+-> Result<(), Box<dyn std::error::Error>> {
+    fn range(sl: u32, sc: u32, el: u32, ec: u32) -> Value {
+        json!({
+            "start": { "line": sl, "character": sc },
+            "end": { "line": el, "character": ec }
+        })
+    }
+
+    for (label, source, requested, admits) in [
+        ("trailing-empty-eof-line point", "my$x=1;\n", range(1, 0, 1, 0), true),
+        ("surrogate-split end character", "a🦀b\n", range(0, 0, 0, 2), false),
+        ("end line outside the document", "my$x=1;\n", range(0, 0, 9, 0), false),
+    ] {
+        let uri = format!("file:///shared-geometry-{label}.pl").replace(' ', "-");
+
+        let single = LspServer::new();
+        advertise(&single, Surface::Range);
+        single.test_apply_did_open(&uri, source, 1)?;
+        let single_result = single.handle_range_formatting_policy(
+            Some(json!({
+                "textDocument": { "uri": uri, "version": 1 },
+                "range": requested,
+                "options": { "tabSize": 4, "insertSpaces": true },
+            })),
+            None,
+        );
+
+        let multi = LspServer::new();
+        advertise(&multi, Surface::Ranges);
+        multi.test_apply_did_open(&uri, source, 1)?;
+        let multi_result = multi.handle_ranges_formatting_policy(
+            Some(json!({
+                "textDocument": { "uri": uri, "version": 1 },
+                "ranges": [requested],
+                "options": { "tabSize": 4, "insertSpaces": true },
+            })),
+            None,
+        );
+
+        // The expected outcome is an explicit row field so a future invalid
+        // row can never route into the admit arm through an incidental guard.
+        if admits {
+            let single_edits = single_result.map_err(|error| {
+                Box::<dyn std::error::Error>::from(format!("{label}: single refused: {error:?}"))
+            })?;
+            assert_eq!(single_edits, Some(json!([])), "{label}: single must admit");
+            let edits = multi_result.map_err(|error| {
+                Box::<dyn std::error::Error>::from(format!("{label}: multi refused: {error:?}"))
+            })?;
+            assert_eq!(edits, Some(json!([])), "{label}: one-element multi must admit");
+        } else {
+            // Invalid geometry refuses on both surfaces through one admission
+            // vocabulary: the shared strict plan mapping rejects before any
+            // engine runs, with identical typed evidence.
+            let single_error =
+                single_result.err().ok_or_else(|| format!("{label}: single must reject"))?;
+            assert_eq!(single_error.code, -32602, "{label}");
+            let single_data =
+                single_error.data.ok_or_else(|| format!("{label}: missing plan evidence"))?;
+            assert_eq!(single_data["reason"], "invalid_position", "{label}");
+            let single_trace = receipt(&single)?;
+            assert_eq!(single_trace["decision"], "blocked", "{label}");
+            assert_eq!(single_trace["reason"], "invalid_position", "{label}");
+            assert_eq!(single_trace["actual_engine"], "not_started", "{label}");
+            assert_eq!(single_trace["result_count"], 0, "{label}");
+
+            let error = multi_result.err().ok_or_else(|| format!("{label}: multi must reject"))?;
+            assert_eq!(error.code, -32602, "{label}");
+            let data = error.data.ok_or_else(|| format!("{label}: missing plan evidence"))?;
+            assert_eq!(data["reason"], "invalid_position", "{label}");
+            let multi_trace = receipt(&multi)?;
+            assert_eq!(multi_trace["decision"], "blocked", "{label}");
+            assert_eq!(multi_trace["result_count"], 0, "{label}");
+        }
+    }
+
+    Ok(())
+}
+
+/// A CRLF terminator-boundary endpoint (one past the line body in UTF-16
+/// units) refuses through the shared strict mapper before any engine runs.
+/// The pre-policy seam ran native formatting for such endpoints because its
+/// permissive validator counted the carriage return; the shared admission
+/// vocabulary owns that boundary now, identically to the multi-range surface.
+#[test]
+fn crlf_terminator_boundary_endpoint_refuses_before_the_engine_runs()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = LspServer::new();
+    advertise(&server, Surface::Range);
+    let runtime = Arc::new(MockSubprocessRuntime::new());
+    server.test_install_formatter_runtime(runtime.clone());
+    let uri = "file:///crlf-boundary-formatting.pl";
+    server.test_apply_did_open(uri, "aa\r\nbb\r\n", 1)?;
+
+    let error = server
+        .handle_range_formatting_policy(
+            Some(json!({
+                "textDocument": { "uri": uri, "version": 1 },
+                "range": {
+                    "start": { "line": 0, "character": 0 },
+                    "end": { "line": 0, "character": 3 }
+                },
+                "options": { "tabSize": 4, "insertSpaces": true },
+            })),
+            None,
+        )
+        .err()
+        .ok_or("a terminator-boundary endpoint must be refused")?;
+
+    assert_eq!(error.code, -32602);
+    let data = error.data.ok_or("missing refusal evidence")?;
+    assert_eq!(data["reason"], "invalid_position");
+    assert!(
+        data["formatting_receipt"]["decision"] == json!("blocked"),
+        "refusal must record a blocked receipt"
+    );
+    let trace = receipt(&server)?;
+    assert_eq!(trace["reason"], "invalid_position");
+    assert_eq!(
+        trace["actual_engine"], "not_started",
+        "refusal must happen before the formatter engine runs"
+    );
+    assert!(
+        runtime.invocations().is_empty(),
+        "refused range formatting must never reach an external engine"
+    );
     Ok(())
 }

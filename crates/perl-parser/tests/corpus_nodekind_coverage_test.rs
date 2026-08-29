@@ -9,7 +9,11 @@
 //! (files with diagnostics) and emit warnings — kinds observed only through
 //! recovery are a sign of fragile coverage that should be addressed.
 
+// Intentional stderr diagnostics: INFO/WARN/RATCHET coverage reports.
+#![allow(clippy::print_stderr)]
+
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
 
 use perl_parser::Parser;
 
@@ -29,12 +33,24 @@ const SINGLE_FILE_ALLOWLIST: &[(&str, &str)] = &[
     // Tuned after first run — add entries as needed.
 ];
 
+/// Decode corpus bytes with the product-side source contract (#1387): UTF-8
+/// first, falling back to per-byte Latin-1. Corpus fixtures such as
+/// `legacy_encoding.pl` are deliberately non-UTF-8 and must still contribute
+/// their NodeKinds to the coverage gates instead of being skipped.
+fn read_corpus_source(path: &Path) -> std::io::Result<String> {
+    let bytes = std::fs::read(path)?;
+    match String::from_utf8(bytes) {
+        Ok(text) => Ok(text),
+        Err(err) => Ok(err.into_bytes().into_iter().map(char::from).collect()),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Test 1 — Hard fail on missing kinds
 // ---------------------------------------------------------------------------
 
 #[test]
-fn test_corpus_nodekind_coverage() {
+fn test_corpus_nodekind_coverage() -> Result<(), Box<dyn std::error::Error>> {
     let files = perl_corpus::get_test_files();
     assert!(!files.is_empty(), "perl_corpus::get_test_files() returned no files");
 
@@ -45,13 +61,8 @@ fn test_corpus_nodekind_coverage() {
     let mut recovery_count: usize = 0;
 
     for path in &files {
-        let source = match std::fs::read_to_string(path) {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("WARN: could not read {}: {e}", path.display());
-                continue;
-            }
-        };
+        let source = read_corpus_source(path)
+            .map_err(|e| format!("could not read {}: {e}", path.display()))?;
 
         let mut parser = Parser::new(&source);
         let output = parser.parse_with_recovery();
@@ -100,6 +111,8 @@ fn test_corpus_nodekind_coverage() {
         "Corpus is missing NodeKind coverage for: {missing:?}\n\
          Add corpus fixtures (test_corpus/*.pl) that exercise these kinds."
     );
+
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -107,7 +120,7 @@ fn test_corpus_nodekind_coverage() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn test_corpus_nodekind_angles() {
+fn test_corpus_nodekind_angles() -> Result<(), Box<dyn std::error::Error>> {
     let files = perl_corpus::get_test_files();
     assert!(!files.is_empty(), "perl_corpus::get_test_files() returned no files");
 
@@ -119,13 +132,8 @@ fn test_corpus_nodekind_angles() {
     let mut clean_kind_to_files: BTreeMap<&'static str, BTreeSet<String>> = BTreeMap::new();
 
     for path in &files {
-        let source = match std::fs::read_to_string(path) {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("WARN: could not read {}: {e}", path.display());
-                continue;
-            }
-        };
+        let source = read_corpus_source(path)
+            .map_err(|e| format!("could not read {}: {e}", path.display()))?;
 
         let label = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
 
@@ -207,4 +215,6 @@ fn test_corpus_nodekind_angles() {
             .collect::<Vec<_>>()
             .join("\n")
     );
+
+    Ok(())
 }

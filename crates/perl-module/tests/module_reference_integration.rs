@@ -1,8 +1,9 @@
-use perl_module::import::{ModuleImportKind, parse_module_import_head};
-use perl_module::path::module_name_to_path;
-use perl_module::reference::{
+use perl_module::module_name_to_path;
+use perl_module::{ModuleImportKind, parse_module_import_head};
+use perl_module::{
     extract_module_reference, extract_module_reference_extended, find_module_reference,
-    find_module_reference_extended,
+    find_module_reference_extended, has_standalone_module_token_boundaries,
+    is_lookup_safe_module_name,
 };
 
 #[test]
@@ -32,6 +33,90 @@ fn extracted_module_name_converts_to_expected_module_path() {
         let canonical = reference.canonical_module_name();
         assert_eq!(canonical, "Demo::Worker");
         assert_eq!(module_name_to_path(&canonical), "Demo/Worker.pm");
+    }
+}
+
+#[test]
+fn unicode_module_reference_remains_byte_exact_and_lookup_safe() {
+    let module = "Δοκιμή::設定2";
+    let line = format!("use {module};");
+    let cursor = line.find("設定2").unwrap_or(0);
+
+    let reference = find_module_reference(&line, cursor);
+    assert!(reference.is_some());
+    if let Some(reference) = reference {
+        assert_eq!(reference.module_name, module);
+        assert_eq!(reference.module_start, 4);
+        assert_eq!(reference.module_end, 4 + module.len());
+        assert_eq!(reference.canonical_module_name(), module);
+        assert!(is_lookup_safe_module_name(reference.module_name));
+        assert_eq!(module_name_to_path(reference.module_name), "Δοκιμή/設定2.pm");
+    }
+}
+
+#[test]
+fn direct_reference_rejects_partial_token_before_combining_mark_suffix() {
+    let line = "use Foo::Bar\u{0301};";
+    let cursor = line.find("Bar").unwrap_or(0);
+
+    let reference = find_module_reference(line, cursor);
+    assert_eq!(reference.map(|value| value.module_name), Some("Foo::Bar\u{0301}"));
+
+    let partial_end = line.find('\u{0301}').unwrap_or(0);
+    assert!(!has_standalone_module_token_boundaries(line, 4, partial_end));
+}
+
+#[test]
+fn direct_require_preserves_combining_mark_suffix_reference() {
+    let line = "require Foo::Bar\u{0301};";
+    let cursor = line.find("Bar").unwrap_or(0);
+
+    let reference = find_module_reference(line, cursor);
+    assert_eq!(reference.map(|value| value.module_name), Some("Foo::Bar\u{0301}"));
+}
+
+#[test]
+fn direct_reference_keeps_standalone_token_control() {
+    let line = "use Foo::Bar;";
+    let cursor = line.find("Bar").unwrap_or(0);
+
+    let reference = find_module_reference(line, cursor);
+    assert_eq!(reference.map(|value| value.module_name), Some("Foo::Bar"));
+}
+
+#[test]
+fn direct_require_preserves_unicode_module_reference() {
+    let module = "Δοκιμή::設定2";
+    let line = format!("require {module};");
+    let cursor = line.find("設定2").unwrap_or(0);
+
+    let reference = find_module_reference(&line, cursor);
+    assert_eq!(reference.map(|value| value.kind), Some(perl_module::ModuleReferenceKind::Require));
+    assert_eq!(reference.map(|value| value.module_name), Some(module));
+}
+
+#[test]
+fn direct_reference_rejects_emoji_module_names_for_use_and_require() {
+    for keyword in ["use", "require"] {
+        let line = format!("{keyword} Foo::💥;");
+        let cursor = line.find('💥').unwrap_or(0);
+
+        assert_eq!(extract_module_reference(&line, cursor), None);
+    }
+}
+
+#[test]
+fn direct_reference_rejects_malformed_unicode_prefixes() {
+    for module in ["Foo·Bar", "Foo💥Bar", "Foo::Bar💥"] {
+        for keyword in ["use", "require"] {
+            let line = format!("{keyword} {module};");
+            let cursor = line.find("Foo").unwrap_or(0);
+            assert_eq!(
+                find_module_reference(&line, cursor),
+                None,
+                "malformed module {module:?} must not resolve as a valid prefix"
+            );
+        }
     }
 }
 

@@ -48,6 +48,7 @@ mod tests {
             current_package: Some("MyClass".to_string()),
             variables: vec!["$self".to_string()],
             imports: vec!["strict".to_string()],
+            ..PreparedInlineCompletionContext::default()
         };
         let (system, user) = build_fim_prompt(&ctx);
         assert!(system.contains("Perl"));

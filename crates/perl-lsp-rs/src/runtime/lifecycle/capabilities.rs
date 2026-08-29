@@ -34,7 +34,11 @@ impl TextDocumentSyncOptions {
             open_close: true,
             change,
             will_save: true,
-            will_save_wait_until: true,
+            // Formatter-owned willSaveWaitUntil is withdrawn (#11955): the
+            // save-owner decision is #8092's and a second unproven edit
+            // producer must not be advertised. Direct requests receive the
+            // truthful method-not-advertised refusal.
+            will_save_wait_until: false,
             save: SaveOptions { include_text: true },
         }
     }
@@ -931,7 +935,7 @@ pub(crate) fn apply_disabled_feature_id(
     }
 }
 
-fn disabled_feature_ids_from_init_options(init_opts: &Value) -> Vec<&str> {
+pub(crate) fn disabled_feature_ids_from_init_options(init_opts: &Value) -> Vec<&str> {
     let top_level = init_opts.get("disabledFeatures").and_then(Value::as_array);
     let namespaced_hyphen =
         init_opts.get("perl-lsp").and_then(|v| v.get("disabledFeatures")).and_then(Value::as_array);

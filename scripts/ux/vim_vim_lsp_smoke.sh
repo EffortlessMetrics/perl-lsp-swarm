@@ -8,17 +8,20 @@
 set -euo pipefail
 
 repo_root=$(cd "$(dirname "$0")/../.." && pwd)
+# #11369: the pinned vim-lsp subject lives in one governed manifest; this script
+# consumes it instead of keeping an independent conflicting copy.
+subject_manifest="${repo_root}/.ci/editor-clients/vim-vim-lsp-subject.v1.json"
 vim_bin=${VIM:-vim}
 : "${VIM_LSP_DIR:?VIM_LSP_DIR must point at a pinned vim-lsp checkout}"
 : "${PERLLSP:?PERLLSP must point at the exact perllsp candidate}"
-expected_vim_lsp_ref=e10d186452743beb7b43d2b3427020832f930c2b
 driver="${repo_root}/scripts/ux/vim_vim_lsp_driver.vim"
 activation_contract="${repo_root}/.ci/editor-clients/vim-vim-lsp-activation-root.v1.json"
+vim_adapter="${repo_root}/scripts/test/vim-clients/vim-lsp-adapter.vim"
 out=${RECEIPT_DIR:-"${repo_root}/target/receipts/vim-vim-lsp"}
 receipt=${RECEIPT:-"${out}/actual-client.json"}
 mkdir -p "${out}" "$(dirname "${receipt}")"
 
-for required in "${driver}" "${activation_contract}" "${VIM_LSP_DIR}/plugin/lsp.vim"; do
+for required in "${driver}" "${activation_contract}" "${vim_adapter}" "${subject_manifest}" "${VIM_LSP_DIR}/plugin/lsp.vim"; do
   [[ -f ${required} ]] || { echo "vim/vim-lsp smoke FAILED: missing ${required}" >&2; exit 1; }
 done
 if ! command -v "${vim_bin}" >/dev/null 2>&1; then
@@ -39,6 +42,20 @@ if [[ ! -x ${PERLLSP} ]]; then
 fi
 if [[ ! -d ${VIM_LSP_DIR}/.git ]]; then
   echo "vim/vim-lsp smoke FAILED: VIM_LSP_DIR must be a real git checkout" >&2
+  exit 1
+fi
+
+expected_vim_lsp_ref=$(SUBJECT_MANIFEST="${subject_manifest}" perl -MJSON::PP -0777 -e '
+  open my $fh, "<", $ENV{SUBJECT_MANIFEST} or die $!;
+  my $subject = decode_json(<$fh>);
+  die "subject manifest schema drift\n" unless $subject->{schema_version} eq "vim_lsp_subject.v1";
+  my $commit = $subject->{upstream}{selected_commit};
+  die "pinned vim-lsp commit missing from the subject manifest\n"
+    unless defined $commit && $commit =~ /^[0-9a-f]{40}$/;
+  print $commit;
+')
+if [[ -z ${expected_vim_lsp_ref} ]]; then
+  echo "vim/vim-lsp smoke FAILED: could not resolve the pinned vim-lsp commit from ${subject_manifest}" >&2
   exit 1
 fi
 
@@ -81,6 +98,20 @@ perllsp_bin=$(absolute_path "${PERLLSP}")
 perllsp_sha=$(hash_file "${perllsp_bin}")
 driver_sha=$(hash_file "${driver}")
 activation_contract_sha=$(hash_file "${activation_contract}")
+
+root_markers=$(CONTRACT_PATH="${activation_contract}" perl -MJSON::PP -0777 -e '
+  open my $fh, "<", $ENV{CONTRACT_PATH} or die $!;
+  local $/;
+  my $contract = decode_json(<$fh>);
+  my $markers = $contract->{root}{markers};
+  die "activation-root contract has no marker list\n"
+    unless ref($markers) eq "ARRAY" && @$markers;
+  print join(",", @$markers);
+')
+if [[ -z ${root_markers} ]]; then
+  echo "vim/vim-lsp smoke FAILED: activation-root contract yielded no markers" >&2
+  exit 2
+fi
 
 identity_path="${out}/perllsp.identity.json"
 features_path="${out}/perllsp.features.json"
@@ -270,6 +301,13 @@ export PERLLSP_VIM_ACTIVATION_RECEIPT="${activation_receipt}"
 export PERLLSP_VIM_SERVER_CAPABILITIES="${baseline_caps}"
 export PERLLSP_VIM_SERVER_TRACE="${baseline_trace_prefix}"
 export PERLLSP_VIM_MODE=baseline
+export PERLLSP_VIM_ADAPTER="${vim_adapter}"
+export PERLLSP_VIM_HOST_CANDIDATE="${perllsp_bin}"
+export PERLLSP_VIM_HOST_VIM_LSP_DIR="${VIM_LSP_DIR}"
+export PERLLSP_VIM_HOST_SERVER_NAME="perllsp-under-test"
+export PERLLSP_VIM_HOST_ROOT_MARKERS="${root_markers}"
+export PERLLSP_VIM_HOST_CLIENT_LOG="${baseline_log}"
+export PERLLSP_VIM_HOST_SERVER_TRACE="${baseline_trace_prefix}"
 
 baseline_rc=0
 # The receipt directory persists between runs, so a receipt left by an earlier

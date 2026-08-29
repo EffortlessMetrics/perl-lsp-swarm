@@ -12,18 +12,16 @@
 // resolve_known_export_tag
 // ============================================================================
 
-use perl_module::import::{
-    DispatchSemantics, ImportBehavior, LoadTiming, resolve_known_export_tag,
-};
-use perl_module::import_match::line_references_module_import;
-use perl_module::reference::{
+use perl_module::line_references_module_import;
+use perl_module::{DispatchSemantics, ImportBehavior, LoadTiming, resolve_known_export_tag};
+use perl_module::{
     ModuleReferenceKind, extract_module_reference, extract_module_reference_extended,
     find_module_reference, find_module_reference_extended,
 };
-use perl_module::token::{contains_module_token, replace_module_token};
 use perl_module::{
     ModuleTokenRange, contains_standalone_module_token, find_standalone_module_token_ranges,
 };
+use perl_module::{contains_module_token, replace_module_token};
 
 // --- resolve_known_export_tag: known module/tag pairs ----------------------
 

@@ -34,7 +34,7 @@ Each row is one PR. Branch names follow `chore/clippy-activate-<lint_name>`.
 | #8601 | `clippy::manual_take` | 1.95 stable | warn | 0 |
 | #8602 | `clippy::manual_pop_if` | 1.95 stable | warn | 0 |
 | #8603 | `clippy::same_length_and_capacity` | 1.94 stable | deny | 0 |
-| #8604 | `clippy::manual_ilog2` | 1.94 stable | warn | 0 |
+| #8604 / #9896 | `clippy::manual_ilog2` | 1.94 stable | deny | 0 |
 | #8605 | `clippy::decimal_bitwise_operands` | 1.94 stable | warn | 0 |
 | #8606 | `clippy::needless_type_cast` | 1.94 stable | warn | 0 |
 
@@ -84,7 +84,7 @@ seams worth banning direct field access on. Candidate seams:
 | Issue | Lint | Sites | Notes |
 | ----- | ---- | ----- | ----- |
 | #4914 | `clippy::wildcard_imports` | ~60 lib, ~150 all-targets | Pre-existing issue. Crate-by-crate burn-down then workspace deny on libs (tests retain `use super::*;` carveout). |
-| #4923 | `clippy::ptr_arg` | low (mostly already clean) | Pre-existing issue. Promote to workspace warn -> deny on facade crates. |
+| #2313 | `clippy::ptr_arg` | 0 (force-warn measured) | Activated workspace-wide deny by #2313 after a zero-site pierced all-targets measurement; dead historical allows removed. The stale #4923 citation pointed at an unrelated closed badges issue. |
 | #8611 | `clippy::str_to_string` | **~3030 lib**, even more test | Planning row. Sub-rail required — per-crate cleanup PRs (highest density first: `perl-semantic-analyzer` 224, `perl-parser-core` 213, `perl-parser` 173, `perl-refactoring` 121, `perl-workspace` 78) then workspace flip. |
 
 ### Removed in Rust 1.95

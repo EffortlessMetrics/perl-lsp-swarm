@@ -32,7 +32,11 @@ jobs:
   current-source-linux-smoke:
     name: Current-source Linux smoke (${{ matrix.vscode_version }})
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    # 30 minutes: the packaged journeys now include the crash-recovery legs
+    # (#7848), whose watchdog row legitimately waits one real watchdog
+    # interval (~30s probe + 10s timeout) and whose breaker leg observes a
+    # bounded no-respawn window after budget exhaustion.
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:

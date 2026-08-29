@@ -1,6 +1,6 @@
-use perl_module::path::module_name_to_path;
-use perl_module::resolution::uri::{ModuleUriResolution, resolve_module_uri};
+use perl_module::module_name_to_path;
 use perl_module::{IncRoot, IncRootKind, collect_module_uri_candidates_with_effective_inc};
+use perl_module::{ModuleUriResolution, resolve_module_uri};
 use std::path::PathBuf;
 use std::time::Duration;
 

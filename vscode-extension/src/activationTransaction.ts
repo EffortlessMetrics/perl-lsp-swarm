@@ -10,6 +10,24 @@ export type ActivationPhase =
   | 'support'
   | 'background';
 
+/**
+ * Runtime authority for {@link ActivationPhase}: the literal union and this
+ * list must stay in lockstep so test-only phase targeting (#7855, #7856) can
+ * validate a phase name before arming an injection.
+ */
+export const ACTIVATION_PHASES: readonly ActivationPhase[] = [
+  'base',
+  'commands',
+  'workspace_listeners',
+  'language_client',
+  'document_providers',
+  'testing',
+  'debugger',
+  'optional_ui',
+  'support',
+  'background',
+];
+
 export type ActivationResourceClass =
   | 'mandatory_for_activation'
   | 'optional_degradable'

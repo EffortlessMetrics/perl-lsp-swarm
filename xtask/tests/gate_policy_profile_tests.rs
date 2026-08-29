@@ -26,6 +26,8 @@ struct PolicyGate {
     #[serde(default)]
     quarantine: bool,
     timeout_seconds: Option<u64>,
+    #[serde(default)]
+    retry_count: Option<u32>,
     budgets: Option<GateBudgets>,
     planning: Option<GatePlanning>,
 }
@@ -592,9 +594,11 @@ fn lsp_unit_lanes_share_ceiling_and_budget() -> Result<(), Box<dyn std::error::E
     );
 
     // Keep the budget:ceiling ratio in line with the sibling test lanes.
-    // unit_analysis_full, unit_dap_support_full, and lsp_smoke all sit at
-    // exactly 0.80 (240000/300s), as do both LSP lanes (336000/420s). The
-    // enforced band below is deliberately wider than that single observed
+    // unit_analysis_full and unit_dap_support_full sit at 0.80, as do both
+    // LSP lanes (336000/420s). lsp_smoke keeps its 0.80 declared budget
+    // (576000/720s); the shared Linux watchdog's 75s Rust backstop grace is
+    // cleanup allowance, not a reason to shorten the execution window.
+    // The enforced band below is deliberately wider than that single observed
     // value so a considered retune does not trip the guard, but narrow enough
     // to catch a budget set without reference to its ceiling. One band, stated
     // once: the assertion, this comment, and the failure message must agree.
@@ -608,6 +612,65 @@ fn lsp_unit_lanes_share_ceiling_and_budget() -> Result<(), Box<dyn std::error::E
          {MIN_BUDGET_RATIO:.2}-{MAX_BUDGET_RATIO:.2} band; the sibling test lanes \
          all sit at 0.80"
     );
+
+    Ok(())
+}
+
+/// #8063: `lsp_smoke` must stay one atomic-child harness invocation — never a
+/// `&&` composite — with an outer runaway guard that accounts for the shared
+/// watchdog's cleanup grace rather than pretending to cover the sum of all
+/// child budgets, and with no gate-level `retry_count` (retry policy is
+/// executable only inside the typed child harness, where setup/compile
+/// watchdog timeouts retry once and behavior children never retry). The child
+/// set itself is pinned by the xtask bin tests
+/// (`lsp_smoke_atomic::tests::child_set_is_pinned_and_ordered`).
+#[test]
+fn lsp_smoke_is_atomic_bounded_and_independently_terminal() -> Result<(), Box<dyn std::error::Error>>
+{
+    let root = project_root();
+    let policy_path = root.join(".ci/gate-policy.yaml");
+    let content = fs::read_to_string(policy_path)?;
+    let parsed: GatePolicyDoc = serde_yaml_ng::from_str(&content)?;
+
+    let gate = parsed
+        .gates
+        .into_iter()
+        .find(|gate| gate.name == "lsp_smoke")
+        .ok_or("missing lsp_smoke gate")?;
+
+    assert_eq!(gate.tier, "merge_gate");
+    assert!(gate.required, "lsp_smoke must stay PR-blocking");
+    let command = gate.command.trim().to_string();
+    assert_eq!(
+        command,
+        "cargo run --locked -p xtask -- lsp-smoke-atomic \
+         --receipt target/receipts/artifacts/lsp_smoke_children.json",
+        "lsp_smoke must invoke the atomic child harness, not a composite"
+    );
+    assert!(!command.contains("&&"), "the #8063 decomposition forbids composites");
+
+    assert!(
+        gate.retry_count.is_none(),
+        "gate-level retry_count must stay absent: a whole-suite rerun on outer \
+         timeout is exactly the twice-retried-600s fleet symptom #8063 fixes"
+    );
+
+    // Outer runaway guard: 720s is the declared execution window. The Linux
+    // helper's 75s Rust backstop grace is cleanup allowance after that window,
+    // not a reason to shorten it. This is deliberately NOT the worst-case sum
+    // of child budgets (3 x 2 x 300s retrying compiles + 6 x 120s behavior =
+    // 2520s): the guard bounds the suite and leaves CANCELLED marks in the
+    // child receipt, it does not promise unreachable headroom.
+    assert_eq!(
+        gate.timeout_seconds,
+        Some(720),
+        "declared outer guard must preserve the full hosted lsp execution window"
+    );
+    let budget = gate
+        .budgets
+        .and_then(|budgets| budgets.max_duration_ms)
+        .ok_or("lsp_smoke must declare a duration budget")?;
+    assert_eq!(budget, 576_000, "budget must stay at the 0.80 ratio (576000/720s)");
 
     Ok(())
 }

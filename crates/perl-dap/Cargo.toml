@@ -34,6 +34,7 @@ path = "src/lib.rs"
 # JSON serialization
 serde = { workspace = true }
 serde_json.workspace = true
+perl-source-identity = { workspace = true }
 
 # Error handling
 anyhow.workspace = true
@@ -78,6 +79,9 @@ criterion.workspace = true
 # Test fixtures
 tempfile.workspace = true
 
+# Exact subject-identity digests for the #9590 public stdio proof receipt
+sha2.workspace = true
+
 perl-tdd-support = { workspace = true }
 
 # Serial test execution for env-mutating tests (prevents races on PLENV_*, PERLBREW_*, PATH)
@@ -93,7 +97,10 @@ toml = "1.1.2"
 nix = { version = "0.31.3", features = ["signal"] }  # For SIGINT handling (AC9)
 
 [target.'cfg(windows)'.dependencies]
-winapi = { version = "0.3.9", features = ["processthreadsapi", "winnt", "handleapi"] }  # For read-only process existence checks (AC9, #3028)
+winapi = { version = "0.3.9", features = ["processthreadsapi", "winnt", "handleapi", "namedpipeapi", "jobapi2", "tlhelp32"] }  # For bounded test-process-tree cleanup and pipe polling
+
+[target.'cfg(unix)'.dev-dependencies]
+libc = "0.2"
 
 [features]
 # The shipped package contains the native adapter only. External implementations
@@ -369,6 +376,16 @@ path = "tests/wave_h_workspace_verification.rs"
 name = "wave_h_platform_edge_cases"
 path = "tests/wave_h_platform_edge_cases.rs"
 # Green TDD: edge cases and boundary conditions for platform module
+
+[[test]]
+name = "error_class_fixed_origin"
+path = "tests/error_class_fixed_origin.rs"
+# #8739: exhaustive ErrorClass matrix for fixed-origin DAP operational errors
+
+[[test]]
+name = "debugger_output_origin"
+path = "tests/debugger_output_origin.rs"
+# #8746: originated stack/variable parse classification by caller-supplied origin
 
 [[test]]
 name = "wave_h_security_edge_cases"
