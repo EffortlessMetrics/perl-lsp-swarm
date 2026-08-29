@@ -52,8 +52,8 @@ the absence of unintended direct access, and the full Clippy gate.
 
 See also:
 
-- [`docs/development/RUST_1_95_ROLLOUT.md`](development/RUST_1_95_ROLLOUT.md) for DF-1
-  through DF-4 sequencing and acceptance contracts.
+- DF-1 through DF-4 sequencing remains issue-owned by
+  [#9850](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/9850).
 - [`docs/CLIPPY_POLICY.md`](CLIPPY_POLICY.md) for the active policy and suppression
   rules.
 - [`policy/clippy-lints.toml`](../policy/clippy-lints.toml) for the planned lint row.

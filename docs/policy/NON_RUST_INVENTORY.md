@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12350 |
-| Rust-family files | 3789 |
-| Non-Rust files | 8561 |
-| Allowlisted | 6326 |
+| Total tracked files | 12406 |
+| Rust-family files | 3814 |
+| Non-Rust files | 8592 |
+| Allowlisted | 6357 |
 | Unclassified | 2235 |
 
 ## Non-Rust files by category
@@ -17,11 +17,11 @@
 | Category | Count |
 |---|---|
 | config | 490 |
-| documentation | 2796 |
+| documentation | 2804 |
 | generated | 2 |
-| production | 346 |
-| test | 2033 |
-| tooling | 659 |
+| production | 348 |
+| test | 2052 |
+| tooling | 661 |
 | unclassified | 2235 |
 
 ## Unclassified files
@@ -2337,9 +2337,14 @@
 | `.changes/unreleased/product-12725-Changed-092400.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12765-Changed-154500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12806-Added-213000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-13123-Fixed-021700.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-13125-Fixed-021800.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-13157-Fixed-023317.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-13159-Fixed-023400.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-13169-Fixed-024536.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-13191-Fixed-062500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-13283-Fixed-122901.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-13796-Fixed-174500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3445-Added-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3765-Changed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3885-Added-120000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -3370,6 +3375,9 @@
 | `.spec/8048-true-eof-final-newline-equivalence/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/8048-true-eof-final-newline-equivalence/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/8048-true-eof-final-newline-equivalence/context.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/8099-parser-metamorphic-oracles/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/8099-parser-metamorphic-oracles/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/8099-parser-metamorphic-oracles/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/8305-organize-imports-containment/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/8305-organize-imports-containment/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/8305-organize-imports-containment/context.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -6199,6 +6207,25 @@
 | `fixtures/experience/standalone_candidate_selection/20_previous_current_alias.json` | test | `non-rust-standalone-candidate-selection-fixtures` | release/ci |
 | `fixtures/experience/standalone_candidate_selection/21_private_path_leakage.json` | test | `non-rust-standalone-candidate-selection-fixtures` | release/ci |
 | `fixtures/experience/standalone_candidate_selection/22_current_names_missing_candidate.json` | test | `non-rust-standalone-candidate-selection-fixtures` | release/ci |
+| `fixtures/product_health_status/expected/status.json` | test | `non-rust-product-health-status-fixtures` | tooling/product-health |
+| `fixtures/product_health_status/registry.json` | test | `non-rust-product-health-status-fixtures` | tooling/product-health |
+| `fixtures/product_health_status/sources/chk-a.json` | test | `non-rust-product-health-status-fixtures` | tooling/product-health |
+| `fixtures/product_health_status/sources/chk-b.json` | test | `non-rust-product-health-status-fixtures` | tooling/product-health |
+| `fixtures/product_health_status/sources/client-wrong.json` | test | `non-rust-product-health-status-fixtures` | tooling/product-health |
+| `fixtures/product_health_status/sources/compiler-now.json` | test | `non-rust-product-health-status-fixtures` | tooling/product-health |
+| `fixtures/product_health_status/sources/compiler-old.json` | test | `non-rust-product-health-status-fixtures` | tooling/product-health |
+| `fixtures/product_health_status/sources/dap.json` | test | `non-rust-product-health-status-fixtures` | tooling/product-health |
+| `fixtures/product_health_status/sources/diag-a.json` | test | `non-rust-product-health-status-fixtures` | tooling/product-health |
+| `fixtures/product_health_status/sources/diag-b.json` | test | `non-rust-product-health-status-fixtures` | tooling/product-health |
+| `fixtures/product_health_status/sources/na.json` | test | `non-rust-product-health-status-fixtures` | tooling/product-health |
+| `fixtures/product_health_status/sources/parser-current.json` | test | `non-rust-product-health-status-fixtures` | tooling/product-health |
+| `fixtures/product_health_status/sources/parser-limited.json` | test | `non-rust-product-health-status-fixtures` | tooling/product-health |
+| `fixtures/product_health_status/sources/pkg-new.json` | test | `non-rust-product-health-status-fixtures` | tooling/product-health |
+| `fixtures/product_health_status/sources/pkg-old.json` | test | `non-rust-product-health-status-fixtures` | tooling/product-health |
+| `fixtures/product_health_status/sources/sec-a.json` | test | `non-rust-product-health-status-fixtures` | tooling/product-health |
+| `fixtures/product_health_status/sources/sec-b.json` | test | `non-rust-product-health-status-fixtures` | tooling/product-health |
+| `fixtures/product_health_status/sources/sec-ind.json` | test | `non-rust-product-health-status-fixtures` | tooling/product-health |
+| `fixtures/product_health_status/sources/unproven.json` | test | `non-rust-product-health-status-fixtures` | tooling/product-health |
 | `fixtures/train_edge_contract/external_stages.v1.json` | test | `non-rust-train-edge-contract-fixtures` | tooling/train-graph |
 | `fixtures/train_edge_contract/invalid/expected_errors.json` | test | `non-rust-train-edge-contract-fixtures` | tooling/train-graph |
 | `fixtures/train_edge_contract/invalid/external_stage_satisfied_internally.json` | test | `non-rust-train-edge-contract-fixtures` | tooling/train-graph |
@@ -6396,6 +6423,7 @@
 | `scripts/apply-zed-core-perl-defaults.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/apply-zed-perl-upstream.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/assert_rss_plateau.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/branch-deletion-admission` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/build-timing-receipt.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/bulk-label-issues.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/cargo-package-workspace-dry-run.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -6743,6 +6771,7 @@
 | `scripts/tests/fixtures/pr_overlap/true_duplicate.json` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/lib/standalone_archive_fixtures.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-agent-flow-control-plane-trigger.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/tests/test-branch-deletion-admission-routing.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-build-timing-receipt-wrapper.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-cargo-safe-toolchain-guard.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-cargo-toolchain-guard.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -8354,6 +8383,7 @@
 | `vscode-extension/src/gherkinStepDefinitions.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/healthWidget.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/healthWidgetDataSource.ts` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/src/inlineCompletionRouting.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/languageClientConfiguration.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/languageClientDocumentSync.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/languageClientLifecycle.ts` | production | `non-rust-vscode-extension` | editor/vscode |
@@ -8441,6 +8471,7 @@
 | `vscode-extension/src/test/healthWidgetDataSource.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/healthWidgetExperience.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/healthWidgetWiring.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/src/test/inlineCompletionRouting.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/integration/firstHourReceipt.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/integration/managedBinarySmoke.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/integration/runTest.ts` | production | `non-rust-vscode-extension` | editor/vscode |
