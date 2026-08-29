@@ -26,9 +26,7 @@ fn first_binary(node: &Node) -> Option<&Node> {
 
 fn binary_parts(node: &Node) -> Option<(&str, &Node, &Node)> {
     match &node.kind {
-        NodeKind::Binary { op, left, right } => {
-            Some((op.as_str(), left.as_ref(), right.as_ref()))
-        }
+        NodeKind::Binary { op, left, right } => Some((op.as_str(), left.as_ref(), right.as_ref())),
         _ => None,
     }
 }
@@ -54,12 +52,7 @@ fn ternary_condition(node: &Node) -> Option<&Node> {
     }
 }
 
-fn assert_nested_binary(
-    source: &str,
-    outer_op: &str,
-    nested_side: NestedSide,
-    nested_op: &str,
-) {
+fn assert_nested_binary(source: &str, outer_op: &str, nested_side: NestedSide, nested_op: &str) {
     assert_clean_parse(source);
     let ast = parse(source);
     let outer = must_some(first_binary(&ast));
@@ -114,12 +107,7 @@ fn symbolic_logical_and_bitwise_ops_bind_inside_right_range_operand() {
 
 #[test]
 fn declaration_tail_uses_the_same_range_precedence() {
-    assert_nested_binary(
-        "(my $x || $fallback .. $end);",
-        "..",
-        NestedSide::Left,
-        "||",
-    );
+    assert_nested_binary("(my $x || $fallback .. $end);", "..", NestedSide::Left, "||");
 }
 
 #[test]
