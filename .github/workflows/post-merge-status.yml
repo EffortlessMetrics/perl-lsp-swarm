@@ -74,7 +74,7 @@ jobs:
           shared-key: post-merge-status-${{ hashFiles('Cargo.lock') }}
 
       - name: Regenerate status subsystem files and roadmap
-        run: cargo run -p xtask -- update-status --write
+        run: cargo run --locked -p xtask -- update-status --write
 
       # Merge-time non-Rust inventory refresh (#11731): any merge that changes
       # tracked file counts drifts docs/policy/NON_RUST_INVENTORY.md, and the
@@ -82,7 +82,7 @@ jobs:
       # unit_routed_full. Regenerating here lands the drift with the same
       # reviewable PR as the status documents instead of on an unlucky branch.
       - name: Regenerate the non-Rust inventory
-        run: cargo run -p xtask -- non-rust inventory --write
+        run: cargo run --locked -p xtask -- non-rust inventory --write
 
       - name: Validate and stage exact generated payload
         id: payload
