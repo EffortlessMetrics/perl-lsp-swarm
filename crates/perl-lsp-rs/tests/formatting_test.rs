@@ -240,6 +240,63 @@ fn test_public_range_formatting_replay_preserves_non_bmp_prefix_and_crlf() {
     assert_eq!(replayed, "my $emoji = \"😀\";\r\nwhile ($n) {\r\n    next;\r\n} # 😀\r\n");
 }
 
+#[test]
+fn test_public_range_formatting_replay_preserves_true_eof_crlf_with_trim_options() {
+    let formatter = CodeFormatter::new();
+    let options = FormattingOptions {
+        tab_size: 4,
+        insert_spaces: true,
+        trim_trailing_whitespace: Some(true),
+        insert_final_newline: Some(true),
+        trim_final_newlines: Some(true),
+    };
+    let source = "my $before=1;\nmy$x=1;  \r\n";
+    let range = WireRange { start: WirePosition::new(1, 0), end: WirePosition::new(2, 0) };
+
+    let edits = must(formatter.format_range(source, &range, &options));
+    assert_eq!(edits.len(), 1);
+    let edit = &edits[0];
+    let start = utf16_offset(source, edit.range.start.line, edit.range.start.character);
+    let end = utf16_offset(source, edit.range.end.line, edit.range.end.character);
+    let mut replayed = source.to_string();
+    replayed.replace_range(start..end, &edit.new_text);
+
+    assert_eq!(edit.new_text, "my $x = 1;\r\n");
+    assert_eq!(replayed, "my $before=1;\nmy $x = 1;\r\n");
+    assert!(edit.new_text.ends_with("\r\n"));
+    assert!(!edit.new_text.ends_with("\n\n"));
+}
+
+#[test]
+fn test_public_range_formatting_replay_infers_crlf_for_unterminated_final_line() {
+    let formatter = CodeFormatter::new();
+    let options = FormattingOptions {
+        tab_size: 4,
+        insert_spaces: true,
+        trim_trailing_whitespace: None,
+        insert_final_newline: None,
+        trim_final_newlines: None,
+    };
+    let source = "my $before=1;\r\nwhile($n){next;}";
+    let selected_line = "while($n){next;}";
+    let range = WireRange {
+        start: WirePosition::new(1, 0),
+        end: WirePosition::new(1, selected_line.encode_utf16().count() as u32),
+    };
+
+    let edits = must(formatter.format_range(source, &range, &options));
+    assert_eq!(edits.len(), 1);
+    let edit = &edits[0];
+    let start = utf16_offset(source, edit.range.start.line, edit.range.start.character);
+    let end = utf16_offset(source, edit.range.end.line, edit.range.end.character);
+    let mut replayed = source.to_string();
+    replayed.replace_range(start..end, &edit.new_text);
+
+    assert_eq!(edit.new_text, "while ($n) {\r\n    next;\r\n}");
+    assert_eq!(replayed, "my $before=1;\r\nwhile ($n) {\r\n    next;\r\n}");
+    assert!(!edit.new_text.ends_with('\n'));
+}
+
 fn utf16_offset(source: &str, line: u32, character: u32) -> usize {
     let mut offset = 0;
     for (line_index, line_text) in source.split_inclusive('\n').enumerate() {
