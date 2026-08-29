@@ -27,13 +27,13 @@ pub mod interprocedural;
 /// Transport-neutral reachability operation, work-budget, and
 /// terminal-outcome contract (#11553).
 pub mod reachability_operation;
-/// Transport-neutral semantic query outcomes and completeness requirements
-/// (#8911).
-pub mod semantic_query;
 /// Canonical framework route fact family (#8918).
 pub mod route;
 /// Transport-neutral stable semantic identity and ownership contract (#12121).
 pub mod semantic_identity;
+/// Transport-neutral semantic query outcomes and completeness requirements
+/// (#8911).
+pub mod semantic_query;
 
 pub use envelope::*;
 pub use handler::*;
