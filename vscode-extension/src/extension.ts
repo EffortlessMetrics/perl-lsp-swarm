@@ -28,15 +28,19 @@ import {
   suggestAiCompletionIfSupported,
   suggestDiscoveredIncludePaths,
   validateIncludePaths,
-  warnAboutPerlExtensionConflicts,
 } from './extensionWorkspaceGuidance';
 export {
   openDemoProjectCommand,
   suggestAiCompletionIfSupported,
   suggestDiscoveredIncludePaths,
   validateIncludePaths,
-  warnAboutPerlExtensionConflicts,
 } from './extensionWorkspaceGuidance';
+import {
+  coexistenceReevaluationRequested,
+  runCoexistenceAdvisory,
+  showCoexistenceStatusCommand,
+} from './coexistenceAdvisory';
+import { registerCoexistenceCommandGroup } from './coexistenceCommandGroup';
 import { WhatsNewManager } from './whatsNew';
 import { generateBoilerplate } from './fileCreation';
 import { handleFormattingError } from './formattingErrors';
@@ -1088,6 +1092,19 @@ async function runExtensionActivation(
     supportCommandDisposables,
   );
 
+  // Coexistence status is usable without a running server: it explains host
+  // observations and never mutates other tools (#7214). Registered last in
+  // the retained support prefix so failure-injection ordinals above stay
+  // stable.
+  const coexistenceCommandDisposables = registerCoexistenceCommandGroup({
+    showCoexistenceStatus: () => showCoexistenceStatusCommand(context),
+  });
+  activation.ownDisposables(
+    'support',
+    'support_surface_allowed_after_failure',
+    coexistenceCommandDisposables,
+  );
+
   const formatOnSaveDisposable = vscode.workspace.onWillSaveTextDocument((event) => {
     if (!shouldFormatOnSave(event.document)) {
       return;
@@ -1115,6 +1132,14 @@ async function runExtensionActivation(
         );
         if (event.affectsConfiguration('perl-lsp.includePaths') || criticChanged) {
           await syncLanguageClientConfiguration(client);
+        }
+
+        // Advisory coexistence findings re-evaluate when an owned input
+        // changes; every collected input is classified live, so this block is
+        // reachable for all of them. Dedupe keeps this silent unless the
+        // finding set changed (#7214 clear/restore semantics).
+        if (coexistenceReevaluationRequested((setting) => event.affectsConfiguration(setting))) {
+          await runCoexistenceAdvisory(context);
         }
       },
       onReconstructConfigurationChanged: async (event) => {
@@ -1449,7 +1474,7 @@ async function startLanguageServerOnDemand(context: vscode.ExtensionContext): Pr
   languageClientStartupMetrics.markMilestone('workspace_ready');
   await validateIncludePaths(context);
   await suggestDiscoveredIncludePaths(context);
-  await warnAboutPerlExtensionConflicts(context);
+  await runCoexistenceAdvisory(context);
 
   // Background update check — fire-and-forget after startup completes.
   // Runs at most once per updateCheckInterval hours; no-ops when serverPath
