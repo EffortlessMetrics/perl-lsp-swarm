@@ -101,8 +101,8 @@ error instead. CLI exit semantics must not leak inward as `panic!`,
 
 ## Exact production admission
 
-The production fatal-construct lane is exact and counted. Each retained identity
-contains:
+The production fatal-construct admission owned by #13688 is exact and counted.
+Each retained identity contains:
 
 ```text
 path
