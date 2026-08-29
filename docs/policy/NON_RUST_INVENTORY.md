@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12318 |
-| Rust-family files | 3770 |
-| Non-Rust files | 8548 |
-| Allowlisted | 6313 |
+| Total tracked files | 12345 |
+| Rust-family files | 3786 |
+| Non-Rust files | 8559 |
+| Allowlisted | 6324 |
 | Unclassified | 2235 |
 
 ## Non-Rust files by category
@@ -17,9 +17,9 @@
 | Category | Count |
 |---|---|
 | config | 490 |
-| documentation | 2791 |
+| documentation | 2795 |
 | generated | 2 |
-| production | 339 |
+| production | 346 |
 | test | 2033 |
 | tooling | 658 |
 | unclassified | 2235 |
@@ -6034,8 +6034,10 @@
 | `docs/specs/PLSP-SPEC-0033-three-rail-evidence.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/specs/PLSP-SPEC-0034-compiler-world.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/specs/PLSP-SPEC-0035-executable-profile-and-eir.md` | documentation | `non-rust-docs-tree` | docs |
+| `docs/specs/PLSP-SPEC-0036-lsp4ij-windows-entrypoints.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/specs/README.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/specs/RELEASE_CANDIDATE_BASELINE.md` | documentation | `non-rust-docs-tree` | docs |
+| `docs/specs/WORKTREE_FORENSIC_EVIDENCE_V1.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/specs/lsp-318-conformance-matrix.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/specs/lsp-final-surface-inventory.json` | documentation | `non-rust-docs-tree` | docs |
 | `docs/specs/protocol-type-substrate-matrix.json` | documentation | `non-rust-docs-tree` | docs |
@@ -8322,6 +8324,10 @@
 | `vscode-extension/src/boundedHttpJson.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/clientMeasurement.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/clientPerformancePolicy.ts` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/src/coexistenceAdvisory.ts` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/src/coexistenceCommandGroup.ts` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/src/coexistenceDetector.ts` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/src/coexistenceRegistry.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/commandResults.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/configurationMigrationRegistry.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/configurationMigrationRuntime.ts` | production | `non-rust-vscode-extension` | editor/vscode |
@@ -8398,6 +8404,9 @@
 | `vscode-extension/src/test/boundedHttpJson.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/clientMeasurement.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/clientPerformancePolicy.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/src/test/coexistenceAdvisory.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/src/test/coexistenceCommandGroup.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/src/test/coexistenceDetector.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/commandResults.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/commands.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/configuration.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
@@ -8567,6 +8576,8 @@
 | `xtask/tests/fixtures/dependency-hygiene/machete-malformed.json` | test | `non-rust-dependency-hygiene-machete-fixtures` | devex/dependency-hygiene |
 | `xtask/tests/fixtures/dependency-hygiene/machete-missing-ignored-used.json` | test | `non-rust-dependency-hygiene-machete-fixtures` | devex/dependency-hygiene |
 | `xtask/tests/fixtures/dependency-hygiene/machete-missing-unused.json` | test | `non-rust-dependency-hygiene-machete-fixtures` | devex/dependency-hygiene |
+| `xtask/tests/fixtures/lsp-318-changelog/PROVENANCE.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `xtask/tests/fixtures/lsp-318-changelog/specification.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `xtask/tests/fixtures/module-train-live/raw-clean-surface.json` | test | `non-rust-module-train-live-observation-fixtures` | devex/module-train |
 | `xtask/tests/fixtures/module-train-live/raw-corpus.json` | test | `non-rust-module-train-live-observation-fixtures` | devex/module-train |
 | `xtask/tests/fixtures/native-critic/false-positive/checked_io.pm` | test | `non-rust-perl-modules` | parser/lsp-fixtures |
