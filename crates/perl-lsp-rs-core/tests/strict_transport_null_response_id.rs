@@ -1,8 +1,6 @@
 //! Regression coverage for JSON-RPC null response ids (#7596).
 
-use perl_lsp_rs_core::transport::{
-    ContentLengthMessageReader, IncomingMessageError, frame,
-};
+use perl_lsp_rs_core::transport::{ContentLengthMessageReader, IncomingMessageError, frame};
 use std::error::Error;
 use std::io::{self, Cursor};
 
@@ -32,10 +30,11 @@ fn null_response_id_is_an_invalid_shape_not_a_mixed_envelope() -> Result<(), Box
     };
 
     match error {
-        IncomingMessageError::InvalidMessageShape {
-            payload_bytes: actual,
-            ..
-        } if actual == payload_bytes => Ok(()),
+        IncomingMessageError::InvalidMessageShape { payload_bytes: actual, .. }
+            if actual == payload_bytes =>
+        {
+            Ok(())
+        }
         IncomingMessageError::MixedRequestResponse { .. } => Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "null response id was misclassified as a mixed request/response envelope",
