@@ -445,6 +445,8 @@
           "selection_committed"
         ],
         "product_units": [
+          "rolled_back",
+          "unchanged",
           "preserved_prior",
           "not_applicable"
         ]

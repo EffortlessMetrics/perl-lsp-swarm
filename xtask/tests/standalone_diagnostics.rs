@@ -913,3 +913,117 @@ fn an_admitted_packet_renders_only_its_bounded_route_mode() -> TestResult {
     assert_eq!(projection.get("route_mode").and_then(Value::as_str), Some("first_party_posix"));
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Packet-consistency invariants must bind the whole contradiction set
+// (independent semantic review of #13800)
+// ---------------------------------------------------------------------------
+
+/// `xtask/examples/standalone_candidate_selection.rs` is the origin admission
+/// authority for this contract: "a committed selection must move product units
+/// to installed/repaired/updated". Every other value is a contradiction and must
+/// reach the instrument family, never a product success.
+#[test]
+fn a_committed_selection_without_a_product_effect_is_an_instrument_failure() -> TestResult {
+    let manifest = diagnostics::load_manifest(&repo_root())?;
+    for product_units in ["rolled_back", "unchanged", "preserved_prior", "not_applicable"] {
+        let projection = diagnostics::project_packet(
+            &manifest,
+            &packet(
+                "selection_committed",
+                json!({
+                    "product_units": product_units,
+                    "cleanup": "completed",
+                    // The most flattering possible dimensions: if the registry
+                    // is going to overclaim, it will do it here.
+                    "process_startup": "verified",
+                    "path_persistence": "persisted"
+                }),
+                "claims a committed selection with no product effect",
+            ),
+        )?;
+        assert_eq!(
+            projection.get("primary_reason").and_then(Value::as_str),
+            Some("inv_selection_committed_without_product_effect"),
+            "product_units `{product_units}` under a committed selection must be a contradiction"
+        );
+        assert_eq!(
+            projection.get("claim_ceiling").and_then(Value::as_str),
+            Some("support_claim_withheld"),
+            "a contradictory packet must not claim availability for `{product_units}`"
+        );
+        assert_eq!(projection.get("classification").and_then(Value::as_str), Some("instrument"));
+    }
+
+    // Positive control: the three admitted values stay ordinary outcomes.
+    for product_units in ["installed", "repaired", "updated"] {
+        let projection = diagnostics::project_packet(
+            &manifest,
+            &packet(
+                "selection_committed",
+                json!({
+                    "product_units": product_units,
+                    "cleanup": "completed",
+                    "process_startup": "verified",
+                    "path_persistence": "persisted"
+                }),
+                "ordinary install",
+            ),
+        )?;
+        assert_eq!(
+            projection.get("primary_reason").and_then(Value::as_str),
+            Some("sel_committed_path_persisted_startup_verified"),
+            "`{product_units}` is an admitted committed-selection outcome"
+        );
+    }
+    Ok(())
+}
+
+/// Negative control for the invariant above: the origin authority deliberately
+/// leaves `product_units` unconstrained for `selection_unchanged`, because a
+/// repair re-commits the current candidate while its units legitimately change.
+/// Forbidding a product effect there would classify a correct installer as
+/// broken.
+#[test]
+fn a_repair_that_keeps_the_current_selection_is_not_a_contradiction() -> TestResult {
+    let manifest = diagnostics::load_manifest(&repo_root())?;
+    for product_units in ["repaired", "updated", "installed"] {
+        let projection = diagnostics::project_packet(
+            &manifest,
+            &packet(
+                "selection_unchanged",
+                json!({
+                    "product_units": product_units,
+                    "cleanup": "completed",
+                    "process_startup": "verified",
+                    "path_persistence": "unchanged"
+                }),
+                "repaired the current installation in place",
+            ),
+        )?;
+        let reason = projection.get("primary_reason").and_then(Value::as_str).unwrap_or_default();
+        assert!(
+            !reason.starts_with("inv_"),
+            "`selection_unchanged` with `{product_units}` is a legitimate repair, got `{reason}`"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn rejects_an_invariant_shadowed_by_an_ordinary_reason() -> TestResult {
+    let mut manifest = canonical_manifest()?;
+    // Move an ordinary success ahead of the whole invariant family. Every reason
+    // still fires somewhere, so first-match reachability alone stays satisfied.
+    let index =
+        position_of(&manifest, "primary_reasons", "sel_committed_path_persisted_startup_verified")
+            .ok_or("missing reason")?;
+    let reasons = reasons_mut(&mut manifest, "primary_reasons").ok_or("missing primary reasons")?;
+    let row = reasons.remove(index);
+    reasons.insert(0, row);
+    expect_violation(&manifest, "is shadowed by")?;
+    expect_violation(
+        &manifest,
+        "a self-contradictory packet would be reported as a product outcome",
+    )
+}
