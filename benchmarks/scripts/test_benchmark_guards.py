@@ -44,12 +44,16 @@ class FormatResultsReceiptGuardTests(unittest.TestCase):
     def test_zero_benchmarks_is_invalid_and_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             results_file = Path(tmp) / "latest.json"
-            results_file.write_text(json.dumps({
-                "version": "0.9.0",
-                "timestamp": "2026-07-12T00:00:00Z",
-                "git_sha": "abc123",
-                "results": {},
-            }))
+            results_file.write_text(
+                json.dumps(
+                    {
+                        "version": "0.9.0",
+                        "timestamp": "2026-07-12T00:00:00Z",
+                        "git_sha": "abc123",
+                        "results": {},
+                    }
+                )
+            )
 
             proc = _run(_FORMAT_RESULTS, [str(results_file), "--receipt"])
             self.assertNotEqual(proc.returncode, 0)
@@ -60,16 +64,20 @@ class FormatResultsReceiptGuardTests(unittest.TestCase):
     def test_nonzero_benchmarks_is_complete_and_passes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             results_file = Path(tmp) / "latest.json"
-            results_file.write_text(json.dumps({
-                "version": "0.9.0",
-                "timestamp": "2026-07-12T00:00:00Z",
-                "git_sha": "abc123",
-                "results": {
-                    "index": {
-                        "incremental update single file": {"mean_ns": 209_000},
-                    },
-                },
-            }))
+            results_file.write_text(
+                json.dumps(
+                    {
+                        "version": "0.9.0",
+                        "timestamp": "2026-07-12T00:00:00Z",
+                        "git_sha": "abc123",
+                        "results": {
+                            "index": {
+                                "incremental update single file": {"mean_ns": 209_000},
+                            },
+                        },
+                    }
+                )
+            )
 
             proc = _run(_FORMAT_RESULTS, [str(results_file), "--receipt"])
             self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
@@ -79,20 +87,27 @@ class FormatResultsReceiptGuardTests(unittest.TestCase):
 
 class CompareMissingBenchmarkGuardTests(unittest.TestCase):
     def _write(self, path: Path, results: dict) -> None:
-        path.write_text(json.dumps({
-            "version": "0.10.0",
-            "timestamp": "2026-07-12T00:00:00Z",
-            "git_sha": "deadbeef",
-            "results": results,
-        }))
+        path.write_text(
+            json.dumps(
+                {
+                    "version": "0.10.0",
+                    "timestamp": "2026-07-12T00:00:00Z",
+                    "git_sha": "deadbeef",
+                    "results": results,
+                }
+            )
+        )
 
     def test_missing_expected_benchmark_fails_under_fail_on_regression(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             baseline = Path(tmp) / "baseline.json"
             current = Path(tmp) / "current.json"
-            self._write(baseline, {
-                "index": {"incremental update single file": {"mean_ns": 209_000}},
-            })
+            self._write(
+                baseline,
+                {
+                    "index": {"incremental update single file": {"mean_ns": 209_000}},
+                },
+            )
             # Current run produced nothing for the "index" category at all --
             # the baseline's benchmark is MISSING, not regressed.
             self._write(current, {})
@@ -101,13 +116,18 @@ class CompareMissingBenchmarkGuardTests(unittest.TestCase):
             self.assertNotEqual(proc.returncode, 0)
             self.assertIn("Missing:", proc.stdout)
 
-    def test_missing_expected_benchmark_is_advisory_without_fail_on_regression(self) -> None:
+    def test_missing_expected_benchmark_is_advisory_without_fail_on_regression(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             baseline = Path(tmp) / "baseline.json"
             current = Path(tmp) / "current.json"
-            self._write(baseline, {
-                "index": {"incremental update single file": {"mean_ns": 209_000}},
-            })
+            self._write(
+                baseline,
+                {
+                    "index": {"incremental update single file": {"mean_ns": 209_000}},
+                },
+            )
             self._write(current, {})
 
             proc = _run(_COMPARE, [str(baseline), str(current)])
@@ -117,12 +137,18 @@ class CompareMissingBenchmarkGuardTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             baseline = Path(tmp) / "baseline.json"
             current = Path(tmp) / "current.json"
-            self._write(baseline, {
-                "index": {"incremental update single file": {"mean_ns": 209_000}},
-            })
-            self._write(current, {
-                "index": {"incremental update single file": {"mean_ns": 210_000}},
-            })
+            self._write(
+                baseline,
+                {
+                    "index": {"incremental update single file": {"mean_ns": 209_000}},
+                },
+            )
+            self._write(
+                current,
+                {
+                    "index": {"incremental update single file": {"mean_ns": 210_000}},
+                },
+            )
 
             proc = _run(_COMPARE, [str(baseline), str(current), "--fail-on-regression"])
             self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
@@ -132,13 +158,19 @@ class CompareMissingBenchmarkGuardTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             baseline = Path(tmp) / "baseline.json"
             current = Path(tmp) / "current.json"
-            self._write(baseline, {
-                "index": {"incremental update single file": {"mean_ns": 209_000}},
-            })
+            self._write(
+                baseline,
+                {
+                    "index": {"incremental update single file": {"mean_ns": 209_000}},
+                },
+            )
             # +50%, well over the 20% regression threshold.
-            self._write(current, {
-                "index": {"incremental update single file": {"mean_ns": 314_000}},
-            })
+            self._write(
+                current,
+                {
+                    "index": {"incremental update single file": {"mean_ns": 314_000}},
+                },
+            )
 
             proc = _run(_COMPARE, [str(baseline), str(current), "--fail-on-regression"])
             self.assertNotEqual(proc.returncode, 0)
@@ -146,11 +178,18 @@ class CompareMissingBenchmarkGuardTests(unittest.TestCase):
 
 
 class NativePipelineSidecarGuardTests(unittest.TestCase):
-    EXPECTED = ["native_pipeline_document/delimited_n8_lf_tabs",
-                "native_pipeline_document/delimited_n32_lf_tabs"]
+    EXPECTED = [
+        "native_pipeline_document/delimited_n8_lf_tabs",
+        "native_pipeline_document/delimited_n32_lf_tabs",
+    ]
     RUN_ID = "123-abc"
 
-    def _row(self, bench_id: str, run_id: str | None = None, schema: str = "native-pipeline-counters-v1") -> dict:
+    def _row(
+        self,
+        bench_id: str,
+        run_id: str | None = None,
+        schema: str = "native-pipeline-counters-v1",
+    ) -> dict:
         return {
             "schema": schema,
             "run_id": run_id or self.RUN_ID,
@@ -168,13 +207,20 @@ class NativePipelineSidecarGuardTests(unittest.TestCase):
                 "replacement_bytes": 8,
                 "peak_depth": 1,
                 "elapsed": {"secs": 0, "nanos": 42},
+                "clock_tag": "std::time::Instant::elapsed",
             },
         }
 
     def test_identity_only_sidecar_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            rows = [{"schema": "native-pipeline-counters-v1", "run_id": self.RUN_ID,
-                     "bench_id": bench_id} for bench_id in self.EXPECTED]
+            rows = [
+                {
+                    "schema": "native-pipeline-counters-v1",
+                    "run_id": self.RUN_ID,
+                    "bench_id": bench_id,
+                }
+                for bench_id in self.EXPECTED
+            ]
             path = self._write(Path(tmp), rows)
             proc = self._run(path)
             self.assertNotEqual(proc.returncode, 0)
@@ -189,6 +235,24 @@ class NativePipelineSidecarGuardTests(unittest.TestCase):
             self.assertNotEqual(proc.returncode, 0)
             self.assertIn("lines_processed", proc.stderr)
 
+    def test_counter_snapshot_without_clock_tag_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            rows = [self._row(bench_id) for bench_id in self.EXPECTED]
+            rows[0]["counters"].pop("clock_tag")
+            path = self._write(Path(tmp), rows)
+            proc = self._run(path)
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("clock_tag", proc.stderr)
+
+    def test_counter_snapshot_with_wrong_clock_tag_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            rows = [self._row(bench_id) for bench_id in self.EXPECTED]
+            rows[0]["counters"]["clock_tag"] = "wall-clock"
+            path = self._write(Path(tmp), rows)
+            proc = self._run(path)
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("clock_tag", proc.stderr)
+
     def test_zero_pipeline_invocations_are_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             rows = [self._row(bench_id) for bench_id in self.EXPECTED]
@@ -198,21 +262,58 @@ class NativePipelineSidecarGuardTests(unittest.TestCase):
             self.assertNotEqual(proc.returncode, 0)
             self.assertIn("pipeline_invocations must be positive", proc.stderr)
 
-    def _run(self, sidecar: Path, expected_ids: list[str] | None = None) -> subprocess.CompletedProcess:
-        args = [sys.executable, str(_SIDECAR), "--sidecar", str(sidecar),
-                "--expected-run-id", self.RUN_ID]
+    def test_zero_non_invocation_counters_are_accepted_as_shape_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            rows = [self._row(bench_id) for bench_id in self.EXPECTED]
+            rows[0]["counters"].update(
+                {
+                    "parse_gate_invocations": 0,
+                    "source_parse_gate_invocations": 0,
+                    "formatted_output_parse_gate_invocations": 0,
+                    "gate_nodes_observed": 0,
+                    "lines_processed": 0,
+                    "delimited_groups_fitted": 0,
+                    "edits_derived": 0,
+                    "replacement_bytes": 0,
+                    "peak_depth": 0,
+                }
+            )
+            path = self._write(Path(tmp), rows)
+            proc = self._run(path)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+
+    def _run(
+        self, sidecar: Path, expected_ids: list[str] | None = None
+    ) -> subprocess.CompletedProcess:
+        args = [
+            sys.executable,
+            str(_SIDECAR),
+            "--sidecar",
+            str(sidecar),
+            "--expected-run-id",
+            self.RUN_ID,
+        ]
         for bench_id in expected_ids or self.EXPECTED:
             args.extend(["--expect-id", bench_id])
         return subprocess.run(args, capture_output=True, text=True, check=False)
 
-    def _write(self, directory: Path, rows: list[dict], schema: str = "native-pipeline-measurements-v1") -> Path:
+    def _write(
+        self,
+        directory: Path,
+        rows: list[dict],
+        schema: str = "native-pipeline-measurements-v1",
+    ) -> Path:
         path = directory / "sidecar.json"
-        path.write_text(json.dumps({"schema": schema, "run_id": self.RUN_ID, "subjects": rows}))
+        path.write_text(
+            json.dumps({"schema": schema, "run_id": self.RUN_ID, "subjects": rows})
+        )
         return path
 
     def test_complete_sidecar_is_accepted(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            path = self._write(Path(tmp), [self._row(bench_id) for bench_id in self.EXPECTED])
+            path = self._write(
+                Path(tmp), [self._row(bench_id) for bench_id in self.EXPECTED]
+            )
             proc = self._run(path)
             self.assertEqual(proc.returncode, 0, proc.stderr)
 
@@ -223,29 +324,41 @@ class NativePipelineSidecarGuardTests(unittest.TestCase):
 
     def test_schema_and_run_id_are_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            path = self._write(Path(tmp), [self._row(bench_id, run_id="stale") for bench_id in self.EXPECTED], schema="wrong")
+            path = self._write(
+                Path(tmp),
+                [self._row(bench_id, run_id="stale") for bench_id in self.EXPECTED],
+                schema="wrong",
+            )
             proc = self._run(path)
             self.assertNotEqual(proc.returncode, 0)
 
     def test_duplicate_or_missing_enrollment_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            path = self._write(Path(tmp), [self._row(self.EXPECTED[0]), self._row(self.EXPECTED[0])])
+            path = self._write(
+                Path(tmp), [self._row(self.EXPECTED[0]), self._row(self.EXPECTED[0])]
+            )
             proc = self._run(path)
             self.assertNotEqual(proc.returncode, 0)
 
     def test_workflow_style_array_invocation_accepts_valid_sidecar(self) -> None:
         workflow = _WORKFLOW.read_text(encoding="utf-8")
-        self.assertIn('sidecar_args=()', workflow)
+        self.assertIn("sidecar_args=()", workflow)
         self.assertIn('sidecar_args+=(--expect-id "$expected_id")', workflow)
         self.assertIn('"${sidecar_args[@]}"', workflow)
 
         with tempfile.TemporaryDirectory(dir=_REPO_ROOT) as tmp:
-            path = self._write(Path(tmp), [self._row(bench_id) for bench_id in self.EXPECTED])
+            path = self._write(
+                Path(tmp), [self._row(bench_id) for bench_id in self.EXPECTED]
+            )
             expected_ids = [
                 "native_pipeline_document/delimited_n8_lf_tabs",
                 "native_pipeline_document/delimited_n32_lf_tabs",
             ]
-            sidecar_args = [arg for expected_id in expected_ids for arg in ("--expect-id", expected_id)]
+            sidecar_args = [
+                arg
+                for expected_id in expected_ids
+                for arg in ("--expect-id", expected_id)
+            ]
             proc = subprocess.run(
                 [
                     sys.executable,

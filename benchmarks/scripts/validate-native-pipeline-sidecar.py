@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Fail-closed validation for the native formatter measurement sidecar."""
+"""Fail-closed validation for the native formatter measurement sidecar.
+
+This validator proves the receipt's enrolled shape and typed counter contract.
+It does not prove that counter values are authentic, mutually consistent, or
+that fields beyond ``bench_id`` identify the benchmark subject.
+"""
 
 import argparse
 import json
@@ -9,6 +14,7 @@ from pathlib import Path
 
 SCHEMA = "native-pipeline-measurements-v1"
 ROW_SCHEMA = "native-pipeline-counters-v1"
+COUNTER_CLOCK_TAG = "std::time::Instant::elapsed"
 COUNTER_FIELDS = (
     "pipeline_invocations",
     "parse_gate_invocations",
@@ -60,14 +66,22 @@ def validate(path: Path, expected_run_id: str, expected_ids: list[str]) -> None:
         if not isinstance(counters, dict):
             raise ValueError("every sidecar row must carry a counter snapshot")
         if counters.get("schema") != ROW_SCHEMA:
-            raise ValueError("every sidecar counter snapshot must carry the counter schema")
+            raise ValueError(
+                "every sidecar counter snapshot must carry the counter schema"
+            )
         for field in COUNTER_FIELDS:
             if field not in counters:
                 raise ValueError(f"every sidecar counter snapshot must carry {field}")
+        if "clock_tag" not in counters:
+            raise ValueError("every sidecar counter snapshot must carry clock_tag")
+        if counters["clock_tag"] != COUNTER_CLOCK_TAG:
+            raise ValueError(f"sidecar counter clock_tag must be {COUNTER_CLOCK_TAG!r}")
         for field in COUNTER_FIELDS[:-1]:
             value = counters[field]
             if not isinstance(value, int) or isinstance(value, bool) or value < 0:
-                raise ValueError(f"sidecar counter {field} must be a non-negative integer")
+                raise ValueError(
+                    f"sidecar counter {field} must be a non-negative integer"
+                )
         if counters["pipeline_invocations"] == 0:
             raise ValueError("sidecar counter pipeline_invocations must be positive")
         elapsed = counters["elapsed"]
@@ -79,7 +93,9 @@ def validate(path: Path, expected_run_id: str, expected_ids: list[str]) -> None:
             or elapsed[field] < 0
             for field in ("secs", "nanos")
         ):
-            raise ValueError("sidecar counter elapsed must contain non-negative secs and nanos")
+            raise ValueError(
+                "sidecar counter elapsed must contain non-negative secs and nanos"
+            )
         bench_id = row.get("bench_id")
         if not isinstance(bench_id, str) or not bench_id:
             raise ValueError("every sidecar row must carry a non-empty bench_id")
@@ -90,7 +106,9 @@ def validate(path: Path, expected_run_id: str, expected_ids: list[str]) -> None:
     if set(actual) != expected:
         missing = sorted(expected - set(actual))
         extra = sorted(set(actual) - expected)
-        raise ValueError(f"sidecar enrollment mismatch; missing={missing}, extra={extra}")
+        raise ValueError(
+            f"sidecar enrollment mismatch; missing={missing}, extra={extra}"
+        )
 
 
 def main() -> int:
