@@ -1,0 +1,552 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://effortlessmetrics.dev/perl-lsp/schemas/analysis_reachability_fixture_manifest.v1.schema.json",
+  "title": "Analysis reachability fixture manifest v1 (#10998)",
+  "description": "Declaration-only canonical manifest naming the reachability claim denominator: fixture identity, metadata schema, validation, coverage accounting and generated views. It never implements analysis, executes semantic or exact-process proof, selects product behavior, repairs failures, changes compatibility or promotes a claim.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "schema_version",
+    "manifest",
+    "owner_issue",
+    "status",
+    "claim_boundary",
+    "digest_algorithm",
+    "allowed_fixture_roots",
+    "authorities",
+    "contracts",
+    "proof_owners",
+    "denominator",
+    "declared_row_count",
+    "rows"
+  ],
+  "properties": {
+    "$schema": { "type": "string" },
+    "schema": { "const": "analysis_reachability_fixture_manifest.v1" },
+    "schema_version": { "const": 1 },
+    "manifest": { "const": "analysis-reachability-fixture-denominator" },
+    "owner_issue": { "const": 10998 },
+    "status": { "const": "declaration-only" },
+    "claim_boundary": { "type": "string", "minLength": 1 },
+    "digest_algorithm": { "const": "sha256-lf-normalized" },
+    "allowed_fixture_roots": {
+      "type": "array",
+      "items": { "enum": ["crates", "test_corpus"] },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "authorities": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^#[0-9]+$" },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "contracts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "operation_stage_and_work",
+        "product_profile_budget",
+        "closed_world_policy",
+        "diagnostic_result_identity",
+        "diagnostic_item_composition",
+        "push_transport",
+        "pull_currentness",
+        "compatibility_projection"
+      ],
+      "properties": {
+        "operation_stage_and_work": { "const": 11553 },
+        "product_profile_budget": { "const": 11590 },
+        "closed_world_policy": { "const": 8101 },
+        "diagnostic_result_identity": { "const": 10941 },
+        "diagnostic_item_composition": { "const": 8142 },
+        "push_transport": { "const": 10953 },
+        "pull_currentness": { "const": 10957 },
+        "compatibility_projection": { "const": 9777 }
+      }
+    },
+    "proof_owners": {
+      "type": "object",
+      "minProperties": 10,
+      "propertyNames": {
+        "enum": [
+          "A_local_flow",
+          "W_workspace_facts",
+          "G_graph_structure",
+          "R_operation_terminal",
+          "B_profile_budget",
+          "P_closed_world_policy",
+          "D_diagnostic_identity",
+          "T_transport_currentness",
+          "C_compatibility_recurrence",
+          "X_proof_closeout"
+        ]
+      },
+      "additionalProperties": { "enum": [11004, 11006, 11012, 11018] }
+    },
+    "denominator": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["family"],
+        "properties": {
+          "family": {
+            "enum": [
+              "A_local_flow",
+              "W_workspace_facts",
+              "G_graph_structure",
+              "R_operation_terminal",
+              "B_profile_budget",
+              "P_closed_world_policy",
+              "D_diagnostic_identity",
+              "T_transport_currentness",
+              "C_compatibility_recurrence",
+              "X_proof_closeout"
+            ]
+          },
+          "required_coverage": { "type": "array", "items": { "type": "string" } },
+          "deferred_coverage": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["coverage", "owner_issue", "reason"],
+              "properties": {
+                "coverage": { "type": "string", "minLength": 1 },
+                "owner_issue": { "type": "integer", "minimum": 1 },
+                "reason": { "type": "string", "minLength": 1 }
+              }
+            }
+          }
+        }
+      }
+    },
+    "declared_row_count": { "type": "integer", "minimum": 1 },
+    "rows": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/row" }
+    }
+  },
+  "$defs": {
+    "row": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "row_id",
+        "fixture",
+        "subjects",
+        "source_roles",
+        "train",
+        "controls",
+        "expectations",
+        "terminal",
+        "limitation",
+        "oracle"
+      ],
+      "properties": {
+        "row_id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9.-]*$" },
+        "fixture": { "$ref": "#/$defs/fixtureIdentity" },
+        "subjects": { "type": "array", "items": { "type": "string", "minLength": 1 }, "minItems": 1 },
+        "source_roles": { "type": "array", "items": { "type": "string", "minLength": 1 }, "minItems": 1 },
+        "train": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["node", "component", "family", "claim_profile"],
+          "properties": {
+            "node": { "type": "string", "minLength": 1 },
+            "component": { "type": "string", "minLength": 1 },
+            "family": {
+              "enum": [
+                "A_local_flow",
+                "W_workspace_facts",
+                "G_graph_structure",
+                "R_operation_terminal",
+                "B_profile_budget",
+                "P_closed_world_policy",
+                "D_diagnostic_identity",
+                "T_transport_currentness",
+                "C_compatibility_recurrence",
+                "X_proof_closeout"
+              ]
+            },
+            "claim_profile": { "type": "string", "minLength": 1 }
+          }
+        },
+        "prerequisites": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "controls": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "opposite": { "type": "string" },
+            "near_neighbour": { "type": "string" }
+          }
+        },
+        "expectations": { "$ref": "#/$defs/expectations" },
+        "terminal": {
+          "enum": [
+            "complete_nonempty",
+            "complete_legitimate_empty",
+            "semantic_partial_typed_ceiling",
+            "not_ready",
+            "stale",
+            "dynamic_or_unsupported",
+            "cancelled_before_start",
+            "cancelled_at_checkpoint",
+            "deadline_exceeded",
+            "resource_limit_at_boundary",
+            "checked_near_overflow",
+            "superseded_before_publication",
+            "repeated_operation_reset",
+            "bounded_view_complete",
+            "incomplete_semantic_never_bounded_complete",
+            "instrument_failure",
+            "product_failure"
+          ]
+        },
+        "result_identity": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["identity", "completeness"],
+          "properties": {
+            "identity": { "type": "string", "minLength": 1 },
+            "completeness": { "enum": ["semantic_complete", "bounded_view_complete"] }
+          }
+        },
+        "authority_reference": { "$ref": "#/$defs/authorityReference" },
+        "limitation": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["support_class"],
+          "properties": {
+            "support_class": {
+              "enum": ["supported", "partial", "unsupported_open_world", "unsupported_terminal"]
+            },
+            "exit_owner_issue": { "type": "integer", "minimum": 1 }
+          }
+        },
+        "oracle": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["oracle_type", "independence_class", "proof_ceiling"],
+          "properties": {
+            "oracle_type": {
+              "enum": [
+                "independent_expected_authority",
+                "bounded_real_perl",
+                "bounded_protocol_client",
+                "observed_output_retained_only",
+                "declaration_only"
+              ]
+            },
+            "independence_class": { "enum": ["independent", "observed_only", "none"] },
+            "proof_ceiling": {
+              "enum": ["static_declaration", "internal_semantic", "exact_process_external", "external_closeout"]
+            }
+          }
+        },
+        "race_barrier": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "position"],
+          "properties": {
+            "kind": {
+              "enum": [
+                "held_target_contributor_generation",
+                "mid_graph_admission_scc_closure_query",
+                "before_final_semantic_publication",
+                "between_source_projections",
+                "mid_push_batch",
+                "mid_workspace_partial_stream",
+                "before_cache_result_id_commit",
+                "close_reopen_root_removal_config_profile_movement"
+              ]
+            },
+            "position": { "type": "string", "minLength": 1 }
+          }
+        },
+        "instrument": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "disposition"],
+          "properties": {
+            "status": { "enum": ["present", "missing"] },
+            "disposition": { "type": "string", "minLength": 1 }
+          }
+        },
+        "owner_issue": { "enum": [11004, 11006, 11012, 11018] }
+      }
+    },
+    "fixtureIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "path", "digest_sha256_lf", "role"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "path": { "type": "string", "pattern": "^(crates|test_corpus)/[A-Za-z0-9._/-]+$" },
+        "digest_sha256_lf": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "role": {
+          "enum": ["positive", "control_opposite", "control_near_neighbour", "falsifier", "shared_canonical"]
+        }
+      }
+    },
+    "authorityReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path"],
+      "properties": {
+        "path": { "type": "string", "pattern": "^(crates|test_corpus)/[A-Za-z0-9._/-]+$" },
+        "note": { "type": "string", "minLength": 1 }
+      }
+    },
+    "expectations": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "local_flow_facts": { "$ref": "#/$defs/factsExpectation" },
+        "workspace_facts": { "$ref": "#/$defs/factsExpectation" },
+        "graph_structure": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["proposition", "shape"],
+          "properties": {
+            "proposition": { "type": "string", "minLength": 1 },
+            "shape": {
+              "enum": [
+                "isolated_node",
+                "chain",
+                "self_loop",
+                "reachable_scc",
+                "dead_scc",
+                "condensed_dag",
+                "complete_family_admission",
+                "missing_family_not_admitted",
+                "partial_stale_or_schema_mismatched_input"
+              ]
+            }
+          }
+        },
+        "structural_liveness": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["proposition", "classification"],
+          "properties": {
+            "proposition": { "type": "string", "minLength": 1 },
+            "classification": {
+              "enum": [
+                "production_live",
+                "test_only_live",
+                "root_unreachable",
+                "interface_retained_orthogonal",
+                "blocker_evidence_only"
+              ]
+            }
+          }
+        },
+        "operation": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["proposition", "stage", "terminal_outcome"],
+          "properties": {
+            "proposition": { "type": "string", "minLength": 1 },
+            "stage": {
+              "enum": [
+                "graph_admission",
+                "scc_discovery_condensation",
+                "production_closure",
+                "test_closure",
+                "classification_query_source_partition",
+                "bounded_explanation",
+                "policy_projection",
+                "diagnostic_composition",
+                "transport_projection_chunking",
+                "result_reuse_final_publication",
+                "semantic_proof",
+                "exact_process_proof"
+              ]
+            },
+            "work_dimensions": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+            "checkpoints": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+            "terminal_outcome": {
+              "enum": [
+                "complete_nonempty",
+                "complete_legitimate_empty",
+                "semantic_partial_typed_ceiling",
+                "not_ready",
+                "stale",
+                "dynamic_or_unsupported",
+                "cancelled_before_start",
+                "cancelled_at_checkpoint",
+                "deadline_exceeded",
+                "resource_limit_at_boundary",
+                "checked_near_overflow",
+                "superseded_before_publication",
+                "repeated_operation_reset",
+                "bounded_view_complete",
+                "incomplete_semantic_never_bounded_complete",
+                "instrument_failure",
+                "product_failure"
+              ]
+            }
+          }
+        },
+        "profile_budget": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "proposition",
+            "profile",
+            "required_work_dimensions",
+            "partial_support_advertised",
+            "envelope_class"
+          ],
+          "properties": {
+            "proposition": { "type": "string", "minLength": 1 },
+            "profile": {
+              "enum": [
+                "interactive_private",
+                "workspace_full",
+                "scheduled_semantic_proof",
+                "compatibility_projection",
+                "workspace_partial"
+              ]
+            },
+            "required_work_dimensions": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1 },
+              "minItems": 1
+            },
+            "partial_support_advertised": { "type": "boolean" },
+            "envelope_class": { "enum": ["within_admitted_envelope", "hits_finite_limit"] }
+          }
+        },
+        "policy": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["proposition", "mode", "eligibility", "reason"],
+          "properties": {
+            "proposition": { "type": "string", "minLength": 1 },
+            "mode": { "enum": ["off", "private_closed_world", "explicit_closed_world"] },
+            "eligibility": {
+              "enum": [
+                "eligible_isolated_private_callable",
+                "eligible_with_component_evidence",
+                "ineligible_production_live",
+                "ineligible_test_only_initial_cohort",
+                "interface_open_world_retained",
+                "blocked_dynamic_framework",
+                "not_eligible_partial_stale_unsupported_terminal",
+                "eligible_bounded_view_evidence_retained",
+                "never_eligible_incomplete_semantics",
+                "invalid_configuration_fail_closed"
+              ]
+            },
+            "reason": { "type": "string", "minLength": 1 }
+          }
+        },
+        "diagnostic": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["proposition", "item_identity", "composition"],
+          "properties": {
+            "proposition": { "type": "string", "minLength": 1 },
+            "item_identity": { "type": "string", "minLength": 1 },
+            "composition": {
+              "enum": [
+                "complete_local_only",
+                "complete_local_plus_workspace",
+                "workspace_deferred_not_ready",
+                "partial_degraded",
+                "terminal_outcome_receipt",
+                "provider_set_schema_catalog_change",
+                "same_bytes_different_instance"
+              ]
+            },
+            "suppression_identity": { "type": "string", "minLength": 1 }
+          }
+        },
+        "transport": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["proposition", "route"],
+          "properties": {
+            "proposition": { "type": "string", "minLength": 1 },
+            "route": {
+              "enum": [
+                "publish_diagnostics",
+                "text_document_diagnostic",
+                "workspace_diagnostic_full",
+                "workspace_diagnostic_partial_chunks"
+              ]
+            },
+            "client_visible_expectation": { "type": "string", "minLength": 1 }
+          }
+        },
+        "currentness": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["proposition", "transition"],
+          "properties": {
+            "proposition": { "type": "string", "minLength": 1 },
+            "transition": {
+              "enum": [
+                "caller_only_live_to_unreachable",
+                "caller_only_unreachable_to_live",
+                "irrelevant_edit_complete_equivalent",
+                "config_profile_provider_change_same_bytes",
+                "close_reopen_new_document_instance",
+                "stale_contributor_generation_movement",
+                "failed_recomputation_never_unchanged",
+                "fallback_clears_stale_workspace_tier",
+                "mid_push_batch_supersession_and_repair",
+                "partial_stream_supersession_client_discard",
+                "result_id_non_eligible_after_terminal_attempt"
+              ]
+            },
+            "generation": { "type": "string", "minLength": 1 }
+          }
+        },
+        "compatibility": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["proposition", "disposition"],
+          "properties": {
+            "proposition": { "type": "string", "minLength": 1 },
+            "disposition": {
+              "enum": [
+                "public_item_dispositioned",
+                "local_adapter_canonical_projection",
+                "workspace_adapter_canonical_projection",
+                "legacy_dto_report_lossiness_recorded",
+                "zero_old_provider_selection",
+                "zero_bare_name_consumer_surface",
+                "raw_scanner_authority_absent",
+                "recurrence_transfer_destination",
+                "failure_cannot_become_compatibility_success"
+              ]
+            }
+          }
+        }
+      }
+    },
+    "factsExpectation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["proposition", "fact_class"],
+      "properties": {
+        "proposition": { "type": "string", "minLength": 1 },
+        "fact_class": {
+          "enum": [
+            "exact_value_or_edge",
+            "unknown_or_partial_value",
+            "recovered_malformed_boundary",
+            "absent_fact_non_edge"
+          ]
+        }
+      }
+    }
+  }
+}

@@ -54,7 +54,8 @@ use tasks::{
     product_health_rail_contract, product_health_status, protocol_type_substrate_matrix,
     provider_confidence_matrix, provider_promotion_ledger, publication_facts, publish,
     publish_closure, publish_manifest_check, publish_receipts, quality_baseline, quality_gate,
-    queue_health, queue_snapshot, receipts, release, release_artifact_check, release_evidence,
+    queue_health, queue_snapshot, reachability_fixture_manifest, receipts, release,
+    release_artifact_check, release_evidence,
     release_notes, release_turnkey, repo_hygiene, ripr_evidence, rust_small_proof, seam_diff,
     semantic_inline_next_edit, semantic_inline_receipts, semantic_scorecard,
     semantic_shadow_compare, semantic_token_classes, session_receipt, shadow_parity,
@@ -139,6 +140,19 @@ enum Commands {
 
     /// Validate declared differential real-Perl oracle fixtures.
     CheckOracleFixtureManifest,
+
+    /// Validate the canonical reachability fixture manifest and claim
+    /// denominator (analysis_reachability_fixture_manifest.v1, #10998):
+    /// fixture identity, metadata schema, validation, coverage accounting,
+    /// and the generated coverage view. Declaration only; it never executes
+    /// semantic or exact-process proof. `--update-view` rewrites the
+    /// generated view (explicit writer action).
+    #[command(name = "check-reachability-fixture-manifest")]
+    CheckReachabilityFixtureManifest {
+        /// Regenerate the committed deterministic coverage view.
+        #[arg(long)]
+        update_view: bool,
+    },
 
     /// List, validate, and explain the compiler lexical cut-line cases
     /// manifest (`compiler_lexical_cutline_cases.v1`, #12156).
@@ -4801,6 +4815,10 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::CheckActiveGoalManifest => active_goal_manifest::run(),
         Commands::CheckProviderPromotionLedger => provider_promotion_ledger::run(),
         Commands::CheckOracleFixtureManifest => oracle_fixture_manifest::run(),
+        Commands::CheckReachabilityFixtureManifest { update_view } => {
+            reachability_fixture_manifest::run(update_view)
+        }
+
         Commands::CompilerLexicalCutline { command } => compiler_lexical_cutline::run(command),
         Commands::CheckOracleReceiptSchema => oracle_receipt_schema::run(),
         Commands::CheckTrainEdgeContract => train_edge_contract::run(),

@@ -3923,3 +3923,47 @@ reason = "Driver template for declared launches only; carries placeholders and z
 covered_by = ["python3 -m unittest discover -s integrations/lsp4ij/host-journey/tests -p test_*.py", "cargo xtask check-file-policy"]
 created = "2026-08-26"
 review_after = "2027-02-26"
+
+# =============================================================================
+# Reachability fixture denominator (#10998)
+# =============================================================================
+
+[[allow]]
+id = "non-rust-reachability-denominator-manifest"
+path = "fixtures/analysis_reachability_denominator/manifest.json"
+kind = "declaration_manifest"
+language = "json"
+surface = "fixtures"
+classification = "config"
+owner = "analysis/reachability"
+reason = "Canonical declaration-only reachability fixture denominator (#10998): fixture identities, metadata schema, validation, coverage accounting and generated views; validated fail-closed by the dedicated xtask checker."
+covered_by = ["cargo xtask check-reachability-fixture-manifest", "cargo test -p xtask --bin xtask reachability", "cargo xtask non-rust inventory --check"]
+created = "2026-08-27"
+review_after = "2027-02-27"
+
+[[allow]]
+id = "non-rust-reachability-denominator-schema"
+path = "schemas/analysis_reachability_fixture_manifest.v1.schema.json"
+kind = "contract_schema"
+language = "json"
+surface = "fixtures"
+classification = "config"
+owner = "analysis/reachability"
+reason = "Pinned JSON Schema for the reachability fixture manifest wire contract; evaluated fail-closed against the manifest by the xtask checker's subset evaluator."
+covered_by = ["cargo xtask check-reachability-fixture-manifest", "cargo test -p xtask --bin xtask reachability"]
+created = "2026-08-27"
+review_after = "2027-02-27"
+
+[[allow]]
+id = "non-rust-reachability-self-fixtures-invalid"
+glob = "fixtures/analysis_reachability_denominator/self_fixtures/invalid/*.json"
+kind = "negative_control_fixture"
+language = "json"
+surface = "fixtures"
+classification = "test"
+owner = "analysis/reachability"
+reason = "Deliberately malformed self-fixture documents with sibling expected_errors.json; the checker's test corpus asserts each parses or violates with its named marker, keeping the fail-closed rules proven, not assumed."
+covered_by = ["cargo test -p xtask --bin xtask reachability"]
+broad_glob_reason = "The invalid corpus grows one file per fail-closed rule; a glob keeps rule tests self-contained exactly like the corpus meta.toml precedent, and every member is consumed by the same test loop."
+created = "2026-08-27"
+review_after = "2027-02-27"
