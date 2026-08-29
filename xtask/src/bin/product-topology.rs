@@ -88,6 +88,7 @@ struct DependencyPolicy {
 struct ExecutablePolicy {
     forbidden_names: Vec<String>,
     forbidden_prefixes: Vec<String>,
+    forbidden_tokens: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -117,6 +118,10 @@ struct CargoTarget {
 struct CargoDependency {
     name: String,
     kind: Option<String>,
+    #[serde(default)]
+    optional: bool,
+    #[serde(default)]
+    rename: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -262,6 +267,7 @@ fn validate(
     let publish_order =
         publish_order_map(&manifest.workspace.metadata.publish.allow, &mut findings);
 
+    validate_publish_denominator(&packages, &publish_order, &mut findings);
     validate_required_packages(policy, &packages, &publish_order, &mut findings);
     validate_optional_service(policy, &packages, &publish_order, &mut findings);
     validate_mcp_stage(policy, &packages, &publish_order, &mut findings);
@@ -356,6 +362,35 @@ fn publish_order_map(
         }
     }
     order
+}
+
+fn validate_publish_denominator(
+    packages: &BTreeMap<String, &CargoPackage>,
+    publish_order: &BTreeMap<String, usize>,
+    findings: &mut BTreeSet<String>,
+) {
+    for package_name in publish_order.keys() {
+        let Some(package) = packages.get(package_name) else {
+            findings.insert(format!(
+                "publish-order: allowlist contains unknown workspace package={package_name}"
+            ));
+            continue;
+        };
+        if !is_publishable(package) {
+            findings.insert(format!(
+                "publish-order: allowlist contains non-publishable workspace package={package_name}"
+            ));
+        }
+    }
+
+    for package in packages.values().filter(|package| is_publishable(package)) {
+        if !publish_order.contains_key(&package.name) {
+            findings.insert(format!(
+                "publish-order: publishable workspace package missing from allowlist={}",
+                package.name
+            ));
+        }
+    }
 }
 
 fn validate_required_packages(
@@ -569,14 +604,18 @@ fn require_normal_dependencies(
     let dependencies = package
         .dependencies
         .iter()
-        .filter(|dependency| dependency.kind.is_none())
+        .filter(|dependency| {
+            dependency.kind.is_none()
+                && !dependency.optional
+                && dependency.rename.is_none()
+        })
         .map(|dependency| dependency.name.as_str())
         .collect::<BTreeSet<_>>();
 
     for dependency in required {
         if !dependencies.contains(dependency.as_str()) {
             findings.insert(format!(
-                "dependency: {owner} package={} requires normal dependency={dependency}",
+                "dependency: {owner} package={} requires normal dependency={dependency} (non-optional, unrenamed)",
                 package.name
             ));
         }
@@ -611,6 +650,26 @@ fn validate_publish_order(
     publish_order: &BTreeMap<String, usize>,
     findings: &mut BTreeSet<String>,
 ) {
+    for package in packages.values().filter(|package| is_publishable(package)) {
+        for dependency in package
+            .dependencies
+            .iter()
+            .filter(|dependency| dependency.kind.is_none())
+        {
+            let Some(dependency_package) = packages.get(&dependency.name) else {
+                continue;
+            };
+            if is_publishable(dependency_package) {
+                require_precedes(
+                    publish_order,
+                    &dependency_package.name,
+                    &package.name,
+                    findings,
+                );
+            }
+        }
+    }
+
     require_precedes(
         publish_order,
         &policy.packages.lsp_library,
@@ -682,7 +741,14 @@ fn validate_reserved_executables(
                 .forbidden_prefixes
                 .iter()
                 .any(|prefix| binary.starts_with(prefix));
-            if forbidden_name || forbidden_prefix {
+            let forbidden_token = binary.split(['-', '_']).any(|token| {
+                policy
+                    .executables
+                    .forbidden_tokens
+                    .iter()
+                    .any(|candidate| candidate == token)
+            });
+            if forbidden_name || forbidden_prefix || forbidden_token {
                 findings.insert(format!(
                     "executable: package={} reserved code-intelligence binary={binary}",
                     package.name
@@ -707,6 +773,8 @@ mod tests {
         CargoDependency {
             name: name.to_owned(),
             kind: None,
+            optional: false,
+            rename: None,
         }
     }
 
@@ -765,6 +833,7 @@ mod tests {
             executables: ExecutablePolicy {
                 forbidden_names: vec!["perl-lsp".to_owned(), "perl-mcp".to_owned()],
                 forbidden_prefixes: vec!["perl-lsp-".to_owned(), "perl-mcp-".to_owned()],
+                forbidden_tokens: vec!["adapter".to_owned(), "server".to_owned()],
             },
         }
     }
@@ -895,6 +964,27 @@ mod tests {
     }
 
     #[test]
+    fn neutral_adapter_or_server_binary_in_another_package_is_rejected() {
+        let (policy, mut metadata, manifest) = fixture(McpStage::Absent);
+        let mut unrelated = package(
+            "unrelated-tooling",
+            "unrelated",
+            "unrelated_tooling",
+            &["code_intelligence_server"],
+            &[],
+        );
+        unrelated.publish = Some(Vec::new());
+        metadata.packages.push(unrelated);
+        metadata.workspace_members.push("unrelated".to_owned());
+
+        let report = validate(&policy, &metadata, &manifest);
+        assert!(has_finding(
+            &report,
+            "reserved code-intelligence binary=code_intelligence_server"
+        ));
+    }
+
+    #[test]
     fn absent_stage_rejects_mcp_package_presence() {
         let (policy, mut metadata, mut manifest) = fixture(McpStage::Absent);
         metadata.packages.push(package(
@@ -998,6 +1088,44 @@ mod tests {
     }
 
     #[test]
+    fn admitted_stage_rejects_optional_required_dependency() {
+        let (policy, mut metadata, manifest) = fixture(McpStage::Admitted);
+        if let Some(mcp) = metadata
+            .packages
+            .iter_mut()
+            .find(|package| package.name == "perl-mcp")
+        {
+            if let Some(dependency) = mcp.dependencies.first_mut() {
+                dependency.optional = true;
+            }
+        }
+        let report = validate(&policy, &metadata, &manifest);
+        assert!(has_finding(
+            &report,
+            "MCP adapter package=perl-mcp requires normal dependency=perl-code-intelligence"
+        ));
+    }
+
+    #[test]
+    fn admitted_stage_rejects_renamed_required_dependency() {
+        let (policy, mut metadata, manifest) = fixture(McpStage::Admitted);
+        if let Some(mcp) = metadata
+            .packages
+            .iter_mut()
+            .find(|package| package.name == "perl-mcp")
+        {
+            if let Some(dependency) = mcp.dependencies.first_mut() {
+                dependency.rename = Some("transport".to_owned());
+            }
+        }
+        let report = validate(&policy, &metadata, &manifest);
+        assert!(has_finding(
+            &report,
+            "MCP adapter package=perl-mcp requires normal dependency=perl-code-intelligence"
+        ));
+    }
+
+    #[test]
     fn lsp_library_cannot_depend_upward_on_mcp() {
         let (policy, mut metadata, manifest) = fixture(McpStage::Admitted);
         if let Some(lsp) = metadata
@@ -1044,6 +1172,22 @@ mod tests {
         assert!(has_finding(
             &report,
             "governed package missing from allowlist=perllsp"
+        ));
+    }
+
+    #[test]
+    fn unknown_publish_allowlist_entry_is_rejected() {
+        let (policy, metadata, mut manifest) = fixture(McpStage::Absent);
+        manifest
+            .workspace
+            .metadata
+            .publish
+            .allow
+            .push("unknown-package".to_owned());
+        let report = validate(&policy, &metadata, &manifest);
+        assert!(has_finding(
+            &report,
+            "allowlist contains unknown workspace package=unknown-package"
         ));
     }
 }
