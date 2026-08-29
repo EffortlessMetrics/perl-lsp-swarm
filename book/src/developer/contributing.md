@@ -434,16 +434,21 @@ The project uses **Dependabot** for automated dependency updates. Dependabot PRs
 - **Minor updates (x.Y.0)** - Require changelog review and testing
 - **Major updates (X.0.0)** - Require deep review, migration planning, and comprehensive testing
 
-For handling Dependabot PRs:
+Dependabot labels are disabled in this repository. Use the bot author to discover candidates, then inspect each PR before enabling merge:
 
 ```bash
-# View all dependency PRs
-gh pr list --label "dependencies"
+# Discover all dependency PRs
+gh pr list --author "app/dependabot"
 
-# Merge passing patch updates
-gh pr list --author "app/dependabot" --search "status:success" --json number --jq '.[].number' | \
-  xargs -I {} gh pr merge {} --auto --squash
+# Inspect one candidate's version table, diff, and checks
+gh pr view <pr-number>
+gh pr checks <pr-number>
+
+# After confirming a patch or security update and completing review
+gh pr merge <pr-number> --auto --squash
 ```
+
+An `app/dependabot` plus `status:success` query is discovery evidence only. It also selects passing minor and major updates, so it must not be piped into `gh pr merge`.
 
 See **[Dependency Management Guide](./docs/how-to/DEPENDENCY_MANAGEMENT.md)** for complete details on:
 - Update strategy and grouping
@@ -647,7 +652,6 @@ Breaking changes include:
 - Backward compatibility periods
 
 ### Emergency Releases
-
 For critical security issues:
 
 1. **Immediate Assessment**: Triage within 24 hours
