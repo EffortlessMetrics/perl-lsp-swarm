@@ -9,6 +9,8 @@ import re
 import sys
 import tomllib
 import unittest
+
+import yaml
 from pathlib import Path
 from typing import Any
 
@@ -47,6 +49,40 @@ CONTRACT_TEST_FILES = (
 CARGO_FMT_RE = re.compile(r"cargo\s+fmt\b")
 
 
+def load_triggers(source: str) -> dict[str, dict[str, Any]]:
+    """Read the `on:` block with a real YAML parser.
+
+    A line-based reader only sees block style, so a flow mapping such as
+    `pull_request: { paths-ignore: ['**.md'] }` hid its own body and the
+    docs-only guard passed on a workflow GitHub would skip for Markdown-only
+    PRs. ci.yml already uses flow style (`merge_group: {}`), so this is a real
+    spelling, not a hypothetical one. Parsing the block as YAML accepts every
+    equivalent representation instead of one shape at a time.
+
+    YAML 1.1 resolves the bare key `on` to boolean True, so both spellings are
+    accepted.
+    """
+    try:
+        document = yaml.safe_load(source)
+    except yaml.YAMLError as error:
+        raise AssertionError(f"workflow source is not valid YAML: {error}") from error
+    if not isinstance(document, dict):
+        raise AssertionError("workflow source is not a YAML mapping")
+    node = document.get("on", document.get(True))
+    if node is None:
+        raise AssertionError("workflow declares no triggers")
+    if isinstance(node, str):
+        return {node: {}}
+    if isinstance(node, list):
+        return {str(event): {} for event in node}
+    if not isinstance(node, dict):
+        raise AssertionError("workflow triggers are not a mapping")
+    return {
+        str(event): (body if isinstance(body, dict) else {})
+        for event, body in node.items()
+    }
+
+
 def load_workflow(text: str | None = None) -> dict[str, Any]:
     """Parse the formatter contract out of ci.yml, or out of `text` when supplied.
 
@@ -55,33 +91,18 @@ def load_workflow(text: str | None = None) -> dict[str, Any]:
     """
     source = WORKFLOW_PATH.read_text(encoding="utf-8") if text is None else text
     lines = source.splitlines()
-    triggers: dict[str, dict[str, Any]] = {}
+    triggers = load_triggers(source)
     job: dict[str, Any] = {"env": {}, "steps": []}
     section = ""
-    current_trigger: str | None = None
     current_step: dict[str, Any] | None = None
     nested: dict[str, str] | None = None
     index = 0
     while index < len(lines):
         parsed = yaml_structure._parse_key_line(lines[index])
         if parsed and parsed.indent == 0:
-            # Any top-level key ends the previous section. Without this,
-            # `concurrency`, `permissions`, and `env` children leaked into the
-            # trigger set and were accepted as if they were workflow events.
-            section = parsed.key if parsed.key in {"on", "jobs"} else ""
-            current_trigger = None
-        elif section == "on" and parsed and parsed.indent == 2:
-            current_trigger = parsed.key
-            triggers[parsed.key] = {}
-        elif (
-            section == "on"
-            and parsed
-            and parsed.indent == 4
-            and current_trigger is not None
-        ):
-            # Trigger bodies must be captured, or the `paths`/`paths-ignore`
-            # guard in validate_contract can never fire.
-            triggers[current_trigger][parsed.key] = yaml_structure._strip_scalar(parsed.value)
+            # Any top-level key ends the previous section, so `concurrency`,
+            # `permissions`, and `env` children cannot be mistaken for jobs.
+            section = parsed.key if parsed.key == "jobs" else ""
         elif section in {"jobs", "other-job"} and parsed and parsed.indent == 2:
             section = "formatter" if parsed.key == JOB_ID else "other-job"
         elif section == "formatter" and parsed:
@@ -122,6 +143,7 @@ def load_workflow(text: str | None = None) -> dict[str, Any]:
 
 
 def load_policy(text: str | None = None) -> dict[str, object]:
+    """Load the required-checks policy from disk, or from `text` when supplied."""
     source = POLICY_PATH.read_text(encoding="utf-8") if text is None else text
     return tomllib.loads(source)
 
@@ -308,6 +330,18 @@ class RustfmtRequiredWorkflowTests(unittest.TestCase):
             validate_contract(self.workflow, broken)
 
 
+def replace_pull_request_trigger(workflow_text: str, replacement: str) -> str:
+    """Swap the entire `on.pull_request` block for `replacement`.
+
+    The real block carries comment lines and a `types:` key, so replacing only
+    its first line would leave them dangling and produce invalid YAML rather
+    than the equivalent workflow the mutation is meant to express.
+    """
+    start = workflow_text.index("  pull_request:\n")
+    end = workflow_text.index("  merge_group:", start)
+    return workflow_text[:start] + replacement + workflow_text[end:]
+
+
 def drop_governed_job(workflow_text: str) -> str:
     """Delete the whole `rust-formatting:` job block from workflow source.
 
@@ -332,6 +366,7 @@ def drop_governed_job(workflow_text: str) -> str:
 
 
 def policy_entry_index(blocks: list[str], name: str) -> int:
+    """Locate the single `[[checks]]` block declaring `name`, or fail closed."""
     hits = [index for index, block in enumerate(blocks) if f'name = "{name}"' in block]
     if len(hits) != 1:
         raise AssertionError(f"expected exactly one {name!r} policy entry, found {len(hits)}")
@@ -373,6 +408,7 @@ class GovernedContextSourceMutationTests(unittest.TestCase):
         self.policy_text = POLICY_PATH.read_text(encoding="utf-8")
 
     def validate_source(self, workflow_text: str, policy_text: str) -> None:
+        """Run the contract against workflow and policy source text."""
         validate_contract(load_workflow(workflow_text), load_policy(policy_text))
 
     def test_unmutated_source_satisfies_the_contract(self) -> None:
@@ -412,6 +448,43 @@ class GovernedContextSourceMutationTests(unittest.TestCase):
         self.assertNotEqual(broken, self.workflow_text)
         with self.assertRaisesRegex(AssertionError, "terminal for docs-only"):
             self.validate_source(broken, self.policy_text)
+
+    def test_flow_style_docs_only_filter_fails_closed(self) -> None:
+        # A line-based reader saw `pull_request: { ... }` as an empty body and
+        # let the docs-only guard pass on a workflow GitHub would skip for
+        # Markdown-only PRs. ci.yml already uses flow style (`merge_group: {}`),
+        # so this spelling is real, not hypothetical.
+        broken = replace_pull_request_trigger(
+            self.workflow_text,
+            "  pull_request: { branches: [ main, master ], paths-ignore: ['**.md'] }\n",
+        )
+        self.assertNotEqual(broken, self.workflow_text)
+        self.assertIn("paths-ignore", load_triggers(broken)["pull_request"])
+        with self.assertRaisesRegex(AssertionError, "terminal for docs-only"):
+            self.validate_source(broken, self.policy_text)
+
+    def test_flow_style_paths_filter_fails_closed(self) -> None:
+        broken = replace_pull_request_trigger(
+            self.workflow_text,
+            "  pull_request: { branches: [ main, master ], paths: ['**.rs'] }\n",
+        )
+        self.assertNotEqual(broken, self.workflow_text)
+        with self.assertRaisesRegex(AssertionError, "terminal for docs-only"):
+            self.validate_source(broken, self.policy_text)
+
+    def test_unparseable_workflow_source_fails_closed(self) -> None:
+        # A corrupted or truncated ci.yml must red the gate with a named error,
+        # not escape as a raw parser exception.
+        with self.assertRaisesRegex(AssertionError, "not valid YAML"):
+            load_triggers(self.workflow_text + "\n  : : :\n\t- bad\n")
+
+    def test_quoted_on_key_is_read_the_same_as_the_bare_key(self) -> None:
+        # YAML 1.1 resolves a bare `on` to boolean True; the quoted spelling
+        # stays a string. Both must yield the same trigger set.
+        quoted = self.workflow_text.replace("\non:\n", '\n"on":\n', 1)
+        self.assertNotEqual(quoted, self.workflow_text)
+        self.assertEqual(load_triggers(quoted), load_triggers(self.workflow_text))
+        self.validate_source(quoted, self.policy_text)
 
     def test_dropping_a_required_trigger_from_source_fails_closed(self) -> None:
         broken = self.workflow_text.replace(
