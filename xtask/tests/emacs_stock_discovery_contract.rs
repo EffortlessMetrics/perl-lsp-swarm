@@ -4,7 +4,7 @@
 //! promote editor support, or treat absence of a built-in entry as server
 //! incompatibility.
 
-#![expect(clippy::expect_used, clippy::panic)]
+#![expect(clippy::expect_used)]
 
 use xtask::editor_client_compat::ClientSourceState;
 use xtask::emacs_stock_discovery::{RegistrationEntry, checked_baseline, render_checked_json};
@@ -86,7 +86,10 @@ fn exact_rows_require_manual_registration_for_perllsp() {
         assert!(
             row.entries.iter().all(|entry| {
                 entry.server_id.as_deref() != Some("perllsp")
-                    && entry.command.first().map(String::as_str) != Some("perllsp")
+                    && entry
+                        .command
+                        .first()
+                        .is_none_or(|program| program != "perllsp")
             }),
             "perllsp absence must be derived from the exact observed entries"
         );
