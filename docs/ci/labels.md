@@ -31,8 +31,18 @@ existing `ci:*` labels already used in some workflows.
 | `ci:parser` | Force parser-related lanes. |
 | `ci:ux` | Force UX regression lane. |
 | `ci:dap` | Force DAP regression lanes. |
+| `ci:public-api` | Run the public API baseline ratchet and fail-closed regression fixture (20-minute timeout). |
 | `ci:security` / `security-audit` | Force audit / deny / Trivy lane. |
 | `release-check` | Run release/package dry-run lanes. |
+
+Label-triggered lanes use GitHub's repository label-write permission as the
+authorization boundary. A label remains authorization across `synchronize`,
+`reopened`, and `ready_for_review` activity until it is removed. Removing a label
+prevents later activity from selecting that lane, but does not cancel a run that
+already started for an earlier event; workflow concurrency cancels stale-head work
+only on `synchronize`. For `ci:public-api` specifically, a `labeled` activity selects
+the lane only when that event added `ci:public-api`; adding an unrelated label does
+not retrigger the public API lane.
 
 Coverage is not PR-label triggered. Use the scheduled/manual coverage workflow
 when coverage diagnostics are needed.
