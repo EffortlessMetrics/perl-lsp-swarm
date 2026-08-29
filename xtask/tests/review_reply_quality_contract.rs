@@ -12,7 +12,11 @@ fn project_root() -> Result<PathBuf, Box<dyn Error>> {
         .to_path_buf())
 }
 
-fn marker_index(skill: &str, marker: &str, provider: &str) -> Result<usize, io::Error> {
+fn marker_index(
+    skill: &str,
+    marker: &str,
+    provider: &str,
+) -> Result<usize, io::Error> {
     skill.find(marker).ok_or_else(|| {
         io::Error::other(format!(
             "{provider} review-response rules must retain marker {marker:?}"
