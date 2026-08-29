@@ -207,6 +207,18 @@ if [[ "$INVALID" -gt 0 ]]; then
     exit 2
 fi
 
+# For a live blocker, restore truthful GitHub state before doing anything that
+# can fail. If evidence posting later fails, the thread remains visibly open
+# rather than falling back to the falsely-clean state this command repairs.
+REOPENED=0
+if [[ "$THREAD_TRANSITION" == "keep_open" && "$IS_RESOLVED" == "true" ]]; then
+    if ! _unresolve_thread "$THREAD" >/dev/null; then
+        echo "ERROR: failed to reopen thread $THREAD before recording non-terminal disposition" >&2
+        exit 2
+    fi
+    REOPENED=1
+fi
+
 if [[ "$EXISTING" -gt 0 ]]; then
     echo "OK matching disposition already exists on thread $THREAD (class=$CLASS, evidence=$EVIDENCE) — reapplying transition without duplicate reply"
 else
@@ -226,11 +238,7 @@ if [[ "$THREAD_TRANSITION" == "resolve" ]]; then
     exit 0
 fi
 
-if [[ "$IS_RESOLVED" == "true" ]]; then
-    if ! _unresolve_thread "$THREAD" >/dev/null; then
-        echo "ERROR: failed to reopen thread $THREAD after non-terminal disposition" >&2
-        exit 2
-    fi
+if [[ "$REOPENED" -eq 1 ]]; then
     echo "OK reopened thread $THREAD (class=$CLASS, evidence=$EVIDENCE, observed_head=$HEAD)"
 else
     echo "OK kept thread $THREAD unresolved (class=$CLASS, evidence=$EVIDENCE, observed_head=$HEAD)"
