@@ -8,6 +8,8 @@ use std::process::{Command, Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use serde::Deserialize;
+
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 
 const PERL_TIMEOUT: Duration = Duration::from_secs(10);
@@ -44,6 +46,38 @@ fn bounded_diagnostic(bytes: &[u8]) -> String {
 
 fn fixture_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/parser_accuracy")
+}
+
+#[derive(Debug, Deserialize)]
+struct ParserAccuracyManifest {
+    fixtures: Vec<ParserAccuracyFixture>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ParserAccuracyFixture {
+    id: String,
+    source_path: PathBuf,
+}
+
+fn import_export_fixture_paths() -> TestResult<(PathBuf, PathBuf)> {
+    let manifest_path = fixture_root().join("manifest.json");
+    let manifest: ParserAccuracyManifest =
+        serde_json::from_str(&fs::read_to_string(&manifest_path)?)?;
+    let repository_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .ok_or_else(|| failure("parser accuracy manifest has no repository root"))?;
+    let consumer = manifest
+        .fixtures
+        .iter()
+        .find(|fixture| fixture.id == "imports_exports")
+        .ok_or_else(|| failure("manifest is missing the imports_exports fixture"))?;
+    let producer = manifest
+        .fixtures
+        .iter()
+        .find(|fixture| fixture.id == "imports_exports_producer")
+        .ok_or_else(|| failure("manifest is missing the imports_exports_producer fixture"))?;
+    Ok((repository_root.join(&consumer.source_path), repository_root.join(&producer.source_path)))
 }
 
 fn environment_value(environment: &[(OsString, OsString)], name: &str) -> Option<OsString> {
@@ -161,9 +195,7 @@ fn bounded_diagnostic_selects_one_line_and_preserves_character_boundaries() {
 
 #[test]
 fn import_export_fixture_is_a_declared_two_file_module_graph() -> TestResult {
-    let root = fixture_root();
-    let producer_path = root.join("Accuracy/ImportsExports.pm");
-    let consumer_path = root.join("imports_exports.pl");
+    let (consumer_path, producer_path) = import_export_fixture_paths()?;
     let producer = fs::read_to_string(&producer_path)?;
     let consumer = fs::read_to_string(&consumer_path)?;
 
@@ -182,12 +214,9 @@ fn import_export_fixture_is_a_declared_two_file_module_graph() -> TestResult {
 
 fn copy_import_export_fixture(root: &Path) -> TestResult {
     fs::create_dir_all(root.join("Accuracy"))?;
-    let fixture_root = fixture_root();
-    fs::copy(fixture_root.join("imports_exports.pl"), root.join("imports_exports.pl"))?;
-    fs::copy(
-        fixture_root.join("Accuracy/ImportsExports.pm"),
-        root.join("Accuracy/ImportsExports.pm"),
-    )?;
+    let (consumer_path, producer_path) = import_export_fixture_paths()?;
+    fs::copy(consumer_path, root.join("imports_exports.pl"))?;
+    fs::copy(producer_path, root.join("Accuracy/ImportsExports.pm"))?;
     Ok(())
 }
 
@@ -216,7 +245,8 @@ fn assert_import_export_copy_rejected(root: &Path, expected: &str) -> TestResult
 #[test]
 fn import_export_negative_control_rejects_missing_producer() -> TestResult {
     let root = tempfile::tempdir()?;
-    fs::copy(fixture_root().join("imports_exports.pl"), root.path().join("imports_exports.pl"))?;
+    let (consumer_path, _) = import_export_fixture_paths()?;
+    fs::copy(consumer_path, root.path().join("imports_exports.pl"))?;
     assert_import_export_copy_rejected(root.path(), "Can't locate Accuracy/ImportsExports.pm")
 }
 
@@ -251,18 +281,18 @@ fn import_export_negative_control_rejects_missing_export() -> TestResult {
 fn import_export_negative_control_rejects_collapsed_topology() -> TestResult {
     let root = tempfile::tempdir()?;
     fs::create_dir_all(root.path())?;
-    let fixture_root = fixture_root();
+    let (consumer_path, producer_path) = import_export_fixture_paths()?;
     let consumer = root.path().join("imports_exports.pl");
-    let mut collapsed = fs::read_to_string(fixture_root.join("imports_exports.pl"))?;
-    collapsed.push_str(&fs::read_to_string(fixture_root.join("Accuracy/ImportsExports.pm"))?);
+    let mut collapsed = fs::read_to_string(consumer_path)?;
+    collapsed.push_str(&fs::read_to_string(producer_path)?);
     fs::write(&consumer, collapsed)?;
     assert_import_export_copy_rejected(root.path(), "Can't locate Accuracy/ImportsExports.pm")
 }
 
 #[test]
 fn import_export_fixture_compiles_with_only_the_declared_module_root() -> TestResult {
+    let (consumer, _) = import_export_fixture_paths()?;
     let root = fixture_root();
-    let consumer = root.join("imports_exports.pl");
     let mut command = isolated_perl_command()?;
     command.current_dir(&root).arg("-I").arg(&root).arg("-c").arg(&consumer);
 
@@ -275,8 +305,8 @@ fn import_export_fixture_compiles_with_only_the_declared_module_root() -> TestRe
 
 #[test]
 fn import_export_fixture_loads_the_expected_imported_symbol() -> TestResult {
+    let (consumer, _) = import_export_fixture_paths()?;
     let root = fixture_root();
-    let consumer = root.join("imports_exports.pl");
     let mut command = isolated_perl_command()?;
     command.current_dir(&root).arg("-I").arg(&root).arg("-e").arg(IMPORT_PROBE).arg(&consumer);
 
@@ -299,6 +329,7 @@ fn governed_perl_probe_denies_hostile_perl_environment() -> TestResult {
         (OsString::from("PERL5LIB"), OsString::from("hostile-module-root")),
         (OsString::from("PERL5OPT"), OsString::from("-MHostile::Prelude")),
         (OsString::from("PERL_LOCAL_LIB_ROOT"), OsString::from("hostile-local-lib")),
+        (OsString::from("PERL_LOCAL_LIB_PREFIX"), OsString::from("hostile-local-prefix")),
         (OsString::from("PERL_MB_OPT"), OsString::from("hostile-mb-opt")),
         (OsString::from("PERL_MM_OPT"), OsString::from("hostile-mm-opt")),
     ];
@@ -323,7 +354,7 @@ fn governed_perl_probe_denies_hostile_perl_environment() -> TestResult {
     require_success(&output, "hostile Perl environment denial probe")?;
 
     let stdout = String::from_utf8(output.stdout)?;
-    if stdout == "isolated\n" {
+    if stdout.trim_end_matches(['\r', '\n']) == "isolated" {
         Ok(())
     } else {
         Err(failure(format!("unexpected environment denial receipt: {stdout:?}")))
