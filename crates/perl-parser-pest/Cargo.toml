@@ -1,12 +1,25 @@
+# Standalone-resolvable manifest (#8771).
+#
+# Every package, dependency, and lint key below is literal: this package must
+# describe itself without borrowing identity, versions, lints, dependencies, or
+# test helpers from the swarm workspace. Do not reintroduce `*.workspace = true`
+# here — `tests/standalone_package.rs` fails closed on workspace inheritance and
+# on any path-only dependency.
+#
+# `version`, `repository`, and `homepage` deliberately still name the current
+# swarm/public lineage. The external `perl-parser-pest` repository does not
+# exist yet (train #8410 / #7373); claiming it here would be false metadata.
+# The pending external owner is recorded under `[package.metadata.extraction]`.
+
 [package]
 name = "perl-parser-pest"
-version.workspace = true
-edition.workspace = true
-rust-version.workspace = true
-authors.workspace = true
-license.workspace = true
-repository.workspace = true
-homepage.workspace = true
+version = "0.17.0"
+edition = "2024"
+rust-version = "1.95"
+authors = ["Steven Zimmerman, CPA <git@effortlesssteven.com>"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/EffortlessMetrics/perl-lsp"
+homepage = "https://github.com/EffortlessMetrics/perl-lsp"
 documentation = "https://docs.rs/perl-parser-pest"
 description = "Legacy Pest-based Perl parser (v2) — maintained as a learning tool and compatibility layer"
 readme = "README.md"
@@ -14,22 +27,31 @@ keywords = ["perl", "parser", "pest", "peg", "ast"]
 categories = ["parsing", "development-tools"]
 include = [
   "src/**",
-  "src/grammar.pest",
+  "tests/**",
+  "examples/**",
   "Cargo.toml",
   "README.md",
-  "LICENSE*",
-  "tests/fixtures/**",
-  "tests/support/**",
-  "tests/fixture_manifest.rs",
+  "CLAUDE.md",
+  "ROADMAP.md",
+  "LICENSE-APACHE",
+  "LICENSE-MIT",
 ]
+
+# Migration disposition, not a claim that the move has happened.
+[package.metadata.extraction]
+status = "pending"
+current_owner = "https://github.com/EffortlessMetrics/perl-lsp"
+tracking_issue = "https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/7373"
+train_issue = "https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/8410"
+note = "repository/homepage stay on the current lineage until the external repository exists."
 
 [dependencies]
 pest = "2.8.6"
 pest_derive = "2.8.6"
-regex.workspace = true
+regex = "1.12.2"
 stacker = "0.1.24"
-thiserror.workspace = true
-serde = { workspace = true }
+thiserror = "2.0.18"
+serde = { version = "1.0.228", features = ["derive"] }
 
 [features]
 default = []
@@ -37,11 +59,9 @@ default = []
 serde = []
 
 [dev-dependencies]
-perl-tdd-support = { workspace = true }
-serde = { workspace = true, features = ["derive"] }
-serde_json.workspace = true
-sha2.workspace = true
-tempfile.workspace = true
+serde_json = "1.0.150"
+sha2 = "0.11.0"
+tempfile = "3.24.0"
 toml = "1.1.2"
 
 [lib]
@@ -51,5 +71,33 @@ doctest = false
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
-[lints]
-workspace = true
+# Literal copy of the workspace lint policy this package is accepted under, so
+# the same checks reproduce outside the workspace (#8771). Keep in step with
+# the root `[workspace.lints]` while the package is still embedded.
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+dbg_macro = "deny"
+await_holding_lock = "deny"
+await_holding_refcell_ref = "deny"
+mutex_atomic = "warn"
+collapsible_if = "deny"
+collapsible_match = "deny"
+decimal_bitwise_operands = "warn"
+duration_suboptimal_units = "warn"
+needless_type_cast = "warn"
+manual_ilog2 = "deny"
+manual_take = "deny"
+unnecessary_trailing_comma = "warn"
+wildcard_imports = "warn"
+print_stderr = "deny"
+print_stdout = "deny"
+same_length_and_capacity = "deny"
+ptr_arg = "deny"
+disallowed_fields = "deny"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(ci)', 'cfg(feature, values("slow_tests"))'] }

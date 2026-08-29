@@ -5,7 +5,7 @@ This file provides guidance to Claude Code when working with code in this reposi
 ## Crate Overview
 
 - **Crate**: `perl-parser-pest`
-- **Version**: workspace (currently 0.12.3)
+- **Version**: `0.17.0`, declared literally in this crate's own `Cargo.toml` (not inherited — see "Standalone manifest" below)
 - **Tier**: 7 (Legacy/testing)
 - **Purpose**: Legacy Pest-based Perl parser (v2) -- maintained as a learning tool, compatibility reference, and benchmark baseline. NOT in the default CI gate.
 
@@ -42,13 +42,16 @@ cargo doc -p perl-parser-pest --open     # View docs
 
 ### Dependencies
 
+Every dependency is a published ecosystem crate pinned to an explicit version in
+this crate's manifest. There are no path or workspace-alias dependencies.
+
 - `pest`, `pest_derive` -- PEG parser generator (grammar in `src/grammar.pest`)
 - `stacker` -- stack overflow protection for deep recursion
 - `thiserror` -- error derive macros
-- `serde`, `postcard` -- serialization (always enabled; `serde` feature flag is a no-op alias)
+- `serde` (with `derive`) -- serialization (always enabled; the `serde` feature flag is a no-op alias)
 - `regex` -- pattern matching within parser
-- `unicode-ident` -- Unicode identifier support
-- `once_cell`, `lazy_static` -- lazy initialization
+
+Dev-dependencies: `serde_json`, `sha2`, `tempfile`, `toml` -- all published.
 
 ### Three-Stage Pipeline
 
@@ -84,6 +87,42 @@ tests/support/**
 Load and select through a caller-supplied package root (`CARGO_MANIFEST_DIR`),
 not the workspace root. Duplicate IDs, path escape, missing sources, empty
 selection, and parser panics fail closed as instrument errors.
+
+## Standalone manifest (`#8771`)
+
+This package describes and tests itself without borrowing from the workspace.
+`Cargo.toml` carries literal identity, MSRV, dependency versions, and a literal
+`[lints.clippy]` / `[lints.rust]` policy instead of `*.workspace = true`, and no
+dependency or dev-dependency is path-only. `tests/standalone_package.rs` is the
+guard: it fails closed on reintroduced workspace inheritance, a path dependency,
+a dropped lint denial, a falsely-external `repository`/`homepage`, an unpackaged
+load-bearing asset, or a returning swarm test-helper import.
+
+Two consequences for anyone editing this crate:
+
+- **Do not reintroduce `workspace = true` here.** When root `[workspace.lints]`
+  changes, mirror the change into this manifest deliberately.
+- **Do not add a path dependency**, including test helpers. `perl-tdd-support`
+  is replaced by `tests/support/assert.rs` (`must` / `must_err`, same
+  `#[track_caller]` and type-name diagnostics), included per test binary via
+  `#[path = "support/assert.rs"] mod assert;`. The `src/pure_rust_parser.rs`
+  unit tests carry their own file-local copy so the v2 bundle twin stays
+  byte-identical.
+
+`repository`/`homepage` deliberately still name the current swarm/public
+lineage; the external `perl-parser-pest` repository does not exist yet. The
+pending owner is recorded under `[package.metadata.extraction]`, not by
+hard-coding a future URL.
+
+Known limitation: the package's `include` set and manifest are proven
+structurally. Executing an unpacked copy outside the workspace is the next
+train row's claim, not this one's.
+
+## Public example
+
+`examples/parse_basic.rs` is the compiled proof that the documented entry point
+still type-checks — `[lib] doctest = false` means the README snippet is not.
+Keep them in step.
 
 ## Important Notes
 

@@ -2,7 +2,10 @@
 use perl_parser_pest::error::{ParseErrorKind, ScannerError, UnicodeError};
 use perl_parser_pest::pratt_parser::Associativity;
 use perl_parser_pest::{ParseError, PrattParser};
-use perl_tdd_support::must_err;
+#[path = "support/assert.rs"]
+mod assert;
+
+use assert::must_err;
 
 fn invalid_token_message(error: ParseError) -> Result<String, Box<dyn std::error::Error>> {
     match error {

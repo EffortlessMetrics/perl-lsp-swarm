@@ -13,7 +13,10 @@
 #![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use perl_parser_pest::PureRustPerlParser;
-use perl_tdd_support::{must, must_err};
+#[path = "support/assert.rs"]
+mod assert;
+
+use assert::{must, must_err};
 
 fn parse_to_sexp(source: &str) -> String {
     let mut parser = PureRustPerlParser::new();
