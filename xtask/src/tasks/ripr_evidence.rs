@@ -8086,13 +8086,8 @@ paths = ["archive/**"]
             bail!("set RIPR_LARGE_RAW_CHECK to a retained raw-check.json to run this probe");
         };
         let started = Instant::now();
-        match ripr_check_ingestion_from_file(
-            Path::new(&path),
-            &no_suppressions(),
-            None,
-            None,
-            None,
-        ) {
+        match ripr_check_ingestion_from_file(Path::new(&path), &no_suppressions(), None, None, None)
+        {
             Ok(ingestion) => println!(
                 "ingested {} in {:?}: weakly_exposed={} reachable_unrevealed={} no_static_path={}",
                 Path::new(&path).display(),
