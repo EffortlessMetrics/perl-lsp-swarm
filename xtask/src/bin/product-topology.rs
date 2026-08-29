@@ -894,15 +894,31 @@ mod tests {
         report.findings.iter().any(|finding| finding.contains(needle))
     }
 
-    #[test]
-    fn absent_stage_accepts_current_product_shape() {
-        let (policy, metadata, manifest) = fixture(McpStage::Absent);
-        let report = validate(&policy, &metadata, &manifest);
-        assert!(report.findings.is_empty(), "{:?}", report.findings);
+    fn require_no_findings(report: &ValidationReport) -> Result<()> {
+        if report.findings.is_empty() {
+            Ok(())
+        } else {
+            bail!("unexpected validation findings: {:?}", report.findings)
+        }
+    }
+
+    fn require_finding(report: &ValidationReport, needle: &str) -> Result<()> {
+        if has_finding(report, needle) {
+            Ok(())
+        } else {
+            bail!("expected finding containing {needle:?}; got {:?}", report.findings)
+        }
     }
 
     #[test]
-    fn retired_lsp_binary_is_rejected() {
+    fn absent_stage_accepts_current_product_shape() -> Result<()> {
+        let (policy, metadata, manifest) = fixture(McpStage::Absent);
+        let report = validate(&policy, &metadata, &manifest);
+        require_no_findings(&report)
+    }
+
+    #[test]
+    fn retired_lsp_binary_is_rejected() -> Result<()> {
         let (policy, mut metadata, manifest) = fixture(McpStage::Absent);
         if let Some(package) =
             metadata.packages.iter_mut().find(|package| package.name == "perl-lsp-rs")
@@ -910,11 +926,11 @@ mod tests {
             package.targets.push(target("perl-lsp", "bin"));
         }
         let report = validate(&policy, &metadata, &manifest);
-        assert!(has_finding(&report, "reserved code-intelligence binary=perl-lsp"));
+        require_finding(&report, "reserved code-intelligence binary=perl-lsp")
     }
 
     #[test]
-    fn prefixed_adapter_binary_is_rejected() {
+    fn prefixed_adapter_binary_is_rejected() -> Result<()> {
         let (policy, mut metadata, manifest) = fixture(McpStage::Absent);
         if let Some(package) =
             metadata.packages.iter_mut().find(|package| package.name == "perllsp")
@@ -922,11 +938,11 @@ mod tests {
             package.targets.push(target("perl-mcp-helper", "bin"));
         }
         let report = validate(&policy, &metadata, &manifest);
-        assert!(has_finding(&report, "reserved code-intelligence binary=perl-mcp-helper"));
+        require_finding(&report, "reserved code-intelligence binary=perl-mcp-helper")
     }
 
     #[test]
-    fn neutral_adapter_or_server_binary_in_another_package_is_rejected() {
+    fn neutral_adapter_or_server_binary_in_another_package_is_rejected() -> Result<()> {
         let (policy, mut metadata, manifest) = fixture(McpStage::Absent);
         let mut unrelated = package(
             "unrelated-tooling",
@@ -940,11 +956,11 @@ mod tests {
         metadata.workspace_members.push("unrelated".to_owned());
 
         let report = validate(&policy, &metadata, &manifest);
-        assert!(has_finding(&report, "reserved code-intelligence binary=code_intelligence_server"));
+        require_finding(&report, "reserved code-intelligence binary=code_intelligence_server")
     }
 
     #[test]
-    fn absent_stage_rejects_mcp_package_presence() {
+    fn absent_stage_rejects_mcp_package_presence() -> Result<()> {
         let (policy, mut metadata, mut manifest) = fixture(McpStage::Absent);
         metadata.packages.push(package(
             "perl-mcp",
@@ -957,33 +973,29 @@ mod tests {
         manifest.workspace.metadata.publish.allow.insert(1, "perl-mcp".to_owned());
 
         let report = validate(&policy, &metadata, &manifest);
-        assert!(has_finding(&report, "stage=absent: package must not exist package=perl-mcp"));
+        require_finding(&report, "stage=absent: package must not exist package=perl-mcp")
     }
 
     #[test]
-    fn admitted_stage_requires_mcp_package() {
+    fn admitted_stage_requires_mcp_package() -> Result<()> {
         let (policy, mut metadata, mut manifest) = fixture(McpStage::Admitted);
         metadata.packages.retain(|package| package.name != "perl-mcp");
         metadata.workspace_members.retain(|member| member != "mcp");
         manifest.workspace.metadata.publish.allow.retain(|package| package != "perl-mcp");
 
         let report = validate(&policy, &metadata, &manifest);
-        assert!(has_finding(&report, "required workspace package missing=perl-mcp"));
+        require_finding(&report, "required workspace package missing=perl-mcp")
     }
 
     #[test]
     fn admitted_stage_accepts_resolved_workspace_dependency() -> Result<()> {
         let (policy, metadata, manifest) = fixture(McpStage::Admitted);
         let report = validate(&policy, &metadata, &manifest);
-        if report.findings.is_empty() {
-            Ok(())
-        } else {
-            bail!("resolved workspace dependency was rejected: {report:?}")
-        }
+        require_no_findings(&report)
     }
 
     #[test]
-    fn admitted_or_required_stage_requires_governed_transport_workspace_package() {
+    fn admitted_or_required_stage_requires_governed_transport_workspace_package() -> Result<()> {
         for stage in [McpStage::Admitted, McpStage::Required] {
             let (policy, mut metadata, mut manifest) = fixture(stage);
             metadata.packages.retain(|package| package.name != "perl-code-intelligence");
@@ -996,17 +1008,18 @@ mod tests {
                 .retain(|package| package != "perl-code-intelligence");
 
             let report = validate(&policy, &metadata, &manifest);
-            assert!(has_finding(
+            require_finding(
                 &report,
                 &format!(
                     "stage={stage}: governed workspace package missing=perl-code-intelligence"
-                )
-            ));
+                ),
+            )?;
         }
+        Ok(())
     }
 
     #[test]
-    fn admitted_stage_rejects_executable_mcp_adapter() {
+    fn admitted_stage_rejects_executable_mcp_adapter() -> Result<()> {
         let (policy, mut metadata, manifest) = fixture(McpStage::Admitted);
         if let Some(package) =
             metadata.packages.iter_mut().find(|package| package.name == "perl-mcp")
@@ -1014,12 +1027,12 @@ mod tests {
             package.targets.push(target("perl-mcp", "bin"));
         }
         let report = validate(&policy, &metadata, &manifest);
-        assert!(has_finding(&report, "target-shape: package=perl-mcp binary_targets"));
-        assert!(has_finding(&report, "reserved code-intelligence binary=perl-mcp"));
+        require_finding(&report, "target-shape: package=perl-mcp binary_targets")?;
+        require_finding(&report, "reserved code-intelligence binary=perl-mcp")
     }
 
     #[test]
-    fn admitted_stage_rejects_wrong_publish_order() {
+    fn admitted_stage_rejects_wrong_publish_order() -> Result<()> {
         let (policy, metadata, mut manifest) = fixture(McpStage::Admitted);
         manifest.workspace.metadata.publish.allow = vec![
             "perl-lsp-rs".to_owned(),
@@ -1029,11 +1042,11 @@ mod tests {
             "perllsp".to_owned(),
         ];
         let report = validate(&policy, &metadata, &manifest);
-        assert!(has_finding(&report, "dependency=perl-code-intelligence"));
+        require_finding(&report, "dependency=perl-code-intelligence")
     }
 
     #[test]
-    fn required_stage_requires_product_dependency() {
+    fn required_stage_requires_product_dependency() -> Result<()> {
         let (policy, mut metadata, manifest) = fixture(McpStage::Required);
         if let Some(product) =
             metadata.packages.iter_mut().find(|package| package.name == "perllsp")
@@ -1041,14 +1054,14 @@ mod tests {
             product.dependencies.retain(|dependency| dependency.name != "perl-mcp");
         }
         let report = validate(&policy, &metadata, &manifest);
-        assert!(has_finding(
+        require_finding(
             &report,
-            "stage=required product package=perllsp requires normal dependency=perl-mcp"
-        ));
+            "stage=required product package=perllsp requires normal dependency=perl-mcp",
+        )
     }
 
     #[test]
-    fn admitted_stage_rejects_product_mcp_adapter_dependency() {
+    fn admitted_stage_rejects_product_mcp_adapter_dependency() -> Result<()> {
         let (policy, mut metadata, manifest) = fixture(McpStage::Admitted);
         if let Some(product) =
             metadata.packages.iter_mut().find(|package| package.name == "perllsp")
@@ -1056,14 +1069,14 @@ mod tests {
             product.dependencies.push(dependency("perl-mcp"));
         }
         let report = validate(&policy, &metadata, &manifest);
-        assert!(has_finding(
+        require_finding(
             &report,
-            "stage=admitted product package=perllsp forbids dependency=perl-mcp"
-        ));
+            "stage=admitted product package=perllsp forbids dependency=perl-mcp",
+        )
     }
 
     #[test]
-    fn admitted_stage_rejects_optional_required_dependency() {
+    fn admitted_stage_rejects_optional_required_dependency() -> Result<()> {
         let (policy, mut metadata, manifest) = fixture(McpStage::Admitted);
         if let Some(mcp) = metadata.packages.iter_mut().find(|package| package.name == "perl-mcp") {
             if let Some(dependency) = mcp.dependencies.first_mut() {
@@ -1071,14 +1084,14 @@ mod tests {
             }
         }
         let report = validate(&policy, &metadata, &manifest);
-        assert!(has_finding(
+        require_finding(
             &report,
-            "MCP adapter package=perl-mcp requires normal dependency=perl-code-intelligence"
-        ));
+            "MCP adapter package=perl-mcp requires normal dependency=perl-code-intelligence",
+        )
     }
 
     #[test]
-    fn admitted_stage_rejects_renamed_required_dependency() {
+    fn admitted_stage_rejects_renamed_required_dependency() -> Result<()> {
         let (policy, mut metadata, manifest) = fixture(McpStage::Admitted);
         if let Some(mcp) = metadata.packages.iter_mut().find(|package| package.name == "perl-mcp") {
             if let Some(dependency) = mcp.dependencies.first_mut() {
@@ -1086,14 +1099,14 @@ mod tests {
             }
         }
         let report = validate(&policy, &metadata, &manifest);
-        assert!(has_finding(
+        require_finding(
             &report,
-            "MCP adapter package=perl-mcp requires normal dependency=perl-code-intelligence"
-        ));
+            "MCP adapter package=perl-mcp requires normal dependency=perl-code-intelligence",
+        )
     }
 
     #[test]
-    fn admitted_stage_rejects_external_required_dependency() {
+    fn admitted_stage_rejects_external_required_dependency() -> Result<()> {
         let (policy, mut metadata, manifest) = fixture(McpStage::Admitted);
         if let Some(mcp) = metadata.packages.iter_mut().find(|package| package.name == "perl-mcp") {
             if let Some(dependency) = mcp.dependencies.first_mut() {
@@ -1102,10 +1115,10 @@ mod tests {
             }
         }
         let report = validate(&policy, &metadata, &manifest);
-        assert!(has_finding(
+        require_finding(
             &report,
-            "MCP adapter package=perl-mcp requires normal dependency=perl-code-intelligence"
-        ));
+            "MCP adapter package=perl-mcp requires normal dependency=perl-code-intelligence",
+        )
     }
 
     #[test]
@@ -1132,18 +1145,14 @@ mod tests {
         service_edge.pkg = external_id.to_owned();
 
         let report = validate(&policy, &metadata, &manifest);
-        if has_finding(
+        require_finding(
             &report,
             "MCP adapter package=perl-mcp requires normal dependency=perl-code-intelligence",
-        ) {
-            Ok(())
-        } else {
-            bail!("same-name non-member path dependency was accepted: {report:?}")
-        }
+        )
     }
 
     #[test]
-    fn lsp_library_cannot_depend_upward_on_mcp() {
+    fn lsp_library_cannot_depend_upward_on_mcp() -> Result<()> {
         let (policy, mut metadata, manifest) = fixture(McpStage::Admitted);
         if let Some(lsp) =
             metadata.packages.iter_mut().find(|package| package.name == "perl-lsp-rs")
@@ -1151,41 +1160,32 @@ mod tests {
             lsp.dependencies.push(dependency("perl-mcp"));
         }
         let report = validate(&policy, &metadata, &manifest);
-        assert!(has_finding(
-            &report,
-            "LSP library package=perl-lsp-rs forbids dependency=perl-mcp"
-        ));
+        require_finding(&report, "LSP library package=perl-lsp-rs forbids dependency=perl-mcp")
     }
 
     #[test]
-    fn mcp_adapter_cannot_depend_on_lsp_runtime() {
+    fn mcp_adapter_cannot_depend_on_lsp_runtime() -> Result<()> {
         let (policy, mut metadata, manifest) = fixture(McpStage::Admitted);
         if let Some(mcp) = metadata.packages.iter_mut().find(|package| package.name == "perl-mcp") {
             mcp.dependencies.push(dependency("perl-lsp-rs-core"));
         }
         let report = validate(&policy, &metadata, &manifest);
-        assert!(has_finding(
-            &report,
-            "MCP adapter package=perl-mcp forbids dependency=perl-lsp-rs-core"
-        ));
+        require_finding(&report, "MCP adapter package=perl-mcp forbids dependency=perl-lsp-rs-core")
     }
 
     #[test]
-    fn missing_publish_evidence_is_rejected() {
+    fn missing_publish_evidence_is_rejected() -> Result<()> {
         let (policy, metadata, mut manifest) = fixture(McpStage::Absent);
         manifest.workspace.metadata.publish.allow.retain(|package| package != "perllsp");
         let report = validate(&policy, &metadata, &manifest);
-        assert!(has_finding(&report, "governed package missing from allowlist=perllsp"));
+        require_finding(&report, "governed package missing from allowlist=perllsp")
     }
 
     #[test]
-    fn unknown_publish_allowlist_entry_is_rejected() {
+    fn unknown_publish_allowlist_entry_is_rejected() -> Result<()> {
         let (policy, metadata, mut manifest) = fixture(McpStage::Absent);
         manifest.workspace.metadata.publish.allow.push("unknown-package".to_owned());
         let report = validate(&policy, &metadata, &manifest);
-        assert!(has_finding(
-            &report,
-            "allowlist contains unknown workspace package=unknown-package"
-        ));
+        require_finding(&report, "allowlist contains unknown workspace package=unknown-package")
     }
 }
