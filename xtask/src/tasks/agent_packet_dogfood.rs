@@ -524,6 +524,13 @@ fn extract_uri_scheme(text: &str, colon: usize) -> Option<&str> {
 fn uri_scheme_for_path(text: &str, start: usize) -> Option<&str> {
     let prefix = &text[..start];
     if let Some(colon) = prefix.rfind("://") {
+        // A scheme governs only the current URI token.  Do not let an earlier
+        // URL carry across whitespace and exempt a later machine-local path.
+        if text[colon + 3..start].chars().any(char::is_whitespace)
+            || text.as_bytes().get(start).is_some_and(u8::is_ascii_whitespace)
+        {
+            return None;
+        }
         return extract_uri_scheme(text, colon);
     }
     if start >= 1
@@ -569,6 +576,17 @@ fn protocol_relative_url_start(text: &str, start: usize) -> Option<usize> {
             || host.eq_ignore_ascii_case("localhost")
             || host.starts_with('['))
     {
+        return None;
+    }
+    // A dotted host is not enough to distinguish a protocol-relative URL from
+    // a dotted UNC share on Windows.  Keep the exemption narrow to the URL
+    // form this validator needs to preserve: a URL carrying a drive-like
+    // segment. Ordinary `//host/share` remains local-path evidence.
+    let remainder = &text[host_end..];
+    let has_drive_like_segment = remainder.as_bytes().windows(3).any(|bytes| {
+        bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && bytes[2] == b'/'
+    });
+    if !has_drive_like_segment {
         return None;
     }
     Some(url_start)

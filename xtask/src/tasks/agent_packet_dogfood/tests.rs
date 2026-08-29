@@ -403,6 +403,7 @@ fn negative_machine_local_path_in_payload_fails_closed() {
         "/usr/local/lib/perl",
         "\\\\build-server\\share\\secret.log",
         "//build-server/share/secret.log",
+        "//build-server.example/share/secret.log",
         "file:///tmp/agent-secret.json",
         "../private/secret.json",
         "..\\private\\secret.json",
@@ -431,6 +432,16 @@ fn positive_uri_text_is_not_misclassified_as_a_drive_path() {
         !violations.iter().any(|violation| violation.code == "local_path_in_payload"),
         "URI text must not trigger a local-path violation: {violations:?}"
     );
+}
+
+#[test]
+fn negative_uri_boundary_does_not_exempt_a_following_local_path() {
+    let violations = mutant(base_manifest(), |doc| {
+        doc["events"][0]["payload"] = json!({
+            "message": "https://example.test/docs /tmp/secret"
+        });
+    });
+    assert_contains(&violations, "local_path_in_payload");
 }
 
 #[test]

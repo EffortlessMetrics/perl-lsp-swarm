@@ -268,5 +268,38 @@ fn stamp_cli_does_not_echo_caller_controlled_manifest_paths() -> Result<()> {
     );
     assert!(!stderr.contains(leaked), "stamp parse error leaked path content: {stderr}");
     assert!(!stderr.contains(&malformed_text), "stamp parse error echoed manifest path: {stderr}");
+
+    let unreadable = temp.path().join("api_key=hunter2-missing-report.json");
+    let output = Command::cargo_bin("xtask")?
+        .args(report_args("markdown", std::slice::from_ref(&unreadable)))
+        .output()?;
+    assert!(!output.status.success(), "missing report manifest must fail");
+    let stderr = String::from_utf8(output.stderr)?;
+    let unreadable_text = unreadable.to_string_lossy().into_owned();
+    assert!(
+        stderr.contains("failed to read caller-supplied manifest"),
+        "missing generic report read error: {stderr}"
+    );
+    assert!(!stderr.contains("api_key=hunter2"), "report read error leaked path content: {stderr}");
+    assert!(!stderr.contains(&unreadable_text), "report read error echoed manifest path: {stderr}");
+
+    let readonly = temp.path().join("api_key=hunter2-readonly.json");
+    fs::write(&readonly, serde_json::to_vec_pretty(&fixture_document()?)?)?;
+    let mut permissions = fs::metadata(&readonly)?.permissions();
+    permissions.set_readonly(true);
+    fs::set_permissions(&readonly, permissions)?;
+    let output = Command::cargo_bin("xtask")?
+        .args(["agent-dogfood", "stamp", "--manifest"])
+        .arg(&readonly)
+        .output()?;
+    assert!(!output.status.success(), "read-only stamp target must fail");
+    let stderr = String::from_utf8(output.stderr)?;
+    let readonly_text = readonly.to_string_lossy().into_owned();
+    assert!(
+        stderr.contains("failed to write caller-supplied manifest"),
+        "missing generic stamp write error: {stderr}"
+    );
+    assert!(!stderr.contains("api_key=hunter2"), "stamp write error leaked path content: {stderr}");
+    assert!(!stderr.contains(&readonly_text), "stamp write error echoed manifest path: {stderr}");
     Ok(())
 }
