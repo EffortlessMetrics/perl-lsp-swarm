@@ -99,9 +99,17 @@ Failure output includes sample uncovered lines and repair guidance. Treat those 
 
 When Codecov runs on the nightly/manual lane:
 
-1. **Codecov / Patch 95**: Must pass with 95% coverage on changed lines
-2. **codecov/patch**: Cloud upload/report status is informational
-3. **Project Coverage**: Informational during burn-down
+1. The advisory coverage job runs outside the PR critical path
+2. Coverage data is uploaded to Codecov
+3. Codecov shows:
+   - Overall coverage percentage
+   - Coverage diff (lines added/removed)
+   - Per-file coverage changes
+   - Flags for each crate (parser, lsp, lexer, dap, corpus)
+
+The nightly coverage lane also generates branch coverage in `lcov.info` and
+checks it against `.ci/coverage-baseline.txt`. That lane remains a diagnostic
+ratchet outside normal PR and merge-queue validation.
 
 ### Coverage Badge
 
@@ -176,7 +184,12 @@ Set this GitHub Actions secret at the repository or organization level:
 
 - `CODECOV_TOKEN`
 
-The coverage upload uses this token for Codecov telemetry.
+The coverage upload uses this token for Codecov telemetry. The advisory patch
+proof is the local `Codecov / Patch 95` quality-gate receipt, not the upload
+step: CI sets `fail_ci_if_error: false`, and `codecov.yml` sets
+`require_ci_to_pass: false`, patch `informational: true`, and patch
+`if_ci_failed: ignore` so unrelated routed test failures remain in test-named
+gates.
 
 ## Configuration Files
 
@@ -340,6 +353,6 @@ Do not add `@codecov/vite-plugin` until the extension adopts a supported JavaScr
 
 ## References
 
-- [cargo-llvm-cov](https://github.com/taiki-e/cargo-llvm-cov) - cargo-llvm-cov project
-- [Codecov](https://about.codecov.io/) - Codecov website
-- [Rust Coverage](https://doc.rust-lang.org/rustc/instrument-coverage.html) - Rust coverage documentation
+- [cargo-llvm-cov](https://github.com/taiki-e/cargo-llvm-cov) - Coverage tool
+- [Codecov Documentation](https://docs.codecov.com/) - Service documentation
+- [Rust instrumentation-based coverage](https://doc.rust-lang.org/rustc/instrument-coverage.html) - rustc coverage
