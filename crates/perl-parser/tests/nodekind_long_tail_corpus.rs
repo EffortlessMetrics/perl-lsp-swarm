@@ -17,30 +17,32 @@ fn existing_long_tail_fixture_is_discovered_and_emits_exact_nodekinds() -> TestR
     let source = fs::read_to_string(&fixture_path)?;
     let corpus_paths = perl_corpus::files::CorpusPaths::from_root(workspace_root);
 
-    assert!(
-        perl_corpus::files::get_test_files_from(&corpus_paths).contains(&fixture_path),
-        "the checkout fixture must be part of the explicitly rooted project-corpus population"
-    );
+    if !perl_corpus::files::get_test_files_from(&corpus_paths).contains(&fixture_path) {
+        return Err(
+            "the checkout fixture must be part of the explicitly rooted project-corpus population"
+                .into(),
+        );
+    }
 
     let mut parser = Parser::new(&source);
     let output = parser.parse_with_recovery();
-    assert!(
-        output.diagnostics.is_empty(),
-        "the long-tail fixture must parse cleanly; observed {} diagnostic(s)",
-        output.diagnostics.len()
-    );
+    if !output.diagnostics.is_empty() {
+        return Err(format!(
+            "the long-tail fixture must parse cleanly; observed {} diagnostic(s)",
+            output.diagnostics.len()
+        )
+        .into());
+    }
 
     for expected_span in ["%config{qw(host port)}", "%config{qw(user)}"] {
-        assert!(
-            contains_key_value_slice(&output.ast, &source, expected_span),
-            "the fixture must emit KeyValueSlice for `{expected_span}`"
-        );
+        if !contains_key_value_slice(&output.ast, &source, expected_span) {
+            return Err(format!("the fixture must emit KeyValueSlice for `{expected_span}`").into());
+        }
     }
     for expected_value in ["v65.66.67", "v76.111.111"] {
-        assert!(
-            contains_vstring(&output.ast, &source, expected_value),
-            "the fixture must emit VString for `{expected_value}`"
-        );
+        if !contains_vstring(&output.ast, &source, expected_value) {
+            return Err(format!("the fixture must emit VString for `{expected_value}`").into());
+        }
     }
 
     Ok(())
