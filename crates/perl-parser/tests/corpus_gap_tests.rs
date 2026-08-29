@@ -1,6 +1,10 @@
 // Test harness for corpus gap coverage
 // These tests ensure the parser handles real-world Perl features missing from original corpus
 
+// Intentional stdout diagnostics: per-file benchmark timings are the bench output.
+#![allow(clippy::print_stdout)]
+#![allow(clippy::print_stderr)]
+
 use perl_parser::Parser;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -69,6 +73,18 @@ mod corpus_gap_tests {
     fn read_corpus_file(filename: &str) -> Result<String, Box<dyn std::error::Error>> {
         let path = resolve_corpus_path(filename)?;
         Ok(fs::read_to_string(path)?)
+    }
+
+    /// Decode corpus bytes with the product-side source contract (#1387):
+    /// UTF-8 first, falling back to per-byte Latin-1. Corpus fixtures such as
+    /// `legacy_encoding.pl` are deliberately non-UTF-8, so a strict
+    /// `read_to_string` would abort the whole corpus walk before parsing.
+    fn read_corpus_source(path: &Path) -> std::io::Result<String> {
+        let bytes = fs::read(path)?;
+        match String::from_utf8(bytes) {
+            Ok(text) => Ok(text),
+            Err(err) => Ok(err.into_bytes().into_iter().map(char::from).collect()),
+        }
     }
 
     // Helper to test a corpus file doesn't crash the parser
@@ -333,8 +349,8 @@ mod corpus_gap_tests {
                 !sexp.contains("ERROR"),
                 "expected no ERROR nodes for hash-slice qw delimiter form, got: {sexp}"
             );
-            assert!(sexp.contains("\"red\""), "expected red key in qw list, got: {sexp}");
-            assert!(sexp.contains("\"blue\""), "expected blue key in qw list, got: {sexp}");
+            assert!(sexp.contains("(value red)"), "expected red key in qw list, got: {sexp}");
+            assert!(sexp.contains("(value blue)"), "expected blue key in qw list, got: {sexp}");
         }
 
         Ok(())
@@ -357,7 +373,7 @@ mod corpus_gap_tests {
             "expected no ERROR nodes for postfix deref in grep/map, got: {sexp}"
         );
         assert!(sexp.contains("enabled"), "expected enabled key in AST, got: {sexp}");
-        assert!(sexp.contains("\"owner\""), "expected owner key in AST, got: {sexp}");
+        assert!(sexp.contains("(value owner)"), "expected owner key in AST, got: {sexp}");
         Ok(())
     }
 
@@ -467,7 +483,7 @@ mod corpus_gap_tests {
         let mut failures = Vec::new();
 
         for path in &files {
-            let content = fs::read_to_string(path)?;
+            let content = read_corpus_source(path)?;
             let mut parser = Parser::new(&content);
 
             if let Err(e) = parser.parse() {
@@ -499,7 +515,7 @@ mod corpus_gap_tests {
         const MAX_PER_PARSE_MS: u128 = 500;
 
         for path in &files {
-            let content = fs::read_to_string(path)?;
+            let content = read_corpus_source(path)?;
             let display = path.display().to_string();
 
             let start = Instant::now();

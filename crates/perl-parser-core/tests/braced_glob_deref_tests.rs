@@ -6,16 +6,16 @@ use perl_parser_core::Parser;
 use perl_tdd_support::must;
 
 fn find_unary_operand<'a>(node: &'a Node, operator: &str) -> Option<&'a Node> {
-    if let NodeKind::Unary { op, operand } = &node.kind {
-        if op == operator {
-            return Some(operand);
-        }
+    if let NodeKind::Unary { op, operand } = &node.kind
+        && op == operator
+    {
+        return Some(operand);
     }
 
     node.children().into_iter().find_map(|child| find_unary_operand(child, operator))
 }
 
-fn find_assignment<'a>(node: &'a Node) -> Option<&'a Node> {
+fn find_assignment(node: &Node) -> Option<&Node> {
     if matches!(node.kind, NodeKind::Assignment { .. }) {
         return Some(node);
     }

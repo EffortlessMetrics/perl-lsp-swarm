@@ -63,19 +63,19 @@ my $result = $obj->process_data("  hello world  ", {trim => 1, uppercase => 1});
         assert_eq!(class_nodes.len(), 1, "Should have exactly one class");
 
         // Verify class has methods
-        if let NodeKind::Class { body, .. } = &class_nodes[0].kind {
-            if let NodeKind::Block { statements: class_statements } = &body.kind {
-                let method_nodes: Vec<_> = class_statements
-                    .iter()
-                    .filter(|s| matches!(s.kind, NodeKind::Method { .. }))
-                    .collect();
-                assert_eq!(method_nodes.len(), 3, "Should have three methods");
+        if let NodeKind::Class { body, .. } = &class_nodes[0].kind
+            && let NodeKind::Block { statements: class_statements } = &body.kind
+        {
+            let method_nodes: Vec<_> = class_statements
+                .iter()
+                .filter(|s| matches!(s.kind, NodeKind::Method { .. }))
+                .collect();
+            assert_eq!(method_nodes.len(), 3, "Should have three methods");
 
-                // Verify methods have signatures
-                for method in &method_nodes {
-                    if let NodeKind::Method { signature, .. } = &method.kind {
-                        assert!(signature.is_some(), "Each method should have a signature");
-                    }
+            // Verify methods have signatures
+            for method in &method_nodes {
+                if let NodeKind::Method { signature, .. } = &method.kind {
+                    assert!(signature.is_some(), "Each method should have a signature");
                 }
             }
         }

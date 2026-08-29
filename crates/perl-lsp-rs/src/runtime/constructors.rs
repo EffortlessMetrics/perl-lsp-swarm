@@ -126,17 +126,16 @@ impl LspServer {
             skip_perlcritic_command_check: AtomicBool::new(false),
             #[cfg(not(target_arch = "wasm32"))]
             force_perlcritic_command_unavailable: AtomicBool::new(false),
-            #[cfg(not(target_arch = "wasm32"))]
-            critic_workspace_warnings_sent: Mutex::new(HashSet::new()),
-            client_setting_warnings_sent: Mutex::new(HashSet::new()),
+            session_warning_dedup: super::session_warning_dedup::SessionWarningDedupStore::default(),
             #[cfg(test)]
             diagnostic_after_snapshot_hook: Mutex::new(None),
             document_symbols_sink: super::document_symbols_sink::DocumentSymbolsSink::default(),
             active_document_readiness: super::readiness::ActiveDocumentParserReadiness::default(),
             #[cfg(test)]
             document_symbols_before_commit_hook: Mutex::new(None),
+            #[cfg(test)]
+            document_symbols_before_install_hook: Mutex::new(None),
             ai_inline_backend: Mutex::new(None),
-            ai_backend_warnings_sent: Mutex::new(HashSet::new()),
             #[cfg(feature = "incremental")]
             incremental_eager: AtomicBool::new(false),
         }
@@ -314,17 +313,16 @@ impl LspServer {
             skip_perlcritic_command_check: AtomicBool::new(false),
             #[cfg(not(target_arch = "wasm32"))]
             force_perlcritic_command_unavailable: AtomicBool::new(false),
-            #[cfg(not(target_arch = "wasm32"))]
-            critic_workspace_warnings_sent: Mutex::new(HashSet::new()),
-            client_setting_warnings_sent: Mutex::new(HashSet::new()),
+            session_warning_dedup: super::session_warning_dedup::SessionWarningDedupStore::default(),
             #[cfg(test)]
             diagnostic_after_snapshot_hook: Mutex::new(None),
             document_symbols_sink: super::document_symbols_sink::DocumentSymbolsSink::default(),
             active_document_readiness: super::readiness::ActiveDocumentParserReadiness::default(),
             #[cfg(test)]
             document_symbols_before_commit_hook: Mutex::new(None),
+            #[cfg(test)]
+            document_symbols_before_install_hook: Mutex::new(None),
             ai_inline_backend: Mutex::new(None),
-            ai_backend_warnings_sent: Mutex::new(HashSet::new()),
             #[cfg(feature = "incremental")]
             incremental_eager: AtomicBool::new(false),
         }
@@ -443,17 +441,16 @@ impl LspServer {
             skip_perlcritic_command_check: AtomicBool::new(false),
             #[cfg(not(target_arch = "wasm32"))]
             force_perlcritic_command_unavailable: AtomicBool::new(false),
-            #[cfg(not(target_arch = "wasm32"))]
-            critic_workspace_warnings_sent: Mutex::new(HashSet::new()),
-            client_setting_warnings_sent: Mutex::new(HashSet::new()),
+            session_warning_dedup: super::session_warning_dedup::SessionWarningDedupStore::default(),
             #[cfg(test)]
             diagnostic_after_snapshot_hook: Mutex::new(None),
             document_symbols_sink: super::document_symbols_sink::DocumentSymbolsSink::default(),
             active_document_readiness: super::readiness::ActiveDocumentParserReadiness::default(),
             #[cfg(test)]
             document_symbols_before_commit_hook: Mutex::new(None),
+            #[cfg(test)]
+            document_symbols_before_install_hook: Mutex::new(None),
             ai_inline_backend: Mutex::new(None),
-            ai_backend_warnings_sent: Mutex::new(HashSet::new()),
             #[cfg(feature = "incremental")]
             incremental_eager: AtomicBool::new(false),
         }

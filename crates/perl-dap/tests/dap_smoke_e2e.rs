@@ -1,7 +1,10 @@
 //! End-to-end DAP smoke test using the native debug adapter and real `perl -d`.
 
+#![expect(
+    clippy::print_stderr,
+    reason = "Integration-test diagnostic and skip output; tracing is not the harness logger."
+)]
 use perl_dap::{DapMessage, DebugAdapter};
-use perl_lsp_rs_core::config::PerlOracleEnv;
 use serde_json::{Value, json};
 use std::fs::write;
 use std::sync::mpsc::{Receiver, sync_channel};
@@ -13,7 +16,7 @@ mod common;
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 fn perl_available() -> bool {
-    PerlOracleEnv::for_dap_test_fixture().is_some()
+    common::debuggee_perl_or_typed_skip("dap_smoke_e2e").is_some()
 }
 
 fn smoke_timeout() -> Duration {
@@ -103,6 +106,10 @@ print "$x\n";
     assert!(capabilities.get("supportsInlineValues").and_then(|v| v.as_bool()).unwrap_or(false));
     let _initialized = wait_for_event(&rx, "initialized", timeout)?;
 
+    let perl_path = common::resolve_launch_perl_path()
+        .map_err(|reason| format!("could not resolve the launch interpreter: {reason}"))?
+        .ok_or("the availability gate resolved no pipe-capable launch interpreter")?;
+
     response_success(
         adapter.handle_request(
             2,
@@ -111,6 +118,7 @@ print "$x\n";
                 "program": script_path_str,
                 "args": [],
                 "stopOnEntry": true,
+                "perlPath": perl_path.to_string_lossy(),
                 "env": {
                     "PERL_PERTURB_KEYS": "0",
                     "PERL_HASH_SEED": "0",

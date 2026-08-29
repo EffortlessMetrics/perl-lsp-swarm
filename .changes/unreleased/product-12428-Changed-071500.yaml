@@ -1,0 +1,9 @@
+project: product
+component: Performance and reliability
+kind: Changed
+body: Made perl-ast Node clone iterative and stack-safe on a 50,000-node 256 KiB worker; Debug and PartialEq remain derived-recursive (#8837).
+time: 2026-08-25T07:15:00Z
+custom:
+  PR: "12428"
+  Slug: ast-node-iterative-clone
+  Breaking: "no"

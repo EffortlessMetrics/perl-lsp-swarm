@@ -1,0 +1,335 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/EffortlessMetrics/perl-lsp-swarm/.ci/schemas/zed-perl-dap-public-registry-receipt.v1.schema.json",
+  "title": "Zed perl-dap official-registry journey receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "stage",
+    "result",
+    "observed_at",
+    "asset_evidence",
+    "registry",
+    "zed",
+    "platform",
+    "extension",
+    "profile",
+    "adapter",
+    "workspace",
+    "configuration",
+    "journey",
+    "discriminators",
+    "managed_cache",
+    "cleanup",
+    "claim_boundary",
+    "limitations",
+    "currentness"
+  ],
+  "properties": {
+    "schema_version": {"const": "zed_perl_dap_public_registry_receipt.v1"},
+    "stage": {"const": "public_registry_install"},
+    "result": {
+      "enum": ["not_run", "blocked_external", "pass", "fail", "not_proven", "instrument_failed", "contract_stale"]
+    },
+    "observed_at": {"type": ["string", "null"], "format": "date-time"},
+    "asset_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract", "aggregate_receipt", "selected_target"],
+      "properties": {
+        "contract": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["relative_path", "sha256"],
+          "properties": {
+            "relative_path": {"const": ".ci/fixtures/zed-perl-upstream/perl-dap-managed-downloads.v1.json"},
+            "sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+          }
+        },
+        "aggregate_receipt": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["relative_path", "sha256", "result", "stage"],
+          "properties": {
+            "relative_path": {"type": "string"},
+            "sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+            "result": {"const": "pass"},
+            "stage": {"const": "public_perl_dap_asset"}
+          }
+        },
+        "selected_target": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "target",
+            "os",
+            "architecture",
+            "release_repository",
+            "release_id",
+            "release_tag",
+            "release_version",
+            "release_producer",
+            "asset_id",
+            "asset_name",
+            "asset_archive_type",
+            "asset_sha256",
+            "archive_member",
+            "member_sha256",
+            "installed_path"
+          ],
+          "properties": {
+            "target": {"type": "string"},
+            "os": {"enum": ["linux", "macos", "windows"]},
+            "architecture": {"enum": ["x86_64", "aarch64"]},
+            "release_repository": {"const": "EffortlessMetrics/perl-lsp"},
+            "release_id": {"type": "integer"},
+            "release_tag": {"type": "string"},
+            "release_version": {"type": "string"},
+            "release_producer": {"type": "string"},
+            "asset_id": {"type": "integer"},
+            "asset_name": {"type": "string"},
+            "asset_archive_type": {"enum": ["tar.gz", "zip"]},
+            "asset_sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+            "archive_member": {"type": "string"},
+            "member_sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+            "installed_path": {"type": "string"}
+          }
+        }
+      }
+    },
+    "gates": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "released_zed_build",
+        "official_registry_entry",
+        "extension_upstream_release",
+        "matching_host_asset_receipt",
+        "exact_source_zed_dap_receipt",
+        "routing_final_check_authority",
+        "blockers"
+      ],
+      "properties": {
+        "released_zed_build": {"enum": ["absent", "stale", "current"]},
+        "official_registry_entry": {"enum": ["absent", "stale", "current"]},
+        "extension_upstream_release": {"enum": ["absent", "stale", "current"]},
+        "matching_host_asset_receipt": {"enum": ["absent", "stale", "current"]},
+        "exact_source_zed_dap_receipt": {"enum": ["absent", "stale", "current"]},
+        "routing_final_check_authority": {"enum": ["absent", "stale", "current"]},
+        "blockers": {"type": "array", "minItems": 1, "items": {"type": "string"}}
+      }
+    },
+    "registry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repository",
+        "entry",
+        "submodule_path",
+        "extension_commit",
+        "extension_version",
+        "upstream_branch",
+        "released_build"
+      ],
+      "properties": {
+        "repository": {"type": ["string", "null"]},
+        "entry": {"type": ["string", "null"]},
+        "submodule_path": {"type": ["string", "null"]},
+        "extension_commit": {"type": ["string", "null"], "pattern": "^[0-9a-f]{40}$"},
+        "extension_version": {"type": ["string", "null"]},
+        "upstream_branch": {"type": ["string", "null"]},
+        "released_build": {"type": ["string", "null"]}
+      }
+    },
+    "zed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["product", "version", "channel", "build"],
+      "properties": {
+        "product": {"const": "Zed"},
+        "version": {"type": ["string", "null"]},
+        "channel": {"type": ["string", "null"]},
+        "build": {"type": ["string", "null"]}
+      }
+    },
+    "platform": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["os", "architecture"],
+      "properties": {
+        "os": {"enum": ["linux", "macos", "windows", null]},
+        "architecture": {"enum": ["x86_64", "aarch64", null]}
+      }
+    },
+    "extension": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["install_route", "upstream_commit", "manifest_version", "package_identity"],
+      "properties": {
+        "install_route": {"const": "official_registry"},
+        "upstream_commit": {"type": ["string", "null"], "pattern": "^[0-9a-f]{40}$"},
+        "manifest_version": {"type": ["string", "null"]},
+        "package_identity": {"type": ["string", "null"]}
+      }
+    },
+    "profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "development_extension_absent",
+        "fork_or_copied_extension_absent",
+        "prior_public_extension_state_absent",
+        "prior_managed_perl_dap_cache_absent",
+        "explicit_debugger_binary_override_absent",
+        "path_candidate_satisfying_managed_row_absent",
+        "other_perl_debugger_selected_absent",
+        "relabeled_receipt_absent"
+      ],
+      "properties": {
+        "development_extension_absent": {"type": ["boolean", "null"]},
+        "fork_or_copied_extension_absent": {"type": ["boolean", "null"]},
+        "prior_public_extension_state_absent": {"type": ["boolean", "null"]},
+        "prior_managed_perl_dap_cache_absent": {"type": ["boolean", "null"]},
+        "explicit_debugger_binary_override_absent": {"type": ["boolean", "null"]},
+        "path_candidate_satisfying_managed_row_absent": {"type": ["boolean", "null"]},
+        "other_perl_debugger_selected_absent": {"type": ["boolean", "null"]},
+        "relabeled_receipt_absent": {"type": ["boolean", "null"]}
+      }
+    },
+    "adapter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["adapter_id", "binary_route", "process_path", "process_argv", "version_output", "binary_sha256"],
+      "properties": {
+        "adapter_id": {"const": "perl-dap"},
+        "binary_route": {"enum": ["managed_public_artifact", "path_override", "worktree_candidate"]},
+        "process_path": {"type": ["string", "null"]},
+        "process_argv": {"type": ["array", "null"], "items": {"type": "string"}},
+        "version_output": {"type": ["string", "null"]},
+        "binary_sha256": {"type": ["string", "null"], "pattern": "^sha256:[0-9a-f]{64}$"}
+      }
+    },
+    "workspace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fixture_id", "fixture_sha256", "root_identity"],
+      "properties": {
+        "fixture_id": {"type": ["string", "null"]},
+        "fixture_sha256": {"type": ["string", "null"], "pattern": "^sha256:[0-9a-f]{64}$"},
+        "root_identity": {"type": ["string", "null"]}
+      }
+    },
+    "configuration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["config_sha256", "driver_sha256", "instrument_sha256"],
+      "properties": {
+        "config_sha256": {"type": ["string", "null"], "pattern": "^sha256:[0-9a-f]{64}$"},
+        "driver_sha256": {"type": ["string", "null"], "pattern": "^sha256:[0-9a-f]{64}$"},
+        "instrument_sha256": {"type": ["string", "null"], "pattern": "^sha256:[0-9a-f]{64}$"}
+      }
+    },
+    "journey": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "zed_host_identity",
+        "fixture_open",
+        "adapter_selection",
+        "managed_resolution",
+        "adapter_process_identity",
+        "initialize_launch",
+        "breakpoint_verified",
+        "stopped_event",
+        "frame_source_identity",
+        "scopes_variables",
+        "continue_step",
+        "terminate_disconnect",
+        "cleanup_bounded",
+        "restart_reuse"
+      ],
+      "properties": {
+        "zed_host_identity": {"$ref": "#/$defs/cell"},
+        "fixture_open": {"$ref": "#/$defs/cell"},
+        "adapter_selection": {"$ref": "#/$defs/cell"},
+        "managed_resolution": {"$ref": "#/$defs/cell"},
+        "adapter_process_identity": {"$ref": "#/$defs/cell"},
+        "initialize_launch": {"$ref": "#/$defs/cell"},
+        "breakpoint_verified": {"$ref": "#/$defs/cell"},
+        "stopped_event": {"$ref": "#/$defs/cell"},
+        "frame_source_identity": {"$ref": "#/$defs/cell"},
+        "scopes_variables": {"$ref": "#/$defs/cell"},
+        "continue_step": {"$ref": "#/$defs/cell"},
+        "terminate_disconnect": {"$ref": "#/$defs/cell"},
+        "cleanup_bounded": {"$ref": "#/$defs/cell"},
+        "restart_reuse": {"$ref": "#/$defs/cell"}
+      }
+    },
+    "discriminators": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["wrong_root_same_basename_rejected"],
+      "properties": {
+        "wrong_root_same_basename_rejected": {"type": ["boolean", "null"]}
+      }
+    },
+    "managed_cache": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["before", "after", "restart"],
+      "properties": {
+        "before": {"type": ["array", "null"], "items": {"type": "string"}},
+        "after": {"type": ["array", "null"], "items": {"type": "string"}},
+        "restart": {
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "required": ["same_subject", "second_provider_absent"],
+          "properties": {
+            "same_subject": {"type": ["boolean", "null"]},
+            "second_provider_absent": {"type": ["boolean", "null"]}
+          }
+        }
+      }
+    },
+    "cleanup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["adapter_orphans", "debuggee_orphans"],
+      "properties": {
+        "adapter_orphans": {"type": ["array", "null"], "items": {"type": "integer"}},
+        "debuggee_orphans": {"type": ["array", "null"], "items": {"type": "integer"}}
+      }
+    },
+    "claim_boundary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["dap_support_projection", "all_platforms", "lsp_support_rows"],
+      "properties": {
+        "dap_support_projection": {"const": "not_proven"},
+        "all_platforms": {"const": "not_proven"},
+        "lsp_support_rows": {"const": "unchanged"}
+      }
+    },
+    "limitations": {"type": "array", "items": {"type": "string"}},
+    "currentness": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["invalidators"],
+      "properties": {
+        "invalidators": {"type": "array", "items": {"type": "string"}}
+      }
+    }
+  },
+  "$defs": {
+    "cell": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["result", "evidence"],
+      "properties": {
+        "result": {"enum": ["pass", "fail", "not_proven", "unsupported", "instrument_failed"]},
+        "evidence": {"type": ["string", "null"]}
+      }
+    }
+  }
+}

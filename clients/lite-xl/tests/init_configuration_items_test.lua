@@ -43,8 +43,41 @@
 -- the array-replacement branch removed (documented in
 -- util_config_merge_test.lua).
 --
+-- Value-fidelity extension (#10845): the matrix cases prove presence and
+-- value are tracked independently through the response payload — an explicit
+-- boolean false (top-level or nested), true, 0, "", and [] round-trip exactly,
+-- while only a genuinely missing section becomes the null sentinel, including
+-- positional coexistence of false and null in one response. Red-first: run
+-- this suite against CURRENT MAIN before the #10845 patch (or any copy whose
+-- slot append still reads `table.insert(settings_list, value or json.null)`):
+-- `value or json.null` converts an explicitly configured false into null, so
+-- every false-bearing case MUST fail there. Mutation falsifier of the PATCHED
+-- module: restore the single `value or json.null` append line in a copied
+-- init.lua and the same cases fail again.
+--
+-- Trust-boundary extension (#10653): workspace/project configuration is
+-- data, never executable code. The scenario fixture binds io.open (existence
+-- and content per absolute candidate path), dofile (records EVERY execution
+-- target; any project-path hit is compromise evidence), system.get_file_info
+-- (deterministic mtimes), and a fake os.time so the 5-second cache window is
+-- drivable. Cases prove: a repository .lite_lsp.lua is never executed at any
+-- project-derived position (workspace scope, server.path, hostile out-of-root
+-- scopeUri) across repeated requests, cache hits, TTL expiry, and restart;
+-- project .lite_lsp.json is read as data; malformed project JSON fails safely
+-- with one bounded error and an empty value instead of crashing or executing
+-- fallback Lua; USERDIR keeps its user-owned .lite_lsp.lua authority; an
+-- accepted configuration change invalidates the cached settings inside the
+-- freshness window. Red-first: run this suite against CURRENT MAIN before
+-- the #10653 patch - get_workspace_settings dofile()s every scanned position,
+-- so the hostile-execution, fail-safe-decode, and stamp-invalidation cases
+-- MUST fail there (the USERDIR retention pin passes on both sides). Mutation
+-- falsifier of the PATCHED module (verified): restore unconditional project
+-- .lite_lsp.lua probing/execution at positions > 1 in a copied init.lua and
+-- the hostile/fail-safe cases fail again; delete the recorded_stamp cache
+-- comparison and the invalidation-inside-TTL case fails.
+--
 -- No framework: plain soft asserts, one process, deterministic, exit code
--- carries the result. Compatible with the Lite XL Lua runtime family
+-- carries the result. Compatible with the Lite XL runtime family
 -- (Lua 5.4).
 
 local init_module_path = arg and arg[1] or nil
@@ -192,6 +225,11 @@ package.preload["plugins.lsp.listbox"] = function()
   return { hide = function() end, show_text = function() end }
 end
 
+-- Local patch (#11172): the staged modules fold their capability
+-- advertisement and command projection through the exact manifest source.
+package.preload["plugins.lsp.capability_manifest"] = function()
+  return dofile(here .. "/../upstream/capability_manifest.lua")
+end
 package.preload["plugins.lsp.diagnostics"] = function()
   return {
     note_provider = function() end,
@@ -449,6 +487,94 @@ do
 end
 
 -- ---------------------------------------------------------------------------
+-- Value-fidelity cases (#10845): explicit false never becomes null; only a
+-- genuinely missing section answers the null sentinel. Presence is tracked
+-- separately from value truthiness through the exact response payload.
+-- ---------------------------------------------------------------------------
+
+do
+  local lsp = fresh_module_load()
+  local json = require "plugins.lsp.json"
+  local client = start_captured_client(lsp, {
+    perl = {
+      enabled = false,
+      truthy = true,
+      zero = 0,
+      empty = "",
+      emptyList = json.array({}),
+      nested = { disabled = false },
+    },
+  })
+
+  ---Requests one section and returns the single decoded slot value.
+  local function one_slot(section, id)
+    local r = deliver(client, "workspace/configuration", id,
+      { items = json.decode('[{"section":"' .. section .. '"}]') })
+    if not (r[1] and r[1].error == nil and type(r[1].result) == "table"
+        and #r[1].result == 1) then
+      return nil, "~invalid response shape~"
+    end
+    return r[1].result[1]
+  end
+
+  -- false stays false: an explicitly configured disable must not decode as null.
+  local enabled = one_slot("perl.enabled", 31)
+  ok(enabled == false,
+    "explicit boolean false round-trips exactly as JSON false")
+
+  -- true / 0 / "" keep their exact identities.
+  ok(one_slot("perl.truthy", 32) == true, "explicit true round-trips exactly")
+  ok(one_slot("perl.zero", 33) == 0, "zero keeps its numeric identity")
+  ok(one_slot("perl.empty", 34) == "", "empty string keeps its string identity")
+
+  -- [] stays an explicitly typed empty array.
+  local empty_list = one_slot("perl.emptyList", 35)
+  ok(type(empty_list) == "table" and json.is_array(empty_list)
+    and #empty_list == 0 and json.encode(empty_list) == "[]",
+    "empty list round-trips as an explicitly typed empty JSON array")
+
+  -- Nested false survives section traversal at depth.
+  ok(one_slot("perl.nested.disabled", 36) == false,
+    "nested boolean false survives traversal exactly")
+
+  -- Only a genuinely absent section becomes the null sentinel.
+  ok(json.is_null(one_slot("perl.absent", 37)),
+    "genuinely missing section still answers the explicit null sentinel")
+
+  -- Positional coexistence: false, null and 0 keep distinct slots in ONE
+  -- response array — the discriminator between value fidelity and collapse.
+  local r = deliver(client, "workspace/configuration", 38,
+    { items = json.decode(
+      '[{"section":"perl.enabled"},{"section":"perl.absent"},{"section":"perl.zero"}]') })
+  ok(r[1] and r[1].error == nil and type(r[1].result) == "table"
+    and #r[1].result == 3
+    and r[1].result[1] == false
+    and json.is_null(r[1].result[2])
+    and r[1].result[3] == 0,
+    "false, null and zero keep distinct exact slots in one positional response")
+
+  -- Logging distinguishes found=false from not found (secondary pin: the two
+  -- branches use different format strings captured by the core.log fake).
+  log_records = {}
+  deliver(client, "workspace/configuration", 39,
+    { items = json.decode('[{"section":"perl.enabled"}]') })
+  deliver(client, "workspace/configuration", 40,
+    { items = json.decode('[{"section":"perl.absent"}]') })
+  local saw_found_false_log, saw_not_found_log = false, false
+  for _, record in ipairs(log_records) do
+    if record:find("Asking for '.*' config but not set", 1, false) then
+      saw_not_found_log = true
+    end
+    if record:find("Asking for '", 1, true)
+      and not record:find("but not set", 1, true) then
+      saw_found_false_log = true
+    end
+  end
+  ok(saw_found_false_log, "found=false-valued section logs the found branch")
+  ok(saw_not_found_log, "missing section logs the not-set branch distinctly")
+end
+
+-- ---------------------------------------------------------------------------
 -- Effective-settings cases (#11143): the real get_workspace_settings typed
 -- merge observed through the production workspace/configuration listener.
 -- USERDIR/.lite_lsp.lua probes are answered by deterministic fixture binds
@@ -526,6 +652,361 @@ do
     and responses[1].result[1]
     and json.encode(responses[1].result[1]) == "[]",
     "explicit empty array clears an inherited list on the effective response")
+end
+
+-- ---------------------------------------------------------------------------
+-- Trust-boundary cases (#10653): workspace/project configuration is data,
+-- never executable code. The scenario fixture owns io.open/dofile/mtimes/
+-- os.time for the duration of one case; every dofile target is recorded.
+-- ---------------------------------------------------------------------------
+
+---Bind the configuration seams for one deterministic scenario and run fn.
+---scenario.files maps absolute candidate paths to fixture answers (string
+---content, true for existence-only, nil/absent for missing);
+---scenario.mtimes maps paths to deterministic stat stamps;
+---scenario.userdir_settings is returned for USERDIR .lite_lsp.lua probes.
+---Returns fn's result; restores every global even on error. The module must
+---be loaded BEFORE this binding so its own dofile() load stays real.
+local function with_config_scenario(scenario, fn)
+  local original_open, original_dofile = io.open, dofile
+  local raw_dofile = original_dofile
+  local original_time = os.time
+  local original_get_file_info = system.get_file_info
+  local epoch = scenario.epoch or 1000
+  local lua_loads = {}
+  os.time = function() return epoch end
+  system.get_file_info = function(path)
+    if scenario.mtimes and scenario.mtimes[path] then
+      -- Lite XL exposes the modification timestamp as `modified` (#10653
+      -- review); the fixture mirrors the production field name so
+      -- same-byte-length content edits still invalidate the stamp.
+      return { modified = scenario.mtimes[path], size = 128 }
+    end
+    return nil
+  end
+  io.open = function(path, _)
+    local answer = scenario.files[path]
+    if answer == nil then
+      return nil
+    elseif answer == true then
+      return { read = function() return "" end, close = function() end }
+    end
+    return {
+      read = function() return answer end,
+      close = function() end,
+    }
+  end
+  dofile = function(path)
+    lua_loads[#lua_loads + 1] = path
+    if path:find("%.lite_lsp%.lua$") then
+      if scenario.userdir_settings then
+        return scenario.userdir_settings
+      end
+      -- Any other execution would be a trust-boundary breach: answer with a
+      -- loud marker payload instead of failing so assertions can report it.
+      return { hostile_lua_executed = path }
+    end
+    return raw_dofile(path)
+  end
+  local ok_run, result = pcall(fn, lua_loads)
+  io.open, dofile = original_open, raw_dofile
+  os.time = original_time
+  system.get_file_info = original_get_file_info
+  if not ok_run then error(result, 0) end
+  return result
+end
+
+---Count recorded dofile targets that executed a project-local Lua config.
+---Module-source loads share the recorder but never match the suffix.
+local function project_lua_loads(lua_loads)
+  local hits = {}
+  for _, path in ipairs(lua_loads) do
+    if path:find("%.lite_lsp%.lua$") and not path:find("^%./") then
+      hits[#hits + 1] = path
+    end
+  end
+  return hits
+end
+
+do
+  -- hostile_workspace_lua_never_executes: a repository .lite_lsp.lua at a
+  -- server-supplied scope is ignored - no execution, no merged backdoor.
+  -- Fixture keys use the exact platform path the #11165 URI authority
+  -- produces for each scope (Windows drive form with backslash separators).
+  local lsp = fresh_module_load()
+  local json = require "plugins.lsp.json"
+  local client = start_captured_client(lsp, { perl = { alpha = "A" } })
+  with_config_scenario({
+    files = { ["C:\\proj/.lite_lsp.lua"] = true },
+  }, function(lua_loads)
+    local r = deliver(client, "workspace/configuration", 51,
+      { items = json.decode(
+        '[{"section":"perl.backdoor","scopeUri":"file:///C:/proj"}]') })
+    ok(r[1] and r[1].error == nil
+      and type(r[1].result) == "table" and #r[1].result == 1
+      and json.is_null(r[1].result[1]),
+      "hostile workspace .lite_lsp.lua answers an empty section, not its payload")
+    ok(#project_lua_loads(lua_loads) == 0,
+      "hostile workspace .lite_lsp.lua is never executed")
+  end)
+end
+
+do
+  -- project_json_read_as_data: the accepted project-data format merges as
+  -- plain data through a scoped request; no Lua authority is involved.
+  local lsp = fresh_module_load()
+  local json = require "plugins.lsp.json"
+  local client = start_captured_client(lsp, { perl = { alpha = "A" } })
+  with_config_scenario({
+    files = {
+      ["C:\\proj/.lite_lsp.json"] = '{"perl":{"layer":"project"}}',
+    },
+    mtimes = { ["C:\\proj"] = 5, ["C:\\proj/.lite_lsp.json"] = 5 },
+  }, function(lua_loads)
+    local r = deliver(client, "workspace/configuration", 52,
+      { items = json.decode(
+        '[{"section":"perl.layer","scopeUri":"file:///C:/proj"}]') })
+    ok(r[1] and r[1].error == nil and type(r[1].result) == "table"
+      and #r[1].result == 1 and r[1].result[1] == "project",
+      "project .lite_lsp.json is read as data through the scoped request")
+    ok(#lua_loads == 0,
+      "data-only project configuration executes no Lua at any position")
+    -- The unscoped default lookup never scans the workspace position.
+    local d = deliver(client, "workspace/configuration", 53,
+      { items = json.decode('[{"section":"perl.layer"}]') })
+    ok(d[1] and type(d[1].result) == "table" and #d[1].result == 1
+      and json.is_null(d[1].result[1]),
+      "unscoped defaults stay section-scoped to the user/server roots")
+  end)
+end
+
+do
+  -- malformed_project_json_fails_safe_without_lua_fallback: broken project
+  -- JSON becomes one bounded error and an empty value - it must not crash
+  -- the lookup or fall through to executing a coexisting project Lua file.
+  local lsp = fresh_module_load()
+  local json = require "plugins.lsp.json"
+  local client = start_captured_client(lsp, { perl = { alpha = "A" } })
+  log_records = {}
+  with_config_scenario({
+    files = {
+      ["C:\\proj/.lite_lsp.json"] = "{oops",
+      ["C:\\proj/.lite_lsp.lua"] = true,
+    },
+    mtimes = { ["C:\\proj"] = 5, ["C:\\proj/.lite_lsp.json"] = 5 },
+  }, function(lua_loads)
+    local r = deliver(client, "workspace/configuration", 54,
+      { items = json.decode(
+        '[{"section":"perl.alpha","scopeUri":"file:///C:/proj"},' ..
+        '{"section":"perl.absent","scopeUri":"file:///C:/proj"}]') })
+    ok(r and not r.listener_error,
+      "malformed project JSON does not crash the configuration listener")
+    ok(r[1] and r[1].error == nil and type(r[1].result) == "table"
+      and #r[1].result == 2 and r[1].result[1] == "A"
+      and json.is_null(r[1].result[2]),
+      "malformed project JSON answers deterministic server-default values")
+    ok(#project_lua_loads(lua_loads) == 0,
+      "malformed project JSON never falls through to executing project Lua")
+    local saw_typed_error = false
+    for _, record in ipairs(log_records) do
+      if record:find("ignoring malformed project configuration", 1, true) then
+        saw_typed_error = true
+      end
+    end
+    ok(saw_typed_error,
+      "the malformed payload reports one bounded typed configuration error")
+  end)
+end
+
+do
+  -- userdir_lua_retained: the user-owned executable root keeps its
+  -- historical authority (contract pin that passes pristine too).
+  local lsp = fresh_module_load()
+  local json = require "plugins.lsp.json"
+  local client = start_captured_client(lsp, { perl = { alpha = "A" } })
+  with_config_scenario({
+    files = { ["./.lite_lsp.lua"] = true },
+    userdir_settings = { perl = { usertoken = "U" } },
+    mtimes = { ["."] = 5, ["./.lite_lsp.lua"] = 5 },
+  }, function(lua_loads)
+    local r = deliver(client, "workspace/configuration", 55,
+      { items = json.decode('[{"section":"perl.usertoken"}]') })
+    ok(r[1] and r[1].error == nil and type(r[1].result) == "table"
+      and #r[1].result == 1 and r[1].result[1] == "U",
+      "USERDIR .lite_lsp.lua remains the user-owned executable config root")
+    local expected_userdir_loads = 0
+    for _, path in ipairs(lua_loads) do
+      if path == "./.lite_lsp.lua" then
+        expected_userdir_loads = expected_userdir_loads + 1
+      end
+    end
+    ok(expected_userdir_loads == 1,
+      "the USERDIR executable config loads exactly once per uncached lookup")
+  end)
+end
+
+do
+  -- repeated_requests_and_ttl_expiry_stay_safe: cache hits, TTL expiry and
+  -- uncached reloads never widen the trust boundary back to project Lua.
+  local lsp = fresh_module_load()
+  local json = require "plugins.lsp.json"
+  local client = start_captured_client(lsp, { perl = { alpha = "A" } })
+  local epoch_holder = { now = 1000 }
+  with_config_scenario({
+    files = { ["C:\\proj/.lite_lsp.lua"] = true },
+    epoch = 1000,
+  }, function(lua_loads)
+    local scoped_items =
+      '[{"section":"perl.backdoor","scopeUri":"file:///C:/proj"}]'
+    deliver(client, "workspace/configuration", 56,
+      { items = json.decode(scoped_items) })
+    deliver(client, "workspace/configuration", 57,
+      { items = json.decode(scoped_items) })
+    ok(#project_lua_loads(lua_loads) == 0,
+      "repeated requests inside the cache window execute no project Lua")
+    os.time = function() return 1010 end
+    deliver(client, "workspace/configuration", 58,
+      { items = json.decode(scoped_items) })
+    os.time = function() return epoch_holder.now end
+    ok(#project_lua_loads(lua_loads) == 0,
+      "a post-TTL uncached reload still executes no project Lua")
+  end)
+end
+
+do
+  -- accepted_config_change_invalidates_cache_inside_ttl: a changed accepted
+  -- project-data file (new mtime, same fake clock tick) refreshes answers.
+  local lsp = fresh_module_load()
+  local json = require "plugins.lsp.json"
+  local client = start_captured_client(lsp, {})
+  local scenario = {
+    files = {
+      ["C:\\proj/.lite_lsp.json"] = '{"perl":{"layer":"v1"}}',
+    },
+    mtimes = { ["C:\\proj"] = 5, ["C:\\proj/.lite_lsp.json"] = 5 },
+    epoch = 1000,
+  }
+  with_config_scenario(scenario, function()
+    local scoped_items =
+      '[{"section":"perl.layer","scopeUri":"file:///C:/proj"}]'
+    local r1 = deliver(client, "workspace/configuration", 59,
+      { items = json.decode(scoped_items) })
+    ok(r1[1] and type(r1[1].result) == "table" and r1[1].result[1] == "v1",
+      "the first accepted project configuration answer is v1")
+    scenario.files["C:\\proj/.lite_lsp.json"] = '{"perl":{"layer":"v2"}}'
+    scenario.mtimes["C:\\proj/.lite_lsp.json"] = 6
+    local r2 = deliver(client, "workspace/configuration", 60,
+      { items = json.decode(scoped_items) })
+    ok(r2[1] and type(r2[1].result) == "table" and r2[1].result[1] == "v2",
+      "a changed accepted configuration invalidates the cached settings "
+        .. "inside the freshness window")
+  end)
+end
+
+do
+  -- restart_relookup_stays_safe: a fresh module/session re-lookup against
+  -- the same hostile workspace stays data-only (restart cannot revive the
+  -- ignored project Lua).
+  local json = require "plugins.lsp.json"
+  local first = fresh_module_load()
+  local first_client = start_captured_client(first, {})
+  with_config_scenario({
+    files = { ["C:\\proj/.lite_lsp.lua"] = true },
+  }, function(first_loads)
+    deliver(first_client, "workspace/configuration", 61,
+      { items = json.decode(
+        '[{"section":"perl.backdoor","scopeUri":"file:///C:/proj"}]') })
+    local second = fresh_module_load()
+    local second_client = start_captured_client(second, {})
+    local second_loads
+    with_config_scenario({
+      files = { ["C:\\proj/.lite_lsp.lua"] = true },
+    }, function(lua_loads)
+      deliver(second_client, "workspace/configuration", 62,
+        { items = json.decode(
+          '[{"section":"perl.backdoor","scopeUri":"file:///C:/proj"}]') })
+      second_loads = lua_loads
+    end)
+    ok(#project_lua_loads(second_loads or {}) == 0,
+      "a restarted session re-lookup still executes no project Lua")
+    ok(#project_lua_loads(first_loads) == 0,
+      "the pre-restart session executed no project Lua either")
+  end)
+end
+
+do
+  -- hostile_scopeuri_escape_contained: an out-of-root scope cannot pull
+  -- arbitrary executable configuration into the lookup.
+  local lsp = fresh_module_load()
+  local json = require "plugins.lsp.json"
+  local client = start_captured_client(lsp, {})
+  with_config_scenario({
+    files = { ["C:\\Windows/System32/.lite_lsp.lua"] = true },
+  }, function(lua_loads)
+    local r = deliver(client, "workspace/configuration", 63,
+      { items = json.decode(
+        '[{"section":"perl.backdoor",' ..
+        '"scopeUri":"file:///C:/Windows/System32"}]') })
+    ok(r[1] and r[1].error == nil and type(r[1].result) == "table"
+      and #r[1].result == 1 and json.is_null(r[1].result[1]),
+      "an out-of-root hostile scope answers empty defaults")
+    ok(#project_lua_loads(lua_loads) == 0,
+      "a hostile scopeUri cannot cause arbitrary config-path execution")
+  end)
+end
+
+do
+  -- non_object_project_roots_rejected: valid-JSON but non-object roots
+  -- (array, null) are typed configuration errors — they must neither merge
+  -- as settings nor replace accumulated user/server values (#10653 review).
+  local lsp = fresh_module_load()
+  local json = require "plugins.lsp.json"
+  local client = start_captured_client(lsp, { perl = { alpha = "A" } })
+  log_records = {}
+  with_config_scenario({
+    files = {
+      ["C:\\proj/.lite_lsp.json"] = "[]",
+    },
+    mtimes = { ["C:\\proj"] = 5, ["C:\\proj/.lite_lsp.json"] = 5 },
+  }, function()
+    local r = deliver(client, "workspace/configuration", 64,
+      { items = json.decode(
+        '[{"section":"perl.alpha","scopeUri":"file:///C:/proj"},' ..
+        '{"section":"perl.absent","scopeUri":"file:///C:/proj"}]') })
+    ok(r and not r.listener_error,
+      "an array-root project file does not crash the lookup")
+    ok(r[1] and r[1].error == nil and type(r[1].result) == "table"
+      and #r[1].result == 2 and r[1].result[1] == "A"
+      and json.is_null(r[1].result[2]),
+      "an array-root project file cannot wipe accumulated server settings")
+    local saw_typed_error = false
+    for _, record in ipairs(log_records) do
+      if record:find("ignoring malformed project configuration", 1, true) then
+        saw_typed_error = true
+      end
+    end
+    ok(saw_typed_error,
+      "an array-root project file reports the bounded not-an-object error")
+  end)
+
+  -- null-root variant through a fresh module/cache.
+  local lsp2 = fresh_module_load()
+  local json2 = require "plugins.lsp.json"
+  local client2 = start_captured_client(lsp2, { perl = { alpha = "A" } })
+  log_records = {}
+  with_config_scenario({
+    files = {
+      ["C:\\proj/.lite_lsp.json"] = "null",
+    },
+    mtimes = { ["C:\\proj"] = 5, ["C:\\proj/.lite_lsp.json"] = 5 },
+  }, function()
+    local r = deliver(client2, "workspace/configuration", 65,
+      { items = json.decode(
+        '[{"section":"perl.alpha","scopeUri":"file:///C:/proj"}]') })
+    ok(r and not r.listener_error
+      and r[1] and type(r[1].result) == "table" and r[1].result[1] == "A",
+      "a null-root project file keeps accumulated server settings")
+  end)
 end
 
 print(string.format("%d passed, %d failed", passed, failed))

@@ -617,22 +617,13 @@ const OWNERSHIP: &[OwnershipRow] = &[
         "#8400"
     ),
     row!(
-        "critic_workspace_warnings_sent",
+        "session_warning_dedup",
         ClientSession,
-        "Mutex<HashSet>",
-        "connection replacement",
-        "client session + configuration",
+        "owned store (per-family Mutex)",
+        "connection replacement + family lifecycle clear",
+        "typed warning family/code/subject fingerprint",
         false,
-        "#8386"
-    ),
-    row!(
-        "client_setting_warnings_sent",
-        ClientSession,
-        "Mutex<HashSet>",
-        "connection replacement",
-        "client session + configuration",
-        false,
-        "#8386"
+        "#9769"
     ),
     row!(
         "diagnostic_after_snapshot_hook",
@@ -653,6 +644,15 @@ const OWNERSHIP: &[OwnershipRow] = &[
         "#11674"
     ),
     row!(
+        "document_symbols_before_install_hook",
+        RuntimeServices,
+        "Mutex<Option<Box>>",
+        "test hook release / server drop",
+        "test runtime",
+        true,
+        "#11674"
+    ),
+    row!(
         "ai_inline_backend",
         ProductComposition,
         "Mutex<Option<Arc>>",
@@ -660,15 +660,6 @@ const OWNERSHIP: &[OwnershipRow] = &[
         "configuration + backend subject",
         true,
         "#8400"
-    ),
-    row!(
-        "ai_backend_warnings_sent",
-        ClientSession,
-        "Mutex<HashSet>",
-        "connection replacement",
-        "client session + backend subject",
-        false,
-        "#8386"
     ),
     row!(
         "incremental_eager",
@@ -851,6 +842,157 @@ fn ownership_map_covers_every_current_lsp_server_field() -> Result<()> {
         discover_lsp_server_fields(&source)?,
         governed_fields(),
         "LspServer fields and the #8383 ownership map must move together"
+    );
+
+    Ok(())
+}
+
+/// `LspServer` fields that legitimately own reviewed string-keyed sets/maps
+/// under their own #8383 rows. Any OTHER string-keyed `HashSet`/`HashMap`
+/// declaration on the struct is raw unbounded state and fails the #9769
+/// negative control -- whatever it is named.
+const STRING_KEYED_STATE_FIELDS: &[&str] = &[
+    // Transport/session bookkeeping with per-item removal semantics.
+    "progress_tokens",
+    "progress_token_to_request",
+    // Per-document stores governed by #8384/#8388.
+    "documents",
+    "parse_cancel_flags",
+    "backing_file_transitions",
+    // Reviewed analysis surfaces governed by #6957/#8384.
+    "provider_decision_traces",
+    "semantic_tokens_cache",
+];
+
+/// The declared type text of one field declaration (everything after the
+/// first top-level `:`), or `None` when the declaration has no field shape.
+fn declaration_type(declaration: &str) -> Option<&str> {
+    strip_visibility(declaration).ok()?.split_once(':').map(|(_, rest)| rest.trim())
+}
+
+/// True when a declaration's type is a string-keyed set or map -- the raw
+/// shape that #9769 removed from warning suppression. Name-independent: a
+/// renamed `dedup_keys: Mutex<HashSet<String>>` is still raw state.
+fn is_string_keyed_collection(declaration: &str) -> bool {
+    declaration_type(declaration)
+        .is_some_and(|ty| ty.contains("HashSet<String") || ty.contains("HashMap<String"))
+}
+
+/// Extract one struct body (between the marker line and its closing brace).
+fn struct_body(source: &str, marker: &str) -> Result<String> {
+    let start = source
+        .find(marker)
+        .ok_or_else(|| anyhow!("struct declaration must remain discoverable: {marker}"))?;
+    let mut body = String::new();
+    for line in source[start + marker.len()..].lines() {
+        let line = line.trim();
+        if line == "}" {
+            return Ok(body);
+        }
+        body.push_str(line);
+        body.push(' ');
+    }
+    Err(anyhow!("struct declaration must close with a sole `}}` line: {marker}"))
+}
+
+/// #9769 negative control: a governed session-warning family may not return
+/// as a raw string-keyed set. The check is structural, not name-based: every
+/// string-keyed `HashSet`/`HashMap` declaration on `LspServer` must belong to
+/// the reviewed allowlist above, and `PullDiagnosticsOrchestrator` (which
+/// previously kept its own unbounded `warnings_sent` set beside the governed
+/// critic family) may declare no collection state at all.
+#[test]
+fn session_warning_dedup_is_not_a_raw_string_set() -> Result<()> {
+    let source = fs::read_to_string(repo_root()?.join("crates/perl-lsp-rs/src/runtime/mod.rs"))?;
+    let body = lsp_server_body(&source)?;
+    let declarations = split_declarations(&body)?;
+
+    for declaration in &declarations {
+        if !is_string_keyed_collection(declaration) {
+            continue;
+        }
+        let name = declaration_field_name(declaration)?;
+        ensure!(
+            STRING_KEYED_STATE_FIELDS.contains(&name.as_str()),
+            "LspServer must not retain raw string-keyed collection state outside the reviewed allowlist (#9769): {declaration}"
+        );
+    }
+
+    let diagnostics =
+        fs::read_to_string(repo_root()?.join("crates/perl-lsp-rs/src/runtime/diagnostics.rs"))?;
+    let orchestrator = struct_body(&diagnostics, "pub struct PullDiagnosticsOrchestrator {")?;
+    ensure!(
+        !orchestrator.contains("HashSet") && !orchestrator.contains("HashMap"),
+        "the pull diagnostics orchestrator must route warning suppression through the bounded #9769 store, not its own collection state: {orchestrator}"
+    );
+    ensure!(
+        !diagnostics.contains("warnings_sent"),
+        "the #9769 pull-path warning store name must not return"
+    );
+
+    ensure!(
+        declarations.iter().any(|declaration| declaration.starts_with(
+            "pub(crate) session_warning_dedup: session_warning_dedup::SessionWarningDedupStore"
+        )),
+        "the bounded #9769 warning-dedup store must remain a governed field"
+    );
+
+    Ok(())
+}
+
+/// Regression fixtures for the structural scan: renamed raw warning stores
+/// must be flagged whatever they are called, and allowlisted reviewed state
+/// must keep passing.
+#[test]
+fn renamed_raw_warning_stores_cannot_escape_the_scan() -> Result<()> {
+    // A renamed raw string set evades name-based checks but not the
+    // structural type scan.
+    let renamed = r#"
+pub struct LspServer {
+    documents: Arc<Mutex<HashMap<String, DocumentState>>>,
+    dedup_keys: Mutex<HashSet<String>>,
+}
+"#;
+    let body = lsp_server_body(renamed)?;
+    let declarations = split_declarations(&body)?;
+    let flagged: Vec<String> = declarations
+        .iter()
+        .filter(|declaration| {
+            is_string_keyed_collection(declaration)
+                && !STRING_KEYED_STATE_FIELDS
+                    .contains(&declaration_field_name(declaration).unwrap_or_default().as_str())
+        })
+        .cloned()
+        .collect();
+    assert_eq!(flagged.len(), 1, "the renamed raw store must be flagged");
+    assert!(flagged[0].contains("dedup_keys"));
+
+    // Reviewed allowlisted state keeps passing the same scan.
+    let governed = r#"
+pub struct LspServer {
+    progress_tokens: Arc<Mutex<HashSet<String>>>,
+    provider_decision_traces: Arc<Mutex<HashMap<String, Value>>>,
+}
+"#;
+    let governed_declarations = split_declarations(&lsp_server_body(governed)?)?;
+    assert!(governed_declarations.iter().all(|declaration| {
+        !is_string_keyed_collection(declaration)
+            || STRING_KEYED_STATE_FIELDS
+                .contains(&declaration_field_name(declaration).unwrap_or_default().as_str())
+    }));
+
+    // The orchestrator scan rejects a renamed set too.
+    let orchestrator_fixture = r#"
+pub struct PullDiagnosticsOrchestrator {
+    critic_analyzer: Mutex<Option<CriticAnalyzer>>,
+    warning_keys: Mutex<HashSet<String>>,
+}
+"#;
+    let orchestrator_body =
+        struct_body(orchestrator_fixture, "pub struct PullDiagnosticsOrchestrator {")?;
+    assert!(
+        orchestrator_body.contains("HashSet"),
+        "fixture must carry the renamed store for the assertion below"
     );
 
     Ok(())

@@ -1439,8 +1439,26 @@ mod tests {
         // strip_prefix fails, the dir stays absolute, and an absolute dir can
         // never prefix-match a repository-relative git path. Those files fall
         // through to the gate rather than being misattributed.
-        let metadata = sample_metadata();
-        let packages = super::workspace_packages(&metadata, Path::new("/somewhere/else"));
+        //
+        // #12790: the fixture paths must be genuinely absolute on the host —
+        // a leading `/` without a drive prefix is not absolute on Windows
+        // (`Path::is_absolute` requires prefix + root), so POSIX-flavored
+        // literals fail the assertion there even though the ownership
+        // semantics under test are platform-neutral.
+        #[cfg(windows)]
+        const ABS_REPO: &str = r"C:\repo";
+        #[cfg(not(windows))]
+        const ABS_REPO: &str = "/repo";
+        #[cfg(windows)]
+        let outside_root = Path::new(r"D:\somewhere\else");
+        #[cfg(not(windows))]
+        let outside_root = Path::new("/somewhere/else");
+
+        let mut metadata = sample_metadata();
+        for package in &mut metadata.packages {
+            package.manifest_path = package.manifest_path.replacen("/repo", ABS_REPO, 1);
+        }
+        let packages = super::workspace_packages(&metadata, outside_root);
         assert!(
             packages.iter().all(|package| package.dir.is_absolute()),
             "packages outside the given root must keep absolute dirs: {packages:?}"

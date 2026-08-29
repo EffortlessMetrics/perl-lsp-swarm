@@ -189,6 +189,13 @@ const MODULES: &[ModuleRow] = &[
         "#9506"
     ),
     module_row!(
+        "parse_effect_contract",
+        PerlApplication,
+        "perl-lsp-rs",
+        "retain accepted-ticket effect contract and checked sink inventory above runtime",
+        "#11672"
+    ),
+    module_row!(
         "parse_worker",
         PerlApplication,
         "perl-lsp-rs RuntimeServices",
@@ -236,6 +243,20 @@ const MODULES: &[ModuleRow] = &[
         "effortless-lsp",
         "replace duplicate serving loops with one connection engine",
         "#9509"
+    ),
+    module_row!(
+        "session_warning_dedup",
+        PerlApplication,
+        "perl-lsp-rs",
+        "retain bounded typed session-warning suppression policy above runtime",
+        "#9769"
+    ),
+    module_row!(
+        "session_warning_dedup_tests",
+        PerlApplication,
+        "perl-lsp-rs",
+        "retain as cfg(test) falsifiers of the bounded warning-dedup store beside its subject",
+        "#9769"
     ),
     module_row!(
         "stream_session",
@@ -380,6 +401,9 @@ const DEPENDENCIES: &[DependencyRow] = &[
     dependency!("perl-symbol", MoveToPerlAdapter, "#6957"),
     dependency!("perl-tdd-support", PerlTestOnly, "#7394"),
     dependency!("perl-test-facts", PerlTestOnly, "#6943"),
+    // Dev-only must-assertions brought in by the #12604 clippy boundary work;
+    // Perl-test support, never a runtime extraction candidate.
+    dependency!("perl-test-must", PerlTestOnly, "#12604"),
     dependency!("perl-uri", MoveToPerlAdapter, "#8617"),
     dependency!("perl-workspace", MoveToPerlAdapter, "#6957"),
     dependency!("predicates", RetainGenericTest, "#9298"),

@@ -4,11 +4,12 @@
 //! child cleanup implementation is shared with the `perl-lsp-rs` process suite.
 //! This target proves that the installable facade—not a compatibility binary or
 //! PATH fallback—is the process completing the public contract.
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 #[path = "support/real_process.rs"]
 mod real_process;
 
-use anyhow::{Result, ensure};
+use anyhow::{Result, bail, ensure};
 use real_process::RealProcessClient;
 use serde_json::{Value, json};
 use std::time::Duration;
@@ -245,8 +246,9 @@ fn exit_without_shutdown_returns_status_one() -> Result<()> {
 #[test]
 fn strict_stdout_parser_rejects_stray_logs_and_lf_only_frames() -> Result<()> {
     let stray_log = b"starting perllsp on stdout\n";
-    let stray_error = RealProcessClient::parse_stdout_frame_for_test(stray_log)
-        .expect_err("stray stdout log must fail strict framing");
+    let Err(stray_error) = RealProcessClient::parse_stdout_frame_for_test(stray_log) else {
+        bail!("stray stdout log must fail strict framing");
+    };
     ensure!(
         stray_error.to_string().contains("CRLF")
             || stray_error.to_string().contains("header")
@@ -257,8 +259,9 @@ fn strict_stdout_parser_rejects_stray_logs_and_lf_only_frames() -> Result<()> {
     let body = br#"{"jsonrpc":"2.0","method":"window/logMessage"}"#;
     let mut lf_only = format!("Content-Length: {}\n\n", body.len()).into_bytes();
     lf_only.extend_from_slice(body);
-    let lf_error = RealProcessClient::parse_stdout_frame_for_test(&lf_only)
-        .expect_err("LF-only framing must fail");
+    let Err(lf_error) = RealProcessClient::parse_stdout_frame_for_test(&lf_only) else {
+        bail!("LF-only framing must fail");
+    };
     ensure!(
         lf_error.to_string().contains("CRLF"),
         "LF-only framing failed for the wrong reason: {lf_error:#}"

@@ -15,11 +15,20 @@ source via `dofile`, and stay authoritative for their seams:
 lua clients/lite-xl/tests/json_decode_test.lua            # json.lua codec
 lua clients/lite-xl/tests/server_frame_test.lua           # server.lua framing
 lua clients/lite-xl/tests/server_logging_test.lua         # server.lua logging
+lua clients/lite-xl/tests/server_message_scheduling_test.lua # server.lua admission/scheduling
 lua clients/lite-xl/tests/util_show_document_test.lua     # util.lua showDocument
 lua clients/lite-xl/tests/init_document_session_test.lua  # init.lua sessions/versions
 lua clients/lite-xl/tests/init_request_currentness_test.lua # init.lua request admission
 lua clients/lite-xl/tests/init_configuration_items_test.lua # init.lua configuration items
+lua clients/lite-xl/tests/init_show_document_outcome_test.lua # init.lua showDocument outcomes
+lua clients/lite-xl/tests/init_completion_resolve_test.lua # init.lua completion resolve pre-apply
+lua clients/lite-xl/tests/capability_manifest_test.lua    # capability manifest schema/projection
+lua clients/lite-xl/tests/server_initialize_capabilities_test.lua # server.lua initialize truthfulness
+lua clients/lite-xl/tests/init_command_projection_test.lua # init.lua command affordance gates
 lua clients/lite-xl/tests/diagnostics_currentness_test.lua  # diagnostics.lua publications
+lua clients/lite-xl/tests/compose_manifest_test.lua       # #11170 candidate composition manifest laws
+lua clients/lite-xl/tests/compose_materializer_test.lua   # #11170 composition materializer laws (hermetic)
+lua clients/lite-xl/tests/compose_integration_test.lua    # #11170 composer over real git history
 ```
 
 Every suite accepts an optional module-path argument so red-first baselines
@@ -100,6 +109,29 @@ Conventions every suite here must keep (including journeys):
    falsifier checks; document verified falsifiers in the header.
 5. Call `world.teardown()` when a journey ends so worlds never leak
    preloads, globals, or clock overrides.
+
+## Candidate composition (#11170)
+
+`../candidate_manifest.lua` binds exact reviewed patch leaves (one merged
+internal candidate SHA each, with per-path git blob digests recomputed from
+history by `compose_manifest_test.lua`) to named claim profiles, and
+`../compose.lua` materializes a profile into an installable exact-source
+tree plus a content-addressed receipt:
+
+```text
+lua clients/lite-xl/compose.lua materialize lite_xl_exact_source_core
+lua clients/lite-xl/compose.lua proof lite_xl_exact_source_core --only json_decode_test.lua
+lua clients/lite-xl/compose.lua verify lite_xl_protocol_baseline --tree <dir> --receipt <file>
+```
+
+Laws: dependency-derived topological application (prefix-closed per staged
+chain), whole-file snapshots that cannot fuzz (any digest divergence is
+fatal), typed combined-tree interactions for undeclared overlaps and
+ancestor breaks, no unowned diff in generated trees, byte-identical
+regeneration with wall-clock-free receipts. Generated output lands under
+`../generated/` (gitignored) — it is composer-owned and reproducible on
+demand. The pristine upstream base copies live under `../leaves/base/`,
+hashing to the documented upstream blob digests.
 
 ## Deliberate boundaries
 

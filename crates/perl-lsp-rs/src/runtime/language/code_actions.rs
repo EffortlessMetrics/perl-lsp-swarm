@@ -1805,14 +1805,6 @@ mod tests {
         Ok(())
     }
 
-    // Left nested rather than collapsed into a let-chain. Collapsing it
-    // registers a new gap under `enforce-new-ripr` that this PR could not
-    // discharge: focused unit tests, an integration test, and moving this
-    // suppression between the seam and the function were all tried, and
-    // none cleared it. The nested form matches main. The exact gap-identity
-    // rule is NOT established -- see the NOT_PROVEN note on PR #9674 before
-    // assuming one. See #9528.
-    #[allow(clippy::collapsible_if)]
     fn make_quickfix(
         uri: &str,
         line: u64,
@@ -1838,22 +1830,22 @@ mod tests {
             }
         });
 
-        if let Some(code) = diag_code {
-            if let Some(object) = action.as_object_mut() {
-                object.insert(
-                    "diagnostics".to_string(),
-                    json!([{
-                        "range": {
-                            "start": {"line": line, "character": start_char},
-                            "end": {"line": line, "character": end_char},
-                        },
-                        "code": code,
-                        "message": format!("Diagnostic for {code}"),
-                        "source": "perl-lsp",
-                        "severity": 2,
-                    }]),
-                );
-            }
+        if let Some(code) = diag_code
+            && let Some(object) = action.as_object_mut()
+        {
+            object.insert(
+                "diagnostics".to_string(),
+                json!([{
+                    "range": {
+                        "start": {"line": line, "character": start_char},
+                        "end": {"line": line, "character": end_char},
+                    },
+                    "code": code,
+                    "message": format!("Diagnostic for {code}"),
+                    "source": "perl-lsp",
+                    "severity": 2,
+                }]),
+            );
         }
 
         action

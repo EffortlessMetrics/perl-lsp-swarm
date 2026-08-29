@@ -1,4 +1,6 @@
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 mod claude;
+mod mcp;
 
 use perllsp::protocol::product_identity::{
     BinaryIdentityPacketV1, IdentityOutputFormat, requested_identity_output,
@@ -37,6 +39,10 @@ fn main() -> std::process::ExitCode {
         return std::process::ExitCode::SUCCESS;
     }
 
+    if let Some(code) = mcp::try_run(&args) {
+        return std::process::ExitCode::from(code);
+    }
+
     match run_claude_product_command(&args) {
         Ok(Some(code)) => return std::process::ExitCode::from(code),
         Ok(None) => {}
@@ -46,7 +52,19 @@ fn main() -> std::process::ExitCode {
         }
     }
 
+    // `perllsp doctor ...` (without `--client`) is the shared doctor surface;
+    // normalize the positional form onto the shared CLI's `--doctor` flag so
+    // invocations like `perllsp doctor --external-tools` work as documented.
+    let args = normalize_doctor_invocation(args);
     std::process::ExitCode::from(perllsp::run_cli(args) as u8)
+}
+
+/// Rewrite the `perllsp doctor ...` positional form to `perllsp --doctor ...`.
+fn normalize_doctor_invocation(mut args: Vec<String>) -> Vec<String> {
+    if args.get(1).map(String::as_str) == Some("doctor") {
+        args[1] = "--doctor".to_string();
+    }
+    args
 }
 
 fn run_claude_product_command(args: &[String]) -> Result<Option<u8>, &'static str> {
@@ -170,6 +188,21 @@ mod tests {
     #[test]
     fn unrelated_existing_doctor_surface_falls_through() {
         assert_eq!(parse_claude_product_invocation(&args(&["perllsp", "doctor"])), Ok(None));
+    }
+
+    #[test]
+    fn doctor_positional_form_normalizes_to_shared_flag() {
+        let normalized =
+            super::normalize_doctor_invocation(args(&["perllsp", "doctor", "--external-tools"]));
+        assert_eq!(normalized, args(&["perllsp", "--doctor", "--external-tools"]));
+    }
+
+    #[test]
+    fn non_doctor_invocations_are_unchanged() {
+        let input = args(&["perllsp", "--stdio"]);
+        assert_eq!(super::normalize_doctor_invocation(input.clone()), input);
+        let input = args(&["perllsp", "doctora"]);
+        assert_eq!(super::normalize_doctor_invocation(input.clone()), input);
     }
 
     #[test]

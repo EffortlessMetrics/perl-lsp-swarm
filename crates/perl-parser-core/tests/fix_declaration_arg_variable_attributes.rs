@@ -8,7 +8,7 @@
 mod cpan_test_helpers;
 use cpan_test_helpers::*;
 use perl_parser_core::{Node, NodeKind};
-use perl_tdd_support::must_some;
+use perl_tdd_support::{must, must_some};
 
 fn find_list_decl(node: &Node) -> Option<&Node> {
     if matches!(node.kind, NodeKind::VariableListDeclaration { .. }) {
@@ -82,7 +82,11 @@ fn declaration_arg_colon_wraps_only_tagged_variable() {
             );
             assert_eq!(attributes, &["shared".to_string()]);
         }
-        other => panic!("expected VariableWithAttributes for :shared, got: {other:?}"),
+        other => {
+            must(Err::<(), _>(format!(
+                "expected VariableWithAttributes for :shared, got: {other:?}"
+            )));
+        }
     }
 
     assert!(
