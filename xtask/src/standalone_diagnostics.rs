@@ -58,6 +58,23 @@ const SELECTOR_FIELDS: &[&str] = &[
     "path_persistence",
 ];
 
+/// Every field `standalone_install_transition.v1` declares. The schema closes
+/// the object, so admission rejects anything else.
+const PACKET_TOP_LEVEL_KEYS: &[&str] = &[
+    "schema_version",
+    "route_mode",
+    "operation",
+    "transaction_id",
+    "attempt_id",
+    "disposition",
+    "candidate_id",
+    "prior_current_candidate_id",
+    "outcome_dimensions",
+    "bounded_reason",
+];
+
+const ROUTE_MODES: &[&str] = &["first_party_posix", "first_party_powershell"];
+
 const OPERATIONS: &[&str] = &["install", "repair", "update", "rollback"];
 const DISPOSITIONS: &[&str] = &[
     "candidate_verified",
@@ -372,11 +389,35 @@ pub fn validate_manifest_file(root: &Path) -> Res<ValidationStats> {
 
     let mut violations = Vec::new();
     validate_canonical_bytes(&bytes, &manifest, &mut violations);
+    validate_against_registry_schema(root, &manifest, &mut violations)?;
     validate_input_schema_agreement(root, &mut violations)?;
     validate_registry_schema_agreement(root, &mut violations)?;
     finish(violations)?;
 
     validate_manifest_value(&manifest)
+}
+
+/// Apply the registry schema as the structural authority.
+///
+/// The semantic checks below know the rules this registry cares about; they do
+/// not know every field the durable contract declares. Parsing the schema
+/// without applying it would let a structurally invalid manifest - an action
+/// missing `applicability`, an unknown nested key, a malformed issue reference -
+/// pass the advertised validation command.
+fn validate_against_registry_schema(
+    root: &Path,
+    manifest: &Value,
+    violations: &mut Vec<String>,
+) -> Res<()> {
+    let bytes = read_repo_bytes(root, SCHEMA_PATH)?;
+    let schema = parse_json(&bytes, SCHEMA_PATH)?;
+    let validator = jsonschema::validator_for(&schema).map_err(|error| {
+        StandaloneDiagnosticsError::new(format!("`{SCHEMA_PATH}` is not a valid schema: {error}"))
+    })?;
+    for error in validator.iter_errors(manifest) {
+        violations.push(format!("registry schema violation: {error}"));
+    }
+    Ok(())
 }
 
 /// The committed manifest must already be in canonical pretty form so that a
@@ -1089,17 +1130,77 @@ fn typed_field(parent: &Map<String, Value>, key: &str, violations: &mut Vec<Stri
     }
 }
 
+/// One admitted `standalone_install_transition.v1` packet, reduced to the parts
+/// the projection is allowed to use.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TransitionPacket {
+    pub combination: Combination,
+    /// Rendering context only. Bounded to the closed route set so an unvalidated
+    /// document can never echo arbitrary text into a projection.
+    pub route_mode: String,
+}
+
 pub fn combination_from_packet(packet: &Value) -> Res<Combination> {
+    read_packet(packet).map(|admitted| admitted.combination)
+}
+
+/// Admit a transition packet, or fail.
+///
+/// Admission is total over the input contract: every declared field must be
+/// present and well-shaped, unknown fields are rejected, and `route_mode` is
+/// bounded to the closed route set. A document that is not a valid
+/// `standalone_install_transition.v1` packet is an admission failure, never a
+/// bounded diagnostic.
+pub fn read_packet(packet: &Value) -> Res<TransitionPacket> {
     let mut violations = Vec::new();
     let Some(object) = packet.as_object() else {
         return Err(StandaloneDiagnosticsError::new("transition packet must be an object"));
     };
+
+    let expected: BTreeSet<&str> = PACKET_TOP_LEVEL_KEYS.iter().copied().collect();
+    let actual: BTreeSet<&str> = object.keys().map(String::as_str).collect();
+    for unknown in actual.difference(&expected) {
+        violations.push(format!("transition packet has unknown field `{unknown}`"));
+    }
+    for missing in expected.difference(&actual) {
+        violations.push(format!("transition packet is missing `{missing}`"));
+    }
+
     if opt_str(object, "schema_version") != Some(INPUT_SCHEMA_VERSION) {
         violations
             .push(format!("transition packet schema_version must be `{INPUT_SCHEMA_VERSION}`"));
     }
-    if opt_str(object, "bounded_reason").is_none() {
-        violations.push("transition packet must carry `bounded_reason`".to_string());
+    let route_mode = match opt_str(object, "route_mode") {
+        Some(value) if ROUTE_MODES.contains(&value) => value.to_string(),
+        Some(value) => {
+            violations.push(format!(
+                "`route_mode` value `{value}` is outside the typed domain; a rendered parameter may not carry arbitrary text"
+            ));
+            String::new()
+        }
+        None => String::new(),
+    };
+    match opt_str(object, "bounded_reason") {
+        Some(text) if !text.is_empty() && text.len() <= 512 => {}
+        Some(_) => {
+            violations.push("`bounded_reason` must be between 1 and 512 characters".to_string());
+        }
+        None => violations.push("transition packet must carry `bounded_reason`".to_string()),
+    }
+    for key in ["transaction_id", "attempt_id"] {
+        match opt_str(object, key) {
+            Some(text) if is_bounded_id(text) => {}
+            Some(_) => violations.push(format!("`{key}` is not a bounded identifier")),
+            None => violations.push(format!("`{key}` must be a string")),
+        }
+    }
+    for key in ["candidate_id", "prior_current_candidate_id"] {
+        match object.get(key) {
+            Some(Value::Null) => {}
+            Some(Value::String(text)) if is_sha256(text) => {}
+            Some(_) => violations.push(format!("`{key}` must be a sha256 digest or null")),
+            None => {}
+        }
     }
 
     let operation = typed_field(object, "operation", &mut violations);
@@ -1119,14 +1220,30 @@ pub fn combination_from_packet(packet: &Value) -> Res<Combination> {
     let path_persistence = typed_field(dimensions, "path_persistence", &mut violations);
 
     finish(violations)?;
-    Ok(Combination {
-        operation,
-        disposition,
-        product_units,
-        cleanup,
-        process_startup,
-        path_persistence,
+    Ok(TransitionPacket {
+        combination: Combination {
+            operation,
+            disposition,
+            product_units,
+            cleanup,
+            process_startup,
+            path_persistence,
+        },
+        route_mode,
     })
+}
+
+fn is_bounded_id(text: &str) -> bool {
+    !text.is_empty()
+        && text.len() <= 128
+        && text.starts_with(|first: char| first.is_ascii_alphanumeric())
+        && text.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | ':' | '-')
+        })
+}
+
+fn is_sha256(text: &str) -> bool {
+    text.len() == 64 && text.chars().all(|character| character.is_ascii_hexdigit())
 }
 
 fn stage_state(field: &str, value: &str) -> &'static str {
@@ -1189,8 +1306,8 @@ fn path_consequence(path_persistence: &str, process_startup: &str) -> &'static s
 
 /// Project one typed transition packet into its bounded user consequence.
 pub fn project_packet(manifest: &Value, packet: &Value) -> Res<Value> {
-    let combination = combination_from_packet(packet)?;
-    project_combination(manifest, &combination, packet.get("route_mode").and_then(Value::as_str))
+    let admitted = read_packet(packet)?;
+    project_combination(manifest, &admitted.combination, Some(admitted.route_mode.as_str()))
 }
 
 /// Project one selector combination. `route_mode` is rendering context only and
