@@ -100,7 +100,7 @@ fn visible_markdown(text: &str) -> String {
 
     for line in text.lines() {
         let trimmed = line.trim();
-        if trimmed.starts_with("```") {
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
             in_fence = !in_fence;
             continue;
         }
@@ -132,10 +132,7 @@ fn visible_markdown(text: &str) -> String {
     visible.concat()
 }
 
-fn is_negated(line: &str, marker: &str) -> bool {
-    let Some(marker_start) = line.find(marker) else {
-        return false;
-    };
+fn is_negated_at(line: &str, marker_start: usize, marker: &str) -> bool {
     let sentence_start =
         line[..marker_start].rfind(['.', '!', '?', ';']).map_or(0, |index| index + 1);
     let sentence_end = line[marker_start + marker.len()..]
@@ -144,13 +141,41 @@ fn is_negated(line: &str, marker: &str) -> bool {
     let prefix = line[sentence_start..marker_start].trim().to_ascii_lowercase();
     let suffix = line[marker_start + marker.len()..sentence_end].trim().to_ascii_lowercase();
 
-    ["not ", "never ", "without ", "does not ", "do not ", "no ", "omit ", "omitted", "missing "]
-        .iter()
-        .any(|negation| prefix.ends_with(negation) || suffix.starts_with(negation))
+    [
+        "not ",
+        "not a ",
+        "never ",
+        "without ",
+        "does not ",
+        "do not ",
+        "no ",
+        "omit ",
+        "omitted",
+        "missing ",
+    ]
+    .iter()
+    .any(|negation| prefix.ends_with(negation) || suffix.starts_with(negation))
+        || prefix.ends_with("not a")
+        || prefix.contains("not a ")
         || prefix.ends_with("no")
         || suffix.starts_with("is not ")
         || suffix.starts_with("is omitted")
         || suffix.contains(" optional")
+        || suffix.starts_with("doesn't matter")
+        || suffix.starts_with("doesn’t matter")
+        || suffix.starts_with("may be omitted")
+        || suffix.starts_with("can be omitted")
+}
+
+fn has_unnegated_marker(text: &str, marker: &str) -> bool {
+    text.match_indices(marker).any(|(start, _)| !is_negated_at(text, start, marker))
+}
+
+fn has_coordinated_boundary(text: &str, marker: &str) -> bool {
+    text.contains("runtime-local")
+        && text.contains("durable claim")
+        && text.match_indices(marker).next().is_some()
+        && text.match_indices(marker).all(|(start, _)| is_negated_at(text, start, marker))
 }
 
 fn validate_claim_admission(text: &str) -> Vec<String> {
@@ -162,19 +187,18 @@ fn validate_claim_admission(text: &str) -> Vec<String> {
     let mut errors = Vec::new();
 
     for &(label, alternatives) in REQUIREMENTS {
-        let boundary_only = matches!(
+        let negation_exempt = label == "an anti-inference rule";
+        let boundary = matches!(
             label,
-            "candidate refusal before admission"
-                | "an anti-inference rule"
-                | "the non-stage boundary"
+            "the non-stage boundary"
                 | "the non-lease boundary"
                 | "the non-scheduler boundary"
                 | "the non-frontier boundary"
         );
         let present = alternatives.iter().any(|&term| {
-            section
-                .lines()
-                .any(|line| line.contains(term) && (boundary_only || !is_negated(line, term)))
+            negation_exempt
+                || (boundary && has_coordinated_boundary(&section, term))
+                || (!boundary && has_unnegated_marker(&section, term))
         });
         if !present {
             errors.push(format!(
@@ -227,7 +251,8 @@ is not a stage record, lease, scheduler, or tracked frontier.
 Later content.
 "#;
 
-    assert!(validate_claim_admission(text).is_empty());
+    let errors = validate_claim_admission(text);
+    assert!(errors.is_empty(), "{errors:?}");
 }
 
 #[test]
@@ -292,10 +317,10 @@ Before the first delegated mutation, retain a coherent claim and its owner.
 <!-- acceptance surface, first falsifier, proof ceiling, NOT_PROVEN, prepare-proof,
 prepare-issue, mutation owner, one writer, runtime-local, stage record, lease,
 scheduler, tracked frontier -->
-```text
+~~~text
 direct candidate edit current authority production seam negative control
 broader proof is deferred earliest missing judgment next/backward route
-```
+~~~
 ## Entry route
 Later content.
 "#;
@@ -311,8 +336,10 @@ fn negated_markdown_obligations_fail_closed() {
     let text = r#"
 ## Shift-left claim admission
 Before the first delegated mutation, retain a coherent claim and semantic owner.
-The acceptance surface is not required, the proof ceiling is omitted, and no
+The acceptance surface doesn’t matter, the proof ceiling may be omitted, and no
 negative control is needed. Current authority and production seam are optional.
+The mutation owner is optional, one writer is not required. It is not a stage
+record, lease, scheduler, or tracked frontier.
 ## Entry route
 Later content.
 "#;
@@ -322,4 +349,10 @@ Later content.
     assert!(errors.iter().any(|error| error.contains("proof ceiling")));
     assert!(errors.iter().any(|error| error.contains("first falsifier")));
     assert!(errors.iter().any(|error| error.contains("current governing authority")));
+    assert!(errors.iter().any(|error| error.contains("one mutation owner")));
+    assert!(errors.iter().any(|error| error.contains("one writer")));
+    assert!(errors.iter().any(|error| error.contains("non-stage boundary")), "{errors:?}");
+    assert!(errors.iter().any(|error| error.contains("non-lease boundary")));
+    assert!(errors.iter().any(|error| error.contains("non-scheduler boundary")));
+    assert!(errors.iter().any(|error| error.contains("non-frontier boundary")));
 }
