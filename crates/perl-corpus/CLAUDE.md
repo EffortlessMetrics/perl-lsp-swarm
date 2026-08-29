@@ -6,11 +6,13 @@ it does not make every repository corpus asset part of the published crate.
 
 ## Authority and scope
 
-The repository-root `CLAUDE.md` and applicable `AGENTS.md` own routes, orchestration,
-review, proof currentness, and result vocabulary. Current source, manifests, tests, and
-generated contracts own the exact API, dependency, module, and asset inventory. This
-file narrows those contracts to crate-local semantic hazards and proof routes; it does
-not override or copy the root control plane.
+The checked-in repository-root `CLAUDE.md` and `AGENTS.md`, as classified by
+`docs/agents/AUTHORITY_STATUS.md` and `docs/agents/authority_status.toml`, are the
+current repository authority for routes, orchestration, review, proof currentness, and
+result vocabulary. Current source, manifests, tests, and generated contracts own the
+exact API, dependency, module, and asset inventory. This file narrows those contracts
+to crate-local semantic hazards and proof routes; it does not establish a competing
+repository contract.
 
 Keep this file durable. Update it when an ownership boundary, semantic invariant,
 failure mode, or proof route changes. Do not mirror workspace versions, dependency

@@ -6,11 +6,13 @@ an LSP fallback, default-gate authority, or evidence of Tree-sitter compatibilit
 
 ## Authority and scope
 
-The repository-root `CLAUDE.md` and applicable `AGENTS.md` own routes, orchestration,
-review, proof currentness, and result vocabulary. Current source, manifests, tests,
-fixtures, and sync recipes own the exact API, dependency, module, and synchronized-file
-inventory. This file narrows those contracts to the crate's role, claim limits, change
-hazards, and proof routes.
+The checked-in repository-root `CLAUDE.md` and `AGENTS.md`, as classified by
+`docs/agents/AUTHORITY_STATUS.md` and `docs/agents/authority_status.toml`, are the
+current repository authority for routes, orchestration, review, proof currentness, and
+result vocabulary. Current source, manifests, tests, fixtures, and applicable recipes
+own the exact API, dependency, module, and file inventory. This file narrows those
+contracts to the crate's role, claim limits, change hazards, and proof routes; it does
+not establish a competing repository contract.
 
 Keep this file durable. Update it when the instrument contract, evidence identity,
 compatibility boundary, or proof route changes. Do not mirror workspace versions,
@@ -25,13 +27,13 @@ cargo test -p perl-parser-pest --test fixture_manifest
 cargo clippy -p perl-parser-pest
 cargo doc -p perl-parser-pest --open
 
-# Required while the archived v2 compatibility copy remains synchronized.
-just ci-v2-bundle-sync
 ```
 
-Run the bundle-sync recipe only when its current recipe says the changed source is in
-the synchronized set. Passing it proves equality under that transitional contract; it
-does not make the archive a second design authority.
+The historical `ci-v2-bundle-sync` recipe and its archived comparison are not a
+package-local proof requirement. If historical parity is investigated while the
+retirement work in #8814 remains open, treat that check as bounded evidence of byte
+equality only; it does not establish current correctness, a second design authority,
+or a requirement to keep the live crate synchronized with the archive.
 
 ## Instrument contract
 
@@ -66,10 +68,12 @@ fail closed as instrument errors rather than being counted as parser results.
 
 ## Compatibility boundary
 
-The live crate is the design authority. The archived `tree-sitter-perl-rs` v2 bundle is
-transitional compatibility debt. While `just ci-v2-bundle-sync` remains part of the
-repository contract, changes to its synchronized set must satisfy it, but do not expand
-that set, copy new architecture into the archive, or treat archive equality as product
+Issue #8814 records the accepted direction for this boundary: the live crate is the
+canonical source for this experimental parser, while the archived `tree-sitter-perl-rs`
+v2 bundle is historical evidence and compatibility debt. The repository may still
+contain legacy synchronization machinery while that issue remains open, but this file
+does not prescribe it as a current contract. Do not expand the old synchronized set,
+copy new architecture into the archive, or treat archive equality as product
 correctness.
 
 Changes here should improve comparison reliability, evidence honesty, legacy

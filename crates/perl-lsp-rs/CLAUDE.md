@@ -4,11 +4,13 @@ LSP server implementation and integration tests.
 
 ## Authority and scope
 
-The repository-root `CLAUDE.md` and applicable `AGENTS.md` own routes, orchestration,
-review, proof currentness, and result vocabulary. Current source, manifests, tests, and
-generated contracts own the exact API, dependency, and module inventory. This file
-carries only package-local runtime, test-harness, and include-root hazards; it narrows
-but does not override the root control plane.
+The checked-in repository-root `CLAUDE.md` and `AGENTS.md`, as classified by
+`docs/agents/AUTHORITY_STATUS.md` and `docs/agents/authority_status.toml`, are the
+current repository authority for routes, orchestration, review, proof currentness, and
+result vocabulary. Current source, manifests, tests, and generated contracts own the
+exact API, dependency, and module inventory. This file carries only package-local
+runtime, test-harness, and include-root hazards; it does not establish a competing
+repository contract.
 
 Keep this file durable. Update it when a local semantic invariant, ownership boundary,
 failure mode, or proof route changes. Do not add workspace versions, dependency lists,
