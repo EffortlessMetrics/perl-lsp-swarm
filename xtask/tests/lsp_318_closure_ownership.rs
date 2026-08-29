@@ -11,14 +11,8 @@ use std::{fs, path::PathBuf};
 const MATRIX_PATH: &str = "docs/specs/lsp-318-conformance-matrix.md";
 const LEDGER_PATH: &str = "docs/specs/lsp-318-closure-ownership.md";
 const CLOSED_DISPOSITIONS: &[&str] = &["implementation-owner", "accepted-disposition"];
-const LEDGER_HEADER: &[&str] = &[
-    "ID",
-    "Matrix feature",
-    "Disposition",
-    "Owner / evidence",
-    "Dependency",
-    "Rationale",
-];
+const LEDGER_HEADER: &[&str] =
+    &["ID", "Matrix feature", "Disposition", "Owner / evidence", "Dependency", "Rationale"];
 const EXPECTED_LEDGER_IDS: &[&str] = &[
     "command-tooltip-non-codelens",
     "generated-code-action-tags",
@@ -47,18 +41,14 @@ fn project_root() -> PathBuf {
 
 fn read(relative: &str) -> Result<String, String> {
     let path = project_root().join(relative);
-    fs::read_to_string(&path)
-        .map_err(|error| format!("failed to read {}: {error}", path.display()))
+    fs::read_to_string(&path).map_err(|error| format!("failed to read {}: {error}", path.display()))
 }
 
 fn table_rows(source: &str, expected_cells: usize) -> Result<Vec<Vec<&str>>, String> {
     let mut rows = Vec::new();
     for line in source.lines().filter(|line| line.starts_with("| ")) {
         let cells: Vec<_> = line.trim_matches('|').split('|').map(str::trim).collect();
-        if cells
-            .iter()
-            .all(|cell| cell.chars().all(|ch| ch == '-' || ch == ' '))
-        {
+        if cells.iter().all(|cell| cell.chars().all(|ch| ch == '-' || ch == ' ')) {
             continue;
         }
         if cells.len() != expected_cells {
@@ -110,28 +100,25 @@ fn parse_matrix(matrix: &str) -> Result<BTreeMap<&str, Vec<&str>>, String> {
 }
 
 fn has_issue_reference(value: &str) -> bool {
-    value
-        .split(|ch: char| ch.is_whitespace() || matches!(ch, ',' | ';' | '/' | '(' | ')'))
-        .any(|token| {
+    value.split(|ch: char| ch.is_whitespace() || matches!(ch, ',' | ';' | '/' | '(' | ')')).any(
+        |token| {
             token.strip_prefix('#').is_some_and(|digits| {
                 !digits.is_empty() && digits.chars().all(|ch| ch.is_ascii_digit())
             })
-        })
+        },
+    )
 }
 
-fn unresolved_matrix_features<'a>(
-    matrix: &BTreeMap<&'a str, Vec<&'a str>>,
-) -> BTreeSet<&'a str> {
+fn unresolved_matrix_features<'a>(matrix: &BTreeMap<&'a str, Vec<&'a str>>) -> BTreeSet<&'a str> {
     matrix
         .iter()
         .filter_map(|(&feature, cells)| {
             let status = cells[5];
             let notes = cells[9].to_ascii_lowercase();
-            let unresolved = matches!(
-                status,
-                "negative-gated+documented" | "not-applicable+documented"
-            ) || notes.contains("unclaimed")
-                || notes.contains("negative-gated");
+            let unresolved =
+                matches!(status, "negative-gated+documented" | "not-applicable+documented")
+                    || notes.contains("unclaimed")
+                    || notes.contains("negative-gated");
             unresolved.then_some(feature)
         })
         .collect()
@@ -154,15 +141,9 @@ fn unresolved_lsp_318_surfaces_have_closure_owners() -> Result<(), Box<dyn std::
     let mut observed_ids = BTreeSet::new();
     let mut observed_features = BTreeSet::new();
     for row in &ledger {
+        assert!(observed_ids.insert(row.id), "duplicate closure-ledger ID `{}`", row.id);
         assert!(
-            observed_ids.insert(row.id),
-            "duplicate closure-ledger ID `{}`",
-            row.id
-        );
-        assert!(
-            row.id
-                .chars()
-                .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-'),
+            row.id.chars().all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-'),
             "closure-ledger ID `{}` must use lowercase kebab-case tokens",
             row.id
         );
