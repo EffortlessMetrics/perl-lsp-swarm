@@ -580,7 +580,7 @@ fn whitespace_within_admitted(
                     .is_some_and(|prefix| prefix.ends_with(['\r', '\n'])),
             )
         {
-            projected.push('\n');
+            projected.push_str(inferred_line_ending(content));
         }
     }
     if projected == slice {
@@ -759,14 +759,7 @@ fn apply_lsp_whitespace_options_from_source(
     options: &FormattingOptions,
     line_ending_source: &str,
 ) -> String {
-    apply_lsp_whitespace_options_with_eof(
-        content,
-        options,
-        true,
-        true,
-        false,
-        line_ending_source,
-    )
+    apply_lsp_whitespace_options_with_eof(content, options, true, true, false, line_ending_source)
 }
 
 fn apply_lsp_whitespace_options_with_eof(
@@ -1369,6 +1362,27 @@ mod decision_projection_tests {
         .expect("projection must not error");
         assert_eq!(decision.outcome.disposition, FormatDisposition::NoChange);
         assert_eq!(decision.document.text, interior_source);
+    }
+
+    #[test]
+    fn no_change_true_eof_range_reinserts_the_source_crlf_terminator() {
+        let mut options = range_options();
+        options.trim_trailing_whitespace = Some(true);
+        options.insert_final_newline = Some(true);
+        options.trim_final_newlines = Some(true);
+        let source = "my $x = 1;  \r\n";
+        let geometry = SourceGeometry::new(source);
+        let admitted = admitted_fixture(source, 0, 0, 1, 0);
+
+        let decision =
+            project_native_range(source, &geometry, &admitted, &options, no_change_typed(source))
+                .expect("projection must not error");
+
+        assert_eq!(decision.outcome.disposition, FormatDisposition::Applied);
+        assert_eq!(decision.document.text, "my $x = 1;\r\n");
+        assert_eq!(decision.document.edits.len(), 1);
+        assert_eq!(decision.document.edits[0].new_text, "my $x = 1;\r\n");
+        assert!(!decision.document.edits[0].new_text.ends_with("\n\n"));
     }
 
     #[test]
