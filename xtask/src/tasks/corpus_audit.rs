@@ -376,30 +376,13 @@ fn validate_report_for_ci(report: &AuditReport) -> Result<()> {
     // Propagate errors so a corrupted baseline does not silently pass.
     let floor_metrics = load_parser_floor_metrics()?;
 
-    if let Some(Some(baseline_nodekind)) = floor_metrics.get("node_kind_coverage") {
-        let current_nodekind = if report.nodekind_coverage.total_count == 0 {
-            0.0
-        } else {
-            report.nodekind_coverage.covered_count as f64
-                / report.nodekind_coverage.total_count as f64
-        };
-        if current_nodekind + 1e-6 < *baseline_nodekind {
-            failures.push(format!(
-                "NodeKind coverage regression: {:.4} < {:.4} baseline",
-                current_nodekind, baseline_nodekind
-            ));
-        }
-    }
-
-    if let Some(Some(baseline_gap_count)) = floor_metrics.get("valid_parser_gap_count") {
-        let current_gap_count = report.parse_outcomes.error as f64;
-        if current_gap_count > *baseline_gap_count {
-            failures.push(format!(
-                "Valid parser gap regression: {:.0} > {:.0} baseline",
-                current_gap_count, baseline_gap_count
-            ));
-        }
-    }
+    failures.extend(parser_ratchet_failure_messages(
+        &floor_metrics,
+        report.nodekind_coverage.covered_count,
+        report.nodekind_coverage.total_count,
+        &report.nodekind_coverage.actionable_never_seen,
+        report.parse_outcomes.error,
+    ));
 
     // Print error category breakdown if there are errors (Issue #180)
     if current_errors > 0 && !report.parse_outcomes.error_by_category.is_empty() {
@@ -421,6 +404,45 @@ fn validate_report_for_ci(report: &AuditReport) -> Result<()> {
         }
         Err(color_eyre::eyre::eyre!("CI gate validation failed: {}", failures.join("; ")))
     }
+}
+
+fn parser_ratchet_failure_messages(
+    floor_metrics: &BTreeMap<String, Option<f64>>,
+    nodekind_covered: usize,
+    nodekind_total: usize,
+    actionable_never_seen: &[String],
+    parse_error: usize,
+) -> Vec<String> {
+    let mut failures = Vec::new();
+
+    if !actionable_never_seen.is_empty() {
+        failures.push(format!(
+            "Actionable never-seen NodeKinds ({}): {}",
+            actionable_never_seen.len(),
+            actionable_never_seen.join(", ")
+        ));
+    }
+
+    if let Some(Some(baseline_nodekind)) = floor_metrics.get("node_kind_coverage") {
+        let current_nodekind =
+            if nodekind_total == 0 { 0.0 } else { nodekind_covered as f64 / nodekind_total as f64 };
+        if current_nodekind + 1e-6 < *baseline_nodekind {
+            failures.push(format!(
+                "NodeKind coverage regression: {current_nodekind:.4} < {baseline_nodekind:.4} baseline"
+            ));
+        }
+    }
+
+    if let Some(Some(baseline_gap_count)) = floor_metrics.get("valid_parser_gap_count") {
+        let current_gap_count = parse_error as f64;
+        if current_gap_count > *baseline_gap_count {
+            failures.push(format!(
+                "Valid parser gap regression: {current_gap_count:.0} > {baseline_gap_count:.0} baseline"
+            ));
+        }
+    }
+
+    failures
 }
 
 fn load_parser_floor_metrics() -> Result<BTreeMap<String, Option<f64>>> {
@@ -530,7 +552,7 @@ mod tests {
     }
 
     // --------------------------------------------------------------------------
-    // Parser floor ratchet logic (nodekind / gap-count)
+    // Parser floor ratchet logic (actionable NodeKind / ratio / gap-count)
     // --------------------------------------------------------------------------
 
     /// Build a minimal floor_metrics map for ratchet tests.
@@ -544,44 +566,78 @@ mod tests {
         m
     }
 
-    /// Check whether `validate_report_for_ci` produces a failure message matching `needle`
-    /// when floor metrics and parse outcomes are configured as given.
-    ///
-    /// We exercise only the ratchet block: other checks (GA coverage, timeouts, panics)
-    /// use values that never fail.
+    /// Exercise the production ratchet with no actionable NodeKind omissions.
     fn ratchet_failure_messages(
         floor_metrics: &BTreeMap<String, Option<f64>>,
         nodekind_covered: usize,
         nodekind_total: usize,
         parse_error: usize,
     ) -> Vec<String> {
-        let mut failures = Vec::new();
+        parser_ratchet_failure_messages(
+            floor_metrics,
+            nodekind_covered,
+            nodekind_total,
+            &[],
+            parse_error,
+        )
+    }
 
-        // -- nodekind ratchet --
-        if let Some(Some(baseline_nodekind)) = floor_metrics.get("node_kind_coverage") {
-            let current = if nodekind_total == 0 {
-                0.0
-            } else {
-                nodekind_covered as f64 / nodekind_total as f64
-            };
-            if current + 1e-6 < *baseline_nodekind {
-                failures.push(format!(
-                    "NodeKind coverage regression: {current:.4} < {baseline_nodekind:.4} baseline"
-                ));
-            }
+    fn synthetic_report(actionable_never_seen: Vec<String>, covered_count: usize) -> AuditReport {
+        AuditReport {
+            metadata: report::ReportMetadata {
+                generated_at: String::new(),
+                version: String::new(),
+                duration_secs: 0,
+            },
+            inventory: corpus::CorpusInventory {
+                total_files: 0,
+                files_by_layer: Vec::new(),
+                total_size_bytes: 0,
+                total_line_count: 0,
+            },
+            parse_outcomes: ParseOutcomesSummary {
+                total: 0,
+                ok: 0,
+                error: 0,
+                timeout: 0,
+                panic: 0,
+                error_by_category: HashMap::new(),
+                failing_files: Vec::new(),
+            },
+            nodekind_coverage: nodekind_analysis::NodeKindStats {
+                total_count: 76,
+                covered_count,
+                coverage_percentage: covered_count as f64 / 76.0 * 100.0,
+                never_seen: actionable_never_seen.clone(),
+                allowlisted_never_seen: Vec::new(),
+                actionable_never_seen,
+                at_risk: Vec::new(),
+                frequency: HashMap::new(),
+            },
+            ga_coverage: ga_alignment::GAFeatureCoverage {
+                total_count: 1,
+                covered_count: 1,
+                coverage_percentage: 100.0,
+                features: Vec::new(),
+                uncovered_critical: Vec::new(),
+                uncovered_partial: Vec::new(),
+            },
+            timeout_risks: Vec::new(),
         }
+    }
 
-        // -- gap-count ratchet --
-        if let Some(Some(baseline_gap)) = floor_metrics.get("valid_parser_gap_count") {
-            let current = parse_error as f64;
-            if current > *baseline_gap {
-                failures.push(format!(
-                    "Valid parser gap regression: {current:.0} > {baseline_gap:.0} baseline"
-                ));
-            }
+    #[test]
+    fn test_validate_report_for_ci_rejects_actionable_nodekind_omission() {
+        let report = synthetic_report(vec!["AmperCall".to_string()], 72);
+
+        let result = validate_report_for_ci(&report);
+        assert!(result.is_err(), "validator must reject reports with actionable omissions");
+        if let Err(error) = result {
+            assert!(
+                error.to_string().contains("Actionable never-seen NodeKinds (1): AmperCall"),
+                "validator error should identify the actionable omission: {error}"
+            );
         }
-
-        failures
     }
 
     #[test]
@@ -601,6 +657,36 @@ mod tests {
             msgs.iter().any(|s| s.contains("NodeKind coverage regression")),
             "expected NodeKind failure: {msgs:?}"
         );
+    }
+
+    #[test]
+    fn test_actionable_nodekind_ratchet_fires_above_ratio_floor() {
+        let m = floor_metrics_from(Some(0.942_029), None);
+        let actionable = ["AmperCall".to_string()];
+
+        // 72/76 is still above the historical ratio floor, so only the semantic
+        // actionable-omission ratchet can reject this regression.
+        let msgs = parser_ratchet_failure_messages(&m, 72, 76, &actionable, 0);
+
+        assert!(
+            msgs.iter().any(|s| s == "Actionable never-seen NodeKinds (1): AmperCall"),
+            "expected actionable NodeKind failure: {msgs:?}"
+        );
+        assert!(
+            !msgs.iter().any(|s| s.contains("NodeKind coverage regression")),
+            "fixture must remain above the legacy ratio floor: {msgs:?}"
+        );
+    }
+
+    #[test]
+    fn test_recovery_only_nodekind_omissions_remain_allowed() {
+        let m = floor_metrics_from(Some(0.942_029), None);
+
+        // The current 73/76 state has three recovery-only omissions but no
+        // actionable omissions, so the semantic ratchet must remain green.
+        let msgs = parser_ratchet_failure_messages(&m, 73, 76, &[], 0);
+
+        assert!(msgs.is_empty(), "recovery-only omissions must remain allowed: {msgs:?}");
     }
 
     #[test]
