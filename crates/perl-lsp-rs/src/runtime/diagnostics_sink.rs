@@ -120,8 +120,37 @@ impl PushDiagnosticsSink {
 }
 
 impl LspServer {
+    pub(crate) fn project_config_for_uri(
+        &self,
+        uri: &str,
+    ) -> Option<perl_lsp_rs_core::config::ProjectConfig> {
+        self.folder_for_doc_uri(uri)
+            .and_then(|folder| folder.project_config)
+            .or_else(|| self.single_file_project_config.lock().clone())
+    }
+
     pub(crate) fn project_config_generation_for_uri(&self, uri: &str) -> Option<u64> {
-        self.folder_for_doc_uri(uri).map(|folder| folder.project_config_generation)
+        self.folder_for_doc_uri(uri).map(|folder| folder.project_config_generation).or_else(|| {
+            self.single_file_project_config.lock().as_ref()?;
+            Some(
+                self.single_file_project_config_generation
+                    .load(std::sync::atomic::Ordering::SeqCst),
+            )
+        })
+    }
+
+    pub(crate) fn set_single_file_project_config(
+        &self,
+        config: Option<perl_lsp_rs_core::config::ProjectConfig>,
+    ) {
+        let changed =
+            self.single_file_project_config.lock().as_ref().map(|value| format!("{value:?}"))
+                != config.as_ref().map(|value| format!("{value:?}"));
+        *self.single_file_project_config.lock() = config;
+        if changed {
+            self.single_file_project_config_generation
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
     }
 
     pub(crate) fn invalidate_workspace_identity(&self) {

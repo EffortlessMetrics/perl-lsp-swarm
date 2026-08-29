@@ -216,6 +216,10 @@ pub struct LspServer {
     pub(crate) workspace_identity_generation: Arc<AtomicU64>,
     /// Serializes workspace identity invalidation with diagnostic publication.
     pub(crate) workspace_identity_lock: Arc<Mutex<()>>,
+    /// Project configuration discovered for an unregistered single-file document.
+    single_file_project_config: Arc<Mutex<Option<perl_lsp_rs_core::config::ProjectConfig>>>,
+    /// Generation for the retained single-file project configuration authority.
+    single_file_project_config_generation: Arc<AtomicU64>,
     /// Root path for module resolution
     root_path: Arc<Mutex<Option<PathBuf>>>,
     /// `.perltidyrc` profile path discovered from the workspace root during

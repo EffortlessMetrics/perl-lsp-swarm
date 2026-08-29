@@ -108,13 +108,11 @@ fn workspace_root_for_doc(server: &LspServer, uri: &str) -> Option<std::path::Pa
 }
 
 fn project_version_for_doc(server: &LspServer, uri: &str) -> Option<String> {
-    server
-        .folder_for_doc_uri(uri)
-        .and_then(|folder| folder.project_config.as_ref()?.perl.version.clone())
+    server.project_config_for_uri(uri)?.perl.version
 }
 
 fn project_config_generation_for_doc(server: &LspServer, uri: &str) -> Option<u64> {
-    server.folder_for_doc_uri(uri).map(|folder| folder.project_config_generation)
+    server.project_config_generation_for_uri(uri)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -709,11 +707,36 @@ impl LspServer {
                     Arc::clone(&doc.generation),
                     doc.generation.load(Ordering::SeqCst),
                     self.workspace_identity_generation.load(Ordering::SeqCst),
-                    project_config_generation_for_doc(self, &normalized_uri),
                 ))
             })
             // lock is released here
         };
+        let snapshot = snapshot.map(
+            |(
+                ast_opt,
+                text,
+                parse_errors,
+                version,
+                degradation_tier,
+                line_starts,
+                generation,
+                gen_at_snapshot,
+                workspace_gen_at_snapshot,
+            )| {
+                (
+                    ast_opt,
+                    text,
+                    parse_errors,
+                    version,
+                    degradation_tier,
+                    line_starts,
+                    generation,
+                    gen_at_snapshot,
+                    workspace_gen_at_snapshot,
+                    project_config_generation_for_doc(self, &normalized_uri),
+                )
+            },
+        );
 
         let Some((
             ast_opt,
@@ -1187,10 +1210,22 @@ impl LspServer {
                     doc.line_starts.clone(),
                     Arc::clone(&doc.generation),
                     doc.generation.load(Ordering::SeqCst),
-                    project_config_generation_for_doc(self, &normalized_uri),
                 ))
             })
         };
+        let snapshot = snapshot.map(
+            |(parse_errors, text, version, line_starts, generation, gen_at_snapshot)| {
+                (
+                    parse_errors,
+                    text,
+                    version,
+                    line_starts,
+                    generation,
+                    gen_at_snapshot,
+                    project_config_generation_for_doc(self, &normalized_uri),
+                )
+            },
+        );
 
         let Some((
             parse_errors,
@@ -1286,11 +1321,23 @@ impl LspServer {
                     std::sync::Arc::clone(&doc.text_arc),
                     std::sync::Arc::clone(&doc.generation),
                     doc.current_generation(),
-                    project_config_generation_for_doc(self, &normalized_uri),
                 )
             })
             // lock is released here
         };
+        let snapshot = snapshot.map(
+            |(parse_errors, version, line_starts, text, generation, gen_at_snapshot)| {
+                (
+                    parse_errors,
+                    version,
+                    line_starts,
+                    text,
+                    generation,
+                    gen_at_snapshot,
+                    project_config_generation_for_doc(self, &normalized_uri),
+                )
+            },
+        );
         let Some((
             parse_errors,
             version,
@@ -1899,7 +1946,6 @@ impl LspServer {
             std::sync::Arc<std::sync::atomic::AtomicU32>,
             u32,
             u64,
-            Option<u64>,
         )> = {
             let documents = self.documents.lock();
             documents
@@ -1907,18 +1953,31 @@ impl LspServer {
                 .map(|(k, v)| {
                     let generation_arc = std::sync::Arc::clone(&v.generation);
                     let gen_val = v.generation.load(std::sync::atomic::Ordering::SeqCst);
-                    let config_generation = project_config_generation_for_doc(self, k);
-                    (
-                        k.clone(),
-                        v.clone(),
-                        generation_arc,
-                        gen_val,
-                        workspace_gen_at_snapshot,
-                        config_generation,
-                    )
+                    (k.clone(), v.clone(), generation_arc, gen_val, workspace_gen_at_snapshot)
                 })
                 .collect()
         };
+        let docs_snapshot: Vec<(
+            String,
+            DocumentState,
+            std::sync::Arc<std::sync::atomic::AtomicU32>,
+            u32,
+            u64,
+            Option<u64>,
+        )> = docs_snapshot
+            .into_iter()
+            .map(|(uri, doc, generation, gen_at_snapshot, workspace_gen_at_snapshot)| {
+                let config_generation_at_snapshot = project_config_generation_for_doc(self, &uri);
+                (
+                    uri,
+                    doc,
+                    generation,
+                    gen_at_snapshot,
+                    workspace_gen_at_snapshot,
+                    config_generation_at_snapshot,
+                )
+            })
+            .collect();
 
         // Wait for index build before sampling per-document staleness for the
         // workspace semantic tier (#5016 item 2).
@@ -3116,6 +3175,23 @@ mod tests {
         Ok((uri, file.to_string_lossy().into_owned()))
     }
 
+    fn install_single_file_project_config(
+        temp: &tempfile::TempDir,
+        version: &str,
+    ) -> Result<(String, String), Box<dyn std::error::Error>> {
+        let folder = temp.path().join("single-file");
+        std::fs::create_dir_all(&folder)?;
+        std::fs::write(
+            folder.join(".perl-lsp.toml"),
+            format!("[perl]\nversion = \"{version}\"\n"),
+        )?;
+        let file = folder.join("main.pl");
+        let uri = url::Url::from_file_path(&file)
+            .map_err(|()| "failed to build single-file URI")?
+            .to_string();
+        Ok((uri, file.to_string_lossy().into_owned()))
+    }
+
     #[test]
     fn production_push_workspace_and_pull_paths_emit_project_version_pl900()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -3209,6 +3285,88 @@ mod tests {
         let invalid_workspace_text = invalid_workspace_report.to_string();
         assert_eq!(invalid_workspace_text.matches("Invalid project [perl].version").count(), 1);
         assert!(!invalid_workspace_text.contains("requires Perl"));
+        Ok(())
+    }
+
+    #[test]
+    fn production_unregistered_single_file_config_reaches_all_diagnostic_paths()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = "use builtin 'inf'; builtin::inf();\n";
+
+        let temp = tempfile::tempdir()?;
+        let (push_server, push_buffer) = make_server_with_capture();
+        let (push_uri, _) = install_single_file_project_config(&temp, "5.20")?;
+        push_server.test_handle_did_open(Some(json!({
+            "textDocument": {"uri": push_uri, "languageId": "perl", "version": 1, "text": source}
+        })))?;
+        push_server.load_and_apply_project_config();
+        push_server.publish_diagnostics(&push_uri);
+        drop(push_server);
+        let push_output = String::from_utf8(push_buffer.lock().clone())?;
+        assert!(push_output.contains("PL900"), "single-file push must emit PL900: {push_output}");
+
+        let (pull_server, _) = make_server_with_capture();
+        let (pull_uri, _) = install_single_file_project_config(&temp, "5.20")?;
+        pull_server.test_handle_did_open(Some(json!({
+            "textDocument": {"uri": pull_uri, "languageId": "perl", "version": 1, "text": source}
+        })))?;
+        pull_server.load_and_apply_project_config();
+        let pull_report = pull_server
+            .handle_document_diagnostic(Some(json!({"textDocument": {"uri": pull_uri}})))?
+            .ok_or("single-file document pull response missing")?;
+        assert!(pull_report.to_string().contains("PL900"));
+
+        let (workspace_server, _) = make_server_with_capture();
+        let (workspace_uri, _) = install_single_file_project_config(&temp, "5.20")?;
+        workspace_server.test_handle_did_open(Some(json!({
+            "textDocument": {"uri": workspace_uri, "languageId": "perl", "version": 1, "text": source}
+        })))?;
+        workspace_server.load_and_apply_project_config();
+        let workspace_report = workspace_server
+            .handle_workspace_diagnostic(Some(json!({"previousResultIds": []})))?
+            .ok_or("single-file workspace pull response missing")?;
+        assert!(workspace_report.to_string().contains("PL900"));
+        Ok(())
+    }
+
+    #[test]
+    fn concurrent_single_file_reload_and_workspace_pull_complete_without_lock_cycle()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let (uri, _) = install_single_file_project_config(&temp, "5.20")?;
+        let server = StdArc::new(LspServer::new());
+        server.test_handle_did_open(Some(json!({
+            "textDocument": {
+                "uri": uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": "use builtin 'inf'; builtin::inf();\n"
+            }
+        })))?;
+
+        let barrier = StdArc::new(std::sync::Barrier::new(3));
+        let (reload_tx, reload_rx) = std::sync::mpsc::channel();
+        let reload_server = StdArc::clone(&server);
+        let reload_barrier = StdArc::clone(&barrier);
+        std::thread::spawn(move || {
+            reload_barrier.wait();
+            reload_server.load_and_apply_project_config();
+            let _ = reload_tx.send(());
+        });
+
+        let (diagnostic_tx, diagnostic_rx) = std::sync::mpsc::channel();
+        let diagnostic_server = StdArc::clone(&server);
+        let diagnostic_barrier = StdArc::clone(&barrier);
+        std::thread::spawn(move || {
+            diagnostic_barrier.wait();
+            let _ = diagnostic_server
+                .handle_workspace_diagnostic(Some(json!({"previousResultIds": []})));
+            let _ = diagnostic_tx.send(());
+        });
+
+        barrier.wait();
+        reload_rx.recv_timeout(Duration::from_secs(10))?;
+        diagnostic_rx.recv_timeout(Duration::from_secs(10))?;
         Ok(())
     }
 

@@ -142,13 +142,22 @@ impl LspServer {
     /// `window/showMessage` Warning is emitted naming the folders and keys, instead
     /// of silently discarding a folder's configuration.
     pub(crate) fn load_and_apply_project_config(&self) {
+        // Discover before taking the workspace-folder lock because discovery
+        // takes the documents lock. This keeps lock acquisition ordered as
+        // documents -> workspace_folders for diagnostic/reload snapshots.
+        let single_file_config = if self.workspace_folders.lock().is_empty() {
+            self.discover_single_file_config()
+        } else {
+            None
+        };
         let mut folders = self.workspace_folders.lock();
 
         if folders.is_empty() {
             // Single-file mode: try to discover .perl-lsp.toml from the
             // open document's directory. This is a common workflow — opening
             // a lone .pl file that has a .perl-lsp.toml next to it. (#UX15)
-            if let Some(config) = self.discover_single_file_config() {
+            self.set_single_file_project_config(single_file_config.clone());
+            if let Some(config) = single_file_config {
                 if let Some(raw_version) = config.perl.version.as_deref()
                     && perl_lsp_rs_core::providers::diagnostics::version_compat::parse_configured_project_version(raw_version).is_none()
                 {
