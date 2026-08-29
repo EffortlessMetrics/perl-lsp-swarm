@@ -10,6 +10,7 @@
 //! `FileIdInfo` adapter when available; adapter failure remains `Unavailable`
 //! and cannot support a clean or race-detection claim.
 
+use crate::worktree_cleanup::Observation;
 use chrono::{SecondsFormat, Utc};
 use color_eyre::eyre::{Context, Result, bail, eyre};
 use serde::{Deserialize, Serialize};
@@ -64,22 +65,6 @@ impl RecoveryClassification {
             Self::ForensicInstrumentUnavailable => "FORENSIC_INSTRUMENT_UNAVAILABLE",
             Self::NotProven => "NOT_PROVEN",
         }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Observation<T> {
-    pub value: Option<T>,
-    pub detail: String,
-}
-
-impl<T> Observation<T> {
-    pub fn observed(value: T) -> Self {
-        Self { value: Some(value), detail: String::from("observed") }
-    }
-
-    pub fn unavailable(detail: impl Into<String>) -> Self {
-        Self { value: None, detail: detail.into() }
     }
 }
 
@@ -336,7 +321,7 @@ pub fn inspect_with_limits_and_probe(
         Ok(identity) => identity,
         Err(error) => {
             let detail = error.to_string();
-            let evidence = initial_evidence(Observation::unavailable(detail.clone()));
+            let evidence = initial_evidence(Observation::not_proven(detail.clone()));
             let mut evidence = evidence;
             evidence.instrument_failures.push(detail);
             return finish_plan(evidence);
@@ -351,7 +336,7 @@ pub fn inspect_with_limits_and_probe(
         }
         Err(error) => {
             let detail = error.to_string();
-            evidence.candidate_identity = Observation::unavailable(detail.clone());
+            evidence.candidate_identity = Observation::not_proven(detail.clone());
             evidence.instrument_failures.push(detail);
             false
         }
@@ -397,16 +382,16 @@ pub fn inspect_with_limits_and_probe(
         StableRead::Stable(bytes) => bytes,
         StableRead::Unstable(detail) => {
             evidence.instrument_failures.push(detail.clone());
-            evidence.pointer = Observation::unavailable(detail);
+            evidence.pointer = Observation::not_proven(detail);
             return finish_plan(evidence);
         }
         StableRead::Unavailable(detail) => {
             if is_missing_path(&pointer_path) {
                 evidence.contradictions.push(String::from("MISSING_GIT_POINTER"));
-                evidence.pointer = Observation::unavailable("candidate has no .git pointer");
+                evidence.pointer = Observation::not_proven("candidate has no .git pointer");
             } else {
                 evidence.instrument_failures.push(detail.clone());
-                evidence.pointer = Observation::unavailable(detail);
+                evidence.pointer = Observation::not_proven(detail);
             }
             return finish_plan(evidence);
         }
@@ -417,7 +402,7 @@ pub fn inspect_with_limits_and_probe(
         Err(error) => {
             let detail = format!("candidate .git pointer is not UTF-8: {error}");
             evidence.contradictions.push(String::from("INVALID_GIT_POINTER"));
-            evidence.pointer = Observation::unavailable(detail);
+            evidence.pointer = Observation::not_proven(detail);
             return finish_plan(evidence);
         }
     };
@@ -425,7 +410,7 @@ pub fn inspect_with_limits_and_probe(
         Ok(path) => path,
         Err(detail) => {
             evidence.contradictions.push(detail.clone());
-            evidence.pointer = Observation::unavailable(detail);
+            evidence.pointer = Observation::not_proven(detail);
             return finish_plan(evidence);
         }
     };
@@ -495,10 +480,10 @@ pub fn inspect_with_limits_and_probe(
 fn initial_evidence(repository_identity: Observation<RepositoryIdentity>) -> RecoveryEvidence {
     RecoveryEvidence {
         repository_identity,
-        candidate_identity: Observation::unavailable("candidate identity not observed"),
-        pointer: Observation::unavailable("candidate pointer not observed"),
-        administrative_gitdir: Observation::unavailable("administrative gitdir not observed"),
-        administrative_commondir: Observation::unavailable("administrative commondir not observed"),
+        candidate_identity: Observation::not_proven("candidate identity not observed"),
+        pointer: Observation::not_proven("candidate pointer not observed"),
+        administrative_gitdir: Observation::not_proven("administrative gitdir not observed"),
+        administrative_commondir: Observation::not_proven("administrative commondir not observed"),
         administration: AdministrationState::Unknown(String::from("not observed")),
         head: HeadEvidence::Unknown(String::from("not observed")),
         reference: ReferenceEvidence::Unknown(String::from("not observed")),
@@ -1906,14 +1891,21 @@ fn sha256(bytes: &[u8]) -> String {
 fn display_repository(observation: &Observation<RepositoryIdentity>) -> String {
     match &observation.value {
         Some(value) => value.repository_root.display().to_string(),
-        None => format!("UNKNOWN ({})", observation.detail),
+        None => display_unavailable(observation.detail.as_deref()),
     }
 }
 
 fn display_candidate(observation: &Observation<CandidateIdentity>) -> String {
     match &observation.value {
         Some(value) => value.canonical_path.display().to_string(),
-        None => format!("UNKNOWN ({})", observation.detail),
+        None => display_unavailable(observation.detail.as_deref()),
+    }
+}
+
+fn display_unavailable(detail: Option<&str>) -> String {
+    match detail {
+        Some(detail) => format!("UNKNOWN ({detail})"),
+        None => String::from("UNKNOWN"),
     }
 }
 
@@ -2187,21 +2179,21 @@ mod tests {
             (
                 "repository",
                 RecoveryEvidence {
-                    repository_identity: Observation::unavailable("missing repository"),
+                    repository_identity: Observation::not_proven("missing repository"),
                     ..positive_evidence()
                 },
             ),
             (
                 "candidate",
                 RecoveryEvidence {
-                    candidate_identity: Observation::unavailable("missing candidate"),
+                    candidate_identity: Observation::not_proven("missing candidate"),
                     ..positive_evidence()
                 },
             ),
             (
                 "pointer",
                 RecoveryEvidence {
-                    pointer: Observation::unavailable("missing pointer"),
+                    pointer: Observation::not_proven("missing pointer"),
                     ..positive_evidence()
                 },
             ),

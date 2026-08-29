@@ -455,8 +455,13 @@ const SHADOW_LIMITATIONS: &[&str] = &[
 /// generations, a non-empty package, and source ranges that are structurally
 /// valid. A table declaration without exact DBIx::Class activation never
 /// becomes framework evidence.
+///
+/// Shadow status (#13140): no production consumer wires this entry point yet,
+/// so it stays crate-visible and is exercised by its in-module tests until a
+/// comparison consumer lands.
 #[must_use]
-pub fn dbix_result_profile_facts(
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn dbix_result_profile_facts(
     detection: &AdapterDetectionResult,
     anchor: &DbixResultSiteAnchor,
     inheritance: &DbixClassInheritanceEvidence,
