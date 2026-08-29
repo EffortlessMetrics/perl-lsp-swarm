@@ -246,11 +246,20 @@ pub fn validate(
         // A state must be satisfiable by at least one of its own declared modes.
         // Without this, a state can silently become a trap that rejects every
         // package assigned to it.
-        if !state.allows_embedded_workspace_source
-            && state.legal_integration_modes.iter().any(|mode| mode == WORKSPACE_PATH_MODE)
-        {
+        let allows_workspace_path =
+            state.legal_integration_modes.iter().any(|mode| mode == WORKSPACE_PATH_MODE);
+        // Both directions, or a state becomes a trap no package can satisfy: one
+        // that keeps embedded source must permit the mode that expresses it, and
+        // one that has given up embedded source must not.
+        if !state.allows_embedded_workspace_source && allows_workspace_path {
             errors.push(format!(
                 "migration state {:?} forbids embedded source but lists {WORKSPACE_PATH_MODE:?} as legal",
+                state.state
+            ));
+        }
+        if state.allows_embedded_workspace_source && !allows_workspace_path {
+            errors.push(format!(
+                "migration state {:?} keeps embedded source but does not list {WORKSPACE_PATH_MODE:?} as legal",
                 state.state
             ));
         }
@@ -565,10 +574,19 @@ pub fn read_workspace_manifests(root: &Path) -> Result<Vec<ManifestPackage>> {
         let dir = Path::new(&package.manifest_path)
             .parent()
             .ok_or_else(|| color_eyre::eyre::eyre!("{} has no parent", package.manifest_path))?;
+        // Fail closed rather than falling back to the absolute manifest path: a
+        // wrong-shaped path would surface as a spurious "path does not match"
+        // finding on every row and hide the real resolution failure.
         let path = dir
             .strip_prefix(root)
             .map(|rel| rel.to_string_lossy().replace('\\', "/"))
-            .unwrap_or_else(|_| package.manifest_path.clone());
+            .wrap_err_with(|| {
+                format!(
+                    "cargo reported {} outside the repository root {}",
+                    dir.display(),
+                    root.display()
+                )
+            })?;
         packages.push(ManifestPackage {
             name: package.name.clone(),
             path,
@@ -1132,6 +1150,33 @@ metadata_authority = "workspace_inherited"
             "legal_integration_modes = [\"released_registry\", \"none\"]\nallows_embedded_workspace_source = false\nrequires_immutable_consumption = true",
         );
         expect_rejected(&source, "lists mutable mode")
+    }
+
+    /// Without this, the package-level immutable-consumption branch is reachable
+    /// but unasserted: disabling it left the whole suite green.
+    #[test]
+    fn rejects_a_mutable_consumption_mode_under_an_immutable_owner() -> TestResult {
+        // `alpha` moves under the external owner but keeps a workspace path.
+        let source = fixture().replace(
+            "name = \"alpha\"\npath = \"crates/alpha\"\ncurrent_owner = \"product\"",
+            "name = \"alpha\"\npath = \"crates/alpha\"\ncurrent_owner = \"library\"",
+        );
+        let source = source.replace(
+            "repository_id = \"library\"\ntarget = \"Org/library\"\nmigration_state = \"embedded\"",
+            "repository_id = \"library\"\ntarget = \"Org/library\"\nmigration_state = \"external\"",
+        );
+        expect_rejected(&source, "requires an immutable consumption mode")
+    }
+
+    /// The mirror of the rule below: a state that keeps embedded source must
+    /// permit the mode that expresses it, or no package can ever satisfy it.
+    #[test]
+    fn rejects_a_state_keeping_embedded_source_without_workspace_path() -> TestResult {
+        let source = fixture().replace(
+            "legal_integration_modes = [\"workspace_path\"]\nallows_embedded_workspace_source = true",
+            "legal_integration_modes = [\"exact_git_bridge\"]\nallows_embedded_workspace_source = true",
+        );
+        expect_rejected(&source, "does not list \"workspace_path\" as legal")
     }
 
     #[test]
