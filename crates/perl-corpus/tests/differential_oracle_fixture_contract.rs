@@ -208,7 +208,7 @@ fn import_export_fixture_loads_the_expected_imported_symbol() -> TestResult {
 #[test]
 fn governed_perl_probe_denies_hostile_perl_environment() -> TestResult {
     let path = env::var_os("PATH").ok_or_else(|| failure("PATH is required for Perl probe"))?;
-    let mut environment = vec![
+    let environment = vec![
         (OsString::from("PATH"), path),
         (OsString::from("PERL5LIB"), OsString::from("hostile-module-root")),
         (OsString::from("PERL5OPT"), OsString::from("-MHostile::Prelude")),
@@ -218,11 +218,15 @@ fn governed_perl_probe_denies_hostile_perl_environment() -> TestResult {
     ];
 
     #[cfg(windows)]
-    for allowed in ["SYSTEMROOT", "WINDIR", "PATHEXT", "TEMP", "TMP"] {
-        if let Some(value) = env::var_os(allowed) {
-            environment.push((OsString::from(allowed), value));
+    let environment = {
+        let mut environment = environment;
+        for allowed in ["SYSTEMROOT", "WINDIR", "PATHEXT", "TEMP", "TMP"] {
+            if let Some(value) = env::var_os(allowed) {
+                environment.push((OsString::from(allowed), value));
+            }
         }
-    }
+        environment
+    };
 
     let mut command = isolated_perl_command_from(&environment)?;
     command.arg("-e").arg(
