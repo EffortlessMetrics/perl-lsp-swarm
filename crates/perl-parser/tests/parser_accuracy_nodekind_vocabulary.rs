@@ -11,7 +11,9 @@
 
 use perl_parser::NodeKind;
 use serde::Deserialize;
-use serde_json::{Map, Value, json};
+use serde::de::{DeserializeSeed, Deserializer, Error as _, MapAccess, SeqAccess, Visitor};
+use serde_json::{Map, Number, Value, json};
+use std::collections::BTreeSet;
 use std::fmt;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -48,8 +50,16 @@ const PARSER_ACCURACY_FIXTURE_FIELDS: &[&str] = &[
     "recovery_expectations",
     "incremental_expectations",
 ];
-const AST_EXPECTATION_FIELDS: &[&str] =
-    &["id", "kind", "line", "span_text", "parent_kind", "depth", "operator", "parent_operator"];
+const AST_EXPECTATION_FIELDS: &[&str] = &[
+    "id",
+    "kind",
+    "line",
+    "span_text",
+    "parent_kind",
+    "depth",
+    "operator",
+    "parent_operator",
+];
 const FORBIDDEN_NODE_FIELDS: &[&str] = &["id", "kind", "line", "parent_kind", "depth"];
 
 #[derive(Debug, Deserialize)]
@@ -109,9 +119,153 @@ impl fmt::Display for ManifestSchemaError {
 
 impl std::error::Error for ManifestSchemaError {}
 
+#[derive(Debug)]
+struct StrictJsonValueSeed {
+    path: String,
+}
+
+impl StrictJsonValueSeed {
+    fn root() -> Self {
+        Self {
+            path: "manifest".to_string(),
+        }
+    }
+}
+
+impl<'de> DeserializeSeed<'de> for StrictJsonValueSeed {
+    type Value = Value;
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_any(StrictJsonValueVisitor { path: self.path })
+    }
+}
+
+#[derive(Debug)]
+struct StrictJsonValueVisitor {
+    path: String,
+}
+
+impl<'de> Visitor<'de> for StrictJsonValueVisitor {
+    type Value = Value;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a valid JSON value")
+    }
+
+    fn visit_bool<E>(self, value: bool) -> Result<Self::Value, E> {
+        Ok(Value::Bool(value))
+    }
+
+    fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E> {
+        Ok(Value::Number(Number::from(value)))
+    }
+
+    fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E> {
+        Ok(Value::Number(Number::from(value)))
+    }
+
+    fn visit_f64<E>(self, value: f64) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        Number::from_f64(value)
+            .map(Value::Number)
+            .ok_or_else(|| E::custom(format!("{} contains a non-finite number", self.path)))
+    }
+
+    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E> {
+        Ok(Value::String(value.to_string()))
+    }
+
+    fn visit_string<E>(self, value: String) -> Result<Self::Value, E> {
+        Ok(Value::String(value))
+    }
+
+    fn visit_none<E>(self) -> Result<Self::Value, E> {
+        Ok(Value::Null)
+    }
+
+    fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        StrictJsonValueSeed { path: self.path }.deserialize(deserializer)
+    }
+
+    fn visit_unit<E>(self) -> Result<Self::Value, E> {
+        Ok(Value::Null)
+    }
+
+    fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        let mut values = Vec::new();
+        while let Some(value) = sequence.next_element_seed(StrictJsonValueSeed {
+            path: format!("{}[{}]", self.path, values.len()),
+        })? {
+            values.push(value);
+        }
+        Ok(Value::Array(values))
+    }
+
+    fn visit_map<A>(self, mut object_access: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut object = Map::new();
+        let mut seen = BTreeSet::new();
+        while let Some(key) = object_access.next_key::<String>()? {
+            if !seen.insert(key.clone()) {
+                return Err(A::Error::custom(format!(
+                    "{} contains duplicate field `{key}`",
+                    self.path
+                )));
+            }
+            let value = object_access.next_value_seed(StrictJsonValueSeed {
+                path: format!("{}.{}", self.path, key),
+            })?;
+            object.insert(key, value);
+        }
+        Ok(Value::Object(object))
+    }
+}
+
 #[test]
 fn parser_accuracy_ast_nodekind_references_are_canonical() -> TestResult {
     let manifest = parse_manifest(MANIFEST_JSON)?;
+    let positive_rows: usize =
+        manifest.fixtures.iter().map(|fixture| fixture.ast_expectations.len()).sum();
+    let forbidden_rows: usize =
+        manifest.fixtures.iter().map(|fixture| fixture.forbidden_nodes.len()).sum();
+    let parent_references: usize = manifest
+        .fixtures
+        .iter()
+        .flat_map(|fixture| {
+            fixture
+                .ast_expectations
+                .iter()
+                .chain(fixture.forbidden_nodes.iter())
+        })
+        .filter(|reference| reference.parent_kind.is_some())
+        .count();
+
+    assert_eq!(
+        positive_rows, 279,
+        "parser-accuracy manifest positive NodeKind row count drifted"
+    );
+    assert_eq!(
+        forbidden_rows, 53,
+        "parser-accuracy manifest forbidden NodeKind row count drifted"
+    );
+    assert_eq!(
+        parent_references, 235,
+        "parser-accuracy manifest parent-kind reference count drifted"
+    );
+
     let mut positive_references = 0usize;
     let mut forbidden_references = 0usize;
 
@@ -140,6 +294,99 @@ fn parser_accuracy_ast_nodekind_references_are_canonical() -> TestResult {
     );
 
     Ok(())
+}
+
+#[test]
+fn manifest_rejects_duplicate_json_members_before_nodekind_validation() {
+    let canonical = r#"{
+        "fixtures": [{
+            "id": "fixture",
+            "ast_expectations": [{
+                "id": "string_under_program",
+                "kind": "String",
+                "line": 1,
+                "span_text": "value",
+                "parent_kind": "Program"
+            }],
+            "forbidden_nodes": [{
+                "id": "no_block",
+                "kind": "Block",
+                "line": 1,
+                "parent_kind": "Program"
+            }]
+        }]
+    }"#;
+    assert!(
+        parse_manifest(canonical).is_ok(),
+        "the canonical duplicate-control manifest must remain admitted"
+    );
+
+    let cases = [
+        (
+            "manifest",
+            "fixtures",
+            r#"{
+                "fixtures": [],
+                "fixtures": []
+            }"#,
+        ),
+        (
+            "manifest.fixtures[0]",
+            "id",
+            r#"{
+                "fixtures": [{
+                    "id": "first",
+                    "id": "second"
+                }]
+            }"#,
+        ),
+        (
+            "manifest.fixtures[0].ast_expectations[0]",
+            "kind",
+            r#"{
+                "fixtures": [{
+                    "id": "fixture",
+                    "ast_expectations": [{
+                        "id": "forged_kind",
+                        "kind": "Bloock",
+                        "kind": "Block",
+                        "line": 1,
+                        "span_text": "value"
+                    }]
+                }]
+            }"#,
+        ),
+        (
+            "manifest.fixtures[0].forbidden_nodes[0]",
+            "parent_kind",
+            r#"{
+                "fixtures": [{
+                    "id": "fixture",
+                    "forbidden_nodes": [{
+                        "id": "forged_parent_kind",
+                        "kind": "Block",
+                        "line": 1,
+                        "parent_kind": "ExpressionStatment",
+                        "parent_kind": "Program"
+                    }]
+                }]
+            }"#,
+        ),
+    ];
+
+    for (object_path, duplicate_key, json) in cases {
+        let error =
+            parse_manifest(json).expect_err("duplicate JSON member names must fail closed");
+        let rendered = error.to_string();
+        assert!(
+            rendered.contains(object_path),
+            "duplicate-key diagnostic `{rendered}` must identify object path `{object_path}`"
+        );
+        assert!(
+            rendered.contains(&format!("duplicate field `{duplicate_key}`")),
+            "duplicate-key diagnostic `{rendered}` must identify key `{duplicate_key}`"
+        );
+    }
 }
 
 #[test]
@@ -207,36 +454,56 @@ fn manifest_rejects_arbitrary_unknown_json_keys_at_each_validated_level() {
     let mut root = json!({ "fixtures": [] });
     root.as_object_mut()
         .expect("test manifest root is an object")
-        .insert("unknown_root_field_generated".to_string(), json!("unknown_root_value"));
+        .insert(
+            "unknown_root_field_generated".to_string(),
+            json!("unknown_root_value"),
+        );
 
     let mut fixture = json!({ "id": "fixture" });
     fixture
         .as_object_mut()
         .expect("test fixture is an object")
-        .insert("unknown_fixture_field_generated".to_string(), json!("unknown_fixture_value"));
+        .insert(
+            "unknown_fixture_field_generated".to_string(),
+            json!("unknown_fixture_value"),
+        );
     let fixture_manifest = json!({ "fixtures": [fixture] });
 
     let mut ast_row = json!({ "id": "expectation", "kind": "String", "line": 1 });
     ast_row
         .as_object_mut()
         .expect("test AST row is an object")
-        .insert("unknown_ast_row_field_generated".to_string(), json!("unknown_ast_row_value"));
+        .insert(
+            "unknown_ast_row_field_generated".to_string(),
+            json!("unknown_ast_row_value"),
+        );
     let ast_fixture = json!({ "id": "fixture", "ast_expectations": [ast_row] });
     let ast_manifest = json!({ "fixtures": [ast_fixture] });
 
     let mut forbidden_row = json!({ "id": "forbidden", "kind": "Block", "line": 1 });
-    forbidden_row.as_object_mut().expect("test forbidden row is an object").insert(
-        "unknown_forbidden_row_field_generated".to_string(),
-        json!("unknown_forbidden_row_value"),
-    );
+    forbidden_row
+        .as_object_mut()
+        .expect("test forbidden row is an object")
+        .insert(
+            "unknown_forbidden_row_field_generated".to_string(),
+            json!("unknown_forbidden_row_value"),
+        );
     let forbidden_fixture = json!({ "id": "fixture", "forbidden_nodes": [forbidden_row] });
     let forbidden_manifest = json!({ "fixtures": [forbidden_fixture] });
 
     let cases = [
         ("root", root, "unknown_root_field_generated"),
-        ("fixture", fixture_manifest, "unknown_fixture_field_generated"),
+        (
+            "fixture",
+            fixture_manifest,
+            "unknown_fixture_field_generated",
+        ),
         ("AST row", ast_manifest, "unknown_ast_row_field_generated"),
-        ("forbidden row", forbidden_manifest, "unknown_forbidden_row_field_generated"),
+        (
+            "forbidden row",
+            forbidden_manifest,
+            "unknown_forbidden_row_field_generated",
+        ),
     ];
     for (location, manifest, unknown_key) in cases {
         let rendered = manifest.to_string();
@@ -273,16 +540,33 @@ fn non_canonical_kind_controls_are_rejected_before_absence_matching() {
         parent_kind: Some("ExpressionStatement".to_string()),
     }];
     assert_eq!(
-        validate_reference_rows("quote_like", &canonical, AST_KIND_FIELD, AST_PARENT_KIND_FIELD,),
+        validate_reference_rows(
+            "quote_like",
+            &canonical,
+            AST_KIND_FIELD,
+            AST_PARENT_KIND_FIELD,
+        ),
         Ok(2),
         "the canonical kind and parent-kind control must remain admitted"
     );
 
     let controls = [
-        (FORBIDDEN_KIND_FIELD, FORBIDDEN_PARENT_KIND_FIELD, "Bloock"),
-        (FORBIDDEN_KIND_FIELD, FORBIDDEN_PARENT_KIND_FIELD, "Strng"),
+        (
+            FORBIDDEN_KIND_FIELD,
+            FORBIDDEN_PARENT_KIND_FIELD,
+            "Bloock",
+        ),
+        (
+            FORBIDDEN_KIND_FIELD,
+            FORBIDDEN_PARENT_KIND_FIELD,
+            "Strng",
+        ),
         (AST_KIND_FIELD, AST_PARENT_KIND_FIELD, "FunctionCal"),
-        (AST_PARENT_KIND_FIELD, AST_KIND_FIELD, "ExpressionStatment"),
+        (
+            AST_PARENT_KIND_FIELD,
+            AST_KIND_FIELD,
+            "ExpressionStatment",
+        ),
     ];
     for (kind_field, parent_field, non_canonical) in controls {
         let rows = [NodeKindReference {
@@ -323,17 +607,32 @@ fn invalid_nodekind_diagnostic_identifies_the_reference() {
     .expect_err("the misspelled NodeKind must be rejected");
 
     let rendered = error.to_string();
-    for expected in ["quote_like", "string_under_statement", AST_KIND_FIELD, "ExpressionStatment"] {
-        assert!(rendered.contains(expected), "diagnostic `{rendered}` must contain `{expected}`");
+    for expected in [
+        "quote_like",
+        "string_under_statement",
+        AST_KIND_FIELD,
+        "ExpressionStatment",
+    ] {
+        assert!(
+            rendered.contains(expected),
+            "diagnostic `{rendered}` must contain `{expected}`"
+        );
     }
 }
 
 fn parse_manifest(
     json: &str,
 ) -> Result<ParserAccuracyNodeKindManifest, Box<dyn std::error::Error>> {
-    let value: Value = serde_json::from_str(json)?;
+    let value = parse_strict_json_value(json)?;
     validate_manifest_schema(&value)?;
     Ok(serde_json::from_value(value)?)
+}
+
+fn parse_strict_json_value(json: &str) -> Result<Value, serde_json::Error> {
+    let mut deserializer = serde_json::Deserializer::from_str(json);
+    let value = StrictJsonValueSeed::root().deserialize(&mut deserializer)?;
+    deserializer.end()?;
+    Ok(value)
 }
 
 fn validate_manifest_schema(value: &Value) -> Result<(), ManifestSchemaError> {
@@ -352,7 +651,11 @@ fn validate_manifest_schema(value: &Value) -> Result<(), ManifestSchemaError> {
         let fixture_object = fixture
             .as_object()
             .ok_or_else(|| ManifestSchemaError(format!("{fixture_path} must be a JSON object")))?;
-        reject_unknown_fields(fixture_object, PARSER_ACCURACY_FIXTURE_FIELDS, &fixture_path)?;
+        reject_unknown_fields(
+            fixture_object,
+            PARSER_ACCURACY_FIXTURE_FIELDS,
+            &fixture_path,
+        )?;
         validate_reference_collection(
             fixture_object,
             "ast_expectations",
@@ -397,7 +700,10 @@ fn reject_unknown_fields(
     allowed_fields: &[&str],
     object_path: &str,
 ) -> Result<(), ManifestSchemaError> {
-    if let Some(unknown) = object.keys().find(|key| !allowed_fields.contains(&key.as_str())) {
+    if let Some(unknown) = object
+        .keys()
+        .find(|key| !allowed_fields.contains(&key.as_str()))
+    {
         return Err(ManifestSchemaError(format!(
             "{object_path} contains unknown field `{unknown}`"
         )));
