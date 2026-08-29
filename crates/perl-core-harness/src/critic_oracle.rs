@@ -109,7 +109,7 @@ impl OracleSubject {
         Ok(())
     }
 
-    fn fields(&self) -> [(&'static str, &str); 8] {
+    fn fields(&self) -> [(&'static str, &str); 9] {
         [
             ("perl_identity", &self.perl_identity),
             ("critic_identity", &self.critic_identity),
@@ -350,6 +350,78 @@ mod tests {
         let before = subject("root", "sha256:profile-before");
         let after = subject("root", "sha256:profile-after");
         assert_ne!(before.digest(), after.digest());
+    }
+
+    #[test]
+    fn each_non_invocation_identity_axis_changes_the_subject() {
+        let baseline = subject("root", "sha256:profile");
+        let variants = [
+            OracleSubject::new(
+                "perl-5.40.2-build-b", "perlcritic-1.152", "sha256:fixture",
+                "root", "sha256:source", "sha256:profile", baseline.invocation.clone(),
+                "sha256:environment", "process-plan.v1", "perlcritic-parser.v2",
+            ).expect("perl variant"),
+            OracleSubject::new(
+                "perl-5.40.2-build-a", "perlcritic-1.153", "sha256:fixture",
+                "root", "sha256:source", "sha256:profile", baseline.invocation.clone(),
+                "sha256:environment", "process-plan.v1", "perlcritic-parser.v2",
+            ).expect("critic variant"),
+            OracleSubject::new(
+                "perl-5.40.2-build-a", "perlcritic-1.152", "sha256:fixture-b",
+                "root", "sha256:source", "sha256:profile", baseline.invocation.clone(),
+                "sha256:environment", "process-plan.v1", "perlcritic-parser.v2",
+            ).expect("fixture variant"),
+            OracleSubject::new(
+                "perl-5.40.2-build-a", "perlcritic-1.152", "sha256:fixture",
+                "root-b", "sha256:source", "sha256:profile", baseline.invocation.clone(),
+                "sha256:environment", "process-plan.v1", "perlcritic-parser.v2",
+            ).expect("root variant"),
+            OracleSubject::new(
+                "perl-5.40.2-build-a", "perlcritic-1.152", "sha256:fixture",
+                "root", "sha256:source-b", "sha256:profile", baseline.invocation.clone(),
+                "sha256:environment", "process-plan.v1", "perlcritic-parser.v2",
+            ).expect("source variant"),
+            OracleSubject::new(
+                "perl-5.40.2-build-a", "perlcritic-1.152", "sha256:fixture",
+                "root", "sha256:source", "sha256:profile", baseline.invocation.clone(),
+                "sha256:environment-b", "process-plan.v1", "perlcritic-parser.v2",
+            ).expect("environment variant"),
+            OracleSubject::new(
+                "perl-5.40.2-build-a", "perlcritic-1.152", "sha256:fixture",
+                "root", "sha256:source", "sha256:profile", baseline.invocation.clone(),
+                "sha256:environment", "process-plan.v2", "perlcritic-parser.v2",
+            ).expect("process schema variant"),
+            OracleSubject::new(
+                "perl-5.40.2-build-a", "perlcritic-1.152", "sha256:fixture",
+                "root", "sha256:source", "sha256:profile", baseline.invocation.clone(),
+                "sha256:environment", "process-plan.v1", "perlcritic-parser.v3",
+            ).expect("parser schema variant"),
+        ];
+        for variant in variants {
+            assert_ne!(baseline.digest(), variant.digest());
+        }
+    }
+
+    #[test]
+    fn each_invocation_axis_changes_the_subject() {
+        let baseline = subject("root", "sha256:profile");
+        let mut variants = Vec::new();
+        for invocation in [
+            OracleInvocation { severity: 4, ..baseline.invocation.clone() },
+            OracleInvocation { theme: Some("full".to_string()), ..baseline.invocation.clone() },
+            OracleInvocation { include: vec!["Naming".to_string()], ..baseline.invocation.clone() },
+            OracleInvocation { exclude: vec!["ValuesAndExpressions".to_string()], ..baseline.invocation.clone() },
+            OracleInvocation { options: vec!["--verbose=4".to_string()], ..baseline.invocation.clone() },
+        ] {
+            variants.push(OracleSubject::new(
+                "perl-5.40.2-build-a", "perlcritic-1.152", "sha256:fixture", "root",
+                "sha256:source", "sha256:profile", invocation, "sha256:environment",
+                "process-plan.v1", "perlcritic-parser.v2",
+            ).expect("invocation variant"));
+        }
+        for variant in variants {
+            assert_ne!(baseline.digest(), variant.digest());
+        }
     }
 
     #[test]
