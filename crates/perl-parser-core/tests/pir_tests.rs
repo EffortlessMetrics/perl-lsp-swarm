@@ -48,7 +48,7 @@ fn lexical_declaration_writes_lvalue_and_assigns() {
 
     // The declared write target is a known lvalue; the statement-level
     // assignment is void. Neither is silently promoted past what HIR proves.
-    assert_eq!(graph.nodes[0].context, PirContext::Lvalue);
+    assert_eq!(graph.nodes[0].access, perl_parser_core::pir::PirAccessMode::Write);
     assert_eq!(graph.nodes[1].context, PirContext::Void);
     assert_eq!(graph.nodes[2].context, PirContext::Unknown);
 
@@ -519,7 +519,7 @@ fn multi_variable_declaration_produces_one_write_per_variable() {
     assert!(names.contains(&"b"), "expected write for $b");
 
     // Every write is an lvalue; the assignment is void.
-    assert!(writes.iter().all(|n| n.context == PirContext::Lvalue));
+    assert!(writes.iter().all(|n| n.access == perl_parser_core::pir::PirAccessMode::Write));
 
     let assigns: Vec<_> =
         graph.nodes.iter().filter(|n| matches!(n.operation, PirOperation::Assign)).collect();
