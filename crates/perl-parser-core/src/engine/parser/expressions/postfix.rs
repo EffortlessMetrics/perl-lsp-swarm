@@ -1226,10 +1226,25 @@ impl<'a> Parser<'a> {
                                             if scalar_filehandle
                                                 && args.len() == 2
                                                 && matches!(args[1].kind, NodeKind::Number { .. })
-                                                && self.peek_kind() == Some(TokenKind::Number)
+                                                && !matches!(
+                                                    self.peek_kind(),
+                                                    Some(
+                                                        TokenKind::Comma
+                                                            | TokenKind::FatArrow
+                                                            | TokenKind::WordOr
+                                                            | TokenKind::WordAnd
+                                                            | TokenKind::WordXor
+                                                            | TokenKind::WordNot
+                                                    )
+                                                )
+                                                && !self.is_at_statement_end()
                                             {
+                                                // After a comma-less numeric message term, any
+                                                // token that neither separates arguments nor ends
+                                                // the call is malformed input: Perl requires an
+                                                // operator or separator there.
                                                 return Err(ParseError::syntax(
-                                                    "Adjacent numeric terms require an operator or separator",
+                                                    "Adjacent terms after a numeric message require an operator or separator",
                                                     self.current_position(),
                                                 ));
                                             }

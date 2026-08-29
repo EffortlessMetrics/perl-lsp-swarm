@@ -263,9 +263,59 @@ fn numeric_scalar_filehandle_reaches_ast_hir_and_pir_with_one_range() -> Result<
 
 #[test]
 fn numeric_literal_matrix_stays_an_indirect_print_argument() -> Result<(), String> {
-    for literal in ["1", "0x10", "1_000", "1.5"] {
+    for literal in ["1", "0x10", "0x1F", "1_000", "1.5"] {
         let source = format!("print $fh {literal};");
         assert_scalar_filehandle_call(&source, "print", ExpectedArgument::Number(literal))?;
+    }
+    Ok(())
+}
+
+#[test]
+fn comma_list_keeps_the_full_indirect_argument_shape() -> Result<(), String> {
+    for source in ["print $fh 1, 2, 3;", "my $ok = print $fh 1, 2, 3;"] {
+        assert_clean_parse(source);
+        assert_no_blocking_diagnostics(source);
+
+        let ast = parse(source);
+        let mut calls = Vec::new();
+        collect_indirect_calls(&ast, &mut calls);
+
+        if calls.len() != 1 {
+            return Err(format!("expected one indirect call, got {calls:?}"));
+        }
+        let Some((method, object, args)) = calls.first().copied() else {
+            return Err(format!("expected an indirect print call, got {}", ast.to_sexp()));
+        };
+        if method != "print" {
+            return Err(format!("expected print method, got {method}"));
+        }
+        match &object.kind {
+            NodeKind::Variable { sigil, name } if sigil == "$" && name == "fh" => {}
+            other => return Err(format!("expected $fh filehandle object, got {other:?}")),
+        }
+        let numbers: Vec<&str> = args
+            .iter()
+            .filter_map(|arg| match &arg.kind {
+                NodeKind::Number { value } => Some(value.as_str()),
+                _ => None,
+            })
+            .collect();
+        if numbers != ["1", "2", "3"] {
+            return Err(format!("expected numeric argument list [1, 2, 3], got {args:?}"));
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn negative_literal_stays_a_regular_print_list() -> Result<(), String> {
+    // `-1` lexes as `Minus Number`, not a single numeric term, so it must not
+    // open the indirect scalar-filehandle route: `print $fh -1;` stays an
+    // ordinary print list over `$fh` and `-1`.
+    for source in ["print $fh -1;", "my $ok = print $fh -1;"] {
+        assert_clean_parse(source);
+        assert_no_blocking_diagnostics(source);
+        assert_no_indirect_call(source)?;
     }
     Ok(())
 }
@@ -274,9 +324,13 @@ fn numeric_literal_matrix_stays_an_indirect_print_argument() -> Result<(), Strin
 fn malformed_numeric_filehandle_forms_never_claim_an_indirect_call() -> Result<(), String> {
     for source in [
         "print $fh 1 2;",
+        "print $fh 1 \"x\";",
+        "print $fh 1 $x;",
         "print $fh {;",
         "print $fh %;",
         "my $ok = print $fh 1 2;",
+        "my $ok = print $fh 1 \"x\";",
+        "my $ok = print $fh 1 $x;",
         "my $ok = print $fh %;",
     ] {
         assert_has_error(source, "");

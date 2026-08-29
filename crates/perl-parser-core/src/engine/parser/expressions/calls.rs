@@ -224,6 +224,12 @@ impl<'a> Parser<'a> {
     /// admission deliberately narrow so the generic expression parser does not
     /// consume `$fh %hash` as a modulo expression before the indirect-call route
     /// can see it.
+    ///
+    /// This admission set is deliberately kept in lockstep with the
+    /// statement-start `$var ARG` arm of [`Self::looks_like_indirect_object`]:
+    /// widening one (for example admitting `LeftBrace` for braced-glob
+    /// filehandles, or `Number` for `exec`/`system`) must widen the other
+    /// consciously, or the two contexts will disagree on the same source.
     fn is_expression_scalar_filehandle_pattern(&mut self, name: &str) -> bool {
         if !matches!(name, "print" | "printf" | "say") {
             return false;
@@ -537,19 +543,35 @@ impl<'a> Parser<'a> {
             // Check if we should continue (comma or fat arrow as separator in indirect syntax)
             if matches!(self.peek_kind(), Some(TokenKind::Comma | TokenKind::FatArrow)) {
                 self.tokens.next()?; // consume , or =>
-            } else if matches!(method.as_str(), "print" | "printf" | "say")
-                && args.len() == 1
-                && matches!(args[0].kind, NodeKind::Number { .. })
-                && self.peek_kind() == Some(TokenKind::Number)
-            {
-                return Err(ParseError::syntax(
-                    "Adjacent numeric terms require an operator or separator",
-                    self.current_position(),
-                ));
             } else if Self::is_statement_terminator(self.peek_kind())
                 || self.is_statement_modifier_keyword()
             {
                 break;
+            } else if matches!(method.as_str(), "print" | "printf" | "say")
+                && args.len() == 1
+                && matches!(args[0].kind, NodeKind::Number { .. })
+                && !matches!(
+                    self.peek_kind(),
+                    Some(
+                        TokenKind::WordOr
+                            | TokenKind::WordAnd
+                            | TokenKind::WordXor
+                            | TokenKind::WordNot
+                            | TokenKind::Question
+                            | TokenKind::RightBrace
+                            | TokenKind::RightParen
+                            | TokenKind::RightBracket
+                    )
+                )
+                && !Self::is_symbolic_short_circuit_operator(self.peek_kind())
+            {
+                // After a comma-less numeric message term, any token that neither
+                // separates arguments nor ends the call is malformed input: Perl
+                // requires an operator or separator there.
+                return Err(ParseError::syntax(
+                    "Adjacent terms after a numeric message require an operator or separator",
+                    self.current_position(),
+                ));
             }
         }
 
