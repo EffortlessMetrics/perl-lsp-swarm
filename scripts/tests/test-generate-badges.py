@@ -68,6 +68,8 @@ def validate_workflow_contract(text: str) -> None:
         "permissions: actions: read contents: read",
         "--ripr-receipt",
         "--producer-receipt",
+        "receipts/quality/ripr-plus.json",
+        "receipts/quality/ripr-badge-producer.json",
     ]
     for fragment in required:
         if fragment not in compact:
@@ -256,6 +258,8 @@ class GenerateBadgesTests(unittest.TestCase):
                 {**receipt, "counts": {"unsuppressed_exposure_gaps": True}},
             ):
                 with self.subTest(mutation=mutation):
+                    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+                    producer_path.write_text(json.dumps(producer), encoding="utf-8")
                     if "kind" in mutation and mutation["kind"] == "ripr_badge_producer":
                         producer_path.write_text(json.dumps(mutation), encoding="utf-8")
                     else:

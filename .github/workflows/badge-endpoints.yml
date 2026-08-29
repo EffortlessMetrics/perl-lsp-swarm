@@ -57,8 +57,8 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --name ripr-pr-evidence \
             --dir "$RUNNER_TEMP/ripr-badge"
-          test -f "$RUNNER_TEMP/ripr-badge/target/receipts/quality/ripr-plus.json"
-          test -f "$RUNNER_TEMP/ripr-badge/target/receipts/quality/ripr-badge-producer.json"
+          test -f "$RUNNER_TEMP/ripr-badge/receipts/quality/ripr-plus.json"
+          test -f "$RUNNER_TEMP/ripr-badge/receipts/quality/ripr-badge-producer.json"
 
       - name: Set up manual RIPR producer
         if: github.event_name == 'workflow_dispatch'
@@ -68,8 +68,8 @@ jobs:
 
       - name: Refresh badge endpoints
         env:
-          RIPR_RECEIPT: ${{ github.event_name == 'workflow_run' && format('{0}/ripr-badge/target/receipts/quality/ripr-plus.json', runner.temp) || '' }}
-          RIPR_PRODUCER: ${{ github.event_name == 'workflow_run' && format('{0}/ripr-badge/target/receipts/quality/ripr-badge-producer.json', runner.temp) || '' }}
+          RIPR_RECEIPT: ${{ github.event_name == 'workflow_run' && format('{0}/ripr-badge/receipts/quality/ripr-plus.json', runner.temp) || '' }}
+          RIPR_PRODUCER: ${{ github.event_name == 'workflow_run' && format('{0}/ripr-badge/receipts/quality/ripr-badge-producer.json', runner.temp) || '' }}
         run: |
           set -euo pipefail
           if [ -n "${RIPR_RECEIPT:-}" ]; then
