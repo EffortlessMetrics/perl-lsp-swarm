@@ -11,7 +11,7 @@
 //! - SimpleIncrementalParser: initial parse, incremental reparse, structural changes
 //! - CheckpointedIncrementalParser: parsing, edit application, cache management
 //! - IncrementalParserV2: value edits, whitespace edits, advanced reuse
-//! - IncrementalTree: node-map lookup
+//! - IncrementalTree: canonical containment lookup
 //! - IncrementalMetrics: efficiency calculation
 //! - Integration helpers: LSP position conversion, DocumentParser, IncrementalConfig
 

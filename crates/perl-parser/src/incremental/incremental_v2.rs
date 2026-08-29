@@ -116,96 +116,89 @@ impl IncrementalMetrics {
     }
 }
 
-/// A parse tree with incremental parsing support and node mapping
+/// A parse tree retained for incremental parsing decisions.
 ///
-/// Maintains an AST along with efficient lookup structures for
-/// finding nodes by position, enabling fast incremental updates.
-/// The node_map provides O(1) access to nodes at specific byte positions.
+/// The tree stores only the root AST and its source text. Earlier versions
+/// also maintained a `node_map: HashMap<usize, Vec<Node>>` position index
+/// that owned-cloned every indexed subtree and descended into only a handful
+/// of structural families, so containment lookups under assignments, loops,
+/// method calls, and most other nodes returned an ancestor or `None` while
+/// deep trees retained quadratic cloned nodes. That index was retired
+/// (#13237): its single production caller performs at most one bounded
+/// lookup per pending edit, which on-demand canonical child traversal serves
+/// without retained entries, hidden construction work, or subtree
+/// duplication.
 #[derive(Debug, Clone)]
 pub struct IncrementalTree {
     pub root: Node,
     pub source: String,
-    /// Maps byte positions to nodes for efficient lookup
-    node_map: HashMap<usize, Vec<Node>>,
 }
 
 impl IncrementalTree {
-    /// Create a new incremental tree
+    /// Create a new incremental tree.
+    ///
+    /// Construction performs no indexing and no subtree duplication: the
+    /// root is stored as given.
     pub fn new(root: Node, source: String) -> Self {
-        let mut tree = IncrementalTree { root, source, node_map: HashMap::new() };
-        tree.build_node_map();
-        tree
+        IncrementalTree { root, source }
     }
 
-    /// Build a map of byte positions to nodes
-    fn build_node_map(&mut self) {
-        self.node_map.clear();
-        self.map_node(&self.root.clone());
-    }
-
-    fn map_node(&mut self, node: &Node) {
-        // Map start position to node
-        self.node_map.entry(node.location.start).or_default().push(node.clone());
-
-        // Recursively map child nodes
-        match &node.kind {
-            NodeKind::Program { statements } | NodeKind::Block { statements } => {
-                for stmt in statements {
-                    self.map_node(stmt);
-                }
-            }
-            NodeKind::VariableDeclaration { variable, initializer, .. } => {
-                self.map_node(variable);
-                if let Some(init) = initializer {
-                    self.map_node(init);
-                }
-            }
-            NodeKind::Binary { left, right, .. } => {
-                self.map_node(left);
-                self.map_node(right);
-            }
-            NodeKind::Unary { operand, .. } => {
-                self.map_node(operand);
-            }
-            NodeKind::FunctionCall { args, .. } => {
-                for arg in args {
-                    self.map_node(arg);
-                }
-            }
-            NodeKind::If { condition, then_branch, elsif_branches, else_branch, .. } => {
-                self.map_node(condition);
-                self.map_node(then_branch);
-                for (cond, branch) in elsif_branches {
-                    self.map_node(cond);
-                    self.map_node(branch);
-                }
-                if let Some(branch) = else_branch {
-                    self.map_node(branch);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    /// Find the smallest node containing the given byte range
+    /// Find the smallest node whose byte range contains `start..end`.
+    ///
+    /// Containment is the predicate `node.location.start <= start &&
+    /// node.location.end >= end` over the half-open query range, so a
+    /// zero-width query `p..p` matches every node spanning byte `p`,
+    /// including zero-width recovery nodes positioned there. A reversed
+    /// query (`start > end`) matches nothing.
+    ///
+    /// The lookup walks the canonical child traversal (`Node::for_each_child`,
+    /// the #8424 field order) with an explicit heap stack and descends only
+    /// into subtrees that contain the query. Among containing nodes it
+    /// selects the narrowest span; ties keep the canonical-first node at the
+    /// greatest visited depth, so the result never depends on hash order and
+    /// is stable across calls. Worst-case work is linear in the number of
+    /// nodes per query with no retained index; there is deliberately no O(1)
+    /// lookup surface.
+    ///
+    /// The explicit work stack keeps lookup stack-safe for adversarially
+    /// deep trees, and construction performs no traversal at all.
     pub fn find_containing_node(&self, start: usize, end: usize) -> Option<&Node> {
-        let mut smallest: Option<&Node> = None;
-        let mut smallest_size = usize::MAX;
+        if start > end {
+            return None;
+        }
+        let root = &self.root;
+        if !(root.location.start <= start && root.location.end >= end) {
+            return None;
+        }
 
-        // Check all nodes
-        for nodes in self.node_map.values() {
-            for node in nodes {
-                if node.location.start <= start && node.location.end >= end {
-                    let size = node.location.end - node.location.start;
-                    if size < smallest_size {
-                        smallest = Some(node);
-                        smallest_size = size;
-                    }
+        let mut best = root;
+        let mut best_width = root.location.end - root.location.start;
+        let mut best_depth = 0usize;
+        // Frames of containing nodes only, visited in canonical preorder:
+        // children are collected in field order and pushed reversed so the
+        // first child pops first.
+        let mut stack: Vec<(&Node, usize)> = vec![(root, 0)];
+        let mut children: Vec<&Node> = Vec::new();
+
+        while let Some((node, depth)) = stack.pop() {
+            let width = node.location.end - node.location.start;
+            if width < best_width || (width == best_width && depth > best_depth) {
+                best = node;
+                best_width = width;
+                best_depth = depth;
+            }
+            children.clear();
+            node.for_each_child(|child| {
+                if child.location.start <= start && child.location.end >= end {
+                    children.push(child);
                 }
+            });
+            for child in children.drain(..).rev() {
+                stack.push((child, depth + 1));
             }
         }
 
-        smallest
+        Some(best)
     }
 }
 
@@ -922,42 +915,29 @@ impl IncrementalParserV2 {
                         );
                     }
                 }
-                // Container nodes - recursively process children
-                NodeKind::Program { statements } => {
-                    let new_statements = statements
-                        .iter()
-                        .map(|stmt| self.clone_and_update_node(stmt, new_source, old_source))
-                        .collect();
-                    let new_location = SourceLocation {
-                        start: isize_to_usize_clamped(node.location.start as isize + shift),
-                        end: isize_to_usize_clamped(node.location.end as isize + shift),
-                    };
-                    return Node::new(
-                        NodeKind::Program { statements: new_statements },
-                        new_location,
-                    );
-                }
-                NodeKind::VariableDeclaration { declarator, variable, attributes, initializer } => {
-                    let new_variable =
-                        Box::new(self.clone_and_update_node(variable, new_source, old_source));
-                    let new_initializer = initializer.as_ref().map(|init| {
-                        Box::new(self.clone_and_update_node(init, new_source, old_source))
+                _ => {
+                    // No value-patch arm for this kind: rebuild generically
+                    // instead of discarding in-subtree updates. The previous
+                    // fall-through cloned the whole subtree with the shift at
+                    // this node's start, which dropped the value patch and the
+                    // per-node shifts of every descendant after the edit (for
+                    // example a subroutine body following an edited literal).
+                    // Children are updated through this same recursion — each
+                    // computes its own shift and patch — and this node's span
+                    // shifts by the edits before it and extends by the byte
+                    // delta of the edits inside it, matching the Program and
+                    // VariableDeclaration arms above.
+                    let mut updated = node.clone();
+                    updated.for_each_child_mut(|child| {
+                        *child = self.clone_and_update_node(child, new_source, old_source);
                     });
-                    let new_location = SourceLocation {
-                        start: isize_to_usize_clamped(node.location.start as isize + shift),
-                        end: isize_to_usize_clamped(node.location.end as isize + shift),
-                    };
-                    return Node::new(
-                        NodeKind::VariableDeclaration {
-                            declarator: declarator.clone(),
-                            variable: new_variable,
-                            attributes: attributes.clone(),
-                            initializer: new_initializer,
-                        },
-                        new_location,
+                    let new_start = isize_to_usize_clamped(node.location.start as isize + shift);
+                    let new_end = isize_to_usize_clamped(
+                        node.location.end as isize + shift + self.calculate_content_delta(node),
                     );
+                    updated.location = SourceLocation { start: new_start, end: new_end };
+                    return updated;
                 }
-                _ => {}
             }
         }
 
@@ -1143,66 +1123,16 @@ impl IncrementalParserV2 {
 
         let new_location = SourceLocation { start: new_start, end: new_end };
 
-        let new_kind = match &node.kind {
-            NodeKind::Program { statements } => NodeKind::Program {
-                statements: statements
-                    .iter()
-                    .map(|s| self.clone_with_shifted_positions(s, shift))
-                    .collect(),
-            },
-            NodeKind::Block { statements } => NodeKind::Block {
-                statements: statements
-                    .iter()
-                    .map(|s| self.clone_with_shifted_positions(s, shift))
-                    .collect(),
-            },
-            NodeKind::VariableDeclaration { declarator, variable, attributes, initializer } => {
-                NodeKind::VariableDeclaration {
-                    declarator: declarator.clone(),
-                    variable: Box::new(self.clone_with_shifted_positions(variable, shift)),
-                    attributes: attributes.clone(),
-                    initializer: initializer
-                        .as_ref()
-                        .map(|i| Box::new(self.clone_with_shifted_positions(i, shift))),
-                }
-            }
-            NodeKind::Binary { op, left, right } => NodeKind::Binary {
-                op: op.clone(),
-                left: Box::new(self.clone_with_shifted_positions(left, shift)),
-                right: Box::new(self.clone_with_shifted_positions(right, shift)),
-            },
-            NodeKind::Unary { op, operand } => NodeKind::Unary {
-                op: op.clone(),
-                operand: Box::new(self.clone_with_shifted_positions(operand, shift)),
-            },
-            NodeKind::FunctionCall { name, args } => NodeKind::FunctionCall {
-                name: name.clone(),
-                args: args.iter().map(|a| self.clone_with_shifted_positions(a, shift)).collect(),
-            },
-            NodeKind::If {
-                condition, then_branch, elsif_branches, else_branch, keyword, ..
-            } => NodeKind::If {
-                condition: Box::new(self.clone_with_shifted_positions(condition, shift)),
-                then_branch: Box::new(self.clone_with_shifted_positions(then_branch, shift)),
-                elsif_branches: elsif_branches
-                    .iter()
-                    .map(|(c, b)| {
-                        (
-                            self.clone_with_shifted_positions(c, shift),
-                            self.clone_with_shifted_positions(b, shift),
-                        )
-                    })
-                    .map(|(c, b)| (Box::new(c), Box::new(b)))
-                    .collect(),
-                else_branch: else_branch
-                    .as_ref()
-                    .map(|b| Box::new(self.clone_with_shifted_positions(b, shift))),
-                keyword: keyword.clone(),
-            },
-            _ => node.kind.clone(), // For leaf nodes, just clone
-        };
-
-        Node::new(new_kind, new_location)
+        // Clone the payload wholesale and shift every canonical child slot.
+        // The previous hand-written match only descended into seven
+        // structural families and left every other container's child
+        // positions stale after an earlier edit; the canonical walker (#8424)
+        // covers all children exactly once.
+        let mut shifted = Node::new(node.kind.clone(), new_location);
+        shifted.for_each_child_mut(|child| {
+            *child = self.clone_with_shifted_positions(child, shift);
+        });
+        shifted
     }
 
     fn count_reuse_potential(&mut self, old_root: &Node, new_root: &Node) {
@@ -2045,6 +1975,18 @@ if ($condition) {
         Ok(())
     }
 
+    /// A digit edit inside a subroutine-local number literal is a simple
+    /// value edit and must be produced fresh-equivalently.
+    ///
+    /// This asserted `reparsed_nodes >= 1` while the retired position index
+    /// could not see inside subroutine bodies, so the edit fell back to a
+    /// full reparse and the assertion only ratified that fallback. With the
+    /// index retired (#13237), the smallest containing node is the number
+    /// literal itself and the simple-value path admits the edit. Assert the
+    /// discriminating properties instead — the same standard
+    /// `whitespace_before_operator_matches_a_fresh_parse` established: the
+    /// incremental result must equal a fresh parse, and the counters must
+    /// describe the tree they report on.
     #[test]
     fn test_edit_near_ast_node_boundaries() -> ParseResult<()> {
         let mut parser = IncrementalParserV2::new();
@@ -2055,20 +1997,22 @@ if ($condition) {
         parser.parse(source1)?;
 
         // Edit right at the boundary between number and semicolon
-        let number_end =
-            source1.find("123").ok_or(perl_parser_core::error::ParseError::UnexpectedEof)? + 3;
+        let number_start =
+            source1.find("123").ok_or(perl_parser_core::error::ParseError::UnexpectedEof)?;
+        let replacement = "456";
+        let number_end = number_start + 3;
         parser.edit(Edit::new(
             number_end - 1, // Edit last digit of number
             number_end,
-            number_end + 1, // "3" -> "456"
+            number_end - 1 + replacement.len(), // "3" -> "456"
             Position::new(number_end - 1, 1, 1),
             Position::new(number_end, 1, 2),
-            Position::new(number_end + 1, 1, 3),
+            Position::new(number_end - 1 + replacement.len(), 1, 4),
         ));
 
         let source2 = source1.replace("123", "12456");
         let start = Instant::now();
-        let _tree = parser.parse(&source2)?;
+        let incremental = parser.parse(&source2)?;
         let boundary_edit_time = start.elapsed();
 
         println!(
@@ -2086,7 +2030,17 @@ if ($condition) {
             boundary_budget_micros,
             boundary_edit_time.as_micros()
         );
-        assert!(parser.reparsed_nodes >= 1, "Should reparse at least the modified node");
+        let fresh = Parser::new(&source2).parse()?;
+        assert_eq!(
+            incremental, fresh,
+            "incremental result must equal a fresh parse in shape and span geometry"
+        );
+        let produced = parser.count_nodes(&incremental);
+        assert_eq!(
+            parser.reused_nodes + parser.reparsed_nodes,
+            produced,
+            "reuse accounting must reconcile to the produced node count"
+        );
 
         Ok(())
     }
