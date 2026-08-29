@@ -1,7 +1,8 @@
 # PLSP-SPEC-0028: lsp-stack extraction boundary
 
-Status: accepted boundary; implementation order delegated
+Status: accepted
 Owner: perl-lsp maintainers
+Implementation order: delegated to [#7384](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/7384)
 Linked proposal: n/a
 Linked ADRs:
 - [PLSP-ADR-0004](../adr/PLSP-ADR-0004-lsp-stack-extraction.md)
