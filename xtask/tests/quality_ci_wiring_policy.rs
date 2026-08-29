@@ -527,6 +527,16 @@ fn coverage_workflow_is_manual_or_nightly_only_and_requires_receipts() {
         !has_positive_stale_route_claim("Coverage is advisory, and\nnever a full CI deep lane."),
         "wrapped advisory prose must not be classified as a positive full-ci deep-lane route"
     );
+    assert!(
+        !has_positive_stale_route_claim("Coverage runs, but\nnot on pull requests."),
+        "wrapped post-run negation must not be classified as a positive coverage route"
+    );
+    assert!(
+        has_positive_stale_route_claim(
+            "Coverage does not run, but\ncoverage runs on pull requests."
+        ),
+        "a wrapped positive contradiction must retain the stale-route finding"
+    );
     let stale_lane_alias_source = format!(
         "{lane_economics}\n[lane.coverage_alias]\nworkflow = \".github/workflows/ci-nightly.yml\"\njob = \"test-coverage\"\nlabels = [\"coverage-alias\"]\nbranches = [\"schedule\", \"workflow_dispatch\"]\n"
     );
@@ -1371,33 +1381,43 @@ fn has_positive_stale_route_claim_across_wrap(lines: &[&str]) -> bool {
         .split(|character: char| !character.is_ascii_alphanumeric())
         .filter(|token| !token.is_empty())
         .collect::<Vec<_>>();
-    let Some(coverage_index) =
-        tokens.iter().position(|token| matches!(*token, "coverage" | "codecov"))
-    else {
-        return false;
-    };
-    for (offset, token) in tokens[coverage_index + 1..].iter().enumerate() {
-        if !matches!(*token, "run" | "runs") {
+    for (coverage_index, token) in tokens.iter().enumerate() {
+        if !matches!(*token, "coverage" | "codecov") {
             continue;
         }
-        let run_index = coverage_index + 1 + offset;
-        if tokens[coverage_index + 1..run_index]
-            .iter()
-            .any(|token| matches!(*token, "not" | "no" | "never" | "without"))
-        {
-            continue;
-        }
-        let following = &tokens[run_index + 1..tokens.len().min(run_index + 7)];
-        if following
-            .windows(2)
-            .any(|window| window == ["pull", "request"] || window == ["pull", "requests"])
-            || following
-                .windows(2)
-                .any(|window| window == ["deep", "lane"] || window == ["risk", "pack"])
-            || following
+        for run_index in coverage_index + 1..tokens.len() {
+            if !matches!(tokens[run_index], "run" | "runs") {
+                continue;
+            }
+            if tokens[coverage_index + 1..run_index]
                 .iter()
-                .any(|token| matches!(*token, "pr" | "prs" | "merge" | "queue" | "group" | "label"))
-        {
+                .any(|token| matches!(*token, "not" | "no" | "never" | "without"))
+            {
+                continue;
+            }
+            let following = &tokens[run_index + 1..tokens.len().min(run_index + 7)];
+            let route_index = following.iter().enumerate().find_map(|(index, token)| {
+                if matches!(*token, "pr" | "prs" | "merge" | "queue" | "group" | "label")
+                    || (index + 1 < following.len()
+                        && (([*token, following[index + 1]] == ["pull", "request"])
+                            || ([*token, following[index + 1]] == ["pull", "requests"])
+                            || ([*token, following[index + 1]] == ["deep", "lane"])
+                            || ([*token, following[index + 1]] == ["risk", "pack"])))
+                {
+                    Some(index)
+                } else {
+                    None
+                }
+            });
+            let Some(route_index) = route_index else {
+                continue;
+            };
+            if following[..route_index]
+                .iter()
+                .any(|token| matches!(*token, "not" | "no" | "never" | "without"))
+            {
+                continue;
+            }
             return true;
         }
     }
@@ -1438,15 +1458,26 @@ fn coverage_reference_rows_contract(document: &str, context: &str) -> Result<()>
     }
     for window in lines.windows(3) {
         let first_line = window[0].trim_end();
+        let second_line = window[1].trim_end();
         let first_word = first_line
             .split(|character: char| !character.is_ascii_alphanumeric())
             .filter(|word| !word.is_empty())
             .next_back();
+        let second_first_word = window[1]
+            .split(|character: char| !character.is_ascii_alphanumeric())
+            .filter(|word| !word.is_empty())
+            .next();
+        let first_line_continues =
+            matches!(first_word, Some("but" | "and" | "or" | "without" | "never"));
+        let connector_starts_second_line =
+            matches!(second_first_word, Some("but" | "and" | "or" | "without" | "never"))
+                && first_line.ends_with(',')
+                && !matches!(second_line.chars().last(), Some('|' | '.' | '!' | '?' | ':'));
         if matches!(first_line.chars().last(), Some('|' | '.' | '!' | '?' | ':'))
-            || matches!(window[1].trim_end().chars().last(), Some('|' | '.' | '!' | '?' | ':'))
+            || matches!(second_line.chars().last(), Some('|' | '.' | '!' | '?' | ':'))
             || window[1].trim_start().starts_with('|')
             || window[2].trim_start().starts_with('|')
-            || !matches!(first_word, Some("but" | "and" | "or" | "without" | "never"))
+            || (!first_line_continues && !connector_starts_second_line)
         {
             continue;
         }
