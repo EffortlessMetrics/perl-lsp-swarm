@@ -215,9 +215,7 @@ impl LspServer {
                     Ok(Some(project_config)) => {
                         tracing::debug!(path = %folder_path.display(), "Loaded .perl-lsp.toml for folder");
 
-                        if previous_project_config.as_ref().map(|previous| format!("{previous:?}"))
-                            != Some(format!("{project_config:?}"))
-                        {
+                        if previous_project_config.as_ref() != Some(&project_config) {
                             folder.project_config_generation =
                                 folder.project_config_generation.saturating_add(1);
                         }

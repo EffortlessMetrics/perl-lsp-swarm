@@ -143,9 +143,7 @@ impl LspServer {
         &self,
         config: Option<perl_lsp_rs_core::config::ProjectConfig>,
     ) {
-        let changed =
-            self.single_file_project_config.lock().as_ref().map(|value| format!("{value:?}"))
-                != config.as_ref().map(|value| format!("{value:?}"));
+        let changed = *self.single_file_project_config.lock() != config;
         *self.single_file_project_config.lock() = config;
         if changed {
             self.single_file_project_config_generation
