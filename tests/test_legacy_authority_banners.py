@@ -81,6 +81,28 @@ ROLLOUT_REDIRECTS: dict[str, dict[str, str]] = {
         "successor": "docs/agents/DEVELOPMENT_METHOD.md",
     },
 }
+RETIRED_ROLLOUT_PATHS = tuple(ROLLOUT_REDIRECTS)
+RETIRED_REFERENCE_METADATA = {
+    *ROLLOUT_REDIRECTS,
+    "docs/agents/AUTHORITY_STATUS.md",
+    "docs/agents/authority_status.toml",
+    "docs/policy/NON_RUST_INVENTORY.md",
+}
+
+
+def unqualified_retired_references(document: str, body: str) -> list[str]:
+    """Return inbound rollout references without an explicit historical marker."""
+    if document in RETIRED_REFERENCE_METADATA:
+        return []
+
+    findings: list[str] = []
+    for line_number, line in enumerate(body.splitlines(), start=1):
+        if any(path in line for path in RETIRED_ROLLOUT_PATHS) and not re.search(
+            r"(?i)historical|superseded|immutable",
+            line,
+        ):
+            findings.append(f"{document}:{line_number}: {line}")
+    return findings
 
 
 def registry_rows() -> dict[str, dict[str, Any]]:
@@ -143,6 +165,41 @@ def workflow_event_paths(event: str) -> set[str]:
 
 
 class LegacyAuthorityBannerTests(unittest.TestCase):
+    def test_current_docs_do_not_depend_on_retired_rollout_paths(self) -> None:
+        findings: list[str] = []
+        for document in (ROOT / "docs").rglob("*.md"):
+            relative = document.relative_to(ROOT).as_posix()
+            findings.extend(
+                unqualified_retired_references(
+                    relative, document.read_text(encoding="utf-8")
+                )
+            )
+
+        self.assertEqual(
+            findings,
+            [],
+            "current docs must point at maintained authorities; retained mentions "
+            "must say historical, superseded, or immutable",
+        )
+
+    def test_unqualified_retired_reference_is_rejected(self) -> None:
+        self.assertEqual(
+            unqualified_retired_references(
+                "docs/current.md",
+                "See docs/development/RUST_1_95_ROLLOUT.md for the current plan.",
+            ),
+            [
+                "docs/current.md:1: See docs/development/RUST_1_95_ROLLOUT.md for the current plan."
+            ],
+        )
+        self.assertEqual(
+            unqualified_retired_references(
+                "docs/forensics.md",
+                "Historical reference: docs/development/RUST_1_95_ROLLOUT.md",
+            ),
+            [],
+        )
+
     def test_local_banners_match_registry(self) -> None:
         by_path = registry_rows()
 
