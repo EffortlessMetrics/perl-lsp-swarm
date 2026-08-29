@@ -1,22 +1,70 @@
 //! Typed reference index for cross-file reference lookups.
 //!
-//! Maintains two indexes over [`ReferenceEdge`] entries:
+//! Maintains three projections over [`ReferenceEdge`] entries:
 //!
 //! - `references_by_name` — keyed by the bare or qualified symbol key, for
-//!   name-based lookups (e.g. find-references by symbol name).
+//!   name-based lookups (e.g. find-references by symbol name). It holds only
+//!   occurrences whose canonical name was actually derived.
 //! - `references_by_entity` — keyed by [`EntityId`], for entity-based lookups
 //!   (e.g. find all references to a specific declaration).
+//! - `unresolved_by_occurrence` — keyed by [`UnresolvedOccurrenceKey`], for
+//!   occurrences with no derivable canonical name. These are kept for
+//!   diagnostics, explanation, and later rebinding; they are deliberately not
+//!   reachable through the name projection, because "we could not resolve this"
+//!   is not a name.
 //!
-//! Both indexes support incremental add/remove via [`ReferenceIndex::add_file`]
+//! All three support incremental add/remove via [`ReferenceIndex::add_file`]
 //! and [`ReferenceIndex::remove_file`], keyed by the file's source URI.
 
-use perl_semantic_facts::{EdgeKind, EntityId, FileId, OccurrenceKind, ReferenceEdge};
+use perl_semantic_facts::{
+    AnchorId, EdgeKind, EntityId, FileId, OccurrenceId, OccurrenceKind, ReferenceEdge,
+};
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::workspace::workspace_index::FileFactShard;
 
-/// Cross-file reference index backed by two `HashMap`s.
+/// Identity of a reference occurrence that has no derivable canonical name.
+///
+/// An [`AnchorId`] on its own is not an occurrence identity: it carries no
+/// source domain, so keying unresolved occurrences by the anchor number alone
+/// merges occurrences from unrelated files into one bucket.
+///
+/// Global anchor uniqueness is a per-producer accident, not a contract the
+/// index may rely on. The two producers that currently attach occurrences
+/// (`perl_symbol::surface::facts` reference anchors and
+/// `semantic::eval_sub_extractor`) do hash `file_id` into the anchor id, but
+/// the same workspace already mints file-independent anchor ids elsewhere —
+/// `semantic::facts::import_anchor_base_id` derives an import anchor from the
+/// import's index alone, so every file's Nth import anchor shares one id.
+/// This key removes the index's dependence on that accident.
+///
+/// # Scope limitation
+///
+/// This key is scoped by *source file identity* only. It carries no project
+/// root, resolution domain, or accepted generation, so it distinguishes
+/// occurrences within one indexed workspace state but cannot by itself
+/// distinguish two generations of the same file or the same logical file under
+/// two roots. Adding those components is owned by the entity-catalog and
+/// fingerprint work in perl-lsp-swarm#8083 / #8054, not by this type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct UnresolvedOccurrenceKey {
+    /// File containing the unresolved occurrence.
+    pub file_id: FileId,
+    /// The occurrence itself.
+    pub occurrence_id: OccurrenceId,
+    /// Source anchor for the occurrence.
+    pub anchor_id: AnchorId,
+}
+
+impl UnresolvedOccurrenceKey {
+    /// Build a key for one occurrence in one file.
+    pub fn new(file_id: FileId, occurrence_id: OccurrenceId, anchor_id: AnchorId) -> Self {
+        Self { file_id, occurrence_id, anchor_id }
+    }
+}
+
+/// Cross-file reference index backed by three `HashMap`s.
 ///
 /// Populated from [`FileFactShard`] occurrences and edges during workspace
 /// indexing. Supports incremental updates: call [`remove_file`](Self::remove_file)
@@ -25,6 +73,9 @@ use crate::workspace::workspace_index::FileFactShard;
 pub struct ReferenceIndex {
     /// Symbol-key → reference edges. The key is the bare or qualified name
     /// carried on each [`ReferenceEdge::symbol_key`].
+    ///
+    /// Only occurrences with a derived canonical name appear here; unresolved
+    /// occurrences live in `unresolved_by_occurrence` instead.
     references_by_name: HashMap<String, Vec<Arc<ReferenceEdge>>>,
 
     /// Entity → reference edges. One entry per target candidate in each
@@ -33,6 +84,14 @@ pub struct ReferenceIndex {
     /// Each `Arc<ReferenceEdge>` is shared with `references_by_name`, so an
     /// edge with N target candidates costs one allocation instead of N+1.
     references_by_entity: HashMap<EntityId, Vec<Arc<ReferenceEdge>>>,
+
+    /// Scoped occurrence identity → reference edges for occurrences with no
+    /// derivable canonical name.
+    ///
+    /// A `Vec` value rather than a single edge because a malformed or
+    /// hand-built shard may repeat one occurrence/anchor pair; those rows stay
+    /// distinct entries rather than silently overwriting one another.
+    unresolved_by_occurrence: HashMap<UnresolvedOccurrenceKey, Vec<Arc<ReferenceEdge>>>,
 
     /// Tracks which file URIs have been indexed so that [`remove_file`](Self::remove_file)
     /// can efficiently purge stale entries.
@@ -95,11 +154,11 @@ impl ReferenceIndex {
                     .unwrap_or_else(|| occ.entity_id.into_iter().collect())
             };
 
-            // Derive the symbol_key from the entity canonical name when
-            // available. For occurrences without a resolved entity we use the
-            // anchor id as a placeholder key — callers that need name-based
-            // lookup will not match these, but entity-based lookup still works.
-            let symbol_key = self.derive_symbol_key(shard, occ);
+            // Derive the canonical name from the occurrence's entity when the
+            // declaring entity is available. An occurrence with no derivable
+            // name is not given a synthetic one: it is routed to the scoped
+            // unresolved store below, leaving the name projection exact.
+            let canonical_name = Self::derive_canonical_name(shard, occ);
 
             // Wrap in Arc so the name and entity indexes share one allocation.
             // target_candidates is moved in (no clone); subsequent access via Deref.
@@ -107,7 +166,7 @@ impl ReferenceIndex {
                 occ.id,
                 occ.anchor_id,
                 shard.file_id,
-                symbol_key.clone(),
+                canonical_name.clone().unwrap_or_default(),
                 target_candidates,
                 occ.kind,
                 occ.provenance,
@@ -115,7 +174,9 @@ impl ReferenceIndex {
             ));
 
             // Insert into entity index — one Arc::clone per target candidate
-            // instead of a full ReferenceEdge clone.
+            // instead of a full ReferenceEdge clone. An occurrence can have
+            // target candidates while its declaration lives in another shard,
+            // so this is independent of whether a name was derived.
             for entity_id in &ref_edge.target_candidates {
                 self.references_by_entity
                     .entry(*entity_id)
@@ -123,9 +184,17 @@ impl ReferenceIndex {
                     .push(Arc::clone(&ref_edge));
             }
 
-            // Insert into name index after the entity index has borrowed the
-            // Arc, so this final insertion can move it without another clone.
-            self.references_by_name.entry(symbol_key).or_default().push(ref_edge);
+            // Insert into the name or unresolved projection after the entity
+            // index has borrowed the Arc, so this final insertion can move it
+            // without another clone.
+            match canonical_name {
+                Some(name) => self.references_by_name.entry(name).or_default().push(ref_edge),
+                None => self
+                    .unresolved_by_occurrence
+                    .entry(UnresolvedOccurrenceKey::new(shard.file_id, occ.id, occ.anchor_id))
+                    .or_default()
+                    .push(ref_edge),
+            }
         }
     }
 
@@ -150,6 +219,14 @@ impl ReferenceIndex {
             refs.retain(|r| r.file_id != file_id);
         }
         self.references_by_entity.retain(|_, v| !v.is_empty());
+
+        // Unresolved rows are already file-scoped by their key, but filter on
+        // the same `file_id` basis as the other two projections so a shard that
+        // reported a foreign `file_id` cannot leave a row behind.
+        for refs in self.unresolved_by_occurrence.values_mut() {
+            refs.retain(|r| r.file_id != file_id);
+        }
+        self.unresolved_by_occurrence.retain(|key, v| key.file_id != file_id && !v.is_empty());
     }
 
     /// Look up all reference edges for a given symbol key (bare or qualified name).
@@ -168,9 +245,25 @@ impl ReferenceIndex {
         self.references_by_entity.get(&entity_id).map(Vec::as_slice).unwrap_or_default()
     }
 
+    /// Look up the reference edges for one unresolved occurrence.
+    ///
+    /// Unresolved occurrences are addressable only through their scoped
+    /// identity; they never satisfy a name lookup.
+    pub fn get_unresolved(&self, key: &UnresolvedOccurrenceKey) -> &[Arc<ReferenceEdge>] {
+        self.unresolved_by_occurrence.get(key).map(Vec::as_slice).unwrap_or_default()
+    }
+
     /// Return the number of distinct symbol keys in the name index.
+    ///
+    /// Counts derived canonical names only — unresolved occurrences are
+    /// counted by [`unresolved_count`](Self::unresolved_count).
     pub fn name_count(&self) -> usize {
         self.references_by_name.len()
+    }
+
+    /// Return the number of distinct unresolved occurrences.
+    pub fn unresolved_count(&self) -> usize {
+        self.unresolved_by_occurrence.len()
     }
 
     /// Return the number of distinct entities in the entity index.
@@ -180,24 +273,24 @@ impl ReferenceIndex {
 
     // ── Private helpers ──
 
-    /// Derive a symbol key for an occurrence.
+    /// Derive the canonical name for an occurrence, if one is available.
     ///
-    /// When the occurrence has a resolved entity_id, we look up the entity's
-    /// canonical name from the shard. Otherwise we fall back to a synthetic
-    /// key based on the anchor id.
-    fn derive_symbol_key(
-        &self,
+    /// Returns the canonical name of the occurrence's entity when that entity
+    /// is present in the same shard. Returns `None` otherwise — including for a
+    /// resolved cross-file target whose declaration lives in another shard,
+    /// which this layer cannot name without a project entity catalog
+    /// (perl-lsp-swarm#8083). `None` means "no name derived here", never "no
+    /// target": the entity projection is populated independently.
+    fn derive_canonical_name(
         shard: &FileFactShard,
         occ: &perl_semantic_facts::OccurrenceFact,
-    ) -> String {
-        if let Some(entity_id) = occ.entity_id {
-            // Try to find the entity in the same shard for its canonical name.
-            if let Some(entity) = shard.entities.iter().find(|e| e.id == entity_id) {
-                return entity.canonical_name.clone();
-            }
-        }
-        // Fallback: use anchor id as a synthetic key.
-        format!("__unresolved_anchor_{}", occ.anchor_id.0)
+    ) -> Option<String> {
+        let entity_id = occ.entity_id?;
+        shard
+            .entities
+            .iter()
+            .find(|e| e.id == entity_id)
+            .map(|entity| entity.canonical_name.clone())
     }
 }
 
@@ -526,13 +619,16 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn unresolved_occurrence_uses_fallback_key() -> Result<(), Box<dyn std::error::Error>> {
-        let file_id = FileId(3);
+    /// Build a shard whose only occurrence has no entity row and no edge, at
+    /// the shared anchor id 60.
+    ///
+    /// Both files deliberately use one anchor number: the index must not depend
+    /// on cross-file anchor uniqueness, which no producer contract guarantees.
+    fn unresolved_shard(source_uri: &str, file_id: FileId, occ_id: OccurrenceId) -> FileFactShard {
         let anchor_id = AnchorId(60);
 
-        let shard = FileFactShard {
-            source_uri: "file:///lib/Unresolved.pm".to_string(),
+        FileFactShard {
+            source_uri: source_uri.to_string(),
             file_id,
             content_hash: 222,
             producer_schema_version: PRODUCER_SCHEMA_VERSION,
@@ -551,7 +647,7 @@ mod tests {
             }],
             entities: vec![],
             occurrences: vec![OccurrenceFact {
-                id: OccurrenceId(900),
+                id: occ_id,
                 kind: OccurrenceKind::Call,
                 entity_id: None,
                 anchor_id,
@@ -560,19 +656,114 @@ mod tests {
                 confidence: Confidence::Low,
             }],
             edges: vec![],
-        };
+        }
+    }
+
+    #[test]
+    fn unresolved_occurrence_leaves_the_name_projection() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let mut index = ReferenceIndex::new();
+        index.add_file(&unresolved_shard(
+            "file:///lib/Unresolved.pm",
+            FileId(3),
+            OccurrenceId(900),
+        ));
+
+        // The retired anchor pseudo-name must not be reachable, and neither
+        // must the empty spelling the edge now carries: "we could not resolve
+        // this" is not a name, so the name projection stays exact.
+        assert!(index.get_by_name("__unresolved_anchor_60").is_empty());
+        assert!(index.get_by_name("").is_empty());
+        assert_eq!(index.name_count(), 0);
+
+        // The occurrence is still retained, addressable by its scoped identity.
+        let key = UnresolvedOccurrenceKey::new(FileId(3), OccurrenceId(900), AnchorId(60));
+        let unresolved = index.get_unresolved(&key);
+        assert_eq!(unresolved.len(), 1);
+        assert_eq!(unresolved[0].confidence, Confidence::Low);
+        assert_eq!(unresolved[0].symbol_key, "");
+        assert_eq!(index.unresolved_count(), 1);
+
+        // No entity-based entries since there are no target candidates.
+        assert_eq!(index.entity_count(), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn unresolved_occurrences_in_two_files_do_not_share_one_bucket()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut index = ReferenceIndex::new();
+        index.add_file(&unresolved_shard("file:///lib/A.pm", FileId(3), OccurrenceId(900)));
+        index.add_file(&unresolved_shard("file:///lib/B.pm", FileId(4), OccurrenceId(901)));
+
+        // Negative control for the retired anchor-only key: both files use
+        // AnchorId(60), so an anchor-keyed store returns one merged bucket of
+        // two edges — as `references_by_name` did under
+        // `__unresolved_anchor_60`. Scoped identity keeps them apart.
+        assert_eq!(index.unresolved_count(), 2);
+        assert_eq!(index.name_count(), 0);
+
+        let key_a = UnresolvedOccurrenceKey::new(FileId(3), OccurrenceId(900), AnchorId(60));
+        let key_b = UnresolvedOccurrenceKey::new(FileId(4), OccurrenceId(901), AnchorId(60));
+        assert_ne!(key_a, key_b);
+
+        let refs_a = index.get_unresolved(&key_a);
+        let refs_b = index.get_unresolved(&key_b);
+        assert_eq!(refs_a.len(), 1);
+        assert_eq!(refs_b.len(), 1);
+        assert_eq!(refs_a[0].file_id, FileId(3));
+        assert_eq!(refs_b[0].file_id, FileId(4));
+        Ok(())
+    }
+
+    #[test]
+    fn unresolved_name_does_not_suppress_a_cross_file_entity_target()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // An occurrence whose declaration lives in another shard: the edge
+        // names the target entity, but no local entity row supplies a name.
+        let target = EntityId(500);
+        let mut shard = unresolved_shard("file:///lib/Caller.pm", FileId(5), OccurrenceId(902));
+        shard.edges.push(EdgeFact {
+            id: EdgeId(1500),
+            kind: EdgeKind::References,
+            from_entity_id: EntityId(0),
+            to_entity_id: target,
+            via_occurrence_id: Some(OccurrenceId(902)),
+            provenance: Provenance::ExactAst,
+            confidence: Confidence::High,
+        });
 
         let mut index = ReferenceIndex::new();
         index.add_file(&shard);
 
-        // The fallback key should be based on the anchor id.
-        let fallback_key = "__unresolved_anchor_60";
-        let refs = index.get_by_name(fallback_key);
-        assert_eq!(refs.len(), 1);
-        assert_eq!(refs[0].confidence, Confidence::Low);
+        // Entity resolution is unaffected by the missing name...
+        let by_entity = index.get_by_entity(target);
+        assert_eq!(by_entity.len(), 1);
+        assert_eq!(by_entity[0].target_candidates, vec![target]);
 
-        // No entity-based entries since there are no target candidates.
-        assert_eq!(index.entity_count(), 0);
+        // ...and the occurrence does not acquire a name it does not have.
+        assert_eq!(index.name_count(), 0);
+        let key = UnresolvedOccurrenceKey::new(FileId(5), OccurrenceId(902), AnchorId(60));
+        let unresolved = index.get_unresolved(&key);
+        assert_eq!(unresolved.len(), 1);
+        // One allocation is shared across projections, as for named edges.
+        assert!(Arc::ptr_eq(&by_entity[0], &unresolved[0]));
+        Ok(())
+    }
+
+    #[test]
+    fn remove_file_purges_only_its_own_unresolved_rows() -> Result<(), Box<dyn std::error::Error>> {
+        let mut index = ReferenceIndex::new();
+        index.add_file(&unresolved_shard("file:///lib/A.pm", FileId(3), OccurrenceId(900)));
+        index.add_file(&unresolved_shard("file:///lib/B.pm", FileId(4), OccurrenceId(901)));
+
+        index.remove_file("file:///lib/A.pm");
+
+        let key_a = UnresolvedOccurrenceKey::new(FileId(3), OccurrenceId(900), AnchorId(60));
+        let key_b = UnresolvedOccurrenceKey::new(FileId(4), OccurrenceId(901), AnchorId(60));
+        assert!(index.get_unresolved(&key_a).is_empty());
+        assert_eq!(index.get_unresolved(&key_b).len(), 1);
+        assert_eq!(index.unresolved_count(), 1);
         Ok(())
     }
 
