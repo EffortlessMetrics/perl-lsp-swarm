@@ -77,7 +77,11 @@ sub transform_item {
 fn generate_file_with_checkpoints() -> String {
     let mut source = String::new();
 
-    // Create content at positions that align with checkpoint positions (0, 100, 500, 1000, 5000)
+    // Create content at positions that align with checkpoint positions (0, 100, 500, 1000, 5000).
+    // The fixture must stay materially larger than every edit offset (150, 600, 2000) and larger
+    // than the 5,000-byte checkpoint-distance bound, so the `<= 5000` assertions keep
+    // discriminating checkpoint-selection locality instead of passing by construction.
+    // #13217 owns the open right-checkpoint-distance (25107) contract question.
     source.push_str("# Preamble to position 100\n");
     for i in 0..20 {
         source.push_str(&format!("my $var{} = {};\n", i, i));

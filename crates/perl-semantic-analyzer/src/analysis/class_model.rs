@@ -6,7 +6,9 @@
 
 use crate::SourceLocation;
 use crate::ast::{Node, NodeKind};
+use crate::pragma_tracker::{PerlVersion, PragmaState, PragmaTracker};
 use std::collections::{HashMap, HashSet};
+use std::ops::Range;
 
 /// Which OO framework a package uses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -160,12 +162,21 @@ pub struct MethodInfo {
     pub synthetic: bool,
     /// Accessor mode for `Class::Accessor`-generated methods.
     pub accessor_mode: Option<ClassAccessorMode>,
+    /// Narrow provenance for synthetic methods whose name came from a writer trait.
+    pub generated_kind: Option<GeneratedMethodKind>,
+}
+
+/// Provenance used to resolve generated writer collisions deterministically.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GeneratedMethodKind {
+    /// Method synthesized by a field `:writer` attribute.
+    Writer,
 }
 
 impl MethodInfo {
     /// Construct a regular declared method.
     pub fn new(name: String, location: SourceLocation) -> Self {
-        Self { name, location, synthetic: false, accessor_mode: None }
+        Self { name, location, synthetic: false, accessor_mode: None, generated_kind: None }
     }
 
     /// Construct a synthetic method generated from framework metadata.
@@ -174,7 +185,17 @@ impl MethodInfo {
         location: SourceLocation,
         accessor_mode: Option<ClassAccessorMode>,
     ) -> Self {
-        Self { name, location, synthetic: true, accessor_mode }
+        Self { name, location, synthetic: true, accessor_mode, generated_kind: None }
+    }
+
+    fn synthetic_writer(name: String, location: SourceLocation) -> Self {
+        Self {
+            name,
+            location,
+            synthetic: true,
+            accessor_mode: None,
+            generated_kind: Some(GeneratedMethodKind::Writer),
+        }
     }
 }
 
@@ -265,6 +286,7 @@ pub struct ClassModelBuilder {
     current_package_aliases: HashSet<String>,
     /// Track which packages have framework detection applied
     framework_map: HashMap<String, Framework>,
+    pragma_map: Vec<(Range<usize>, PragmaState)>,
 }
 
 impl Default for ClassModelBuilder {
@@ -294,11 +316,13 @@ impl ClassModelBuilder {
             current_uses_exporter: false,
             current_package_aliases: HashSet::new(),
             framework_map: HashMap::new(),
+            pragma_map: Vec::new(),
         }
     }
 
     /// Build class models from an AST.
     pub fn build(mut self, node: &Node) -> Vec<ClassModel> {
+        self.pragma_map = PragmaTracker::build(node);
         self.visit_node(node);
         self.flush_current_package();
         self.models
@@ -306,6 +330,7 @@ impl ClassModelBuilder {
 
     /// Flush the current package's accumulated data into a ClassModel.
     fn flush_current_package(&mut self) {
+        self.finalize_field_writers();
         let framework = self.current_framework;
         // Produce a ClassModel if the package uses a framework, has attributes, or has parents
         let has_oo_indicator = framework != Framework::None
@@ -1236,7 +1261,15 @@ impl ClassModelBuilder {
     /// keyword and attribute set (`:param`, `:reader`, `:writer`, `:accessor`,
     /// `:mutator`) are identical for both frameworks.
     fn try_extract_field_declaration(&mut self, statement: &Node) -> Option<usize> {
-        let field = Self::object_pad_field_from_statement(statement)?;
+        let allow_named_writer = self.current_framework == Framework::ObjectPad
+            || self.native_named_writers_allowed(statement.location.start);
+        let allow_bare_writer =
+            self.current_framework == Framework::ObjectPad || allow_named_writer;
+        let field = Self::object_pad_field_from_statement(
+            statement,
+            allow_named_writer,
+            allow_bare_writer,
+        )?;
         let location = field.location;
         let field_name = field.name.clone();
         let traits = field.attributes.clone();
@@ -1246,8 +1279,13 @@ impl ClassModelBuilder {
         if let Some(reader) = Self::object_pad_reader_name(&field_name, &traits) {
             self.current_methods.push(MethodInfo::synthetic(reader, location, None));
         }
-        if let Some(writer) = Self::object_pad_writer_name(&field_name, &traits) {
-            self.current_methods.push(MethodInfo::synthetic(writer, location, None));
+        if let Some(writer) = Self::object_pad_writer_name(
+            &field_name,
+            &traits,
+            allow_named_writer,
+            allow_bare_writer,
+        ) {
+            self.current_methods.push(MethodInfo::synthetic_writer(writer, location));
         }
         if let Some(accessor) = Self::object_pad_accessor_name(&field_name, &traits) {
             self.current_methods.push(MethodInfo::synthetic(accessor, location, None));
@@ -1275,7 +1313,11 @@ impl ClassModelBuilder {
         self.current_adjusts.push(MethodInfo::synthetic("ADJUST".to_string(), location, None));
     }
 
-    fn object_pad_field_from_statement(statement: &Node) -> Option<FieldInfo> {
+    fn object_pad_field_from_statement(
+        statement: &Node,
+        allow_named_writer: bool,
+        allow_bare_writer: bool,
+    ) -> Option<FieldInfo> {
         let NodeKind::VariableDeclaration { declarator, variable, attributes, initializer } =
             &statement.kind
         else {
@@ -1315,7 +1357,12 @@ impl ClassModelBuilder {
         };
 
         field.reader = Self::object_pad_reader_name(&field.name, &field.attributes);
-        field.writer = Self::object_pad_writer_name(&field.name, &field.attributes);
+        field.writer = Self::object_pad_writer_name(
+            &field.name,
+            &field.attributes,
+            allow_named_writer,
+            allow_bare_writer,
+        );
         field.accessor = Self::object_pad_accessor_name(&field.name, &field.attributes);
         field.mutator = Self::object_pad_mutator_name(&field.name, &field.attributes);
 
@@ -1330,12 +1377,33 @@ impl ClassModelBuilder {
         }
     }
 
-    fn object_pad_writer_name(field_name: &str, traits: &[String]) -> Option<String> {
-        if traits.iter().any(|trait_name| trait_name == "writer") {
-            Some(format!("set_{}", Self::object_pad_public_name(field_name)))
-        } else {
-            None
+    fn object_pad_writer_name(
+        field_name: &str,
+        traits: &[String],
+        allow_named_writer: bool,
+        allow_bare_writer: bool,
+    ) -> Option<String> {
+        for trait_name in traits {
+            if trait_name == "writer" {
+                if !allow_bare_writer {
+                    return None;
+                }
+                return Some(format!("set_{}", Self::object_pad_public_name(field_name)));
+            }
+
+            if let Some(writer_name) = trait_name.strip_prefix("writer(") {
+                // The first writer trait owns the result. Malformed or unsupported
+                // forms fail closed instead of falling through to another trait.
+                let writer_name = writer_name.strip_suffix(')')?;
+                let writer_name = writer_name.trim();
+                if !allow_named_writer || !is_valid_named_writer(writer_name) {
+                    return None;
+                }
+                return Some(writer_name.to_owned());
+            }
         }
+
+        None
     }
 
     fn object_pad_accessor_name(field_name: &str, traits: &[String]) -> Option<String> {
@@ -1356,6 +1424,44 @@ impl ClassModelBuilder {
 
     fn object_pad_public_name(field_name: &str) -> &str {
         field_name.strip_prefix('_').unwrap_or(field_name)
+    }
+
+    fn native_named_writers_allowed(&self, offset: usize) -> bool {
+        self.current_framework == Framework::NativeClass
+            && PragmaTracker::state_for_offset(&self.pragma_map, offset)
+                .perl_version
+                .is_some_and(|version| version >= PerlVersion::new(5, 42))
+    }
+
+    fn finalize_field_writers(&mut self) {
+        let occupied_names: HashSet<&str> = self
+            .current_methods
+            .iter()
+            // Readers, accessors, mutators, and other generated members reserve
+            // their names before a generated writer can claim them.
+            .filter(|method| method.generated_kind != Some(GeneratedMethodKind::Writer))
+            .map(|method| method.name.as_str())
+            .collect();
+        let mut seen_names = HashSet::new();
+        let mut accepted = HashSet::new();
+
+        for field in &mut self.current_fields {
+            let Some(writer) = field.writer.as_deref() else { continue };
+            if occupied_names.contains(writer) || !seen_names.insert(writer.to_owned()) {
+                field.writer = None;
+                continue;
+            }
+            accepted.insert((field.location.start, field.location.end, writer.to_owned()));
+        }
+
+        self.current_methods.retain(|method| {
+            method.generated_kind != Some(GeneratedMethodKind::Writer)
+                || accepted.contains(&(
+                    method.location.start,
+                    method.location.end,
+                    method.name.clone(),
+                ))
+        });
     }
 
     /// Return true when a `Class::Accessor` call targets the current package.
@@ -1450,6 +1556,13 @@ impl ClassModelBuilder {
 }
 
 // ---- Helper functions (parallel to SymbolExtractor's private helpers) ----
+
+fn is_valid_named_writer(name: &str) -> bool {
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else { return false };
+    (first == '_' || first.is_ascii_alphabetic())
+        && chars.all(|character| character == '_' || character.is_ascii_alphanumeric())
+}
 
 fn class_tiny_default_hash_pairs(statement: &Node) -> Option<(&[(Node, Node)], SourceLocation)> {
     let expression = match &statement.kind {
@@ -2489,6 +2602,7 @@ class MyApp::Point {
         // and synthetic accessors, matching Object::Pad parity.
         let models = build_models(
             r#"
+use v5.42;
 class Point {
     field $x :param :reader = 0;
     field $y :param :writer = 1;
