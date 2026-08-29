@@ -6,6 +6,7 @@ pub mod agent_flow;
 pub mod agent_implementation_packet;
 pub mod agent_lease;
 pub mod agent_ledgers;
+pub mod agent_packet_dogfood;
 pub mod agent_receipt;
 pub mod agent_review_packet;
 pub mod aggregate_receipts;

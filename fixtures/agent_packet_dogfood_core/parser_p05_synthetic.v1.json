@@ -1,0 +1,82 @@
+{
+  "disposition": "completed",
+  "events": [
+    {
+      "at_ms": 0,
+      "digest": "0af55d4d560d922589254e3661aab83374a15e4117df3f317638446cb7144ae5",
+      "kind": "observation",
+      "payload": {
+        "note": "synthetic hover probe opened"
+      },
+      "seq": 0
+    },
+    {
+      "at_ms": 10,
+      "digest": "03f938bd5d7dd28078848f75b90ac9532dd3832706a14b953c0a3a58f7be3e25",
+      "kind": "tool_call",
+      "payload": {
+        "op": "hover",
+        "tool": "perl-lsp"
+      },
+      "seq": 1
+    },
+    {
+      "at_ms": 20,
+      "digest": "aba54e5b1e8d39a57f88193e95ab35ea1b9aa8d86ffb8a69ee15aeb80c8fcb25",
+      "kind": "tool_result",
+      "payload": {
+        "ok": true
+      },
+      "seq": 2
+    }
+  ],
+  "human_intervention": [
+    {
+      "before_seq": 2,
+      "reason": "operator approved write scope mid-run",
+      "role": "human_operator"
+    }
+  ],
+  "identity": {
+    "packet_digest": "dba5172c121b60b9115bce2d94d14e969a2c67fbb24d10c5a00a26a4aaedcdd2",
+    "packet_id": "parser-p05-synthetic-001",
+    "spec_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+    "spec_ref": "https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/11024",
+    "tree_sha": "1111111111111111111111111111111111111111111111111111111111111111"
+  },
+  "results": [
+    {
+      "at_ms": 40,
+      "digest": "35fcafec1754b2afc497a8289ad658197e579fa5a91d2d775ff6b5c4494a2452",
+      "kind": "check_result",
+      "payload": {
+        "check": "hover-support",
+        "outcome": "pass"
+      },
+      "seq": 0
+    }
+  ],
+  "run_id": "synthetic-parser-p05-run-001",
+  "schema": "agent_packet_dogfood.core.v1",
+  "schema_version": 1,
+  "subject": {
+    "agent": {
+      "name": "synthetic-agent",
+      "version": "0"
+    },
+    "model": {
+      "id": "synthetic-model-x",
+      "revision": "r0"
+    },
+    "permissions": {
+      "ceiling": [
+        "workspace:read",
+        "workspace:write"
+      ]
+    },
+    "tool": {
+      "name": "perl-lsp-xtask",
+      "version": "0"
+    }
+  }
+}

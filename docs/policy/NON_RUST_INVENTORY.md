@@ -6,23 +6,23 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12395 |
-| Rust-family files | 3808 |
-| Non-Rust files | 8587 |
-| Allowlisted | 6352 |
-| Unclassified | 2235 |
+| Total tracked files | 12434 |
+| Rust-family files | 3811 |
+| Non-Rust files | 8623 |
+| Allowlisted | 6354 |
+| Unclassified | 2269 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 490 |
-| documentation | 2801 |
+| config | 491 |
+| documentation | 2802 |
 | generated | 2 |
 | production | 346 |
 | test | 2052 |
 | tooling | 661 |
-| unclassified | 2235 |
+| unclassified | 2269 |
 
 ## Unclassified files
 
@@ -124,6 +124,40 @@
 | `distribution/test-release.sh` | `sh` |
 | `distribution/windows/update-manifests.ps1` | `ps1` |
 | `distribution/winget/perl-lsp.yaml` | `yaml` |
+| `fixtures/agent_packet_dogfood_core/analysis_train_synthetic_transfer.v1.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/golden/agent_packet_dogfood_core.advisory.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/chain_of_thought_in_metadata.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/chain_of_thought_in_payload.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/credential_in_metadata.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/credential_in_payload.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/dangling_intervention_ref.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/empty_events.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/expected_errors.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/invalid_run_id.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/machine_local_path_in_payload.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/machine_local_path_in_subject.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/malformed_packet_digest.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/metadata_not_object.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/missing_model_identity.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/missing_model_revision.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/missing_packet_digest.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/missing_scope_ceiling.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/missing_subject.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/mutable_state_camel_case.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/nested_chain_of_thought_in_payload.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/oversized_event_excerpt.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/results_not_array.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/structured_credential_keys.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/tampered_event_payload.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/tampered_model_identity.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/tampered_packet_envelope.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/tampered_subject_ceiling.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/tampered_tree_sha.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/unknown_disposition.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/unknown_root_field.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/unsorted_event_sequences.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/unsorted_result_sequences.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/parser_p05_synthetic.v1.json` | `json` |
 | `fixtures/clippy_repair_falsifiers/cases/A01-file-wide-suppression-carveout.json` | `json` |
 | `fixtures/clippy_repair_falsifiers/cases/A02-dead-code-baseline-absorption.json` | `json` |
 | `fixtures/clippy_repair_falsifiers/cases/A03-cfg-test-attr-general-carveout.json` | `json` |
@@ -2748,6 +2782,7 @@
 | `.ci/release/evidence.toml` | config | `non-rust-ci-config` | release/ci |
 | `.ci/risk-tags.yaml` | config | `non-rust-ci-config` | release/ci |
 | `.ci/schemas/agent-client-compat.v1.schema.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/schemas/agent-packet-dogfood.core.v1.schema.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/schemas/ci-route-plan.v1.schema.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/schemas/editor-client-compat.v1.schema.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/schemas/editor-ux.schema.json` | config | `non-rust-ci-config` | release/ci |
@@ -6129,6 +6164,7 @@
 | `fixtures/agent_implementation_packet/invalid/unconditional_profile_with_decision.json` | test | `non-rust-agent-implementation-packet-fixtures` | tooling/agent-packet |
 | `fixtures/agent_implementation_packet/live_observed_candidate.v1.json` | test | `non-rust-agent-implementation-packet-fixtures` | tooling/agent-packet |
 | `fixtures/agent_implementation_packet/shuffled/bounded_leaf_offline_shuffled.v1.json` | test | `non-rust-agent-implementation-packet-fixtures` | tooling/agent-packet |
+| `fixtures/agent_packet_dogfood_core/golden/agent_packet_dogfood_core.advisory.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `fixtures/agent_review_packet/challenger_service_marker.v1.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
 | `fixtures/agent_review_packet/closure_open_finding.v1.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
 | `fixtures/agent_review_packet/closure_service_marker_eligible.v1.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
