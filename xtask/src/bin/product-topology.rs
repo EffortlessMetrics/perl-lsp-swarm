@@ -516,6 +516,7 @@ fn validate_dependencies(
             product,
             &policy.dependencies.product_requires,
             "product",
+            packages,
             findings,
         );
         if policy.mcp_stage == McpStage::Required {
@@ -523,6 +524,7 @@ fn validate_dependencies(
                 product,
                 std::slice::from_ref(&policy.packages.mcp_adapter),
                 "stage=required product",
+                packages,
                 findings,
             );
         }
@@ -547,6 +549,7 @@ fn validate_dependencies(
             mcp_adapter,
             &policy.dependencies.mcp_requires,
             "MCP adapter",
+            packages,
             findings,
         );
         forbid_dependencies(mcp_adapter, &policy.dependencies.mcp_forbids, "MCP adapter", findings);
@@ -557,6 +560,7 @@ fn require_normal_dependencies(
     package: &CargoPackage,
     required: &[String],
     owner: &str,
+    workspace_packages: &BTreeMap<String, &CargoPackage>,
     findings: &mut BTreeSet<String>,
 ) {
     let dependencies = package
@@ -567,6 +571,7 @@ fn require_normal_dependencies(
                 && !dependency.optional
                 && dependency.rename.is_none()
                 && dependency.source.is_none()
+                && workspace_packages.contains_key(&dependency.name)
         })
         .map(|dependency| dependency.name.as_str())
         .collect::<BTreeSet<_>>();
