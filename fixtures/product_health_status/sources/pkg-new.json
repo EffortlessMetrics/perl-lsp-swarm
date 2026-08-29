@@ -1,0 +1,14 @@
+{
+  "schema": "fixture.v1",
+  "packet_id": "pkg-new",
+  "selector": "fixture.subject",
+  "rail_id": "fixture.package",
+  "subject": "package@fixture-tree",
+  "source_result": "failed",
+  "state": "current",
+  "supersedes": "pkg-old",
+  "digest": "sha256:d0ce98ed8d38438a59a339c17034bc48c3058d77807233f8f384e386f5e60edf",
+  "limitations": [],
+  "nonclaims": [],
+  "detail": {}
+}

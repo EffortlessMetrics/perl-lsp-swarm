@@ -2,8 +2,10 @@
 
 use std::{fs, path::PathBuf};
 
+use anyhow::{Result, anyhow, ensure};
 use assert_cmd::Command;
 use perl_tdd_support::{must, must_some};
+use serde_yaml_ng::Value;
 
 #[test]
 fn ignored_test_issue_reference_gate_is_required_on_prs() {
@@ -367,6 +369,176 @@ fn coverage_workflow_is_manual_or_nightly_only_and_requires_receipts() {
 }
 
 #[test]
+fn nightly_manual_dispatch_routes_each_expensive_job_through_its_typed_input() {
+    let root = repo_root();
+    let workflow = must(fs::read_to_string(root.join(".github/workflows/ci-nightly.yml")));
+
+    let routed_jobs = [
+        ("mutation", "run_mutation"),
+        ("benchmark", "run_benchmarks"),
+        ("real-repo-latency", "run_real_repo_latency"),
+        ("corpus-differential", "run_corpus_differential"),
+        ("lsp-memory-plateau", "run_memory"),
+        ("test-coverage", "run_coverage"),
+        ("tautology-check", "run_tautology"),
+        ("semver-check", "run_semver"),
+        ("public-api-check", "run_public_api"),
+        ("scorecard-ratchet-check", "run_scorecard"),
+        ("clippy-strict", "run_clippy_strict"),
+        ("perl-kwalitee", "run_perl_kwalitee"),
+        ("fuzz", "run_fuzz"),
+    ];
+
+    assert!(
+        !workflow.contains("github.event.inputs."),
+        "manual dispatch routing must use typed boolean inputs instead of string event payloads"
+    );
+    let fuzz = must_some(workflow_job(&workflow, "fuzz"));
+    assert!(
+        fuzz.contains("DURATION=600")
+            && !fuzz.contains("inputs.fuzz_duration")
+            && !fuzz.contains("github.event.inputs.duration"),
+        "dispatch routing must not make the 600-second fuzz proof duration configurable"
+    );
+
+    for (job, input) in routed_jobs {
+        let input_contract = format!("      {input}:\n");
+        assert!(
+            workflow.contains(&input_contract),
+            "nightly dispatch must declare `{input}` for `{job}`"
+        );
+
+        let job_contract = must_some(workflow_job(&workflow, job));
+        let selector = format!("(github.event_name == 'workflow_dispatch' && inputs.{input})");
+        assert!(
+            job_contract.contains(&selector),
+            "nightly job `{job}` must be gated by its typed `{input}` selector"
+        );
+        assert_eq!(
+            job_contract.matches("github.event_name == 'workflow_dispatch'").count(),
+            1,
+            "nightly job `{job}` must not retain an unconditional manual-dispatch route"
+        );
+    }
+
+    let coverage = must_some(workflow_job(&workflow, "test-coverage"));
+    assert!(
+        coverage.contains("inputs.run_coverage")
+            && routed_jobs
+                .iter()
+                .filter(|(job, _)| *job != "test-coverage")
+                .all(|(_, input)| !coverage.contains(&format!("inputs.{input}"))),
+        "coverage-only dispatch must select coverage independently of every other expensive pack"
+    );
+
+    for job in [
+        "mutation",
+        "benchmark",
+        "real-repo-latency",
+        "corpus-differential",
+        "lsp-memory-plateau",
+        "semver-check",
+        "public-api-check",
+        "scorecard-ratchet-check",
+        "perl-kwalitee",
+        "fuzz",
+    ] {
+        assert!(
+            must_some(workflow_job(&workflow, job)).contains("github.event_name == 'schedule'"),
+            "scheduled nightly behavior must remain enabled for `{job}`"
+        );
+    }
+
+    for (job, label) in [
+        ("mutation", "ci:mutation"),
+        ("benchmark", "ci:bench"),
+        ("real-repo-latency", "ci:real-repo-latency"),
+        ("corpus-differential", "ci:corpus-differential"),
+        ("lsp-memory-plateau", "ci:memory"),
+        ("tautology-check", "ci:strict"),
+        ("semver-check", "ci:semver"),
+        ("public-api-check", "ci:public-api"),
+        ("scorecard-ratchet-check", "ci:metrics-ratchet"),
+        ("clippy-strict", "ci:strict"),
+        ("perl-kwalitee", "ci:kwalitee"),
+    ] {
+        assert!(
+            must_some(workflow_job(&workflow, job)).contains(label),
+            "PR label route `{label}` must remain enabled for `{job}`"
+        );
+    }
+}
+
+#[test]
+fn nightly_manual_dispatch_inputs_are_boolean_and_job_selectors_are_exclusive() -> Result<()> {
+    let root = repo_root();
+    let workflow_source = fs::read_to_string(root.join(".github/workflows/ci-nightly.yml"))?;
+    let workflow: Value = serde_yaml_ng::from_str(&workflow_source)?;
+    let dispatch = yaml_mapping_entry(&workflow, "on")?;
+    let inputs = yaml_mapping_entry(yaml_mapping_entry(dispatch, "workflow_dispatch")?, "inputs")?;
+    let routed_jobs = [
+        ("mutation", "run_mutation"),
+        ("benchmark", "run_benchmarks"),
+        ("real-repo-latency", "run_real_repo_latency"),
+        ("corpus-differential", "run_corpus_differential"),
+        ("lsp-memory-plateau", "run_memory"),
+        ("test-coverage", "run_coverage"),
+        ("tautology-check", "run_tautology"),
+        ("semver-check", "run_semver"),
+        ("public-api-check", "run_public_api"),
+        ("scorecard-ratchet-check", "run_scorecard"),
+        ("clippy-strict", "run_clippy_strict"),
+        ("perl-kwalitee", "run_perl_kwalitee"),
+        ("fuzz", "run_fuzz"),
+    ];
+
+    // GitHub's workflow syntax reference documents a 25 top-level `inputs`
+    // maximum; this guards platform validity without forcing unrelated
+    // expensive packs into grouped selectors.
+    ensure!(
+        inputs.as_mapping().is_some_and(|mapping| mapping.len() <= 25),
+        "workflow_dispatch must stay within GitHub's 25-input platform limit"
+    );
+
+    for (_, input) in routed_jobs {
+        let definition = yaml_mapping_entry(inputs, input)?;
+        ensure!(
+            definition.get("type").and_then(Value::as_str) == Some("boolean"),
+            "nightly dispatch input `{input}` must declare `type: boolean`"
+        );
+        ensure!(
+            definition.get("default").and_then(Value::as_bool) == Some(false),
+            "nightly dispatch input `{input}` must default to false for fail-safe manual routing"
+        );
+    }
+
+    for (job, input) in routed_jobs {
+        let job_contract = workflow_job(&workflow_source, job)
+            .ok_or_else(|| anyhow!("nightly job `{job}` must be present"))?;
+        ensure!(
+            nightly_job_selector_is_exclusive(job_contract, input),
+            "nightly job `{job}` must select exactly `{input}` for manual dispatch"
+        );
+    }
+
+    let original_selector = "(github.event_name == 'workflow_dispatch' && inputs.run_mutation)";
+    let mutated_selector = format!("{original_selector} || inputs.run_benchmarks");
+    let mutated_source = workflow_source.replacen(original_selector, &mutated_selector, 1);
+    ensure!(
+        mutated_source != workflow_source,
+        "exclusivity negative control must mutate the mutation selector"
+    );
+    let mutated_job = workflow_job(&mutated_source, "mutation")
+        .ok_or_else(|| anyhow!("mutated mutation job must be present"))?;
+    ensure!(
+        !nightly_job_selector_is_exclusive(mutated_job, "run_mutation"),
+        "a second run_* selector must invalidate the per-job exclusivity contract"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn coverage_proof_exercises_lsp_318_claim_guard() {
     let root = repo_root();
 
@@ -498,4 +670,46 @@ fn workflow_step<'a>(content: &'a str, name: &str) -> Option<&'a str> {
         )
         .unwrap_or(rest.len());
     Some(&rest[..next])
+}
+
+fn workflow_job<'a>(content: &'a str, name: &str) -> Option<&'a str> {
+    let needle = format!("\n  {name}:\n");
+    let start = content.find(&needle)? + 1;
+    let rest = &content[start..];
+    let next = rest
+        .lines()
+        .skip(1)
+        .scan(rest.lines().next()?.len() + 1, |offset, line| {
+            let current = *offset;
+            *offset += line.len() + 1;
+            Some((current, line))
+        })
+        .find_map(|(offset, line)| {
+            let bytes = line.as_bytes();
+            if line.starts_with("  ")
+                && !line.starts_with("    ")
+                && bytes.get(2).is_some_and(u8::is_ascii_alphanumeric)
+            {
+                Some(offset)
+            } else {
+                None
+            }
+        })
+        .unwrap_or(rest.len());
+    Some(&rest[..next])
+}
+
+fn nightly_job_selector_is_exclusive(job: &str, expected_input: &str) -> bool {
+    let selector = format!("(github.event_name == 'workflow_dispatch' && inputs.{expected_input})");
+    job.contains(&selector)
+        && job.matches("github.event_name == 'workflow_dispatch'").count() == 1
+        && job.matches("inputs.run_").count() == 1
+}
+
+fn yaml_mapping_entry<'a>(value: &'a Value, key: &str) -> Result<&'a Value> {
+    value
+        .as_mapping()
+        .ok_or_else(|| anyhow!("expected a YAML mapping while looking for `{key}`"))?
+        .get(Value::String(key.to_owned()))
+        .ok_or_else(|| anyhow!("missing YAML key `{key}`"))
 }
