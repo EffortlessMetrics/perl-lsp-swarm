@@ -901,7 +901,12 @@ impl LspServer {
             drop(documents);
             if let Some(subject) = native_critic_subject {
                 let native_actions = self.native_critic_code_actions(uri, subject);
-                code_actions.splice(native_insert_at..native_insert_at, native_actions);
+                // Clamped: `Vec::splice` panics on an out-of-range range, and no
+                // production path may panic. Nothing between the capture above
+                // and here removes actions today, so the clamp is a no-op that
+                // keeps a later edit from turning a reordering into a crash.
+                let at = native_insert_at.min(code_actions.len());
+                code_actions.splice(at..at, native_actions);
             }
 
             // Emit a disabled "Extract variable" placeholder when the selection

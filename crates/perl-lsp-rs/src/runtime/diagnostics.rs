@@ -862,13 +862,15 @@ impl LspServer {
 
             // Add configured policy critic diagnostics.
             let critic_source_identity = critic_source_identity_for(uri, gen_at_snapshot);
-            accepted_critic_policy = self.collect_policy_critic_diagnostics(
-                ast,
-                &text,
-                uri,
-                critic_source_identity,
-                &mut diagnostics,
-            );
+            accepted_critic_policy = self
+                .collect_policy_critic_diagnostics(
+                    ast,
+                    &text,
+                    uri,
+                    critic_source_identity,
+                    &mut diagnostics,
+                )
+                .published_policy();
 
             // Add external perlcritic diagnostics (opt-in)
             self.collect_external_perlcritic_diagnostics(uri, &text, &mut diagnostics);
@@ -1993,7 +1995,7 @@ impl LspServer {
 
                 // Add native critic diagnostics when explicitly selected.
                 let critic_source_identity = critic_source_identity_for(uri_str, *gen_at_snapshot);
-                self.collect_native_critic_diagnostics(
+                let critic_contribution = self.collect_native_critic_diagnostics(
                     ast,
                     &doc.text,
                     uri_str,
@@ -2065,12 +2067,21 @@ impl LspServer {
                 }
                 identity_context.projection = identity_projection;
 
+                // The composed identity encodes the critic policy this report
+                // was evaluated under. A run that could not publish leaves the
+                // report incomplete for that policy, and a policy that has since
+                // moved makes the identity describe a dead subject - neither may
+                // be handed back as reusable (#13304).
+                let critic_subject_current =
+                    critic_contribution.permits_reusable_result_id(|root| {
+                        self.config.lock().effective_critic_state(root).fingerprint()
+                    });
                 let result_id = compose_report_identity(
                     uri_str,
                     &doc.text,
                     Some(u64::from(doc.current_generation())),
                     &identity_context,
-                    true,
+                    critic_subject_current,
                 );
                 let result_id_json =
                     result_id.as_ref().map(|id| Value::String(id.as_str().to_string()));
@@ -2305,12 +2316,11 @@ impl LspServer {
         Ok(Some(json!({ "items": items })))
     }
 
-    /// Collect configured policy critic diagnostics, returning the accepted
-    /// native critic policy the published rows were produced under (#13304).
+    /// Collect configured policy critic diagnostics (#13304).
     ///
-    /// `None` means the resulting payload carries no native critic row that
-    /// depends on live configuration: the legacy engine (whose removal is
-    /// #9068) or a native run that produced nothing publishable.
+    /// See [`NativeCriticContribution`]: the caller needs to tell a run that
+    /// deliberately contributed nothing apart from a run that could not publish,
+    /// because only the latter makes the resulting report uncacheable.
     fn collect_policy_critic_diagnostics(
         &self,
         ast: &std::sync::Arc<perl_parser::ast::Node>,
@@ -2318,14 +2328,14 @@ impl LspServer {
         subject: &str,
         source_identity: perl_lsp_rs_core::tooling::perl_critic::CriticSourceIdentity,
         diagnostics: &mut Vec<InternalDiagnostic>,
-    ) -> Option<AcceptedCriticPolicy> {
+    ) -> NativeCriticContribution {
         let critic_engine = { self.config.lock().critic_engine };
         match critic_engine {
             perl_lsp_rs_core::config::CriticEngine::Legacy => {
                 let built_in_analyzer = BuiltInAnalyzer::new();
                 let violations = built_in_analyzer.analyze(ast, doc_text);
                 diagnostics.extend(violations.iter().map(builtin_violation_to_diagnostic));
-                None
+                NativeCriticContribution::PolicyIndependent
             }
             perl_lsp_rs_core::config::CriticEngine::Native => self
                 .collect_native_critic_diagnostics(
@@ -2345,7 +2355,7 @@ impl LspServer {
         subject: &str,
         source_identity: perl_lsp_rs_core::tooling::perl_critic::CriticSourceIdentity,
         diagnostics: &mut Vec<InternalDiagnostic>,
-    ) -> Option<AcceptedCriticPolicy> {
+    ) -> NativeCriticContribution {
         use perl_lsp_rs_core::providers::diagnostics::{
             critic_overlap_observations, take_critic_overlap_observations,
         };
@@ -2401,7 +2411,7 @@ impl LspServer {
         // configuration moved underneath the analysis, so its rows are dropped
         // and the untouched core diagnostics stay intact for this publication.
         if !run.is_publishable() {
-            return None;
+            return NativeCriticContribution::Withheld;
         }
         take_critic_overlap_observations(diagnostics);
         diagnostics.extend(run.findings().iter().map(normalized_critic_finding_to_diagnostic));
@@ -2410,7 +2420,10 @@ impl LspServer {
         // Hand it to the sink so the irreversible enqueue can re-check it
         // against live configuration in its own critical section (#13304):
         // this gate closed before the publication boundary, not at it.
-        Some(AcceptedCriticPolicy { owning_root: root_key, fingerprint: expected_fingerprint })
+        NativeCriticContribution::Published(AcceptedCriticPolicy {
+            owning_root: root_key,
+            fingerprint: expected_fingerprint,
+        })
     }
 
     /// Collect external perlcritic diagnostics if the feature is enabled.
@@ -2818,6 +2831,56 @@ fn push_diagnostic_source(code: Option<&str>) -> &'static str {
 /// rows; producer spellings never reach this projection directly (#7475).
 /// The contributing ordinary producer's user-visible remediation rides along
 /// so the merged row renders exactly what its retired twin rendered (#12004).
+/// What one native critic collection contributed to a report (#13304).
+///
+/// Publication and result-ID reuse need to distinguish three outcomes that a
+/// bare `Option` collapses. A run that deliberately contributed nothing leaves
+/// the report fully current; a run that could not publish leaves the report
+/// incomplete for its own snapshotted policy, so it must never be cached as the
+/// current answer.
+enum NativeCriticContribution {
+    /// No native row in this report depends on live critic configuration: the
+    /// legacy engine (whose removal is #9068), or an accepted state that is
+    /// disabled by configuration (#8253).
+    PolicyIndependent,
+    /// Rows were published under exactly this accepted policy.
+    Published(AcceptedCriticPolicy),
+    /// The run finished but could not publish - the policy moved underneath it,
+    /// or it was cancelled. The report is missing rows it would otherwise carry.
+    Withheld,
+}
+
+impl NativeCriticContribution {
+    /// The accepted policy to bind into an irreversible publication, if any.
+    fn published_policy(&self) -> Option<AcceptedCriticPolicy> {
+        match self {
+            Self::Published(policy) => Some(policy.clone()),
+            Self::PolicyIndependent | Self::Withheld => None,
+        }
+    }
+
+    /// Whether a report carrying this contribution may hand back a reusable
+    /// result ID (#13304).
+    ///
+    /// `live_fingerprint` reads the current accepted state for one owning root;
+    /// it is injected so the decision is provable without racing a live server.
+    /// A withheld run leaves the report incomplete for its own snapshotted
+    /// policy, and a published run whose policy has since moved describes a dead
+    /// subject: neither may be cached as the current answer.
+    fn permits_reusable_result_id(
+        &self,
+        live_fingerprint: impl FnOnce(Option<&str>) -> String,
+    ) -> bool {
+        match self {
+            Self::Withheld => false,
+            Self::PolicyIndependent => true,
+            Self::Published(policy) => {
+                live_fingerprint(policy.owning_root.as_deref()) == policy.fingerprint
+            }
+        }
+    }
+}
+
 fn normalized_critic_finding_to_diagnostic(
     finding: &perl_lsp_rs_core::tooling::perl_critic::NormalizedCriticFinding,
 ) -> InternalDiagnostic {
@@ -4681,6 +4744,63 @@ print \"unreachable\\n\";\n";
             "report items must be empty for an unopened file; got: {value:?}"
         );
         Ok(())
+    }
+
+    /// #13304: the workspace transport composes its own report identity, so the
+    /// critic subject behind it must gate result-ID reuse exactly as the pull
+    /// provider's does. A hardcoded `ready: true` (the state this repaired)
+    /// hands back a cacheable ID for a report that silently lost its critic rows.
+    #[test]
+    fn critic_contribution_gates_workspace_result_id_reuse() {
+        use super::{AcceptedCriticPolicy, NativeCriticContribution};
+
+        let policy = |root: Option<&str>, fingerprint: &str| AcceptedCriticPolicy {
+            owning_root: root.map(str::to_string),
+            fingerprint: fingerprint.to_string(),
+        };
+
+        // A run that could not publish leaves the report incomplete for its own
+        // snapshotted policy, whatever configuration currently says.
+        assert!(
+            !NativeCriticContribution::Withheld.permits_reusable_result_id(|_| "live".to_string()),
+            "a withheld run must never yield a reusable result ID"
+        );
+
+        // Nothing in the report depends on critic configuration.
+        assert!(
+            NativeCriticContribution::PolicyIndependent
+                .permits_reusable_result_id(|_| "anything".to_string()),
+            "a policy-independent report stays cacheable"
+        );
+
+        // Published under a policy that is still live.
+        assert!(
+            NativeCriticContribution::Published(policy(Some("/root"), "fp-a"))
+                .permits_reusable_result_id(|root| {
+                    assert_eq!(root, Some("/root"), "the owning root must be carried through");
+                    "fp-a".to_string()
+                }),
+            "rows published under the live policy stay cacheable"
+        );
+
+        // Published under a policy that has since moved.
+        assert!(
+            !NativeCriticContribution::Published(policy(Some("/root"), "fp-a"))
+                .permits_reusable_result_id(|_| "fp-b".to_string()),
+            "rows published under a policy that has since moved must not be cacheable"
+        );
+
+        // The root is part of the question: a multi-root workspace must not
+        // compare one root's snapshot against another root's live policy.
+        assert!(
+            !NativeCriticContribution::Published(policy(None, "fp-a")).permits_reusable_result_id(
+                |root| {
+                    assert_eq!(root, None, "an absent owning root must stay absent");
+                    "fp-b".to_string()
+                }
+            ),
+            "an unrooted snapshot is compared against the unrooted live policy"
+        );
     }
 
     /// Full-range code-action params for a freshly opened perl document.
