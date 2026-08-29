@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12407 |
-| Rust-family files | 3815 |
-| Non-Rust files | 8592 |
-| Allowlisted | 6357 |
+| Total tracked files | 12409 |
+| Rust-family files | 3816 |
+| Non-Rust files | 8593 |
+| Allowlisted | 6358 |
 | Unclassified | 2235 |
 
 ## Non-Rust files by category
@@ -21,7 +21,7 @@
 | generated | 2 |
 | production | 348 |
 | test | 2054 |
-| tooling | 661 |
+| tooling | 662 |
 | unclassified | 2235 |
 
 ## Unclassified files
@@ -6601,6 +6601,7 @@
 | `scripts/ci/test_ci_classify.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_codecov_test_results_workflows.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_docker_publish_metadata.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/ci/test_docker_publish_topology.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_droid_security_boundary.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_emit_ci_actuals.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_evaluate_ci_gate.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
