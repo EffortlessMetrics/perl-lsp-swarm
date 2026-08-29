@@ -839,9 +839,9 @@ pub(crate) fn validate_manifest(doc: &Value) -> Vec<Violation> {
     // Closed disposition vocabulary.
     match string_field(root, "disposition") {
         Some(disposition) if DISPOSITIONS.contains(&disposition) => {}
-        Some(disposition) => violations.push(Violation::new(
+        Some(_) => violations.push(Violation::new(
             "unknown_disposition",
-            format!("manifest: unknown disposition {disposition}"),
+            "manifest: unknown disposition (value redacted)".to_string(),
         )),
         None => violations.push(Violation::new(
             "missing_disposition",

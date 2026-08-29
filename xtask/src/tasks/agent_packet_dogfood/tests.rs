@@ -752,6 +752,43 @@ fn invalid_disposition_is_redacted_while_valid_disposition_is_preserved() {
     }));
 }
 
+#[test]
+fn every_closed_disposition_is_preserved_in_both_report_projections() {
+    for disposition in DISPOSITIONS {
+        let mut doc = base_manifest();
+        doc["disposition"] = json!(*disposition);
+        let doc = stamped(doc);
+        let entries = vec![(format!("{disposition}.json"), doc)];
+        let rows = collect_rows(&entries);
+
+        assert!(rows[0].violations.is_empty(), "{disposition} must remain valid");
+        let markdown = render_report(&rows, DogfoodReportFormat::Markdown);
+        assert!(
+            markdown.contains(&format!("| {disposition} | valid |")),
+            "Markdown report must preserve {disposition}: {markdown}"
+        );
+
+        let json = render_report(&rows, DogfoodReportFormat::Json);
+        let report: Value = serde_json::from_str(&json).expect("JSON report is valid");
+        assert_eq!(report["runs"][0]["disposition"], json!(*disposition));
+        assert_eq!(report["runs"][0]["validity"], json!("valid"));
+    }
+}
+
+#[test]
+fn unknown_disposition_violation_does_not_retain_the_untrusted_value() {
+    let leaked = "api_key=hunter2";
+    let violations = mutant(base_manifest(), |doc| {
+        doc["disposition"] = json!(leaked);
+    });
+    let violation = violations
+        .iter()
+        .find(|violation| violation.code == "unknown_disposition")
+        .expect("unknown disposition must be reported");
+    assert!(!violation.detail.contains(leaked), "validator detail leaked {leaked}");
+    assert_eq!(violation.detail, "manifest: unknown disposition (value redacted)");
+}
+
 // ---------------------------------------------------------------------------
 // Repository-contract level proofs (fixtures + schema self-check).
 // ---------------------------------------------------------------------------
