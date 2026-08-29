@@ -6,23 +6,23 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12425 |
-| Rust-family files | 3809 |
-| Non-Rust files | 8616 |
-| Allowlisted | 6353 |
-| Unclassified | 2263 |
+| Total tracked files | 12434 |
+| Rust-family files | 3811 |
+| Non-Rust files | 8623 |
+| Allowlisted | 6354 |
+| Unclassified | 2269 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
 | config | 491 |
-| documentation | 2801 |
+| documentation | 2802 |
 | generated | 2 |
 | production | 346 |
 | test | 2052 |
 | tooling | 661 |
-| unclassified | 2263 |
+| unclassified | 2269 |
 
 ## Unclassified files
 
@@ -126,22 +126,28 @@
 | `distribution/winget/perl-lsp.yaml` | `yaml` |
 | `fixtures/agent_packet_dogfood_core/analysis_train_synthetic_transfer.v1.json` | `json` |
 | `fixtures/agent_packet_dogfood_core/golden/agent_packet_dogfood_core.advisory.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/chain_of_thought_in_metadata.json` | `json` |
 | `fixtures/agent_packet_dogfood_core/invalid/chain_of_thought_in_payload.json` | `json` |
 | `fixtures/agent_packet_dogfood_core/invalid/credential_in_metadata.json` | `json` |
 | `fixtures/agent_packet_dogfood_core/invalid/credential_in_payload.json` | `json` |
 | `fixtures/agent_packet_dogfood_core/invalid/dangling_intervention_ref.json` | `json` |
 | `fixtures/agent_packet_dogfood_core/invalid/empty_events.json` | `json` |
 | `fixtures/agent_packet_dogfood_core/invalid/expected_errors.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/invalid_run_id.json` | `json` |
 | `fixtures/agent_packet_dogfood_core/invalid/machine_local_path_in_payload.json` | `json` |
 | `fixtures/agent_packet_dogfood_core/invalid/machine_local_path_in_subject.json` | `json` |
 | `fixtures/agent_packet_dogfood_core/invalid/malformed_packet_digest.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/metadata_not_object.json` | `json` |
 | `fixtures/agent_packet_dogfood_core/invalid/missing_model_identity.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/missing_model_revision.json` | `json` |
 | `fixtures/agent_packet_dogfood_core/invalid/missing_packet_digest.json` | `json` |
 | `fixtures/agent_packet_dogfood_core/invalid/missing_scope_ceiling.json` | `json` |
 | `fixtures/agent_packet_dogfood_core/invalid/missing_subject.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/mutable_state_camel_case.json` | `json` |
 | `fixtures/agent_packet_dogfood_core/invalid/nested_chain_of_thought_in_payload.json` | `json` |
 | `fixtures/agent_packet_dogfood_core/invalid/oversized_event_excerpt.json` | `json` |
 | `fixtures/agent_packet_dogfood_core/invalid/results_not_array.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/structured_credential_keys.json` | `json` |
 | `fixtures/agent_packet_dogfood_core/invalid/tampered_event_payload.json` | `json` |
 | `fixtures/agent_packet_dogfood_core/invalid/tampered_model_identity.json` | `json` |
 | `fixtures/agent_packet_dogfood_core/invalid/tampered_packet_envelope.json` | `json` |
@@ -2365,6 +2371,7 @@
 | `.changes/unreleased/product-12725-Changed-092400.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12765-Changed-154500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12806-Added-213000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-13125-Fixed-021800.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-13157-Fixed-023317.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-13159-Fixed-023400.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-13191-Fixed-062500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
