@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12409 |
-| Rust-family files | 3816 |
-| Non-Rust files | 8593 |
-| Allowlisted | 6358 |
+| Total tracked files | 12411 |
+| Rust-family files | 3817 |
+| Non-Rust files | 8594 |
+| Allowlisted | 6359 |
 | Unclassified | 2235 |
 
 ## Non-Rust files by category
@@ -20,7 +20,7 @@
 | documentation | 2802 |
 | generated | 2 |
 | production | 348 |
-| test | 2054 |
+| test | 2055 |
 | tooling | 662 |
 | unclassified | 2235 |
 
@@ -3738,6 +3738,7 @@
 | `crates/perl-corpus/concepts/positions.toml` | test | `non-rust-corpus-concepts` | parser/corpus |
 | `crates/perl-corpus/concepts/recovery.toml` | test | `non-rust-corpus-concepts` | parser/corpus |
 | `crates/perl-corpus/concepts/tree_sitter.toml` | test | `non-rust-corpus-concepts` | parser/corpus |
+| `crates/perl-corpus/fixtures/parser_accuracy/Accuracy/ImportsExports.pm` | test | `non-rust-perl-modules` | parser/lsp-fixtures |
 | `crates/perl-corpus/fixtures/parser_accuracy/autoload_boundary.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `crates/perl-corpus/fixtures/parser_accuracy/bad_heredoc_terminator.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `crates/perl-corpus/fixtures/parser_accuracy/control_do_until.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
