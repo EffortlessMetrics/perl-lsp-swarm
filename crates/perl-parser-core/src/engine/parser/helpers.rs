@@ -500,12 +500,27 @@ impl<'a> Parser<'a> {
             return Ok(expr);
         }
 
-        let Some(op) = self.peek_kind().and_then(Self::assignment_operator_text) else {
+        // Contiguous `x=` shares the ordinary assignment recognition: the
+        // contextual `Identifier("x")` + `Assign` pair folds into the
+        // operator only under exact source adjacency, so a spaced
+        // `pos($s) x = 0` keeps its identifier reading.
+        let x_assign = self.peek_adjacent_x_assign();
+        let Some(op) = (if x_assign {
+            Some("x=")
+        } else {
+            self.peek_kind().and_then(Self::assignment_operator_text)
+        }) else {
             return Ok(expr);
         };
 
-        let op_token = self.tokens.next()?;
-        let rhs = if let Some(missing) = self.recover_missing_infix_rhs(op_token.start()) {
+        let op_start = if x_assign {
+            let _x_token = self.tokens.next()?; // consume `x`
+            let assign_token = self.tokens.next()?; // consume `=`
+            assign_token.start()
+        } else {
+            self.tokens.next()?.start() // consume operator
+        };
+        let rhs = if let Some(missing) = self.recover_missing_infix_rhs(op_start) {
             missing
         } else {
             self.parse_assignment()?

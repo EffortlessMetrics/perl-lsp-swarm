@@ -159,3 +159,33 @@ fn test_x_assign_nests_through_assignment_precedence_path() {
         "Expected x= assignment as the declaration initializer: {sexp}"
     );
 }
+
+#[test]
+fn test_x_assign_after_lvalue_builtin() {
+    // Statement-start lvalue builtins route through the specialized
+    // assignment tail; contiguous `x=` must be recognized there too.
+    let mut parser = Parser::new("substr($s, 0, 1) x= 2;");
+    let ast = must(parser.parse());
+    let sexp = ast.to_sexp();
+    assert!(
+        sexp.contains("(assignment_xassign"),
+        "Expected assignment_xassign after substr lvalue in: {sexp}"
+    );
+    assert!(sexp.contains("(op x=)"), "Expected op `x=` in: {sexp}");
+}
+
+#[test]
+fn test_spaced_x_after_lvalue_builtin_is_not_repetition_assignment() {
+    // The adjacency boundary holds on the lvalue-builtin tail as well.
+    let mut parser = Parser::new("pos($s) x = 0;");
+    let ast = must(parser.parse());
+    let sexp = ast.to_sexp();
+    assert!(
+        !sexp.contains("assignment_xassign"),
+        "Spaced `x =` must not normalize into the operator: {sexp}"
+    );
+    assert!(
+        sexp.contains("(assignment_assign"),
+        "Expected ordinary assignment on the lvalue builtin in: {sexp}"
+    );
+}
