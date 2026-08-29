@@ -17,7 +17,7 @@ use perl_semantic_facts::AnchorId;
 use std::collections::BTreeMap;
 
 /// Current PIR lowering-receipt schema version.
-pub const PIR_RECEIPT_VERSION: u32 = 1;
+pub const PIR_RECEIPT_VERSION: u32 = 2;
 
 /// Stable identifier for a PIR node within one lowering receipt.
 ///
