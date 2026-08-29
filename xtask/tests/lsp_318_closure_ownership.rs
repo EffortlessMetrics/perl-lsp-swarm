@@ -51,31 +51,49 @@ fn table_cells(line: &str) -> Vec<&str> {
     let body = body.strip_suffix('|').unwrap_or(body);
     let mut cells = Vec::new();
     let mut start = 0;
-    let mut in_code_span = false;
+    let mut code_delimiter_len = 0_usize;
     let mut escaped = false;
+    let mut index = 0_usize;
 
-    for (index, ch) in body.char_indices() {
+    while index < body.len() {
+        let Some(ch) = body[index..].chars().next() else {
+            break;
+        };
+        let width = ch.len_utf8();
         if escaped {
             escaped = false;
+            index += width;
             continue;
         }
-        if ch == '\\' {
+        if ch == '\\' && code_delimiter_len == 0 {
             escaped = true;
+            index += width;
             continue;
         }
         if ch == '`' {
-            in_code_span = !in_code_span;
+            let delimiter_len = body[index..]
+                .chars()
+                .take_while(|candidate| *candidate == '`')
+                .count();
+            if code_delimiter_len == 0 {
+                code_delimiter_len = delimiter_len;
+            } else if code_delimiter_len == delimiter_len {
+                code_delimiter_len = 0;
+            }
+            index += delimiter_len;
             continue;
         }
-        if ch == '|' && !in_code_span {
+        if ch == '|' && code_delimiter_len == 0 {
             cells.push(body[start..index].trim());
-            start = index + ch.len_utf8();
+            index += width;
+            start = index;
+            continue;
         }
+        index += width;
     }
     cells.push(body[start..].trim());
     cells
 }
-
 fn table_rows(source: &str, expected_cells: usize) -> Result<Vec<Vec<&str>>, String> {
     let mut rows = Vec::new();
     for line in source.lines() {
@@ -170,11 +188,11 @@ fn unresolved_matrix_features<'a>(matrix: &BTreeMap<&'a str, Vec<&'a str>>) -> B
 fn markdown_table_parser_handles_indentation_trailing_space_and_code_pipes()
 -> Result<(), Box<dyn std::error::Error>> {
     let rows = table_rows(
-        "  | ID | Feature | Disposition | Owner | Evidence | Dependency | Rationale |  \n  | --- | --- | --- | --- | --- | --- | --- |\n  | row | feature | accepted-disposition | n/a | compare `a | b` (#123). | none | material rationale here |  ",
+        "  | ID | Feature | Disposition | Owner | Evidence | Dependency | Rationale |  \n  | --- | --- | --- | --- | --- | --- | --- |\n  | row | feature | accepted-disposition | n/a | compare `a | b` and ``c | d`` (#123). | none | material rationale here |  ",
         7,
     )?;
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0][4], "compare `a | b` (#123).");
+    assert_eq!(rows[0][4], "compare `a | b` and ``c | d`` (#123).");
     Ok(())
 }
 
