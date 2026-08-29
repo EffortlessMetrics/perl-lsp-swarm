@@ -539,3 +539,102 @@ fn native_projection_trim_then_insert_retains_crlf_document_ending()
     assert!(!decision.document.text.ends_with("\r\r\n"));
     Ok(())
 }
+
+/// The terminal envelope must stay internally consistent across every public
+/// formatting path (#7585).
+///
+/// `Applied` means the caller received edits that really change bytes, so its
+/// change summary is non-zero; `NoChange` means no edits and a zero summary;
+/// refusals and failures never carry an applied-change summary. Asserting the
+/// predicate over a representative corpus keeps the invariant total instead of
+/// leaving it to hold by coincidence at each individual call site.
+#[test]
+fn every_terminal_decision_keeps_a_consistent_change_envelope()
+-> Result<(), Box<dyn std::error::Error>> {
+    let provider =
+        FormattingProvider::new(RecordingRuntime { invoked: Arc::new(AtomicBool::new(false)) });
+
+    let mut trimming = options();
+    trimming.trim_trailing_whitespace = Some(true);
+    let mut final_newline = options();
+    final_newline.insert_final_newline = Some(true);
+
+    // (source, options) pairs spanning applied, legitimate no-change, whitespace
+    // fallback, refusal, and failed/not-proven paths.
+    let documents = [
+        ("my$x=1;\n", options()),              // native applied
+        ("my $x = 1;\n", options()),           // native legitimate no-change
+        ("# trailing   \n", trimming.clone()), // whitespace fallback emits an edit
+        ("# trailing\n", trimming.clone()),    // fallback finds no difference
+        ("my $x = ;\n", options()),            // source parse refusal
+        ("print 1;;;\n", options()),           // unsupported-syntax refusal
+        ("my $x = 1;", final_newline),         // final-newline insertion
+        ("", options()),                       // empty document
+    ];
+
+    for (source, formatting_options) in documents {
+        let decision =
+            provider.format_document_decision(source, &formatting_options, &context())?;
+        assert_envelope_is_consistent(source, &decision);
+    }
+
+    let ranges = [
+        FormatRange::new(FormatPosition::new(0, 0), FormatPosition::new(0, 13)),
+        FormatRange::new(FormatPosition::new(0, 0), FormatPosition::new(0, 10)),
+        FormatRange::new(FormatPosition::new(0, 0), FormatPosition::new(0, 0)),
+    ];
+    for range in ranges {
+        let decision =
+            provider.format_range_decision("# trailing   \n", &range, &trimming, &context())?;
+        assert_envelope_is_consistent("# trailing   \n", &decision);
+    }
+    Ok(())
+}
+
+fn assert_envelope_is_consistent(
+    source: &str,
+    decision: &perl_lsp_rs_core::providers::formatting::FormattingDecision,
+) {
+    let change = decision.outcome.change;
+    let edits = &decision.document.edits;
+    assert_eq!(
+        change.edit_count,
+        edits.len(),
+        "edit_count must equal the returned edits for {source:?}"
+    );
+
+    match decision.outcome.disposition {
+        FormatDisposition::Applied => {
+            assert!(!edits.is_empty(), "Applied must return edits for {source:?}");
+            assert_ne!(
+                decision.document.text, source,
+                "Applied must change rendered bytes for {source:?}"
+            );
+            assert!(
+                change.source_bytes_changed > 0 && change.rendered_bytes_changed > 0,
+                "Applied must carry non-zero change evidence for {source:?}"
+            );
+        }
+        FormatDisposition::NoChange => {
+            assert!(edits.is_empty(), "NoChange must return no edits for {source:?}");
+            assert_eq!(
+                decision.document.text, source,
+                "NoChange must leave the source bytes intact for {source:?}"
+            );
+            assert_eq!(change.source_bytes_changed, 0);
+            assert_eq!(change.rendered_bytes_changed, 0);
+            assert_eq!(change.changed_lines, 0);
+        }
+        FormatDisposition::Refused | FormatDisposition::FailedOrNotProven => {
+            assert!(edits.is_empty(), "a withheld decision must not return edits for {source:?}");
+            assert_eq!(
+                decision.document.text, source,
+                "a withheld decision must retain the source for {source:?}"
+            );
+            assert_eq!(
+                change.source_bytes_changed, 0,
+                "a withheld decision carries no applied-change summary for {source:?}"
+            );
+        }
+    }
+}
