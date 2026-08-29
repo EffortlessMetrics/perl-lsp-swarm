@@ -176,6 +176,7 @@ pub struct PullReportSubject {
     legacy_policy_digest: Option<ContentDigest>,
     facts_generation: Option<u64>,
     project_version: Option<String>,
+    configuration_generation: Option<u64>,
     resolver_roots: BTreeSet<String>,
     projection: DiagnosticProjectionFragment,
     critic_enabled: bool,
@@ -233,7 +234,9 @@ pub fn pull_report_subject(
             .project_version
             .as_deref()
             .and_then(perl_lsp_rs_core::providers::diagnostics::version_compat::parse_configured_project_version)
-            .map(|version| format!("{}.{}", version.major, version.minor)),
+            .map(|version| format!("{}.{}", version.major, version.minor))
+            .or_else(|| context.project_version.as_ref().map(|raw| format!("invalid:{raw}"))),
+        configuration_generation: context.configuration_generation,
         projection: context.projection,
         critic_enabled: context.perlcritic_enabled,
         legacy_policy_digest,
@@ -278,14 +281,13 @@ impl PullReportSubject {
     /// through SHA-256 over a length-prefixed canonical encoding that embeds
     /// the core substrate identity (#7201) plus this layer's fragments.
     pub fn compose(&self) -> Result<PullReportResultId, NotReusable> {
-        // Configuration generations have no independent counter authority yet
-        // (#6736/#7064 own one); the pinned 0 scopes the field explicitly while
-        // every behavior-bearing configuration field is encoded on its own.
-        const NO_CONFIGURATION_GENERATION_AUTHORITY: u64 = 0;
+        // Folder-owned configuration generations distinguish accepted config
+        // reloads while the default preserves identities without that context.
+        let configuration_generation = self.configuration_generation.unwrap_or(0);
 
         let policy = CriticPolicyIdentity::new(
             self.root_id.clone(),
-            NO_CONFIGURATION_GENERATION_AUTHORITY,
+            configuration_generation,
             self.engine,
             self.profile,
             self.severity,
@@ -515,6 +517,17 @@ mod tests {
         );
         context.project_version = Some("5.38".to_string());
         assert_ne!(project_id, subject_for(&context, URI_A, CONTENT).compose().ok().unwrap());
+
+        context.configuration_generation = Some(1);
+        let generation_one = subject_for(&context, URI_A, CONTENT).compose().ok().unwrap();
+        context.configuration_generation = Some(2);
+        assert_ne!(generation_one, subject_for(&context, URI_A, CONTENT).compose().ok().unwrap());
+
+        context.project_version = Some("not-a-version".to_string());
+        context.configuration_generation = Some(3);
+        let invalid_one = subject_for(&context, URI_A, CONTENT).compose().ok().unwrap();
+        context.project_version = Some("5.20.1".to_string());
+        assert_ne!(invalid_one, subject_for(&context, URI_A, CONTENT).compose().ok().unwrap());
 
         // Resolver environment.
         let mut context = baseline_context.clone();

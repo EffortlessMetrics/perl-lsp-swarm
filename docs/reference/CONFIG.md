@@ -136,7 +136,7 @@ per folder. See [Configuration Precedence](#configuration-precedence).
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `include_paths` | `string[]` | `[]` | Additional include paths for module resolution, relative to workspace root. An empty list leaves the built-in defaults (`lib`, `.`, `local/lib/perl5`) unchanged. |
-| `version` | `string` | (none) | Per-folder Perl version hint, e.g. `"5.38"`, used as the PL900 fallback target when source has no `use VERSION` declaration. Malformed values are ignored. |
+| `version` | `string` | (none) | Per-folder Perl version hint, e.g. `"5.38"`, used as the PL900 fallback target when source has no `use VERSION` declaration. Malformed values produce an actionable configuration diagnostic and are never used as a fallback target. |
 
 #### `[diagnostics]` — Linting
 

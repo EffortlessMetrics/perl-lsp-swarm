@@ -108,19 +108,13 @@ fn workspace_root_for_doc(server: &LspServer, uri: &str) -> Option<std::path::Pa
 }
 
 fn project_version_for_doc(server: &LspServer, uri: &str) -> Option<String> {
-    let raw_version = server
+    server
         .folder_for_doc_uri(uri)
         .and_then(|folder| folder.project_config.as_ref()?.perl.version.clone())
-        .or_else(|| {
-            let path = source_path_from_uri(uri)?;
-            let directory = std::path::Path::new(&path).parent()?;
-            perl_lsp_rs_core::config::load_project_config(directory).ok().flatten()?.perl.version
-        })?;
+}
 
-    perl_lsp_rs_core::providers::diagnostics::version_compat::parse_configured_project_version(
-        &raw_version,
-    )
-    .map(|version| format!("{}.{}", version.major, version.minor))
+fn project_config_generation_for_doc(server: &LspServer, uri: &str) -> Option<u64> {
+    server.folder_for_doc_uri(uri).map(|folder| folder.project_config_generation)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -338,6 +332,7 @@ impl PullDiagnosticsOrchestrator {
             workspace_root,
             include_paths,
             project_version,
+            configuration_generation: project_config_generation_for_doc(server, uri),
             markup_message_support,
             identity_root_key: root_key,
             facts_generation,
@@ -2102,6 +2097,8 @@ impl LspServer {
                 identity_context.native_critic_include = identity_native_include.clone();
                 identity_context.native_critic_exclude = identity_native_exclude.clone();
                 identity_context.project_version = project_version.clone();
+                identity_context.configuration_generation =
+                    project_config_generation_for_doc(self, uri_str);
                 identity_context.include_paths = self
                     .include_paths_for_doc(uri_str)
                     .into_iter()
@@ -3120,6 +3117,71 @@ mod tests {
             pull_text.contains("project [perl].version"),
             "pull path must identify the project fallback: {pull_text}"
         );
+
+        let (invalid_server, invalid_buffer) = make_server_with_capture();
+        let (invalid_uri, _) =
+            install_project_version_folder(&invalid_server, &temp, "not-a-version")?;
+        invalid_server.test_handle_did_open(Some(json!({
+            "textDocument": {"uri": invalid_uri, "languageId": "perl", "version": 1, "text": "use v5.40; use builtin 'inf'; builtin::inf();\n"}
+        })))?;
+        invalid_buffer.lock().clear();
+        invalid_server.publish_diagnostics(&invalid_uri);
+        drop(invalid_server);
+        let invalid_output = String::from_utf8(invalid_buffer.lock().clone())?;
+        let invalid_frame = latest_published_diagnostics(&invalid_output, &invalid_uri)
+            .ok_or("invalid project diagnostic frame missing")?;
+        assert_eq!(invalid_frame.matches("Invalid project [perl].version").count(), 1);
+        assert!(!invalid_frame.contains("requires Perl"));
+        Ok(())
+    }
+
+    #[test]
+    fn production_source_version_authority_survives_recovery_and_ambiguity()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let (recovered_server, recovered_buffer) = make_server_with_capture();
+        let (recovered_uri, _) = install_project_version_folder(&recovered_server, &temp, "5.40")?;
+        recovered_server.test_handle_did_open(Some(json!({
+            "textDocument": {
+                "uri": recovered_uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": "use v5.20; use builtin 'inf'; builtin::inf(); my $broken = (\n"
+            }
+        })))?;
+        recovered_server.publish_diagnostics(&recovered_uri);
+        drop(recovered_server);
+        let recovered_output = String::from_utf8(recovered_buffer.lock().clone())?;
+        assert!(
+            !recovered_output.contains("target from project [perl].version"),
+            "recovered source must not be treated as definitively absent and replaced by project fallback: {recovered_output}"
+        );
+        assert!(
+            recovered_output.contains("PL001"),
+            "the recovered parse must remain explicitly represented by parser diagnostics: {recovered_output}"
+        );
+
+        let (ambiguous_server, ambiguous_buffer) = make_server_with_capture();
+        let (ambiguous_uri, _) = install_project_version_folder(&ambiguous_server, &temp, "5.20")?;
+        ambiguous_server.test_handle_did_open(Some(json!({
+            "textDocument": {
+                "uri": ambiguous_uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": "use v5.20; use v5.40; use builtin 'inf'; builtin::inf();\n"
+            }
+        })))?;
+        ambiguous_server.publish_diagnostics(&ambiguous_uri);
+        drop(ambiguous_server);
+        let ambiguous_output = String::from_utf8(ambiguous_buffer.lock().clone())?;
+        assert!(
+            !ambiguous_output.contains("target from project [perl].version"),
+            "ambiguous source declarations must not be replaced by project fallback: {ambiguous_output}"
+        );
+        assert!(
+            !ambiguous_output.contains("requires Perl v5.36+"),
+            "the highest source declaration must remain authoritative: {ambiguous_output}"
+        );
         Ok(())
     }
 
@@ -3237,7 +3299,16 @@ mod tests {
             .and_then(|items| items.first())
             .ok_or("malformed lifecycle item missing")?;
         assert_eq!(malformed_item["kind"], "full");
-        assert!(!malformed_item.to_string().contains("PL900"));
+        let malformed_text = malformed_item.to_string();
+        assert_eq!(
+            malformed_text.matches("Invalid project [perl].version").count(),
+            1,
+            "malformed project configuration must remain actionable: {malformed_text}"
+        );
+        assert!(
+            !malformed_text.contains("requires Perl"),
+            "malformed project configuration must not become a fallback PL900 target: {malformed_text}"
+        );
 
         let malformed_id = malformed_item["resultId"]
             .as_str()
@@ -4801,7 +4872,7 @@ mod tests {
     }
 
     #[test]
-    fn build_context_discovers_single_file_project_version()
+    fn build_context_does_not_discover_rootless_adjacent_project_version()
     -> Result<(), Box<dyn std::error::Error>> {
         let temp = tempfile::tempdir()?;
         let script = temp.path().join("script.pl");
@@ -4812,9 +4883,9 @@ mod tests {
 
         let context = PullDiagnosticsOrchestrator::new().build_context(&server, &doc_uri);
 
-        assert_eq!(context.project_version.as_deref(), Some("5.20"));
-        assert_eq!(context.workspace_root.as_deref(), Some(temp.path()));
-        assert_eq!(context.identity_root_key.as_deref(), temp.path().to_str());
+        assert!(context.project_version.is_none());
+        assert!(context.workspace_root.is_none());
+        assert!(context.identity_root_key.is_none());
         Ok(())
     }
 

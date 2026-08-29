@@ -170,6 +170,7 @@ impl LspServer {
         for folder in folders.iter_mut() {
             // Try to load .perl-lsp.toml from this folder
             if let Some(folder_path) = &folder.path {
+                let previous_project_config = folder.project_config.clone();
                 folder.project_config = None;
 
                 // Start with initializationOptions.perl.* as the base layer, then
@@ -192,9 +193,20 @@ impl LspServer {
                 match perl_lsp_rs_core::config::load_project_config(folder_path) {
                     Ok(None) => {
                         // No .perl-lsp.toml found — normal, no action needed
+                        if previous_project_config.is_some() {
+                            folder.project_config_generation =
+                                folder.project_config_generation.saturating_add(1);
+                        }
                     }
                     Ok(Some(project_config)) => {
                         tracing::debug!(path = %folder_path.display(), "Loaded .perl-lsp.toml for folder");
+
+                        if previous_project_config.as_ref().map(|previous| format!("{previous:?}"))
+                            != Some(format!("{project_config:?}"))
+                        {
+                            folder.project_config_generation =
+                                folder.project_config_generation.saturating_add(1);
+                        }
 
                         if let Some(raw_version) = project_config.perl.version.as_deref()
                             && perl_lsp_rs_core::providers::diagnostics::version_compat::parse_configured_project_version(raw_version).is_none()

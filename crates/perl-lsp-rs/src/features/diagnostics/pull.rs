@@ -78,6 +78,8 @@ pub struct PullDiagnosticsContext {
     pub include_paths: Vec<String>,
     /// Folder-owned `[perl].version` fallback for PL900.
     pub project_version: Option<String>,
+    /// Accepted workspace-configuration generation for report identity.
+    pub configuration_generation: Option<u64>,
     /// Whether client supports LSP 3.18 markup messages
     pub markup_message_support: bool,
     /// Optional workspace index for dead code detection
@@ -110,6 +112,7 @@ impl PullDiagnosticsContext {
             workspace_root: None,
             include_paths: Vec::new(),
             project_version: None,
+            configuration_generation: None,
             markup_message_support: false,
             identity_root_key: Some(PROVIDER_DEFAULT_ROOT_AUTHORITY.to_string()),
             facts_generation: None,
@@ -136,6 +139,7 @@ impl PullDiagnosticsContext {
             workspace_root: None,
             include_paths: Vec::new(),
             project_version: None,
+            configuration_generation: None,
             markup_message_support: false,
             identity_root_key: Some(PROVIDER_DEFAULT_ROOT_AUTHORITY.to_string()),
             facts_generation: None,
@@ -164,6 +168,7 @@ impl PullDiagnosticsContext {
             workspace_root: None,
             include_paths: Vec::new(),
             project_version: None,
+            configuration_generation: None,
             markup_message_support: false,
             identity_root_key: Some(PROVIDER_DEFAULT_ROOT_AUTHORITY.to_string()),
             facts_generation: None,
@@ -189,6 +194,7 @@ impl std::fmt::Debug for PullDiagnosticsContext {
             .field("workspace_root", &self.workspace_root)
             .field("include_paths", &self.include_paths)
             .field("project_version", &self.project_version)
+            .field("configuration_generation", &self.configuration_generation)
             .field("markup_message_support", &self.markup_message_support)
             .field("identity_root_key", &self.identity_root_key)
             .field("facts_generation", &self.facts_generation)
