@@ -1,6 +1,6 @@
 # Perl 5.44 Support — Historical Scope Map
 
-> **Historical discovery snapshot — not current execution authority.** This document records the six-layer investigation that preceded the current Perl 5.44 campaign graph. For current ownership, dependencies, and completion state, start with [campaign #3330](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3330) and its [integrated closeout #13315](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/13315). Do not use this file to select branches, infer current implementation state, or assign work.
+> **Historical discovery snapshot — not current execution authority.** This document records the six-layer investigation that preceded the current Perl 5.44 campaign graph. For current ownership, dependencies, and completion state, start with the [integrated closeout #13315](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/13315) and its linked campaign graph. Do not use this file to select branches, infer current implementation state, or assign work.
 
 *Historical campaign-tracking artifact. Synthesized from six layer ground-truth reports and adversarial verification passes. Where a verifier overturned a reader, the verifier's evidence is authoritative for this snapshot and is marked ⚠️ OVERTURNED.*
 
