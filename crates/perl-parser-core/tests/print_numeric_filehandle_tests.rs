@@ -326,11 +326,13 @@ fn malformed_numeric_filehandle_forms_never_claim_an_indirect_call() -> Result<(
         "print $fh 1 2;",
         "print $fh 1 \"x\";",
         "print $fh 1 $x;",
+        "print $fh 1, 2 3;",
         "print $fh {;",
         "print $fh %;",
         "my $ok = print $fh 1 2;",
         "my $ok = print $fh 1 \"x\";",
         "my $ok = print $fh 1 $x;",
+        "my $ok = print $fh 1, 2 3;",
         "my $ok = print $fh %;",
     ] {
         assert_has_error(source, "");

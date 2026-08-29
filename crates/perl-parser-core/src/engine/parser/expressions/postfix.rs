@@ -1224,8 +1224,10 @@ impl<'a> Parser<'a> {
                                                 ));
                                             }
                                             if scalar_filehandle
-                                                && args.len() == 2
-                                                && matches!(args[1].kind, NodeKind::Number { .. })
+                                                && matches!(
+                                                    args.last().map(|arg| &arg.kind),
+                                                    Some(NodeKind::Number { .. })
+                                                )
                                                 && !matches!(
                                                     self.peek_kind(),
                                                     Some(

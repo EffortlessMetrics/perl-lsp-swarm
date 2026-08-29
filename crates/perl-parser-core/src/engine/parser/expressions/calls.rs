@@ -548,8 +548,7 @@ impl<'a> Parser<'a> {
             {
                 break;
             } else if matches!(method.as_str(), "print" | "printf" | "say")
-                && args.len() == 1
-                && matches!(args[0].kind, NodeKind::Number { .. })
+                && matches!(args.last().map(|arg| &arg.kind), Some(NodeKind::Number { .. }))
                 && !matches!(
                     self.peek_kind(),
                     Some(
