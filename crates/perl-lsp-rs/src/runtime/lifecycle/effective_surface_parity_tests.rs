@@ -17,18 +17,18 @@
     reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
 )]
 
-use super::super::{json, LspServer};
+use super::super::{LspServer, json};
 use super::capabilities::{apply_disabled_feature_id, disabled_feature_ids_from_init_options};
 use perl_lsp_rs_core::features::policy::FeatureProfile;
-use perl_lsp_rs_core::protocol::capabilities::{get_supported_commands, BuildFlags};
+use perl_lsp_rs_core::protocol::capabilities::{BuildFlags, get_supported_commands};
 use serde_json::Value;
 use std::collections::BTreeSet;
 use std::sync::atomic::Ordering;
 
 use perl_lsp_rs_core::protocol::effective_surface::{
-    apply_disabled_feature_id_model, CapabilityFamily, ClientFact, EffectiveLspSurface,
-    FamilyOutcome, FileOperationFacts, KnownException, PositionEncoding, RefreshSupportFacts,
-    RuntimeAvailability, SurfaceInputs,
+    CapabilityFamily, ClientFact, EffectiveLspSurface, FamilyOutcome, FileOperationFacts,
+    KnownException, PositionEncoding, RefreshSupportFacts, RuntimeAvailability, SurfaceInputs,
+    apply_disabled_feature_id_model,
 };
 
 /// Map a JSON boolean capability pointer to its normalized fact class,
@@ -44,11 +44,7 @@ fn fact_at(params: &Value, pointer: &str) -> ClientFact {
 
 /// Presence-only selectors admit any present payload.
 fn presence_at(params: &Value, pointer: &str) -> ClientFact {
-    if params.pointer(pointer).is_some() {
-        ClientFact::Supported
-    } else {
-        ClientFact::Absent
-    }
+    if params.pointer(pointer).is_some() { ClientFact::Supported } else { ClientFact::Absent }
 }
 
 /// Replicate the server-selected negotiated position encoding rule.
@@ -87,11 +83,7 @@ fn inputs_from_params(params: &Value) -> SurfaceInputs {
     let diagnostic_refresh = {
         let plural = fact_at(params, "/capabilities/workspace/diagnostics/refreshSupport");
         let singular = fact_at(params, "/capabilities/workspace/diagnostic/refreshSupport");
-        if plural == ClientFact::Absent {
-            singular
-        } else {
-            plural
-        }
+        if plural == ClientFact::Absent { singular } else { plural }
     };
 
     let client = &mut inputs.client;

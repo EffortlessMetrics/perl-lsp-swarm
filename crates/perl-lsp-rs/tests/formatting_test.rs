@@ -209,8 +209,8 @@ fn test_range_formatting_uses_utf16_columns_for_non_bmp_text() {
 }
 
 #[test]
-fn test_public_range_formatting_replay_preserves_non_bmp_prefix_and_crlf(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn test_public_range_formatting_replay_preserves_non_bmp_prefix_and_crlf()
+-> Result<(), Box<dyn std::error::Error>> {
     let formatter = CodeFormatter::new();
     let options = FormattingOptions {
         tab_size: 4,
