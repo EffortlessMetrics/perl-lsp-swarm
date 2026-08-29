@@ -153,7 +153,11 @@ impl LspServer {
                 .with_folder_config_generation(
                     self.project_config_generation_for_uri(&normalized_uri),
                 );
-                self.documents.lock().insert(normalized_uri.clone(), guard_state);
+                {
+                    #[cfg(feature = "workspace")]
+                    let _transition = self.indexing_transition_lock.lock();
+                    self.documents.lock().insert(normalized_uri.clone(), guard_state);
+                }
                 // Guarded no-parse document: terminal readiness state (#11675).
                 self.mark_active_document_guarded(
                     &normalized_uri,
@@ -203,7 +207,11 @@ impl LspServer {
                 .with_folder_config_generation(
                     self.project_config_generation_for_uri(&normalized_uri),
                 );
-                self.documents.lock().insert(normalized_uri.clone(), guard_state);
+                {
+                    #[cfg(feature = "workspace")]
+                    let _transition = self.indexing_transition_lock.lock();
+                    self.documents.lock().insert(normalized_uri.clone(), guard_state);
+                }
                 // Guarded no-parse document: terminal readiness state (#11675).
                 self.mark_active_document_guarded(
                     &normalized_uri,
@@ -249,7 +257,11 @@ impl LspServer {
                 .with_folder_config_generation(
                     self.project_config_generation_for_uri(&normalized_uri),
                 );
-                self.documents.lock().insert(normalized_uri.clone(), guard_state);
+                {
+                    #[cfg(feature = "workspace")]
+                    let _transition = self.indexing_transition_lock.lock();
+                    self.documents.lock().insert(normalized_uri.clone(), guard_state);
+                }
                 // Guarded no-parse document: terminal readiness state (#11675).
                 self.mark_active_document_guarded(
                     &normalized_uri,
@@ -393,7 +405,11 @@ impl LspServer {
             ));
             doc_state.publish_parsed_if_current(doc_generation, Arc::clone(&snapshot));
 
-            self.documents.lock().insert(normalized_uri.clone(), doc_state);
+            {
+                #[cfg(feature = "workspace")]
+                let _transition = self.indexing_transition_lock.lock();
+                self.documents.lock().insert(normalized_uri.clone(), doc_state);
+            }
             let acceptance_class = if ast_arc.is_none() {
                 crate::runtime::readiness::ParserAcceptanceClass::Failed
             } else if !snapshot.parse_errors_arc().is_empty() {
@@ -435,6 +451,7 @@ impl LspServer {
                     let documents_for_task =
                         parse_worker::DocumentsHandle(Arc::clone(&self.documents));
                     let normalized_uri_owned = normalized_uri.clone();
+                    let indexing_transition_lock = Arc::clone(&self.indexing_transition_lock);
                     let task_counter = Arc::clone(&self.pending_index_task_count);
                     task_counter.fetch_add(1, Ordering::SeqCst);
 
@@ -447,19 +464,22 @@ impl LspServer {
                         // so held work from a prior open cannot commit here
                         // (reopen ABA), and a newer edit advances the numeric
                         // past `FIRST_ACCEPTED_DOCUMENT_GENERATION`.
-                        let committed = commit_parse_effect_if_current(
-                            &documents_for_task,
-                            &normalized_uri_owned,
-                            FIRST_ACCEPTED_DOCUMENT_GENERATION.get(),
-                            &generation,
-                            || {
-                                workspace_index.index_live_file(
-                                    url,
-                                    text_owned,
-                                    SourceCommit::new(FIRST_ACCEPTED_DOCUMENT_GENERATION),
-                                )
-                            },
-                        );
+                        let committed = {
+                            let _transition = indexing_transition_lock.lock();
+                            commit_parse_effect_if_current(
+                                &documents_for_task,
+                                &normalized_uri_owned,
+                                FIRST_ACCEPTED_DOCUMENT_GENERATION.get(),
+                                &generation,
+                                || {
+                                    workspace_index.index_live_file(
+                                        url,
+                                        text_owned,
+                                        SourceCommit::new(FIRST_ACCEPTED_DOCUMENT_GENERATION),
+                                    )
+                                },
+                            )
+                        };
                         match committed {
                             Some(SourceCommitOutcome::Accepted | SourceCommitOutcome::NoOp) => {
                                 // Active-document readiness is minted by the

@@ -141,6 +141,24 @@ if !filereadable(s:vim_lsp_dir . '/plugin/lsp.vim')
   cquit 3
 endif
 
+" vim-lsp's public root helper decides file-vs-directory by spelling alone:
+" a marker ending in `/` or `\` is searched with finddir(), every other marker
+" with findfile(). The cross-editor #7762 contract deliberately keeps the
+" semantic name `.git`, so adapt it here into both client spellings. `.git/`
+" covers ordinary repositories; `.git` covers linked worktrees and submodules
+" where Git writes a gitdir file instead of a directory.
+function! VimLspHostClientRootMarkers() abort
+  let l:markers = []
+  for l:marker in s:root_markers
+    if l:marker ==# '.git'
+      call extend(l:markers, ['.git/', '.git'])
+    else
+      call add(l:markers, l:marker)
+    endif
+  endfor
+  return l:markers
+endfunction
+
 " State counters over public vim-lsp User events (the same proven event
 " surface the #7810 harness mined).
 let g:perllsp_vim_host_server_init = 0
@@ -185,12 +203,14 @@ endfunction
 
 function! s:RootUri(_server_info) abort
   " #7762 consumption: nearest parent marker from the environment-delivered
-  " list, cwd fallback. No second marker policy lives here.
+  " list, cwd fallback. Client-specific directory syntax is projected at this
+  " boundary; no second semantic marker policy lives here.
   let l:root = lsp#utils#find_nearest_parent_file_directory(
-        \ expand('%:p'), s:root_markers)
+        \ expand('%:p'), VimLspHostClientRootMarkers())
   if empty(l:root)
     let l:root = getcwd()
   endif
+  let g:perllsp_vim_host_root_callback = fnamemodify(l:root, ':p')
   return lsp#utils#path_to_uri(l:root)
 endfunction
 
