@@ -1,0 +1,195 @@
+{
+  "fixture": {
+    "description": "A canonical handoff must name explicit limitations; none declared.",
+    "name": "leaf_incomplete_no_limitations.v1.json"
+  },
+  "expected_result": "LEAF_INCOMPLETE",
+  "git_facts": {
+    "head_resolved": "2222222222222222222222222222222222222222222222222222222222222222",
+    "base_resolved": "1111111111111111111111111111111111111111111111111111111111111111",
+    "changed_paths": [
+      "docs/policy/AUTHORITY_TRANSFER_LEAF_CLOSEOUT.md",
+      "fixtures/authority_transfer_closeout/fixture-manifest.generated.json",
+      "xtask/src/authority_transfer_closeout.rs",
+      "schemas/authority_transfer_leaf_closeout_request.v1.schema.json",
+      ".ci/authority-transfer-programme/generated/closeout-cells.json",
+      "docs/project/status/authority-transfer-closeout.md",
+      ".ci/receipts/authority-transfer-closeout/leaf-closeout.receipt.json"
+    ],
+    "limitations": [],
+    "merge_base": "1111111111111111111111111111111111111111111111111111111111111111",
+    "main_resolved": "2222222222222222222222222222222222222222222222222222222222222222"
+  },
+  "request": {
+    "authority_transfers_claimed": [
+      "authority_transfer.closeout"
+    ],
+    "request_id": "closeout.11703.leaf.bounded.v1",
+    "schema_version": 1,
+    "forbidden_terminal_issues": [
+      {
+        "repository": "EffortlessMetrics/perl-lsp-swarm",
+        "number": 11696
+      },
+      {
+        "repository": "EffortlessMetrics/perl-lsp-swarm",
+        "number": 10168
+      },
+      {
+        "repository": "EffortlessMetrics/perl-lsp-swarm",
+        "number": 6736
+      },
+      {
+        "repository": "EffortlessMetrics/perl-lsp-swarm",
+        "number": 6738
+      }
+    ],
+    "schema": "authority_transfer_leaf_closeout_request.v1",
+    "required_changes": {
+      "tests": [
+        "xtask/src/authority_transfer_closeout.rs"
+      ],
+      "specs": [
+        "docs/policy/AUTHORITY_TRANSFER_LEAF_CLOSEOUT.md"
+      ],
+      "schemas": [
+        "schemas/authority_transfer_leaf_closeout_request.v1.schema.json"
+      ],
+      "docs": [
+        "docs/project/status/authority-transfer-closeout.md"
+      ],
+      "fixtures": [
+        "fixtures/authority_transfer_closeout/fixture-manifest.generated.json"
+      ],
+      "receipts": [
+        ".ci/receipts/authority-transfer-closeout/leaf-closeout.receipt.json"
+      ],
+      "generated": [
+        ".ci/authority-transfer-programme/generated/closeout-cells.json"
+      ]
+    },
+    "live_observation": {
+      "observation_digest": null,
+      "candidate_state": "observed"
+    },
+    "packet_subject": {
+      "current_main_sha": "2222222222222222222222222222222222222222222222222222222222222222",
+      "packet_ruling_revision": "ruling.r1"
+    },
+    "proof_profile": {
+      "selected": [
+        "cargo.test.xtask.authority_transfer_closeout",
+        "cargo.clippy.xtask.scoped"
+      ],
+      "claims_installed_behavior": false,
+      "executed": {
+        "cargo.clippy.xtask.scoped": "passed",
+        "cargo.test.xtask.authority_transfer_closeout": "passed"
+      },
+      "installed_observation_sha256": null,
+      "generated_identities": [
+        "generation.g1"
+      ],
+      "first_falsifier_id": "falsifier.first.stale_head",
+      "generated_outputs_current": true,
+      "negative_controls": [
+        {
+          "control_id": "falsifier.first.stale_head",
+          "subject_matches_candidate": true,
+          "passes_only_intended_implementation": true,
+          "red_before_evidence": true
+        },
+        {
+          "control_id": "falsifier.zero_work_proof",
+          "subject_matches_candidate": true,
+          "passes_only_intended_implementation": true,
+          "red_before_evidence": true
+        },
+        {
+          "control_id": "falsifier.controller_close",
+          "subject_matches_candidate": true,
+          "passes_only_intended_implementation": true,
+          "red_before_evidence": true
+        }
+      ]
+    },
+    "candidate": {
+      "base_sha": "1111111111111111111111111111111111111111111111111111111111111111",
+      "head_sha": "2222222222222222222222222222222222222222222222222222222222222222"
+    },
+    "repository": "EffortlessMetrics/perl-lsp-swarm",
+    "forbidden_surfaces": [
+      ".ci/semantic-close-containment/",
+      ".github/workflows/"
+    ],
+    "claimed_closes": [
+      {
+        "repository": "EffortlessMetrics/perl-lsp-swarm",
+        "number": 11703
+      }
+    ],
+    "limitations": [],
+    "digest_binds": {
+      "proof_profile_sha256": "5e963a9a12a022faba7391ce893a172191aa1a863a3cff7cdc9611929b2421e7",
+      "probe_observation_sha256": "274ee680c343ff897c99e0059cf70926bb12c2e37f021ef426db97aa4137f44a",
+      "issue_ruling_revision": "ruling.r1",
+      "reviewer_packet_sha256": "45063b7ba0ce0ade09f3d698e07398104a670695e5d87c5a5c03cc1298a3d8a2",
+      "builder_packet_sha256": "41bb14ba18dc8a9747f9f82443e10db929a1377d9eb0143ff48c728edb579edd",
+      "programme_manifest_sha256": "7d488a8aef2434fdf4d0a5fc2ada02fdaff0fdf7064389b9bfe16aaf32cda6e0",
+      "frontier_sha256": "89c067afb425a3724a838151631fd1e8aeaa4a8cabb0bf15e6ee6d02ed3992b0"
+    },
+    "predecessor_exit": {
+      "compatibility_exit_identity": null,
+      "predecessor_ids": [
+        "at.pred.manual.closeout.prose"
+      ],
+      "mode": "retired",
+      "independently_reachable": false
+    },
+    "identity": {
+      "controller_issue": {
+        "repository": "EffortlessMetrics/perl-lsp-swarm",
+        "number": 11696
+      },
+      "claim_ceiling": "leaf",
+      "node_id": "at.node.leaf.closeout.11703",
+      "issue": {
+        "repository": "EffortlessMetrics/perl-lsp-swarm",
+        "number": 11703
+      },
+      "conflict_key": "authority_transfer.closeout"
+    },
+    "artifacts": [
+      {
+        "path": ".ci/authority-transfer-programme/graph.v1.json",
+        "contents": "{\"schema\":\"programme_manifest.v1\",\"nodes\":48}\n",
+        "role": "programme_manifest"
+      },
+      {
+        "path": "target/closeout/probe.json",
+        "contents": "{\"schema\":\"probe_observation.v1\",\"state\":\"clean\"}\n",
+        "role": "probe_observation"
+      },
+      {
+        "path": "target/closeout/frontier.json",
+        "contents": "{\"schema\":\"frontier_digest.v1\",\"decision\":\"ready\"}\n",
+        "role": "frontier"
+      },
+      {
+        "path": "target/closeout/builder_packet.json",
+        "contents": "{\"schema\":\"agent_implementation_packet.v1\",\"packet_id\":\"pkt.builder.11703\"}\n",
+        "role": "builder_packet"
+      },
+      {
+        "path": "target/closeout/reviewer_packet.json",
+        "contents": "{\"schema\":\"agent_review_packet.v1\",\"packet_id\":\"pkt.reviewer.11703\"}\n",
+        "role": "reviewer_packet"
+      },
+      {
+        "path": "target/closeout/proof_profile.json",
+        "contents": "{\"schema\":\"proof_profile.v1\",\"profile\":\"leaf.default\"}\n",
+        "role": "proof_profile"
+      }
+    ]
+  }
+}
