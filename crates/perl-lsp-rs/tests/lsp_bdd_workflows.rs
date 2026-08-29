@@ -1648,8 +1648,7 @@ sub boom {
     let mut changing_diag = DocumentDiagnosticFlow::new(&mut harness, changing_uri.clone());
     let changing_after_edit = changing_diag.request(Some(changing_id.as_str()))?;
 
-    scenario
-        .then("the fact-tier movement surfaces as fresh full reports on both documents");
+    scenario.then("the fact-tier movement surfaces as fresh full reports on both documents");
     assert_eq!(
         DocumentDiagnosticFlow::kind(&stable_after_edit),
         Some("full"),
