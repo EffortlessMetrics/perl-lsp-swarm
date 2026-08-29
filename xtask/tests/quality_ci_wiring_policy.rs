@@ -2,7 +2,7 @@
 
 use std::{fs, path::PathBuf};
 
-use anyhow::{Result, anyhow, ensure};
+use anyhow::{anyhow, ensure, Result};
 use assert_cmd::Command;
 use perl_tdd_support::{must, must_some};
 use serde_yaml_ng::Value;
@@ -169,7 +169,9 @@ fn coverage_workflow_is_manual_or_nightly_only_and_requires_receipts() {
     let root = repo_root();
     let workflow = must(fs::read_to_string(root.join(".github/workflows/ci-nightly.yml")));
     let policy = must(fs::read_to_string(root.join(".ci/policies/required-checks.toml")));
+    let lane_economics = must(fs::read_to_string(root.join("policy/ci-lanes.toml")));
     let lane_whitelist = must(fs::read_to_string(root.join("policy/ci-lane-whitelist.toml")));
+    let inventory = must(fs::read_to_string(root.join("docs/ci/inventory.md")));
     let evidence_lanes_doc = must(fs::read_to_string(root.join("docs/ci/test-evidence-lanes.md")));
     let verification_ladder_doc =
         must(fs::read_to_string(root.join("docs/ci/verification-ladder.md")));
@@ -210,6 +212,20 @@ fn coverage_workflow_is_manual_or_nightly_only_and_requires_receipts() {
             && !coverage_lane.contains("required Codecov"),
         "coverage lane whitelist must match the schedule/manual-only advisory workflow"
     );
+    let economics_start = must_some(lane_economics.find("[lane.coverage]"));
+    let economics_tail = &lane_economics[economics_start..];
+    let economics_end = economics_tail.find("\n[lane.").unwrap_or(economics_tail.len());
+    let coverage_economics = &economics_tail[..economics_end];
+    assert!(
+        coverage_economics.contains(
+            "description = \"Coverage collection for scheduled nightly or explicitly manual runs.\""
+        ) && coverage_economics.contains("labels = []")
+            && coverage_economics.contains("branches = []")
+            && !coverage_economics.contains("master")
+            && !coverage_economics.contains("ci:coverage")
+            && !coverage_economics.contains("full-ci"),
+        "coverage lane economics must not advertise label or master-branch routing"
+    );
     assert!(
         evidence_lanes_doc.contains(
             "| Coverage | scheduled nightly run or explicit `workflow_dispatch` with coverage enabled | Advisory Codecov upload; it is not a PR or merge-queue lane. |"
@@ -218,6 +234,14 @@ fn coverage_workflow_is_manual_or_nightly_only_and_requires_receipts() {
             && !evidence_lanes_doc.contains("label-gated PR (`coverage`)")
             && !verification_ladder_doc.contains("main / `coverage` label"),
         "coverage reference docs must describe only scheduled/manual execution"
+    );
+    assert!(
+        inventory.contains(
+            "| `ci-nightly.yml` (test-coverage) | `schedule`, `workflow_dispatch` | no | `ubuntu-24.04` | Coverage | 45 | `coverage` | keep |"
+        ) && !inventory.contains(
+            "| `ci-nightly.yml` (test-coverage) | `schedule`, `workflow_dispatch`, label |"
+        ),
+        "CI inventory must describe coverage as schedule/manual-only"
     );
     let checkout_ref = must_some(checkout_action_ref(coverage_job));
     assert!(
@@ -701,7 +725,11 @@ fn workflow_step<'a>(content: &'a str, name: &str) -> Option<&'a str> {
         })
         .find_map(
             |(offset, line)| {
-                if line.trim_start().starts_with("- name:") { Some(offset) } else { None }
+                if line.trim_start().starts_with("- name:") {
+                    Some(offset)
+                } else {
+                    None
+                }
             },
         )
         .unwrap_or(rest.len());
