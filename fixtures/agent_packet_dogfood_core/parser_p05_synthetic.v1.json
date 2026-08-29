@@ -38,7 +38,7 @@
     }
   ],
   "identity": {
-    "packet_digest": "047ffdd4b8b193c51f83b8e0467591856b41a53668db5dd78a329f7eb076e5d4",
+    "packet_digest": "dba5172c121b60b9115bce2d94d14e969a2c67fbb24d10c5a00a26a4aaedcdd2",
     "packet_id": "parser-p05-synthetic-001",
     "spec_digest": "2222222222222222222222222222222222222222222222222222222222222222",
     "spec_ref": "https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/11024",

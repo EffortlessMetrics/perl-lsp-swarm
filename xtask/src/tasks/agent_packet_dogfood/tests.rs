@@ -195,6 +195,7 @@ fn negative_tampered_packet_envelope_mid_run_fails_closed() {
             "completed",
             &recomputed_events,
             &result_digests,
+            &doc["human_intervention"],
         );
         doc["identity"]["packet_digest"] = json!(honest_envelope);
         // Now mutate what the envelope covers WITHOUT restamping again:
@@ -229,6 +230,14 @@ fn negative_tampered_tree_sha_mid_run_fails_closed() {
 fn negative_tampered_model_identity_mid_run_fails_closed() {
     let violations = mutant(base_manifest(), |doc| {
         doc["subject"]["model"]["id"] = json!("shadow-model-y");
+    });
+    assert_contains(&violations, "packet_digest_mismatch");
+}
+
+#[test]
+fn negative_tampered_intervention_is_bound_to_packet_digest() {
+    let violations = mutant(base_manifest(), |doc| {
+        doc["human_intervention"][0]["reason"] = json!("operator approved a different scope");
     });
     assert_contains(&violations, "packet_digest_mismatch");
 }
@@ -303,6 +312,24 @@ fn negative_credential_outside_payload_fails_closed() {
         doc["metadata"] = json!({"debug": "api_key=hunter2"});
     });
     assert_contains(&violations, "credential_in_payload");
+}
+
+#[test]
+fn negative_structured_credential_key_fails_closed() {
+    let violations = mutant(base_manifest(), |doc| {
+        doc["metadata"] = json!({"nested": [{"api_key": "hunter2"}]});
+    });
+    assert_contains(&violations, "credential_in_payload");
+}
+
+#[test]
+fn negative_present_model_revision_must_be_non_empty_string() {
+    for revision in [json!(""), json!(42), Value::Null] {
+        let violations = mutant(base_manifest(), |doc| {
+            doc["subject"]["model"]["revision"] = revision;
+        });
+        assert_contains(&violations, "malformed_subject_field");
+    }
 }
 
 #[test]

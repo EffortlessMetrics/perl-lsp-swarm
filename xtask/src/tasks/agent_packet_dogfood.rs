@@ -92,6 +92,20 @@ const CREDENTIAL_MARKERS: &[&str] = &[
     "authorization: bearer",
 ];
 
+/// Structured field names that must never be retained, even when their
+/// values do not resemble a credential assignment.
+const CREDENTIAL_KEY_MARKERS: &[&str] = &[
+    "api_key",
+    "apikey",
+    "password",
+    "access_token",
+    "auth_token",
+    "client_secret",
+    "private_key",
+    "secret",
+    "token",
+];
+
 /// Machine-local path markers that must never survive into retained packets.
 const LOCAL_PATH_MARKERS: &[&str] = &["\\users\\", "/users/", "/home/", "/root/", "%userprofile%"];
 
@@ -239,6 +253,7 @@ fn envelope_digest(
     disposition: &str,
     event_digests: &[Option<String>],
     result_digests: &[Option<String>],
+    human_intervention: &Value,
 ) -> String {
     let string_array = |values: &[Option<String>]| -> Value {
         Value::Array(values.iter().map(|d| Value::String(d.clone().unwrap_or_default())).collect())
@@ -252,6 +267,7 @@ fn envelope_digest(
     canon.insert("disposition".to_string(), Value::String(disposition.to_string()));
     canon.insert("events".to_string(), string_array(event_digests));
     canon.insert("results".to_string(), string_array(result_digests));
+    canon.insert("human_intervention".to_string(), human_intervention.clone());
     sha256_hex(canonical_form(&Value::Object(canon)).as_bytes())
 }
 
@@ -314,6 +330,8 @@ pub fn stamp_manifest(doc: &mut Value) -> Result<()> {
     let subject = root.get("subject").and_then(as_str_map).ok_or_else(|| {
         color_eyre::eyre::eyre!("manifest must carry a subject object before stamping")
     })?;
+    let human_intervention =
+        root.get("human_intervention").cloned().unwrap_or_else(|| Value::Array(Vec::new()));
 
     let packet_digest = envelope_digest(
         &identity_input,
@@ -322,6 +340,7 @@ pub fn stamp_manifest(doc: &mut Value) -> Result<()> {
         &disposition,
         &event_digests,
         &result_digests,
+        &human_intervention,
     );
     let Some(identity) = root.get_mut("identity").and_then(Value::as_object_mut) else {
         bail!("manifest must carry an identity object before stamping");
@@ -396,23 +415,6 @@ fn is_lowercase_sha256_hex(text: &str) -> bool {
         && text.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
-fn scan_strings<F: FnMut(&str, &str)>(value: &Value, where_: &str, visit: &mut F) {
-    match value {
-        Value::String(text) => visit(text, where_),
-        Value::Array(items) => {
-            for (index, item) in items.iter().enumerate() {
-                scan_strings(item, &format!("{where_}[{index}]"), visit);
-            }
-        }
-        Value::Object(object) => {
-            for (key, child) in object {
-                scan_strings(child, &format!("{where_}.{key}"), visit);
-            }
-        }
-        _ => {}
-    }
-}
-
 /// Hygiene guard: credentials/machine-local paths inside one retained string.
 fn scan_hygiene(text: &str, where_: &str, violations: &mut Vec<Violation>) {
     let lowered = text.to_lowercase();
@@ -437,6 +439,13 @@ fn scan_hygiene(text: &str, where_: &str, violations: &mut Vec<Violation>) {
             break;
         }
     }
+}
+
+fn is_credential_key(key: &str) -> bool {
+    let normalized = key.to_ascii_lowercase().replace('-', "_");
+    CREDENTIAL_KEY_MARKERS
+        .iter()
+        .any(|marker| normalized == *marker || normalized.ends_with(&format!("_{marker}")))
 }
 
 /// Chain-of-thought key guard at any depth of one retained payload: the walk
@@ -470,9 +479,30 @@ fn scan_payload(payload: &Value, where_: &str, violations: &mut Vec<Violation>) 
 /// in the packet (payloads, metadata, subject, identity, ledger, run id) is
 /// scanned for credentials and machine-local paths — a marker outside the
 /// payload can no longer survive stamping or validation.
-fn scan_document_hygiene(doc: &Value, violations: &mut Vec<Violation>) {
-    let mut visit = |text: &str, at: &str| scan_hygiene(text, at, violations);
-    scan_strings(doc, "manifest", &mut visit);
+fn scan_document_hygiene(value: &Value, where_: &str, violations: &mut Vec<Violation>) {
+    match value {
+        Value::String(text) => scan_hygiene(text, where_, violations),
+        Value::Array(items) => {
+            for (index, item) in items.iter().enumerate() {
+                scan_document_hygiene(item, &format!("{where_}[{index}]"), violations);
+            }
+        }
+        Value::Object(object) => {
+            for (key, child) in object {
+                let child_where = format!("{where_}.{key}");
+                if is_credential_key(key) {
+                    violations.push(Violation::new(
+                        "credential_in_payload",
+                        format!(
+                            "{child_where}: retained evidence contains a credential field name"
+                        ),
+                    ));
+                }
+                scan_document_hygiene(child, &child_where, violations);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn contains_forbidden_mutable_state(value: &Value, where_: &str, violations: &mut Vec<Violation>) {
@@ -587,7 +617,7 @@ pub(crate) fn validate_manifest(doc: &Value) -> Vec<Violation> {
     }
     check_unknown_keys(root, ROOT_KEYS, "manifest", &mut violations);
     contains_forbidden_mutable_state(doc, "manifest", &mut violations);
-    scan_document_hygiene(doc, &mut violations);
+    scan_document_hygiene(doc, "manifest", &mut violations);
     require_non_empty(root, "run_id", "missing_run_id", "manifest", &mut violations);
 
     // Packet/tree/spec identity digests.
@@ -658,6 +688,15 @@ pub(crate) fn validate_manifest(doc: &Value) -> Vec<Violation> {
                         "subject.model",
                         &mut violations,
                     );
+                    if model.contains_key("revision") {
+                        require_non_empty(
+                            model,
+                            "revision",
+                            "malformed_subject_field",
+                            "subject.model",
+                            &mut violations,
+                        );
+                    }
                 }
                 None => violations.push(Violation::new(
                     "missing_subject_field",
@@ -865,6 +904,8 @@ pub(crate) fn validate_manifest(doc: &Value) -> Vec<Violation> {
         .map(envelope_identity)
         .unwrap_or_else(|| empty_object.clone());
     let subject_input = root.get("subject").cloned().unwrap_or(empty_object);
+    let human_intervention_input =
+        root.get("human_intervention").cloned().unwrap_or_else(|| Value::Array(Vec::new()));
     let recomputed_envelope = envelope_digest(
         &identity_input,
         &subject_input,
@@ -872,6 +913,7 @@ pub(crate) fn validate_manifest(doc: &Value) -> Vec<Violation> {
         &string_of(root, "disposition"),
         &event_digests,
         &result_digests,
+        &human_intervention_input,
     );
     let recorded = root
         .get("identity")
