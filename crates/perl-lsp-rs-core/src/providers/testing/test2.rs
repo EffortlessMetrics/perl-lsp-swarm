@@ -212,11 +212,8 @@ const V1_DEFAULT: &[&str] = &["T2"];
 /// distribution. This is an open-world *negative* table: it only removes
 /// proven first-party names from structural recognition, so it must never
 /// grow a name that any extant distribution could legitimately provide.
-const REMOVED_BUNDLES: &[&str] = &[
-    "Test2::Bundle::More",
-    "Test2::Bundle::Simple",
-    "Test2::Bundle::Extended",
-];
+const REMOVED_BUNDLES: &[&str] =
+    &["Test2::Bundle::More", "Test2::Bundle::Simple", "Test2::Bundle::Extended"];
 
 /// Whether `module` is a first-party Test2 bundle proven absent from the
 /// pinned `Test2::Suite` distribution (see `REMOVED_BUNDLES`). Such names have

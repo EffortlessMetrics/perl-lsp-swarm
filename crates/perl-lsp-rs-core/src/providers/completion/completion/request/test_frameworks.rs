@@ -343,6 +343,21 @@ mod tests {
     }
 
     #[test]
+    fn removed_bundle_imports_manufacture_no_test2_completions() {
+        // Issue #13551: `Test2::Bundle::More` is proven absent from the pinned
+        // first-party Test2::Suite distribution, so even an explicit import
+        // list must not manufacture Test2 completion facts. The unknown-bundle
+        // control proves the gate targets only the removed names rather than
+        // `Test2::Bundle::*` broadly.
+        let removed = complete("use Test2::Bundle::More qw(custom_helper);\ncustom_helper|", None);
+        assert!(!labels(&removed).contains(&"custom_helper"));
+
+        let unknown =
+            complete("use Test2::Bundle::Unknown qw(custom_helper);\ncustom_helper|", None);
+        assert!(labels(&unknown).contains(&"custom_helper"));
+    }
+
+    #[test]
     fn quote_like_fixture_text_does_not_create_an_import() {
         let items = complete("my $fixture = q{x; use Test2::V0;};\neq_|", Some("lib/Example.pm"));
         assert!(!labels(&items).contains(&"eq_array"));
