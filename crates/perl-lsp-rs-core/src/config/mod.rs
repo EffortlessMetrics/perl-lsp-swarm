@@ -12,6 +12,7 @@ use perl_parser_core::path_security::{WorkspacePathError, validate_workspace_pat
 use std::path::{Path, PathBuf};
 #[cfg(not(target_arch = "wasm32"))]
 use std::process::{Command, Output, Stdio};
+use std::sync::{Arc, Mutex, MutexGuard};
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::{Duration, Instant};
 use std::{fs::File, io::Read};
@@ -1019,6 +1020,23 @@ pub enum SystemIncProbeOutcome {
     Paths(Vec<PathBuf>),
 }
 
+/// Shared startup-`@INC` probe epoch: the cached outcome plus the attempt
+/// budget that bounds the transient `TimedOut` retry (#12945).
+///
+/// Held behind `Arc<Mutex<..>>` so every clone of a `WorkspaceConfig` —
+/// folder configs are cloned per document — observes and advances the SAME
+/// epoch. Per-clone state would let each lookup re-probe on a stalled host,
+/// reintroducing the per-request latency the one-second timeout exists to
+/// prevent.
+#[derive(Debug, Default)]
+struct SystemIncProbeEpoch {
+    /// Last probe outcome; `None` until the first probe or after settings
+    /// invalidation.
+    outcome: Option<SystemIncProbeOutcome>,
+    /// Completed probe attempts in this epoch.
+    attempts: u32,
+}
+
 /// Workspace configuration for module resolution
 ///
 /// Controls how the LSP server resolves module imports and finds
@@ -1054,15 +1072,15 @@ pub struct WorkspaceConfig {
     /// Default: false (avoids blocking on network filesystems)
     pub use_system_inc: bool,
 
-    /// Cached system @INC probe outcome (populated lazily when use_system_inc is true).
-    system_inc_cache: Option<SystemIncProbeOutcome>,
+    /// Shared startup-`@INC` probe state (populated lazily when
+    /// `use_system_inc` is true). Clones share this epoch, so navigation
+    /// paths that clone the owning folder config cannot re-probe behind the
+    /// owner's back (#12945 review).
+    system_inc_epoch: Arc<Mutex<SystemIncProbeEpoch>>,
 
-    /// Completed startup `@INC` probe attempts in the current cache epoch.
-    ///
-    /// The epoch ends when `useSystemInc` / `usePerl5lib` invalidation clears
-    /// `system_inc_cache`, which also resets this budget. Bounds the transient
-    /// `TimedOut` retry (#12945); see [`SYSTEM_INC_PROBE_MAX_ATTEMPTS`].
-    system_inc_probe_attempts: u32,
+    /// Materialized copy of the epoch's `Paths` outcome, refreshed under the
+    /// epoch lock so `get_system_inc` can keep returning a borrowed slice.
+    system_inc_resolved: Vec<PathBuf>,
 
     /// Perl interpreter used for startup `@INC` probing.
     ///
@@ -1105,8 +1123,8 @@ impl Default for WorkspaceConfig {
             discovery_extra_extensions: Vec::new(),
             discovery_extra_skipped_dirs: Vec::new(),
             use_system_inc: false,
-            system_inc_cache: None,
-            system_inc_probe_attempts: 0,
+            system_inc_epoch: Arc::new(Mutex::new(SystemIncProbeEpoch::default())),
+            system_inc_resolved: Vec::new(),
             perl_path: None,
             perl_args: Vec::new(),
             native_build_hints: NativeBuildHints::default(),
@@ -1603,8 +1621,10 @@ impl WorkspaceConfig {
             }
             if let Some(use_inc) = workspace.get("useSystemInc").and_then(|v| v.as_bool()) {
                 if use_inc != self.use_system_inc {
-                    self.system_inc_cache = None;
-                    self.system_inc_probe_attempts = 0;
+                    // Settings changed: reset the SHARED epoch so every clone
+                    // re-probes, and clear this instance's materialized copy.
+                    *self.lock_system_inc_epoch() = SystemIncProbeEpoch::default();
+                    self.system_inc_resolved.clear();
                 }
                 self.use_system_inc = use_inc;
             }
@@ -1622,8 +1642,10 @@ impl WorkspaceConfig {
                 // usePerl5lib is false (and inherits it when true). A cache built under
                 // the old setting may include or exclude PERL5LIB paths incorrectly.
                 if use_p5l != self.use_perl5lib {
-                    self.system_inc_cache = None;
-                    self.system_inc_probe_attempts = 0;
+                    // Same shared-epoch reset as the useSystemInc boundary:
+                    // every clone of this config must observe the change.
+                    *self.lock_system_inc_epoch() = SystemIncProbeEpoch::default();
+                    self.system_inc_resolved.clear();
                 }
                 self.use_perl5lib = use_p5l;
             }
@@ -1646,25 +1668,41 @@ impl WorkspaceConfig {
         rejected
     }
 
+    /// Lock the shared probe epoch, recovering from a poisoned guard.
+    ///
+    /// The epoch's value is always a coherent typed state, so a panicked
+    /// holder is recovered from instead of failing lookups for the rest of
+    /// the session.
+    fn lock_system_inc_epoch(&self) -> MutexGuard<'_, SystemIncProbeEpoch> {
+        match self.system_inc_epoch.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
+
     fn ensure_system_inc_probe(&mut self) {
-        if let Some(outcome) = self.system_inc_cache.as_ref() {
+        // The lock is held across the probe so clones sharing this epoch
+        // observe exactly one bounded spawn at a time; the guard never
+        // re-enters `WorkspaceConfig` mutably.
+        let mut epoch = self.lock_system_inc_epoch();
+        if let Some(outcome) = epoch.outcome.as_ref() {
             // A `TimedOut` outcome describes the host at one instant, not
             // the configuration, so it gets exactly one bounded retry before
             // it becomes terminal (#12945). Every other outcome is settled
             // and memoized as before.
             let retryable = matches!(outcome, SystemIncProbeOutcome::TimedOut)
-                && self.system_inc_probe_attempts < SYSTEM_INC_PROBE_MAX_ATTEMPTS;
+                && epoch.attempts < SYSTEM_INC_PROBE_MAX_ATTEMPTS;
             if !retryable {
                 return;
             }
         }
 
         // Snapshot the fields needed by the oracle constructor before the
-        // mutable borrow below.
+        // probe below.
         let perl_args = self.perl_args.clone();
         let result = self.run_system_inc_probe(&perl_args);
-        self.system_inc_probe_attempts = self.system_inc_probe_attempts.saturating_add(1);
-        self.system_inc_cache = Some(result);
+        epoch.attempts = epoch.attempts.saturating_add(1);
+        epoch.outcome = Some(result);
     }
 
     /// Perform one bounded probe attempt: the injected replacement under
@@ -1696,8 +1734,9 @@ impl WorkspaceConfig {
         }
 
         self.ensure_system_inc_probe();
-        match self.system_inc_cache.as_ref() {
-            Some(outcome) => outcome.clone(),
+        let outcome = self.lock_system_inc_epoch().outcome.clone();
+        match outcome {
+            Some(outcome) => outcome,
             None => SystemIncProbeOutcome::Unavailable,
         }
     }
@@ -1723,9 +1762,16 @@ impl WorkspaceConfig {
 
         self.ensure_system_inc_probe();
 
-        match self.system_inc_cache.as_ref() {
-            Some(SystemIncProbeOutcome::Paths(paths)) => paths.as_slice(),
-            _ => &[],
+        let outcome = self.lock_system_inc_epoch().outcome.clone();
+        match outcome {
+            Some(SystemIncProbeOutcome::Paths(paths)) => {
+                self.system_inc_resolved = paths;
+                self.system_inc_resolved.as_slice()
+            }
+            _ => {
+                self.system_inc_resolved.clear();
+                &[]
+            }
         }
     }
 
@@ -5499,6 +5545,18 @@ profile = "recommended"
         assert_eq!(disabled, SystemIncProbeOutcome::Disabled);
     }
 
+    /// Seed the shared probe epoch with a settled outcome (retry budget
+    /// exhausted), mimicking a memoized probe result.
+    fn seed_system_inc_cache(config: &mut WorkspaceConfig, outcome: SystemIncProbeOutcome) {
+        *config.lock_system_inc_epoch() =
+            SystemIncProbeEpoch { outcome: Some(outcome), attempts: SYSTEM_INC_PROBE_MAX_ATTEMPTS };
+    }
+
+    /// The cached outcome of the shared probe epoch, if any.
+    fn system_inc_cached_outcome(config: &WorkspaceConfig) -> Option<SystemIncProbeOutcome> {
+        config.lock_system_inc_epoch().outcome.clone()
+    }
+
     /// `usePerl5lib` and `useSystemInc` must produce independent startup-`@INC`
     /// caches. When `usePerl5lib` toggles, the cache must be invalidated so the
     /// next `get_system_inc` call re-probes Perl with the correct PERL5LIB
@@ -5508,42 +5566,46 @@ profile = "recommended"
         let mut config = WorkspaceConfig { use_system_inc: true, ..WorkspaceConfig::default() };
         assert!(config.use_perl5lib, "default usePerl5lib should be true");
 
-        // Pre-populate the cache; flipping usePerl5lib must clear it.
-        config.system_inc_cache =
-            Some(SystemIncProbeOutcome::Paths(vec![PathBuf::from("/sentinel/cached")]));
+        // Pre-populate the epoch; flipping usePerl5lib must clear it.
+        seed_system_inc_cache(
+            &mut config,
+            SystemIncProbeOutcome::Paths(vec![PathBuf::from("/sentinel/cached")]),
+        );
         config.update_from_value(&serde_json::json!({
             "workspace": { "usePerl5lib": false }
         }));
         assert!(!config.use_perl5lib);
         assert!(
-            config.system_inc_cache.is_none(),
-            "system_inc_cache must invalidate when usePerl5lib changes (true -> false); \
+            system_inc_cached_outcome(&config).is_none(),
+            "shared epoch must invalidate when usePerl5lib changes (true -> false); \
              got {:?}",
-            config.system_inc_cache
+            system_inc_cached_outcome(&config)
         );
 
         // Flip back the other direction.
-        config.system_inc_cache =
-            Some(SystemIncProbeOutcome::Paths(vec![PathBuf::from("/sentinel/cached2")]));
+        seed_system_inc_cache(
+            &mut config,
+            SystemIncProbeOutcome::Paths(vec![PathBuf::from("/sentinel/cached2")]),
+        );
         config.update_from_value(&serde_json::json!({
             "workspace": { "usePerl5lib": true }
         }));
         assert!(config.use_perl5lib);
         assert!(
-            config.system_inc_cache.is_none(),
-            "system_inc_cache must invalidate when usePerl5lib changes (false -> true); \
+            system_inc_cached_outcome(&config).is_none(),
+            "shared epoch must invalidate when usePerl5lib changes (false -> true); \
              got {:?}",
-            config.system_inc_cache
+            system_inc_cached_outcome(&config)
         );
 
         // No-op (same value) must NOT clear the cache.
         let stable = vec![PathBuf::from("/sentinel/stable")];
-        config.system_inc_cache = Some(SystemIncProbeOutcome::Paths(stable.clone()));
+        seed_system_inc_cache(&mut config, SystemIncProbeOutcome::Paths(stable.clone()));
         config.update_from_value(&serde_json::json!({
             "workspace": { "usePerl5lib": true }
         }));
         assert_eq!(
-            config.system_inc_cache,
+            system_inc_cached_outcome(&config),
             Some(SystemIncProbeOutcome::Paths(stable)),
             "cache must survive when usePerl5lib value does not change",
         );
@@ -5598,55 +5660,106 @@ profile = "recommended"
         );
     }
 
-    /// Toggling `useSystemInc` must invalidate `system_inc_cache` so the next
-    /// `get_system_inc` call re-probes Perl under the new setting.  This is
-    /// symmetric with `use_perl5lib_toggle_invalidates_system_inc_cache` which
-    /// covers the `usePerl5lib` branch of the same cache-invalidation logic.
+    /// Toggling `useSystemInc` must invalidate the shared probe epoch so the
+    /// next `get_system_inc` call re-probes Perl under the new setting.  This
+    /// is symmetric with `use_perl5lib_toggle_invalidates_system_inc_cache`
+    /// which covers the `usePerl5lib` branch of the same cache-invalidation
+    /// logic.
     #[test]
     fn update_from_value_clears_system_inc_cache_when_use_system_inc_changes() {
         let mut config = WorkspaceConfig::default();
         // Default is false; toggle to true so we can test both directions.
         assert!(!config.use_system_inc, "default useSystemInc should be false");
 
-        // Pre-populate the cache; enabling useSystemInc must clear it.
-        config.system_inc_cache =
-            Some(SystemIncProbeOutcome::Paths(vec![PathBuf::from("/sentinel/cached")]));
+        // Pre-populate the epoch; enabling useSystemInc must clear it.
+        seed_system_inc_cache(
+            &mut config,
+            SystemIncProbeOutcome::Paths(vec![PathBuf::from("/sentinel/cached")]),
+        );
         config.update_from_value(&serde_json::json!({
             "workspace": { "useSystemInc": true }
         }));
         assert!(config.use_system_inc);
         assert!(
-            config.system_inc_cache.is_none(),
-            "system_inc_cache must invalidate when useSystemInc changes (false -> true); \
+            system_inc_cached_outcome(&config).is_none(),
+            "shared epoch must invalidate when useSystemInc changes (false -> true); \
              got {:?}",
-            config.system_inc_cache,
+            system_inc_cached_outcome(&config),
         );
 
         // Flip back the other direction.
-        config.system_inc_cache =
-            Some(SystemIncProbeOutcome::Paths(vec![PathBuf::from("/sentinel/cached2")]));
+        seed_system_inc_cache(
+            &mut config,
+            SystemIncProbeOutcome::Paths(vec![PathBuf::from("/sentinel/cached2")]),
+        );
         config.update_from_value(&serde_json::json!({
             "workspace": { "useSystemInc": false }
         }));
         assert!(!config.use_system_inc);
         assert!(
-            config.system_inc_cache.is_none(),
-            "system_inc_cache must invalidate when useSystemInc changes (true -> false); \
+            system_inc_cached_outcome(&config).is_none(),
+            "shared epoch must invalidate when useSystemInc changes (true -> false); \
              got {:?}",
-            config.system_inc_cache,
+            system_inc_cached_outcome(&config),
         );
 
         // No-op (same value) must NOT clear the cache.
         let stable = vec![PathBuf::from("/sentinel/stable")];
-        config.system_inc_cache = Some(SystemIncProbeOutcome::Paths(stable.clone()));
+        seed_system_inc_cache(&mut config, SystemIncProbeOutcome::Paths(stable.clone()));
         config.update_from_value(&serde_json::json!({
             "workspace": { "useSystemInc": false }
         }));
         assert_eq!(
-            config.system_inc_cache,
+            system_inc_cached_outcome(&config),
             Some(SystemIncProbeOutcome::Paths(stable)),
             "cache must survive when useSystemInc value does not change",
         );
+    }
+
+    /// Clones of a config share ONE probe epoch (#12945 review): navigation
+    /// paths obtain folder configs as clones, so a clone must not re-probe
+    /// behind the owner's back after the epoch is terminal, and owner-side
+    /// settings invalidation must reset the epoch the clone observes.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn system_inc_probe_epoch_is_shared_across_clones() -> TestResult {
+        let calls = std::rc::Rc::new(std::cell::Cell::new(0u32));
+        let counter = calls.clone();
+        let probe: system_inc_probe_injection::InjectedProbe =
+            std::rc::Rc::new(move |_config: &WorkspaceConfig, _args: &[String]| {
+                counter.set(counter.get() + 1);
+                SystemIncProbeOutcome::TimedOut
+            });
+        let _guard = system_inc_probe_injection::install(probe);
+
+        let mut owner = WorkspaceConfig { use_system_inc: true, ..WorkspaceConfig::default() };
+
+        // Exhaust the epoch on the owner: one attempt + the single retry.
+        owner.get_system_inc_probe_outcome();
+        owner.get_system_inc_probe_outcome();
+        owner.get_system_inc_probe_outcome();
+        assert_eq!(calls.get(), 2, "owner epoch is terminal at two attempts");
+
+        let mut clone = owner.clone();
+        clone.get_system_inc_probe_outcome();
+        assert_eq!(
+            calls.get(),
+            2,
+            "a clone must reuse the shared epoch; per-clone budgets would \
+             re-probe on every lookup and reintroduce per-request latency"
+        );
+
+        // Owner-side settings invalidation resets the epoch the clone sees.
+        owner.update_from_value(&serde_json::json!({
+            "workspace": { "usePerl5lib": false }
+        }));
+        clone.get_system_inc_probe_outcome();
+        assert_eq!(
+            calls.get(),
+            3,
+            "owner invalidation must restore the epoch shared with the clone"
+        );
+        Ok(())
     }
 
     /// JSON `null` for `apiKeyPrefix` must clear the prefix to `None` (raw key, no scheme).
