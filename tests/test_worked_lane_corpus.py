@@ -534,8 +534,8 @@ class WorkedLaneWorkflowTests(unittest.TestCase):
     REQUIRED_PATHS = {
         WORKFLOW_PATH,
         TEST_PATH,
-        str(AGENTS_README.relative_to(ROOT)),
-        f"{EXAMPLES.relative_to(ROOT)}/**",
+        AGENTS_README.relative_to(ROOT).as_posix(),
+        f"{EXAMPLES.relative_to(ROOT).as_posix()}/**",
     }
 
     def test_workflow_exists(self) -> None:
