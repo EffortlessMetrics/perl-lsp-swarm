@@ -540,6 +540,7 @@ impl DebugAdapter {
                     thread_id,
                     last_resume_mode: ResumeMode::Unknown,
                     stopped_generation: 0,
+                    pending_auto_continued_stop: false,
                 };
 
                 if let Ok(mut guard) = self.session.lock() {
@@ -1211,6 +1212,7 @@ impl DebugAdapter {
                                                 }
                                                 s.state = DebugState::Running;
                                                 s.last_resume_mode = ResumeMode::Continue;
+                                                s.pending_auto_continued_stop = true;
                                                 should_auto_continue = true;
                                             }
                                         } else if matches!(resume_mode, ResumeMode::RunToBreakpoint)
@@ -1226,10 +1228,12 @@ impl DebugAdapter {
                                             // Simply keep state=Running and suppress the stopped
                                             // event so the client never sees this implicit stop.
                                             s.state = DebugState::Running;
+                                            s.pending_auto_continued_stop = true;
                                             // Keep RunToBreakpoint until we actually hit one.
                                             should_auto_continue = true;
                                         } else {
                                             s.state = DebugState::Stopped;
+                                            s.pending_auto_continued_stop = false;
                                         }
 
                                         if !should_auto_continue {
@@ -1294,6 +1298,11 @@ impl DebugAdapter {
                                 };
                                 if let Some(ref mut s) = *guard {
                                     let was_running = matches!(s.state, DebugState::Running);
+                                    let prompt_is_for_auto_continued_stop =
+                                        was_running && s.pending_auto_continued_stop;
+                                    if prompt_is_for_auto_continued_stop {
+                                        s.pending_auto_continued_stop = false;
+                                    }
                                     // A prompt can be observed after the context
                                     // branch (which already advanced the
                                     // suspension generation), or without a
@@ -1301,7 +1310,10 @@ impl DebugAdapter {
                                     // generation in the former case and advance
                                     // it in the latter; never reset the frame id
                                     // to the historical constant 1.
-                                    let current_frame_id = current_stopped_frame_id(s, was_running);
+                                    let current_frame_id = current_stopped_frame_id(
+                                        s,
+                                        was_running && !prompt_is_for_auto_continued_stop,
+                                    );
                                     // Create stack frame with enhanced context validation
                                     if !current_file.is_empty() && current_line > 0 {
                                         let frame = StackFrame {
@@ -1347,23 +1359,9 @@ impl DebugAdapter {
                                         s.stack_frames = vec![frame];
                                         s.stack_frame_arguments.clear();
                                     }
-                                    if was_running {
-                                        if matches!(s.last_resume_mode, ResumeMode::RunToBreakpoint)
-                                        {
-                                            // Mirror the context branch's
-                                            // RunToBreakpoint suppression: while the
-                                            // `c` from configurationDone is driving
-                                            // toward the first user breakpoint, a bare
-                                            // prompt is the implicit first-line stop,
-                                            // not a client-visible suspension. Keep
-                                            // the session Running (a following context
-                                            // line can still own the real stop) and
-                                            // preserve the resume mode.
-                                            s.state = DebugState::Running;
-                                        } else {
-                                            s.state = DebugState::Stopped;
-                                            prompt_owns_stop = true;
-                                        }
+                                    if was_running && !prompt_is_for_auto_continued_stop {
+                                        s.state = DebugState::Stopped;
+                                        prompt_owns_stop = true;
                                     }
                                     s.thread_id
                                 } else {
@@ -2162,6 +2160,7 @@ impl DebugAdapter {
                 // stop) and auto-continue until a user breakpoint is hit.
                 session.state = DebugState::Running;
                 session.last_resume_mode = ResumeMode::RunToBreakpoint;
+                session.pending_auto_continued_stop = true;
                 let _ = stdin.write_all(b"c\n");
                 let _ = stdin.flush();
             }
@@ -2473,6 +2472,15 @@ $| = 1;
 my $n = 0;
 while (defined(my $go = <STDIN>)) {
     if ($go =~ /^p/) { $n += 1; print STDERR "DB<$n>\n"; }
+    elsif ($go =~ /^c/) {
+        print STDERR "main::(/tmp/auto-continued.pl:10):\n";
+        print STDERR "DB<$n>\n";
+        print STDERR "DB<$n>\n";
+    }
+    elsif ($go =~ /^o/) {
+        print STDERR "DB<$n>\n";
+        print STDERR "main::(/tmp/out-of-order.pl:20):\n";
+    }
     elsif ($go =~ /^m/) { print STDERR "MARKER $n\n"; }
     else { last; }
 }
@@ -2551,6 +2559,7 @@ while (defined(my $go = <STDIN>)) {
                 thread_id: 1,
                 last_resume_mode: ResumeMode::Unknown,
                 stopped_generation: 0,
+                pending_auto_continued_stop: false,
             });
 
         adapter.start_output_reader();
@@ -2635,6 +2644,7 @@ while (defined(my $go = <STDIN>)) {
             let s = guard.as_mut().ok_or("session was not installed")?;
             s.state = DebugState::Running;
             s.last_resume_mode = ResumeMode::RunToBreakpoint;
+            s.pending_auto_continued_stop = true;
         }
         send("p\n")?;
         send("m\n")?;
@@ -2657,9 +2667,103 @@ while (defined(my $go = <STDIN>)) {
             }
         }
 
+        // The next prompt-only stop is a real user breakpoint, not another
+        // representation of the implicit entry stop. It must be observable.
+        send("p\n")?;
+        send("m\n")?;
+        events.clear();
+        drain_until_marker(&rx, 5, &mut events)?;
+        if stopped_count(&events) != 1 {
+            return Err(format!(
+                "later prompt-only RunToBreakpoint stop must emit exactly once, got {}",
+                stopped_count(&events)
+            ));
+        }
+
+        // 5. A context line can be the non-user stop that RunToBreakpoint
+        // auto-continues. Its paired prompt stays silent, while the following
+        // prompt is a real breakpoint stop and must be observable. This uses
+        // the production output reader for both representations, not a helper
+        // that invokes the correlation logic directly.
+        {
+            let mut guard =
+                adapter.session.lock().map_err(|_| "session lock poisoned".to_string())?;
+            let s = guard.as_mut().ok_or("session was not installed")?;
+            s.state = DebugState::Running;
+            s.last_resume_mode = ResumeMode::RunToBreakpoint;
+            s.pending_auto_continued_stop = false;
+        }
+        send("c\n")?;
+        send("m\n")?;
+        events.clear();
+        drain_until_marker(&rx, 5, &mut events)?;
+        if stopped_count(&events) != 1 {
+            return Err(format!(
+                "context auto-continue followed by a real prompt must emit exactly one stopped event, got {}",
+                stopped_count(&events)
+            ));
+        }
+        {
+            let guard = adapter.session.lock().map_err(|_| "session lock poisoned".to_string())?;
+            let s = guard.as_ref().ok_or("session was not installed")?;
+            if !matches!(s.state, DebugState::Stopped) {
+                return Err(
+                    "real prompt after context auto-continue must stop the session".to_string()
+                );
+            }
+        }
+
+        // 6. A prompt may arrive before its context line. The prompt owns the
+        // stop, and the late context is stale/interleaved evidence for the same
+        // suspension; it must not produce a second stopped event.
+        {
+            let mut guard =
+                adapter.session.lock().map_err(|_| "session lock poisoned".to_string())?;
+            let s = guard.as_mut().ok_or("session was not installed")?;
+            s.state = DebugState::Running;
+            s.last_resume_mode = ResumeMode::Next;
+            s.pending_auto_continued_stop = false;
+        }
+        send("o\n")?;
+        send("m\n")?;
+        events.clear();
+        drain_until_marker(&rx, 5, &mut events)?;
+        if stopped_count(&events) != 1 {
+            return Err(format!(
+                "out-of-order prompt/context pair must emit exactly one stopped event, got {}",
+                stopped_count(&events)
+            ));
+        }
+
         // Drop stdin: the synthetic debugger sees EOF and exits, the reader
         // observes EOF and tears the session down.
         drop(stdin);
+
+        let mut terminated = None;
+        loop {
+            let message = rx
+                .recv_timeout(std::time::Duration::from_secs(15))
+                .map_err(|_| "timed out waiting for debugger_eof termination event".to_string())?;
+            if let DapMessage::Event { event, body, .. } = message
+                && event == "terminated"
+            {
+                terminated = Some(body);
+                break;
+            }
+        }
+        let termination_body = terminated.ok_or("debugger EOF emitted no termination body")?;
+        if termination_body.as_ref().and_then(|body| body.get("reason"))
+            != Some(&serde_json::json!("debugger_eof"))
+        {
+            return Err(format!(
+                "debugger EOF termination had unexpected body: {termination_body:?}"
+            ));
+        }
+        if let Ok(message) = rx.try_recv()
+            && matches!(message, DapMessage::Event { ref event, .. } if event == "terminated")
+        {
+            return Err("debugger EOF emitted duplicate termination events".to_string());
+        }
         Ok(())
     }
 
@@ -3411,6 +3515,7 @@ while (defined(my $go = <STDIN>)) {
             thread_id: 1,
             last_resume_mode: ResumeMode::Unknown,
             stopped_generation: 0,
+            pending_auto_continued_stop: false,
         };
         *lock_or_recover(&adapter.session, "test.session") = Some(session);
 
@@ -3516,6 +3621,7 @@ while (defined(my $go = <STDIN>)) {
             thread_id: 1,
             last_resume_mode: ResumeMode::Unknown,
             stopped_generation: 0,
+            pending_auto_continued_stop: false,
         };
         *lock_or_recover(&adapter.session, "test.session") = Some(session);
 
