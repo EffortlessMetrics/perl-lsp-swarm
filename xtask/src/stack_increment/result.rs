@@ -240,6 +240,10 @@ pub struct StackIncrementResultV1 {
     pub route_plan_digest: String,
     /// Canonical keyed rows: ordering can never change serialized bytes.
     pub rows: BTreeMap<String, StackRowResult>,
+    /// Positive count of governed denominator rows copied from the bound plan.
+    /// Artifact validation requires this count to equal `rows.len()`, so an
+    /// empty hand-authored row map cannot masquerade as a scoped no-op.
+    pub planned_gate_count: u64,
     /// Independent parent prerequisite visibility.
     pub parent_prerequisite_state: ParentPrerequisiteState,
     /// Aggregated child increment status.
@@ -416,6 +420,28 @@ pub fn validate_result(result: &StackIncrementResultV1) -> Result<(), StackResul
         .map_err(|message| refuse_result("malformed_result", message))?;
     validate_nonempty("reproduce command", &result.reproduce_command)
         .map_err(|message| refuse_result("malformed_result", message))?;
+    if result.planned_gate_count == 0 {
+        return Err(refuse_result(
+            "malformed_result",
+            "bound route-plan denominator must contain at least one gate",
+        ));
+    }
+    let planned_gate_count = usize::try_from(result.planned_gate_count).map_err(|_| {
+        refuse_result(
+            "malformed_result",
+            format!("bound route-plan denominator is too large: {}", result.planned_gate_count),
+        )
+    })?;
+    if result.rows.len() != planned_gate_count {
+        return Err(refuse_result(
+            "malformed_result",
+            format!(
+                "result carries {} rows for a bound denominator of {} gates",
+                result.rows.len(),
+                result.planned_gate_count
+            ),
+        ));
+    }
 
     let mut counts = RowClassCounts::default();
     for (gate_id, row) in &result.rows {
@@ -550,6 +576,12 @@ pub fn compile_result(
     let expected_digest = subject_digest(&input.subject);
     let plan_digest_recomputed = super::plan::stack_plan_digest(&input.plan)
         .map_err(|error| refuse_result("plan_digest_mismatch", error.to_string()))?;
+    let planned_gate_count = u64::try_from(input.plan.denominator.len()).map_err(|_| {
+        refuse_result(
+            "malformed_result",
+            "route-plan denominator cannot be represented in a result artifact",
+        )
+    })?;
     if plan_digest_recomputed != input.plan_digest {
         return Err(refuse_result(
             "plan_digest_mismatch",
@@ -795,6 +827,7 @@ pub fn compile_result(
         subject_digest: expected_digest,
         route_plan_digest: input.plan_digest,
         rows,
+        planned_gate_count,
         parent_prerequisite_state,
         child_increment_status,
         context_status,
@@ -813,7 +846,7 @@ pub fn render_explanation(result: &StackIncrementResultV1) -> String {
     let mut text = String::new();
     text.push_str(&format!(
         "# {}\n\nContext status: {:?}\n\n## Subjects\n\n- repository: {}\n- parent PR: #{}\n- \
-         child PR: #{}\n- subject digest: `{}`\n- route plan digest: `{}`\n\n## Delta\n\nchild-\
+         child PR: #{}\n- subject digest: `{}`\n- route plan digest: `{}`\n- bound denominator gates: {}\n\n## Delta\n\nchild-\
          only changed paths: {}\n\n## Selected proof rows\n\n",
         result.context_name,
         result.context_status,
@@ -822,6 +855,7 @@ pub fn render_explanation(result: &StackIncrementResultV1) -> String {
         result.child_pr_number,
         result.subject_digest,
         result.route_plan_digest,
+        result.planned_gate_count,
         result.delta_path_count,
     ));
     for (gate_id, row) in &result.rows {

@@ -574,6 +574,28 @@ fn ci_stack_increment_empty_delta_scopes_to_honest_noop_green() {
 }
 
 #[test]
+fn ci_stack_increment_forged_empty_rows_cannot_claim_scoped_noop() {
+    let mut input = subject_input();
+    input.delta = super::ChildDelta {
+        bound_parent_tree: PARENT_TREE(),
+        bound_child_tree: CHILD_TREE(),
+        fingerprint: super::delta_fingerprint(&PARENT_TREE(), &CHILD_TREE(), &[]),
+        paths: Vec::new(),
+    };
+    let subject = compile_subject(input).unwrap();
+    let plan = compiled_plan(&subject);
+    let valid = compile_result(result_input_current(&subject, &plan, vec![])).unwrap();
+    assert_eq!(valid.context_status, ContextStatus::ScopedNoop);
+    assert!(valid.planned_gate_count > 0);
+
+    let mut forged = valid;
+    forged.rows.clear();
+    let error = validate_result(&forged).unwrap_err();
+    assert_eq!(error.code, "malformed_result");
+    assert!(error.message.contains("rows") && error.message.contains("denominator"));
+}
+
+#[test]
 fn ci_stack_increment_changed_delta_with_zero_runs_never_publishes_green() {
     // Every governed gate proves its own disengagement while the delta moved
     // files inside the stack scope: that selection is insufficient and must
@@ -739,6 +761,44 @@ fn ci_stack_increment_sibling_prefix_selects_no_gate() {
     assert_eq!(
         selectors[0].proof,
         Some(crate::ci_route_plan::SelectorProof::NotApplicableToSubject)
+    );
+}
+
+#[test]
+fn ci_stack_increment_rename_and_copy_scope_checks_both_paths() {
+    let edge = StackEdgeDeclaration {
+        dependency: EdgeKind::ProgrammeDependency,
+        parent_pr_number: 100,
+        scope_paths: vec!["crates/foo/".to_string()],
+        declared_parent_head_sha: None,
+    };
+    let delta = |source: &str, destination: &str| {
+        let paths = vec![DeltaPath {
+            status: DeltaStatus::Renamed,
+            path: destination.to_string(),
+            renamed_from: Some(source.to_string()),
+        }];
+        super::ChildDelta {
+            bound_parent_tree: PARENT_TREE(),
+            bound_child_tree: CHILD_TREE(),
+            fingerprint: super::delta_fingerprint(&PARENT_TREE(), &CHILD_TREE(), &paths),
+            paths,
+        }
+    };
+
+    let error =
+        super::check_declared_scope(&delta("crates/outside/old.rs", "crates/foo/new.rs"), &edge)
+            .unwrap_err();
+    assert!(error.1.contains("source path"));
+
+    let error =
+        super::check_declared_scope(&delta("crates/foo/old.rs", "crates/outside/new.rs"), &edge)
+            .unwrap_err();
+    assert!(error.1.contains("destination path"));
+
+    assert!(
+        super::check_declared_scope(&delta("crates/foo/old.rs", "crates/foo/new.rs"), &edge,)
+            .is_ok()
     );
 }
 

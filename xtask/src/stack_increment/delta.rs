@@ -122,7 +122,17 @@ pub fn compute_delta_from_trees(
     let output = std::process::Command::new("git")
         .arg("-C")
         .arg(repository)
-        .args(["diff-tree", "-r", "--no-commit-id", "--name-status", "-z", parent_tree, child_tree])
+        .args([
+            "diff-tree",
+            "-r",
+            "--no-commit-id",
+            "--name-status",
+            "-z",
+            "-M",
+            "-C",
+            parent_tree,
+            child_tree,
+        ])
         .output()
         .map_err(|error| format!("failed to spawn git: {error}"))?;
     if !output.status.success() {
@@ -132,6 +142,16 @@ pub fn compute_delta_from_trees(
         ));
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
+    let paths = parse_name_status_z(&stdout)?;
+    Ok(ChildDelta {
+        bound_parent_tree: parent_tree.to_string(),
+        bound_child_tree: child_tree.to_string(),
+        fingerprint: delta_fingerprint(parent_tree, child_tree, &paths),
+        paths,
+    })
+}
+
+fn parse_name_status_z(stdout: &str) -> Result<Vec<DeltaPath>, String> {
     let fields = stdout.split('\0').filter(|field| !field.is_empty());
     let mut paths = Vec::new();
     let mut fields = fields.peekable();
@@ -141,20 +161,20 @@ pub fn compute_delta_from_trees(
         };
         let status = DeltaStatus::parse(first_letter)
             .ok_or_else(|| format!("unrecognized diff-tree status {status_token:?}"))?;
-        let path = fields.next().ok_or("diff-tree entry ended before its path")?.to_string();
-        let renamed_from = if matches!(status, DeltaStatus::Renamed) {
-            Some(fields.next().ok_or("rename entry ended before its source path")?.to_string())
+        let first_path = fields.next().ok_or("diff-tree entry ended before its path")?;
+        let (path, renamed_from) = if matches!(status, DeltaStatus::Renamed) {
+            let destination =
+                fields.next().ok_or("rename/copy entry ended before its destination path")?;
+            // Git emits rename/copy rows as old path, new path. The domain
+            // contract stores the new path in `path` and the old path in
+            // `renamed_from`, so both sides can be checked by admission.
+            (destination.to_string(), Some(first_path.to_string()))
         } else {
-            None
+            (first_path.to_string(), None)
         };
         paths.push(DeltaPath { status, path, renamed_from });
     }
-    Ok(ChildDelta {
-        bound_parent_tree: parent_tree.to_string(),
-        bound_child_tree: child_tree.to_string(),
-        fingerprint: delta_fingerprint(parent_tree, child_tree, &paths),
-        paths,
-    })
+    Ok(paths)
 }
 
 /// Refuse any delta row outside the declared edge scope. Scope entries are
@@ -170,16 +190,29 @@ pub fn check_declared_scope(
     edge: &super::StackEdgeDeclaration,
 ) -> Result<(), (String, String)> {
     for row in &delta.paths {
-        let allowed =
+        let destination_allowed =
             edge.scope_paths.iter().any(|scope| super::path_matches_scope_entry(&row.path, scope));
-        if !allowed {
+        if !destination_allowed {
             return Err((
                 "undeclared_delta_surface".to_string(),
                 format!(
-                    "delta path {:?} is outside every declared scope of the stack edge",
+                    "delta destination path {:?} is outside every declared scope of the stack edge",
                     row.path
                 ),
             ));
+        }
+        if let Some(source) = &row.renamed_from {
+            let source_allowed =
+                edge.scope_paths.iter().any(|scope| super::path_matches_scope_entry(source, scope));
+            if !source_allowed {
+                return Err((
+                    "undeclared_delta_surface".to_string(),
+                    format!(
+                        "delta source path {:?} for destination {:?} is outside every declared scope of the stack edge",
+                        source, row.path
+                    ),
+                ));
+            }
         }
     }
     Ok(())
