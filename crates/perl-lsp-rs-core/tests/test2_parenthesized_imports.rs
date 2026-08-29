@@ -27,8 +27,8 @@ fn test2_labels(items: &[CompletionItem]) -> Vec<&str> {
 }
 
 #[test]
-fn parenthesized_explicit_selection_replaces_v0_defaults()
--> Result<(), Box<dyn std::error::Error>> {
+fn parenthesized_explicit_selection_replaces_v0_defaults(
+) -> Result<(), Box<dyn std::error::Error>> {
     let resolved = resolve_v0("('ok')")?;
 
     assert!(resolved.symbols.contains("ok"));
@@ -37,8 +37,7 @@ fn parenthesized_explicit_selection_replaces_v0_defaults()
 }
 
 #[test]
-fn parenthesized_exclusion_keeps_other_v0_defaults()
--> Result<(), Box<dyn std::error::Error>> {
+fn parenthesized_exclusion_keeps_other_v0_defaults() -> Result<(), Box<dyn std::error::Error>> {
     let resolved = resolve_v0("('!ok')")?;
 
     assert!(!resolved.symbols.contains("ok"));
@@ -57,8 +56,7 @@ fn parenthesized_qw_list_remains_explicit() -> Result<(), Box<dyn std::error::Er
 }
 
 #[test]
-fn explicit_empty_parenthesized_import_remains_empty()
--> Result<(), Box<dyn std::error::Error>> {
+fn explicit_empty_parenthesized_import_remains_empty() -> Result<(), Box<dyn std::error::Error>> {
     let resolved = resolve_v0("()")?;
 
     assert!(resolved.symbols.is_empty());
