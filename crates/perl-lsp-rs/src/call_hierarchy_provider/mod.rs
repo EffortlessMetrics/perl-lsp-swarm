@@ -152,20 +152,24 @@ impl CallHierarchyProvider {
         if offset >= node.location.start && offset <= node.location.end {
             let uri = &self.uri;
             match &node.kind {
-                NodeKind::Subroutine { name, prototype: _, signature, name_span, .. } => {
-                    if let Some(name_str) = name {
-                        let includes_offset = name_span
-                            .as_ref()
-                            .is_none_or(|span| offset >= span.start && offset <= span.end);
-                        if includes_offset {
-                            return Some(self.call_hierarchy_subroutine_item(
-                                node,
-                                uri,
-                                name_str,
-                                name_span,
-                                signature.is_some(),
-                            ));
-                        }
+                NodeKind::Subroutine {
+                    name: Some(name_str),
+                    prototype: _,
+                    signature,
+                    name_span,
+                    ..
+                } => {
+                    let includes_offset = name_span
+                        .as_ref()
+                        .is_none_or(|span| offset >= span.start && offset <= span.end);
+                    if includes_offset {
+                        return Some(self.call_hierarchy_subroutine_item(
+                            node,
+                            uri,
+                            name_str,
+                            name_span,
+                            signature.is_some(),
+                        ));
                     }
                 }
                 NodeKind::MethodCall { method, .. } => {
@@ -237,31 +241,29 @@ impl CallHierarchyProvider {
     ) {
         let uri = &self.uri;
         match &node.kind {
-            NodeKind::Subroutine { name, name_span, .. } => {
-                if let Some(name_str) = name {
-                    let range = self.node_to_range(node);
-                    let selection_range = self.selection_range_from_name_span(name_span, &range);
-                    let item = CallHierarchyItem {
-                        name: name_str.clone(),
-                        kind: "function".to_string(),
-                        uri: uri.clone(),
-                        range,
-                        selection_range,
-                        detail: None,
-                        package_name: None,
-                        qualified_name: None,
-                    };
+            NodeKind::Subroutine { name: Some(name_str), name_span, .. } => {
+                let range = self.node_to_range(node);
+                let selection_range = self.selection_range_from_name_span(name_span, &range);
+                let item = CallHierarchyItem {
+                    name: name_str.clone(),
+                    kind: "function".to_string(),
+                    uri: uri.clone(),
+                    range,
+                    selection_range,
+                    detail: None,
+                    package_name: None,
+                    qualified_name: None,
+                };
 
-                    // Search within this named function; return early so the
-                    // bottom visitor does not re-visit children with the outer
-                    // (possibly None) context, which would create spurious
-                    // file-level callers for calls inside this sub.
-                    self.visit_children(node, |child| {
-                        self.find_incoming_calls(child, target_name, calls, Some(&item));
-                        None::<()>
-                    });
-                    return;
-                }
+                // Search within this named function; return early so the
+                // bottom visitor does not re-visit children with the outer
+                // (possibly None) context, which would create spurious
+                // file-level callers for calls inside this sub.
+                self.visit_children(node, |child| {
+                    self.find_incoming_calls(child, target_name, calls, Some(&item));
+                    None::<()>
+                });
+                return;
                 // Anonymous sub — fall through to the bottom visitor.
             }
             NodeKind::FunctionCall { name, .. } | NodeKind::AmperCall { name, .. } => {
@@ -282,20 +284,18 @@ impl CallHierarchyProvider {
                     }
                 }
             }
-            NodeKind::MethodCall { method, .. } => {
-                if method == target_name {
-                    let call_range = self.node_to_range(node);
-                    let from = current_function.cloned().unwrap_or_else(|| {
-                        // Top-level call site — synthesize a file-level caller so the
-                        // script appears in incomingCalls instead of being silently dropped.
-                        synthetic_file_level_caller(uri, call_range)
-                    });
-                    let ranges = vec![call_range];
-                    if let Some(existing) = calls.iter_mut().find(|c| c.from.name == from.name) {
-                        existing.from_ranges.extend(ranges);
-                    } else {
-                        calls.push(CallHierarchyIncomingCall { from, from_ranges: ranges });
-                    }
+            NodeKind::MethodCall { method, .. } if method == target_name => {
+                let call_range = self.node_to_range(node);
+                let from = current_function.cloned().unwrap_or_else(|| {
+                    // Top-level call site — synthesize a file-level caller so the
+                    // script appears in incomingCalls instead of being silently dropped.
+                    synthetic_file_level_caller(uri, call_range)
+                });
+                let ranges = vec![call_range];
+                if let Some(existing) = calls.iter_mut().find(|c| c.from.name == from.name) {
+                    existing.from_ranges.extend(ranges);
+                } else {
+                    calls.push(CallHierarchyIncomingCall { from, from_ranges: ranges });
                 }
             }
             _ => {}
@@ -379,15 +379,13 @@ impl CallHierarchyProvider {
                     calls.push(CallHierarchyOutgoingCall { to: item, from_ranges: ranges });
                 }
             }
-            NodeKind::VariableDeclaration { variable, initializer, .. } => {
-                if let Some(initializer) = initializer {
-                    self.record_receiver_assignment(
-                        variable,
-                        initializer,
-                        current_package,
-                        receiver_packages,
-                    );
-                }
+            NodeKind::VariableDeclaration { variable, initializer: Some(initializer), .. } => {
+                self.record_receiver_assignment(
+                    variable,
+                    initializer,
+                    current_package,
+                    receiver_packages,
+                );
             }
             NodeKind::Assignment { lhs, rhs, .. } => {
                 self.record_receiver_assignment(lhs, rhs, current_package, receiver_packages);

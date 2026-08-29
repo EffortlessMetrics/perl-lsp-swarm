@@ -349,20 +349,18 @@ impl<'a> Parser<'a> {
         // If the next token is a sigil token, delegate to parse_variable_from_sigil
         // This handles cases where the lexer splits sigil and name (e.g. "%" "hash" vs "%hash")
         // Also handles operators that can act as sigils in this context (%, &, *)
-        if let Some(kind) = self.peek_kind() {
-            match kind {
-                TokenKind::ScalarSigil
-                | TokenKind::ArraySigil
-                | TokenKind::HashSigil
-                | TokenKind::SubSigil
-                | TokenKind::GlobSigil
-                | TokenKind::Percent     // %hash
-                | TokenKind::BitwiseAnd  // &sub
-                | TokenKind::Star => {   // *glob
-                    return self.parse_variable_from_sigil();
-                }
-                _ => {}
-            }
+        if let Some(
+            TokenKind::ScalarSigil
+            | TokenKind::ArraySigil
+            | TokenKind::HashSigil
+            | TokenKind::SubSigil
+            | TokenKind::GlobSigil
+            | TokenKind::Percent      // %hash
+            | TokenKind::BitwiseAnd   // &sub
+            | TokenKind::Star,        // *glob
+        ) = self.peek_kind()
+        {
+            return self.parse_variable_from_sigil();
         }
 
         let token = self.consume_token()?;
@@ -1309,13 +1307,11 @@ impl<'a> Parser<'a> {
                 NodeKind::OptionalParameter { .. } => {
                     seen_optional = true;
                 }
-                NodeKind::MandatoryParameter { .. } => {
-                    if seen_optional {
-                        self.errors.push(ParseError::syntax(
-                            "Mandatory parameter cannot follow an optional parameter in signature",
-                            param.location.start,
-                        ));
-                    }
+                NodeKind::MandatoryParameter { .. } if seen_optional => {
+                    self.errors.push(ParseError::syntax(
+                        "Mandatory parameter cannot follow an optional parameter in signature",
+                        param.location.start,
+                    ));
                 }
                 _ => {}
             }

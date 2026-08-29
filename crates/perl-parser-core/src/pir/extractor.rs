@@ -125,31 +125,27 @@ pub fn extract_lexical_facts(file: &HirFile) -> LexicalExtractorReceipt {
             total_node_count += 1;
 
             match &pir_node.operation {
-                PirOperation::LexicalRead { name } => {
-                    if pir_node.source_anchor.is_anchored() {
-                        anchored_node_count += 1;
-                        facts.push(LexicalBindingFact {
-                            name: name.clone(),
-                            role: LexicalRole::Read,
-                            source_anchor: pir_node.source_anchor.clone(),
-                            body_idx,
-                            body_owner: owner.clone(),
-                        });
-                        total_read_count += 1;
-                    }
+                PirOperation::LexicalRead { name } if pir_node.source_anchor.is_anchored() => {
+                    anchored_node_count += 1;
+                    facts.push(LexicalBindingFact {
+                        name: name.clone(),
+                        role: LexicalRole::Read,
+                        source_anchor: pir_node.source_anchor.clone(),
+                        body_idx,
+                        body_owner: owner.clone(),
+                    });
+                    total_read_count += 1;
                 }
-                PirOperation::LexicalWrite { name } => {
-                    if pir_node.source_anchor.is_anchored() {
-                        anchored_node_count += 1;
-                        facts.push(LexicalBindingFact {
-                            name: name.clone(),
-                            role: LexicalRole::Write,
-                            source_anchor: pir_node.source_anchor.clone(),
-                            body_idx,
-                            body_owner: owner.clone(),
-                        });
-                        total_write_count += 1;
-                    }
+                PirOperation::LexicalWrite { name } if pir_node.source_anchor.is_anchored() => {
+                    anchored_node_count += 1;
+                    facts.push(LexicalBindingFact {
+                        name: name.clone(),
+                        role: LexicalRole::Write,
+                        source_anchor: pir_node.source_anchor.clone(),
+                        body_idx,
+                        body_owner: owner.clone(),
+                    });
+                    total_write_count += 1;
                 }
                 PirOperation::Modify { .. } | PirOperation::StashModify { .. } => {
                     // Modify and StashModify are explicitly skipped: they are neither Read nor
