@@ -40,6 +40,26 @@ Name the goal's current phase and what it admits. Valuable adjacent findings do 
 become runnable merely because they are true. Record deferred work durably and keep the
 phase predicate governing selection.
 
+```text
+phase: honest-main
+
+eligible
+  classify current main failures
+  repair current main failures
+  repair the instruments needed to classify them
+  bounded read-only evidence supporting those decisions
+
+defer
+  ordinary backlog
+  unrelated hardening
+  product opportunities
+  release work the phase does not require
+```
+
+Deferring is not discarding. A discovery may change the phase, but change it deliberately
+and state why; widening the phase to accommodate work already started makes the
+predicate stop governing selection.
+
 ## Select and run a claim
 
 Choose one distinct claim that is phase-eligible, still required, actionable, not
