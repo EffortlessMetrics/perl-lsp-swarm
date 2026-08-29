@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Shared script entry point for the #12885 branch-deletion admission.
+#
+# Callers must gate every local or remote branch deletion through this wrapper.
+# The binary owns the live graph, branch-tip, repository-identity, and #3957
+# worktree-ownership checks; callers only inspect its exit status.
+
+set -euo pipefail
+
+# This wrapper invokes cargo, so it is a cargo entrypoint and must refuse a
+# stale toolchain like every other one (#12593).
+. "$(dirname -- "${BASH_SOURCE[0]}")/lib/cargo-toolchain-guard.sh" && cargo_toolchain_guard
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="${REPO_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
+
+cd "$REPO_ROOT"
+exec cargo run --quiet --locked -p xtask --bin branch-deletion-admission -- "$@"
