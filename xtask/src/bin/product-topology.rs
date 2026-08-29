@@ -206,11 +206,7 @@ fn check_current_tree() -> Result<ExitCode> {
             report.stage,
             policy.targets.product_binary,
             policy.targets.dap_binary,
-            if report.stage == McpStage::Absent {
-                "absent"
-            } else {
-                "library-only"
-            }
+            if report.stage == McpStage::Absent { "absent" } else { "library-only" }
         );
         Ok(ExitCode::SUCCESS)
     } else {
@@ -229,23 +225,13 @@ fn check_current_tree() -> Result<ExitCode> {
 fn load_cargo_metadata() -> Result<CargoMetadata> {
     let cargo = env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
     let output = Command::new(cargo)
-        .args([
-            "metadata",
-            "--format-version",
-            "1",
-            "--no-deps",
-            "--locked",
-        ])
+        .args(["metadata", "--format-version", "1", "--no-deps", "--locked"])
         .output()
         .context("run `cargo metadata --format-version 1 --no-deps --locked`")?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!(
-            "cargo metadata failed with status {}: {}",
-            output.status,
-            stderr.trim()
-        );
+        bail!("cargo metadata failed with status {}: {}", output.status, stderr.trim());
     }
 
     serde_json::from_slice(&output.stdout).context("parse Cargo metadata JSON")
@@ -275,16 +261,10 @@ fn validate(
     validate_publish_order(policy, &packages, &publish_order, &mut findings);
     validate_reserved_executables(policy, &packages, &mut findings);
 
-    ValidationReport {
-        stage: policy.mcp_stage,
-        findings: findings.into_iter().collect(),
-    }
+    ValidationReport { stage: policy.mcp_stage, findings: findings.into_iter().collect() }
 }
 
-fn validate_policy_identity(
-    policy: &ProductTopologyPolicy,
-    findings: &mut BTreeSet<String>,
-) {
+fn validate_policy_identity(policy: &ProductTopologyPolicy, findings: &mut BTreeSet<String>) {
     if policy.schema_version != EXPECTED_SCHEMA_VERSION {
         findings.insert(format!(
             "policy: schema_version={} expected={EXPECTED_SCHEMA_VERSION}",
@@ -292,10 +272,8 @@ fn validate_policy_identity(
         ));
     }
     if policy.contract != EXPECTED_CONTRACT {
-        findings.insert(format!(
-            "policy: contract={} expected={EXPECTED_CONTRACT}",
-            policy.contract
-        ));
+        findings
+            .insert(format!("policy: contract={} expected={EXPECTED_CONTRACT}", policy.contract));
     }
 
     let package_names = [
@@ -319,11 +297,7 @@ fn workspace_package_map<'a>(
     metadata: &'a CargoMetadata,
     findings: &mut BTreeSet<String>,
 ) -> BTreeMap<String, &'a CargoPackage> {
-    let member_ids = metadata
-        .workspace_members
-        .iter()
-        .map(String::as_str)
-        .collect::<BTreeSet<_>>();
+    let member_ids = metadata.workspace_members.iter().map(String::as_str).collect::<BTreeSet<_>>();
     let mut packages = BTreeMap::new();
     let mut observed_member_ids = BTreeSet::new();
 
@@ -351,10 +325,7 @@ fn workspace_package_map<'a>(
     packages
 }
 
-fn publish_order_map(
-    allow: &[String],
-    findings: &mut BTreeSet<String>,
-) -> BTreeMap<String, usize> {
+fn publish_order_map(allow: &[String], findings: &mut BTreeSet<String>) -> BTreeMap<String, usize> {
     let mut order = BTreeMap::new();
     for (index, package) in allow.iter().enumerate() {
         if order.insert(package.clone(), index).is_some() {
@@ -453,9 +424,8 @@ fn validate_mcp_stage(
     match policy.mcp_stage {
         McpStage::Absent => {
             if packages.contains_key(mcp_package) {
-                findings.insert(format!(
-                    "stage=absent: package must not exist package={mcp_package}"
-                ));
+                findings
+                    .insert(format!("stage=absent: package must not exist package={mcp_package}"));
             }
             if publish_order.contains_key(mcp_package) {
                 findings.insert(format!(
@@ -491,16 +461,12 @@ fn validate_package_shape(
     findings: &mut BTreeSet<String>,
 ) {
     let Some(package) = packages.get(package_name).copied() else {
-        findings.insert(format!(
-            "package: required workspace package missing={package_name}"
-        ));
+        findings.insert(format!("package: required workspace package missing={package_name}"));
         return;
     };
 
     if !is_publishable(package) {
-        findings.insert(format!(
-            "package: expected publishable package={package_name}"
-        ));
+        findings.insert(format!("package: expected publishable package={package_name}"));
     }
     if !publish_order.contains_key(package_name) {
         findings.insert(format!(
@@ -517,10 +483,7 @@ fn validate_package_shape(
     }
 
     let actual_binaries = target_names(package, "bin");
-    let expected_binaries = expected_binaries
-        .iter()
-        .copied()
-        .collect::<BTreeSet<_>>();
+    let expected_binaries = expected_binaries.iter().copied().collect::<BTreeSet<_>>();
     if actual_binaries != expected_binaries {
         findings.insert(format!(
             "target-shape: package={package_name} binary_targets={actual_binaries:?} expected={expected_binaries:?}"
@@ -529,10 +492,7 @@ fn validate_package_shape(
 }
 
 fn is_publishable(package: &CargoPackage) -> bool {
-    package
-        .publish
-        .as_ref()
-        .is_none_or(|registries| !registries.is_empty())
+    package.publish.as_ref().is_none_or(|registries| !registries.is_empty())
 }
 
 fn target_names<'a>(package: &'a CargoPackage, kind: &str) -> BTreeSet<&'a str> {
@@ -575,18 +535,11 @@ fn validate_dependencies(
     }
 
     if let Some(lsp_library) = packages.get(&policy.packages.lsp_library).copied() {
-        forbid_dependencies(
-            lsp_library,
-            &policy.dependencies.lsp_forbids,
-            "LSP library",
-            findings,
-        );
+        forbid_dependencies(lsp_library, &policy.dependencies.lsp_forbids, "LSP library", findings);
     }
 
-    if matches!(
-        policy.mcp_stage,
-        McpStage::Admitted | McpStage::Required
-    ) && let Some(mcp_adapter) = packages.get(&policy.packages.mcp_adapter).copied()
+    if matches!(policy.mcp_stage, McpStage::Admitted | McpStage::Required)
+        && let Some(mcp_adapter) = packages.get(&policy.packages.mcp_adapter).copied()
     {
         require_normal_dependencies(
             mcp_adapter,
@@ -594,12 +547,7 @@ fn validate_dependencies(
             "MCP adapter",
             findings,
         );
-        forbid_dependencies(
-            mcp_adapter,
-            &policy.dependencies.mcp_forbids,
-            "MCP adapter",
-            findings,
-        );
+        forbid_dependencies(mcp_adapter, &policy.dependencies.mcp_forbids, "MCP adapter", findings);
     }
 }
 
@@ -613,9 +561,7 @@ fn require_normal_dependencies(
         .dependencies
         .iter()
         .filter(|dependency| {
-            dependency.kind.is_none()
-                && !dependency.optional
-                && dependency.rename.is_none()
+            dependency.kind.is_none() && !dependency.optional && dependency.rename.is_none()
         })
         .map(|dependency| dependency.name.as_str())
         .collect::<BTreeSet<_>>();
@@ -659,21 +605,13 @@ fn validate_publish_order(
     findings: &mut BTreeSet<String>,
 ) {
     for package in packages.values().filter(|package| is_publishable(package)) {
-        for dependency in package
-            .dependencies
-            .iter()
-            .filter(|dependency| dependency.kind.is_none())
+        for dependency in package.dependencies.iter().filter(|dependency| dependency.kind.is_none())
         {
             let Some(dependency_package) = packages.get(&dependency.name) else {
                 continue;
             };
             if is_publishable(dependency_package) {
-                require_precedes(
-                    publish_order,
-                    &dependency_package.name,
-                    &package.name,
-                    findings,
-                );
+                require_precedes(publish_order, &dependency_package.name, &package.name, findings);
             }
         }
     }
@@ -694,10 +632,7 @@ fn validate_publish_order(
         );
     }
 
-    if matches!(
-        policy.mcp_stage,
-        McpStage::Admitted | McpStage::Required
-    ) {
+    if matches!(policy.mcp_stage, McpStage::Admitted | McpStage::Required) {
         require_precedes(
             publish_order,
             &policy.packages.transport_service,
@@ -739,22 +674,15 @@ fn validate_reserved_executables(
 ) {
     for package in packages.values() {
         for binary in target_names(package, "bin") {
-            let forbidden_name = policy
-                .executables
-                .forbidden_names
-                .iter()
-                .any(|name| name == binary);
+            let forbidden_name =
+                policy.executables.forbidden_names.iter().any(|name| name == binary);
             let forbidden_prefix = policy
                 .executables
                 .forbidden_prefixes
                 .iter()
                 .any(|prefix| binary.starts_with(prefix));
             let forbidden_token = binary.split(['-', '_']).any(|token| {
-                policy
-                    .executables
-                    .forbidden_tokens
-                    .iter()
-                    .any(|candidate| candidate == token)
+                policy.executables.forbidden_tokens.iter().any(|candidate| candidate == token)
             });
             if forbidden_name || forbidden_prefix || forbidden_token {
                 findings.insert(format!(
@@ -771,19 +699,11 @@ mod tests {
     use super::*;
 
     fn target(name: &str, kind: &str) -> CargoTarget {
-        CargoTarget {
-            name: name.to_owned(),
-            kind: vec![kind.to_owned()],
-        }
+        CargoTarget { name: name.to_owned(), kind: vec![kind.to_owned()] }
     }
 
     fn dependency(name: &str) -> CargoDependency {
-        CargoDependency {
-            name: name.to_owned(),
-            kind: None,
-            optional: false,
-            rename: None,
-        }
+        CargoDependency { name: name.to_owned(), kind: None, optional: false, rename: None }
     }
 
     fn package(
@@ -799,10 +719,7 @@ mod tests {
             name: name.to_owned(),
             id: id.to_owned(),
             targets,
-            dependencies: dependencies
-                .iter()
-                .map(|name| dependency(name))
-                .collect(),
+            dependencies: dependencies.iter().map(|name| dependency(name)).collect(),
             publish: None,
         }
     }
@@ -849,28 +766,11 @@ mod tests {
     fn fixture(stage: McpStage) -> (ProductTopologyPolicy, CargoMetadata, RootManifest) {
         let mut packages = vec![
             package("perl-lsp-rs", "lsp", "perl_lsp", &[], &[]),
-            package(
-                "perllsp",
-                "product",
-                "perllsp",
-                &["perllsp"],
-                &["perl-lsp-rs"],
-            ),
-            package(
-                "perl-dap",
-                "dap",
-                "perl_dap",
-                &["perl-dap"],
-                &["perl-lsp-rs-core"],
-            ),
+            package("perllsp", "product", "perllsp", &["perllsp"], &["perl-lsp-rs"]),
+            package("perl-dap", "dap", "perl_dap", &["perl-dap"], &["perl-lsp-rs-core"]),
         ];
-        let mut workspace_members =
-            vec!["lsp".to_owned(), "product".to_owned(), "dap".to_owned()];
-        let mut allow = vec![
-            "perl-lsp-rs".to_owned(),
-            "perl-dap".to_owned(),
-            "perllsp".to_owned(),
-        ];
+        let mut workspace_members = vec!["lsp".to_owned(), "product".to_owned(), "dap".to_owned()];
+        let mut allow = vec!["perl-lsp-rs".to_owned(), "perl-dap".to_owned(), "perllsp".to_owned()];
 
         if matches!(stage, McpStage::Admitted | McpStage::Required) {
             packages.push(package(
@@ -880,13 +780,7 @@ mod tests {
                 &[],
                 &[],
             ));
-            packages.push(package(
-                "perl-mcp",
-                "mcp",
-                "perl_mcp",
-                &[],
-                &["perl-code-intelligence"],
-            ));
+            packages.push(package("perl-mcp", "mcp", "perl_mcp", &[], &["perl-code-intelligence"]));
             workspace_members.push("service".to_owned());
             workspace_members.push("mcp".to_owned());
             allow = vec![
@@ -899,35 +793,24 @@ mod tests {
         }
 
         if stage == McpStage::Required
-            && let Some(product) = packages
-                .iter_mut()
-                .find(|package| package.name == "perllsp")
+            && let Some(product) = packages.iter_mut().find(|package| package.name == "perllsp")
         {
             product.dependencies.push(dependency("perl-mcp"));
         }
 
         (
             policy(stage),
-            CargoMetadata {
-                packages,
-                workspace_members,
-                workspace_root: ".".to_owned(),
-            },
+            CargoMetadata { packages, workspace_members, workspace_root: ".".to_owned() },
             RootManifest {
                 workspace: WorkspaceManifest {
-                    metadata: WorkspaceMetadata {
-                        publish: PublishMetadata { allow },
-                    },
+                    metadata: WorkspaceMetadata { publish: PublishMetadata { allow } },
                 },
             },
         )
     }
 
     fn has_finding(report: &ValidationReport, needle: &str) -> bool {
-        report
-            .findings
-            .iter()
-            .any(|finding| finding.contains(needle))
+        report.findings.iter().any(|finding| finding.contains(needle))
     }
 
     #[test]
@@ -940,35 +823,25 @@ mod tests {
     #[test]
     fn retired_lsp_binary_is_rejected() {
         let (policy, mut metadata, manifest) = fixture(McpStage::Absent);
-        if let Some(package) = metadata
-            .packages
-            .iter_mut()
-            .find(|package| package.name == "perl-lsp-rs")
+        if let Some(package) =
+            metadata.packages.iter_mut().find(|package| package.name == "perl-lsp-rs")
         {
             package.targets.push(target("perl-lsp", "bin"));
         }
         let report = validate(&policy, &metadata, &manifest);
-        assert!(has_finding(
-            &report,
-            "reserved code-intelligence binary=perl-lsp"
-        ));
+        assert!(has_finding(&report, "reserved code-intelligence binary=perl-lsp"));
     }
 
     #[test]
     fn prefixed_adapter_binary_is_rejected() {
         let (policy, mut metadata, manifest) = fixture(McpStage::Absent);
-        if let Some(package) = metadata
-            .packages
-            .iter_mut()
-            .find(|package| package.name == "perllsp")
+        if let Some(package) =
+            metadata.packages.iter_mut().find(|package| package.name == "perllsp")
         {
             package.targets.push(target("perl-mcp-helper", "bin"));
         }
         let report = validate(&policy, &metadata, &manifest);
-        assert!(has_finding(
-            &report,
-            "reserved code-intelligence binary=perl-mcp-helper"
-        ));
+        assert!(has_finding(&report, "reserved code-intelligence binary=perl-mcp-helper"));
     }
 
     #[test]
@@ -986,10 +859,7 @@ mod tests {
         metadata.workspace_members.push("unrelated".to_owned());
 
         let report = validate(&policy, &metadata, &manifest);
-        assert!(has_finding(
-            &report,
-            "reserved code-intelligence binary=code_intelligence_server"
-        ));
+        assert!(has_finding(&report, "reserved code-intelligence binary=code_intelligence_server"));
     }
 
     #[test]
@@ -1003,48 +873,28 @@ mod tests {
             &["perl-code-intelligence"],
         ));
         metadata.workspace_members.push("mcp".to_owned());
-        manifest
-            .workspace
-            .metadata
-            .publish
-            .allow
-            .insert(1, "perl-mcp".to_owned());
+        manifest.workspace.metadata.publish.allow.insert(1, "perl-mcp".to_owned());
 
         let report = validate(&policy, &metadata, &manifest);
-        assert!(has_finding(
-            &report,
-            "stage=absent: package must not exist package=perl-mcp"
-        ));
+        assert!(has_finding(&report, "stage=absent: package must not exist package=perl-mcp"));
     }
 
     #[test]
     fn admitted_stage_requires_mcp_package() {
         let (policy, mut metadata, mut manifest) = fixture(McpStage::Admitted);
-        metadata
-            .packages
-            .retain(|package| package.name != "perl-mcp");
+        metadata.packages.retain(|package| package.name != "perl-mcp");
         metadata.workspace_members.retain(|member| member != "mcp");
-        manifest
-            .workspace
-            .metadata
-            .publish
-            .allow
-            .retain(|package| package != "perl-mcp");
+        manifest.workspace.metadata.publish.allow.retain(|package| package != "perl-mcp");
 
         let report = validate(&policy, &metadata, &manifest);
-        assert!(has_finding(
-            &report,
-            "required workspace package missing=perl-mcp"
-        ));
+        assert!(has_finding(&report, "required workspace package missing=perl-mcp"));
     }
 
     #[test]
     fn admitted_or_required_stage_requires_governed_transport_workspace_package() {
         for stage in [McpStage::Admitted, McpStage::Required] {
             let (policy, mut metadata, mut manifest) = fixture(stage);
-            metadata
-                .packages
-                .retain(|package| package.name != "perl-code-intelligence");
+            metadata.packages.retain(|package| package.name != "perl-code-intelligence");
             metadata.workspace_members.retain(|member| member != "service");
             manifest
                 .workspace
@@ -1066,22 +916,14 @@ mod tests {
     #[test]
     fn admitted_stage_rejects_executable_mcp_adapter() {
         let (policy, mut metadata, manifest) = fixture(McpStage::Admitted);
-        if let Some(package) = metadata
-            .packages
-            .iter_mut()
-            .find(|package| package.name == "perl-mcp")
+        if let Some(package) =
+            metadata.packages.iter_mut().find(|package| package.name == "perl-mcp")
         {
             package.targets.push(target("perl-mcp", "bin"));
         }
         let report = validate(&policy, &metadata, &manifest);
-        assert!(has_finding(
-            &report,
-            "target-shape: package=perl-mcp binary_targets"
-        ));
-        assert!(has_finding(
-            &report,
-            "reserved code-intelligence binary=perl-mcp"
-        ));
+        assert!(has_finding(&report, "target-shape: package=perl-mcp binary_targets"));
+        assert!(has_finding(&report, "reserved code-intelligence binary=perl-mcp"));
     }
 
     #[test]
@@ -1095,23 +937,16 @@ mod tests {
             "perllsp".to_owned(),
         ];
         let report = validate(&policy, &metadata, &manifest);
-        assert!(has_finding(
-            &report,
-            "dependency=perl-code-intelligence"
-        ));
+        assert!(has_finding(&report, "dependency=perl-code-intelligence"));
     }
 
     #[test]
     fn required_stage_requires_product_dependency() {
         let (policy, mut metadata, manifest) = fixture(McpStage::Required);
-        if let Some(product) = metadata
-            .packages
-            .iter_mut()
-            .find(|package| package.name == "perllsp")
+        if let Some(product) =
+            metadata.packages.iter_mut().find(|package| package.name == "perllsp")
         {
-            product
-                .dependencies
-                .retain(|dependency| dependency.name != "perl-mcp");
+            product.dependencies.retain(|dependency| dependency.name != "perl-mcp");
         }
         let report = validate(&policy, &metadata, &manifest);
         assert!(has_finding(
@@ -1123,11 +958,7 @@ mod tests {
     #[test]
     fn admitted_stage_rejects_optional_required_dependency() {
         let (policy, mut metadata, manifest) = fixture(McpStage::Admitted);
-        if let Some(mcp) = metadata
-            .packages
-            .iter_mut()
-            .find(|package| package.name == "perl-mcp")
-        {
+        if let Some(mcp) = metadata.packages.iter_mut().find(|package| package.name == "perl-mcp") {
             if let Some(dependency) = mcp.dependencies.first_mut() {
                 dependency.optional = true;
             }
@@ -1142,11 +973,7 @@ mod tests {
     #[test]
     fn admitted_stage_rejects_renamed_required_dependency() {
         let (policy, mut metadata, manifest) = fixture(McpStage::Admitted);
-        if let Some(mcp) = metadata
-            .packages
-            .iter_mut()
-            .find(|package| package.name == "perl-mcp")
-        {
+        if let Some(mcp) = metadata.packages.iter_mut().find(|package| package.name == "perl-mcp") {
             if let Some(dependency) = mcp.dependencies.first_mut() {
                 dependency.rename = Some("transport".to_owned());
             }
@@ -1161,10 +988,8 @@ mod tests {
     #[test]
     fn lsp_library_cannot_depend_upward_on_mcp() {
         let (policy, mut metadata, manifest) = fixture(McpStage::Admitted);
-        if let Some(lsp) = metadata
-            .packages
-            .iter_mut()
-            .find(|package| package.name == "perl-lsp-rs")
+        if let Some(lsp) =
+            metadata.packages.iter_mut().find(|package| package.name == "perl-lsp-rs")
         {
             lsp.dependencies.push(dependency("perl-mcp"));
         }
@@ -1178,11 +1003,7 @@ mod tests {
     #[test]
     fn mcp_adapter_cannot_depend_on_lsp_runtime() {
         let (policy, mut metadata, manifest) = fixture(McpStage::Admitted);
-        if let Some(mcp) = metadata
-            .packages
-            .iter_mut()
-            .find(|package| package.name == "perl-mcp")
-        {
+        if let Some(mcp) = metadata.packages.iter_mut().find(|package| package.name == "perl-mcp") {
             mcp.dependencies.push(dependency("perl-lsp-rs-core"));
         }
         let report = validate(&policy, &metadata, &manifest);
@@ -1195,28 +1016,15 @@ mod tests {
     #[test]
     fn missing_publish_evidence_is_rejected() {
         let (policy, metadata, mut manifest) = fixture(McpStage::Absent);
-        manifest
-            .workspace
-            .metadata
-            .publish
-            .allow
-            .retain(|package| package != "perllsp");
+        manifest.workspace.metadata.publish.allow.retain(|package| package != "perllsp");
         let report = validate(&policy, &metadata, &manifest);
-        assert!(has_finding(
-            &report,
-            "governed package missing from allowlist=perllsp"
-        ));
+        assert!(has_finding(&report, "governed package missing from allowlist=perllsp"));
     }
 
     #[test]
     fn unknown_publish_allowlist_entry_is_rejected() {
         let (policy, metadata, mut manifest) = fixture(McpStage::Absent);
-        manifest
-            .workspace
-            .metadata
-            .publish
-            .allow
-            .push("unknown-package".to_owned());
+        manifest.workspace.metadata.publish.allow.push("unknown-package".to_owned());
         let report = validate(&policy, &metadata, &manifest);
         assert!(has_finding(
             &report,
