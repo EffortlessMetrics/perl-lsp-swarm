@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12344 |
-| Rust-family files | 3786 |
-| Non-Rust files | 8558 |
-| Allowlisted | 6323 |
+| Total tracked files | 12358 |
+| Rust-family files | 3796 |
+| Non-Rust files | 8562 |
+| Allowlisted | 6327 |
 | Unclassified | 2235 |
 
 ## Non-Rust files by category
@@ -17,11 +17,11 @@
 | Category | Count |
 |---|---|
 | config | 490 |
-| documentation | 2792 |
+| documentation | 2795 |
 | generated | 2 |
 | production | 346 |
 | test | 2033 |
-| tooling | 660 |
+| tooling | 661 |
 | unclassified | 2235 |
 
 ## Unclassified files
@@ -3513,6 +3513,7 @@
 | `benchmarks/scripts/run-benchmarks.sh` | tooling | `non-rust-benchmarks-scripts` | parser/perf |
 | `benchmarks/scripts/test_alert_system.sh` | tooling | `non-rust-benchmarks-scripts` | parser/perf |
 | `benchmarks/scripts/test_benchmark_guards.py` | tooling | `non-rust-benchmarks-scripts` | parser/perf |
+| `benchmarks/scripts/test_benchmark_targets.py` | tooling | `non-rust-benchmarks-scripts` | parser/perf |
 | `benchmarks/scripts/test_extract_criterion.py` | tooling | `non-rust-benchmarks-scripts` | parser/perf |
 | `benchmarks/scripts/test_regression.py` | tooling | `non-rust-benchmarks-scripts` | parser/perf |
 | `book/.gitignore` | config | `non-rust-gitignore-family` | release/ci |
@@ -6034,6 +6035,7 @@
 | `docs/specs/PLSP-SPEC-0033-three-rail-evidence.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/specs/PLSP-SPEC-0034-compiler-world.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/specs/PLSP-SPEC-0035-executable-profile-and-eir.md` | documentation | `non-rust-docs-tree` | docs |
+| `docs/specs/PLSP-SPEC-0036-lsp4ij-windows-entrypoints.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/specs/README.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/specs/RELEASE_CANDIDATE_BASELINE.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/specs/WORKTREE_FORENSIC_EVIDENCE_V1.md` | documentation | `non-rust-docs-tree` | docs |
@@ -8577,6 +8579,8 @@
 | `xtask/tests/fixtures/dependency-hygiene/machete-malformed.json` | test | `non-rust-dependency-hygiene-machete-fixtures` | devex/dependency-hygiene |
 | `xtask/tests/fixtures/dependency-hygiene/machete-missing-ignored-used.json` | test | `non-rust-dependency-hygiene-machete-fixtures` | devex/dependency-hygiene |
 | `xtask/tests/fixtures/dependency-hygiene/machete-missing-unused.json` | test | `non-rust-dependency-hygiene-machete-fixtures` | devex/dependency-hygiene |
+| `xtask/tests/fixtures/lsp-318-changelog/PROVENANCE.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `xtask/tests/fixtures/lsp-318-changelog/specification.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `xtask/tests/fixtures/module-train-live/raw-clean-surface.json` | test | `non-rust-module-train-live-observation-fixtures` | devex/module-train |
 | `xtask/tests/fixtures/module-train-live/raw-corpus.json` | test | `non-rust-module-train-live-observation-fixtures` | devex/module-train |
 | `xtask/tests/fixtures/native-critic/false-positive/checked_io.pm` | test | `non-rust-perl-modules` | parser/lsp-fixtures |
