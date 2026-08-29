@@ -56,6 +56,8 @@ pub struct DistMetadataFacts {
 
 /// The prereq relations recognized in cpanfile / META.json.
 const RELATIONS: &[&str] = &["requires", "recommends", "suggests", "conflicts"];
+/// Canonical prerequisite phases recognized in cpanfile `on` blocks.
+const CPANFILE_PHASES: &[&str] = &["configure", "build", "test", "runtime", "develop"];
 /// META 1.x phase-specific top-level prerequisite keys → canonical phase.
 const META_V1_PHASED_REQUIRES: &[(&str, &str)] =
     &[("configure_requires", "configure"), ("build_requires", "build")];
@@ -70,6 +72,12 @@ const CPANFILE_KEYWORDS: &[(&str, &str, &str)] = &[
     ("suggests", "suggests", "runtime"),
     ("conflicts", "conflicts", "runtime"),
 ];
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CpanfileBlock {
+    Phase(String),
+    Unsupported,
+}
 
 /// Parse a `META.json` (CPAN Meta Spec v2, with a v1.4 flat fallback).
 ///
@@ -133,42 +141,50 @@ pub fn parse_meta_json(file_id: FileId, content: &str) -> Option<DistMetadataFac
     })
 }
 
-/// Parse a `cpanfile` for its prerequisites (heuristic statement scan — no Perl
-/// parser). Name/version/abstract are not declared in a cpanfile.
+/// Parse a `cpanfile` for its unconditional prerequisites (heuristic statement
+/// scan — no Perl parser). Name/version/abstract are not declared in a cpanfile.
 ///
-/// Handles both the flat form (`requires`, `test_requires`, …) and the
-/// block form (`on 'test' => sub { requires '...' }`): statements are split on
-/// `;` / `{` / `}`, and an `on 'phase' => sub { ... }` block sets the phase for
-/// the plain `requires`/`recommends`/`suggests` inside it.
+/// Handles both the flat form (`requires`, `test_requires`, …) and recognized
+/// block forms (`on 'test' => sub { requires '...' }`). Other blocks are
+/// deliberately ignored because this fact type cannot retain their predicates.
 #[must_use]
 pub fn parse_cpanfile(file_id: FileId, content: &str) -> DistMetadataFacts {
     let cleaned = strip_comments(content);
     let mut prereqs = Vec::new();
-    let mut phase_stack: Vec<String> = Vec::new();
+    let mut block_stack: Vec<CpanfileBlock> = Vec::new();
     let mut buf = String::new();
     for ch in cleaned.chars() {
         match ch {
             ';' => {
-                handle_cpanfile_statement(&buf, phase_stack.last(), &mut prereqs);
+                if let Some(block_phase) = active_cpanfile_phase(&block_stack) {
+                    handle_cpanfile_statement(&buf, block_phase, &mut prereqs);
+                }
                 buf.clear();
             }
             '{' => {
-                // `on 'phase' => sub {` opens a phase block; other blocks inherit.
-                let phase = parse_on_phase(&buf)
-                    .or_else(|| phase_stack.last().cloned())
-                    .unwrap_or_else(|| "runtime".to_string());
-                phase_stack.push(phase);
+                let block = if matches!(block_stack.last(), Some(CpanfileBlock::Unsupported)) {
+                    CpanfileBlock::Unsupported
+                } else if let Some(phase) = parse_on_phase(&buf) {
+                    CpanfileBlock::Phase(phase)
+                } else {
+                    CpanfileBlock::Unsupported
+                };
+                block_stack.push(block);
                 buf.clear();
             }
             '}' => {
-                handle_cpanfile_statement(&buf, phase_stack.last(), &mut prereqs);
+                if let Some(block_phase) = active_cpanfile_phase(&block_stack) {
+                    handle_cpanfile_statement(&buf, block_phase, &mut prereqs);
+                }
                 buf.clear();
-                phase_stack.pop();
+                block_stack.pop();
             }
             _ => buf.push(ch),
         }
     }
-    handle_cpanfile_statement(&buf, phase_stack.last(), &mut prereqs);
+    if let Some(block_phase) = active_cpanfile_phase(&block_stack) {
+        handle_cpanfile_statement(&buf, block_phase, &mut prereqs);
+    }
 
     prereqs.sort_by(|a, b| {
         (&a.phase, &a.relation, &a.module).cmp(&(&b.phase, &b.relation, &b.module))
@@ -184,24 +200,29 @@ pub fn parse_cpanfile(file_id: FileId, content: &str) -> DistMetadataFacts {
     }
 }
 
+fn active_cpanfile_phase(block_stack: &[CpanfileBlock]) -> Option<Option<&str>> {
+    match block_stack.last() {
+        None => Some(None),
+        Some(CpanfileBlock::Phase(phase)) => Some(Some(phase.as_str())),
+        Some(CpanfileBlock::Unsupported) => None,
+    }
+}
+
 /// Recognize a prereq statement and push it, resolving its phase.
 ///
 /// A prefixed keyword (`configure_requires`/`build_requires`/`test_requires`)
 /// carries its own phase; a plain `requires`/`recommends`/`suggests` uses the
 /// enclosing `on 'phase'` block's phase, defaulting to `runtime`.
-fn handle_cpanfile_statement(buf: &str, block_phase: Option<&String>, out: &mut Vec<Prereq>) {
+fn handle_cpanfile_statement(buf: &str, block_phase: Option<&str>, out: &mut Vec<Prereq>) {
     let statement = buf.trim();
     // Longest keyword first so `configure_requires` isn't matched by `requires`.
-    let Some((_kw, relation, kw_phase)) =
-        CPANFILE_KEYWORDS.iter().find(|(kw, _, _)| statement.starts_with(kw))
+    let Some((_kw, relation, kw_phase)) = CPANFILE_KEYWORDS
+        .iter()
+        .find(|(kw, _, _)| starts_with_cpanfile_keyword(statement, kw))
     else {
         return;
     };
-    let phase = if *kw_phase == "runtime" {
-        block_phase.map_or("runtime", String::as_str)
-    } else {
-        kw_phase
-    };
+    let phase = if *kw_phase == "runtime" { block_phase.unwrap_or("runtime") } else { kw_phase };
     let quoted = quoted_strings(statement);
     if let Some(module) = quoted.first() {
         out.push(Prereq {
@@ -213,7 +234,16 @@ fn handle_cpanfile_statement(buf: &str, block_phase: Option<&String>, out: &mut 
     }
 }
 
-/// Extract the phase from an `on 'phase' => sub` block header, if `buf` is one.
+fn starts_with_cpanfile_keyword(statement: &str, keyword: &str) -> bool {
+    let Some(rest) = statement.strip_prefix(keyword) else {
+        return false;
+    };
+    rest.chars().next().is_none_or(|ch| {
+        ch.is_whitespace() || matches!(ch, '(' | '\'' | '"')
+    })
+}
+
+/// Extract a canonical phase from an `on 'phase' => sub` block header.
 fn parse_on_phase(buf: &str) -> Option<String> {
     let rest = buf.trim().strip_prefix("on")?;
     // `on` must be followed by whitespace or a quote, not be part of a longer word.
@@ -221,10 +251,11 @@ fn parse_on_phase(buf: &str) -> Option<String> {
         return None;
     }
     // Prefer a quoted phase (`on 'test'`); fall back to a bareword (`on test`).
-    quoted_strings(buf)
+    let phase = quoted_strings(buf)
         .into_iter()
         .next()
-        .or_else(|| rest.split_whitespace().next().map(str::to_string))
+        .or_else(|| rest.split_whitespace().next().map(str::to_string))?;
+    CPANFILE_PHASES.contains(&phase.as_str()).then_some(phase)
 }
 
 /// Collect `{ module: version }` object entries into prereqs.
@@ -501,6 +532,58 @@ mod tests {
         assert!(
             facts.prereqs.iter().any(|p| p.module == "Perl::Critic" && p.phase == "develop"),
             "develop block phase"
+        );
+    }
+
+    #[test]
+    fn cpanfile_unsupported_blocks_do_not_become_unconditional_facts() {
+        let content = r#"
+            requires 'Top::Level';
+            feature 'SQLite' => sub {
+                requires 'DBD::SQLite';
+                on 'test' => sub { requires 'Feature::Test'; };
+            };
+            if ($^O eq 'MSWin32') {
+                build_requires 'Win32::Build';
+            }
+            on 'test' => sub {
+                requires 'Test::More';
+                if ($ENV{AUTHOR_TESTING}) { requires 'Test::Warnings'; }
+                recommends 'Test::Deep';
+            };
+        "#;
+        let facts = parse_cpanfile(FileId::new("cpanfile", &Digest::of("x")), content);
+
+        assert!(facts.prereqs.iter().any(|p| p.module == "Top::Level" && p.phase == "runtime"));
+        assert!(facts.prereqs.iter().any(|p| p.module == "Test::More" && p.phase == "test"));
+        assert!(facts.prereqs.iter().any(|p| p.module == "Test::Deep" && p.phase == "test"));
+        for conditional in ["DBD::SQLite", "Feature::Test", "Win32::Build", "Test::Warnings"] {
+            assert!(
+                !facts.prereqs.iter().any(|p| p.module == conditional),
+                "conditional prerequisite {conditional} must not become unconditional: {:?}",
+                facts.prereqs
+            );
+        }
+    }
+
+    #[test]
+    fn cpanfile_unknown_phases_and_keyword_prefixes_are_rejected() {
+        let content = r#"
+            on 'deploy' => sub { requires 'Deploy::Only'; };
+            requires_extra 'Prefix::Collision';
+            oncall 'test' => sub { requires 'Not::An::On::Block'; };
+            on 'build' => sub { requires 'Build::Known'; };
+        "#;
+        let facts = parse_cpanfile(FileId::new("cpanfile", &Digest::of("x")), content);
+
+        assert_eq!(
+            facts.prereqs,
+            vec![Prereq {
+                module: "Build::Known".to_string(),
+                version: None,
+                phase: "build".to_string(),
+                relation: "requires".to_string(),
+            }]
         );
     }
 
