@@ -1,16 +1,19 @@
 //! Standalone-resolution contract for the `perl-parser-pest` package (`#8771`).
 //!
 //! These tests own the claim that this package describes and tests itself
-//! without borrowing identity, versions, lints, dependencies, or test helpers
-//! from the swarm workspace. They are structural assertions over the package's
-//! own manifest and source tree; they do not invoke Cargo, reach the network,
-//! or claim that an unpacked copy has been executed in isolation (that is the
-//! next train row's claim).
+//! without borrowing identity, versions, dependencies, or test helpers from
+//! the swarm workspace. `[lints]` is the one deliberate exception, retained
+//! because a required gate demands it (`#13775`) and pinned here so it cannot
+//! spread. They are structural assertions over the package's own manifest and
+//! source tree; they do not invoke Cargo, reach the network, verify registry
+//! presence, or claim that an unpacked copy has been executed in isolation
+//! (that is the next train row's claim).
 //!
-//! Every assertion here fails closed: a reintroduced `workspace = true`
-//! marker, a path-only dependency, a dropped lint level, a falsely-external
-//! repository URL, an unpackaged load-bearing asset, or a returning
-//! `perl_tdd_support` import is a test failure, not a warning.
+//! Every assertion here fails closed: a `workspace = true` marker on any key
+//! but `[lints]`, a path-only dependency, a dropped `[lints]` marker or a
+//! local lint table appearing beside it, a falsely-external repository URL, an
+//! unpackaged load-bearing asset, or a returning `perl_tdd_support` import is
+//! a test failure, not a warning.
 #![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use std::error::Error;
