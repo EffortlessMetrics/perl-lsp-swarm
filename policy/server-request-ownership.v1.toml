@@ -1,0 +1,341 @@
+# Machine-readable ownership matrix for server-initiated LSP requests (#13223).
+#
+# One row per request that `perllsp` sends TO the client. The matrix is an
+# ownership and proof map, not a second implementation registry: the wire
+# classification (direction and envelope kind) stays owned by
+# `crates/perl-lsp-rs/src/protocol/method_direction.rs`, and this file records
+# who owns each proposition about that method and which proof exists today.
+#
+# Read by: `cargo xtask server-request-ownership check`.
+#
+# Cells are deliberately allowed to say `missing`. An unknown or absent owner is
+# recorded as `missing` with its owning issue and never rendered as passing; a
+# row only earns a non-`not_proven` disposition when the cells that would
+# justify it actually exist. Notifications and client-to-server requests are not
+# rows here at all -- the checker rejects them.
+
+[meta]
+schema = "server_request_ownership.v1"
+owner_issue = 13223
+direction_registry = "crates/perl-lsp-rs/src/protocol/method_direction.rs"
+feature_catalog = "features.toml"
+emission_scan_root = "crates/perl-lsp-rs/src/runtime"
+
+# A row may only use these values. An unlisted value is a hard failure, so a
+# typo or an invented state cannot silently read as green.
+allowed_protocol_baselines = ["stable_3_17", "selected_3_18"]
+allowed_emission_states = ["emitted", "not_emitted"]
+allowed_response_decoders = ["generic_shape", "per_method"]
+allowed_dispositions = [
+  "supported",
+  "advertised_not_proven",
+  "helper_only_unadvertised",
+  "not_proven",
+]
+
+# `supported` additionally requires a terminal state owner and exact-process
+# proof that are not `missing`. No current row qualifies: `state_owner` is
+# `missing` for every server-initiated row in features.toml and every such row
+# is `maturity = "not_proven"` there.
+
+# =============================================================================
+# workspace/* mutation and configuration
+# =============================================================================
+
+[[request]]
+id = "srq-workspace-apply-edit"
+method = "workspace/applyEdit"
+spec = "LSP 3.0"
+protocol_baseline = "stable_3_17"
+emission = "emitted"
+emitters = ["crates/perl-lsp-rs/src/runtime/client_requests.rs#request_apply_workspace_edit_with_metadata"]
+feature_catalog_row = "lsp.apply_edit"
+capability_gate = "workspace.applyEdit + workspace.workspaceEdit.metadataSupport"
+capability_gate_owner = "#6735"
+ux_default_response_owner = "missing:#13220"
+programmable_actions_owner = "missing:#13221"
+response_decoder = "generic_shape"
+terminal_state_owner = "missing:#6724"
+timeout_cleanup_policy = "server_request_registry_default"
+exact_process_proof = "missing:#7016"
+schema_evidence = "#7116"
+disposition = "advertised_not_proven"
+limitations = "Emitted only when the client advertises both applyEdit and metadataSupport; the no-metadata path emits no request at all. The client's edit-application result is decoded by generic shape, so acceptance is not distinguished from refusal by a typed decoder."
+
+[[request]]
+id = "srq-workspace-configuration"
+method = "workspace/configuration"
+spec = "LSP 3.6"
+protocol_baseline = "stable_3_17"
+emission = "emitted"
+emitters = ["crates/perl-lsp-rs/src/runtime/workspace.rs#request_workspace_configuration_for_folders"]
+feature_catalog_row = "lsp.configuration"
+capability_gate = "workspace.configuration"
+capability_gate_owner = "#6736"
+ux_default_response_owner = "missing:#13220"
+programmable_actions_owner = "missing:#13221"
+response_decoder = "generic_shape"
+terminal_state_owner = "#7007"
+timeout_cleanup_policy = "retained_until_terminal_response_or_root_change"
+exact_process_proof = "missing:#7016"
+schema_evidence = "#7116"
+disposition = "advertised_not_proven"
+limitations = "Pending request state is retained until a terminal response, timeout, supersession, root removal, or shutdown, per policy/workspace-runtime-ownership.v1.tsv row WRT-CONFIG-002. The terminal owner exists; the exact-process negative proof does not."
+
+# =============================================================================
+# client/* dynamic registration
+# =============================================================================
+
+[[request]]
+id = "srq-client-register-capability"
+method = "client/registerCapability"
+spec = "LSP 3.0"
+protocol_baseline = "stable_3_17"
+emission = "emitted"
+emitters = [
+  "crates/perl-lsp-rs/src/runtime/lifecycle/watchers.rs#register_file_watchers_if_needed",
+  "crates/perl-lsp-rs/src/runtime/lifecycle/watchers.rs#register_inline_completion_if_needed",
+]
+feature_catalog_row = "lsp.client_register_capability"
+capability_gate = "missing"
+capability_gate_owner = "missing:#6735"
+ux_default_response_owner = "missing:#13220"
+programmable_actions_owner = "missing:#13221"
+response_decoder = "generic_shape"
+terminal_state_owner = "missing:#6724"
+timeout_cleanup_policy = "server_request_registry_default"
+exact_process_proof = "missing:#7016"
+schema_evidence = "#7116"
+disposition = "advertised_not_proven"
+limitations = "Two independent registration sites (file watchers and inline completion) share one row identity but have no entry-level per-registration coverage; entry-by-entry method/selector ownership is required by the #13370 extension and is not represented here. Both sites log and continue on send failure, so a registration that never reaches the client is not observable as a failure."
+
+[[request]]
+id = "srq-client-unregister-capability"
+method = "client/unregisterCapability"
+spec = "LSP 3.0"
+protocol_baseline = "stable_3_17"
+emission = "not_emitted"
+emitters = []
+feature_catalog_row = "lsp.client_unregister_capability"
+capability_gate = "missing"
+capability_gate_owner = "missing:#6735"
+ux_default_response_owner = "missing:#13220"
+programmable_actions_owner = "missing:#13221"
+response_decoder = "generic_shape"
+terminal_state_owner = "missing:#6724"
+timeout_cleanup_policy = "not_applicable_no_emitter"
+exact_process_proof = "not_applicable_no_emitter"
+schema_evidence = "#7116"
+disposition = "helper_only_unadvertised"
+limitations = "Classified in the direction registry and advertised in features.toml, but no production call site emits it: nothing on current main ever unregisters a dynamically registered capability. It holds a separate row from registerCapability so the pair cannot share one vague outcome. It earns no support credit."
+
+# =============================================================================
+# window/* user-facing requests
+# =============================================================================
+
+[[request]]
+id = "srq-window-show-message-request"
+method = "window/showMessageRequest"
+spec = "LSP 3.0"
+protocol_baseline = "stable_3_17"
+emission = "emitted"
+emitters = ["crates/perl-lsp-rs/src/runtime/window.rs#show_message_request"]
+feature_catalog_row = "lsp.show_message_request"
+capability_gate = "none"
+capability_gate_owner = "none"
+ux_default_response_owner = "missing:#13220"
+programmable_actions_owner = "missing:#13221"
+response_decoder = "generic_shape"
+terminal_state_owner = "missing:#6724"
+timeout_cleanup_policy = "server_request_registry_default"
+exact_process_proof = "missing:#7016"
+schema_evidence = "#7116"
+disposition = "advertised_not_proven"
+limitations = "The user's selected action is returned as a generic value; no typed decoder distinguishes a chosen action from a dismissal (null), so a dismissal and an unparsed result are indistinguishable to callers."
+
+[[request]]
+id = "srq-window-show-document"
+method = "window/showDocument"
+spec = "LSP 3.16"
+protocol_baseline = "stable_3_17"
+emission = "emitted"
+emitters = ["crates/perl-lsp-rs/src/runtime/window.rs#show_document"]
+feature_catalog_row = "lsp.show_document"
+capability_gate = "none"
+capability_gate_owner = "none"
+ux_default_response_owner = "missing:#13220"
+programmable_actions_owner = "missing:#13221"
+response_decoder = "generic_shape"
+terminal_state_owner = "missing:#6724"
+timeout_cleanup_policy = "server_request_registry_default"
+exact_process_proof = "missing:#7016"
+schema_evidence = "#7116"
+disposition = "advertised_not_proven"
+limitations = "Emitted without consulting a window.showDocument client capability, so an unsupporting client receives a request it may answer with MethodNotFound."
+
+[[request]]
+id = "srq-window-work-done-progress-create"
+method = "window/workDoneProgress/create"
+spec = "LSP 3.15"
+protocol_baseline = "stable_3_17"
+emission = "emitted"
+emitters = [
+  "crates/perl-lsp-rs/src/runtime/window.rs#create_work_done_progress",
+  "crates/perl-lsp-rs/src/runtime/workspace_progress.rs#send_progress_create",
+]
+feature_catalog_row = "lsp.work_done_progress_create"
+capability_gate = "none"
+capability_gate_owner = "none"
+ux_default_response_owner = "missing:#13220"
+programmable_actions_owner = "missing:#13221"
+response_decoder = "generic_shape"
+terminal_state_owner = "missing:#6724"
+timeout_cleanup_policy = "server_request_registry_default"
+exact_process_proof = "missing:#7016"
+schema_evidence = "#7116"
+disposition = "advertised_not_proven"
+limitations = "Two emitters with different id-allocation paths: the window.rs site allocates through the server wrapper while workspace_progress.rs supplies a caller-owned id to OutboundSink. The progress token is registered on send success rather than on the client's response, so a refused create still leaves a registered token."
+
+# =============================================================================
+# workspace/*/refresh pull-model invalidation
+# =============================================================================
+
+[[request]]
+id = "srq-workspace-code-lens-refresh"
+method = "workspace/codeLens/refresh"
+spec = "LSP 3.16"
+protocol_baseline = "stable_3_17"
+emission = "emitted"
+emitters = ["crates/perl-lsp-rs/src/runtime/client_requests.rs#request_code_lens_refresh"]
+feature_catalog_row = "lsp.code_lens_refresh"
+capability_gate = "workspace.codeLens.refreshSupport"
+capability_gate_owner = "#6735"
+ux_default_response_owner = "missing:#13220"
+programmable_actions_owner = "missing:#13221"
+response_decoder = "generic_shape"
+terminal_state_owner = "missing:#6724"
+timeout_cleanup_policy = "server_request_registry_default"
+exact_process_proof = "missing:#7016"
+schema_evidence = "#7116"
+disposition = "advertised_not_proven"
+limitations = "Fire-and-forget: the refresh id is registered but no caller consumes the terminal outcome, so a client error response is indistinguishable from success at the call site."
+
+[[request]]
+id = "srq-workspace-semantic-tokens-refresh"
+method = "workspace/semanticTokens/refresh"
+spec = "LSP 3.16"
+protocol_baseline = "stable_3_17"
+emission = "emitted"
+emitters = ["crates/perl-lsp-rs/src/runtime/client_requests.rs#request_semantic_tokens_refresh"]
+feature_catalog_row = "lsp.semantic_tokens_refresh"
+capability_gate = "workspace.semanticTokens.refreshSupport"
+capability_gate_owner = "#6735"
+ux_default_response_owner = "missing:#13220"
+programmable_actions_owner = "missing:#13221"
+response_decoder = "generic_shape"
+terminal_state_owner = "missing:#6724"
+timeout_cleanup_policy = "server_request_registry_default"
+exact_process_proof = "missing:#7016"
+schema_evidence = "#7116"
+disposition = "advertised_not_proven"
+limitations = "Fire-and-forget; no caller consumes the terminal outcome."
+
+[[request]]
+id = "srq-workspace-inlay-hint-refresh"
+method = "workspace/inlayHint/refresh"
+spec = "LSP 3.17"
+protocol_baseline = "stable_3_17"
+emission = "emitted"
+emitters = ["crates/perl-lsp-rs/src/runtime/client_requests.rs#request_inlay_hint_refresh"]
+feature_catalog_row = "lsp.inlay_hint_refresh"
+capability_gate = "workspace.inlayHint.refreshSupport"
+capability_gate_owner = "#6735"
+ux_default_response_owner = "missing:#13220"
+programmable_actions_owner = "missing:#13221"
+response_decoder = "generic_shape"
+terminal_state_owner = "missing:#6724"
+timeout_cleanup_policy = "server_request_registry_default"
+exact_process_proof = "missing:#7016"
+schema_evidence = "#7116"
+disposition = "advertised_not_proven"
+limitations = "Fire-and-forget; no caller consumes the terminal outcome."
+
+[[request]]
+id = "srq-workspace-inline-value-refresh"
+method = "workspace/inlineValue/refresh"
+spec = "LSP 3.17"
+protocol_baseline = "stable_3_17"
+emission = "emitted"
+emitters = ["crates/perl-lsp-rs/src/runtime/client_requests.rs#request_inline_value_refresh"]
+feature_catalog_row = "lsp.inline_value_refresh"
+capability_gate = "workspace.inlineValue.refreshSupport"
+capability_gate_owner = "#6735"
+ux_default_response_owner = "missing:#13220"
+programmable_actions_owner = "missing:#13221"
+response_decoder = "generic_shape"
+terminal_state_owner = "missing:#6724"
+timeout_cleanup_policy = "server_request_registry_default"
+exact_process_proof = "missing:#7016"
+schema_evidence = "#7116"
+disposition = "advertised_not_proven"
+limitations = "Fire-and-forget; no caller consumes the terminal outcome. perl-lsp advertises no inlineValueProvider, so this refresh has no provider to invalidate."
+
+[[request]]
+id = "srq-workspace-diagnostic-refresh"
+method = "workspace/diagnostic/refresh"
+spec = "LSP 3.17"
+protocol_baseline = "stable_3_17"
+emission = "emitted"
+emitters = ["crates/perl-lsp-rs/src/runtime/client_requests.rs#request_diagnostic_refresh"]
+feature_catalog_row = "lsp.diagnostic_refresh"
+capability_gate = "missing"
+capability_gate_owner = "missing:#6735"
+ux_default_response_owner = "missing:#13220"
+programmable_actions_owner = "missing:#13221"
+response_decoder = "generic_shape"
+terminal_state_owner = "missing:#6724"
+timeout_cleanup_policy = "server_request_registry_default"
+exact_process_proof = "missing:#7016"
+schema_evidence = "#7116"
+disposition = "advertised_not_proven"
+limitations = "The features.toml capability gate is recorded as missing while the emitter does consult a refresh-support flag; the two accepted diagnostic-refresh capability spellings from #9592/#9605 are a required discriminator for the #13370 extension and are not represented here."
+
+[[request]]
+id = "srq-workspace-folding-range-refresh"
+method = "workspace/foldingRange/refresh"
+spec = "LSP 3.18"
+protocol_baseline = "selected_3_18"
+emission = "emitted"
+emitters = ["crates/perl-lsp-rs/src/runtime/client_requests.rs#request_folding_range_refresh"]
+feature_catalog_row = "lsp.folding_range_refresh"
+capability_gate = "missing"
+capability_gate_owner = "missing:#6735"
+ux_default_response_owner = "missing:#13220"
+programmable_actions_owner = "missing:#13221"
+response_decoder = "generic_shape"
+terminal_state_owner = "missing:#6724"
+timeout_cleanup_policy = "server_request_registry_default"
+exact_process_proof = "missing:#7016"
+schema_evidence = "#7116"
+disposition = "advertised_not_proven"
+limitations = "Selected LSP 3.18 surface: it cannot inherit stable-3.17 status. crates/perl-lsp-rs/tests/lsp_318_negative_claims.rs asserts the server advertises no /workspace/foldingRange capability, so this refresh is emitted against a surface the server does not claim."
+
+[[request]]
+id = "srq-workspace-text-document-content-refresh"
+method = "workspace/textDocumentContent/refresh"
+spec = "LSP 3.18"
+protocol_baseline = "selected_3_18"
+emission = "emitted"
+emitters = ["crates/perl-lsp-rs/src/runtime/language/virtual_content.rs#request_text_document_content_refresh"]
+feature_catalog_row = "lsp.text_document_content_refresh"
+capability_gate = "textDocument.content(proposed)"
+capability_gate_owner = "missing:#6735"
+ux_default_response_owner = "missing:#13220"
+programmable_actions_owner = "missing:#13221"
+response_decoder = "generic_shape"
+terminal_state_owner = "missing:#7021"
+timeout_cleanup_policy = "server_request_registry_default"
+exact_process_proof = "missing:#458"
+schema_evidence = "#7116"
+disposition = "advertised_not_proven"
+limitations = "Selected LSP 3.18 (@proposed) surface; it cannot inherit stable-3.17 status. Terminal and coalescing behavior is owned by #7021, selected-3.18 wire proof by #458, and actual Neovim consumption by #7764; none of those substitutes for another and none is present. Distinct from the client-to-server workspace/textDocumentContent request, which is not a row here."
