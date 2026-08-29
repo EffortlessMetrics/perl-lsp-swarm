@@ -128,9 +128,6 @@ const LOCAL_PATH_MARKERS: &[&str] = &[
     "%userprofile%",
 ];
 
-const LOCAL_PATH_ROOTS: &[&str] =
-    &["/users", "/home", "/root", "/tmp", "/var", "/etc", "/private", "/mnt", "/media", "/volumes"];
-
 /// Mutable live-state key family banned at any depth (borrowed shape of the
 /// shared packet contracts): durable packets never embed scheduler state.
 const MUTABLE_STATE_KEYS: &[&str] = &[
@@ -546,10 +543,41 @@ fn has_path_boundary(text: &str, start: usize) -> bool {
     start == 0 || !text.as_bytes()[start - 1].is_ascii_alphanumeric()
 }
 
-fn has_path_end_boundary(text: &str, end: usize) -> bool {
-    text.as_bytes()
-        .get(end)
-        .is_none_or(|byte| !byte.is_ascii_alphanumeric() && *byte != b'_' && *byte != b'-')
+fn protocol_relative_url_start(text: &str, start: usize) -> Option<usize> {
+    let url_start = if text[start..].starts_with("//") {
+        start
+    } else if start >= 1 && text[start - 1..].starts_with("//") {
+        start - 1
+    } else {
+        text[..start].rfind("//")?
+    };
+    if url_start > 0 && text.as_bytes().get(url_start - 1) == Some(&b':') {
+        return None;
+    }
+    if !has_path_boundary(text, url_start) {
+        return None;
+    }
+    let host_start = url_start + 2;
+    let host_end = text[host_start..]
+        .find(|character: char| {
+            character == '/' || character == '\\' || character.is_whitespace()
+        })
+        .map_or(text.len(), |offset| host_start + offset);
+    let host = &text[host_start..host_end];
+    if host.is_empty()
+        || !(host.contains('.')
+            || host.eq_ignore_ascii_case("localhost")
+            || host.starts_with('['))
+    {
+        return None;
+    }
+    Some(url_start)
+}
+
+fn is_exempt_uri_path(text: &str, start: usize) -> bool {
+    is_non_file_uri_path(text, start)
+        || (start > 0 && is_non_file_uri_path(text, start - 1))
+        || protocol_relative_url_start(text, start).is_some()
 }
 
 fn contains_local_path(text: &str) -> bool {
@@ -561,26 +589,11 @@ fn contains_local_path(text: &str) -> bool {
             let start = search_from + relative;
             let is_environment_marker = marker.starts_with('%');
             if (is_environment_marker || has_path_boundary(&lowered, start))
-                && !is_non_file_uri_path(&lowered, start)
+                && !is_exempt_uri_path(&lowered, start)
             {
                 return true;
             }
             search_from = start + marker.len();
-        }
-    }
-
-    for root in LOCAL_PATH_ROOTS {
-        let mut search_from = 0;
-        while let Some(relative) = lowered[search_from..].find(root) {
-            let start = search_from + relative;
-            let end = start + root.len();
-            if has_path_boundary(&lowered, start)
-                && has_path_end_boundary(&lowered, end)
-                && !is_non_file_uri_path(&lowered, start)
-            {
-                return true;
-            }
-            search_from = end;
         }
     }
 
@@ -597,7 +610,7 @@ fn contains_local_path(text: &str) -> bool {
             && (bytes[index + 2] == b'\\' || bytes[index + 2] == b'/');
         if drive_like
             && has_path_boundary(&lowered, index)
-            && !is_non_file_uri_path(&lowered, index)
+            && !is_exempt_uri_path(&lowered, index)
         {
             return true;
         }
@@ -613,7 +626,20 @@ fn contains_local_path(text: &str) -> bool {
         if unc_like
             && has_share
             && has_path_boundary(&lowered, index)
-            && !is_non_file_uri_path(&lowered, index)
+            && !is_exempt_uri_path(&lowered, index)
+        {
+            return true;
+        }
+    }
+
+    // Any absolute POSIX path is local evidence unless it is a path component
+    // of a non-file URI. This catches roots such as `/opt` and `/usr/local`
+    // without maintaining an incomplete host-root allowlist.
+    for index in 0..bytes.len() {
+        if bytes[index] == b'/'
+            && bytes.get(index + 1) != Some(&b'/')
+            && has_path_boundary(&lowered, index)
+            && !is_exempt_uri_path(&lowered, index)
         {
             return true;
         }
@@ -623,7 +649,7 @@ fn contains_local_path(text: &str) -> bool {
         let mut search_from = 0;
         while let Some(relative) = lowered[search_from..].find(marker) {
             let start = search_from + relative;
-            if has_path_boundary(&lowered, start) && !is_non_file_uri_path(&lowered, start) {
+            if has_path_boundary(&lowered, start) && !is_exempt_uri_path(&lowered, start) {
                 return true;
             }
             search_from = start + marker.len();
@@ -1517,15 +1543,13 @@ fn load_entries(manifests: &[PathBuf]) -> Result<Vec<(String, Value)>> {
 }
 
 fn run_stamp(path: &Path) -> Result<()> {
-    let text =
-        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
-    let mut doc: Value = serde_json::from_str(&text)
-        .with_context(|| format!("failed to parse {}", path.display()))?;
+    let text = fs::read_to_string(path).context("failed to read caller-supplied manifest")?;
+    let mut doc: Value =
+        serde_json::from_str(&text).context("failed to parse caller-supplied manifest")?;
     stamp_manifest(&mut doc)?;
     let stamped = serde_json::to_string_pretty(&doc)?;
-    fs::write(path, stamped + "\n")
-        .with_context(|| format!("failed to write {}", path.display()))?;
-    println!("stamped {}", path.display());
+    fs::write(path, stamped + "\n").context("failed to write caller-supplied manifest")?;
+    println!("stamped caller-supplied manifest");
     Ok(())
 }
 

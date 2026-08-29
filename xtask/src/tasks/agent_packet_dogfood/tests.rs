@@ -399,6 +399,8 @@ fn negative_machine_local_path_in_payload_fails_closed() {
         "/home/dev/.ssh/id_rsa.pub",
         "/tmp/agent-secret.json",
         "/var/run/agent.sock",
+        "/opt/perl-lsp/config.json",
+        "/usr/local/lib/perl",
         "\\\\build-server\\share\\secret.log",
         "//build-server/share/secret.log",
         "file:///tmp/agent-secret.json",
@@ -422,6 +424,7 @@ fn positive_uri_text_is_not_misclassified_as_a_drive_path() {
             "drive_like_url": "https://example.test/C:/tmp",
             "posix_like_url": "https://example.test/home/dev/docs",
             "traversal_like_url": "https://example.test/../docs",
+            "protocol_relative_url": "//example.test/C:/tmp",
         });
     });
     assert!(

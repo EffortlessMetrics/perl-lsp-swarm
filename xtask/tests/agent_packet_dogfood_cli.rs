@@ -232,3 +232,41 @@ fn validate_cli_does_not_echo_caller_controlled_manifest_paths() -> Result<()> {
     assert!(!stderr.contains(&missing_text), "read error echoed manifest path: {stderr}");
     Ok(())
 }
+
+#[test]
+fn stamp_cli_does_not_echo_caller_controlled_manifest_paths() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let leaked = "api_key=hunter2";
+    let path = write_document(&temp, "api_key=hunter2.json", fixture_document()?)?;
+    let output = Command::cargo_bin("xtask")?
+        .args(["agent-dogfood", "stamp", "--manifest"])
+        .arg(&path)
+        .output()?;
+
+    assert!(output.status.success(), "stamping valid manifest must succeed");
+    let stdout = String::from_utf8(output.stdout)?;
+    let path_text = path.to_string_lossy().into_owned();
+    assert!(
+        stdout.contains("stamped caller-supplied manifest"),
+        "missing bounded stamp output: {stdout}"
+    );
+    assert!(!stdout.contains(leaked), "stamp CLI leaked path content: {stdout}");
+    assert!(!stdout.contains(&path_text), "stamp CLI echoed manifest path: {stdout}");
+
+    let malformed = temp.path().join("api_key=hunter2-malformed.json");
+    fs::write(&malformed, "{")?;
+    let output = Command::cargo_bin("xtask")?
+        .args(["agent-dogfood", "stamp", "--manifest"])
+        .arg(&malformed)
+        .output()?;
+    assert!(!output.status.success(), "malformed manifest must fail stamping");
+    let stderr = String::from_utf8(output.stderr)?;
+    let malformed_text = malformed.to_string_lossy().into_owned();
+    assert!(
+        stderr.contains("failed to parse caller-supplied manifest"),
+        "missing generic stamp parse error: {stderr}"
+    );
+    assert!(!stderr.contains(leaked), "stamp parse error leaked path content: {stderr}");
+    assert!(!stderr.contains(&malformed_text), "stamp parse error echoed manifest path: {stderr}");
+    Ok(())
+}
