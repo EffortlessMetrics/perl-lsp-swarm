@@ -192,6 +192,7 @@ fn recovery_kind_allowlist() -> HashMap<&'static str, &'static str> {
 ///   `actionable_never_seen` and `allowlisted_never_seen` names,
 /// - every omission name is a canonical `NodeKind` name from
 ///   `NodeKind::ALL_KIND_NAMES`, and
+/// - every allowlisted omission is a recovery kind,
 /// - every allowlisted entry carries a non-empty rationale.
 ///
 /// Each violation yields one human-readable failure message; an empty result

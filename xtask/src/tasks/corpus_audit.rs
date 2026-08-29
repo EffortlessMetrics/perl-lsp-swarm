@@ -780,6 +780,23 @@ mod tests {
     }
 
     #[test]
+    fn test_validate_report_for_ci_rejects_non_recovery_allowlist_entry() {
+        // A canonical non-recovery kind can satisfy the partition shape and
+        // still be dishonest zero-actionable evidence unless eligibility is
+        // checked on the production validation path.
+        let report = synthetic_report(Vec::new(), vec![allowlisted("AmperCall")], 73);
+
+        let result = validate_report_for_ci(&report);
+        assert!(result.is_err(), "non-recovery allowlist entries must be rejected");
+        if let Err(error) = result {
+            assert!(
+                error.to_string().contains("is not a recovery kind"),
+                "validator error should identify the invalid allowlist membership: {error}"
+            );
+        }
+    }
+
+    #[test]
     fn test_zero_actionable_with_dropped_member_is_rejected_by_ratchet() {
         let m = floor_metrics_from(Some(0.942_029), None);
         let stats = synthetic_stats(
