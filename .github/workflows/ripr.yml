@@ -33,6 +33,8 @@ on:
     branches: [master, main]
     types: [opened, synchronize, reopened, ready_for_review]
   merge_group:
+  push:
+    branches: [master, main]
   # #12563: seed the ripr rust caches from a main-ref run so hosted PR runs
   # restore warm artifacts instead of cold-building into the runner-eviction
   # window. Pull_request runs stay restore-only (docs/ci/cache-policy.md):
@@ -342,6 +344,8 @@ jobs:
               # still upload whatever artifacts were produced.
               cargo xtask ripr-pr --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA" || RIPR_FAILED=1
               cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json || RIPR_FAILED=1
+              mkdir -p target/receipts/quality
+              printf '{"schema_version":1,"kind":"ripr_badge_producer","head":"%s","root":".","source_format":"ripr-plus repo-badge-json","ripr_version":"%s"}\n' "$(git rev-parse HEAD)" "$RIPR_VERSION" > target/receipts/quality/ripr-badge-producer.json
               cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA" --timeout-seconds 210 || RIPR_FAILED=1
               cargo xtask impacted-evidence --labels-csv "$PR_LABELS" || RIPR_FAILED=1
               cargo xtask ripr-pr-summary || RIPR_FAILED=1
@@ -411,6 +415,7 @@ jobs:
             target/ripr/review/**
             target/xtask/impacted-evidence/**
             target/receipts/quality/ripr-plus.json
+            target/receipts/quality/ripr-badge-producer.json
             target/receipts/quality/quality-gate-ripr.json
             target/receipts/quality/quality-gate-ripr.md
           retention-days: 14
@@ -592,6 +597,8 @@ jobs:
               # still upload whatever artifacts were produced.
               cargo xtask ripr-pr --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA" || RIPR_FAILED=1
               cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json || RIPR_FAILED=1
+              mkdir -p target/receipts/quality
+              printf '{"schema_version":1,"kind":"ripr_badge_producer","head":"%s","root":".","source_format":"ripr-plus repo-badge-json","ripr_version":"%s"}\n' "$(git rev-parse HEAD)" "$RIPR_VERSION" > target/receipts/quality/ripr-badge-producer.json
               cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA" --timeout-seconds 210 || RIPR_FAILED=1
               cargo xtask impacted-evidence --labels-csv "$PR_LABELS" || RIPR_FAILED=1
               cargo xtask ripr-pr-summary || RIPR_FAILED=1
@@ -661,6 +668,7 @@ jobs:
             target/ripr/review/**
             target/xtask/impacted-evidence/**
             target/receipts/quality/ripr-plus.json
+            target/receipts/quality/ripr-badge-producer.json
             target/receipts/quality/quality-gate-ripr.json
             target/receipts/quality/quality-gate-ripr.md
           retention-days: 14
@@ -747,6 +755,12 @@ jobs:
         if: always()
         run: cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json
 
+      - name: Record exact RIPR badge producer
+        if: always()
+        run: |
+          mkdir -p target/receipts/quality
+          printf '{"schema_version":1,"kind":"ripr_badge_producer","head":"%s","root":".","source_format":"ripr-plus repo-badge-json","ripr_version":"%s"}\n' "$(git rev-parse HEAD)" "$RIPR_VERSION" > target/receipts/quality/ripr-badge-producer.json
+
       - name: Generate review guidance
         if: always()
         run: cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA" --timeout-seconds 600
@@ -825,6 +839,7 @@ jobs:
             target/ripr/review/**
             target/xtask/impacted-evidence/**
             target/receipts/quality/ripr-plus.json
+            target/receipts/quality/ripr-badge-producer.json
             target/receipts/quality/quality-gate-ripr.json
             target/receipts/quality/quality-gate-ripr.md
           retention-days: 14
@@ -909,6 +924,12 @@ jobs:
         if: always()
         run: cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json
 
+      - name: Record exact RIPR badge producer
+        if: always()
+        run: |
+          mkdir -p target/receipts/quality
+          printf '{"schema_version":1,"kind":"ripr_badge_producer","head":"%s","root":".","source_format":"ripr-plus repo-badge-json","ripr_version":"%s"}\n' "$(git rev-parse HEAD)" "$RIPR_VERSION" > target/receipts/quality/ripr-badge-producer.json
+
       - name: Generate review guidance
         if: always()
         run: cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA" --timeout-seconds 600
@@ -981,12 +1002,13 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
         with:
-          name: ripr-pr-evidence-fallback
+          name: ripr-pr-evidence
           path: |
             target/ripr/pr/**
             target/ripr/review/**
             target/xtask/impacted-evidence/**
             target/receipts/quality/ripr-plus.json
+            target/receipts/quality/ripr-badge-producer.json
             target/receipts/quality/quality-gate-ripr.json
             target/receipts/quality/quality-gate-ripr.md
           retention-days: 14
