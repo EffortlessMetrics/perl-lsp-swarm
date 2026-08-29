@@ -416,7 +416,7 @@ impl DiagnosticsProvider {
             check_pod_coverage(ast, source, &mut diagnostics);
 
             // Version compatibility lint (PL900)
-            check_version_compat(ast, &mut diagnostics);
+            check_version_compat(ast, source, &mut diagnostics);
 
             // Unreachable code detection (PL406)
             check_unreachable_code(ast, &mut diagnostics);
