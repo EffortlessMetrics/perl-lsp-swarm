@@ -17,6 +17,7 @@ const EXPECTED_INVALID: &[(&str, &str)] = &[
     ("missing_packet_digest.json", "missing_identity_field"),
     ("missing_subject.json", "missing_subject"),
     ("missing_model_identity.json", "missing_subject_field"),
+    ("missing_model_revision.json", "missing_subject_field"),
     ("missing_scope_ceiling.json", "missing_scope_ceiling"),
     ("tampered_event_payload.json", "record_digest_mismatch"),
     ("tampered_packet_envelope.json", "packet_digest_mismatch"),
@@ -30,6 +31,7 @@ const EXPECTED_INVALID: &[(&str, &str)] = &[
     ("oversized_event_excerpt.json", "retention_bound_exceeded"),
     ("credential_in_payload.json", "credential_in_payload"),
     ("credential_in_metadata.json", "credential_in_payload"),
+    ("structured_credential_keys.json", "credential_in_payload"),
     ("machine_local_path_in_payload.json", "local_path_in_payload"),
     ("machine_local_path_in_subject.json", "local_path_in_payload"),
     ("chain_of_thought_in_payload.json", "cot_key_in_payload"),
@@ -67,7 +69,7 @@ fn base_manifest() -> Value {
         },
         "subject": {
             "agent": {"name": "synthetic-agent", "version": "0"},
-            "model": {"id": "synthetic-model-x"},
+            "model": {"id": "synthetic-model-x", "revision": "r0"},
             "tool": {"name": "perl-lsp-xtask", "version": "0"},
             "permissions": {
                 "ceiling": ["workspace:read", "workspace:write"],
@@ -316,10 +318,20 @@ fn negative_credential_outside_payload_fails_closed() {
 
 #[test]
 fn negative_structured_credential_key_fails_closed() {
+    for key in ["api_key", "accessToken", "clientSecret", "credentials"] {
+        let violations = mutant(base_manifest(), |doc| {
+            doc["metadata"] = json!({"nested": [{ key: "hunter2" }]});
+        });
+        assert_contains(&violations, "credential_in_payload");
+    }
+}
+
+#[test]
+fn negative_missing_model_revision_fails_closed() {
     let violations = mutant(base_manifest(), |doc| {
-        doc["metadata"] = json!({"nested": [{"api_key": "hunter2"}]});
+        doc["subject"]["model"].as_object_mut().unwrap().remove("revision");
     });
-    assert_contains(&violations, "credential_in_payload");
+    assert_contains(&violations, "missing_subject_field");
 }
 
 #[test]

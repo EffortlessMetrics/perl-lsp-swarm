@@ -90,7 +90,7 @@
         "model": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["id"],
+          "required": ["id", "revision"],
           "properties": {
             "id": { "type": "string", "minLength": 1 },
             "revision": { "type": "string", "minLength": 1 }

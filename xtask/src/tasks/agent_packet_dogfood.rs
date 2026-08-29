@@ -102,6 +102,8 @@ const CREDENTIAL_KEY_MARKERS: &[&str] = &[
     "auth_token",
     "client_secret",
     "private_key",
+    "credential",
+    "credentials",
     "secret",
     "token",
 ];
@@ -442,10 +444,44 @@ fn scan_hygiene(text: &str, where_: &str, violations: &mut Vec<Violation>) {
 }
 
 fn is_credential_key(key: &str) -> bool {
-    let normalized = key.to_ascii_lowercase().replace('-', "_");
+    let normalized = normalize_credential_key(key);
     CREDENTIAL_KEY_MARKERS
         .iter()
         .any(|marker| normalized == *marker || normalized.ends_with(&format!("_{marker}")))
+}
+
+/// Normalize structured field names before comparing them with the closed
+/// credential vocabulary. JSON producers use both snake_case and camelCase
+/// (including acronym-bearing names such as `APIKey`), so lowercasing alone
+/// would let `accessToken` or `clientSecret` bypass the fail-closed check.
+fn normalize_credential_key(key: &str) -> String {
+    let chars: Vec<char> = key.chars().collect();
+    let mut normalized = String::with_capacity(key.len());
+    for (index, character) in chars.iter().copied().enumerate() {
+        if character == '-' {
+            if !normalized.ends_with('_') {
+                normalized.push('_');
+            }
+            continue;
+        }
+        if character.is_ascii_uppercase() {
+            let previous = index.checked_sub(1).and_then(|i| chars.get(i)).copied();
+            let next = chars.get(index + 1).copied();
+            let starts_word = previous.is_some_and(|previous| {
+                previous.is_ascii_lowercase()
+                    || previous.is_ascii_digit()
+                    || (previous.is_ascii_uppercase()
+                        && next.is_some_and(|next| next.is_ascii_lowercase()))
+            });
+            if starts_word && !normalized.ends_with('_') {
+                normalized.push('_');
+            }
+            normalized.push(character.to_ascii_lowercase());
+        } else {
+            normalized.push(character);
+        }
+    }
+    normalized
 }
 
 /// Chain-of-thought key guard at any depth of one retained payload: the walk
@@ -696,11 +732,17 @@ pub(crate) fn validate_manifest(doc: &Value) -> Vec<Violation> {
                             "subject.model",
                             &mut violations,
                         );
+                    } else {
+                        violations.push(Violation::new(
+                            "missing_subject_field",
+                            "subject.model.revision: required model revision was not supplied"
+                                .to_string(),
+                        ));
                     }
                 }
                 None => violations.push(Violation::new(
                     "missing_subject_field",
-                    "subject: model must be an object with id".to_string(),
+                    "subject: model must be an object with id and revision".to_string(),
                 )),
             }
             // The permission scope ceiling may never be dropped or emptied.
@@ -1372,22 +1414,38 @@ fn validate_schema_file(root: &Path) -> Result<Vec<String>> {
         }
     }
 
-    // Required-root set: the closed core's mandatory fields are pinned.
-    let expected_required =
-        ["schema", "schema_version", "run_id", "identity", "subject", "disposition", "events"];
-    match at(&["required"]).as_array() {
-        Some(required) => {
-            let mut names: Vec<&str> = required.iter().filter_map(Value::as_str).collect();
-            names.sort_unstable();
-            let mut expected_names = expected_required.to_vec();
-            expected_names.sort_unstable();
-            if names.ne(&expected_names) {
-                violations.push(format!(
-                    "schema root required set drifted from the pinned vocabulary: {names:?}"
-                ));
+    // Required sets: the closed core's mandatory fields are pinned, including
+    // the model revision that makes the executing model identity complete.
+    let expected_required_sets: &[(&[&str], &[&str], &str)] = &[
+        (
+            &["required"],
+            &["schema", "schema_version", "run_id", "identity", "subject", "disposition", "events"],
+            "root",
+        ),
+        (
+            &["$defs", "subject", "properties", "model", "required"],
+            &["id", "revision"],
+            "subject.model",
+        ),
+    ];
+    for (path_segments, expected_values, label) in expected_required_sets {
+        match at(path_segments).as_array() {
+            Some(required) => {
+                let mut names: Vec<&str> = required.iter().filter_map(Value::as_str).collect();
+                names.sort_unstable();
+                let mut expected_names = expected_values.to_vec();
+                expected_names.sort_unstable();
+                if names.ne(&expected_names) {
+                    violations.push(format!(
+                        "schema {label} required set drifted from the pinned vocabulary: {names:?}"
+                    ));
+                }
             }
+            None => violations.push(format!(
+                "schema is missing the {label} required set at {}",
+                segments_label(path_segments)
+            )),
         }
-        None => violations.push("schema is missing the root required set".to_string()),
     }
 
     // Numeric bounds: retention caps and non-empty collection minimums.
