@@ -1664,7 +1664,7 @@
       "label_mode": "partial",
       "source_path": "crates/perl-corpus/fixtures/parser_accuracy/imports_exports.pl",
       "scored_lines": 6,
-      "scored_symbols": 10,
+      "scored_symbols": 6,
       "fully_labeled_regions": 0,
       "partial_labeled_regions": 1,
       "unknown_regions": 1,
@@ -1693,19 +1693,19 @@
           ]
         },
         {
-          "line": 6,
+          "line": 5,
           "expected_tags": [
-            "variable_decl"
+            "import"
           ]
         },
         {
-          "line": 8,
+          "line": 7,
           "expected_tags": [
             "sub_decl"
           ]
         },
         {
-          "line": 19,
+          "line": 8,
           "expected_tags": [
             "function_call"
           ]
@@ -1713,36 +1713,6 @@
       ],
       "symbol_expectations": {
         "entities": [
-          {
-            "id": "imports_exports_package_entity",
-            "kind": "Package",
-            "canonical_name": "Accuracy::ImportsExports",
-            "span_text": "Accuracy::ImportsExports",
-            "package": "Accuracy",
-            "scope": null,
-            "provenance": "ExactAst",
-            "confidence": "High"
-          },
-          {
-            "id": "imports_exports_answer_entity",
-            "kind": "Subroutine",
-            "canonical_name": "Accuracy::ImportsExports::answer",
-            "span_text": "answer",
-            "package": "Accuracy::ImportsExports",
-            "scope": null,
-            "provenance": "ExactAst",
-            "confidence": "High"
-          },
-          {
-            "id": "imports_exports_export_ok_entity",
-            "kind": "GlobalVariable",
-            "canonical_name": "Accuracy::ImportsExports::EXPORT_OK",
-            "span_text": "@EXPORT_OK",
-            "package": "Accuracy::ImportsExports",
-            "scope": null,
-            "provenance": "ExactAst",
-            "confidence": "High"
-          },
           {
             "id": "imports_exports_consumer_package_entity",
             "kind": "Package",
@@ -1798,14 +1768,6 @@
         ],
         "edges": [
           {
-            "id": "imports_exports_defines_answer",
-            "kind": "Defines",
-            "from": "Accuracy::ImportsExports",
-            "to": "Accuracy::ImportsExports::answer",
-            "provenance": "ExactAst",
-            "confidence": "High"
-          },
-          {
             "id": "imports_exports_defines_call_imported",
             "kind": "Defines",
             "from": "Accuracy::ImportsConsumer",
@@ -1817,10 +1779,10 @@
       },
       "ast_expectations": [
         {
-          "id": "imports_exports_package",
+          "id": "imports_exports_consumer_package",
           "kind": "Package",
           "line": 1,
-          "span_text": "package Accuracy::ImportsExports",
+          "span_text": "package Accuracy::ImportsConsumer",
           "parent_kind": "Program",
           "depth": 1,
           "operator": null,
@@ -1847,49 +1809,9 @@
           "parent_operator": null
         },
         {
-          "id": "imports_exports_export_variable",
-          "kind": "VariableDeclaration",
-          "line": 6,
-          "span_text": "our @EXPORT_OK",
-          "parent_kind": null,
-          "depth": null,
-          "operator": null,
-          "parent_operator": null
-        },
-        {
-          "id": "imports_exports_answer_subroutine",
-          "kind": "Subroutine",
-          "line": 8,
-          "span_text": "sub answer",
-          "parent_kind": "Program",
-          "depth": 1,
-          "operator": null,
-          "parent_operator": null
-        },
-        {
-          "id": "imports_exports_answer_return",
-          "kind": "Return",
-          "line": 9,
-          "span_text": "return 42",
-          "parent_kind": null,
-          "depth": null,
-          "operator": null,
-          "parent_operator": null
-        },
-        {
-          "id": "imports_exports_consumer_package",
-          "kind": "Package",
-          "line": 12,
-          "span_text": "package Accuracy::ImportsConsumer",
-          "parent_kind": "Program",
-          "depth": 1,
-          "operator": null,
-          "parent_operator": null
-        },
-        {
           "id": "imports_exports_import_use",
           "kind": "Use",
-          "line": 16,
+          "line": 5,
           "span_text": "use Accuracy::ImportsExports",
           "parent_kind": null,
           "depth": null,
@@ -1899,7 +1821,7 @@
         {
           "id": "imports_exports_consumer_subroutine",
           "kind": "Subroutine",
-          "line": 18,
+          "line": 7,
           "span_text": "sub call_imported",
           "parent_kind": "Program",
           "depth": 1,
@@ -1907,19 +1829,9 @@
           "parent_operator": null
         },
         {
-          "id": "imports_exports_imported_call",
-          "kind": "FunctionCall",
-          "line": 19,
-          "span_text": "answer()",
-          "parent_kind": null,
-          "depth": null,
-          "operator": null,
-          "parent_operator": null
-        },
-        {
           "id": "imports_exports_consumer_return",
           "kind": "Return",
-          "line": 19,
+          "line": 8,
           "span_text": "return answer()",
           "parent_kind": null,
           "depth": null,
@@ -1927,12 +1839,154 @@
           "parent_operator": null
         },
         {
-          "id": "imports_exports_qw_string",
-          "kind": "String",
-          "line": 6,
-          "span_text": "answer",
-          "parent_kind": "ArrayLiteral",
-          "depth": 3,
+          "id": "imports_exports_imported_call",
+          "kind": "FunctionCall",
+          "line": 8,
+          "span_text": "answer()",
+          "parent_kind": null,
+          "depth": null,
+          "operator": null,
+          "parent_operator": null
+        }
+      ]
+    },
+    {
+      "id": "imports_exports_producer",
+      "family": "imports_exports",
+      "label_mode": "full",
+      "source_path": "crates/perl-corpus/fixtures/parser_accuracy/Accuracy/ImportsExports.pm",
+      "scored_lines": 7,
+      "scored_symbols": 4,
+      "fully_labeled_regions": 1,
+      "partial_labeled_regions": 0,
+      "unknown_regions": 0,
+      "negative_regions": 0,
+      "dynamic_boundaries": 0,
+      "unsupported_constructs": 0,
+      "real_project_file": false,
+      "generated": false,
+      "line_expectations": [
+        { "line": 1, "expected_tags": ["package_decl"] },
+        { "line": 3, "expected_tags": ["import"] },
+        { "line": 4, "expected_tags": ["import"] },
+        { "line": 5, "expected_tags": ["import"] },
+        { "line": 7, "expected_tags": ["variable_decl"] },
+        { "line": 9, "expected_tags": ["sub_decl"] },
+        { "line": 10, "expected_tags": [] }
+      ],
+      "symbol_expectations": {
+        "entities": [
+          {
+            "id": "imports_exports_producer_package_entity",
+            "kind": "Package",
+            "canonical_name": "Accuracy::ImportsExports",
+            "span_text": "Accuracy::ImportsExports",
+            "package": "Accuracy",
+            "scope": null,
+            "provenance": "ExactAst",
+            "confidence": "High"
+          },
+          {
+            "id": "imports_exports_producer_answer_entity",
+            "kind": "Subroutine",
+            "canonical_name": "Accuracy::ImportsExports::answer",
+            "span_text": "answer",
+            "package": "Accuracy::ImportsExports",
+            "scope": null,
+            "provenance": "ExactAst",
+            "confidence": "High"
+          },
+          {
+            "id": "imports_exports_producer_export_ok_entity",
+            "kind": "GlobalVariable",
+            "canonical_name": "Accuracy::ImportsExports::EXPORT_OK",
+            "span_text": "@EXPORT_OK",
+            "package": "Accuracy::ImportsExports",
+            "scope": null,
+            "provenance": "ExactAst",
+            "confidence": "High"
+          }
+        ],
+        "occurrences": [],
+        "edges": [
+          {
+            "id": "imports_exports_producer_defines_answer",
+            "kind": "Defines",
+            "from": "Accuracy::ImportsExports",
+            "to": "Accuracy::ImportsExports::answer",
+            "provenance": "ExactAst",
+            "confidence": "High"
+          }
+        ]
+      },
+      "ast_expectations": [
+        {
+          "id": "imports_exports_producer_package",
+          "kind": "Package",
+          "line": 1,
+          "span_text": "package Accuracy::ImportsExports",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "imports_exports_producer_use_strict",
+          "kind": "Use",
+          "line": 3,
+          "span_text": "use strict",
+          "parent_kind": null,
+          "depth": null,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "imports_exports_producer_use_warnings",
+          "kind": "Use",
+          "line": 4,
+          "span_text": "use warnings",
+          "parent_kind": null,
+          "depth": null,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "imports_exports_producer_use_exporter",
+          "kind": "Use",
+          "line": 5,
+          "span_text": "use Exporter",
+          "parent_kind": null,
+          "depth": null,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "imports_exports_producer_export_variable",
+          "kind": "VariableDeclaration",
+          "line": 7,
+          "span_text": "our @EXPORT_OK",
+          "parent_kind": null,
+          "depth": null,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "imports_exports_producer_answer_subroutine",
+          "kind": "Subroutine",
+          "line": 9,
+          "span_text": "sub answer",
+          "parent_kind": "Program",
+          "depth": 1,
+          "operator": null,
+          "parent_operator": null
+        },
+        {
+          "id": "imports_exports_producer_answer_return",
+          "kind": "Return",
+          "line": 10,
+          "span_text": "return 42",
+          "parent_kind": null,
+          "depth": null,
           "operator": null,
           "parent_operator": null
         }
