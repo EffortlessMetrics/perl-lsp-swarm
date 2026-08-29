@@ -110,6 +110,15 @@ export class LanguageClientLifecycle<TClient extends LifecycleClient<TEvent>, TE
     };
   }
 
+  /** True only while this exact client and generation remain authoritative. */
+  isCurrent(client: TClient, generation: number): boolean {
+    return (
+      this.generation === generation &&
+      this.activeClient?.generation === generation &&
+      this.activeClient.client === client
+    );
+  }
+
   /** Start the current generation, coalescing concurrent callers. */
   start(): Promise<TClient | undefined> {
     if (this.restartPromise) {

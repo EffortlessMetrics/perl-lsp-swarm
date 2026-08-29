@@ -7,6 +7,7 @@ use super::{
     SetExpressionResponseBody, Value, Variable, VariableCacheKind, lock_or_recover,
     module_path_to_name, parse_dap_arguments, validate_safe_expression,
 };
+use crate::parse_origin::{DebuggerOutputOrigin, ParseIdentity};
 use crate::value::PerlValue;
 use crate::value_format::ValueFormatPolicy;
 use std::sync::LazyLock;
@@ -225,7 +226,13 @@ impl DebugAdapter {
         }
 
         let parsed = if let Some(lines) = framed_lines.as_ref() {
-            Self::parse_evaluate_result_from_lines(lines, expression, true)
+            Self::parse_evaluate_result_from_lines(
+                lines,
+                expression,
+                true,
+                DebuggerOutputOrigin::DebuggerControlPayload,
+                ParseIdentity::new().with_operation_id_from_i64(request_seq),
+            )
         } else {
             self.parse_evaluate_result_from_output(expression)
         };
@@ -442,7 +449,15 @@ impl DebugAdapter {
             .and_then(|(begin, end)| {
                 self.capture_framed_debugger_output(begin, end, DEBUGGER_QUERY_WAIT_MS * 8)
             })
-            .and_then(|lines| Self::parse_evaluate_result_from_lines(&lines, expression, true));
+            .and_then(|lines| {
+                Self::parse_evaluate_result_from_lines(
+                    &lines,
+                    expression,
+                    true,
+                    DebuggerOutputOrigin::DebuggerControlPayload,
+                    ParseIdentity::new().with_operation_id_from_i64(request_seq),
+                )
+            });
 
         let Some((default_value, rendered_type, typed)) = parsed else {
             return DapMessage::Response {

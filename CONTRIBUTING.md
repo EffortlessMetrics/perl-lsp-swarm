@@ -38,6 +38,17 @@ just pr-fast
 The repository pins Rust channel `1.95.0` in `rust-toolchain.toml` and currently
 requires MSRV 1.95.
 
+### Windows symlink-privilege skips (#12567)
+
+Creating file symlinks on Windows requires `SeCreateSymbolicLinkPrivilege`,
+which unprivileged sessions hold only with Developer Mode enabled. Tests whose
+subject is symlink/reparse-point **rejection** use
+`perl_tdd_support::try_create_file_symlink` (and `try_create_dir_symlink`):
+they print a visible skip note and pass when the session lacks the privilege,
+and fail loudly on every other error. Enable Windows Developer Mode to opt out
+of these skips entirely — it is opt-in, never a requirement, and CI is
+unaffected (Linux runners hold the equivalent capability).
+
 ## Choose one coherent claim
 
 A useful pull request has:
@@ -139,6 +150,8 @@ Useful command choices:
 | Fast inner loop | `just pr-fast` |
 | Full local merge gate | `just ci-gate` |
 | Agent compile/test/lint | `just agent-check`, `just agent-test`, `just agent-clippy` |
+| Multi-worktree shared build cache | `just cached <cargo args>` — see [Multi-Worktree Build Caching](docs/how-to/MULTI_WORKTREE_BUILD_CACHING.md) |
+| Build disk grew / stale target trees | `just target-gc` (dry-run report), then `just target-gc --apply` |
 | Parser or generated status changed | `just status-update` then `just status-check` |
 | Public API documentation changed | `just ci-docs-check` and `just docs-verify` |
 | Release/version surfaces changed | `just version-check` then `just release-check` |

@@ -461,7 +461,8 @@ mod tests {
     }
 
     #[test]
-    fn error_expected_tokens_are_material_and_absent_from_sexp() {
+    fn error_expected_tokens_are_material_and_visible_in_sexp()
+    -> Result<(), perl_token::TokenSpanError> {
         let left = Node::new(
             NodeKind::Error {
                 message: "oops".to_string(),
@@ -480,23 +481,26 @@ mod tests {
             },
             loc(0, 1),
         );
-        assert_eq!(left.to_sexp(), right.to_sexp());
+        assert_ne!(left.to_sexp(), right.to_sexp(), "recovery expected tokens must be visible");
         assert_ne!(left, right);
         let with_found = Node::new(
             NodeKind::Error {
                 message: "oops".to_string(),
                 expected: vec![TokenKind::Identifier],
-                found: Some(Token::new(TokenKind::Identifier, "x", 0, 1)),
+                found: Some(Token::new_checked(TokenKind::Identifier, "x", 0, 1)?),
                 partial: None,
             },
             loc(0, 1),
         );
-        assert_eq!(left.to_sexp(), with_found.to_sexp());
+        assert_ne!(left.to_sexp(), with_found.to_sexp(), "found token must be visible");
         assert_ne!(left, with_found);
+        assert!(left.to_sexp().contains("expected"), "sexp = {}", left.to_sexp());
+        assert!(with_found.to_sexp().contains("found"), "sexp = {}", with_found.to_sexp());
+        Ok(())
     }
 
     #[test]
-    fn subroutine_name_span_and_declarator_are_material_and_absent_from_sexp() {
+    fn subroutine_name_span_is_material_and_absent_from_sexp() {
         let body = Node::new(NodeKind::Block { statements: vec![] }, loc(10, 12));
         let left = Node::new(
             NodeKind::Subroutine {
@@ -534,10 +538,11 @@ mod tests {
             },
             loc(0, 12),
         );
-        assert_eq!(left.to_sexp(), span_moved.to_sexp());
-        assert_eq!(left.to_sexp(), lexical.to_sexp());
+        assert_eq!(left.to_sexp(), span_moved.to_sexp(), "sexp omits name_span");
+        assert_ne!(left.to_sexp(), lexical.to_sexp(), "declarator is a debug payload");
         assert_ne!(left, span_moved);
         assert_ne!(left, lexical);
+        assert!(lexical.to_sexp().contains("declarator"), "sexp = {}", lexical.to_sexp());
     }
 
     #[test]

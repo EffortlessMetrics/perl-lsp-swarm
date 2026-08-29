@@ -398,6 +398,41 @@ do
     "custom claims never become canonical repository evidence")
 end
 
+do
+  -- Initialize timeout policy is policy-owned (#10657): the real
+  -- Server:initialize path queues NO explicit timeout, the longer
+  -- INITIALIZE_REQUEST_TIMEOUT governs, and even beyond it id=1 was on the
+  -- wire exactly once with a terminal typed expiry - never re-emitted.
+  local s = fresh_server()
+  ok(s:initialize("C:/proj", "litexl-test", "1.0") == true,
+    "initialize succeeds for the timeout-policy case")
+  local request = initialize_params(s)
+  local queued = s.request_list[#s.request_list]
+  ok(queued.timeout == nil,
+    "production initialize carries no explicit timeout; policy owns pacing")
+  ok(server_module.INITIALIZE_REQUEST_TIMEOUT == 120
+    and server_module.DEFAULT_REQUEST_TIMEOUT == 30,
+    "single-send timeout policies are named module constants")
+  s:process_requests()
+  local frames = 0
+  for _, frame_data in ipairs(s.wire) do
+    local decoded = json.decode(frame_data)
+    if decoded.id == 1 then frames = frames + 1 end
+  end
+  ok(frames == 1, "the initialize request hits the wire exactly once")
+  fake_epoch = fake_epoch + server_module.INITIALIZE_REQUEST_TIMEOUT + 1
+  s:process_requests()
+  fake_epoch = fake_epoch + server_module.INITIALIZE_REQUEST_TIMEOUT + 1
+  s.process_requests(s)
+  frames = 0
+  for _, frame_data in ipairs(s.wire) do
+    local decoded = json.decode(frame_data)
+    if decoded.id == 1 then frames = frames + 1 end
+  end
+  ok(frames == 1 and #s.request_list == 0,
+    "a slow initialize expires terminally without a second id=1 frame")
+end
+
 os.time = original_os_time
 PLATFORM = original_platform
 USERDIR = original_userdir
