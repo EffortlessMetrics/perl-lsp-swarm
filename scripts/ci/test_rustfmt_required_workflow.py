@@ -47,8 +47,14 @@ CONTRACT_TEST_FILES = (
 CARGO_FMT_RE = re.compile(r"cargo\s+fmt\b")
 
 
-def load_workflow() -> dict[str, Any]:
-    lines = WORKFLOW_PATH.read_text(encoding="utf-8").splitlines()
+def load_workflow(text: str | None = None) -> dict[str, Any]:
+    """Parse the formatter contract out of ci.yml, or out of `text` when supplied.
+
+    Accepting source text lets the mutation tests drop the governed context from
+    real workflow source instead of from an already-parsed dictionary (#9564).
+    """
+    source = WORKFLOW_PATH.read_text(encoding="utf-8") if text is None else text
+    lines = source.splitlines()
     triggers: dict[str, object] = {}
     job: dict[str, Any] = {"env": {}, "steps": []}
     section = ""
@@ -100,8 +106,9 @@ def load_workflow() -> dict[str, Any]:
     return {"on": triggers, "jobs": {JOB_ID: job}}
 
 
-def load_policy() -> dict[str, object]:
-    return tomllib.loads(POLICY_PATH.read_text(encoding="utf-8"))
+def load_policy(text: str | None = None) -> dict[str, object]:
+    source = POLICY_PATH.read_text(encoding="utf-8") if text is None else text
+    return tomllib.loads(source)
 
 
 def named_step(job: dict[str, Any], name: str) -> dict[str, Any]:
@@ -284,6 +291,119 @@ class RustfmtRequiredWorkflowTests(unittest.TestCase):
         entry["enforcement"] = "github-ruleset"
         with self.assertRaisesRegex(AssertionError, "remain advisory"):
             validate_contract(self.workflow, broken)
+
+
+def drop_governed_job(workflow_text: str) -> str:
+    """Delete the whole `rust-formatting:` job block from workflow source.
+
+    This reproduces the exact #9564 regression shape: the governed context
+    disappears and every other job in the workflow survives untouched.
+    """
+    lines = workflow_text.splitlines(keepends=True)
+    header = f"  {JOB_ID}:"
+    start = next(
+        (index for index, line in enumerate(lines) if line.rstrip("\n") == header),
+        None,
+    )
+    if start is None:
+        raise AssertionError(f"{JOB_ID!r} job block is not present in workflow source")
+    end = len(lines)
+    for cursor in range(start + 1, len(lines)):
+        candidate = lines[cursor].rstrip("\n")
+        if candidate.startswith("  ") and not candidate.startswith("   "):
+            end = cursor
+            break
+    return "".join(lines[:start] + lines[end:])
+
+
+def policy_entry_index(blocks: list[str], name: str) -> int:
+    hits = [index for index, block in enumerate(blocks) if f'name = "{name}"' in block]
+    if len(hits) != 1:
+        raise AssertionError(f"expected exactly one {name!r} policy entry, found {len(hits)}")
+    return hits[0]
+
+
+def drop_policy_entry(policy_text: str, name: str) -> str:
+    """Delete exactly one `[[checks]]` entry by context name from policy source."""
+    blocks = policy_text.split("[[checks]]")
+    del blocks[policy_entry_index(blocks, name)]
+    return "[[checks]]".join(blocks)
+
+
+def mutate_policy_entry(policy_text: str, name: str, old: str, new: str) -> str:
+    """Rewrite `old` into `new` inside exactly the named `[[checks]]` entry.
+
+    Scoping the rewrite to one entry keeps the mutation independent of key order
+    and of every unrelated context in the policy file.
+    """
+    blocks = policy_text.split("[[checks]]")
+    index = policy_entry_index(blocks, name)
+    if old not in blocks[index]:
+        raise AssertionError(f"{old!r} is not present in the {name!r} policy entry")
+    blocks[index] = blocks[index].replace(old, new, 1)
+    return "[[checks]]".join(blocks)
+
+
+class GovernedContextSourceMutationTests(unittest.TestCase):
+    """Prove the contract rejects the governed context being dropped from real source.
+
+    The dict-level mutations above prove `validate_contract` discriminates *after*
+    parsing succeeded. They cannot fail if the hand-rolled workflow parser simply
+    stops seeing the job, which is exactly how the #6858 rebase dropped the
+    `Rust formatting` governed context with nothing going red (#9564).
+    """
+
+    def setUp(self) -> None:
+        self.workflow_text = WORKFLOW_PATH.read_text(encoding="utf-8")
+        self.policy_text = POLICY_PATH.read_text(encoding="utf-8")
+
+    def validate_source(self, workflow_text: str, policy_text: str) -> None:
+        validate_contract(load_workflow(workflow_text), load_policy(policy_text))
+
+    def test_unmutated_source_satisfies_the_contract(self) -> None:
+        # Anti-vacuity: the mutations below must be the reason the contract fails.
+        self.validate_source(self.workflow_text, self.policy_text)
+
+    def test_dropping_the_governed_job_from_workflow_source_fails_closed(self) -> None:
+        broken = drop_governed_job(self.workflow_text)
+        self.assertNotIn(f"  {JOB_ID}:\n", broken)
+        self.assertLess(len(broken), len(self.workflow_text))
+        # The mutation stays surgical: the rest of the workflow is still there.
+        self.assertIn("\njobs:\n", broken)
+        self.assertIn("pull_request:", broken)
+        with self.assertRaisesRegex(AssertionError, "formatter context name drifted"):
+            self.validate_source(broken, self.policy_text)
+
+    def test_renaming_the_governed_context_in_workflow_source_fails_closed(self) -> None:
+        broken = self.workflow_text.replace(
+            f"name: {CONTEXT_NAME}", "name: Rust format check", 1
+        )
+        self.assertNotEqual(broken, self.workflow_text)
+        with self.assertRaisesRegex(AssertionError, "formatter context name drifted"):
+            self.validate_source(broken, self.policy_text)
+
+    def test_dropping_the_policy_entry_from_source_fails_closed(self) -> None:
+        broken = drop_policy_entry(self.policy_text, CONTEXT_NAME)
+        self.assertNotIn(f'name = "{CONTEXT_NAME}"', broken)
+        with self.assertRaisesRegex(AssertionError, "exactly one formatter context"):
+            self.validate_source(self.workflow_text, broken)
+
+    def test_repointing_the_policy_entry_in_source_fails_closed(self) -> None:
+        broken = mutate_policy_entry(
+            self.policy_text, CONTEXT_NAME, f'job = "{JOB_ID}"', 'job = "rust-fmt"'
+        )
+        self.assertNotEqual(broken, self.policy_text)
+        with self.assertRaisesRegex(AssertionError, "must name the owning job"):
+            self.validate_source(self.workflow_text, broken)
+
+    def test_promoting_the_policy_entry_in_source_fails_closed(self) -> None:
+        # The advisory-before-promotion rule must bind real policy source too.
+        broken = mutate_policy_entry(
+            self.policy_text, CONTEXT_NAME, "required = false", "required = true"
+        )
+        self.assertNotEqual(broken, self.policy_text)
+        with self.assertRaisesRegex(AssertionError, "remain advisory"):
+            self.validate_source(self.workflow_text, broken)
 
 
 def load_rust_small_workflow_text() -> str:
