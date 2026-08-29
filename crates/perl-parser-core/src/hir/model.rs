@@ -995,6 +995,15 @@ pub enum StorageClass {
     Implicit,
     /// Package global observed without a lexical binding.
     PackageGlobal,
+    /// Per-object `field` storage declared in a Perl 5.38+ `class` body.
+    ///
+    /// A field is neither a package global nor a lexical slot: its storage is
+    /// per instance, while its name is visible to the class body and its
+    /// methods. Recording it distinctly keeps `field $x` from being read as an
+    /// undeclared global or as a `my` binding. This names the storage only —
+    /// construction order, `ADJUST`, and object semantics remain unmodeled
+    /// (see #6672).
+    ClassField,
 }
 
 /// Variable reference and its lexical binding resolution.

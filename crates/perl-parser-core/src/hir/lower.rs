@@ -2355,6 +2355,10 @@ fn storage_class_for_declarator(declarator: &str) -> StorageClass {
         "our" => StorageClass::PackageOur,
         "state" => StorageClass::LexicalState,
         "local" => StorageClass::LocalizedPackage,
+        // A `field` in a 5.38+ class body is per-object storage. Without this
+        // arm it fell to `PackageGlobal` below, which made `field $x`
+        // indistinguishable from an undeclared package global (#13817).
+        "field" => StorageClass::ClassField,
         _ => StorageClass::PackageGlobal,
     }
 }
@@ -3216,7 +3220,15 @@ impl<'a> BodyBuilder2<'a> {
                     return match binding.storage {
                         StorageClass::LexicalMy
                         | StorageClass::LexicalState
-                        | StorageClass::Parameter => VariableKind::Lexical,
+                        | StorageClass::Parameter
+                        // A `field` name is resolved by the scope chain of the
+                        // class body and its methods, and has no stash entry.
+                        // `Lexical` is the truthful side of this binary split:
+                        // reading `$x` in a method is not a read of
+                        // `$Point::x`. It also makes the reference agree with
+                        // the field declaration, which already lowers to a
+                        // lexical write (#13817).
+                        | StorageClass::ClassField => VariableKind::Lexical,
                         StorageClass::PackageOur
                         | StorageClass::LocalizedPackage
                         | StorageClass::PackageGlobal
@@ -4191,7 +4203,52 @@ fn storage_class_for_decl(declarator: &str) -> DeclStorageClass {
         "our" => DeclStorageClass::Our,
         "local" => DeclStorageClass::Local,
         "state" => DeclStorageClass::State,
+        // Without this arm `field` fell to `My` below, contradicting the
+        // scope graph's answer for the same declaration (#13817).
+        "field" => DeclStorageClass::Field,
         _ => DeclStorageClass::My,
+    }
+}
+
+#[cfg(test)]
+mod declarator_storage_tests {
+    use super::{
+        DeclStorageClass, StorageClass, storage_class_for_decl, storage_class_for_declarator,
+    };
+
+    /// Every declarator that carries storage meaning must be named in the
+    /// scope-graph table rather than reaching the `PackageGlobal` catch-all.
+    #[test]
+    fn scope_graph_table_names_every_storage_declarator() {
+        assert_eq!(storage_class_for_declarator("my"), StorageClass::LexicalMy);
+        assert_eq!(storage_class_for_declarator("our"), StorageClass::PackageOur);
+        assert_eq!(storage_class_for_declarator("state"), StorageClass::LexicalState);
+        assert_eq!(storage_class_for_declarator("local"), StorageClass::LocalizedPackage);
+        assert_eq!(storage_class_for_declarator("field"), StorageClass::ClassField);
+    }
+
+    /// An unrecognized declarator keeps the existing catch-all behavior; this
+    /// fix does not widen the repair beyond `field`.
+    #[test]
+    fn unknown_declarator_still_falls_back_to_package_global() {
+        assert_eq!(storage_class_for_declarator("nonesuch"), StorageClass::PackageGlobal);
+    }
+
+    /// The body-arena declarator table must agree with the scope-graph table
+    /// about `field`, so the two HIR models cannot give one declaration two
+    /// different storage answers.
+    ///
+    /// Note: `class` bodies are not yet lowered into HIR body arenas, so this
+    /// table entry is not reachable end-to-end from a real `field`
+    /// declaration today. It is pinned here, at the table, so the two models
+    /// stay consistent when class-body lowering lands.
+    #[test]
+    fn body_arena_table_agrees_about_field() {
+        assert_eq!(storage_class_for_decl("field"), DeclStorageClass::Field);
+        assert_eq!(storage_class_for_decl("my"), DeclStorageClass::My);
+        assert_eq!(storage_class_for_decl("our"), DeclStorageClass::Our);
+        assert_eq!(storage_class_for_decl("local"), DeclStorageClass::Local);
+        assert_eq!(storage_class_for_decl("state"), DeclStorageClass::State);
     }
 }
 
