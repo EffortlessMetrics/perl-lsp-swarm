@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
   "owner_issue": 8282,
-  "reason": "Routes VS Code inline completion through one provider owner (#8282). The candidate adds src/inlineCompletionRouting.ts and extends streamingCompletion.ts, growing the bundled out/extension.js from 1591832 to 1601785 bytes. The measured 29-file package remains size-only: no file additions, removals, or permission loosening.",
+  "reason": "Routes VS Code inline completion through one provider owner (#8282). The candidate adds src/inlineCompletionRouting.ts and extends streamingCompletion.ts, growing the bundled out/extension.js from 1591832 to 1602864 bytes. The measured 29-file package remains size-only: no file additions, removals, or permission loosening.",
   "base_baseline_file_sha256": "d6f01dad2c5a8b18a75dab8bdd0c55a50d168f042b7a3aaa7ed57af7af5d63d2",
-  "candidate_baseline_file_sha256": "626e5009a7a8361f8a4bbcc7c1e05507a8a0c5d10930e2e50ddd367c0a221728",
+  "candidate_baseline_file_sha256": "2e2ecc43ab2ebd1be1b7c206c690a69452cbb303d1e4b60b7c9147800b7f7f5c",
   "base_inventory_sha256": "af077116d6be5400315a98d2e0f1aa05197c930ac7521fea3f6b72a319d56975",
-  "candidate_inventory_sha256": "82e67d43c10d16b571d5b22cadc33e035adefe4fd61b941b1f9f1192beec6d80"
+  "candidate_inventory_sha256": "af48317916044c805d24c16dfdb1f4a1444f51a4f6245c3a3757075405200b49"
 }

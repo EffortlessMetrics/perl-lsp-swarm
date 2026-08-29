@@ -209,6 +209,7 @@ export class InlineCompletionOwner {
     return { ...this.counters };
   }
 
+  /** Zero the counters. Test-support only; the owner never resets itself. */
   public resetCounters(): void {
     this.counters = { providerInvocations: 0, standardRoute: 0, streamRoute: 0 };
   }

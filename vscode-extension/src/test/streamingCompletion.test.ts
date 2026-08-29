@@ -945,6 +945,34 @@ describe('StreamingCompletionController — actual request context forwarding', 
     expect(params.position).toEqual({ line: 11, character: 3 });
   });
 
+  test('an already-cancelled token that fires synchronously does not throw', () => {
+    // VS Code returns a shortcut event for an already-cancelled token. Its own
+    // implementation defers via setTimeout, but a synchronous listener must not
+    // be able to take the provider down: the listener clears activeTokenSource,
+    // so reading the token after subscribing would throw a TypeError here.
+    const synchronouslyCancelledToken = {
+      isCancellationRequested: true,
+      onCancellationRequested: (listener: () => void) => {
+        listener();
+        return { dispose: jest.fn() };
+      },
+    } as unknown as vscode.CancellationToken;
+
+    expect(() =>
+      controller.provideInlineCompletionItems(
+        makeMockDoc('file:///a.pl', 1),
+        makeMockPos(5, 10),
+        { triggerKind: 0 } as vscode.InlineCompletionContext,
+        synchronouslyCancelledToken,
+      ),
+    ).not.toThrow();
+
+    // The request still went out with the generation's own token, and the
+    // synchronous cancellation settled it rather than leaving it in flight.
+    expect((mockClient.sendRequest as jest.Mock).mock.calls).toHaveLength(1);
+    expect(controller.snapshotStreamCounters().streamGenerationsStarted).toBe(1);
+  });
+
   test('editor cancellation cancels the in-flight stream', () => {
     let fireCancellation: (() => void) | undefined;
     const token = {

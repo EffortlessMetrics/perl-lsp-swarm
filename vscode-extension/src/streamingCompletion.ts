@@ -323,6 +323,14 @@ export class StreamingCompletionController implements vscode.Disposable, InlineS
     return undefined; // No immediate result -- will come via progress
   }
 
+  /**
+   * Begin one backend generation for this request identity.
+   *
+   * Cancels any prior generation first, then forwards the request's exact
+   * document identity, cursor, trigger kind, and `selectedCompletionInfo` to
+   * the server. The caller has already established that no generation is in
+   * flight for this identity.
+   */
   private startStreamRequest(
     document: vscode.TextDocument,
     position: vscode.Position,
@@ -387,6 +395,12 @@ export class StreamingCompletionController implements vscode.Disposable, InlineS
       partialResultToken,
     };
 
+    // Read the token before subscribing below. An already-cancelled editor
+    // token may invoke its listener synchronously, and that listener clears
+    // `activeTokenSource`; reading it afterwards would throw inside the
+    // provider and take inline completion down with it.
+    const requestToken = this.activeTokenSource.token;
+
     // Forward editor cancellation to the stream. Bound to this generation, so a
     // token cancelled after the stream was superseded cannot cancel its
     // successor.
@@ -401,20 +415,18 @@ export class StreamingCompletionController implements vscode.Disposable, InlineS
 
     this.streamGenerationsStarted += 1;
 
-    this.client
-      .sendRequest('textDocument/perlInlineCompletionStream', params, this.activeTokenSource.token)
-      .then(
-        () => this.settleActiveStream(requestIdentity),
-        (err: unknown) => {
-          this.settleActiveStream(requestIdentity);
-          // Silently ignore cancellation errors (expected on cursor movement)
-          if (err instanceof Error && err.message.includes('cancelled')) {
-            return;
-          }
-          // Non-cancellation errors are suppressed — the stream will be
-          // retried on the next inline completion trigger.
-        },
-      );
+    this.client.sendRequest('textDocument/perlInlineCompletionStream', params, requestToken).then(
+      () => this.settleActiveStream(requestIdentity),
+      (err: unknown) => {
+        this.settleActiveStream(requestIdentity);
+        // Silently ignore cancellation errors (expected on cursor movement)
+        if (err instanceof Error && err.message.includes('cancelled')) {
+          return;
+        }
+        // Non-cancellation errors are suppressed — the stream will be
+        // retried on the next inline completion trigger.
+      },
+    );
   }
 
   /**
@@ -453,6 +465,15 @@ export class StreamingCompletionController implements vscode.Disposable, InlineS
     }
   }
 
+  /**
+   * Abandon the in-flight generation and discard its candidate.
+   *
+   * Used when the candidate is no longer valid for what the user is looking at
+   * — cursor move, document change, editor cancellation, supersession, or
+   * disposal. Contrast `settleActiveStream`, which releases the same resources
+   * for a generation that finished on its own but keeps the cached candidate
+   * servable.
+   */
   private cancelActiveStream(): void {
     // Null out the active identity first so any in-flight progress callbacks
     // that fire after this point see a mismatched identity and bail out.
@@ -498,6 +519,13 @@ export class StreamingCompletionController implements vscode.Disposable, InlineS
     return !this.disposed && this.client === candidate;
   }
 
+  /**
+   * Retire this adapter with its language-client generation.
+   *
+   * Marks it disposed so `isStreamReady` reports false and the owner stops
+   * routing to it, then cancels any in-flight stream and releases the editor
+   * event subscriptions.
+   */
   dispose(): void {
     this.disposed = true;
     this.cancelActiveStream();
