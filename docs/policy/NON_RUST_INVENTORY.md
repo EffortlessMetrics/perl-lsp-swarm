@@ -7,9 +7,9 @@
 | Metric | Count |
 |---|---|
 | Total tracked files | 12335 |
-| Rust-family files | 3779 |
-| Non-Rust files | 8556 |
-| Allowlisted | 6321 |
+| Rust-family files | 3778 |
+| Non-Rust files | 8557 |
+| Allowlisted | 6322 |
 | Unclassified | 2235 |
 
 ## Non-Rust files by category
@@ -17,7 +17,7 @@
 | Category | Count |
 |---|---|
 | config | 490 |
-| documentation | 2792 |
+| documentation | 2793 |
 | generated | 2 |
 | production | 346 |
 | test | 2033 |
@@ -6034,6 +6034,7 @@
 | `docs/specs/PLSP-SPEC-0033-three-rail-evidence.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/specs/PLSP-SPEC-0034-compiler-world.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/specs/PLSP-SPEC-0035-executable-profile-and-eir.md` | documentation | `non-rust-docs-tree` | docs |
+| `docs/specs/PLSP-SPEC-0036-lsp4ij-windows-entrypoints.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/specs/README.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/specs/RELEASE_CANDIDATE_BASELINE.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/specs/WORKTREE_FORENSIC_EVIDENCE_V1.md` | documentation | `non-rust-docs-tree` | docs |
