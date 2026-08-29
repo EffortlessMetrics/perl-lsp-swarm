@@ -96,6 +96,29 @@ struct CargoMetadata {
     packages: Vec<CargoPackage>,
     workspace_members: Vec<String>,
     workspace_root: String,
+    resolve: CargoResolve,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct CargoResolve {
+    nodes: Vec<CargoResolveNode>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct CargoResolveNode {
+    id: String,
+    deps: Vec<CargoResolvedDependency>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct CargoResolvedDependency {
+    pkg: String,
+    dep_kinds: Vec<CargoResolvedDependencyKind>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct CargoResolvedDependencyKind {
+    kind: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -227,9 +250,9 @@ fn check_current_tree() -> Result<ExitCode> {
 fn load_cargo_metadata() -> Result<CargoMetadata> {
     let cargo = env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
     let output = Command::new(cargo)
-        .args(["metadata", "--format-version", "1", "--no-deps", "--locked"])
+        .args(["metadata", "--format-version", "1", "--locked"])
         .output()
-        .context("run `cargo metadata --format-version 1 --no-deps --locked`")?;
+        .context("run `cargo metadata --format-version 1 --locked`")?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -259,7 +282,7 @@ fn validate(
     validate_required_packages(policy, &packages, &publish_order, &mut findings);
     validate_optional_service(policy, &packages, &publish_order, &mut findings);
     validate_mcp_stage(policy, &packages, &publish_order, &mut findings);
-    validate_dependencies(policy, &packages, &mut findings);
+    validate_dependencies(policy, &packages, &metadata.resolve, &mut findings);
     validate_publish_order(policy, &packages, &publish_order, &mut findings);
     validate_reserved_executables(policy, &packages, &mut findings);
 
@@ -509,6 +532,7 @@ fn target_names<'a>(package: &'a CargoPackage, kind: &str) -> BTreeSet<&'a str> 
 fn validate_dependencies(
     policy: &ProductTopologyPolicy,
     packages: &BTreeMap<String, &CargoPackage>,
+    resolve: &CargoResolve,
     findings: &mut BTreeSet<String>,
 ) {
     if let Some(product) = packages.get(&policy.packages.product).copied() {
@@ -517,6 +541,7 @@ fn validate_dependencies(
             &policy.dependencies.product_requires,
             "product",
             packages,
+            resolve,
             findings,
         );
         if policy.mcp_stage == McpStage::Required {
@@ -525,6 +550,7 @@ fn validate_dependencies(
                 std::slice::from_ref(&policy.packages.mcp_adapter),
                 "stage=required product",
                 packages,
+                resolve,
                 findings,
             );
         }
@@ -558,6 +584,7 @@ fn validate_dependencies(
             &policy.dependencies.mcp_requires,
             "MCP adapter",
             packages,
+            resolve,
             findings,
         );
         forbid_dependencies(mcp_adapter, &policy.dependencies.mcp_forbids, "MCP adapter", findings);
@@ -569,25 +596,35 @@ fn require_normal_dependencies(
     required: &[String],
     owner: &str,
     workspace_packages: &BTreeMap<String, &CargoPackage>,
+    resolve: &CargoResolve,
     findings: &mut BTreeSet<String>,
 ) {
-    let dependencies = package
-        .dependencies
-        .iter()
-        .filter(|dependency| {
-            dependency.kind.is_none()
-                && !dependency.optional
-                && dependency.rename.is_none()
-                && dependency.source.is_none()
-                && workspace_packages.contains_key(&dependency.name)
-        })
-        .map(|dependency| dependency.name.as_str())
-        .collect::<BTreeSet<_>>();
+    let resolved_node = resolve.nodes.iter().find(|node| node.id == package.id);
 
     for dependency in required {
-        if !dependencies.contains(dependency.as_str()) {
+        let manifest_has_normal_dependency = package.dependencies.iter().any(|candidate| {
+            candidate.name == *dependency
+                && candidate.kind.is_none()
+                && !candidate.optional
+                && candidate.rename.is_none()
+                && candidate.source.is_none()
+        });
+        let resolves_to_workspace_package =
+            workspace_packages.get(dependency).is_some_and(|workspace_package| {
+                resolved_node.is_some_and(|node| {
+                    node.deps.iter().any(|resolved_dependency| {
+                        resolved_dependency.pkg == workspace_package.id
+                            && resolved_dependency
+                                .dep_kinds
+                                .iter()
+                                .any(|dependency_kind| dependency_kind.kind.is_none())
+                    })
+                })
+            });
+
+        if !manifest_has_normal_dependency || !resolves_to_workspace_package {
             findings.insert(format!(
-                "dependency: {owner} package={} requires normal dependency={dependency} (non-optional, unrenamed)",
+                "dependency: {owner} package={} requires normal dependency={dependency} (non-optional, unrenamed, resolved to the governed workspace package)",
                 package.name
             ));
         }
@@ -810,9 +847,41 @@ mod tests {
             product.dependencies.push(dependency("perl-mcp"));
         }
 
+        let workspace_packages = packages
+            .iter()
+            .filter(|package| workspace_members.contains(&package.id))
+            .map(|package| (package.name.as_str(), package.id.as_str()))
+            .collect::<BTreeMap<_, _>>();
+        let nodes = packages
+            .iter()
+            .filter(|package| workspace_members.contains(&package.id))
+            .map(|package| CargoResolveNode {
+                id: package.id.clone(),
+                deps: package
+                    .dependencies
+                    .iter()
+                    .filter_map(|dependency| {
+                        workspace_packages.get(dependency.name.as_str()).map(|package_id| {
+                            CargoResolvedDependency {
+                                pkg: (*package_id).to_owned(),
+                                dep_kinds: vec![CargoResolvedDependencyKind {
+                                    kind: dependency.kind.clone(),
+                                }],
+                            }
+                        })
+                    })
+                    .collect(),
+            })
+            .collect();
+
         (
             policy(stage),
-            CargoMetadata { packages, workspace_members, workspace_root: ".".to_owned() },
+            CargoMetadata {
+                packages,
+                workspace_members,
+                workspace_root: ".".to_owned(),
+                resolve: CargoResolve { nodes },
+            },
             RootManifest {
                 workspace: WorkspaceManifest {
                     metadata: WorkspaceMetadata { publish: PublishMetadata { allow } },
@@ -900,6 +969,17 @@ mod tests {
 
         let report = validate(&policy, &metadata, &manifest);
         assert!(has_finding(&report, "required workspace package missing=perl-mcp"));
+    }
+
+    #[test]
+    fn admitted_stage_accepts_resolved_workspace_dependency() -> Result<()> {
+        let (policy, metadata, manifest) = fixture(McpStage::Admitted);
+        let report = validate(&policy, &metadata, &manifest);
+        if report.findings.is_empty() {
+            Ok(())
+        } else {
+            bail!("resolved workspace dependency was rejected: {report:?}")
+        }
     }
 
     #[test]
@@ -1017,7 +1097,8 @@ mod tests {
         let (policy, mut metadata, manifest) = fixture(McpStage::Admitted);
         if let Some(mcp) = metadata.packages.iter_mut().find(|package| package.name == "perl-mcp") {
             if let Some(dependency) = mcp.dependencies.first_mut() {
-                dependency.source = Some("registry+https://github.com/rust-lang/crates.io-index".to_owned());
+                dependency.source =
+                    Some("registry+https://github.com/rust-lang/crates.io-index".to_owned());
             }
         }
         let report = validate(&policy, &metadata, &manifest);
@@ -1025,6 +1106,40 @@ mod tests {
             &report,
             "MCP adapter package=perl-mcp requires normal dependency=perl-code-intelligence"
         ));
+    }
+
+    #[test]
+    fn admitted_stage_rejects_same_name_non_member_path_dependency() -> Result<()> {
+        let (policy, mut metadata, manifest) = fixture(McpStage::Admitted);
+        let external_id = "path+file:///outside/perl-code-intelligence#0.1.0";
+        metadata.packages.push(package(
+            "perl-code-intelligence",
+            external_id,
+            "perl_code_intelligence",
+            &[],
+            &[],
+        ));
+
+        let Some(mcp_node) = metadata.resolve.nodes.iter_mut().find(|node| node.id == "mcp") else {
+            bail!("fixture is missing the resolved perl-mcp node");
+        };
+        let Some(service_edge) = mcp_node.deps.iter_mut().find(|dependency| {
+            dependency.pkg == "service"
+                && dependency.dep_kinds.iter().any(|kind| kind.kind.is_none())
+        }) else {
+            bail!("fixture is missing the normal perl-mcp service dependency");
+        };
+        service_edge.pkg = external_id.to_owned();
+
+        let report = validate(&policy, &metadata, &manifest);
+        if has_finding(
+            &report,
+            "MCP adapter package=perl-mcp requires normal dependency=perl-code-intelligence",
+        ) {
+            Ok(())
+        } else {
+            bail!("same-name non-member path dependency was accepted: {report:?}")
+        }
     }
 
     #[test]
