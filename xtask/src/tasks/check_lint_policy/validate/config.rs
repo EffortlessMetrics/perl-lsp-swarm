@@ -126,20 +126,20 @@ fn validate_disallowed_fields_policy(config: &Value, ledger: &LintLedger) -> Res
     if !matches!(lint.status.as_str(), "active" | "debt") {
         if lint.configuration_state.is_some() {
             bail!(
-                "{} lint {} cannot set configuration_state; the marker is valid only for active or debt lints",
-                lint.status,
-                lint.name
+                "{LINT_LEDGER} row {} with status {} cannot set configuration_state; the marker is valid only for active or debt lints",
+                lint.name,
+                lint.status
             );
         }
         if config.get(DISALLOWED_FIELDS_CONFIG).is_some() {
             bail!(
-                "{CLIPPY_CONFIG} configures {DISALLOWED_FIELDS_CONFIG}, but {} is {}",
+                "{CLIPPY_CONFIG} configures {DISALLOWED_FIELDS_CONFIG}, but {LINT_LEDGER} row {} is {}",
                 lint.name,
                 lint.status
             );
         }
         bail!(
-            "lint {} must remain active or debt; {} is not a valid status for this config-backed policy",
+            "{LINT_LEDGER} row {} must remain active or debt; {} is not a valid status for this config-backed policy",
             lint.name,
             lint.status
         );
