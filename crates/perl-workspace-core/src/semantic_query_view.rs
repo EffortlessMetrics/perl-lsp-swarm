@@ -61,6 +61,12 @@ pub enum NotProvenReason {
     },
     /// The generating request did not admit the fact class this index needs.
     FactClassNotAdmitted,
+    /// An adopted shard never populated this fact class, so its contribution
+    /// to the denominator is unproven: missing extraction is not zero.
+    ShardClassNotPopulated {
+        /// The fact family whose per-shard population is unproven.
+        family: &'static str,
+    },
 }
 
 impl fmt::Display for NotProvenReason {
@@ -71,6 +77,9 @@ impl fmt::Display for NotProvenReason {
             }
             Self::FactClassNotAdmitted => {
                 write!(f, "generating request did not admit the required fact class")
+            }
+            Self::ShardClassNotPopulated { family } => {
+                write!(f, "adopted shards never populated {family} facts")
             }
         }
     }
@@ -463,6 +472,15 @@ pub struct SemanticQueryView {
     anchor_max_ends: BTreeMap<FileId, AnchorMaxEndIndex>,
     /// Typed completeness per family, keyed by family name.
     completeness: BTreeMap<&'static str, IndexCompleteness>,
+    /// Discovered-but-unread relative paths carried over from the model so
+    /// path-scoped lookups can refuse a fabricated legitimate empty.
+    unread_discovered: BTreeSet<String>,
+    /// Structural limitation-to-path association (limitation id -> relative
+    /// paths it bounds), joined from model-level limitations that declare
+    /// paths and from adopted shard states. Ids absent from this map predate
+    /// the structural field and fall back to the `<kind>:<path>` id
+    /// convention at query time.
+    limitation_paths: BTreeMap<String, BTreeSet<String>>,
     /// Build work receipt.
     work: ViewWorkReceipt,
     /// Deterministic view fingerprint (`fnv64:` form).
@@ -500,6 +518,8 @@ impl SemanticQueryView {
         let anchors_by_file = index_anchors(&declarations_by_file);
         let anchor_max_ends = anchor_max_end_index(&anchors_by_file);
         let completeness = classify_families(model);
+        let unread_discovered = model.unread_discovered.clone();
+        let limitation_paths = structural_limitation_paths(model);
         let work = measure_work(&sources, &declarations_by_file, &symbols, &packages);
         let fingerprint = fingerprint_view(model, &sources, &declarations_by_file, &completeness);
 
@@ -514,6 +534,8 @@ impl SemanticQueryView {
             anchors_by_file,
             anchor_max_ends,
             completeness,
+            unread_discovered,
+            limitation_paths,
             work,
             fingerprint,
         })
@@ -550,17 +572,24 @@ impl SemanticQueryView {
             IndexCompleteness::Complete => IndexAnswer::Complete(found),
             IndexCompleteness::Partial { limitation_ids } => match found {
                 Some(entry) => {
-                    let ids = limitations_matching_path(
-                        &entry.relative_path,
-                        limitation_ids.iter().map(String::as_str),
-                    );
+                    let ids = self.limitations_bounding_path(&limitation_ids, relative_path);
                     if ids.is_empty() {
                         IndexAnswer::Complete(Some(entry))
                     } else {
                         IndexAnswer::Partial { rows: Some(entry), limitation_ids: ids }
                     }
                 }
-                None => IndexAnswer::Complete(None),
+                None => {
+                    if self.unread_discovered.contains(relative_path) {
+                        // The walk discovered this path and the read failed:
+                        // its absence is bounded, never a legitimate empty.
+                        let ids =
+                            self.limitations_bounding_path(&limitation_ids, relative_path);
+                        IndexAnswer::Partial { rows: None, limitation_ids: ids }
+                    } else {
+                        IndexAnswer::Complete(None)
+                    }
+                }
             },
             IndexCompleteness::NotProven(reason) => IndexAnswer::NotProven(*reason),
         }
@@ -579,10 +608,9 @@ impl SemanticQueryView {
             IndexCompleteness::Partial { limitation_ids } => {
                 let mut ids: BTreeSet<&str> = BTreeSet::new();
                 for entry in &rows {
-                    ids.extend(limitations_matching_path(
-                        &entry.relative_path,
-                        limitation_ids.iter().map(String::as_str),
-                    ));
+                    ids.extend(
+                        self.limitations_bounding_path(&limitation_ids, &entry.relative_path),
+                    );
                 }
                 if ids.is_empty() {
                     IndexAnswer::Complete(rows)
@@ -736,7 +764,7 @@ impl SemanticQueryView {
             Ok(()) => Ok(()),
             Err(IndexAnswer::Partial { limitation_ids, .. }) => match self.file_path_of(file_id) {
                 Some(path) => {
-                    let ids = limitations_matching_path(path, limitation_ids.into_iter());
+                    let ids = self.limitations_bounding_path(&limitation_ids, path);
                     if ids.is_empty() {
                         Ok(())
                     } else {
@@ -767,6 +795,30 @@ impl SemanticQueryView {
             .values()
             .find(|entry| &entry.file_id == file_id)
             .map(|e| e.relative_path.as_str())
+    }
+
+    /// The family limitation ids that bound one path.
+    ///
+    /// Structural association is authoritative: an id carried in
+    /// [`Self::limitation_paths`] bounds the path only when its recorded
+    /// paths contain it, so a valid non-suffixed id is never dropped. Ids
+    /// absent from the structural map predate it and keep the textual
+    /// `<kind>:<path>` convention (`:<path>` suffix), so legacy limitations
+    /// bound exactly as before.
+    fn limitations_bounding_path<'a, T: AsRef<str>>(
+        &self,
+        family_ids: &'a [T],
+        path: &str,
+    ) -> Vec<&'a str> {
+        let suffix = format!(":{path}");
+        family_ids
+            .iter()
+            .filter(|id| match self.limitation_paths.get(id.as_ref()) {
+                Some(paths) => paths.iter().any(|bounded| bounded == path),
+                None => id.as_ref().ends_with(&suffix),
+            })
+            .map(|id| id.as_ref())
+            .collect()
     }
 }
 
@@ -966,30 +1018,56 @@ fn sources_completeness(model: &ProjectModel) -> IndexCompleteness {
     if !model.requested.contains(FactClasses::FILES) {
         return IndexCompleteness::NotProven(NotProvenReason::FactClassNotAdmitted);
     }
-    partial_if_limited(model, model.files.iter().map(|file| file.relative_path.as_str()))
+    partial_if_limited(model)
 }
 
 fn declarations_completeness(model: &ProjectModel) -> IndexCompleteness {
     if !model.requested.contains(FactClasses::SYMBOLS) {
         return IndexCompleteness::NotProven(NotProvenReason::FactClassNotAdmitted);
     }
+    // A shard that never populated the declarations class cannot back a
+    // proven-empty denominator for its file: extraction that never ran is
+    // not a proven zero. Builder-built models carry no shard states and stay
+    // bounded by file-level parse limitations instead.
+    if model
+        .shard_states
+        .values()
+        .any(|state| !state.populated.contains(FactClasses::SYMBOLS))
+    {
+        return IndexCompleteness::NotProven(NotProvenReason::ShardClassNotPopulated {
+            family: "declarations",
+        });
+    }
     // Every admitted file bounds the declaration denominator: a parse-failed
     // or recovered file may hide declarations that never became rows.
-    let paths = model.files.iter().map(|file| file.relative_path.as_str());
-    partial_if_limited(model, paths)
+    partial_if_limited(model)
 }
 
-fn partial_if_limited<'a, I>(model: &ProjectModel, contributing_paths: I) -> IndexCompleteness
-where
-    I: Iterator<Item = &'a str>,
-{
-    let paths: BTreeSet<&str> = contributing_paths.collect();
+/// The family denominator: every admitted file plus every
+/// discovered-but-unread path. An unread source is not an empty slot — it
+/// bounds the family, because the walk saw it and the read failed.
+fn partial_if_limited(model: &ProjectModel) -> IndexCompleteness {
+    let paths: BTreeSet<&str> = model
+        .files
+        .iter()
+        .map(|file| file.relative_path.as_str())
+        .chain(model.unread_discovered.iter().map(String::as_str))
+        .collect();
     let mut limitation_ids: BTreeSet<String> = BTreeSet::new();
-    // Single pass over limitations: an id bounds the family when any
-    // colon-remainder of the id names a contributing path (the
-    // `<kind>:<relative path>` convention; the remainder is checked at every
-    // colon so paths containing colons still match, as with `ends_with`).
     for limitation in &model.limitations {
+        if !limitation.paths.is_empty() {
+            // Structural association is authoritative: the limitation names
+            // the paths it bounds, so no id-text convention is consulted.
+            if limitation.paths.iter().any(|path| paths.contains(path.as_str())) {
+                limitation_ids.insert(limitation.id.clone());
+            }
+            continue;
+        }
+        // Legacy ids keep the textual convention, preserved exactly: an id
+        // bounds the family when any colon-remainder of the id names a
+        // contributing path (the `<kind>:<relative path>` convention; the
+        // remainder is checked at every colon so paths containing colons
+        // still match, as with `ends_with`).
         let mut rest = limitation.id.as_str();
         while let Some(colon) = rest.find(':') {
             if paths.contains(&rest[colon + 1..]) {
@@ -1011,12 +1089,23 @@ where
     }
 }
 
-fn limitations_matching_path<'a>(
-    path: &str,
-    limitation_ids: impl Iterator<Item = &'a str>,
-) -> Vec<&'a str> {
-    let suffix = format!(":{path}");
-    limitation_ids.filter(|id| id.ends_with(&suffix)).collect()
+/// Structural limitation-to-path association for one model: model-level
+/// limitations that declare paths, joined with the per-shard associations
+/// retained at adoption. Limitations that declare no paths and predate the
+/// structural field are absent here and keep the textual fallback.
+fn structural_limitation_paths(model: &ProjectModel) -> BTreeMap<String, BTreeSet<String>> {
+    let mut map: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for limitation in &model.limitations {
+        if !limitation.paths.is_empty() {
+            map.entry(limitation.id.clone()).or_default().extend(limitation.paths.iter().cloned());
+        }
+    }
+    for state in model.shard_states.values() {
+        for (id, paths) in &state.limitation_paths {
+            map.entry(id.clone()).or_default().extend(paths.iter().cloned());
+        }
+    }
+    map
 }
 
 fn approx_declaration_bytes(row: &DeclarationRow) -> usize {
@@ -1404,6 +1493,7 @@ mod tests {
             id: "parse-failed:lib/Bad.pm".to_string(),
             kind: "parse_failure".to_string(),
             message: "unbalanced braces".to_string(),
+            paths: Vec::new(),
         });
         let good_sym = symbol("lib/Good.pm", "good", None, "ok", "OK::ok", 0, 8);
         model.symbols.push(good_sym);
@@ -1816,5 +1906,140 @@ mod tests {
         let rejection =
             ViewRejection::StaleGeneration { path: "lib/A.pm".to_string(), floor: 7, actual: 4 };
         assert!(rejection.to_string().contains("below required floor"));
+    }
+
+    #[test]
+    fn unread_discovered_path_bounds_source_answers() {
+        // Issue #13288 item 1: a discovered-but-unread path stays in the
+        // source denominator, so its absence is bounded — never a fabricated
+        // legitimate empty.
+        let mut model = ProjectModel::empty("proj", FactClasses::all());
+        model.files.push(file("lib/Good.pm", "good"));
+        model.limitations.push(ModelLimitation {
+            id: "read-failed:lib/Locked.pm".to_string(),
+            kind: "read_failure".to_string(),
+            message: "could not read `lib/Locked.pm`".to_string(),
+            paths: vec!["lib/Locked.pm".to_string()],
+        });
+        model.unread_discovered.insert("lib/Locked.pm".to_string());
+        let view = SemanticQueryView::build(&model).unwrap();
+
+        assert!(matches!(
+            view.family_completeness("sources"),
+            Some(IndexCompleteness::Partial { .. })
+        ));
+        match view.source_by_path("lib/Locked.pm") {
+            IndexAnswer::Partial { rows: None, limitation_ids } => {
+                assert_eq!(limitation_ids, ["read-failed:lib/Locked.pm"]);
+            }
+            other => panic!("expected bounded absent answer, got {other:?}"),
+        }
+        // A never-discovered path stays a legitimate exact empty.
+        assert!(matches!(
+            view.source_by_path("lib/NeverSeen.pm"),
+            IndexAnswer::Complete(None)
+        ));
+    }
+
+    #[test]
+    fn shard_without_populated_symbols_cannot_claim_complete_denominator() {
+        // Issue #13288 item 2: a shard that never populated the declarations
+        // class cannot back a proven-empty answer for its file; extraction
+        // that never ran is not a proven zero.
+        let requested = FactClasses::FILES | FactClasses::SYMBOLS;
+        let mut model = ProjectModel::empty("proj", requested);
+        let mut shard =
+            ProjectFactShard::empty(file("lib/Quiet.pm", "quiet"), 1, "test-producer", requested);
+        // populated stays without SYMBOLS: the producer never ran extraction.
+        shard.source_len_bytes = 5;
+        model.insert_or_replace(shard).unwrap();
+        let view = SemanticQueryView::build(&model).unwrap();
+        assert_eq!(
+            view.family_completeness("declarations"),
+            Some(&IndexCompleteness::NotProven(
+                NotProvenReason::ShardClassNotPopulated { family: "declarations" }
+            ))
+        );
+        assert!(matches!(
+            view.declarations_in_file(&FileId::new("lib/Quiet.pm", &Digest::of("quiet"))),
+            IndexAnswer::NotProven(NotProvenReason::ShardClassNotPopulated { .. })
+        ));
+
+        // Negative control (#12063): a shard that DID populate the class with
+        // zero rows is a legitimate exact empty and stays Complete.
+        let mut model = ProjectModel::empty("proj", requested);
+        let mut shard =
+            ProjectFactShard::empty(file("lib/Empty.pm", "empty"), 1, "test-producer", requested);
+        shard.populated |= FactClasses::SYMBOLS;
+        shard.source_len_bytes = 5;
+        model.insert_or_replace(shard).unwrap();
+        let view = SemanticQueryView::build(&model).unwrap();
+        assert_eq!(view.family_completeness("declarations"), Some(&IndexCompleteness::Complete));
+    }
+
+    #[test]
+    fn non_suffixed_shard_limitation_bounds_scoped_answers() {
+        // Issue #13288 item 3: the limitation-to-path association is carried
+        // structurally from shard ownership, so a valid non-suffixed id is
+        // not dropped when answers are scoped (which used to upgrade Partial
+        // to Complete).
+        let requested = FactClasses::FILES | FactClasses::SYMBOLS;
+        let mut model = ProjectModel::empty("proj", requested);
+        let mut shard = ProjectFactShard::empty(file("lib/A.pm", "aaa"), 1, "test-producer", requested);
+        shard.populated |= FactClasses::SYMBOLS;
+        shard.source_len_bytes = 3;
+        shard.limitations.push(ModelLimitation {
+            id: "tokenizer-v2-gap".to_string(),
+            kind: "producer_gap".to_string(),
+            message: "tokenizer could not classify a region".to_string(),
+            paths: Vec::new(),
+        });
+        model.insert_or_replace(shard).unwrap();
+        let view = SemanticQueryView::build(&model).unwrap();
+
+        assert_eq!(
+            view.family_completeness("declarations"),
+            Some(&IndexCompleteness::Partial {
+                limitation_ids: vec!["tokenizer-v2-gap".to_string()]
+            })
+        );
+        let file_id = FileId::new("lib/A.pm", &Digest::of("aaa"));
+        match view.declarations_in_file(&file_id) {
+            IndexAnswer::Partial { limitation_ids, .. } => {
+                assert_eq!(
+                    limitation_ids,
+                    ["tokenizer-v2-gap"],
+                    "non-suffixed id must bound the scoped answer"
+                );
+            }
+            other => panic!("expected partial scoped answer, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn adoption_of_readable_shard_retires_unread_marker() {
+        // A discovered-but-unread path that later becomes readable through
+        // shard adoption leaves the unread denominator: the real file record
+        // supersedes the walk-time marker.
+        let requested = FactClasses::FILES | FactClasses::SYMBOLS;
+        let mut model = ProjectModel::empty("proj", requested);
+        model.limitations.push(ModelLimitation {
+            id: "read-failed:lib/A.pm".to_string(),
+            kind: "read_failure".to_string(),
+            message: "transient read failure".to_string(),
+            paths: vec!["lib/A.pm".to_string()],
+        });
+        model.unread_discovered.insert("lib/A.pm".to_string());
+        let mut shard = ProjectFactShard::empty(file("lib/A.pm", "aaa"), 1, "test-producer", requested);
+        shard.populated |= FactClasses::SYMBOLS;
+        shard.source_len_bytes = 3;
+        model.insert_or_replace(shard).unwrap();
+        assert!(model.unread_discovered.is_empty());
+
+        let view = SemanticQueryView::build(&model).unwrap();
+        assert!(matches!(
+            view.source_by_path("lib/A.pm"),
+            IndexAnswer::Complete(_)
+        ));
     }
 }
