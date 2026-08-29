@@ -1440,6 +1440,10 @@ fn fail_step(
         result: TerminalResult::Failed,
         reason_family: reason,
         receipt_digest: fabricated_digest(&format!("failed:{}:{reason:?}", format_stage(stage_id))),
+        // Intentionally empty: a failed stage never completed, so it consumes
+        // no predecessor receipts. The fabricated receipt digest records the
+        // failure; the empty predecessor list must not be read as a broken
+        // dependency chain.
         predecessor_digests: Vec::new(),
         artifacts: Vec::new(),
         evidence: Vec::new(),
@@ -1614,6 +1618,28 @@ mod tests {
         assert_ne!(serialized(&packet), serialized(&stale_applied));
         let erased = derive(vector, Deviation::ErasePriorAttempt);
         assert_eq!(erased.attempts.len(), 1, "mutation 13 drops history");
+    }
+
+    /// v022 is the success-path twin of v016: attempt a1 integrity-fails,
+    /// attempt a2 succeeds to installed_transition. The conformant
+    /// derivation must retain BOTH attempts in the durable history —
+    /// asserted here independently of the mutation bank and the
+    /// golden-comparison path.
+    #[test]
+    fn retry_success_keeps_the_prior_failed_attempt_in_history() {
+        let vectors = corpus();
+        let vector = vector_by_id(&vectors, "v022-retry-succeeds-erase-prior-attempt");
+        let packet = derive(vector, Deviation::None);
+        assert_eq!(packet.terminal.result, TerminalResult::Succeeded);
+        assert_eq!(packet.terminal.stage_id, StageId::InstalledTransition);
+        assert_eq!(packet.attempts.len(), 2, "retry history retained on success");
+        assert_eq!(packet.attempts[0].outcome, TerminalResult::Failed);
+        assert_eq!(packet.attempts[0].reason_family, ReasonFamily::IntegrityFailed);
+        assert_eq!(packet.attempts[1].outcome, TerminalResult::Succeeded);
+        assert_eq!(packet.claim_ceiling, ClaimCeiling::InstalledReleaseClaim);
+
+        let erased = derive(vector, Deviation::ErasePriorAttempt);
+        assert_eq!(erased.attempts.len(), 1, "mutation 13 drops history on success too");
     }
 
     #[test]
