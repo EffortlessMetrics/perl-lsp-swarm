@@ -11,7 +11,7 @@ use std::error::Error;
 mod cpan_test_helpers;
 
 use cpan_test_helpers::{assert_clean_parse, assert_no_blocking_diagnostics};
-use perl_parser_core::hir::{lower_ast, CompilePhase, HirFile, HirKind};
+use perl_parser_core::hir::{CompilePhase, HirFile, HirKind, lower_ast};
 use perl_parser_core::{Node, Parser};
 
 fn collect_ast_shapes<'a>(node: &'a Node, shapes: &mut Vec<(&'static str, usize, usize)>) {
