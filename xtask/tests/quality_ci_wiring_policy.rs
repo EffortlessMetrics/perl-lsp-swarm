@@ -515,6 +515,14 @@ fn coverage_workflow_is_manual_or_nightly_only_and_requires_receipts() {
         !has_positive_stale_route_claim("Coverage is advisory, never a PR gate."),
         "legitimate negative coverage prose with `never` must remain allowed"
     );
+    assert!(
+        !has_positive_stale_route_claim("Coverage is advisory, and never a full CI deep lane."),
+        "advisory prose must not be classified as a positive full-ci deep-lane route"
+    );
+    assert!(
+        !has_positive_stale_route_claim("Coverage is advisory, and\nnever a full CI deep lane."),
+        "wrapped advisory prose must not be classified as a positive full-ci deep-lane route"
+    );
     let stale_lane_alias_source = format!(
         "{lane_economics}\n[lane.coverage_alias]\nworkflow = \".github/workflows/ci-nightly.yml\"\njob = \"test-coverage\"\nlabels = [\"coverage-alias\"]\nbranches = [\"schedule\", \"workflow_dispatch\"]\n"
     );
@@ -1221,7 +1229,8 @@ fn has_positive_stale_route_claim(text: &str) -> bool {
     route_prose_clauses(&normalized).iter().any(|clause| has_positive_stale_route_clause(clause))
         || (normalized.contains("coverage")
             && normalized.contains("full ci")
-            && (normalized.contains("deep lane") || normalized.contains("label")))
+            && (normalized.contains("deep lane") || normalized.contains("label"))
+            && !has_negative_route_prose(&normalized))
         || (normalized.contains("coverage")
             && has_pr_token
             && (normalized.contains("deep lane")
