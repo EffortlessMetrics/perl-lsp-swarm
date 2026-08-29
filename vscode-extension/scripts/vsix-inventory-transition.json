@@ -2,8 +2,8 @@
   "schema_version": 1,
   "owner_issue": 13501,
   "reason": "Reconciles the exact candidate VSIX inventory after current-main Rust 1.95, packaging compatibility, DAP resolution, and published-smoke proof repairs. The candidate changes package metadata and the bundled extension output; the measured 29-file package remains size-only with no file additions, removals, or permission loosening.",
-  "base_baseline_file_sha256": "18c71611c572f227fff586fed8e8a8f85f9cedabd7c9f5febe72464c09e6f7f5",
+  "base_baseline_file_sha256": "bbedb2f0d07c89240638a3e1323b4c57e75e64ac3f36e8b70223754dbe43417d",
   "candidate_baseline_file_sha256": "d6f01dad2c5a8b18a75dab8bdd0c55a50d168f042b7a3aaa7ed57af7af5d63d2",
-  "base_inventory_sha256": "124e8ae60936f4b50e724e0d6341bb662818dc3324c3790cb08e03bac854b655",
+  "base_inventory_sha256": "47560cea1d8fa4da6af0bd27939daba70e14f4d8415f82177081f7ca71af8e33",
   "candidate_inventory_sha256": "af077116d6be5400315a98d2e0f1aa05197c930ac7521fea3f6b72a319d56975"
 }
