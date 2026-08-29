@@ -4,12 +4,15 @@ import re
 import tomllib
 import unittest
 from pathlib import Path
+from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
 REGISTRY = ROOT / "docs" / "agents" / "authority_status.toml"
 MIGRATOR = ROOT / "scripts" / "migrate-legacy-authority-banners.py"
+WORKFLOW = ROOT / ".github" / "workflows" / "legacy-authority-banners.yml"
 MARKER = "<!-- authority-status:v1 -->"
+HISTORICAL_COMMIT = "f6d3f9919dca35095fa8a7b26923c3190008d040"
 EXPECTED = {
     "docs/reference/ORCHESTRATION_DOCTRINE.md": (
         "superseded",
@@ -35,23 +38,58 @@ EXPECTED = {
         "historical",
         "REVIEW_CURRENTNESS.md",
     ),
+    "docs/development/RUST_1_95_ROLLOUT.md": (
+        "superseded",
+        "CLIPPY_POLICY.md",
+    ),
+    "docs/development/STRONG_CLIPPY_LINTS_ROLLOUT.md": (
+        "superseded",
+        "CLIPPY_POLICY.md",
+    ),
+    "docs/development/RUST_1_95_PROACTIVE_GUARDS.md": (
+        "superseded",
+        "DEVELOPMENT_METHOD.md",
+    ),
+    "docs/ci/perl-lsp-rust-1.95-rollout.md": (
+        "superseded",
+        "CLIPPY_POLICY.md",
+    ),
+    "docs/project/RAILS_INDEX.md": (
+        "superseded",
+        "DEVELOPMENT_METHOD.md",
+    ),
+}
+ROLLOUT_REDIRECTS: dict[str, dict[str, str]] = {
+    "docs/development/RUST_1_95_ROLLOUT.md": {
+        "blob": "61284c6ceca9395c7802b0d151e9847bdbba63d4",
+        "successor": "docs/CLIPPY_POLICY.md",
+    },
+    "docs/development/STRONG_CLIPPY_LINTS_ROLLOUT.md": {
+        "blob": "1a676040c83475a9a2e7dd9a091da3bb732c4677",
+        "successor": "docs/CLIPPY_POLICY.md",
+    },
+    "docs/development/RUST_1_95_PROACTIVE_GUARDS.md": {
+        "blob": "05bfe9bf9344b4f4ea469dddbafed78eaa815131",
+        "successor": "docs/agents/DEVELOPMENT_METHOD.md",
+    },
+    "docs/ci/perl-lsp-rust-1.95-rollout.md": {
+        "blob": "b1667cef5512abb2700dd24080c2731b6e327733",
+        "successor": "docs/CLIPPY_POLICY.md",
+    },
+    "docs/project/RAILS_INDEX.md": {
+        "blob": "5d27670786f80b7274e7e1d9ff357d7ee65bfb3b",
+        "successor": "docs/agents/DEVELOPMENT_METHOD.md",
+    },
 }
 
 
-def registry_rows() -> dict[str, dict[str, object]]:
+def registry_rows() -> dict[str, dict[str, Any]]:
     registry = tomllib.loads(REGISTRY.read_text(encoding="utf-8"))
     return {row["path"]: row for row in registry["documents"]}
 
 
 def banner_link_targets(document: str, head: str) -> dict[str, Path]:
-    """Resolve every Markdown link in a banner to a real filesystem path.
-
-    A banner is a redirection: its whole job is to send a reader somewhere that
-    still has authority. Asserting the successor's *name* appears in the header
-    cannot tell a working link from a broken one -- the name matches just as well
-    inside a typo'd path, a link to a moved file, or bare prose with no link at
-    all. Resolving the target relative to the document catches all three.
-    """
+    """Resolve every local Markdown link in a banner to a repository path."""
     targets: dict[str, Path] = {}
     for text, href in re.findall(r"\[([^\]]+)\]\(([^)]+)\)", head):
         if href.startswith(("http://", "https://", "#")):
@@ -61,6 +99,47 @@ def banner_link_targets(document: str, head: str) -> dict[str, Path]:
             continue
         targets[text] = ((ROOT / document).parent / target).resolve()
     return targets
+
+
+def historical_urls(document: str, head: str) -> list[str]:
+    return [
+        href
+        for _text, href in re.findall(r"\[([^\]]+)\]\(([^)]+)\)", head)
+        if href.startswith("https://github.com/") and f"/blob/{HISTORICAL_COMMIT}/" in href
+    ]
+
+
+def workflow_event_paths(event: str) -> set[str]:
+    lines = WORKFLOW.read_text(encoding="utf-8").splitlines()
+    event_indent = None
+    paths_indent = None
+    collected: set[str] = set()
+    in_event = False
+    in_paths = False
+
+    for line in lines:
+        stripped = line.strip()
+        indent = len(line) - len(line.lstrip())
+        if stripped == f"{event}:" and indent == 2:
+            event_indent = indent
+            in_event = True
+            in_paths = False
+            continue
+        if in_event and event_indent is not None and stripped and indent <= event_indent:
+            break
+        if in_event and stripped == "paths:":
+            paths_indent = indent
+            in_paths = True
+            continue
+        if in_paths and paths_indent is not None:
+            if stripped and indent <= paths_indent:
+                in_paths = False
+                continue
+            match = re.match(r"- ['\"](.+)['\"]$", stripped)
+            if match:
+                collected.add(match.group(1))
+
+    return collected
 
 
 class LegacyAuthorityBannerTests(unittest.TestCase):
@@ -79,12 +158,7 @@ class LegacyAuthorityBannerTests(unittest.TestCase):
                 self.assertEqual(by_path[path]["status"], status)
 
     def test_banner_links_resolve_to_real_files(self) -> None:
-        """Every banner link must point at a file that exists.
-
-        This is the half `assertIn(successor, head)` cannot prove: a substring
-        match is satisfied by a link whose href is wrong, so a banner could send
-        every reader of a superseded document to a 404 and still pass.
-        """
+        """Every local banner link must resolve inside the repository."""
         for path, (_status, successor) in EXPECTED.items():
             with self.subTest(path=path):
                 head = "\n".join(
@@ -96,16 +170,14 @@ class LegacyAuthorityBannerTests(unittest.TestCase):
                 )
                 for text, target in targets.items():
                     self.assertTrue(
+                        target.is_relative_to(ROOT),
+                        f"{path}: banner link [{text}] escapes the repository: {target}",
+                    )
+                    self.assertTrue(
                         target.is_file(),
                         f"{path}: banner link [{text}] points at missing {target}",
                     )
 
-                # The authority index and the named successor must each be a
-                # real link target, not merely words somewhere in the header --
-                # and must be *the* canonical file, not merely something with a
-                # matching basename. Comparing names would accept a link to any
-                # other AUTHORITY_STATUS.md in the tree, which is the same class
-                # of near-miss as the plain-text mention this check replaced.
                 linked = set(targets.values())
                 registry_successor = registry_rows()[path]["successor"]
                 self.assertIn(
@@ -119,42 +191,15 @@ class LegacyAuthorityBannerTests(unittest.TestCase):
                     f"{path}: banner does not link the registry successor "
                     f"{registry_successor}",
                 )
-                # Guard the hardcoded expectation against the registry, so a
-                # successor change cannot leave this test asserting the old one.
                 self.assertEqual(Path(registry_successor).name, Path(successor).name)
 
     def test_each_document_carries_exactly_one_banner(self) -> None:
-        """A second marker means two competing local statuses.
-
-        The migration appends a banner; running it twice, or hand-adding one to
-        an already-migrated document, yields a file whose first banner says one
-        thing and whose second says another. Every other check reads only the
-        first 24 lines, so the duplicate is invisible to them.
-        """
         for path in EXPECTED:
             with self.subTest(path=path):
                 body = (ROOT / path).read_text(encoding="utf-8")
                 self.assertEqual(
                     body.count(MARKER), 1, f"{path}: expected exactly one banner marker"
                 )
-
-    def test_banner_links_stay_inside_the_repository(self) -> None:
-        """Reject a relative href that escapes the repository root.
-
-        `../../..`-style traversal resolves to a path outside the tree. On a
-        developer machine that can still be a real file, so `is_file()` alone
-        does not catch it.
-        """
-        for path in EXPECTED:
-            with self.subTest(path=path):
-                head = "\n".join(
-                    (ROOT / path).read_text(encoding="utf-8").splitlines()[:24]
-                )
-                for text, target in banner_link_targets(path, head).items():
-                    self.assertTrue(
-                        target.is_relative_to(ROOT),
-                        f"{path}: banner link [{text}] escapes the repository: {target}",
-                    )
 
     def test_explicit_old_statuses_are_not_still_current(self) -> None:
         pipeline = "\n".join(
@@ -173,31 +218,19 @@ class LegacyAuthorityBannerTests(unittest.TestCase):
         self.assertNotIn("**Status**: Accepted", adr)
         self.assertIn("**Status**: Superseded", adr)
 
-    def test_banner_set_matches_every_legacy_markdown_row(self) -> None:
-        """Every legacy *document* must carry a banner.
-
-        Scoped to Markdown because a banner is an HTML comment plus Markdown
-        prose. Executable files cannot carry one -- `<!-- ... -->` is not a
-        Python comment -- so a retired script declares its status in its own
-        docstring instead, which `test_retired_legacy_scripts_say_so` checks.
-        Without this split, reclassifying a retired script in the registry would
-        demand a Markdown banner in a Python file.
-        """
+    def test_banner_set_matches_every_non_archive_legacy_markdown_row(self) -> None:
         legacy_markdown = {
             path
             for path, row in registry_rows().items()
-            if row["status"] in {"historical", "superseded"} and path.endswith(".md")
+            if row["status"] in {"historical", "superseded"}
+            and path.endswith(".md")
+            and not path.startswith("archive/")
         }
 
         self.assertEqual(set(EXPECTED), legacy_markdown)
-        self.assertEqual(len(EXPECTED), 9)
+        self.assertEqual(len(EXPECTED), 14)
 
     def test_retired_legacy_scripts_say_so(self) -> None:
-        """The non-Markdown half of the same inventory.
-
-        These rows are legacy too, so they still need a machine-checked local
-        disposition -- just one their file format can carry.
-        """
         legacy_scripts = {
             path
             for path, row in registry_rows().items()
@@ -216,6 +249,73 @@ class LegacyAuthorityBannerTests(unittest.TestCase):
                     r"RETIRED|[Rr]etired|no longer has",
                     f"{path}: retired command does not declare its own status",
                 )
+
+    def test_rollout_redirects_bind_exact_historical_subject(self) -> None:
+        rows = registry_rows()
+        for path, expected in ROLLOUT_REDIRECTS.items():
+            with self.subTest(path=path):
+                row = rows[path]
+                head = "\n".join(
+                    (ROOT / path).read_text(encoding="utf-8").splitlines()[:24]
+                )
+                expected_url = (
+                    "https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/"
+                    f"{HISTORICAL_COMMIT}/{path}"
+                )
+
+                self.assertEqual(row["status"], "superseded")
+                self.assertEqual(row["successor"], expected["successor"])
+                self.assertEqual(row["historical_source_commit"], HISTORICAL_COMMIT)
+                self.assertEqual(row["historical_source_blob_sha1"], expected["blob"])
+                self.assertEqual(historical_urls(path, head), [expected_url])
+                self.assertIn("stable redirect", head)
+                self.assertIn("non-executable", head)
+
+    def test_rollout_redirects_do_not_retain_executable_queue_prose(self) -> None:
+        forbidden = (
+            "Remaining implementation ladder",
+            "Each row is one PR",
+            "Coworker agents",
+            "pick from rails",
+            "Umbrella: **#8590**",
+            "Canonical post-landing source of truth",
+        )
+        for path in ROLLOUT_REDIRECTS:
+            with self.subTest(path=path):
+                body = (ROOT / path).read_text(encoding="utf-8")
+                self.assertLessEqual(len(body.splitlines()), 24)
+                for phrase in forbidden:
+                    self.assertNotIn(phrase, body)
+
+    def test_strong_clippy_redirect_rejects_the_8590_collision(self) -> None:
+        body = (
+            ROOT / "docs/development/STRONG_CLIPPY_LINTS_ROLLOUT.md"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("Current #8590 owns CPANTS/kwalitee oracle work", body)
+        for issue in ("#9850", "#11335", "#11337", "#11404"):
+            self.assertIn(issue, body)
+        self.assertNotIn("Umbrella: **#8590**", body)
+
+    def test_historical_provenance_is_unique_to_rollout_redirects(self) -> None:
+        rows = registry_rows()
+        marked = {
+            path
+            for path, row in rows.items()
+            if "historical_source_commit" in row or "historical_source_blob_sha1" in row
+        }
+        self.assertEqual(marked, set(ROLLOUT_REDIRECTS))
+
+    def test_legacy_workflow_filters_cover_the_banner_set_exactly(self) -> None:
+        required = set(EXPECTED) | {
+            "docs/agents/authority_status.toml",
+            "scripts/migrate-legacy-authority-banners.py",
+            "tests/test_legacy_authority_banners.py",
+            ".github/workflows/legacy-authority-banners.yml",
+        }
+        for event in ("pull_request", "push"):
+            with self.subTest(event=event):
+                self.assertEqual(workflow_event_paths(event), required)
 
     def test_one_shot_migrator_is_inert(self) -> None:
         source = MIGRATOR.read_text(encoding="utf-8")
