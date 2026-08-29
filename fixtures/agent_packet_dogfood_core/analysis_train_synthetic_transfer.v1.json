@@ -1,0 +1,43 @@
+{
+  "disposition": "transferred",
+  "events": [
+    {
+      "at_ms": 0,
+      "digest": "6fa18c2a22c3d0ad7c7bd95ba9ee8b60a591bd9319a56aa1ee4af5f198bd590f",
+      "kind": "observation",
+      "payload": {
+        "note": "scope handed to downstream lane without results"
+      },
+      "seq": 0
+    }
+  ],
+  "identity": {
+    "packet_digest": "73016c8dc02fa3e40b2d5a04e971b021a9ca24c62551f84d53ddd3231b3f8968",
+    "packet_id": "analysis-train-synthetic-002",
+    "spec_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+    "spec_ref": "https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/11024",
+    "tree_sha": "1111111111111111111111111111111111111111111111111111111111111111"
+  },
+  "run_id": "synthetic-analysis-train-transfer-002",
+  "schema": "agent_packet_dogfood.core.v1",
+  "schema_version": 1,
+  "subject": {
+    "agent": {
+      "name": "synthetic-agent",
+      "version": "0"
+    },
+    "model": {
+      "id": "synthetic-model-x",
+      "revision": "r0"
+    },
+    "permissions": {
+      "ceiling": [
+        "workspace:read"
+      ]
+    },
+    "tool": {
+      "name": "perl-lsp-xtask",
+      "version": "0"
+    }
+  }
+}

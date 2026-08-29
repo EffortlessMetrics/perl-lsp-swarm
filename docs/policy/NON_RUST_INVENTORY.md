@@ -6,23 +6,23 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12345 |
-| Rust-family files | 3786 |
-| Non-Rust files | 8559 |
-| Allowlisted | 6324 |
-| Unclassified | 2235 |
+| Total tracked files | 12381 |
+| Rust-family files | 3791 |
+| Non-Rust files | 8590 |
+| Allowlisted | 6328 |
+| Unclassified | 2262 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 490 |
-| documentation | 2795 |
+| config | 491 |
+| documentation | 2797 |
 | generated | 2 |
 | production | 346 |
 | test | 2033 |
-| tooling | 658 |
-| unclassified | 2235 |
+| tooling | 659 |
+| unclassified | 2262 |
 
 ## Unclassified files
 
@@ -124,6 +124,33 @@
 | `distribution/test-release.sh` | `sh` |
 | `distribution/windows/update-manifests.ps1` | `ps1` |
 | `distribution/winget/perl-lsp.yaml` | `yaml` |
+| `fixtures/agent_packet_dogfood_core/analysis_train_synthetic_transfer.v1.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/golden/agent_packet_dogfood_core.advisory.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/chain_of_thought_in_payload.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/credential_in_payload.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/dangling_intervention_ref.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/empty_events.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/expected_errors.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/machine_local_path_in_payload.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/machine_local_path_in_subject.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/malformed_packet_digest.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/missing_model_identity.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/missing_packet_digest.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/missing_scope_ceiling.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/missing_subject.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/nested_chain_of_thought_in_payload.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/oversized_event_excerpt.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/results_not_array.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/tampered_event_payload.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/tampered_model_identity.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/tampered_packet_envelope.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/tampered_subject_ceiling.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/tampered_tree_sha.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/unknown_disposition.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/unknown_root_field.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/unsorted_event_sequences.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/invalid/unsorted_result_sequences.json` | `json` |
+| `fixtures/agent_packet_dogfood_core/parser_p05_synthetic.v1.json` | `json` |
 | `fixtures/clippy_repair_falsifiers/cases/A01-file-wide-suppression-carveout.json` | `json` |
 | `fixtures/clippy_repair_falsifiers/cases/A02-dead-code-baseline-absorption.json` | `json` |
 | `fixtures/clippy_repair_falsifiers/cases/A03-cfg-test-attr-general-carveout.json` | `json` |
@@ -2330,6 +2357,7 @@
 | `.changes/unreleased/product-12489-Changed-095500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12559-Fixed-213941.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12573-Changed-194700.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-12598-Changed-021722.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12639-Fixed-235500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12641-Security-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12648-Fixed-203303.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -2745,6 +2773,7 @@
 | `.ci/release/evidence.toml` | config | `non-rust-ci-config` | release/ci |
 | `.ci/risk-tags.yaml` | config | `non-rust-ci-config` | release/ci |
 | `.ci/schemas/agent-client-compat.v1.schema.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/schemas/agent-packet-dogfood.core.v1.schema.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/schemas/ci-route-plan.v1.schema.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/schemas/editor-client-compat.v1.schema.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/schemas/editor-ux.schema.json` | config | `non-rust-ci-config` | release/ci |
@@ -3513,6 +3542,7 @@
 | `benchmarks/scripts/run-benchmarks.sh` | tooling | `non-rust-benchmarks-scripts` | parser/perf |
 | `benchmarks/scripts/test_alert_system.sh` | tooling | `non-rust-benchmarks-scripts` | parser/perf |
 | `benchmarks/scripts/test_benchmark_guards.py` | tooling | `non-rust-benchmarks-scripts` | parser/perf |
+| `benchmarks/scripts/test_benchmark_targets.py` | tooling | `non-rust-benchmarks-scripts` | parser/perf |
 | `benchmarks/scripts/test_extract_criterion.py` | tooling | `non-rust-benchmarks-scripts` | parser/perf |
 | `benchmarks/scripts/test_regression.py` | tooling | `non-rust-benchmarks-scripts` | parser/perf |
 | `book/.gitignore` | config | `non-rust-gitignore-family` | release/ci |
@@ -6122,6 +6152,7 @@
 | `fixtures/agent_implementation_packet/invalid/unconditional_profile_with_decision.json` | test | `non-rust-agent-implementation-packet-fixtures` | tooling/agent-packet |
 | `fixtures/agent_implementation_packet/live_observed_candidate.v1.json` | test | `non-rust-agent-implementation-packet-fixtures` | tooling/agent-packet |
 | `fixtures/agent_implementation_packet/shuffled/bounded_leaf_offline_shuffled.v1.json` | test | `non-rust-agent-implementation-packet-fixtures` | tooling/agent-packet |
+| `fixtures/agent_packet_dogfood_core/golden/agent_packet_dogfood_core.advisory.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `fixtures/agent_review_packet/challenger_service_marker.v1.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
 | `fixtures/agent_review_packet/closure_open_finding.v1.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
 | `fixtures/agent_review_packet/closure_service_marker_eligible.v1.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
