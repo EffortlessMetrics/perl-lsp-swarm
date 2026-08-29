@@ -32,10 +32,7 @@ fn long_tail_fixture_is_discovered_and_emits_exact_nodekinds() -> TestResult {
         contains_key_value_slice(&output.ast, &source),
         "the fixture must emit KeyValueSlice for `%pairs{{qw(alpha beta)}}`"
     );
-    assert!(
-        contains_vstring(&output.ast, &source),
-        "the fixture must emit VString for `v1.2.3`"
-    );
+    assert!(contains_vstring(&output.ast, &source), "the fixture must emit VString for `v1.2.3`");
 
     Ok(())
 }
