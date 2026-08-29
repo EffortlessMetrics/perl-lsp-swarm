@@ -90,7 +90,8 @@ pub fn extract_pod(source: &str) -> PodDoc {
     for line in source.lines() {
         // Detect POD start directives. Use exact command-word matching to avoid
         // false positives like `=cutlery` matching `=cut` or `=headache`
-        // matching `=head` (#4971).
+        // matching `=head` (narrow command-map slice: #13575; broader POD
+        // parser authority: #4971).
         if pod_command(line).is_some() {
             in_pod = true;
         }
@@ -212,7 +213,8 @@ pub fn extract_pod(source: &str) -> PodDoc {
 /// Recognized POD commands. Returns the command name (without `=`) when `line`
 /// starts with `=` followed by exactly one of the known command identifiers and
 /// a word boundary (space, tab, or end-of-line). This prevents `=cutlery` from
-/// matching `=cut` and `=headache` from matching `=head` (#4971).
+/// matching `=cut` and `=headache` from matching `=head` (narrow command-map
+/// slice: #13575; broader POD parser authority: #4971).
 fn pod_command(line: &str) -> Option<&'static str> {
     let rest = line.strip_prefix('=')?;
     // The command is the leading alphanumeric run (e.g. `head1`, `head2`).
@@ -789,13 +791,13 @@ mod tests {
         assert_eq!(doc.methods.len(), 1, "expected exactly one method section");
     }
 
-    // ── POD command-prefix matching (#4971) ────────────────────────────────
+    // ── POD command-prefix matching (#13575; broader authority #4971) ─────
 
     #[test]
     fn pod_command_maps_complete_closed_vocabulary() {
         for command in [
-            "pod", "cut", "head1", "head2", "head3", "head4", "head5", "head6", "over",
-            "back", "item", "begin", "end", "for", "encoding",
+            "pod", "cut", "head1", "head2", "head3", "head4", "head5", "head6", "over", "back",
+            "item", "begin", "end", "for", "encoding",
         ] {
             let bare = format!("={command}");
             let spaced = format!("={command} value");
@@ -809,7 +811,7 @@ mod tests {
 
     #[test]
     fn pod_command_rejects_prefix_only_matches() {
-        // #4971: lookalikes must not match a shorter recognized directive.
+        // #13575: lookalikes must not match a shorter recognized directive.
         for line in [
             "=cutlery",
             "=headache",
