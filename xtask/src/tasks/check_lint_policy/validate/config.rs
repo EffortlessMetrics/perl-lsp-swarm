@@ -139,7 +139,11 @@ fn validate_disallowed_fields_policy(config: &Value, ledger: &LintLedger) -> Res
                 lint.status
             );
         }
-        return Ok(());
+        bail!(
+            "lint {} must remain active or debt; {} is not a valid status for this config-backed policy",
+            lint.name,
+            lint.status
+        );
     }
 
     let selector_count = disallowed_field_selector_count(config)?;

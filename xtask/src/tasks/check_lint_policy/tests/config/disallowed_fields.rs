@@ -167,6 +167,19 @@ fn configuration_state_is_rejected_for_non_active_lint() -> Result<()> {
 }
 
 #[test]
+fn tracked_lint_without_marker_or_hook_is_rejected() -> Result<()> {
+    let config = toml::from_str::<Value>("msrv = \"1.95\"")?;
+    let ledger = disallowed_fields_ledger("tracked", None);
+
+    let result = validate_clippy_config_value(&config, &ledger);
+    let Err(error) = result else {
+        bail!("tracked disallowed_fields without marker or hook should fail");
+    };
+    assert!(error.to_string().contains("must remain active or debt"));
+    Ok(())
+}
+
+#[test]
 fn configured_field_is_rejected_by_clippy() -> Result<()> {
     let fixture = tempdir()?;
     let source_dir = fixture.path().join("src");
