@@ -209,9 +209,9 @@ pub struct OracleCacheStats {
 #[derive(Debug)]
 pub struct OracleCache<T> {
     capacity: usize,
-    entries: BTreeMap<String, T>,
-    order: VecDeque<String>,
-    retired: BTreeSet<String>,
+    entries: BTreeMap<OracleSubject, T>,
+    order: VecDeque<OracleSubject>,
+    retired: BTreeSet<OracleSubject>,
     stats: OracleCacheStats,
 }
 
@@ -232,11 +232,10 @@ impl<T> OracleCache<T> {
 
     /// Return a result only for the exact complete subject.
     pub fn get(&mut self, subject: &OracleSubject) -> Option<&T> {
-        let key = subject.digest();
-        if self.entries.contains_key(&key) {
+        if self.entries.contains_key(subject) {
             self.stats.hits = self.stats.hits.saturating_add(1);
-            self.touch(&key);
-            self.entries.get(&key)
+            self.touch(subject);
+            self.entries.get(subject)
         } else {
             self.stats.misses = self.stats.misses.saturating_add(1);
             None
@@ -246,15 +245,14 @@ impl<T> OracleCache<T> {
     /// Insert a complete result unless work for this retired subject arrived late.
     pub fn insert(&mut self, subject: &OracleSubject, value: T) -> Result<(), OracleCacheError> {
         subject.validate().map_err(OracleCacheError::InvalidSubject)?;
-        let key = subject.digest();
-        if self.retired.contains(&key) {
+        if self.retired.contains(subject) {
             return Err(OracleCacheError::RetiredSubject);
         }
-        self.entries.insert(key.clone(), value);
-        self.touch(&key);
+        self.entries.insert(subject.clone(), value);
+        self.touch(subject);
         while self.entries.len() > self.capacity {
             if let Some(oldest) = self.order.pop_front() {
-                if oldest != key && self.entries.remove(&oldest).is_some() {
+                if oldest != *subject && self.entries.remove(&oldest).is_some() {
                     self.stats.evictions = self.stats.evictions.saturating_add(1);
                 }
             } else {
@@ -266,10 +264,9 @@ impl<T> OracleCache<T> {
 
     /// Retire a subject so late/cancelled work cannot repopulate it.
     pub fn retire(&mut self, subject: &OracleSubject) {
-        let key = subject.digest();
-        self.retired.insert(key.clone());
-        self.entries.remove(&key);
-        self.order.retain(|candidate| candidate != &key);
+        self.retired.insert(subject.clone());
+        self.entries.remove(subject);
+        self.order.retain(|candidate| candidate != subject);
         self.stats.invalidations = self.stats.invalidations.saturating_add(1);
     }
 
@@ -279,9 +276,9 @@ impl<T> OracleCache<T> {
         self.stats
     }
 
-    fn touch(&mut self, key: &str) {
-        self.order.retain(|candidate| candidate != key);
-        self.order.push_back(key.to_string());
+    fn touch(&mut self, subject: &OracleSubject) {
+        self.order.retain(|candidate| candidate != subject);
+        self.order.push_back(subject.clone());
     }
 }
 
