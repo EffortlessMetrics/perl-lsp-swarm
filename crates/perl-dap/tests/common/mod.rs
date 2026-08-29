@@ -856,6 +856,15 @@ mod explicit_pin_tests {
         let controls = tempfile::tempdir().map_err(|error| error.to_string())?;
         let binary = controls.path().join(if cfg!(windows) { "perl.exe" } else { "perl" });
         fs::write(&binary, b"path candidate").map_err(|error| error.to_string())?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let mut permissions =
+                fs::metadata(&binary).map_err(|error| error.to_string())?.permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(&binary, permissions).map_err(|error| error.to_string())?;
+        }
         let search_path =
             std::env::join_paths([controls.path()]).map_err(|error| error.to_string())?;
         let resolved =
@@ -864,6 +873,47 @@ mod explicit_pin_tests {
         if resolved != expected {
             return Err(format!(
                 "PATH candidate was not frozen absolutely: {resolved:?} != {expected:?}"
+            ));
+        }
+        Ok(())
+    }
+
+    /// PATH lookup must continue past a regular file that Unix cannot execute.
+    /// This negative control distinguishes executable eligibility from mere
+    /// canonicalizability and protects the ordering contract for later PATH
+    /// entries.
+    #[cfg(unix)]
+    #[test]
+    fn path_lookup_skips_non_executable_candidate() -> Result<(), String> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let controls = tempfile::tempdir().map_err(|error| error.to_string())?;
+        let first_dir = controls.path().join("first");
+        let second_dir = controls.path().join("second");
+        fs::create_dir_all(&first_dir).map_err(|error| error.to_string())?;
+        fs::create_dir_all(&second_dir).map_err(|error| error.to_string())?;
+        let first = first_dir.join("perl");
+        let second = second_dir.join("perl");
+        fs::write(&first, b"non-executable path candidate").map_err(|error| error.to_string())?;
+        fs::write(&second, b"executable path candidate").map_err(|error| error.to_string())?;
+
+        let mut first_permissions =
+            fs::metadata(&first).map_err(|error| error.to_string())?.permissions();
+        first_permissions.set_mode(0o644);
+        fs::set_permissions(&first, first_permissions).map_err(|error| error.to_string())?;
+        let mut second_permissions =
+            fs::metadata(&second).map_err(|error| error.to_string())?.permissions();
+        second_permissions.set_mode(0o755);
+        fs::set_permissions(&second, second_permissions).map_err(|error| error.to_string())?;
+
+        let search_path =
+            std::env::join_paths([&first_dir, &second_dir]).map_err(|error| error.to_string())?;
+        let resolved =
+            resolve_debuggee_candidate(Path::new("perl"), Some(search_path.as_os_str()))?;
+        let expected = fs::canonicalize(&second).map_err(|error| error.to_string())?;
+        if resolved != expected {
+            return Err(format!(
+                "PATH lookup did not skip the non-executable candidate: {resolved:?} != {expected:?}"
             ));
         }
         Ok(())
@@ -2501,6 +2551,18 @@ fn bare_name_lookup_variants(name: &std::ffi::OsStr) -> Vec<std::ffi::OsString> 
     vec![name.to_os_string()]
 }
 
+#[cfg(unix)]
+fn candidate_is_executable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+
+    fs::metadata(path).is_ok_and(|metadata| metadata.permissions().mode() & 0o111 != 0)
+}
+
+#[cfg(not(unix))]
+fn candidate_is_executable(_path: &Path) -> bool {
+    true
+}
+
 /// Resolve one ambient candidate to the absolute interpreter path the probe
 /// will validate, so the launch-time pin canonicalization sees the same value
 /// the probe executed (#13553). A bare program name is looked up on the
@@ -2540,6 +2602,7 @@ fn resolve_debuggee_candidate(
             let candidate = directory.join(&variant);
             if let Ok(canonical) = fs::canonicalize(&candidate)
                 && canonical.is_file()
+                && candidate_is_executable(&canonical)
             {
                 return Ok(canonical);
             }
