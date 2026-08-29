@@ -152,10 +152,8 @@ impl<'a> Parser<'a> {
             // A parenthesized RHS (`my $a = (1, $b);`) is unaffected: the
             // parens are parsed as a single primary term by `parse_ternary`
             // regardless of the outer precedence level.
-            let assign_op = self.peek_compound_assign_op();
-            let initializer = if let Some(op) = assign_op {
-                let op_token = self.tokens.next()?;
-                let rhs = if let Some(missing) = self.recover_missing_infix_rhs(op_token.start()) {
+            let initializer = if let Some((op, op_start)) = self.consume_assignment_operator()? {
+                let rhs = if let Some(missing) = self.recover_missing_infix_rhs(op_start) {
                     missing
                 } else {
                     self.parse_assignment()?

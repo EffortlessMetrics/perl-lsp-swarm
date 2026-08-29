@@ -203,15 +203,12 @@ sources that affect cancellation, reachability, and filter behavior.
 
 | Kind | Source | Subject to `no lib` cancellation? | Notes |
 |---|---|---|---|
-| `WorkspaceDefaultDot` | `.` from the workspace folder | No | **Wildcard-like** — matches almost any workspace file; do NOT treat as an ordinary library root for reachability filters |
-| `WorkspaceConfiguredRelative` | `includePaths: ["lib", "t/lib"]` config | No | Explicit operator intent; persists for the workspace lifetime |
-| `WorkspaceConfiguredAbsolute` | `includePaths: ["/abs/path"]` config | No | Same as Relative but absolute |
-| `LexicalUseLib` | `use lib '...'` in the source under analysis | **Yes** (position-scoped) | Cancelled by a downstream `no lib '...'` at the cancel-point offset |
-| `LexicalNoLibCancellation` | `no lib '...'` cancellation marker | n/a — the cancel itself | Removes a `LexicalUseLib` entry from the position-scoped active set |
-| `Perl5LibEnv` | `PERL5LIB`, gated by `usePerl5lib` | No | Inherited from the LSP process environment; stripped from subprocess oracles per #8551 |
-| `InterpreterStartup` | `perl -e 'print @INC'`, gated by `useSystemInc` | No | Output of the subprocess seam — see [perl-subprocess-seams.md](../../architecture/perl-subprocess-seams.md) (#8555) |
-| `FindBinDerived` | `use FindBin; use lib "$FindBin::Bin/..."` | Yes (position-scoped) | `$FindBin::Bin` derived per analyzed file |
-| `RuntimeDerived` | Other lexical paths derived at runtime | Yes (position-scoped) | Currently rare; reserved for future use |
+| `WorkspaceRelative` | Relative configured include paths such as `lib`, `t/lib`, or `.` | Yes, when the matching configured path is cancelled at the request position | The `.` entry resolves to the workspace root and is **wildcard-like** for reachability filtering; it is not a separate kind |
+| `FileLocalLexical` | A `use lib '...'` path from the source under analysis after lexical resolution | Yes (position-scoped) | Workspace-contained absolute lexical paths are normalized to workspace-relative paths and use this kind; absolute lexical paths outside the workspace are rejected before effective roots are assembled |
+| `ExternalAbsolute` | An absolute configured include path already admitted by the upstream configuration boundary | Yes when it is a cancelled configured path | Lexical paths are normalized or rejected before effective-root classification; this kind is not the production representation for workspace-contained absolute lexical paths |
+| `Perl5LibEnv` | A `PERL5LIB` entry when `usePerl5lib` is enabled | No | Environment-supplied roots are labeled separately; subprocess environment handling is governed by #8551 |
+| `InterpreterStartup` | An entry returned by the selected interpreter's startup `@INC` probe when `useSystemInc` is enabled | No | Output of the subprocess seam — see [perl-subprocess-seams.md](../../architecture/perl-subprocess-seams.md) (#8555) |
+| `RuntimeDerived` | A future trusted runtime-derived include root | No | Reserved by the enum; the current effective-root builder does not produce it |
 
 **Why this matters**: if `.` (the workspace default) is treated like any
 other configured include root, reachability filters incorrectly conclude
@@ -223,7 +220,7 @@ first-folder fallback remains not_proven under M07
 [#10575](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/10575)
 and is not complete multi-root effective-root authority.
 
-See `crates/perl-lsp-rs/src/runtime/lifecycle/inc_context.rs` for the
+See `crates/perl-lsp-rs/src/runtime/lifecycle/inc_context/mod.rs` for the
 runtime implementation and `crates/perl-lsp-rs/CLAUDE.md` for the per-crate
 rule.
 
