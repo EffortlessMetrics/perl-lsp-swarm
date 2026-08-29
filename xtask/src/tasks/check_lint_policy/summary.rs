@@ -1,4 +1,4 @@
-use super::model::{DebtLedger, LintLedger};
+use super::model::{ConfigurationState, DebtLedger, LintLedger};
 
 pub(super) fn render_policy_summary(ledger: &LintLedger, debt: &DebtLedger) -> String {
     let mut output = format!(
@@ -16,6 +16,16 @@ pub(super) fn render_policy_summary(ledger: &LintLedger, debt: &DebtLedger) -> S
             .collect();
         append_summary_group(&mut output, status, names);
     }
+    append_summary_group(
+        &mut output,
+        "configuration-empty-by-design",
+        ledger
+            .lint
+            .iter()
+            .filter(|lint| lint.configuration_state == Some(ConfigurationState::EmptyByDesign))
+            .map(|lint| lint.name.clone())
+            .collect(),
+    );
     append_summary_group(
         &mut output,
         "future-planned",

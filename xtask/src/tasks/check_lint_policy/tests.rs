@@ -29,6 +29,7 @@ pub(super) fn lint_entry(name: &str, status: &str) -> LintEntry {
         name: name.to_owned(),
         level: "deny".to_owned(),
         status: status.to_owned(),
+        configuration_state: None,
         class: "test".to_owned(),
         reason: "test reason".to_owned(),
     }

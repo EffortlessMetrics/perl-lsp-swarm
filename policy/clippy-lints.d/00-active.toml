@@ -151,8 +151,9 @@ reason = "Library code must use tracing rather than direct stdout, with intentio
 name = "clippy::disallowed_fields"
 level = "deny"
 status = "active"
+configuration_state = "empty-by-design"
 class = "architecture"
-reason = "The mechanism is active; clippy.toml deliberately carries an empty protected-field set until #6114 completes the governed Phase 1 contract."
+reason = "The deny mechanism is active, while the protected-field set remains deliberately empty until a separately reviewed selector lands; the configuration marker prevents that zero denominator from being mistaken for effective field protection."
 
 [[lint]]
 name = "clippy::ptr_arg"

@@ -1,3 +1,4 @@
+use super::super::model::ConfigurationState;
 use super::super::summary::render_policy_summary;
 use super::{deferred_lint, empty_debt, ledger_with, lint_entry, planned_lint};
 
@@ -20,5 +21,16 @@ fn summary_is_insertion_order_independent() {
     assert_eq!(
         render_policy_summary(&first, &empty_debt()),
         render_policy_summary(&second, &empty_debt())
+    );
+}
+
+#[test]
+fn summary_surfaces_empty_by_design_configuration() {
+    let mut lint = lint_entry("clippy::disallowed_fields", "active");
+    lint.configuration_state = Some(ConfigurationState::EmptyByDesign);
+    let summary = render_policy_summary(&ledger_with(vec![lint]), &empty_debt());
+
+    assert!(
+        summary.contains("configuration-empty-by-design (1): clippy::disallowed_fields")
     );
 }
