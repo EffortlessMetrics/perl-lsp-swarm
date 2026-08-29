@@ -1096,8 +1096,9 @@ assuming the former prose-row denominator.
    `(local_cargo, local_testing_or_prerelease_validation)`. A fixture that emits
    only the VS Code row, merges contexts, substitutes an opaque catalog ID before
    #10334 publishes it under #10333's contract, or changes this source order fails. This checks preservation
-   of applicable projections; it does not make the order operative route-selection
-   policy while H1–H7 remain human-pending.
+   of applicable projections; this order is deterministic serialization/source order
+   only, and does not define route-selection precedence or a preferred route while
+   H1–H7 remain human-pending.
 9. **Determinism.** The eventual catalog-owner regeneration check must produce
    byte-identical classification output across repeated runs and supported
    environments. The output contains no timestamps or other ambient state, and
