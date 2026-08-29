@@ -10,6 +10,7 @@ use std::{fs, path::PathBuf};
 
 const MATRIX_PATH: &str = "docs/specs/lsp-318-conformance-matrix.md";
 const LEDGER_PATH: &str = "docs/specs/lsp-318-closure-ownership.md";
+const PARTIAL_CLOSURE_MARKER: &str = "<!-- closure: partly-unclaimed -->";
 const CLOSED_DISPOSITIONS: &[&str] = &["implementation-owner", "accepted-disposition"];
 const LEDGER_HEADER: &[&str] =
     &["ID", "Matrix feature", "Disposition", "Owner", "Evidence", "Dependency", "Rationale"];
@@ -97,6 +98,13 @@ fn table_cells(line: &str) -> Vec<&str> {
 fn table_rows(source: &str, expected_cells: usize) -> Result<Vec<Vec<&str>>, String> {
     let mut rows = Vec::new();
     for line in source.lines() {
+        let indentation = line
+            .chars()
+            .take_while(|ch| *ch == ' ' || *ch == '\t')
+            .count();
+        if indentation > 3 {
+            continue;
+        }
         let trimmed = line.trim();
         if !trimmed.starts_with('|') {
             continue;
@@ -178,7 +186,7 @@ fn unresolved_matrix_features<'a>(matrix: &BTreeMap<&'a str, Vec<&'a str>>) -> B
             let notes = cells[9].to_ascii_lowercase();
             let unresolved =
                 matches!(status, "negative-gated+documented" | "not-applicable+documented")
-                    || notes.contains("remains unclaimed");
+                    || notes.contains(PARTIAL_CLOSURE_MARKER);
             unresolved.then_some(feature)
         })
         .collect()
@@ -188,7 +196,7 @@ fn unresolved_matrix_features<'a>(matrix: &BTreeMap<&'a str, Vec<&'a str>>) -> B
 fn markdown_table_parser_handles_indentation_trailing_space_and_code_pipes()
 -> Result<(), Box<dyn std::error::Error>> {
     let rows = table_rows(
-        "  | ID | Feature | Disposition | Owner | Evidence | Dependency | Rationale |  \n  | --- | --- | --- | --- | --- | --- | --- |\n  | row | feature | accepted-disposition | n/a | compare `a | b` and ``c | d`` (#123). | none | material rationale here |  ",
+        "  | ID | Feature | Disposition | Owner | Evidence | Dependency | Rationale |  \n  | --- | --- | --- | --- | --- | --- | --- |\n  | row | feature | accepted-disposition | n/a | compare `a | b` and ``c | d`` (#123). | none | material rationale here |  \n    | fake | feature | accepted-disposition | n/a | indented code | none | material rationale here |  ",
         7,
     )?;
     assert_eq!(rows.len(), 1);
