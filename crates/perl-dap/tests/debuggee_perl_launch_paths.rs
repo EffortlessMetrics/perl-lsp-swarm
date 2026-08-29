@@ -117,8 +117,9 @@ fn all_convenience_launch_paths_reach_the_pinned_interpreter() -> Result<(), Box
         }
     }
     let ambient = controls.path().join(if cfg!(windows) { "perl.exe" } else { "perl" });
-    let pinned =
-        controls.path().join(if cfg!(windows) { "pinned-perl.exe" } else { "pinned-perl" });
+    // Keep the copied pin's basename within the adapter's strict Perl-name
+    // contract while still making it distinct from the ambient `perl` copy.
+    let pinned = controls.path().join(if cfg!(windows) { "perl5.exe" } else { "perl5" });
     fs::copy(&source_perl, &ambient)?;
     fs::copy(&source_perl, &pinned)?;
     for binary in [&ambient, &pinned] {
