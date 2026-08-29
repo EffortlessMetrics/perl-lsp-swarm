@@ -1,19 +1,22 @@
 //! Exact, source-backed Emacs stock-discovery observations (#13610).
 //!
 //! This module records what exact released and upstream-source Eglot/lsp-mode
-//! subjects register for Perl. It is lower-tier than an actual Emacs host
+//! revisions register for Perl. It is lower-tier than an actual Emacs host
 //! receipt and cannot promote support. The checked subject manifest owns
-//! package/source identity; this projection owns only the observed upstream
-//! registration/client entries at one exact source revision.
+//! package/source subjects; this projection owns only one exhaustive source
+//! observation at an exact repository commit and tree.
 
 use crate::editor_client_compat::ClientSourceState;
 use crate::emacs_subject_manifest::SubjectClientKind;
-use anyhow::{Result, ensure};
+use anyhow::{Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
 pub const SCHEMA_VERSION: &str = "emacs_stock_discovery.v1";
 pub const CLAIM_CEILING: &str = "source_registration_observation";
+
+const EMACS_REPOSITORY: &str = "https://github.com/emacs-mirror/emacs";
+const LSP_MODE_REPOSITORY: &str = "https://github.com/emacs-lsp/lsp-mode";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -33,10 +36,10 @@ pub struct ObservedSourceFile {
 #[serde(deny_unknown_fields)]
 pub struct RegistrationEntry {
     pub entry_id: String,
-    pub modes: Vec<String>,
+    pub major_modes: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub language_id: Option<String>,
-    pub command: Vec<String>,
+    pub activation_language: Option<String>,
+    pub command_shape: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub server_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -46,13 +49,15 @@ pub struct RegistrationEntry {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StockDiscoveryObservation {
-    pub subject_id: String,
+    pub observation_id: String,
     pub client_kind: SubjectClientKind,
     pub client_version: String,
     pub source_state: ClientSourceState,
     pub repository: String,
     pub commit: String,
+    pub tree_sha1: String,
     pub registration_surface: RegistrationSurface,
+    pub search_scope: Vec<String>,
     pub observed_files: Vec<ObservedSourceFile>,
     pub observation_complete: bool,
     pub manual_registration_injected: bool,
@@ -87,9 +92,9 @@ impl StockDiscoveryBaseline {
         for (index, observation) in self.observations.iter().enumerate() {
             observation.validate()?;
             ensure!(
-                ids.insert(observation.subject_id.as_str()),
-                "duplicate subject_id {}",
-                observation.subject_id
+                ids.insert(observation.observation_id.as_str()),
+                "duplicate observation_id {}",
+                observation.observation_id
             );
             ensure!(
                 dimension_rank(observation)? == index,
@@ -103,8 +108,8 @@ impl StockDiscoveryBaseline {
 impl StockDiscoveryObservation {
     fn validate(&self) -> Result<()> {
         ensure!(
-            is_subject_token(&self.subject_id),
-            "subject_id must be a stable token"
+            is_subject_token(&self.observation_id),
+            "observation_id must be a stable token"
         );
         ensure!(
             !self.client_version.trim().is_empty(),
@@ -119,6 +124,10 @@ impl StockDiscoveryObservation {
             "commit must be an exact 40-hex revision"
         );
         ensure!(
+            is_lower_hex(&self.tree_sha1, 40),
+            "tree_sha1 must be an exact 40-hex Git tree"
+        );
+        ensure!(
             self.observation_complete,
             "absence cannot be inferred from an incomplete observation"
         );
@@ -126,35 +135,8 @@ impl StockDiscoveryObservation {
             !self.manual_registration_injected,
             "manual registration cannot satisfy stock discovery"
         );
-        ensure!(
-            !self.observed_files.is_empty(),
-            "at least one exact source file is required"
-        );
-
-        let mut paths = BTreeSet::new();
-        let mut previous_path: Option<&str> = None;
-        for file in &self.observed_files {
-            ensure!(
-                !file.path.starts_with('/') && !file.path.contains(".."),
-                "source paths must be bounded and relative"
-            );
-            ensure!(
-                is_lower_hex(&file.git_blob_sha1, 40),
-                "source blob must be exact 40-hex SHA-1"
-            );
-            ensure!(
-                paths.insert(file.path.as_str()),
-                "duplicate observed source path {}",
-                file.path
-            );
-            if let Some(previous) = previous_path {
-                ensure!(
-                    previous < file.path.as_str(),
-                    "observed source files must use stable path order"
-                );
-            }
-            previous_path = Some(file.path.as_str());
-        }
+        validate_sorted_tokens(&self.search_scope, "search_scope")?;
+        validate_source_files(&self.observed_files)?;
 
         ensure!(
             !self.entries.is_empty(),
@@ -170,13 +152,7 @@ impl StockDiscoveryObservation {
             );
         }
 
-        let observed_perllsp = self.entries.iter().any(|entry| {
-            entry.server_id.as_deref() == Some("perllsp")
-                || entry
-                    .command
-                    .first()
-                    .is_some_and(|program| program == "perllsp")
-        });
+        let observed_perllsp = self.entries.iter().any(RegistrationEntry::is_perllsp);
         ensure!(
             self.perllsp_present == observed_perllsp,
             "perllsp_present must be derived from the exact observed entry set"
@@ -186,14 +162,14 @@ impl StockDiscoveryObservation {
             SubjectClientKind::ExternalEglot => self.validate_eglot(),
             SubjectClientKind::LspMode => self.validate_lsp_mode(),
             SubjectClientKind::BundledEglot => {
-                anyhow::bail!("this baseline records external released/source subjects only")
+                bail!("this baseline records external released/source subjects only")
             }
         }
     }
 
     fn validate_eglot(&self) -> Result<()> {
         ensure!(
-            self.repository == "https://github.com/emacs-mirror/emacs",
+            self.repository == EMACS_REPOSITORY,
             "Eglot rows must bind the audited Emacs mirror"
         );
         ensure!(
@@ -201,20 +177,29 @@ impl StockDiscoveryObservation {
             "Eglot rows must observe eglot-server-programs"
         );
         ensure!(
+            strings_equal(
+                &self.search_scope,
+                &["lisp/progmodes/eglot.el:eglot-server-programs"]
+            ),
+            "Eglot observation must cover the complete stock registry"
+        );
+        ensure!(
             self.entries.len() == 1,
             "current exact Eglot subjects must retain one Perl contact"
         );
-        let entry = &self.entries[0];
+        let Some(entry) = self.entries.first() else {
+            bail!("Eglot Perl contact is missing");
+        };
         ensure!(
             entry.entry_id == "perl_language_server",
             "Eglot baseline must retain the legacy Perl contact"
         );
         ensure!(
-            strings_equal(&entry.modes, &["perl-mode", "cperl-mode"]),
+            strings_equal(&entry.major_modes, &["perl-mode", "cperl-mode"]),
             "Eglot Perl modes changed"
         );
         ensure!(
-            entry.language_id.is_none(),
+            entry.activation_language.is_none(),
             "current Eglot source does not declare an explicit Perl language id here"
         );
         ensure!(
@@ -223,13 +208,13 @@ impl StockDiscoveryObservation {
         );
         ensure!(
             strings_equal(
-                &entry.command,
+                &entry.command_shape,
                 &[
                     "perl",
                     "-MPerl::LanguageServer",
                     "-e",
                     "Perl::LanguageServer::run",
-                ],
+                ]
             ),
             "Eglot legacy Perl command changed"
         );
@@ -238,7 +223,7 @@ impl StockDiscoveryObservation {
 
     fn validate_lsp_mode(&self) -> Result<()> {
         ensure!(
-            self.repository == "https://github.com/emacs-lsp/lsp-mode",
+            self.repository == LSP_MODE_REPOSITORY,
             "lsp-mode rows must bind the audited upstream repository"
         );
         ensure!(
@@ -246,34 +231,88 @@ impl StockDiscoveryObservation {
             "lsp-mode rows must observe client modules"
         );
         ensure!(
+            strings_equal(&self.search_scope, &["clients/", "lsp-mode.el"]),
+            "lsp-mode absence must bind the full client directory and package root"
+        );
+        ensure!(
             self.entries.len() == 3,
             "current exact lsp-mode subjects must retain three Perl clients"
         );
-        let priorities = self
-            .entries
-            .iter()
-            .map(|entry| entry.priority)
-            .collect::<Vec<_>>();
         ensure!(
-            priorities == vec![Some(0), Some(-1), Some(-2)],
-            "lsp-mode Perl priority order changed"
-        );
-        let ids = self
-            .entries
-            .iter()
-            .map(|entry| entry.entry_id.as_str())
-            .collect::<Vec<_>>();
-        ensure!(
-            ids == vec!["perlnavigator", "pls", "perl_language_server"],
+            self.entries
+                .iter()
+                .map(|entry| entry.entry_id.as_str())
+                .eq(["perlnavigator", "pls", "perl_language_server"]),
             "lsp-mode Perl client set/order changed"
         );
         ensure!(
-            self.entries[0].language_id.as_deref() == Some("perl")
-                && self.entries[1].language_id.as_deref() == Some("perl")
-                && self.entries[2].language_id.is_none(),
+            self.entries
+                .iter()
+                .map(|entry| entry.priority)
+                .eq([Some(0), Some(-1), Some(-2)]),
+            "lsp-mode Perl priority order changed"
+        );
+        ensure!(
+            self.entries
+                .iter()
+                .map(|entry| entry.activation_language.as_deref())
+                .eq([Some("perl"), Some("perl"), None]),
             "lsp-mode activation-vs-major-mode language identity changed"
         );
+
+        let navigator = self.entry("perlnavigator")?;
+        ensure!(
+            navigator.major_modes.is_empty(),
+            "Perl Navigator uses language activation, not a major-mode list"
+        );
+        ensure!(
+            strings_equal(
+                &navigator.command_shape,
+                &["managed_or_configured:perlnavigator", "--stdio"]
+            ),
+            "Perl Navigator command shape changed"
+        );
+
+        let pls = self.entry("pls")?;
+        ensure!(
+            pls.major_modes.is_empty(),
+            "PLS uses language activation, not a major-mode list"
+        );
+        ensure!(
+            strings_equal(
+                &pls.command_shape,
+                &["configured:lsp-pls-executable", "configured:lsp-pls-arguments..."]
+            ),
+            "PLS command shape changed"
+        );
+
+        let legacy = self.entry("perl_language_server")?;
+        ensure!(
+            strings_equal(&legacy.major_modes, &["perl-mode", "cperl-mode"]),
+            "Perl::LanguageServer major modes changed"
+        );
+        ensure!(
+            strings_equal(
+                &legacy.command_shape,
+                &[
+                    "configured:lsp-perl-language-server-path",
+                    "-MPerl::LanguageServer",
+                    "-e",
+                    "Perl::LanguageServer::run",
+                    "--",
+                    "--port {port} --version {client-version}",
+                ]
+            ),
+            "Perl::LanguageServer command shape changed"
+        );
         Ok(())
+    }
+
+    fn entry(&self, entry_id: &str) -> Result<&RegistrationEntry> {
+        self.entries
+            .iter()
+            .find(|entry| entry.entry_id == entry_id)
+            .ok_or_else(|| anyhow::anyhow!("missing registration entry {entry_id}"))
     }
 }
 
@@ -284,14 +323,14 @@ impl RegistrationEntry {
             "entry_id must be a stable token"
         );
         ensure!(
-            !self.modes.is_empty(),
-            "registration entry must retain its modes or activation selector"
+            !self.major_modes.is_empty() || self.activation_language.is_some(),
+            "entry must retain major modes or a language activation selector"
         );
         ensure!(
-            self.command
+            self.command_shape
                 .first()
                 .is_some_and(|program| !program.is_empty()),
-            "registration command must have a program"
+            "registration command must have a program shape"
         );
         if let Some(server_id) = &self.server_id {
             ensure!(
@@ -301,6 +340,15 @@ impl RegistrationEntry {
         }
         Ok(())
     }
+
+    fn is_perllsp(&self) -> bool {
+        self.entry_id == "perllsp"
+            || self.server_id.as_deref() == Some("perllsp")
+            || self
+                .command_shape
+                .first()
+                .is_some_and(|program| program == "perllsp")
+    }
 }
 
 pub fn checked_baseline() -> StockDiscoveryBaseline {
@@ -309,31 +357,35 @@ pub fn checked_baseline() -> StockDiscoveryBaseline {
         claim_ceiling: CLAIM_CEILING.to_string(),
         observations: vec![
             eglot_observation(
-                "released_eglot_gnu_elpa_1_24",
+                "eglot_released_1_24_stock_registry",
                 "1.24",
                 ClientSourceState::Released,
                 "0d67e76b94e1f0af9fe364aed8aa5db1c494c206",
+                "fa588e3cafbd43e97b3ac9cd1a0bc727430c4731",
                 "f701a38ab8bd9ad984c58320907cb8a93396ec69",
             ),
             eglot_observation(
-                "source_eglot_emacs_f4f249a2",
+                "eglot_source_f4f249a2_stock_registry",
                 "1.24",
                 ClientSourceState::UpstreamSource,
                 "f4f249a2249a7047ba41a659b8fcdcd7e1caf4e0",
+                "ffd5ed14f7cc689e22163527e47d6ae0d0acbea0",
                 "f2a9e36989cd90500e66900efe5138e6dee56668",
             ),
             lsp_mode_observation(
-                "released_lsp_mode_10_0_0",
+                "lsp_mode_released_10_0_0_clients",
                 "10.0.0",
                 ClientSourceState::Released,
                 "913a6c07f163205cb568bc68d7dfe677dbc358ab",
+                "0941b1b96aee881e5256bf2fce9ad75391c1abb4",
                 "ee16b0ca0c999eb9ba6db25a46ec3c1a19330619",
             ),
             lsp_mode_observation(
-                "source_lsp_mode_e15b8205",
+                "lsp_mode_source_e15b8205_clients",
                 "10.0.1",
                 ClientSourceState::UpstreamSource,
                 "e15b8205cbd0369df40b412909eb3ed3264e96a2",
+                "51274cfa292c0b5ae0a70edb9c0c61b153b5f916",
                 "9575875cd4c7ef49ab0bd8e5473e44f73c4a0c7d",
             ),
         ],
@@ -349,32 +401,35 @@ pub fn render_checked_json() -> Result<String> {
 }
 
 fn eglot_observation(
-    subject_id: &str,
+    observation_id: &str,
     client_version: &str,
     source_state: ClientSourceState,
     commit: &str,
-    blob: &str,
+    tree_sha1: &str,
+    blob_sha1: &str,
 ) -> StockDiscoveryObservation {
     StockDiscoveryObservation {
-        subject_id: subject_id.to_string(),
+        observation_id: observation_id.to_string(),
         client_kind: SubjectClientKind::ExternalEglot,
         client_version: client_version.to_string(),
         source_state,
-        repository: "https://github.com/emacs-mirror/emacs".to_string(),
+        repository: EMACS_REPOSITORY.to_string(),
         commit: commit.to_string(),
+        tree_sha1: tree_sha1.to_string(),
         registration_surface: RegistrationSurface::EglotServerPrograms,
+        search_scope: vec!["lisp/progmodes/eglot.el:eglot-server-programs".to_string()],
         observed_files: vec![ObservedSourceFile {
             path: "lisp/progmodes/eglot.el".to_string(),
-            git_blob_sha1: blob.to_string(),
+            git_blob_sha1: blob_sha1.to_string(),
         }],
         observation_complete: true,
         manual_registration_injected: false,
         perllsp_present: false,
         entries: vec![RegistrationEntry {
             entry_id: "perl_language_server".to_string(),
-            modes: vec!["perl-mode".to_string(), "cperl-mode".to_string()],
-            language_id: None,
-            command: vec![
+            major_modes: vec!["perl-mode".to_string(), "cperl-mode".to_string()],
+            activation_language: None,
+            command_shape: vec![
                 "perl".to_string(),
                 "-MPerl::LanguageServer".to_string(),
                 "-e".to_string(),
@@ -387,20 +442,23 @@ fn eglot_observation(
 }
 
 fn lsp_mode_observation(
-    subject_id: &str,
+    observation_id: &str,
     client_version: &str,
     source_state: ClientSourceState,
     commit: &str,
-    root_blob: &str,
+    tree_sha1: &str,
+    root_blob_sha1: &str,
 ) -> StockDiscoveryObservation {
     StockDiscoveryObservation {
-        subject_id: subject_id.to_string(),
+        observation_id: observation_id.to_string(),
         client_kind: SubjectClientKind::LspMode,
         client_version: client_version.to_string(),
         source_state,
-        repository: "https://github.com/emacs-lsp/lsp-mode".to_string(),
+        repository: LSP_MODE_REPOSITORY.to_string(),
         commit: commit.to_string(),
+        tree_sha1: tree_sha1.to_string(),
         registration_surface: RegistrationSurface::LspModeClientModules,
+        search_scope: vec!["clients/".to_string(), "lsp-mode.el".to_string()],
         observed_files: vec![
             ObservedSourceFile {
                 path: "clients/lsp-perl.el".to_string(),
@@ -416,7 +474,7 @@ fn lsp_mode_observation(
             },
             ObservedSourceFile {
                 path: "lsp-mode.el".to_string(),
-                git_blob_sha1: root_blob.to_string(),
+                git_blob_sha1: root_blob_sha1.to_string(),
             },
         ],
         observation_complete: true,
@@ -425,31 +483,37 @@ fn lsp_mode_observation(
         entries: vec![
             RegistrationEntry {
                 entry_id: "perlnavigator".to_string(),
-                modes: vec!["perl".to_string()],
-                language_id: Some("perl".to_string()),
-                command: vec!["perlnavigator".to_string(), "--stdio".to_string()],
+                major_modes: Vec::new(),
+                activation_language: Some("perl".to_string()),
+                command_shape: vec![
+                    "managed_or_configured:perlnavigator".to_string(),
+                    "--stdio".to_string(),
+                ],
                 server_id: Some("perlnavigator".to_string()),
                 priority: Some(0),
             },
             RegistrationEntry {
                 entry_id: "pls".to_string(),
-                modes: vec!["perl".to_string()],
-                language_id: Some("perl".to_string()),
-                command: vec!["pls".to_string()],
+                major_modes: Vec::new(),
+                activation_language: Some("perl".to_string()),
+                command_shape: vec![
+                    "configured:lsp-pls-executable".to_string(),
+                    "configured:lsp-pls-arguments...".to_string(),
+                ],
                 server_id: Some("pls".to_string()),
                 priority: Some(-1),
             },
             RegistrationEntry {
                 entry_id: "perl_language_server".to_string(),
-                modes: vec!["perl-mode".to_string(), "cperl-mode".to_string()],
-                language_id: None,
-                command: vec![
-                    "perl".to_string(),
+                major_modes: vec!["perl-mode".to_string(), "cperl-mode".to_string()],
+                activation_language: None,
+                command_shape: vec![
+                    "configured:lsp-perl-language-server-path".to_string(),
                     "-MPerl::LanguageServer".to_string(),
                     "-e".to_string(),
                     "Perl::LanguageServer::run".to_string(),
                     "--".to_string(),
-                    "--port {port} --version {client_version}".to_string(),
+                    "--port {port} --version {client-version}".to_string(),
                 ],
                 server_id: Some("perl-language-server".to_string()),
                 priority: Some(-2),
@@ -458,13 +522,54 @@ fn lsp_mode_observation(
     }
 }
 
+fn validate_sorted_tokens(values: &[String], field: &str) -> Result<()> {
+    ensure!(!values.is_empty(), "{field} must not be empty");
+    ensure!(
+        values.windows(2).all(|pair| pair[0] < pair[1]),
+        "{field} must be unique and deterministically sorted"
+    );
+    Ok(())
+}
+
+fn validate_source_files(files: &[ObservedSourceFile]) -> Result<()> {
+    ensure!(
+        !files.is_empty(),
+        "at least one exact observed source file is required"
+    );
+    let mut paths = BTreeSet::new();
+    let mut previous_path: Option<&str> = None;
+    for file in files {
+        ensure!(
+            !file.path.starts_with('/') && !file.path.contains(".."),
+            "source paths must be bounded and relative"
+        );
+        ensure!(
+            is_lower_hex(&file.git_blob_sha1, 40),
+            "source blob must be exact 40-hex SHA-1"
+        );
+        ensure!(
+            paths.insert(file.path.as_str()),
+            "duplicate observed source path {}",
+            file.path
+        );
+        if let Some(previous) = previous_path {
+            ensure!(
+                previous < file.path.as_str(),
+                "observed source files must use stable path order"
+            );
+        }
+        previous_path = Some(file.path.as_str());
+    }
+    Ok(())
+}
+
 fn dimension_rank(observation: &StockDiscoveryObservation) -> Result<usize> {
     match (observation.client_kind, observation.source_state) {
         (SubjectClientKind::ExternalEglot, ClientSourceState::Released) => Ok(0),
         (SubjectClientKind::ExternalEglot, ClientSourceState::UpstreamSource) => Ok(1),
         (SubjectClientKind::LspMode, ClientSourceState::Released) => Ok(2),
         (SubjectClientKind::LspMode, ClientSourceState::UpstreamSource) => Ok(3),
-        _ => anyhow::bail!("baseline accepts only external Eglot/lsp-mode released/source rows"),
+        _ => bail!("baseline accepts only external Eglot/lsp-mode released/source rows"),
     }
 }
 
