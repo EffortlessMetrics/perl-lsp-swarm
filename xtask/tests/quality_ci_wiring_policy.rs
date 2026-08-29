@@ -430,6 +430,11 @@ fn coverage_workflow_is_manual_or_nightly_only_and_requires_receipts() {
         coverage_reference_rows_contract(&stale_inventory, "mutated inventory").is_err(),
         "coverage documentation contract must reject stale route wording in alternate rows"
     );
+    let wrapped_stale_route = "Coverage is advisory, but\nruns on pull requests.";
+    assert!(
+        coverage_reference_rows_contract(wrapped_stale_route, "wrapped reference").is_err(),
+        "coverage documentation contract must reject stale route wording across wrapped lines"
+    );
     let stale_risk_doc =
         risk_pack_doc.replacen("`mutation`, `fuzz` |", "`mutation`, `fuzz`, `coverage` |", 1);
     assert!(
@@ -458,8 +463,20 @@ fn coverage_workflow_is_manual_or_nightly_only_and_requires_receipts() {
         "positive stale coverage prose must not be hidden by a comma and `without`"
     );
     assert!(
+        has_positive_stale_route_claim("Coverage runs on PRs without labels."),
+        "positive stale coverage prose must not be hidden by `without labels`"
+    );
+    assert!(
         has_positive_stale_route_claim("Coverage runs on PRs; never blocks."),
         "positive stale coverage prose must not be hidden by a semicolon and `never`"
+    );
+    assert!(
+        has_positive_stale_route_claim("Coverage runs on PRs and never blocks."),
+        "positive stale coverage prose must not be hidden by `and never`"
+    );
+    assert!(
+        has_positive_stale_route_claim("Coverage does not run on PRs and coverage runs on PRs."),
+        "a positive conjunction must not be hidden by an unrelated negative clause"
     );
     assert!(
         !has_positive_stale_route_claim("Coverage does not run on PRs or merge queues."),
@@ -470,6 +487,12 @@ fn coverage_workflow_is_manual_or_nightly_only_and_requires_receipts() {
             "Coverage is advisory, and maintainers can run routed proof locally."
         ),
         "legitimate negative coverage prose must remain allowed"
+    );
+    assert!(
+        !has_positive_stale_route_claim(
+            "Coverage is advisory, and pull requests use the required Rust gates."
+        ),
+        "advisory prose must not be classified as a positive coverage route"
     );
     assert!(
         !has_positive_stale_route_claim("Coverage is advisory, never a PR gate."),
@@ -1175,8 +1198,16 @@ fn ensure_no_positive_stale_route_value(value: &TomlValue, context: &str) -> Res
 
 fn has_positive_stale_route_claim(text: &str) -> bool {
     let normalized = text.to_ascii_lowercase().replace(['_', '-'], " ");
+    let has_pr_token = normalized
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .any(|token| token == "pr" || token == "prs");
     route_prose_clauses(&normalized).iter().any(|clause| has_positive_stale_route_clause(clause))
-        || has_positive_stale_route_clause(&normalized)
+        || (normalized.contains("coverage")
+            && normalized.contains("full ci")
+            && (normalized.contains("deep lane") || normalized.contains("label")))
+        || (normalized.contains("coverage")
+            && has_pr_token
+            && !has_negative_route_prose(&normalized))
 }
 
 fn route_prose_clauses(normalized: &str) -> Vec<&str> {
@@ -1186,7 +1217,7 @@ fn route_prose_clauses(normalized: &str) -> Vec<&str> {
     {
         let mut remaining = punctuation_clause;
         loop {
-            let Some((separator, separator_text)) = [" but ", " without ", " never "]
+            let Some((separator, separator_text)) = [" but ", " without ", " never ", " and "]
                 .iter()
                 .filter_map(|separator| remaining.find(separator).map(|index| (index, *separator)))
                 .min_by_key(|(index, _)| *index)
@@ -1298,13 +1329,71 @@ fn has_positive_stale_route_claim_in_context(text: &str, coverage_context: bool)
                 .any(|marker| normalized.contains(marker)))
 }
 
+fn has_positive_stale_route_claim_across_wrap(lines: &[&str]) -> bool {
+    let normalized = lines.join(" ").to_ascii_lowercase().replace(['_', '-'], " ");
+    let tokens = normalized
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .filter(|token| !token.is_empty())
+        .collect::<Vec<_>>();
+    let Some(coverage_index) =
+        tokens.iter().position(|token| matches!(*token, "coverage" | "codecov"))
+    else {
+        return false;
+    };
+    for (offset, token) in tokens[coverage_index + 1..].iter().enumerate() {
+        if !matches!(*token, "run" | "runs") {
+            continue;
+        }
+        let run_index = coverage_index + 1 + offset;
+        if tokens[coverage_index + 1..run_index]
+            .iter()
+            .any(|token| matches!(*token, "not" | "no" | "never" | "without"))
+        {
+            continue;
+        }
+        let following = &tokens[run_index + 1..tokens.len().min(run_index + 7)];
+        if following
+            .windows(2)
+            .any(|window| window == ["pull", "request"] || window == ["pull", "requests"])
+            || following
+                .iter()
+                .any(|token| matches!(*token, "pr" | "prs" | "merge" | "queue" | "group" | "label"))
+        {
+            return true;
+        }
+    }
+    false
+}
+
 fn coverage_reference_rows_contract(document: &str, context: &str) -> Result<()> {
-    for line in document.lines() {
+    let lines = document.lines().collect::<Vec<_>>();
+    for line in &lines {
         let lower = line.to_ascii_lowercase();
         if lower.contains("coverage") || lower.contains("codecov") {
             ensure!(
                 !has_positive_stale_route_claim(line),
                 "{context} contains stale coverage route wording: {line}"
+            );
+        }
+    }
+    for window in lines.windows(2) {
+        let first_line = window[0].trim_end();
+        let first_word = first_line
+            .split(|character: char| !character.is_ascii_alphanumeric())
+            .filter(|word| !word.is_empty())
+            .next_back();
+        if matches!(first_line.chars().last(), Some('|' | '.' | '!' | '?' | ':'))
+            || window[1].trim_start().starts_with('|')
+            || !matches!(first_word, Some("but" | "and" | "or" | "without" | "never"))
+        {
+            continue;
+        }
+        let joined = format!("{} {}", window[0], window[1]);
+        let lower = joined.to_ascii_lowercase();
+        if lower.contains("coverage") || lower.contains("codecov") {
+            ensure!(
+                !has_positive_stale_route_claim_across_wrap(window),
+                "{context} contains stale coverage route wording across wrapped lines: {joined}"
             );
         }
     }
