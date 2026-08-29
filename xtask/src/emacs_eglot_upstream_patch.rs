@@ -2,6 +2,8 @@
 //!
 //! The packet prepares one exact upstream source change. It performs no
 //! upstream write and proves no Emacs host behavior or released discovery.
+//! The declared subject carries the Perl contact at lines 347-348 of
+//! `lisp/progmodes/eglot.el` (blob `f2a9e369...`).
 
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
@@ -37,7 +39,7 @@ pub const AFTER_ANCHOR: &str = concat!(
 pub const UNIFIED_DIFF: &str = concat!(
     "--- a/lisp/progmodes/eglot.el\n",
     "+++ b/lisp/progmodes/eglot.el\n",
-    "@@ -349,2 +349,6 @@\n",
+    "@@ -347,2 +347,6 @@\n",
     "-    ((perl-mode cperl-mode)\n",
     "-     . (\"perl\" \"-MPerl::LanguageServer\" \"-e\" ",
     "\"Perl::LanguageServer::run\"))\n",
@@ -79,22 +81,13 @@ pub struct EglotPatchPacket {
 
 impl EglotPatchPacket {
     pub fn validate(&self) -> Result<()> {
-        ensure!(
-            self.schema_version == SCHEMA_VERSION,
-            "schema_version must be {SCHEMA_VERSION}"
-        );
-        ensure!(
-            self.claim_ceiling == CLAIM_CEILING,
-            "claim_ceiling must be {CLAIM_CEILING}"
-        );
+        ensure!(self.schema_version == SCHEMA_VERSION, "schema_version must be {SCHEMA_VERSION}");
+        ensure!(self.claim_ceiling == CLAIM_CEILING, "claim_ceiling must be {CLAIM_CEILING}");
         ensure!(
             !self.external_action_authorized,
             "patch preparation cannot authorize an upstream write"
         );
-        ensure!(
-            self.base == expected_base(),
-            "patch must bind the exact audited Eglot source"
-        );
+        ensure!(self.base == expected_base(), "patch must bind the exact audited Eglot source");
         ensure!(
             self.before_anchor == BEFORE_ANCHOR,
             "patch must replace the exact current Perl contact"
@@ -113,10 +106,7 @@ impl EglotPatchPacket {
             "upstream checks must remain explicit and bounded"
         );
         ensure!(
-            self.actual_host_prerequisites
-                .iter()
-                .copied()
-                .eq([7708, 7126, 7721]),
+            self.actual_host_prerequisites.iter().copied().eq([7708, 7126, 7721]),
             "packet must retain the exact host/protocol blockers"
         );
         ensure!(
@@ -152,20 +142,55 @@ impl EglotPatchPacket {
             !source.contains(self.after_anchor.as_str()),
             "patched Eglot contact already exists in the source"
         );
-        Ok(source.replacen(
-            self.before_anchor.as_str(),
-            self.after_anchor.as_str(),
-            1,
-        ))
+        Ok(source.replacen(self.before_anchor.as_str(), self.after_anchor.as_str(), 1))
     }
 
     fn expected_packet_id(&self) -> Result<String> {
         let mut canonical = self.clone();
         canonical.packet_id.clear();
         let bytes = serde_json::to_vec(&canonical)?;
-        let digest = format!("{:x}", Sha256::digest(bytes));
+        let digest = sha256_hex(&bytes);
         Ok(format!("eglot_patch_{}", &digest[..16]))
     }
+
+    /// Verify that `source` is byte-exact with the declared upstream blob.
+    ///
+    /// Computes the Git blob SHA-1 (`sha1("blob <size>\0" + bytes)`) of the
+    /// full source and compares it with `base.blob_sha1`, so a moved contact
+    /// inside otherwise-similar bytes cannot pass as the audited subject.
+    pub fn verify_source_blob(&self, source: &str) -> Result<()> {
+        let actual = git_blob_sha1_hex(source);
+        ensure!(
+            actual == self.base.blob_sha1,
+            "source bytes must hash to the declared Git blob {} (got {actual}); \
+             refusing to patch unaudited source",
+            self.base.blob_sha1
+        );
+        Ok(())
+    }
+
+    /// Verify the exact declared source blob, then apply the patch.
+    ///
+    /// This is the fail-closed application path: only the byte-exact audited
+    /// `eglot.el` blob can be patched through it.
+    pub fn apply_to_verified_source(&self, source: &str) -> Result<String> {
+        self.verify_source_blob(source)?;
+        self.apply_to_source(source)
+    }
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    Sha256::digest(bytes).iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn git_blob_sha1_hex(source: &str) -> String {
+    use sha1::{Digest, Sha1};
+
+    let bytes = source.as_bytes();
+    let mut hasher = Sha1::new();
+    hasher.update(format!("blob {}\0", bytes.len()).into_bytes());
+    hasher.update(bytes);
+    hasher.finalize().iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 pub fn checked_packet() -> Result<EglotPatchPacket> {
@@ -231,10 +256,7 @@ fn validate_after_anchor(anchor: &str) -> Result<()> {
     let legacy = anchor
         .find("Perl::LanguageServer::run")
         .ok_or_else(|| anyhow::anyhow!("legacy Perl::LanguageServer fallback is missing"))?;
-    ensure!(
-        perllsp < legacy,
-        "perllsp must precede the ubiquitous perl fallback"
-    );
+    ensure!(perllsp < legacy, "perllsp must precede the ubiquitous perl fallback");
     ensure!(
         !anchor.contains("perl-ts-mode"),
         "third-party perl-ts-mode is outside the core upstream patch"

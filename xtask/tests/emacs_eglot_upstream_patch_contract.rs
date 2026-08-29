@@ -51,9 +51,8 @@ fn exact_anchor_applies_once_and_preserves_surrounding_source() {
 fn stale_or_duplicate_anchor_fails_closed() {
     let packet = checked_packet().expect("checked packet");
     let stale = source_fixture().replace("cperl-mode", "cperl-ts-mode");
-    let error = packet
-        .apply_to_source(&stale)
-        .expect_err("moved upstream contact must block application");
+    let error =
+        packet.apply_to_source(&stale).expect_err("moved upstream contact must block application");
     assert!(error.to_string().contains("appear once"));
 
     let duplicate = format!("{}{}", source_fixture(), source_fixture());
@@ -67,21 +66,16 @@ fn stale_or_duplicate_anchor_fails_closed() {
 fn missing_stdio_is_rejected() {
     let mut packet = checked_packet().expect("checked packet");
     packet.after_anchor = packet.after_anchor.replace("--stdio", "--socket");
-    let error = packet
-        .validate()
-        .expect_err("perllsp must use the stdio transport");
+    let error = packet.validate().expect_err("perllsp must use the stdio transport");
     assert!(error.to_string().contains("reviewed selector"));
 }
 
 #[test]
 fn legacy_fallback_cannot_be_removed() {
     let mut packet = checked_packet().expect("checked packet");
-    packet.after_anchor = packet
-        .after_anchor
-        .replace("Perl::LanguageServer::run", "removed_legacy_fallback");
-    let error = packet
-        .validate()
-        .expect_err("legacy fallback removal must fail");
+    packet.after_anchor =
+        packet.after_anchor.replace("Perl::LanguageServer::run", "removed_legacy_fallback");
+    let error = packet.validate().expect_err("legacy fallback removal must fail");
     assert!(error.to_string().contains("reviewed selector"));
 }
 
@@ -97,22 +91,17 @@ fn perllsp_cannot_follow_the_ubiquitous_perl_fallback() {
         "           (\"perllsp\" \"--stdio\"))))\n",
     )
     .to_string();
-    let error = packet
-        .validate()
-        .expect_err("reversed alternative order must fail");
+    let error = packet.validate().expect_err("reversed alternative order must fail");
     assert!(error.to_string().contains("reviewed selector"));
 }
 
 #[test]
 fn both_builtin_modes_must_use_language_id_perl() {
     let mut packet = checked_packet().expect("checked packet");
-    packet.after_anchor = packet.after_anchor.replace(
-        "(cperl-mode :language-id \"perl\")",
-        "(cperl-mode :language-id \"cperl\")",
-    );
-    let error = packet
-        .validate()
-        .expect_err("cperl must not become the protocol language id");
+    packet.after_anchor = packet
+        .after_anchor
+        .replace("(cperl-mode :language-id \"perl\")", "(cperl-mode :language-id \"cperl\")");
+    let error = packet.validate().expect_err("cperl must not become the protocol language id");
     assert!(error.to_string().contains("reviewed selector"));
 }
 
@@ -126,9 +115,8 @@ fn third_party_perl_mode_cannot_enter_the_core_patch() {
             "      (perl-ts-mode :language-id \"perl\"))"
         ),
     );
-    let error = packet
-        .validate()
-        .expect_err("third-party mode must remain a separate support subject");
+    let error =
+        packet.validate().expect_err("third-party mode must remain a separate support subject");
     assert!(error.to_string().contains("reviewed selector"));
 }
 
@@ -136,9 +124,7 @@ fn third_party_perl_mode_cannot_enter_the_core_patch() {
 fn stale_base_identity_is_rejected() {
     let mut packet = checked_packet().expect("checked packet");
     packet.base.commit = "0000000000000000000000000000000000000000".to_string();
-    let error = packet
-        .validate()
-        .expect_err("patch must not float or apply to another source");
+    let error = packet.validate().expect_err("patch must not float or apply to another source");
     assert!(error.to_string().contains("exact audited Eglot source"));
 }
 
@@ -146,9 +132,7 @@ fn stale_base_identity_is_rejected() {
 fn external_action_cannot_be_authorized_by_the_packet() {
     let mut packet = checked_packet().expect("checked packet");
     packet.external_action_authorized = true;
-    let error = packet
-        .validate()
-        .expect_err("repository preparation cannot submit upstream");
+    let error = packet.validate().expect_err("repository preparation cannot submit upstream");
     assert!(error.to_string().contains("cannot authorize"));
 }
 
@@ -156,27 +140,59 @@ fn external_action_cannot_be_authorized_by_the_packet() {
 fn content_or_claim_mutation_invalidates_packet_identity() {
     let mut packet = checked_packet().expect("checked packet");
     packet.proposed_pr_body.push_str(" changed");
-    let error = packet
-        .validate()
-        .expect_err("content mutation must invalidate the packet id");
+    let error = packet.validate().expect_err("content mutation must invalidate the packet id");
     assert!(error.to_string().contains("content-address"));
 
     let mut packet = checked_packet().expect("checked packet");
     let _ = packet.limitations.pop();
-    let error = packet
-        .validate()
-        .expect_err("claim ceiling cannot silently broaden");
+    let error = packet.validate().expect_err("claim ceiling cannot silently broaden");
     assert!(error.to_string().contains("limitations"));
 }
 
 #[test]
 fn applying_the_same_packet_twice_is_not_success() {
     let packet = checked_packet().expect("checked packet");
-    let patched = packet
-        .apply_to_source(&source_fixture())
-        .expect("first application");
+    let patched = packet.apply_to_source(&source_fixture()).expect("first application");
     let error = packet
         .apply_to_source(&patched)
         .expect_err("already-patched source must not count as a fresh apply");
     assert!(error.to_string().contains("appear once"));
+}
+
+/// Git blob SHA-1 of `source_fixture()` as produced by `git hash-object`
+/// offline; the test asserts the Rust computation agrees with Git.
+const FIXTURE_BLOB_SHA1: &str = "8693186cc014cf6ee96ae8714fc5c064a2892267";
+
+#[test]
+fn blob_verification_rejects_unaudited_bytes_with_intact_anchor() {
+    let packet = checked_packet().expect("checked packet");
+
+    // The anchor still appears exactly once, but the bytes are not the
+    // declared subject: byte-exactness must fail before any replacement.
+    let tampered = source_fixture().replace("marksman", "org-mode");
+    let error = packet
+        .verify_source_blob(&tampered)
+        .expect_err("unaudited source bytes must fail blob verification");
+    assert!(error.to_string().contains("refusing to patch unaudited source"));
+
+    // The Rust Git-blob computation must agree with `git hash-object` for
+    // the same bytes.
+    let mut declared = checked_packet().expect("checked packet");
+    declared.base.blob_sha1 = FIXTURE_BLOB_SHA1.to_string();
+    declared
+        .verify_source_blob(&source_fixture())
+        .expect("byte-exact source must verify against its Git blob identity");
+
+    // The packet's own declared subject stays pinned to the audited blob.
+    assert_eq!(packet.base.blob_sha1, BASE_BLOB_SHA1);
+}
+
+#[test]
+fn verified_application_rejects_unaudited_bytes_before_anchoring() {
+    let packet = checked_packet().expect("checked packet");
+    let tampered = source_fixture().replace("marksman", "org-mode");
+    let error = packet
+        .apply_to_verified_source(&tampered)
+        .expect_err("verified application must reject unaudited bytes first");
+    assert!(error.to_string().contains("Git blob"));
 }
