@@ -138,7 +138,10 @@ no artifact and no return    → FAILED_NO_RETURN; affected dimension NOT_PROVEN
 
 Before reassignment, establish whether the prior writer can resume, whether its process
 has stopped, and whether uncommitted/unpushed work exists. Salvage useful work before
-replacing a writer.
+replacing a writer. Establishing those facts alone does not transfer mutation authority:
+reassign only after the prior writer is provably unable to resume, or after an
+acknowledged handoff has stopped or revoked it, so two writers never mutate the same
+candidate concurrently.
 
 ## Root-held claim frames
 

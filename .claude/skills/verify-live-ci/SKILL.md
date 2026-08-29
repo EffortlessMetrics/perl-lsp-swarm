@@ -117,7 +117,16 @@ evidence rule:
 - a required status that is missing or pending on the live PR head is a GitHub
   integration fact. Request a job rerun where appropriate without mutating the branch.
   Never rebase, push an empty commit, or replay unrelated CI merely to manufacture a
-  current status.
+  current status;
+- a rerun of a merge-tree-evaluated check replays its original merge snapshot: after
+  material base movement (release bumps, fmt/clippy sweeps landing on main), a fresh
+  trigger (empty-commit head bump, e.g. `ci: re-request fresh merge-tree checks`)
+  re-evaluates the current tree and is the honest action; the empty-commit ban covers
+  manufacturing a current status on an unchanged subject, not re-evaluating a changed
+  merge tree (#12174, #12251, #12256, #12258 each unblocked only through the fresh
+  trigger). Advisory CI-Gate shard redness on that fresh tree is then a main-red
+  signal, not noise: query main's own head check-runs before repairing branch-locally
+  (#12357, #12311/#12312, #12374-class).
 
 Classify failures as candidate-owned, base-owned, integration interaction,
 test/oracle defect, instrument failure, environment/capacity, pending, or

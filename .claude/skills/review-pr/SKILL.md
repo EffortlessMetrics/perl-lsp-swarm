@@ -117,8 +117,8 @@ python3 scripts/ci/check-pr-semantic-review-currentness.py \
   <pr> <owner/repo> --emit-marker
 ```
 
-Append the emitted `<!-- semantic-review:v1 ... -->` marker to the same useful review
-record. The marker binds semantic currentness without turning the full head SHA into a
+Append the emitted `semantic-review:v1` marker — an HTML comment bound to the current
+PR diff — to the same useful review record. The marker binds semantic currentness without turning the full head SHA into a
 ceremonial review receipt.
 
 **The main thread posts the cumulative review.** A bounded review programme returns

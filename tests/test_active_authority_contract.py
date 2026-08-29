@@ -104,7 +104,15 @@ SEMANTIC_PARITY_MARKERS: dict[str, tuple[str, ...]] = {
     "review-pr": ("REVIEW_CURRENT", "CHANGES_REQUIRED", "NOT_PROVEN", "semantic-review:v1", "verify-live-ci"),
     "review-tests": ("NOT_PROVEN", "build-candidate", "prepare-proof"),
     "simplify-candidate": ("ALREADY_MINIMAL", "NOT_PROVEN", "review-candidate"),
-    "verify-live-ci": ("REVIEW_CURRENT", "INTEGRATION_READY", "PR_IN_FLIGHT", "MERGE_BLOCKED", "NOT_PROVEN"),
+    "verify-live-ci": (
+        "REVIEW_CURRENT",
+        "INTEGRATION_READY",
+        "PR_IN_FLIGHT",
+        "MERGE_BLOCKED",
+        "NOT_PROVEN",
+        "a rerun of a merge-tree-evaluated check replays its original merge snapshot",
+        "re-evaluates the current tree and is the honest action",
+    ),
 }
 
 # Every path that must re-run this contract, under both workflow events.
@@ -132,6 +140,7 @@ FLOW_ROSTER_HEADING = "Choose the narrowest applicable public flow:"
 FLOW_BULLET = re.compile(r"^- `\$?([a-z][a-z-]*)`", re.MULTILINE)
 BACKTICK_SKILL = re.compile(r"`\$?([a-z][a-z0-9-]*)`")
 RETIRED_ACTIVE_SKILL_AUTHORITY = (
+    re.compile(r"\bcampaign root\b"),
     re.compile(r"\blane root\b"),
     re.compile(r"\blane-root\b"),
     re.compile(r"\blane owner\b"),
@@ -143,6 +152,15 @@ SUBORDINATE_AUTHORITY = re.compile(
 )
 CODEX_ROOT_AUTHORITY = re.compile(r"\b(?:accountable root|Codex root|main/root(?: Codex)? (?:thread|orchestrator))\b")
 CLAUDE_ROOT_AUTHORITY = re.compile(r"\bmain Claude thread\b")
+
+
+ROUTE_EDGE = re.compile(r"(?:→\s*)?([A-Z][A-Z0-9_]+)\s*\n\s*→\s*`\$?([a-z0-9][a-z0-9-]*)`")
+
+
+def result_route_edges(text: str) -> set[tuple[str, str]]:
+    """Normalized result-to-destination edges from a skill's route blocks."""
+
+    return {(result, destination) for result, destination in ROUTE_EDGE.findall(text)}
 
 
 def read(path: str) -> str:
@@ -506,6 +524,11 @@ class CrossSurfaceInvariantTests(unittest.TestCase):
                 skill_references(codex),
                 skill_references(claude),
                 f"{skill} provider implementations disagree on callable skill references",
+            )
+            self.assertEqual(
+                result_route_edges(codex),
+                result_route_edges(claude),
+                f"{skill} provider implementations disagree on result-to-route edges",
             )
             self.assertRegex(
                 codex,

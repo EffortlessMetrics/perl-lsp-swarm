@@ -53,7 +53,8 @@ dimensions, contradictions/dispositions, limitations, and typed result.
 ## Runtime-local boundary
 
 This is an attention shift, not a durable lifecycle stage. Do not compute a claim
-digest, post a marker, create a review receipt, or write challenge state to a file.
+digest, post a `final-challenge` marker, create a review receipt, or write challenge
+state to a file.
 Durable output is limited to useful localized findings, evidence-backed dispositions,
 changed proof/claim/route facts, and the later cumulative GitHub review.
 
