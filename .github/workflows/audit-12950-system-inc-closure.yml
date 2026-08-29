@@ -1,0 +1,65 @@
+name: Audit startup INC closure
+
+on:
+  push:
+    branches:
+      - audit/12950-system-inc-closure-20260829
+
+permissions:
+  contents: read
+
+env:
+  MAIN_SHA: f6d3f9919dca35095fa8a7b26923c3190008d040
+  RETRY_HEAD: 39e19545a7fae642d4b36e7469bec82e0f99eae2
+
+jobs:
+  census:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout audit subject
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          ref: audit/12950-system-inc-closure-20260829
+
+      - name: Produce exact current-main census
+        shell: bash
+        run: |
+          set -euo pipefail
+          git checkout --detach "$MAIN_SHA"
+          echo '=== CURRENT MAIN SUBJECT ==='
+          git rev-parse HEAD
+
+          echo '=== STARTUP INC API / FIELD REFERENCES ==='
+          git grep -n -E 'get_system_inc(_probe_outcome)?\(|ensure_system_inc_probe|system_inc_cache|system_inc_probe_attempts' -- '*.rs' || true
+
+          echo '=== LEGACY / CANONICAL MODULE RESOLUTION REFERENCES ==='
+          git grep -n -E 'resolve_module_path_with_uri|resolve_xs_bootstrap_path_with_uri|resolve_module_path\(|resolve_module_to_path_with_doc_at_offset|effective_inc_context_for_doc|system_inc_for_context|workspace_config_for_doc|append_system_inc_paths' -- '*.rs' || true
+
+          echo '=== STARTUP INC INPUT MUTATION SITES ==='
+          git grep -n -E '(perl_path|perl_args|use_system_inc|use_perl5lib)[[:space:]]*=' -- '*.rs' || true
+
+          echo '=== CONFIG / ROOT FALLBACK AND LOCK SITES ==='
+          git grep -n -E 'folders\.first\(|workspace_folders\.first\(|workspace_folders\.lock\(\)|workspace_config\.lock\(\)' -- \
+            crates/perl-lsp-rs/src/runtime/lifecycle/inc_context \
+            crates/perl-lsp-rs/src/runtime/lifecycle/module_resolution.rs \
+            crates/perl-lsp-rs/src/runtime/workspace/configuration_response.rs || true
+
+          echo '=== EXPLANATION SURFACES ==='
+          git grep -n -E 'explainMissingModuleLookup|explain_missing_module|explainProviderDecision|ProviderDecisionExplanation' -- '*.rs' '*.ts' '*.json' || true
+
+          echo '=== CURRENT MAIN RELEVANT FUNCTION BODIES ==='
+          sed -n '300,560p' crates/perl-lsp-rs/src/runtime/lifecycle/module_resolution.rs
+          sed -n '170,310p' crates/perl-lsp-rs/src/runtime/lifecycle/inc_context/mod.rs
+          sed -n '1540,1815p' crates/perl-lsp-rs-core/src/config/mod.rs
+
+      - name: Compare proposed retry branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo '=== RETRY BRANCH SUBJECT / DIFF ==='
+          git show --stat --oneline "$RETRY_HEAD"
+          git diff --unified=20 "$MAIN_SHA" "$RETRY_HEAD" -- crates/perl-lsp-rs-core/src/config/mod.rs
+          echo '=== CLONE SITES THAT WOULD CARRY RETRY STATE ==='
+          git grep -n -E 'WorkspaceConfig::default\(\)|workspace_config.*clone\(|effective_workspace_config\.clone\(|config_for_doc\(' "$RETRY_HEAD" -- '*.rs' || true
