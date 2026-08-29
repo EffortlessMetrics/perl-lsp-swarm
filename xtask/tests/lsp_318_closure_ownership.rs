@@ -72,10 +72,8 @@ fn table_cells(line: &str) -> Vec<&str> {
             continue;
         }
         if ch == '`' {
-            let delimiter_len = body[index..]
-                .chars()
-                .take_while(|candidate| *candidate == '`')
-                .count();
+            let delimiter_len =
+                body[index..].chars().take_while(|candidate| *candidate == '`').count();
             if code_delimiter_len == 0 {
                 code_delimiter_len = delimiter_len;
             } else if code_delimiter_len == delimiter_len {
@@ -98,10 +96,7 @@ fn table_cells(line: &str) -> Vec<&str> {
 fn table_rows(source: &str, expected_cells: usize) -> Result<Vec<Vec<&str>>, String> {
     let mut rows = Vec::new();
     for line in source.lines() {
-        let indentation = line
-            .chars()
-            .take_while(|ch| *ch == ' ' || *ch == '\t')
-            .count();
+        let indentation = line.chars().take_while(|ch| *ch == ' ' || *ch == '\t').count();
         if indentation > 3 {
             continue;
         }
@@ -193,8 +188,8 @@ fn unresolved_matrix_features<'a>(matrix: &BTreeMap<&'a str, Vec<&'a str>>) -> B
 }
 
 #[test]
-fn markdown_table_parser_handles_indentation_trailing_space_and_code_pipes()
--> Result<(), Box<dyn std::error::Error>> {
+fn markdown_table_parser_handles_indentation_trailing_space_and_code_pipes(
+) -> Result<(), Box<dyn std::error::Error>> {
     let rows = table_rows(
         "  | ID | Feature | Disposition | Owner | Evidence | Dependency | Rationale |  \n  | --- | --- | --- | --- | --- | --- | --- |\n  | row | feature | accepted-disposition | n/a | compare `a | b` and ``c | d`` (#123). | none | material rationale here |  \n    | fake | feature | accepted-disposition | n/a | indented code | none | material rationale here |  ",
         7,
@@ -213,8 +208,8 @@ fn issue_reference_detection_accepts_markdown_and_sentence_punctuation() {
 }
 
 #[test]
-fn implementation_owner_is_separate_from_historical_evidence()
--> Result<(), Box<dyn std::error::Error>> {
+fn implementation_owner_is_separate_from_historical_evidence(
+) -> Result<(), Box<dyn std::error::Error>> {
     let rows = parse_ledger(
         "| ID | Matrix feature | Disposition | Owner | Evidence | Dependency | Rationale |\n| --- | --- | --- | --- | --- | --- | --- |\n| row | feature | implementation-owner | #123 | boundary #9 | none | material rationale here |",
     )?;
