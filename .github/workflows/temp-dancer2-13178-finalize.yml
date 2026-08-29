@@ -1,0 +1,502 @@
+name: Temporary Dancer2 1.x finalization
+
+on:
+  push:
+    branches: ["fix/13089-dancer2-dsl-keywords"]
+
+permissions:
+  contents: write
+
+jobs:
+  finalize:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout candidate branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: fix/13089-dancer2-dsl-keywords
+          fetch-depth: 1
+
+      - name: Apply remaining review dispositions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          from pathlib import Path
+
+          def replace_once(text: str, old: str, new: str, label: str) -> str:
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{label}: expected one match, found {count}")
+              return text.replace(old, new, 1)
+
+          facts_path = Path("crates/perl-semantic-facts/src/framework_adapters/dancer2.rs")
+          facts = facts_path.read_text()
+          facts = replace_once(
+              facts,
+              '''pub const DANCER2_DSL_CONTRACT_VERSION: &str = "dancer2-dsl.1-1.v3";
+          const DANCER2_DSL_1_0_CONTRACT_VERSION: &str = "dancer2-dsl.1-0.v3";
+          const DANCER2_URI_FOR_ROUTE_VERSION_CONSTRAINT: &str = ">=1.1.0,<2.0.0";
+          ''',
+              '''pub const DANCER2_DSL_CONTRACT_VERSION: &str = "dancer2-dsl.1-1.v3";
+          const DANCER2_DSL_1_0_CONTRACT_VERSION: &str = "dancer2-dsl.1-0.v3";
+          const DANCER2_DSL_UNRESOLVED_CONTRACT_VERSION: &str = "dancer2-dsl.unresolved.v3";
+          const DANCER2_URI_FOR_ROUTE_VERSION_CONSTRAINT: &str = ">=1.1.0,<2.0.0";
+          ''',
+              "unresolved contract identity",
+          )
+          facts = replace_once(
+              facts,
+              '''                dsl,
+                          dsl_contract_version: DANCER2_DSL_CONTRACT_VERSION,
+                          keywords: Vec::new(),
+                          unknown_exclusions: unknown_exclusions(evidence, None),
+          ''',
+              '''                dsl,
+                          dsl_contract_version: DANCER2_DSL_UNRESOLVED_CONTRACT_VERSION,
+                          keywords: Vec::new(),
+                          unknown_exclusions: unknown_exclusions(evidence, None),
+          ''',
+              "not-activated contract identity",
+          )
+          facts = replace_once(
+              facts,
+              '''    match framework_version {
+                  Some(version) => keyword_is_available_in_version(keyword, version),
+                  None => true,
+              }
+          ''',
+              '''    match framework_version {
+                  Some(version) => keyword_is_available_in_version(keyword, version),
+                  // Without exact version authority no union member is claimed
+                  // reviewed; every exclusion remains explicit and recoverable.
+                  None => false,
+              }
+          ''',
+              "unresolved exclusion policy",
+          )
+          facts = replace_once(
+              facts,
+              "fn keyword_table_matches_reviewed_v1_1_registration()",
+              "fn keyword_table_matches_reviewed_dancer2_1_x_union()",
+              "union test name",
+          )
+          test_anchor = '''    #[test]
+              fn non_keyword_hook_name_remains_an_unknown_exclusion() {
+                  let evidence = parse_dancer2_import_args(&["!before".to_string()]);
+                  assert_eq!(unknown_exclusions(&evidence, Some("1.1.1")), vec!["before".to_string()]);
+              }
+          '''
+          test_replacement = test_anchor + '''
+              #[test]
+              fn not_activated_preserves_exclusions_under_an_unresolved_contract() {
+                  let observation = crate::framework::ModuleObservationReceipt::new(
+                      "module-resolver.v1",
+                      "root:test",
+                      "project-environment.v1",
+                      SourceGeneration::known("g1"),
+                      "sha256:test",
+                      Vec::new(),
+                  );
+                  let input = AdapterDetectionInput::new(
+                      dancer2_descriptor(),
+                      observation,
+                      None,
+                      crate::framework::AdapterCancellation::active(),
+                  );
+                  let detection = detect_dancer2(&input);
+                  let evidence = parse_dancer2_import_args(&["!uri_for_route".to_string()]);
+                  let activation = dancer2_activation_facts(&detection, Some("App"), &evidence);
+
+                  assert!(matches!(
+                      activation.state,
+                      Dancer2ActivationState::NotActivated { .. }
+                  ));
+                  assert_eq!(
+                      activation.dsl_contract_version,
+                      DANCER2_DSL_UNRESOLVED_CONTRACT_VERSION
+                  );
+                  assert!(activation.keywords.is_empty());
+                  assert_eq!(activation.unknown_exclusions, vec!["uri_for_route".to_string()]);
+              }
+          '''
+          facts = replace_once(
+              facts,
+              test_anchor,
+              test_replacement,
+              "unresolved activation test",
+          )
+          facts_path.write_text(facts)
+
+          routes_path = Path(
+              "crates/perl-semantic-facts/src/framework_adapters/dancer2_routes.rs"
+          )
+          routes = routes_path.read_text()
+          routes = replace_once(
+              routes,
+              '''use crate::framework_adapters::dancer2::{
+              DANCER2_ADAPTER_ID, DANCER2_DSL_CONTRACT_VERSION, DANCER2_FRAMEWORK_NAME,
+              Dancer2ActivationFacts, Dancer2KeywordState,
+          };
+          ''',
+              '''use crate::framework_adapters::dancer2::{
+              DANCER2_ADAPTER_ID, DANCER2_FRAMEWORK_NAME, Dancer2ActivationFacts,
+              Dancer2KeywordState,
+          };
+          ''',
+              "route adapter imports",
+          )
+          routes = replace_once(
+              routes,
+              '''    let Dancer2ActivationFacts { state, keywords, .. } = activation;
+          ''',
+              '''    let Dancer2ActivationFacts {
+                  state,
+                  keywords,
+                  dsl_contract_version,
+                  ..
+              } = activation;
+          ''',
+              "activation contract destructure",
+          )
+          routes = replace_once(
+              routes,
+              '''                framework_version,
+                          source_generation,
+                      ));
+          ''',
+              '''                framework_version,
+                          dsl_contract_version,
+                          source_generation,
+                      ));
+          ''',
+              "handler context call",
+          )
+          routes = replace_once(
+              routes,
+              '''fn mint_handler_context_fact(
+              declaration: &Dancer2RouteDeclaration,
+              application_name: &str,
+              framework_version: &str,
+              generation: &SourceGeneration,
+          ) -> RouteHandlerContextFact {
+          ''',
+              '''fn mint_handler_context_fact(
+              declaration: &Dancer2RouteDeclaration,
+              application_name: &str,
+              framework_version: &str,
+              dsl_contract_version: &str,
+              generation: &SourceGeneration,
+          ) -> RouteHandlerContextFact {
+          ''',
+              "handler context signature",
+          )
+          routes = replace_once(
+              routes,
+              '''        declaration.route.declaration_index,
+                  DANCER2_DSL_CONTRACT_VERSION,
+              )
+          }
+          ''',
+              '''        declaration.route.declaration_index,
+                  dsl_contract_version,
+              )
+          }
+          ''',
+              "handler context receipt",
+          )
+          routes_path.write_text(routes)
+
+          analyzer_path = Path(
+              "crates/perl-semantic-analyzer/tests/dancer2_route_facts.rs"
+          )
+          analyzer = analyzer_path.read_text()
+          analyzer = replace_once(
+              analyzer,
+              '''fn matched_dancer2(generation: &str) -> ModuleSelectorEvaluation {
+              let activation = ModuleActivationIdentity::new(
+                  "Dancer2",
+                  Some(FileId(7)),
+                  SourceGeneration::known(generation),
+              )
+              .with_observed_version(ModuleVersionEvidence::new(
+                  "1.1.1",
+                  SourceGeneration::known(generation),
+              ));
+              ModuleSelectorEvaluation::new(
+                  "Dancer2",
+                  ModuleSelectorOutcome::Matched {
+                      activation,
+                      evidence_class: DetectionEvidenceClass::ResolvedModule,
+                  },
+              )
+          }
+          ''',
+              '''fn matched_dancer2(generation: &str) -> ModuleSelectorEvaluation {
+              matched_dancer2_version(generation, "1.1.1")
+          }
+
+          fn matched_dancer2_version(
+              generation: &str,
+              framework_version: &str,
+          ) -> ModuleSelectorEvaluation {
+              let activation = ModuleActivationIdentity::new(
+                  "Dancer2",
+                  Some(FileId(7)),
+                  SourceGeneration::known(generation),
+              )
+              .with_observed_version(ModuleVersionEvidence::new(
+                  framework_version,
+                  SourceGeneration::known(generation),
+              ));
+              ModuleSelectorEvaluation::new(
+                  "Dancer2",
+                  ModuleSelectorOutcome::Matched {
+                      activation,
+                      evidence_class: DetectionEvidenceClass::ResolvedModule,
+                  },
+              )
+          }
+          ''',
+              "versioned Dancer2 observation",
+          )
+          analyzer = replace_once(
+              analyzer,
+              '''fn input(generation: &str) -> AdapterDetectionInput {
+              let observation = ModuleObservationReceipt::new(
+                  "module-resolver.v1",
+                  "root:fixture",
+                  "project-environment.v1",
+                  SourceGeneration::known(generation),
+                  "sha256:fixture-input",
+                  vec![matched_dancer2(generation)],
+              );
+              AdapterDetectionInput::new(
+                  dancer2_descriptor(),
+                  observation,
+                  None,
+                  AdapterCancellation::active(),
+              )
+          }
+          ''',
+              '''fn input(generation: &str) -> AdapterDetectionInput {
+              input_with_version(generation, "1.1.1")
+          }
+
+          fn input_with_version(generation: &str, framework_version: &str) -> AdapterDetectionInput {
+              let observation = ModuleObservationReceipt::new(
+                  "module-resolver.v1",
+                  "root:fixture",
+                  "project-environment.v1",
+                  SourceGeneration::known(generation),
+                  "sha256:fixture-input",
+                  vec![matched_dancer2_version(generation, framework_version)],
+              );
+              AdapterDetectionInput::new(
+                  dancer2_descriptor(),
+                  observation,
+                  None,
+                  AdapterCancellation::active(),
+              )
+          }
+          ''',
+              "versioned detection input",
+          )
+          analyzer = replace_once(
+              analyzer,
+              '''fn family_facts(code: &str, generation: &str) -> Dancer2RouteFacts {
+              let mut parser = Parser::new(code);
+              let ast = must(parser.parse());
+              let sites = extract_dancer2_activation_sites(&ast, FileId(1));
+              let contexts = extract_dancer2_route_contexts(&ast, FileId(1));
+              let detection = detect_dancer2(&input(generation));
+              let mut facts = Dancer2RouteFacts::default();
+          ''',
+              '''fn family_facts(code: &str, generation: &str) -> Dancer2RouteFacts {
+              family_facts_with_input(code, &input(generation))
+          }
+
+          fn family_facts_with_input(
+              code: &str,
+              detection_input: &AdapterDetectionInput,
+          ) -> Dancer2RouteFacts {
+              let mut parser = Parser::new(code);
+              let ast = must(parser.parse());
+              let sites = extract_dancer2_activation_sites(&ast, FileId(1));
+              let contexts = extract_dancer2_route_contexts(&ast, FileId(1));
+              let detection = detect_dancer2(detection_input);
+              let mut facts = Dancer2RouteFacts::default();
+          ''',
+              "versioned family helper",
+          )
+          analyzer_test_anchor = '''    assert!(
+              code[interval.start_byte as usize..interval.end_byte as usize].contains("route_parameters"),
+              "the interval covers the handler body where request context applies"
+          );
+          }
+
+          // Falsifier: ZERO family facts without registry activation.
+          '''
+          analyzer_test_replacement = '''    assert!(
+              code[interval.start_byte as usize..interval.end_byte as usize].contains("route_parameters"),
+              "the interval covers the handler body where request context applies"
+          );
+          }
+
+          #[test]
+          fn handler_context_uses_the_activation_selected_dsl_contract() {
+              let code = "package App;\nuse Dancer2;\nget '/x' => sub { params; };\n";
+              let input = input_with_version("gen-1", "1.0.0");
+              let facts = family_facts_with_input(code, &input);
+
+              assert_eq!(facts.handler_contexts.len(), 1);
+              assert_eq!(
+                  facts.handler_contexts[0].dsl_contract_version,
+                  "dancer2-dsl.1-0.v3"
+              );
+          }
+
+          // Falsifier: ZERO family facts without registry activation.
+          '''
+          analyzer = replace_once(
+              analyzer,
+              analyzer_test_anchor,
+              analyzer_test_replacement,
+              "versioned handler context proof",
+          )
+          analyzer_path.write_text(analyzer)
+
+          diagnostics_path = Path(
+              "crates/perl-lsp-rs-core/src/providers/dancer2/diagnostics.rs"
+          )
+          diagnostics = diagnostics_path.read_text()
+          diagnostics = replace_once(
+              diagnostics,
+              '''    use perl_semantic_facts::{FileId, SourceGeneration};
+          ''',
+              '''    use perl_semantic_facts::{FileId, SourceGeneration};
+              use perl_test_must::{must_some_with, must_with};
+          ''',
+              "diagnostics assertion imports",
+          )
+          parse_old = '        let ast = parser.parse().expect("fixture must parse");\n'
+          if diagnostics.count(parse_old) != 2:
+              raise SystemExit(
+                  "diagnostics parser extractions: expected 2, "
+                  f"found {diagnostics.count(parse_old)}"
+              )
+          diagnostics = diagnostics.replace(
+              parse_old,
+              '        let ast = must_with(parser.parse(), "fixture must parse");\n',
+          )
+          diagnostics = replace_once(
+              diagnostics,
+              '        let declaration_get_offset = source.rfind("get").expect("declaration keyword offset");\n',
+              '        let declaration_get_offset =\n            must_some_with(source.rfind("get"), "declaration keyword offset");\n',
+              "declaration offset extraction",
+          )
+          diagnostics = replace_once(
+              diagnostics,
+              '        let params_offset = source.find("params").expect("params offset");\n',
+              '        let params_offset = must_some_with(source.find("params"), "params offset");\n',
+              "params offset extraction",
+          )
+          diagnostics_path.write_text(diagnostics)
+
+          changelog_path = Path(
+              ".changes/unreleased/product-13178-Fixed-091500.yaml"
+          )
+          if changelog_path.exists():
+              raise SystemExit("Dancer2 changelog fragment already exists")
+          changelog_path.write_text(
+              '''project: product
+          component: Language intelligence
+          kind: Fixed
+          body: "Dancer2 completion, hover, and diagnostics now use the reviewed Dancer2 1.x keyword contract for the detected version: request-only helpers stay in handler scope, non-keywords are no longer suggested, deprecations are retained, and Dancer2 1.0 does not advertise `uri_for_route`."
+          time: 2026-08-29T09:15:00Z
+          custom:
+            PR: "13178"
+            Slug: dancer2-versioned-dsl-keywords
+            Breaking: "no"
+          '''
+          )
+          PY
+
+          cargo fmt --all
+          cargo fmt --all -- --check
+          git diff --check
+
+      - name: Prove semantic fact and route-family contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked -p perl-semantic-facts
+          cargo test --locked -p perl-semantic-analyzer --test dancer2_route_facts
+
+      - name: Prove Dancer2 provider behavior
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked -p perl-lsp-rs-core providers::dancer2
+          cargo test --locked -p perl-test-must
+
+      - name: Check changelog and selected lint debt
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo xtask changelog check
+          python3 <<'PY'
+          from pathlib import Path
+
+          text = Path(
+              "crates/perl-lsp-rs-core/src/providers/dancer2/diagnostics.rs"
+          ).read_text()
+          selected = [
+              '.expect("fixture must parse")',
+              '.expect("declaration keyword offset")',
+              '.expect("params offset")',
+          ]
+          remaining = [needle for needle in selected if needle in text]
+          if remaining:
+              raise SystemExit(f"selected diagnostics extraction debt remains: {remaining}")
+          PY
+
+      - name: Commit verified repair and remove temporary executor
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm .github/workflows/temp-dancer2-13178-finalize.yml
+          python3 <<'PY'
+          import subprocess
+
+          expected = {
+              ".changes/unreleased/product-13178-Fixed-091500.yaml",
+              ".github/workflows/temp-dancer2-13178-finalize.yml",
+              "crates/perl-lsp-rs-core/src/providers/dancer2/diagnostics.rs",
+              "crates/perl-semantic-analyzer/tests/dancer2_route_facts.rs",
+              "crates/perl-semantic-facts/src/framework_adapters/dancer2.rs",
+              "crates/perl-semantic-facts/src/framework_adapters/dancer2_routes.rs",
+          }
+          changed = set(
+              subprocess.check_output(["git", "diff", "--name-only"], text=True).splitlines()
+          )
+          if changed != expected:
+              raise SystemExit(
+                  "unexpected changed-file set:\n"
+                  f"expected={sorted(expected)}\nobserved={sorted(changed)}"
+              )
+          PY
+          git diff --check
+          git config user.name "EffortlessSteven"
+          git config user.email "git@effortlesssteven.com"
+          git add \
+            .changes/unreleased/product-13178-Fixed-091500.yaml \
+            .github/workflows/temp-dancer2-13178-finalize.yml \
+            crates/perl-lsp-rs-core/src/providers/dancer2/diagnostics.rs \
+            crates/perl-semantic-analyzer/tests/dancer2_route_facts.rs \
+            crates/perl-semantic-facts/src/framework_adapters/dancer2.rs \
+            crates/perl-semantic-facts/src/framework_adapters/dancer2_routes.rs
+          git commit -m "fix(dancer2): close versioned contract gaps (#13089)"
+          git push origin HEAD:fix/13089-dancer2-dsl-keywords
