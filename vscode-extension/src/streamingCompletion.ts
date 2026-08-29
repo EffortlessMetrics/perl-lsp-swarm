@@ -1,6 +1,11 @@
 import * as vscode from 'vscode';
 import type { LanguageClient } from 'vscode-languageclient/node';
 import { ProgressType } from 'vscode-jsonrpc';
+import {
+  toLspInlineTriggerKind,
+  toLspSelectedCompletionInfo,
+  type InlineStreamAdapter,
+} from './inlineCompletionRouting';
 
 /** Shape of each candidate item inside a stream progress value. */
 interface StreamCandidateItem {
@@ -67,43 +72,45 @@ interface CachedCandidate {
 const streamProgressType = new ProgressType<StreamProgressValue>();
 
 /**
- * Streaming inline completion controller.
+ * Streaming inline completion adapter.
  *
- * Manages the lifecycle of progressive AI inline completions:
- * 1. Triggers custom stream requests to the server
- * 2. Caches cumulative candidates from $/progress, keyed to the request
+ * This type deliberately does **not** register an inline-completion provider.
+ * `InlineCompletionOwner`, installed as language-client middleware, is the one
+ * authoritative provider for Perl inline completion (#8282); this class is the
+ * custom-stream session and cache adapter it delegates to. Registering here as
+ * well would put two providers on the same `{ scheme: 'file', language: 'perl' }`
+ * selector and let one editor trigger dispatch two server requests.
+ *
+ * Responsibilities:
+ * 1. Start at most one custom stream request per request identity
+ * 2. Cache cumulative candidates from $/progress, keyed to the request
  *    identity (URI + document version + cursor line + cursor character)
- * 3. Feeds cached candidates through the inline completion provider only
- *    when all four key fields match the current editor state
- * 4. Cancels streams on cursor movement or document changes
+ * 3. Serve cached candidates only when all four key fields match
+ * 4. Cancel streams on cursor movement or document changes
  */
-export class StreamingCompletionController implements vscode.Disposable {
+export class StreamingCompletionController implements vscode.Disposable, InlineStreamAdapter {
   private client: LanguageClient;
   private cachedCandidate: CachedCandidate | null = null;
   private activeRequestIdentity: RequestIdentity | null = null;
   private activeTokenSource: vscode.CancellationTokenSource | null = null;
   private activeProgressToken: string | null = null;
   private activeProgressDisposable: vscode.Disposable | null = null;
+  /** Editor cancellation subscription for the in-flight generation. */
+  private activeCancellationSubscription: vscode.Disposable | null = null;
   private disposables: vscode.Disposable[] = [];
+  /** Backend stream generations actually started. Bounded count, no text. */
+  private streamGenerationsStarted = 0;
+  /** Display re-queries that reused an in-flight generation instead of restarting it. */
+  private duplicateDisplayRequeries = 0;
+  /**
+   * Set by `dispose`. A disposed adapter belongs to a superseded language-client
+   * generation and must never take a route, even if the owner still holds a
+   * reference to it during reconstruction.
+   */
+  private disposed = false;
 
   constructor(client: LanguageClient) {
     this.client = client;
-
-    // Register inline completion provider
-    const provider = vscode.languages.registerInlineCompletionItemProvider(
-      { scheme: 'file', language: 'perl' },
-      {
-        provideInlineCompletionItems: (
-          document: vscode.TextDocument,
-          position: vscode.Position,
-          context: vscode.InlineCompletionContext,
-          token: vscode.CancellationToken,
-        ) => {
-          return this.provideInlineCompletionItems(document, position, context, token);
-        },
-      },
-    );
-    this.disposables.push(provider);
 
     // Cancel on cursor movement
     const cursorDisposable = vscode.window.onDidChangeTextEditorSelection(() => {
@@ -216,18 +223,47 @@ export class StreamingCompletionController implements vscode.Disposable {
     void vscode.commands.executeCommand('editor.action.inlineSuggest.trigger');
   }
 
-  private provideInlineCompletionItems(
-    document: vscode.TextDocument,
-    position: vscode.Position,
-    _context: vscode.InlineCompletionContext,
-    _token: vscode.CancellationToken,
-  ): vscode.InlineCompletionItem[] | undefined {
-    // Check if AI completion is enabled
+  /**
+   * Whether this adapter may take an inline-completion route.
+   *
+   * The owner consults this before selecting the stream route, so a disabled
+   * configuration falls through to the standard path instead of being handled
+   * here and returning nothing.
+   */
+  public isStreamReady(): boolean {
+    if (this.disposed) {
+      return false;
+    }
     const config = vscode.workspace.getConfiguration('perl-lsp');
     const aiEnabled = config.get<boolean>('aiCompletion.enabled', false);
     const streamingEnabled = config.get<boolean>('aiCompletion.streaming.enabled', true);
+    return aiEnabled && streamingEnabled;
+  }
 
-    if (!aiEnabled || !streamingEnabled) {
+  /** Bounded counters for tests. Counts only — no source or completion text. */
+  public snapshotStreamCounters(): {
+    streamGenerationsStarted: number;
+    duplicateDisplayRequeries: number;
+  } {
+    return {
+      streamGenerationsStarted: this.streamGenerationsStarted,
+      duplicateDisplayRequeries: this.duplicateDisplayRequeries,
+    };
+  }
+
+  /**
+   * Serve or start the custom stream for one invocation.
+   *
+   * Public because `InlineCompletionOwner` calls it directly; it is not
+   * registered with VS Code as a provider.
+   */
+  public provideInlineCompletionItems(
+    document: vscode.TextDocument,
+    position: vscode.Position,
+    context: vscode.InlineCompletionContext,
+    token: vscode.CancellationToken,
+  ): vscode.InlineCompletionItem[] | undefined {
+    if (!this.isStreamReady()) {
       return undefined; // Let the server handle via standard path
     }
 
@@ -265,13 +301,34 @@ export class StreamingCompletionController implements vscode.Disposable {
       return [new vscode.InlineCompletionItem(this.cachedCandidate.text, range)];
     }
 
+    // A display re-query for a generation that is already in flight must not
+    // start a second one. `handleProgress` re-triggers the suggest widget on
+    // every chunk, so without this guard each chunk would cancel the stream
+    // that produced it and dispatch a fresh backend generation.
+    const active = this.activeRequestIdentity;
+    if (
+      active &&
+      active.uri === docUri &&
+      active.version === docVersion &&
+      active.line === position.line &&
+      active.character === position.character
+    ) {
+      this.duplicateDisplayRequeries += 1;
+      return undefined;
+    }
+
     // Start a new stream request
-    this.startStreamRequest(document, position);
+    this.startStreamRequest(document, position, context, token);
 
     return undefined; // No immediate result -- will come via progress
   }
 
-  private startStreamRequest(document: vscode.TextDocument, position: vscode.Position): void {
+  private startStreamRequest(
+    document: vscode.TextDocument,
+    position: vscode.Position,
+    context: vscode.InlineCompletionContext,
+    token: vscode.CancellationToken,
+  ): void {
     // Cancel any existing stream (also sets activeRequestIdentity = null)
     this.cancelActiveStream();
 
@@ -301,7 +358,22 @@ export class StreamingCompletionController implements vscode.Disposable {
       },
     );
 
-    // Send custom request
+    // Forward the actual editor context. The trigger kind is projected onto the
+    // LSP numbering (Invoke 0 -> Invoked 1, Automatic 1 -> Automatic 2); it is
+    // not the VS Code value. Sending a hardcoded 2 previously relabelled every
+    // explicit invocation as automatic, which the server refuses before backend
+    // dispatch, so no streamed candidate could ever be produced.
+    const requestContext: {
+      triggerKind: number;
+      selectedCompletionInfo?: ReturnType<typeof toLspSelectedCompletionInfo>;
+    } = {
+      triggerKind: toLspInlineTriggerKind(context?.triggerKind),
+    };
+    const selectedCompletionInfo = toLspSelectedCompletionInfo(context?.selectedCompletionInfo);
+    if (selectedCompletionInfo) {
+      requestContext.selectedCompletionInfo = selectedCompletionInfo;
+    }
+
     const params = {
       textDocument: {
         uri: document.uri.toString(),
@@ -311,11 +383,23 @@ export class StreamingCompletionController implements vscode.Disposable {
         line: position.line,
         character: position.character,
       },
-      context: {
-        triggerKind: 2, // Automatic
-      },
+      context: requestContext,
       partialResultToken,
     };
+
+    // Forward editor cancellation to the stream. Bound to this generation, so a
+    // token cancelled after the stream was superseded cannot cancel its
+    // successor.
+    if (typeof token?.onCancellationRequested === 'function') {
+      const cancellationSubscription = token.onCancellationRequested(() => {
+        if (this.activeRequestIdentity === requestIdentity) {
+          this.cancelActiveStream();
+        }
+      });
+      this.activeCancellationSubscription = cancellationSubscription;
+    }
+
+    this.streamGenerationsStarted += 1;
 
     this.client
       .sendRequest('textDocument/perlInlineCompletionStream', params, this.activeTokenSource.token)
@@ -334,6 +418,10 @@ export class StreamingCompletionController implements vscode.Disposable {
     // that fire after this point see a mismatched identity and bail out.
     this.activeRequestIdentity = null;
     this.cachedCandidate = null;
+    if (this.activeCancellationSubscription) {
+      this.activeCancellationSubscription.dispose();
+      this.activeCancellationSubscription = null;
+    }
     if (this.activeProgressDisposable) {
       this.activeProgressDisposable.dispose();
       this.activeProgressDisposable = null;
@@ -365,7 +453,13 @@ export class StreamingCompletionController implements vscode.Disposable {
     });
   }
 
+  /** True when this adapter still belongs to the given language client. */
+  public isBoundTo(candidate: LanguageClient): boolean {
+    return !this.disposed && this.client === candidate;
+  }
+
   dispose(): void {
+    this.disposed = true;
     this.cancelActiveStream();
     for (const d of this.disposables) {
       d.dispose();
