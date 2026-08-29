@@ -224,7 +224,7 @@ fn walk_direct_statement(
             // is precise enough to emit a source-backed fact.
             context.table_package_authority.remove(&package);
 
-            let Some(anchor) = direct_table_or_view_builder_anchor(expression) else {
+            let Some(anchor) = direct_table_or_view_builder_anchor(expression, source) else {
                 invalidate_qorm_table_fact(&package, facts);
                 return;
             };
@@ -235,11 +235,69 @@ fn walk_direct_statement(
             context.shadowed_builders.insert(package.clone());
             context.table_package_authority.remove(&package);
             invalidate_qorm_table_fact(&package, facts);
+
+            if let NodeKind::Subroutine { body, .. } = &node.kind {
+                walk_compile_time_descendants(body, file_id, context, facts, source);
+            }
+        }
+        NodeKind::Subroutine { body, .. } => {
+            // `use`/`no` remain compile-time declarations when written inside
+            // a subroutine body. Inspect those declarations, plus qualified
+            // builder calls in nested executable descendants, without treating
+            // ordinary runtime `table` calls as package-level declarations.
+            walk_compile_time_descendants(body, file_id, context, facts, source);
         }
         // Runtime-controlled nodes and nested subroutine bodies are not
         // package-level table declarations. Do not recurse into them or let
         // runtime-controlled framework state escape into the containing package.
         _ => {}
+    }
+}
+
+fn walk_compile_time_descendants(
+    node: &Node,
+    file_id: FileId,
+    context: &mut WalkContext,
+    facts: &mut Vec<GeneratedMemberFact>,
+    source: Option<&str>,
+) {
+    match &node.kind {
+        NodeKind::Use { module, args, .. } if module == QUICKORM_MODULE => {
+            let package = current_package(context).to_string();
+            let source_segment = source.and_then(|text| source_import_segment(text, node));
+            if classify_import_shape(args, source_segment) == QuickOrmImportShape::UnfilteredTable {
+                context.shadowed_builders.remove(&package);
+                context.table_package_authority.insert(package);
+            } else {
+                context.table_package_authority.remove(&package);
+                invalidate_qorm_table_fact(&package, facts);
+            }
+        }
+        NodeKind::Use { module, args, .. }
+            if module != QUICKORM_MODULE && imports_table_builder(args) =>
+        {
+            let package = current_package(context).to_string();
+            context.table_package_authority.remove(&package);
+            invalidate_qorm_table_fact(&package, facts);
+        }
+        NodeKind::No { module, .. } if module == QUICKORM_MODULE => {
+            let package = current_package(context).to_string();
+            context.table_package_authority.remove(&package);
+            invalidate_qorm_table_fact(&package, facts);
+        }
+        NodeKind::ExpressionStatement { expression }
+            if is_competing_import_call(expression)
+                || is_qualified_table_or_view_call(expression, current_package(context)) =>
+        {
+            let package = current_package(context).to_string();
+            context.table_package_authority.remove(&package);
+            invalidate_qorm_table_fact(&package, facts);
+        }
+        _ => {}
+    }
+
+    for child in node.children() {
+        walk_compile_time_descendants(child, file_id, context, facts, source);
     }
 }
 
@@ -250,25 +308,23 @@ fn current_package(context: &WalkContext) -> &str {
 fn imports_table_builder(args: &[String]) -> bool {
     args.iter().any(|arg| {
         let value = arg.trim();
-        if matches!(value, "table" | "'table'" | "\"table\"") {
+        if matches!(value, "table" | "view" | "'table'" | "\"table\"" | "'view'" | "\"view\"") {
             return true;
         }
 
-        value
-            .strip_prefix("qw(")
-            .and_then(|words| words.strip_suffix(')'))
-            .is_some_and(|words| words.split_whitespace().any(|word| word == "table"))
+        value.strip_prefix("qw(").and_then(|words| words.strip_suffix(')')).is_some_and(|words| {
+            words.split_whitespace().any(|word| matches!(word, "table" | "view"))
+        })
     })
 }
 
 fn imports_table_builder_from_nodes(args: &[Node]) -> bool {
     args.iter().any(|arg| match &arg.kind {
         NodeKind::String { value, .. } | NodeKind::Identifier { name: value } => {
-            value.trim_matches(['\'', '"']) == "table"
-                || value
-                    .strip_prefix("qw(")
-                    .and_then(|words| words.strip_suffix(')'))
-                    .is_some_and(|words| words.split_whitespace().any(|word| word == "table"))
+            matches!(value.trim_matches(['\'', '"']), "table" | "view")
+                || value.strip_prefix("qw(").and_then(|words| words.strip_suffix(')')).is_some_and(
+                    |words| words.split_whitespace().any(|word| matches!(word, "table" | "view")),
+                )
         }
         NodeKind::ArrayLiteral { elements } => imports_table_builder_from_nodes(elements),
         _ => false,
@@ -315,11 +371,23 @@ fn is_table_or_view_call(expression: &Node, package: &str) -> bool {
         || (!args.is_empty() && is_current_package_qualified_call(name, package))
 }
 
+fn is_qualified_table_or_view_call(expression: &Node, package: &str) -> bool {
+    let NodeKind::FunctionCall { name, args } = &expression.kind else {
+        return false;
+    };
+    !args.is_empty()
+        && (name.strip_suffix("::table") == Some(package)
+            || name.strip_suffix("::view") == Some(package))
+}
+
 fn is_current_package_qualified_call(name: &str, package: &str) -> bool {
     name.strip_suffix("::table") == Some(package) || name.strip_suffix("::view") == Some(package)
 }
 
-fn direct_table_or_view_builder_anchor(expression: &Node) -> Option<&Node> {
+fn direct_table_or_view_builder_anchor<'a>(
+    expression: &'a Node,
+    source: Option<&str>,
+) -> Option<&'a Node> {
     let NodeKind::FunctionCall { args, .. } = &expression.kind else {
         return None;
     };
@@ -329,7 +397,7 @@ fn direct_table_or_view_builder_anchor(expression: &Node) -> Option<&Node> {
         return None;
     }
 
-    static_table_name_anchor(args.first()?)
+    static_table_name_anchor(args.first()?, source)
 }
 
 fn is_direct_builder_argument(node: &Node) -> bool {
@@ -344,16 +412,21 @@ fn is_builder_name(name: &str) -> bool {
     matches!(name, "table" | "view" | QORM_TABLE_MEMBER)
 }
 
-fn static_table_name_anchor(node: &Node) -> Option<&Node> {
+fn static_table_name_anchor<'a>(node: &'a Node, source: Option<&str>) -> Option<&'a Node> {
     match &node.kind {
-        NodeKind::String { value, interpolated }
+        NodeKind::String { value, .. }
             if !value.trim().is_empty()
-                && (!*interpolated || !contains_unescaped_interpolation(value)) =>
+                && source
+                    .and_then(|text| text.get(node.location.start..node.location.end))
+                    .map_or_else(
+                        || !contains_unescaped_interpolation(value),
+                        |raw| !contains_unescaped_interpolation(raw),
+                    ) =>
         {
             Some(node)
         }
         NodeKind::Identifier { name } if is_static_identifier(name) => Some(node),
-        NodeKind::Binary { op, left, .. } if op == "=>" => static_table_name_anchor(left),
+        NodeKind::Binary { op, left, .. } if op == "=>" => static_table_name_anchor(left, source),
         _ => None,
     }
 }
@@ -406,6 +479,7 @@ fn is_perl_interpolation_name_start(character: &char) -> bool {
                 | ')'
                 | '|'
                 | '*'
+                | '$'
                 | '['
                 | ']'
         )

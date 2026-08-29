@@ -144,6 +144,50 @@ fn qualified_competing_import_call_invalidates_quickorm_authority()
 }
 
 #[test]
+fn competing_view_import_invalidates_quickorm_authority() -> Result<(), Box<dyn std::error::Error>>
+{
+    let facts = generated_facts_from_source(
+        "package User; use DBIx::QuickORM type => 'table'; use Other::DSL qw(view); view users => sub {};",
+    )?;
+
+    assert!(facts.is_empty());
+    Ok(())
+}
+
+#[test]
+fn nested_qualified_builder_call_invalidates_outer_authority()
+-> Result<(), Box<dyn std::error::Error>> {
+    let facts = generated_facts_from_source(
+        "package User; use DBIx::QuickORM type => 'table'; sub build { User::table 'nested' => sub {}; } table users => sub {};",
+    )?;
+
+    assert!(facts.is_empty());
+    Ok(())
+}
+
+#[test]
+fn compile_time_quickorm_import_inside_subroutine_enables_following_builder()
+-> Result<(), Box<dyn std::error::Error>> {
+    let facts = generated_facts_from_source(
+        "package User; sub configure { use DBIx::QuickORM type => 'table'; } table users => sub {};",
+    )?;
+
+    assert_eq!(canonical_names(&facts), vec!["User::qorm_table"]);
+    Ok(())
+}
+
+#[test]
+fn double_dollar_interpolation_does_not_emit_qorm_table() -> Result<(), Box<dyn std::error::Error>>
+{
+    let facts = generated_facts_from_source(
+        "package User; use DBIx::QuickORM type => 'table'; table \"cost$$\" => sub {};",
+    )?;
+
+    assert!(facts.is_empty());
+    Ok(())
+}
+
+#[test]
 fn parser_preserves_quickorm_configuration_as_key_value_args()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut parser = Parser::new("use DBIx::QuickORM type => 'table';");
