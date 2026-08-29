@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Toolchain guard (#12593): refuse a stale non-rustup cargo before any build work.
+. "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)/lib/cargo-toolchain-guard.sh" && cargo_toolchain_guard
+
 first_commit="d174ec1e9845056b8e1a193001ce88a2ea9eaebe"
 first_parent="470277161c18cd5cfa00e31ea6545e2e7baee461"
 second_commit="0f6a4334eb5a53df54a5ed40103659a63578b6f5"
