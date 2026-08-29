@@ -4668,6 +4668,88 @@ print \"unreachable\\n\";\n";
         );
     }
 
+    /// #13304: the action transport must present the SAME logical row as the
+    /// diagnostic transports.
+    ///
+    /// Two properties are proven at once. First, reaching this assertion at all
+    /// proves the runtime document guard was released before the native critic
+    /// run: `native_critic_code_actions` re-acquires `documents_guard()` to
+    /// revalidate the accepted generation, so an implementation that still held
+    /// the guard across the service call (the state this repaired) deadlocks
+    /// here instead of returning. Second, the action's embedded diagnostic must
+    /// carry the normalized public identity — code, severity and message — that
+    /// the pull report publishes, not producer-local fields, or a client cannot
+    /// associate the fix with the problem it resolves.
+    #[test]
+    fn native_critic_code_action_diagnostic_matches_the_published_row() {
+        let (server, _buf) = make_server_with_capture();
+        server.test_configure_critic_engine(perl_lsp_rs_core::config::CriticEngine::Native);
+        server.test_configure_native_critic_profile("strict");
+        let uri = "file:///native_critic_action_parity.pl";
+        server
+            .test_handle_did_open(Some(json!({
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "perl",
+                    "version": 1,
+                    "text": "my $path = 'f.txt';\nmy $out = `ls`;\nmy $u;\nif ($u == undef) { print $u; }\nsystem($path);\nprint $out;\n"
+                }
+            })))
+            .expect("did_open must succeed");
+
+        let actions = server
+            .test_handle_code_action(Some(code_action_params(uri)))
+            .expect("code_action must succeed")
+            .unwrap_or_default();
+
+        let report = server
+            .test_handle_document_diagnostic(Some(json!({
+                "textDocument": { "uri": uri }
+            })))
+            .expect("document diagnostic must succeed")
+            .unwrap_or_default();
+        let published = report["items"]
+            .as_array()
+            .cloned()
+            .or_else(|| report["diagnostics"].as_array().cloned())
+            .unwrap_or_default();
+
+        // Every native row an action embeds must exist, identically, in the
+        // published set.
+        let mut compared = 0usize;
+        for action in actions.as_array().cloned().unwrap_or_default() {
+            for embedded in action["diagnostics"].as_array().cloned().unwrap_or_default() {
+                let Some(code) = embedded["code"].as_str() else { continue };
+                if !code.starts_with("native.") {
+                    continue;
+                }
+                let found = published.iter().find(|row| row["code"].as_str() == Some(code));
+                assert!(
+                    found.is_some(),
+                    "action embedded native row `{code}` has no published counterpart;                      published: {published:?}"
+                );
+                let Some(matching) = found else { continue };
+                assert_eq!(
+                    embedded["message"], matching["message"],
+                    "action and published message must be the same normalized text for {code}"
+                );
+                assert_eq!(
+                    embedded["severity"], matching["severity"],
+                    "action and published severity must agree for {code}"
+                );
+                assert_eq!(
+                    embedded["source"], matching["source"],
+                    "action and published source must agree for {code}"
+                );
+                compared += 1;
+            }
+        }
+        assert!(
+            compared > 0,
+            "the fixture must produce at least one native action row to compare;              actions: {actions}"
+        );
+    }
+
     #[test]
     fn legacy_critic_code_actions_keep_perl_critic_source() {
         // The opt-in legacy compatibility engine still shares the external

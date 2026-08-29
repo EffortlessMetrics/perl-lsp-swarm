@@ -634,6 +634,54 @@ mod tests {
         normalize_critic_findings(native_candidates.into_iter().chain(built_in))
     }
 
+    /// #13304: the published diagnostic and the code action that resolves it
+    /// must render one composition. `message()` stays the normalized problem
+    /// statement; `user_visible_message()` is the complete text, so a surface
+    /// that renders the bare message drops the producer's remediation and
+    /// stops matching the row a client already received.
+    #[test]
+    fn merged_row_user_visible_message_carries_the_producer_remediation() {
+        let bytes = system_call_bytes();
+        let (native_candidates, unresolved) = native_finding_candidates(
+            [native_finding_at_source_bytes(
+                "native.security.system_exec",
+                CriticFindingShape::SystemCall,
+                Severity::Harsh,
+                bytes,
+            )],
+            subject(),
+        );
+        assert!(unresolved.is_empty());
+
+        let suggestion = "Pass system() a list so no shell is involved";
+        let built_in = super::built_in_observation_candidates(
+            [super::BuiltInCriticObservation::pl603_system(
+                Severity::Harsh,
+                bytes,
+                "system() executes a shell command. Ensure input is sanitized.".to_string(),
+                None,
+            )
+            .with_suggestion(suggestion)],
+            OVERLAP_SOURCE,
+            subject(),
+        );
+
+        let rows = normalize_critic_findings(native_candidates.into_iter().chain(built_in));
+        assert_eq!(rows.len(), 1, "the reviewed alias pair must merge into one row");
+        let Some(row) = rows.first() else { return };
+
+        assert_eq!(row.remediation_suggestion(), Some(suggestion));
+        assert!(
+            !row.message().contains("Suggestion:"),
+            "the normalized problem statement must not already embed the remediation"
+        );
+        assert_eq!(
+            row.user_visible_message(),
+            format!("{}\nSuggestion: {suggestion}", row.message()),
+            "the complete user-visible text must append the producer's remediation"
+        );
+    }
+
     #[test]
     fn built_in_overlap_observations_merge_with_every_reviewed_native_alias() {
         let bytes = system_call_bytes();

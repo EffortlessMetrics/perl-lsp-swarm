@@ -1170,7 +1170,7 @@ impl LspServer {
                     "severity": normalized.severity().to_diagnostic_severity(),
                     "code": normalized.public_code(),
                     "source": "perl-lsp",
-                    "message": normalized.message(),
+                    "message": normalized.user_visible_message(),
                 }],
                 "edit": {
                     "changes": changes,

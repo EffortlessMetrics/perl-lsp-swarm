@@ -73,3 +73,88 @@ fn code_actions_preserve_service_ownership() -> Result<(), Box<dyn Error>> {
 
     Ok(())
 }
+
+/// The native run must not evaluate under a runtime document lock (#9062), and
+/// the action surface must consume the same accepted finding set the diagnostic
+/// transports do (#13304).
+///
+/// The runtime consequence of a regression is worse than a wrong result:
+/// `native_critic_code_actions` re-acquires the documents guard to revalidate
+/// the accepted generation, so restoring the lock-held call deadlocks the
+/// code-action handler. This gate turns that into a readable failure.
+#[test]
+fn code_actions_release_the_document_guard_before_analysis() -> Result<(), Box<dyn Error>> {
+    let source = code_action_source()?;
+
+    let release = source.find("drop(documents);").ok_or_else(|| {
+        io::Error::other(format!(
+            "{CODE_ACTION_SOURCE} must release the runtime document guard before the native              critic run (#9062)"
+        ))
+    })?;
+    let deferred_call = source.find("self.native_critic_code_actions(").ok_or_else(|| {
+        io::Error::other(format!(
+            "{CODE_ACTION_SOURCE} must run native critic analysis through the deferred,              lock-free helper (#9062)"
+        ))
+    })?;
+    require(
+        release < deferred_call,
+        format!(
+            "{CODE_ACTION_SOURCE} calls the native critic run before releasing the document              guard; #9062 requires snapshot, release, then evaluate"
+        ),
+    )?;
+
+    let entry = source.find(SERVICE_ENTRYPOINT).ok_or_else(|| {
+        io::Error::other(format!("{CODE_ACTION_SOURCE} must call the native critic service"))
+    })?;
+    require(
+        entry > deferred_call,
+        format!(
+            "{CODE_ACTION_SOURCE} evaluates the native critic service inside the guarded              handler region instead of the deferred helper (#9062)"
+        ),
+    )?;
+
+    Ok(())
+}
+
+/// The action transport must present the same logical row as push and pull.
+#[test]
+fn code_actions_consume_the_shared_finding_set_and_public_identity() -> Result<(), Box<dyn Error>> {
+    let source = code_action_source()?;
+
+    require(
+        source.contains("critic_overlap_observations("),
+        format!(
+            "{CODE_ACTION_SOURCE} must feed the service the producer-declared overlap              observations push and pull feed it, not an empty set (#11918/#13304)"
+        ),
+    )?;
+
+    // The embedded action diagnostic is the client's association key with the
+    // published row, so it must be projected from the normalized finding.
+    for projection in
+        ["normalized.public_code()", "normalized.severity()", "normalized.user_visible_message()"]
+    {
+        require(
+            source.contains(projection),
+            format!(
+                "{CODE_ACTION_SOURCE} must project the embedded action diagnostic from                  `{projection}` so it matches the published row (#13304)"
+            ),
+        )?;
+    }
+
+    // Producer-local fields must never reach the wire: for a reviewed
+    // core/native alias they carry a different identity than the published row.
+    for producer_local in [
+        "finding.rule_id.clone()",
+        "finding.message.clone()",
+        "finding.severity.to_diagnostic_severity()",
+    ] {
+        require(
+            !source.contains(producer_local),
+            format!(
+                "{CODE_ACTION_SOURCE} projects the embedded action diagnostic from the                  producer-local `{producer_local}` instead of the normalized public identity                  (#13304)"
+            ),
+        )?;
+    }
+
+    Ok(())
+}

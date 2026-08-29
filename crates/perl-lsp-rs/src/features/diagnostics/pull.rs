@@ -875,11 +875,10 @@ impl PullDiagnosticsProvider {
         }));
 
         // #12004: render the contributing ordinary producer's user-visible
-        // remediation exactly the way the ordinary-row path renders it.
-        let mut message = finding.message().to_string();
-        if let Some(suggestion) = finding.remediation_suggestion() {
-            message = format!("{message}\nSuggestion: {suggestion}");
-        }
+        // remediation exactly the way the ordinary-row path renders it. The
+        // composition is owned by the normalized finding so the code-action
+        // surface renders the identical text (#13304).
+        let message = finding.user_visible_message();
         let remediation_notes: Vec<RelatedInformation> = finding
             .remediation_related_information()
             .iter()
@@ -2881,6 +2880,109 @@ mod tests {
                 Some(unchanged.unchanged_document_diagnostic_report.result_id.clone())
             }
         }
+    }
+
+    // ── accepted-state currentness at the pull result boundary (#13304) ────
+
+    /// Build the strict native context the currentness proofs share.
+    fn strict_native_context() -> PullDiagnosticsContext {
+        let mut context = PullDiagnosticsContext::new();
+        context.critic_engine = CriticEngine::Native;
+        context.native_critic_profile = "strict".to_string();
+        context.accepted_critic_state = strict_accepted_state(3);
+        context.perlcritic_severity = 3;
+        context
+    }
+
+    fn has_native_critic_row(items: &[LspDiagnostic]) -> bool {
+        items.iter().any(|diag| {
+            diag.code.as_ref().is_some_and(|code| {
+                matches!(code, NumberOrString::String(value) if value.starts_with("native."))
+            })
+        })
+    }
+
+    /// #13304: a pull run whose accepted policy moved underneath it must
+    /// neither publish its native rows nor hand back a reusable result ID. An
+    /// implementation that passes `RunGate::open()` for currentness (the state
+    /// this repaired) returns the dead-policy rows and caches them.
+    #[test]
+    fn moved_policy_withholds_native_rows_and_reusable_result_id()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = PullDiagnosticsProvider::new();
+        let uri: Uri = "file:///pull_currentness.pl".parse()?;
+        let source = "my $x = 1;
+";
+
+        // Control: with the accepted policy still live, this subject really
+        // does produce native rows and a reusable ID — so the assertions below
+        // are discriminating rather than vacuous.
+        let current = strict_native_context();
+        let live =
+            provider.get_document_diagnostics_with_context(&uri, source, None, &current, None);
+        assert!(
+            has_native_critic_row(&get_full_items(live.clone())),
+            "the fixture must produce native critic rows while the policy is live"
+        );
+        assert!(
+            full_result_id(&live).is_some(),
+            "a fully current subject must carry a reusable result ID"
+        );
+
+        // The accepted policy is dead for the whole run.
+        let mut moved = strict_native_context();
+        moved.accepted_state_currentness =
+            AcceptedStateCurrentness::new(std::sync::Arc::new(|| false));
+        let report =
+            provider.get_document_diagnostics_with_context(&uri, source, None, &moved, None);
+
+        assert!(
+            !has_native_critic_row(&get_full_items(report.clone())),
+            "rows produced under a dead policy must not reach the client"
+        );
+        assert!(
+            full_result_id(&report).is_none(),
+            "a report that dropped its critic rows must not be cacheable as current"
+        );
+        Ok(())
+    }
+
+    /// #13304: the gate must also close for a policy that was live when the
+    /// report subject was composed and moved while rules evaluated. Checking
+    /// currentness only before collection leaves this run cacheable.
+    #[test]
+    fn policy_moving_during_collection_withholds_the_reusable_result_id()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = PullDiagnosticsProvider::new();
+        let uri: Uri = "file:///pull_currentness_race.pl".parse()?;
+
+        // Current for the identity composition, dead by the result boundary.
+        let observations = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = std::sync::Arc::clone(&observations);
+        let mut context = strict_native_context();
+        context.accepted_state_currentness =
+            AcceptedStateCurrentness::new(std::sync::Arc::new(move || {
+                seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0
+            }));
+
+        let report = provider.get_document_diagnostics_with_context(
+            &uri,
+            "my $x = 1;
+",
+            None,
+            &context,
+            None,
+        );
+
+        assert!(
+            observations.load(std::sync::atomic::Ordering::SeqCst) > 1,
+            "the currentness authority must be consulted again after collection"
+        );
+        assert!(
+            full_result_id(&report).is_none(),
+            "a policy that moved during collection must suppress the reusable result ID"
+        );
+        Ok(())
     }
 
     /// Exact same complete subject/profile → deterministic same ID and a valid

@@ -322,7 +322,8 @@ mod tests {
     #![allow(clippy::expect_used)]
 
     use super::{
-        LspServer, PushDiagnosticIdentity, PushDiagnosticsCommitOutcome, PushDiagnosticsDisposition,
+        AcceptedCriticPolicy, LspServer, PushDiagnosticIdentity, PushDiagnosticsCommitOutcome,
+        PushDiagnosticsDisposition,
     };
     use serde_json::json;
     use std::io::Write;
@@ -464,6 +465,83 @@ mod tests {
             frame_count(&buf),
             final_frames,
             "rejected stale candidate must not enqueue a frame"
+        );
+    }
+
+    /// #13304: document identity and generation cannot observe configuration
+    /// movement, so the sink must re-check the accepted critic policy the rows
+    /// were produced under. An implementation that validates only the document
+    /// ticket publishes dead-policy rows here and turns this red.
+    #[test]
+    fn critic_policy_movement_after_analysis_is_rejected_without_frame() {
+        let (server, buf) = make_server();
+        let uri = "file:///sink_critic_policy_test.pl";
+        let identity = open_document(
+            &server,
+            uri,
+            "my $x = 1;
+",
+        );
+        assert!(wait_for_frames(&buf, 1), "didOpen publication must flush first");
+
+        // The policy the candidate's rows were produced under.
+        let accepted_fingerprint =
+            { server.config.lock().effective_critic_state(None).fingerprint() };
+        let bound = identity.clone().with_accepted_critic_policy(Some(AcceptedCriticPolicy {
+            owning_root: None,
+            fingerprint: accepted_fingerprint.clone(),
+        }));
+
+        // Control: while the policy is still live, binding it changes nothing.
+        let frames_before = frame_count(&buf);
+        assert_eq!(
+            server.commit_push_diagnostics(
+                &bound,
+                json!({ "uri": uri, "version": 1, "diagnostics": [] }),
+                PushDiagnosticsDisposition::Replacement,
+            ),
+            PushDiagnosticsCommitOutcome::CommittedCurrent
+        );
+        assert!(
+            wait_for_frames(&buf, frames_before + 1),
+            "a candidate under the live policy must still enqueue exactly one frame"
+        );
+
+        // Configuration moves underneath the in-flight candidate. The document
+        // is untouched: same instance, same generation, same text.
+        server.config.lock().perlcritic_enabled = false;
+        let live_fingerprint = { server.config.lock().effective_critic_state(None).fingerprint() };
+        assert_ne!(
+            live_fingerprint, accepted_fingerprint,
+            "the mutation must actually move the accepted policy, or this test proves nothing"
+        );
+
+        let settled_frames = frame_count(&buf);
+        assert_eq!(
+            server.commit_push_diagnostics(
+                &bound,
+                json!({ "uri": uri, "version": 1, "diagnostics": [] }),
+                PushDiagnosticsDisposition::Replacement,
+            ),
+            PushDiagnosticsCommitOutcome::RejectedSupersededCriticPolicy
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert_eq!(
+            frame_count(&buf),
+            settled_frames,
+            "rows produced under a dead policy must not reach the client"
+        );
+
+        // The same document ticket still publishes when no policy is bound, so
+        // the rejection above is the policy gate and not a document-ticket
+        // regression.
+        assert_eq!(
+            server.commit_push_diagnostics(
+                &identity,
+                json!({ "uri": uri, "version": 1, "diagnostics": [] }),
+                PushDiagnosticsDisposition::Replacement,
+            ),
+            PushDiagnosticsCommitOutcome::CommittedCurrent
         );
     }
 

@@ -522,6 +522,25 @@ impl NormalizedCriticFinding {
     pub fn remediation_related_information(&self) -> &[CriticRelatedInformation] {
         &self.remediation_related_information
     }
+
+    /// The complete user-visible message for this logical row (#12004).
+    ///
+    /// [`Self::message`] is the normalized problem statement; a merged overlap
+    /// row can additionally carry the contributing ordinary producer's
+    /// remediation. Every surface that renders this finding to a user - the
+    /// published diagnostic and the code action that resolves it - must render
+    /// the same text, or a client cannot associate the fix with the problem it
+    /// resolves. Owning the composition here keeps the surfaces from drifting
+    /// (#13304).
+    #[must_use]
+    pub fn user_visible_message(&self) -> String {
+        match self.remediation_suggestion() {
+            Some(suggestion) => {
+                format!("{}\nSuggestion: {suggestion}", self.message())
+            }
+            None => self.message().to_string(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
