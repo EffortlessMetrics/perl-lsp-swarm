@@ -186,7 +186,15 @@ fn duplicate_labels_across_mixed_forms_keep_declaration_order() -> R {
 
 #[test]
 fn duplicate_unicode_labels_keep_distinct_body_geometry() -> R {
-    let source = concat!("print <<Δ, <<Δ;\n", "α\n", "Δ\n", "β\n", "Δ\n", "my $after = 5;\n",);
+    let source = concat!(
+        "use utf8;\n",
+        "print <<Δ, <<Δ;\n",
+        "α\n",
+        "Δ\n",
+        "β\n",
+        "Δ\n",
+        "my $after = 5;\n",
+    );
 
     assert_queue_case(source, &["<<Δ", "<<Δ"], &["α\n", "β\n"], &["Δ\n", "Δ\n"], "my $after = 5;")
 }
