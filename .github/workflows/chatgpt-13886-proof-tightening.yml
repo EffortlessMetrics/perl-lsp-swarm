@@ -1,0 +1,56 @@
+name: ChatGPT 13886 proof tightening
+
+on:
+  push:
+    branches:
+      - fix/13705-xtask-clippy-residue
+
+permissions:
+  contents: write
+
+concurrency:
+  group: chatgpt-13886-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  tighten-and-prove:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out candidate
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: 1.95.0
+          components: rustfmt, clippy
+
+      - name: Add discriminating fixture preconditions
+        run: python3 scripts/maintenance/chatgpt_13886_invalid_utf8_precondition.py
+
+      - name: Format candidate
+        run: cargo fmt --all
+
+      - name: Prove invalid-byte continuation contract
+        run: cargo test -p xtask --bin xtask --locked log_reaches_test_execution_finds_a_marker_after_invalid_bytes
+
+      - name: Re-prove exact production-bin Clippy subject
+        run: cargo clippy -p xtask --bin xtask --locked -- -D warnings -A missing_docs
+
+      - name: Check formatting and patch hygiene
+        run: |
+          cargo fmt --all -- --check
+          git diff --check
+
+      - name: Remove temporary executor and publish candidate
+        run: |
+          rm .github/workflows/chatgpt-13886-proof-tightening.yml
+          rm scripts/maintenance/chatgpt_13886_invalid_utf8_precondition.py
+          git add -A
+          git config user.name "EffortlessSteven"
+          git config user.email "git@effortlesssteven.com"
+          git commit -m "test(xtask): prove invalid-byte fixtures stay invalid (#13705)"
+          git push origin HEAD:fix/13705-xtask-clippy-residue
