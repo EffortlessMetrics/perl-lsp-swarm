@@ -90,3 +90,66 @@ fn run_fixture(path: &Path) -> color_eyre::Result<CloseoutOutcome> {
     }
     Ok(outcome)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    /// Absolute path of a repository-root-relative closeout fixture document.
+    fn fixture(relative: &str) -> color_eyre::Result<PathBuf> {
+        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let root =
+            manifest_dir.parent().ok_or_else(|| eyre!("xtask manifest has a repository parent"))?;
+        Ok(root.join(closeout::FIXTURE_DIR).join(relative))
+    }
+
+    /// The mismatch branch must fail closed and reveal both sides of the
+    /// comparison — the declared expectation and the observed result — so a
+    /// drifted fixture is diagnosed, not just rejected.
+    #[test]
+    fn expectation_mismatch_reveals_expected_and_observed() -> color_eyre::Result<()> {
+        let valid = fixture("valid/leaf_ready_offline.v1.json")?;
+        let raw = std::fs::read_to_string(&valid)
+            .wrap_err_with(|| format!("fixture {} is readable", valid.display()))?;
+        let mut document: serde_json::Value =
+            serde_json::from_str(&raw).wrap_err("fixture parses as JSON")?;
+        document["expected_result"] = serde_json::Value::String("WRONG_SUBJECT".to_string());
+
+        let workspace = tempfile::tempdir().wrap_err("temp workspace creates")?;
+        let path = workspace.path().join("mismatched-expectation.v1.json");
+        std::fs::write(&path, serde_json::to_string(&document).wrap_err("document serializes")?)
+            .wrap_err("mismatched fixture writes")?;
+
+        let error = match run_fixture(&path) {
+            Ok(outcome) => {
+                return Err(eyre!(
+                    "mismatched expectation must fail, observed {}",
+                    outcome.result.as_str()
+                ));
+            }
+            Err(error) => error,
+        };
+        let rendered = format!("{error}");
+        assert!(
+            rendered.contains("expected WRONG_SUBJECT, observed LEAF_READY"),
+            "mismatch must reveal both sides: {rendered}"
+        );
+        assert!(
+            rendered.contains(&path.display().to_string()),
+            "reveal names the fixture: {rendered}"
+        );
+        Ok(())
+    }
+
+    /// The same document with the true expectation passes: the mismatch test
+    /// above fails on the comparison itself, not on parsing or evaluation.
+    #[test]
+    fn matching_expectation_is_accepted() -> color_eyre::Result<()> {
+        let valid = fixture("valid/leaf_ready_offline.v1.json")?;
+        let outcome =
+            run_fixture(&valid).map_err(|error| eyre!("valid fixture passes: {error}"))?;
+        assert_eq!(outcome.result, closeout::CloseoutResult::LeafReady);
+        Ok(())
+    }
+}
