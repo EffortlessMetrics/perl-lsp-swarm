@@ -95,8 +95,14 @@ fn mixed_hashref_then_plain_hash_keeps_each_local_operator() -> Result<(), Strin
             TypeEvidence::HashRefSlot { base, key } if base == "$root" && key == "outer"
         )
     }));
+    // Access evidence only: the initializer path labels literal slots with
+    // hash "literal" (type_inference hash_literal_fact), so requiring a
+    // non-literal base pins the walk-produced {staff} hop itself.
     assert!(fact.evidence.iter().any(|evidence| {
-        matches!(evidence, TypeEvidence::HashSlot { key, .. } if key == "staff")
+        matches!(
+            evidence,
+            TypeEvidence::HashSlot { hash, key } if hash != "literal" && key == "staff"
+        )
     }));
     assert!(!fact.evidence.iter().any(|evidence| {
         matches!(evidence, TypeEvidence::HashRefSlot { key, .. } if key == "staff")
