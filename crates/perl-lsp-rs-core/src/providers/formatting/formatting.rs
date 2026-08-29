@@ -348,7 +348,7 @@ fn project_native_document(
         FormatDisposition::Applied | FormatDisposition::NoChange => {}
     }
 
-    let formatted = apply_lsp_whitespace_options(&result.formatted, options);
+    let formatted = apply_lsp_whitespace_options_from_source(&result.formatted, options, content);
     let edits = if formatted == content {
         Vec::new()
     } else if formatted == result.formatted {
@@ -528,7 +528,8 @@ fn projected_native_range(
         options,
         admitted.end_byte == content.len(),
         admitted_end_is_line_end(formatted, formatted_end),
-        formatted.get(..admitted.start_byte).is_some_and(|prefix| prefix.ends_with(['\r', '\n'])),
+        content.get(..admitted.start_byte).is_some_and(|prefix| prefix.ends_with(['\r', '\n'])),
+        content,
     );
     let mut updated = String::with_capacity(formatted.len() - native_slice.len() + projected.len());
     updated.push_str(&formatted[..admitted.start_byte]);
@@ -750,7 +751,22 @@ fn native_edit_to_format_edit(edit: crate::tooling::perltidy::TextEdit) -> Forma
 }
 
 fn apply_lsp_whitespace_options(content: &str, options: &FormattingOptions) -> String {
-    apply_lsp_whitespace_options_with_eof(content, options, true, true, false)
+    apply_lsp_whitespace_options_with_eof(content, options, true, true, false, content)
+}
+
+fn apply_lsp_whitespace_options_from_source(
+    content: &str,
+    options: &FormattingOptions,
+    line_ending_source: &str,
+) -> String {
+    apply_lsp_whitespace_options_with_eof(
+        content,
+        options,
+        true,
+        true,
+        false,
+        line_ending_source,
+    )
 }
 
 fn apply_lsp_whitespace_options_with_eof(
@@ -759,9 +775,10 @@ fn apply_lsp_whitespace_options_with_eof(
     allow_final_newline: bool,
     trim_tail: bool,
     prefix_terminated: bool,
+    line_ending_source: &str,
 ) -> String {
     let mut output = content.to_string();
-    let document_line_ending = inferred_line_ending(content);
+    let document_line_ending = inferred_line_ending(line_ending_source);
 
     if options.trim_trailing_whitespace.unwrap_or(false) {
         output = trim_trailing_whitespace_in_slice(&output, trim_tail);
