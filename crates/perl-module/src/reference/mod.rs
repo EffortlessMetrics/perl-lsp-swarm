@@ -4,6 +4,8 @@
 //! by `use`/`require` statements.
 
 use crate::name::normalize_package_separator;
+use crate::path::is_lookup_safe_module_name;
+use crate::token_core::has_standalone_module_token_boundaries;
 use crate::token_parser::parse_module_token;
 use perl_parser_core::text_line::{is_keyword_boundary, line_bounds_at, skip_ascii_whitespace};
 
@@ -250,6 +252,8 @@ fn find_in_line_for_keyword<'a>(
         }
 
         if let Some(span) = parse_module_token(line, module_start)
+            && has_standalone_module_token_boundaries(line, span.start, span.end)
+            && is_lookup_safe_module_name(&line[module_start..span.end])
             && cursor_in_line >= module_start
             && cursor_in_line <= span.end
         {

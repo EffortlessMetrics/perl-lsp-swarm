@@ -3,6 +3,7 @@
 //! Focuses on: must/must_some/must_err edge cases, panic message formatting,
 //! #[track_caller] behavior, governance quality scoring edge cases,
 //! TDD workflow state transitions, and coverage tracker boundaries.
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use perl_tdd_support::governance::*;
 use perl_tdd_support::tdd_basic::{

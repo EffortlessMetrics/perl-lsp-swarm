@@ -853,48 +853,47 @@ mod schema_check {
                 return Err(format!("instance violates type constraint {expected}"));
             }
         }
-        if let Some(expected) = schema.get("const") {
-            if instance != expected {
-                return Err(format!("instance violates const {expected}"));
-            }
+        if let Some(expected) = schema.get("const")
+            && instance != expected
+        {
+            return Err(format!("instance violates const {expected}"));
         }
-        if let Some(expected) = schema.get("enum").and_then(Value::as_array) {
-            if !expected.contains(instance) {
-                return Err(format!("instance is outside enum {expected:?}"));
-            }
+        if let Some(expected) = schema.get("enum").and_then(Value::as_array)
+            && !expected.contains(instance)
+        {
+            return Err(format!("instance is outside enum {expected:?}"));
         }
         // Pattern/numeric keywords constrain their matching instance types;
         // other types are governed solely by the checked `type` keyword.
-        if let Some(pattern) = schema.get("pattern").and_then(Value::as_str) {
-            if let Some(text) = instance.as_str() {
-                anchored_pattern_matches(pattern, text)?;
-            }
+        if let Some(pattern) = schema.get("pattern").and_then(Value::as_str)
+            && let Some(text) = instance.as_str()
+        {
+            anchored_pattern_matches(pattern, text)?;
         }
-        if let Some(minimum) = schema.get("minimum").and_then(Value::as_i64) {
-            if let Some(number) = instance.as_i64() {
-                if number < minimum {
-                    return Err(format!("instance {number} is below minimum {minimum}"));
-                }
-            }
+        if let Some(minimum) = schema.get("minimum").and_then(Value::as_i64)
+            && let Some(number) = instance.as_i64()
+            && number < minimum
+        {
+            return Err(format!("instance {number} is below minimum {minimum}"));
         }
         match instance {
             Value::String(text) => {
-                if let Some(min) = schema.get("minLength").and_then(Value::as_u64) {
-                    if (text.chars().count() as u64) < min {
-                        return Err(format!("string shorter than minLength {min}"));
-                    }
+                if let Some(min) = schema.get("minLength").and_then(Value::as_u64)
+                    && (text.chars().count() as u64) < min
+                {
+                    return Err(format!("string shorter than minLength {min}"));
                 }
-                if let Some(max) = schema.get("maxLength").and_then(Value::as_u64) {
-                    if (text.chars().count() as u64) > max {
-                        return Err(format!("string longer than maxLength {max}"));
-                    }
+                if let Some(max) = schema.get("maxLength").and_then(Value::as_u64)
+                    && (text.chars().count() as u64) > max
+                {
+                    return Err(format!("string longer than maxLength {max}"));
                 }
             }
             Value::Array(items) => {
-                if let Some(min) = schema.get("minItems").and_then(Value::as_u64) {
-                    if (items.len() as u64) < min {
-                        return Err(format!("array shorter than minItems {min}"));
-                    }
+                if let Some(min) = schema.get("minItems").and_then(Value::as_u64)
+                    && (items.len() as u64) < min
+                {
+                    return Err(format!("array shorter than minItems {min}"));
                 }
                 if schema.get("uniqueItems") == Some(&Value::Bool(true)) {
                     let duplicated = items
@@ -1154,4 +1153,52 @@ impl ObservedDiscoveryInput {
         self.discovery_frame = frame;
         self
     }
+}
+
+#[test]
+fn deserialized_receipt_intake_rejects_noncanonical_artifact_digest_spelling() -> Result<()> {
+    // #7725 review falsifier: receipts arriving by deserialization bypass
+    // construction entirely, so the canonical-spelling law must hold on the
+    // shared receipt-validation path, not only at the constructor.
+    let matrix = matrix()?;
+    let receipt = build(&matrix, &base_input(&matrix, "component_base", b"t/base/if.t\n")?)?;
+    let original = receipt.payload.invocation.runner_artifact.content_sha256.clone();
+
+    let retag_artifact = |spelled: String| -> Result<UpstreamDiscoveryReceiptV1> {
+        let mut value = serde_json::to_value(&receipt)?;
+        value["payload"]["invocation"]["runner_artifact"]["content_sha256"] = json!(spelled);
+        let mut tampered: UpstreamDiscoveryReceiptV1 = serde_json::from_value(value)?;
+        tampered.payload_digest =
+            discovery_payload_digest(&tampered.payload).map_err(|error| eyre!(error))?;
+        Ok(tampered)
+    };
+
+    let uppercased = retag_artifact(original.to_ascii_uppercase())?;
+    assert_rejected_where(
+        "uppercase artifact digest under a recomputed payload digest",
+        validate_receipt_subject_binding(&uppercased),
+    )?;
+    assert!(validate_observed_discovery_receipt(&matrix, &uppercased).is_err());
+
+    // Flip exactly one case-bearing (letter) nibble, never a digit, so the
+    // mutation cannot collapse into the canonical control when the digest
+    // happens to start with a hex digit.
+    let mut mixed = original.clone();
+    let letter_nibble = mixed
+        .bytes()
+        .position(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_digit())
+        .ok_or_else(|| eyre!("fixture artifact digest carries no case-bearing nibble"))?;
+    let flipped = mixed[letter_nibble..=letter_nibble].to_ascii_uppercase();
+    mixed.replace_range(letter_nibble..=letter_nibble, &flipped);
+    assert_ne!(mixed, original, "mixed-case mutation must alter the spelling");
+    let mixed_case = retag_artifact(mixed)?;
+    assert_rejected_where(
+        "single mixed-case nibble under a recomputed payload digest",
+        validate_receipt_subject_binding(&mixed_case),
+    )?;
+
+    // Canonical control: the unchanged spelling keeps validating.
+    ensure(validate_receipt_subject_binding(&receipt))?;
+    ensure(validate_observed_discovery_receipt(&matrix, &receipt))?;
+    Ok(())
 }
