@@ -1722,4 +1722,111 @@ mod tests {
         let parse: std::result::Result<Vector, _> = serde_json::from_str(text);
         assert!(parse.is_err(), "deny_unknown_fields must reject sneaky_field");
     }
+
+    // Negative controls for the three #13295 fail-closed closures (#13300
+    // review F2). Each control asserts the typed refusal its closure
+    // introduced on a minimally edited fixture, so reverting the closure
+    // flips exactly its control red.
+
+    /// Fix 3 (#13295): a truncated stage graph — a mode-required stage
+    /// omitted entirely — must be rejected. The declared-row two-way check
+    /// above only inspects rows that exist, so the complement check in
+    /// `validate_stage_graph` is the only surface that sees the absent
+    /// stage.
+    #[test]
+    fn truncated_graph_rejected_when_a_mode_required_stage_is_absent() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../fixtures/standalone_install_vectors/vectors/v001-archive-pair-success.json");
+        let text = match std::fs::read_to_string(path) {
+            Ok(text) => text.replace("\r\n", "\n"),
+            Err(error) => fail(&format!("fixture read failed: {error}")),
+        };
+        let truncated = text.replace(
+            ",\n    { \"stage_id\": \"installed_transition\", \"applicability\": \"required\", \
+             \"predecessors\": [\"fresh_process_observation\"], \"port_script\": \"install\" }",
+            "",
+        );
+        assert_ne!(text, truncated, "fixture edit must apply");
+        let vector: Vector = match serde_json::from_str(&truncated) {
+            Ok(vector) => vector,
+            Err(error) => fail(&format!("parse failed: {error}")),
+        };
+        match validate_vector(&vector) {
+            Err(OracleError::StageGraph(message)) => {
+                assert!(
+                    message.contains("mode-required stage")
+                        && message.contains("absent from the stage graph"),
+                    "{message}"
+                );
+            }
+            other => fail(&format!("truncated graph must be rejected, got {other:?}")),
+        }
+    }
+
+    /// Fix 2 (#13295): a successful executable observation whose call omits
+    /// the `executables` map positively observes no required role. The pair
+    /// gate must fold the attempt to `PairIncomplete` instead of letting the
+    /// success reach promotion with `pair_claims_satisfied`.
+    #[test]
+    fn absent_executables_map_fails_the_pair_gate_at_observation() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../fixtures/standalone_install_vectors/vectors/v001-archive-pair-success.json");
+        let text = match std::fs::read_to_string(path) {
+            Ok(text) => text.replace("\r\n", "\n"),
+            Err(error) => fail(&format!("fixture read failed: {error}")),
+        };
+        let no_map =
+            text.replace(", \"executables\": { \"perllsp\": \"ok\", \"perl-dap\": \"ok\" }", "");
+        assert_ne!(text, no_map, "fixture edit must apply");
+        let vector: Vector = match serde_json::from_str(&no_map) {
+            Ok(vector) => vector,
+            Err(error) => fail(&format!("parse failed: {error}")),
+        };
+        if let Err(error) = validate_vector(&vector) {
+            fail(&format!("edited vector must stay corpus-valid: {error}"));
+        }
+        let packet = match derive_packet(&vector, Deviation::None) {
+            Ok(packet) => packet,
+            Err(error) => {
+                fail(&format!("absent map must fold to a typed failure, not error: {error}"))
+            }
+        };
+        assert_eq!(packet.terminal.result, TerminalResult::Failed);
+        assert_eq!(packet.terminal.reason_family, ReasonFamily::PairIncomplete);
+        assert_eq!(packet.terminal.stage_id, StageId::ExecutableObservation);
+        assert_eq!(packet.side_effect_ceiling, CeilingLevel::Staged);
+        assert!(!packet.pair_claims_satisfied);
+        assert!(!packet.effects.iter().any(|effect| effect.kind == "promoted"));
+    }
+
+    /// Fix 1 (#13295): a declared predecessor with neither a receipt in this
+    /// attempt's chain nor positive mode authorization is a corpus authoring
+    /// bug; composition must fail closed instead of minting an empty
+    /// predecessor list. v011's `checksum_integrity` script produces no call,
+    /// so under WarnAndContinue the mandatory failure is bypassed without a
+    /// receipt and without mode authorization, and the declared successor's
+    /// predecessor chain cannot be resolved.
+    #[test]
+    fn unresolvable_declared_predecessor_fails_closed_at_composition() {
+        let vectors = corpus();
+        let vector = vector_by_id(&vectors, "v011-missing-mandatory-stage");
+
+        // Conformant anchor: without a deviation the missing mandatory stage
+        // stops the attempt before any successor runs.
+        let packet = derive(vector, Deviation::None);
+        assert_eq!(packet.terminal.reason_family, ReasonFamily::MissingEvidence);
+
+        match derive_packet(vector, Deviation::WarnAndContinue) {
+            Err(OracleError::StageGraph(message)) => {
+                assert!(
+                    message.contains("checksum_integrity")
+                        && message.contains("no receipt and was not"),
+                    "{message}"
+                );
+            }
+            other => {
+                fail(&format!("unresolvable declared predecessor must fail closed, got {other:?}"))
+            }
+        }
+    }
 }
