@@ -355,10 +355,13 @@ fn test_parser_accuracy_artifact_renders_denominator_and_metric_rows() -> Result
     );
     assert!(
         result.contains(
-            "whitespace_invariance_rate: investigation_only (legacy_oracle_untrusted; \
-             trailing whitespace; observed=0.3; n=44)",
+            "whitespace_invariance_rate: investigation_only (legacy_oracle_untrusted; trailing whitespace; observed=0.3; n=44)"
         ),
-        "whitespace invariance summary must disclose its sampled trailing-whitespace basis"
+        "legacy whitespace observations must render as untrusted investigation evidence"
+    );
+    assert!(
+        !result.contains("whitespace_invariance_rate=0.3"),
+        "legacy whitespace observations must not render as ordinary measured accuracy"
     );
     Ok(())
 }
