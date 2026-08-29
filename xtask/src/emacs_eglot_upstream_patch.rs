@@ -15,6 +15,10 @@ pub const BASE_TREE_SHA1: &str = "ffd5ed14f7cc689e22163527e47d6ae0d0acbea0";
 pub const BASE_PATH: &str = "lisp/progmodes/eglot.el";
 pub const BASE_BLOB_SHA1: &str = "f2a9e36989cd90500e66900efe5138e6dee56668";
 
+const LOAD_CHECK: &str =
+    r#"emacs --batch -Q -L lisp/progmodes -l eglot --eval '(message "eglot-load-ok")'"#;
+const EGLOT_TEST_CHECK: &str = "make -C test lisp/progmodes/eglot-tests";
+
 pub const BEFORE_ANCHOR: &str = concat!(
     "    ((perl-mode cperl-mode)\n",
     "     . (\"perl\" \"-MPerl::LanguageServer\" \"-e\" ",
@@ -105,13 +109,7 @@ impl EglotPatchPacket {
         );
         validate_after_anchor(&self.after_anchor)?;
         ensure!(
-            strings_equal(
-                &self.upstream_checks,
-                &[
-                    "emacs --batch -Q -L lisp/progmodes -l eglot --eval '(message \\"eglot-load-ok\\")'",
-                    "make -C test lisp/progmodes/eglot-tests",
-                ]
-            ),
+            strings_equal(&self.upstream_checks, &[LOAD_CHECK, EGLOT_TEST_CHECK]),
             "upstream checks must remain explicit and bounded"
         );
         ensure!(
@@ -180,11 +178,7 @@ pub fn checked_packet() -> Result<EglotPatchPacket> {
         before_anchor: BEFORE_ANCHOR.to_string(),
         after_anchor: AFTER_ANCHOR.to_string(),
         unified_diff: UNIFIED_DIFF.to_string(),
-        upstream_checks: vec![
-            "emacs --batch -Q -L lisp/progmodes -l eglot --eval '(message \\"eglot-load-ok\\")'"
-                .to_string(),
-            "make -C test lisp/progmodes/eglot-tests".to_string(),
-        ],
+        upstream_checks: vec![LOAD_CHECK.to_string(), EGLOT_TEST_CHECK.to_string()],
         actual_host_prerequisites: vec![7708, 7126, 7721],
         proposed_commit_title: "Eglot: prefer perllsp for Perl buffers".to_string(),
         proposed_pr_body: concat!(
