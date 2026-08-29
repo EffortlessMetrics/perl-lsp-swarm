@@ -234,10 +234,35 @@ export class StreamingCompletionController implements vscode.Disposable, InlineS
     if (this.disposed) {
       return false;
     }
+    if (!this.serverAdvertisesStream()) {
+      return false;
+    }
     const config = vscode.workspace.getConfiguration('perl-lsp');
     const aiEnabled = config.get<boolean>('aiCompletion.enabled', false);
     const streamingEnabled = config.get<boolean>('aiCompletion.streaming.enabled', true);
     return aiEnabled && streamingEnabled;
+  }
+
+  /**
+   * Whether the connected server actually implements the custom stream method.
+   *
+   * Local configuration is not sufficient readiness. `perl-lsp.serverPath` can
+   * select an older or third-party server that supports standard inline
+   * completion but not `textDocument/perlInlineCompletionStream`. Because the
+   * owner routes an invocation to exactly one route, routing to an unsupported
+   * method would drop the request entirely rather than falling back.
+   *
+   * Fails closed: an absent or not-yet-populated `initializeResult` reports
+   * unready, so the standard route — which always works — is taken.
+   *
+   * Server side: `runtime/lifecycle/capabilities.rs:869` advertises this only
+   * when `features.inline_completion` is on and the client declared support.
+   */
+  private serverAdvertisesStream(): boolean {
+    const experimental = this.client.initializeResult?.capabilities?.experimental as
+      | Record<string, unknown>
+      | undefined;
+    return experimental?.perlInlineCompletionStream === true;
   }
 
   /** Bounded counters for tests. Counts only — no source or completion text. */
@@ -425,7 +450,20 @@ export class StreamingCompletionController implements vscode.Disposable, InlineS
     this.streamGenerationsStarted += 1;
 
     this.client.sendRequest('textDocument/perlInlineCompletionStream', params, requestToken).then(
-      () => this.settleActiveStream(requestIdentity),
+      (response: unknown) => {
+        // The server answers this custom request with a one-shot inline
+        // completion result whenever it declines to stream — its own AI config
+        // is off (`streaming.rs:102-104`), or no backend is available and
+        // `aiCompletion.fallback` is set (`streaming.rs:146-149`). Those items
+        // are the deterministic fallback. Discarding them loses completions
+        // outright, because the owner routes an invocation to exactly one route
+        // and never calls the standard path afterwards.
+        const served = this.cacheOneShotResponse(response, requestIdentity);
+        this.settleActiveStream(requestIdentity);
+        if (served) {
+          void vscode.commands.executeCommand('editor.action.inlineSuggest.trigger');
+        }
+      },
       (err: unknown) => {
         this.settleActiveStream(requestIdentity);
         // Silently ignore cancellation errors (expected on cursor movement)
@@ -436,6 +474,55 @@ export class StreamingCompletionController implements vscode.Disposable, InlineS
         // retried on the next inline completion trigger.
       },
     );
+  }
+
+  /**
+   * Cache a one-shot inline completion result returned as the request's own
+   * response, so the deterministic fallback is still displayed.
+   *
+   * The payload is the ordinary inline-completion shape, `{ items: [...] }`.
+   * Returns true when a candidate was cached and the suggest widget should be
+   * retriggered. No-ops for a superseded generation, so a late response cannot
+   * install a candidate over its successor's.
+   */
+  private cacheOneShotResponse(response: unknown, requestIdentity: RequestIdentity): boolean {
+    if (this.activeRequestIdentity !== requestIdentity) {
+      return false;
+    }
+    if (typeof response !== 'object' || response === null) {
+      return false;
+    }
+    const items = (response as { items?: unknown }).items;
+    if (!Array.isArray(items) || items.length === 0) {
+      return false;
+    }
+    const item = items[0];
+    if (typeof item !== 'object' || item === null) {
+      return false;
+    }
+    const insertText = (item as { insertText?: unknown }).insertText;
+    if (typeof insertText !== 'string' || insertText.length === 0) {
+      return false;
+    }
+    const candidate: CachedCandidate = {
+      uri: requestIdentity.uri,
+      version: requestIdentity.version,
+      line: requestIdentity.line,
+      character: requestIdentity.character,
+      text: insertText,
+      // A one-shot answer has no stream session. The marker keeps it distinct
+      // from any session id, and the request has already completed, so no
+      // progress can arrive to be compared against this sequence.
+      sessionId: 'one-shot-fallback',
+      sequence: 0,
+      isFinal: true,
+    };
+    const range = (item as { range?: unknown }).range;
+    if (this.isStreamReplacementRange(range)) {
+      candidate.serverRange = range;
+    }
+    this.cachedCandidate = candidate;
+    return true;
   }
 
   /**

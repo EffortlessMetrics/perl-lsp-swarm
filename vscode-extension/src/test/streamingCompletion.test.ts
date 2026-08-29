@@ -26,6 +26,9 @@ function createMockClient(): LanguageClient {
     onProgress: jest.fn(() => ({ dispose: jest.fn() })),
     sendRequest: jest.fn(async () => ({})),
     sendNotification: jest.fn(),
+    // The adapter gates readiness on the server actually advertising the
+    // custom stream method, so the mock must advertise it too.
+    initializeResult: { capabilities: { experimental: { perlInlineCompletionStream: true } } },
   } as unknown as LanguageClient;
 }
 
@@ -943,6 +946,99 @@ describe('StreamingCompletionController — actual request context forwarding', 
     const params = lastRequestParams();
     expect(params.textDocument).toEqual({ uri: 'file:///deep/module.pl', version: 42 });
     expect(params.position).toEqual({ line: 11, character: 3 });
+  });
+
+  test('a one-shot fallback response is served instead of discarded', async () => {
+    // The server answers this custom request with ordinary inline completion
+    // items when it declines to stream. The owner never calls the standard
+    // route afterwards, so discarding them would lose completions outright.
+    (mockClient.sendRequest as jest.Mock).mockResolvedValueOnce({
+      items: [{ insertText: 'my $deterministic = 1;' }],
+    });
+
+    const doc = makeMockDoc('file:///a.pl', 1);
+    const pos = makeMockPos(5, 10);
+
+    controller.provideInlineCompletionItems(
+      doc,
+      pos,
+      { triggerKind: 0 } as vscode.InlineCompletionContext,
+      {} as vscode.CancellationToken,
+    );
+
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const items = controller.provideInlineCompletionItems(
+      doc,
+      pos,
+      { triggerKind: 0 } as vscode.InlineCompletionContext,
+      {} as vscode.CancellationToken,
+    );
+    expect(items).toHaveLength(1);
+    const [served] = items as unknown as { insertText: string }[];
+    expect(served?.insertText).toBe('my $deterministic = 1;');
+  });
+
+  test('an empty one-shot response caches nothing', async () => {
+    (mockClient.sendRequest as jest.Mock).mockResolvedValueOnce({ items: [] });
+
+    const doc = makeMockDoc('file:///a.pl', 1);
+    const pos = makeMockPos(5, 10);
+
+    controller.provideInlineCompletionItems(
+      doc,
+      pos,
+      { triggerKind: 0 } as vscode.InlineCompletionContext,
+      {} as vscode.CancellationToken,
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // Opposite-direction control: an empty result must not install a candidate.
+    // The next call is a fresh generation, not a cache hit.
+    const items = controller.provideInlineCompletionItems(
+      doc,
+      pos,
+      { triggerKind: 0 } as vscode.InlineCompletionContext,
+      {} as vscode.CancellationToken,
+    );
+    expect(items).toBeUndefined();
+  });
+
+  test('a server that does not advertise the stream method is not stream-ready', () => {
+    (vscode.workspace as Record<string, unknown>).getConfiguration = jest.fn(() => ({
+      get: jest.fn(() => true),
+    }));
+
+    const withoutCapability = {
+      onProgress: jest.fn(() => ({ dispose: jest.fn() })),
+      sendRequest: jest.fn(async () => ({})),
+      sendNotification: jest.fn(),
+      initializeResult: { capabilities: { experimental: {} } },
+    } as unknown as LanguageClient;
+    const ctrl = new StreamingCompletionController(withoutCapability);
+
+    // Routing an invocation to an unsupported method would drop it entirely,
+    // since the owner takes exactly one route.
+    expect(ctrl.isStreamReady()).toBe(false);
+    ctrl.dispose();
+  });
+
+  test('an absent initializeResult fails closed to not stream-ready', () => {
+    (vscode.workspace as Record<string, unknown>).getConfiguration = jest.fn(() => ({
+      get: jest.fn(() => true),
+    }));
+
+    const notInitialized = {
+      onProgress: jest.fn(() => ({ dispose: jest.fn() })),
+      sendRequest: jest.fn(async () => ({})),
+      sendNotification: jest.fn(),
+    } as unknown as LanguageClient;
+    const ctrl = new StreamingCompletionController(notInitialized);
+
+    expect(ctrl.isStreamReady()).toBe(false);
+    ctrl.dispose();
   });
 
   test('an already-cancelled token dispatches no stream request', () => {
