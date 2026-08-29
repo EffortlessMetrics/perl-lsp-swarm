@@ -7,6 +7,43 @@
 //! for seven categories of heredoc-related anti-patterns and produces
 //! [`crate::heredoc_anti_patterns::Diagnostic`]s describing each finding, with
 //! severity, explanation, suggested fix, and documentation references.
+//!
+//! # Scan-bound decision (#3597, supersedes the #3568 tradeoff)
+//!
+//! Three detector patterns — dynamic delimiter, regex code block, and eval
+//! string — describe constructs that legitimately span newlines in real Perl.
+//! #3568 excluded `\n` from their character classes to bound scan work, which
+//! silently dropped every multi-line occurrence. #3597 asked whether that
+//! coverage loss actually buys anything.
+//!
+//! Measured through [`AntiPatternDetector::detect_all`] (see
+//! `tests/heredoc_antip_redos_guardrail.rs`, which owns the executable form of
+//! these numbers), three candidate shapes on adversarial input:
+//!
+//! | shape | newline-excluded | unbounded | `{0,2000}`-bounded |
+//! |---|---|---|---|
+//! | 40 KB dense unclosed `(?{`/`<<` | 88 µs | 106 µs | 582 000 µs |
+//! | 72 KB many single-line matches | 235 µs | 239 µs | 3 396 µs |
+//! | 23 KB multi-line closing blocks | 11 µs, **0 found** | 51 µs, 1000 found | 1 243 µs, 1000 found |
+//!
+//! Every shape scales linearly with input size, so the `captures_iter`
+//! `O(m·n²)` caveat does not bind for these patterns: `regex` is a
+//! finite-automaton engine and makes one left-to-right pass. Catastrophic
+//! backtracking is not reachable, so the original ReDoS premise was overstated.
+//!
+//! The bounded-quantifier alternative proposed in the closed #3542/#3546/#3575
+//! cluster is the *worst* of the three: `{0,N}` unrolls into N automaton states,
+//! inflating `m` in `O(m·n)` by three to four orders of magnitude, and it still
+//! truncates detection past its horizon. It is rejected on measurement.
+//!
+//! These patterns therefore use unbounded negated classes. They remain bounded
+//! in practice because each class excludes its own terminator (`}`, `'`, `"`,
+//! `` ` ``), so a scan cannot run past the construct it is matching.
+//!
+//! Known residual, unchanged by this decision: the regex-code-block and eval
+//! patterns treat a left-shift `<<` as a heredoc marker. That imprecision is
+//! pre-existing on single lines and is tracked separately, not by the newline
+//! horizon.
 
 mod detectors;
 mod model;

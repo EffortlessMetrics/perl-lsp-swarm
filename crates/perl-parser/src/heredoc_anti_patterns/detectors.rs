@@ -226,9 +226,13 @@ impl PatternDetector for BeginTimeHeredocDetector {
 // Dynamic delimiter detector
 struct DynamicDelimiterDetector;
 
-/// Pattern for identifying dynamic heredoc delimiters
+/// Pattern for identifying dynamic heredoc delimiters.
+///
+/// Each negated class excludes its own terminator (`}` or `` ` ``), which bounds
+/// the scan without a newline horizon. See the module docs for the measurement
+/// that rejected both the `\n`-excluded and `{0,N}`-bounded forms (#3597).
 static DYNAMIC_DELIMITER_PATTERN: LazyLock<Regex> =
-    LazyLock::new(|| match Regex::new(r"<<\s*\$\{[^}\n]+\}|<<\s*\$\w+|<<\s*`[^`\n]+`") {
+    LazyLock::new(|| match Regex::new(r"<<\s*\$\{[^}]+\}|<<\s*\$\w+|<<\s*`[^`]+`") {
         Ok(re) => re,
         Err(_) => unreachable!("DYNAMIC_DELIMITER_PATTERN regex failed to compile"),
     });
@@ -332,9 +336,13 @@ impl PatternDetector for SourceFilterDetector {
 // Regex heredoc detector
 struct RegexHeredocDetector;
 
-/// Pattern for identifying heredocs inside regex code blocks
+/// Pattern for identifying heredocs inside regex code blocks.
+///
+/// `(?{ ... })` blocks containing a heredoc are multi-line by construction in
+/// real Perl, so the class is bounded by `}` alone rather than by a newline
+/// horizon. See the module docs for the governing measurement (#3597).
 static REGEX_HEREDOC_PATTERN: LazyLock<Regex> =
-    LazyLock::new(|| match Regex::new(r"\(\?\{[^}\n]*<<[^}\n]*\}") {
+    LazyLock::new(|| match Regex::new(r"\(\?\{[^}]*<<[^}]*\}") {
         Ok(re) => re,
         Err(_) => unreachable!("REGEX_HEREDOC_PATTERN regex failed to compile"),
     });
@@ -382,9 +390,13 @@ impl PatternDetector for RegexHeredocDetector {
 // Eval heredoc detector
 struct EvalHeredocDetector;
 
-/// Pattern for identifying heredocs inside eval strings
+/// Pattern for identifying heredocs inside eval strings.
+///
+/// An `eval` string that declares a heredoc must span newlines to reach its
+/// terminator, so the class is bounded by the closing quote alone rather than by
+/// a newline horizon. See the module docs for the governing measurement (#3597).
 static EVAL_HEREDOC_PATTERN: LazyLock<Regex> =
-    LazyLock::new(|| match Regex::new(r#"eval\s+(?:'[^\n']*<<[^\n']*'|"[^\n"]*<<[^\n"]*")"#) {
+    LazyLock::new(|| match Regex::new(r#"eval\s+(?:'[^']*<<[^']*'|"[^"]*<<[^"]*")"#) {
         Ok(re) => re,
         Err(_) => unreachable!("EVAL_HEREDOC_PATTERN regex failed to compile"),
     });
