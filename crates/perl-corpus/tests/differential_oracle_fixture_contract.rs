@@ -180,6 +180,85 @@ fn import_export_fixture_is_a_declared_two_file_module_graph() -> TestResult {
     Ok(())
 }
 
+fn copy_import_export_fixture(root: &Path) -> TestResult {
+    fs::create_dir_all(root.join("Accuracy"))?;
+    let fixture_root = fixture_root();
+    fs::copy(fixture_root.join("imports_exports.pl"), root.join("imports_exports.pl"))?;
+    fs::copy(
+        fixture_root.join("Accuracy/ImportsExports.pm"),
+        root.join("Accuracy/ImportsExports.pm"),
+    )?;
+    Ok(())
+}
+
+fn compile_import_export_copy(root: &Path) -> TestResult<Output> {
+    let consumer = root.join("imports_exports.pl");
+    let mut command = isolated_perl_command()?;
+    command.current_dir(root).arg("-I").arg(root).arg("-c").arg(consumer);
+    run_bounded(command, "temporary ImportExport fixture syntax check")
+}
+
+fn assert_import_export_copy_rejected(root: &Path, expected: &str) -> TestResult {
+    let output = compile_import_export_copy(root)?;
+    if output.status.success() {
+        return Err(failure(format!(
+            "temporary ImportExport fixture unexpectedly compiled for negative control {expected:?}"
+        )));
+    }
+    let diagnostics = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_contains(&diagnostics, expected, "temporary ImportExport negative control")
+}
+
+#[test]
+fn import_export_negative_control_rejects_missing_producer() -> TestResult {
+    let root = tempfile::tempdir()?;
+    fs::copy(fixture_root().join("imports_exports.pl"), root.path().join("imports_exports.pl"))?;
+    assert_import_export_copy_rejected(root.path(), "Can't locate Accuracy/ImportsExports.pm")
+}
+
+#[test]
+fn import_export_negative_control_rejects_wrong_module_root() -> TestResult {
+    let root = tempfile::tempdir()?;
+    copy_import_export_fixture(root.path())?;
+    fs::create_dir_all(root.path().join("WrongRoot"))?;
+    fs::rename(
+        root.path().join("Accuracy/ImportsExports.pm"),
+        root.path().join("WrongRoot/ImportsExports.pm"),
+    )?;
+    fs::remove_dir(root.path().join("Accuracy"))?;
+    assert_import_export_copy_rejected(root.path(), "Can't locate Accuracy/ImportsExports.pm")
+}
+
+#[test]
+fn import_export_negative_control_rejects_missing_export() -> TestResult {
+    let root = tempfile::tempdir()?;
+    copy_import_export_fixture(root.path())?;
+    let producer = root.path().join("Accuracy/ImportsExports.pm");
+    let source = fs::read_to_string(&producer)?
+        .replace("our @EXPORT_OK = qw(answer);", "our @EXPORT_OK = qw();");
+    fs::write(producer, source)?;
+    assert_import_export_copy_rejected(
+        root.path(),
+        "not exported by the Accuracy::ImportsExports module",
+    )
+}
+
+#[test]
+fn import_export_negative_control_rejects_collapsed_topology() -> TestResult {
+    let root = tempfile::tempdir()?;
+    fs::create_dir_all(root.path())?;
+    let fixture_root = fixture_root();
+    let consumer = root.path().join("imports_exports.pl");
+    let mut collapsed = fs::read_to_string(fixture_root.join("imports_exports.pl"))?;
+    collapsed.push_str(&fs::read_to_string(fixture_root.join("Accuracy/ImportsExports.pm"))?);
+    fs::write(&consumer, collapsed)?;
+    assert_import_export_copy_rejected(root.path(), "Can't locate Accuracy/ImportsExports.pm")
+}
+
 #[test]
 fn import_export_fixture_compiles_with_only_the_declared_module_root() -> TestResult {
     let root = fixture_root();
