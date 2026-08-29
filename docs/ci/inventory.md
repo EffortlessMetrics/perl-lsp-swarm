@@ -14,7 +14,7 @@ is decided in PR 15+ once actuals confirm the overlap.
 
 | | |
 |---|---|
-| Default branch | `master` |
+| Default branch | `main` |
 | Rust workspace | resolver `3`, MSRV `1.95.0` (per `rust-toolchain.toml`) |
 | Workspace members | 134 (per `cargo metadata --no-deps`) |
 | Required branch checks | `merge-gate` (aggregate), `pr-title-check`, `methodology-gate`, `workflow-policy` |

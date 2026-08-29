@@ -8,7 +8,7 @@ The perl-lsp project uses **cargo-llvm-cov** for code coverage generation and **
 
 Branch coverage is enabled in the coverage lane with `cargo-llvm-cov --branch`. That requires a nightly Rust toolchain because LLVM branch coverage uses unstable `-Z coverage-options=branch` support.
 
-The scheduled/manual coverage lane keeps branch diagnostics on library/unit tests (`--lib`) so it stays stable on current master. Integration snapshot suites can still be run separately outside the coverage lane.
+The scheduled/manual coverage lane keeps branch diagnostics on library/unit tests (`--lib`) so it stays stable on current main. Integration snapshot suites can still be run separately outside the coverage lane.
 
 ## Quick Start
 
@@ -113,9 +113,9 @@ ratchet outside normal PR and merge-queue validation.
 
 ### Coverage Badge
 
-The README includes a Codecov badge showing the current coverage on the `master` branch:
+The README includes a Codecov badge showing the current coverage on the `main` branch:
 
-[![codecov](https://codecov.io/gh/EffortlessMetrics/perl-lsp/branch/master/graph/badge.svg)](https://codecov.io/gh/EffortlessMetrics/perl-lsp)
+[![codecov](https://codecov.io/gh/EffortlessMetrics/perl-lsp/branch/main/graph/badge.svg)](https://codecov.io/gh/EffortlessMetrics/perl-lsp)
 
 ## Coverage Thresholds
 

@@ -6,6 +6,7 @@ use anyhow::{anyhow, ensure, Result};
 use assert_cmd::Command;
 use perl_tdd_support::{must, must_some};
 use serde_yaml_ng::Value;
+use toml::Value as TomlValue;
 
 #[test]
 fn ignored_test_issue_reference_gate_is_required_on_prs() {
@@ -172,6 +173,7 @@ fn coverage_workflow_is_manual_or_nightly_only_and_requires_receipts() {
     let lane_economics = must(fs::read_to_string(root.join("policy/ci-lanes.toml")));
     let lane_whitelist = must(fs::read_to_string(root.join("policy/ci-lane-whitelist.toml")));
     let inventory = must(fs::read_to_string(root.join("docs/ci/inventory.md")));
+    let coverage_guide = must(fs::read_to_string(root.join("docs/how-to/COVERAGE.md")));
     let evidence_lanes_doc = must(fs::read_to_string(root.join("docs/ci/test-evidence-lanes.md")));
     let verification_ladder_doc =
         must(fs::read_to_string(root.join("docs/ci/verification-ladder.md")));
@@ -181,6 +183,57 @@ fn coverage_workflow_is_manual_or_nightly_only_and_requires_receipts() {
     let coverage_tail = &workflow[coverage_start..];
     let coverage_end = must_some(coverage_tail.find("\n  tautology-check:"));
     let coverage_job = &coverage_tail[..coverage_end];
+
+    let workflow_document: Value = must(serde_yaml_ng::from_str(&workflow));
+    let coverage_yaml_job = must_some(mapping_value(
+        must_some(mapping_value(&workflow_document, "jobs")),
+        "test-coverage",
+    ));
+    let coverage_if = must_some(must_some(mapping_value(coverage_yaml_job, "if")).as_str())
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect::<String>();
+    assert_eq!(
+        coverage_if,
+        "github.event_name=='schedule'||(github.event_name=='workflow_dispatch'&&inputs.run_coverage)",
+        "coverage job must be structurally limited to schedule/manual dispatch"
+    );
+
+    let whitelist_document: TomlValue = must(toml::from_str(&lane_whitelist));
+    let coverage_whitelist_table = must_some(toml_lane(&whitelist_document, "coverage"));
+    let allowed_triggers =
+        must_some(must_some(coverage_whitelist_table.get("allowed_triggers")).as_array())
+            .iter()
+            .filter_map(TomlValue::as_str)
+            .collect::<Vec<_>>();
+    assert_eq!(
+        allowed_triggers,
+        vec!["schedule", "workflow_dispatch"],
+        "coverage whitelist must have exactly the executable trigger set"
+    );
+    assert!(
+        toml_array_is_empty(coverage_whitelist_table.get("labels"))
+            && toml_array_is_empty(coverage_whitelist_table.get("branches")),
+        "coverage whitelist must not carry label or branch selectors"
+    );
+
+    let economics_document: TomlValue = must(toml::from_str(&lane_economics));
+    let coverage_economics_table = must_some(
+        economics_document
+            .get("lane")
+            .and_then(TomlValue::as_table)
+            .and_then(|lanes| lanes.get("coverage"))
+            .and_then(TomlValue::as_table),
+    );
+    assert!(
+        toml_array_is_empty(coverage_economics_table.get("labels"))
+            && toml_array_is_empty(coverage_economics_table.get("branches")),
+        "coverage economics must not carry label or branch selectors"
+    );
+    assert!(
+        coverage_economics_table.get("default_pr").and_then(TomlValue::as_bool) == Some(false),
+        "coverage economics must remain outside the default PR lane"
+    );
 
     assert!(
         workflow.contains("types: [opened, synchronize, reopened, ready_for_review, labeled]"),
@@ -242,12 +295,25 @@ fn coverage_workflow_is_manual_or_nightly_only_and_requires_receipts() {
         "coverage reference docs must describe only scheduled/manual execution"
     );
     assert!(
+        coverage_guide.contains("stays stable on current main")
+            && coverage_guide.contains("current coverage on the `main` branch")
+            && coverage_guide.contains("/branch/main/graph/badge.svg")
+            && !coverage_guide.contains("current master")
+            && !coverage_guide.contains("/branch/master/"),
+        "coverage guide must describe the live main branch and badge"
+    );
+    assert!(
         inventory.contains(
             "| `ci-nightly.yml` (test-coverage) | `schedule`, `workflow_dispatch` | no | `ubuntu-24.04` | Coverage | 45 | `coverage` | keep |"
         ) && !inventory.contains(
             "| `ci-nightly.yml` (test-coverage) | `schedule`, `workflow_dispatch`, label |"
         ),
         "CI inventory must describe coverage as schedule/manual-only"
+    );
+    assert!(
+        inventory.contains("| Default branch | `main` |")
+            && !inventory.contains("| Default branch | `master` |"),
+        "CI inventory must name the live default branch"
     );
     let checkout_ref = must_some(checkout_action_ref(coverage_job));
     assert!(
@@ -699,6 +765,26 @@ fn policy_required_check(policy: &toml::Value, name: &str) -> bool {
             && item.get("required").and_then(toml::Value::as_bool) == Some(true)
             && item.get("enforcement").and_then(toml::Value::as_str) == Some("github-ruleset")
     })
+}
+
+fn mapping_value<'a>(value: &'a Value, key: &str) -> Option<&'a Value> {
+    value.as_mapping().and_then(|mapping| mapping.get(Value::String(key.to_owned())))
+}
+
+fn toml_lane<'a>(document: &'a TomlValue, id: &str) -> Option<&'a toml::value::Table> {
+    document.get("lane").and_then(TomlValue::as_array).and_then(|lanes| {
+        lanes.iter().find_map(|lane| {
+            let table = lane.as_table()?;
+            (table.get("id").and_then(TomlValue::as_str) == Some(id)).then_some(table)
+        })
+    })
+}
+
+fn toml_array_is_empty(value: Option<&TomlValue>) -> bool {
+    match value {
+        None => true,
+        Some(value) => value.as_array().is_some_and(|array| array.is_empty()),
+    }
 }
 
 fn checkout_action_ref(step: &str) -> Option<&str> {
