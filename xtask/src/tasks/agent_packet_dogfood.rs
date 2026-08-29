@@ -1064,11 +1064,11 @@ fn collect_rows(entries: &[(String, Value)]) -> Vec<RunRow> {
     entries
         .iter()
         .map(|(source, doc)| {
-            let disposition = doc
-                .get("disposition")
-                .and_then(Value::as_str)
-                .unwrap_or("<missing-disposition>")
-                .to_string();
+            let disposition = match doc.get("disposition").and_then(Value::as_str) {
+                Some(disposition) if DISPOSITIONS.contains(&disposition) => disposition.to_string(),
+                Some(_) => "<redacted-invalid-disposition>".to_string(),
+                None => "<missing-disposition>".to_string(),
+            };
             let violations = validate_manifest(doc);
             // Invalid packets are still reportable for advisory classification,
             // but none of their untrusted run identity may be copied to stdout.

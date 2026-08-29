@@ -725,6 +725,33 @@ fn invalid_run_id_is_redacted_from_rendered_reports() {
     assert!(json.contains("<redacted-invalid-run-id>"));
 }
 
+#[test]
+fn invalid_disposition_is_redacted_while_valid_disposition_is_preserved() {
+    let valid = stamped(base_manifest());
+    let mut invalid = stamped(base_manifest());
+    invalid["disposition"] = json!("api_key=hunter2");
+    let entries = vec![("valid.json".to_string(), valid), ("invalid.json".to_string(), invalid)];
+    let rows = collect_rows(&entries);
+    let markdown = render_report(&rows, DogfoodReportFormat::Markdown);
+    let json = render_report(&rows, DogfoodReportFormat::Json);
+
+    assert!(!markdown.contains("api_key=hunter2"), "invalid disposition leaked in markdown report");
+    assert!(!json.contains("api_key=hunter2"), "invalid disposition leaked in JSON report");
+    assert!(
+        markdown.contains("| completed | valid |"),
+        "valid disposition changed in markdown report"
+    );
+
+    let report: Value = serde_json::from_str(&json).expect("valid JSON report");
+    let runs = report["runs"].as_array().expect("runs array");
+    assert!(runs
+        .iter()
+        .any(|run| { run["disposition"] == "completed" && run["validity"] == "valid" }));
+    assert!(runs.iter().any(|run| {
+        run["disposition"] == "<redacted-invalid-disposition>" && run["validity"] == "invalid"
+    }));
+}
+
 // ---------------------------------------------------------------------------
 // Repository-contract level proofs (fixtures + schema self-check).
 // ---------------------------------------------------------------------------
