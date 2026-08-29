@@ -134,9 +134,19 @@ impl<'a> Parser<'a> {
 
         let mut expr = self.parse_ternary()?;
 
+        // Contiguous string-repetition assignment `x=`: the lexer keeps
+        // word-shaped `x` contextual, so the operator arrives as
+        // `Identifier("x")` immediately followed by `Assign` rather than as a
+        // one-token symbolic kind. It is only the operator when the two tokens
+        // are exactly adjacent in the source; a spaced `x =` keeps its
+        // bareword/identifier meaning and must not be normalized.
+        let x_assign = self.peek_adjacent_x_assign();
+
         // Check for assignment operators
-        if let Some(kind) = self.peek_kind() {
-            let op = match kind {
+        let op = if x_assign {
+            Some("x=")
+        } else {
+            self.peek_kind().and_then(|kind| match kind {
                 TokenKind::Assign => Some("="),
                 TokenKind::PlusAssign => Some("+="),
                 TokenKind::MinusAssign => Some("-="),
@@ -154,34 +164,68 @@ impl<'a> Parser<'a> {
                 TokenKind::LogicalOrAssign => Some("||="),
                 TokenKind::DefinedOrAssign => Some("//="),
                 _ => None,
+            })
+        };
+
+        if let Some(op) = op {
+            // Consume the operator. `x=` is two contextual tokens; every
+            // other assignment operator is one symbolic token.
+            let op_start = if x_assign {
+                let _x_token = self.tokens.next()?; // consume `x`
+                let assign_token = self.tokens.next()?; // consume `=`
+                assign_token.start()
+            } else {
+                self.tokens.next()?.start() // consume operator
             };
+            // The RHS can be a 'not' expression, or missing (recovery)
+            let rhs = if let Some(missing) = self.recover_missing_infix_rhs(op_start) {
+                missing
+            } else if self.peek_kind() == Some(TokenKind::WordNot) {
+                self.parse_word_not_expr()?
+            } else {
+                self.parse_assignment()?
+            };
+            let start = expr.location.start;
+            let end = rhs.location.end;
 
-            if let Some(op) = op {
-                let op_token = self.tokens.next()?; // consume operator
-                // The RHS can be a 'not' expression, or missing (recovery)
-                let rhs =
-                    if let Some(missing) = self.recover_missing_infix_rhs(op_token.start()) {
-                        missing
-                    } else if self.peek_kind() == Some(TokenKind::WordNot) {
-                        self.parse_word_not_expr()?
-                    } else {
-                        self.parse_assignment()?
-                    };
-                let start = expr.location.start;
-                let end = rhs.location.end;
-
-                expr = Node::new(
-                    NodeKind::Assignment {
-                        lhs: Box::new(expr),
-                        rhs: Box::new(rhs),
-                        op: op.to_string(),
-                    },
-                    SourceLocation { start, end },
-                );
-            }
+            expr = Node::new(
+                NodeKind::Assignment {
+                    lhs: Box::new(expr),
+                    rhs: Box::new(rhs),
+                    op: op.to_string(),
+                },
+                SourceLocation { start, end },
+            );
         }
 
         Ok(expr)
+    }
+
+    /// Detect a contiguous string-repetition assignment operator `x=` at the
+    /// token cursor without consuming it.
+    ///
+    /// The lexer keeps word-shaped `x` contextual, so `x=` is tokenized as
+    /// `Identifier("x")` followed by `Assign`. The pair only forms the
+    /// operator when the source is exactly adjacent — the `x` token ends
+    /// where the `=` token starts — so `x =` (spaced) or `x  # c\n=`
+    /// (comment-separated) keep their bareword reading and are never
+    /// normalized into the operator.
+    fn peek_adjacent_x_assign(&mut self) -> bool {
+        let x_is_bare_word = match self.tokens.peek() {
+            Ok(token) => token.kind() == TokenKind::Identifier && token.text.as_ref() == "x",
+            Err(_) => return false,
+        };
+        if !x_is_bare_word {
+            return false;
+        }
+        let x_end = match self.tokens.peek() {
+            Ok(token) => token.end(),
+            Err(_) => return false,
+        };
+        match self.tokens.peek_second() {
+            Ok(assign) => assign.kind() == TokenKind::Assign && assign.start() == x_end,
+            Err(_) => false,
+        }
     }
 
     /// Parse ternary conditional expression

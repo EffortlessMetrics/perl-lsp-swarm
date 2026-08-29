@@ -626,6 +626,8 @@ mod unclosed_block_recovery_tests;
 #[cfg(test)]
 mod use_overload_tests;
 #[cfg(test)]
+mod x_assignment_tests;
+#[cfg(test)]
 mod x_repetition_tests;
 
 #[cfg(test)]
