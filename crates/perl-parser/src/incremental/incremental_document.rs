@@ -448,14 +448,10 @@ impl IncrementalDocument {
                 }
             }
             NodeKind::Subroutine { body, .. } => {
-                if self.update_token_in_tree(body, source, edit) {
-                    return true;
-                }
+                return self.update_token_in_tree(body, source, edit);
             }
             NodeKind::ExpressionStatement { expression } => {
-                if self.update_token_in_tree(expression, source, edit) {
-                    return true;
-                }
+                return self.update_token_in_tree(expression, source, edit);
             }
             NodeKind::VariableDeclaration { variable, initializer, .. } => {
                 if self.update_token_in_tree(variable, source, edit) {
@@ -504,9 +500,7 @@ impl IncrementalDocument {
                 }
             }
             NodeKind::Unary { operand, .. } => {
-                if self.update_token_in_tree(operand, source, edit) {
-                    return true;
-                }
+                return self.update_token_in_tree(operand, source, edit);
             }
             _ => {}
         }
@@ -559,14 +553,10 @@ impl IncrementalDocument {
                 }
             }
             NodeKind::Subroutine { body, .. } => {
-                if self.insert_reusable(body, reusable) {
-                    return true;
-                }
+                return self.insert_reusable(body, reusable);
             }
             NodeKind::ExpressionStatement { expression } => {
-                if self.insert_reusable(expression, reusable) {
-                    return true;
-                }
+                return self.insert_reusable(expression, reusable);
             }
             NodeKind::If { condition, then_branch, elsif_branches, else_branch, .. } => {
                 if self.insert_reusable(condition, reusable) {

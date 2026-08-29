@@ -545,38 +545,28 @@ impl IncrementalParserV2 {
                 Some(node) => {
                     match &node.kind {
                         // Support string and numeric literals
-                        NodeKind::Number { .. } | NodeKind::String { .. } => {
-                            // Ensure the edit stays within the literal node bounds
+                        NodeKind::Number { .. } | NodeKind::String { .. }
                             if original_start >= node.location.start
-                                && original_end <= node.location.end
-                            {
-                                cumulative_shift += edit.byte_shift();
-                                continue;
-                            } else {
-                                return false;
-                            }
+                                && original_end <= node.location.end =>
+                        {
+                            cumulative_shift += edit.byte_shift();
+                            continue;
                         }
                         // Support simple identifier edits (variable names)
-                        NodeKind::Variable { .. } => {
+                        NodeKind::Variable { .. }
                             if original_start >= node.location.start
-                                && original_end <= node.location.end
-                            {
-                                cumulative_shift += edit.byte_shift();
-                                continue;
-                            } else {
-                                return false;
-                            }
+                                && original_end <= node.location.end =>
+                        {
+                            cumulative_shift += edit.byte_shift();
+                            continue;
                         }
                         // Support identifier edits (identifiers can often be treated like simple values)
-                        NodeKind::Identifier { .. } => {
+                        NodeKind::Identifier { .. }
                             if original_start >= node.location.start
-                                && original_end <= node.location.end
-                            {
-                                cumulative_shift += edit.byte_shift();
-                                continue;
-                            } else {
-                                return false;
-                            }
+                                && original_end <= node.location.end =>
+                        {
+                            cumulative_shift += edit.byte_shift();
+                            continue;
                         }
                         _ => {
                             return false; // Not a simple value
@@ -763,25 +753,19 @@ impl IncrementalParserV2 {
                         return false;
                     }
                 }
-                NodeKind::String { value, .. } => {
-                    // String content validation - should include quotes if present
+                NodeKind::String { value, .. }
                     if !node_text.is_empty()
-                        && !value.contains(node_text.trim_matches(|c| c == '"' || c == '\''))
-                    {
-                        // Be lenient for string validation as quotes might be handled differently
-                    }
+                        && !value.contains(node_text.trim_matches(|c| c == '"' || c == '\'')) =>
+                {
+                    // Be lenient for string validation as quotes might be handled differently
                 }
-                NodeKind::Variable { name, .. } => {
+                NodeKind::Variable { name, .. } if !node_text.contains(name) => {
                     // Variable name should appear in the source text
-                    if !node_text.contains(name) {
-                        return false;
-                    }
+                    return false;
                 }
-                NodeKind::Identifier { name } => {
+                NodeKind::Identifier { name } if name.trim() != node_text.trim() => {
                     // Identifier name should match source text
-                    if name.trim() != node_text.trim() {
-                        return false;
-                    }
+                    return false;
                 }
                 _ => {
                     // For container nodes, just ensure they have reasonable bounds
@@ -830,12 +814,16 @@ impl IncrementalParserV2 {
                     return false;
                 }
             }
-            NodeKind::Binary { left, right, .. } => {
+            NodeKind::Binary { left, right, .. }
                 if !self.validate_node_tree_consistency(left, source, depth + 1, max_depth)
-                    || !self.validate_node_tree_consistency(right, source, depth + 1, max_depth)
-                {
-                    return false;
-                }
+                    || !self.validate_node_tree_consistency(
+                        right,
+                        source,
+                        depth + 1,
+                        max_depth,
+                    ) =>
+            {
+                return false;
             }
             _ => {
                 // Leaf nodes don't need recursive validation
