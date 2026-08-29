@@ -1,21 +1,21 @@
-name: Rustfmt #13473 repair artifact
+name: Rustfmt #13473 finalize candidate
 
 on:
   pull_request:
     branches: [main]
-    types: [opened, synchronize, reopened]
+    types: [synchronize]
     paths:
       - .github/workflows/rustfmt-13473-artifact.yml
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
-  group: rustfmt-13473-${{ github.event.pull_request.number }}
+  group: rustfmt-13473-finalize-${{ github.event.pull_request.number }}
   cancel-in-progress: false
 
 jobs:
-  generate:
+  finalize:
     if: >-
       github.repository == 'EffortlessMetrics/perl-lsp-swarm' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
@@ -29,7 +29,7 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
-          persist-credentials: false
+          persist-credentials: true
 
       - name: Install pinned Rust formatter
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable
@@ -37,34 +37,45 @@ jobs:
           toolchain: 1.95.0
           components: rustfmt
 
-      - name: Produce exact formatted files and patch
+      - name: Materialize and commit exact formatter output
         shell: bash
         run: |
           set -euo pipefail
-          before="$(git rev-parse HEAD)"
-          test "$before" = "${{ github.event.pull_request.head.sha }}"
-          cargo fmt --all
-          mkdir -p target/receipts/rustfmt-13473/files
-          git diff --binary > target/receipts/rustfmt-13473/rustfmt.patch
-          git diff --name-only -- '*.rs' > target/receipts/rustfmt-13473/paths.txt
-          while IFS= read -r path; do
-            test -n "$path"
-            mkdir -p "target/receipts/rustfmt-13473/files/$(dirname "$path")"
-            cp -- "$path" "target/receipts/rustfmt-13473/files/$path"
-          done < target/receipts/rustfmt-13473/paths.txt
-          sha256sum $(cat target/receipts/rustfmt-13473/paths.txt) \
-            > target/receipts/rustfmt-13473/sha256.txt
-          {
-            printf 'source_sha=%s\n' "$before"
-            rustfmt --version
-            printf 'changed_paths=%s\n' "$(wc -l < target/receipts/rustfmt-13473/paths.txt)"
-          } > target/receipts/rustfmt-13473/identity.txt
-          test -s target/receipts/rustfmt-13473/rustfmt.patch
-          test "$(wc -l < target/receipts/rustfmt-13473/paths.txt)" -eq 7
+          test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha }}"
+          test "$(git rev-parse HEAD^)" = "093b1bbad49713025fdebf04aa6e9e12576b3a9d"
 
-      - name: Upload read-only formatter artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: rustfmt-13473-${{ github.event.pull_request.head.sha }}
-          path: target/receipts/rustfmt-13473/
-          retention-days: 7
+          cat > /tmp/expected-paths <<'EOF'
+          crates/perl-corpus/src/api/root.rs
+          crates/perl-corpus/src/files.rs
+          crates/perl-corpus/tests/distribution_contract.rs
+          crates/perl-corpus/tests/root_path_authority.rs
+          crates/perl-parser-core/tests/fix_range_precedence_13128.rs
+          xtask/src/tasks/update_status/parser/accuracy.rs
+          xtask/tests/parser_accuracy_legacy_oracle_policy.rs
+          EOF
+
+          cat > /tmp/expected-sha256 <<'EOF'
+          2174f6b4d771572442611c1eb9ff39004c3f13e67800cf0e3dbb1c8be4219095  crates/perl-corpus/src/api/root.rs
+          ad33d677f75fdb0bc14215ed115cc9d6654a164e3029705dff970edb6f519d77  crates/perl-corpus/src/files.rs
+          a1376ea97f36f53fdc69fa7978de2d5de00ad36c6127ec3633d1acb148d44c4a  crates/perl-corpus/tests/distribution_contract.rs
+          c5e81a429558409dbd301fda9ed3d47a11971ecc345a6b14f41ced9bd4ab10e3  crates/perl-corpus/tests/root_path_authority.rs
+          961e018a71bb3d0ad0d6db95629c33c208b75be65f560efe44f64e0292e62aa1  crates/perl-parser-core/tests/fix_range_precedence_13128.rs
+          3d5a7ccc50a91b854613534c77cc57998e2fa45f1a954dc4d06c7ec15c1c40e5  xtask/src/tasks/update_status/parser/accuracy.rs
+          a09b768b96187dad97ba5fd7fc74e82ed7742ca693fd78c5681153e3731e080f  xtask/tests/parser_accuracy_legacy_oracle_policy.rs
+          EOF
+
+          cargo fmt --all
+          git diff --name-only -- '*.rs' | sort > /tmp/actual-paths
+          diff -u /tmp/expected-paths /tmp/actual-paths
+          sha256sum -c /tmp/expected-sha256
+
+          git config user.name EffortlessSteven
+          git config user.email git@effortlesssteven.com
+          while IFS= read -r path; do
+            git add -- "$path"
+          done < /tmp/expected-paths
+          git rm -- .github/workflows/rustfmt-13473-artifact.yml
+          git diff --cached --check
+          test "$(git diff --cached --name-only | wc -l)" -eq 8
+          git commit -m "style: restore current-main Rust formatting (#13473)"
+          git push origin HEAD:refs/heads/codex/13473-rustfmt-main
