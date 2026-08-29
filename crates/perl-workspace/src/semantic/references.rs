@@ -617,12 +617,30 @@ mod tests {
         Ok(())
     }
 
-    /// Build a shard whose only occurrence has no entity row and no edge, at
-    /// the shared anchor id 60.
+    /// Build a shard whose only occurrence resolves to no local canonical name,
+    /// at the shared anchor id 60.
+    ///
+    /// Every unresolved fixture is constructed whole rather than mutated after
+    /// the fact, so each field a case depends on is visible at its one
+    /// construction site.
+    ///
+    /// * `occurrence_entity` — what the occurrence claims to target. `None` is
+    ///   an occurrence with no target at all; `Some(id)` with no matching row in
+    ///   `entities` is a declaration that lives in another shard.
+    /// * `entities` — the local entity rows, which decide whether
+    ///   `derive_canonical_name`'s `e.id == entity_id` lookup hits or misses.
+    /// * `edges` — `EdgeKind::References` edges supplying target candidates.
     ///
     /// Both files deliberately use one anchor number: the index must not depend
     /// on cross-file anchor uniqueness, which no producer contract guarantees.
-    fn unresolved_shard(source_uri: &str, file_id: FileId, occ_id: OccurrenceId) -> FileFactShard {
+    fn unresolved_shard_with(
+        source_uri: &str,
+        file_id: FileId,
+        occ_id: OccurrenceId,
+        occurrence_entity: Option<EntityId>,
+        entities: Vec<EntityFact>,
+        edges: Vec<EdgeFact>,
+    ) -> FileFactShard {
         let anchor_id = AnchorId(60);
 
         FileFactShard {
@@ -643,17 +661,48 @@ mod tests {
                 provenance: Provenance::NameHeuristic,
                 confidence: Confidence::Low,
             }],
-            entities: vec![],
+            entities,
             occurrences: vec![OccurrenceFact {
                 id: occ_id,
                 kind: OccurrenceKind::Call,
-                entity_id: None,
+                entity_id: occurrence_entity,
                 anchor_id,
                 scope_id: None,
                 provenance: Provenance::NameHeuristic,
                 confidence: Confidence::Low,
             }],
-            edges: vec![],
+            edges,
+        }
+    }
+
+    /// The simplest unresolved shard: no target, no local entity row, no edge.
+    fn unresolved_shard(source_uri: &str, file_id: FileId, occ_id: OccurrenceId) -> FileFactShard {
+        unresolved_shard_with(source_uri, file_id, occ_id, None, Vec::new(), Vec::new())
+    }
+
+    /// A `References` edge from the synthetic caller sentinel to `target`.
+    fn reference_edge(edge_id: EdgeId, occ_id: OccurrenceId, target: EntityId) -> EdgeFact {
+        EdgeFact {
+            id: edge_id,
+            kind: EdgeKind::References,
+            from_entity_id: EntityId(0),
+            to_entity_id: target,
+            via_occurrence_id: Some(occ_id),
+            provenance: Provenance::ExactAst,
+            confidence: Confidence::High,
+        }
+    }
+
+    /// A subroutine entity row declared locally under `canonical_name`.
+    fn declared_entity(id: EntityId, canonical_name: &str) -> EntityFact {
+        EntityFact {
+            id,
+            kind: EntityKind::Subroutine,
+            canonical_name: canonical_name.to_string(),
+            anchor_id: None,
+            scope_id: None,
+            provenance: Provenance::ExactAst,
+            confidence: Confidence::High,
         }
     }
 
@@ -720,16 +769,14 @@ mod tests {
         // An occurrence whose declaration lives in another shard: the edge
         // names the target entity, but no local entity row supplies a name.
         let target = EntityId(500);
-        let mut shard = unresolved_shard("file:///lib/Caller.pm", FileId(5), OccurrenceId(902));
-        shard.edges.push(EdgeFact {
-            id: EdgeId(1500),
-            kind: EdgeKind::References,
-            from_entity_id: EntityId(0),
-            to_entity_id: target,
-            via_occurrence_id: Some(OccurrenceId(902)),
-            provenance: Provenance::ExactAst,
-            confidence: Confidence::High,
-        });
+        let shard = unresolved_shard_with(
+            "file:///lib/Caller.pm",
+            FileId(5),
+            OccurrenceId(902),
+            None,
+            Vec::new(),
+            vec![reference_edge(EdgeId(1500), OccurrenceId(902), target)],
+        );
 
         let mut index = ReferenceIndex::new();
         index.add_file(&shard);
@@ -758,19 +805,21 @@ mod tests {
         // catalog will eventually resolve — until then it must produce *no*
         // name at all, not a stand-in derived from the entity id.
         let absent_target = EntityId(900);
-        let mut shard = unresolved_shard("file:///lib/Importer.pm", FileId(6), OccurrenceId(903));
-        shard.occurrences[0].entity_id = Some(absent_target);
+        let declared_locally = EntityId(901);
         // A different entity *is* declared locally, so the lookup genuinely
         // scans and misses rather than short-circuiting on an empty vector.
-        shard.entities.push(EntityFact {
-            id: EntityId(901),
-            kind: EntityKind::Subroutine,
-            canonical_name: "Importer::local_only".to_string(),
-            anchor_id: None,
-            scope_id: None,
-            provenance: Provenance::ExactAst,
-            confidence: Confidence::High,
-        });
+        let shard = unresolved_shard_with(
+            "file:///lib/Importer.pm",
+            FileId(6),
+            OccurrenceId(903),
+            Some(absent_target),
+            vec![declared_entity(declared_locally, "Importer::local_only")],
+            Vec::new(),
+        );
+        assert_ne!(
+            absent_target, declared_locally,
+            "the fixture must miss the local row, not match it"
+        );
 
         let mut index = ReferenceIndex::new();
         index.add_file(&shard);
