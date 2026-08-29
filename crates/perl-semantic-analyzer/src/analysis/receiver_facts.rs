@@ -847,14 +847,43 @@ mod tests {
         Ok(())
     }
 
+    // Mirrors `method_call_named` traversal order but returns the receiver
+    // object of the matching method call directly, so a found node is a
+    // method-call receiver by construction.
+    fn method_call_object<'a>(node: &'a Node, name: &str) -> Option<&'a Node> {
+        if let NodeKind::MethodCall { method, object, .. } = &node.kind {
+            if method == name {
+                return Some(object);
+            }
+        }
+
+        match &node.kind {
+            NodeKind::Program { statements } => {
+                statements.iter().find_map(|child| method_call_object(child, name))
+            }
+            NodeKind::ExpressionStatement { expression } => method_call_object(expression, name),
+            NodeKind::VariableDeclaration { initializer, .. } => {
+                initializer.as_deref().and_then(|child| method_call_object(child, name))
+            }
+            NodeKind::Assignment { lhs, rhs, .. } => {
+                method_call_object(lhs, name).or_else(|| method_call_object(rhs, name))
+            }
+            NodeKind::MethodCall { object, args, .. } => method_call_object(object, name)
+                .or_else(|| args.iter().find_map(|child| method_call_object(child, name))),
+            NodeKind::Binary { left, right, .. } => {
+                method_call_object(left, name).or_else(|| method_call_object(right, name))
+            }
+            _ => None,
+        }
+    }
+
     fn binary_receiver_parts<'a>(
         root: &'a Node,
         method: &str,
     ) -> Result<(&'a Node, &'a Node, &'a Node), String> {
-        let call = method_call_named(root, method).ok_or("expected method call")?;
-        let NodeKind::MethodCall { object, .. } = &call.kind else {
-            return Err("node is not a method call".to_string());
-        };
+        // method_call_object only yields the receiver object of a matching
+        // method call, so no "not a method call" arm is reachable here.
+        let object = method_call_object(root, method).ok_or("expected method call")?;
         let NodeKind::Binary { left, right, .. } = &object.kind else {
             return Err("receiver is not a subscript binary".to_string());
         };
@@ -919,6 +948,28 @@ mod tests {
             .evidence
             .iter()
             .any(|evidence| matches!(evidence, TypeEvidence::Heuristic { reason } if reason == "array index receiver")));
+        Ok(())
+    }
+
+    #[test]
+    fn binary_receiver_parts_exact_error_variant() -> Result<(), String> {
+        // Missing-call boundary: an AST with no matching method call yields
+        // the exact "expected method call" error variant.
+        let missing = parse_ast("my $x = 1;")?;
+        let err = match binary_receiver_parts(&missing, "render") {
+            Err(err) => err,
+            Ok(_) => return Err("expected the missing-method-call error variant".to_string()),
+        };
+        assert_eq!(err, "expected method call");
+
+        // Non-subscript receiver boundary: a plain variable receiver yields
+        // the exact "receiver is not a subscript binary" error variant.
+        let plain = parse_ast("$srv->render();")?;
+        let err = match binary_receiver_parts(&plain, "render") {
+            Err(err) => err,
+            Ok(_) => return Err("expected the non-subscript-receiver error variant".to_string()),
+        };
+        assert_eq!(err, "receiver is not a subscript binary");
         Ok(())
     }
 
