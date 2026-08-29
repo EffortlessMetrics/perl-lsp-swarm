@@ -32,6 +32,9 @@ const EXPECTED_INVALID: &[(&str, &str)] = &[
     ("credential_in_payload.json", "credential_in_payload"),
     ("credential_in_metadata.json", "credential_in_payload"),
     ("structured_credential_keys.json", "credential_in_payload"),
+    ("chain_of_thought_in_metadata.json", "cot_key_in_payload"),
+    ("mutable_state_camel_case.json", "mutable_state_embedded"),
+    ("invalid_run_id.json", "credential_in_payload"),
     ("metadata_not_object.json", "not_an_object"),
     ("machine_local_path_in_payload.json", "local_path_in_payload"),
     ("machine_local_path_in_subject.json", "local_path_in_payload"),
@@ -409,6 +412,25 @@ fn negative_chain_of_thought_in_payload_fails_closed() {
 }
 
 #[test]
+fn negative_chain_of_thought_keys_are_normalized_across_metadata_and_payload() {
+    for (location, key) in [
+        ("metadata", "chain_of_thought"),
+        ("metadata", "chainOfThought"),
+        ("events", "chain_of_thought"),
+        ("events", "chainOfThought"),
+    ] {
+        let violations = mutant(base_manifest(), |doc| {
+            if location == "metadata" {
+                doc["metadata"] = json!({key: "hidden reasoning text"});
+            } else {
+                doc["events"][0]["payload"] = json!({key: "hidden reasoning text"});
+            }
+        });
+        assert_contains(&violations, "cot_key_in_payload");
+    }
+}
+
+#[test]
 fn negative_nested_chain_of_thought_key_fails_closed() {
     // The chain-of-thought key guard recurses: a prohibited key below the
     // payload's outer object (through objects and arrays) is still rejected.
@@ -446,6 +468,14 @@ fn negative_mutable_live_state_embedded_fails_closed() {
             .as_object_mut()
             .unwrap()
             .insert("lease".to_string(), json!({"owner": "runtime"}));
+    });
+    assert_contains(&violations, "mutable_state_embedded");
+}
+
+#[test]
+fn negative_camel_case_mutable_live_state_embedded_fails_closed() {
+    let violations = mutant(base_manifest(), |doc| {
+        doc["metadata"] = json!({"wakeEvent": "checks complete", "leaseOwner": "agent"});
     });
     assert_contains(&violations, "mutable_state_embedded");
 }
@@ -680,6 +710,19 @@ fn invalid_runs_render_as_invalid_without_panicking() {
     let rows = collect_rows(vec![("broken.json".to_string(), broken)].as_slice());
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].validity, "invalid");
+}
+
+#[test]
+fn invalid_run_id_is_redacted_from_rendered_reports() {
+    let mut invalid = stamped(base_manifest());
+    invalid["run_id"] = json!("api_key=hunter2");
+    let rows = collect_rows(vec![("invalid.json".to_string(), invalid)].as_slice());
+    let markdown = render_report(&rows, DogfoodReportFormat::Markdown);
+    let json = render_report(&rows, DogfoodReportFormat::Json);
+    assert!(!markdown.contains("api_key=hunter2"), "invalid run_id leaked in markdown report");
+    assert!(!json.contains("api_key=hunter2"), "invalid run_id leaked in JSON report");
+    assert!(markdown.contains("<redacted-invalid-run-id>"));
+    assert!(json.contains("<redacted-invalid-run-id>"));
 }
 
 // ---------------------------------------------------------------------------

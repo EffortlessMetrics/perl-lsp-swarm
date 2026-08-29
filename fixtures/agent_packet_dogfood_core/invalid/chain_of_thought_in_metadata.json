@@ -1,0 +1,6 @@
+{
+  "schema": "agent_packet_dogfood.core.v1",
+  "metadata": {
+    "chainOfThought": "hidden reasoning text"
+  }
+}

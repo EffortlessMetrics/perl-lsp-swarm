@@ -26,7 +26,7 @@
 
 use crate::utils::project_root;
 use clap::Subcommand;
-use color_eyre::eyre::{bail, Context, Result};
+use color_eyre::eyre::{Context, Result, bail};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -515,6 +515,11 @@ fn is_credential_key(key: &str) -> bool {
     CREDENTIAL_KEY_MARKERS.iter().any(|marker| bounded.contains(&format!("_{marker}_")))
 }
 
+fn is_named_key(key: &str, names: &[&str]) -> bool {
+    let normalized = normalize_key(key);
+    names.iter().any(|name| normalized == *name)
+}
+
 /// Normalize structured field names before comparing them with the closed
 /// credential vocabulary. JSON producers use both snake_case and camelCase
 /// (including acronym-bearing names such as `APIKey`), so lowercasing alone
@@ -522,6 +527,10 @@ fn is_credential_key(key: &str) -> bool {
 /// fail-closed check. The caller bounds marker matches to underscore-delimited
 /// segments so comparable prefix, suffix, and nested variants are rejected too.
 fn normalize_credential_key(key: &str) -> String {
+    normalize_key(key)
+}
+
+fn normalize_key(key: &str) -> String {
     let chars: Vec<char> = key.chars().collect();
     let mut normalized = String::with_capacity(key.len());
     for (index, character) in chars.iter().copied().enumerate() {
@@ -551,37 +560,11 @@ fn normalize_credential_key(key: &str) -> String {
     normalized
 }
 
-/// Chain-of-thought key guard at any depth of one retained payload: the walk
-/// recurses through nested objects and arrays, so a prohibited key below the
-/// payload's outer object is still rejected.
-fn scan_payload(payload: &Value, where_: &str, violations: &mut Vec<Violation>) {
-    match payload {
-        Value::Object(object) => {
-            for (key, child) in object {
-                if COT_KEYS.contains(&key.as_str()) {
-                    violations.push(Violation::new(
-                        "cot_key_in_payload",
-                        format!(
-                            "{where_}.{key}: chain-of-thought key {key} must never be retained"
-                        ),
-                    ));
-                }
-                scan_payload(child, &format!("{where_}.{key}"), violations);
-            }
-        }
-        Value::Array(items) => {
-            for (index, item) in items.iter().enumerate() {
-                scan_payload(item, &format!("{where_}[{index}]"), violations);
-            }
-        }
-        _ => {}
-    }
-}
-
-/// Hygiene guard over the complete retained document: every string anywhere
-/// in the packet (payloads, metadata, subject, identity, ledger, run id) is
-/// scanned for credentials and machine-local paths — a marker outside the
-/// payload can no longer survive stamping or validation.
+/// Hygiene guard over the complete retained document: every string and
+/// prohibited key anywhere in the packet (payloads, metadata, subject,
+/// identity, ledger, run id) is scanned for credentials, machine-local paths,
+/// and chain-of-thought keys — a marker outside the payload can no longer
+/// survive stamping or validation.
 fn scan_document_hygiene(value: &Value, where_: &str, violations: &mut Vec<Violation>) {
     match value {
         Value::String(text) => scan_hygiene(text, where_, violations),
@@ -593,6 +576,12 @@ fn scan_document_hygiene(value: &Value, where_: &str, violations: &mut Vec<Viola
         Value::Object(object) => {
             for (key, child) in object {
                 let child_where = format!("{where_}.{key}");
+                if is_named_key(key, COT_KEYS) {
+                    violations.push(Violation::new(
+                        "cot_key_in_payload",
+                        format!("{child_where}: chain-of-thought key {key} must never be retained"),
+                    ));
+                }
                 if is_credential_key(key) {
                     violations.push(Violation::new(
                         "credential_in_payload",
@@ -612,7 +601,7 @@ fn contains_forbidden_mutable_state(value: &Value, where_: &str, violations: &mu
     match value {
         Value::Object(object) => {
             for (key, child) in object {
-                if MUTABLE_STATE_KEYS.contains(&key.as_str()) {
+                if is_named_key(key, MUTABLE_STATE_KEYS) {
                     violations.push(Violation::new(
                         "mutable_state_embedded",
                         format!("{where_}: durable packet carries live-state field {key}"),
@@ -676,9 +665,6 @@ fn validate_record(
             "retention_bound_exceeded",
             format!("{at}: record exceeds the {MAX_RECORD_BYTES}-byte retention bound (unbounded logs are not evidence)"),
         ));
-    }
-    if let Some(payload) = record.get("payload") {
-        scan_payload(payload, &format!("{at}.payload"), violations);
     }
     let recomputed = record_digest(record);
     match (string_field(record, "digest"), &recomputed) {
@@ -1078,14 +1064,19 @@ fn collect_rows(entries: &[(String, Value)]) -> Vec<RunRow> {
     entries
         .iter()
         .map(|(source, doc)| {
-            let run_id =
-                doc.get("run_id").and_then(Value::as_str).unwrap_or("<missing-run-id>").to_string();
             let disposition = doc
                 .get("disposition")
                 .and_then(Value::as_str)
                 .unwrap_or("<missing-disposition>")
                 .to_string();
             let violations = validate_manifest(doc);
+            // Invalid packets are still reportable for advisory classification,
+            // but none of their untrusted run identity may be copied to stdout.
+            let run_id = if violations.is_empty() {
+                doc.get("run_id").and_then(Value::as_str).unwrap_or("<missing-run-id>").to_string()
+            } else {
+                "<redacted-invalid-run-id>".to_string()
+            };
             RunRow {
                 source: source.clone(),
                 run_id,
