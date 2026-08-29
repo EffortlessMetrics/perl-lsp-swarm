@@ -40,11 +40,18 @@ struct WalkCtx {
     dbix_class_active: bool,
 }
 
+/// Shared candidate-name vocabulary authority for source-backed extraction.
+///
+/// This is the single owner of the candidate name/span vocabulary, symbol
+/// normalization, and stable FNV identifiers (issue #13354). The sibling
+/// `dbix_quickorm_candidate` pilot consumes these items instead of carrying a
+/// private copy; new extractors must reuse this surface rather than redefining
+/// it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct NameCandidate {
-    name: String,
-    span_start: usize,
-    span_end: usize,
+pub(crate) struct NameCandidate {
+    pub(crate) name: String,
+    pub(crate) span_start: usize,
+    pub(crate) span_end: usize,
 }
 
 /// Extract generated member facts from package-level framework declarations.
@@ -484,7 +491,8 @@ fn option_method_name(
     Some(value.clone())
 }
 
-fn normalize_symbol_name(raw: &str) -> Option<String> {
+/// Shared authority: trim quote decorations from one candidate symbol.
+pub(crate) fn normalize_symbol_name(raw: &str) -> Option<String> {
     let trimmed = raw.trim().trim_matches('\'').trim_matches('"').trim();
     if trimmed.is_empty() { None } else { Some(trimmed.to_string()) }
 }
@@ -660,7 +668,14 @@ fn is_class_tiny_module(module: &str) -> bool {
     matches!(module, "Class::Tiny" | "Class::Tiny::RW")
 }
 
-fn stable_id(label: &str, file_id: FileId, anchor_start: usize, package: &str, name: &str) -> u64 {
+/// Shared authority: stable FNV-1a identifier for synthesized facts.
+pub(crate) fn stable_id(
+    label: &str,
+    file_id: FileId,
+    anchor_start: usize,
+    package: &str,
+    name: &str,
+) -> u64 {
     const FNV_OFFSET: u64 = 14_695_981_039_346_656_037;
     const FNV_PRIME: u64 = 1_099_511_628_211;
 
