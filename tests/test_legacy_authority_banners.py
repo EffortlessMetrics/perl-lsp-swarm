@@ -484,7 +484,7 @@ class LegacyAuthorityBannerTests(unittest.TestCase):
         }
         self.assertEqual(marked, set(ROLLOUT_REDIRECTS))
 
-    def test_legacy_workflow_filters_cover_the_banner_set_exactly(self) -> None:
+    def test_legacy_authority_workflow_filter_covers_the_banner_set_exactly(self) -> None:
         required = set(EXPECTED) | {
             "docs/agents/authority_status.toml",
             "scripts/migrate-legacy-authority-banners.py",
