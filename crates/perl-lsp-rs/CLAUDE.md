@@ -39,25 +39,32 @@ entries. If `.` is treated like any other include root, almost every workspace f
 becomes reachable and the filter cannot reject, for example, `lib/GoneModule.pm` after
 `no lib 'lib'`.
 
-Sources of include roots are semantically distinct; do not collapse them to "path
-roots":
+Sources of include roots are semantically distinct, but the current
+`perl_module::IncRootKind` has one workspace-relative variant rather than separate
+default and configured variants:
 
-- `WorkspaceDefaultDot` — `.` from the workspace folder. It is a wildcard for
-  everything under the workspace and is not subject to `no lib` cancellation.
-- `WorkspaceConfiguredRelative` — explicit `additionalIncPaths` entries from config,
-  such as `lib` or `t/lib`.
-- `LexicalUseLib` — `use lib '...'` from the source under analysis. It is
-  position-scoped and subject to downstream `no lib '...'` cancellation.
-- `Perl5LibEnv` — `PERL5LIB` from the LSP process or `usePerl5lib` config.
-- `InterpreterStartup` — output of the `perl -e 'print @INC'` probe under the
-  subprocess-oracle contract.
+- `WorkspaceRelative` — relative configured include paths, including the default
+  `lib`, `.`, and `local/lib/perl5` entries. The `.` entry is not a separate enum
+  variant; when it resolves to the workspace root, `EffectiveIncContext` treats it
+  as a wildcard and excludes it from the direct module-file reachability check.
+- `FileLocalLexical` — a relative `use lib` path from the source under analysis. It is
+  position-scoped and subject to `no lib` cancellation before effective roots are
+  assembled. Absolute lexical paths are classified as `ExternalAbsolute`.
+- `ExternalAbsolute` — an absolute include path already admitted by the upstream
+  configuration boundary.
+- `Perl5LibEnv` — a `PERL5LIB` entry when `use_perl5lib` is enabled.
+- `InterpreterStartup` — an entry returned by the selected interpreter's startup
+  `@INC` probe when `use_system_inc` is enabled.
+- `RuntimeDerived` — reserved for a future trusted runtime source; the current
+  effective-root builder does not produce it.
 
-When implementing a filter or routing decision over include roots, branch on the kind,
-not only the path. The wildcard `.` is the common false-positive seam in
-workspace-symbol filtering.
+When implementing a filter or routing decision over include roots, preserve the kind
+and source label alongside the path. Do not invent a separate kind for `.`, and use the
+resolved workspace-root path when handling its wildcard behavior. The wildcard `.` is
+the common false-positive seam in workspace-symbol filtering.
 
 Primary seam:
-`crates/perl-lsp-rs/src/runtime/lifecycle/inc_context.rs`.
+`crates/perl-lsp-rs/src/runtime/lifecycle/inc_context/mod.rs`.
 
 ## Proof routes
 
