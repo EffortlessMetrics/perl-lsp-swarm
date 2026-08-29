@@ -26,9 +26,11 @@
 
 use crate::utils::project_root;
 use clap::Subcommand;
-use color_eyre::eyre::{bail, Context, Result};
+use color_eyre::eyre::{Context, Result, bail};
+use serde::de::{DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
+use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -573,15 +575,11 @@ fn protocol_relative_url_start(text: &str, start: usize) -> Option<usize> {
 
     let host_start = url_start + 2;
     let host_end = text[host_start..]
-        .find(|character: char| {
-            character == '/' || character == '\\' || character.is_whitespace()
-        })
+        .find(|character: char| character == '/' || character == '\\' || character.is_whitespace())
         .map_or(text.len(), |offset| host_start + offset);
     let host = &text[host_start..host_end];
     if host.is_empty()
-        || !(host.contains('.')
-            || host.eq_ignore_ascii_case("localhost")
-            || host.starts_with('['))
+        || !(host.contains('.') || host.eq_ignore_ascii_case("localhost") || host.starts_with('['))
     {
         return None;
     }
@@ -609,6 +607,29 @@ fn is_exempt_uri_path(text: &str, start: usize) -> bool {
     is_non_file_uri_path(text, start)
         || (start > 0 && is_non_file_uri_path(text, start - 1))
         || protocol_relative_url_start(text, start).is_some()
+}
+
+fn is_likely_posix_path(text: &str, start: usize) -> bool {
+    let bytes = text.as_bytes();
+    let Some(first) = bytes.get(start + 1) else {
+        return false;
+    };
+    if first.is_ascii_whitespace() || first.is_ascii_digit() {
+        return false;
+    }
+
+    // A version token after a prose label is not an absolute filesystem path
+    // (for example, `text: /v1`). Keep this exemption lexical and narrow:
+    // labeled real paths such as `path: /opt/perl` still fail closed.
+    let preceding_non_whitespace =
+        text[..start].chars().rev().find(|character| !character.is_whitespace());
+    if preceding_non_whitespace == Some(':')
+        && first.eq_ignore_ascii_case(&b'v')
+        && bytes.get(start + 2).is_some_and(u8::is_ascii_digit)
+    {
+        return false;
+    }
+    true
 }
 
 fn contains_local_path(text: &str) -> bool {
@@ -639,9 +660,7 @@ fn contains_local_path(text: &str) -> bool {
         let drive_like = bytes[index].is_ascii_lowercase()
             && bytes[index + 1] == b':'
             && (bytes[index + 2] == b'\\' || bytes[index + 2] == b'/');
-        if drive_like
-            && has_path_boundary(&lowered, index)
-            && !is_exempt_uri_path(&lowered, index)
+        if drive_like && has_path_boundary(&lowered, index) && !is_exempt_uri_path(&lowered, index)
         {
             return true;
         }
@@ -671,6 +690,7 @@ fn contains_local_path(text: &str) -> bool {
             && bytes.get(index + 1) != Some(&b'/')
             && bytes.get(index + 1).is_some_and(|byte| !byte.is_ascii_whitespace())
             && has_path_boundary(&lowered, index)
+            && is_likely_posix_path(&lowered, index)
             && !is_exempt_uri_path(&lowered, index)
         {
             return true;
@@ -1241,6 +1261,123 @@ pub(crate) fn validate_manifest(doc: &Value) -> Vec<Violation> {
     violations
 }
 
+#[derive(Default)]
+struct RawManifestScan {
+    duplicate_credential_key: bool,
+    credential_hygiene: bool,
+    local_path_hygiene: bool,
+}
+
+struct ScanSeed<'a>(&'a mut RawManifestScan);
+
+impl<'de, 'a> DeserializeSeed<'de> for ScanSeed<'a> {
+    type Value = ();
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_any(ScanVisitor(self.0))
+    }
+}
+
+struct ScanVisitor<'a>(&'a mut RawManifestScan);
+
+impl<'de, 'a> Visitor<'de> for ScanVisitor<'a> {
+    type Value = ();
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a JSON value")
+    }
+
+    fn visit_bool<E>(self, _value: bool) -> Result<Self::Value, E> {
+        Ok(())
+    }
+
+    fn visit_i64<E>(self, _value: i64) -> Result<Self::Value, E> {
+        Ok(())
+    }
+
+    fn visit_u64<E>(self, _value: u64) -> Result<Self::Value, E> {
+        Ok(())
+    }
+
+    fn visit_f64<E>(self, _value: f64) -> Result<Self::Value, E> {
+        Ok(())
+    }
+
+    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E> {
+        if CREDENTIAL_MARKERS.iter().any(|marker| value.to_lowercase().contains(marker)) {
+            self.0.credential_hygiene = true;
+        }
+        if contains_local_path(value) {
+            self.0.local_path_hygiene = true;
+        }
+        Ok(())
+    }
+
+    fn visit_string<E>(self, value: String) -> Result<Self::Value, E> {
+        self.visit_str(&value)
+    }
+
+    fn visit_bytes<E>(self, _value: &[u8]) -> Result<Self::Value, E> {
+        Ok(())
+    }
+
+    fn visit_none<E>(self) -> Result<Self::Value, E> {
+        Ok(())
+    }
+
+    fn visit_unit<E>(self) -> Result<Self::Value, E> {
+        Ok(())
+    }
+
+    fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        ScanSeed(self.0).deserialize(deserializer)
+    }
+
+    fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        while sequence.next_element_seed(ScanSeed(self.0))?.is_some() {}
+        Ok(())
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut keys = Vec::<String>::new();
+        while let Some(key) = map.next_key::<String>()? {
+            if is_credential_key(&key) {
+                self.0.credential_hygiene = true;
+            }
+            if keys.iter().any(|seen| seen == &key) && is_credential_key(&key) {
+                self.0.duplicate_credential_key = true;
+            }
+            keys.push(key);
+            map.next_value_seed(ScanSeed(self.0))?;
+        }
+        Ok(())
+    }
+}
+
+fn scan_raw_manifest(text: &str) -> serde_json::Result<RawManifestScan> {
+    let mut scan = RawManifestScan::default();
+    let mut deserializer = serde_json::Deserializer::from_str(text);
+    ScanSeed(&mut scan).deserialize(&mut deserializer)?;
+    deserializer.end()?;
+    Ok(scan)
+}
+
+fn has_duplicate_credential_key(text: &str) -> serde_json::Result<bool> {
+    Ok(scan_raw_manifest(text)?.duplicate_credential_key)
+}
+
 fn string_of(root: &Map<String, Value>, key: &str) -> String {
     string_field(root, key).unwrap_or_default().to_string()
 }
@@ -1267,31 +1404,83 @@ fn load_manifest(path: &Path) -> Result<(String, Value)> {
     Ok((source, doc))
 }
 
+struct LoadedManifest {
+    source: String,
+    doc: Value,
+    raw_scan: RawManifestScan,
+}
+
+fn load_checked_manifest(path: &Path) -> Result<LoadedManifest> {
+    let text = fs::read_to_string(path).context("failed to read caller-supplied manifest")?;
+    let raw_scan = scan_raw_manifest(&text).context("failed to parse caller-supplied manifest")?;
+    let doc: Value =
+        serde_json::from_str(&text).context("failed to parse caller-supplied manifest")?;
+    let source = path
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_else(|| path.display().to_string());
+    Ok(LoadedManifest { source, doc, raw_scan })
+}
+
+fn append_raw_hygiene_violations(violations: &mut Vec<Violation>, raw_scan: &RawManifestScan) {
+    if raw_scan.credential_hygiene
+        && !violations.iter().any(|violation| violation.code == "credential_in_payload")
+    {
+        violations.push(Violation::new(
+            "credential_in_payload",
+            "manifest: retained evidence contains a credential marker".to_string(),
+        ));
+    }
+    if raw_scan.local_path_hygiene
+        && !violations.iter().any(|violation| violation.code == "local_path_in_payload")
+    {
+        violations.push(Violation::new(
+            "local_path_in_payload",
+            "manifest: retained evidence contains a machine-local path".to_string(),
+        ));
+    }
+}
+
+fn validate_loaded_manifest(manifest: &LoadedManifest) -> Vec<Violation> {
+    let mut violations = validate_manifest(&manifest.doc);
+    append_raw_hygiene_violations(&mut violations, &manifest.raw_scan);
+    violations
+}
+
+fn collect_row(source: &str, doc: &Value, raw_scan: Option<&RawManifestScan>) -> RunRow {
+    let disposition = match doc.get("disposition").and_then(Value::as_str) {
+        Some(disposition) if DISPOSITIONS.contains(&disposition) => disposition.to_string(),
+        Some(_) => "<redacted-invalid-disposition>".to_string(),
+        None => "<missing-disposition>".to_string(),
+    };
+    let mut violations = validate_manifest(doc);
+    if let Some(raw_scan) = raw_scan {
+        append_raw_hygiene_violations(&mut violations, raw_scan);
+    }
+    // Invalid packets are still reportable for advisory classification, but
+    // none of their untrusted run identity may be copied to stdout.
+    let run_id = if violations.is_empty() {
+        doc.get("run_id").and_then(Value::as_str).unwrap_or("<missing-run-id>").to_string()
+    } else {
+        "<redacted-invalid-run-id>".to_string()
+    };
+    RunRow {
+        source: source.to_string(),
+        run_id,
+        disposition,
+        validity: if violations.is_empty() { "valid" } else { "invalid" }.to_string(),
+        violations,
+    }
+}
+
 fn collect_rows(entries: &[(String, Value)]) -> Vec<RunRow> {
+    entries.iter().map(|(source, doc)| collect_row(source, doc, None)).collect()
+}
+
+fn collect_loaded_rows(entries: &[LoadedManifest]) -> Vec<RunRow> {
     entries
         .iter()
-        .map(|(source, doc)| {
-            let disposition = match doc.get("disposition").and_then(Value::as_str) {
-                Some(disposition) if DISPOSITIONS.contains(&disposition) => disposition.to_string(),
-                Some(_) => "<redacted-invalid-disposition>".to_string(),
-                None => "<missing-disposition>".to_string(),
-            };
-            let violations = validate_manifest(doc);
-            // Invalid packets are still reportable for advisory classification,
-            // but none of their untrusted run identity may be copied to stdout.
-            let run_id = if violations.is_empty() {
-                doc.get("run_id").and_then(Value::as_str).unwrap_or("<missing-run-id>").to_string()
-            } else {
-                "<redacted-invalid-run-id>".to_string()
-            };
-            RunRow {
-                source: source.clone(),
-                run_id,
-                disposition,
-                validity: if violations.is_empty() { "valid" } else { "invalid" }.to_string(),
-                violations,
-            }
-        })
+        .map(|manifest| collect_row(&manifest.source, &manifest.doc, Some(&manifest.raw_scan)))
         .collect()
 }
 
@@ -1454,8 +1643,8 @@ fn run_validate(manifests: &[PathBuf], update_golden: bool) -> Result<()> {
             let expected_code =
                 expected.get(&name).and_then(Value::as_str).unwrap_or_default().to_string();
             let path = invalid_dir.join(&name);
-            let doc = load_manifest(&path)?.1;
-            let violations = validate_manifest(&doc);
+            let manifest = load_checked_manifest(&path)?;
+            let violations = validate_loaded_manifest(&manifest);
             let codes = violation_codes(&violations);
             if codes.is_empty() {
                 failures.push(format!(
@@ -1473,22 +1662,23 @@ fn run_validate(manifests: &[PathBuf], update_golden: bool) -> Result<()> {
 
     // Stamped positive fixtures and their golden advisory reports.
     let fixture_dir = root.join(FIXTURE_DIR);
-    let mut valid_entries: Vec<(String, Value)> = Vec::new();
+    let mut valid_entries = Vec::new();
     for name in VALID_FIXTURES {
         let path = fixture_dir.join(name);
-        let (source, doc) = load_manifest(&path)?;
-        let violations = validate_manifest(&doc);
+        let manifest = load_checked_manifest(&path)?;
+        let violations = validate_loaded_manifest(&manifest);
         if !violations.is_empty() {
             failures.push(format!(
                 "{name}: expected a valid packet, got {:?}",
                 violation_codes(&violations)
             ));
         }
-        valid_entries.push((source, doc));
+        valid_entries.push(manifest);
     }
     if !valid_entries.is_empty() || update_golden {
-        let markdown = render_report(&collect_rows(&valid_entries), DogfoodReportFormat::Markdown);
-        let json = render_report(&collect_rows(&valid_entries), DogfoodReportFormat::Json);
+        let markdown =
+            render_report(&collect_loaded_rows(&valid_entries), DogfoodReportFormat::Markdown);
+        let json = render_report(&collect_loaded_rows(&valid_entries), DogfoodReportFormat::Json);
         let projections =
             [(DogfoodReportFormat::Markdown, markdown), (DogfoodReportFormat::Json, json)];
         if update_golden {
@@ -1537,8 +1727,8 @@ fn run_validate(manifests: &[PathBuf], update_golden: bool) -> Result<()> {
 fn validate_supplied(manifests: &[PathBuf]) -> Result<()> {
     let mut had_failure = false;
     for (index, path) in manifests.iter().enumerate() {
-        let (_, doc) = load_manifest(path)?;
-        let violations = validate_manifest(&doc);
+        let manifest = load_checked_manifest(path)?;
+        let violations = validate_loaded_manifest(&manifest);
         if violations.is_empty() {
             println!("PASS manifest[{index}]: valid {SCHEMA_NAME} packet");
         } else {
@@ -1556,28 +1746,38 @@ fn validate_supplied(manifests: &[PathBuf]) -> Result<()> {
 
 fn run_report(manifests: &[PathBuf], format: DogfoodReportFormat) -> Result<()> {
     let entries = load_entries(manifests)?;
-    print!("{}", render_report(&collect_rows(&entries), format));
+    print!("{}", render_report(&collect_loaded_rows(&entries), format));
     Ok(())
 }
 
-fn load_entries(manifests: &[PathBuf]) -> Result<Vec<(String, Value)>> {
+fn load_entries(manifests: &[PathBuf]) -> Result<Vec<LoadedManifest>> {
     if manifests.is_empty() {
         let root = project_root()?;
         let fixture_dir = root.join(FIXTURE_DIR);
         let mut entries = Vec::new();
         for name in VALID_FIXTURES {
-            let (source, doc) = load_manifest(&fixture_dir.join(name))?;
-            entries.push((source, doc));
+            entries.push(load_checked_manifest(&fixture_dir.join(name))?);
         }
         return Ok(entries);
     }
-    manifests.iter().map(|path| load_manifest(path)).collect()
+    manifests.iter().map(|path| load_checked_manifest(path)).collect()
 }
 
 fn run_stamp(path: &Path) -> Result<()> {
     let text = fs::read_to_string(path).context("failed to read caller-supplied manifest")?;
     let mut doc: Value =
         serde_json::from_str(&text).context("failed to parse caller-supplied manifest")?;
+    let raw_scan = scan_raw_manifest(&text).context("failed to parse caller-supplied manifest")?;
+    if raw_scan.credential_hygiene || raw_scan.local_path_hygiene {
+        let mut codes = Vec::new();
+        if raw_scan.credential_hygiene {
+            codes.push("credential_in_payload");
+        }
+        if raw_scan.local_path_hygiene {
+            codes.push("local_path_in_payload");
+        }
+        bail!("manifest failed closed validation before stamping: {codes:?}");
+    }
     stamp_manifest(&mut doc)?;
     let stamped = serde_json::to_string_pretty(&doc)?;
     fs::write(path, stamped + "\n").context("failed to write caller-supplied manifest")?;
@@ -1754,11 +1954,7 @@ fn validate_schema_file(root: &Path) -> Result<Vec<String>> {
 
 /// Stable display label for a schema path segment list.
 fn segments_label(path_segments: &[&str]) -> String {
-    if path_segments.is_empty() {
-        "<root>".to_string()
-    } else {
-        path_segments.join(".")
-    }
+    if path_segments.is_empty() { "<root>".to_string() } else { path_segments.join(".") }
 }
 
 #[cfg(test)]

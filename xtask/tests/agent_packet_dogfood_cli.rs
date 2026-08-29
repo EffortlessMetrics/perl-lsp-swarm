@@ -244,8 +244,14 @@ fn validate_cli_does_not_echo_caller_controlled_manifest_paths() -> Result<()> {
         stderr.contains("failed to parse caller-supplied manifest"),
         "missing generic validate parse error: {stderr}"
     );
-    assert!(!stderr.contains("api_key=hunter2"), "validate parse error leaked path content: {stderr}");
-    assert!(!stderr.contains(&malformed_text), "validate parse error echoed manifest path: {stderr}");
+    assert!(
+        !stderr.contains("api_key=hunter2"),
+        "validate parse error leaked path content: {stderr}"
+    );
+    assert!(
+        !stderr.contains(&malformed_text),
+        "validate parse error echoed manifest path: {stderr}"
+    );
 
     let valid = temp.path().join("api_key=hunter2-valid.json");
     fs::write(&valid, serde_json::to_vec_pretty(&fixture_document()?)?)?;
@@ -270,7 +276,9 @@ fn report_cli_redacts_invalid_run_ids_in_both_formats() -> Result<()> {
     invalid["run_id"] = json!(leaked);
     let path = write_document(&temp, "invalid-run-id.json", invalid)?;
     for format in ["markdown", "json"] {
-        let output = Command::cargo_bin("xtask")?.args(report_args(format, std::slice::from_ref(&path))).output()?;
+        let output = Command::cargo_bin("xtask")?
+            .args(report_args(format, std::slice::from_ref(&path)))
+            .output()?;
         assert!(output.status.success(), "invalid report input should remain reportable");
         let stdout = String::from_utf8(output.stdout)?;
         assert!(stdout.contains("<redacted-invalid-run-id>"), "missing run-id redaction: {stdout}");
@@ -328,7 +336,10 @@ fn stamp_cli_does_not_echo_caller_controlled_manifest_paths() -> Result<()> {
         "missing generic stamp read error: {stderr}"
     );
     assert!(!stderr.contains("api_key=hunter2"), "stamp read error leaked path content: {stderr}");
-    assert!(!stderr.contains(&missing_stamp_text), "stamp read error echoed manifest path: {stderr}");
+    assert!(
+        !stderr.contains(&missing_stamp_text),
+        "stamp read error echoed manifest path: {stderr}"
+    );
 
     let invalid_stamp = temp.path().join("api_key=hunter2-invalid-stamp.json");
     let mut invalid = fixture_document()?;
@@ -358,8 +369,14 @@ fn stamp_cli_does_not_echo_caller_controlled_manifest_paths() -> Result<()> {
         stderr.contains("failed to parse caller-supplied manifest"),
         "missing generic report parse error: {stderr}"
     );
-    assert!(!stderr.contains("api_key=hunter2"), "report parse error leaked path content: {stderr}");
-    assert!(!stderr.contains(&malformed_report_text), "report parse error echoed manifest path: {stderr}");
+    assert!(
+        !stderr.contains("api_key=hunter2"),
+        "report parse error leaked path content: {stderr}"
+    );
+    assert!(
+        !stderr.contains(&malformed_report_text),
+        "report parse error echoed manifest path: {stderr}"
+    );
 
     let unreadable = temp.path().join("api_key=hunter2-missing-report.json");
     let output = Command::cargo_bin("xtask")?

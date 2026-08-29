@@ -459,10 +459,42 @@ fn negative_protocol_relative_url_boundary_is_not_a_path_exemption() {
 
 #[test]
 fn negative_posix_detector_ignores_division_text() {
+    for message in ["ratio / 2", "ratio /2", "text: /v1"] {
+        let violations = mutant(base_manifest(), |doc| {
+            doc["events"][0]["payload"] = json!({"message": message});
+        });
+        assert!(
+            !violation_codes(&violations).contains(&"local_path_in_payload"),
+            "ordinary prose token was classified as a local path: {message:?}"
+        );
+    }
+}
+
+#[test]
+fn negative_posix_detector_rejects_labeled_absolute_paths() {
     let violations = mutant(base_manifest(), |doc| {
-        doc["events"][0]["payload"] = json!({"message": "ratio / 2"});
+        doc["events"][0]["payload"] = json!({"message": "path: /opt/perl-lsp/config.json"});
     });
-    assert!(!violation_codes(&violations).contains(&"local_path_in_payload"));
+    assert_contains(&violations, "local_path_in_payload");
+}
+
+#[test]
+fn duplicate_credential_keys_are_checked_before_json_object_collapse() {
+    let text = r#"{"metadata":{"api\u005fkey":"hunter2","api_key":"redacted"}}"#;
+    assert!(has_duplicate_credential_key(text).expect("duplicate-key scan succeeds"));
+
+    let doc: Value = serde_json::from_str(text).expect("duplicate-key JSON parses");
+    assert_eq!(doc["metadata"]["api_key"], json!("redacted"));
+    let raw_scan = scan_raw_manifest(text).expect("raw manifest scan succeeds");
+    let manifest = LoadedManifest { source: "duplicate.json".to_string(), doc, raw_scan };
+    assert_contains(&validate_loaded_manifest(&manifest), "credential_in_payload");
+
+    let text = r#"{"metadata":{"note":"api_key=hunter2","note":"safe"}}"#;
+    let raw_scan = scan_raw_manifest(text).expect("raw manifest scan succeeds");
+    assert!(raw_scan.credential_hygiene);
+    let doc: Value = serde_json::from_str(text).expect("duplicate-key JSON parses");
+    let manifest = LoadedManifest { source: "duplicate-value.json".to_string(), doc, raw_scan };
+    assert_contains(&validate_loaded_manifest(&manifest), "credential_in_payload");
 }
 
 #[test]
@@ -828,9 +860,9 @@ fn invalid_disposition_is_redacted_while_valid_disposition_is_preserved() {
 
     let report: Value = serde_json::from_str(&json).expect("valid JSON report");
     let runs = report["runs"].as_array().expect("runs array");
-    assert!(runs
-        .iter()
-        .any(|run| { run["disposition"] == "completed" && run["validity"] == "valid" }));
+    assert!(
+        runs.iter().any(|run| { run["disposition"] == "completed" && run["validity"] == "valid" })
+    );
     assert!(runs.iter().any(|run| {
         run["disposition"] == "<redacted-invalid-disposition>" && run["validity"] == "invalid"
     }));
