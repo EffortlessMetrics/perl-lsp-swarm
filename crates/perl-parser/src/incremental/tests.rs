@@ -56,6 +56,48 @@ fn assert_incremental_matches_fresh(state: &IncrementalState) {
     assert_token_streams_equal(state.tokens(), &fresh_state.tokens);
 }
 
+fn assert_restored_token_stream_matches_fresh(source: &str) -> Result<()> {
+    let line_index = LineIndex::new(source);
+    let fresh_lexed = super::lex::lex_source_with_checkpoints(source, &line_index);
+    let checkpoint = fresh_lexed
+        .stored_checkpoints
+        .iter()
+        .find(|stored| {
+            stored.live.position > 0
+                && stored.live.position < source.len()
+                && !stored.live.is_timeout_sensitive()
+        })
+        .ok_or_else(|| anyhow::anyhow!("fixture must retain a restorable checkpoint"))?;
+    let prefix_len = fresh_lexed
+        .tokens
+        .iter()
+        .position(|token| token.start >= checkpoint.live.position)
+        .unwrap_or(fresh_lexed.tokens.len());
+    let restored = super::lex::lex_from_live_checkpoint(
+        source,
+        &line_index,
+        &checkpoint.live,
+    )?;
+
+    assert_token_streams_equal(&restored.tokens, &fresh_lexed.tokens[prefix_len..]);
+    assert_eq!(restored.terminal_checkpoint, fresh_lexed.terminal_checkpoint);
+
+    let mut assembled = fresh_lexed.tokens[..prefix_len].to_vec();
+    assembled.extend(restored.tokens);
+    let parser_tokens = crate::TokenStream::lexer_tokens_to_parser_tokens(assembled);
+    let mut resumed_parser = Parser::from_tokens(parser_tokens, source);
+    let resumed_output = resumed_parser.parse_with_recovery();
+    let mut fresh_parser = Parser::new(source);
+    let fresh_output = fresh_parser.parse_with_recovery();
+
+    assert_eq!(resumed_output.ast, fresh_output.ast, "restored token AST diverged");
+    assert_eq!(resumed_output.diagnostics, fresh_output.diagnostics);
+    assert_eq!(resumed_output.recovered_count, fresh_output.recovered_count);
+    assert_eq!(resumed_output.terminated_early(), fresh_output.terminated_early());
+    assert_eq!(resumed_output.stop_cause(), fresh_output.stop_cause());
+    Ok(())
+}
+
 #[test]
 fn test_incremental_state_small_edit_reuses_tokens_before_full_parse() -> Result<()> {
     let source = (0..30usize).map(|i| format!("my $var_{i} = {i};")).collect::<Vec<_>>().join("\n");
@@ -131,6 +173,7 @@ fn stateful_checkpoint_restart_matches_fresh_tokens_and_ast() -> Result<()> {
     assert_eq!(result.lex_restart.strategy, LexRestartStrategy::StoredCheckpointToEof);
     assert!(result.lex_restart.restart_byte > 0);
     assert_incremental_matches_fresh(&state);
+    assert_restored_token_stream_matches_fresh(state.source())?;
     Ok(())
 }
 
@@ -153,6 +196,7 @@ fn unicode_crlf_checkpoint_restart_preserves_spans() -> Result<()> {
 
     assert_eq!(result.lex_restart.strategy, LexRestartStrategy::StoredCheckpointToEof);
     assert_incremental_matches_fresh(&state);
+    assert_restored_token_stream_matches_fresh(state.source())?;
     Ok(())
 }
 
@@ -176,6 +220,7 @@ fn recovery_checkpoint_restart_matches_fresh_diagnostics() -> Result<()> {
     assert_eq!(result.lex_restart.strategy, LexRestartStrategy::StoredCheckpointToEof);
     assert!(!state.parse_output().diagnostics.is_empty());
     assert_incremental_matches_fresh(&state);
+    assert_restored_token_stream_matches_fresh(state.source())?;
     Ok(())
 }
 
