@@ -40,30 +40,6 @@ const REQUIRED_LITERAL_PACKAGE_KEYS: &[&str] = &[
     "categories",
 ];
 
-/// Every lint the accepted policy denies. Losing any of these outside the
-/// workspace would silently weaken the package's own gate, and an unpacked
-/// package has no root manifest to diff against, so the full set is pinned
-/// here rather than only the headline six.
-const REQUIRED_DENIED_CLIPPY_LINTS: &[&str] = &[
-    "await_holding_lock",
-    "await_holding_refcell_ref",
-    "collapsible_if",
-    "collapsible_match",
-    "dbg_macro",
-    "disallowed_fields",
-    "expect_used",
-    "manual_ilog2",
-    "manual_take",
-    "panic",
-    "print_stderr",
-    "print_stdout",
-    "ptr_arg",
-    "same_length_and_capacity",
-    "todo",
-    "unimplemented",
-    "unwrap_used",
-];
-
 /// Assets that must travel with the package for the library, the Pest grammar
 /// derive, the public example, and the package-local proof population to work.
 const REQUIRED_PACKAGED_ASSETS: &[&str] = &[
@@ -166,12 +142,22 @@ fn rust_sources(root: &Path, out: &mut Vec<PathBuf>) -> Result<(), Box<dyn Error
 }
 
 #[test]
-fn manifest_declares_no_workspace_inheritance() -> Result<(), Box<dyn Error>> {
+fn lints_is_the_only_workspace_inheritance_left() -> Result<(), Box<dyn Error>> {
+    // `[lints] workspace = true` is required of every workspace member by
+    // `cargo xtask check-lint-policy`, a required gate with no exemption
+    // mechanism, so the lint half of #8771 cannot land while this crate is a
+    // workspace member. Everything else must be literal.
+    //
+    // Asserting the exact set, rather than "no inheritance except lints",
+    // keeps the exception from spreading: a second inherited key fails here
+    // even though it is also `workspace = true`.
     let inherited = inherited_paths(&manifest()?);
 
-    assert!(
-        inherited.is_empty(),
-        "standalone resolution requires literal values; found workspace inheritance at: {inherited:?}"
+    assert_eq!(
+        inherited,
+        vec!["lints".to_string()],
+        "`[lints]` is the single permitted inheritance; every other key must be literal for \
+         standalone resolution"
     );
     Ok(())
 }
@@ -275,67 +261,24 @@ fn dependency_feature_surface_stays_bounded() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
-fn local_lint_policy_reproduces_the_accepted_denials() -> Result<(), Box<dyn Error>> {
+fn lint_policy_still_satisfies_the_required_workspace_invariant() -> Result<(), Box<dyn Error>> {
+    // `cargo xtask check-lint-policy` (required) bails with
+    // "workspace members missing [lints] workspace = true" for any member that
+    // declares its own table. Dropping this marker to finish #8771's lint
+    // decoupling turns that gate red, so the marker is pinned here and the
+    // residual is tracked rather than silently attempted again.
     let manifest = manifest()?;
-    let clippy = manifest
-        .get("lints")
-        .and_then(|lints| lints.get("clippy"))
-        .and_then(Value::as_table)
-        .ok_or("manifest has no literal [lints.clippy] table")?;
+    let lints = manifest.get("lints").ok_or("manifest has no [lints] table")?;
 
-    for lint in REQUIRED_DENIED_CLIPPY_LINTS {
-        let level = clippy
-            .get(*lint)
-            .and_then(Value::as_str)
-            .ok_or_else(|| format!("[lints.clippy] is missing `{lint}`"))?;
-        assert_eq!(level, "deny", "[lints.clippy] `{lint}` must stay denied outside the workspace");
-    }
-
-    assert!(
-        manifest.get("lints").and_then(|lints| lints.get("rust")).is_some_and(Value::is_table),
-        "the package must carry its own [lints.rust] policy"
+    assert_eq!(
+        lints.get("workspace").and_then(Value::as_bool),
+        Some(true),
+        "[lints] workspace = true is required of every workspace member"
     );
-    Ok(())
-}
-
-#[test]
-fn local_lint_policy_does_not_drift_from_the_workspace_while_embedded() -> Result<(), Box<dyn Error>>
-{
-    // The literal `[lints]` block is a copy of the accepted workspace policy, so
-    // it can silently fall behind when the root promotes a lint. While the
-    // package is still embedded the root manifest is present and the two tables
-    // must match exactly — every entry, not just the load-bearing denials.
-    //
-    // An unpacked package has no workspace root above it. That is the whole
-    // point of #8771, so its absence is a skip, not a failure; the rest of this
-    // file still holds there.
-    let Some(workspace_root) =
-        package_root().parent().and_then(Path::parent).map(Path::to_path_buf)
-    else {
-        return Ok(());
-    };
-    let root_manifest_path = workspace_root.join("Cargo.toml");
-    if !root_manifest_path.exists() {
-        return Ok(());
-    }
-    let root = parse_manifest(&fs::read_to_string(&root_manifest_path)?)?;
-    let Some(workspace_lints) = root.get("workspace").and_then(|workspace| workspace.get("lints"))
-    else {
-        return Ok(());
-    };
-
-    let manifest = manifest()?;
-    let local_lints = manifest.get("lints").ok_or("manifest has no literal [lints] table")?;
-
-    for family in ["clippy", "rust"] {
-        let expected = workspace_lints.get(family).and_then(Value::as_table);
-        let actual = local_lints.get(family).and_then(Value::as_table);
-        assert_eq!(
-            actual, expected,
-            "[lints.{family}] has drifted from the root [workspace.lints.{family}]; \
-             mirror the root change into this package's manifest deliberately (#8771)"
-        );
-    }
+    assert!(
+        lints.get("clippy").is_none() && lints.get("rust").is_none(),
+        "a local [lints.clippy]/[lints.rust] table cannot coexist with the required inheritance"
+    );
     Ok(())
 }
 

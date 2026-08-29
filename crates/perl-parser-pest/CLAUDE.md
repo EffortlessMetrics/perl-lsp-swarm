@@ -85,18 +85,24 @@ production parser or infer production reachability from package-local green test
 
 ## Self-description hazard
 
-This package describes itself. Its manifest carries literal identity, MSRV, dependency
-versions, and a literal `[lints]` policy instead of `*.workspace = true`, and no
-dependency or dev-dependency is path-only (#8771). Two edits would silently undo that:
+This package describes itself. Its manifest carries literal identity, MSRV, and
+dependency versions instead of `*.workspace = true`, and no dependency or
+dev-dependency is path-only (#8771). Two edits would silently undo that:
 
-- reintroducing `workspace = true` in any manifest key, and
+- reintroducing `workspace = true` for any key other than `[lints]`, and
 - adding a path dependency, including a shared test helper.
 
-`tests/standalone_package.rs` fails closed on both, on a dropped lint denial, on a
-falsely-external `repository`/`homepage`, and on an unpackaged load-bearing asset. It
-also diffs the crate's `[lints]` against the root `[workspace.lints]` while the package
-is still embedded, so promoting a lint at the root without mirroring it here fails
-rather than drifting.
+`[lints] workspace = true` is the one deliberate exception and must stay. The required
+`cargo xtask check-lint-policy` gate enforces it on every workspace member with no
+exemption mechanism, so the lint half of #8771's standalone contract cannot land while
+this crate is a member; removing the marker to "finish" the decoupling turns that gate
+red. Whether the invariant grows an extraction exemption or the lint decoupling moves to
+the extraction PR is a separate decision.
+
+`tests/standalone_package.rs` fails closed on all of it: it asserts `[lints]` is the
+*only* inherited key so the exception cannot spread, that the marker is still present,
+and that no path dependency, falsely-external `repository`/`homepage`, or unpackaged
+load-bearing asset has appeared.
 
 Assertion-boundary helpers are package-local in `tests/support/assert.rs`; the unit
 tests inside `src/pure_rust_parser.rs` carry their own copy so that file stays

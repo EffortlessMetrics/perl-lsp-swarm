@@ -1,10 +1,13 @@
 # Standalone-resolvable manifest (#8771).
 #
-# Every package, dependency, and lint key below is literal: this package must
-# describe itself without borrowing identity, versions, lints, dependencies, or
-# test helpers from the swarm workspace. Do not reintroduce `*.workspace = true`
-# here — `tests/standalone_package.rs` fails closed on workspace inheritance and
-# on any path-only dependency.
+# Every package and dependency key below is literal: this package describes
+# itself without borrowing identity, versions, dependencies, or test helpers
+# from the swarm workspace. Do not reintroduce `*.workspace = true` for any of
+# them — `tests/standalone_package.rs` fails closed on workspace inheritance
+# and on any path-only dependency.
+#
+# `[lints]` is the one deliberate exception, required by a repository gate; see
+# the note above that table.
 #
 # `version`, `repository`, and `homepage` deliberately still name the current
 # swarm/public lineage. The external `perl-parser-pest` repository does not
@@ -71,33 +74,12 @@ doctest = false
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
-# Literal copy of the workspace lint policy this package is accepted under, so
-# the same checks reproduce outside the workspace (#8771). Keep in step with
-# the root `[workspace.lints]` while the package is still embedded.
-[lints.clippy]
-unwrap_used = "deny"
-expect_used = "deny"
-panic = "deny"
-todo = "deny"
-unimplemented = "deny"
-dbg_macro = "deny"
-await_holding_lock = "deny"
-await_holding_refcell_ref = "deny"
-mutex_atomic = "warn"
-collapsible_if = "deny"
-collapsible_match = "deny"
-decimal_bitwise_operands = "warn"
-duration_suboptimal_units = "warn"
-needless_type_cast = "warn"
-manual_ilog2 = "deny"
-manual_take = "deny"
-unnecessary_trailing_comma = "warn"
-wildcard_imports = "warn"
-print_stderr = "deny"
-print_stdout = "deny"
-same_length_and_capacity = "deny"
-ptr_arg = "deny"
-disallowed_fields = "deny"
-
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(ci)', 'cfg(feature, values("slow_tests"))'] }
+# Lint policy stays workspace-inherited. `cargo xtask check-lint-policy` is a
+# required gate and enforces `[lints] workspace = true` on every workspace
+# member with no exemption mechanism, so the lint half of #8771's standalone
+# contract cannot land while this crate is a workspace member. That residual is
+# tracked separately; `tests/standalone_package.rs` pins this as the single
+# permitted inheritance so the rest of the manifest cannot quietly follow it
+# back.
+[lints]
+workspace = true
