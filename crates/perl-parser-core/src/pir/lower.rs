@@ -16,11 +16,31 @@ use crate::hir::{
 };
 
 use super::model::{
-    LexicalName, PIR_RECEIPT_VERSION, PirAnchorCoverage, PirCallee, PirContext,
+    LexicalName, PIR_RECEIPT_VERSION, PirAccessMode, PirAnchorCoverage, PirCallee, PirContext,
+    PirEvaluationDemand,
     PirDynamicBoundaryKind, PirEdge, PirEdgeKind, PirGraph, PirId, PirLiteralKind, PirLoweringMode,
     PirMethod, PirNode, PirOperation, PirReceipt, PirReceiver, PirRegexModifiers, PirRegexTarget,
     PirSourceAnchor, PirTargetAccess, SymbolName,
 };
+
+fn access_for_operation(operation: &PirOperation) -> PirAccessMode {
+    match operation {
+        PirOperation::LexicalWrite { .. } | PirOperation::StashWrite { .. } => {
+            PirAccessMode::Write
+        }
+        PirOperation::Modify { .. } | PirOperation::StashModify { .. } => {
+            PirAccessMode::ReadModifyWrite
+        }
+        _ => PirAccessMode::Read,
+    }
+}
+
+fn demand_for_operation(operation: &PirOperation) -> PirEvaluationDemand {
+    match operation {
+        PirOperation::Branch { .. } => PirEvaluationDemand::TruthTest,
+        _ => PirEvaluationDemand::Value,
+    }
+}
 
 /// Lower a [`HirFile`] into a PIR v0 graph with no caller-supplied identity.
 #[must_use]
@@ -224,7 +244,15 @@ impl Lowerer {
                 }
             };
             // The declaration names a write target, which is a known lvalue.
-            self.push_node(item, anchor, operation, PirContext::Lvalue, None);
+            self.push_node_with_access(
+                item,
+                anchor,
+                operation,
+                PirContext::Void,
+                PirEvaluationDemand::Value,
+                PirAccessMode::Write,
+                None,
+            );
         }
 
         if decl.has_initializer {
@@ -445,7 +473,7 @@ impl Lowerer {
         // Statement branches are control-flow forks that yield no value at
         // statement level. A ternary is different: it is a value-producing
         // conditional expression that may participate in an lvalue context,
-        // but the flat path cannot prove its enclosing Scalar/List/Lvalue
+        // but the flat path cannot prove its enclosing Scalar/List
         // context. Keep it Unknown, matching the body path, rather than
         // claiming Void and losing the value-producing distinction.
         let context = match branch.keyword {
@@ -543,6 +571,8 @@ impl Lowerer {
             source_anchor,
             operation,
             context,
+            demand: demand_for_operation(&operation),
+            access: access_for_operation(&operation),
             dynamic_boundary,
             scope,
             package_context: item.package_context.clone(),
@@ -587,12 +617,32 @@ impl Lowerer {
             source_anchor,
             operation,
             context: PirContext::Unknown,
+            demand: demand_for_operation(&operation),
+            access: access_for_operation(&operation),
             dynamic_boundary,
             scope: item.scope_context,
             package_context: item.package_context.clone(),
         });
         if is_parent {
             self.expression_parent_ids.entry(item.scope_context).or_default().push(id);
+        }
+        id
+    }
+
+    fn push_node_with_access(
+        &mut self,
+        item: &HirItem,
+        source_anchor: PirSourceAnchor,
+        operation: PirOperation,
+        context: PirContext,
+        demand: PirEvaluationDemand,
+        access: PirAccessMode,
+        dynamic_boundary: Option<PirId>,
+    ) -> PirId {
+        let id = self.push_node(item, source_anchor, operation, context, dynamic_boundary);
+        if let Some(node) = self.nodes.get_mut(id.index() as usize) {
+            node.demand = demand;
+            node.access = access;
         }
         id
     }
@@ -666,12 +716,16 @@ fn build_receipt(
 ) -> PirReceipt {
     let mut operation_counts = std::collections::BTreeMap::new();
     let mut context_counts = std::collections::BTreeMap::new();
+    let mut demand_counts = std::collections::BTreeMap::new();
+    let mut access_counts = std::collections::BTreeMap::new();
     let mut dynamic_boundary_counts = std::collections::BTreeMap::new();
     let mut coverage = PirAnchorCoverage::default();
 
     for node in nodes {
         *operation_counts.entry(node.operation.name()).or_insert(0) += 1;
         *context_counts.entry(node.context.name()).or_insert(0) += 1;
+        *demand_counts.entry(node.demand.name()).or_insert(0) += 1;
+        *access_counts.entry(node.access.name()).or_insert(0) += 1;
         if node.source_anchor.is_anchored() {
             coverage.anchored += 1;
         } else {
@@ -692,6 +746,8 @@ fn build_receipt(
         edge_count,
         operation_counts,
         context_counts,
+        demand_counts,
+        access_counts,
         source_anchor_coverage: coverage,
         dynamic_boundary_counts,
         unsupported_construct_counts,
@@ -884,6 +940,8 @@ pub fn lower_hir_bodies_with_identity(file: &HirFile, source_identity: Option<St
             edge_count: 0,
             operation_counts: Default::default(),
             context_counts: Default::default(),
+            demand_counts: Default::default(),
+            access_counts: Default::default(),
             source_anchor_coverage: Default::default(),
             dynamic_boundary_counts: Default::default(),
             unsupported_construct_counts: Default::default(),
@@ -988,7 +1046,15 @@ impl BodyLowerer {
                             name: LexicalName { sigil: sigil_str(sigil), name: name.clone() },
                         },
                     };
-                    self.push_body_node(anchor, op, PirContext::Lvalue, None, file);
+                    self.push_body_node_with_access(
+                        anchor,
+                        op,
+                        PirContext::Void,
+                        PirEvaluationDemand::Value,
+                        PirAccessMode::Write,
+                        None,
+                        file,
+                    );
                 }
                 // Lower the RHS of the initialiser. The init expr in the HIR body
                 // is an HirExpr::Assign { lhs: Variable(Write), rhs, mode: Simple }.
@@ -1590,10 +1656,30 @@ impl BodyLowerer {
             source_anchor,
             operation,
             context,
+            demand: demand_for_operation(&operation),
+            access: access_for_operation(&operation),
             dynamic_boundary,
             scope,
             package_context: None, // deferred: body arenas don't carry package_context yet
         });
+        id
+    }
+
+    fn push_body_node_with_access(
+        &mut self,
+        source_anchor: PirSourceAnchor,
+        operation: PirOperation,
+        context: PirContext,
+        demand: PirEvaluationDemand,
+        access: PirAccessMode,
+        dynamic_boundary: Option<PirId>,
+        file: &HirFile,
+    ) -> PirId {
+        let id = self.push_body_node(source_anchor, operation, context, dynamic_boundary, file);
+        if let Some(node) = self.nodes.get_mut(id.index() as usize) {
+            node.demand = demand;
+            node.access = access;
+        }
         id
     }
 
@@ -1776,7 +1862,7 @@ mod tests {
         let graph = lower("my $x = 1;");
         assert_eq!(graph.nodes.len(), 3);
         assert_eq!(graph.nodes[0].operation.name(), "LexicalWrite");
-        assert_eq!(graph.nodes[0].context, PirContext::Lvalue);
+        assert_eq!(graph.nodes[0].access, PirAccessMode::Write);
         assert_eq!(graph.nodes[1].operation.name(), "Assign");
         assert_eq!(graph.nodes[1].context, PirContext::Void);
         assert!(matches!(
