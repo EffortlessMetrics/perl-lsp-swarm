@@ -518,6 +518,22 @@ impl SplitMix64 {
 /// covers every family and every registered disposition (FPH-001); the seed
 /// only drives the free axis choices, keeping every draw structured.
 pub fn generate_case(seed: u64, index: usize) -> GeneratedCase {
+    generate_case_with_disposition(seed, index, None)
+}
+
+/// Generate the same case without applying the registry disposition. This is
+/// a negative control for FPH-001: the disposition-aware path must produce
+/// source bytes that differ from this neutral construction for some bounded
+/// seed, or the registration is only a receipt label.
+pub fn generate_case_neutral_control(seed: u64, index: usize) -> GeneratedCase {
+    generate_case_with_disposition(seed, index, Some("control.neutral"))
+}
+
+fn generate_case_with_disposition(
+    seed: u64,
+    index: usize,
+    forced_disposition: Option<&'static str>,
+) -> GeneratedCase {
     let registry = family_registry();
     let record = &registry[index % registry.len()];
     // Fail closed on generator-side drift: the compile-time table alignment
@@ -526,13 +542,34 @@ pub fn generate_case(seed: u64, index: usize) -> GeneratedCase {
     let variants = variants_for(record.family);
     let mut rng = SplitMix64::new(seed ^ (index as u64).rotate_left(17));
 
-    let disposition = record.dispositions[(index / registry.len()) % record.dispositions.len()];
+    let disposition = forced_disposition.unwrap_or_else(|| {
+        record.dispositions[(index / registry.len()) % record.dispositions.len()]
+    });
 
-    let variant_base = rng.pick(variants.compact.len());
-    let use_spaced = !variants.spaced.is_empty() && rng.chance(50);
-    let keyword_gap = variants.renders_closed_blocks && rng.chance(50);
-    let indent = INDENTS[rng.pick(INDENTS.len())];
-    let comment = COMMENTS[rng.pick(COMMENTS.len())];
+    // A registry disposition is executable construction authority, not a
+    // receipt label. Generator rows select their pinned family shape; each
+    // mutator row applies one observable source mutation. The remaining
+    // axes stay seed-driven so the bounded walk still explores combinations.
+    let generator_disposition = disposition.starts_with("generator.");
+    let variant_base = if generator_disposition {
+        record.family.pinned_index() % variants.compact.len()
+    } else {
+        rng.pick(variants.compact.len())
+    };
+    let use_spaced = disposition == "mutator.spacing_style"
+        || (!generator_disposition && !variants.spaced.is_empty() && rng.chance(50));
+    let keyword_gap = disposition == "mutator.keyword_gap"
+        || (!generator_disposition && variants.renders_closed_blocks && rng.chance(50));
+    let indent = if disposition == "mutator.indent_prefix" {
+        INDENTS[1]
+    } else {
+        INDENTS[rng.pick(INDENTS.len())]
+    };
+    let comment = if disposition == "mutator.trailing_comment" {
+        COMMENTS[1]
+    } else {
+        COMMENTS[rng.pick(COMMENTS.len())]
+    };
 
     let line_ending = pick_line_ending(&mut rng);
     let final_newline = if rng.chance(60) {
@@ -558,6 +595,9 @@ pub fn generate_case(seed: u64, index: usize) -> GeneratedCase {
         let raw = if use_spaced { variants.spaced[pick] } else { variants.compact[pick] };
         let mut line = String::from(indent);
         line.push_str(&render_keyword_gap(raw, keyword_gap));
+        if disposition == "mutator.block_tail" && variants.renders_closed_blocks {
+            mutate_block_tail(&mut line);
+        }
         if offset + 1 == line_count {
             line.push_str(comment);
         }
@@ -604,6 +644,15 @@ pub fn generate_case(seed: u64, index: usize) -> GeneratedCase {
             line_ending,
         },
         expects_refusal: false,
+    }
+}
+
+/// Apply the block-tail mutator to the generated source itself. Inserting a
+/// space before the closing brace is deliberately small but observable in the
+/// exact bytes and remains valid Perl across all admitted block families.
+fn mutate_block_tail(line: &mut String) {
+    if let Some(close) = line.rfind('}') {
+        line.insert(close, ' ');
     }
 }
 
@@ -724,7 +773,7 @@ fn render_keyword_gap(line: &str, gap: bool) -> String {
         return line.to_string();
     }
     let mut widened = line.to_string();
-    for keyword in ["if", "unless", "while", "until", "foreach"] {
+    for keyword in ["if", "unless", "while", "until", "foreach", "for"] {
         widened = widened.replace(&format!("{keyword}("), &format!("{keyword} ("));
     }
     widened

@@ -24,7 +24,8 @@ mod formatter_property_harness;
 use formatter_property_harness::{
     DormantStatus, Family, GeneratedCase, HARNESS_SCHEMA_VERSION, LineEndingKind, MAX_PLAN_EDITS,
     MAX_SUBJECT_BYTES, MAX_SUBJECT_LINES, case_from_fuzz_input, dormant_registry, family_registry,
-    generate_case, generate_invalidation_case, record_for, run_case, variants_for,
+    generate_case, generate_case_neutral_control, generate_invalidation_case, record_for, run_case,
+    variants_for,
 };
 use perl_lsp_perltidy::native::FinalNewline;
 
@@ -279,6 +280,70 @@ fn every_admitted_family_has_a_registered_disposition() -> TestResult {
         "the bounded run must cover every pinned admitted family (FPH-001)"
     );
     assert!(!all_dispositions.is_empty());
+    Ok(())
+}
+
+/// FPH-001 negative controls: each registered disposition must alter the
+/// generated source/configuration through its named path. A disposition that
+/// is deleted from the match in `generate_case` must make one of these
+/// assertions fail; a receipt-only label cannot satisfy this test.
+#[test]
+fn generator_and_mutator_dispositions_are_observable() -> TestResult {
+    let registry = family_registry();
+    for (family_index, record) in registry.iter().enumerate() {
+        for (slot, disposition) in record.dispositions.iter().enumerate() {
+            let index = family_index + slot * registry.len();
+            let mut observed_difference = false;
+            for seed in 0x1318_9001..0x1318_9041 {
+                let case = generate_case(seed, index);
+                let control = generate_case_neutral_control(seed, index);
+                if case.subject.text != control.subject.text {
+                    observed_difference = true;
+                    break;
+                }
+            }
+            assert!(
+                observed_difference,
+                "{disposition} did not alter generated source bytes versus its neutral control"
+            );
+
+            let case = generate_case(0x1318_9001, index);
+            let variants = variants_for(record.family);
+            if disposition.starts_with("generator.") {
+                let expected = variants.compact[family_index % variants.compact.len()];
+                assert!(
+                    case.subject.text.contains(expected),
+                    "{disposition} did not drive its pinned generator shape for {}",
+                    record.family.name()
+                );
+            }
+            match *disposition {
+                "mutator.spacing_style" => assert!(
+                    variants.spaced.iter().any(|variant| case.subject.text.contains(variant)),
+                    "spacing mutator did not change source bytes"
+                ),
+                "mutator.indent_prefix" => assert!(
+                    case.subject.text.lines().all(|line| line.starts_with("  ")),
+                    "indent mutator did not apply its prefix"
+                ),
+                "mutator.trailing_comment" => assert!(
+                    case.subject.text.contains(" # note"),
+                    "trailing-comment mutator did not change source bytes"
+                ),
+                "mutator.keyword_gap" => assert!(
+                    ["if (", "unless (", "while (", "until (", "foreach (", "for ("]
+                        .iter()
+                        .any(|marker| case.subject.text.contains(marker)),
+                    "keyword-gap mutator did not change source bytes"
+                ),
+                "mutator.block_tail" => assert!(
+                    case.subject.text.contains(" }"),
+                    "block-tail mutator did not change source bytes"
+                ),
+                _ => {}
+            }
+        }
+    }
     Ok(())
 }
 
