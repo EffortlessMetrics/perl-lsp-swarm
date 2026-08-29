@@ -1,0 +1,369 @@
+name: Apply bounded cpanfile advisory parser
+
+on:
+  push:
+    branches:
+      - agent/13695-cpanfile-advisory-blocks
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor == 'EffortlessSteven'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out patch branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+
+      - name: Install repository Rust toolchain
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: 1.95.0
+          components: rustfmt,clippy
+
+      - name: Apply exact source patch
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("crates/perl-lsp-rs-core/src/config/metadata_dependencies.rs")
+          source = path.read_text(encoding="utf-8")
+
+          old_constants = """const CPANFILE_KEYS: &[&str] =
+              &["requires", "test_requires", "recommends", "build_requires", "configure_requires"];
+          """
+          new_constants = """const CPANFILE_PHASES: &[&str] = &["configure", "build", "test", "runtime", "develop"];
+          const CPANFILE_KEYWORDS: &[(&str, &str, &str)] = &[
+              ("configure_requires", "requires", "configure"),
+              ("build_requires", "requires", "build"),
+              ("test_requires", "requires", "test"),
+              ("author_requires", "requires", "develop"),
+              ("requires", "requires", "runtime"),
+              ("recommends", "recommends", "runtime"),
+              ("suggests", "suggests", "runtime"),
+              ("conflicts", "conflicts", "runtime"),
+          ];
+
+          #[derive(Debug, Clone, PartialEq, Eq)]
+          enum CpanfileBlock {
+              Phase(String),
+              Unsupported,
+          }
+          """
+          if source.count(old_constants) != 1:
+              raise SystemExit("expected exactly one cpanfile keyword constant")
+          source = source.replace(old_constants, new_constants, 1)
+
+          old_parser = """/// Extract literal dependencies from a `cpanfile`.
+          #[must_use]
+          pub fn extract_cpanfile_requirements(source: &str) -> Vec<DeclaredDependency> {
+              let source = strip_comments_preserving_strings(source);
+              let mut dependencies = Vec::new();
+
+              for statement in source.split(';') {
+                  let statement = statement.trim();
+                  for key in CPANFILE_KEYS {
+                      if !starts_with_keyword(statement, key) {
+                          continue;
+                      }
+                      let args = quoted_strings(statement);
+                      let Some(module) = args.first().and_then(|value| normalize_module_name(value)) else {
+                          continue;
+                      };
+                      let version = args.get(1).and_then(|value| normalize_version(value));
+                      push_unique(
+                          &mut dependencies,
+                          DeclaredDependency::new(
+                              module,
+                              version.as_deref(),
+                              *key,
+                              DeclaredDependencySource::Cpanfile,
+                          ),
+                      );
+                  }
+              }
+
+              dependencies
+          }
+          """
+          new_parser = """/// Extract unconditional literal dependencies from a `cpanfile`.
+          ///
+          /// This scanner is transitional until #13631 routes the advisory through
+          /// `perl-workspace-core`. It recognizes canonical `on` phase blocks and
+          /// deliberately suppresses every other block because `DeclaredDependency`
+          /// cannot retain feature or condition predicates.
+          #[must_use]
+          pub fn extract_cpanfile_requirements(source: &str) -> Vec<DeclaredDependency> {
+              let source = strip_comments_preserving_strings(source);
+              let mut dependencies = Vec::new();
+              let mut block_stack = Vec::new();
+              let mut statement = String::new();
+              let mut quote = None;
+              let mut escaped = false;
+
+              for ch in source.chars() {
+                  if let Some(delimiter) = quote {
+                      statement.push(ch);
+                      if escaped {
+                          escaped = false;
+                      } else if ch == '\\\\' {
+                          escaped = true;
+                      } else if ch == delimiter {
+                          quote = None;
+                      }
+                      continue;
+                  }
+
+                  match ch {
+                      '\\'' | '"' => {
+                          quote = Some(ch);
+                          statement.push(ch);
+                      }
+                      ';' => {
+                          if let Some(block_phase) = active_cpanfile_phase(&block_stack) {
+                              collect_cpanfile_statement(
+                                  &statement,
+                                  block_phase,
+                                  &mut dependencies,
+                              );
+                          }
+                          statement.clear();
+                      }
+                      '{' => {
+                          let block = if matches!(
+                              block_stack.last(),
+                              Some(CpanfileBlock::Unsupported)
+                          ) {
+                              CpanfileBlock::Unsupported
+                          } else if let Some(phase) = parse_cpanfile_on_phase(&statement) {
+                              CpanfileBlock::Phase(phase)
+                          } else {
+                              CpanfileBlock::Unsupported
+                          };
+                          block_stack.push(block);
+                          statement.clear();
+                      }
+                      '}' => {
+                          if let Some(block_phase) = active_cpanfile_phase(&block_stack) {
+                              collect_cpanfile_statement(
+                                  &statement,
+                                  block_phase,
+                                  &mut dependencies,
+                              );
+                          }
+                          statement.clear();
+                          block_stack.pop();
+                      }
+                      _ => statement.push(ch),
+                  }
+              }
+
+              if let Some(block_phase) = active_cpanfile_phase(&block_stack) {
+                  collect_cpanfile_statement(&statement, block_phase, &mut dependencies);
+              }
+
+              dependencies
+          }
+
+          fn active_cpanfile_phase(block_stack: &[CpanfileBlock]) -> Option<Option<&str>> {
+              match block_stack.last() {
+                  None => Some(None),
+                  Some(CpanfileBlock::Phase(phase)) => Some(Some(phase.as_str())),
+                  Some(CpanfileBlock::Unsupported) => None,
+              }
+          }
+
+          fn collect_cpanfile_statement(
+              statement: &str,
+              block_phase: Option<&str>,
+              dependencies: &mut Vec<DeclaredDependency>,
+          ) {
+              let statement = statement.trim();
+              let Some((keyword, relation, keyword_phase)) = CPANFILE_KEYWORDS
+                  .iter()
+                  .find(|(keyword, _, _)| starts_with_keyword(statement, keyword))
+              else {
+                  return;
+              };
+              let phase = if *keyword_phase == "runtime" {
+                  block_phase.unwrap_or("runtime")
+              } else {
+                  keyword_phase
+              };
+              let args = quoted_strings(statement);
+              let Some(module) = args.first().and_then(|value| normalize_module_name(value)) else {
+                  return;
+              };
+              let version = args.get(1).and_then(|value| normalize_version(value));
+              let kind = if block_phase.is_some() && *keyword == *relation {
+                  format!("{phase}.{relation}")
+              } else {
+                  (*keyword).to_string()
+              };
+
+              push_unique(
+                  dependencies,
+                  DeclaredDependency::new(
+                      module,
+                      version.as_deref(),
+                      kind,
+                      DeclaredDependencySource::Cpanfile,
+                  ),
+              );
+          }
+
+          fn parse_cpanfile_on_phase(statement: &str) -> Option<String> {
+              let rest = statement.trim().strip_prefix("on")?;
+              if !rest.starts_with(|ch: char| {
+                  ch.is_whitespace() || matches!(ch, '(' | '\\'' | '"')
+              }) {
+                  return None;
+              }
+              let phase = quoted_strings(statement)
+                  .into_iter()
+                  .next()
+                  .or_else(|| {
+                      rest.trim_start_matches(|ch: char| ch.is_whitespace() || ch == '(')
+                          .split(|ch: char| ch.is_whitespace() || matches!(ch, ')' | '=' | '>'))
+                          .next()
+                          .map(str::to_string)
+                  })?;
+              CPANFILE_PHASES.contains(&phase.as_str()).then_some(phase)
+          }
+          """
+          if source.count(old_parser) != 1:
+              raise SystemExit("expected exactly one prior cpanfile parser")
+          source = source.replace(old_parser, new_parser, 1)
+
+          insertion = """    #[test]
+              fn hash_requirement_edges_have_local_oracles() {
+          """
+          tests = """    #[test]
+              fn cpanfile_block_semantics_preserve_only_unconditional_facts() {
+                  let source = r#"
+                      my $open = '{';
+                      my $close = "}";
+                      my $separator = ";";
+                      requires 'Path::Tiny', '0.140';
+                      on 'test' => sub {
+                          requires 'Test::More', '1.302190';
+                          recommends 'Test::Deep';
+                          if ($ENV{AUTHOR_TESTING}) {
+                              requires 'Test::Warnings';
+                          }
+                      };
+                      feature 'SQLite' => sub {
+                          requires 'DBD::SQLite';
+                          requires 'SQL::Statement';
+                          on 'test' => sub { requires 'Feature::Test'; };
+                      };
+                      if ($^O eq 'MSWin32') {
+                          build_requires 'Win32::Build';
+                          requires 'Win32';
+                      }
+                      on('build') => sub { requires 'Build::Known'; };
+                  "#;
+
+                  assert_eq!(
+                      extract_cpanfile_requirements(source),
+                      vec![
+                          DeclaredDependency::new(
+                              "Path::Tiny",
+                              Some("0.140"),
+                              "requires",
+                              DeclaredDependencySource::Cpanfile,
+                          ),
+                          DeclaredDependency::new(
+                              "Test::More",
+                              Some("1.302190"),
+                              "test.requires",
+                              DeclaredDependencySource::Cpanfile,
+                          ),
+                          DeclaredDependency::new(
+                              "Test::Deep",
+                              None,
+                              "test.recommends",
+                              DeclaredDependencySource::Cpanfile,
+                          ),
+                          DeclaredDependency::new(
+                              "Build::Known",
+                              None,
+                              "build.requires",
+                              DeclaredDependencySource::Cpanfile,
+                          ),
+                      ],
+                  );
+              }
+
+              #[test]
+              fn cpanfile_rejects_unknown_phases_and_keyword_prefixes() {
+                  let source = r#"
+                      on 'deploy' => sub { requires 'Deploy::Only'; };
+                      requires_extra 'Prefix::Collision';
+                      oncall 'test' => sub { requires 'Not::An::On::Block'; };
+                      test_requires 'Flat::Test';
+                      author_requires 'Author::Tool';
+                      suggests 'Optional::Tool';
+                      conflicts 'Broken::Tool';
+                  "#;
+
+                  assert_eq!(
+                      extract_cpanfile_requirements(source),
+                      vec![
+                          DeclaredDependency::new(
+                              "Flat::Test",
+                              None,
+                              "test_requires",
+                              DeclaredDependencySource::Cpanfile,
+                          ),
+                          DeclaredDependency::new(
+                              "Author::Tool",
+                              None,
+                              "author_requires",
+                              DeclaredDependencySource::Cpanfile,
+                          ),
+                          DeclaredDependency::new(
+                              "Optional::Tool",
+                              None,
+                              "suggests",
+                              DeclaredDependencySource::Cpanfile,
+                          ),
+                          DeclaredDependency::new(
+                              "Broken::Tool",
+                              None,
+                              "conflicts",
+                              DeclaredDependencySource::Cpanfile,
+                          ),
+                      ],
+                  );
+              }
+
+          """
+          if source.count(insertion) != 1:
+              raise SystemExit("expected exactly one test insertion point")
+          source = source.replace(insertion, tests + insertion, 1)
+          path.write_text(source, encoding="utf-8")
+          PY
+          cargo fmt --all
+          git diff --check
+
+      - name: Run focused regressions
+        run: cargo test -p perl-lsp-rs-core --locked cpanfile_
+
+      - name: Run focused lint
+        run: cargo clippy -p perl-lsp-rs-core --all-targets --locked -- -D warnings
+
+      - name: Commit clean source diff
+        shell: bash
+        run: |
+          git config user.name "EffortlessSteven"
+          git config user.email "git@effortlesssteven.com"
+          git rm .github/workflows/agent-13695-apply.yml
+          git add crates/perl-lsp-rs-core/src/config/metadata_dependencies.rs
+          git diff --cached --check
+          git commit -m "fix(config): bound cpanfile advisory facts (#13695)"
+          git push origin HEAD:agent/13695-cpanfile-advisory-blocks
