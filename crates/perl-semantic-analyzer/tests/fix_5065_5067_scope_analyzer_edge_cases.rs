@@ -1,3 +1,5 @@
+#![deny(clippy::map_err_ignore)]
+// Cohort C1 activation (#12598): all production rows exact-excepted; new findings move the crate back to non-C1.
 //! Tests for issues #5065 and #5067 — scope analyzer edge cases:
 //!   #5065: `my $x` in postfix conditionals/statement modifiers must be
 //!          hoisted (visible to the statement).  Previously the statement
