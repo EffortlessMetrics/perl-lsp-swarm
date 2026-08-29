@@ -28,15 +28,19 @@ import {
   suggestAiCompletionIfSupported,
   suggestDiscoveredIncludePaths,
   validateIncludePaths,
-  warnAboutPerlExtensionConflicts,
 } from './extensionWorkspaceGuidance';
 export {
   openDemoProjectCommand,
   suggestAiCompletionIfSupported,
   suggestDiscoveredIncludePaths,
   validateIncludePaths,
-  warnAboutPerlExtensionConflicts,
 } from './extensionWorkspaceGuidance';
+import {
+  coexistenceReevaluationRequested,
+  runCoexistenceAdvisory,
+  showCoexistenceStatusCommand,
+} from './coexistenceAdvisory';
+import { registerCoexistenceCommandGroup } from './coexistenceCommandGroup';
 import { WhatsNewManager } from './whatsNew';
 import { generateBoilerplate } from './fileCreation';
 import { handleFormattingError } from './formattingErrors';
@@ -48,6 +52,7 @@ import { registerGherkinProviders } from './gherkinProviders';
 import { registerGherkinStepDefinitionSupport } from './gherkinStepDefinitions';
 import { registerDocumentFeatureGroup } from './documentFeatureGroup';
 import { StreamingCompletionController } from './streamingCompletion';
+import { InlineCompletionOwner } from './inlineCompletionRouting';
 import {
   runAllTestsWithProve,
   runCurrentTestWithProve,
@@ -177,6 +182,15 @@ let statusBarItem: vscode.StatusBarItem | undefined;
 let healthWidget: HealthWidget | undefined;
 let healthWidgetDataSource: HealthWidgetDataSource | undefined;
 let streamingController: StreamingCompletionController | undefined;
+
+/**
+ * The single owner for Perl inline completion in VS Code (#8282).
+ *
+ * Consults the current streaming adapter through a getter rather than holding
+ * it, so a controller disposed by configuration change, restart, or extension
+ * disposal stops being routed to without rebuilding the owner.
+ */
+const inlineCompletionOwner = new InlineCompletionOwner(() => streamingController);
 let languageClientLifecycle:
   | ExtensionLanguageClientLifecycle<LanguageClient, StateChangeEvent>
   | undefined;
@@ -1088,6 +1102,19 @@ async function runExtensionActivation(
     supportCommandDisposables,
   );
 
+  // Coexistence status is usable without a running server: it explains host
+  // observations and never mutates other tools (#7214). Registered last in
+  // the retained support prefix so failure-injection ordinals above stay
+  // stable.
+  const coexistenceCommandDisposables = registerCoexistenceCommandGroup({
+    showCoexistenceStatus: () => showCoexistenceStatusCommand(context),
+  });
+  activation.ownDisposables(
+    'support',
+    'support_surface_allowed_after_failure',
+    coexistenceCommandDisposables,
+  );
+
   const formatOnSaveDisposable = vscode.workspace.onWillSaveTextDocument((event) => {
     if (!shouldFormatOnSave(event.document)) {
       return;
@@ -1115,6 +1142,14 @@ async function runExtensionActivation(
         );
         if (event.affectsConfiguration('perl-lsp.includePaths') || criticChanged) {
           await syncLanguageClientConfiguration(client);
+        }
+
+        // Advisory coexistence findings re-evaluate when an owned input
+        // changes; every collected input is classified live, so this block is
+        // reachable for all of them. Dedupe keeps this silent unless the
+        // finding set changed (#7214 clear/restore semantics).
+        if (coexistenceReevaluationRequested((setting) => event.affectsConfiguration(setting))) {
+          await runCoexistenceAdvisory(context);
         }
       },
       onReconstructConfigurationChanged: async (event) => {
@@ -1449,7 +1484,7 @@ async function startLanguageServerOnDemand(context: vscode.ExtensionContext): Pr
   languageClientStartupMetrics.markMilestone('workspace_ready');
   await validateIncludePaths(context);
   await suggestDiscoveredIncludePaths(context);
-  await warnAboutPerlExtensionConflicts(context);
+  await runCoexistenceAdvisory(context);
 
   // Background update check — fire-and-forget after startup completes.
   // Runs at most once per updateCheckInterval hours; no-ops when serverPath
@@ -2017,6 +2052,22 @@ function createLanguageClient(serverPath: string): LanguageClient {
           },
           null,
           (error) => handleLspProviderError('Completion', error),
+        );
+      },
+      // The one authoritative provider for Perl inline completion (#8282).
+      // Installing the owner as middleware keeps it on the language client's
+      // own provider registration, so no second provider competes for the same
+      // document selector.
+      provideInlineCompletionItems: (document, position, context, token, next) => {
+        if (languageClientLifecycle?.snapshot.state !== 'running') {
+          return null;
+        }
+        return inlineCompletionOwner.provideInlineCompletionItems(
+          document,
+          position,
+          context,
+          token,
+          next,
         );
       },
       provideDefinition: async (document, position, token, next) => {
