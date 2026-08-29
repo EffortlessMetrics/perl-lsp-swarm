@@ -134,7 +134,9 @@ Revert the audit doc. Do not move code based on a reverted audit.
 
 Goal:
 
-Prove the first candidate extraction set can compile without Perl dependencies.
+Determine whether the first candidate extraction set is dependency-clean.
+Record a blocker when the preferred candidate remains mixed; do not convert an
+audit result into an independent-compilation claim.
 
 Audit input:
 
@@ -154,16 +156,27 @@ Allowed changes:
 
 Acceptance:
 
-- no `perl-*` dependency in the candidate set
-- no provider, parser, DAP, release, or package dependency in the candidate set
-- dependency additions are documented and language-neutral
+- the exact candidate source set and its direct external references are
+  recorded
+- a clean candidate records its language-neutral reference set; a mixed
+  candidate records every blocker and the intended post-preparation set
+- provider, parser, DAP, release, package, and compatibility-policy references
+  are classified rather than silently omitted
+- the intended post-preparation dependency closure is recorded as a target, not
+  as a current fact
+- no claim of independent compilation or Perl-free closure is made while a
+  blocker remains
 
 Proof:
 
 ```bash
 git diff --check
+just ci-docs-check
 ./scripts/cargo-safe check -p perl-lsp-rs-core --all-targets --profile agent --locked
 ```
+
+The compile check is supporting evidence for the current application. It does
+not prove that a mixed candidate compiles independently.
 
 Rollback:
 
