@@ -20,10 +20,7 @@ fn marker_index(skill: &str, marker: &str, provider: &str) -> Result<usize, io::
     })
 }
 
-fn assert_reasoned_reply<'a>(
-    skill: &'a str,
-    provider: &str,
-) -> Result<&'a str, Box<dyn Error>> {
+fn assert_reasoned_reply<'a>(skill: &'a str, provider: &str) -> Result<&'a str, Box<dyn Error>> {
     for marker in [
         "## Reply quality",
         "concise engineering decision record",
@@ -60,8 +57,7 @@ fn assert_reasoned_reply<'a>(
 fn provider_rules_require_reasoned_inline_replies() -> Result<(), Box<dyn Error>> {
     let root = project_root()?;
     let codex = fs::read_to_string(root.join(".agents/skills/address-review-comments/SKILL.md"))?;
-    let claude =
-        fs::read_to_string(root.join(".claude/skills/address-review-comments/SKILL.md"))?;
+    let claude = fs::read_to_string(root.join(".claude/skills/address-review-comments/SKILL.md"))?;
     let droid = fs::read_to_string(root.join(".factory/rules/droid-review.md"))?;
 
     let codex_section = assert_reasoned_reply(&codex, "Codex")?;
