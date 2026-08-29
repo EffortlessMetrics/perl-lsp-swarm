@@ -6,18 +6,18 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12406 |
-| Rust-family files | 3814 |
-| Non-Rust files | 8592 |
-| Allowlisted | 6357 |
+| Total tracked files | 12409 |
+| Rust-family files | 3815 |
+| Non-Rust files | 8594 |
+| Allowlisted | 6359 |
 | Unclassified | 2235 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 490 |
-| documentation | 2804 |
+| config | 491 |
+| documentation | 2805 |
 | generated | 2 |
 | production | 348 |
 | test | 2052 |
@@ -4890,6 +4890,7 @@
 | `docs/forensics/prompts/measurement-auditor.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/forensics/prompts/policy-auditor.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/forensics/prompts/verification-auditor.md` | documentation | `non-rust-docs-tree` | docs |
+| `docs/generated/workspace_index_lifecycle_propositions.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/generated/workspace_runtime_ownership.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/handoff/2026-05-03-v0.13.3-closeout-handoff.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/handoff/SWARM_DESIGN.md` | documentation | `non-rust-docs-tree` | docs |
@@ -6375,6 +6376,7 @@
 | `policy/trust-lanes.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/ub-review.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/workflow-contracts.toml` | config | `non-rust-policy-ledgers` | release/ci |
+| `policy/workspace-index-lifecycle-propositions.v1.tsv` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/workspace-runtime-ownership.v1.tsv` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/workspace-symbol-classes.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/zed-dap-support.toml` | config | `non-rust-policy-ledgers` | release/ci |
