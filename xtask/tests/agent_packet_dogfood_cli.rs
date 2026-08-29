@@ -1,8 +1,8 @@
 //! Executable CLI coverage for the agent-packet dogfood report and validation paths.
 
 use assert_cmd::Command;
-use color_eyre::eyre::{Context, Result, eyre};
-use serde_json::{Value, json};
+use color_eyre::eyre::{eyre, Context, Result};
+use serde_json::{json, Value};
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::PathBuf;
@@ -138,10 +138,16 @@ fn validate_cli_redacts_untrusted_structural_diagnostic_values() -> Result<()> {
     invalid_field[leaked] = json!(true);
     let field_path = write_document(&temp, "invalid-field.json", invalid_field)?;
 
+    let leaked_path = "C:/Users/dev/api_key=hunter2";
+    let mut invalid_path_key = fixture_document()?;
+    invalid_path_key[leaked_path] = json!(true);
+    let path_key_path = write_document(&temp, "invalid-path-key.json", invalid_path_key)?;
+
     for (path, code) in [
         (&kind_path, "unknown_record_kind"),
         (&role_path, "unknown_intervention_role"),
         (&field_path, "unknown_field"),
+        (&path_key_path, "unknown_field"),
     ] {
         let output = Command::cargo_bin("xtask")?
             .args(["agent-dogfood", "validate", "--manifest"])
@@ -152,6 +158,15 @@ fn validate_cli_redacts_untrusted_structural_diagnostic_values() -> Result<()> {
         assert!(stderr.contains(code), "missing reason code {code}: {stderr}");
         assert!(!stderr.contains(leaked), "validation CLI leaked {leaked}: {stderr}");
     }
+    let output = Command::cargo_bin("xtask")?
+        .args(["agent-dogfood", "validate", "--manifest"])
+        .arg(&path_key_path)
+        .output()?;
+    let stderr = String::from_utf8(output.stderr)?;
+    assert!(
+        !stderr.contains(leaked_path),
+        "validation CLI leaked diagnostic path {leaked_path}: {stderr}"
+    );
     Ok(())
 }
 

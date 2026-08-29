@@ -26,7 +26,7 @@
 
 use crate::utils::project_root;
 use clap::Subcommand;
-use color_eyre::eyre::{Context, Result, bail};
+use color_eyre::eyre::{bail, Context, Result};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -498,8 +498,14 @@ fn scan_hygiene(text: &str, where_: &str, violations: &mut Vec<Violation>) {
             format!("{where_}: retained evidence contains a machine-local path"),
         ));
     }
-    for pair in lowered.chars().collect::<Vec<_>>().windows(3) {
-        if pair[0].is_ascii_lowercase() && pair[1] == ':' && pair[2] == '\\' {
+    let chars: Vec<_> = lowered.chars().collect();
+    for (index, pair) in chars.windows(3).enumerate() {
+        let at_path_boundary = index == 0 || !chars[index - 1].is_ascii_alphanumeric();
+        if at_path_boundary
+            && pair[0].is_ascii_lowercase()
+            && pair[1] == ':'
+            && (pair[2] == '\\' || (pair[2] == '/' && chars.get(index + 3) != Some(&'/')))
+        {
             violations.push(Violation::new(
                 "local_path_in_payload",
                 format!("{where_}: retained evidence contains a drive-letter path"),
@@ -541,7 +547,7 @@ fn normalize_key(key: &str) -> String {
     let chars: Vec<char> = key.chars().collect();
     let mut normalized = String::with_capacity(key.len());
     for (index, character) in chars.iter().copied().enumerate() {
-        if character == '-' {
+        if !character.is_ascii_alphanumeric() {
             if !normalized.ends_with('_') {
                 normalized.push('_');
             }

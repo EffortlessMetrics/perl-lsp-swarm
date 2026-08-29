@@ -341,6 +341,10 @@ fn negative_structured_credential_key_fails_closed() {
         "APIKeyId",
         "nestedTokenValue",
         "credentialRef",
+        "api.key",
+        "api/key",
+        "client.secret",
+        "private/key",
     ] {
         let violations = mutant(base_manifest(), |doc| {
             doc["metadata"] = json!({"nested": [{ key: "hunter2" }]});
@@ -351,7 +355,15 @@ fn negative_structured_credential_key_fails_closed() {
 
 #[test]
 fn normalized_credential_keys_require_segment_boundaries() {
-    for key in ["tokenValue", "clientSecretValue", "apiKeyId", "outer_token_value"] {
+    for key in [
+        "tokenValue",
+        "clientSecretValue",
+        "apiKeyId",
+        "outer_token_value",
+        "api.key",
+        "api/key",
+        "API.Key",
+    ] {
         assert!(is_credential_key(key), "{key} must be rejected as a credential key");
     }
     for key in ["tokenized", "secretary", "credentialish"] {
@@ -382,6 +394,8 @@ fn negative_machine_local_path_in_payload_fails_closed() {
     for leaked in [
         "C:\\Users\\dev\\secret.log",
         "F:\\Temp\\raw-dump.txt",
+        "C:/Users/dev/secret.log",
+        "D:/Temp/raw-dump.txt",
         "/home/dev/.ssh/id_rsa.pub",
         "%USERPROFILE%\\notes.md",
     ] {
@@ -393,12 +407,37 @@ fn negative_machine_local_path_in_payload_fails_closed() {
 }
 
 #[test]
+fn positive_uri_text_is_not_misclassified_as_a_drive_path() {
+    let violations = mutant(base_manifest(), |doc| {
+        doc["metadata"] = json!({
+            "documentation": "https://example.test/perl-lsp",
+            "endpoint": "http://localhost:3000/status",
+        });
+    });
+    assert!(
+        !violations.iter().any(|violation| violation.code == "local_path_in_payload"),
+        "URI text must not trigger a local-path violation: {violations:?}"
+    );
+}
+
+#[test]
 fn negative_machine_local_path_outside_payload_fails_closed() {
     // Subject identity strings are part of the retained document too.
     let violations = mutant(base_manifest(), |doc| {
         doc["subject"]["tool"]["name"] = json!("/home/dev/perl-lsp-xtask");
     });
     assert_contains(&violations, "local_path_in_payload");
+}
+
+#[test]
+fn negative_caller_controlled_diagnostic_path_is_not_echoed() {
+    let leaked = "C:/Users/dev/api_key=hunter2";
+    let violations = mutant(base_manifest(), |doc| {
+        doc.as_object_mut().unwrap().insert(leaked.to_string(), json!(true));
+    });
+    assert_contains(&violations, "unknown_field");
+    let details = violations.iter().map(|violation| violation.detail.as_str()).collect::<Vec<_>>();
+    assert!(details.iter().all(|detail| !detail.contains(leaked)));
 }
 
 #[test]
