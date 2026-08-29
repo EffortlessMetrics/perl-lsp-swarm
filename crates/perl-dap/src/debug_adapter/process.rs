@@ -1275,6 +1275,16 @@ impl DebugAdapter {
                         // Detect debugger prompt (stopped state) with enhanced pattern matching
                         if prompt_re().is_some_and(|re| re.is_match(&sanitized_text)) {
                             _debugger_ready = true;
+                            // Per-stop correlation: a prompt-only line belongs to a
+                            // physical stop that the context branch may already have
+                            // reported (its emission advanced the suspension
+                            // generation), to the implicit RunToBreakpoint stop that
+                            // must stay suppressed, or to a stop whose context line
+                            // was never observed. This branch owns the emission only
+                            // when it advanced the generation itself — the same
+                            // was_running gate the context branch applies — so each
+                            // stop yields exactly one stopped event.
+                            let mut prompt_owns_stop = false;
                             let thread_id = {
                                 let Ok(mut guard) = session.lock() else {
                                     tracing::warn!(
@@ -1283,6 +1293,7 @@ impl DebugAdapter {
                                     continue;
                                 };
                                 if let Some(ref mut s) = *guard {
+                                    let was_running = matches!(s.state, DebugState::Running);
                                     // A prompt can be observed after the context
                                     // branch (which already advanced the
                                     // suspension generation), or without a
@@ -1290,10 +1301,7 @@ impl DebugAdapter {
                                     // generation in the former case and advance
                                     // it in the latter; never reset the frame id
                                     // to the historical constant 1.
-                                    let current_frame_id = current_stopped_frame_id(
-                                        s,
-                                        matches!(s.state, DebugState::Running),
-                                    );
+                                    let current_frame_id = current_stopped_frame_id(s, was_running);
                                     // Create stack frame with enhanced context validation
                                     if !current_file.is_empty() && current_line > 0 {
                                         let frame = StackFrame {
@@ -1339,15 +1347,35 @@ impl DebugAdapter {
                                         s.stack_frames = vec![frame];
                                         s.stack_frame_arguments.clear();
                                     }
-                                    s.state = DebugState::Stopped;
+                                    if was_running {
+                                        if matches!(s.last_resume_mode, ResumeMode::RunToBreakpoint)
+                                        {
+                                            // Mirror the context branch's
+                                            // RunToBreakpoint suppression: while the
+                                            // `c` from configurationDone is driving
+                                            // toward the first user breakpoint, a bare
+                                            // prompt is the implicit first-line stop,
+                                            // not a client-visible suspension. Keep
+                                            // the session Running (a following context
+                                            // line can still own the real stop) and
+                                            // preserve the resume mode.
+                                            s.state = DebugState::Running;
+                                        } else {
+                                            s.state = DebugState::Stopped;
+                                            prompt_owns_stop = true;
+                                        }
+                                    }
                                     s.thread_id
                                 } else {
                                     continue;
                                 }
                             };
 
-                            // Send stopped event with robust error handling
-                            if let Some(ref sender) = sender
+                            // Send the stopped event only when this prompt
+                            // advanced the suspension generation itself; a prompt
+                            // observed for an already-reported stop stays silent.
+                            if prompt_owns_stop
+                                && let Some(ref sender) = sender
                                 && !emit_event_safe(
                                     sender,
                                     &seq,
@@ -2431,6 +2459,207 @@ mod tests {
             return Err("next suspension reused the previous frame id".to_string());
         }
 
+        Ok(())
+    }
+
+    /// A controllable perl5db stand-in: every `p` line on stdin emits one
+    /// standalone `DB<n>` prompt line on stderr; every `m` line emits a
+    /// `MARKER <n>` line that is neither a prompt nor a context line. The
+    /// reader processes lines in order, so observing a marker's `output`
+    /// event proves every event decision for earlier lines has been made —
+    /// exact ordering with no sleeps.
+    const PROMPT_FEED_SCRIPT: &str = r#"
+$| = 1;
+my $n = 0;
+while (defined(my $go = <STDIN>)) {
+    if ($go =~ /^p/) { $n += 1; print STDERR "DB<$n>\n"; }
+    elsif ($go =~ /^m/) { print STDERR "MARKER $n\n"; }
+    else { last; }
+}
+"#;
+
+    fn drain_until_marker(
+        rx: &std::sync::mpsc::Receiver<super::DapMessage>,
+        marker: usize,
+        events: &mut Vec<super::DapMessage>,
+    ) -> Result<(), String> {
+        loop {
+            let msg = rx
+                .recv_timeout(std::time::Duration::from_secs(15))
+                .map_err(|_| format!("timed out waiting for MARKER {marker}"))?;
+            let is_marker = match &msg {
+                super::DapMessage::Event { event, body, .. } if event == "output" => body
+                    .as_ref()
+                    .and_then(|b| b.get("output"))
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|text| text.contains(&format!("MARKER {marker}"))),
+                _ => false,
+            };
+            let reached_marker = is_marker;
+            events.push(msg);
+            if reached_marker {
+                return Ok(());
+            }
+        }
+    }
+
+    fn stopped_count(events: &[super::DapMessage]) -> usize {
+        events
+            .iter()
+            .filter(|m| matches!(m, super::DapMessage::Event { event, .. } if event == "stopped"))
+            .count()
+    }
+
+    /// Per-stop correlation of prompt-only lines with the suspension
+    /// generation (DAP-stepping flake class, isolation receipt on #11869):
+    ///
+    /// 1. a `DB<n>` prompt observed while the session is NOT running emits no
+    ///    `stopped` event (the context branch already owns that stop);
+    /// 2. a prompt that advances the generation itself emits exactly one
+    ///    `stopped(reason="step")`;
+    /// 3. a duplicate prompt for the now-stopped session emits nothing;
+    /// 4. a prompt while `RunToBreakpoint` is pending stays suppressed and
+    ///    keeps the session Running, mirroring the context branch.
+    #[test]
+    fn prompt_only_line_emission_is_generation_correlated() -> Result<(), String> {
+        use super::{DapMessage, DebugSession, DebugState, ResumeMode, VariableCache};
+        use std::io::Write;
+        use std::sync::mpsc::sync_channel;
+
+        let mut adapter = DebugAdapter::new();
+        let (tx, rx) = sync_channel::<DapMessage>(512);
+        adapter.set_event_sender(tx);
+
+        let mut child = std::process::Command::new("perl")
+            .arg("-e")
+            .arg(PROMPT_FEED_SCRIPT)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|error| format!("synthetic perl debugger child failed to spawn: {error}"))?;
+        let mut stdin =
+            child.stdin.take().ok_or_else(|| "synthetic child stdin was not piped".to_string())?;
+
+        *adapter.session.lock().map_err(|_| "session lock poisoned".to_string())? =
+            Some(DebugSession {
+                process: child,
+                state: DebugState::Stopped,
+                stack_frames: Vec::new(),
+                stack_frame_arguments: HashMap::new(),
+                variable_cache: VariableCache::default(),
+                thread_id: 1,
+                last_resume_mode: ResumeMode::Unknown,
+                stopped_generation: 0,
+            });
+
+        adapter.start_output_reader();
+
+        let mut send = |command: &str| -> Result<(), String> {
+            stdin.write_all(command.as_bytes()).map_err(|e| e.to_string())?;
+            stdin.flush().map_err(|e| e.to_string())
+        };
+        let mut events: Vec<DapMessage> = Vec::new();
+
+        // 1. Prompt while Stopped: the stop was already reported; the prompt
+        //    branch must not emit.
+        send("p\n")?;
+        send("m\n")?;
+        drain_until_marker(&rx, 1, &mut events)?;
+        if stopped_count(&events) != 0 {
+            return Err(format!(
+                "prompt while not running emitted a stopped event (count {}), duplicating the stop the context branch owns",
+                stopped_count(&events)
+            ));
+        }
+
+        // 2. Prompt after a resume (generation advances in this branch):
+        //    exactly one stopped event, reason `step`, session Stopped.
+        {
+            let mut guard =
+                adapter.session.lock().map_err(|_| "session lock poisoned".to_string())?;
+            let s = guard.as_mut().ok_or("session was not installed")?;
+            s.state = DebugState::Running;
+            s.last_resume_mode = ResumeMode::Next;
+        }
+        send("p\n")?;
+        send("m\n")?;
+        events.clear();
+        drain_until_marker(&rx, 2, &mut events)?;
+        if stopped_count(&events) != 1 {
+            return Err(format!(
+                "prompt that advanced the generation must emit exactly one stopped event, got {}",
+                stopped_count(&events)
+            ));
+        }
+        let step_reason_ok = events.iter().any(|m| match m {
+            DapMessage::Event { event, body, .. } if event == "stopped" => {
+                body.as_ref().and_then(|b| b.get("reason")).and_then(|v| v.as_str()) == Some("step")
+            }
+            _ => false,
+        });
+        if !step_reason_ok {
+            return Err("step-stop stopped event must carry reason `step`".to_string());
+        }
+        {
+            let guard = adapter.session.lock().map_err(|_| "session lock poisoned".to_string())?;
+            let s = guard.as_ref().ok_or("session was not installed")?;
+            if !matches!(s.state, DebugState::Stopped) {
+                return Err("session must be Stopped after a prompt-owned stop".to_string());
+            }
+            if s.stopped_generation != 1 {
+                return Err(format!(
+                    "one prompt-owned stop must advance the generation exactly once, got {}",
+                    s.stopped_generation
+                ));
+            }
+        }
+
+        // 3. Duplicate prompt for the same (now stopped) suspension: deduped.
+        send("p\n")?;
+        send("m\n")?;
+        events.clear();
+        drain_until_marker(&rx, 3, &mut events)?;
+        if stopped_count(&events) != 0 {
+            return Err(format!(
+                "duplicate prompt for the current suspension must not emit (count {})",
+                stopped_count(&events)
+            ));
+        }
+
+        // 4. Prompt while RunToBreakpoint is pending: suppressed, session
+        //    stays Running so a following context line can own the real stop.
+        {
+            let mut guard =
+                adapter.session.lock().map_err(|_| "session lock poisoned".to_string())?;
+            let s = guard.as_mut().ok_or("session was not installed")?;
+            s.state = DebugState::Running;
+            s.last_resume_mode = ResumeMode::RunToBreakpoint;
+        }
+        send("p\n")?;
+        send("m\n")?;
+        events.clear();
+        drain_until_marker(&rx, 4, &mut events)?;
+        if stopped_count(&events) != 0 {
+            return Err(format!(
+                "prompt during RunToBreakpoint must stay suppressed (count {})",
+                stopped_count(&events)
+            ));
+        }
+        {
+            let guard = adapter.session.lock().map_err(|_| "session lock poisoned".to_string())?;
+            let s = guard.as_ref().ok_or("session was not installed")?;
+            if !matches!(s.state, DebugState::Running) {
+                return Err("RunToBreakpoint suppression must keep the session Running".to_string());
+            }
+            if !matches!(s.last_resume_mode, ResumeMode::RunToBreakpoint) {
+                return Err("RunToBreakpoint suppression must preserve the resume mode".to_string());
+            }
+        }
+
+        // Drop stdin: the synthetic debugger sees EOF and exits, the reader
+        // observes EOF and tears the session down.
+        drop(stdin);
         Ok(())
     }
 
