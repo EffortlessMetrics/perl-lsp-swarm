@@ -177,7 +177,9 @@ probe metadata remains available to the classifier.
 
 The landed #11575 inventory is the complete audit input for this plan, not the
 future route denominator. A validator must parse every literal claim ID in its
-claim-row table and require an exact-one disposition in the future join data:
+claim-row table and require an exact-one disposition record for every claim in the
+future join data (a record may project to a route already supported by other
+claims):
 
 1. a claim is projected to one or more exact catalog route rows and projection
    contexts, or
@@ -281,8 +283,8 @@ In particular, FND-5 is a `route-independent constraint` for the mutable
 
 The closure contract is a future executable acceptance fixture, not proof that a
 production ledger exists in this planning PR. The fixture below is deliberately
-self-contained and list-based: repeated IDs are observable, and C202's four
-projections cannot overwrite one another in a dictionary. Its synthetic route
+self-contained and list-based: repeated IDs are observable, and multi-route
+claims (including C202) cannot overwrite one another in a dictionary. Its synthetic route
 IDs are test data only; the implementation must replace them with distinct opaque
 IDs from #10334 under #10333's contract and validate the catalog digest before
 accepting the ledger. The
@@ -404,6 +406,20 @@ CLAIM_ROUTE_BINDINGS["C1208"] = {
     "exact_catalog_route_id": "r_4f8c2a",
     "exact_projection_context": "Open_VSX_compatible_marketplace_context",
 }
+MULTI_ROUTE_PROJECTIONS = {
+    # A claim may support several independently selectable channel/context
+    # projections.  These fixture IDs are opaque test data, not catalog IDs.
+    "C1202": ("marketplace", "open-vsx"),
+    "C1302": ("registry", "local-cargo"),
+    "C1304": ("registry", "homebrew", "local-cargo"),
+    "C1305": ("registry", "homebrew", "local-cargo"),
+    "C1308": ("registry", "homebrew"),
+}
+for item_id, route_names in MULTI_ROUTE_PROJECTIONS.items():
+    CLAIM_ROUTE_BINDINGS[item_id] = tuple({
+        "exact_catalog_route_id": f"fixture-route-{item_id}-{route_name}",
+        "exact_projection_context": f"fixture-context-{item_id}-{route_name}",
+    } for route_name in route_names)
 FINDING_DISPOSITION_RULES = {
     finding_id: {
         "kind": "project",
@@ -429,37 +445,37 @@ FINDING_DISPOSITION_RULES.update({
         "exact_reason": "literal-pin policy owned by #10342",
     },
 })
+FINDING_DISPOSITION_RULES["FND-3"] = tuple({
+    "kind": "project",
+    "exact_catalog_route_id": f"fixture-finding-route-FND-3-{route_name}",
+    "exact_projection_context": f"fixture-finding-context-FND-3-{route_name}",
+} for route_name in ("marketplace", "homebrew"))
+
+def projection_records(subject_id):
+    expected = (CLAIM_ROUTE_BINDINGS if subject_id.startswith("C")
+                else FINDING_DISPOSITION_RULES)[subject_id]
+    return list(expected) if isinstance(expected, tuple) else [expected]
 
 def fixture_catalog():
     rows = []
     for item_id in EXPECTED_CLAIMS:
         if item_id in REQUIRED_EXCLUSION_IDS:
             continue
-        if item_id == "C202":
-            rows.extend({
-                "route_id": f"fixture-route-{route}",
-                "target_registry": "fixture_registry",
+        for projection in projection_records(item_id):
+            route_id = projection["exact_catalog_route_id"]
+            context = projection["exact_projection_context"]
+            rows.append({
+                "route_id": route_id,
+                "target_registry": "open_vsx" if item_id == "C1208"
+                else "fixture_registry",
                 "projection_contexts": (context,),
-            } for route, context in C202_PROJECTIONS)
-        elif item_id == "C1208":
-            rows.append({
-                "route_id": "r_4f8c2a",
-                "target_registry": "open_vsx",
-                "projection_contexts": (
-                    "Open_VSX_compatible_marketplace_context",
-                ),
-            })
-        else:
-            rows.append({
-                "route_id": f"fixture-route-{item_id}",
-                "target_registry": "fixture_registry",
-                "projection_contexts": (f"fixture-context-{item_id}",),
             })
     rows.extend({
-        "route_id": f"fixture-finding-route-{finding_id}",
+        "route_id": projection["exact_catalog_route_id"],
         "target_registry": "fixture_registry",
-        "projection_contexts": (f"fixture-finding-context-{finding_id}",),
-    } for finding_id in ROUTE_FINDING_IDS)
+        "projection_contexts": (projection["exact_projection_context"],),
+    } for finding_id in ROUTE_FINDING_IDS
+      for projection in projection_records(finding_id))
     return tuple(rows)
 
 FIXTURE_CATALOG = fixture_catalog()
@@ -502,7 +518,10 @@ def require_claim_disposition(row):
             raise ValueError(f"{row['id']}: route claim must be projected")
     elif row["id"] in EXPECTED_FINDINGS:
         expected = FINDING_DISPOSITION_RULES[row["id"]]
-        if any(row.get(key) != value for key, value in expected.items()):
+        if isinstance(expected, tuple):
+            if row.get("kind") != "project":
+                raise ValueError(f"{row['id']}: route finding must be projected")
+        elif any(row.get(key) != value for key, value in expected.items()):
             raise ValueError(f"{row['id']}: incompatible finding disposition")
     else:
         raise ValueError(f"{row['id']}: unknown disposition subject")
@@ -515,21 +534,23 @@ def require_claim_route_binding(row):
         "exact_catalog_route_id": row.get("exact_catalog_route_id"),
         "exact_projection_context": row.get("exact_projection_context"),
     }
-    if actual != expected:
+    if actual not in (expected if isinstance(expected, tuple) else (expected,)):
         raise ValueError(f"{row['id']}: claim-to-route/context binding mismatch")
 
 def require_finding_route_binding(row):
     expected = FINDING_DISPOSITION_RULES.get(row["id"])
-    if expected is None or expected["kind"] != "project":
+    if expected is None or (not isinstance(expected, tuple)
+                           and expected["kind"] != "project"):
         return
     actual = {
         "exact_catalog_route_id": row.get("exact_catalog_route_id"),
         "exact_projection_context": row.get("exact_projection_context"),
     }
-    if actual != {
-        "exact_catalog_route_id": expected["exact_catalog_route_id"],
-        "exact_projection_context": expected["exact_projection_context"],
-    }:
+    expected_bindings = expected if isinstance(expected, tuple) else (expected,)
+    if actual not in ({
+        "exact_catalog_route_id": binding["exact_catalog_route_id"],
+        "exact_projection_context": binding["exact_projection_context"],
+    } for binding in expected_bindings):
         raise ValueError(f"{row['id']}: finding-to-route/context binding mismatch")
 
 def require_true(condition, message):
@@ -553,29 +574,15 @@ def assert_disposition_rejected(row):
 def fixture_ledger():
     rows = []
     for item_id in EXPECTED_CLAIMS:
-        if item_id == "C202":
-            rows.extend({
-                "id": item_id, "kind": "project",
-                "exact_catalog_route_id": f"fixture-route-{route}",
-                "exact_projection_context": context,
-            } for route, context in C202_PROJECTIONS)
-        elif item_id == "C1208":
-            rows.append({
-                "id": item_id, "kind": "project",
-                "exact_catalog_route_id": "r_4f8c2a",
-                "exact_projection_context": "Open_VSX_compatible_marketplace_context",
-            })
-        elif item_id in REQUIRED_EXCLUSION_IDS:
+        if item_id in REQUIRED_EXCLUSION_IDS:
             rows.append({"id": item_id, **CLAIM_DISPOSITION_RULES[item_id]})
         else:
-            rows.append({
-                "id": item_id, "kind": "project",
-                "exact_catalog_route_id": f"fixture-route-{item_id}",
-                "exact_projection_context": f"fixture-context-{item_id}",
-            })
+            rows.extend({"id": item_id, "kind": "project", **projection}
+                        for projection in projection_records(item_id))
     for number in range(1, 13):
         finding_id = f"FND-{number}"
-        rows.append({"id": finding_id, **FINDING_DISPOSITION_RULES[finding_id]})
+        rows.extend({"id": finding_id, **projection}
+                    for projection in projection_records(finding_id))
     return rows
 
 def validate_closure(inventory_rows, ledger_rows, catalog_rows):
@@ -590,6 +597,9 @@ def validate_closure(inventory_rows, ledger_rows, catalog_rows):
         raise ValueError("missing, duplicate, or unknown inventory claim ID")
     expected_counts = Counter({item_id: 1 for item_id in expected})
     expected_counts["C202"] = 4
+    for item_id, route_names in MULTI_ROUTE_PROJECTIONS.items():
+        expected_counts[item_id] = len(route_names)
+    expected_counts["FND-3"] = len(FINDING_DISPOSITION_RULES["FND-3"])
     if Counter(ledger_ids) != expected_counts:
         raise ValueError("missing, duplicate, or unknown ledger ID")
     for row in ledger_rows:
@@ -644,10 +654,8 @@ def validate_closure(inventory_rows, ledger_rows, catalog_rows):
         for row in ledger_rows
         if row["kind"] == "project"
     ]
-    if Counter(referenced_projections) != Counter(catalog_projections):
-        raise ValueError(
-            "catalog contains an unreferenced or multiply referenced route/context"
-        )
+    if set(referenced_projections) != set(catalog_projections):
+        raise ValueError("catalog contains an unreferenced route/context")
     return True
 
 def assert_closure_rejected(catalog_rows):
@@ -762,18 +770,22 @@ require_true(
 The fixture rejects missing, duplicate, unknown, and incompatible IDs before
 acceptance (the production harness should collect those errors rather than stop at the
 first one). It validates every literal claim and finding ID individually, including
-all 82 ledger IDs and C202's four records, rather than trusting a count or range
+all 93 ledger records and the multi-route claims (including C202's four records), rather than trusting a count or range
 shorthand. Thus the complete 70-claim / 12-finding closure check is executable
 before route classification exists; only exact catalog route IDs and projection
 contexts remain gated on #10334's catalog and #10333's contract. A prose manifest or count without this
-set-equality and compatibility check does not satisfy closure. Every project row
+set-equality and compatibility check does not satisfy closure. Multiple ledger
+facts may support one catalog projection, but every catalog projection must be
+referenced at least once. Every project row
 also resolves its exact route ID and projection context through the fixture catalog.
 The claim-to-disposition rules independently require every explicit out-of-scope
 row (C106, C108, C201, C216, C703, C801, C1001, C1002, C1008, C1102, C1201,
 C1205, and C1309) to remain its declared exclusion; a project or other incompatible
 exclusion disposition is rejected for each. The reverse catalog check compares exact
-`(route_id, projection_context)` pairs and rejects any unreferenced or multiply
-referenced route/context pair, including an extra context on an otherwise known route.
+`(route_id, projection_context)` pairs as sets and rejects any unreferenced
+route/context pair, including an extra context on an otherwise known route;
+many-to-one references are valid because several claims or findings can support
+the same catalog projection.
 The per-ID route-binding check also rejects a complete C101/C102 binding swap, and
 the expected finding disposition map rejects moving route-relevant FND-4 to an
 allowed exclusion. These are deliberate tamper controls: they fail under both
@@ -1088,7 +1100,8 @@ assuming the former prose-row denominator.
    result (`pending_gate` > `unproven` > `proven_current`). Removing the inert
    status must leave the same result. A fixture that only lists the eight names,
    or treats `volatile_number` as `unproven`, is incomplete.
-8. **C202 projection preservation.** The closure fixture must emit exactly four
+8. **Multi-route projection preservation.** The closure fixture must emit every
+   declared projection for multi-route claims and findings. C202 must emit exactly four
    ordered rows for C202:
    `(VS_Code_extension, VS_Code_compatible_managed_client)`,
    `(manual_archive, macOS_or_Linux_or_Windows_manual_archive)`,
@@ -1189,7 +1202,7 @@ be emitted.
 | H2 | Windows x86_64 policy while published PowerShell installer is broken (#5461/#4348) | (a) manual-archive first, powershell shown as `pending_gate`; (b) omit powershell entirely; (c) lead with scoop/choco/winget verify-first | `human-pending`; no route recommendation | Users routed to a 404 installer, or gate visibility lost (FND-9's four-site spread re-grows) |
 | H3 | Windows ARM64 until an ARM64 release ships (FND-4 — routed to #11549 by name) | (a) recommend x64-fallback + build-from-source labeled receipt-bound; (b) refuse with "no receipt-backed route"; (c) follow prose (contradicts receipts) | `human-pending`; no route recommendation | Either false "supported" claim or an unnecessarily barren answer; FND-4 disposition must be defensible |
 | H4 | macOS server-only ranking: homebrew-tap vs cargo-registry (both `current`; tap freshness unproven per C1304/C1305 caveats) | (a) tap first (native UX); (b) cargo-registry first (version receipts); (c) context-split (editor=tap, headless=cargo) | `human-pending`; no ordering | A preferred route whose freshness caveat the docs themselves flag |
-| H5 | Unpinned mutability policy: `cargo-git` (FND-6) and `latest` endorsements (FND-3) | (a) classify `not_recommended`, never selected; (b) selectable with warning; (c) leave unclassified | `human-pending`; no selection | Classifier endorses what FND-3 calls a moving target the receipt does not cover |
+| H5 | Unpinned mutability policy: `cargo-git` (FND-6) and `latest` endorsements (FND-3) | (a) classify `not_recommended`, never selected; (b) retain as a diagnostic with warning, never selectable; (c) leave unclassified | `human-pending`; no selection | Classifier endorses what FND-3 calls a moving target the receipt does not cover |
 | H6 | perl-dap (adapter) acquisition policy for non-VS Code users | (a) archive pair route; (b) separate `cargo install --locked perl-dap` (C702); (c) defer — server-only answer, adapter on request | `human-pending`; no ordering | Users get a server without a debugger, or build-from-source surprises (C208) |
 | H7 | Unproven channels (`unproven-channels`: scoop/choco/winget C212, Docker) in selection output | (a) never selected, visible in a "unproven" appendix; (b) fully omitted; (c) visible with a verify-first instruction but never selectable | `human-pending`; no selection | Either dead output weight or an implied endorsement the receipts don't back |
 
