@@ -34,3 +34,4 @@ mcp_forbids = [
 [executables]
 forbidden_names = ["perl-lsp", "perl-mcp"]
 forbidden_prefixes = ["perl-lsp-", "perl-mcp-"]
+forbidden_tokens = ["adapter", "server"]
