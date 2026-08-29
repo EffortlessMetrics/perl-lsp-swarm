@@ -1,49 +1,62 @@
 //! Public immutable-subject and real ci-scope consumer proof (#8042).
+//!
+//! Fixture classification (#13697): identity-pinning and hermetic. Every Git
+//! invocation, including the `xtask` children that read the fixture, runs
+//! through `git_test_support::HermeticGit` so ambient machine configuration
+//! (signing, object format, hooks, filters, line endings, locale, timezone)
+//! cannot change the pinned commit/tree/digest identities.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use assert_cmd::cargo::cargo_bin_cmd;
-use color_eyre::eyre::{Context, ContextCompat, Result, bail, ensure};
+use color_eyre::eyre::{ContextCompat, Result, bail, ensure};
 use serde_json::{Value, json};
+
+mod git_test_support;
+
+use git_test_support::HermeticGit;
 
 const REPOSITORY: &str = "EffortlessMetrics/perl-lsp-swarm";
 
-fn git(repo: &Path, args: &[&str]) -> Result<String> {
-    let output = Command::new("git")
-        .args(args)
-        .current_dir(repo)
-        .env("GIT_AUTHOR_DATE", "2026-08-27T12:00:00Z")
-        .env("GIT_COMMITTER_DATE", "2026-08-27T12:00:00Z")
-        .output()
-        .with_context(|| format!("git {} failed to start", args.join(" ")))?;
-    ensure!(
-        output.status.success(),
-        "git {} failed: {}",
-        args.join(" "),
-        String::from_utf8_lossy(&output.stderr).trim()
-    );
-    Ok(String::from_utf8(output.stdout)?.trim().to_string())
+/// Bridge from the shared helper's typed anyhow failures to this suite's
+/// color-eyre errors, preserving the argv/cwd/stderr chain.
+fn hermetic_to_eyre(error: anyhow::Error) -> color_eyre::eyre::Report {
+    color_eyre::eyre::Report::msg(format!("{error:#}"))
 }
 
-fn commit(repo: &Path, path: &str, content: &str, message: &str) -> Result<String> {
+fn git(hermetic: &HermeticGit, repo: &Path, args: &[&str]) -> Result<String> {
+    HermeticGit::git(hermetic, repo, args).map_err(hermetic_to_eyre)
+}
+
+fn commit(
+    hermetic: &HermeticGit,
+    repo: &Path,
+    path: &str,
+    content: &str,
+    message: &str,
+) -> Result<String> {
     let file = repo.join(path);
     if let Some(parent) = file.parent() {
         fs::create_dir_all(parent)?;
     }
     fs::write(file, content)?;
-    git(repo, &["add", path])?;
-    git(repo, &["commit", "-m", message])?;
-    git(repo, &["rev-parse", "HEAD"])
+    git(hermetic, repo, &["add", path])?;
+    git(hermetic, repo, &["commit", "-m", message])?;
+    git(hermetic, repo, &["rev-parse", "HEAD"])
 }
 
-fn init_fixture(root: &Path) -> Result<(String, String)> {
-    git(root, &["init", "--initial-branch=main"])?;
-    git(root, &["config", "user.email", "ci-subject@example.com"])?;
-    git(root, &["config", "user.name", "CI Subject Fixture"])?;
-    git(root, &["config", "commit.gpgsign", "false"])?;
-    git(root, &["remote", "add", "origin", "git@github.com:EffortlessMetrics/perl-lsp-swarm.git"])?;
+fn init_fixture(hermetic: &HermeticGit, root: &Path) -> Result<(String, String)> {
+    hermetic.init_repo(root).map_err(hermetic_to_eyre)?;
+    git(hermetic, root, &["config", "user.email", "ci-subject@example.com"])?;
+    git(hermetic, root, &["config", "user.name", "CI Subject Fixture"])?;
+    git(hermetic, root, &["config", "commit.gpgsign", "false"])?;
+    git(
+        hermetic,
+        root,
+        &["remote", "add", "origin", "git@github.com:EffortlessMetrics/perl-lsp-swarm.git"],
+    )?;
     fs::create_dir_all(root.join("crates/demo/src"))?;
     fs::write(
         root.join("Cargo.toml"),
@@ -54,11 +67,16 @@ fn init_fixture(root: &Path) -> Result<(String, String)> {
         "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
     )?;
     fs::write(root.join("crates/demo/src/lib.rs"), "pub fn value() -> u8 { 1 }\n")?;
-    git(root, &["add", "Cargo.toml", "crates/demo/Cargo.toml", "crates/demo/src/lib.rs"])?;
-    git(root, &["commit", "-m", "fixture base"])?;
-    let base = git(root, &["rev-parse", "HEAD"])?;
-    git(root, &["checkout", "-b", "candidate"])?;
+    git(
+        hermetic,
+        root,
+        &["add", "Cargo.toml", "crates/demo/Cargo.toml", "crates/demo/src/lib.rs"],
+    )?;
+    git(hermetic, root, &["commit", "-m", "fixture base"])?;
+    let base = git(hermetic, root, &["rev-parse", "HEAD"])?;
+    git(hermetic, root, &["checkout", "-b", "candidate"])?;
     let head = commit(
+        hermetic,
         root,
         "crates/demo/src/platform/windows.rs",
         "pub fn windows_value() -> u8 { 2 }\n",
@@ -79,18 +97,19 @@ fn write_pr_event(path: &Path, base: &str, head: &str) -> Result<()> {
     Ok(())
 }
 
-fn run_subject(repo: &Path, event: &Path, receipt: &Path) -> Result<()> {
-    run_event_subject(repo, event, receipt, "pull_request", None)
+fn run_subject(hermetic: &HermeticGit, repo: &Path, event: &Path, receipt: &Path) -> Result<()> {
+    run_event_subject(hermetic, repo, event, receipt, "pull_request", None)
 }
 
 fn run_event_subject(
+    hermetic: &HermeticGit,
     repo: &Path,
     event: &Path,
     receipt: &Path,
     event_name: &str,
     github_sha: Option<&str>,
 ) -> Result<()> {
-    let output = run_event_subject_output(repo, event, receipt, event_name, github_sha)?;
+    let output = run_event_subject_output(hermetic, repo, event, receipt, event_name, github_sha)?;
     ensure!(
         output.status.success(),
         "ci-subject failed: {}",
@@ -100,6 +119,7 @@ fn run_event_subject(
 }
 
 fn run_event_subject_output(
+    hermetic: &HermeticGit,
     repo: &Path,
     event: &Path,
     receipt: &Path,
@@ -117,6 +137,7 @@ fn run_event_subject_output(
     if let Some(github_sha) = github_sha {
         command.args(["--github-sha", github_sha]);
     }
+    hermetic.apply_env_to_assert(&mut command);
     Ok(command.output()?)
 }
 
@@ -125,7 +146,9 @@ fn public_push_and_merge_group_adapters_preserve_direct_exact_pair_semantics() -
     let tmp = tempfile::tempdir()?;
     let repo = tmp.path().join("repo");
     fs::create_dir_all(&repo)?;
-    let (base, head) = init_fixture(&repo)?;
+    let hermetic =
+        HermeticGit::at(&tmp.path().join("git-fixture-pins")).map_err(hermetic_to_eyre)?;
+    let (base, head) = init_fixture(&hermetic, &repo)?;
     let cases = [
         (
             "push",
@@ -150,7 +173,7 @@ fn public_push_and_merge_group_adapters_preserve_direct_exact_pair_semantics() -
         let event_path = tmp.path().join(format!("{event_name}.json"));
         let receipt_path = tmp.path().join(format!("{event_name}-subject.json"));
         fs::write(&event_path, serde_json::to_vec_pretty(&event)?)?;
-        run_event_subject(&repo, &event_path, &receipt_path, event_name, github_sha)?;
+        run_event_subject(&hermetic, &repo, &event_path, &receipt_path, event_name, github_sha)?;
         let receipt: Value = serde_json::from_slice(&fs::read(receipt_path)?)?;
         ensure!(receipt["base_sha"] == base);
         ensure!(receipt["head_sha"] == head);
@@ -176,7 +199,9 @@ fn captured_pr_subject_survives_base_branch_movement_and_drives_real_ci_scope() 
     let tmp = tempfile::tempdir()?;
     let repo = tmp.path().join("repo");
     fs::create_dir_all(&repo)?;
-    let (base, head) = init_fixture(&repo)?;
+    let hermetic =
+        HermeticGit::at(&tmp.path().join("git-fixture-pins")).map_err(hermetic_to_eyre)?;
+    let (base, head) = init_fixture(&hermetic, &repo)?;
     ensure!(base == EXPECTED_BASE_SHA, "fixture base commit changed unexpectedly");
     ensure!(head == EXPECTED_HEAD_SHA, "fixture head commit changed unexpectedly");
     let event = tmp.path().join("event.json");
@@ -184,15 +209,15 @@ fn captured_pr_subject_survives_base_branch_movement_and_drives_real_ci_scope() 
     let moved_receipt = tmp.path().join("subject-moved.json");
     write_pr_event(&event, &base, &head)?;
 
-    run_subject(&repo, &event, &first_receipt)?;
+    run_subject(&hermetic, &repo, &event, &first_receipt)?;
     let first_bytes = fs::read(&first_receipt)?;
 
-    git(&repo, &["checkout", "main"])?;
-    let moved_main = commit(&repo, "README.md", "branch moved\n", "move main")?;
+    git(&hermetic, &repo, &["checkout", "main"])?;
+    let moved_main = commit(&hermetic, &repo, "README.md", "branch moved\n", "move main")?;
     ensure!(moved_main != base, "fixture main branch must move away from event base");
-    git(&repo, &["checkout", "candidate"])?;
+    git(&hermetic, &repo, &["checkout", "candidate"])?;
 
-    run_subject(&repo, &event, &moved_receipt)?;
+    run_subject(&hermetic, &repo, &event, &moved_receipt)?;
     let moved_bytes = fs::read(&moved_receipt)?;
     ensure!(first_bytes == moved_bytes, "semantic receipt bytes changed after branch movement");
     ensure!(moved_bytes.len() < 2048, "bounded subject receipt exceeded 2 KiB");
@@ -232,26 +257,30 @@ fn captured_pr_subject_survives_base_branch_movement_and_drives_real_ci_scope() 
         expected_receipt.replace("\"changed_file_count\": 1", "\"changed_file_count\": 2");
     ensure!(tampered != expected_receipt, "tamper control must change the receipt");
     fs::write(&tampered_receipt, tampered)?;
-    let tampered_output = cargo_bin_cmd!("xtask")
+    let mut tampered_command = cargo_bin_cmd!("xtask");
+    tampered_command
         .args(["ci-scope", "--subject"])
         .arg(&tampered_receipt)
         .arg("--root")
         .arg(&repo)
-        .args(["--format", "json"])
-        .output()?;
+        .args(["--format", "json"]);
+    hermetic.apply_env_to_assert(&mut tampered_command);
+    let tampered_output = tampered_command.output()?;
     ensure!(!tampered_output.status.success(), "tampered receipt must be rejected");
     ensure!(
         String::from_utf8_lossy(&tampered_output.stderr).contains("subject digest mismatch"),
         "tampered receipt rejection must identify the invalid semantic digest"
     );
 
-    let output = cargo_bin_cmd!("xtask")
+    let mut scope_command = cargo_bin_cmd!("xtask");
+    scope_command
         .args(["ci-scope", "--subject"])
         .arg(&moved_receipt)
         .arg("--root")
         .arg(&repo)
-        .args(["--format", "json"])
-        .output()?;
+        .args(["--format", "json"]);
+    hermetic.apply_env_to_assert(&mut scope_command);
+    let output = scope_command.output()?;
     ensure!(
         output.status.success(),
         "ci-scope subject consumer failed: {}",
@@ -316,13 +345,16 @@ fn producer_refuses_successful_receipt_when_checkout_head_differs() -> Result<()
     let tmp = tempfile::tempdir()?;
     let repo = tmp.path().join("repo");
     fs::create_dir_all(&repo)?;
-    let (base, head) = init_fixture(&repo)?;
+    let hermetic =
+        HermeticGit::at(&tmp.path().join("git-fixture-pins")).map_err(hermetic_to_eyre)?;
+    let (base, head) = init_fixture(&hermetic, &repo)?;
     let event = tmp.path().join("event.json");
     let receipt = tmp.path().join("failure.json");
     write_pr_event(&event, &base, &head)?;
 
-    git(&repo, &["checkout", "main"])?;
-    let output = run_event_subject_output(&repo, &event, &receipt, "pull_request", None)?;
+    git(&hermetic, &repo, &["checkout", "main"])?;
+    let output =
+        run_event_subject_output(&hermetic, &repo, &event, &receipt, "pull_request", None)?;
     ensure!(!output.status.success(), "producer must reject a stale checkout HEAD");
     ensure!(
         !String::from_utf8(output.stdout)?.contains("ci subject: RESOLVED"),
@@ -339,9 +371,12 @@ fn explicit_branch_name_fails_with_typed_not_proven_receipt() -> Result<()> {
     let tmp = tempfile::tempdir()?;
     let repo = tmp.path().join("repo");
     fs::create_dir_all(&repo)?;
-    let (_, head) = init_fixture(&repo)?;
+    let hermetic =
+        HermeticGit::at(&tmp.path().join("git-fixture-pins")).map_err(hermetic_to_eyre)?;
+    let (_, head) = init_fixture(&hermetic, &repo)?;
     let receipt = tmp.path().join("failure.json");
-    let output = cargo_bin_cmd!("xtask")
+    let mut command = cargo_bin_cmd!("xtask");
+    command
         .args([
             "ci-subject",
             "--event-name",
@@ -356,8 +391,9 @@ fn explicit_branch_name_fails_with_typed_not_proven_receipt() -> Result<()> {
         ])
         .arg(&receipt)
         .arg("--root")
-        .arg(&repo)
-        .output()?;
+        .arg(&repo);
+    hermetic.apply_env_to_assert(&mut command);
+    let output = command.output()?;
     ensure!(!output.status.success(), "mutable branch input must fail");
     let failure: Value = serde_json::from_slice(&fs::read(receipt)?)?;
     ensure!(failure["status"] == "NOT_PROVEN");
