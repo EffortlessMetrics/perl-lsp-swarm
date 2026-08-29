@@ -73,11 +73,7 @@ fn assert_restored_token_stream_matches_fresh(source: &str) -> Result<()> {
         .iter()
         .position(|token| token.start >= checkpoint.live.position)
         .unwrap_or(fresh_lexed.tokens.len());
-    let restored = super::lex::lex_from_live_checkpoint(
-        source,
-        &line_index,
-        &checkpoint.live,
-    )?;
+    let restored = super::lex::lex_from_live_checkpoint(source, &line_index, &checkpoint.live)?;
 
     assert_token_streams_equal(&restored.tokens, &fresh_lexed.tokens[prefix_len..]);
     assert_eq!(restored.terminal_checkpoint, fresh_lexed.terminal_checkpoint);
@@ -157,9 +153,8 @@ fn stateful_checkpoint_restart_matches_fresh_tokens_and_ast() -> Result<()> {
     let source = format!(
         "{prefix}my $value = $input =~ /a\\/b/ ? s{{old}}{{new}} : qq{{value}};\nmy $tail = 1;\n"
     );
-    let edit_start = source
-        .find("a\\/b")
-        .ok_or_else(|| anyhow::anyhow!("regex fixture is missing"))?;
+    let edit_start =
+        source.find("a\\/b").ok_or_else(|| anyhow::anyhow!("regex fixture is missing"))?;
     let edit = Edit {
         start_byte: edit_start,
         old_end_byte: edit_start + "a\\/b".len(),
@@ -181,9 +176,8 @@ fn stateful_checkpoint_restart_matches_fresh_tokens_and_ast() -> Result<()> {
 fn unicode_crlf_checkpoint_restart_preserves_spans() -> Result<()> {
     let prefix = "my $seed = 0;\r\n".repeat(24);
     let source = format!("{prefix}my $value = 'café';\r\nmy $tail = 1;\r\n");
-    let edit_start = source
-        .find("café")
-        .ok_or_else(|| anyhow::anyhow!("unicode fixture is missing"))?;
+    let edit_start =
+        source.find("café").ok_or_else(|| anyhow::anyhow!("unicode fixture is missing"))?;
     let edit = Edit {
         start_byte: edit_start,
         old_end_byte: edit_start + "café".len(),
@@ -205,9 +199,8 @@ fn unicode_crlf_checkpoint_restart_preserves_spans() -> Result<()> {
 fn recovery_checkpoint_restart_matches_fresh_diagnostics() -> Result<()> {
     let prefix = "my $seed = 0;\n".repeat(24);
     let source = format!("{prefix}my $value = ;\nmy $tail = 1;\n");
-    let edit_start = source
-        .find("1;")
-        .ok_or_else(|| anyhow::anyhow!("recovery fixture is missing"))?;
+    let edit_start =
+        source.find("1;").ok_or_else(|| anyhow::anyhow!("recovery fixture is missing"))?;
     let edit = Edit {
         start_byte: edit_start,
         old_end_byte: edit_start + "1".len(),
