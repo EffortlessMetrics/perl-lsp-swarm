@@ -797,9 +797,13 @@ fn normalize_windows_path_prefix(path: PathBuf) -> PathBuf {
 
 #[cfg(test)]
 mod explicit_pin_tests {
+    #[cfg(target_os = "linux")]
+    use super::candidate_is_executable;
     use super::{launch_arguments, normalize_explicit_debuggee_pin, resolve_debuggee_candidate};
     use std::fs;
     use std::path::Path;
+    #[cfg(target_os = "linux")]
+    use std::process::Command;
 
     #[test]
     fn nested_relative_pin_is_frozen_before_different_launch_cwd() -> Result<(), String> {
@@ -919,6 +923,81 @@ mod explicit_pin_tests {
         Ok(())
     }
 
+    /// Unix mode bits are only a hint when an ACL or ownership rule can deny
+    /// the current user.  This control leaves execute bits on group/other,
+    /// denies execute to the file owner through a real POSIX ACL, and requires
+    /// PATH lookup to continue to the next candidate.  It is Linux-only because
+    /// `setfacl` is not a portable Unix interface; unsupported hosts report an
+    /// explicit skip rather than claiming ACL coverage.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn path_lookup_skips_acl_inaccessible_first_candidate() -> Result<(), String> {
+        use std::os::unix::fs::PermissionsExt;
+
+        // `access(2)` checks the real user.  Root can execute a file when any
+        // execute bit remains set, so this control cannot distinguish ACL
+        // denial from root's special-case access semantics.
+        // SAFETY: `getuid` has no preconditions and does not retain pointers.
+        if unsafe { libc::getuid() } == 0 {
+            eprintln!("skipping ACL access control when running as root");
+            return Ok(());
+        }
+
+        match Command::new("setfacl").arg("--version").status() {
+            Ok(status) if status.success() => {}
+            Ok(_) => {
+                eprintln!("skipping ACL access control: setfacl is unavailable");
+                return Ok(());
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                eprintln!("skipping ACL access control: setfacl is not installed");
+                return Ok(());
+            }
+            Err(error) => return Err(format!("could not invoke setfacl: {error}")),
+        }
+
+        let controls = tempfile::tempdir().map_err(|error| error.to_string())?;
+        let first_dir = controls.path().join("first");
+        let second_dir = controls.path().join("second");
+        fs::create_dir_all(&first_dir).map_err(|error| error.to_string())?;
+        fs::create_dir_all(&second_dir).map_err(|error| error.to_string())?;
+        let first = first_dir.join("perl");
+        let second = second_dir.join("perl");
+        fs::write(&first, b"ACL-inaccessible path candidate").map_err(|error| error.to_string())?;
+        fs::write(&second, b"accessible path candidate").map_err(|error| error.to_string())?;
+        fs::set_permissions(&first, fs::Permissions::from_mode(0o755))
+            .map_err(|error| error.to_string())?;
+        fs::set_permissions(&second, fs::Permissions::from_mode(0o755))
+            .map_err(|error| error.to_string())?;
+
+        let status = Command::new("setfacl")
+            .args(["--modify", "u::rw-,m::rwx", "--"])
+            .arg(&first)
+            .status()
+            .map_err(|error| format!("could not apply the ACL control: {error}"))?;
+        if !status.success() {
+            return Err(format!("setfacl could not deny owner execute access: {status}"));
+        }
+        if candidate_is_executable(&first) {
+            return Err(
+                "the ACL control still appears executable to the current user; refusing a false proof"
+                    .to_string(),
+            );
+        }
+
+        let search_path =
+            std::env::join_paths([&first_dir, &second_dir]).map_err(|error| error.to_string())?;
+        let resolved =
+            resolve_debuggee_candidate(Path::new("perl"), Some(search_path.as_os_str()))?;
+        let expected = fs::canonicalize(&second).map_err(|error| error.to_string())?;
+        if resolved != expected {
+            return Err(format!(
+                "PATH lookup did not skip the ACL-inaccessible candidate: {resolved:?} != {expected:?}"
+            ));
+        }
+        Ok(())
+    }
+
     #[cfg(windows)]
     #[test]
     fn path_only_candidate_honors_pathext_for_perl_exe() -> Result<(), String> {
@@ -942,7 +1021,7 @@ mod explicit_pin_tests {
     #[test]
     fn path_candidate_with_extension_does_not_gain_pathext_suffix() -> Result<(), String> {
         let controls = tempfile::tempdir().map_err(|error| error.to_string())?;
-        let misleading = controls.path().join("perl.cmd.EXE");
+        let misleading = controls.path().join("perl.EXE");
         fs::write(&misleading, b"path candidate").map_err(|error| error.to_string())?;
         let search_path =
             std::env::join_paths([controls.path()]).map_err(|error| error.to_string())?;
@@ -2553,9 +2632,16 @@ fn bare_name_lookup_variants(name: &std::ffi::OsStr) -> Vec<std::ffi::OsString> 
 
 #[cfg(unix)]
 fn candidate_is_executable(path: &Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
 
-    fs::metadata(path).is_ok_and(|metadata| metadata.permissions().mode() & 0o111 != 0)
+    let Ok(path) = CString::new(path.as_os_str().as_bytes()) else {
+        return false;
+    };
+    // SAFETY: `path` is a NUL-free, live C string for the duration of this
+    // call, and `access` does not retain the pointer.  X_OK asks the kernel to
+    // apply the current user's ownership, ACL, and execute-permission rules.
+    unsafe { libc::access(path.as_ptr(), libc::X_OK) == 0 }
 }
 
 #[cfg(not(unix))]
