@@ -481,9 +481,7 @@ impl UxClient {
 
 fn validate_shutdown_response(response: &Value) -> Result<()> {
     if response.get("jsonrpc") != Some(&json!("2.0")) {
-        return Err(anyhow!(
-            "shutdown response omitted JSON-RPC 2.0: {response}"
-        ));
+        return Err(anyhow!("shutdown response omitted JSON-RPC 2.0: {response}"));
     }
     if let Some(error) = response.get("error") {
         return Err(anyhow!("shutdown returned JSON-RPC error: {error}"));
@@ -641,12 +639,14 @@ mod shutdown_response_tests {
 
     #[test]
     fn shutdown_response_requires_jsonrpc_null_result_and_no_error() {
-        assert!(validate_shutdown_response(&json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "result": null
-        }))
-        .is_ok());
+        assert!(
+            validate_shutdown_response(&json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": null
+            }))
+            .is_ok()
+        );
 
         for invalid in [
             json!({"id": 1, "result": null}),
