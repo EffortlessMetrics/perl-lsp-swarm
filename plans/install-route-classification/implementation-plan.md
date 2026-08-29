@@ -293,6 +293,8 @@ the catalog binding, not a route-name convention.
 
 ```python
 from collections import Counter
+from pathlib import Path
+import re
 
 EXPECTED_CLAIMS = tuple(
     f"C{n}"
@@ -302,6 +304,25 @@ EXPECTED_CLAIMS = tuple(
               list(range(901, 903)) + list(range(1001, 1009)) + [1101, 1102] +
               list(range(1201, 1209)) + list(range(1301, 1310))))
 EXPECTED_FINDINGS = tuple(f"FND-{n}" for n in range(1, 13))
+
+INVENTORY_PATH = Path("docs/distribution/INSTALL_CLAIM_SURFACES.md")
+
+def inventory_rows_from_markdown(markdown):
+    """Read claim IDs from the checked-in inventory, preserving table order."""
+    claim_section = markdown.split("## Claim rows", 1)
+    if len(claim_section) != 2:
+        raise ValueError("inventory is missing its claim-row section")
+    rows = []
+    for line in claim_section[1].splitlines():
+        match = re.match(r"^\|\s*(C\d+)\s*\|", line)
+        if match:
+            rows.append({"id": match.group(1)})
+    if not rows:
+        raise ValueError("inventory contains no claim rows")
+    return rows
+
+def checked_in_inventory_rows():
+    return inventory_rows_from_markdown(INVENTORY_PATH.read_text(encoding="utf-8"))
 C202_PROJECTIONS = [
     ("VS_Code_extension", "VS_Code_compatible_managed_client"),
     ("manual_archive", "macOS_or_Linux_or_Windows_manual_archive"),
@@ -669,11 +690,29 @@ def assert_closure_rejected(catalog_rows):
         return True
     raise AssertionError("unreferenced catalog row was accepted")
 
+def assert_inventory_rejected(inventory_rows):
+    try:
+        validate_closure(inventory_rows, fixture_ledger(), FIXTURE_CATALOG)
+    except ValueError:
+        return True
+    raise AssertionError("changed inventory was accepted")
+
 require_true(validate_closure(
-    [{"id": item_id} for item_id in EXPECTED_CLAIMS],
+    checked_in_inventory_rows(),
     fixture_ledger(),
     FIXTURE_CATALOG,
 ), "fixture closure was not validated")
+INVENTORY_TEXT = INVENTORY_PATH.read_text(encoding="utf-8")
+CHANGED_INVENTORY_TEXT = INVENTORY_TEXT.replace("| C101 |", "| C999 |", 1)
+require_true(
+    assert_inventory_rejected(inventory_rows_from_markdown(CHANGED_INVENTORY_TEXT)),
+    "changed inventory claim ID was accepted",
+)
+DUPLICATED_INVENTORY_TEXT = INVENTORY_TEXT.replace("| C101 |", "| C102 |", 1)
+require_true(
+    assert_inventory_rejected(inventory_rows_from_markdown(DUPLICATED_INVENTORY_TEXT)),
+    "duplicated inventory claim ID was accepted",
+)
 UNREFERENCED_CONTEXT_CATALOG = tuple(
     {
         **row,
@@ -767,7 +806,8 @@ require_true(
 )
 ```
 
-The fixture rejects missing, duplicate, unknown, and incompatible IDs before
+The fixture reads `docs/distribution/INSTALL_CLAIM_SURFACES.md` and rejects missing,
+duplicate, unknown, and incompatible IDs before
 acceptance (the production harness should collect those errors rather than stop at the
 first one). It validates every literal claim and finding ID individually, including
 all 93 ledger records and the multi-route claims (including C202's four records), rather than trusting a count or range
