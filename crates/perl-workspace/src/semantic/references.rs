@@ -220,13 +220,11 @@ impl ReferenceIndex {
         }
         self.references_by_entity.retain(|_, v| !v.is_empty());
 
-        // Unresolved rows are already file-scoped by their key, but filter on
-        // the same `file_id` basis as the other two projections so a shard that
-        // reported a foreign `file_id` cannot leave a row behind.
-        for refs in self.unresolved_by_occurrence.values_mut() {
-            refs.retain(|r| r.file_id != file_id);
-        }
-        self.unresolved_by_occurrence.retain(|key, v| key.file_id != file_id && !v.is_empty());
+        // Unresolved buckets need no element filter: unlike a name or entity
+        // key, which can legitimately hold rows from several files, this key
+        // carries the `file_id` its rows were inserted with, so a bucket is
+        // wholly owned by one file and the key alone decides.
+        self.unresolved_by_occurrence.retain(|key, _| key.file_id != file_id);
     }
 
     /// Look up all reference edges for a given symbol key (bare or qualified name).
@@ -748,6 +746,47 @@ mod tests {
         assert_eq!(unresolved.len(), 1);
         // One allocation is shared across projections, as for named edges.
         assert!(Arc::ptr_eq(&by_entity[0], &unresolved[0]));
+        Ok(())
+    }
+
+    #[test]
+    fn entity_declared_in_another_shard_yields_no_synthesized_name()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // The occurrence names its target, but the declaration lives in another
+        // shard: `entity_id` is `Some` and the local `find` fails. This is the
+        // branch `derive_canonical_name` documents and the one #8083's entity
+        // catalog will eventually resolve — until then it must produce *no*
+        // name at all, not a stand-in derived from the entity id.
+        let absent_target = EntityId(900);
+        let mut shard = unresolved_shard("file:///lib/Importer.pm", FileId(6), OccurrenceId(903));
+        shard.occurrences[0].entity_id = Some(absent_target);
+        // A different entity *is* declared locally, so the lookup genuinely
+        // scans and misses rather than short-circuiting on an empty vector.
+        shard.entities.push(EntityFact {
+            id: EntityId(901),
+            kind: EntityKind::Subroutine,
+            canonical_name: "Importer::local_only".to_string(),
+            anchor_id: None,
+            scope_id: None,
+            provenance: Provenance::ExactAst,
+            confidence: Confidence::High,
+        });
+
+        let mut index = ReferenceIndex::new();
+        index.add_file(&shard);
+
+        // No name is invented for the missing declaration — under any spelling.
+        assert_eq!(index.name_count(), 0, "no name may be synthesized from an absent declaration");
+        assert!(index.get_by_name("Importer::local_only").is_empty());
+
+        let key = UnresolvedOccurrenceKey::new(FileId(6), OccurrenceId(903), AnchorId(60));
+        let unresolved = index.get_unresolved(&key);
+        assert_eq!(unresolved.len(), 1);
+        assert_eq!(unresolved[0].symbol_key, "");
+
+        // The occurrence's own target still reaches the entity projection: an
+        // underivable name never suppresses a known target.
+        assert_eq!(index.get_by_entity(absent_target).len(), 1);
         Ok(())
     }
 
