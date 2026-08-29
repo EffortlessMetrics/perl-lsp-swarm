@@ -151,7 +151,52 @@ class NativePipelineSidecarGuardTests(unittest.TestCase):
     RUN_ID = "123-abc"
 
     def _row(self, bench_id: str, run_id: str | None = None, schema: str = "native-pipeline-counters-v1") -> dict:
-        return {"schema": schema, "run_id": run_id or self.RUN_ID, "bench_id": bench_id}
+        return {
+            "schema": schema,
+            "run_id": run_id or self.RUN_ID,
+            "bench_id": bench_id,
+            "counters": {
+                "schema": "native-pipeline-counters-v1",
+                "pipeline_invocations": 1,
+                "parse_gate_invocations": 2,
+                "source_parse_gate_invocations": 1,
+                "formatted_output_parse_gate_invocations": 1,
+                "gate_nodes_observed": 3,
+                "lines_processed": 4,
+                "delimited_groups_fitted": 1,
+                "edits_derived": 1,
+                "replacement_bytes": 8,
+                "peak_depth": 1,
+                "elapsed": {"secs": 0, "nanos": 42},
+            },
+        }
+
+    def test_identity_only_sidecar_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            rows = [{"schema": "native-pipeline-counters-v1", "run_id": self.RUN_ID,
+                     "bench_id": bench_id} for bench_id in self.EXPECTED]
+            path = self._write(Path(tmp), rows)
+            proc = self._run(path)
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("counter snapshot", proc.stderr)
+
+    def test_counter_snapshot_without_a_required_field_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            rows = [self._row(bench_id) for bench_id in self.EXPECTED]
+            rows[0]["counters"].pop("lines_processed")
+            path = self._write(Path(tmp), rows)
+            proc = self._run(path)
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("lines_processed", proc.stderr)
+
+    def test_zero_pipeline_invocations_are_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            rows = [self._row(bench_id) for bench_id in self.EXPECTED]
+            rows[0]["counters"]["pipeline_invocations"] = 0
+            path = self._write(Path(tmp), rows)
+            proc = self._run(path)
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("pipeline_invocations must be positive", proc.stderr)
 
     def _run(self, sidecar: Path, expected_ids: list[str] | None = None) -> subprocess.CompletedProcess:
         args = [sys.executable, str(_SIDECAR), "--sidecar", str(sidecar),

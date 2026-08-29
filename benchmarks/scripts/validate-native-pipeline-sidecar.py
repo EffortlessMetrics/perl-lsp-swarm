@@ -9,6 +9,19 @@ from pathlib import Path
 
 SCHEMA = "native-pipeline-measurements-v1"
 ROW_SCHEMA = "native-pipeline-counters-v1"
+COUNTER_FIELDS = (
+    "pipeline_invocations",
+    "parse_gate_invocations",
+    "source_parse_gate_invocations",
+    "formatted_output_parse_gate_invocations",
+    "gate_nodes_observed",
+    "lines_processed",
+    "delimited_groups_fitted",
+    "edits_derived",
+    "replacement_bytes",
+    "peak_depth",
+    "elapsed",
+)
 
 
 def validate(path: Path, expected_run_id: str, expected_ids: list[str]) -> None:
@@ -43,6 +56,30 @@ def validate(path: Path, expected_run_id: str, expected_ids: list[str]) -> None:
             raise ValueError("every sidecar row must carry the counter schema")
         if row.get("run_id") != expected_run_id:
             raise ValueError("every sidecar row must carry the current workflow run_id")
+        counters = row.get("counters")
+        if not isinstance(counters, dict):
+            raise ValueError("every sidecar row must carry a counter snapshot")
+        if counters.get("schema") != ROW_SCHEMA:
+            raise ValueError("every sidecar counter snapshot must carry the counter schema")
+        for field in COUNTER_FIELDS:
+            if field not in counters:
+                raise ValueError(f"every sidecar counter snapshot must carry {field}")
+        for field in COUNTER_FIELDS[:-1]:
+            value = counters[field]
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                raise ValueError(f"sidecar counter {field} must be a non-negative integer")
+        if counters["pipeline_invocations"] == 0:
+            raise ValueError("sidecar counter pipeline_invocations must be positive")
+        elapsed = counters["elapsed"]
+        if not isinstance(elapsed, dict):
+            raise ValueError("sidecar counter elapsed must be a duration object")
+        if set(elapsed) != {"secs", "nanos"} or any(
+            not isinstance(elapsed[field], int)
+            or isinstance(elapsed[field], bool)
+            or elapsed[field] < 0
+            for field in ("secs", "nanos")
+        ):
+            raise ValueError("sidecar counter elapsed must contain non-negative secs and nanos")
         bench_id = row.get("bench_id")
         if not isinstance(bench_id, str) or not bench_id:
             raise ValueError("every sidecar row must carry a non-empty bench_id")
