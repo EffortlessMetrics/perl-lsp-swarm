@@ -43,3 +43,17 @@ pub use topology::{
     AssetRequirement, CORPUS_TOPOLOGY_SCHEMA_VERSION, CorpusAsset, CorpusAssetKind,
     CorpusAssetLayer, CorpusTopology, CorpusTopologyError,
 };
+
+/// Serializes every test that reads or mutates the process-wide current
+/// directory.
+///
+/// `std::env::set_current_dir` is per-process, not per-thread, so a test that
+/// enters a temporary directory moves relative-path resolution out from under
+/// any concurrently running test that resolved a path against the previous
+/// current directory. With `--test-threads` above one that is a real race, not
+/// a hypothetical: it is why the relative runtime-root binding test failed on
+/// `main` against a path that no longer existed. Every test in this module
+/// tree that touches the current directory must hold this lock for the whole
+/// window between reading it and resolving against it.
+#[cfg(test)]
+pub(crate) static CWD_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
