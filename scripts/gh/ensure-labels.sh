@@ -57,6 +57,8 @@ if re.fullmatch(r"[0-9a-fA-F]{6}", color) is None:
     raise SystemExit("ci:public-api color must be exactly six hexadecimal digits")
 if not description.strip() or any(ord(char) < 32 or char == "\t" for char in description):
     raise SystemExit("ci:public-api description must be non-empty and free of control characters")
+if len(description) > 100:
+    raise SystemExit("ci:public-api description must be at most 100 characters")
 
 print(f"{color}\t{description}")
 PY

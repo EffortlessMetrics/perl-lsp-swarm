@@ -182,7 +182,7 @@ PATH="${FAKE_BIN}:${PATH}" \
 grep -Fqx -- 'label edit ci:public-api --color 123abc --description Catalog-owned public API label' "${LOG}"
 echo 'PASS later sibling fields cannot overwrite public API metadata'
 
-for invalid_catalog in invalid-color duplicate-key unknown-key; do
+for invalid_catalog in invalid-color duplicate-key unknown-key description-too-long; do
   BAD_CATALOG="${TMPDIR_BASE}/${invalid_catalog}-ci-config.yml"
   case "${invalid_catalog}" in
     invalid-color)
@@ -207,6 +207,14 @@ for invalid_catalog in invalid-color duplicate-key unknown-key; do
         "    color: '0052cc'" \
         "    description: 'Run public API surface validation'" \
         "    owner: 'ci'" > "${BAD_CATALOG}"
+      ;;
+    description-too-long)
+      long_description="$(printf 'x%.0s' {1..101})"
+      printf '%s\n' \
+        'labels:' \
+        '  ci:public-api:' \
+        "    color: '0052cc'" \
+        "    description: '${long_description}'" > "${BAD_CATALOG}"
       ;;
   esac
 
