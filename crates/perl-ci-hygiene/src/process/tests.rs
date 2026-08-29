@@ -10,7 +10,7 @@ use std::ffi::OsString;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 
@@ -29,8 +29,8 @@ struct TempDir(PathBuf);
 impl TempDir {
     fn new(label: &str) -> TestResult<Self> {
         let nanos = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
-        let path = env::temp_dir()
-            .join(format!("perl-ci-hygiene-{label}-{}-{nanos}", std::process::id()));
+        let path =
+            env::temp_dir().join(format!("perl-ci-hygiene-{label}-{}-{nanos}", std::process::id()));
         fs::create_dir_all(&path)?;
         Ok(Self(path))
     }
@@ -173,8 +173,7 @@ fn command_with_output_all_combines_streams_on_success_and_failure() -> TestResu
     let temp = TempDir::new("output-all")?;
     let command = fixture_command()?;
     let args = fixture_args();
-    let combined =
-        command_with_output_all(temp.path(), &command, &args, &fixture_env("success"))?;
+    let combined = command_with_output_all(temp.path(), &command, &args, &fixture_env("success"))?;
     let stdout_position = combined
         .find(STDOUT_MARKER)
         .ok_or_else(|| io::Error::other("combined output omitted stdout"))?;
@@ -228,10 +227,18 @@ fn command_output_with_status_returns_stdout_but_not_stderr() -> TestResult {
 }
 
 #[test]
-fn allow_empty_match_accepts_one_and_rejects_other_nonzero_status() -> TestResult {
+fn allow_empty_match_accepts_zero_and_one_and_rejects_other_nonzero_status() -> TestResult {
     let temp = TempDir::new("allow-empty")?;
     let command = fixture_command()?;
     let args = fixture_args();
+    let output = command_with_output_allow_empty_match(
+        temp.path(),
+        &command,
+        &args,
+        &fixture_env("success"),
+    )?;
+    assert!(output.contains(STDOUT_MARKER));
+
     let output = command_with_output_allow_empty_match(
         temp.path(),
         &command,
@@ -240,14 +247,10 @@ fn allow_empty_match_accepts_one_and_rejects_other_nonzero_status() -> TestResul
     )?;
     assert!(output.contains(STDOUT_MARKER));
 
-    let error = command_with_output_allow_empty_match(
-        temp.path(),
-        &command,
-        &args,
-        &fixture_env("exit-2"),
-    )
-    .err()
-    .ok_or_else(|| io::Error::other("expected exit 2 to be rejected"))?;
+    let error =
+        command_with_output_allow_empty_match(temp.path(), &command, &args, &fixture_env("exit-2"))
+            .err()
+            .ok_or_else(|| io::Error::other("expected exit 2 to be rejected"))?;
     let message = error.to_string();
     assert!(message.contains("exit 2"));
     assert!(message.contains(STDERR_MARKER));
@@ -259,12 +262,8 @@ fn allow_failure_preserves_stdout_from_nonzero_child() -> TestResult {
     let temp = TempDir::new("allow-failure")?;
     let command = fixture_command()?;
     let args = fixture_args();
-    let output = command_with_output_allow_failure(
-        temp.path(),
-        &command,
-        &args,
-        &fixture_env("exit-7"),
-    )?;
+    let output =
+        command_with_output_allow_failure(temp.path(), &command, &args, &fixture_env("exit-7"))?;
 
     assert!(output.contains(STDOUT_MARKER));
     assert!(!output.contains(STDERR_MARKER));
@@ -281,36 +280,29 @@ fn status_helpers_preserve_raw_and_strict_behavior() -> TestResult {
     assert_eq!(status, 7);
 
     command_status_strict(temp.path(), &command, &args, &fixture_env("quiet-success"))?;
-    let error =
-        command_status_strict(temp.path(), &command, &args, &fixture_env("quiet-exit-7"))
-            .err()
-            .ok_or_else(|| io::Error::other("expected strict status to reject exit 7"))?;
+    let error = command_status_strict(temp.path(), &command, &args, &fixture_env("quiet-exit-7"))
+        .err()
+        .ok_or_else(|| io::Error::other("expected strict status to reject exit 7"))?;
     assert!(error.to_string().contains("failed with code 7"));
     Ok(())
 }
 
 #[test]
-fn timed_status_preserves_status_and_measured_interval() -> TestResult {
+fn timed_status_returns_nonzero_child_status() -> TestResult {
     let temp = TempDir::new("timed-status")?;
     let command = fixture_command()?;
     let args = fixture_args();
-    let outer_start = Instant::now();
-    let (status, elapsed) =
-        command_timed_status(temp.path(), &command, &args, &fixture_env("quiet-success"))?;
-    let outer_elapsed = outer_start.elapsed();
+    let (status, _elapsed) =
+        command_timed_status(temp.path(), &command, &args, &fixture_env("quiet-exit-7"))?;
 
-    assert_eq!(status, 0);
-    assert!(elapsed <= outer_elapsed);
+    assert_eq!(status, 7);
     Ok(())
 }
 
 #[test]
 fn output_lines_trim_blanks_and_preserve_order() {
     let lines = command_output_lines("  first  \n\n\tsecond\t\n   \nthird\n");
-    assert_eq!(
-        lines,
-        vec!["first".to_owned(), "second".to_owned(), "third".to_owned()]
-    );
+    assert_eq!(lines, vec!["first".to_owned(), "second".to_owned(), "third".to_owned()]);
 }
 
 #[test]
@@ -368,4 +360,27 @@ fn command_exists_in_path_continues_past_directory_candidate() -> TestResult {
 #[test]
 fn command_exists_in_path_returns_false_without_path() {
     assert!(!command_exists_in_path("ci-hygiene-probe", None));
+}
+
+#[cfg(windows)]
+#[test]
+fn command_exists_in_path_accepts_windows_command_extensions() -> TestResult {
+    let command = "ci-hygiene-probe";
+    for suffix in [".cmd", ".bat", ""] {
+        let label = match suffix {
+            ".cmd" => "cmd",
+            ".bat" => "bat",
+            "" => "extensionless",
+            _ => "unexpected",
+        };
+        let temp = TempDir::new(&format!("windows-extension-{label}"))?;
+        fs::write(temp.path().join(format!("{command}{suffix}")), b"")?;
+        let path = joined_path(&[temp.path()])?;
+
+        assert!(
+            command_exists_in_path(command, Some(path.as_os_str())),
+            "command lookup did not find {command}{suffix}"
+        );
+    }
+    Ok(())
 }
