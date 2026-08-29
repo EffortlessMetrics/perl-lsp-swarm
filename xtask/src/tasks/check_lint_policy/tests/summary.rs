@@ -19,8 +19,8 @@ fn summary_is_insertion_order_independent() {
     second.deferred_due.push(deferred_lint("clippy::manual_checked_ops", "1.95"));
 
     assert_eq!(
-        render_policy_summary(&first, &empty_debt()),
-        render_policy_summary(&second, &empty_debt())
+        render_policy_summary(&first, &empty_debt(), 0),
+        render_policy_summary(&second, &empty_debt(), 0)
     );
 }
 
@@ -28,7 +28,9 @@ fn summary_is_insertion_order_independent() {
 fn summary_surfaces_empty_by_design_configuration() {
     let mut lint = lint_entry("clippy::disallowed_fields", "active");
     lint.configuration_state = Some(ConfigurationState::EmptyByDesign);
-    let summary = render_policy_summary(&ledger_with(vec![lint]), &empty_debt());
+    let summary = render_policy_summary(&ledger_with(vec![lint]), &empty_debt(), 0);
 
     assert!(summary.contains("configuration-empty-by-design (1): clippy::disallowed_fields"));
+    assert!(summary.contains("configured selector denominator: 0"));
+    assert!(summary.contains("protected architecture-seam denominator: 0"));
 }

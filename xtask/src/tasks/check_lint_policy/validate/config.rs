@@ -89,10 +89,12 @@ pub(super) fn validate_workspace_members_inherit_lints(root: &Path, cargo: &Valu
     Ok(())
 }
 
-pub(super) fn validate_clippy_config(root: &Path, ledger: &LintLedger) -> Result<()> {
+pub(super) fn validate_clippy_config(root: &Path, ledger: &LintLedger) -> Result<usize> {
     let path = root.join(CLIPPY_CONFIG);
     let config = read_toml(path.clone())?;
-    validate_clippy_config_value(&config, ledger).map_err(|err| eyre!("{}: {err}", path.display()))
+    validate_clippy_config_value(&config, ledger)
+        .map_err(|err| eyre!("{}: {err}", path.display()))?;
+    disallowed_field_selector_count(&config).map_err(|err| eyre!("{}: {err}", path.display()))
 }
 
 pub(crate) fn validate_clippy_config_value(config: &Value, ledger: &LintLedger) -> Result<()> {
