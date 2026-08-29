@@ -402,14 +402,46 @@ The editor must be able to find and launch the `perllsp` binary. Symptoms includ
    - Neovim: `:LspLog`
    - Emacs: `*eglot stderr*` buffer
 
-3. **Test JSON-RPC communication** manually:
+3. **Test JSON-RPC communication** manually. LSP stdio requires a
+   `Content-Length` header followed by a blank line and the UTF-8 JSON payload;
+   sending bare JSON with `echo` is not a valid LSP probe.
+
+   In Bash, Git Bash, or WSL:
+
    ```bash
-   printf 'Content-Length: 75\r\n\r\n{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}' | perllsp --stdio
+   payload='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}'
+   printf 'Content-Length: %s\r\n\r\n%s' "$(printf '%s' "$payload" | wc -c)" "$payload" | perllsp --stdio
    ```
-   You should see a framed JSON response (`Content-Length: ...` followed by a
-   JSON object with `"id":1`). LSP stdio requires `Content-Length` framing, so a
-   bare `echo` of the JSON produces no response. If you see an error, the binary
-   itself has a problem -- try reinstalling.
+
+   In PowerShell, write the same UTF-8 frame to the server's standard input:
+
+   ```powershell
+   $payload = '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}'
+   $payloadBytes = [Text.Encoding]::UTF8.GetBytes($payload)
+   $headerBytes = [Text.Encoding]::ASCII.GetBytes("Content-Length: $($payloadBytes.Length)`r`n`r`n")
+   $frame = [byte[]]($headerBytes + $payloadBytes)
+
+   $startInfo = New-Object Diagnostics.ProcessStartInfo
+   $startInfo.FileName = 'perllsp'
+   $startInfo.Arguments = '--stdio'
+   $startInfo.UseShellExecute = $false
+   $startInfo.RedirectStandardInput = $true
+   $startInfo.RedirectStandardOutput = $true
+   $process = New-Object Diagnostics.Process
+   $process.StartInfo = $startInfo
+   [void]$process.Start()
+   $process.StandardInput.BaseStream.Write($frame, 0, $frame.Length)
+   $process.StandardInput.Close()
+   $response = $process.StandardOutput.ReadToEnd()
+   $process.WaitForExit()
+   $response
+   ```
+
+   With either command, verify that the response is framed with
+   `Content-Length: ...`, contains valid JSON-RPC, and has `"id":1`. The
+   response length and capabilities are version-dependent, so do not expect a
+   fixed byte count. If the server returns no valid framed response, the binary
+   itself may have a problem -- try reinstalling.
 
 4. **VS Code specific**: ensure the extension is installed and enabled:
    ```bash
