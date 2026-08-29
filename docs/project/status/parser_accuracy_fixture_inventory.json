@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "commit": "8b99d915d",
+  "commit": "4d516e246",
   "generated_by": "cargo xtask metrics parser-accuracy --export-status-receipts",
   "fixture_count": 53,
   "family_count": 30,

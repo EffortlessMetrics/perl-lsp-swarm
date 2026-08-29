@@ -15,6 +15,14 @@ type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 const PERL_TIMEOUT: Duration = Duration::from_secs(10);
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
 const MAX_DIAGNOSTIC_CHARS: usize = 200;
+const DENIED_PERL_ENVIRONMENT: &[&str] = &[
+    "PERL5LIB",
+    "PERL5OPT",
+    "PERL_LOCAL_LIB_ROOT",
+    "PERL_LOCAL_LIB_PREFIX",
+    "PERL_MB_OPT",
+    "PERL_MM_OPT",
+];
 const IMPORT_PROBE: &str = r#"
 my $file = shift @ARGV;
 my $loaded = do $file;
@@ -46,6 +54,16 @@ fn bounded_diagnostic(bytes: &[u8]) -> String {
 
 fn fixture_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/parser_accuracy")
+}
+
+fn normalized_protocol_line(bytes: &[u8], subject: &str) -> TestResult<String> {
+    let output = String::from_utf8(bytes.to_vec())?;
+    let line = output.strip_suffix("\r\n").or_else(|| output.strip_suffix('\n'));
+    let line = line.unwrap_or(&output);
+    if line.contains(['\r', '\n']) {
+        return Err(failure(format!("{subject} emitted more than one protocol line")));
+    }
+    Ok(line.to_owned())
 }
 
 #[derive(Debug, Deserialize)]
@@ -87,23 +105,16 @@ fn environment_value(environment: &[(OsString, OsString)], name: &str) -> Option
         .map(|(_, value)| value.clone())
 }
 
-fn isolated_perl_command_from(environment: &[(OsString, OsString)]) -> TestResult<Command> {
+fn sanitize_perl_command(
+    mut command: Command,
+    environment: &[(OsString, OsString)],
+) -> TestResult<Command> {
     let path = environment_value(environment, "PATH")
         .ok_or_else(|| failure("PATH is required to resolve the governed Perl fixture probe"))?;
 
-    let mut command = Command::new("perl");
     command.env_clear().env("PATH", path).env("LC_ALL", "C");
 
-    for denied in [
-        "PERL5LIB",
-        "PERL5OPT",
-        "PERL_LOCAL_LIB_ROOT",
-        "PERL_LOCAL_LIB_PREFIX",
-        "PERL_MB_OPT",
-        "PERL_MM_OPT",
-    ] {
-        command.env_remove(denied);
-    }
+    remove_denied_perl_environment(&mut command);
 
     #[cfg(windows)]
     for allowed in ["SYSTEMROOT", "WINDIR", "PATHEXT", "TEMP", "TMP"] {
@@ -113,6 +124,16 @@ fn isolated_perl_command_from(environment: &[(OsString, OsString)]) -> TestResul
     }
 
     Ok(command)
+}
+
+fn remove_denied_perl_environment(command: &mut Command) {
+    for denied in DENIED_PERL_ENVIRONMENT {
+        command.env_remove(denied);
+    }
+}
+
+fn isolated_perl_command_from(environment: &[(OsString, OsString)]) -> TestResult<Command> {
+    sanitize_perl_command(Command::new("perl"), environment)
 }
 
 fn isolated_perl_command() -> TestResult<Command> {
@@ -191,6 +212,14 @@ fn bounded_diagnostic_selects_one_line_and_preserves_character_boundaries() {
     assert_eq!(diagnostic.chars().count(), MAX_DIAGNOSTIC_CHARS + 1);
     assert!(diagnostic.ends_with('…'));
     assert!(!diagnostic.contains("ignored"));
+}
+
+#[test]
+fn protocol_line_normalization_accepts_only_one_lf_or_crlf_terminated_line() -> TestResult {
+    assert_eq!(normalized_protocol_line(b"fixture-ok\n", "fixture probe")?, "fixture-ok");
+    assert_eq!(normalized_protocol_line(b"fixture-ok\r\n", "fixture probe")?, "fixture-ok");
+    assert!(normalized_protocol_line(b"fixture-ok\nextra", "fixture probe").is_err());
+    Ok(())
 }
 
 #[test]
@@ -313,8 +342,8 @@ fn import_export_fixture_loads_the_expected_imported_symbol() -> TestResult {
     let output = run_bounded(command, "ImportExport fixture load probe")?;
     require_success(&output, "ImportExport fixture load probe")?;
 
-    let stdout = String::from_utf8(output.stdout)?;
-    if stdout == "fixture-ok\n" {
+    let stdout = normalized_protocol_line(&output.stdout, "ImportExport fixture load probe")?;
+    if stdout == "fixture-ok" {
         Ok(())
     } else {
         Err(failure(format!("unexpected ImportExport fixture load receipt: {stdout:?}")))
@@ -345,7 +374,12 @@ fn governed_perl_probe_denies_hostile_perl_environment() -> TestResult {
         environment
     };
 
-    let mut command = isolated_perl_command_from(&environment)?;
+    let mut command = Command::new("perl");
+    for (key, value) in &environment {
+        command.env(key, value);
+    }
+    command.env("LC_ALL", "C");
+    remove_denied_perl_environment(&mut command);
     command.arg("-e").arg(
         r#"my @bad = grep { exists $ENV{$_} } qw(PERL5LIB PERL5OPT PERL_LOCAL_LIB_ROOT PERL_LOCAL_LIB_PREFIX PERL_MB_OPT PERL_MM_OPT); die join(',', @bad) if @bad; print "isolated\n";"#,
     );
@@ -353,8 +387,8 @@ fn governed_perl_probe_denies_hostile_perl_environment() -> TestResult {
     let output = run_bounded(command, "hostile Perl environment denial probe")?;
     require_success(&output, "hostile Perl environment denial probe")?;
 
-    let stdout = String::from_utf8(output.stdout)?;
-    if stdout.trim_end_matches(['\r', '\n']) == "isolated" {
+    let stdout = normalized_protocol_line(&output.stdout, "hostile Perl environment denial probe")?;
+    if stdout == "isolated" {
         Ok(())
     } else {
         Err(failure(format!("unexpected environment denial receipt: {stdout:?}")))
