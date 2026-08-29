@@ -2329,7 +2329,8 @@
 | `.changes/unreleased/product-12470-Added-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12489-Changed-095500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12559-Fixed-213941.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
-| `.changes/unreleased/product-12573-Changed-194700.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |`n| `.changes/unreleased/product-12598-Changed-021722.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-12573-Changed-194700.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-12598-Changed-021722.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12639-Fixed-235500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12641-Security-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12648-Fixed-203303.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -3512,7 +3513,8 @@
 | `benchmarks/scripts/format-results.py` | tooling | `non-rust-benchmarks-scripts` | parser/perf |
 | `benchmarks/scripts/run-benchmarks.sh` | tooling | `non-rust-benchmarks-scripts` | parser/perf |
 | `benchmarks/scripts/test_alert_system.sh` | tooling | `non-rust-benchmarks-scripts` | parser/perf |
-| `benchmarks/scripts/test_benchmark_guards.py` | tooling | `non-rust-benchmarks-scripts` | parser/perf |`n| `benchmarks/scripts/test_benchmark_targets.py` | tooling | `non-rust-benchmarks-scripts` | parser/perf |
+| `benchmarks/scripts/test_benchmark_guards.py` | tooling | `non-rust-benchmarks-scripts` | parser/perf |
+| `benchmarks/scripts/test_benchmark_targets.py` | tooling | `non-rust-benchmarks-scripts` | parser/perf |
 | `benchmarks/scripts/test_extract_criterion.py` | tooling | `non-rust-benchmarks-scripts` | parser/perf |
 | `benchmarks/scripts/test_regression.py` | tooling | `non-rust-benchmarks-scripts` | parser/perf |
 | `book/.gitignore` | config | `non-rust-gitignore-family` | release/ci |
