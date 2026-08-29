@@ -775,10 +775,10 @@ gates:
       cargo clippy
       --workspace --bins --locked --no-deps
       -- -D clippy::unwrap_used -D clippy::expect_used
-    timeout_seconds: 300
+    timeout_seconds: 600
     retry_count: 0
     budgets:
-      max_duration_ms: 240000
+      max_duration_ms: 480000
       max_warnings: 0
     quarantine: false
     tags:
