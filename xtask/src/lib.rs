@@ -5,6 +5,7 @@
 extern crate self as xtask;
 
 pub mod actual_host_receipt;
+pub mod branch_deletion_admission;
 pub mod ci_route_plan;
 pub mod client_compat_fixture;
 pub mod clippy_repair_corpus;
@@ -35,3 +36,4 @@ pub mod vim_lsp_cell_catalog;
 pub mod vim_lsp_specialized_driver;
 pub mod vim_lsp_subject_refresh;
 pub mod worktree_cleanup;
+pub mod worktree_forensic_recovery;
