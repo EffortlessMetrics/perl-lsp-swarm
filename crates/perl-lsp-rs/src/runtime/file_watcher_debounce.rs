@@ -1263,9 +1263,21 @@ mod tests {
             harness.debouncer.try_schedule(&format!("file:///strand{i}.pl"));
         }
         harness.advance(101);
+        // The degraded flag is stored BEFORE the dispatcher's accounting drain
+        // (flag-first is what stops intake from racing the drain), so waiting
+        // on `!is_operational()` alone can release while `panic_dropped_total`
+        // and the zeroed counters are still mid-drain on a preempted runner.
+        // Wait for the full drain postcondition the assertions below rely on.
         harness.wait_for(
-            || !harness.debouncer.is_operational(),
-            "degraded flag after panicking dispatch",
+            || {
+                let pressure = harness.debouncer.pressure();
+                !harness.debouncer.is_operational()
+                    && pressure.panic_dropped_total == 5
+                    && pressure.pending_subjects == 0
+                    && pressure.outboxed_batches == 0
+                    && pressure.active_subjects == 0
+            },
+            "degraded flag with fully drained, truthful accounting after panicking dispatch",
         );
 
         // Truthful transition: in-flight batch (2) plus queued batches (3)
