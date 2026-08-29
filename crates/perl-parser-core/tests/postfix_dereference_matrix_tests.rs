@@ -27,9 +27,19 @@ $gref->**;
 
 #[derive(Clone, Copy)]
 enum ExpectedShape<'a> {
-    Unary { op: &'a str, receiver: &'a str },
-    Binary { op: &'a str, receiver: &'a str, selector: &'a str },
-    HashSlice { receiver: &'a str, selector: &'a str },
+    Unary {
+        op: &'a str,
+        receiver: &'a str,
+    },
+    Binary {
+        op: &'a str,
+        receiver: &'a str,
+        selector: &'a str,
+    },
+    HashSlice {
+        receiver: &'a str,
+        selector: &'a str,
+    },
 }
 
 #[derive(Clone, Copy)]
@@ -41,15 +51,24 @@ struct MatrixCase<'a> {
 const MATRIX: &[MatrixCase<'static>] = &[
     MatrixCase {
         text: "$sref->$*",
-        shape: ExpectedShape::Unary { op: "->$*", receiver: "$sref" },
+        shape: ExpectedShape::Unary {
+            op: "->$*",
+            receiver: "$sref",
+        },
     },
     MatrixCase {
         text: "$aref->$#*",
-        shape: ExpectedShape::Unary { op: "->$#*", receiver: "$aref" },
+        shape: ExpectedShape::Unary {
+            op: "->$#*",
+            receiver: "$aref",
+        },
     },
     MatrixCase {
         text: "$aref->@*",
-        shape: ExpectedShape::Unary { op: "->@*", receiver: "$aref" },
+        shape: ExpectedShape::Unary {
+            op: "->@*",
+            receiver: "$aref",
+        },
     },
     MatrixCase {
         text: "$aref->@[0, 2]",
@@ -68,7 +87,10 @@ const MATRIX: &[MatrixCase<'static>] = &[
     },
     MatrixCase {
         text: "$href->%*",
-        shape: ExpectedShape::Unary { op: "->%*", receiver: "$href" },
+        shape: ExpectedShape::Unary {
+            op: "->%*",
+            receiver: "$href",
+        },
     },
     MatrixCase {
         text: "$href->%{'alpha', $dynamic_key}",
@@ -80,26 +102,39 @@ const MATRIX: &[MatrixCase<'static>] = &[
     },
     MatrixCase {
         text: "$cref->&*",
-        shape: ExpectedShape::Unary { op: "->&*", receiver: "$cref" },
+        shape: ExpectedShape::Unary {
+            op: "->&*",
+            receiver: "$cref",
+        },
     },
     MatrixCase {
         text: "$gref->**",
-        shape: ExpectedShape::Unary { op: "->**", receiver: "$gref" },
+        shape: ExpectedShape::Unary {
+            op: "->**",
+            receiver: "$gref",
+        },
     },
 ];
 
 fn source_text<'a>(source: &'a str, node: &Node) -> Result<&'a str, String> {
-    source.get(node.location.start..node.location.end).ok_or_else(|| {
-        format!(
-            "node span {}..{} is outside source of {} bytes",
-            node.location.start,
-            node.location.end,
-            source.len()
-        )
-    })
+    source
+        .get(node.location.start..node.location.end)
+        .ok_or_else(|| {
+            format!(
+                "node span {}..{} is outside source of {} bytes",
+                node.location.start,
+                node.location.end,
+                source.len()
+            )
+        })
 }
 
-fn collect_exact<'a>(node: &'a Node, source: &str, expected: &str, found: &mut Vec<&'a Node>) {
+fn collect_exact<'a>(
+    node: &'a Node,
+    source: &str,
+    expected: &str,
+    found: &mut Vec<&'a Node>,
+) {
     if source.get(node.location.start..node.location.end) == Some(expected) {
         found.push(node);
     }
@@ -128,9 +163,11 @@ fn assert_variable(node: &Node, expected_text: &str) -> TestResult {
     let expected_name = expected_text
         .strip_prefix('$')
         .ok_or_else(|| format!("expected scalar receiver, got {expected_text:?}"))?;
-    if !matches!(&node.kind, NodeKind::Variable { sigil, name }
-        if sigil == "$" && name == expected_name)
-    {
+    if !matches!(
+        &node.kind,
+        NodeKind::Variable { sigil, name }
+            if sigil == "$" && name == expected_name
+    ) {
         return Err(format!(
             "expected receiver {expected_text}, got {}",
             node.kind.kind_name()
@@ -142,8 +179,15 @@ fn assert_variable(node: &Node, expected_text: &str) -> TestResult {
 fn assert_shape(source: &str, node: &Node, expected: ExpectedShape<'_>) -> TestResult {
     match expected {
         ExpectedShape::Unary { op, receiver } => {
-            let NodeKind::Unary { op: actual_op, operand } = &node.kind else {
-                return Err(format!("expected Unary({op}), got {}", node.kind.kind_name()));
+            let NodeKind::Unary {
+                op: actual_op,
+                operand,
+            } = &node.kind
+            else {
+                return Err(format!(
+                    "expected Unary({op}), got {}",
+                    node.kind.kind_name()
+                ));
             };
             if actual_op != op {
                 return Err(format!("expected unary op {op:?}, got {actual_op:?}"));
@@ -156,9 +200,21 @@ fn assert_shape(source: &str, node: &Node, expected: ExpectedShape<'_>) -> TestR
             }
             assert_variable(operand, receiver)?;
         }
-        ExpectedShape::Binary { op, receiver, selector } => {
-            let NodeKind::Binary { op: actual_op, left, right } = &node.kind else {
-                return Err(format!("expected Binary({op}), got {}", node.kind.kind_name()));
+        ExpectedShape::Binary {
+            op,
+            receiver,
+            selector,
+        } => {
+            let NodeKind::Binary {
+                op: actual_op,
+                left,
+                right,
+            } = &node.kind
+            else {
+                return Err(format!(
+                    "expected Binary({op}), got {}",
+                    node.kind.kind_name()
+                ));
             };
             if actual_op != op {
                 return Err(format!("expected binary op {op:?}, got {actual_op:?}"));
@@ -174,7 +230,10 @@ fn assert_shape(source: &str, node: &Node, expected: ExpectedShape<'_>) -> TestR
         }
         ExpectedShape::HashSlice { receiver, selector } => {
             let NodeKind::HashSlice { target, keys } = &node.kind else {
-                return Err(format!("expected HashSlice, got {}", node.kind.kind_name()));
+                return Err(format!(
+                    "expected HashSlice, got {}",
+                    node.kind.kind_name()
+                ));
             };
             if source_text(source, target)? != receiver || source_text(source, keys)? != selector {
                 return Err(format!(
@@ -218,7 +277,11 @@ fn complete_postfix_dereference_matrix_exposes_receiver_and_selector_children() 
             .collect::<Result<Vec<_>, _>>()?;
         let expected = match case.shape {
             ExpectedShape::Unary { receiver, .. } => vec![receiver],
-            ExpectedShape::Binary { receiver, selector, .. }
+            ExpectedShape::Binary {
+                receiver,
+                selector,
+                ..
+            }
             | ExpectedShape::HashSlice { receiver, selector } => vec![receiver, selector],
         };
         if child_text != expected {
@@ -254,16 +317,21 @@ fn postfix_dereference_matrix_has_explicit_canonical_hir_dispositions() -> TestR
             .ok_or_else(|| format!("{} has no canonical HIR expression", case.text))?;
 
         let matches_disposition = match (case.shape, hir) {
-            (ExpectedShape::Unary { op, .. }, HirExpr::Unary { op: actual_op, .. }) => {
-                actual_op == op
-            }
+            (
+                ExpectedShape::Unary { op, .. },
+                HirExpr::Unary { op: actual_op, .. },
+            ) => actual_op == op,
             (
                 ExpectedShape::Binary { op, .. },
-                HirExpr::Binary { op: BinaryOp::Other(actual_op), .. },
+                HirExpr::Binary {
+                    op: BinaryOp::Other(actual_op),
+                    ..
+                },
             ) => actual_op == op,
-            (ExpectedShape::HashSlice { .. }, HirExpr::Call { ast_kind, args, .. }) => {
-                ast_kind == "HashSlice" && args.len() == 3
-            }
+            (
+                ExpectedShape::HashSlice { .. },
+                HirExpr::Call { ast_kind, args, .. },
+            ) => ast_kind == "HashSlice" && args.len() == 3,
             _ => false,
         };
         if !matches_disposition {
@@ -283,7 +351,10 @@ fn chained_receiver_and_utf8_selectors_keep_exact_geometry() -> TestResult {
     let ast = parse(source);
     let slice = exact_node(&ast, source, "$object->{payload}->@{'naïve', '東京'}")?;
     let NodeKind::HashSlice { target, keys } = &slice.kind else {
-        return Err(format!("expected HashSlice, got {}", slice.kind.kind_name()));
+        return Err(format!(
+            "expected HashSlice, got {}",
+            slice.kind.kind_name()
+        ));
     };
     if source_text(source, target)? != "$object->{payload}"
         || source_text(source, keys)? != "'naïve', '東京'"
@@ -327,9 +398,10 @@ $cref->();
 
 fn collect_postfix_rows(node: &Node, source: &str, found: &mut Vec<String>) -> TestResult {
     let is_postfix = match &node.kind {
-        NodeKind::Unary { op, .. } => {
-            matches!(op.as_str(), "->$*" | "->$#*" | "->@*" | "->%*" | "->&*" | "->**")
-        }
+        NodeKind::Unary { op, .. } => matches!(
+            op.as_str(),
+            "->$*" | "->$#*" | "->@*" | "->%*" | "->&*" | "->**"
+        ),
         NodeKind::Binary { op, .. } => matches!(op.as_str(), "->@[]" | "->%{}"),
         NodeKind::HashSlice { target, .. } => source
             .get(target.location.end..node.location.end)
@@ -362,7 +434,9 @@ fn malformed_postfix_dereference_rows_recover_without_panicking() -> TestResult 
         let mut parser = Parser::new(source);
         let output = parser.parse_with_recovery();
         if output.diagnostics.is_empty() {
-            return Err(format!("malformed row {source:?} retained no recovery diagnostic"));
+            return Err(format!(
+                "malformed row {source:?} retained no recovery diagnostic"
+            ));
         }
         if !matches!(output.ast.kind, NodeKind::Program { .. }) {
             return Err(format!(
@@ -382,7 +456,10 @@ fn exact_source_ranges_remain_byte_based() -> TestResult {
     let expected_start = source
         .find("$href")
         .ok_or_else(|| "fixture lost $href marker".to_string())?;
-    let expected = SourceLocation { start: expected_start, end: source.len() - 1 };
+    let expected = SourceLocation {
+        start: expected_start,
+        end: source.len() - 1,
+    };
     if node.location != expected {
         return Err(format!(
             "UTF-8 prefix changed byte geometry: got {:?}, expected {expected:?}",
