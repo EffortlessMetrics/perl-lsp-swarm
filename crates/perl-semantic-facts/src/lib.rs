@@ -1,6 +1,3 @@
- 2209 crates/perl-semantic-facts/src/lib.rs
-  315 crates/perl-semantic-facts/src/module_move.rs
- 2524 total
 #![warn(missing_docs)]
 #![cfg_attr(clippy, allow(missing_docs))]
 
