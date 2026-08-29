@@ -606,8 +606,13 @@ fn nightly_manual_dispatch_inputs_are_boolean_and_job_selectors_are_exclusive() 
     let root = repo_root();
     let workflow_source = fs::read_to_string(root.join(".github/workflows/ci-nightly.yml"))?;
     let workflow: Value = serde_yaml_ng::from_str(&workflow_source)?;
-    let dispatch = yaml_mapping_entry(&workflow, "on")?;
-    let inputs = yaml_mapping_entry(yaml_mapping_entry(dispatch, "workflow_dispatch")?, "inputs")?;
+    let triggers = yaml_mapping_entry(&workflow, "on")?;
+    let schedule = yaml_mapping_entry(triggers, "schedule")?;
+    ensure!(
+        schedule.as_sequence().is_some_and(|entries| !entries.is_empty()),
+        "nightly workflow must declare at least one top-level schedule trigger"
+    );
+    let inputs = yaml_mapping_entry(yaml_mapping_entry(triggers, "workflow_dispatch")?, "inputs")?;
     let routed_jobs = [
         ("mutation", "run_mutation"),
         ("benchmark", "run_benchmarks"),
