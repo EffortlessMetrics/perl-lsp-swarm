@@ -78,6 +78,24 @@ fn wait_for_method(output: &OutputCapture, method: &str) -> Option<Value> {
     }
 }
 
+/// Complete the LSP lifecycle handshake after `initialize` (#13492).
+///
+/// Server-to-client requests (`window/showMessageRequest`, `window/showDocument`,
+/// `window/workDoneProgress/create`, ...) are rejected with `WouldBlock` until
+/// initialization completes: `LspServer::send_request` guards the common seam
+/// because LSP 3.17 forbids server-originated requests before the handshake
+/// finishes (#7708; a35d535023, ff7ac8a084, f3d86f5514). Tests that drive those
+/// APIs must deliver the `initialized` notification first, exactly like real
+/// clients do.
+fn complete_initialization(server: &LspServer) {
+    let _ = server.handle_request(perl_lsp::JsonRpcRequest {
+        _jsonrpc: "2.0".to_string(),
+        id: None,
+        method: "initialized".to_string(),
+        params: Some(json!({})),
+    });
+}
+
 impl Write for OutputCapture {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         self.buffer.lock().write(buf)
@@ -118,6 +136,7 @@ fn lsp_window_show_message_request_format() -> Result<(), Box<dyn std::error::Er
         method: "initialize".to_string(),
         params: Some(init_params),
     });
+    complete_initialization(&server);
 
     let _ = wait_for_messages(&output, 1);
     output.clear();
@@ -189,6 +208,7 @@ fn lsp_window_show_document_with_capability() {
         method: "initialize".to_string(),
         params: Some(init_params),
     });
+    complete_initialization(&server);
 
     let _ = wait_for_messages(&output, 1);
     output.clear();
@@ -236,6 +256,7 @@ fn lsp_window_progress_lifecycle() {
         method: "initialize".to_string(),
         params: Some(init_params),
     });
+    complete_initialization(&server);
 
     let _ = wait_for_messages(&output, 1);
     output.clear();
@@ -314,6 +335,7 @@ fn lsp_window_progress_duplicate_token_fails() -> Result<(), Box<dyn std::error:
         method: "initialize".to_string(),
         params: Some(init_params),
     });
+    complete_initialization(&server);
 
     // Create first token
     let token = "duplicate-token";
@@ -453,6 +475,16 @@ fn lsp_window_message_types() {
     let output_box: Box<dyn Write + Send> = Box::new(output.clone());
     let server = LspServer::with_output(Arc::new(Mutex::new(output_box)));
 
+    // Server-to-client requests are deferred until the handshake completes
+    // (#7708), so complete initialization before driving showMessageRequest.
+    let _ = server.handle_request(perl_lsp::JsonRpcRequest {
+        _jsonrpc: "2.0".to_string(),
+        id: Some(perl_lsp::protocol::JsonRpcId::Integer(1_i64)),
+        method: "initialize".to_string(),
+        params: Some(json!({ "capabilities": {} })),
+    });
+    complete_initialization(&server);
+
     // Test all message types
     let types = [
         (MessageType::Error, 1),
@@ -479,6 +511,16 @@ fn lsp_window_debug_message_type_serializes_to_five() -> Result<(), Box<dyn std:
     let output = OutputCapture::new();
     let output_box: Box<dyn Write + Send> = Box::new(output.clone());
     let server = LspServer::with_output(Arc::new(Mutex::new(output_box)));
+
+    // The final leg sends a server-to-client window/showMessageRequest, which
+    // is deferred until the handshake completes (#7708); initialize first.
+    let _ = server.handle_request(perl_lsp::JsonRpcRequest {
+        _jsonrpc: "2.0".to_string(),
+        id: Some(perl_lsp::protocol::JsonRpcId::Integer(1_i64)),
+        method: "initialize".to_string(),
+        params: Some(json!({ "capabilities": {} })),
+    });
+    complete_initialization(&server);
 
     server.log_message(MessageType::Debug, "debug log")?;
     let log_message = wait_for_method(&output, "window/logMessage")
@@ -546,6 +588,7 @@ fn lsp_window_show_document_external_flag() {
         method: "initialize".to_string(),
         params: Some(init_params),
     });
+    complete_initialization(&server);
 
     let _ = wait_for_messages(&output, 1);
     output.clear();
