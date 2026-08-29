@@ -83,10 +83,21 @@ def validate_workflow_contract(text: str) -> None:
         "github.event.workflow_run.repository.full_name == github.repository",
         "contents: write",
         "pull-requests: write",
+        'title: "chore(badges): refresh public endpoints"',
+        'commit-message: "chore(badges): refresh public endpoints"',
+        "Source SHA: `${{ env.SOURCE_SHA }}`",
+        "RIPR producer run: `${{ github.event.workflow_run.id }}`",
+        "Badge payload: `badge-endpoints-${{ github.run_id }}`",
+        "Refs #13694.",
     ]
     for fragment in writer_required:
         if fragment not in open_pr:
             raise ValueError(f"badge PR writer contract is missing {fragment!r}")
+    if "#8820" in open_pr:
+        raise ValueError("badge PR writer retains stale #8820 ownership")
+    for closing in ("Closes #13694", "Fixes #13694", "Resolves #13694"):
+        if closing in open_pr:
+            raise ValueError("badge PR writer must not close the recovery umbrella")
     if "github.event_name == 'workflow_dispatch'" in open_pr:
         raise ValueError("manual candidate proof must not admit the write-capable PR job")
 
@@ -116,6 +127,17 @@ class GenerateBadgesTests(unittest.TestCase):
             text.replace(
                 "github.event.workflow_run.conclusion == 'success'",
                 "github.event.workflow_run.conclusion != 'success'",
+                1,
+            ),
+            text.replace("Refs #13694.", "Closes #13694.", 1),
+            text.replace(
+                "Source SHA: `${{ env.SOURCE_SHA }}`",
+                "Source SHA: `unknown`",
+                1,
+            ),
+            text.replace(
+                'title: "chore(badges): refresh public endpoints"',
+                'title: "chore(badges): refresh public endpoints (#8820)"',
                 1,
             ),
         ]

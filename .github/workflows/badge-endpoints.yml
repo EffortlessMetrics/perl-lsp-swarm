@@ -344,10 +344,16 @@ jobs:
           token: ${{ github.token }}
           branch: automation/badge-endpoints
           add-paths: badges
-          title: "chore(badges): refresh public endpoints (#8820)"
-          commit-message: "chore(badges): refresh public endpoints (#8820)"
+          title: "chore(badges): refresh public endpoints"
+          commit-message: "chore(badges): refresh public endpoints"
           body: |
             Refreshes the exact generated Shields endpoint snapshot under `badges/`.
+
+            Source SHA: `${{ env.SOURCE_SHA }}`
+            RIPR producer run: `${{ github.event.workflow_run.id }}`
+            Badge payload: `badge-endpoints-${{ github.run_id }}`
+
+            Refs #13694.
 
             Generated without repository write authority by:
 
