@@ -100,6 +100,28 @@ fn semicolons_inside_import_comments_do_not_truncate_source_backed_shape()
 }
 
 #[test]
+fn zero_argument_current_package_qualified_call_does_not_consume_authority()
+-> Result<(), Box<dyn std::error::Error>> {
+    let facts = generated_facts_from_source(
+        "package User; use DBIx::QuickORM type => 'table'; User::table(); table users => sub {};",
+    )?;
+
+    assert_eq!(canonical_names(&facts), vec!["User::qorm_table"]);
+    Ok(())
+}
+
+#[test]
+fn later_quickorm_import_reestablishes_authority_after_builder_shadow()
+-> Result<(), Box<dyn std::error::Error>> {
+    let facts = generated_facts_from_source(
+        "package User; sub table {}; use DBIx::QuickORM type => 'table'; table users => sub {};",
+    )?;
+
+    assert_eq!(canonical_names(&facts), vec!["User::qorm_table"]);
+    Ok(())
+}
+
+#[test]
 fn parser_preserves_quickorm_configuration_as_key_value_args()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut parser = Parser::new("use DBIx::QuickORM type => 'table';");
@@ -561,12 +583,12 @@ fn dynamic_reconfiguration_invalidates_prior_generated_fact()
 }
 
 #[test]
-fn package_level_table_shadow_blocks_later_import_promotion()
+fn package_level_table_shadow_is_replaced_by_later_import_promotion()
 -> Result<(), Box<dyn std::error::Error>> {
     let facts = generated_facts_from_source(
         "package User; sub table { 1 }; use DBIx::QuickORM type => 'table'; table users => sub {};",
     )?;
-    assert!(facts.is_empty());
+    assert_eq!(canonical_names(&facts), vec!["User::qorm_table"]);
     Ok(())
 }
 

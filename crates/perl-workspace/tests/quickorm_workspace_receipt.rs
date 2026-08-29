@@ -193,6 +193,42 @@ table "users" => sub {};
 }
 
 #[test]
+fn workspace_index_preserves_authority_after_zero_argument_qualified_call()
+-> Result<(), Box<dyn std::error::Error>> {
+    let index = WorkspaceIndex::new();
+    let uri = Url::parse("file:///lib/MyApp/Schema/ZeroArgQualified.pm")?;
+    let source = r#"
+package MyApp::Schema::ZeroArgQualified;
+use DBIx::QuickORM type => 'table';
+MyApp::Schema::ZeroArgQualified::table();
+table "users" => sub {};
+1;
+"#;
+
+    index.index_file(uri, source.to_string())?;
+    assert_eq!(index.search_generated_workspace_symbols("qorm_table", None).len(), 1);
+    Ok(())
+}
+
+#[test]
+fn workspace_index_later_import_reestablishes_shadowed_builder_authority()
+-> Result<(), Box<dyn std::error::Error>> {
+    let index = WorkspaceIndex::new();
+    let uri = Url::parse("file:///lib/MyApp/Schema/LaterImport.pm")?;
+    let source = r#"
+package MyApp::Schema::LaterImport;
+sub table {}
+use DBIx::QuickORM type => 'table';
+table "users" => sub {};
+1;
+"#;
+
+    index.index_file(uri, source.to_string())?;
+    assert_eq!(index.search_generated_workspace_symbols("qorm_table", None).len(), 1);
+    Ok(())
+}
+
+#[test]
 fn workspace_index_receipts_cover_package_reentry_and_fresh_anchor()
 -> Result<(), Box<dyn std::error::Error>> {
     let index = WorkspaceIndex::new();

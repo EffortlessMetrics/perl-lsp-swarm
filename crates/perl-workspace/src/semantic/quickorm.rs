@@ -182,9 +182,10 @@ fn walk_direct_statement(
         NodeKind::Use { module, args, .. } if module == QUICKORM_MODULE => {
             let package = current_package(context).to_string();
             let source_segment = source.and_then(|text| source_import_segment(text, node));
-            if classify_import_shape(args, source_segment) == QuickOrmImportShape::UnfilteredTable
-                && !context.shadowed_builders.contains(&package)
-            {
+            if classify_import_shape(args, source_segment) == QuickOrmImportShape::UnfilteredTable {
+                // A valid later import re-establishes QuickORM's compile-time
+                // authority after an earlier package-local builder shadow.
+                context.shadowed_builders.remove(&package);
                 context.table_package_authority.insert(package);
             } else {
                 context.table_package_authority.remove(&package);
@@ -268,10 +269,11 @@ fn is_direct_table_or_view_call(expression: &Node) -> bool {
 }
 
 fn is_table_or_view_call(expression: &Node, package: &str) -> bool {
-    let NodeKind::FunctionCall { name, .. } = &expression.kind else {
+    let NodeKind::FunctionCall { name, args } = &expression.kind else {
         return false;
     };
-    is_direct_table_or_view_call(expression) || is_current_package_qualified_call(name, package)
+    is_direct_table_or_view_call(expression)
+        || (!args.is_empty() && is_current_package_qualified_call(name, package))
 }
 
 fn is_current_package_qualified_call(name: &str, package: &str) -> bool {

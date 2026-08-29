@@ -174,3 +174,53 @@ table users => sub {};
     );
     Ok(())
 }
+
+#[test]
+fn zero_argument_qualified_call_preserves_generated_completion()
+-> Result<(), Box<dyn std::error::Error>> {
+    let index = Arc::new(WorkspaceIndex::new());
+    index.index_file(
+        Url::parse("file:///workspace/MyApp/Schema/ZeroArgQualified.pm")?,
+        r#"
+package MyApp::Schema::ZeroArgQualified;
+use DBIx::QuickORM type => 'table';
+MyApp::Schema::ZeroArgQualified::table();
+table users => sub {};
+1;
+"#
+        .to_string(),
+    )?;
+
+    let completions = completion_items(index, "MyApp::Schema::ZeroArgQualified->q")?;
+    let labels = labels(&completions);
+    assert!(
+        labels.contains(&"qorm_table"),
+        "a zero-argument qualified call must not consume authority: {labels:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn later_quickorm_import_restores_generated_completion_after_builder_shadow()
+-> Result<(), Box<dyn std::error::Error>> {
+    let index = Arc::new(WorkspaceIndex::new());
+    index.index_file(
+        Url::parse("file:///workspace/MyApp/Schema/LaterImport.pm")?,
+        r#"
+package MyApp::Schema::LaterImport;
+sub table {}
+use DBIx::QuickORM type => 'table';
+table users => sub {};
+1;
+"#
+        .to_string(),
+    )?;
+
+    let completions = completion_items(index, "MyApp::Schema::LaterImport->q")?;
+    let labels = labels(&completions);
+    assert!(
+        labels.contains(&"qorm_table"),
+        "a later valid QuickORM import must restore authority: {labels:?}"
+    );
+    Ok(())
+}
