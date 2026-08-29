@@ -804,21 +804,28 @@ mod tests {
         // branch `derive_canonical_name` documents and the one #8083's entity
         // catalog will eventually resolve — until then it must produce *no*
         // name at all, not a stand-in derived from the entity id.
-        let absent_target = EntityId(900);
-        let declared_locally = EntityId(901);
-        // A different entity *is* declared locally, so the lookup genuinely
-        // scans and misses rather than short-circuiting on an empty vector.
+        let absent_target = EntityId(901);
+        // Local rows on both sides of the target id, so the `e.id == entity_id`
+        // scan walks past a lower and a higher row without matching either.
+        // Together with the equal case in `add_file_populates_name_index`
+        // (occurrence and row both `EntityId(100)`), that covers the equality
+        // boundary from below, at, and above.
+        let declared_below = EntityId(900);
+        let declared_above = EntityId(902);
         let shard = unresolved_shard_with(
             "file:///lib/Importer.pm",
             FileId(6),
             OccurrenceId(903),
             Some(absent_target),
-            vec![declared_entity(declared_locally, "Importer::local_only")],
+            vec![
+                declared_entity(declared_below, "Importer::below"),
+                declared_entity(declared_above, "Importer::above"),
+            ],
             Vec::new(),
         );
-        assert_ne!(
-            absent_target, declared_locally,
-            "the fixture must miss the local row, not match it"
+        assert!(
+            declared_below < absent_target && absent_target < declared_above,
+            "the fixture must straddle the target id, not match it"
         );
 
         let mut index = ReferenceIndex::new();
@@ -826,7 +833,8 @@ mod tests {
 
         // No name is invented for the missing declaration — under any spelling.
         assert_eq!(index.name_count(), 0, "no name may be synthesized from an absent declaration");
-        assert!(index.get_by_name("Importer::local_only").is_empty());
+        assert!(index.get_by_name("Importer::below").is_empty());
+        assert!(index.get_by_name("Importer::above").is_empty());
 
         let key = UnresolvedOccurrenceKey::new(FileId(6), OccurrenceId(903), AnchorId(60));
         let unresolved = index.get_unresolved(&key);
