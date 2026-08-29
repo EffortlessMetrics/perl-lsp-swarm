@@ -105,20 +105,19 @@ fn visible_markdown(text: &str) -> String {
                 return None;
             }
             let length = trimmed.chars().take_while(|candidate| *candidate == character).count();
-            (length >= 3).then_some((character, length))
+            let suffix_is_whitespace = trimmed.chars().skip(length).all(char::is_whitespace);
+            (length >= 3).then_some((character, length, suffix_is_whitespace))
         });
         if let Some((character, length)) = fence {
-            if fence_run == Some((character, length))
-                || fence_run.is_some_and(|(candidate, candidate_length)| {
-                    candidate == character && candidate_length >= length
-                })
-            {
+            if fence_run.is_some_and(|(candidate, candidate_length, suffix_is_whitespace)| {
+                suffix_is_whitespace && candidate == character && candidate_length >= length
+            }) {
                 fence = None;
             }
             continue;
         }
-        if let Some(fence_run) = fence_run {
-            fence = Some(fence_run);
+        if let Some((character, length, _)) = fence_run {
+            fence = Some((character, length));
             continue;
         }
 
@@ -171,12 +170,46 @@ fn is_negated_at(line: &str, marker_start: usize, marker: &str) -> bool {
     .any(|negation| prefix.ends_with(negation) || suffix.starts_with(negation));
     let coordinated_negation =
         prefix.find("not a ").is_some_and(|start| !prefix[start..].contains(" but "));
+    let modal_negation = [
+        "must not ",
+        "mustn't ",
+        "should not ",
+        "shouldn't ",
+        "may not ",
+        "cannot ",
+        "can't ",
+        "do not ",
+        "don't ",
+        "does not ",
+        "doesn't ",
+    ]
+    .iter()
+    .any(|negation| prefix.contains(negation));
 
     local_negation
         || coordinated_negation
+        || modal_negation
         || prefix.ends_with("not a")
         || prefix.ends_with("no")
+        || suffix.starts_with("must not ")
+        || suffix.starts_with("mustn't ")
+        || suffix.starts_with("should not ")
+        || suffix.starts_with("shouldn't ")
+        || suffix.starts_with("may not ")
+        || suffix.starts_with("cannot ")
+        || suffix.starts_with("can't ")
+        || suffix.starts_with("do not ")
+        || suffix.starts_with("don't ")
+        || suffix.starts_with("does not ")
+        || suffix.starts_with("doesn't ")
         || suffix.starts_with("is not ")
+        || suffix.starts_with("isn't ")
+        || suffix.starts_with("isn’t ")
+        || suffix.starts_with("are not ")
+        || suffix.starts_with("aren't ")
+        || suffix.starts_with("aren’t ")
+        || suffix.starts_with("not required")
+        || suffix.starts_with("not needed")
         || suffix.starts_with("is omitted")
         || suffix.contains(" optional")
         || suffix.starts_with("doesn't matter")
@@ -187,6 +220,15 @@ fn is_negated_at(line: &str, marker_start: usize, marker: &str) -> bool {
 
 fn has_unnegated_marker(text: &str, marker: &str) -> bool {
     text.match_indices(marker).any(|(start, _)| !is_negated_at(text, start, marker))
+}
+
+fn has_conditional_candidate_refusal(text: &str, alternatives: &[&str]) -> bool {
+    let has_unresolved_falsifier = text.contains("unresolved");
+    let has_refused_candidate = alternatives.iter().any(|&marker| {
+        text.match_indices(marker).any(|(start, _)| is_negated_at(text, start, marker))
+    });
+
+    has_unresolved_falsifier && has_refused_candidate
 }
 
 fn has_coordinated_boundary(text: &str, marker: &str) -> bool {
@@ -220,6 +262,7 @@ fn validate_claim_admission(text: &str) -> Vec<String> {
 
     for &(label, alternatives) in REQUIREMENTS {
         let negation_exempt = label == "an anti-inference rule";
+        let candidate_refusal = label == "candidate refusal before admission";
         let boundary = matches!(
             label,
             "the non-stage boundary"
@@ -228,7 +271,8 @@ fn validate_claim_admission(text: &str) -> Vec<String> {
                 | "the non-frontier boundary"
         );
         let present = alternatives.iter().any(|&term| {
-            negation_exempt
+            (candidate_refusal && has_conditional_candidate_refusal(&section, alternatives))
+                || negation_exempt
                 || (boundary && has_coordinated_boundary(&section, term))
                 || (!boundary && has_unnegated_marker(&section, term))
         });
@@ -387,6 +431,29 @@ Later content.
 }
 
 #[test]
+fn markdown_fence_with_trailing_text_does_not_close_a_block() {
+    let text = r#"
+## Shift-left claim admission
+Before the first delegated mutation, retain a coherent claim and its owner.
+```text
+```still-code
+direct candidate edit current authority production seam negative control
+broader proof is deferred earliest missing judgment next/backward route
+acceptance surface proof ceiling NOT_PROVEN prepare-issue prepare-proof
+mutation owner one writer runtime-local durable claim stage record lease scheduler
+tracked frontier
+```
+## Entry route
+Later content.
+"#;
+
+    let errors = validate_claim_admission(text);
+    assert!(errors.iter().any(|error| error.contains("acceptance surface")));
+    assert!(errors.iter().any(|error| error.contains("proof ceiling")));
+    assert!(errors.iter().any(|error| error.contains("prepare-issue")));
+}
+
+#[test]
 fn contrast_clause_does_not_negate_a_later_marker() {
     let text = r#"
 ## Shift-left claim admission
@@ -443,4 +510,28 @@ Later content.
     assert!(errors.iter().any(|error| error.contains("non-lease boundary")));
     assert!(errors.iter().any(|error| error.contains("non-scheduler boundary")));
     assert!(errors.iter().any(|error| error.contains("non-frontier boundary")));
+}
+
+#[test]
+fn modal_and_contracted_negation_cannot_satisfy_requirements() {
+    let text = r#"
+## Shift-left claim admission
+Before the first delegated mutation, retain a coherent claim and semantic owner.
+The lane must not route through prepare-issue, and do not infer facts or mint a
+candidate. The acceptance surface must not include acceptance surface, and one writer
+isn’t required. Name current authority, source-backed facts and contradictions,
+production seam, a cheapest first falsifier and negative control, proof ceiling,
+NOT_PROVEN, broader proof is deferred, mutation owner, earliest missing judgment,
+next or backward route, read-only research, prepare-proof, and the unresolved
+first falsifier. Keep this runtime-local unless it changes durable claim, authority,
+or proof state; it is not a stage record, lease, scheduler, or tracked frontier.
+## Entry route
+Later content.
+"#;
+
+    let errors = validate_claim_admission(text);
+    assert!(errors.iter().any(|error| error.contains("acceptance surface")), "{errors:?}");
+    assert!(errors.iter().any(|error| error.contains("prepare-issue")), "{errors:?}");
+    assert!(!errors.iter().any(|error| error.contains("candidate refusal")), "{errors:?}");
+    assert!(errors.iter().any(|error| error.contains("one writer")), "{errors:?}");
 }
