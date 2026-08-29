@@ -3181,7 +3181,7 @@ mod tests {
             "changes": [{ "uri": change_uri.to_string(), "type": 2 }]
         })))?;
 
-        index.index_file(
+        index.index_initial_file(
             url::Url::parse(old_uri.as_str())?,
             "#!/usr/bin/env perl\nsub disk_rename { 1 }\n1;\n".to_string(),
         )?;
@@ -3241,7 +3241,7 @@ mod tests {
             )));
         let index = server.coordinator().ok_or("missing index coordinator")?.index();
 
-        index.index_file(
+        index.index_initial_file(
             url::Url::parse(create_uri.as_str())?,
             "sub stale_create { 1 }\n1;\n".to_string(),
         )?;
@@ -3254,11 +3254,11 @@ mod tests {
             "failed create classification must clear stale closed-file facts"
         );
 
-        index.index_file(
+        index.index_initial_file(
             url::Url::parse(old_uri.as_str())?,
             "sub stale_old { 1 }\n1;\n".to_string(),
         )?;
-        index.index_file(
+        index.index_initial_file(
             url::Url::parse(new_uri.as_str())?,
             "sub stale_new { 1 }\n1;\n".to_string(),
         )?;

@@ -848,6 +848,46 @@ mod explicit_pin_tests {
         Ok(())
     }
 
+    /// A bare program name reachable only through the search path must resolve
+    /// to the absolute path the probe will execute, so the launch boundary's
+    /// pin canonicalization sees the same value (#13553).
+    #[test]
+    fn path_only_candidate_is_frozen_to_absolute_path() -> Result<(), String> {
+        let controls = tempfile::tempdir().map_err(|error| error.to_string())?;
+        let binary = controls.path().join(if cfg!(windows) { "perl.exe" } else { "perl" });
+        fs::write(&binary, b"path candidate").map_err(|error| error.to_string())?;
+        let search_path =
+            std::env::join_paths([controls.path()]).map_err(|error| error.to_string())?;
+        let resolved =
+            resolve_debuggee_candidate(Path::new("perl"), Some(search_path.as_os_str()))?;
+        let expected = fs::canonicalize(binary).map_err(|error| error.to_string())?;
+        if resolved != expected {
+            return Err(format!(
+                "PATH candidate was not frozen absolutely: {resolved:?} != {expected:?}"
+            ));
+        }
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn path_only_candidate_honors_pathext_for_perl_exe() -> Result<(), String> {
+        let controls = tempfile::tempdir().map_err(|error| error.to_string())?;
+        let binary = controls.path().join("perl.exe");
+        fs::write(&binary, b"path candidate").map_err(|error| error.to_string())?;
+        let search_path =
+            std::env::join_paths([controls.path()]).map_err(|error| error.to_string())?;
+        let resolved =
+            resolve_debuggee_candidate(Path::new("perl"), Some(search_path.as_os_str()))?;
+        let expected = fs::canonicalize(binary).map_err(|error| error.to_string())?;
+        if resolved != expected {
+            return Err(format!(
+                "PATHEXT candidate was not resolved: {resolved:?} != {expected:?}"
+            ));
+        }
+        Ok(())
+    }
+
     #[cfg(unix)]
     #[test]
     fn non_utf8_pin_is_rejected_before_launch() -> Result<(), String> {
@@ -863,27 +903,6 @@ mod explicit_pin_tests {
         };
         if !error.contains("not valid UTF-8") {
             return Err(format!("unexpected error: {error}"));
-        }
-        Ok(())
-    }
-
-    /// A bare program name reachable only through the search path must resolve
-    /// to the absolute path the probe will execute, so the launch boundary's
-    /// pin canonicalization sees the same value (#13553).
-    #[test]
-    fn path_only_candidate_is_frozen_to_absolute_path() -> Result<(), String> {
-        let controls = tempfile::tempdir().map_err(|error| error.to_string())?;
-        let binary = controls.path().join(if cfg!(windows) { "perl.exe" } else { "perl" });
-        fs::write(&binary, b"path candidate").map_err(|error| error.to_string())?;
-        let search_path =
-            std::env::join_paths([controls.path()]).map_err(|error| error.to_string())?;
-        let resolved = resolve_debuggee_candidate(Path::new("perl"), Some(search_path.as_os_str()))
-            .map_err(|error| format!("the PATH-only candidate should resolve: {error}"))?;
-        let expected = fs::canonicalize(&binary).map_err(|error| error.to_string())?;
-        if resolved != expected {
-            return Err(format!(
-                "PATH candidate was not frozen absolutely: {resolved:?} != {expected:?}"
-            ));
         }
         Ok(())
     }
