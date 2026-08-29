@@ -1725,6 +1725,7 @@ name = "perl-core-harness-types"
 version = "0.17.0"
 dependencies = [
  "clap",
+ "jsonschema",
  "serde",
  "serde_json",
 ]

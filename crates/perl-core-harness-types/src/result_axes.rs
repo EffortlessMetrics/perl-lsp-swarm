@@ -1,0 +1,2166 @@
+//! Strict v2 result axes for the upstream Perl core harness lane.
+//!
+//! A v1 harness record answered one question — did the runner pass? That single
+//! answer silently merged six independent facts: whether the evidence is usable
+//! at all, what the product actually did, what the compiler admitted, what
+//! semantics are genuinely supported, which mechanism produced the correctness
+//! signal, and how the observation relates to accepted state.
+//!
+//! This module keeps those facts separate and makes dishonest combinations
+//! unrepresentable. [`ResultAxes`] holds private fields and is reachable only
+//! through [`ResultAxes::new`], which enforces every cross-axis invariant.
+//! Deserialization routes through the same check, so a receipt read from disk
+//! cannot assert a combination that could not have been constructed.
+//!
+//! This module is representation-only. It adds no production consumer, migrates
+//! no baseline, and accepts no transition.
+
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+use std::error::Error;
+use std::fmt;
+
+use crate::{
+    CompatibilityRailAvailability, CompatibilityTransition, HarnessMode,
+    RESULT_AXES_SCHEMA_VERSION, RunnerStatus, SmokeStatus,
+};
+
+/// Whether the evidence behind a record may be used to draw a domain conclusion.
+///
+/// This axis is decided before any product outcome. Evidence that is not
+/// [`EvidenceValidity::Valid`] cannot carry a clean or failing observation,
+/// because no domain conclusion was actually obtained.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EvidenceValidity {
+    /// The evidence is complete, fresh, and usable for a current conclusion.
+    Valid,
+    /// The instrument did not establish enough to decide the domain question.
+    NotProven,
+    /// The evidence is structurally unusable, such as a malformed receipt.
+    Invalid,
+    /// The evidence was valid once but its freshness contract has expired.
+    Stale,
+    /// The measurement was cancelled before it could settle.
+    Cancelled,
+}
+
+impl EvidenceValidity {
+    /// Stable snake_case wire name.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Valid => "valid",
+            Self::NotProven => "not_proven",
+            Self::Invalid => "invalid",
+            Self::Stale => "stale",
+            Self::Cancelled => "cancelled",
+        }
+    }
+
+    /// Whether this evidence may support a current domain conclusion.
+    #[must_use]
+    pub fn supports_domain_conclusion(self) -> bool {
+        matches!(self, Self::Valid)
+    }
+}
+
+impl fmt::Display for EvidenceValidity {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// What the product was observed to do, separate from whether that is acceptable.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ObservedOutcome {
+    /// The subject ran and produced no failures.
+    Clean,
+    /// The subject ran and produced real product failures.
+    ///
+    /// This is an honest red observation, not an instrument problem: it pairs
+    /// with [`EvidenceValidity::Valid`].
+    FailuresObserved,
+    /// The process or protocol itself failed, so no product outcome was observed.
+    ProcessOrProtocolFailed,
+    /// This subject was deliberately not measured.
+    NotAssessed,
+}
+
+impl ObservedOutcome {
+    /// Stable snake_case wire name.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Clean => "clean",
+            Self::FailuresObserved => "failures_observed",
+            Self::ProcessOrProtocolFailed => "process_or_protocol_failed",
+            Self::NotAssessed => "not_assessed",
+        }
+    }
+
+    /// Whether this outcome asserts something about the product itself.
+    #[must_use]
+    pub fn is_domain_outcome(self) -> bool {
+        matches!(self, Self::Clean | Self::FailuresObserved)
+    }
+}
+
+impl fmt::Display for ObservedOutcome {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// What the compiler admitted about a subject, separate from what it supports.
+///
+/// Admission is a compile-time statement. It never implies that the behavior
+/// executes correctly.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompatibilityAdmission {
+    /// The behavior is modeled as an ordinary implemented fact.
+    Implemented,
+    /// A static fact was retained without executing the behavior.
+    StaticallyClassified,
+    /// The subject is admitted only through reviewed, source-locked debt.
+    AcceptedDebt,
+    /// The subject is not currently safe to admit.
+    Unsupported,
+    /// Admission was not assessed for this subject.
+    NotAssessed,
+}
+
+impl CompatibilityAdmission {
+    /// Stable snake_case wire name.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Implemented => "implemented",
+            Self::StaticallyClassified => "statically_classified",
+            Self::AcceptedDebt => "accepted_debt",
+            Self::Unsupported => "unsupported",
+            Self::NotAssessed => "not_assessed",
+        }
+    }
+
+    /// Whether this admission could ever underwrite general semantic support.
+    ///
+    /// Only [`CompatibilityAdmission::Implemented`] can. Debt, static
+    /// classification, unsupported, and unassessed admissions cannot, however
+    /// much execution evidence accompanies them.
+    #[must_use]
+    pub fn may_underwrite_general_support(self) -> bool {
+        matches!(self, Self::Implemented)
+    }
+}
+
+impl fmt::Display for CompatibilityAdmission {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// How much of the semantics is genuinely supported.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SemanticSupport {
+    /// Supported in general, not only for pinned shapes or replayed fixtures.
+    General,
+    /// Supported for a declared subset only.
+    Partial,
+    /// Known to be blocked, typically by source-locked or downstream debt.
+    Blocked,
+    /// No support rail exists for this subject.
+    Unavailable,
+    /// Support was not assessed for this subject.
+    NotAssessed,
+}
+
+impl SemanticSupport {
+    /// Stable snake_case wire name.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::General => "general",
+            Self::Partial => "partial",
+            Self::Blocked => "blocked",
+            Self::Unavailable => "unavailable",
+            Self::NotAssessed => "not_assessed",
+        }
+    }
+
+    /// Whether this is a positive support claim requiring backing evidence.
+    #[must_use]
+    pub fn is_positive_claim(self) -> bool {
+        matches!(self, Self::General | Self::Partial)
+    }
+}
+
+impl fmt::Display for SemanticSupport {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Which mechanism produced the execution or correctness signal.
+///
+/// A weaker mechanism can never be presented as a stronger one. Fixture replay
+/// in particular proves that recorded output still matches; it does not prove
+/// runtime semantics.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CorrectnessMechanism {
+    /// No execution or correctness rail ran.
+    None,
+    /// Recorded fixtures were replayed and compared.
+    FixtureReplay,
+    /// The subject executed through EIR.
+    EirExecution,
+    /// The subject was differentially compared against real Perl.
+    RealPerlOracle,
+    /// The subject was compared against curated gold output.
+    CuratedGold,
+}
+
+impl CorrectnessMechanism {
+    /// Stable snake_case wire name.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::FixtureReplay => "fixture_replay",
+            Self::EirExecution => "eir_execution",
+            Self::RealPerlOracle => "real_perl_oracle",
+            Self::CuratedGold => "curated_gold",
+        }
+    }
+
+    /// Whether the mechanism actually exercised runtime behavior.
+    #[must_use]
+    pub fn executes_behavior(self) -> bool {
+        matches!(self, Self::EirExecution | Self::RealPerlOracle | Self::CuratedGold)
+    }
+}
+
+impl fmt::Display for CorrectnessMechanism {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// One named axis, used when a record must report which axes it cannot fill.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResultAxis {
+    /// The [`EvidenceValidity`] axis.
+    Evidence,
+    /// The [`ObservedOutcome`] axis.
+    Observation,
+    /// The [`CompatibilityAdmission`] axis.
+    Admission,
+    /// The [`SemanticSupport`] axis.
+    Support,
+    /// The [`CorrectnessMechanism`] axis.
+    Mechanism,
+}
+
+impl ResultAxis {
+    /// Stable snake_case wire name.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Evidence => "evidence",
+            Self::Observation => "observation",
+            Self::Admission => "admission",
+            Self::Support => "support",
+            Self::Mechanism => "mechanism",
+        }
+    }
+}
+
+impl fmt::Display for ResultAxis {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// A cross-axis combination that would overstate what the evidence establishes.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ResultAxisViolation {
+    /// A clean or failing product outcome was claimed without valid evidence.
+    DomainOutcomeWithoutValidEvidence {
+        /// The evidence axis that cannot support a domain conclusion.
+        evidence: EvidenceValidity,
+        /// The domain outcome that was claimed anyway.
+        observation: ObservedOutcome,
+    },
+    /// A process or protocol failure was recorded as valid evidence.
+    ProcessFailureClaimedAsValidEvidence,
+    /// A positive support claim was made without valid evidence.
+    PositiveSupportWithoutValidEvidence {
+        /// The support claim that lacks valid evidence.
+        support: SemanticSupport,
+        /// The evidence axis that cannot back it.
+        evidence: EvidenceValidity,
+    },
+    /// An admission that cannot underwrite general support claimed it anyway.
+    AdmissionCannotUnderwriteGeneralSupport {
+        /// The admission that was recorded.
+        admission: CompatibilityAdmission,
+    },
+    /// An unsupported or unassessed admission carried a positive support claim.
+    AdmissionCannotUnderwritePositiveSupport {
+        /// The admission that was recorded.
+        admission: CompatibilityAdmission,
+        /// The positive support claim it cannot back.
+        support: SemanticSupport,
+    },
+    /// A positive support claim was made with no correctness mechanism at all.
+    PositiveSupportWithoutMechanism {
+        /// The positive support claim.
+        support: SemanticSupport,
+    },
+    /// Fixture replay was presented as general semantic support.
+    FixtureReplayClaimedGeneralSupport,
+}
+
+impl fmt::Display for ResultAxisViolation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::DomainOutcomeWithoutValidEvidence { evidence, observation } => write!(
+                f,
+                "observation '{observation}' asserts a product outcome, but evidence is '{evidence}'; \
+                 evidence validity is decided before domain outcome"
+            ),
+            Self::ProcessFailureClaimedAsValidEvidence => f.write_str(
+                "observation 'process_or_protocol_failed' cannot carry evidence 'valid'; \
+                 an instrument failure is not_proven, not a product result",
+            ),
+            Self::PositiveSupportWithoutValidEvidence { support, evidence } => {
+                write!(f, "support '{support}' is a positive claim but evidence is '{evidence}'")
+            }
+            Self::AdmissionCannotUnderwriteGeneralSupport { admission } => write!(
+                f,
+                "admission '{admission}' cannot become semantic support 'general'; \
+                 compile admission and accepted debt never imply general support"
+            ),
+            Self::AdmissionCannotUnderwritePositiveSupport { admission, support } => write!(
+                f,
+                "admission '{admission}' cannot carry positive semantic support '{support}'"
+            ),
+            Self::PositiveSupportWithoutMechanism { support } => write!(
+                f,
+                "support '{support}' requires a correctness mechanism; \
+                 a missing rail stays unavailable rather than becoming support"
+            ),
+            Self::FixtureReplayClaimedGeneralSupport => f.write_str(
+                "mechanism 'fixture_replay' cannot imply semantic support 'general'; \
+                 replay proves recorded output, not runtime semantics",
+            ),
+        }
+    }
+}
+
+impl Error for ResultAxisViolation {}
+
+/// Deserialization shape for [`ResultAxes`], checked before it becomes one.
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ResultAxesRepr {
+    evidence: EvidenceValidity,
+    observation: ObservedOutcome,
+    admission: CompatibilityAdmission,
+    support: SemanticSupport,
+    mechanism: CorrectnessMechanism,
+}
+
+impl TryFrom<ResultAxesRepr> for ResultAxes {
+    type Error = ResultAxisViolation;
+
+    fn try_from(repr: ResultAxesRepr) -> Result<Self, Self::Error> {
+        Self::new(repr.evidence, repr.observation, repr.admission, repr.support, repr.mechanism)
+    }
+}
+
+/// The six separated result axes for one subject.
+///
+/// Fields are private on purpose: every value of this type has passed
+/// [`ResultAxes::new`], including values produced by deserialization, so an
+/// overstated combination cannot enter the system through any route.
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, try_from = "ResultAxesRepr")]
+pub struct ResultAxes {
+    evidence: EvidenceValidity,
+    observation: ObservedOutcome,
+    admission: CompatibilityAdmission,
+    support: SemanticSupport,
+    mechanism: CorrectnessMechanism,
+}
+
+impl ResultAxes {
+    /// Build one axis set, rejecting every combination that overstates evidence.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first [`ResultAxisViolation`] found. Checks run in
+    /// dependency order: evidence validity first, then domain outcome, then
+    /// admission, then support and mechanism.
+    pub fn new(
+        evidence: EvidenceValidity,
+        observation: ObservedOutcome,
+        admission: CompatibilityAdmission,
+        support: SemanticSupport,
+        mechanism: CorrectnessMechanism,
+    ) -> Result<Self, ResultAxisViolation> {
+        if observation.is_domain_outcome() && !evidence.supports_domain_conclusion() {
+            return Err(ResultAxisViolation::DomainOutcomeWithoutValidEvidence {
+                evidence,
+                observation,
+            });
+        }
+        if observation == ObservedOutcome::ProcessOrProtocolFailed
+            && evidence.supports_domain_conclusion()
+        {
+            return Err(ResultAxisViolation::ProcessFailureClaimedAsValidEvidence);
+        }
+        if support.is_positive_claim() {
+            if !evidence.supports_domain_conclusion() {
+                return Err(ResultAxisViolation::PositiveSupportWithoutValidEvidence {
+                    support,
+                    evidence,
+                });
+            }
+            if matches!(
+                admission,
+                CompatibilityAdmission::Unsupported | CompatibilityAdmission::NotAssessed
+            ) {
+                return Err(ResultAxisViolation::AdmissionCannotUnderwritePositiveSupport {
+                    admission,
+                    support,
+                });
+            }
+            if mechanism == CorrectnessMechanism::None {
+                return Err(ResultAxisViolation::PositiveSupportWithoutMechanism { support });
+            }
+        }
+        if support == SemanticSupport::General {
+            if !admission.may_underwrite_general_support() {
+                return Err(ResultAxisViolation::AdmissionCannotUnderwriteGeneralSupport {
+                    admission,
+                });
+            }
+            if mechanism == CorrectnessMechanism::FixtureReplay {
+                return Err(ResultAxisViolation::FixtureReplayClaimedGeneralSupport);
+            }
+        }
+        Ok(Self { evidence, observation, admission, support, mechanism })
+    }
+
+    /// Build the axis set for a subject that was deliberately not measured.
+    #[must_use]
+    pub fn not_assessed(evidence: EvidenceValidity) -> Self {
+        Self {
+            evidence,
+            observation: ObservedOutcome::NotAssessed,
+            admission: CompatibilityAdmission::NotAssessed,
+            support: SemanticSupport::NotAssessed,
+            mechanism: CorrectnessMechanism::None,
+        }
+    }
+
+    /// The evidence-validity axis.
+    #[must_use]
+    pub fn evidence(&self) -> EvidenceValidity {
+        self.evidence
+    }
+
+    /// The observed-outcome axis.
+    #[must_use]
+    pub fn observation(&self) -> ObservedOutcome {
+        self.observation
+    }
+
+    /// The compatibility-admission axis.
+    #[must_use]
+    pub fn admission(&self) -> CompatibilityAdmission {
+        self.admission
+    }
+
+    /// The semantic-support axis.
+    #[must_use]
+    pub fn support(&self) -> SemanticSupport {
+        self.support
+    }
+
+    /// The correctness-mechanism axis.
+    #[must_use]
+    pub fn mechanism(&self) -> CorrectnessMechanism {
+        self.mechanism
+    }
+
+    /// Axes that carry no assessment and must not be read as zero or pass.
+    #[must_use]
+    pub fn not_assessed_axes(&self) -> Vec<ResultAxis> {
+        let mut axes = Vec::new();
+        if self.observation == ObservedOutcome::NotAssessed {
+            axes.push(ResultAxis::Observation);
+        }
+        if self.admission == CompatibilityAdmission::NotAssessed {
+            axes.push(ResultAxis::Admission);
+        }
+        if self.support == SemanticSupport::NotAssessed {
+            axes.push(ResultAxis::Support);
+        }
+        if self.mechanism == CorrectnessMechanism::None {
+            axes.push(ResultAxis::Mechanism);
+        }
+        axes
+    }
+}
+
+/// Whether a record was measured now or adapted from historical v1 evidence.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EvidenceOrigin {
+    /// The record was produced by a current measurement.
+    CurrentMeasurement,
+    /// The record was adapted from historical v1 evidence and is read-only.
+    LegacyAdapted,
+}
+
+/// How completely the measurement itself ran.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MeasurementCompletion {
+    /// Every declared subject settled.
+    Complete,
+    /// The measurement started but did not cover every declared subject.
+    Incomplete,
+    /// The measurement never ran.
+    NotAttempted,
+}
+
+/// Exact identity every current aggregate must retain.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ResultSubjectIdentity {
+    /// Immutable comparison-series identity.
+    pub series_id: String,
+    /// Exact compiler/runner subject the numbers describe.
+    pub subject_identity: String,
+    /// Evidence bundle the aggregate was computed from.
+    pub evidence_bundle_id: String,
+    /// Commit the measurement ran at.
+    pub measurement_sha: String,
+    /// Exact denominator; an aggregate without one is not comparable.
+    pub denominator: usize,
+}
+
+impl ResultSubjectIdentity {
+    /// Reject an aggregate identity that cannot anchor a comparison.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ResultReportViolation::MissingSubjectIdentity`] when a required
+    /// identity string is empty, or [`ResultReportViolation::MissingDenominator`]
+    /// when the denominator is zero.
+    pub fn validate(&self) -> Result<(), ResultReportViolation> {
+        for (field, value) in [
+            ("series_id", &self.series_id),
+            ("subject_identity", &self.subject_identity),
+            ("evidence_bundle_id", &self.evidence_bundle_id),
+            ("measurement_sha", &self.measurement_sha),
+        ] {
+            if value.trim().is_empty() {
+                return Err(ResultReportViolation::MissingSubjectIdentity { field });
+            }
+        }
+        if self.denominator == 0 {
+            return Err(ResultReportViolation::MissingDenominator);
+        }
+        Ok(())
+    }
+}
+
+/// Availability and counts for one optional correctness or execution rail.
+///
+/// A rail that did not run has no counts at all. Representing it as zero of zero
+/// would let an absent rail read as a clean one.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CorrectnessRailSummary {
+    /// Mechanism this rail would use.
+    pub mechanism: CorrectnessMechanism,
+    /// Whether the rail produced usable evidence.
+    pub availability: CompatibilityRailAvailability,
+    /// Why the rail is in this state.
+    pub reason: String,
+    /// Evidence references backing the rail.
+    pub evidence_refs: Vec<String>,
+    /// Files the rail covered, absent unless the rail actually ran.
+    pub files_total: Option<usize>,
+    /// Files the rail passed, absent unless the rail actually ran.
+    pub files_passed: Option<usize>,
+}
+
+impl CorrectnessRailSummary {
+    /// An explicitly absent rail: no mechanism, no counts, a stated reason.
+    #[must_use]
+    pub fn unavailable(reason: impl Into<String>) -> Self {
+        Self {
+            mechanism: CorrectnessMechanism::None,
+            availability: CompatibilityRailAvailability::NotAvailable,
+            reason: reason.into(),
+            evidence_refs: Vec::new(),
+            files_total: None,
+            files_passed: None,
+        }
+    }
+
+    /// Reject a rail that reports numbers it did not earn.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`ResultReportViolation`] when a mechanism-less rail carries
+    /// counts or availability, when an available rail has no mechanism or no
+    /// evidence, or when passed exceeds total.
+    pub fn validate(&self, rail: &'static str) -> Result<(), ResultReportViolation> {
+        if self.mechanism == CorrectnessMechanism::None {
+            if self.files_total.is_some() || self.files_passed.is_some() {
+                return Err(ResultReportViolation::RailCountsWithoutMechanism { rail });
+            }
+            if self.availability == CompatibilityRailAvailability::Available {
+                return Err(ResultReportViolation::RailAvailableWithoutMechanism { rail });
+            }
+        }
+        if self.availability == CompatibilityRailAvailability::Available
+            && self.evidence_refs.is_empty()
+        {
+            return Err(ResultReportViolation::RailAvailableWithoutEvidence { rail });
+        }
+        match (self.files_total, self.files_passed) {
+            (Some(total), Some(passed)) if passed > total => {
+                Err(ResultReportViolation::RailPassedExceedsTotal { rail })
+            }
+            (None, Some(_)) | (Some(_), None) => {
+                Err(ResultReportViolation::RailCountsIncomplete { rail })
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
+/// Parse-rail acceptance counts for one run.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ParseRailSummary {
+    /// Files the parse rail covered.
+    pub files_total: usize,
+    /// Files the parse rail accepted.
+    pub files_passed: usize,
+    /// Axes describing the parse rail as a whole.
+    pub axes: ResultAxes,
+}
+
+/// Admission, debt, and support distribution for one run.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct AdmissionSummary {
+    /// Count per [`CompatibilityAdmission`] wire name.
+    pub by_admission: BTreeMap<String, usize>,
+    /// Count per [`SemanticSupport`] wire name.
+    pub by_support: BTreeMap<String, usize>,
+    /// Subjects admitted only through reviewed debt.
+    pub accepted_debt_count: usize,
+    /// Debt entries pinned to an exact source shape.
+    pub source_locked_count: usize,
+    /// Debt entries that block a downstream consumer.
+    pub downstream_blocking_count: usize,
+}
+
+impl AdmissionSummary {
+    /// Total subjects counted by admission.
+    #[must_use]
+    pub fn admission_total(&self) -> usize {
+        self.by_admission.values().sum()
+    }
+
+    /// Reject a distribution that does not describe the stated denominator.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`ResultReportViolation`] when either distribution disagrees
+    /// with the denominator, or when debt counts exceed the admitted debt.
+    pub fn validate(&self, denominator: usize) -> Result<(), ResultReportViolation> {
+        let admission_total = self.admission_total();
+        if admission_total != denominator {
+            return Err(ResultReportViolation::AdmissionTotalMismatch {
+                counted: admission_total,
+                denominator,
+            });
+        }
+        let support_total: usize = self.by_support.values().sum();
+        if support_total != denominator {
+            return Err(ResultReportViolation::SupportTotalMismatch {
+                counted: support_total,
+                denominator,
+            });
+        }
+        let admitted_debt =
+            self.by_admission.get(CompatibilityAdmission::AcceptedDebt.as_str()).copied();
+        if admitted_debt != Some(self.accepted_debt_count) && self.accepted_debt_count != 0 {
+            return Err(ResultReportViolation::DebtCountMismatch {
+                declared: self.accepted_debt_count,
+                distributed: admitted_debt.unwrap_or(0),
+            });
+        }
+        if self.source_locked_count > self.accepted_debt_count
+            || self.downstream_blocking_count > self.accepted_debt_count
+        {
+            return Err(ResultReportViolation::DebtDetailExceedsDebt);
+        }
+        Ok(())
+    }
+}
+
+/// How one observation relates to the accepted state, without moving it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CurrentVersusAccepted {
+    /// Canonical transition vocabulary, reused rather than redefined.
+    pub transition: CompatibilityTransition,
+    /// Whether a reviewer must accept this before it becomes state.
+    pub requires_acceptance: bool,
+    /// Digest of the accepted baseline this observation was compared against.
+    pub accepted_baseline_digest: Option<String>,
+    /// Why this transition was assigned.
+    pub reason: String,
+}
+
+impl CurrentVersusAccepted {
+    /// Reject a transition that would present a candidate as accepted state.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`ResultReportViolation`] when a candidate transition does not
+    /// require acceptance, when a settled transition demands it, or when an
+    /// improvement or regression is claimed with no baseline to compare against.
+    pub fn validate(&self) -> Result<(), ResultReportViolation> {
+        let is_candidate = matches!(
+            self.transition,
+            CompatibilityTransition::ImprovementCandidate
+                | CompatibilityTransition::Regression
+                | CompatibilityTransition::ContractCorrectionCandidate
+        );
+        if is_candidate && !self.requires_acceptance {
+            return Err(ResultReportViolation::CandidateTreatedAsAccepted {
+                transition: self.transition,
+            });
+        }
+        if !is_candidate && self.requires_acceptance {
+            return Err(ResultReportViolation::SettledTransitionRequiresAcceptance {
+                transition: self.transition,
+            });
+        }
+        if matches!(
+            self.transition,
+            CompatibilityTransition::ImprovementCandidate | CompatibilityTransition::Regression
+        ) && self.accepted_baseline_digest.is_none()
+        {
+            return Err(ResultReportViolation::ComparisonWithoutBaseline {
+                transition: self.transition,
+            });
+        }
+        Ok(())
+    }
+}
+
+/// A structural problem in an aggregate v2 result report.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ResultReportViolation {
+    /// The report declares an unexpected schema version.
+    UnexpectedSchemaVersion {
+        /// The version found on the record.
+        found: String,
+    },
+    /// A required subject-identity field was empty.
+    MissingSubjectIdentity {
+        /// Name of the empty field.
+        field: &'static str,
+    },
+    /// The aggregate carries no denominator.
+    MissingDenominator,
+    /// Admission counts do not describe the declared denominator.
+    AdmissionTotalMismatch {
+        /// Sum of the admission distribution.
+        counted: usize,
+        /// Declared denominator.
+        denominator: usize,
+    },
+    /// Support counts do not describe the declared denominator.
+    SupportTotalMismatch {
+        /// Sum of the support distribution.
+        counted: usize,
+        /// Declared denominator.
+        denominator: usize,
+    },
+    /// Declared debt disagrees with the admission distribution.
+    DebtCountMismatch {
+        /// Debt count declared on the summary.
+        declared: usize,
+        /// Debt count present in the distribution.
+        distributed: usize,
+    },
+    /// Source-locked or downstream-blocking counts exceed total accepted debt.
+    DebtDetailExceedsDebt,
+    /// A rail with no mechanism reported file counts.
+    RailCountsWithoutMechanism {
+        /// Rail name.
+        rail: &'static str,
+    },
+    /// A rail with no mechanism was marked available.
+    RailAvailableWithoutMechanism {
+        /// Rail name.
+        rail: &'static str,
+    },
+    /// An available rail cited no evidence.
+    RailAvailableWithoutEvidence {
+        /// Rail name.
+        rail: &'static str,
+    },
+    /// A rail reported more passes than subjects.
+    RailPassedExceedsTotal {
+        /// Rail name.
+        rail: &'static str,
+    },
+    /// A rail reported one count without the other.
+    RailCountsIncomplete {
+        /// Rail name.
+        rail: &'static str,
+    },
+    /// The parse rail reported more passes than subjects.
+    ParsePassedExceedsTotal,
+    /// The parse rail denominator disagrees with the aggregate denominator.
+    ParseTotalMismatch {
+        /// Parse rail total.
+        counted: usize,
+        /// Declared denominator.
+        denominator: usize,
+    },
+    /// A candidate transition was recorded as if it were accepted state.
+    CandidateTreatedAsAccepted {
+        /// The candidate transition.
+        transition: CompatibilityTransition,
+    },
+    /// A settled transition demanded acceptance it does not need.
+    SettledTransitionRequiresAcceptance {
+        /// The settled transition.
+        transition: CompatibilityTransition,
+    },
+    /// An improvement or regression was claimed with no accepted baseline.
+    ComparisonWithoutBaseline {
+        /// The transition claimed without a baseline.
+        transition: CompatibilityTransition,
+    },
+    /// Valid aggregate evidence was claimed from an incomplete measurement.
+    ValidEvidenceFromIncompleteMeasurement {
+        /// The completion state that cannot support valid evidence.
+        completion: MeasurementCompletion,
+    },
+    /// A legacy-adapted record tried to act as current authority.
+    LegacyAdaptedRecordClaimsCurrentAuthority {
+        /// Axes the legacy evidence could not fill.
+        unavailable_axes: Vec<ResultAxis>,
+    },
+    /// A legacy-adapted record claimed a non-historical transition.
+    LegacyAdaptedRecordClaimsTransition {
+        /// The transition a historical record may not claim.
+        transition: CompatibilityTransition,
+    },
+}
+
+impl fmt::Display for ResultReportViolation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnexpectedSchemaVersion { found } => {
+                write!(f, "unsupported result-axes schema version '{found}'")
+            }
+            Self::MissingSubjectIdentity { field } => {
+                write!(
+                    f,
+                    "subject identity field '{field}' is empty; aggregates must name their subject"
+                )
+            }
+            Self::MissingDenominator => f.write_str(
+                "aggregate has no denominator; a ratio without a denominator is not comparable",
+            ),
+            Self::AdmissionTotalMismatch { counted, denominator } => write!(
+                f,
+                "admission distribution counts {counted} subjects but the denominator is {denominator}"
+            ),
+            Self::SupportTotalMismatch { counted, denominator } => write!(
+                f,
+                "support distribution counts {counted} subjects but the denominator is {denominator}"
+            ),
+            Self::DebtCountMismatch { declared, distributed } => write!(
+                f,
+                "declared accepted debt {declared} disagrees with distributed accepted debt {distributed}"
+            ),
+            Self::DebtDetailExceedsDebt => {
+                f.write_str("source-locked or downstream-blocking debt exceeds total accepted debt")
+            }
+            Self::RailCountsWithoutMechanism { rail } => write!(
+                f,
+                "rail '{rail}' has mechanism 'none' but reports file counts; \
+                 an absent rail stays unavailable rather than becoming zero"
+            ),
+            Self::RailAvailableWithoutMechanism { rail } => {
+                write!(f, "rail '{rail}' is available but declares mechanism 'none'")
+            }
+            Self::RailAvailableWithoutEvidence { rail } => {
+                write!(f, "rail '{rail}' is available but cites no evidence")
+            }
+            Self::RailPassedExceedsTotal { rail } => {
+                write!(f, "rail '{rail}' passed more subjects than it covered")
+            }
+            Self::RailCountsIncomplete { rail } => {
+                write!(
+                    f,
+                    "rail '{rail}' reported one of files_total/files_passed without the other"
+                )
+            }
+            Self::ParsePassedExceedsTotal => {
+                f.write_str("parse rail passed more subjects than it covered")
+            }
+            Self::ParseTotalMismatch { counted, denominator } => write!(
+                f,
+                "parse rail covers {counted} subjects but the denominator is {denominator}"
+            ),
+            Self::CandidateTreatedAsAccepted { transition } => write!(
+                f,
+                "transition '{transition:?}' is a candidate and must require acceptance; \
+                 a candidate transition is not accepted state"
+            ),
+            Self::SettledTransitionRequiresAcceptance { transition } => {
+                write!(f, "transition '{transition:?}' is settled and cannot require acceptance")
+            }
+            Self::ComparisonWithoutBaseline { transition } => write!(
+                f,
+                "transition '{transition:?}' compares against an accepted baseline that is absent"
+            ),
+            Self::ValidEvidenceFromIncompleteMeasurement { completion } => {
+                write!(f, "aggregate claims valid evidence from a '{completion:?}' measurement")
+            }
+            Self::LegacyAdaptedRecordClaimsCurrentAuthority { unavailable_axes } => {
+                let names: Vec<&str> = unavailable_axes.iter().map(|axis| axis.as_str()).collect();
+                write!(
+                    f,
+                    "legacy-adapted evidence cannot satisfy current authority; unavailable axes: {}",
+                    names.join(", ")
+                )
+            }
+            Self::LegacyAdaptedRecordClaimsTransition { transition } => {
+                write!(f, "legacy-adapted evidence may only be historical, not '{transition:?}'")
+            }
+        }
+    }
+}
+
+impl Error for ResultReportViolation {}
+
+/// Per-invocation result axes.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct InvocationAxesResult {
+    /// Exact invocation this record describes.
+    pub invocation_identity: String,
+    /// Separated axes for the invocation.
+    pub axes: ResultAxes,
+    /// Stated limits on what this invocation can prove.
+    pub limitations: Vec<String>,
+}
+
+/// Per-file, per-mode result axes.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct FileModeAxesResult {
+    /// Path relative to the prepared tree.
+    pub path: String,
+    /// Harness mode the record describes.
+    pub mode: HarnessMode,
+    /// Separated axes for this file and mode.
+    pub axes: ResultAxes,
+    /// Failure bucket, when one was assigned.
+    pub bucket: Option<String>,
+}
+
+/// A complete v2 result report for one measured series.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct RunAxesReport {
+    /// Schema version; always [`RESULT_AXES_SCHEMA_VERSION`] for current records.
+    pub schema_version: String,
+    /// Whether this was measured now or adapted from history.
+    pub origin: EvidenceOrigin,
+    /// How completely the measurement ran.
+    pub completion: MeasurementCompletion,
+    /// Exact denominator and subject identity.
+    pub subject: ResultSubjectIdentity,
+    /// Run-level axis rollup.
+    pub axes: ResultAxes,
+    /// Parse rail summary.
+    pub parse: ParseRailSummary,
+    /// Admission, debt, and support distribution.
+    pub admission: AdmissionSummary,
+    /// Optional correctness and execution rails, by rail name.
+    pub correctness_rails: BTreeMap<String, CorrectnessRailSummary>,
+    /// Relationship to accepted state.
+    pub current_versus_accepted: CurrentVersusAccepted,
+    /// Per-file, per-mode records.
+    pub files: Vec<FileModeAxesResult>,
+    /// Per-invocation records.
+    pub invocations: Vec<InvocationAxesResult>,
+    /// What this report deliberately does not claim.
+    pub claim_boundary: String,
+    /// Stated limitations on the report as a whole.
+    pub limitations: Vec<String>,
+}
+
+impl RunAxesReport {
+    /// Reject a report whose parts do not support the whole.
+    ///
+    /// Runs every component validator plus the cross-part rules: valid evidence
+    /// needs a complete measurement, and legacy-adapted evidence stays
+    /// historical.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first [`ResultReportViolation`] found.
+    pub fn validate(&self) -> Result<(), ResultReportViolation> {
+        if self.schema_version != RESULT_AXES_SCHEMA_VERSION {
+            return Err(ResultReportViolation::UnexpectedSchemaVersion {
+                found: self.schema_version.clone(),
+            });
+        }
+        self.subject.validate()?;
+        self.admission.validate(self.subject.denominator)?;
+        self.current_versus_accepted.validate()?;
+
+        if self.parse.files_passed > self.parse.files_total {
+            return Err(ResultReportViolation::ParsePassedExceedsTotal);
+        }
+        if self.parse.files_total != self.subject.denominator {
+            return Err(ResultReportViolation::ParseTotalMismatch {
+                counted: self.parse.files_total,
+                denominator: self.subject.denominator,
+            });
+        }
+        for (rail, summary) in &self.correctness_rails {
+            let rail: &'static str = match rail.as_str() {
+                "execution" => "execution",
+                "curated_gold" => "curated_gold",
+                "differential_oracle" => "differential_oracle",
+                "eir" => "eir",
+                _ => "rail",
+            };
+            summary.validate(rail)?;
+        }
+        if self.axes.evidence() == EvidenceValidity::Valid
+            && self.completion != MeasurementCompletion::Complete
+        {
+            return Err(ResultReportViolation::ValidEvidenceFromIncompleteMeasurement {
+                completion: self.completion,
+            });
+        }
+        if self.origin == EvidenceOrigin::LegacyAdapted {
+            if self.current_versus_accepted.transition != CompatibilityTransition::Historical {
+                return Err(ResultReportViolation::LegacyAdaptedRecordClaimsTransition {
+                    transition: self.current_versus_accepted.transition,
+                });
+            }
+            let unavailable = self.axes.not_assessed_axes();
+            if !unavailable.is_empty() && self.axes.support().is_positive_claim() {
+                return Err(ResultReportViolation::LegacyAdaptedRecordClaimsCurrentAuthority {
+                    unavailable_axes: unavailable,
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether this report may serve as current authority for its series.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`ResultReportViolation`] when the report is structurally
+    /// invalid, when its evidence is not valid, or when it is legacy-adapted.
+    pub fn admissible_as_current_authority(&self) -> Result<(), ResultReportViolation> {
+        self.validate()?;
+        if self.origin == EvidenceOrigin::LegacyAdapted {
+            return Err(ResultReportViolation::LegacyAdaptedRecordClaimsCurrentAuthority {
+                unavailable_axes: self.axes.not_assessed_axes(),
+            });
+        }
+        if self.axes.evidence() != EvidenceValidity::Valid {
+            return Err(ResultReportViolation::ValidEvidenceFromIncompleteMeasurement {
+                completion: self.completion,
+            });
+        }
+        Ok(())
+    }
+}
+
+/// One v1 record translated forward, naming everything it cannot establish.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct LegacyAdaptation {
+    /// Axes derivable from the historical record.
+    pub axes: ResultAxes,
+    /// Axes the historical record simply does not contain.
+    pub unavailable_axes: Vec<ResultAxis>,
+    /// Schema version the record came from.
+    pub source_schema_version: String,
+    /// Whether the adapted record can satisfy current authority. Always false
+    /// for status-only v1 evidence, which carries no admission, support, or
+    /// mechanism facts.
+    pub sufficient_for_current_authority: bool,
+}
+
+impl LegacyAdaptation {
+    /// Reject an adapted record being used as current authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ResultReportViolation::LegacyAdaptedRecordClaimsCurrentAuthority`]
+    /// naming the axes the historical evidence could not fill.
+    pub fn require_current_authority(&self) -> Result<(), ResultReportViolation> {
+        if self.sufficient_for_current_authority {
+            return Ok(());
+        }
+        Err(ResultReportViolation::LegacyAdaptedRecordClaimsCurrentAuthority {
+            unavailable_axes: self.unavailable_axes.clone(),
+        })
+    }
+}
+
+/// Translate a v1 [`RunnerStatus`] forward without inventing facts.
+///
+/// A v1 `pass` records that the runner did not fail. It says nothing about
+/// admission, semantic support, or which mechanism ran, so those axes stay
+/// unassessed and the adaptation is never sufficient for current authority.
+#[must_use]
+pub fn adapt_legacy_runner_status(
+    status: RunnerStatus,
+    source_schema_version: impl Into<String>,
+) -> LegacyAdaptation {
+    let observation = match status {
+        RunnerStatus::Pass => ObservedOutcome::Clean,
+        RunnerStatus::Fail => ObservedOutcome::FailuresObserved,
+    };
+    legacy_adaptation(observation, source_schema_version)
+}
+
+/// Translate a v1 [`SmokeStatus`] forward without inventing facts.
+#[must_use]
+pub fn adapt_legacy_smoke_status(
+    status: SmokeStatus,
+    source_schema_version: impl Into<String>,
+) -> LegacyAdaptation {
+    let observation = match status {
+        SmokeStatus::Pass => ObservedOutcome::Clean,
+        SmokeStatus::Fail => ObservedOutcome::FailuresObserved,
+    };
+    legacy_adaptation(observation, source_schema_version)
+}
+
+fn legacy_adaptation(
+    observation: ObservedOutcome,
+    source_schema_version: impl Into<String>,
+) -> LegacyAdaptation {
+    let axes = ResultAxes {
+        evidence: EvidenceValidity::Valid,
+        observation,
+        admission: CompatibilityAdmission::NotAssessed,
+        support: SemanticSupport::NotAssessed,
+        mechanism: CorrectnessMechanism::None,
+    };
+    LegacyAdaptation {
+        unavailable_axes: axes.not_assessed_axes(),
+        axes,
+        source_schema_version: source_schema_version.into(),
+        sufficient_for_current_authority: false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn axes(
+        evidence: EvidenceValidity,
+        observation: ObservedOutcome,
+        admission: CompatibilityAdmission,
+        support: SemanticSupport,
+        mechanism: CorrectnessMechanism,
+    ) -> Result<ResultAxes, ResultAxisViolation> {
+        ResultAxes::new(evidence, observation, admission, support, mechanism)
+    }
+
+    fn subject() -> ResultSubjectIdentity {
+        ResultSubjectIdentity {
+            series_id: "upstream-base".to_string(),
+            subject_identity: "perl-compiler@abcdef".to_string(),
+            evidence_bundle_id: "bundle-1".to_string(),
+            measurement_sha: "a".repeat(40),
+            denominator: 4,
+        }
+    }
+
+    fn distribution(pairs: &[(&str, usize)]) -> BTreeMap<String, usize> {
+        pairs.iter().map(|(key, value)| ((*key).to_string(), *value)).collect()
+    }
+
+    fn report(axes: ResultAxes, transition: CurrentVersusAccepted) -> RunAxesReport {
+        RunAxesReport {
+            schema_version: RESULT_AXES_SCHEMA_VERSION.to_string(),
+            origin: EvidenceOrigin::CurrentMeasurement,
+            completion: MeasurementCompletion::Complete,
+            subject: subject(),
+            axes,
+            parse: ParseRailSummary { files_total: 4, files_passed: 4, axes },
+            admission: AdmissionSummary {
+                by_admission: distribution(&[("implemented", 4)]),
+                by_support: distribution(&[("general", 4)]),
+                accepted_debt_count: 0,
+                source_locked_count: 0,
+                downstream_blocking_count: 0,
+            },
+            correctness_rails: BTreeMap::new(),
+            current_versus_accepted: transition,
+            files: Vec::new(),
+            invocations: Vec::new(),
+            claim_boundary: "compile admission only".to_string(),
+            limitations: Vec::new(),
+        }
+    }
+
+    fn no_change() -> CurrentVersusAccepted {
+        CurrentVersusAccepted {
+            transition: CompatibilityTransition::NoChange,
+            requires_acceptance: false,
+            accepted_baseline_digest: Some("sha256:0".to_string()),
+            reason: "identical to accepted state".to_string(),
+        }
+    }
+
+    // ---- Fixture class 1: valid clean implemented observation ----------------
+
+    #[test]
+    fn valid_clean_implemented_observation_is_representable() -> Result<(), ResultAxisViolation> {
+        let observed = axes(
+            EvidenceValidity::Valid,
+            ObservedOutcome::Clean,
+            CompatibilityAdmission::Implemented,
+            SemanticSupport::General,
+            CorrectnessMechanism::EirExecution,
+        )?;
+        assert_eq!(observed.evidence(), EvidenceValidity::Valid);
+        assert_eq!(observed.support(), SemanticSupport::General);
+        assert!(observed.not_assessed_axes().is_empty());
+        Ok(())
+    }
+
+    // ---- Fixture class 2: valid complete product regression ------------------
+
+    #[test]
+    fn complete_red_observation_keeps_valid_evidence() -> Result<(), ResultAxisViolation> {
+        let observed = axes(
+            EvidenceValidity::Valid,
+            ObservedOutcome::FailuresObserved,
+            CompatibilityAdmission::Implemented,
+            SemanticSupport::Partial,
+            CorrectnessMechanism::RealPerlOracle,
+        )?;
+        assert_eq!(observed.evidence(), EvidenceValidity::Valid);
+        assert_eq!(observed.observation(), ObservedOutcome::FailuresObserved);
+        Ok(())
+    }
+
+    // ---- Fixture class 3: source-locked debt, downstream support blocked -----
+
+    #[test]
+    fn source_locked_debt_admits_without_support() -> Result<(), ResultAxisViolation> {
+        let observed = axes(
+            EvidenceValidity::Valid,
+            ObservedOutcome::Clean,
+            CompatibilityAdmission::AcceptedDebt,
+            SemanticSupport::Blocked,
+            CorrectnessMechanism::None,
+        )?;
+        assert_eq!(observed.admission(), CompatibilityAdmission::AcceptedDebt);
+        assert_eq!(observed.support(), SemanticSupport::Blocked);
+        Ok(())
+    }
+
+    // ---- Fixture class 4: valid statically classified file -------------------
+
+    #[test]
+    fn statically_classified_file_may_reach_partial_only() -> Result<(), ResultAxisViolation> {
+        let observed = axes(
+            EvidenceValidity::Valid,
+            ObservedOutcome::Clean,
+            CompatibilityAdmission::StaticallyClassified,
+            SemanticSupport::Partial,
+            CorrectnessMechanism::FixtureReplay,
+        )?;
+        assert_eq!(observed.support(), SemanticSupport::Partial);
+
+        let escalated = axes(
+            EvidenceValidity::Valid,
+            ObservedOutcome::Clean,
+            CompatibilityAdmission::StaticallyClassified,
+            SemanticSupport::General,
+            CorrectnessMechanism::EirExecution,
+        );
+        assert_eq!(
+            escalated,
+            Err(ResultAxisViolation::AdmissionCannotUnderwriteGeneralSupport {
+                admission: CompatibilityAdmission::StaticallyClassified,
+            }),
+            "compile admission must not imply general semantic support"
+        );
+        Ok(())
+    }
+
+    // ---- Fixture class 5: unsupported compiler result ------------------------
+
+    #[test]
+    fn unsupported_admission_cannot_carry_positive_support() {
+        let rejected = axes(
+            EvidenceValidity::Valid,
+            ObservedOutcome::Clean,
+            CompatibilityAdmission::Unsupported,
+            SemanticSupport::Partial,
+            CorrectnessMechanism::EirExecution,
+        );
+        assert_eq!(
+            rejected,
+            Err(ResultAxisViolation::AdmissionCannotUnderwritePositiveSupport {
+                admission: CompatibilityAdmission::Unsupported,
+                support: SemanticSupport::Partial,
+            })
+        );
+    }
+
+    // ---- Fixture class 6: process/instrument NOT_PROVEN ----------------------
+
+    #[test]
+    fn instrument_failure_is_not_proven_not_a_product_result() -> Result<(), ResultAxisViolation> {
+        let observed = axes(
+            EvidenceValidity::NotProven,
+            ObservedOutcome::ProcessOrProtocolFailed,
+            CompatibilityAdmission::NotAssessed,
+            SemanticSupport::NotAssessed,
+            CorrectnessMechanism::None,
+        )?;
+        assert_eq!(observed.evidence(), EvidenceValidity::NotProven);
+
+        let forged = axes(
+            EvidenceValidity::Valid,
+            ObservedOutcome::ProcessOrProtocolFailed,
+            CompatibilityAdmission::NotAssessed,
+            SemanticSupport::NotAssessed,
+            CorrectnessMechanism::None,
+        );
+        assert_eq!(forged, Err(ResultAxisViolation::ProcessFailureClaimedAsValidEvidence));
+        Ok(())
+    }
+
+    #[test]
+    fn not_proven_evidence_cannot_carry_a_domain_outcome() {
+        let rejected = axes(
+            EvidenceValidity::NotProven,
+            ObservedOutcome::Clean,
+            CompatibilityAdmission::NotAssessed,
+            SemanticSupport::NotAssessed,
+            CorrectnessMechanism::None,
+        );
+        assert_eq!(
+            rejected,
+            Err(ResultAxisViolation::DomainOutcomeWithoutValidEvidence {
+                evidence: EvidenceValidity::NotProven,
+                observation: ObservedOutcome::Clean,
+            })
+        );
+    }
+
+    // ---- Fixture class 7: stale and cancelled evidence -----------------------
+
+    #[test]
+    fn stale_and_cancelled_evidence_assess_nothing() {
+        for evidence in [EvidenceValidity::Stale, EvidenceValidity::Cancelled] {
+            let observed = ResultAxes::not_assessed(evidence);
+            assert_eq!(observed.evidence(), evidence);
+            assert_eq!(observed.observation(), ObservedOutcome::NotAssessed);
+            assert_eq!(
+                observed.not_assessed_axes(),
+                vec![
+                    ResultAxis::Observation,
+                    ResultAxis::Admission,
+                    ResultAxis::Support,
+                    ResultAxis::Mechanism,
+                ]
+            );
+
+            let forged = axes(
+                evidence,
+                ObservedOutcome::Clean,
+                CompatibilityAdmission::Implemented,
+                SemanticSupport::NotAssessed,
+                CorrectnessMechanism::None,
+            );
+            assert!(forged.is_err(), "{evidence} evidence must not carry a clean observation");
+        }
+    }
+
+    // ---- Fixture class 8: fixture replay without runtime support -------------
+
+    #[test]
+    fn fixture_replay_cannot_become_general_support() {
+        let rejected = axes(
+            EvidenceValidity::Valid,
+            ObservedOutcome::Clean,
+            CompatibilityAdmission::Implemented,
+            SemanticSupport::General,
+            CorrectnessMechanism::FixtureReplay,
+        );
+        assert_eq!(rejected, Err(ResultAxisViolation::FixtureReplayClaimedGeneralSupport));
+    }
+
+    // ---- Fixture class 9: EIR execution with declared profile ----------------
+
+    #[test]
+    fn eir_execution_may_underwrite_general_support() -> Result<(), ResultAxisViolation> {
+        let observed = axes(
+            EvidenceValidity::Valid,
+            ObservedOutcome::Clean,
+            CompatibilityAdmission::Implemented,
+            SemanticSupport::General,
+            CorrectnessMechanism::EirExecution,
+        )?;
+        assert!(observed.mechanism().executes_behavior());
+        Ok(())
+    }
+
+    // ---- Fixture class 10: unavailable oracle/gold/EIR rails ------------------
+
+    #[test]
+    fn absent_rails_stay_unavailable_rather_than_zero() -> Result<(), ResultReportViolation> {
+        for rail in ["curated_gold", "differential_oracle", "eir"] {
+            let summary = CorrectnessRailSummary::unavailable("no rail provisioned");
+            summary.validate(rail)?;
+            assert_eq!(summary.files_total, None, "absent rail must not report a denominator");
+            assert_eq!(summary.files_passed, None, "absent rail must not report passes");
+            assert_ne!(summary.availability, CompatibilityRailAvailability::Available);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn positive_support_requires_a_mechanism() {
+        let rejected = axes(
+            EvidenceValidity::Valid,
+            ObservedOutcome::Clean,
+            CompatibilityAdmission::Implemented,
+            SemanticSupport::Partial,
+            CorrectnessMechanism::None,
+        );
+        assert_eq!(
+            rejected,
+            Err(ResultAxisViolation::PositiveSupportWithoutMechanism {
+                support: SemanticSupport::Partial,
+            })
+        );
+    }
+
+    // ---- Fixture class 11: candidate stronger than accepted, unaccepted ------
+
+    #[test]
+    fn improvement_candidate_is_not_accepted_state() -> Result<(), ResultReportViolation> {
+        let candidate = CurrentVersusAccepted {
+            transition: CompatibilityTransition::ImprovementCandidate,
+            requires_acceptance: true,
+            accepted_baseline_digest: Some("sha256:1".to_string()),
+            reason: "more files admitted than the accepted ratchet".to_string(),
+        };
+        candidate.validate()?;
+
+        let forged = CurrentVersusAccepted { requires_acceptance: false, ..candidate };
+        assert_eq!(
+            forged.validate(),
+            Err(ResultReportViolation::CandidateTreatedAsAccepted {
+                transition: CompatibilityTransition::ImprovementCandidate,
+            })
+        );
+        Ok(())
+    }
+
+    // ---- Fixture class 12: observation weaker than the accepted ratchet ------
+
+    #[test]
+    fn regression_requires_a_baseline_to_regress_from() -> Result<(), ResultReportViolation> {
+        let regression = CurrentVersusAccepted {
+            transition: CompatibilityTransition::Regression,
+            requires_acceptance: true,
+            accepted_baseline_digest: Some("sha256:2".to_string()),
+            reason: "fewer files admitted than the accepted ratchet".to_string(),
+        };
+        regression.validate()?;
+
+        let baseless = CurrentVersusAccepted { accepted_baseline_digest: None, ..regression };
+        assert_eq!(
+            baseless.validate(),
+            Err(ResultReportViolation::ComparisonWithoutBaseline {
+                transition: CompatibilityTransition::Regression,
+            })
+        );
+        Ok(())
+    }
+
+    // ---- Fixture class 13: legacy v1 pass with insufficient information ------
+
+    #[test]
+    fn legacy_v1_pass_does_not_become_implemented_or_general() {
+        let adapted = adapt_legacy_runner_status(RunnerStatus::Pass, "perl_core_harness.report.v1");
+        assert_eq!(adapted.axes.observation(), ObservedOutcome::Clean);
+        assert_eq!(adapted.axes.admission(), CompatibilityAdmission::NotAssessed);
+        assert_eq!(adapted.axes.support(), SemanticSupport::NotAssessed);
+        assert_eq!(adapted.axes.mechanism(), CorrectnessMechanism::None);
+        assert_eq!(
+            adapted.unavailable_axes,
+            vec![ResultAxis::Admission, ResultAxis::Support, ResultAxis::Mechanism],
+            "the adapter must name every axis the legacy record cannot fill"
+        );
+        assert!(!adapted.sufficient_for_current_authority);
+        assert_eq!(
+            adapted.require_current_authority(),
+            Err(ResultReportViolation::LegacyAdaptedRecordClaimsCurrentAuthority {
+                unavailable_axes: vec![
+                    ResultAxis::Admission,
+                    ResultAxis::Support,
+                    ResultAxis::Mechanism,
+                ],
+            })
+        );
+    }
+
+    #[test]
+    fn legacy_v1_fail_remains_a_product_failure() {
+        let adapted = adapt_legacy_smoke_status(SmokeStatus::Fail, "perl_core_harness.smoke.v1");
+        assert_eq!(adapted.axes.observation(), ObservedOutcome::FailuresObserved);
+        assert_eq!(adapted.axes.evidence(), EvidenceValidity::Valid);
+        assert!(!adapted.sufficient_for_current_authority);
+    }
+
+    #[test]
+    fn legacy_adapted_report_cannot_be_current_authority() -> Result<(), ResultAxisViolation> {
+        let adapted = adapt_legacy_runner_status(RunnerStatus::Pass, "perl_core_harness.report.v1");
+        let mut historical = report(
+            adapted.axes,
+            CurrentVersusAccepted {
+                transition: CompatibilityTransition::Historical,
+                requires_acceptance: false,
+                accepted_baseline_digest: None,
+                reason: "retained for history".to_string(),
+            },
+        );
+        historical.origin = EvidenceOrigin::LegacyAdapted;
+        historical.admission.by_admission = distribution(&[("not_assessed", 4)]);
+        historical.admission.by_support = distribution(&[("not_assessed", 4)]);
+
+        assert_eq!(historical.validate(), Ok(()), "a historical record stays readable");
+        assert!(
+            matches!(
+                historical.admissible_as_current_authority(),
+                Err(ResultReportViolation::LegacyAdaptedRecordClaimsCurrentAuthority { .. })
+            ),
+            "legacy evidence must not silently satisfy current authority"
+        );
+
+        let mut promoted = historical;
+        promoted.current_versus_accepted.transition = CompatibilityTransition::ImprovementCandidate;
+        promoted.current_versus_accepted.requires_acceptance = true;
+        promoted.current_versus_accepted.accepted_baseline_digest = Some("sha256:3".to_string());
+        assert_eq!(
+            promoted.validate(),
+            Err(ResultReportViolation::LegacyAdaptedRecordClaimsTransition {
+                transition: CompatibilityTransition::ImprovementCandidate,
+            })
+        );
+        Ok(())
+    }
+
+    // ---- Fixture class 14: unknown fields and unknown enum values ------------
+
+    #[test]
+    fn axes_reject_unknown_fields() {
+        let json = r#"{
+            "evidence": "valid",
+            "observation": "clean",
+            "admission": "implemented",
+            "support": "general",
+            "mechanism": "eir_execution",
+            "unexpected_authority_field": true
+        }"#;
+        let err = serde_json::from_str::<ResultAxes>(json).err();
+        assert!(
+            err.is_some_and(|err| err.to_string().contains("unexpected_authority_field")),
+            "unknown field must be rejected"
+        );
+    }
+
+    #[test]
+    fn axes_reject_unknown_enum_values() {
+        let json = r#"{
+            "evidence": "probably_fine",
+            "observation": "clean",
+            "admission": "implemented",
+            "support": "general",
+            "mechanism": "eir_execution"
+        }"#;
+        assert!(
+            serde_json::from_str::<ResultAxes>(json).is_err(),
+            "an unknown evidence value must not deserialize"
+        );
+    }
+
+    // ---- Fixture class 15: source-locked debt forged as general support ------
+
+    #[test]
+    fn accepted_debt_cannot_be_forged_into_general_support() {
+        let rejected = axes(
+            EvidenceValidity::Valid,
+            ObservedOutcome::Clean,
+            CompatibilityAdmission::AcceptedDebt,
+            SemanticSupport::General,
+            CorrectnessMechanism::RealPerlOracle,
+        );
+        assert_eq!(
+            rejected,
+            Err(ResultAxisViolation::AdmissionCannotUnderwriteGeneralSupport {
+                admission: CompatibilityAdmission::AcceptedDebt,
+            })
+        );
+    }
+
+    #[test]
+    fn deserialization_cannot_bypass_the_constructor() {
+        let json = r#"{
+            "evidence": "valid",
+            "observation": "clean",
+            "admission": "accepted_debt",
+            "support": "general",
+            "mechanism": "real_perl_oracle"
+        }"#;
+        let err = serde_json::from_str::<ResultAxes>(json)
+            .err()
+            .map(|err| err.to_string())
+            .unwrap_or_default();
+        assert!(
+            err.contains("cannot become semantic support 'general'"),
+            "a forged receipt must be rejected on read, got: {err}"
+        );
+    }
+
+    // ---- Fixture class 16: compile counts inserted into runtime totals -------
+
+    #[test]
+    fn runtime_rail_cannot_borrow_compile_counts() {
+        let forged = CorrectnessRailSummary {
+            mechanism: CorrectnessMechanism::None,
+            availability: CompatibilityRailAvailability::NotAvailable,
+            reason: "no execution rail provisioned".to_string(),
+            evidence_refs: Vec::new(),
+            files_total: Some(4),
+            files_passed: Some(4),
+        };
+        assert_eq!(
+            forged.validate("execution"),
+            Err(ResultReportViolation::RailCountsWithoutMechanism { rail: "execution" })
+        );
+    }
+
+    #[test]
+    fn available_rail_needs_a_mechanism_and_evidence() {
+        let mechanismless = CorrectnessRailSummary {
+            mechanism: CorrectnessMechanism::None,
+            availability: CompatibilityRailAvailability::Available,
+            reason: "claimed available".to_string(),
+            evidence_refs: vec!["bundle-1".to_string()],
+            files_total: None,
+            files_passed: None,
+        };
+        assert_eq!(
+            mechanismless.validate("eir"),
+            Err(ResultReportViolation::RailAvailableWithoutMechanism { rail: "eir" })
+        );
+
+        let evidenceless = CorrectnessRailSummary {
+            mechanism: CorrectnessMechanism::EirExecution,
+            availability: CompatibilityRailAvailability::Available,
+            reason: "claimed available".to_string(),
+            evidence_refs: Vec::new(),
+            files_total: Some(4),
+            files_passed: Some(4),
+        };
+        assert_eq!(
+            evidenceless.validate("eir"),
+            Err(ResultReportViolation::RailAvailableWithoutEvidence { rail: "eir" })
+        );
+    }
+
+    // ---- Fixture class 17: missing denominator/series/subject ----------------
+
+    #[test]
+    fn aggregates_require_denominator_and_subject() {
+        let mut identity = subject();
+        identity.denominator = 0;
+        assert_eq!(identity.validate(), Err(ResultReportViolation::MissingDenominator));
+
+        let mut identity = subject();
+        identity.series_id = String::new();
+        assert_eq!(
+            identity.validate(),
+            Err(ResultReportViolation::MissingSubjectIdentity { field: "series_id" })
+        );
+
+        let mut identity = subject();
+        identity.subject_identity = "   ".to_string();
+        assert_eq!(
+            identity.validate(),
+            Err(ResultReportViolation::MissingSubjectIdentity { field: "subject_identity" })
+        );
+    }
+
+    #[test]
+    fn admission_distribution_must_describe_the_denominator() -> Result<(), ResultAxisViolation> {
+        let mut candidate = report(
+            axes(
+                EvidenceValidity::Valid,
+                ObservedOutcome::Clean,
+                CompatibilityAdmission::Implemented,
+                SemanticSupport::General,
+                CorrectnessMechanism::EirExecution,
+            )?,
+            no_change(),
+        );
+        assert_eq!(candidate.validate(), Ok(()));
+
+        candidate.admission.by_admission = distribution(&[("implemented", 3)]);
+        assert_eq!(
+            candidate.validate(),
+            Err(ResultReportViolation::AdmissionTotalMismatch { counted: 3, denominator: 4 })
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn valid_evidence_requires_a_complete_measurement() -> Result<(), ResultAxisViolation> {
+        let mut candidate = report(
+            axes(
+                EvidenceValidity::Valid,
+                ObservedOutcome::Clean,
+                CompatibilityAdmission::Implemented,
+                SemanticSupport::General,
+                CorrectnessMechanism::EirExecution,
+            )?,
+            no_change(),
+        );
+        candidate.completion = MeasurementCompletion::Incomplete;
+        assert_eq!(
+            candidate.validate(),
+            Err(ResultReportViolation::ValidEvidenceFromIncompleteMeasurement {
+                completion: MeasurementCompletion::Incomplete,
+            })
+        );
+        Ok(())
+    }
+
+    // ---- Fixture class 18: deterministic serialization -----------------------
+
+    #[test]
+    fn serialization_is_deterministic_across_input_order() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let observed = ResultAxes::new(
+            EvidenceValidity::Valid,
+            ObservedOutcome::Clean,
+            CompatibilityAdmission::Implemented,
+            SemanticSupport::General,
+            CorrectnessMechanism::EirExecution,
+        )?;
+
+        let mut forward = report(observed, no_change());
+        forward
+            .correctness_rails
+            .insert("eir".to_string(), CorrectnessRailSummary::unavailable("not provisioned"));
+        forward
+            .correctness_rails
+            .insert("curated_gold".to_string(), CorrectnessRailSummary::unavailable("no gold"));
+
+        let mut reverse = report(observed, no_change());
+        reverse
+            .correctness_rails
+            .insert("curated_gold".to_string(), CorrectnessRailSummary::unavailable("no gold"));
+        reverse
+            .correctness_rails
+            .insert("eir".to_string(), CorrectnessRailSummary::unavailable("not provisioned"));
+
+        assert_eq!(serde_json::to_string(&forward)?, serde_json::to_string(&reverse)?);
+        Ok(())
+    }
+
+    #[test]
+    fn report_roundtrips_through_json() -> Result<(), Box<dyn std::error::Error>> {
+        let observed = ResultAxes::new(
+            EvidenceValidity::Valid,
+            ObservedOutcome::FailuresObserved,
+            CompatibilityAdmission::Implemented,
+            SemanticSupport::Partial,
+            CorrectnessMechanism::FixtureReplay,
+        )?;
+        let mut candidate = report(observed, no_change());
+        candidate.files.push(FileModeAxesResult {
+            path: "base/ok.t".to_string(),
+            mode: HarnessMode::Compile,
+            axes: observed,
+            bucket: Some("compile_effect".to_string()),
+        });
+        candidate.invocations.push(InvocationAxesResult {
+            invocation_identity: "invocation-1".to_string(),
+            axes: observed,
+            limitations: vec!["fixture replay only".to_string()],
+        });
+
+        let encoded = serde_json::to_string(&candidate)?;
+        let decoded: RunAxesReport = serde_json::from_str(&encoded)?;
+        assert_eq!(decoded, candidate);
+        Ok(())
+    }
+
+    #[test]
+    fn report_rejects_a_foreign_schema_version() -> Result<(), ResultAxisViolation> {
+        let mut candidate = report(
+            axes(
+                EvidenceValidity::Valid,
+                ObservedOutcome::Clean,
+                CompatibilityAdmission::Implemented,
+                SemanticSupport::General,
+                CorrectnessMechanism::EirExecution,
+            )?,
+            no_change(),
+        );
+        candidate.schema_version = "perl_core_harness.result_axes.v1".to_string();
+        assert_eq!(
+            candidate.validate(),
+            Err(ResultReportViolation::UnexpectedSchemaVersion {
+                found: "perl_core_harness.result_axes.v1".to_string(),
+            })
+        );
+        Ok(())
+    }
+
+    // ---- Published schema parity --------------------------------------------
+    //
+    // The schema is only worth publishing if it decides the same cases as the
+    // Rust constructor. These tests compare the two on identical fixtures, so
+    // either drifting from the other turns the suite red.
+
+    fn schema_document() -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../schemas/perl_core_harness.result_axes.v2.schema.json");
+        Ok(serde_json::from_str(&std::fs::read_to_string(path)?)?)
+    }
+
+    fn schema() -> Result<jsonschema::Validator, Box<dyn std::error::Error>> {
+        Ok(jsonschema::validator_for(&schema_document()?)?)
+    }
+
+    /// The published `result_axes` subschema, rooted so its `$ref`s still resolve.
+    fn axes_schema() -> Result<jsonschema::Validator, Box<dyn std::error::Error>> {
+        let document = schema_document()?;
+        let defs = document.get("$defs").ok_or("schema is missing $defs")?.clone();
+        if defs.get("result_axes").is_none() {
+            return Err("schema is missing $defs.result_axes".into());
+        }
+        let rooted = serde_json::json!({
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "$ref": "#/$defs/result_axes",
+            "$defs": defs,
+        });
+        Ok(jsonschema::validator_for(&rooted)?)
+    }
+
+    /// Every axis combination the constructor decides, as a wire object.
+    fn axis_fixtures() -> Vec<(&'static str, serde_json::Value)> {
+        let case = |evidence, observation, admission, support, mechanism| {
+            serde_json::json!({
+                "evidence": evidence,
+                "observation": observation,
+                "admission": admission,
+                "support": support,
+                "mechanism": mechanism,
+            })
+        };
+        vec![
+            (
+                "clean implemented general",
+                case("valid", "clean", "implemented", "general", "eir_execution"),
+            ),
+            (
+                "complete red observation",
+                case("valid", "failures_observed", "implemented", "partial", "real_perl_oracle"),
+            ),
+            (
+                "source-locked debt blocked",
+                case("valid", "clean", "accepted_debt", "blocked", "none"),
+            ),
+            (
+                "statically classified partial",
+                case("valid", "clean", "statically_classified", "partial", "fixture_replay"),
+            ),
+            (
+                "unsupported unavailable",
+                case("valid", "clean", "unsupported", "unavailable", "none"),
+            ),
+            (
+                "instrument not proven",
+                case(
+                    "not_proven",
+                    "process_or_protocol_failed",
+                    "not_assessed",
+                    "not_assessed",
+                    "none",
+                ),
+            ),
+            (
+                "stale not assessed",
+                case("stale", "not_assessed", "not_assessed", "not_assessed", "none"),
+            ),
+            (
+                "cancelled not assessed",
+                case("cancelled", "not_assessed", "not_assessed", "not_assessed", "none"),
+            ),
+            (
+                "forged: debt claims general",
+                case("valid", "clean", "accepted_debt", "general", "real_perl_oracle"),
+            ),
+            (
+                "forged: static classification claims general",
+                case("valid", "clean", "statically_classified", "general", "eir_execution"),
+            ),
+            (
+                "forged: fixture replay claims general",
+                case("valid", "clean", "implemented", "general", "fixture_replay"),
+            ),
+            (
+                "forged: support without mechanism",
+                case("valid", "clean", "implemented", "partial", "none"),
+            ),
+            (
+                "forged: unsupported claims partial",
+                case("valid", "clean", "unsupported", "partial", "eir_execution"),
+            ),
+            (
+                "forged: clean outcome without valid evidence",
+                case("not_proven", "clean", "not_assessed", "not_assessed", "none"),
+            ),
+            (
+                "forged: process failure claims valid evidence",
+                case("valid", "process_or_protocol_failed", "not_assessed", "not_assessed", "none"),
+            ),
+            (
+                "forged: stale evidence claims support",
+                case("stale", "not_assessed", "implemented", "general", "eir_execution"),
+            ),
+        ]
+    }
+
+    #[test]
+    fn published_schema_decides_axes_exactly_as_the_constructor()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let axes_schema = axes_schema()?;
+
+        for (name, fixture) in axis_fixtures() {
+            let rust_accepts = serde_json::from_value::<ResultAxes>(fixture.clone()).is_ok();
+            let schema_accepts = axes_schema.is_valid(&fixture);
+            assert_eq!(
+                rust_accepts, schema_accepts,
+                "'{name}': Rust constructor accepts={rust_accepts} but published schema \
+                 accepts={schema_accepts}; the schema and the invariants have drifted"
+            );
+            let expected_valid = !name.starts_with("forged:");
+            assert_eq!(
+                rust_accepts, expected_valid,
+                "'{name}': expected acceptance {expected_valid}, got {rust_accepts}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn published_schema_accepts_a_complete_report() -> Result<(), Box<dyn std::error::Error>> {
+        let validator = schema()?;
+        let observed = ResultAxes::new(
+            EvidenceValidity::Valid,
+            ObservedOutcome::Clean,
+            CompatibilityAdmission::Implemented,
+            SemanticSupport::General,
+            CorrectnessMechanism::EirExecution,
+        )?;
+        let mut candidate = report(observed, no_change());
+        candidate
+            .correctness_rails
+            .insert("eir".to_string(), CorrectnessRailSummary::unavailable("not provisioned"));
+        candidate.files.push(FileModeAxesResult {
+            path: "base/ok.t".to_string(),
+            mode: HarnessMode::Compile,
+            axes: observed,
+            bucket: None,
+        });
+        candidate.invocations.push(InvocationAxesResult {
+            invocation_identity: "invocation-1".to_string(),
+            axes: observed,
+            limitations: Vec::new(),
+        });
+        candidate.validate()?;
+
+        let encoded = serde_json::to_value(&candidate)?;
+        if let Err(error) = validator.validate(&encoded) {
+            return Err(format!("valid report rejected by published schema: {error}").into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn published_schema_rejects_a_rail_that_borrowed_counts()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let validator = schema()?;
+        let observed = ResultAxes::new(
+            EvidenceValidity::Valid,
+            ObservedOutcome::Clean,
+            CompatibilityAdmission::Implemented,
+            SemanticSupport::General,
+            CorrectnessMechanism::EirExecution,
+        )?;
+        let mut candidate = report(observed, no_change());
+        candidate.correctness_rails.insert(
+            "execution".to_string(),
+            CorrectnessRailSummary {
+                mechanism: CorrectnessMechanism::None,
+                availability: CompatibilityRailAvailability::NotAvailable,
+                reason: "no execution rail provisioned".to_string(),
+                evidence_refs: Vec::new(),
+                files_total: Some(4),
+                files_passed: Some(4),
+            },
+        );
+
+        assert!(candidate.validate().is_err(), "the Rust validator must reject borrowed counts");
+        let encoded = serde_json::to_value(&candidate)?;
+        assert!(
+            !validator.is_valid(&encoded),
+            "the published schema must also reject a mechanism-less rail reporting counts"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn published_schema_rejects_an_aggregate_without_a_denominator()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let validator = schema()?;
+        let observed = ResultAxes::new(
+            EvidenceValidity::Valid,
+            ObservedOutcome::Clean,
+            CompatibilityAdmission::Implemented,
+            SemanticSupport::General,
+            CorrectnessMechanism::EirExecution,
+        )?;
+        let mut candidate = report(observed, no_change());
+        candidate.subject.denominator = 0;
+        candidate.parse.files_total = 0;
+        candidate.parse.files_passed = 0;
+        candidate.admission.by_admission = BTreeMap::new();
+        candidate.admission.by_support = BTreeMap::new();
+
+        assert!(candidate.validate().is_err(), "the Rust validator must reject this");
+        let encoded = serde_json::to_value(&candidate)?;
+        assert!(
+            !validator.is_valid(&encoded),
+            "the published schema must also reject an aggregate with no denominator"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn published_schema_rejects_an_aggregate_missing_subject_identity()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let validator = schema()?;
+        let observed = ResultAxes::new(
+            EvidenceValidity::Valid,
+            ObservedOutcome::Clean,
+            CompatibilityAdmission::Implemented,
+            SemanticSupport::General,
+            CorrectnessMechanism::EirExecution,
+        )?;
+        let mut candidate = report(observed, no_change());
+        candidate.subject.series_id = String::new();
+
+        assert!(candidate.validate().is_err(), "the Rust validator must reject this");
+        let encoded = serde_json::to_value(&candidate)?;
+        assert!(
+            !validator.is_valid(&encoded),
+            "the published schema must also reject an aggregate with no series identity"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn published_schema_rejects_a_candidate_presented_as_accepted()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let validator = schema()?;
+        let observed = ResultAxes::new(
+            EvidenceValidity::Valid,
+            ObservedOutcome::Clean,
+            CompatibilityAdmission::Implemented,
+            SemanticSupport::General,
+            CorrectnessMechanism::EirExecution,
+        )?;
+        let mut candidate = report(observed, no_change());
+        candidate.current_versus_accepted = CurrentVersusAccepted {
+            transition: CompatibilityTransition::ImprovementCandidate,
+            requires_acceptance: false,
+            accepted_baseline_digest: Some("sha256:4".to_string()),
+            reason: "forged as settled".to_string(),
+        };
+
+        assert!(candidate.validate().is_err(), "the Rust validator must reject this");
+        let encoded = serde_json::to_value(&candidate)?;
+        assert!(
+            !validator.is_valid(&encoded),
+            "the published schema must also reject a candidate that does not require acceptance"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn axis_wire_names_match_the_declared_vocabulary() {
+        assert_eq!(EvidenceValidity::NotProven.as_str(), "not_proven");
+        assert_eq!(ObservedOutcome::ProcessOrProtocolFailed.as_str(), "process_or_protocol_failed");
+        assert_eq!(CompatibilityAdmission::StaticallyClassified.as_str(), "statically_classified");
+        assert_eq!(SemanticSupport::Unavailable.as_str(), "unavailable");
+        assert_eq!(CorrectnessMechanism::FixtureReplay.as_str(), "fixture_replay");
+        assert_eq!(ResultAxis::Mechanism.as_str(), "mechanism");
+    }
+}

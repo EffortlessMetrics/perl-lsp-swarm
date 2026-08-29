@@ -1,0 +1,273 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://effortlessmetrics.dev/schemas/perl_core_harness.result_axes.v2.schema.json",
+  "title": "Perl core harness result axes v2",
+  "description": "Strict separated result axes for the upstream Perl core harness lane. Evidence validity, observed product outcome, compatibility admission, semantic support, and correctness mechanism are independent; the cross-axis rules in $defs.result_axes.allOf reject combinations that would overstate what the evidence establishes.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "origin",
+    "completion",
+    "subject",
+    "axes",
+    "parse",
+    "admission",
+    "correctness_rails",
+    "current_versus_accepted",
+    "files",
+    "invocations",
+    "claim_boundary",
+    "limitations"
+  ],
+  "properties": {
+    "schema_version": {"const": "perl_core_harness.result_axes.v2"},
+    "origin": {"enum": ["current_measurement", "legacy_adapted"]},
+    "completion": {"enum": ["complete", "incomplete", "not_attempted"]},
+    "subject": {"$ref": "#/$defs/subject_identity"},
+    "axes": {"$ref": "#/$defs/result_axes"},
+    "parse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["files_total", "files_passed", "axes"],
+      "properties": {
+        "files_total": {"type": "integer", "minimum": 0},
+        "files_passed": {"type": "integer", "minimum": 0},
+        "axes": {"$ref": "#/$defs/result_axes"}
+      }
+    },
+    "admission": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "by_admission",
+        "by_support",
+        "accepted_debt_count",
+        "source_locked_count",
+        "downstream_blocking_count"
+      ],
+      "properties": {
+        "by_admission": {
+          "type": "object",
+          "propertyNames": {"$ref": "#/$defs/admission"},
+          "additionalProperties": {"type": "integer", "minimum": 0}
+        },
+        "by_support": {
+          "type": "object",
+          "propertyNames": {"$ref": "#/$defs/support"},
+          "additionalProperties": {"type": "integer", "minimum": 0}
+        },
+        "accepted_debt_count": {"type": "integer", "minimum": 0},
+        "source_locked_count": {"type": "integer", "minimum": 0},
+        "downstream_blocking_count": {"type": "integer", "minimum": 0}
+      }
+    },
+    "correctness_rails": {
+      "type": "object",
+      "additionalProperties": {"$ref": "#/$defs/correctness_rail"}
+    },
+    "current_versus_accepted": {"$ref": "#/$defs/current_versus_accepted"},
+    "files": {"type": "array", "items": {"$ref": "#/$defs/file_mode_result"}},
+    "invocations": {"type": "array", "items": {"$ref": "#/$defs/invocation_result"}},
+    "claim_boundary": {"type": "string", "minLength": 1},
+    "limitations": {"type": "array", "items": {"type": "string", "minLength": 1}}
+  },
+  "$defs": {
+    "evidence": {"enum": ["valid", "not_proven", "invalid", "stale", "cancelled"]},
+    "observation": {
+      "enum": ["clean", "failures_observed", "process_or_protocol_failed", "not_assessed"]
+    },
+    "admission": {
+      "enum": [
+        "implemented",
+        "statically_classified",
+        "accepted_debt",
+        "unsupported",
+        "not_assessed"
+      ]
+    },
+    "support": {"enum": ["general", "partial", "blocked", "unavailable", "not_assessed"]},
+    "mechanism": {
+      "enum": ["none", "fixture_replay", "eir_execution", "real_perl_oracle", "curated_gold"]
+    },
+    "axis_name": {"enum": ["evidence", "observation", "admission", "support", "mechanism"]},
+    "rail_availability": {"enum": ["available", "partial", "not_available", "stale"]},
+    "transition": {
+      "enum": [
+        "no_change",
+        "improvement_candidate",
+        "regression",
+        "contract_correction_candidate",
+        "not_proven",
+        "historical"
+      ]
+    },
+    "result_axes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["evidence", "observation", "admission", "support", "mechanism"],
+      "properties": {
+        "evidence": {"$ref": "#/$defs/evidence"},
+        "observation": {"$ref": "#/$defs/observation"},
+        "admission": {"$ref": "#/$defs/admission"},
+        "support": {"$ref": "#/$defs/support"},
+        "mechanism": {"$ref": "#/$defs/mechanism"}
+      },
+      "allOf": [
+        {
+          "$comment": "Evidence validity is decided before domain outcome: a clean or failing product outcome requires valid evidence.",
+          "if": {"properties": {"observation": {"enum": ["clean", "failures_observed"]}}},
+          "then": {"properties": {"evidence": {"const": "valid"}}}
+        },
+        {
+          "$comment": "An instrument failure is not_proven, not a product result.",
+          "if": {"properties": {"observation": {"const": "process_or_protocol_failed"}}},
+          "then": {"properties": {"evidence": {"not": {"const": "valid"}}}}
+        },
+        {
+          "$comment": "A positive support claim needs valid evidence, an admission that can carry it, and a real mechanism.",
+          "if": {"properties": {"support": {"enum": ["general", "partial"]}}},
+          "then": {
+            "properties": {
+              "evidence": {"const": "valid"},
+              "admission": {"not": {"enum": ["unsupported", "not_assessed"]}},
+              "mechanism": {"not": {"const": "none"}}
+            }
+          }
+        },
+        {
+          "$comment": "Compile admission, accepted debt, and fixture replay never imply general semantic support.",
+          "if": {"properties": {"support": {"const": "general"}}},
+          "then": {
+            "properties": {
+              "admission": {"const": "implemented"},
+              "mechanism": {"not": {"const": "fixture_replay"}}
+            }
+          }
+        }
+      ]
+    },
+    "subject_identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "series_id",
+        "subject_identity",
+        "evidence_bundle_id",
+        "measurement_sha",
+        "denominator"
+      ],
+      "properties": {
+        "series_id": {"type": "string", "minLength": 1},
+        "subject_identity": {"type": "string", "minLength": 1},
+        "evidence_bundle_id": {"type": "string", "minLength": 1},
+        "measurement_sha": {"type": "string", "minLength": 1},
+        "denominator": {
+          "type": "integer",
+          "minimum": 1,
+          "$comment": "A current aggregate without an exact denominator is not comparable."
+        }
+      }
+    },
+    "correctness_rail": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mechanism",
+        "availability",
+        "reason",
+        "evidence_refs",
+        "files_total",
+        "files_passed"
+      ],
+      "properties": {
+        "mechanism": {"$ref": "#/$defs/mechanism"},
+        "availability": {"$ref": "#/$defs/rail_availability"},
+        "reason": {"type": "string", "minLength": 1},
+        "evidence_refs": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "files_total": {"type": ["integer", "null"], "minimum": 0},
+        "files_passed": {"type": ["integer", "null"], "minimum": 0}
+      },
+      "allOf": [
+        {
+          "$comment": "A rail that never ran stays unavailable rather than reporting zero of zero.",
+          "if": {"properties": {"mechanism": {"const": "none"}}},
+          "then": {
+            "properties": {
+              "availability": {"not": {"const": "available"}},
+              "files_total": {"const": null},
+              "files_passed": {"const": null}
+            }
+          }
+        },
+        {
+          "$comment": "An available rail names a mechanism and cites evidence.",
+          "if": {"properties": {"availability": {"const": "available"}}},
+          "then": {
+            "properties": {
+              "mechanism": {"not": {"const": "none"}},
+              "evidence_refs": {"minItems": 1}
+            }
+          }
+        }
+      ]
+    },
+    "current_versus_accepted": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["transition", "requires_acceptance", "accepted_baseline_digest", "reason"],
+      "properties": {
+        "transition": {"$ref": "#/$defs/transition"},
+        "requires_acceptance": {"type": "boolean"},
+        "accepted_baseline_digest": {"type": ["string", "null"], "minLength": 1},
+        "reason": {"type": "string", "minLength": 1}
+      },
+      "allOf": [
+        {
+          "$comment": "A candidate transition is not accepted state; it must require acceptance.",
+          "if": {
+            "properties": {
+              "transition": {
+                "enum": [
+                  "improvement_candidate",
+                  "regression",
+                  "contract_correction_candidate"
+                ]
+              }
+            }
+          },
+          "then": {"properties": {"requires_acceptance": {"const": true}}},
+          "else": {"properties": {"requires_acceptance": {"const": false}}}
+        },
+        {
+          "$comment": "Improvement and regression are claims relative to an actual accepted baseline.",
+          "if": {
+            "properties": {"transition": {"enum": ["improvement_candidate", "regression"]}}
+          },
+          "then": {"properties": {"accepted_baseline_digest": {"type": "string"}}}
+        }
+      ]
+    },
+    "file_mode_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "mode", "axes", "bucket"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "mode": {"enum": ["parse", "compile", "execute"]},
+        "axes": {"$ref": "#/$defs/result_axes"},
+        "bucket": {"type": ["string", "null"], "minLength": 1}
+      }
+    },
+    "invocation_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["invocation_identity", "axes", "limitations"],
+      "properties": {
+        "invocation_identity": {"type": "string", "minLength": 1},
+        "axes": {"$ref": "#/$defs/result_axes"},
+        "limitations": {"type": "array", "items": {"type": "string", "minLength": 1}}
+      }
+    }
+  }
+}
