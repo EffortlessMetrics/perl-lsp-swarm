@@ -124,6 +124,12 @@ reconstruct goal and claim frames
 → re-evaluate every original acceptance predicate
 ```
 
+Start a residue sweep with `bash scripts/cleanup-completed-worktrees.sh --dry-run` and
+review every disposition against current Git/worktree state. Rerun it without
+`--dry-run` only for proven-safe removals; when `scripts/worktree-manager.py` still owns
+the slot, release it through the manager with the allocation's owner token instead of
+deleting around that local lease.
+
 If another PR lands and a candidate remains valid, do nothing. If an actual conflict,
 explicit stack change, or combined-tree failure appears, repair the affected claim and
 refresh only affected proof and review.
