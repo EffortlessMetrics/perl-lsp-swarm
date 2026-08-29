@@ -216,7 +216,7 @@ fn package_identity_keys_are_literal() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
-fn every_dependency_is_versioned_and_not_path_only() -> Result<(), Box<dyn Error>> {
+fn every_dependency_is_versioned_and_path_free() -> Result<(), Box<dyn Error>> {
     let manifest = manifest()?;
 
     for (section, table) in dependency_tables(&manifest) {
@@ -231,8 +231,8 @@ fn every_dependency_is_versioned_and_not_path_only() -> Result<(), Box<dyn Error
             let path_only = spec.as_table().is_some_and(|detail| detail.contains_key("path"));
             assert!(
                 !path_only,
-                "[{section}] `{name}` is a path dependency; the package must not require an \
-                 in-workspace dependency to resolve"
+                "[{section}] `{name}` must not declare a path dependency; standalone resolution \
+                 must use registry versions"
             );
         }
     }
