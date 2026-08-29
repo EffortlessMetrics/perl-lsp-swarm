@@ -25,6 +25,7 @@ pub mod git_ancestry;
 pub mod import_cleanup_train_manifest;
 pub mod native_helix_actions;
 pub mod native_neovim_actions;
+pub mod public_release_claims;
 pub mod publication_drift;
 pub mod rust_hygiene;
 pub mod vim_host_diagnostics_run;

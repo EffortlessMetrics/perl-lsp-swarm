@@ -6,22 +6,22 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12360 |
-| Rust-family files | 3797 |
-| Non-Rust files | 8563 |
-| Allowlisted | 6328 |
+| Total tracked files | 12399 |
+| Rust-family files | 3808 |
+| Non-Rust files | 8591 |
+| Allowlisted | 6356 |
 | Unclassified | 2235 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 490 |
-| documentation | 2796 |
-| generated | 2 |
+| config | 492 |
+| documentation | 2801 |
+| generated | 3 |
 | production | 346 |
-| test | 2033 |
-| tooling | 661 |
+| test | 2052 |
+| tooling | 662 |
 | unclassified | 2235 |
 
 ## Unclassified files
@@ -2339,6 +2339,7 @@
 | `.changes/unreleased/product-12806-Added-213000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-13157-Fixed-023317.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-13159-Fixed-023400.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-13191-Fixed-062500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-13283-Fixed-122901.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3445-Added-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3765-Changed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -3170,6 +3171,7 @@
 | `.spec/11392-native-neovim-train-graph/invalid/unknown_edge_target.json` | tooling | `non-rust-spec-tree` | developer-experience |
 | `.spec/11392-native-neovim-train-graph/shuffled/train.manifest.json` | tooling | `non-rust-spec-tree` | developer-experience |
 | `.spec/11392-native-neovim-train-graph/train.manifest.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/11548-inventory-derivative/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11625-module-train-graph/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11625-module-train-graph/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11625-module-train-graph/context.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -3370,6 +3372,9 @@
 | `.spec/8048-true-eof-final-newline-equivalence/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/8048-true-eof-final-newline-equivalence/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/8048-true-eof-final-newline-equivalence/context.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/8099-parser-metamorphic-oracles/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/8099-parser-metamorphic-oracles/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/8099-parser-metamorphic-oracles/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/8305-organize-imports-containment/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/8305-organize-imports-containment/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/8305-organize-imports-containment/context.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -4339,6 +4344,8 @@
 | `deny.toml` | config | `non-rust-deny-toml` | release/ci |
 | `dist-workspace.toml` | config | `non-rust-dist-workspace` | release/ci |
 | `distribution/linux/README.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `distribution/public_release_claims.v2.json` | generated | `non-rust-public-release-claims-v2-catalog` | release/ci |
+| `distribution/release_receipts/v0.17.0.assets.json` | config | `non-rust-release-receipt-asset-manifest` | release/ci |
 | `distribution/windows/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `docker-compose.yml` | config | `non-rust-docker-compose` | release/ci |
 | `docs/CHANGELOG_WORKFLOW.md` | documentation | `non-rust-docs-tree` | docs |
@@ -6199,6 +6206,25 @@
 | `fixtures/experience/standalone_candidate_selection/20_previous_current_alias.json` | test | `non-rust-standalone-candidate-selection-fixtures` | release/ci |
 | `fixtures/experience/standalone_candidate_selection/21_private_path_leakage.json` | test | `non-rust-standalone-candidate-selection-fixtures` | release/ci |
 | `fixtures/experience/standalone_candidate_selection/22_current_names_missing_candidate.json` | test | `non-rust-standalone-candidate-selection-fixtures` | release/ci |
+| `fixtures/product_health_status/expected/status.json` | test | `non-rust-product-health-status-fixtures` | tooling/product-health |
+| `fixtures/product_health_status/registry.json` | test | `non-rust-product-health-status-fixtures` | tooling/product-health |
+| `fixtures/product_health_status/sources/chk-a.json` | test | `non-rust-product-health-status-fixtures` | tooling/product-health |
+| `fixtures/product_health_status/sources/chk-b.json` | test | `non-rust-product-health-status-fixtures` | tooling/product-health |
+| `fixtures/product_health_status/sources/client-wrong.json` | test | `non-rust-product-health-status-fixtures` | tooling/product-health |
+| `fixtures/product_health_status/sources/compiler-now.json` | test | `non-rust-product-health-status-fixtures` | tooling/product-health |
+| `fixtures/product_health_status/sources/compiler-old.json` | test | `non-rust-product-health-status-fixtures` | tooling/product-health |
+| `fixtures/product_health_status/sources/dap.json` | test | `non-rust-product-health-status-fixtures` | tooling/product-health |
+| `fixtures/product_health_status/sources/diag-a.json` | test | `non-rust-product-health-status-fixtures` | tooling/product-health |
+| `fixtures/product_health_status/sources/diag-b.json` | test | `non-rust-product-health-status-fixtures` | tooling/product-health |
+| `fixtures/product_health_status/sources/na.json` | test | `non-rust-product-health-status-fixtures` | tooling/product-health |
+| `fixtures/product_health_status/sources/parser-current.json` | test | `non-rust-product-health-status-fixtures` | tooling/product-health |
+| `fixtures/product_health_status/sources/parser-limited.json` | test | `non-rust-product-health-status-fixtures` | tooling/product-health |
+| `fixtures/product_health_status/sources/pkg-new.json` | test | `non-rust-product-health-status-fixtures` | tooling/product-health |
+| `fixtures/product_health_status/sources/pkg-old.json` | test | `non-rust-product-health-status-fixtures` | tooling/product-health |
+| `fixtures/product_health_status/sources/sec-a.json` | test | `non-rust-product-health-status-fixtures` | tooling/product-health |
+| `fixtures/product_health_status/sources/sec-b.json` | test | `non-rust-product-health-status-fixtures` | tooling/product-health |
+| `fixtures/product_health_status/sources/sec-ind.json` | test | `non-rust-product-health-status-fixtures` | tooling/product-health |
+| `fixtures/product_health_status/sources/unproven.json` | test | `non-rust-product-health-status-fixtures` | tooling/product-health |
 | `fixtures/train_edge_contract/external_stages.v1.json` | test | `non-rust-train-edge-contract-fixtures` | tooling/train-graph |
 | `fixtures/train_edge_contract/invalid/expected_errors.json` | test | `non-rust-train-edge-contract-fixtures` | tooling/train-graph |
 | `fixtures/train_edge_contract/invalid/external_stage_satisfied_internally.json` | test | `non-rust-train-edge-contract-fixtures` | tooling/train-graph |
@@ -6376,6 +6402,7 @@
 | `schemas/perl_core_harness_target_topology_drift.v1.schema.json` | config | `non-rust-core-harness-target-topology-drift-schema` | compiler |
 | `schemas/perl_core_harness_upstream_effective_invocation_trace.v1.schema.json` | config | `non-rust-core-harness-upstream-effective-invocation-trace-schema` | compiler |
 | `schemas/perl_core_harness_upstream_runner_discovery.v1.schema.json` | config | `non-rust-core-harness-upstream-runner-discovery-schema` | compiler |
+| `schemas/public_release_claims.v2.schema.json` | config | `non-rust-public-release-claims-v2-schema` | release/ci |
 | `schemas/publication_runtime_identity.v1.schema.json` | config | `non-rust-publication-runtime-identity-schema` | release/ci |
 | `schemas/release_topology.v1.schema.json` | config | `non-rust-release-topology-schema` | release/ci |
 | `schemas/stage_closure_projection.v1.schema.json` | config | `non-rust-stage-closure-projection-schema` | tooling/agent-review |
@@ -6861,6 +6888,7 @@
 | `scripts/validate-release-scope.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/validate-workspace-exclusions.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/validate_public_release_claims.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/validate_public_release_claims_v2.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/validate_swarm_findings.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/verify-docs-rs.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/verify-publication-facts.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |

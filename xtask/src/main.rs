@@ -52,16 +52,16 @@ use tasks::{
     oracle_runner, parse_rust, parser_corpus_sweep, parser_matrix, parser_ratchet,
     perl_core_harness, perl_kwalitee, populate_book, pre_push_plan, prep_crates_io_launch,
     product_health_rail_contract, product_health_status, protocol_type_substrate_matrix,
-    provider_confidence_matrix, provider_promotion_ledger, publication_facts, publish,
-    publish_closure, publish_manifest_check, publish_receipts, quality_baseline, quality_gate,
-    queue_health, queue_snapshot, receipts, release, release_artifact_check, release_evidence,
-    release_notes, release_turnkey, repo_hygiene, ripr_evidence, rust_small_proof, seam_diff,
-    semantic_inline_next_edit, semantic_inline_receipts, semantic_scorecard,
-    semantic_shadow_compare, semantic_token_classes, session_receipt, shadow_parity,
-    srp_microcrates, supported_editor_inline_smoke, swarm_agent_roster, swarm_summary,
-    sync_release_docs, targeted_checks, test, test_lsp, train_edge_contract, unwired_scan,
-    update_homebrew, update_status, ux_regression_receipt, ux_scorecard,
-    validate_workspace_exclusions, workflow_policy_lint, workflow_trigger_lint,
+    provider_confidence_matrix, provider_promotion_ledger, public_release_claims,
+    publication_facts, publish, publish_closure, publish_manifest_check, publish_receipts,
+    quality_baseline, quality_gate, queue_health, queue_snapshot, receipts, release,
+    release_artifact_check, release_evidence, release_notes, release_turnkey, repo_hygiene,
+    ripr_evidence, rust_small_proof, seam_diff, semantic_inline_next_edit,
+    semantic_inline_receipts, semantic_scorecard, semantic_shadow_compare, semantic_token_classes,
+    session_receipt, shadow_parity, srp_microcrates, supported_editor_inline_smoke,
+    swarm_agent_roster, swarm_summary, sync_release_docs, targeted_checks, test, test_lsp,
+    train_edge_contract, unwired_scan, update_homebrew, update_status, ux_regression_receipt,
+    ux_scorecard, validate_workspace_exclusions, workflow_policy_lint, workflow_trigger_lint,
     workspace_symbol_classes, worktree_allocator, worktrees, writer_admission,
 };
 #[cfg(feature = "parser-tasks")]
@@ -146,6 +146,15 @@ enum Commands {
         /// Operation to run against the manifest.
         #[command(subcommand)]
         command: tasks::compiler_lexical_cutline::CompilerLexicalCutlineSubcommand,
+    },
+
+    /// Build, check, list, and explain the deterministic install-claim
+    /// inventory derivative (`distribution/public_release_claims.v2.json`,
+    /// #11548 shape (a); non-authoritative per the #11549 scoping receipt).
+    PublicReleaseClaimsV2 {
+        /// Operation to run against the generated catalog.
+        #[command(subcommand)]
+        command: tasks::public_release_claims::PublicReleaseClaimsV2Subcommand,
     },
 
     /// Validate differential real-Perl oracle receipt schema.
@@ -4799,6 +4808,7 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::CheckProviderPromotionLedger => provider_promotion_ledger::run(),
         Commands::CheckOracleFixtureManifest => oracle_fixture_manifest::run(),
         Commands::CompilerLexicalCutline { command } => compiler_lexical_cutline::run(command),
+        Commands::PublicReleaseClaimsV2 { command } => public_release_claims::run(command),
         Commands::CheckOracleReceiptSchema => oracle_receipt_schema::run(),
         Commands::CheckTrainEdgeContract => train_edge_contract::run(),
         Commands::CheckNativeNeovimTrain => native_neovim_train::run(),

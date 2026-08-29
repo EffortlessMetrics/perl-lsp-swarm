@@ -3923,3 +3923,52 @@ reason = "Driver template for declared launches only; carries placeholders and z
 covered_by = ["python3 -m unittest discover -s integrations/lsp4ij/host-journey/tests -p test_*.py", "cargo xtask check-file-policy"]
 created = "2026-08-26"
 review_after = "2027-02-26"
+
+[[allow]]
+id = "non-rust-public-release-claims-v2-schema"
+path = "schemas/public_release_claims.v2.schema.json"
+kind = "release_contract"
+language = "json"
+surface = "release"
+classification = "config"
+owner = "release/ci"
+reason = "Closed catalog schema for the #11548 inventory-derivative successor (shape (a), non-authoritative per the #11549 scoping receipt); every object node carries additionalProperties:false and the oracle walks that closure."
+covered_by = [
+  "python scripts/validate_public_release_claims_v2.py distribution/public_release_claims.v2.json",
+  "cargo xtask public-release-claims-v2 check",
+]
+created = "2026-08-28"
+review_after = "2026-11-28"
+
+[[allow]]
+id = "non-rust-public-release-claims-v2-catalog"
+path = "distribution/public_release_claims.v2.json"
+kind = "generated_catalog"
+language = "json"
+surface = "release"
+classification = "generated"
+owner = "release/ci"
+reason = "Canonical 70-row install-claim inventory derivative regenerated from docs/distribution/INSTALL_CLAIM_SURFACES.md by the sanctioned xtask generator; hand edits fail byte-identity and the row-level oracle."
+generated_by = "cargo xtask public-release-claims-v2 build --write"
+covered_by = [
+  "cargo xtask public-release-claims-v2 check",
+  "python scripts/validate_public_release_claims_v2.py distribution/public_release_claims.v2.json",
+]
+created = "2026-08-28"
+review_after = "2026-11-28"
+
+[[allow]]
+id = "non-rust-release-receipt-asset-manifest"
+path = "distribution/release_receipts/v0.17.0.assets.json"
+kind = "release_receipt"
+language = "json"
+surface = "release"
+classification = "config"
+owner = "release/ci"
+reason = "Mirrored v0.17.0 release-asset manifest; the receipt authority the generator and oracle cross-check every published_receipt_* field against (D1). Re-verify against the live release when a successor receipt is mirrored."
+covered_by = [
+  "python scripts/validate_public_release_claims_v2.py distribution/public_release_claims.v2.json",
+  "cargo xtask public-release-claims-v2 check",
+]
+created = "2026-08-28"
+review_after = "2026-11-28"
