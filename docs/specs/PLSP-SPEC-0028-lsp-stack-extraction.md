@@ -2,7 +2,6 @@
 
 Status: accepted
 Owner: perl-lsp maintainers
-Implementation order: delegated to [#7384](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/7384)
 Linked proposal: n/a
 Linked ADRs:
 - [PLSP-ADR-0004](../adr/PLSP-ADR-0004-lsp-stack-extraction.md)
@@ -223,8 +222,9 @@ Boundary-doc rollback:
 
 - revert the documentation PR;
 - keep current app behavior and proof unchanged;
-- do not reopen a historical implementation sequence unless #7384 is explicitly
-  replaced and the successor does not own the claim.
+- never restore or reopen the former numbered implementation sequence;
+- reconsider one historical candidate only when neither #7384 nor its accepted
+  successor owns that exact claim.
 
 Implementation rollback:
 
