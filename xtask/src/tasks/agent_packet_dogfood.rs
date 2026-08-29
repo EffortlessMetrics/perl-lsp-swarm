@@ -439,7 +439,7 @@ fn check_unknown_keys(
         if !allowed.contains(&key.as_str()) {
             violations.push(Violation::new(
                 "unknown_field",
-                format!("{where_}: unexpected field {key} (closed core vocabulary; widen via a new versioned schema, not this one)"),
+                format!("{where_}: unexpected field (name redacted; closed core vocabulary; widen via a new versioned schema, not this one)"),
             ));
         }
     }
@@ -643,8 +643,10 @@ fn validate_record(
     }
     match string_field(record, "kind") {
         Some(kind) if kinds.contains(&kind) => {}
-        Some(kind) => violations
-            .push(Violation::new("unknown_record_kind", format!("{at}: unknown kind {kind}"))),
+        Some(_) => violations.push(Violation::new(
+            "unknown_record_kind",
+            format!("{at}: unknown kind (value redacted)"),
+        )),
         None => violations
             .push(Violation::new("missing_record_kind", format!("{at}: kind is required"))),
     }
@@ -976,9 +978,9 @@ pub(crate) fn validate_manifest(doc: &Value) -> Vec<Violation> {
             }
             match string_field(entry, "role") {
                 Some(role) if INTERVENTION_ROLES.contains(&role) => {}
-                Some(role) => violations.push(Violation::new(
+                Some(_) => violations.push(Violation::new(
                     "unknown_intervention_role",
-                    format!("{at}: unknown role {role}"),
+                    format!("{at}: unknown role (value redacted)"),
                 )),
                 None => violations.push(Violation::new(
                     "missing_intervention_role",

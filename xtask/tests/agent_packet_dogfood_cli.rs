@@ -2,7 +2,7 @@
 
 use assert_cmd::Command;
 use color_eyre::eyre::{Context, Result, eyre};
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::PathBuf;
@@ -43,6 +43,10 @@ fn write_and_stamp(temp: &TempDir, name: &str, disposition: &str) -> Result<Path
 fn write_without_stamping(temp: &TempDir, name: &str, disposition: &str) -> Result<PathBuf> {
     let mut document = fixture_document()?;
     document["disposition"] = Value::String(disposition.to_string());
+    write_document(temp, name, document)
+}
+
+fn write_document(temp: &TempDir, name: &str, document: Value) -> Result<PathBuf> {
     let path = temp.path().join(name);
     fs::write(&path, serde_json::to_vec_pretty(&document)?).context("writing test manifest")?;
     Ok(path)
@@ -114,5 +118,39 @@ fn validate_cli_redacts_unknown_disposition_values() -> Result<()> {
     let stderr = String::from_utf8(output.stderr)?;
     assert!(stderr.contains("unknown_disposition"), "missing reason code: {stderr}");
     assert!(!stderr.contains(leaked), "validation CLI leaked the unknown value: {stderr}");
+    Ok(())
+}
+
+#[test]
+fn validate_cli_redacts_untrusted_structural_diagnostic_values() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let leaked = "api_key=hunter2";
+
+    let mut invalid_kind = fixture_document()?;
+    invalid_kind["events"][0]["kind"] = json!(leaked);
+    let kind_path = write_document(&temp, "invalid-kind.json", invalid_kind)?;
+
+    let mut invalid_role = fixture_document()?;
+    invalid_role["human_intervention"][0]["role"] = json!(leaked);
+    let role_path = write_document(&temp, "invalid-role.json", invalid_role)?;
+
+    let mut invalid_field = fixture_document()?;
+    invalid_field[leaked] = json!(true);
+    let field_path = write_document(&temp, "invalid-field.json", invalid_field)?;
+
+    for (path, code) in [
+        (&kind_path, "unknown_record_kind"),
+        (&role_path, "unknown_intervention_role"),
+        (&field_path, "unknown_field"),
+    ] {
+        let output = Command::cargo_bin("xtask")?
+            .args(["agent-dogfood", "validate", "--manifest"])
+            .arg(path)
+            .output()?;
+        assert!(!output.status.success(), "{code} must fail validation");
+        let stderr = String::from_utf8(output.stderr)?;
+        assert!(stderr.contains(code), "missing reason code {code}: {stderr}");
+        assert!(!stderr.contains(leaked), "validation CLI leaked {leaked}: {stderr}");
+    }
     Ok(())
 }
