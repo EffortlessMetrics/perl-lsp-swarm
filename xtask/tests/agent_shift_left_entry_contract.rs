@@ -95,16 +95,30 @@ fn h2_section(text: &str, heading: &str) -> Option<String> {
 
 fn visible_markdown(text: &str) -> String {
     let mut visible = Vec::new();
-    let mut in_fence = false;
+    let mut fence: Option<(char, usize)> = None;
     let mut in_comment = false;
 
     for line in text.lines() {
         let trimmed = line.trim();
-        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
-            in_fence = !in_fence;
+        let fence_run = trimmed.chars().next().and_then(|character| {
+            if character != '`' && character != '~' {
+                return None;
+            }
+            let length = trimmed.chars().take_while(|candidate| *candidate == character).count();
+            (length >= 3).then_some((character, length))
+        });
+        if let Some((character, length)) = fence {
+            if fence_run == Some((character, length))
+                || fence_run.is_some_and(|(candidate, candidate_length)| {
+                    candidate == character && candidate_length >= length
+                })
+            {
+                fence = None;
+            }
             continue;
         }
-        if in_fence {
+        if let Some(fence_run) = fence_run {
+            fence = Some(fence_run);
             continue;
         }
 
@@ -141,7 +155,7 @@ fn is_negated_at(line: &str, marker_start: usize, marker: &str) -> bool {
     let prefix = line[sentence_start..marker_start].trim().to_ascii_lowercase();
     let suffix = line[marker_start + marker.len()..sentence_end].trim().to_ascii_lowercase();
 
-    [
+    let local_negation = [
         "not ",
         "not a ",
         "never ",
@@ -154,9 +168,13 @@ fn is_negated_at(line: &str, marker_start: usize, marker: &str) -> bool {
         "missing ",
     ]
     .iter()
-    .any(|negation| prefix.ends_with(negation) || suffix.starts_with(negation))
+    .any(|negation| prefix.ends_with(negation) || suffix.starts_with(negation));
+    let coordinated_negation =
+        prefix.find("not a ").is_some_and(|start| !prefix[start..].contains(" but "));
+
+    local_negation
+        || coordinated_negation
         || prefix.ends_with("not a")
-        || prefix.contains("not a ")
         || prefix.ends_with("no")
         || suffix.starts_with("is not ")
         || suffix.starts_with("is omitted")
@@ -172,10 +190,24 @@ fn has_unnegated_marker(text: &str, marker: &str) -> bool {
 }
 
 fn has_coordinated_boundary(text: &str, marker: &str) -> bool {
-    text.contains("runtime-local")
-        && text.contains("durable claim")
-        && text.match_indices(marker).next().is_some()
-        && text.match_indices(marker).all(|(start, _)| is_negated_at(text, start, marker))
+    text.match_indices(marker).next().is_some()
+        && text.match_indices(marker).all(|(start, _)| {
+            if !is_negated_at(text, start, marker) {
+                return false;
+            }
+            let sentence_start = text[..start].rfind(['.', '!', '?']).map_or(0, |index| index + 1);
+            let previous_start = text[..sentence_start.saturating_sub(1)]
+                .rfind(['.', '!', '?'])
+                .map_or(0, |index| index + 1);
+            let sentence_end = text[start + marker.len()..]
+                .find(['.', '!', '?'])
+                .map_or(text.len(), |index| start + marker.len() + index);
+            let current = &text[sentence_start..sentence_end];
+            let previous = &text[previous_start..sentence_start];
+            [current, previous].iter().any(|context| {
+                context.contains("runtime-local") && context.contains("durable claim")
+            })
+        })
 }
 
 fn validate_claim_admission(text: &str) -> Vec<String> {
@@ -329,6 +361,62 @@ Later content.
     assert!(errors.iter().any(|error| error.contains("acceptance surface")));
     assert!(errors.iter().any(|error| error.contains("proof ceiling")));
     assert!(errors.iter().any(|error| error.contains("prepare-issue")));
+}
+
+#[test]
+fn mismatched_markdown_fences_keep_decoys_hidden() {
+    let text = r#"
+## Shift-left claim admission
+Before the first delegated mutation, retain a coherent claim and its owner.
+```text
+direct candidate edit current authority production seam negative control
+broader proof is deferred earliest missing judgment next/backward route
+~~~
+acceptance surface proof ceiling NOT_PROVEN prepare-issue prepare-proof
+mutation owner one writer runtime-local durable claim stage record lease scheduler
+tracked frontier
+```
+## Entry route
+Later content.
+"#;
+
+    let errors = validate_claim_admission(text);
+    assert!(errors.iter().any(|error| error.contains("acceptance surface")));
+    assert!(errors.iter().any(|error| error.contains("proof ceiling")));
+    assert!(errors.iter().any(|error| error.contains("prepare-issue")));
+}
+
+#[test]
+fn contrast_clause_does_not_negate_a_later_marker() {
+    let text = r#"
+## Shift-left claim admission
+Before the first delegated mutation, retain a coherent claim and its semantic owner.
+The boundary is not a stage record, but this is a stage record.
+## Entry route
+Later content.
+"#;
+
+    let errors = validate_claim_admission(text);
+    assert!(errors.iter().any(|error| error.contains("non-stage boundary")), "{errors:?}");
+}
+
+#[test]
+fn boundary_markers_must_be_tied_to_the_runtime_boundary() {
+    let text = r#"
+## Shift-left claim admission
+Before the first delegated mutation, retain a coherent claim and its semantic owner.
+Keep this runtime-local unless it changes durable claim, authority, or proof state.
+This unrelated sentence separates the boundary concepts.
+The boundary is not a stage record, lease, scheduler, or tracked frontier.
+## Entry route
+Later content.
+"#;
+
+    let errors = validate_claim_admission(text);
+    assert!(errors.iter().any(|error| error.contains("non-stage boundary")), "{errors:?}");
+    assert!(errors.iter().any(|error| error.contains("non-lease boundary")));
+    assert!(errors.iter().any(|error| error.contains("non-scheduler boundary")));
+    assert!(errors.iter().any(|error| error.contains("non-frontier boundary")));
 }
 
 #[test]
