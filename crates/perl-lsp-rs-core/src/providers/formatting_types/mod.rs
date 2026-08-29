@@ -17,7 +17,7 @@ pub struct FormatTextEdit {
 }
 
 /// Position in a document (UTF-16 based).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FormatPosition {
     /// Line position (0-based).
     pub line: u32,
@@ -33,7 +33,7 @@ impl FormatPosition {
 }
 
 /// Range in a document.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FormatRange {
     /// Start position.
     pub start: FormatPosition,

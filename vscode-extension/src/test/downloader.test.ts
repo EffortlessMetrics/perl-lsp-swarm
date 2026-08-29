@@ -20,6 +20,7 @@ import {
   classifyWindowsArm64Support,
   getUnsupportedWindowsArm64Message,
   findReleaseAssetName,
+  lookupSha256SumsDigest,
   selectWindowsArm64Target,
   WINDOWS_ARM64_TARGET,
   WINDOWS_X64_TARGET,
@@ -73,7 +74,6 @@ interface DownloaderPrivateSurface {
   collectStaleManagedCandidates(baseDir: string): void;
   runEnsureBinary(forceDownload: boolean): Promise<string | null>;
   calculateSHA256(filePath: string): Promise<string>;
-  findBinary(dir: string, name: string): string | null;
   getLatestRelease(timeoutMs?: number): Promise<unknown>;
   getLocalVersion(binaryPath: string): Promise<string | null>;
   downloadWithProgress(): Promise<string>;
@@ -1349,70 +1349,6 @@ describe('BinaryDownloader.calculateSHA256', () => {
 });
 
 // ---------------------------------------------------------------------------
-// findBinary (recursive directory search)
-// ---------------------------------------------------------------------------
-describe('BinaryDownloader.findBinary', () => {
-  let tmpDir: string;
-
-  beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'find-bin-'));
-  });
-
-  afterEach(() => {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
-  });
-
-  test('finds binary in top-level directory', () => {
-    fs.writeFileSync(path.join(tmpDir, 'perllsp'), 'binary');
-
-    const downloader = new BinaryDownloader(
-      makeContext(),
-      makeOutputChannel(),
-    ) as unknown as TestDownloader;
-    const result = downloader.findBinary(tmpDir, 'perllsp');
-
-    expect(result).toBe(path.join(tmpDir, 'perllsp'));
-  });
-
-  test('finds binary in nested directory', () => {
-    const nested = path.join(tmpDir, 'subdir', 'bin');
-    fs.mkdirSync(nested, { recursive: true });
-    fs.writeFileSync(path.join(nested, 'perllsp'), 'binary');
-
-    const downloader = new BinaryDownloader(
-      makeContext(),
-      makeOutputChannel(),
-    ) as unknown as TestDownloader;
-    const result = downloader.findBinary(tmpDir, 'perllsp');
-
-    expect(result).toBe(path.join(nested, 'perllsp'));
-  });
-
-  test('returns null when binary is not found', () => {
-    const downloader = new BinaryDownloader(
-      makeContext(),
-      makeOutputChannel(),
-    ) as unknown as TestDownloader;
-    const result = downloader.findBinary(tmpDir, 'nonexistent');
-
-    expect(result).toBeNull();
-  });
-
-  test('ignores files with different names', () => {
-    fs.writeFileSync(path.join(tmpDir, 'not-perllsp'), 'wrong');
-    fs.writeFileSync(path.join(tmpDir, 'perllsp.old'), 'wrong');
-
-    const downloader = new BinaryDownloader(
-      makeContext(),
-      makeOutputChannel(),
-    ) as unknown as TestDownloader;
-    const result = downloader.findBinary(tmpDir, 'perllsp');
-
-    expect(result).toBeNull();
-  });
-});
-
-// ---------------------------------------------------------------------------
 // Download URL security validation (downloadFile method)
 // ---------------------------------------------------------------------------
 describe('BinaryDownloader download URL security', () => {
@@ -1529,13 +1465,17 @@ describe('BinaryDownloader download stream lifecycle', () => {
   type TestFile = EventEmitter & {
     destroy: jest.Mock;
     close: jest.Mock;
+    write: jest.Mock;
+    end: jest.Mock;
   };
   type TestRequest = EventEmitter & {
     destroy: jest.Mock;
   };
   type TestResponse = EventEmitter & {
     statusCode: number;
-    pipe: jest.Mock;
+    headers: Record<string, string>;
+    destroy: jest.Mock;
+    resume: jest.Mock;
   };
   type DownloaderSeams = {
     downloadFile: (url: string, dest: string, timeoutMs?: number) => Promise<void>;
@@ -1572,26 +1512,18 @@ describe('BinaryDownloader download stream lifecycle', () => {
     };
   }
 
-  test('observes stream errors before request failure and temporary-directory cleanup', async () => {
+  test('does not open a dest stream before a response, and still cleans up request failure', async () => {
     const destination = path.join(tmpDir, 'partial.bin');
     const seams = downloader as unknown as DownloaderSeams;
-    const file = new EventEmitter() as TestFile;
-    file.destroy = jest.fn();
-    file.close = jest.fn();
-    const createWriteStream = jest.spyOn(seams, 'createWriteStream').mockReturnValue(file);
+    const createWriteStream = jest.spyOn(seams, 'createWriteStream');
     const removePartialFile = jest.spyOn(seams, 'removePartialFile');
 
     const request = new EventEmitter() as TestRequest;
     request.destroy = jest.fn();
     const requestError = Object.assign(new Error('request failed'), { code: 'ECONNRESET' });
-    const streamError = Object.assign(new Error('destination disappeared'), { code: 'ENOENT' });
-    let listenerCountBeforeRequestActivity = 0;
     jest.spyOn(seams, 'httpGet').mockImplementation(() => {
-      listenerCountBeforeRequestActivity = file.listenerCount('error');
-      fs.rmSync(tmpDir, { recursive: true, force: true });
       process.nextTick(() => {
         request.emit('error', requestError);
-        setImmediate(() => file.emit('error', streamError));
       });
       return request;
     });
@@ -1603,8 +1535,7 @@ describe('BinaryDownloader download stream lifecycle', () => {
       );
       await new Promise<void>((resolve) => setImmediate(resolve));
 
-      expect(listenerCountBeforeRequestActivity).toBe(1);
-      expect(createWriteStream).toHaveBeenCalledWith(destination);
+      expect(createWriteStream).not.toHaveBeenCalled();
       expect(removePartialFile).toHaveBeenCalledTimes(1);
       expect(uncaught.errors).toEqual([]);
     } finally {
@@ -1615,14 +1546,7 @@ describe('BinaryDownloader download stream lifecycle', () => {
   test('cleans up exactly once when the download times out', async () => {
     const destination = path.join(tmpDir, 'timed-out.bin');
     const seams = downloader as unknown as DownloaderSeams;
-    const file = new EventEmitter() as TestFile;
-    file.close = jest.fn();
-    file.destroy = jest.fn(() => {
-      process.nextTick(() =>
-        file.emit('error', Object.assign(new Error('stream closed'), { code: 'ENOENT' })),
-      );
-    });
-    jest.spyOn(seams, 'createWriteStream').mockReturnValue(file);
+    const createWriteStream = jest.spyOn(seams, 'createWriteStream');
     const removePartialFile = jest.spyOn(seams, 'removePartialFile');
     const request = new EventEmitter() as TestRequest;
     request.destroy = jest.fn();
@@ -1635,7 +1559,8 @@ describe('BinaryDownloader download stream lifecycle', () => {
       );
       await new Promise<void>((resolve) => setImmediate(resolve));
 
-      expect(file.destroy).toHaveBeenCalledTimes(1);
+      expect(request.destroy).toHaveBeenCalled();
+      expect(createWriteStream).not.toHaveBeenCalled();
       expect(removePartialFile).toHaveBeenCalledTimes(1);
       expect(uncaught.errors).toEqual([]);
     } finally {
@@ -1649,27 +1574,30 @@ describe('BinaryDownloader download stream lifecycle', () => {
     const file = new EventEmitter() as TestFile;
     file.destroy = jest.fn();
     file.close = jest.fn();
+    file.write = jest.fn();
+    file.end = jest.fn();
     jest.spyOn(seams, 'createWriteStream').mockReturnValue(file);
     const removePartialFile = jest.spyOn(seams, 'removePartialFile');
 
     const response = new EventEmitter() as TestResponse;
     response.statusCode = 200;
+    response.headers = {};
+    response.destroy = jest.fn();
+    response.resume = jest.fn();
     const streamError = Object.assign(new Error('partial response failed'), { code: 'EPIPE' });
-    response.pipe = jest.fn(() => {
-      file.emit('error', streamError);
-      return file;
-    });
     const request = new EventEmitter() as TestRequest;
     request.destroy = jest.fn();
     jest.spyOn(seams, 'httpGet').mockImplementation((_https, _url, _options, callback) => {
-      (callback as (value: unknown) => void)(response);
+      process.nextTick(() => {
+        (callback as (value: unknown) => void)(response);
+        process.nextTick(() => response.emit('error', streamError));
+      });
       return request;
     });
 
     await expect(seams.downloadFile('http://localhost/file', destination, 1000)).rejects.toBe(
       streamError,
     );
-    expect(response.pipe).toHaveBeenCalledTimes(1);
     expect(removePartialFile).toHaveBeenCalledTimes(1);
   });
 });
@@ -2252,6 +2180,130 @@ describe('release asset candidate selection', () => {
 
     expect(candidates[0]).toBe('perllsp-0.13.1-x86_64-pc-windows-msvc.zip');
     expect(candidates).toContain('perllsp-v0.13.1-x86_64-pc-windows-msvc.zip');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SHA256SUMS anchored digest lookup (#9839)
+//
+// A line only counts when the digest is a whole leading token and the file
+// name field exactly equals the requested asset. Substring containment let a
+// crafted filename that merely contained the requested name (or an embedded
+// digest string) satisfy verification with an attacker-chosen digest.
+// ---------------------------------------------------------------------------
+describe('SHA256SUMS anchored digest lookup', () => {
+  const GOOD_DIGEST = 'ab'.repeat(32);
+  const EVIL_DIGEST = 'cd'.repeat(32);
+  const ASSET_NAME = 'perllsp-0.13.1-x86_64-pc-windows-msvc.zip';
+
+  test('rejects crafted decoy whose filename embeds a valid digest plus the requested suffix (#9839 falsifier)', () => {
+    // Today's substring match resolves `evil.asset` to EVIL_DIGEST because the
+    // decoy filename contains it; the embedded "valid" digest makes the craft
+    // look genuine at a glance.
+    const sums = `${EVIL_DIGEST}  xx${GOOD_DIGEST}evil.asset\n`;
+
+    expect(lookupSha256SumsDigest(sums, 'evil.asset')).toEqual({ status: 'absent' });
+  });
+
+  test('decoy line containing the asset name as a substring cannot shadow the real entry', () => {
+    const sums = [
+      `${EVIL_DIGEST}  prefix-${ASSET_NAME}.bak`,
+      `${GOOD_DIGEST}  ${ASSET_NAME}`,
+      '',
+      '',
+    ].join('\n');
+
+    expect(lookupSha256SumsDigest(sums, ASSET_NAME)).toEqual({
+      status: 'found',
+      digest: GOOD_DIGEST,
+    });
+  });
+
+  test('resolves genuine sha256sum entries across binary modes, tabs, and CRLF', () => {
+    const binaryMarker = `${GOOD_DIGEST} *${ASSET_NAME}\n`;
+    expect(lookupSha256SumsDigest(binaryMarker, ASSET_NAME)).toEqual({
+      status: 'found',
+      digest: GOOD_DIGEST,
+    });
+
+    const tabSeparated = `${GOOD_DIGEST}\t${ASSET_NAME}\n`;
+    expect(lookupSha256SumsDigest(tabSeparated, ASSET_NAME)).toEqual({
+      status: 'found',
+      digest: GOOD_DIGEST,
+    });
+
+    const amongOthers = [
+      `${'11'.repeat(32)}  unrelated.tar.gz`,
+      `${GOOD_DIGEST}  ${ASSET_NAME}`,
+      `${'22'.repeat(32)}  another.zip`,
+      '',
+    ].join('\n');
+    expect(lookupSha256SumsDigest(amongOthers, ASSET_NAME)).toEqual({
+      status: 'found',
+      digest: GOOD_DIGEST,
+    });
+  });
+
+  test('rejects uppercase digest characters as non-canonical', () => {
+    const uppercaseDigest = GOOD_DIGEST.toUpperCase();
+    const sums = `${uppercaseDigest}  ${ASSET_NAME}\r\n`;
+
+    expect(lookupSha256SumsDigest(sums, ASSET_NAME)).toEqual({ status: 'malformed' });
+  });
+
+  test('fails closed on malformed lines even when they mention the asset name', () => {
+    const malformedEntries = [
+      // Digest one character short.
+      `${GOOD_DIGEST.slice(0, 63)}  ${ASSET_NAME}`,
+      // Digest one character long.
+      `${GOOD_DIGEST}a  ${ASSET_NAME}`,
+      // Non-hex character inside the digest token.
+      `${GOOD_DIGEST.slice(0, 31) + 'g' + GOOD_DIGEST.slice(32)}  ${ASSET_NAME}`,
+    ];
+
+    for (const sums of malformedEntries) {
+      expect(lookupSha256SumsDigest(`${sums}\n`, ASSET_NAME)).toEqual({ status: 'malformed' });
+    }
+
+    const ignoredCases = [
+      // Digest glued to the filename without a separator.
+      `${GOOD_DIGEST}${ASSET_NAME}`,
+      // Reversed (BSD-style) ordering is not sha256sum format.
+      `${ASSET_NAME}  ${GOOD_DIGEST}`,
+      // Indented entry never comes from sha256sum output.
+      `  ${GOOD_DIGEST}  ${ASSET_NAME}`,
+      // Prose mentioning the asset carries no digest token.
+      `checksum for ${ASSET_NAME} pending`,
+      // Empty manifest.
+      '',
+      // Comment-style line.
+      `# ${GOOD_DIGEST}  ${ASSET_NAME}`,
+    ];
+
+    for (const sums of ignoredCases) {
+      expect(lookupSha256SumsDigest(`${sums}\n`, ASSET_NAME)).toEqual({ status: 'absent' });
+    }
+  });
+
+  test('duplicate entries are conflicting and fail closed, even when they agree', () => {
+    const conflicting = [`${GOOD_DIGEST}  ${ASSET_NAME}`, `${EVIL_DIGEST}  ${ASSET_NAME}`, ''].join(
+      '\n',
+    );
+    expect(lookupSha256SumsDigest(conflicting, ASSET_NAME)).toEqual({ status: 'conflicting' });
+
+    const agreeing = [`${GOOD_DIGEST}  ${ASSET_NAME}`, `${GOOD_DIGEST}  ${ASSET_NAME}`, ''].join(
+      '\n',
+    );
+    expect(lookupSha256SumsDigest(agreeing, ASSET_NAME)).toEqual({ status: 'conflicting' });
+
+    const validAndMalformed = [
+      `${GOOD_DIGEST}  ${ASSET_NAME}`,
+      `${GOOD_DIGEST.slice(0, 63)}  ${ASSET_NAME}`,
+      '',
+    ].join('\n');
+    expect(lookupSha256SumsDigest(validAndMalformed, ASSET_NAME)).toEqual({
+      status: 'conflicting',
+    });
   });
 });
 
