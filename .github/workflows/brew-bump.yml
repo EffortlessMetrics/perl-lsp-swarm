@@ -417,7 +417,10 @@ jobs:
             Formula/perllsp.rb
             Formula/perl-lsp.rb
           signoff: false
-          delete-branch: true
+          # No delete-branch: an open PR that names this generated branch
+          # as its base is a live dependency on it, and deleting the base
+          # auto-closes that child (#12885). Cleanup is a separate admitted
+          # decision via `xtask branch-deletion-admission admit`.
 
       - name: Summary
         env:
