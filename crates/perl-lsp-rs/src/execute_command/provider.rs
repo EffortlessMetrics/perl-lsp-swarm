@@ -18,8 +18,9 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::borrow::Cow;
 use std::collections::HashMap;
-#[cfg(windows)]
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
 #[cfg(windows)]
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 #[cfg(windows)]
@@ -27,6 +28,7 @@ use std::path::{Component, Prefix};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{LazyLock, Mutex};
+use std::time::SystemTime;
 use url::Url;
 
 /// Strip the Windows extended-length path prefix (`\\?\`) before passing a path
@@ -1791,36 +1793,117 @@ pub(crate) fn select_test_runner(
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct CommandExistsCacheKey {
     command: String,
-    path_env: String,
+    path_env: OsString,
     #[cfg(windows)]
-    path_ext: String,
+    path_ext: OsString,
 }
 
 /// Build a cache key from explicit environment inputs so tests can prove key
 /// sensitivity without mutating the process environment.
 fn command_exists_cache_key(
     command: &str,
-    path_env: &str,
-    path_ext: Option<&str>,
+    path_env: &OsStr,
+    path_ext: Option<&OsStr>,
 ) -> CommandExistsCacheKey {
     #[cfg(not(windows))]
     let _ = path_ext;
     CommandExistsCacheKey {
         command: command.to_string(),
-        path_env: path_env.to_string(),
+        path_env: path_env.to_os_string(),
         #[cfg(windows)]
-        path_ext: path_ext.unwrap_or_default().to_string(),
+        path_ext: path_ext.unwrap_or_default().to_os_string(),
     }
 }
 
 /// Snapshot the live environment into a [`CommandExistsCacheKey`].
 fn current_command_exists_cache_key(command: &str) -> CommandExistsCacheKey {
-    let path_env = std::env::var("PATH").unwrap_or_default();
+    let path_env = std::env::var_os("PATH").unwrap_or_default();
     #[cfg(windows)]
-    let path_ext = std::env::var("PATHEXT").ok();
+    let path_ext = std::env::var_os("PATHEXT");
     #[cfg(not(windows))]
-    let path_ext: Option<String> = None;
-    command_exists_cache_key(command, &path_env, path_ext.as_deref())
+    let path_ext: Option<OsString> = None;
+    command_exists_cache_key(command, path_env.as_os_str(), path_ext.as_deref())
+}
+
+/// Metadata needed to invalidate a cached probe after a filesystem change.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct FilesystemProbeFingerprint {
+    path: PathBuf,
+    exists: bool,
+    is_file: bool,
+    len: Option<u64>,
+    modified: Option<SystemTime>,
+    readonly: Option<bool>,
+    #[cfg(unix)]
+    mode: Option<u32>,
+}
+
+fn filesystem_probe_fingerprint(path: &Path) -> FilesystemProbeFingerprint {
+    match std::fs::metadata(path) {
+        Ok(metadata) => FilesystemProbeFingerprint {
+            path: path.to_path_buf(),
+            exists: true,
+            is_file: metadata.is_file(),
+            len: Some(metadata.len()),
+            modified: metadata.modified().ok(),
+            readonly: Some(metadata.permissions().readonly()),
+            #[cfg(unix)]
+            mode: Some(metadata.mode()),
+        },
+        Err(_) => FilesystemProbeFingerprint {
+            path: path.to_path_buf(),
+            exists: false,
+            is_file: false,
+            len: None,
+            modified: None,
+            readonly: None,
+            #[cfg(unix)]
+            mode: None,
+        },
+    }
+}
+
+/// Build the candidate paths that `which` can inspect for this key.
+///
+/// Directory fingerprints cover additions/removals even when a candidate is
+/// currently absent. Candidate fingerprints additionally catch replacement,
+/// permission, and executable-bit changes without re-running `which` on a
+/// cache hit.
+fn command_exists_candidate_paths(key: &CommandExistsCacheKey) -> Vec<PathBuf> {
+    let command = OsString::from(&key.command);
+    let mut candidates = Vec::new();
+
+    for directory in std::env::split_paths(key.path_env.as_os_str()) {
+        candidates.push(directory.join(&command));
+
+        #[cfg(windows)]
+        if Path::new(&command).extension().is_none() {
+            for extension in key.path_ext.to_string_lossy().split(';').filter(|ext| !ext.is_empty())
+            {
+                let mut executable = command.clone();
+                executable.push(extension);
+                candidates.push(directory.join(executable));
+            }
+        }
+    }
+
+    candidates
+}
+
+fn command_exists_filesystem_state(key: &CommandExistsCacheKey) -> Vec<FilesystemProbeFingerprint> {
+    let mut paths = Vec::new();
+
+    for directory in std::env::split_paths(key.path_env.as_os_str()) {
+        paths.push(directory);
+    }
+    paths.extend(command_exists_candidate_paths(key));
+
+    paths.into_iter().map(|path| filesystem_probe_fingerprint(&path)).collect()
+}
+
+struct CommandExistsCacheEntry {
+    result: bool,
+    filesystem_state: Vec<FilesystemProbeFingerprint>,
 }
 
 /// Memoized tool-presence answers keyed on [`CommandExistsCacheKey`].
@@ -1829,14 +1912,16 @@ fn current_command_exists_cache_key(command: &str) -> CommandExistsCacheKey {
 /// (`perl_dap::platform::PERL_INTERPRETER_CACHE`): a check-then-compute-then-
 /// store pattern with two lock acquisitions. Two concurrent callers racing on
 /// a cold entry will both run the probe and the second write wins; the
-/// invariant is that callers always receive a valid answer for the current
-/// environment, not that exactly one probe runs per entry.
+/// invariant is that callers always receive an answer for the current
+/// environment and candidate filesystem state, not that exactly one probe runs
+/// per entry.
 ///
 /// The map stays bounded in practice: product callers probe a fixed set of
 /// tool names (`perltidy`, `perlcritic`, `yath`, `prove`) and an entry is
 /// only added per distinct (command, environment) key.
-static COMMAND_EXISTS_CACHE: LazyLock<Mutex<HashMap<CommandExistsCacheKey, bool>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
+static COMMAND_EXISTS_CACHE: LazyLock<
+    Mutex<HashMap<CommandExistsCacheKey, CommandExistsCacheEntry>>,
+> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Answer command presence through [`COMMAND_EXISTS_CACHE`], running `probe`
 /// only on a cache miss.
@@ -1847,15 +1932,24 @@ static COMMAND_EXISTS_CACHE: LazyLock<Mutex<HashMap<CommandExistsCacheKey, bool>
 /// probe.
 fn command_exists_via(probe: impl Fn(&str) -> bool, command: &str) -> bool {
     let key = current_command_exists_cache_key(command);
+    command_exists_via_key(probe, key)
+}
+
+/// Testable cache path with an explicit environment key. Production callers
+/// use [`current_command_exists_cache_key`]; tests use this helper to exercise
+/// filesystem invalidation without mutating process-global environment state.
+fn command_exists_via_key(probe: impl Fn(&str) -> bool, key: CommandExistsCacheKey) -> bool {
+    let filesystem_state = command_exists_filesystem_state(&key);
     if let Ok(cache) = COMMAND_EXISTS_CACHE.lock()
-        && let Some(found) = cache.get(&key)
+        && let Some(entry) = cache.get(&key)
+        && entry.filesystem_state == filesystem_state
     {
-        return *found;
+        return entry.result;
     }
 
-    let found = probe(command);
+    let found = probe(&key.command);
     if let Ok(mut cache) = COMMAND_EXISTS_CACHE.lock() {
-        cache.insert(key, found);
+        cache.insert(key, CommandExistsCacheEntry { result: found, filesystem_state });
     }
     found
 }
@@ -1905,7 +1999,6 @@ pub fn get_supported_commands() -> Vec<String> {
 
 #[cfg(test)]
 mod command_exists_cache_tests;
-#[cfg(test)]
 #[cfg(test)]
 mod normalize_path_tests;
 #[cfg(test)]
