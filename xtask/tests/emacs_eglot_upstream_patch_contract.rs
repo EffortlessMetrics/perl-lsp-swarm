@@ -6,7 +6,7 @@
 #![expect(clippy::expect_used)]
 
 use xtask::emacs_eglot_upstream_patch::{
-    AFTER_ANCHOR, BEFORE_ANCHOR, BASE_BLOB_SHA1, BASE_COMMIT, BASE_PATH, BASE_TREE_SHA1,
+    AFTER_ANCHOR, BASE_BLOB_SHA1, BASE_COMMIT, BASE_PATH, BASE_TREE_SHA1, BEFORE_ANCHOR,
     UNIFIED_DIFF, checked_packet, render_checked_json,
 };
 
@@ -119,9 +119,13 @@ fn both_builtin_modes_must_use_language_id_perl() {
 #[test]
 fn third_party_perl_mode_cannot_enter_the_core_patch() {
     let mut packet = checked_packet().expect("checked packet");
-    packet.after_anchor = packet
-        .after_anchor
-        .replace("(cperl-mode :language-id \"perl\"))", "(cperl-mode :language-id \"perl\")\n      (perl-ts-mode :language-id \"perl\"))");
+    packet.after_anchor = packet.after_anchor.replace(
+        "(cperl-mode :language-id \"perl\"))",
+        concat!(
+            "(cperl-mode :language-id \"perl\")\n",
+            "      (perl-ts-mode :language-id \"perl\"))"
+        ),
+    );
     let error = packet
         .validate()
         .expect_err("third-party mode must remain a separate support subject");
@@ -158,7 +162,7 @@ fn content_or_claim_mutation_invalidates_packet_identity() {
     assert!(error.to_string().contains("content-address"));
 
     let mut packet = checked_packet().expect("checked packet");
-    packet.limitations.pop();
+    let _ = packet.limitations.pop();
     let error = packet
         .validate()
         .expect_err("claim ceiling cannot silently broaden");
