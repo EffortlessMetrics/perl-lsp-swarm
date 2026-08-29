@@ -8,13 +8,24 @@ that fields beyond ``bench_id`` identify the benchmark subject.
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
 
 SCHEMA = "native-pipeline-measurements-v1"
 ROW_SCHEMA = "native-pipeline-counters-v1"
-COUNTER_CLOCK_TAG = "std::time::Instant::elapsed"
+_COUNTERS_SOURCE = (
+    Path(__file__).resolve().parents[2]
+    / "crates"
+    / "perl-lsp-perltidy"
+    / "src"
+    / "native"
+    / "counters.rs"
+)
+_CLOCK_TAG_DECLARATION = re.compile(
+    r'^pub const COUNTER_CLOCK_TAG: &str = "(?P<tag>[^"]+)";', re.MULTILINE
+)
 COUNTER_FIELDS = (
     "pipeline_invocations",
     "parse_gate_invocations",
@@ -30,7 +41,31 @@ COUNTER_FIELDS = (
 )
 
 
+def counter_clock_tag() -> str:
+    """Read the producer's named clock contract.
+
+    The benchmark receipt is produced by Rust, so the Rust declaration is the
+    authority. Keeping the validator coupled to that declaration makes a
+    contract change fail closed until the producer and validator are reviewed
+    together. This validates shape and labeling only; it does not authenticate
+    counter values or prove subject identity beyond ``bench_id``.
+    """
+    try:
+        source = _COUNTERS_SOURCE.read_text(encoding="utf-8")
+    except OSError as error:
+        raise ValueError(
+            f"cannot read the Rust counter clock contract {_COUNTERS_SOURCE}: {error}"
+        ) from error
+    match = _CLOCK_TAG_DECLARATION.search(source)
+    if match is None:
+        raise ValueError(
+            f"Rust counter clock contract is missing or malformed: {_COUNTERS_SOURCE}"
+        )
+    return match.group("tag")
+
+
 def validate(path: Path, expected_run_id: str, expected_ids: list[str]) -> None:
+    expected_clock_tag = counter_clock_tag()
     try:
         payload = json.loads(path.read_text())
     except (OSError, json.JSONDecodeError) as error:
@@ -74,8 +109,10 @@ def validate(path: Path, expected_run_id: str, expected_ids: list[str]) -> None:
                 raise ValueError(f"every sidecar counter snapshot must carry {field}")
         if "clock_tag" not in counters:
             raise ValueError("every sidecar counter snapshot must carry clock_tag")
-        if counters["clock_tag"] != COUNTER_CLOCK_TAG:
-            raise ValueError(f"sidecar counter clock_tag must be {COUNTER_CLOCK_TAG!r}")
+        if counters["clock_tag"] != expected_clock_tag:
+            raise ValueError(
+                f"sidecar counter clock_tag must be {expected_clock_tag!r}"
+            )
         for field in COUNTER_FIELDS[:-1]:
             value = counters[field]
             if not isinstance(value, int) or isinstance(value, bool) or value < 0:

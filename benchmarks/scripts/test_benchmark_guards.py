@@ -17,6 +17,7 @@ ever invoked by hand against an old/partial results file.
 """
 
 import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -29,6 +30,21 @@ _FORMAT_RESULTS = _SCRIPTS_DIR / "format-results.py"
 _COMPARE = _SCRIPTS_DIR / "compare.py"
 _SIDECAR = _SCRIPTS_DIR / "validate-native-pipeline-sidecar.py"
 _WORKFLOW = _SCRIPTS_DIR.parent.parent / ".github" / "workflows" / "ci-nightly.yml"
+_COUNTERS_RS = (
+    _REPO_ROOT / "crates" / "perl-lsp-perltidy" / "src" / "native" / "counters.rs"
+)
+
+
+def _rust_counter_clock_tag() -> str:
+    source = _COUNTERS_RS.read_text(encoding="utf-8")
+    match = re.search(
+        r'^pub const COUNTER_CLOCK_TAG: &str = "(?P<tag>[^"]+)";',
+        source,
+        re.MULTILINE,
+    )
+    if match is None:
+        raise AssertionError("Rust counter clock contract is missing")
+    return match.group("tag")
 
 
 def _run(script: Path, args: "list[str]") -> subprocess.CompletedProcess:
@@ -207,7 +223,7 @@ class NativePipelineSidecarGuardTests(unittest.TestCase):
                 "replacement_bytes": 8,
                 "peak_depth": 1,
                 "elapsed": {"secs": 0, "nanos": 42},
-                "clock_tag": "std::time::Instant::elapsed",
+                "clock_tag": _rust_counter_clock_tag(),
             },
         }
 
@@ -316,6 +332,14 @@ class NativePipelineSidecarGuardTests(unittest.TestCase):
             )
             proc = self._run(path)
             self.assertEqual(proc.returncode, 0, proc.stderr)
+
+    def test_rust_producer_clock_contract_is_accepted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write(
+                Path(tmp), [self._row(bench_id) for bench_id in self.EXPECTED]
+            )
+            proc = self._run(path)
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
 
     def test_missing_sidecar_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
