@@ -24,11 +24,7 @@ fn project_root() -> PathBuf {
 }
 
 fn fixture(id: &str, source: &str) -> LegacyFixtureInput {
-    LegacyFixtureInput::new(
-        id.to_owned(),
-        format!("fixtures/{id}.pl"),
-        source.as_bytes().to_vec(),
-    )
+    LegacyFixtureInput::new(id.to_owned(), format!("fixtures/{id}.pl"), source.as_bytes().to_vec())
 }
 
 #[test]
@@ -86,17 +82,11 @@ fn shuffled_input_preserves_canonical_rows_and_identity() -> TestResult {
 fn equal_count_case_swap_changes_population_identity() -> TestResult {
     let original = build_legacy_whitespace_population(
         1,
-        vec![
-            fixture("alpha", "my $alpha = 1;\n"),
-            fixture("beta", "print <<'END';\nEND\n"),
-        ],
+        vec![fixture("alpha", "my $alpha = 1;\n"), fixture("beta", "print <<'END';\nEND\n")],
     )?;
     let swapped = build_legacy_whitespace_population(
         1,
-        vec![
-            fixture("alpha", "print <<'END';\nEND\n"),
-            fixture("beta", "my $beta = 1;\n"),
-        ],
+        vec![fixture("alpha", "print <<'END';\nEND\n"), fixture("beta", "my $beta = 1;\n")],
     )?;
 
     assert_eq!(original.applied_count(), swapped.applied_count());
@@ -119,25 +109,15 @@ fn equal_count_case_swap_changes_population_identity() -> TestResult {
 
 #[test]
 fn exact_source_mutation_changes_source_and_population_identity() -> TestResult {
-    let original = build_legacy_whitespace_population(
-        1,
-        vec![fixture("alpha", "my $alpha = 1;\n")],
-    )?;
-    let mutated = build_legacy_whitespace_population(
-        1,
-        vec![fixture("alpha", "my $alpha = 2;\n")],
-    )?;
+    let original =
+        build_legacy_whitespace_population(1, vec![fixture("alpha", "my $alpha = 1;\n")])?;
+    let mutated =
+        build_legacy_whitespace_population(1, vec![fixture("alpha", "my $alpha = 2;\n")])?;
 
-    let original_digests = original
-        .rows()
-        .iter()
-        .map(|row| row.source_content_digest.as_str())
-        .collect::<Vec<_>>();
-    let mutated_digests = mutated
-        .rows()
-        .iter()
-        .map(|row| row.source_content_digest.as_str())
-        .collect::<Vec<_>>();
+    let original_digests =
+        original.rows().iter().map(|row| row.source_content_digest.as_str()).collect::<Vec<_>>();
+    let mutated_digests =
+        mutated.rows().iter().map(|row| row.source_content_digest.as_str()).collect::<Vec<_>>();
     assert_ne!(original_digests, mutated_digests);
     assert_ne!(original.population_identity()?, mutated.population_identity()?);
 
@@ -148,16 +128,10 @@ fn exact_source_mutation_changes_source_and_population_identity() -> TestResult 
 fn duplicate_fixture_identity_fails_closed() {
     let result = build_legacy_whitespace_population(
         1,
-        vec![
-            fixture("duplicate", "my $x = 1;\n"),
-            fixture("duplicate", "my $x = 2;\n"),
-        ],
+        vec![fixture("duplicate", "my $x = 1;\n"), fixture("duplicate", "my $x = 2;\n")],
     );
 
-    assert!(matches!(
-        result,
-        Err(LegacyPopulationError::DuplicateFixtureId { .. })
-    ));
+    assert!(matches!(result, Err(LegacyPopulationError::DuplicateFixtureId { .. })));
 }
 
 #[test]
@@ -176,17 +150,10 @@ fn empty_or_unsupported_population_fails_closed() {
 fn case_identity_is_nonordinal_and_tracks_fixture_identity() -> TestResult {
     let population = build_legacy_whitespace_population(
         1,
-        vec![
-            fixture("zeta", "my $zeta = 1;\n"),
-            fixture("alpha", "my $alpha = 1;\n"),
-        ],
+        vec![fixture("zeta", "my $zeta = 1;\n"), fixture("alpha", "my $alpha = 1;\n")],
     )?;
 
-    let case_ids = population
-        .rows()
-        .iter()
-        .map(|row| row.case_id.as_str())
-        .collect::<Vec<_>>();
+    let case_ids = population.rows().iter().map(|row| row.case_id.as_str()).collect::<Vec<_>>();
     assert_eq!(
         case_ids,
         vec![
