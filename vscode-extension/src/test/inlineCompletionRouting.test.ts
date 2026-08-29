@@ -16,6 +16,12 @@ describe('inline completion trigger-kind projection', () => {
   test('the VS Code and LSP enumerations are genuinely different', () => {
     // The whole defect in #8282 is that these two numberings were conflated.
     // If they were equal the projection would be pointless, so pin them.
+    //
+    // These assertions compare the constants against literals; `vscode` is
+    // mocked here, so they cannot themselves detect an upstream renumbering.
+    // That binding is enforced at compile time by the `_InvokeIsZero` /
+    // `_AutomaticIsOne` guards in `inlineCompletionRouting.ts`, which fail
+    // `npm run typecheck` against the real `@types/vscode` declarations.
     expect(VSCODE_INLINE_TRIGGER_INVOKE).toBe(0);
     expect(VSCODE_INLINE_TRIGGER_AUTOMATIC).toBe(1);
     expect(LSP_INLINE_TRIGGER_INVOKED).toBe(1);

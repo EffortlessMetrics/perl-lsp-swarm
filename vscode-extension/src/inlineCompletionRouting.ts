@@ -19,8 +19,8 @@ import type * as vscode from 'vscode';
  * `vscode.InlineCompletionTriggerKind` values, restated as constants.
  *
  * The enum is unavailable when the `vscode` module is mocked, and the numeric
- * values are load-bearing here, so they are pinned explicitly and checked
- * against the real enum by `inlineCompletionRouting.test.ts` when it is present.
+ * values are load-bearing here, so they are pinned explicitly and bound to the
+ * real enum by the compile-time guard below.
  *
  * Source: `@types/vscode` — `Invoke = 0`, `Automatic = 1`.
  */
@@ -39,6 +39,25 @@ export const VSCODE_INLINE_TRIGGER_AUTOMATIC = 1;
  */
 export const LSP_INLINE_TRIGGER_INVOKED = 1;
 export const LSP_INLINE_TRIGGER_AUTOMATIC = 2;
+
+/**
+ * Compile-time guard binding the constants above to the real VS Code enum.
+ *
+ * `vscode` has no runtime presence under Jest — the module is mocked — so a
+ * unit test can only compare these constants against themselves, which would
+ * not notice an upstream renumbering. These aliases are checked by
+ * `npm run typecheck` against the actual `@types/vscode` declarations: if
+ * either member changes value, the conditional yields `false`, fails the
+ * `extends true` constraint, and the build breaks here rather than silently
+ * mislabelling every request's trigger kind.
+ */
+export type AssertTrue<T extends true> = T;
+export type _InvokeIsZero = AssertTrue<
+  vscode.InlineCompletionTriggerKind.Invoke extends 0 ? true : false
+>;
+export type _AutomaticIsOne = AssertTrue<
+  vscode.InlineCompletionTriggerKind.Automatic extends 1 ? true : false
+>;
 
 /** The route selected for one inline-completion invocation. */
 export type InlineCompletionRoute = 'standard' | 'stream';
