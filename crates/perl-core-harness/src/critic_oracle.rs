@@ -21,8 +21,9 @@ pub struct OracleSubject {
     critic_identity: String,
     fixture_digest: String,
     root_identity: String,
+    source_digest: String,
     profile_digest: String,
-    options_digest: String,
+    invocation: OracleInvocation,
     environment_digest: String,
     process_schema: String,
     parser_schema: String,
@@ -36,8 +37,9 @@ impl OracleSubject {
         critic_identity: impl Into<String>,
         fixture_digest: impl Into<String>,
         root_identity: impl Into<String>,
+        source_digest: impl Into<String>,
         profile_digest: impl Into<String>,
-        options_digest: impl Into<String>,
+        invocation: OracleInvocation,
         environment_digest: impl Into<String>,
         process_schema: impl Into<String>,
         parser_schema: impl Into<String>,
@@ -47,8 +49,9 @@ impl OracleSubject {
             critic_identity: critic_identity.into(),
             fixture_digest: fixture_digest.into(),
             root_identity: root_identity.into(),
+            source_digest: source_digest.into(),
             profile_digest: profile_digest.into(),
-            options_digest: options_digest.into(),
+            invocation,
             environment_digest: environment_digest.into(),
             process_schema: process_schema.into(),
             parser_schema: parser_schema.into(),
@@ -65,38 +68,88 @@ impl OracleSubject {
             hasher.update((value.len() as u64).to_le_bytes());
             hasher.update(value.as_bytes());
         }
+        hasher.update(b"invocation");
+        hasher.update(self.invocation.severity.to_le_bytes());
+        let invocation_fields: [(&str, Vec<&str>); 4] = [
+            ("theme", self.invocation.theme.as_deref().into_iter().collect()),
+            ("include", self.invocation.include.iter().map(String::as_str).collect()),
+            ("exclude", self.invocation.exclude.iter().map(String::as_str).collect()),
+            ("options", self.invocation.options.iter().map(String::as_str).collect()),
+        ];
+        for (name, values) in invocation_fields {
+            hasher.update(name.as_bytes());
+            for value in values {
+                hasher.update((value.len() as u64).to_le_bytes());
+                hasher.update(value.as_bytes());
+            }
+        }
         format!("sha256:{}", hex_lower(&hasher.finalize()))
     }
 
     /// Validate all subject components and the redaction boundary.
     pub fn validate(&self) -> Result<(), OracleSubjectError> {
         for (field, value) in self.fields() {
-            if value.is_empty() {
-                return Err(OracleSubjectError::Empty { field });
-            }
-            if value.len() > MAX_IDENTITY_LENGTH {
-                return Err(OracleSubjectError::TooLong { field });
-            }
-            if value.contains('/') || value.contains('\\') || value.contains("..") {
-                return Err(OracleSubjectError::PrivatePath { field });
+            validate_identity_value(field, value)?;
+        }
+        if !(1..=5).contains(&self.invocation.severity) {
+            return Err(OracleSubjectError::InvalidSeverity { value: self.invocation.severity });
+        }
+        if let Some(theme) = &self.invocation.theme {
+            validate_identity_value("invocation.theme", theme)?;
+        }
+        for (field, values) in [
+            ("invocation.include", &self.invocation.include),
+            ("invocation.exclude", &self.invocation.exclude),
+            ("invocation.options", &self.invocation.options),
+        ] {
+            for value in values {
+                validate_identity_value(field, value)?;
             }
         }
         Ok(())
     }
 
-    fn fields(&self) -> [(&'static str, &str); 9] {
+    fn fields(&self) -> [(&'static str, &str); 8] {
         [
             ("perl_identity", &self.perl_identity),
             ("critic_identity", &self.critic_identity),
             ("fixture_digest", &self.fixture_digest),
             ("root_identity", &self.root_identity),
+            ("source_digest", &self.source_digest),
             ("profile_digest", &self.profile_digest),
-            ("options_digest", &self.options_digest),
             ("environment_digest", &self.environment_digest),
             ("process_schema", &self.process_schema),
             ("parser_schema", &self.parser_schema),
         ]
     }
+}
+
+fn validate_identity_value(field: &'static str, value: &str) -> Result<(), OracleSubjectError> {
+    if value.is_empty() {
+        return Err(OracleSubjectError::Empty { field });
+    }
+    if value.len() > MAX_IDENTITY_LENGTH {
+        return Err(OracleSubjectError::TooLong { field });
+    }
+    if value.contains('/') || value.contains('\\') || value.contains("..") {
+        return Err(OracleSubjectError::PrivatePath { field });
+    }
+    Ok(())
+}
+
+/// Invocation settings that affect Perl::Critic output.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+pub struct OracleInvocation {
+    /// Perl::Critic severity threshold.
+    pub severity: u8,
+    /// Optional theme selected for the oracle.
+    pub theme: Option<String>,
+    /// Policy include arguments, retaining behavior-bearing order.
+    pub include: Vec<String>,
+    /// Policy exclude arguments, retaining behavior-bearing order.
+    pub exclude: Vec<String>,
+    /// Other reviewed invocation arguments, retaining behavior-bearing order.
+    pub options: Vec<String>,
 }
 
 fn hex_lower(bytes: &[u8]) -> String {
@@ -118,6 +171,8 @@ pub enum OracleSubjectError {
     TooLong { field: &'static str },
     /// A private or path-shaped value was supplied where a redacted identity was required.
     PrivatePath { field: &'static str },
+    /// Perl::Critic severity is outside its reviewed 1–5 range.
+    InvalidSeverity { value: u8 },
 }
 
 impl fmt::Display for OracleSubjectError {
@@ -127,6 +182,9 @@ impl fmt::Display for OracleSubjectError {
             Self::TooLong { field } => write!(formatter, "oracle subject field {field} is too long"),
             Self::PrivatePath { field } => {
                 write!(formatter, "oracle subject field {field} contains a private path")
+            }
+            Self::InvalidSeverity { value } => {
+                write!(formatter, "oracle invocation severity {value} is outside 1..=5")
             }
         }
     }
@@ -260,8 +318,15 @@ mod tests {
             "perlcritic-1.152",
             "sha256:fixture",
             root,
+            "sha256:source",
             profile,
-            "sha256:options",
+            OracleInvocation {
+                severity: 3,
+                theme: Some("core".to_string()),
+                include: vec!["Core".to_string()],
+                exclude: vec!["Documentation".to_string()],
+                options: vec!["--verbose".to_string()],
+            },
             "sha256:environment",
             "process-plan.v1",
             "perlcritic-parser.v2",
@@ -295,8 +360,15 @@ mod tests {
             "perlcritic-1.152",
             "sha256:fixture",
             "root",
+            "sha256:source",
             "sha256:profile",
-            "sha256:options",
+            OracleInvocation {
+                severity: 3,
+                theme: None,
+                include: Vec::new(),
+                exclude: Vec::new(),
+                options: Vec::new(),
+            },
             "sha256:environment-a",
             "process-plan.v1",
             "perlcritic-parser.v2",
@@ -307,8 +379,15 @@ mod tests {
             "perlcritic-1.153",
             "sha256:fixture",
             "root",
+            "sha256:source",
             "sha256:profile",
-            "sha256:options",
+            OracleInvocation {
+                severity: 3,
+                theme: None,
+                include: Vec::new(),
+                exclude: Vec::new(),
+                options: Vec::new(),
+            },
             "sha256:environment-b",
             "process-plan.v1",
             "perlcritic-parser.v2",
@@ -359,8 +438,15 @@ mod tests {
             "critic",
             "fixture",
             "/private/fixture",
+            "source",
             "profile",
-            "options",
+            OracleInvocation {
+                severity: 3,
+                theme: None,
+                include: Vec::new(),
+                exclude: Vec::new(),
+                options: Vec::new(),
+            },
             "environment",
             "process",
             "parser",
