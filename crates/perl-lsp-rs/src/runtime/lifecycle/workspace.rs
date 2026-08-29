@@ -5,7 +5,7 @@
 #[cfg(test)]
 use super::super::*;
 use super::super::{LspServer, MessageType};
-use perl_dap::platform::{PerlInterpreterResult, find_perl_interpreter};
+use perl_dap::platform::{PerlInterpreterResult, find_perl_interpreter_cached};
 use perl_lsp_rs_core::config::WorkspaceConfig;
 use std::sync::Once;
 
@@ -91,9 +91,17 @@ impl LspServer {
     ///   configured but does not exist.
     ///
     /// Does not alter any server state. Tracing fallback is preserved alongside user messages.
+    ///
+    /// Detection is memoized per process through the shared DAP-side cache
+    /// ([`perl_dap::platform::find_perl_interpreter_cached`]), keyed on the
+    /// configured path and the discovery environment (PATH, perlbrew/plenv
+    /// variables, HOME/USERPROFILE, PREFIX). A configuration change that alters
+    /// the interpreter path changes the cache key, so mid-session
+    /// reconfiguration is honored without a config watcher; probe order and
+    /// results are unchanged — only repeated PATH walks are removed.
     pub(crate) fn check_perl_interpreter(&self) {
         let configured_path = self.workspace_config.lock().perl_path.clone();
-        let result = find_perl_interpreter(configured_path.as_deref());
+        let result = find_perl_interpreter_cached(configured_path.as_deref());
 
         match result {
             PerlInterpreterResult::ConfiguredPath(ref path) => {

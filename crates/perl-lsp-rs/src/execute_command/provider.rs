@@ -17,6 +17,7 @@ use perl_lsp_rs_core::providers::{
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::borrow::Cow;
+use std::collections::HashMap;
 #[cfg(windows)]
 use std::ffi::OsString;
 #[cfg(windows)]
@@ -25,6 +26,7 @@ use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::path::{Component, Prefix};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::{LazyLock, Mutex};
 use url::Url;
 
 /// Strip the Windows extended-length path prefix (`\\?\`) before passing a path
@@ -1781,9 +1783,96 @@ pub(crate) fn select_test_runner(
     }
 }
 
+/// Environment inputs that can change a `which` lookup for a command.
+///
+/// On Windows the `which` crate resolves extension-less names through
+/// `PATHEXT`, so it participates in the key there; on other platforms only the
+/// `PATH` value matters.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct CommandExistsCacheKey {
+    command: String,
+    path_env: String,
+    #[cfg(windows)]
+    path_ext: String,
+}
+
+/// Build a cache key from explicit environment inputs so tests can prove key
+/// sensitivity without mutating the process environment.
+fn command_exists_cache_key(
+    command: &str,
+    path_env: &str,
+    path_ext: Option<&str>,
+) -> CommandExistsCacheKey {
+    #[cfg(not(windows))]
+    let _ = path_ext;
+    CommandExistsCacheKey {
+        command: command.to_string(),
+        path_env: path_env.to_string(),
+        #[cfg(windows)]
+        path_ext: path_ext.unwrap_or_default().to_string(),
+    }
+}
+
+/// Snapshot the live environment into a [`CommandExistsCacheKey`].
+fn current_command_exists_cache_key(command: &str) -> CommandExistsCacheKey {
+    let path_env = std::env::var("PATH").unwrap_or_default();
+    #[cfg(windows)]
+    let path_ext = std::env::var("PATHEXT").ok();
+    #[cfg(not(windows))]
+    let path_ext: Option<String> = None;
+    command_exists_cache_key(command, &path_env, path_ext.as_deref())
+}
+
+/// Memoized tool-presence answers keyed on [`CommandExistsCacheKey`].
+///
+/// Same shape as the DAP-side interpreter-discovery cache
+/// (`perl_dap::platform::PERL_INTERPRETER_CACHE`): a check-then-compute-then-
+/// store pattern with two lock acquisitions. Two concurrent callers racing on
+/// a cold entry will both run the probe and the second write wins; the
+/// invariant is that callers always receive a valid answer for the current
+/// environment, not that exactly one probe runs per entry.
+///
+/// The map stays bounded in practice: product callers probe a fixed set of
+/// tool names (`perltidy`, `perlcritic`, `yath`, `prove`) and an entry is
+/// only added per distinct (command, environment) key.
+static COMMAND_EXISTS_CACHE: LazyLock<Mutex<HashMap<CommandExistsCacheKey, bool>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Answer command presence through [`COMMAND_EXISTS_CACHE`], running `probe`
+/// only on a cache miss.
+///
+/// The injectable probe is the same test-seam approach used by the
+/// perl-lsp-rs-core config module (#12945/#12978): tests supply a counting
+/// probe to observe that a second lookup does not re-execute the underlying
+/// probe.
+fn command_exists_via(probe: impl Fn(&str) -> bool, command: &str) -> bool {
+    let key = current_command_exists_cache_key(command);
+    if let Ok(cache) = COMMAND_EXISTS_CACHE.lock()
+        && let Some(found) = cache.get(&key)
+    {
+        return *found;
+    }
+
+    let found = probe(command);
+    if let Ok(mut cache) = COMMAND_EXISTS_CACHE.lock() {
+        cache.insert(key, found);
+    }
+    found
+}
+
 /// Check whether a command exists in the current PATH.
+///
+/// Memoized per process after the first probe: the initialize-time
+/// `detect_tool("perltidy")` / `detect_tool("perlcritic")` calls and every
+/// later diagnostics/executeCommand availability guard reuse the first
+/// `which` PATH walk instead of re-scanning PATH on each call. The cache key
+/// includes the environment inputs that can change the answer (PATH, plus
+/// PATHEXT on Windows), so an environment change re-probes. No LSP
+/// configuration setting can change external-tool presence, so no
+/// config-change invalidation signal is required. Probe order and results are
+/// unchanged — only repetition is removed.
 pub fn command_exists(command: &str) -> bool {
-    which::which(command).is_ok()
+    command_exists_via(|cmd| which::which(cmd).is_ok(), command)
 }
 
 /// Return the supported executeCommand identifiers.
@@ -1814,6 +1903,9 @@ pub fn get_supported_commands() -> Vec<String> {
     ]
 }
 
+#[cfg(test)]
+mod command_exists_cache_tests;
+#[cfg(test)]
 #[cfg(test)]
 mod normalize_path_tests;
 #[cfg(test)]
