@@ -328,3 +328,31 @@ action = 'SublimeText/UnitTesting/actions/setup'
 sha = 'b8abedefd5fbc0f64a8c6082506ebd1e24203164'
 kind = 'branch_commit'
 value = 'master (sublime-journey)'
+
+# Verified against upstream on 2026-08-28:
+#   git ls-remote --tags https://github.com/docker/setup-buildx-action v4.3.0
+#   37fe631027851001ddb9b187196cc803df7f5f0e  refs/tags/v4.3.0
+[[pin]]
+action = 'docker/setup-buildx-action'
+sha = '37fe631027851001ddb9b187196cc803df7f5f0e'
+kind = 'release_tag'
+value = 'v4.3.0'
+
+# Verified against upstream on 2026-08-28:
+#   git ls-remote --tags https://github.com/github/codeql-action v4.37.8
+#   37f2634a92ba38a0926ef79a0748ac8ae7d95ab2  refs/tags/v4.37.8  (tag object)
+#   -> commit db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28 (annotated tag)
+[[pin]]
+action = 'github/codeql-action/upload-sarif'
+sha = 'db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28'
+kind = 'release_tag'
+value = 'v4.37.8'
+
+# Verified against upstream on 2026-08-28:
+#   git ls-remote --tags https://github.com/taiki-e/install-action v2.86.7
+#   b6ff580856c41316412a0b9b60540fbc6f8c82cc  refs/tags/v2.86.7
+[[pin]]
+action = 'taiki-e/install-action'
+sha = 'b6ff580856c41316412a0b9b60540fbc6f8c82cc'
+kind = 'release_tag'
+value = 'v2.86.7'
