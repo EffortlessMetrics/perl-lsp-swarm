@@ -7,13 +7,15 @@ use crate::tasks::change_set::{self, ArtifactIdentity};
 use crate::tasks::git_context::{default_windows_drive_mount_root, git_output_with_mount_root};
 use color_eyre::eyre::{Context, Result, bail, eyre};
 use glob::Pattern;
+use serde::de::{self, DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
+use std::fmt;
 use std::fs;
-use std::io::Read;
+use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -704,14 +706,12 @@ fn write_pr_evidence(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
     let diff_receipt = resolve_committed_diff(repo, &options.base, &options.head)?;
     let changed_file_count = diff_receipt.entries.len();
     write_pr_diff(repo, &diff_receipt)?;
-    let check_json = run_ripr_check(repo, options)?;
-    let check_value: Value =
-        serde_json::from_str(&check_json).context("ripr check output was not valid JSON")?;
-    // Write raw check output for offline diagnostics (#1346): repo-exposure.json only contains
-    // per-bucket counts; the findings[] array (which carries per-finding classification and path)
-    // is required to diagnose suppression mismatches.  This file is included in the
+    // Stream raw check output for offline diagnostics (#1346) straight to its
+    // artifact path: repo-exposure.json only contains per-bucket counts; the
+    // findings[] array (which carries per-finding classification and path) is
+    // required to diagnose suppression mismatches.  This file is included in the
     // ripr-pr-evidence artifact upload so it is available without re-running ripr.
-    write_text(&repo.join(PR_RAW_CHECK_JSON), &check_json)?;
+    run_ripr_check(repo, options)?;
     let suppressions = read_ripr_suppression_rules(repo, Path::new(DEFAULT_RIPR_SUPPRESSIONS))?;
     let head_extents = HeadLineExtents::from_committed_diff(repo, &diff_receipt);
     // Attribution basis for the new-gap count (#11690): findings must sit in a
@@ -728,14 +728,24 @@ fn write_pr_evidence(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
     let production_surface = metadata
         .as_ref()
         .and_then(|metadata| production_surface_from_metadata(repo, metadata).ok());
-    let packet = pr_evidence_packet_with_count(
+    let attribution = attribution_scope.as_ref().and_then(AttributionScope::applied);
+    // The findings payload is unbounded (#12860: 2.1GB observed) — ingest it by
+    // streaming one finding at a time into the summary buckets instead of
+    // buffering the whole String plus a full serde_json DOM.
+    let ingestion = ripr_check_ingestion_from_file(
+        &repo.join(PR_RAW_CHECK_JSON),
+        &suppressions,
+        Some(&head_extents),
+        attribution,
+        production_surface.as_ref(),
+    )?;
+    let packet = pr_evidence_packet_from_summary(
         options,
-        &check_value,
+        &ingestion,
         &base_sha,
         &head_sha,
         &suppressions,
         changed_file_count,
-        Some(&head_extents),
         attribution_scope.as_ref(),
         production_surface.as_ref(),
     );
@@ -781,18 +791,287 @@ fn check_pr_evidence(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
     Ok(())
 }
 
-fn run_ripr_check(repo: &Path, options: &PrEvidenceOptions) -> Result<String> {
+/// Runs `ripr check --format json`, streaming its stdout straight into
+/// [`PR_RAW_CHECK_JSON`] without buffering the payload in memory.
+///
+/// RIPR check output is unbounded — a 2.1GB payload killed a 16GB CI runner
+/// (#12860) — so this transport never holds the whole document: the child
+/// writes to the same regular temporary file [`run_output`] uses to keep large
+/// stdout writes off a Windows pipe (#12569), and the artifact is filled with
+/// a fixed-size copy loop.
+fn run_ripr_check(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
     let diff = repo.join(PR_DIFF).display().to_string();
     let root = command_root_arg(repo, &options.root)?;
-    run_ripr(&[
-        "check".to_string(),
-        "--root".to_string(),
-        root,
-        "--diff".to_string(),
-        diff,
-        "--format".to_string(),
-        "json".to_string(),
-    ])
+    run_ripr_streaming_to_file(
+        &[
+            "check".to_string(),
+            "--root".to_string(),
+            root,
+            "--diff".to_string(),
+            diff,
+            "--format".to_string(),
+            "json".to_string(),
+        ],
+        &repo.join(PR_RAW_CHECK_JSON),
+    )
+}
+
+/// Runs RIPR, copying stdout into `out_path` with a fixed-size buffer. Stderr
+/// is captured in full (diagnostics are small); the stdout excerpt in a
+/// failure message is bounded because the payload itself is unbounded.
+fn run_ripr_streaming_to_file(args: &[String], out_path: &Path) -> Result<()> {
+    let binary = ripr_binary()?;
+    let stdout_file =
+        tempfile::NamedTempFile::new().context("failed to create RIPR stdout file")?;
+    let mut child = Command::new(&binary)
+        .args(args)
+        .stdout(Stdio::from(stdout_file.reopen().context("failed to reopen RIPR stdout file")?))
+        .stderr(Stdio::piped())
+        .spawn()
+        .with_context(|| format!("failed to run {binary}"))?;
+    let mut stderr_bytes = Vec::new();
+    if let Some(mut stderr) = child.stderr.take() {
+        stderr
+            .read_to_end(&mut stderr_bytes)
+            .with_context(|| format!("failed to read {binary} stderr"))?;
+    }
+    let status = child.wait().with_context(|| format!("failed to wait for {binary}"))?;
+    if !status.success() {
+        let mut stdout_excerpt = Vec::new();
+        if let Ok(stdout_reader) = stdout_file.reopen() {
+            let _ = stdout_reader.take(4096).read_to_end(&mut stdout_excerpt);
+        }
+        bail!(
+            "{binary} failed with status {}\nstdout:\n{}\nstderr:\n{}",
+            status,
+            String::from_utf8_lossy(&stdout_excerpt).trim(),
+            String::from_utf8_lossy(&stderr_bytes).trim()
+        );
+    }
+    if let Some(parent) = out_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    let mut source =
+        stdout_file.reopen().with_context(|| format!("failed to reopen {binary} stdout file"))?;
+    let mut destination = fs::File::create(out_path)
+        .with_context(|| format!("failed to write {}", out_path.display()))?;
+    std::io::copy(&mut source, &mut destination)
+        .with_context(|| format!("failed to stream {binary} stdout to {}", out_path.display()))?;
+    Ok(())
+}
+
+/// Streamed ingestion of one `ripr check --format json` payload (#12860): the
+/// summary map plus the aggregate per-finding buckets. The findings array is
+/// never materialized — it is the unbounded surface (2.1GB observed) that
+/// killed evidence runners when the whole payload was buffered into a String
+/// and parsed into a full serde_json DOM.
+#[derive(Debug)]
+struct RiprCheckIngestion {
+    summary_counts: RiprPrSummaryCounts,
+    /// Mirrors `check_value.get("summary").and_then(Value::as_object).is_some()`:
+    /// a `summary` key that is not an object still counts as absent.
+    check_summary_present: bool,
+}
+
+/// Streams the raw payload at `raw_check_path` once, aggregating per-finding
+/// buckets through [`RiprFindingBuckets::absorb`] as each finding is parsed.
+/// Only the (small) summary object is retained.
+fn ripr_check_ingestion_from_file(
+    raw_check_path: &Path,
+    suppressions: &RiprSuppressionRules,
+    head_extents: Option<&HeadLineExtents>,
+    attribution: Option<&DependencyAttribution>,
+    production_surface: Option<&ProductionSurface>,
+) -> Result<RiprCheckIngestion> {
+    let raw_check = fs::File::open(raw_check_path)
+        .with_context(|| format!("reading {}", raw_check_path.display()))?;
+    let reader = BufReader::with_capacity(64 * 1024, raw_check);
+    let mut buckets = RiprFindingBuckets::default();
+    let summary = stream_ripr_check_payload(reader, &mut |finding| {
+        buckets.absorb(finding, suppressions, head_extents, attribution, production_surface);
+    })
+    .context("ripr check output was not valid JSON")?;
+    let check_summary = summary.as_ref().and_then(Value::as_object);
+    Ok(RiprCheckIngestion {
+        summary_counts: ripr_summary_counts_merge(
+            ripr_summary_counts_seed(check_summary),
+            buckets,
+            check_summary.is_some(),
+        ),
+        check_summary_present: check_summary.is_some(),
+    })
+}
+
+/// Streams one JSON document from `reader`, invoking `on_finding` for every
+/// element of the top-level `findings` array as it is parsed. Returns the raw
+/// top-level `summary` value, if present. Any other top-level shape (arrays,
+/// scalars) is still validated but carries no summary and no findings, which
+/// is what the previous DOM path saw through `Value::get`.
+fn stream_ripr_check_payload<R, F>(
+    reader: R,
+    on_finding: &mut F,
+) -> serde_json::Result<Option<Value>>
+where
+    R: Read,
+    F: FnMut(&Value),
+{
+    let mut deserializer = serde_json::Deserializer::from_reader(reader);
+    let payload = deserializer.deserialize_any(RiprCheckPayloadVisitor { on_finding })?;
+    deserializer.end()?;
+    Ok(payload.summary)
+}
+
+/// What a streaming parse of a `ripr check` payload retains.
+#[derive(Default)]
+struct RiprCheckPayload {
+    summary: Option<Value>,
+}
+
+/// Hand-driven map visitor so `findings` elements are consumed one at a time;
+/// a typed `findings: Vec<...>` field would rebuild the unbounded array this
+/// ingestion exists to avoid.
+struct RiprCheckPayloadVisitor<'a, F> {
+    on_finding: &'a mut F,
+}
+
+impl<'de, F> Visitor<'de> for RiprCheckPayloadVisitor<'_, F>
+where
+    F: FnMut(&Value),
+{
+    type Value = RiprCheckPayload;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.write_str("a ripr check JSON payload")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut payload = RiprCheckPayload::default();
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "summary" => payload.summary = Some(map.next_value()?),
+                "findings" => {
+                    map.next_value_seed(StreamFindingsSeed { on_finding: self.on_finding })?;
+                }
+                // Values the receipt never consumes are skipped in place —
+                // serde_json discards skipped tokens without buffering them.
+                _ => {
+                    map.next_value::<de::IgnoredAny>()?;
+                }
+            }
+        }
+        Ok(payload)
+    }
+
+    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        while seq.next_element::<de::IgnoredAny>()?.is_some() {}
+        Ok(RiprCheckPayload::default())
+    }
+
+    fn visit_bool<E>(self, _value: bool) -> Result<Self::Value, E> {
+        Ok(RiprCheckPayload::default())
+    }
+
+    fn visit_i64<E>(self, _value: i64) -> Result<Self::Value, E> {
+        Ok(RiprCheckPayload::default())
+    }
+
+    fn visit_u64<E>(self, _value: u64) -> Result<Self::Value, E> {
+        Ok(RiprCheckPayload::default())
+    }
+
+    fn visit_f64<E>(self, _value: f64) -> Result<Self::Value, E> {
+        Ok(RiprCheckPayload::default())
+    }
+
+    fn visit_str<E>(self, _value: &str) -> Result<Self::Value, E> {
+        Ok(RiprCheckPayload::default())
+    }
+
+    fn visit_unit<E>(self) -> Result<Self::Value, E> {
+        Ok(RiprCheckPayload::default())
+    }
+}
+
+/// [`DeserializeSeed`] streaming the elements of one `findings` value through
+/// the caller's callback.
+struct StreamFindingsSeed<'a, F> {
+    on_finding: &'a mut F,
+}
+
+impl<'de, F> DeserializeSeed<'de> for StreamFindingsSeed<'_, F>
+where
+    F: FnMut(&Value),
+{
+    type Value = ();
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_any(self)
+    }
+}
+
+impl<'de, F> Visitor<'de> for StreamFindingsSeed<'_, F>
+where
+    F: FnMut(&Value),
+{
+    type Value = ();
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.write_str("an array of ripr findings")
+    }
+
+    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        while let Some(finding) = seq.next_element::<Value>()? {
+            (self.on_finding)(&finding);
+        }
+        Ok(())
+    }
+
+    // A `findings` value that is not an array behaves as absent, matching the
+    // DOM path's `Value::as_array` guard.
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        while map.next_entry::<de::IgnoredAny, de::IgnoredAny>()?.is_some() {}
+        Ok(())
+    }
+
+    fn visit_bool<E>(self, _value: bool) -> Result<Self::Value, E> {
+        Ok(())
+    }
+
+    fn visit_i64<E>(self, _value: i64) -> Result<Self::Value, E> {
+        Ok(())
+    }
+
+    fn visit_u64<E>(self, _value: u64) -> Result<Self::Value, E> {
+        Ok(())
+    }
+
+    fn visit_f64<E>(self, _value: f64) -> Result<Self::Value, E> {
+        Ok(())
+    }
+
+    fn visit_str<E>(self, _value: &str) -> Result<Self::Value, E> {
+        Ok(())
+    }
+
+    fn visit_unit<E>(self) -> Result<Self::Value, E> {
+        Ok(())
+    }
 }
 
 #[derive(Debug, Default)]
@@ -827,6 +1106,10 @@ struct RiprPrSummaryCounts {
     non_production_unclassified: usize,
 }
 
+/// DOM-path aggregation, retained as the test oracle for the streaming
+/// ingestion (#12860): production ingests via [`RiprFindingBuckets`] without
+/// materializing the findings array.
+#[cfg(test)]
 fn ripr_pr_summary_counts(
     check_value: &Value,
     check_summary: Option<&Map<String, Value>>,
@@ -835,23 +1118,59 @@ fn ripr_pr_summary_counts(
     attribution: Option<&DependencyAttribution>,
     production_surface: Option<&ProductionSurface>,
 ) -> RiprPrSummaryCounts {
-    let summary_counts = RiprPrSummaryCounts {
+    let mut buckets = RiprFindingBuckets::default();
+    if let Some(findings) = check_value.get("findings").and_then(Value::as_array) {
+        for finding in findings {
+            buckets.absorb(finding, suppressions, head_extents, attribution, production_surface);
+        }
+    }
+    ripr_summary_counts_merge(
+        ripr_summary_counts_seed(check_summary),
+        buckets,
+        check_summary.is_some(),
+    )
+}
+
+/// The bucket totals seeded from the payload's own summary object, before any
+/// per-finding discounting.
+fn ripr_summary_counts_seed(check_summary: Option<&Map<String, Value>>) -> RiprPrSummaryCounts {
+    RiprPrSummaryCounts {
         weakly_exposed: count_field(check_summary, "weakly_exposed"),
         reachable_unrevealed: count_field(check_summary, "reachable_unrevealed"),
         no_static_path: count_field(check_summary, "no_static_path"),
         ..RiprPrSummaryCounts::default()
-    };
-    let Some(findings) = check_value.get("findings").and_then(Value::as_array) else {
-        return summary_counts;
-    };
+    }
+}
 
-    let mut suppressed = RiprPrSummaryCounts::default();
-    let mut outside_head = RiprPrSummaryCounts::default();
-    let mut non_production = RiprPrSummaryCounts::default();
-    let mut unsuppressed_from_findings = RiprPrSummaryCounts::default();
-    let mut out_of_graph_buckets = RiprPrSummaryCounts::default();
-    let mut out_of_graph_total = 0usize;
-    for finding in findings {
+/// Per-finding discounting buckets, accumulated one finding at a time so the
+/// findings array never has to be materialized (#12860).
+#[derive(Default)]
+struct RiprFindingBuckets {
+    suppressed: RiprPrSummaryCounts,
+    outside_head: RiprPrSummaryCounts,
+    non_production: RiprPrSummaryCounts,
+    unsuppressed_from_findings: RiprPrSummaryCounts,
+    out_of_graph_buckets: RiprPrSummaryCounts,
+    out_of_graph_total: usize,
+}
+
+impl RiprFindingBuckets {
+    fn absorb(
+        &mut self,
+        finding: &Value,
+        suppressions: &RiprSuppressionRules,
+        head_extents: Option<&HeadLineExtents>,
+        attribution: Option<&DependencyAttribution>,
+        production_surface: Option<&ProductionSurface>,
+    ) {
+        let Self {
+            suppressed,
+            outside_head,
+            non_production,
+            unsuppressed_from_findings,
+            out_of_graph_buckets,
+            out_of_graph_total,
+        } = self;
         // ripr 0.5.x: "classification" field, values "weakly_exposed" | "reachable_unrevealed" | "no_static_path".
         // ripr 0.9.x: "grip_class" field, values "weakly_gripped" | "reachable_unrevealed" | "no_static_path".
         //   "weakly_gripped" findings are counted in summary.reachable_unrevealed in 0.9.x.
@@ -898,7 +1217,7 @@ fn ripr_pr_summary_counts(
                 non_production.non_production_excluded += 1;
                 non_production.non_production_unclassified += 1;
             }
-            continue;
+            return;
         };
         let policy_suppressed = suppression_matches_finding(suppressions, finding);
         if !policy_suppressed
@@ -911,26 +1230,26 @@ fn ripr_pr_summary_counts(
             // dropped before bucket counting and reported for transparency.
             // Policy suppression, head-revision filtering, and the structural
             // non-production filter all keep precedence.
-            out_of_graph_total += 1;
+            *out_of_graph_total += 1;
             match canonical {
                 "weakly_exposed" => out_of_graph_buckets.weakly_exposed += 1,
                 "reachable_unrevealed" => out_of_graph_buckets.reachable_unrevealed += 1,
                 "no_static_path" => out_of_graph_buckets.no_static_path += 1,
                 _ => {}
             }
-            continue;
+            return;
         }
         let counts = if policy_suppressed {
             suppressed.suppressed_by_policy += 1;
-            &mut suppressed
+            &mut *suppressed
         } else if outside {
             outside_head.outside_head_revision += 1;
-            &mut outside_head
+            &mut *outside_head
         } else if non_production_kind.is_some() {
             non_production.non_production_excluded += 1;
-            &mut non_production
+            &mut *non_production
         } else {
-            &mut unsuppressed_from_findings
+            &mut *unsuppressed_from_findings
         };
         match canonical {
             "weakly_exposed" => counts.weakly_exposed += 1,
@@ -939,7 +1258,25 @@ fn ripr_pr_summary_counts(
             _ => {}
         }
     }
-    if check_summary.is_some() {
+}
+
+/// Combines the summary seed with the per-finding buckets. When the payload
+/// carried a summary object the buckets only discount it; otherwise the
+/// recognized findings are the totals themselves.
+fn ripr_summary_counts_merge(
+    summary_counts: RiprPrSummaryCounts,
+    buckets: RiprFindingBuckets,
+    check_summary_present: bool,
+) -> RiprPrSummaryCounts {
+    let RiprFindingBuckets {
+        suppressed,
+        outside_head,
+        non_production,
+        unsuppressed_from_findings,
+        out_of_graph_buckets,
+        out_of_graph_total,
+    } = buckets;
+    if check_summary_present {
         // Per-bucket suppression: subtract classified suppressions from their respective buckets.
         // Unclassified suppressions (suppressed_unclassified) cannot be attributed to a bucket,
         // so they are carried through for the caller to subtract from severe_gaps directly.
@@ -1833,6 +2170,10 @@ fn pr_evidence_packet_on_surface(
     )
 }
 
+/// DOM-path receipt builder, retained as the test oracle for the streaming
+/// ingestion (#12860): receipt bytes must match
+/// [`pr_evidence_packet_from_summary`] for the same payload.
+#[cfg(test)]
 fn pr_evidence_packet_with_count(
     options: &PrEvidenceOptions,
     check_value: &Value,
@@ -1853,6 +2194,36 @@ fn pr_evidence_packet_with_count(
         attribution_scope.and_then(AttributionScope::applied),
         production_surface,
     );
+    pr_evidence_packet_from_summary(
+        options,
+        &RiprCheckIngestion {
+            summary_counts: summary,
+            check_summary_present: check_summary.is_some(),
+        },
+        base_sha,
+        head_sha,
+        suppressions,
+        changed_file_count,
+        attribution_scope,
+        production_surface,
+    )
+}
+
+/// Builds the receipt from streamed ingestion results. Receipt bytes are
+/// identical to the DOM path (`pr_evidence_packet_with_count`, retained as the
+/// test oracle) for the same payload; the #12860 compatibility tests pin this
+/// byte for byte.
+fn pr_evidence_packet_from_summary(
+    options: &PrEvidenceOptions,
+    ingestion: &RiprCheckIngestion,
+    base_sha: &str,
+    head_sha: &str,
+    suppressions: &RiprSuppressionRules,
+    changed_file_count: usize,
+    attribution_scope: Option<&AttributionScope>,
+    production_surface: Option<&ProductionSurface>,
+) -> Value {
+    let summary = &ingestion.summary_counts;
     let weakly_exposed = summary.weakly_exposed;
     let reachable_unrevealed = summary.reachable_unrevealed;
     let no_static_path = summary.no_static_path;
@@ -1867,7 +2238,7 @@ fn pr_evidence_packet_with_count(
         .saturating_sub(summary.outside_head_unclassified)
         .saturating_sub(summary.non_production_unclassified);
     let ripr_severe_gap = severe_gaps > 0;
-    let warnings = if check_summary.is_some() {
+    let warnings = if ingestion.check_summary_present {
         Vec::new()
     } else {
         vec![json!({
@@ -7322,5 +7693,461 @@ esac
             "gate must fire: 1 real gap remains even though 2 unclassified are suppressed"
         );
         Ok(())
+    }
+
+    // ---------------------------------------------------------------------------
+    // Streaming ingestion compatibility (#12860)
+    //
+    // `ripr check --format json` output is unbounded — a 2.1GB payload killed a
+    // 16GB CI runner when write_pr_evidence buffered it into one String and then
+    // parsed a full serde_json DOM. The ingestion now streams one finding at a
+    // time into RiprFindingBuckets. These tests pin the new path to the retained
+    // DOM oracle byte for byte, on realistic and degenerate payloads alike.
+    // ---------------------------------------------------------------------------
+
+    /// #12860 compatibility falsifier: for the same raw payload bytes, the
+    /// streaming ingestion must produce receipt bytes identical to the DOM
+    /// oracle (`serde_json::from_str` + `pr_evidence_packet_with_count`).
+    fn assert_streaming_receipt_matches_dom(
+        payload: &str,
+        extents: Option<&HeadLineExtents>,
+        suppressions: &RiprSuppressionRules,
+    ) -> Result<()> {
+        let options = PrEvidenceOptions {
+            root: ".".to_string(),
+            base: "origin/main".to_string(),
+            head: "HEAD".to_string(),
+            pr_head_sha: None,
+        };
+        let dom_packet = pr_evidence_packet_with_count(
+            &options,
+            &serde_json::from_str(payload).context("parity payload must be valid JSON")?,
+            "base-sha",
+            "head-sha",
+            suppressions,
+            1,
+            extents,
+            None,
+            None,
+        );
+        let temp = tempfile::tempdir()?;
+        let raw_path = temp.path().join("raw-check.json");
+        fs::write(&raw_path, payload)?;
+        let ingestion =
+            ripr_check_ingestion_from_file(&raw_path, suppressions, extents, None, None)?;
+        let streamed_packet = pr_evidence_packet_from_summary(
+            &options,
+            &ingestion,
+            "base-sha",
+            "head-sha",
+            suppressions,
+            1,
+            None,
+            None,
+        );
+        assert_eq!(
+            format_json(&dom_packet)?,
+            format_json(&streamed_packet)?,
+            "streamed receipt bytes must match DOM receipt bytes"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn streaming_ingestion_receipt_matches_dom_bytes() -> Result<()> {
+        let payloads = [
+            // Realistic 0.5.x shape: classification + probe paths, plus large
+            // unconsumed per-finding structures like the 2.1GB payload carried.
+            concat!(
+                r#"{"schema_version":"0.2","tool":"ripr","summary":{"changed_rust_files":2,"findings":3,"weakly_exposed":1,"reachable_unrevealed":1,"no_static_path":1},"findings":["#,
+                r#"{"id":"p1","classification":"weakly_exposed","severity":"info","confidence":1.0,"probe":{"id":"p1","family":"call_deletion","file":".\\xtask/src/a.rs","line":11,"expression":"type TestResult = anyhow::Result<()>;"},"ripr":{"reach":{"state":"yes","summary":"reaches"},"observations":[{"line":271,"value":"01","context":"assertion_argument"}]}},"#,
+                r#"{"classification":"reachable_unrevealed","seam":{"file":"crates/perl-lsp-rs/src/b.rs","line":4}},"#,
+                r#"{"classification":"no_static_path","probe":{"path":"xtask/src/c.rs","line":9},"notes":"unicode ✓ escaped \"quotes\""}]}"#
+            ),
+            // 0.9.x grip_class variant, mapped onto the canonical buckets.
+            concat!(
+                r#"{"summary":{"weakly_exposed":0,"reachable_unrevealed":2,"no_static_path":0},"findings":["#,
+                r#"{"grip_class":"weakly_gripped","seam":{"file":"crates/perl-lsp-rs/src/removed.rs","line":4}},"#,
+                r#"{"grip_class":"weakly_gripped","seam":{"file":"crates/perl-lsp-rs/src/kept.rs","line":40}}]}"#
+            ),
+            // Unrecognized classification on suppression-relevant paths (#1346).
+            concat!(
+                r#"{"summary":{"weakly_exposed":1},"findings":["#,
+                r#"{"classification":"exposed","probe":{"path":"archive/old.rs"}},"#,
+                r#"{"classification":"reachable_unrevealed","probe":{"path":"archive/old.rs"}}]}"#
+            ),
+            // Summary without findings.
+            r#"{"summary":{"weakly_exposed":3,"reachable_unrevealed":0,"no_static_path":0}}"#,
+            // Findings without summary (Path B counting).
+            concat!(
+                r#"{"findings":[{"classification":"no_static_path","probe":{"path":"a.rs"}},"#,
+                r#"{"classification":"unknown","probe":{"path":"b.rs"}}]}"#
+            ),
+            // Neither.
+            r#"{"tool":"ripr"}"#,
+            r#"{}"#,
+            // Degenerate summary/findings shapes the DOM path tolerated.
+            r#"{"summary":"not-an-object","findings":null}"#,
+            r#"{"summary":{"weakly_exposed":2},"findings":5}"#,
+            r#"{"summary":{"weakly_exposed":2},"findings":{"a":1}}"#,
+            r#"{"summary":{"weakly_exposed":2},"findings":["a-string",42,null,true,{"classification":"weakly_exposed","probe":{"path":"mixed.rs"}}]}"#,
+            // Count fields the DOM path ignored (strings, negatives, floats).
+            r#"{"summary":{"weakly_exposed":"3","reachable_unrevealed":-2,"no_static_path":1.5},"findings":[]}"#,
+            // Duplicate keys: DOM semantics keep the last occurrence.
+            r#"{"summary":{"weakly_exposed":1},"summary":{"weakly_exposed":7},"findings":[],"findings":[]}"#,
+            // Top-level non-object payloads validate but carry nothing.
+            r#"[1,2,3]"#,
+            r#""just a string""#,
+            r#"42"#,
+            r#"-7"#,
+            r#"true"#,
+            r#"null"#,
+            // Trailing whitespace is allowed by both paths.
+            "{}\n  ",
+        ];
+        for payload in payloads {
+            assert_streaming_receipt_matches_dom(payload, None, &no_suppressions())?;
+        }
+        Ok(())
+    }
+
+    /// The #6260 reproduction payload: probes on a deleted line must not count
+    /// as new gaps under either ingestion path.
+    #[test]
+    fn streaming_ingestion_receipt_matches_dom_bytes_with_extents() -> Result<()> {
+        let payload = concat!(
+            r#"{"summary":{"weakly_exposed":0,"reachable_unrevealed":0,"no_static_path":2},"findings":["#,
+            r#"{"classification":"no_static_path","kind":"call_deletion","probe":{"path":"xtask/src/tasks/check_version_sync.rs","line":29}},"#,
+            r#"{"classification":"no_static_path","kind":"return_value","probe":{"path":"xtask/src/tasks/check_version_sync.rs","line":29}}]}"#
+        );
+        let extents = HeadLineExtents {
+            present: BTreeMap::from([(
+                "xtask/src/tasks/check_version_sync.rs".to_string(),
+                13usize,
+            )]),
+            removed: BTreeSet::new(),
+        };
+        assert_streaming_receipt_matches_dom(payload, Some(&extents), &no_suppressions())
+    }
+
+    #[test]
+    fn streaming_ingestion_receipt_matches_dom_bytes_with_suppressions() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        fs::create_dir_all(temp.path().join("policy"))?;
+        fs::write(
+            temp.path().join("policy/ripr-suppressions.toml"),
+            r#"schema_version = 1
+policy = "ripr-suppressions"
+owner = "EffortlessMetrics"
+status = "advisory"
+updated = "2026-05-28"
+
+[[suppress]]
+paths = ["archive/**"]
+"#,
+        )?;
+        let rules =
+            read_ripr_suppression_rules(temp.path(), Path::new("policy/ripr-suppressions.toml"))?;
+        let payload = concat!(
+            r#"{"summary":{"weakly_exposed":1,"reachable_unrevealed":2,"no_static_path":0},"findings":["#,
+            r#"{"classification":"weakly_exposed","probe":{"path":"archive/old.rs","line":1}},"#,
+            r#"{"classification":"reachable_unrevealed","seam":{"file":"archive/deep/nested.rs","line":2}},"#,
+            r#"{"classification":"reachable_unrevealed","seam":{"file":"crates/live/src/lib.rs","line":3}}]}"#
+        );
+        assert_streaming_receipt_matches_dom(payload, None, &rules)
+    }
+
+    /// Both paths must reject invalid payloads, and the streaming error must
+    /// carry the same ingestion context the DOM path used.
+    #[test]
+    fn streaming_ingestion_rejects_invalid_payloads_like_the_dom_path() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let suppressions = no_suppressions();
+        for (name, payload) in [
+            ("garbage", "not json at all"),
+            ("truncated", r#"{"summary":{}"#),
+            ("trailing-content", r#"{"summary":{}} trailing"#),
+            ("bad-string", r#"{"findings":[{"probe":{"path":unterminated}}]"#),
+        ] {
+            let raw_path = temp.path().join(format!("{name}.json"));
+            fs::write(&raw_path, payload)?;
+            let streamed =
+                ripr_check_ingestion_from_file(&raw_path, &suppressions, None, None, None);
+            assert!(
+                serde_json::from_str::<Value>(payload).is_err(),
+                "{name}: DOM oracle must reject this payload"
+            );
+            let err = streamed.unwrap_err();
+            let message = format!("{err:#}");
+            assert!(
+                message.contains("ripr check output was not valid JSON"),
+                "{name}: error must carry the ingestion context: {message}"
+            );
+        }
+        Ok(())
+    }
+
+    /// The raw artifact must carry ripr's stdout byte for byte — the contract
+    /// the String-buffering path had via `write_text` (#1346) — while the
+    /// streaming transport never holds the payload in memory (#12860).
+    #[test]
+    fn run_ripr_check_streams_stdout_verbatim_into_the_raw_artifact() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path().join("repo");
+        let stubs = temp.path().join("stubs");
+        fs::create_dir_all(&repo)?;
+        fs::create_dir_all(&stubs)?;
+        let payload = concat!(
+            r#"{"summary":{"changed_rust_files":1,"findings":2,"weakly_exposed":1,"reachable_unrevealed":0,"no_static_path":1},"findings":"#,
+            r#"[{"classification":"weakly_exposed","probe":{"file":"crates/x/src/a.rs","line":3}},"#,
+            r#"{"classification":"no_static_path","probe":{"path":"xtask/src/b.rs","line":8}}]}"#
+        );
+        let binary = write_ripr_stub(&stubs, "ripr-check-ok", payload, 0)?;
+        let _override = override_ripr_bin(&binary)?;
+        let options = PrEvidenceOptions {
+            root: ".".to_string(),
+            base: "origin/main".to_string(),
+            head: "HEAD".to_string(),
+            pr_head_sha: None,
+        };
+
+        run_ripr_check(&repo, &options)?;
+
+        let raw_path = repo.join("target/ripr/pr/raw-check.json");
+        let raw = fs::read(&raw_path)?;
+        assert_eq!(raw, payload.as_bytes(), "raw artifact must carry stdout verbatim");
+
+        let suppressions = no_suppressions();
+        let ingestion = ripr_check_ingestion_from_file(&raw_path, &suppressions, None, None, None)?;
+        assert!(ingestion.check_summary_present);
+        assert_eq!(ingestion.summary_counts.weakly_exposed, 1);
+        assert_eq!(ingestion.summary_counts.reachable_unrevealed, 0);
+        assert_eq!(ingestion.summary_counts.no_static_path, 1);
+        Ok(())
+    }
+
+    /// A failing ripr run must surface its status and a bounded stdout excerpt,
+    /// and must not leave a raw artifact behind.
+    #[test]
+    fn run_ripr_check_failure_surfaces_status_without_an_artifact() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path().join("repo");
+        let stubs = temp.path().join("stubs");
+        fs::create_dir_all(&repo)?;
+        fs::create_dir_all(&stubs)?;
+        let binary = write_ripr_stub(&stubs, "ripr-check-fail", "partial payload", 2)?;
+        let _override = override_ripr_bin(&binary)?;
+        let options = PrEvidenceOptions {
+            root: ".".to_string(),
+            base: "origin/main".to_string(),
+            head: "HEAD".to_string(),
+            pr_head_sha: None,
+        };
+
+        let err = run_ripr_check(&repo, &options).unwrap_err();
+        let message = format!("{err:#}");
+        assert!(message.contains("status"), "exit status must appear: {message}");
+        assert!(
+            message.contains("partial payload"),
+            "bounded stdout excerpt must aid diagnosis: {message}"
+        );
+        assert!(
+            !repo.join("target/ripr/pr/raw-check.json").exists(),
+            "artifact must not be written when ripr fails"
+        );
+        Ok(())
+    }
+
+    /// Lazily generates a `ripr check` payload whose findings[] is ~100MB —
+    /// the shape that killed the evidence runner (#12860): few findings, each
+    /// carrying a huge unconsumed blob. The generator yields chunk by chunk and
+    /// the streaming parser retains at most one finding, so this test
+    /// completing with correct buckets is the memory-safety shape assertion in
+    /// CI; the previous String-plus-DOM ingestion would have buffered all of
+    /// it before producing anything.
+    struct SyntheticCheckStream {
+        header: Vec<u8>,
+        header_pos: usize,
+        findings_remaining: usize,
+        pending: Vec<u8>,
+        pending_pos: usize,
+        footer_served: bool,
+        filler: String,
+    }
+
+    impl SyntheticCheckStream {
+        const FINDING_COUNT: usize = 400;
+        /// ~256KB of unconsumed filler per finding, sized like the real
+        /// payload (~1.2MB findings, most of it never read by the receipt).
+        const FILLER_BYTES: usize = 256 * 1024;
+
+        fn new() -> Self {
+            Self {
+                header: format!(
+                    r#"{{"schema_version":"0.2","tool":"ripr","summary":{{"findings":{},"weakly_exposed":{}}},"findings":["#,
+                    Self::FINDING_COUNT,
+                    Self::FINDING_COUNT
+                )
+                .into_bytes(),
+                header_pos: 0,
+                findings_remaining: Self::FINDING_COUNT,
+                pending: Vec::new(),
+                pending_pos: 0,
+                footer_served: false,
+                filler: "x".repeat(Self::FILLER_BYTES),
+            }
+        }
+
+        fn finding_bytes(&self, index: usize) -> Vec<u8> {
+            let comma = if index == 0 { "" } else { "," };
+            format!(
+                "{comma}{{\"id\":\"probe:{index}\",\"classification\":\"weakly_exposed\",\"severity\":\"info\",\"confidence\":1.0,\"probe\":{{\"file\":\"crates/x/src/{index}.rs\",\"line\":3}},\"evidence\":\"{}\"}}",
+                self.filler
+            )
+            .into_bytes()
+        }
+    }
+
+    impl Read for SyntheticCheckStream {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if self.header_pos < self.header.len() {
+                let len = (self.header.len() - self.header_pos).min(buf.len());
+                buf[..len].copy_from_slice(&self.header[self.header_pos..][..len]);
+                self.header_pos += len;
+                return Ok(len);
+            }
+            if self.pending_pos < self.pending.len() {
+                let len = (self.pending.len() - self.pending_pos).min(buf.len());
+                buf[..len].copy_from_slice(&self.pending[self.pending_pos..][..len]);
+                self.pending_pos += len;
+                return Ok(len);
+            }
+            if self.findings_remaining > 0 {
+                let index = Self::FINDING_COUNT - self.findings_remaining;
+                self.findings_remaining -= 1;
+                self.pending = self.finding_bytes(index);
+                self.pending_pos = 0;
+                return self.read(buf);
+            }
+            if !self.footer_served {
+                self.footer_served = true;
+                self.pending = b"]}".to_vec();
+                self.pending_pos = 0;
+                return self.read(buf);
+            }
+            Ok(0)
+        }
+    }
+
+    #[test]
+    fn streaming_ingestion_completes_on_large_payload_with_correct_buckets() -> Result<()> {
+        let seen = std::cell::Cell::new(0usize);
+        let summary = stream_ripr_check_payload(
+            BufReader::with_capacity(64 * 1024, SyntheticCheckStream::new()),
+            &mut |_finding| seen.set(seen.get() + 1),
+        )?;
+        assert_eq!(seen.get(), SyntheticCheckStream::FINDING_COUNT);
+        let Some(summary) = summary else {
+            bail!("synthetic payload carries a summary");
+        };
+        assert_eq!(
+            count_field(summary.as_object(), "weakly_exposed"),
+            SyntheticCheckStream::FINDING_COUNT
+        );
+
+        // Bucket correctness over the streamed findings, without the summary seed.
+        let mut buckets = RiprFindingBuckets::default();
+        let summary = stream_ripr_check_payload(
+            BufReader::with_capacity(64 * 1024, SyntheticCheckStream::new()),
+            &mut |finding| buckets.absorb(finding, &no_suppressions(), None, None, None),
+        )?;
+        assert!(summary.is_some());
+        let counts = ripr_summary_counts_merge(ripr_summary_counts_seed(None), buckets, false);
+        assert_eq!(counts.weakly_exposed, SyntheticCheckStream::FINDING_COUNT);
+        assert_eq!(counts.reachable_unrevealed, 0);
+        assert_eq!(counts.no_static_path, 0);
+        Ok(())
+    }
+
+    /// Bounded local re-run against a retained diagnostics payload (#12860),
+    /// for the wt-12860 lane's 2.1GB artifact. Skipped by default:
+    /// `RIPR_LARGE_RAW_CHECK=<path> cargo test -p xtask -- --ignored streaming_ingestion_handles_retained_large_payload`
+    ///
+    /// The retained artifact is a truncated document (the diagnosed run was
+    /// killed while ripr was still writing), so full-document ingestion cannot
+    /// complete for it. What this probe pins instead is the absence of the
+    /// kill signature: the whole payload streams through a fixed-size reader
+    /// and the truncated document fails cleanly with the ingestion context —
+    /// no multi-gigabyte String, no DOM, no abort.
+    #[test]
+    #[ignore]
+    fn streaming_ingestion_handles_retained_large_payload_when_asked() -> Result<()> {
+        let Some(path) = env::var_os("RIPR_LARGE_RAW_CHECK") else {
+            bail!("set RIPR_LARGE_RAW_CHECK to a retained raw-check.json to run this probe");
+        };
+        let started = Instant::now();
+        match ripr_check_ingestion_from_file(
+            Path::new(&path),
+            &no_suppressions(),
+            None,
+            None,
+            None,
+        ) {
+            Ok(ingestion) => println!(
+                "ingested {} in {:?}: weakly_exposed={} reachable_unrevealed={} no_static_path={}",
+                Path::new(&path).display(),
+                started.elapsed(),
+                ingestion.summary_counts.weakly_exposed,
+                ingestion.summary_counts.reachable_unrevealed,
+                ingestion.summary_counts.no_static_path,
+            ),
+            Err(err) => {
+                let message = format!("{err:#}");
+                assert!(
+                    message.contains("ripr check output was not valid JSON"),
+                    "a truncated payload must fail cleanly at parse, not by exhaustion: {message}"
+                );
+                println!(
+                    "streamed {} to a clean parse failure in {:?} (truncated diagnostics artifact): {message}",
+                    Path::new(&path).display(),
+                    started.elapsed(),
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Compile a stub `ripr` binary that writes `stdout_text` to stdout and
+    /// exits with `exit_code`, the way the #12569 transport helpers do.
+    fn write_ripr_stub(
+        dir: &Path,
+        name: &str,
+        stdout_text: &str,
+        exit_code: i32,
+    ) -> Result<PathBuf> {
+        let source = dir.join(format!("{name}.rs"));
+        fs::write(
+            &source,
+            format!(
+                "fn main() {{\n    use std::io::Write;\n    let payload = {stdout_text:?};\n    let _ = std::io::stdout().write_all(payload.as_bytes());\n    std::process::exit({exit_code});\n}}\n"
+            ),
+        )?;
+        #[cfg(windows)]
+        let binary = dir.join(format!("{name}.exe"));
+        #[cfg(not(windows))]
+        let binary = dir.join(name);
+        let output = Command::new("rustc")
+            .arg(&source)
+            .arg("-o")
+            .arg(&binary)
+            .output()
+            .context("failed to compile ripr stub")?;
+        if !output.status.success() {
+            bail!(
+                "failed to compile ripr stub:\n{}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        Ok(binary)
     }
 }
