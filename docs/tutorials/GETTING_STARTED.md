@@ -395,7 +395,12 @@ After reloading, `perllsp --version` should print the version number.
 
 The editor must be able to find and launch the `perllsp` binary. Symptoms include "server failed to start" messages or LSP features simply not appearing.
 
-1. **Verify the binary path** -- run `which perllsp` in the same shell your editor uses. Some editors (VS Code, for instance) may not inherit your shell's `PATH` when launched from a desktop shortcut. Try launching the editor from the terminal (`code .`) so it inherits your environment.
+1. **Verify the binary path** in the same shell your editor uses:
+   - POSIX-compatible shells: `which perllsp`
+   - PowerShell: `Get-Command perllsp`
+   - Windows Command Prompt: `where.exe perllsp`
+
+   Some editors (VS Code, for instance) may not inherit your shell's `PATH` when launched from a desktop shortcut. Try launching the editor from the terminal (`code .`) so it inherits your environment.
 
 2. **Check editor logs** -- every LSP client has a log output:
    - VS Code: View > Output > select "Perl Language Server"
