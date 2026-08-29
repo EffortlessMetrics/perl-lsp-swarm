@@ -238,23 +238,7 @@ pub fn range_start(range: std::ops::Range<usize>) -> usize {
         bail!("configured disallowed field unexpectedly passed Clippy");
     }
 
-    let mut found_lint = false;
-    for line in output
-        .stdout
-        .split(|byte| *byte == b'\n')
-        .filter(|line| !line.is_empty())
-    {
-        // `--message-format=json` makes stdout a strict machine channel. A
-        // non-JSON line is instrument failure and must not be skipped as if it
-        // were unrelated compiler chatter; ordinary notices belong on stderr.
-        let event: JsonValue = serde_json::from_slice(line)?;
-        let lint_code = event.pointer("/message/code/code").and_then(JsonValue::as_str);
-        if lint_code == Some("clippy::disallowed_fields") {
-            found_lint = true;
-            break;
-        }
-    }
-    if !found_lint {
+    if !contains_disallowed_fields_lint(&output.stdout)? {
         let stdout = bounded_diagnostic(&output.stdout);
         let stderr = bounded_diagnostic(&output.stderr);
         bail!(
@@ -262,6 +246,33 @@ pub fn range_start(range: std::ops::Range<usize>) -> usize {
         );
     }
     Ok(())
+}
+
+#[test]
+fn malformed_json_after_expected_lint_is_rejected() -> Result<()> {
+    let stdout = br#"{"message":{"code":{"code":"clippy::disallowed_fields"}}}
+not-json"#;
+
+    let result = contains_disallowed_fields_lint(stdout);
+    if result.is_ok() {
+        bail!("malformed JSON after the expected lint must fail closed");
+    }
+    Ok(())
+}
+
+fn contains_disallowed_fields_lint(stdout: &[u8]) -> Result<bool> {
+    let mut found_lint = false;
+    for line in stdout.split(|byte| *byte == b'\n').filter(|line| !line.is_empty()) {
+        // `--message-format=json` makes stdout a strict machine channel. A
+        // non-JSON line is instrument failure and must not be skipped as if it
+        // were unrelated compiler chatter; ordinary notices belong on stderr.
+        let event: JsonValue = serde_json::from_slice(line)?;
+        let lint_code = event.pointer("/message/code/code").and_then(JsonValue::as_str);
+        if lint_code == Some("clippy::disallowed_fields") {
+            found_lint = true;
+        }
+    }
+    Ok(found_lint)
 }
 
 fn disallowed_fields_ledger(
