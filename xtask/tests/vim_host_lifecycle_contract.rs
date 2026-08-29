@@ -419,10 +419,12 @@ fn host1_wire() -> LifecycleWire {
     LifecycleWire {
         initialize_count: 1,
         did_close_lines: vec![(13, "main.pl".to_string())],
-        document_symbol_responses: vec![
-            PendingResponse { line_index: 14, request_id: 3 },
-            PendingResponse { line_index: 99, request_id: 4 },
-        ],
+        // Pending #2 (request 3) is answered AFTER the governed didClose at
+        // line 13 (the late document route); pending #3 (request 4) stays
+        // UNANSWERED through host 1's exit (the in-flight host route). A wire
+        // that answers request 4 before exit is the negative control in
+        // `a_response_for_the_in_flight_request_defeats_the_host_route`.
+        document_symbol_responses: vec![PendingResponse { line_index: 14, request_id: 3 }],
         cancel_request_ids: vec![2],
     }
 }
@@ -924,6 +926,88 @@ fn an_unmined_late_response_cannot_satisfy_late_result_rejection() -> Result<()>
         judgment.cells.get(CELL_LATE_RESULT) == Some(&ObservationResult::Fail),
         "the wire-mined response is load-bearing: a driver claim alone cannot prove the old \
          operation completed"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_response_before_the_document_close_is_not_a_late_result() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let plan = scratch_lifecycle_plan(&dir.path().join("scratch"))?;
+    let digest = plan.identity.candidate_artifact_sha256.clone();
+    let mut sessions = canonical_sessions(&plan, &digest);
+    // The old operation's response lands BEFORE the governed didClose (line
+    // 13): the document was never invalidated between request and response,
+    // so the "late result" claim has no observed invalidation to reject.
+    sessions[0].lifecycle_wire.document_symbol_responses =
+        vec![PendingResponse { line_index: 12, request_id: 3 }];
+    let judgment = evaluate_lifecycle_observation(&sessions, LifecycleFixtureVariant::Canonical);
+    ensure!(
+        judgment.cells.get(CELL_LATE_RESULT) == Some(&ObservationResult::Fail),
+        "the response must follow the document close to prove lateness: {:?}",
+        judgment.cells
+    );
+    Ok(())
+}
+
+#[test]
+fn a_response_for_the_in_flight_request_defeats_the_host_route() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let plan = scratch_lifecycle_plan(&dir.path().join("scratch"))?;
+    let digest = plan.identity.candidate_artifact_sha256.clone();
+    let mut sessions = canonical_sessions(&plan, &digest);
+    // Pending #3 (request 4) receives its response before host 1 exits: no
+    // work was ever in flight across the host boundary, so the host route of
+    // the late-result cell must fail.
+    sessions[0]
+        .lifecycle_wire
+        .document_symbol_responses
+        .push(PendingResponse { line_index: 20, request_id: 4 });
+    let judgment = evaluate_lifecycle_observation(&sessions, LifecycleFixtureVariant::Canonical);
+    ensure!(
+        judgment.cells.get(CELL_LATE_RESULT) == Some(&ObservationResult::Fail),
+        "a request answered before host exit was never in flight: {:?}",
+        judgment.cells
+    );
+    Ok(())
+}
+
+#[test]
+fn an_unexercised_relabel_control_is_never_a_typed_failure() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let plan = scratch_lifecycle_plan(&dir.path().join("scratch"))?;
+    let digest = plan.identity.candidate_artifact_sha256.clone();
+    // The control's host timed out before any in-host restart: no second
+    // outgoing `initialize` ever landed on its wire. The typed
+    // `host_replacement_absent` detection must not be asserted from the
+    // variant — the run is an instrument gap (NotProven, no typed reason),
+    // which the CLI rejects instead of accepting a typed failure that never
+    // exercised its designed false subject.
+    let sessions = vec![scratch_session(
+        1,
+        "server_restart_relabel_session",
+        &plan,
+        complete_relabel_events(&digest),
+        wire_with_caps(Some(false)),
+        LifecycleWire::default(),
+        None,
+        CleanupResult::NotProven,
+        true,
+        true,
+        111,
+        Some(true),
+    )];
+    let judgment =
+        evaluate_lifecycle_observation(&sessions, LifecycleFixtureVariant::ServerRestartRelabel);
+    ensure!(
+        judgment.result == ObservationResult::NotProven,
+        "a control that never exercised its relabel path is not the typed failure: {:?}",
+        judgment.cells
+    );
+    ensure!(
+        judgment.failure_reason.is_none(),
+        "no typed reason may be assigned without relabel evidence: {:?}",
+        judgment.failure_reason
     );
     Ok(())
 }

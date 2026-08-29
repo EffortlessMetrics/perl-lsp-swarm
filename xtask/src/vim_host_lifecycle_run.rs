@@ -250,6 +250,12 @@ pub fn lifecycle_env(
         ("PERLLSP_VIM_HOST_MUTATION_LINE", MUTATION_LINE.to_string()),
         ("PERLLSP_VIM_HOST_CLEAN_SOURCE_TEXT", clean_source_text()),
         ("PERLLSP_VIM_HOST_DEFECT_SOURCE_TEXT", defect_source_text()),
+        // The single-line generation texts for the one-line buffer edit path.
+        // The whole-document texts above feed whole-file replacement only; a
+        // one-line `setline()` must never receive a multiline payload (it
+        // would corrupt the buffer line with embedded NULs).
+        ("PERLLSP_VIM_HOST_CLEAN_LINE_TEXT", CLEAN_LINE_TEXT.to_string()),
+        ("PERLLSP_VIM_HOST_DEFECT_LINE_TEXT", DEFECT_LINE_TEXT.to_string()),
         ("PERLLSP_VIM_HOST_LATE_WINDOW_MS", LATE_WINDOW_MS.to_string()),
     ];
     pairs
@@ -1131,8 +1137,9 @@ pub fn evaluate_lifecycle_observation(
                 && event.details.get("errors") == Some(&"0".to_string())
                 && event.details.get("warnings") == Some(&"0".to_string())
         });
-    let didclose_on_wire =
-        host1.and_then(|session| session.lifecycle_wire.first_close_line(MAIN_TOKEN)).is_some();
+    let host1_close_line =
+        host1.and_then(|session| session.lifecycle_wire.first_close_line(MAIN_TOKEN));
+    let didclose_on_wire = host1_close_line.is_some();
     let buffer_reopen_observed = defect_observed && (wipe.is_some() || reopen.is_some());
     let buffer_reopen_ok = defect_observed
         && wipe.is_some()
@@ -1182,16 +1189,32 @@ pub fn evaluate_lifecycle_observation(
             .and_then(|event| event.details.get("request_id").cloned())
             .and_then(|id| id.parse::<u64>().ok())
     });
-    let response_mined = pending2_id
-        .zip(host1)
-        .and_then(|(id, session)| session.lifecycle_wire.response_line_of(id))
-        .is_some();
+    // The document route: the old operation's response must be mined from the
+    // wire AND must arrive strictly after the governed `didClose` — a response
+    // that precedes the document invalidation is not a late result.
+    let response_mined_after_close = pending2_id.zip(host1).is_some_and(|(id, session)| {
+        host1_close_line.is_some_and(|close_line| {
+            session
+                .lifecycle_wire
+                .response_line_of(id)
+                .is_some_and(|response_line| response_line > close_line)
+        })
+    });
     let host2 = sessions.get(1);
-    let pending3_in_flight = host1.is_some_and(|session| {
+    // The host route: pending action 3 must be bound to its wire request
+    // identity and that identity must still be UNANSWERED when host 1 exits —
+    // a fast response between the event and shutdown means no work was ever
+    // in flight across the host boundary.
+    let pending3_id = host1.and_then(|session| {
         events_of_kind(&session.observation.events, DriverEventKind::PendingActionStarted)
             .iter()
-            .any(|event| event.details.get("pending_index") == Some(&"3".to_string()))
+            .find(|event| event.details.get("pending_index") == Some(&"3".to_string()))
+            .and_then(|event| event.details.get("request_id").cloned())
+            .and_then(|id| id.parse::<u64>().ok())
     });
+    let pending3_unresolved_at_exit = pending3_id
+        .zip(host1)
+        .is_some_and(|(id, session)| session.lifecycle_wire.response_line_of(id).is_none());
     let replacement_chain_own = host2.is_some_and(|session| {
         session_attach_ok(session)
             && session.lifecycle_wire.initialize_count == 1
@@ -1205,9 +1228,11 @@ pub fn evaluate_lifecycle_observation(
                     && event.details.get("errors") == Some(&"0".to_string())
             })
     });
-    let late_result_observed = late_event.is_some() || pending3_in_flight;
-    let late_result_ok =
-        late_event.is_some() && response_mined && pending3_in_flight && replacement_chain_own;
+    let late_result_observed = late_event.is_some() || pending3_unresolved_at_exit;
+    let late_result_ok = late_event.is_some()
+        && response_mined_after_close
+        && pending3_unresolved_at_exit
+        && replacement_chain_own;
     cells.insert(CELL_LATE_RESULT.to_string(), cell_result(late_result_observed, late_result_ok));
 
     // --- full host reopen: an orderly user-equivalent exit of host 1 plus a
@@ -1354,12 +1379,28 @@ pub fn evaluate_lifecycle_observation(
     });
     let any_leak =
         sessions.iter().any(|session| session.observation.cleanup == CleanupResult::Fail);
-    let result = if variant.expected_negative_reason().is_some() {
-        // A negative control must fail on every reachable path: reaching an
-        // all-ok state through designed defect injection would itself be an
-        // oracle violation, and reporting it as a pass would hide it.
+    // Positive relabel evidence: the control's own host observed a second
+    // outgoing `initialize` on its wire — the attempted in-host server
+    // restart. Without it the control never exercised its designed false
+    // subject (a Vim timeout or pre-initialization exit proves nothing), and
+    // assigning the typed failure would assert detection instead of
+    // observing it. A negative control can still never report Pass: the
+    // un-exercised path falls through the same fail-closed ladder as any
+    // other run and lands on NotProven.
+    let relabel_exercised = sessions.iter().any(|session| {
+        session.role == "server_restart_relabel_session"
+            && session.lifecycle_wire.initialize_count > 1
+    });
+    let result = if variant.expected_negative_reason().is_some() && relabel_exercised {
+        // A negative control whose designed relabel path was exercised must
+        // fail on every reachable path: reaching an all-ok state through
+        // designed defect injection would itself be an oracle violation, and
+        // reporting it as a pass would hide it.
         ObservationResult::Fail
     } else if all_actionable_ok && workspace_ok && designed_boundaries && !any_leak {
+        // Unreachable for a negative variant (its designed relabel makes the
+        // host-reopen cell fail), but kept explicit so no ladder rewrite can
+        // ever produce a passing negative control.
         ObservationResult::Pass
     } else if any_leak
         || !designed_boundaries
@@ -1377,11 +1418,12 @@ pub fn evaluate_lifecycle_observation(
         Some(crate::editor_client_compat::FailureClass::HostClient)
     };
     // The relabel control's typed detection: the judgment itself observed the
-    // absent host replacement (the server restart or buffer reopen the run
-    // offered in its place), so the typed reason is derived from the evidence
-    // rather than asserted from the variant.
+    // absent host replacement (the server restart the run offered in its
+    // place, bound by `relabel_exercised`), so the typed reason is derived
+    // from the evidence rather than asserted from the variant.
     let failure_reason = failure_reason.or_else(|| {
         if variant.expected_negative_reason().is_some()
+            && relabel_exercised
             && cells.get(CELL_HOST_REOPEN) != Some(&ObservationResult::Pass)
         {
             Some("host_replacement_absent".to_string())

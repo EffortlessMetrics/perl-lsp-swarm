@@ -36,6 +36,8 @@
 "   PERLLSP_VIM_HOST_MUTATION_LINE       1-based governed mutation line
 "   PERLLSP_VIM_HOST_CLEAN_SOURCE_TEXT   the clean generation bytes
 "   PERLLSP_VIM_HOST_DEFECT_SOURCE_TEXT  the defective generation bytes
+"   PERLLSP_VIM_HOST_CLEAN_LINE_TEXT     clean generation, mutation line only
+"   PERLLSP_VIM_HOST_DEFECT_LINE_TEXT    defect generation, mutation line only
 "   PERLLSP_VIM_HOST_LATE_WINDOW_MS      bounded late-result observation window
 "
 " The full_lifecycle_session journey (the whole proof, judged by Rust):
@@ -91,6 +93,11 @@ let s:expected_root_rel = s:Env('PERLLSP_VIM_HOST_EXPECTED_ROOT_REL')
 let s:mutation_line = str2nr(s:Env('PERLLSP_VIM_HOST_MUTATION_LINE'))
 let s:clean_text = s:Env('PERLLSP_VIM_HOST_CLEAN_SOURCE_TEXT')
 let s:defect_text = s:Env('PERLLSP_VIM_HOST_DEFECT_SOURCE_TEXT')
+" The one-line edit path replaces exactly one buffer line, so it receives
+" exactly one line: a multiline setline payload corrupts the buffer line with
+" embedded NULs and the generation barriers become unreliable.
+let s:clean_line_text = s:Env('PERLLSP_VIM_HOST_CLEAN_LINE_TEXT')
+let s:defect_line_text = s:Env('PERLLSP_VIM_HOST_DEFECT_LINE_TEXT')
 let s:late_window = str2nr(s:Env('PERLLSP_VIM_HOST_LATE_WINDOW_MS'))
 if s:budget <= 0
   let s:budget = 20000
@@ -100,6 +107,7 @@ if empty(s:adapter) || empty(s:event_file) || empty(s:capability_path)
       \ || empty(s:fixture_root) || empty(s:candidate_sha) || empty(s:server_name)
       \ || empty(s:role) || empty(s:opened_file_rel) || empty(s:expected_root_rel)
       \ || s:mutation_line <= 0 || empty(s:clean_text) || empty(s:defect_text)
+      \ || empty(s:clean_line_text) || empty(s:defect_line_text)
       \ || s:late_window <= 0
   echoerr 'vim lifecycle driver: required environment missing, failing closed'
   cquit 3
@@ -488,7 +496,7 @@ if empty(s:failures) && s:role ==# 'replacement_host_session'
   " Its own defect edit through the real buffer didChange path.
   let s:update_before = VimLspHostDiagnosticsUpdatedCount()
   let s:wire_before = VimLspHostWireMarkerCount('textDocument/publishDiagnostics')
-  call VimLspHostSetLineAndFlush(s:mutation_line, s:defect_text)
+  call VimLspHostSetLineAndFlush(s:mutation_line, s:defect_line_text)
   if s:SettleBarrier(s:update_before, s:wire_before,
         \   "VimLspHostBufferDiagnosticsCounts()['error'] >= 1",
         \   'replacement_own_defect_never_arrived')
@@ -500,7 +508,7 @@ if empty(s:failures) && s:role ==# 'replacement_host_session'
   " Its own fix edit back to the clean generation.
   let s:update_before = VimLspHostDiagnosticsUpdatedCount()
   let s:wire_before = VimLspHostWireMarkerCount('textDocument/publishDiagnostics')
-  call VimLspHostSetLineAndFlush(s:mutation_line, s:clean_text)
+  call VimLspHostSetLineAndFlush(s:mutation_line, s:clean_line_text)
   if s:SettleBarrier(s:update_before, s:wire_before,
         \   "VimLspHostBufferDiagnosticsCounts()['error'] == 0"
         \   . " && VimLspHostBufferDiagnosticsCounts()['warning'] == 0",
