@@ -28,13 +28,17 @@ fn access_for_operation(operation: &PirOperation) -> PirAccessMode {
         PirOperation::Modify { .. } | PirOperation::StashModify { .. } => {
             PirAccessMode::ReadModifyWrite
         }
+        PirOperation::Substitution { access: PirTargetAccess::Mutate, .. }
+        | PirOperation::Transliteration { access: PirTargetAccess::Mutate, .. } => {
+            PirAccessMode::ReadModifyWrite
+        }
         _ => PirAccessMode::Read,
     }
 }
 
 fn demand_for_operation(operation: &PirOperation) -> PirEvaluationDemand {
     match operation {
-        PirOperation::Branch { .. } => PirEvaluationDemand::TruthTest,
+        PirOperation::Branch { .. } | PirOperation::Loop { .. } => PirEvaluationDemand::TruthTest,
         _ => PirEvaluationDemand::Value,
     }
 }
