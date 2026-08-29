@@ -839,10 +839,11 @@ mod tests {
     }
 
     #[test]
-    fn binding_canonicalizes_relative_runtime_root() {
+    fn binding_canonicalizes_runtime_root() {
+        let runtime_root = std::env::current_dir().expect("read runtime root");
         let topology =
-            topology_with(Vec::new()).with_root(".").expect("bind relative runtime root");
-        let expected = canonical_runtime_root(Path::new(".")).expect("canonical runtime root");
+            topology_with(Vec::new()).with_root(runtime_root.join(".")).expect("bind runtime root");
+        let expected = canonical_runtime_root(&runtime_root).expect("canonical runtime root");
 
         assert_eq!(topology.root(), Some(expected.as_path()));
     }
