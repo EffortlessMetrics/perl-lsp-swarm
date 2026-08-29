@@ -29,6 +29,7 @@ SURFACE_PATH = EDITOR_CLIENTS / "vim-vim-lsp-public-surface.v1.json"
 ACTIVATION_ROOT_PATH = EDITOR_CLIENTS / "vim-vim-lsp-activation-root.v1.json"
 SMOKE_SCRIPT = REPO_ROOT / "scripts" / "ux" / "vim_vim_lsp_smoke.sh"
 DRIVER_SCRIPT = REPO_ROOT / "scripts" / "ux" / "vim_vim_lsp_driver.vim"
+ADAPTER_SCRIPT = REPO_ROOT / "scripts" / "test" / "vim-clients" / "vim-lsp-adapter.vim"
 
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
 
@@ -296,15 +297,52 @@ def validate_activation_root_consumption(violations: Violations) -> None:
     authority_set = set(authority)
 
     driver_text = DRIVER_SCRIPT.read_text(encoding="utf-8")
+    adapter_text = ADAPTER_SCRIPT.read_text(encoding="utf-8")
+    required_adapter_fragments = (
+        "function! VimLspHostClientRootMarkers() abort",
+        "call extend(l:markers, ['.git/', '.git'])",
+        "expand('%:p'), VimLspHostClientRootMarkers()",
+    )
+    for fragment in required_adapter_fragments:
+        if fragment not in adapter_text:
+            violations.add(f"adapter: canonical marker projection is missing {fragment!r}")
+
+    if "execute 'source ' . fnameescape(expand('$PERLLSP_VIM_ADAPTER'))" not in driver_text:
+        violations.add("driver: integration rail must source the canonical Vim adapter")
+    if "VimLspHostRegister()" not in driver_text:
+        violations.add("driver: integration rail must use adapter-owned registration")
+
+    if "VimLspHostRegister()" in driver_text:
+        # The adapter-owned registration reaches its root callback through the
+        # canonical projection checked above. There is intentionally no second
+        # nearest-parent call in this rail to inspect.
+        return
+
+    direct_calls = re.findall(
+        r"find_nearest_parent_file_directory\((.*?)\)", driver_text, re.DOTALL
+    )
+    if direct_calls and all("VimLspHostClientRootMarkers()" in call for call in direct_calls):
+        return
+
     call_match = re.search(
-        r"find_nearest_parent_file_directory\([\s\\]*[^,]+,[\s\\]*\[([^\]]*)\]",
+        r"find_nearest_parent_file_directory\([\s\\]*[^,]+,[\s\\]*([^\)]+)\)",
         driver_text,
         re.DOTALL,
     )
     if not call_match:
         violations.add("driver: nearest-parent marker call not found for consumption check")
         return
-    driver_markers = re.findall(r"'([^']+)'", call_match.group(1))
+    marker_expression = call_match.group(1).strip()
+    if marker_expression == "VimLspHostClientRootMarkers()":
+        # The deep rail delegates to the canonical adapter projection. Its
+        # source-level contract is checked below; there is no second marker
+        # list to compare here.
+        return
+    literal_match = re.fullmatch(r"\[([^\]]*)\]", marker_expression, re.DOTALL)
+    if not literal_match:
+        violations.add("driver: nearest-parent call must consume VimLspHostClientRootMarkers()")
+        return
+    driver_markers = re.findall(r"'([^']+)'", literal_match.group(1))
 
     unsanctioned = sorted(
         marker

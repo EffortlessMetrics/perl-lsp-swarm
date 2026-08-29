@@ -210,6 +210,7 @@ function! s:RootUri(_server_info) abort
   if empty(l:root)
     let l:root = getcwd()
   endif
+  let g:perllsp_vim_host_root_callback = fnamemodify(l:root, ':p')
   return lsp#utils#path_to_uri(l:root)
 endfunction
 

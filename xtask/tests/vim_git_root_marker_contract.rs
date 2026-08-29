@@ -73,18 +73,19 @@ fn executable_vim_lsp_root_proof_covers_both_git_root_shapes() -> Result<()> {
 
     let deep_rail = source("scripts/ux/vim_vim_lsp_driver.vim")?;
     ensure!(
-        deep_rail.contains("'dist.ini', '.git/', '.git'"),
-        "the deep actual-client rail must pass both vim-lsp Git marker spellings"
+        deep_rail.contains("VimLspHostRegister()"),
+        "the deep actual-client rail must use adapter-owned registration"
     );
 
     let smoke = source("scripts/ux/vim_activation_root_smoke.sh")?;
     for required in [
         "roots/git-only/.git",
         "roots/git-file/.git",
-        "VimLspClientRootMarkers",
+        "VimLspHostClientRootMarkers",
         "vim_lsp_helper_roots",
         "git_directory",
         "git_file",
+        "accepted an unmarked tree",
     ] {
         ensure!(
             smoke.contains(required),
