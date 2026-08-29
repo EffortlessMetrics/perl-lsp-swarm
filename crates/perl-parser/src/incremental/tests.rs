@@ -195,6 +195,7 @@ fn unicode_crlf_checkpoint_restart_preserves_spans() -> Result<()> {
     let result = apply_edits(&mut state, &[edit])?;
 
     assert_eq!(result.lex_restart.strategy, LexRestartStrategy::StoredCheckpointToEof);
+    assert!(result.lex_restart.restart_byte > 0);
     assert_incremental_matches_fresh(&state);
     assert_restored_token_stream_matches_fresh(state.source())?;
     Ok(())
@@ -218,6 +219,7 @@ fn recovery_checkpoint_restart_matches_fresh_diagnostics() -> Result<()> {
     let result = apply_edits(&mut state, &[edit])?;
 
     assert_eq!(result.lex_restart.strategy, LexRestartStrategy::StoredCheckpointToEof);
+    assert!(result.lex_restart.restart_byte > 0);
     assert!(!state.parse_output().diagnostics.is_empty());
     assert_incremental_matches_fresh(&state);
     assert_restored_token_stream_matches_fresh(state.source())?;
