@@ -1,7 +1,7 @@
 //! Corpus file discovery helpers.
 
-use crate::api::root::{CorpusRoot, CorpusRootError, CorpusRootSource};
 pub use crate::api::root::CORPUS_ROOT_ENV;
+use crate::api::root::{CorpusRoot, CorpusRootError, CorpusRootSource};
 use std::env;
 use std::fs;
 use std::ops::Deref;
@@ -120,9 +120,7 @@ impl CorpusPaths {
     }
 
     /// Validate an explicit root and derive its common corpus paths.
-    pub fn try_from_root(
-        root: impl AsRef<Path>,
-    ) -> Result<ResolvedCorpusPaths, CorpusRootError> {
+    pub fn try_from_root(root: impl AsRef<Path>) -> Result<ResolvedCorpusPaths, CorpusRootError> {
         CorpusRoot::explicit(root).map(ResolvedCorpusPaths::from_root)
     }
 
