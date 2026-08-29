@@ -501,6 +501,13 @@ fn coverage_workflow_is_manual_or_nightly_only_and_requires_receipts() {
         coverage_risk_pack_docs_contract(&stale_risk_sentence).is_err(),
         "risk-pack documentation contract must reject stale coverage route wording"
     );
+    let wrapped_stale_risk_route = format!(
+        "{risk_pack_doc}\nCoverage is advisory,\nbut runs through the\nfull CI deep lane.\n"
+    );
+    assert!(
+        coverage_risk_pack_docs_contract(&wrapped_stale_risk_route).is_err(),
+        "risk-pack documentation contract must reject stale coverage wording across three wrapped lines"
+    );
     assert!(
         has_positive_stale_route_claim(
             "Coverage does not run on PRs, but coverage runs on PRs for every pull request."
@@ -564,6 +571,24 @@ fn coverage_workflow_is_manual_or_nightly_only_and_requires_receipts() {
     assert!(
         !has_positive_stale_route_claim("Coverage is advisory, never a PR gate."),
         "legitimate negative coverage prose with `never` must remain allowed"
+    );
+    assert!(
+        !has_positive_stale_route_claim("Coverage doesn't run on PRs."),
+        "negative coverage prose with an ASCII contraction must remain allowed"
+    );
+    assert!(
+        !has_positive_stale_route_claim("Coverage doesn’t run on PRs."),
+        "negative coverage prose with a Unicode apostrophe contraction must remain allowed"
+    );
+    assert!(
+        !has_positive_stale_route_claim(
+            "Coverage is advisory, but the full CI deep lane is disabled."
+        ),
+        "disabled coverage routes must remain negative in compatibility prose"
+    );
+    assert!(
+        has_positive_stale_route_claim("Coverage is disabled, but coverage runs on pull requests."),
+        "a positive coverage route must remain visible beside a disabled clause"
     );
     assert!(
         !has_positive_stale_route_claim("Coverage is advisory, and never a full CI deep lane."),
@@ -1374,11 +1399,13 @@ fn has_positive_stale_route_clause(normalized: &str) -> bool {
 }
 
 fn has_negative_route_prose(normalized: &str) -> bool {
-    let has_negative_token = normalized
-        .split(|character: char| !character.is_ascii_alphanumeric())
-        .any(|token| matches!(token, "not" | "without" | "never" | "absent" | "neither"));
-    let has_negative_phrase =
-        ["does not", "must not", "instead of"].iter().any(|marker| normalized.contains(marker));
+    let has_negative_token =
+        normalized.split(|character: char| !character.is_ascii_alphanumeric()).any(|token| {
+            matches!(token, "not" | "without" | "never" | "absent" | "neither" | "disabled")
+        });
+    let has_negative_phrase = ["does not", "doesn't", "doesn’t", "must not", "instead of"]
+        .iter()
+        .any(|marker| normalized.contains(marker));
     let has_no_route_phrase = normalized.contains("no pull request")
         || normalized.contains("no merge queue")
         || normalized.contains("no merge group")
@@ -1613,6 +1640,7 @@ fn coverage_risk_pack_docs_contract(document: &str) -> Result<()> {
         !has_positive_stale_route_claim(parser_row),
         "parser risk-pack docs must not advertise coverage as a PR deep lane"
     );
+    coverage_reference_rows_contract(document, "risk-pack docs")?;
     let mut previous_coverage_line = false;
     for line in document.lines() {
         let lower = line.to_ascii_lowercase();
