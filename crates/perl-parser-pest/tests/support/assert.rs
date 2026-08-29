@@ -40,14 +40,19 @@ pub fn must<T, E: Debug>(result: Result<T, E>) -> T {
 ///
 /// # Panics
 ///
-/// Panics at the invocation site when `result` is [`Ok`], naming the success
-/// type and its [`Debug`] representation.
+/// Panics at the invocation site when `result` is [`Ok`], naming the expected
+/// error type, the success type, and the success value's [`Debug`]
+/// representation — the same diagnostic shape as the shared helper.
 #[allow(clippy::panic, reason = "test-only assertion boundary (#8771)")]
 #[track_caller]
 pub fn must_err<T: Debug, E>(result: Result<T, E>) -> E {
     match result {
         Ok(value) => {
-            panic!("must_err: expected Err, got Ok<{}>: {value:?}", type_name::<T>())
+            panic!(
+                "must_err: expected Err<{}>, got Ok<{}>: {value:?}",
+                type_name::<E>(),
+                type_name::<T>()
+            )
         }
         Err(error) => error,
     }

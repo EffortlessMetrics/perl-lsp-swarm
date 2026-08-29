@@ -40,10 +40,29 @@ const REQUIRED_LITERAL_PACKAGE_KEYS: &[&str] = &[
     "categories",
 ];
 
-/// Lint levels the accepted checks depend on. Losing any of these outside the
-/// workspace would silently weaken the package's own gate.
-const REQUIRED_DENIED_CLIPPY_LINTS: &[&str] =
-    &["unwrap_used", "expect_used", "panic", "todo", "unimplemented", "dbg_macro"];
+/// Every lint the accepted policy denies. Losing any of these outside the
+/// workspace would silently weaken the package's own gate, and an unpacked
+/// package has no root manifest to diff against, so the full set is pinned
+/// here rather than only the headline six.
+const REQUIRED_DENIED_CLIPPY_LINTS: &[&str] = &[
+    "await_holding_lock",
+    "await_holding_refcell_ref",
+    "collapsible_if",
+    "collapsible_match",
+    "dbg_macro",
+    "disallowed_fields",
+    "expect_used",
+    "manual_ilog2",
+    "manual_take",
+    "panic",
+    "print_stderr",
+    "print_stdout",
+    "ptr_arg",
+    "same_length_and_capacity",
+    "todo",
+    "unimplemented",
+    "unwrap_used",
+];
 
 /// Assets that must travel with the package for the library, the Pest grammar
 /// derive, the public example, and the package-local proof population to work.
@@ -82,10 +101,19 @@ fn manifest() -> Result<Value, Box<dyn Error>> {
 }
 
 /// Collect every dotted path at which a `workspace = true` inheritance marker
-/// appears. This catches all spellings at once: `version.workspace = true`,
-/// `regex.workspace = true`, and a bare `[lints] workspace = true` all parse
-/// into a table carrying a `workspace` key.
+/// appears. `version.workspace = true`, `regex.workspace = true`, and a bare
+/// `[lints] workspace = true` all parse into a table carrying a `workspace`
+/// key, so one traversal catches every spelling.
+///
+/// The walk descends through arrays of tables (`[[bin]]`, `[[example]]`, …) as
+/// well as tables, so no manifest shape is silently exempt from the check.
 fn workspace_inherited_paths(value: &Value, prefix: &str, found: &mut Vec<String>) {
+    if let Some(items) = value.as_array() {
+        for (index, item) in items.iter().enumerate() {
+            workspace_inherited_paths(item, &format!("{prefix}[{index}]"), found);
+        }
+        return;
+    }
     let Some(table) = value.as_table() else {
         return;
     };
@@ -151,7 +179,8 @@ fn manifest_declares_no_workspace_inheritance() -> Result<(), Box<dyn Error>> {
 #[test]
 fn inheritance_detector_reports_a_workspace_inherited_manifest() -> Result<(), Box<dyn Error>> {
     // Negative control: the detector above must actually discriminate. This is
-    // the shape of the manifest before #8771, in all three spellings.
+    // the shape of the manifest before #8771 in all three spellings, plus an
+    // array-of-tables entry proving the walk is not table-only.
     let before = r#"
 [package]
 name = "perl-parser-pest"
@@ -162,12 +191,21 @@ regex.workspace = true
 
 [lints]
 workspace = true
+
+[[example]]
+name = "parse_basic"
+required-features.workspace = true
 "#;
     let inherited = inherited_paths(&parse_manifest(before)?);
 
     assert_eq!(
         inherited,
-        vec!["dependencies.regex".to_string(), "lints".to_string(), "package.version".to_string(),],
+        vec![
+            "dependencies.regex".to_string(),
+            "example[0].required-features".to_string(),
+            "lints".to_string(),
+            "package.version".to_string(),
+        ],
         "the detector must name every inherited key, or the positive test is vacuous"
     );
     Ok(())
@@ -257,6 +295,47 @@ fn local_lint_policy_reproduces_the_accepted_denials() -> Result<(), Box<dyn Err
         manifest.get("lints").and_then(|lints| lints.get("rust")).is_some_and(Value::is_table),
         "the package must carry its own [lints.rust] policy"
     );
+    Ok(())
+}
+
+#[test]
+fn local_lint_policy_does_not_drift_from_the_workspace_while_embedded() -> Result<(), Box<dyn Error>>
+{
+    // The literal `[lints]` block is a copy of the accepted workspace policy, so
+    // it can silently fall behind when the root promotes a lint. While the
+    // package is still embedded the root manifest is present and the two tables
+    // must match exactly — every entry, not just the load-bearing denials.
+    //
+    // An unpacked package has no workspace root above it. That is the whole
+    // point of #8771, so its absence is a skip, not a failure; the rest of this
+    // file still holds there.
+    let Some(workspace_root) =
+        package_root().parent().and_then(Path::parent).map(Path::to_path_buf)
+    else {
+        return Ok(());
+    };
+    let root_manifest_path = workspace_root.join("Cargo.toml");
+    if !root_manifest_path.exists() {
+        return Ok(());
+    }
+    let root = parse_manifest(&fs::read_to_string(&root_manifest_path)?)?;
+    let Some(workspace_lints) = root.get("workspace").and_then(|workspace| workspace.get("lints"))
+    else {
+        return Ok(());
+    };
+
+    let manifest = manifest()?;
+    let local_lints = manifest.get("lints").ok_or("manifest has no literal [lints] table")?;
+
+    for family in ["clippy", "rust"] {
+        let expected = workspace_lints.get(family).and_then(Value::as_table);
+        let actual = local_lints.get(family).and_then(Value::as_table);
+        assert_eq!(
+            actual, expected,
+            "[lints.{family}] has drifted from the root [workspace.lints.{family}]; \
+             mirror the root change into this package's manifest deliberately (#8771)"
+        );
+    }
     Ok(())
 }
 
