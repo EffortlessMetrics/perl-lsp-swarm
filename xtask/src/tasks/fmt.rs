@@ -162,6 +162,29 @@ pub(crate) fn owning_package<'a>(
         .max_by_key(|package| package.dir.as_os_str().len())
 }
 
+/// Whether a staged path may be rewritten in place by the staged formatter.
+///
+/// Both sides have to agree, and for different reasons. `read_to_string`
+/// follows a symlink, while [`commit_formatted`] renames a regular temp file
+/// over the path — so formatting a staged `foo.rs` symlink replaces the link
+/// with a regular file holding its target's bytes, content that can originate
+/// outside the repository entirely. The index is what actually gets committed,
+/// so an entry git records as a symlink is refused even when the worktree copy
+/// currently looks regular, and the reverse. Measured before the refusal
+/// existed: `git add` recorded a `120000 -> 100644` type *and* content change
+/// inside the author's own commit.
+///
+/// `index_mode` is the staged mode from `git ls-files --stage`, absent when the
+/// path has no index entry. Only the two regular blob modes are rewritable:
+/// `120000` (symlink) and `160000` (gitlink/submodule) are refused, as is any
+/// mode git may add later — the rule fails closed on anything unrecognised.
+pub(crate) fn is_rewritable_staged_file(
+    worktree_is_regular: bool,
+    index_mode: Option<&str>,
+) -> bool {
+    worktree_is_regular && index_mode.is_none_or(|mode| mode == "100644" || mode == "100755")
+}
+
 /// Formats the staged Rust diff and re-stages it.
 ///
 /// This is the apply half of the `rustfmt_staged` commit gate: that check
@@ -249,25 +272,17 @@ pub fn run_staged() -> Result<()> {
             // subdirectory, so resolve against the git root.
             let absolute = root.join(path);
 
-            // Only ever rewrite a regular file, checked on both sides.
-            //
-            // `read_to_string` follows a symlink, but the commit phase renames
-            // a regular temp file over the link — so a staged `foo.rs` symlink
-            // became a regular file holding its target's bytes, and `git add`
-            // recorded that as a 120000 -> 100644 type change. Measured before
-            // the fix, with a target outside the source tree.
-            //
-            // The worktree type alone is not enough: the index is what gets
-            // committed, so an entry the index calls a symlink is refused even
-            // if the worktree copy currently looks regular (and vice versa).
+            // Only ever rewrite a regular file, checked on both sides — see
+            // [`is_rewritable_staged_file`] for why the index mode is consulted
+            // as well as the worktree type.
             let worktree_regular = std::fs::symlink_metadata(&absolute)
                 .with_context(|| format!("failed to stat staged file {}", path.display()))?
                 .file_type()
                 .is_file();
-            let index_regular = index_modes
-                .get(path.as_path())
-                .is_none_or(|mode| mode == "100644" || mode == "100755");
-            if !worktree_regular || !index_regular {
+            if !is_rewritable_staged_file(
+                worktree_regular,
+                index_modes.get(path.as_path()).map(String::as_str),
+            ) {
                 irregular.push(path.as_path());
                 continue;
             }
@@ -856,7 +871,7 @@ mod tests {
     use super::{
         CargoMetadata, CargoPackage, CrateFailure, StagedFormatAction, WorkspacePackage,
         classify_staged_paths, collect_workspace_manifest_paths, format_failure_report,
-        parse_unformatted_files,
+        is_rewritable_staged_file, parse_unformatted_files,
     };
     use color_eyre::eyre::Result;
     use std::collections::HashSet;
@@ -956,6 +971,65 @@ mod tests {
         assert_eq!(owner_name("src/lib.rs", &dirs).as_deref(), Some("root-crate"));
         // ...and must not shadow a more specific package.
         assert_eq!(owner_name("xtask/src/main.rs", &dirs).as_deref(), Some("xtask"));
+    }
+
+    // `is_rewritable_staged_file` — the staged symlink / irregular index-mode
+    // refusal (#9555). Formatting a staged symlink replaces it with a regular
+    // file holding its target's bytes, so every case below that returns `false`
+    // is a file the formatter must leave alone. These are the pure-function
+    // half of the rule applied in `run_staged`; deleting either side of the
+    // `&&` there turns one of these red.
+
+    #[test]
+    fn a_staged_symlink_is_never_rewritten() {
+        // The index says symlink; the worktree agrees. The original defect.
+        assert!(!is_rewritable_staged_file(false, Some("120000")));
+    }
+
+    #[test]
+    fn a_worktree_symlink_is_refused_even_when_the_index_calls_it_regular() {
+        // The worktree is what `read_to_string` follows, so a link here is
+        // refused whatever the index currently records.
+        assert!(!is_rewritable_staged_file(false, Some("100644")));
+    }
+
+    #[test]
+    fn a_regular_worktree_file_the_index_calls_a_symlink_is_refused() {
+        // The index is what gets committed, so its mode is decisive even when
+        // the worktree copy looks safe to rewrite.
+        assert!(!is_rewritable_staged_file(true, Some("120000")));
+    }
+
+    #[test]
+    fn a_staged_gitlink_is_never_rewritten() {
+        // 160000 is a submodule pointer, not a blob the formatter can rewrite.
+        assert!(!is_rewritable_staged_file(true, Some("160000")));
+    }
+
+    #[test]
+    fn an_unrecognised_index_mode_fails_closed() {
+        // The rule admits two modes by name rather than excluding known-bad
+        // ones, so a mode git adds later is refused rather than rewritten.
+        assert!(!is_rewritable_staged_file(true, Some("100600")));
+        assert!(!is_rewritable_staged_file(true, Some("")));
+    }
+
+    #[test]
+    fn a_regular_staged_blob_is_rewritable_in_both_modes() {
+        assert!(is_rewritable_staged_file(true, Some("100644")));
+        assert!(is_rewritable_staged_file(true, Some("100755")));
+    }
+
+    #[test]
+    fn a_regular_file_with_no_index_entry_is_rewritable() {
+        // No index entry means nothing contradicts the worktree type.
+        assert!(is_rewritable_staged_file(true, None));
+    }
+
+    #[test]
+    fn a_worktree_symlink_with_no_index_entry_is_refused() {
+        // The absent-entry case must not become a blanket accept.
+        assert!(!is_rewritable_staged_file(false, None));
     }
 
     #[test]
