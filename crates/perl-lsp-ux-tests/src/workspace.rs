@@ -119,9 +119,7 @@ impl crate::UxHarness {
     /// successfully and refuses to reset an already-open version owner.
     pub fn open_editor_buffer(&self, relative_path: &str, content: &str) -> Result<()> {
         let uri = self.workspace.uri(relative_path);
-        open_tracked_document(&self.document_versions, &uri, || {
-            self.client.did_open(&uri, content)
-        })
+        open_tracked_document(&self.document_versions, &uri, || self.client.did_open(&uri, content))
     }
 
     /// Replace an open editor buffer without changing its backing workspace file.
@@ -160,11 +158,7 @@ impl crate::UxHarness {
     /// Return the client version currently owned for an open editor buffer.
     pub fn tracked_document_version(&self, relative_path: &str) -> Option<i32> {
         let uri = self.workspace.uri(relative_path);
-        self.document_versions
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .get(&uri)
-            .copied()
+        self.document_versions.lock().unwrap_or_else(|error| error.into_inner()).get(&uri).copied()
     }
 }
 
@@ -223,11 +217,7 @@ mod editor_buffer_version_tests {
     use std::sync::Mutex;
 
     fn version(versions: &Mutex<HashMap<String, i32>>, uri: &str) -> Option<i32> {
-        versions
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .get(uri)
-            .copied()
+        versions.lock().unwrap_or_else(|error| error.into_inner()).get(uri).copied()
     }
 
     #[test]
@@ -259,9 +249,7 @@ mod editor_buffer_version_tests {
         let uri = "file:///workspace/live.pl";
         let versions = Mutex::new(HashMap::new());
 
-        assert!(
-            open_tracked_document(&versions, uri, || Err(anyhow!("open transport"))).is_err()
-        );
+        assert!(open_tracked_document(&versions, uri, || Err(anyhow!("open transport"))).is_err());
         assert_eq!(version(&versions, uri), None);
 
         open_tracked_document(&versions, uri, || Ok(()))?;
