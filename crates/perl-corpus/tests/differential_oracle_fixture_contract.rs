@@ -3,7 +3,7 @@ use std::error::Error;
 use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -17,6 +17,7 @@ const POLL_INTERVAL: Duration = Duration::from_millis(10);
 const MAX_DIAGNOSTIC_CHARS: usize = 200;
 const DENIED_PERL_ENVIRONMENT: &[&str] = &[
     "PERL5LIB",
+    "PERLLIB",
     "PERL5OPT",
     "PERL_LOCAL_LIB_ROOT",
     "PERL_LOCAL_LIB_PREFIX",
@@ -56,6 +57,15 @@ fn fixture_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/parser_accuracy")
 }
 
+#[derive(Debug)]
+struct ImportExportFixturePaths {
+    consumer: PathBuf,
+    producer: PathBuf,
+    module_root: PathBuf,
+    consumer_relative: PathBuf,
+    producer_relative: PathBuf,
+}
+
 fn normalized_protocol_line(bytes: &[u8], subject: &str) -> TestResult<String> {
     let output = String::from_utf8(bytes.to_vec())?;
     let line = output.strip_suffix("\r\n").or_else(|| output.strip_suffix('\n'));
@@ -77,7 +87,38 @@ struct ParserAccuracyFixture {
     source_path: PathBuf,
 }
 
-fn import_export_fixture_paths() -> TestResult<(PathBuf, PathBuf)> {
+fn validated_manifest_source_path(
+    repository_root: &Path,
+    fixture_root: &Path,
+    source_path: &Path,
+) -> TestResult<PathBuf> {
+    if source_path.is_absolute()
+        || source_path.components().any(|component| {
+            matches!(component, Component::Prefix(_) | Component::RootDir | Component::ParentDir)
+        })
+    {
+        return Err(failure(format!(
+            "manifest fixture source path is not a safe relative path: {}",
+            source_path.display()
+        )));
+    }
+
+    let canonical_repository_root = fs::canonicalize(repository_root)?;
+    let canonical_fixture_root = fs::canonicalize(fixture_root)?;
+    let candidate = repository_root.join(source_path);
+    let canonical_candidate = fs::canonicalize(&candidate)?;
+    if !canonical_candidate.starts_with(&canonical_repository_root)
+        || !canonical_candidate.starts_with(&canonical_fixture_root)
+    {
+        return Err(failure(format!(
+            "manifest fixture source path escapes the parser-accuracy fixture root: {}",
+            source_path.display()
+        )));
+    }
+    Ok(canonical_candidate)
+}
+
+fn import_export_fixture_paths() -> TestResult<ImportExportFixturePaths> {
     let manifest_path = fixture_root().join("manifest.json");
     let manifest: ParserAccuracyManifest =
         serde_json::from_str(&fs::read_to_string(&manifest_path)?)?;
@@ -95,7 +136,31 @@ fn import_export_fixture_paths() -> TestResult<(PathBuf, PathBuf)> {
         .iter()
         .find(|fixture| fixture.id == "imports_exports_producer")
         .ok_or_else(|| failure("manifest is missing the imports_exports_producer fixture"))?;
-    Ok((repository_root.join(&consumer.source_path), repository_root.join(&producer.source_path)))
+    let canonical_fixture_root = fs::canonicalize(fixture_root())?;
+    let consumer = validated_manifest_source_path(
+        repository_root,
+        &canonical_fixture_root,
+        &consumer.source_path,
+    )?;
+    let producer = validated_manifest_source_path(
+        repository_root,
+        &canonical_fixture_root,
+        &producer.source_path,
+    )?;
+    let consumer_relative = consumer.strip_prefix(&canonical_fixture_root)?.to_path_buf();
+    let producer_relative = producer.strip_prefix(&canonical_fixture_root)?.to_path_buf();
+    let module_root = producer
+        .parent()
+        .and_then(Path::parent)
+        .ok_or_else(|| failure("manifest producer path has no module root"))?
+        .to_path_buf();
+    Ok(ImportExportFixturePaths {
+        consumer,
+        producer,
+        module_root,
+        consumer_relative,
+        producer_relative,
+    })
 }
 
 fn environment_value(environment: &[(OsString, OsString)], name: &str) -> Option<OsString> {
@@ -142,6 +207,7 @@ fn isolated_perl_command() -> TestResult<Command> {
 }
 
 fn run_bounded(mut command: Command, operation: &str) -> TestResult<Output> {
+    // This contract bounds only the directly spawned child; descendant cleanup is not proven.
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = command.spawn().map_err(|error| {
         failure(format!(
@@ -223,8 +289,32 @@ fn protocol_line_normalization_accepts_only_one_lf_or_crlf_terminated_line() -> 
 }
 
 #[test]
+fn manifest_source_path_rejects_absolute_and_parent_traversal() -> TestResult {
+    let root = tempfile::tempdir()?;
+    let fixture_root = root.path().join("fixtures");
+    fs::create_dir_all(&fixture_root)?;
+    fs::write(fixture_root.join("inside.pl"), "1;")?;
+
+    assert!(
+        validated_manifest_source_path(root.path(), &fixture_root, Path::new("../outside.pl"))
+            .is_err()
+    );
+    assert!(
+        validated_manifest_source_path(root.path(), &fixture_root, &fixture_root.join("inside.pl"))
+            .is_err()
+    );
+    assert!(
+        validated_manifest_source_path(root.path(), &fixture_root, Path::new("fixtures/inside.pl"))
+            .is_ok()
+    );
+    Ok(())
+}
+
+#[test]
 fn import_export_fixture_is_a_declared_two_file_module_graph() -> TestResult {
-    let (consumer_path, producer_path) = import_export_fixture_paths()?;
+    let paths = import_export_fixture_paths()?;
+    let consumer_path = &paths.consumer;
+    let producer_path = &paths.producer;
     let producer = fs::read_to_string(&producer_path)?;
     let consumer = fs::read_to_string(&consumer_path)?;
 
@@ -242,17 +332,32 @@ fn import_export_fixture_is_a_declared_two_file_module_graph() -> TestResult {
 }
 
 fn copy_import_export_fixture(root: &Path) -> TestResult {
-    fs::create_dir_all(root.join("Accuracy"))?;
-    let (consumer_path, producer_path) = import_export_fixture_paths()?;
-    fs::copy(consumer_path, root.join("imports_exports.pl"))?;
-    fs::copy(producer_path, root.join("Accuracy/ImportsExports.pm"))?;
+    let paths = import_export_fixture_paths()?;
+    let consumer = root.join(&paths.consumer_relative);
+    let producer = root.join(&paths.producer_relative);
+    if let Some(parent) = consumer.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    if let Some(parent) = producer.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::copy(&paths.consumer, consumer)?;
+    fs::copy(&paths.producer, producer)?;
     Ok(())
 }
 
 fn compile_import_export_copy(root: &Path) -> TestResult<Output> {
-    let consumer = root.join("imports_exports.pl");
+    let paths = import_export_fixture_paths()?;
+    let consumer = root.join(&paths.consumer_relative);
+    let module_root = root.join(
+        paths
+            .producer_relative
+            .parent()
+            .and_then(Path::parent)
+            .ok_or_else(|| failure("manifest producer path has no module root"))?,
+    );
     let mut command = isolated_perl_command()?;
-    command.current_dir(root).arg("-I").arg(root).arg("-c").arg(consumer);
+    command.current_dir(root).arg("-I").arg(module_root).arg("-c").arg(consumer);
     run_bounded(command, "temporary ImportExport fixture syntax check")
 }
 
@@ -274,8 +379,12 @@ fn assert_import_export_copy_rejected(root: &Path, expected: &str) -> TestResult
 #[test]
 fn import_export_negative_control_rejects_missing_producer() -> TestResult {
     let root = tempfile::tempdir()?;
-    let (consumer_path, _) = import_export_fixture_paths()?;
-    fs::copy(consumer_path, root.path().join("imports_exports.pl"))?;
+    let paths = import_export_fixture_paths()?;
+    let consumer = root.path().join(&paths.consumer_relative);
+    if let Some(parent) = consumer.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::copy(paths.consumer, consumer)?;
     assert_import_export_copy_rejected(root.path(), "Can't locate Accuracy/ImportsExports.pm")
 }
 
@@ -310,18 +419,19 @@ fn import_export_negative_control_rejects_missing_export() -> TestResult {
 fn import_export_negative_control_rejects_collapsed_topology() -> TestResult {
     let root = tempfile::tempdir()?;
     fs::create_dir_all(root.path())?;
-    let (consumer_path, producer_path) = import_export_fixture_paths()?;
-    let consumer = root.path().join("imports_exports.pl");
-    let mut collapsed = fs::read_to_string(consumer_path)?;
-    collapsed.push_str(&fs::read_to_string(producer_path)?);
+    let paths = import_export_fixture_paths()?;
+    let consumer = root.path().join(&paths.consumer_relative);
+    let mut collapsed = fs::read_to_string(paths.consumer)?;
+    collapsed.push_str(&fs::read_to_string(paths.producer)?);
     fs::write(&consumer, collapsed)?;
     assert_import_export_copy_rejected(root.path(), "Can't locate Accuracy/ImportsExports.pm")
 }
 
 #[test]
 fn import_export_fixture_compiles_with_only_the_declared_module_root() -> TestResult {
-    let (consumer, _) = import_export_fixture_paths()?;
-    let root = fixture_root();
+    let paths = import_export_fixture_paths()?;
+    let consumer = &paths.consumer;
+    let root = &paths.module_root;
     let mut command = isolated_perl_command()?;
     command.current_dir(&root).arg("-I").arg(&root).arg("-c").arg(&consumer);
 
@@ -334,8 +444,9 @@ fn import_export_fixture_compiles_with_only_the_declared_module_root() -> TestRe
 
 #[test]
 fn import_export_fixture_loads_the_expected_imported_symbol() -> TestResult {
-    let (consumer, _) = import_export_fixture_paths()?;
-    let root = fixture_root();
+    let paths = import_export_fixture_paths()?;
+    let consumer = &paths.consumer;
+    let root = &paths.module_root;
     let mut command = isolated_perl_command()?;
     command.current_dir(&root).arg("-I").arg(&root).arg("-e").arg(IMPORT_PROBE).arg(&consumer);
 
@@ -381,7 +492,7 @@ fn governed_perl_probe_denies_hostile_perl_environment() -> TestResult {
     command.env("LC_ALL", "C");
     remove_denied_perl_environment(&mut command);
     command.arg("-e").arg(
-        r#"my @bad = grep { exists $ENV{$_} } qw(PERL5LIB PERL5OPT PERL_LOCAL_LIB_ROOT PERL_LOCAL_LIB_PREFIX PERL_MB_OPT PERL_MM_OPT); die join(',', @bad) if @bad; print "isolated\n";"#,
+        r#"my @bad = grep { exists $ENV{$_} } qw(PERL5LIB PERLLIB PERL5OPT PERL_LOCAL_LIB_ROOT PERL_LOCAL_LIB_PREFIX PERL_MB_OPT PERL_MM_OPT); die join(',', @bad) if @bad; print "isolated\n";"#,
     );
 
     let output = run_bounded(command, "hostile Perl environment denial probe")?;
@@ -400,6 +511,7 @@ fn governed_perl_probe_environment_contains_no_denied_value() -> TestResult {
     let command = isolated_perl_command()?;
     let denied = [
         OsStr::new("PERL5LIB"),
+        OsStr::new("PERLLIB"),
         OsStr::new("PERL5OPT"),
         OsStr::new("PERL_LOCAL_LIB_ROOT"),
         OsStr::new("PERL_LOCAL_LIB_PREFIX"),
