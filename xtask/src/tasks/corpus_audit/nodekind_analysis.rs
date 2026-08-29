@@ -19,10 +19,8 @@ pub struct NodeKindStats {
     /// NodeKinds that were never seen
     pub never_seen: Vec<String>,
     /// Never-seen NodeKinds that are intentionally excluded from strict coverage.
-    #[serde(default)]
     pub allowlisted_never_seen: Vec<AllowlistedNodeKind>,
     /// Never-seen NodeKinds that still need fixture/generator coverage.
-    #[serde(default)]
     pub actionable_never_seen: Vec<String>,
     /// NodeKinds with low coverage (<5 occurrences)
     pub at_risk: Vec<AtRiskNodeKind>,
@@ -218,6 +216,37 @@ mod tests {
     }
 
     #[test]
+    fn test_nodekind_stats_requires_explicit_omission_classification() {
+        let missing_actionable = r#"{
+            "total_count": 76,
+            "covered_count": 71,
+            "coverage_percentage": 93.4,
+            "never_seen": ["KeyValueSlice"],
+            "allowlisted_never_seen": [],
+            "at_risk": [],
+            "frequency": {}
+        }"#;
+        assert!(
+            serde_json::from_str::<NodeKindStats>(missing_actionable).is_err(),
+            "a report without actionable_never_seen must not deserialize as zero actionable gaps"
+        );
+
+        let missing_allowlisted = r#"{
+            "total_count": 76,
+            "covered_count": 71,
+            "coverage_percentage": 93.4,
+            "never_seen": ["MissingBlock"],
+            "actionable_never_seen": [],
+            "at_risk": [],
+            "frequency": {}
+        }"#;
+        assert!(
+            serde_json::from_str::<NodeKindStats>(missing_allowlisted).is_err(),
+            "a report without allowlisted_never_seen must not deserialize as a complete omission partition"
+        );
+    }
+
+    #[test]
     fn test_recovery_allowlist_contains_known_kinds() {
         let allowlist = recovery_kind_allowlist();
         // All 6 members of RECOVERY_KIND_NAMES must appear in the allowlist.
@@ -272,7 +301,7 @@ mod tests {
         );
         // No overlap between the two sub-lists.
         let allowlisted_set: HashSet<&str> = allowlisted.iter().map(|s| s.as_str()).collect();
-        let actionable_set: HashSet<&str> = actionable.iter().map(|s| s.as_str()).collect();
+        let actionable_set: HashSet<&str> = actionable.iter().map(std::string::String::as_str).collect();
         let overlap: Vec<&&str> = allowlisted_set.intersection(&actionable_set).collect();
         assert!(
             overlap.is_empty(),
