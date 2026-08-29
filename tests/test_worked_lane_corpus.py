@@ -95,9 +95,15 @@ MIN_UNPROVED_CHARS = 30
 CATEGORY_HEADING = re.compile(r"^### ([a-z0-9-]+)\s*$")
 FIELD_LINE = re.compile(r"^- \*\*([^:*]+):\*\* (.+)$")
 # Ledger paths are relative to the corpus directory and use POSIX separators,
-# including when a future lane is kept in a subdirectory. Reject `..` segments
-# so the path remains a child of `EXAMPLES` when it is resolved below.
-LANE_FILE = re.compile(r"^`([A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*\.md)`$")
+# including when a future lane is kept in a subdirectory. Every segment must
+# begin with a character other than `.`, which is what actually rejects `..`
+# and keeps the path a child of `EXAMPLES` once it is joined below --
+# `test_lane_paths_cannot_escape_the_corpus` is the control. A permissive
+# `[A-Za-z0-9_.-]+` segment reads as if it excluded `..`, but the dot is in the
+# class, so `../x.md` matched and the receipts check would then read a document
+# outside the corpus.
+LANE_SEGMENT = r"[A-Za-z0-9_-][A-Za-z0-9_.-]*"
+LANE_FILE = re.compile(rf"^`({LANE_SEGMENT}(?:/{LANE_SEGMENT})*\.md)`$")
 
 # A receipt is an issue/PR reference or a commit. Both are checked, because a
 # ledger that verified only `#NNNN` while a row also listed a squash SHA would
@@ -465,6 +471,29 @@ class WorkedLaneLedgerTests(unittest.TestCase):
                 MIN_UNPROVED_CHARS,
                 f"{category}: ABSENT must say what a lane would have to "
                 f"demonstrate, so the gap stays actionable",
+            )
+
+    def test_lane_paths_cannot_escape_the_corpus(self) -> None:
+        """A ledger path is a child of the corpus, and the pattern proves it.
+
+        `test_covered_receipts_appear_in_the_lane_document` joins the matched
+        path onto `EXAMPLES` and reads whatever it finds, so a `..` segment
+        would bind a row's receipts to a document outside the corpus. The
+        membership check would still fail such a row, but the two checks are
+        independent, and the one that reads the file should not depend on the
+        other having run.
+        """
+        for escape in ("../outside.md", "../../outside.md", "sub/../../outside.md"):
+            self.assertIsNone(
+                LANE_FILE.match(f"`{escape}`"),
+                f"{escape!r} escapes {EXAMPLES.relative_to(ROOT)} but the lane "
+                f"path pattern accepted it",
+            )
+        for allowed in ("lane.md", "product/lane.md", "a/b/lane.md"):
+            self.assertIsNotNone(
+                LANE_FILE.match(f"`{allowed}`"),
+                f"{allowed!r} is a legitimate corpus-relative lane path but the "
+                f"pattern rejected it",
             )
 
     def test_no_example_document_is_unaccounted_for(self) -> None:
