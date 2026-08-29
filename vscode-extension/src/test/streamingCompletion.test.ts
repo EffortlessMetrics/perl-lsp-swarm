@@ -945,13 +945,59 @@ describe('StreamingCompletionController — actual request context forwarding', 
     expect(params.position).toEqual({ line: 11, character: 3 });
   });
 
-  test('an already-cancelled token that fires synchronously does not throw', () => {
-    // VS Code returns a shortcut event for an already-cancelled token. Its own
-    // implementation defers via setTimeout, but a synchronous listener must not
-    // be able to take the provider down: the listener clears activeTokenSource,
-    // so reading the token after subscribing would throw a TypeError here.
-    const synchronouslyCancelledToken = {
+  test('an already-cancelled token dispatches no stream request', () => {
+    // VS Code defers a listener registered after cancellation to a later
+    // event-loop turn, so subscribing alone would let the request go out and be
+    // cancelled a tick later. Nothing should be dispatched at all.
+    const preCancelledToken = {
       isCancellationRequested: true,
+      onCancellationRequested: () => ({ dispose: jest.fn() }),
+    } as unknown as vscode.CancellationToken;
+
+    controller.provideInlineCompletionItems(
+      makeMockDoc('file:///a.pl', 1),
+      makeMockPos(5, 10),
+      { triggerKind: 0 } as vscode.InlineCompletionContext,
+      preCancelledToken,
+    );
+
+    expect(mockClient.sendRequest as jest.Mock).not.toHaveBeenCalled();
+    expect(controller.snapshotStreamCounters().streamGenerationsStarted).toBe(0);
+  });
+
+  test('a live token after a cancelled one still dispatches', () => {
+    const preCancelledToken = {
+      isCancellationRequested: true,
+      onCancellationRequested: () => ({ dispose: jest.fn() }),
+    } as unknown as vscode.CancellationToken;
+
+    controller.provideInlineCompletionItems(
+      makeMockDoc('file:///a.pl', 1),
+      makeMockPos(5, 10),
+      { triggerKind: 0 } as vscode.InlineCompletionContext,
+      preCancelledToken,
+    );
+
+    // Opposite-direction control: the refusal must be scoped to the cancelled
+    // token, not latch the adapter off for subsequent live requests.
+    controller.provideInlineCompletionItems(
+      makeMockDoc('file:///a.pl', 1),
+      makeMockPos(5, 10),
+      { triggerKind: 0 } as vscode.InlineCompletionContext,
+      {} as vscode.CancellationToken,
+    );
+
+    expect((mockClient.sendRequest as jest.Mock).mock.calls).toHaveLength(1);
+    expect(controller.snapshotStreamCounters().streamGenerationsStarted).toBe(1);
+  });
+
+  test('a token that fires cancellation synchronously on subscribe does not throw', () => {
+    // Not flagged cancelled on entry, so it passes the pre-cancelled refusal
+    // and reaches the subscribe path. Its listener fires synchronously, which
+    // clears activeTokenSource — reading the token after subscribing would
+    // throw a TypeError here and take the provider down.
+    const synchronouslyCancelledToken = {
+      isCancellationRequested: false,
       onCancellationRequested: (listener: () => void) => {
         listener();
         return { dispose: jest.fn() };

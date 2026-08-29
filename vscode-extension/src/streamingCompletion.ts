@@ -340,6 +340,15 @@ export class StreamingCompletionController implements vscode.Disposable, InlineS
     // Cancel any existing stream (also sets activeRequestIdentity = null)
     this.cancelActiveStream();
 
+    // The editor can hand the provider a token that is already cancelled when
+    // the request was abandoned before we ran. VS Code schedules a listener
+    // registered after cancellation for a later event-loop turn, so merely
+    // subscribing below would still let the request go out and be cancelled a
+    // tick later — one wasted backend generation. Refuse it outright instead.
+    if (token?.isCancellationRequested === true) {
+      return;
+    }
+
     // Create cancellation token
     this.activeTokenSource = new vscode.CancellationTokenSource();
 
