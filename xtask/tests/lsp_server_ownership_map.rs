@@ -644,6 +644,15 @@ const OWNERSHIP: &[OwnershipRow] = &[
         "#11674"
     ),
     row!(
+        "document_symbols_before_install_hook",
+        RuntimeServices,
+        "Mutex<Option<Box>>",
+        "test hook release / server drop",
+        "test runtime",
+        true,
+        "#11674"
+    ),
+    row!(
         "ai_inline_backend",
         ProductComposition,
         "Mutex<Option<Arc>>",
