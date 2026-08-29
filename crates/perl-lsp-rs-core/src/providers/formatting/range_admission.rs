@@ -10,7 +10,7 @@
 //! source bounds, so a range request can never silently become the nearest
 //! convenient lines.
 
-use crate::providers::formatting_types::FormatRange;
+use crate::providers::formatting_types::{FormatPosition, FormatRange};
 
 /// One strict position-mapping failure inside the current source.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -284,6 +284,24 @@ pub fn admit_format_range(
         return Err(RangeAdmissionError::Reversed);
     }
     Ok(AdmittedFormatRange { requested: range.clone(), start_byte, end_byte })
+}
+
+/// Admit one requested range given raw wire (line, character) endpoints.
+///
+/// Identical strict mapping to [`admit_format_range`]; offered so policy-layer
+/// `--lib` sources can admit ranges without naming the geometry types
+/// (#9618).
+pub fn admit_wire_endpoints(
+    geometry: &SourceGeometry,
+    source: &str,
+    start: (u32, u32),
+    end: (u32, u32),
+) -> Result<AdmittedFormatRange, RangeAdmissionError> {
+    admit_format_range(
+        geometry,
+        source,
+        &FormatRange::new(FormatPosition::new(start.0, start.1), FormatPosition::new(end.0, end.1)),
+    )
 }
 
 #[cfg(test)]

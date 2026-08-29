@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { COEXISTENCE_CONFIGURATION_INPUTS } from '../coexistenceAdvisory';
 import {
   buildDisabledFeaturesFromConfig,
   buildLanguageClientConfigurationPayload,
@@ -210,6 +211,13 @@ describe('language client configuration', () => {
   ])('classifies %s as %s', (setting, expected) => {
     expect(classifyConfigurationSetting(setting)).toBe(expected);
   });
+
+  test.each([...COEXISTENCE_CONFIGURATION_INPUTS])(
+    'coexistence input %s classifies live so advisory re-evaluation stays reachable',
+    (setting) => {
+      expect(classifyConfigurationSetting(setting)).toBe('live');
+    },
+  );
 
   test('reports all actions affected by one configuration event', () => {
     const changed = new Set([
