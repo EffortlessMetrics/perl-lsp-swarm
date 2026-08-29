@@ -179,10 +179,7 @@ impl ModuleMovePlan {
             ModuleMoveTarget::Package(value) => value,
             ModuleMoveTarget::RelativePath(value) => {
                 let prefix = format!("{}/", source.root.trim_end_matches('/'));
-                value
-                    .strip_prefix(&prefix)
-                    .and_then(package_from_path)
-                    .unwrap_or_default()
+                value.strip_prefix(&prefix).and_then(package_from_path).unwrap_or_default()
             }
         };
         let target_path = module_path(&target_package)
@@ -198,7 +195,9 @@ impl ModuleMovePlan {
             || !valid_package(&source.module)
             || source.package != source.module
             || expected_source_path.as_deref() != Some(source.relative_path.as_str())
-            || !source.editable || source.restricted || source.primary_package_count != 1
+            || !source.editable
+            || source.restricted
+            || source.primary_package_count != 1
         {
             blockers.push(if source.primary_package_count != 1 {
                 ModuleMoveBlocker::AmbiguousSourcePackage
@@ -231,15 +230,18 @@ impl ModuleMovePlan {
             if occurrence.dynamic || occurrence.kind == OccurrenceKind::DynamicBoundary {
                 blockers.push(ModuleMoveBlocker::DynamicBoundary);
             }
-            if occurrence.unsupported { blockers.push(ModuleMoveBlocker::UnsupportedProjection); }
+            if occurrence.unsupported {
+                blockers.push(ModuleMoveBlocker::UnsupportedProjection);
+            }
             if occurrence.kind == OccurrenceKind::Definition
                 && occurrence.old_text.trim_start().starts_with("package ")
-                && replace_identity(&occurrence.old_text, &source.package, &target_package).is_some()
+                && replace_identity(&occurrence.old_text, &source.package, &target_package)
+                    .is_some()
             {
                 has_package_declaration = true;
             }
-            let range_len = u64::from(occurrence.end_byte)
-                .saturating_sub(u64::from(occurrence.start_byte));
+            let range_len =
+                u64::from(occurrence.end_byte).saturating_sub(u64::from(occurrence.start_byte));
             if occurrence.stale
                 || occurrence.old_text.is_empty()
                 || occurrence.end_byte <= occurrence.start_byte
@@ -250,11 +252,21 @@ impl ModuleMovePlan {
                 }
                 blockers.push(ModuleMoveBlocker::StaleOrUnknownGeneration);
             }
-            if let Some(new_text) = replace_identity(&occurrence.old_text, &source.package, &target_package) {
-                edits.push(ModuleMoveEdit { file_id: occurrence.file_id, generation: occurrence.file_generation,
-                    occurrence_id: occurrence.occurrence_id, kind: occurrence.kind, entity_id: occurrence.entity_id,
-                    anchor_id: occurrence.anchor_id, old_text: occurrence.old_text, new_text,
-                    start_byte: occurrence.start_byte, end_byte: occurrence.end_byte });
+            if let Some(new_text) =
+                replace_identity(&occurrence.old_text, &source.package, &target_package)
+            {
+                edits.push(ModuleMoveEdit {
+                    file_id: occurrence.file_id,
+                    generation: occurrence.file_generation,
+                    occurrence_id: occurrence.occurrence_id,
+                    kind: occurrence.kind,
+                    entity_id: occurrence.entity_id,
+                    anchor_id: occurrence.anchor_id,
+                    old_text: occurrence.old_text,
+                    new_text,
+                    start_byte: occurrence.start_byte,
+                    end_byte: occurrence.end_byte,
+                });
             } else {
                 blockers.push(ModuleMoveBlocker::UnsupportedProjection);
             }
@@ -265,29 +277,51 @@ impl ModuleMovePlan {
         edits.sort_by_key(|edit| (edit.file_id, edit.start_byte, edit.occurrence_id));
         blockers.sort_unstable_by_key(|blocker| *blocker as u8);
         blockers.dedup();
-        let resource = ModuleMoveResourceTransition { source_path: source.relative_path.clone(),
-            target_path, source_module: source.module.clone(), target_module: target_package.clone() };
-        let disposition = if blockers.is_empty() { ModuleMoveDisposition::Complete } else { ModuleMoveDisposition::Blocked };
-        let fingerprint = crate::semantic_identity::SemanticIdentityFingerprint::new("module-move-plan-v1")
-            .field("source", &source.source_uri).field("generation", &format!("{:?}", source.generation))
-            .field("target", &resource.target_module).field("path", &resource.target_path)
-            .field("disposition", &format!("{disposition:?}"))
-            .field("edits", &format!("{edits:?}" )).field("blockers", &format!("{blockers:?}" )).finish();
+        let resource = ModuleMoveResourceTransition {
+            source_path: source.relative_path.clone(),
+            target_path,
+            source_module: source.module.clone(),
+            target_module: target_package.clone(),
+        };
+        let disposition = if blockers.is_empty() {
+            ModuleMoveDisposition::Complete
+        } else {
+            ModuleMoveDisposition::Blocked
+        };
+        let fingerprint =
+            crate::semantic_identity::SemanticIdentityFingerprint::new("module-move-plan-v1")
+                .field("source", &source.source_uri)
+                .field("generation", &format!("{:?}", source.generation))
+                .field("target", &resource.target_module)
+                .field("path", &resource.target_path)
+                .field("disposition", &format!("{disposition:?}"))
+                .field("edits", &format!("{edits:?}"))
+                .field("blockers", &format!("{blockers:?}"))
+                .finish();
         Self { schema_version: 1, source, resource, edits, blockers, disposition, fingerprint }
     }
 
     /// A complete plan is the only plan eligible for materialization.
-    pub const fn is_complete(&self) -> bool { matches!(self.disposition, ModuleMoveDisposition::Complete) }
+    pub const fn is_complete(&self) -> bool {
+        matches!(self.disposition, ModuleMoveDisposition::Complete)
+    }
 }
 
 fn valid_package(value: &str) -> bool {
-    !value.is_empty() && value.split("::").all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_'))
+    !value.is_empty()
+        && value.split("::").all(|part| {
+            !part.is_empty() && part.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+        })
 }
 
-fn module_path(package: &str) -> Option<String> { valid_package(package).then(|| format!("{}.pm", package.replace("::", "/"))) }
+fn module_path(package: &str) -> Option<String> {
+    valid_package(package).then(|| format!("{}.pm", package.replace("::", "/")))
+}
 
 fn package_from_path(path: &str) -> Option<String> {
-    if path.contains("..") || !path.ends_with(".pm") { return None; }
+    if path.contains("..") || !path.ends_with(".pm") {
+        return None;
+    }
     let stem = path.strip_suffix(".pm")?;
     let package = stem.replace('/', "::");
     valid_package(&package).then_some(package)
@@ -298,19 +332,60 @@ fn replace_identity(old: &str, source: &str, target: &str) -> Option<String> {
     let end = start + source.len();
     let before = old.as_bytes().get(start.wrapping_sub(1)).copied();
     let after = old.as_bytes().get(end).copied();
-    let boundary = |byte: Option<u8>| byte.is_none_or(|value| !(value.is_ascii_alphanumeric() || value == b'_'));
-    (boundary(before) && boundary(after)).then(|| format!("{}{}{}", &old[..start], target, &old[end..]))
+    let boundary = |byte: Option<u8>| {
+        byte.is_none_or(|value| !(value.is_ascii_alphanumeric() || value == b'_'))
+    };
+    (boundary(before) && boundary(after))
+        .then(|| format!("{}{}{}", &old[..start], target, &old[end..]))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn source() -> ModuleMoveSource { ModuleMoveSource { workspace: "w".into(), root: "lib".into(), file_id: FileId(1), relative_path: "lib/Old/Name.pm".into(), source_uri: "file:///w/lib/Old/Name.pm".into(), package: "Old::Name".into(), module: "Old::Name".into(), generation: SourceGeneration::known("g1"), editable: true, restricted: false, primary_package_count: 1, occurrences_complete: true } }
-    fn occurrence(text: &str, kind: OccurrenceKind) -> ModuleMoveOccurrence { ModuleMoveOccurrence { file_id: FileId(1), occurrence_id: OccurrenceId(1), anchor_id: AnchorId(2), entity_id: EntityId(3), kind, old_text: text.into(), start_byte: 0, end_byte: text.len() as u32, file_generation: SourceGeneration::known("g1"), dynamic: false, stale: false, unsupported: false } }
+    fn source() -> ModuleMoveSource {
+        ModuleMoveSource {
+            workspace: "w".into(),
+            root: "lib".into(),
+            file_id: FileId(1),
+            relative_path: "lib/Old/Name.pm".into(),
+            source_uri: "file:///w/lib/Old/Name.pm".into(),
+            package: "Old::Name".into(),
+            module: "Old::Name".into(),
+            generation: SourceGeneration::known("g1"),
+            editable: true,
+            restricted: false,
+            primary_package_count: 1,
+            occurrences_complete: true,
+        }
+    }
+    fn occurrence(text: &str, kind: OccurrenceKind) -> ModuleMoveOccurrence {
+        ModuleMoveOccurrence {
+            file_id: FileId(1),
+            occurrence_id: OccurrenceId(1),
+            anchor_id: AnchorId(2),
+            entity_id: EntityId(3),
+            kind,
+            old_text: text.into(),
+            start_byte: 0,
+            end_byte: text.len() as u32,
+            file_generation: SourceGeneration::known("g1"),
+            dynamic: false,
+            stale: false,
+            unsupported: false,
+        }
+    }
 
     #[test]
     fn plans_exact_prefix_and_preserves_imported_member() {
-        let plan = ModuleMovePlan::build(source(), ModuleMoveTarget::Package("New::Name".into()), vec![occurrence("package Old::Name", OccurrenceKind::Definition), occurrence("use Old::Name qw(run)", OccurrenceKind::Import)], false);
+        let plan = ModuleMovePlan::build(
+            source(),
+            ModuleMoveTarget::Package("New::Name".into()),
+            vec![
+                occurrence("package Old::Name", OccurrenceKind::Definition),
+                occurrence("use Old::Name qw(run)", OccurrenceKind::Import),
+            ],
+            false,
+        );
         assert!(plan.is_complete());
         assert_eq!(plan.edits[0].new_text, "use New::Name qw(run)");
         assert_eq!(plan.resource.target_path, "lib/New/Name.pm");
@@ -321,7 +396,12 @@ mod tests {
         let mut item = occurrence("require Old::Name", OccurrenceKind::Reference);
         item.dynamic = true;
         item.file_generation = SourceGeneration::known("g2");
-        let plan = ModuleMovePlan::build(source(), ModuleMoveTarget::Package("New::Name".into()), vec![item], false);
+        let plan = ModuleMovePlan::build(
+            source(),
+            ModuleMoveTarget::Package("New::Name".into()),
+            vec![item],
+            false,
+        );
         assert!(!plan.is_complete());
         assert!(plan.blockers.contains(&ModuleMoveBlocker::DynamicBoundary));
         assert!(plan.blockers.contains(&ModuleMoveBlocker::StaleOrUnknownGeneration));
@@ -331,14 +411,27 @@ mod tests {
     fn refuses_same_text_in_an_unrelated_projection() {
         let mut item = occurrence("Old::Name", OccurrenceKind::Reference);
         item.unsupported = true;
-        let plan = ModuleMovePlan::build(source(), ModuleMoveTarget::Package("New::Name".into()), vec![item], false);
+        let plan = ModuleMovePlan::build(
+            source(),
+            ModuleMoveTarget::Package("New::Name".into()),
+            vec![item],
+            false,
+        );
         assert!(!plan.is_complete());
-        assert!(plan.edits.is_empty() || plan.blockers.contains(&ModuleMoveBlocker::UnsupportedProjection));
+        assert!(
+            plan.edits.is_empty()
+                || plan.blockers.contains(&ModuleMoveBlocker::UnsupportedProjection)
+        );
     }
 
     #[test]
     fn refuses_target_traversal_and_collision() {
-        let plan = ModuleMovePlan::build(source(), ModuleMoveTarget::RelativePath("lib/../New.pm".into()), Vec::new(), true);
+        let plan = ModuleMovePlan::build(
+            source(),
+            ModuleMoveTarget::RelativePath("lib/../New.pm".into()),
+            Vec::new(),
+            true,
+        );
         assert!(!plan.is_complete());
         assert!(plan.blockers.contains(&ModuleMoveBlocker::UnsafeTarget));
         assert!(plan.blockers.contains(&ModuleMoveBlocker::TargetCollision));
@@ -346,7 +439,12 @@ mod tests {
 
     #[test]
     fn requires_package_declaration_occurrence() {
-        let plan = ModuleMovePlan::build(source(), ModuleMoveTarget::Package("New::Name".into()), vec![occurrence("use Old::Name", OccurrenceKind::Import)], false);
+        let plan = ModuleMovePlan::build(
+            source(),
+            ModuleMoveTarget::Package("New::Name".into()),
+            vec![occurrence("use Old::Name", OccurrenceKind::Import)],
+            false,
+        );
         assert!(plan.blockers.contains(&ModuleMoveBlocker::MissingPackageDeclaration));
     }
 
@@ -354,7 +452,12 @@ mod tests {
     fn requires_consistent_package_and_module_identity() {
         let mut input = source();
         input.module = "Other::Name".into();
-        let plan = ModuleMovePlan::build(input, ModuleMoveTarget::Package("New::Name".into()), vec![occurrence("package Old::Name", OccurrenceKind::Definition)], false);
+        let plan = ModuleMovePlan::build(
+            input,
+            ModuleMoveTarget::Package("New::Name".into()),
+            vec![occurrence("package Old::Name", OccurrenceKind::Definition)],
+            false,
+        );
         assert!(plan.blockers.contains(&ModuleMoveBlocker::InvalidSource));
     }
 
@@ -362,7 +465,12 @@ mod tests {
     fn binds_each_occurrence_to_its_file_generation() {
         let mut item = occurrence("package Old::Name", OccurrenceKind::Definition);
         item.file_generation = SourceGeneration::known("dependent-generation");
-        let plan = ModuleMovePlan::build(source(), ModuleMoveTarget::Package("New::Name".into()), vec![item], false);
+        let plan = ModuleMovePlan::build(
+            source(),
+            ModuleMoveTarget::Package("New::Name".into()),
+            vec![item],
+            false,
+        );
         assert!(plan.blockers.contains(&ModuleMoveBlocker::StaleOrUnknownGeneration));
     }
 
@@ -370,7 +478,12 @@ mod tests {
     fn rejects_ranges_that_do_not_equal_old_text_bytes() {
         let mut item = occurrence("package Old::Name", OccurrenceKind::Definition);
         item.end_byte -= 1;
-        let plan = ModuleMovePlan::build(source(), ModuleMoveTarget::Package("New::Name".into()), vec![item], false);
+        let plan = ModuleMovePlan::build(
+            source(),
+            ModuleMoveTarget::Package("New::Name".into()),
+            vec![item],
+            false,
+        );
         assert!(plan.blockers.contains(&ModuleMoveBlocker::InvalidAnchor));
         assert!(!plan.is_complete());
     }
