@@ -73,9 +73,10 @@ The README is a front door, not the metric source of truth. Current release post
 code --install-extension EffortlessMetrics.perl-lsp-rs
 ```
 
-**Cargo** (any platform, Rust 1.95 or newer) — installs the `perllsp`
-language-server binary from crates.io. This installs `perllsp` only, not the
-`perl-dap` debug adapter; use a release archive if you need the debugger.
+**Cargo** (supported Linux, macOS, and Windows platforms; Rust 1.95 or newer) —
+installs the `perllsp` language-server binary from crates.io. This installs
+`perllsp` only, not the `perl-dap` debug adapter; use a release archive if you
+need the debugger. Support on other Rust targets is not established here.
 crates.io is an independently versioned channel, so compare
 `perllsp --version` with the latest
 [release](https://github.com/EffortlessMetrics/perl-lsp/releases) before
@@ -116,12 +117,18 @@ matches the release you expect before installing.
 [Releases](https://github.com/EffortlessMetrics/perl-lsp/releases), extract it,
 and put the folder containing `perllsp.exe` on your `PATH`.
 
-The PowerShell installer script is **not usable yet**: the copy published at
-`perl-lsp/master` still builds a `perl-lsp-…zip` asset name, and releases ship
-`perllsp-…zip`, so it fails with a 404. The fix exists in this repository but
-has not been promoted to the publication repo
-([#4348](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/4348)). Use
-the manual archive until it has.
+The published PowerShell installer is usable for x86_64 Windows and Windows 11
+ARM64 under x64 emulation. It selects the current
+`perllsp-<version>-x86_64-pc-windows-msvc.zip` release asset, installs
+`perllsp.exe`, and verifies its checksum when the release checksum file is
+available. Run it from PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/install.ps1 | iex
+```
+
+Windows 10 ARM64 and unsupported architectures must build from source; the
+manual archive remains available as an alternative.
 
 Then inspect the install before wiring it into an editor. `--doctor` reports
 the local Perl and workspace setup; it is a diagnostic report, not a CI gate.
