@@ -185,6 +185,7 @@ fn coverage_workflow_is_manual_or_nightly_only_and_requires_receipts() {
     let coverage_job = &coverage_tail[..coverage_end];
 
     let workflow_document: Value = must(serde_yaml_ng::from_str(&workflow));
+    must(coverage_workflow_contract(&workflow_document));
     let coverage_yaml_job = must_some(mapping_value(
         must_some(mapping_value(&workflow_document, "jobs")),
         "test-coverage",
@@ -200,6 +201,9 @@ fn coverage_workflow_is_manual_or_nightly_only_and_requires_receipts() {
     );
 
     let whitelist_document: TomlValue = must(toml::from_str(&lane_whitelist));
+    let required_checks_document: TomlValue = must(toml::from_str(&policy));
+    must(coverage_required_check_contract(&required_checks_document));
+    must(coverage_whitelist_contract(&whitelist_document));
     let coverage_whitelist_table = must_some(toml_lane(&whitelist_document, "coverage"));
     let allowed_triggers =
         must_some(must_some(coverage_whitelist_table.get("allowed_triggers")).as_array())
@@ -314,6 +318,52 @@ fn coverage_workflow_is_manual_or_nightly_only_and_requires_receipts() {
         inventory.contains("| Default branch | `main` |")
             && !inventory.contains("| Default branch | `master` |"),
         "CI inventory must name the live default branch"
+    );
+
+    let workflow_mutations = [
+        (
+            "push trigger",
+            "on:\n",
+            "on:\n  push:\n    branches: [main]\n",
+        ),
+        (
+            "merge-group trigger",
+            "on:\n",
+            "on:\n  merge_group:\n",
+        ),
+        (
+            "label route",
+            "      (github.event_name == 'workflow_dispatch' && inputs.run_coverage)",
+            "      (github.event_name == 'workflow_dispatch' && inputs.run_coverage) ||\n      (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'coverage'))",
+        ),
+        (
+            "branch route",
+            "      (github.event_name == 'workflow_dispatch' && inputs.run_coverage)",
+            "      (github.event_name == 'workflow_dispatch' && inputs.run_coverage) ||\n      (github.ref == 'refs/heads/main' && inputs.run_coverage)",
+        ),
+    ];
+    for (route, original, replacement) in workflow_mutations {
+        let mutated_source = workflow.replacen(original, replacement, 1);
+        assert_ne!(mutated_source, workflow, "{route} negative control must change the workflow");
+        let mutated_workflow: Value = must(serde_yaml_ng::from_str(&mutated_source));
+        assert!(
+            coverage_workflow_contract(&mutated_workflow).is_err(),
+            "coverage workflow contract must reject {route}"
+        );
+    }
+    let duplicate_checks_source = format!(
+        "{policy}\n[[checks]]\nname = \"Codecov / Patch 95\"\nworkflow = \".github/workflows/ci-nightly.yml\"\njob = \"test-coverage\"\nevents = [\"schedule\", \"workflow_dispatch\"]\n"
+    );
+    let duplicate_checks: TomlValue = must(toml::from_str(&duplicate_checks_source));
+    assert!(
+        coverage_required_check_contract(&duplicate_checks).is_err(),
+        "coverage policy contract must reject duplicate coverage entries"
+    );
+    let duplicate_lanes_source = format!("{lane_whitelist}\n[[lane]]\nid = \"coverage\"\n");
+    let duplicate_lanes: TomlValue = must(toml::from_str(&duplicate_lanes_source));
+    assert!(
+        coverage_whitelist_contract(&duplicate_lanes).is_err(),
+        "coverage whitelist contract must reject duplicate coverage entries"
     );
     let checkout_ref = must_some(checkout_action_ref(coverage_job));
     assert!(
@@ -770,6 +820,119 @@ fn policy_required_check(policy: &toml::Value, name: &str) -> bool {
             && item.get("required").and_then(toml::Value::as_bool) == Some(true)
             && item.get("enforcement").and_then(toml::Value::as_str) == Some("github-ruleset")
     })
+}
+
+fn coverage_workflow_contract(workflow: &Value) -> Result<()> {
+    let triggers = yaml_mapping_entry(workflow, "on")?;
+    let schedule = yaml_mapping_entry(triggers, "schedule")?;
+    ensure!(
+        schedule.as_sequence().is_some_and(|entries| !entries.is_empty()),
+        "coverage workflow must declare a non-empty top-level schedule trigger"
+    );
+    ensure!(
+        mapping_value(triggers, "push").is_none(),
+        "coverage workflow must not declare a push trigger"
+    );
+    ensure!(
+        mapping_value(triggers, "merge_group").is_none(),
+        "coverage workflow must not declare a merge-group trigger"
+    );
+    yaml_mapping_entry(triggers, "workflow_dispatch")?;
+
+    let jobs = yaml_mapping_entry(workflow, "jobs")?;
+    let coverage_job = yaml_mapping_entry(jobs, "test-coverage")?;
+    let condition = yaml_mapping_entry(coverage_job, "if")?
+        .as_str()
+        .ok_or_else(|| anyhow!("coverage job must declare a string if expression"))?
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect::<String>();
+    ensure!(
+        condition == "github.event_name=='schedule'||(github.event_name=='workflow_dispatch'&&inputs.run_coverage)",
+        "coverage job must select only the top-level schedule or manual coverage route"
+    );
+    Ok(())
+}
+
+fn coverage_required_check_contract(policy: &TomlValue) -> Result<()> {
+    let checks = policy
+        .get("checks")
+        .and_then(TomlValue::as_array)
+        .ok_or_else(|| anyhow!("required-checks policy must contain a checks array"))?;
+    let coverage_checks = checks
+        .iter()
+        .filter(|check| check.get("name").and_then(TomlValue::as_str) == Some("Codecov / Patch 95"))
+        .collect::<Vec<_>>();
+    ensure!(
+        coverage_checks.len() == 1,
+        "required-checks policy must contain exactly one Codecov / Patch 95 entry"
+    );
+    let coverage = coverage_checks[0];
+    ensure!(
+        coverage.get("workflow").and_then(TomlValue::as_str)
+            == Some(".github/workflows/ci-nightly.yml")
+            && coverage.get("job").and_then(TomlValue::as_str) == Some("test-coverage"),
+        "coverage required-check entry must identify the nightly test-coverage job"
+    );
+    let events = coverage
+        .get("events")
+        .and_then(TomlValue::as_array)
+        .ok_or_else(|| anyhow!("coverage required-check entry must declare events"))?
+        .iter()
+        .map(|event| event.as_str())
+        .collect::<Option<Vec<_>>>();
+    ensure!(
+        events.as_deref() == Some(["schedule", "workflow_dispatch"].as_slice()),
+        "coverage required-check entry must list only schedule and workflow_dispatch events"
+    );
+    ensure!(
+        coverage.get("required").and_then(TomlValue::as_bool) == Some(false)
+            && coverage.get("policy_role").and_then(TomlValue::as_str) == Some("advisory")
+            && coverage.get("applicability").and_then(TomlValue::as_str) == Some("conditional")
+            && coverage.get("enforcement").and_then(TomlValue::as_str) == Some("neither"),
+        "coverage required-check entry must remain advisory and conditional"
+    );
+    Ok(())
+}
+
+fn coverage_whitelist_contract(policy: &TomlValue) -> Result<()> {
+    let lanes = policy
+        .get("lane")
+        .and_then(TomlValue::as_array)
+        .ok_or_else(|| anyhow!("coverage whitelist must contain a lane array"))?;
+    let coverage_lanes = lanes
+        .iter()
+        .filter(|lane| lane.get("id").and_then(TomlValue::as_str) == Some("coverage"))
+        .collect::<Vec<_>>();
+    ensure!(coverage_lanes.len() == 1, "coverage whitelist must contain exactly one coverage lane");
+    let coverage = coverage_lanes[0];
+    ensure!(
+        coverage.get("workflow").and_then(TomlValue::as_str)
+            == Some(".github/workflows/ci-nightly.yml")
+            && coverage.get("job").and_then(TomlValue::as_str) == Some("test-coverage"),
+        "coverage whitelist entry must identify the nightly test-coverage job"
+    );
+    let triggers = coverage
+        .get("allowed_triggers")
+        .and_then(TomlValue::as_array)
+        .ok_or_else(|| anyhow!("coverage whitelist must declare allowed_triggers"))?
+        .iter()
+        .map(|trigger| trigger.as_str())
+        .collect::<Option<Vec<_>>>();
+    ensure!(
+        triggers.as_deref() == Some(["schedule", "workflow_dispatch"].as_slice()),
+        "coverage whitelist must allow only schedule and workflow_dispatch"
+    );
+    for field in ["labels", "branches"] {
+        match coverage.get(field) {
+            None => {}
+            Some(values) => ensure!(
+                values.as_array().is_some_and(|values| values.is_empty()),
+                "coverage whitelist must not route coverage by `{field}`"
+            ),
+        }
+    }
+    Ok(())
 }
 
 fn mapping_value<'a>(value: &'a Value, key: &str) -> Option<&'a Value> {
