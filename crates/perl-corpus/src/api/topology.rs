@@ -997,10 +997,12 @@ mod tests {
         assert_eq!(loaded.asset_path(asset), Err(CorpusTopologyError::RootNotBound));
 
         let rebound = loaded.with_root(first_root.path()).expect("bind topology root");
-        assert!(rebound
-            .assets
-            .iter()
-            .all(|asset| rebound.asset_path(asset).is_ok_and(|path| path.is_file())));
+        assert!(
+            rebound
+                .assets
+                .iter()
+                .all(|asset| rebound.asset_path(asset).is_ok_and(|path| path.is_file()))
+        );
     }
 
     #[test]
@@ -1296,8 +1298,8 @@ mod tests {
 
     #[cfg(any(unix, windows))]
     #[test]
-    fn dangling_excluded_metadata_symlink_does_not_block_discovery(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn dangling_excluded_metadata_symlink_does_not_block_discovery()
+    -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir().expect("temporary directory");
         let link = root.path().join("crates/perl-corpus/fuzz/README.md");
         fs::create_dir_all(link.parent().expect("link parent")).expect("create link parent");
@@ -1334,8 +1336,8 @@ mod tests {
 
     #[cfg(any(unix, windows))]
     #[test]
-    fn dangling_selected_symlink_fails_as_symlink_unsupported(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn dangling_selected_symlink_fails_as_symlink_unsupported()
+    -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir().expect("temporary directory");
         let link = root.path().join("test_corpus/dangling.pl");
         fs::create_dir_all(link.parent().expect("link parent")).expect("create link parent");
@@ -1354,8 +1356,8 @@ mod tests {
 
     #[cfg(any(unix, windows))]
     #[test]
-    fn symlinked_test_directory_cannot_hide_selected_descendants(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn symlinked_test_directory_cannot_hide_selected_descendants()
+    -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir().expect("temporary directory");
         let target = root.path().join("outside-test-tree");
         write_fixture(&target.join("case.pl"), "1;");
@@ -1378,8 +1380,8 @@ mod tests {
 
     #[cfg(any(unix, windows))]
     #[test]
-    fn symlinked_fuzz_directory_cannot_hide_selected_descendants(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn symlinked_fuzz_directory_cannot_hide_selected_descendants()
+    -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir().expect("temporary directory");
         let target = root.path().join("outside-fuzz-tree");
         write_fixture(&target.join("crash-deadbeef"), "xqN<<\"");
@@ -1402,8 +1404,8 @@ mod tests {
 
     #[cfg(any(unix, windows))]
     #[test]
-    fn symlinked_directory_target_inside_root_still_fails_closed(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn symlinked_directory_target_inside_root_still_fails_closed()
+    -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir().expect("temporary directory");
         let target = root.path().join("test_corpus/real");
         write_fixture(&target.join("case.pl"), "1;");
@@ -1423,8 +1425,8 @@ mod tests {
 
     #[cfg(any(unix, windows))]
     #[test]
-    fn symlinked_directory_target_outside_root_fails_closed(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn symlinked_directory_target_outside_root_fails_closed()
+    -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir().expect("temporary directory");
         let outside = tempfile::tempdir().expect("outside temporary directory");
         write_fixture(&outside.path().join("case.pl"), "1;");
