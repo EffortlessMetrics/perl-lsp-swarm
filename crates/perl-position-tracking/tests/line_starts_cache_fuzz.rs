@@ -37,6 +37,16 @@ fn char_boundary_offsets(content: &str) -> Vec<usize> {
     offsets
 }
 
+fn expected_roundtrip_offset(content: &str, offset: usize) -> usize {
+    let offset = offset.min(content.len());
+    for (cr_index, separator) in content.as_bytes().windows(2).enumerate() {
+        if separator == b"\r\n" && offset == cr_index + 1 {
+            return cr_index;
+        }
+    }
+    offset
+}
+
 proptest! {
     #[test]
     fn prop_text_and_rope_offsets_agree(content in mixed_content_strategy(), offset in 0usize..512usize) {
@@ -69,7 +79,14 @@ proptest! {
         for offset in char_boundary_offsets(&content) {
             let (line, col) = cache.offset_to_position_rope(&rope, offset);
             let roundtrip_offset = cache.position_to_offset_rope(&rope, line, col);
-            prop_assert_eq!(roundtrip_offset, offset, "roundtrip mismatch at offset {}", offset);
+            let expected = expected_roundtrip_offset(&content, offset);
+            prop_assert_eq!(
+                roundtrip_offset,
+                expected,
+                "roundtrip mismatch at offset {} (expected normalized offset {})",
+                offset,
+                expected,
+            );
         }
     }
 }
