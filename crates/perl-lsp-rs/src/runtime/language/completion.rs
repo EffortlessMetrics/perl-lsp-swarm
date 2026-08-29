@@ -2517,6 +2517,7 @@ impl LspServer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::must_some_with;
 
     fn explain_provider_decision(
         server: &LspServer,
@@ -5374,10 +5375,10 @@ our $single_root_var;
              re-enter through the runtime fallback; got {items:?}"
         );
 
-        let (_, our_insert, our_range) =
-            items.iter().find(|(label, _, _)| label == "$api_local").cloned().unwrap_or_else(
-                || panic!("vacuity guard: expected the same-document `$api_local`; got {items:?}"),
-            );
+        let (_, our_insert, our_range) = must_some_with(
+            items.iter().find(|(label, _, _)| label == "$api_local").cloned(),
+            format!("vacuity guard: expected the same-document `$api_local`; got {items:?}"),
+        );
         assert_eq!(
             our_insert.as_deref(),
             Some("$api_local"),
@@ -5385,10 +5386,10 @@ our $single_root_var;
         );
         assert!(our_range.is_none(), "a bare insertion carries no replace range");
 
-        let (_, cross_file_insert, _) =
-            items.iter().find(|(label, _, _)| label == "$api_token").cloned().unwrap_or_else(
-                || panic!("vacuity guard: expected the cross-file `$api_token`; got {items:?}"),
-            );
+        let (_, cross_file_insert, _) = must_some_with(
+            items.iter().find(|(label, _, _)| label == "$api_token").cloned(),
+            format!("vacuity guard: expected the cross-file `$api_token`; got {items:?}"),
+        );
         assert_eq!(
             cross_file_insert.as_deref(),
             Some("$Secrets::api_token"),

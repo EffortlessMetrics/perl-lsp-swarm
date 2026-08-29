@@ -6,6 +6,7 @@ mod tests {
     use super::super::LspServer;
     use crate::runtime::document_symbols_sink::DocumentSymbolIdentity;
     use crate::runtime::parse_effect_contract::ParseEffectCommitOutcomeV1;
+    use crate::{must_some_with, must_with};
     use serde_json::json;
 
     fn make_server() -> LspServer {
@@ -205,8 +206,10 @@ mod tests {
 
         let identity = identity_for_current(&server, uri);
         let key = server.normalize_uri_key(uri);
-        let ledger_before_install =
-            server.test_last_committed_document_symbols(&key).expect("didOpen must have recorded");
+        let ledger_before_install = must_some_with(
+            server.test_last_committed_document_symbols(&key),
+            "didOpen must have recorded",
+        );
 
         // Interpose exactly between boundary validation and the serialized
         // install, then run the lifecycle-owned eviction: remove the document
@@ -222,9 +225,10 @@ mod tests {
 
         // The pre-validated candidate now attempts its commit against a
         // document the lifecycle already evicted.
-        let ast = perl_parser::Parser::new("sub alpha_barrier {};")
-            .parse()
-            .expect("parse should succeed");
+        let ast = must_with(
+            perl_parser::Parser::new("sub alpha_barrier {};").parse(),
+            "parse should succeed",
+        );
         let outcome =
             server.commit_document_symbols_from_ast(&identity, &ast, "sub alpha_barrier {};");
 
