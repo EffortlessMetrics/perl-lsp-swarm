@@ -604,18 +604,6 @@ fn validate_publish_order(
     publish_order: &BTreeMap<String, usize>,
     findings: &mut BTreeSet<String>,
 ) {
-    for package in packages.values().filter(|package| is_publishable(package)) {
-        for dependency in package.dependencies.iter().filter(|dependency| dependency.kind.is_none())
-        {
-            let Some(dependency_package) = packages.get(&dependency.name) else {
-                continue;
-            };
-            if is_publishable(dependency_package) {
-                require_precedes(publish_order, &dependency_package.name, &package.name, findings);
-            }
-        }
-    }
-
     require_precedes(
         publish_order,
         &policy.packages.lsp_library,
