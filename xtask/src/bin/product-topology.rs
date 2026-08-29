@@ -122,6 +122,8 @@ struct CargoDependency {
     optional: bool,
     #[serde(default)]
     rename: Option<String>,
+    #[serde(default)]
+    source: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -561,7 +563,10 @@ fn require_normal_dependencies(
         .dependencies
         .iter()
         .filter(|dependency| {
-            dependency.kind.is_none() && !dependency.optional && dependency.rename.is_none()
+            dependency.kind.is_none()
+                && !dependency.optional
+                && dependency.rename.is_none()
+                && dependency.source.is_none()
         })
         .map(|dependency| dependency.name.as_str())
         .collect::<BTreeSet<_>>();
@@ -691,7 +696,13 @@ mod tests {
     }
 
     fn dependency(name: &str) -> CargoDependency {
-        CargoDependency { name: name.to_owned(), kind: None, optional: false, rename: None }
+        CargoDependency {
+            name: name.to_owned(),
+            kind: None,
+            optional: false,
+            rename: None,
+            source: None,
+        }
     }
 
     fn package(
@@ -964,6 +975,21 @@ mod tests {
         if let Some(mcp) = metadata.packages.iter_mut().find(|package| package.name == "perl-mcp") {
             if let Some(dependency) = mcp.dependencies.first_mut() {
                 dependency.rename = Some("transport".to_owned());
+            }
+        }
+        let report = validate(&policy, &metadata, &manifest);
+        assert!(has_finding(
+            &report,
+            "MCP adapter package=perl-mcp requires normal dependency=perl-code-intelligence"
+        ));
+    }
+
+    #[test]
+    fn admitted_stage_rejects_external_required_dependency() {
+        let (policy, mut metadata, manifest) = fixture(McpStage::Admitted);
+        if let Some(mcp) = metadata.packages.iter_mut().find(|package| package.name == "perl-mcp") {
+            if let Some(dependency) = mcp.dependencies.first_mut() {
+                dependency.source = Some("registry+https://github.com/rust-lang/crates.io-index".to_owned());
             }
         }
         let report = validate(&policy, &metadata, &manifest);
