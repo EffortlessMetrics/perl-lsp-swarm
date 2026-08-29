@@ -548,7 +548,6 @@ fn exact_terminators_cover_lf_crlf_cr_and_indentation() -> R {
         ("print <<EOF;\nbody\nEOF\nmy $x = 1;\n", "body\n", "print <<EOF;\n".len()),
         ("print <<EOF;\r\nbody\r\nEOF\r\nmy $x = 1;\r\n", "body\r\n", "print <<EOF;\r\n".len()),
         ("print <<EOF;\rbody\rEOF\rmy $x = 1;\r", "body\r", "print <<EOF;\r".len()),
-        ("print <<~EOF;\n  body\n\tEOF\nmy $x = 1;\n", "  body\n", "print <<~EOF;\n".len()),
     ];
 
     for (source, expected_body, body_start) in cases {
@@ -578,6 +577,26 @@ fn exact_terminators_cover_lf_crlf_cr_and_indentation() -> R {
         assert_clean_terminal(&tokens)?;
     }
     Ok(())
+}
+
+#[test]
+fn mixed_tab_space_indentation_is_not_a_valid_indented_terminator() -> R {
+    // Perl 5.32.1 rejects this exact source with "Indentation on line 1 of
+    // here-doc doesn't match delimiter". Keep the original tab-indented
+    // fixture as a negative control: a tab is not a byte-prefix of two spaces.
+    let source = "print <<~EOF;\n  body\n\tEOF\nmy $x = 1;\n";
+    let tokens = PerlLexer::with_body_tokens(source).collect_tokens();
+
+    require_eq(&body_tokens(&tokens).len(), &0, "mixed-indentation body token count")?;
+    let unknown = tokens
+        .iter()
+        .find(|token| matches!(&token.token_type, TokenType::UnknownRest))
+        .ok_or_else(|| missing("expected recovery for mixed tab/space indentation"))?;
+    require_eq(
+        &source.get(unknown.start..unknown.end),
+        &Some("  body\n\tEOF\nmy $x = 1;\n"),
+        "mixed-indentation recovery payload",
+    )
 }
 
 #[test]

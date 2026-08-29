@@ -560,7 +560,7 @@ jobs:
 
       - name: Install just
         if: needs.draft-pr-check.outputs.api_scope == 'true'
-        uses: taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1  # v2.85.13
+        uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc  # v2.86.7
         with:
           tool: just
 
@@ -709,7 +709,7 @@ jobs:
           components: rustfmt, clippy
 
       - name: Install just
-        uses: taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1  # v2.85.13
+        uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc  # v2.86.7
         with:
           tool: just
 
@@ -993,7 +993,7 @@ jobs:
           components: rustfmt, clippy
 
       - name: Install just
-        uses: taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1  # v2.85.13
+        uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc  # v2.86.7
         with:
           tool: just
 
@@ -1337,7 +1337,7 @@ jobs:
           toolchain: 1.95.0
 
       - name: Install just
-        uses: taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1  # v2.85.13
+        uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc  # v2.86.7
         with:
           tool: just
 
@@ -1543,7 +1543,7 @@ jobs:
           toolchain: 1.95.0
 
       - name: Install just
-        uses: taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1  # v2.85.13
+        uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc  # v2.86.7
         with:
           tool: just
 
@@ -1557,6 +1557,15 @@ jobs:
 
       - name: Compile all targets (catches integration-test + bench bit-rot)
         run: just check-all-targets
+
+      # The frozen legacy parity authority is a required merge surface. Keep
+      # both integration targets here because compile-all-targets alone cannot
+      # execute their assertions, and the routed pr-fast lane is advisory.
+      - name: Legacy parity library authority (required merge surface)
+        run: cargo test -p perl-kwalitee --test legacy_parity --locked -- --nocapture
+
+      - name: Legacy parity CLI authority (required merge surface)
+        run: cargo test -p xtask --test perl_kwalitee_parity --locked -- --nocapture
 
       # Required merge surface for #7767/#7796: unit_routed_full only executes via
       # advisory pr-smoke, so stale Emacs guidance could otherwise merge while this
