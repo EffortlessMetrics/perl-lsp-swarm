@@ -344,18 +344,14 @@ fn hash_receiver_fact(
         );
     }
 
-    ReceiverFact {
+    fallback_receiver_fact(
         kind,
-        package: None,
-        candidate_packages: vec![],
-        shape: container_fact.shape,
-        confidence: Confidence::Low,
-        evidence: vec![evidence],
-        freshness: ReceiverFactFreshness::Fresh,
-        dynamic_boundary: container_fact.dynamic_boundary,
-        source_range: Some((receiver.location.start, receiver.location.end)),
-        fallback_state: ReceiverFallbackState::Fallback,
-    }
+        receiver,
+        container_fact,
+        evidence,
+        ReceiverFactFreshness::Fresh,
+        None,
+    )
 }
 
 fn array_receiver_fact(
@@ -381,18 +377,14 @@ fn array_receiver_fact(
     };
 
     let Some(index) = static_array_index(right) else {
-        return ReceiverFact {
-            kind: ReceiverKind::ArrayIndex,
-            package: None,
-            candidate_packages: vec![],
-            shape: container_fact.shape,
-            confidence: Confidence::Low,
-            evidence: vec![evidence],
-            freshness: ReceiverFactFreshness::Unknown,
-            dynamic_boundary: Some(DynamicBoundary::UnknownReceiver),
-            source_range: Some((receiver.location.start, receiver.location.end)),
-            fallback_state: ReceiverFallbackState::Fallback,
-        };
+        return fallback_receiver_fact(
+            ReceiverKind::ArrayIndex,
+            receiver,
+            container_fact,
+            evidence,
+            ReceiverFactFreshness::Unknown,
+            Some(DynamicBoundary::UnknownReceiver),
+        );
     };
 
     if let Some(index_fact) = array_index_type_fact(&container_fact, index) {
@@ -403,18 +395,14 @@ fn array_receiver_fact(
         );
     }
 
-    ReceiverFact {
-        kind: ReceiverKind::ArrayIndex,
-        package: None,
-        candidate_packages: vec![],
-        shape: container_fact.shape,
-        confidence: Confidence::Low,
-        evidence: vec![evidence],
-        freshness: ReceiverFactFreshness::Fresh,
-        dynamic_boundary: container_fact.dynamic_boundary,
-        source_range: Some((receiver.location.start, receiver.location.end)),
-        fallback_state: ReceiverFallbackState::Fallback,
-    }
+    fallback_receiver_fact(
+        ReceiverKind::ArrayIndex,
+        receiver,
+        container_fact,
+        evidence,
+        ReceiverFactFreshness::Fresh,
+        None,
+    )
 }
 
 fn receiver_container_fact(left: &Node, context: ReceiverFactContext<'_>) -> Option<TypeFact> {
@@ -442,8 +430,10 @@ fn receiver_container_fact(left: &Node, context: ReceiverFactContext<'_>) -> Opt
                 TypeEvidence::HashSlot { hash: base, key }
             };
 
-            hash_slot_type_fact(&container_fact, &evidence)
-                .map(|fact| with_access_evidence(fact, &container_fact, evidence))
+            Some(hash_slot_type_fact(&container_fact, &evidence).map_or_else(
+                || degraded_container_fact(&container_fact, evidence.clone()),
+                |fact| with_access_evidence(fact, &container_fact, evidence.clone()),
+            ))
         }
         NodeKind::Binary { op, left: container, right } if op == "[]" || op == "->[]" => {
             let container_fact = receiver_container_fact(container, context)?;
@@ -456,8 +446,10 @@ fn receiver_container_fact(left: &Node, context: ReceiverFactContext<'_>) -> Opt
                 ));
             };
 
-            array_index_type_fact(&container_fact, index)
-                .map(|fact| with_access_evidence(fact, &container_fact, evidence))
+            Some(array_index_type_fact(&container_fact, index).map_or_else(
+                || degraded_container_fact(&container_fact, evidence.clone()),
+                |fact| with_access_evidence(fact, &container_fact, evidence.clone()),
+            ))
         }
         _ => None,
     }
@@ -495,6 +487,10 @@ fn with_access_evidence(
     container_fact: &TypeFact,
     evidence: TypeEvidence,
 ) -> TypeFact {
+    fact.confidence = fact.confidence.max(container_fact.confidence);
+    if fact.dynamic_boundary.is_none() {
+        fact.dynamic_boundary = container_fact.dynamic_boundary.clone();
+    }
     for inherited in &container_fact.evidence {
         if !fact.evidence.contains(inherited) {
             fact.evidence.push(inherited.clone());
@@ -504,6 +500,47 @@ fn with_access_evidence(
         fact.evidence.push(evidence);
     }
     fact
+}
+
+fn degraded_container_fact(container_fact: &TypeFact, evidence: TypeEvidence) -> TypeFact {
+    let mut fact = TypeFact::unknown();
+    fact.confidence = fact.confidence.max(container_fact.confidence);
+    fact.dynamic_boundary = container_fact.dynamic_boundary.clone();
+    for inherited in &container_fact.evidence {
+        if !fact.evidence.contains(inherited) {
+            fact.evidence.push(inherited.clone());
+        }
+    }
+    if !fact.evidence.contains(&evidence) {
+        fact.evidence.push(evidence);
+    }
+    fact
+}
+
+fn fallback_receiver_fact(
+    kind: ReceiverKind,
+    receiver: &Node,
+    container_fact: TypeFact,
+    evidence: TypeEvidence,
+    freshness: ReceiverFactFreshness,
+    boundary: Option<DynamicBoundary>,
+) -> ReceiverFact {
+    let mut inherited_evidence = container_fact.evidence.clone();
+    if !inherited_evidence.contains(&evidence) {
+        inherited_evidence.push(evidence);
+    }
+    ReceiverFact {
+        kind,
+        package: None,
+        candidate_packages: vec![],
+        shape: container_fact.shape,
+        confidence: Confidence::Low.max(container_fact.confidence),
+        evidence: inherited_evidence,
+        freshness,
+        dynamic_boundary: boundary.or(container_fact.dynamic_boundary),
+        source_range: Some((receiver.location.start, receiver.location.end)),
+        fallback_state: ReceiverFallbackState::Fallback,
+    }
 }
 
 fn fallback_state_for_fact(package: Option<&str>, fact: &TypeFact) -> ReceiverFallbackState {
@@ -777,6 +814,18 @@ mod tests {
     fn array_shape_fact(index: usize, package: &str) -> TypeFact {
         let mut indexed = BTreeMap::new();
         indexed.insert(index, object_fact(package, Confidence::High));
+        TypeFact {
+            ty: PerlType::Array(Box::new(PerlType::Any)),
+            confidence: Confidence::High,
+            evidence: vec![TypeEvidence::Literal],
+            dynamic_boundary: None,
+            shape: Some(ShapeFact::Array(super::super::type_facts::ArrayShape::new(indexed, None))),
+        }
+    }
+
+    fn array_union_shape_fact(index: usize, first: &str, second: &str) -> TypeFact {
+        let mut indexed = BTreeMap::new();
+        indexed.insert(index, union_object_fact(first, second));
         TypeFact {
             ty: PerlType::Array(Box::new(PerlType::Any)),
             confidence: Confidence::High,
@@ -1458,6 +1507,167 @@ mod tests {
         assert_eq!(fact.confidence, Confidence::Low);
         assert_eq!(fact.dynamic_boundary, Some(DynamicBoundary::DynamicHashKey));
         assert_eq!(fact.fallback_state, ReceiverFallbackState::Fallback);
+        assert!(fact.evidence.iter().any(|evidence| {
+            matches!(evidence, TypeEvidence::Heuristic { reason } if reason == "hash receiver key is dynamic")
+        }));
+        assert!(fact.evidence.iter().any(|evidence| {
+            matches!(evidence, TypeEvidence::Heuristic { reason } if reason == "array index receiver")
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn dynamic_intermediate_boundary_survives_later_hash_lookup() -> Result<(), String> {
+        let fact = source_derived_receiver_fact_for(
+            "my %groups = (staff => [My::User->new]); my $bucket = 'staff'; $groups{$bucket}[0]{field}->render();",
+            "render",
+        )?;
+
+        assert_eq!(fact.kind, ReceiverKind::HashSlot);
+        assert_eq!(fact.package, None);
+        assert_eq!(fact.confidence, Confidence::Low);
+        assert_eq!(fact.dynamic_boundary, Some(DynamicBoundary::DynamicHashKey));
+        assert_eq!(fact.fallback_state, ReceiverFallbackState::Fallback);
+        assert!(fact.evidence.iter().any(|evidence| {
+            matches!(evidence, TypeEvidence::Heuristic { reason } if reason == "hash receiver key is dynamic")
+        }));
+        assert!(fact.evidence.iter().any(|evidence| {
+            matches!(evidence, TypeEvidence::HashSlot { hash, key } if hash == "Binary" && key == "field")
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn wrong_shape_hash_slot_cannot_be_admitted_as_array_element() -> Result<(), String> {
+        let mut env = TypeEnvironment::new();
+        env.set_variable_fact("groups".to_string(), hash_shape_fact("staff", "My::Group"));
+
+        let fact = receiver_fact_for("$groups{staff}[0]->render();", "render", &env)?;
+
+        assert_eq!(fact.kind, ReceiverKind::ArrayIndex);
+        assert_eq!(fact.package, None);
+        assert!(fact.candidate_packages.is_empty());
+        assert_eq!(fact.confidence, Confidence::Low);
+        assert_eq!(fact.dynamic_boundary, None);
+        assert_eq!(fact.fallback_state, ReceiverFallbackState::Fallback);
+        assert!(fact.evidence.iter().any(|evidence| {
+            matches!(evidence, TypeEvidence::HashSlot { hash, key } if hash == "$groups" && key == "staff")
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn wrong_shape_array_element_cannot_be_admitted_as_hash_slot() -> Result<(), String> {
+        let mut env = TypeEnvironment::new();
+        env.set_variable_fact("items".to_string(), array_shape_fact(0, "My::Item"));
+
+        let fact = receiver_fact_for("$items[0]{field}->render();", "render", &env)?;
+
+        assert_eq!(fact.kind, ReceiverKind::HashSlot);
+        assert_eq!(fact.package, None);
+        assert!(fact.candidate_packages.is_empty());
+        assert_eq!(fact.confidence, Confidence::Low);
+        assert_eq!(fact.dynamic_boundary, None);
+        assert_eq!(fact.fallback_state, ReceiverFallbackState::Fallback);
+        assert!(fact.evidence.iter().any(|evidence| {
+            matches!(evidence, TypeEvidence::Heuristic { reason } if reason == "array index receiver")
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn ambiguous_array_element_preserves_candidates_but_not_exactness() -> Result<(), String> {
+        let mut env = TypeEnvironment::new();
+        env.set_variable_fact("groups".to_string(), {
+            let mut slots = BTreeMap::new();
+            slots.insert("staff".to_string(), array_union_shape_fact(0, "My::User", "My::Admin"));
+            TypeFact {
+                ty: PerlType::Hash { key: Box::new(PerlType::Any), value: Box::new(PerlType::Any) },
+                confidence: Confidence::High,
+                evidence: vec![TypeEvidence::Literal],
+                dynamic_boundary: None,
+                shape: Some(ShapeFact::Hash(super::super::type_facts::HashShape::new(slots, None))),
+            }
+        });
+
+        let fact = receiver_fact_for("$groups{staff}[0]->render();", "render", &env)?;
+
+        assert_eq!(fact.package.as_deref(), Some("My::User"));
+        assert_eq!(fact.candidate_packages, vec!["My::User", "My::Admin"]);
+        assert_eq!(fact.confidence, Confidence::High);
+        assert_eq!(fact.fallback_state, ReceiverFallbackState::Fallback);
+        Ok(())
+    }
+
+    #[test]
+    fn shadowed_environment_fact_wins_by_current_variable_identity() -> Result<(), String> {
+        let mut parent = TypeEnvironment::new();
+        parent.set_variable_fact(
+            "groups".to_string(),
+            hash_of_array_shape_fact("staff", 0, "Outer::User"),
+        );
+        let mut env = TypeEnvironment::with_parent(parent);
+        env.set_variable_fact(
+            "groups".to_string(),
+            hash_of_array_shape_fact("staff", 0, "Inner::User"),
+        );
+
+        let fact = receiver_fact_for("$groups{staff}[0]->render();", "render", &env)?;
+
+        assert_eq!(fact.package.as_deref(), Some("Inner::User"));
+        assert_eq!(fact.candidate_packages, vec!["Inner::User"]);
+        assert!(fact.evidence.iter().any(|evidence| {
+            matches!(evidence, TypeEvidence::HashSlot { hash, key } if hash == "$groups" && key == "staff")
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn traversed_medium_confidence_caps_indexed_element_fact() -> Result<(), String> {
+        let mut container = hash_of_array_shape_fact("staff", 0, "My::User");
+        container.confidence = Confidence::Medium;
+        let mut env = TypeEnvironment::new();
+        env.set_variable_fact("groups".to_string(), container);
+
+        let fact = receiver_fact_for("$groups{staff}[0]->render();", "render", &env)?;
+
+        assert_eq!(fact.package.as_deref(), Some("My::User"));
+        assert_eq!(fact.confidence, Confidence::Medium);
+        assert_eq!(fact.fallback_state, ReceiverFallbackState::Fallback);
+        Ok(())
+    }
+
+    #[test]
+    fn receiver_fact_range_is_the_outer_receiver_expression() -> Result<(), String> {
+        let code = "$groups{staff}[0]->render();";
+        let env_fact = hash_of_array_shape_fact("staff", 0, "My::User");
+        let mut env = TypeEnvironment::new();
+        env.set_variable_fact("groups".to_string(), env_fact);
+        let fact = receiver_fact_for(code, "render", &env)?;
+        let start = code.find("$groups{staff}[0]").ok_or("receiver start missing")?;
+        let end = start + "$groups{staff}[0]".len();
+
+        assert_eq!(fact.source_range, Some((start, end)));
+        Ok(())
+    }
+
+    #[test]
+    fn malformed_receiver_does_not_fabricate_a_fact() -> Result<(), String> {
+        let code = "$groups{staff}[0]->render(";
+        let mut parser = Parser::new(code);
+        let parsed = parser.parse();
+        if let Ok(ast) = parsed {
+            if let Some(call) = method_call_named(&ast, "render") {
+                let env = TypeEnvironment::new();
+                let fact = receiver_fact_for_method_call(
+                    call,
+                    ReceiverFactContext::new(Some(&env)).with_source(code),
+                );
+                if fact.package.is_some() || fact.fallback_state == ReceiverFallbackState::Exact {
+                    return Err(format!("malformed receiver fabricated exact fact: {fact:?}"));
+                }
+            }
+        }
         Ok(())
     }
 
