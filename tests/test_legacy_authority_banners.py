@@ -14,6 +14,7 @@ REGISTRY = ROOT / "docs" / "agents" / "authority_status.toml"
 MIGRATOR = ROOT / "scripts" / "migrate-legacy-authority-banners.py"
 WORKFLOW = ROOT / ".github" / "workflows" / "legacy-authority-banners.yml"
 MARKER = "<!-- authority-status:v1 -->"
+TRUSTED_HISTORICAL_COMMIT = "4dc745fd3513d1a345cd1d6258bb96a13e284ae2"
 EXPECTED = {
     "docs/reference/ORCHESTRATION_DOCTRINE.md": (
         "superseded",
@@ -184,14 +185,15 @@ def historical_blob_sha1(commit: str, path: str) -> str:
 
 
 def trusted_historical_commit() -> str:
+    return TRUSTED_HISTORICAL_COMMIT
+
+
+def current_main_contains_trusted_history(trusted_commit: str) -> bool:
     result = subprocess.run(
-        ["git", "rev-parse", "--verify", "origin/main^{commit}"],
+        ["git", "merge-base", "--is-ancestor", trusted_commit, "origin/main"],
         cwd=ROOT,
-        check=True,
-        capture_output=True,
-        text=True,
     )
-    return result.stdout.strip()
+    return result.returncode == 0
 
 
 def historical_identity_findings(
@@ -402,6 +404,10 @@ class LegacyAuthorityBannerTests(unittest.TestCase):
     def test_rollout_redirects_bind_exact_historical_subject(self) -> None:
         rows = registry_rows()
         trusted_commit = trusted_historical_commit()
+        self.assertTrue(
+            current_main_contains_trusted_history(trusted_commit),
+            "current main must retain the pinned historical authority commit",
+        )
         for path, expected in ROLLOUT_REDIRECTS.items():
             with self.subTest(path=path):
                 row = rows[path]
@@ -435,6 +441,12 @@ class LegacyAuthorityBannerTests(unittest.TestCase):
             [],
             "changing both registry identity fields to a matching candidate blob "
             "must remain rejected",
+        )
+
+        self.assertNotEqual(
+            historical_identity_findings(path, rows[path], head, candidate_commit),
+            [],
+            "a moving main tip must not redefine the pinned historical authority",
         )
 
     def test_rollout_redirects_do_not_retain_executable_queue_prose(self) -> None:
