@@ -8,13 +8,16 @@
 #[path = "support/active_document_readiness.rs"]
 mod active_document_readiness;
 
-use active_document_readiness::{ReadyObservation, ready_event_count, wait_for_generation_after};
+use active_document_readiness::{
+    ReadyObservation, generation_after, ready_event_count, ready_generations,
+    wait_for_generation_after,
+};
 use anyhow::{Context, Result, anyhow, ensure};
 use perl_lsp_ux_tests::{
-    ProjectFixtureFile, ScenarioConfig, UxCiTier, UxComponent, UxHarness, binary_available,
-    document_symbol_names, fixture_content, fixture_scenario_config, load_catalyst_fixture_files,
-    load_dancer2_fixture_files, load_mojolicious_fixture_files, missing_binary_skip,
-    open_all_fixture_files, run_ux_scenario,
+    LspEvent, ProjectFixtureFile, ScenarioConfig, UxCiTier, UxComponent, UxHarness,
+    binary_available, document_symbol_names, fixture_content, fixture_scenario_config,
+    load_catalyst_fixture_files, load_dancer2_fixture_files, load_mojolicious_fixture_files,
+    missing_binary_skip, open_all_fixture_files, run_ux_scenario,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Deserializer, Value, json};
@@ -28,6 +31,7 @@ const SCENARIO_FILE: &str = "ux_scenario_67_golden_editor_workload.rs";
 const MANIFEST: &str = include_str!("../fixtures/golden_editor_workload.json");
 const PLAIN_ACTIVE_FILE: &str = "lib/Plain/App.pm";
 const READY_TIMEOUT: Duration = Duration::from_secs(30);
+const EDIT_BURST_COUNT: i32 = 20;
 const PRE_CLOSE_SYMBOL: &str = "__golden_preclose_symbol";
 const REOPENED_SYMBOL: &str = "__golden_reopened_symbol";
 const PLAIN_SOURCE: &str = r#"package Plain::App;
@@ -174,6 +178,31 @@ fn close_reopen_rejects_untracked_buffer_before_current_evidence() -> Result<()>
 }
 
 #[test]
+fn delayed_same_generation_readiness_requires_reopened_discriminator() -> Result<()> {
+    let uri = "file:///workspace/lib/App.pm";
+    let ready = |generation| LspEvent::Other {
+        method: active_document_readiness::ACTIVE_DOCUMENT_READY_METHOD.to_owned(),
+        params: json!({"uri": uri, "generation": generation}),
+    };
+    let mut events = vec![ready(1), ready(2)];
+    let cursor = ready_generations(&events, uri).len();
+    events.push(ready(1));
+    let stale_readiness = generation_after(&ready_generations(&events, uri), cursor, 1).context(
+        "same-generation delayed readiness must be observable for this negative control",
+    )?;
+    let stale_names = vec![format!("Golden::PreClose::App::{PRE_CLOSE_SYMBOL}")];
+    let error = require_reopened_discriminator(stale_readiness, &stale_names)
+        .err()
+        .context("a same-generation stale event must not release close/reopen evidence")?;
+    let message = format!("{error:#}");
+    ensure!(
+        message.contains("post-reopen document symbols"),
+        "stale same-generation evidence was not rejected by the independent discriminator: {message}"
+    );
+    Ok(())
+}
+
+#[test]
 fn edit_burst_restoration_is_pending_until_real_generation_barrier() -> Result<()> {
     if !binary_available() {
         return Ok(());
@@ -185,14 +214,17 @@ fn edit_burst_restoration_is_pending_until_real_generation_barrier() -> Result<(
     let cursor = position_after(PLAIN_SOURCE, "$self->")?;
     let observation =
         run_edit_burst_completion(&harness, &project.active_file, PLAIN_SOURCE, cursor)?;
+    let expected_generation = 1 + EDIT_BURST_COUNT + 1;
 
     ensure!(
         observation.readiness_state.starts_with("active_document_pending_during_request;"),
         "edit burst retained initial readiness: {}",
         observation.readiness_state
     );
-    ensure!(observation.readiness_state.contains("restored_generation=22"));
-    ensure!(harness.tracked_document_version(&project.active_file) == Some(22));
+    ensure!(
+        observation.readiness_state.contains(&format!("restored_generation={expected_generation}"))
+    );
+    ensure!(harness.tracked_document_version(&project.active_file) == Some(expected_generation));
     Ok(())
 }
 
@@ -200,10 +232,15 @@ fn edit_burst_restoration_is_pending_until_real_generation_barrier() -> Result<(
 fn lifecycle_symbol_matching_is_namespace_component_exact() -> Result<()> {
     let names = vec![
         "Golden::Reopened::__golden_reopened_symbol".to_owned(),
+        "Golden::Reopened::__golden_reopened_symbol_v2".to_owned(),
         "not___golden_reopened_symbol".to_owned(),
     ];
     ensure!(contains_symbol_name(&names, REOPENED_SYMBOL));
+    ensure!(!contains_symbol_name(&names, "__golden_reopened_symbol_v"));
     ensure!(!contains_symbol_name(&names, "golden_reopened_symbol"));
+    let sanitized = lifecycle_source("Reopened", "project-name", "bad-symbol!");
+    ensure!(sanitized.contains("sub bad_symbol_ {"));
+    ensure!(!sanitized.contains("sub bad-symbol! {"));
     Ok(())
 }
 
@@ -823,7 +860,7 @@ fn run_project_workload(
                     CursorReceipt { line: 0, character: 0 },
                     json!({"_golden_error": format!("{error:#}")}),
                     Value::Null,
-                    "active_document_not_observed".to_owned(),
+                    "lifecycle_failure_before_observation".to_owned(),
                 ),
             },
             other => return Err(anyhow!("unhandled golden workload journey {other}")),
@@ -884,7 +921,7 @@ fn run_edit_burst_completion(
     source: &str,
     cursor: CursorReceipt,
 ) -> Result<EditBurstObservation> {
-    for edit in 0..20 {
+    for edit in 0..EDIT_BURST_COUNT {
         harness
             .change_editor_buffer_full(file, &format!("{source}\n# golden editor burst {edit}"))?;
     }
@@ -899,7 +936,7 @@ fn run_edit_burst_hover(
     source: &str,
     cursor: CursorReceipt,
 ) -> Result<EditBurstObservation> {
-    for edit in 0..20 {
+    for edit in 0..EDIT_BURST_COUNT {
         harness
             .change_editor_buffer_full(file, &format!("{source}\n# golden editor burst {edit}"))?;
     }
@@ -952,14 +989,7 @@ fn run_close_reopen_pending(
     let symbols = harness.document_symbols(&project.active_file)?;
     let names = document_symbol_names(&symbols).into_iter().map(str::to_owned).collect::<Vec<_>>();
 
-    ensure!(
-        contains_symbol_name(&names, REOPENED_SYMBOL),
-        "post-reopen document symbols did not expose the reopened buffer marker; got {names:?}"
-    );
-    ensure!(
-        !contains_symbol_name(&names, PRE_CLOSE_SYMBOL),
-        "post-reopen document symbols exposed the pre-close buffer marker; got {names:?}"
-    );
+    require_reopened_discriminator(reopened_readiness, &names)?;
     ensure!(
         !contains_symbol_name(&names, &project.definition_needle),
         "post-reopen document symbols still exposed the backing/initial source discriminator `{}`; got {names:?}",
@@ -1025,13 +1055,35 @@ fn run_close_reopen_pending(
 }
 
 fn lifecycle_source(phase: &str, project_name: &str, symbol: &str) -> String {
-    let package_component = project_name
+    let package_component = sanitize_perl_identifier_component(project_name);
+    let symbol_component = sanitize_perl_identifier_component(symbol);
+    format!(
+        "package Golden::{phase}::{package_component};\nuse strict;\nuse warnings;\n\nsub {symbol_component} {{\n    return 1;\n}}\n\n1;\n"
+    )
+}
+
+fn sanitize_perl_identifier_component(value: &str) -> String {
+    value
         .chars()
         .map(|character| if character.is_ascii_alphanumeric() { character } else { '_' })
-        .collect::<String>();
-    format!(
-        "package Golden::{phase}::{package_component};\nuse strict;\nuse warnings;\n\nsub {symbol} {{\n    return 1;\n}}\n\n1;\n"
-    )
+        .collect()
+}
+
+fn require_reopened_discriminator(readiness: ReadyObservation, names: &[String]) -> Result<()> {
+    ensure!(
+        readiness.generation == 1,
+        "close/reopen readiness used unexpected generation {}; expected generation 1",
+        readiness.generation
+    );
+    ensure!(
+        contains_symbol_name(names, REOPENED_SYMBOL),
+        "post-reopen document symbols did not expose the reopened buffer marker; got {names:?}"
+    );
+    ensure!(
+        !contains_symbol_name(names, PRE_CLOSE_SYMBOL),
+        "post-reopen document symbols exposed the pre-close buffer marker; got {names:?}"
+    );
+    Ok(())
 }
 
 fn contains_symbol_name(names: &[String], expected: &str) -> bool {
