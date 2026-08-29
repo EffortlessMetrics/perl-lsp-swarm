@@ -118,6 +118,22 @@ fn validated_manifest_source_path(
     Ok(canonical_candidate)
 }
 
+#[cfg(unix)]
+fn create_file_symlink_for_test(target: &Path, link: &Path) -> TestResult<bool> {
+    std::os::unix::fs::symlink(target, link)?;
+    Ok(true)
+}
+
+#[cfg(windows)]
+fn create_file_symlink_for_test(target: &Path, link: &Path) -> TestResult<bool> {
+    use perl_tdd_support::try_create_file_symlink;
+
+    if perl_tdd_support::symlink_test_decision().skip_visibly() {
+        return Ok(false);
+    }
+    Ok(try_create_file_symlink(target, link)?.is_some())
+}
+
 fn import_export_fixture_paths() -> TestResult<ImportExportFixturePaths> {
     let manifest_path = fixture_root().join("manifest.json");
     let manifest: ParserAccuracyManifest =
@@ -311,6 +327,36 @@ fn manifest_source_path_rejects_absolute_and_parent_traversal() -> TestResult {
 }
 
 #[test]
+fn manifest_source_path_rejects_symlink_escape() -> TestResult {
+    let root = tempfile::tempdir()?;
+    let fixture_root = root.path().join("fixtures");
+    let outside = tempfile::tempdir()?;
+    fs::create_dir_all(&fixture_root)?;
+    let target = outside.path().join("outside.pl");
+    fs::write(&target, "1;\n")?;
+    let link = fixture_root.join("escaped.pl");
+    if !create_file_symlink_for_test(&target, &link)? {
+        return Ok(());
+    }
+
+    let error = match validated_manifest_source_path(
+        root.path(),
+        &fixture_root,
+        Path::new("fixtures/escaped.pl"),
+    ) {
+        Ok(path) => {
+            return Err(failure(format!("symlink escape was accepted: {}", path.display())));
+        }
+        Err(error) => error,
+    };
+    assert_contains(
+        &error.to_string(),
+        "escapes the parser-accuracy fixture root",
+        "symlink escape containment",
+    )
+}
+
+#[test]
 fn import_export_fixture_is_a_declared_two_file_module_graph() -> TestResult {
     let paths = import_export_fixture_paths()?;
     let consumer_path = &paths.consumer;
@@ -418,9 +464,11 @@ fn import_export_negative_control_rejects_missing_export() -> TestResult {
 #[test]
 fn import_export_negative_control_rejects_collapsed_topology() -> TestResult {
     let root = tempfile::tempdir()?;
-    fs::create_dir_all(root.path())?;
     let paths = import_export_fixture_paths()?;
     let consumer = root.path().join(&paths.consumer_relative);
+    if let Some(parent) = consumer.parent() {
+        fs::create_dir_all(parent)?;
+    }
     let mut collapsed = fs::read_to_string(paths.consumer)?;
     collapsed.push_str(&fs::read_to_string(paths.producer)?);
     fs::write(&consumer, collapsed)?;
@@ -467,6 +515,7 @@ fn governed_perl_probe_denies_hostile_perl_environment() -> TestResult {
     let environment = vec![
         (OsString::from("PATH"), path),
         (OsString::from("PERL5LIB"), OsString::from("hostile-module-root")),
+        (OsString::from("PERLLIB"), OsString::from("hostile-fallback-module-root")),
         (OsString::from("PERL5OPT"), OsString::from("-MHostile::Prelude")),
         (OsString::from("PERL_LOCAL_LIB_ROOT"), OsString::from("hostile-local-lib")),
         (OsString::from("PERL_LOCAL_LIB_PREFIX"), OsString::from("hostile-local-prefix")),
