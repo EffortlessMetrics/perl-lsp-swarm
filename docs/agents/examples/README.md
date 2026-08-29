@@ -98,8 +98,8 @@ put it in front of a reviewer rather than to settle it.
 - **Worked lane:** none
 - **Source receipts:** none
 - **Terminal ruling:** none
-- **Defining transition:** a directed review finding is verified against the candidate, repaired by the one writer already holding it, and answered with focused regression proof on the changed seam rather than a full replay.
-- **What remains unproved:** no curated corpus document narrates the directed finding, the one-writer repair, and the focused re-review together. A future promotion must carry that transition on its own evidence rather than borrowing a nearby safety repair.
+- **Defining transition:** a bot or human finding is verified against primary evidence, given an explicit disposition, repaired by the one integrating writer, and answered by rerunning only the affected proof while unchanged areas keep their current evidence.
+- **What remains unproved:** the material is strong and the lane document does not carry it. #4192 records a `PROMOTE` for the review-forward synthetic integration proof on PR #5717, whose directed review produced four findings that were verified and repaired before merge. But `integration-trigger-and-proof-caller.md` narrates only that "the later repair pass found a concrete safety gap" and "added focused regression tests" — it never identifies the review as the source, names a disposition, or shows the one-writer boundary. This row was `COVERED` until review caught that the ledger's author had imported the finding from #5717's threads rather than reading it in the lane.
 
 ### clean-formal-review
 
