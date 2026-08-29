@@ -9,7 +9,7 @@
 //! rather than a string literal) are reported as [`SubtestName::Dynamic`]
 //! rather than guessed — the caller decides how to present an unknown name.
 
-use crate::providers::document_symbols::DocumentSymbol;
+use crate::providers::document_symbols::{CALLABLE_DOCUMENT_SYMBOL_PRIORITY, DocumentSymbol};
 use perl_parser_core::ast::{Node, NodeKind};
 use perl_position_tracking::WireRange;
 use perl_semantic_analyzer::symbol::SymbolKind;
@@ -91,7 +91,8 @@ pub fn subtest_document_symbols(subtests: &[DiscoveredSubtest]) -> Vec<DocumentS
 ///   being floated to the root.
 ///
 /// Name, kind, detail, and selection-range conventions are exactly those of
-/// [`subtest_document_symbols`]; sibling order follows source position.
+/// [`subtest_document_symbols`]; sibling order follows assembler priority and
+/// then source position.
 pub fn nest_subtest_symbols_in_outline(
     outline: &mut Vec<DocumentSymbol>,
     subtests: &[DiscoveredSubtest],
@@ -246,20 +247,13 @@ fn insert_by_source_position(children: &mut Vec<DocumentSymbol>, symbol: Documen
     children.insert(position, symbol);
 }
 
-/// Mirror the priority used by the compiler document-symbol assembler.
-///
-/// Subtests are LSP functions, so they share the callable priority rather than
-/// being inserted by source position across properties, namespaces, or
-/// variables that the assembler intentionally groups separately.
 fn document_symbol_sort_key(symbol: &DocumentSymbol) -> (u8, u32, u32, u32) {
-    let priority = match symbol.kind {
-        7 => 0,                 // scalar `has` property
-        2 | 3 | 4 | 5 | 8 => 1, // package/class/role namespace family
-        18 | 19 => 2,           // array/hash `has` properties
-        6 | 12 => 3,            // methods/functions, including subtests
-        _ => 4,
-    };
-    (priority, symbol.range.start.line, symbol.range.start.character, symbol.range.end.line)
+    (
+        symbol.sort_priority,
+        symbol.range.start.line,
+        symbol.range.start.character,
+        symbol.range.end.line,
+    )
 }
 
 /// Find the innermost subtest whose range contains the 0-based `line`.
@@ -293,6 +287,7 @@ fn to_document_symbol(subtest: &DiscoveredSubtest) -> DocumentSymbol {
         range: subtest.range,
         selection_range: subtest.name_range,
         children: subtest.children.iter().map(to_document_symbol).collect(),
+        sort_priority: CALLABLE_DOCUMENT_SYMBOL_PRIORITY,
     }
 }
 

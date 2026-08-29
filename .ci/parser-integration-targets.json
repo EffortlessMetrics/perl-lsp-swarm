@@ -111,6 +111,21 @@
       "boundedness": "focused"
     },
     {
+      "id": "parser.red_black_tree_access_paths",
+      "package": "perl-parser-core",
+      "target": "red_black_tree_access_paths_tests",
+      "features": [],
+      "no_default_features": false,
+      "cargo_args": [],
+      "test_args": [
+        "--test-threads=4"
+      ],
+      "owner": "#4847",
+      "reason": "Pin red-black-tree rotation and fix-up access paths: container reads, terminal writes, and single ReadModifyWrite places.",
+      "disposition": "execute",
+      "boundedness": "focused"
+    },
+    {
       "id": "parser.semantic.smoke",
       "package": "perl-parser",
       "target": "semantic_smoke_tests",
