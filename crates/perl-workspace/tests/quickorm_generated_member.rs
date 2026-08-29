@@ -3,7 +3,7 @@ use perl_workspace::{NodeKind, Parser};
 use url::Url;
 
 #[test]
-fn quickorm_qorm_table_stays_below_workspace_symbol_admission() -> Result<(), Box<dyn std::error::Error>>
+fn quickorm_qorm_table_reaches_generated_member_surfaces() -> Result<(), Box<dyn std::error::Error>>
 {
     let source = r#"
 package MyApp::Schema::User;
@@ -37,10 +37,13 @@ table users => sub {
     let uri = Url::parse("file:///lib/MyApp/Schema/User.pm")?;
     index.index_file(uri, source.to_string()).map_err(std::io::Error::other)?;
 
-    assert!(
-        index.search_generated_workspace_symbols("qorm_table", None).is_empty(),
-        "Medium-confidence QuickORM facts must not enter the live workspace-symbol surface"
-    );
+    let generated = index.search_generated_workspace_symbols("qorm_table", None);
+    assert_eq!(generated.len(), 1, "expected one generated qorm_table symbol: {generated:?}");
+    let symbol = &generated[0];
+    assert_eq!(symbol.name, "qorm_table [generated/framework]");
+    assert_eq!(symbol.qualified_name.as_deref(), Some("MyApp::Schema::User::qorm_table"));
+    assert_eq!(symbol.container_name.as_deref(), Some("MyApp::Schema::User [generated/framework]"));
+    assert_eq!(source.get(symbol.range.start.byte..symbol.range.end.byte), Some("users"));
 
     assert!(
         index.search_source_symbols("qorm_table", None).is_empty(),

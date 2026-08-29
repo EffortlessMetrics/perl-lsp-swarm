@@ -247,10 +247,11 @@ fn walk_direct_statement(
             // ordinary runtime `table` calls as package-level declarations.
             walk_compile_time_descendants(body, file_id, context, facts, source);
         }
-        // Runtime-controlled nodes and nested subroutine bodies are not
-        // package-level table declarations. Do not recurse into them or let
-        // runtime-controlled framework state escape into the containing package.
-        _ => {}
+        // Other direct statements can contain executable descendants, such as
+        // a qualified builder in a variable initializer. Inspect those
+        // descendants for invalidating evidence without treating a direct
+        // runtime `table` call as a package-level declaration.
+        _ => walk_compile_time_descendants(node, file_id, context, facts, source),
     }
 }
 
@@ -288,6 +289,18 @@ fn walk_compile_time_descendants(
         NodeKind::ExpressionStatement { expression }
             if is_competing_import_call(expression)
                 || is_qualified_table_or_view_call(expression, current_package(context)) =>
+        {
+            let package = current_package(context).to_string();
+            context.table_package_authority.remove(&package);
+            invalidate_qorm_table_fact(&package, facts);
+        }
+        NodeKind::MethodCall { .. } if is_competing_import_call(node) => {
+            let package = current_package(context).to_string();
+            context.table_package_authority.remove(&package);
+            invalidate_qorm_table_fact(&package, facts);
+        }
+        NodeKind::FunctionCall { .. }
+            if is_qualified_table_or_view_call(node, current_package(context)) =>
         {
             let package = current_package(context).to_string();
             context.table_package_authority.remove(&package);

@@ -250,3 +250,47 @@ table users => sub {};
     );
     Ok(())
 }
+
+#[test]
+fn competing_view_method_import_does_not_surface_generated_completion()
+-> Result<(), Box<dyn std::error::Error>> {
+    let index = Arc::new(WorkspaceIndex::new());
+    index.index_file(
+        Url::parse("file:///workspace/MyApp/Schema/CompetingView.pm")?,
+        r#"
+package MyApp::Schema::CompetingView;
+use DBIx::QuickORM type => 'table';
+Other::DSL->import(qw(view));
+view users => sub {};
+1;
+"#
+        .to_string(),
+    )?;
+
+    let completions = completion_items(index, "MyApp::Schema::CompetingView->q")?;
+    let labels = labels(&completions);
+    assert!(!labels.contains(&"qorm_table"));
+    Ok(())
+}
+
+#[test]
+fn nested_qualified_builder_initializer_does_not_surface_generated_completion()
+-> Result<(), Box<dyn std::error::Error>> {
+    let index = Arc::new(WorkspaceIndex::new());
+    index.index_file(
+        Url::parse("file:///workspace/MyApp/Schema/NestedInitializer.pm")?,
+        r#"
+package MyApp::Schema::NestedInitializer;
+use DBIx::QuickORM type => 'table';
+my $builder = MyApp::Schema::NestedInitializer::table "nested_users" => sub {};
+table users => sub {};
+1;
+"#
+        .to_string(),
+    )?;
+
+    let completions = completion_items(index, "MyApp::Schema::NestedInitializer->q")?;
+    let labels = labels(&completions);
+    assert!(!labels.contains(&"qorm_table"));
+    Ok(())
+}

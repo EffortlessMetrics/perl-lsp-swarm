@@ -166,6 +166,28 @@ fn nested_qualified_builder_call_invalidates_outer_authority()
 }
 
 #[test]
+fn nested_qualified_builder_initializer_invalidates_outer_authority()
+-> Result<(), Box<dyn std::error::Error>> {
+    let facts = generated_facts_from_source(
+        "package User; use DBIx::QuickORM type => 'table'; my $builder = User::table 'nested' => sub {}; table users => sub {};",
+    )?;
+
+    assert!(facts.is_empty());
+    Ok(())
+}
+
+#[test]
+fn competing_view_method_import_invalidates_quickorm_authority()
+-> Result<(), Box<dyn std::error::Error>> {
+    let facts = generated_facts_from_source(
+        "package User; use DBIx::QuickORM type => 'table'; Other::DSL->import(qw(view)); view users => sub {};",
+    )?;
+
+    assert!(facts.is_empty());
+    Ok(())
+}
+
+#[test]
 fn compile_time_quickorm_import_inside_subroutine_enables_following_builder()
 -> Result<(), Box<dyn std::error::Error>> {
     let facts = generated_facts_from_source(
