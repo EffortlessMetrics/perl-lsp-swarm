@@ -207,8 +207,11 @@ fn coverage_workflow_is_manual_or_nightly_only_and_requires_receipts() {
     assert!(
         coverage_lane.contains("allowed_triggers = [\"schedule\", \"workflow_dispatch\"]")
             && coverage_lane.contains("Codecov / Patch 95 is advisory")
+            && coverage_lane.contains("labels = []")
             && !coverage_lane.contains("pull_request")
             && !coverage_lane.contains("merge_group")
+            && !coverage_lane.contains("ci:coverage")
+            && !coverage_lane.contains("full-ci")
             && !coverage_lane.contains("required Codecov"),
         "coverage lane whitelist must match the schedule/manual-only advisory workflow"
     );
@@ -231,6 +234,9 @@ fn coverage_workflow_is_manual_or_nightly_only_and_requires_receipts() {
             "| Coverage | scheduled nightly run or explicit `workflow_dispatch` with coverage enabled | Advisory Codecov upload; it is not a PR or merge-queue lane. |"
         ) && verification_ladder_doc
             .contains("| coverage | nightly / manual dispatch | execution surface |")
+            && !evidence_lanes_doc.contains("| `coverage` |")
+            && !evidence_lanes_doc.contains("coverage.yml` Codecov upload on PR")
+            && !evidence_lanes_doc.contains("Coverage on `master`")
             && !evidence_lanes_doc.contains("label-gated PR (`coverage`)")
             && !verification_ladder_doc.contains("main / `coverage` label"),
         "coverage reference docs must describe only scheduled/manual execution"

@@ -77,7 +77,6 @@ changes).
 | `property-tests` | broad property sweep in `property-testing.yml` (high case-count). |
 | `fuzz` | quick-fuzz across all parser surfaces in `fuzzing.yml`. |
 | `mutation` | targeted mutation testing in `mutation-testing.yml` (scoped to touched risk-pack). |
-| `coverage` | `coverage.yml` Codecov upload on PR. |
 | `security-audit` | standalone `cargo-deny` in `ci-security.yml` (also fires on push-main + weekly cron). |
 | `full-ci` | "spend authorization": activates every label-gated lane on a single PR. Reviewer signs off on the cost. |
 
@@ -89,7 +88,7 @@ canary lanes.
 - Full property-test sweep (256+ cases per crate).
 - Full fuzz matrix at extended budget.
 - Full mutation sweep across trust surfaces.
-- Coverage on `master` (`coverage.yml`).
+- Coverage via the scheduled `ci-nightly.yml` run or an explicit manual dispatch.
 - `ci-nightly.yml` for any other long-running canary.
 
 The point of nightly: surface regressions that the bounded PR-fast
