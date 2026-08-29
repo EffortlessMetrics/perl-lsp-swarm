@@ -32,12 +32,150 @@ FORBIDDEN_DOC_PHRASES = (
 )
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
-SUPPORTED_COMMANDS_RE = re.compile(
-    r"const\s+SUPPORTED_COMMANDS\s*:\s*\[&str;\s*(?P<count>\d+)\s*\]\s*=\s*"
-    r"\[(?P<body>.*?)\];",
-    re.DOTALL,
-)
 RUST_STRING_RE = re.compile(r'"([A-Za-z][A-Za-z0-9]*)"')
+
+# The one executable request authority (#9527). Rows in this table expand
+# into both the typed inventory and the `dispatch_request` match arms, so a
+# row is production routing rather than a parallel list describing it.
+REQUEST_TABLE_INVOCATION_RE = re.compile(r"\bdap_request_table\s*!\s*\{")
+REQUEST_TABLE_ROW_RE = re.compile(
+    r"(?P<class>standard|extension)\s+"
+    r'"(?P<command>[A-Za-z][A-Za-z0-9._/-]*)"\s*=>\s*'
+    r"(?P<handler>[a-z_][a-z0-9_]*)\s*\(\s*(?:arguments\s*)?\)\s*,"
+)
+# A hand-written request arm anywhere in the dispatch source would be a
+# second executable authority the table cannot see.
+STRAY_DISPATCH_ARM_RE = re.compile(r'"[A-Za-z][A-Za-z0-9]*"\s*=>\s*self\s*\.\s*handle_')
+REQUEST_CLASSES = {"standard", "extension"}
+
+
+def strip_rust_comments(text: str) -> str:
+    """Remove Rust line and block comments, preserving string literals.
+
+    Comment and string content must never contribute request identities, so
+    the inventory is derived only from executable tokens.
+    """
+    out: list[str] = []
+    index = 0
+    length = len(text)
+    while index < length:
+        char = text[index]
+        if char == '"':
+            out.append(char)
+            index += 1
+            while index < length:
+                current = text[index]
+                out.append(current)
+                index += 1
+                if current == "\\" and index < length:
+                    out.append(text[index])
+                    index += 1
+                elif current == '"':
+                    break
+            continue
+        if text.startswith("//", index):
+            end = text.find("\n", index)
+            index = length if end == -1 else end
+            continue
+        if text.startswith("/*", index):
+            depth = 1
+            index += 2
+            while index < length and depth:
+                if text.startswith("/*", index):
+                    depth += 1
+                    index += 2
+                elif text.startswith("*/", index):
+                    depth -= 1
+                    index += 2
+                else:
+                    index += 1
+            out.append(" ")
+            continue
+        out.append(char)
+        index += 1
+    return "".join(out)
+
+
+def _balanced_block(text: str, open_index: int) -> str:
+    """Return the body of the brace block whose `{` is at `open_index`."""
+    depth = 0
+    for index in range(open_index, len(text)):
+        char = text[index]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return text[open_index + 1 : index]
+    raise AuthorityError("dap_request_table! invocation is not brace-balanced")
+
+
+def parse_request_table(source: str) -> list[dict[str, str]]:
+    """Parse the executable request table into deterministic rows.
+
+    Fails closed on a missing, duplicated, malformed, or partially parsed
+    table, and on any hand-written dispatch arm outside it.
+    """
+    text = strip_rust_comments(source)
+
+    invocations = list(REQUEST_TABLE_INVOCATION_RE.finditer(text))
+    if not invocations:
+        raise AuthorityError(
+            "cannot locate the executable dap_request_table! invocation; "
+            "production request identity must come from routed rows"
+        )
+    if len(invocations) > 1:
+        raise AuthorityError(
+            f"found {len(invocations)} dap_request_table! invocations; "
+            "exactly one executable request authority may exist"
+        )
+
+    stray = STRAY_DISPATCH_ARM_RE.search(text)
+    if stray is not None:
+        line = text.count("\n", 0, stray.start()) + 1
+        raise AuthorityError(
+            f"hand-written request dispatch arm at {DISPATCH_PATH.as_posix()}:{line}; "
+            "every routed request must be a dap_request_table! row"
+        )
+
+    body = _balanced_block(text, invocations[0].end() - 1)
+
+    rows: list[dict[str, str]] = []
+    consumed = 0
+    for match in REQUEST_TABLE_ROW_RE.finditer(body):
+        if body[consumed : match.start()].strip():
+            residue = body[consumed : match.start()].strip()
+            raise AuthorityError(
+                f"unparsed content in the request table: {residue[:80]!r}"
+            )
+        rows.append(
+            {
+                "row_id": f"dap.request.{match.group('command')}",
+                "command": match.group("command"),
+                "class": match.group("class"),
+                "handler": match.group("handler"),
+            }
+        )
+        consumed = match.end()
+    if body[consumed:].strip():
+        raise AuthorityError(
+            f"unparsed content in the request table: {body[consumed:].strip()[:80]!r}"
+        )
+    if not rows:
+        raise AuthorityError("the executable request table is empty")
+
+    commands = [row["command"] for row in rows]
+    if len(set(commands)) != len(commands):
+        raise AuthorityError("the executable request table contains duplicate wire names")
+    handlers = [row["handler"] for row in rows]
+    if len(set(handlers)) != len(handlers):
+        raise AuthorityError("two request rows route to the same handler")
+    for row in rows:
+        if row["class"] not in REQUEST_CLASSES:
+            raise AuthorityError(
+                f"request row {row['command']!r} has unknown class {row['class']!r}"
+            )
+    return rows
 SEND_EVENT_CALL_RE = re.compile(r"\bself\.send_event\s*\(")
 SEND_EVENT_LITERAL_RE = re.compile(r'\s*"([A-Za-z][A-Za-z0-9]*)"')
 DEFINITION_REF_PREFIX = "#/definitions/"

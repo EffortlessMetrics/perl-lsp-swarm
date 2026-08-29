@@ -8,32 +8,20 @@ from typing import Any, Mapping
 from dap_authority_common import (
     DEBUG_ADAPTER_ROOT,
     DISPATCH_PATH,
-    RUST_STRING_RE,
     SEND_EVENT_CALL_RE,
     SEND_EVENT_LITERAL_RE,
-    SUPPORTED_COMMANDS_RE,
     AuthorityError,
     array_value,
     manifest_rows,
+    parse_request_table,
     read_text,
     string_value,
 )
 
 
-def _production_commands(root: Path) -> set[str]:
+def _production_request_rows(root: Path) -> list[dict[str, str]]:
     text = read_text(root / DISPATCH_PATH, "DAP dispatch source")
-    match = SUPPORTED_COMMANDS_RE.search(text)
-    if match is None:
-        raise AuthorityError(f"cannot locate exact SUPPORTED_COMMANDS inventory in {DISPATCH_PATH}")
-    commands = RUST_STRING_RE.findall(match.group("body"))
-    declared_count = int(match.group("count"))
-    if len(commands) != declared_count:
-        raise AuthorityError(
-            f"SUPPORTED_COMMANDS declares {declared_count} entries but exposes {len(commands)}"
-        )
-    if len(set(commands)) != len(commands):
-        raise AuthorityError("SUPPORTED_COMMANDS contains duplicate wire names")
-    return set(commands)
+    return parse_request_table(text)
 
 
 def _production_events(root: Path) -> set[str]:
@@ -67,8 +55,24 @@ def validate_production_boundary(
     standard_events = set(
         array_value(observed.get("standard_events"), "observed.standard_events")
     )
-    commands = _production_commands(root)
+    rows = _production_request_rows(root)
+    commands = {row["command"] for row in rows}
     events = _production_events(root)
+
+    # The class declared beside the executable route must agree with the
+    # pinned upstream schema. A row cannot claim to be standard DAP that
+    # upstream does not define, nor hide a standard request as a project
+    # extension.
+    misclassified = sorted(
+        (row["command"], row["class"])
+        for row in rows
+        if (row["class"] == "standard") != (row["command"] in standard_requests)
+    )
+    if misclassified:
+        raise AuthorityError(
+            "request rows are misclassified against the pinned upstream schema: "
+            f"{misclassified}"
+        )
 
     production_extensions = {
         *(("request", name) for name in commands - standard_requests),
@@ -134,6 +138,15 @@ def validate_production_boundary(
     return {
         "dispatch_path": DISPATCH_PATH.as_posix(),
         "source_root": DEBUG_ADAPTER_ROOT.as_posix(),
+        "request_rows": [
+            {
+                "row_id": row["row_id"],
+                "command": row["command"],
+                "class": row["class"],
+                "handler": row["handler"],
+            }
+            for row in sorted(rows, key=lambda row: row["row_id"])
+        ],
         "commands": sorted(commands),
         "events": sorted(events),
         "project_extensions": [

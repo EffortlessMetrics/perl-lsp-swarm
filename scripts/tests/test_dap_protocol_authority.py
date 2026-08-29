@@ -7,6 +7,7 @@ import copy
 import hashlib
 import importlib.util
 import json
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -221,22 +222,39 @@ class DapProtocolAuthorityTests(unittest.TestCase):
         if divergent:
             paths[1].write_text(source + "\ndiverged\n", encoding="utf-8")
 
+    @staticmethod
+    def _render_row(command: str, *, standard: tuple[str, ...]) -> str:
+        # The class must agree with the pinned schema; the handler is a
+        # valid Rust identifier derived from the wire name.
+        handler = re.sub(r"[^a-z0-9]+", "_", command.lower()).strip("_")
+        kind = "standard" if command in standard else "extension"
+        return f'    {kind} "{command}" => handle_{handler}(arguments),'
+
+    @classmethod
+    def _render_table(
+        cls,
+        commands: tuple[str, ...],
+        *,
+        standard: tuple[str, ...] = ("initialize",),
+        extra_body: str = "",
+    ) -> str:
+        rows = "\n".join(cls._render_row(command, standard=standard) for command in commands)
+        return f"dap_request_table! {{\n{rows}\n{extra_body}}}\n"
+
     def _write_production(
         self,
         *,
         commands: tuple[str, ...] = ("initialize", "inlineValues"),
         events: tuple[str, ...] = ("initialized", "continued"),
         dynamic_event: bool = False,
+        dispatch_source: str | None = None,
     ) -> None:
         dispatch = self.root / MODULE.DISPATCH_PATH
         dispatch.parent.mkdir(parents=True, exist_ok=True)
-        rendered_commands = "\n".join(f'        "{command}",' for command in commands)
         dispatch.write_text(
-            "impl DebugAdapter {\n"
-            f"    const SUPPORTED_COMMANDS: [&str; {len(commands)}] = [\n"
-            f"{rendered_commands}\n"
-            "    ];\n"
-            "}\n",
+            dispatch_source
+            if dispatch_source is not None
+            else self._render_table(commands),
             encoding="utf-8",
         )
 
@@ -585,6 +603,156 @@ class DapProtocolAuthorityTests(unittest.TestCase):
                 }
             ],
         )
+
+    # --- #9527: the executable request table is the only request authority ---
+
+    def _production_rows(self):
+        validated = MODULE.validate_manifest(self.manifest, require_sha256=True)
+        observed = MODULE.validate_schema_bytes(self.data, validated, require_sha256=True)
+        return MODULE.validate_production_boundary(self.root, validated, observed)
+
+    def test_request_rows_are_derived_from_the_executable_table(self) -> None:
+        production = self._production_rows()
+        self.assertEqual(
+            production["request_rows"],
+            [
+                {
+                    "row_id": "dap.request.initialize",
+                    "command": "initialize",
+                    "class": "standard",
+                    "handler": "handle_initialize",
+                },
+                {
+                    "row_id": "dap.request.inlineValues",
+                    "command": "inlineValues",
+                    "class": "extension",
+                    "handler": "handle_inlinevalues",
+                },
+            ],
+        )
+
+    def test_row_order_does_not_change_row_identity(self) -> None:
+        before = self._production_rows()["request_rows"]
+        self._write_production(commands=("inlineValues", "initialize"))
+        self.assertEqual(before, self._production_rows()["request_rows"])
+
+    def test_hand_written_dispatch_arm_is_a_second_authority_and_fails(self) -> None:
+        # The realistic split-brain: a request routed outside the table is
+        # executable but invisible to the inventory.
+        source = self._render_table(("initialize", "inlineValues"))
+        source += (
+            "impl DebugAdapter {\n"
+            "    fn dispatch_extra(&mut self, command: &str) -> DapMessage {\n"
+            "        match command {\n"
+            '            "sneak" => self.handle_sneak(seq, request_seq, arguments),\n'
+            "            _ => unknown(),\n"
+            "        }\n"
+            "    }\n"
+            "}\n"
+        )
+        self._write_production(dispatch_source=source)
+        self.assertAuthorityError(self._production_rows)
+
+    def test_commented_out_table_cannot_supply_requests(self) -> None:
+        commented = "\n".join(
+            f"// {line}" for line in self._render_table(("initialize",)).splitlines()
+        )
+        self._write_production(dispatch_source=commented + "\n")
+        self.assertAuthorityError(self._production_rows)
+
+    def test_block_commented_row_does_not_enter_the_inventory(self) -> None:
+        source = self._render_table(
+            ("initialize", "inlineValues"),
+            extra_body='    /* standard "ghost" => handle_ghost(arguments), */\n',
+        )
+        self._write_production(dispatch_source=source)
+        self.assertNotIn(
+            "ghost", [row["command"] for row in self._production_rows()["request_rows"]]
+        )
+
+    def test_string_literal_decoy_does_not_enter_the_inventory(self) -> None:
+        source = self._render_table(("initialize", "inlineValues"))
+        source += 'const DECOY: &str = "standard \\"ghost\\" => handle_ghost(arguments),";\n'
+        self._write_production(dispatch_source=source)
+        self.assertNotIn(
+            "ghost", [row["command"] for row in self._production_rows()["request_rows"]]
+        )
+
+    def test_two_request_tables_fail_closed(self) -> None:
+        source = self._render_table(("initialize", "inlineValues"))
+        source += self._render_table(("initialize",))
+        self._write_production(dispatch_source=source)
+        self.assertAuthorityError(self._production_rows)
+
+    def test_missing_request_table_fails_closed(self) -> None:
+        self._write_production(dispatch_source="impl DebugAdapter {}\n")
+        self.assertAuthorityError(self._production_rows)
+
+    def test_duplicate_wire_name_fails_closed(self) -> None:
+        # Distinct handlers, so only the wire-name uniqueness rule can
+        # reject this pair.
+        source = (
+            "dap_request_table! {\n"
+            '    standard "initialize" => handle_initialize(arguments),\n'
+            '    standard "initialize" => handle_initialize_again(arguments),\n'
+            '    extension "inlineValues" => handle_inline_values(arguments),\n'
+            "}\n"
+        )
+        self._write_production(dispatch_source=source)
+        self.assertAuthorityError(self._production_rows)
+
+    def test_two_rows_sharing_one_handler_fail_closed(self) -> None:
+        source = (
+            "dap_request_table! {\n"
+            '    standard "initialize" => handle_shared(arguments),\n'
+            '    extension "inlineValues" => handle_shared(arguments),\n'
+            "}\n"
+        )
+        self._write_production(dispatch_source=source)
+        self.assertAuthorityError(self._production_rows)
+
+    def test_unparsed_trailing_table_content_fails_closed(self) -> None:
+        source = self._render_table(
+            ("initialize", "inlineValues"),
+            extra_body="    standard ghost => handle_ghost(arguments),\n",
+        )
+        self._write_production(dispatch_source=source)
+        self.assertAuthorityError(self._production_rows)
+
+    def test_unparsed_content_between_rows_fails_closed(self) -> None:
+        # Residue in the middle of the table must fail closed too; a
+        # trailing-only check would let this through.
+        source = (
+            "dap_request_table! {\n"
+            '    standard "initialize" => handle_initialize(arguments),\n'
+            "    if cfg!(feature = \"x\") { route_somewhere_else(); }\n"
+            '    extension "inlineValues" => handle_inline_values(arguments),\n'
+            "}\n"
+        )
+        self._write_production(dispatch_source=source)
+        self.assertAuthorityError(self._production_rows)
+
+    def test_misclassified_standard_row_fails_closed(self) -> None:
+        # `inlineValues` is not in the pinned upstream schema, so a row
+        # cannot claim it is standard DAP.
+        source = self._render_table(
+            ("initialize", "inlineValues"), standard=("initialize", "inlineValues")
+        )
+        self._write_production(dispatch_source=source)
+        self.assertAuthorityError(self._production_rows)
+
+    def test_standard_request_hidden_as_extension_fails_closed(self) -> None:
+        source = self._render_table(("initialize", "inlineValues"), standard=())
+        self._write_production(dispatch_source=source)
+        self.assertAuthorityError(self._production_rows)
+
+    def test_removing_a_route_removes_it_from_the_inventory(self) -> None:
+        # The inventory follows executable routing: a withdrawn route cannot
+        # linger as a stale production request.
+        self._write_production(commands=("initialize", "inlineValues"))
+        self.assertIn("inlineValues", self._production_rows()["commands"])
+        self._write_production(commands=("initialize",))
+        self.assertAuthorityError(self._production_rows)
 
 
 if __name__ == "__main__":
