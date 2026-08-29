@@ -135,11 +135,8 @@ fn dry_run_requires_explicit_follow_up_semantics() -> Result<(), Box<dyn Error>>
     assert!(prerequisite_text.contains("keep thread unresolved"));
     assert!(!prerequisite_text.contains("--- then: resolveReviewThread"));
 
-    let not_proven = run_dry(
-        &root,
-        "not-proven",
-        &["--argument", "Current evidence is incomplete."],
-    )?;
+    let not_proven =
+        run_dry(&root, "not-proven", &["--argument", "Current evidence is incomplete."])?;
     assert!(not_proven.status.success());
     assert!(output_text(&not_proven).contains(r#""thread_transition":"keep_open""#));
 
@@ -222,10 +219,7 @@ fn run_live(
         .args(extra)
         .env("PATH", path)
         .env("GH_STUB_LOG", &log)
-        .env(
-            "GH_STUB_RESOLVED",
-            if initially_resolved { "true" } else { "false" },
-        );
+        .env("GH_STUB_RESOLVED", if initially_resolved { "true" } else { "false" });
 
     let output = command.output()?;
     let calls = fs::read_to_string(log)?;
@@ -237,52 +231,25 @@ fn run_live(
 fn terminal_dispositions_resolve_and_live_blockers_do_not() -> Result<(), Box<dyn Error>> {
     let root = project_root()?;
 
-    let (fixed, fixed_calls) =
-        run_live(&root, "fixed", &["--commit", "abc1234"], false)?;
-    assert!(
-        fixed.status.success(),
-        "fixed disposition failed: {}",
-        output_text(&fixed)
-    );
+    let (fixed, fixed_calls) = run_live(&root, "fixed", &["--commit", "abc1234"], false)?;
+    assert!(fixed.status.success(), "fixed disposition failed: {}", output_text(&fixed));
     assert!(fixed_calls.contains("addPullRequestReviewThreadReply"));
-    assert!(
-        fixed_calls
-            .lines()
-            .any(|line| line.contains(" resolveReviewThread"))
-    );
+    assert!(fixed_calls.lines().any(|line| line.contains(" resolveReviewThread")));
     assert!(!fixed_calls.contains("unresolveReviewThread"));
 
     let (additive, additive_calls) = run_live(
         &root,
         "post-merge-follow-up",
-        &[
-            "--issue",
-            "13342",
-            "--argument",
-            "The current claim is satisfied; this is additive.",
-        ],
+        &["--issue", "13342", "--argument", "The current claim is satisfied; this is additive."],
         false,
     )?;
-    assert!(
-        additive.status.success(),
-        "post-merge follow-up failed: {}",
-        output_text(&additive)
-    );
-    assert!(
-        additive_calls
-            .lines()
-            .any(|line| line.contains(" resolveReviewThread"))
-    );
+    assert!(additive.status.success(), "post-merge follow-up failed: {}", output_text(&additive));
+    assert!(additive_calls.lines().any(|line| line.contains(" resolveReviewThread")));
 
     let (prerequisite, prerequisite_calls) = run_live(
         &root,
         "blocked-by-prerequisite",
-        &[
-            "--issue",
-            "13342",
-            "--argument",
-            "The defect remains until the prerequisite lands.",
-        ],
+        &["--issue", "13342", "--argument", "The defect remains until the prerequisite lands."],
         true,
     )?;
     assert!(
@@ -292,11 +259,7 @@ fn terminal_dispositions_resolve_and_live_blockers_do_not() -> Result<(), Box<dy
     );
     assert!(prerequisite_calls.contains("addPullRequestReviewThreadReply"));
     assert!(prerequisite_calls.contains("unresolveReviewThread"));
-    assert!(
-        !prerequisite_calls
-            .lines()
-            .any(|line| line.contains(" resolveReviewThread"))
-    );
+    assert!(!prerequisite_calls.lines().any(|line| line.contains(" resolveReviewThread")));
     assert!(output_text(&prerequisite).contains("reopened thread"));
 
     let (current, current_calls) = run_live(
@@ -312,11 +275,7 @@ fn terminal_dispositions_resolve_and_live_blockers_do_not() -> Result<(), Box<dy
     );
     assert!(current_calls.contains("addPullRequestReviewThreadReply"));
     assert!(!current_calls.contains("unresolveReviewThread"));
-    assert!(
-        !current_calls
-            .lines()
-            .any(|line| line.contains(" resolveReviewThread"))
-    );
+    assert!(!current_calls.lines().any(|line| line.contains(" resolveReviewThread")));
     assert!(output_text(&current).contains("kept thread PRRT_test unresolved"));
 
     Ok(())
