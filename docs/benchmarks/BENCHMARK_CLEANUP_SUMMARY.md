@@ -136,6 +136,9 @@ fn save_results(&self, results: &BenchmarkResults) -> Result<(), BenchmarkError>
 **Solution**: Created comprehensive test suites:
 
 #### Test Files Created:
+
+> **Status (2026-08-28):** `benchmark_output_tests.rs`, `benchmark_output_integration_test.rs`, and `benchmark_error_handling_tests.rs` were deleted as unreachable: the repository root is a virtual workspace with no `[package]`, so `tests/*.rs` files were never compiled as test targets, and the `benchmark_parsers` binary they spawned has been archived. See flaky-census wave 1 (issue #11869, comment 5461166201).
+
 1. **`benchmark_output_tests.rs`** - 8 comprehensive tests covering:
    - Default output file creation and validation
    - Custom output path functionality
