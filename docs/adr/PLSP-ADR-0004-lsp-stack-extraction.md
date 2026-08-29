@@ -136,7 +136,7 @@ This ADR does not authorize:
 - extracting inline-completion/provider policy, Perl capabilities, DAP, editor,
   CLI, package, or release behavior;
 - creating an external repository or publishing/tagging/releasing without the
-  explicit authorization required by #7384's externalization rail;
+  explicit authorization required by [#7397](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/7397)'s externalization train;
 - claiming general reuse, stability, publication, or release readiness from an
   empty crate, one primitive, a workspace compile, or a compatibility re-export.
 
