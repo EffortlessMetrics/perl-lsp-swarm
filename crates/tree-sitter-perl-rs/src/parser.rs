@@ -2,8 +2,10 @@ use crate::tree::tree_from_parts;
 use crate::{InputEdit, ParseDiagnostic, Tree};
 use perl_parser_core::{
     ParseOutput, Parser as CoreParser,
-    incremental::{FallbackReason as CoreFallbackReason, IncrementalEdit, IncrementalState},
+    incremental::{FallbackReason as CoreFallbackReason, IncrementalEdit},
 };
+pub use perl_parser_core::incremental::IncrementalMetrics;
+pub(crate) use perl_parser_core::incremental::IncrementalState;
 
 /// A Perl parser with tree-sitter-style ergonomics.
 ///

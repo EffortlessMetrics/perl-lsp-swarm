@@ -63,14 +63,15 @@ mod tree;
 pub use cursor::TreeCursor;
 pub use language::{LANGUAGE, PerlLanguage, language};
 pub use node::Node;
-pub use parser::{FallbackReason, ParseFailure, ParseOutcome, Parser, ReparseMode};
+pub use parser::{
+    FallbackReason, IncrementalMetrics, ParseFailure, ParseOutcome, Parser, ReparseMode,
+};
 pub use point::Point;
 pub use semantic_overlay::{OverlayDefinition, SemanticOverlay, VisibleImport};
 pub use tree::Tree;
 
 /// Parser diagnostics surfaced by [`Parser::parse_detailed`].
 pub use perl_parser_core::ParseError as ParseDiagnostic;
-pub use perl_parser_core::incremental::IncrementalMetrics;
 
 /// Re-export of Edit type for tree-sitter-compatible incremental parsing.
 ///
