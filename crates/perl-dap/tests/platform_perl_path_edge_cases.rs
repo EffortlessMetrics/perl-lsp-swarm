@@ -15,6 +15,8 @@ use perl_dap::platform::{
 };
 #[cfg(not(windows))]
 use perl_dap::platform::{detect_perlbrew_perl, detect_plenv_perl};
+#[cfg(not(windows))]
+use perl_tdd_support::{must, must_some};
 use serial_test::serial;
 use std::path::PathBuf;
 
