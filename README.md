@@ -82,7 +82,7 @@ crates.io is an independently versioned channel, so compare
 relying on it:
 
 ```bash
-cargo install perllsp
+cargo install perllsp --locked
 ```
 
 **macOS and Linux** — use a manual archive from
