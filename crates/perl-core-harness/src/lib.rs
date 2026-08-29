@@ -10,6 +10,7 @@
 pub mod artifacts;
 #[path = "target_contracts/contract.rs"]
 pub mod contract;
+pub mod critic_oracle;
 #[path = "target_contracts/io.rs"]
 pub mod io;
 #[path = "target_contracts/matrix.rs"]
