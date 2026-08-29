@@ -1,0 +1,61 @@
+name: CI #13473 exact-final dispatch
+
+on:
+  pull_request:
+    branches: [main]
+    types: [synchronize]
+    paths:
+      - .github/workflows/ci-13473-dispatch.yml
+
+permissions:
+  actions: write
+  contents: write
+
+concurrency:
+  group: ci-13473-dispatch-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  dispatch:
+    if: >-
+      github.repository == 'EffortlessMetrics/perl-lsp-swarm' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.head_ref == 'codex/13473-rustfmt-main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - name: Checkout exact pull-request head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Delete dispatcher and request full exact-head CI
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha }}"
+          git config user.name EffortlessSteven
+          git config user.email git@effortlesssteven.com
+          git rm -- .github/workflows/ci-13473-dispatch.yml
+          git commit -m "ci: remove formatter proof dispatcher (#13473)"
+          git push origin HEAD:refs/heads/codex/13473-rustfmt-main
+          final_sha="$(git rev-parse HEAD)"
+
+          gh api --method POST \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/dispatches" \
+            --input - <<JSON
+          {
+            "ref": "codex/13473-rustfmt-main",
+            "inputs": {
+              "base_sha": "${{ github.event.pull_request.base.sha }}",
+              "head_sha": "${final_sha}"
+            }
+          }
+          JSON
+
+          printf 'dispatched ci.yml for exact final head %s\n' "$final_sha"
