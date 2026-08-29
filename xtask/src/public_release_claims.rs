@@ -160,6 +160,7 @@ pub struct ParsedInventory {
 }
 
 /// Mirrored release-asset manifest (receipt authority, D1).
+#[derive(Debug)]
 pub struct ParsedReceiptManifest {
     pub release: String,
     pub verified_date: String,
@@ -1335,7 +1336,7 @@ fn validate_catalog_value(value: &Value) -> Result<CatalogStats, CatalogError> {
                 })?;
                 match family.as_str() {
                     "windows_arm64" => {
-                        validate_closed_keys(
+                        validate_dimension_family(
                             family_object,
                             &[
                                 "user_prose",
@@ -1994,5 +1995,514 @@ mod tests {
         assert_eq!(ids[0], "C101");
         assert!(explain_claim(&catalog, "C207").is_some());
         assert!(explain_claim(&catalog, "C9999").is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // RIPR seam reveal: every error path in this module is executed by a
+    // focused test that asserts a discriminating value. Each test names the
+    // seam it reveals.
+    // -----------------------------------------------------------------------
+
+    fn assert_err_containing(error: Result<(), CatalogError>, fragment: &str) {
+        let message = format!("{}", error.expect_err("test: expected an error"));
+        assert!(message.contains(fragment), "error `{message}` must name `{fragment}`");
+    }
+
+    fn doctored(doc: &str, from: &str, to: &str) -> String {
+        let result = doc.replace(from, to);
+        assert_ne!(result, doc, "test: probe `{from}` must exist in the inventory");
+        result
+    }
+
+    /// Seam: extract_cell_text rejects unbalanced cells (direct call).
+    #[test]
+    fn seam_extract_cell_text_rejects_unbalanced_directly() {
+        let error = extract_cell_text("`open only", "probe.summary");
+        assert_err_containing(error.map(|_| ()), "unbalanced code-span delimiters");
+        assert_err_containing(
+            extract_cell_text("close only`", "probe.notes").map(|_| ()),
+            "probe.notes",
+        );
+        assert_eq!(extract_cell_text("plain text", "probe").expect("plain cell ok"), "plain text");
+        assert_eq!(
+            extract_cell_text("`whole span`", "probe").expect("whole span trims"),
+            "whole span"
+        );
+        assert_eq!(
+            extract_cell_text("`a` between `b`", "probe").expect("multi-span stays verbatim"),
+            "`a` between `b`"
+        );
+    }
+
+    /// Seam: trim_code_span_pair symmetric rules (direct table).
+    #[test]
+    fn seam_trim_code_span_pair_cases() {
+        assert_eq!(trim_code_span_pair("  `whole`  "), "whole");
+        assert_eq!(trim_code_span_pair("`a` b `c`"), "`a` b `c`");
+        assert_eq!(trim_code_span_pair("`open"), "`open");
+        assert_eq!(trim_code_span_pair("close`"), "close`");
+        assert_eq!(trim_code_span_pair("plain"), "plain");
+        assert_eq!(trim_code_span_pair("``"), "");
+    }
+
+    /// Seam: resolve_link_label keeps display labels and plain text verbatim.
+    #[test]
+    fn seam_resolve_link_label_cases() {
+        assert_eq!(resolve_link_label("[README.md](../README.md)"), "README.md");
+        assert_eq!(resolve_link_label("no link"), "no link");
+        assert_eq!(resolve_link_label("[unclosed"), "[unclosed");
+    }
+
+    /// Seam: parse_inventory fails when the audited-commit anchor is absent.
+    #[test]
+    fn seam_parse_inventory_missing_audited_anchor() {
+        let doc = committed_doc();
+        let error =
+            parse_inventory("# Install Claim Surface Inventory
+
+no anchors here")
+                .expect_err("anchor-less doc must fail");
+        assert!(format!("{error}").contains("could not locate the `**Audited against:**`"));
+    }
+
+    /// Seam: parse_inventory fails when the audit date is absent.
+    #[test]
+    fn seam_parse_inventory_missing_audited_date() {
+        let doc = committed_doc();
+        let doctored = doctored(&doc, "(2026-08-26)", "no-date").replace("(2026-06-28)", "no-date");
+        assert_err_containing(
+            parse_inventory(&doctored).map(|_| ()),
+            "could not locate the audit date",
+        );
+    }
+
+    /// Seam: parse_inventory fails when the drift anchor release is absent.
+    #[test]
+    fn seam_parse_inventory_missing_release_anchor() {
+        let doc = committed_doc();
+        let doctored = doc.replace("**Drift anchor:**", "**Drift notes:**");
+        assert_err_containing(
+            parse_inventory(&doctored).map(|_| ()),
+            "could not locate the drift-anchor release receipt",
+        );
+    }
+
+    /// Seam: parse_inventory fails when a claim row precedes any S-heading.
+    #[test]
+    fn seam_parse_inventory_claim_row_before_section() {
+        let doc = committed_doc();
+        let doctored = doctored(
+            &doc,
+            "## Claim rows",
+            "## Claim rows\n\n| C0000 | probe.md:1 | probe | `current` | probe |",
+        );
+        assert_err_containing(
+            parse_inventory(&doctored).map(|_| ()),
+            "appeared before any `### Sxx` heading",
+        );
+    }
+
+    /// Seam: parse_surface_row rejects malformed surface rows.
+    #[test]
+    fn seam_parse_surface_row_malformed() {
+        let doc = committed_doc();
+        let doctored = doctored(
+            &doc,
+            "| S01 | [README.md](../../README.md) | root landing prose | commands + boundaries | \u{2014} |",
+            "| S01 | too-few-cells |",
+        );
+        assert_err_containing(parse_inventory(&doctored).map(|_| ()), "malformed surface row");
+    }
+
+    /// Seam: parse_claim_row rejects malformed claim rows.
+    #[test]
+    fn seam_parse_claim_row_malformed() {
+        let doc = committed_doc();
+        let doctored = doctored(&doc, "| C801 | TROUBLESHOOTING.md:3-16 | If basic probes fail, fix binary installation and `PATH` first before deeper debugging | `current` | Route-recommendation claim (diagnostic-surface class) |", "| C801 | only-two-cells |");
+        assert_err_containing(parse_inventory(&doctored).map(|_| ()), "malformed claim row");
+    }
+
+    /// Seam: parse_findings rejects a finding without its `.**` terminator.
+    #[test]
+    fn seam_parse_findings_missing_title_terminator() {
+        let doc = committed_doc();
+        let doctored = doctored(
+            &doc,
+            "unpinned release-archive download outside S02.**",
+            "unpinned release-archive download outside S02**",
+        );
+        assert_err_containing(
+            parse_inventory(&doctored).map(|_| ()),
+            "has no `.**` title terminator",
+        );
+    }
+
+    /// Seam: parse_findings rejects an empty finding title.
+    #[test]
+    fn seam_parse_findings_empty_title() {
+        let doc = committed_doc();
+        let doctored = doctored(
+            &doc,
+            "**FND-1 \u{2014} `@master` literal action pins (consumer-facing).**",
+            "**FND-1 \u{2014} .**",
+        );
+        assert_err_containing(parse_inventory(&doctored).map(|_| ()), "has an empty title");
+    }
+
+    /// Seam: parse_inventory fails when a finding bullet is missing.
+    #[test]
+    fn seam_parse_findings_missing_bullet() {
+        let doc = committed_doc();
+        let doctored = doctored(
+            &doc,
+            "- **FND-12 \u{2014} unpinned release-archive download outside S02.**",
+            "- (finding withheld)",
+        );
+        assert_err_containing(
+            parse_inventory(&doctored).map(|_| ()),
+            "findings section is missing `FND-12`",
+        );
+    }
+
+    /// Seam: validate_denominator fails on unknown drift vocabulary.
+    #[test]
+    fn seam_validate_denominator_unknown_drift_status() {
+        let doc = committed_doc();
+        let doctored =
+            doctored(&doc, "| `current` | Matches S02/S12 |", "| `banana` | Matches S02/S12 |");
+        let inventory = parse_inventory(&doctored).expect("doctored doc parses");
+        assert_err_containing(
+            validate_denominator(&inventory).map(|_| ()),
+            "uses unknown drift status `banana`",
+        );
+    }
+
+    /// Seam: validate_denominator fails when a denominator surface row is dropped.
+    #[test]
+    fn seam_validate_denominator_missing_surface() {
+        let doc = committed_doc();
+        let doctored = doctored(
+            &doc,
+            "| S13 | docs/EDITORS/*_SETUP.md (7 guides) | editor integration guides | acquisition commands | \u{2014} |",
+            "",
+        );
+        let inventory = parse_inventory(&doctored).expect("doctored doc parses");
+        assert_err_containing(
+            validate_denominator(&inventory).map(|_| ()),
+            "missing denominator surface S13",
+        );
+    }
+
+    /// Seam: validate_denominator fails when an unexpected claim row appears.
+    #[test]
+    fn seam_validate_denominator_extra_claim_row() {
+        let doc = committed_doc();
+        let with_extra = doc.replace(
+            "## Findings",
+            "| C9999 | CODEX_CLI_SETUP.md:31 | probe row | `current` | probe |
+
+## Findings",
+        );
+        let inventory = parse_inventory(&with_extra).expect("extra row parses");
+        assert_err_containing(
+            validate_denominator(&inventory).map(|_| ()),
+            "outside the recorded denominator",
+        );
+        // The undisturbed document still passes the denominator (sanity).
+        let inventory = parse_inventory(&doc).expect("doc parses");
+        validate_denominator(&inventory).expect("denominator holds");
+    }
+
+    /// Seam: validate_denominator fails when the FND-1 rel C401 join is lost.
+    #[test]
+    fn seam_validate_denominator_d4_regression() {
+        let doc = committed_doc();
+        let doctored = doctored(
+            &doc,
+            ".github/actions/setup-perl-lsp/action.yml:3",
+            "elsewhere/renamed-file.md:3",
+        );
+        let inventory = parse_inventory(&doctored).expect("doctored doc still parses");
+        let error = validate_denominator(&inventory).expect_err("D4 regression must trip");
+        assert!(format!("{error}").contains("relation"), "{error}");
+    }
+
+    /// Seam: parse_findings citations resolve from the finding body.
+    #[test]
+    fn seam_parse_findings_cited_files() {
+        let doc = committed_doc();
+        let inventory = parse_inventory(&doc).expect("inventory parses");
+        let fnd9 = inventory
+            .findings
+            .iter()
+            .find(|finding| finding.finding_id == "FND-9")
+            .expect("FND-9 present");
+        assert!(fnd9.cited_files.contains(&"README.md".to_string()));
+        assert!(fnd9.cited_files.contains(&"INSTALLATION.md".to_string()));
+        assert!(!fnd9.cited_files.contains(&"install.ps1".to_string()));
+    }
+
+    /// Seam: validate_artifact_bytes rejects non-UTF-8 bytes.
+    #[test]
+    fn seam_validate_artifact_bytes_not_utf8() {
+        let error = validate_artifact_bytes(&[0xFF, 0xFE, 0x00]).expect_err("non-UTF-8 must fail");
+        assert!(format!("{error}").contains("not UTF-8"));
+    }
+
+    /// Seam: validate_artifact_bytes rejects invalid JSON.
+    #[test]
+    fn seam_validate_artifact_bytes_invalid_json() {
+        let error = validate_artifact_bytes(b"{not json").expect_err("invalid JSON must fail");
+        assert!(format!("{error}").contains("invalid JSON"));
+    }
+
+    /// Seam: validate_artifact_bytes rejects non-canonical byte forms.
+    #[test]
+    fn seam_validate_artifact_bytes_non_canonical() {
+        let value = committed_catalog();
+        let text = serde_json::to_string(&value).expect("compact serialization");
+        let error = validate_artifact_bytes(text.as_bytes()).expect_err("compact form must fail");
+        assert!(format!("{error}").contains("canonical"));
+    }
+
+    /// Seam: validate_catalog_value rejects schema-forbidden root keys.
+    #[test]
+    fn seam_validate_catalog_value_rogue_root_key() {
+        let mut catalog = committed_catalog();
+        catalog["rogue"] = Value::Bool(true);
+        let error = validate_catalog_value(&catalog).expect_err("rogue root key must fail");
+        assert!(format!("{error}").contains("schema-forbidden key"));
+    }
+
+    /// Seam: validate_catalog_value rejects a wrong schema version.
+    #[test]
+    fn seam_validate_catalog_value_wrong_version() {
+        let mut catalog = committed_catalog();
+        catalog["schema_version"] = json!("public_release_claims.v1");
+        let error = validate_catalog_value(&catalog).expect_err("wrong version must fail");
+        assert!(format!("{error}").contains("v1 document must go to the v1 validator"));
+    }
+
+    /// Seam: validate_catalog_value rejects duplicate claim authority.
+    #[test]
+    fn seam_validate_catalog_value_duplicate_claim_ids() {
+        let mut catalog = committed_catalog();
+        if let Some(claims) = catalog.get_mut("claims").and_then(Value::as_array_mut) {
+            let clone = claims[0].clone();
+            claims.insert(1, clone);
+        }
+        let error = validate_catalog_value(&catalog).expect_err("duplicate ids must fail");
+        assert!(format!("{error}").contains("duplicate route authority"));
+    }
+
+    /// Seam: validate_catalog_value rejects unknown drift statuses.
+    #[test]
+    fn seam_validate_catalog_value_unknown_drift() {
+        let mut catalog = committed_catalog();
+        if let Some(claims) = catalog.get_mut("claims").and_then(Value::as_array_mut) {
+            claims[0]["drift_status"] = json!("banana");
+        }
+        let error = validate_catalog_value(&catalog).expect_err("unknown drift must fail");
+        assert!(format!("{error}").contains("unknown drift status"));
+    }
+
+    /// Seam: validate_catalog_value rejects unbalanced summary delimiters.
+    #[test]
+    fn seam_validate_catalog_value_unbalanced_summary() {
+        let mut catalog = committed_catalog();
+        if let Some(claims) = catalog.get_mut("claims").and_then(Value::as_array_mut) {
+            claims[0]["summary"] = json!("`dangling delimiter");
+        }
+        let error = validate_catalog_value(&catalog).expect_err("unbalanced summary must fail");
+        assert!(format!("{error}").contains("unbalanced code-span delimiters"));
+    }
+
+    /// Seam: validate_identity_anti_claim rejects mutated anti-claim consts.
+    #[test]
+    fn seam_validate_anti_claim_shape() {
+        let mut catalog = committed_catalog();
+        let index = catalog
+            .get("claims")
+            .and_then(Value::as_array)
+            .map(|claims| {
+                claims
+                    .iter()
+                    .position(|claim| {
+                        claim
+                            .get("identity_anti_claims")
+                            .and_then(Value::as_array)
+                            .is_some_and(|items| !items.is_empty())
+                    })
+                    .expect("test: an anti-claimed row exists")
+            })
+            .expect("test: claims array");
+        catalog["claims"][index]["identity_anti_claims"][0]["disposition"] = json!("install_me");
+        let error = validate_catalog_value(&catalog).expect_err("mutated const must fail");
+        assert!(format!("{error}").contains("must be `do_not_install`"));
+        catalog["claims"][index]["identity_anti_claims"][0]["rogue"] = Value::Bool(true);
+        let error = validate_catalog_value(&catalog).expect_err("rogue key must fail");
+        assert!(format!("{error}").contains("schema-forbidden key"));
+    }
+
+    /// Seam: dimension family validation rejects rogue families and keys.
+    #[test]
+    fn seam_validate_dimension_families() {
+        let mut catalog = committed_catalog();
+        let index = catalog
+            .get("claims")
+            .and_then(Value::as_array)
+            .map(|claims| {
+                claims
+                    .iter()
+                    .position(|claim| claim.get("dimensions").is_some())
+                    .expect("test: a dimensioned row exists")
+            })
+            .expect("test: claims array");
+        catalog["claims"][index]["dimensions"]["rogue_family"] = json!({});
+        let error = validate_catalog_value(&catalog).expect_err("rogue family must fail");
+        assert!(format!("{error}").contains("schema-forbidden dimension family"));
+        catalog["claims"][index]["dimensions"] =
+            json!({"sha256sums_enforcement": {"mode": "fail_closed_required", "rogue": true}});
+        let error = validate_catalog_value(&catalog).expect_err("rogue key must fail");
+        assert!(format!("{error}").contains("schema-forbidden key"));
+        catalog["claims"][index]["dimensions"] = json!({"windows_arm64": {"user_prose": "unsupported", "tracked_source": "built", "published_receipt_v0_17_0": "banana"}});
+        let error = validate_catalog_value(&catalog).expect_err("bad receipt enum must fail");
+        assert!(format!("{error}").contains("invalid published_receipt_v0_17_0"));
+        catalog["claims"][index]["dimensions"] = json!({"windows_arm64": {"user_prose": "unsupported", "tracked_source": "built", "published_receipt_v0_17_0": "absent", "finding_refs": ["FND-99"]}});
+        let error = validate_catalog_value(&catalog).expect_err("unknown finding ref must fail");
+        assert!(format!("{error}").contains("unknown finding `FND-99`"));
+    }
+
+    /// Seam: findings validation rejects unknown related claims and the
+    /// D4 regression absence.
+    #[test]
+    fn seam_validate_findings_rows() {
+        let mut catalog = committed_catalog();
+        if let Some(findings) = catalog.get_mut("findings").and_then(Value::as_array_mut) {
+            for finding in findings.iter_mut() {
+                if finding.get("finding_id").and_then(Value::as_str) == Some("FND-1") {
+                    finding["rogue"] = Value::Bool(true);
+                }
+            }
+        }
+        let error = validate_catalog_value(&catalog).expect_err("rogue finding key must fail");
+        assert!(format!("{error}").contains("schema-forbidden key"));
+        let mut catalog = committed_catalog();
+        if let Some(findings) = catalog.get_mut("findings").and_then(Value::as_array_mut) {
+            for finding in findings.iter_mut() {
+                if finding.get("finding_id").and_then(Value::as_str) == Some("FND-1") {
+                    finding["related_claims"] = json!(["C9999"]);
+                }
+            }
+        }
+        let error = validate_catalog_value(&catalog).expect_err("unknown claim must fail");
+        assert!(format!("{error}").contains("unknown claim `C9999`"));
+        let mut catalog = committed_catalog();
+        if let Some(findings) = catalog.get_mut("findings").and_then(Value::as_array_mut) {
+            for finding in findings.iter_mut() {
+                if finding.get("finding_id").and_then(Value::as_str) == Some(REGRESSION_FINDING) {
+                    finding["related_claims"] = json!([]);
+                }
+            }
+        }
+        let error = validate_catalog_value(&catalog).expect_err("missing regression must fail");
+        assert!(format!("{error}").contains("relation to C401 missing"));
+    }
+
+    /// Seam: receipt-manifest parsing rejects every malformed shape.
+    #[test]
+    fn seam_parse_receipt_manifest_shapes() {
+        let error = parse_receipt_manifest(b"{not json").expect_err("invalid JSON must fail");
+        assert!(format!("{error}").contains("invalid JSON"));
+        for (probe, fragment) in [
+            (br#"{"verified_date":"2026-08-28","assets":[{"name":"a"}]}"#.as_slice(), "release: missing"),
+            (br#"{"release":"v0.17.0","assets":[{"name":"a"}]}"#.as_slice(), "verified_date: missing"),
+            (br#"{"release":"v0.17.0","verified_date":"2026-08-28"}"#.as_slice(), "assets: missing array"),
+            (br#"{"release":"v0.17.0","verified_date":"2026-08-28","assets":[]}"#.as_slice(), "assets must be non-empty"),
+            (br#"{"release":"v0.17.0","verified_date":"2026-08-28","assets":[{}]}"#.as_slice(), "missing name"),
+            (br#"{"release":"v0.17.0","verified_date":"2026-08-28","assets":[{"name":"b"},{"name":"a"}]}"#.as_slice(), "unique and stored in sorted order"),
+            (br#"{"release":"v0.17.0","verified_date":"2026-08-28","assets":[{"name":"a"},{"name":"a"}]}"#.as_slice(), "unique and stored in sorted order"),
+        ] {
+            let error = parse_receipt_manifest(probe).expect_err("malformed manifest must fail");
+            assert!(format!("{error}").contains(fragment), "{error}");
+        }
+        let ok = parse_receipt_manifest(
+            br#"{"release":"v0.17.0","verified_date":"2026-08-28","assets":[{"name":"a"},{"name":"b"}]}"#,
+        )
+        .expect("sorted manifest parses");
+        assert_eq!(ok.asset_names, vec!["a", "b"]);
+    }
+
+    /// Seam: validate_receipt_binding rejects a receipt field that contradicts
+    /// the manifest, and a windows_arm64 row missing the field.
+    #[test]
+    fn seam_validate_receipt_binding() {
+        let manifest = parse_receipt_manifest(
+            br#"{"release":"v0.17.0","verified_date":"2026-08-28","assets":[{"name":"perllsp-0.17.0-x86_64-pc-windows-msvc.zip"}]}"#,
+        )
+        .expect("manifest parses");
+        let mut catalog = committed_catalog();
+        let index = catalog
+            .get("claims")
+            .and_then(Value::as_array)
+            .map(|claims| {
+                claims
+                    .iter()
+                    .position(|claim| claim.pointer("/dimensions/windows_arm64").is_some())
+                    .expect("test: a windows_arm64 row exists")
+            })
+            .expect("test: claims array");
+        catalog["claims"][index]["dimensions"]["windows_arm64"]["published_receipt_v0_17_0"] =
+            json!("present");
+        let error = validate_receipt_binding(&catalog, &manifest)
+            .expect_err("contradicting receipt must fail");
+        assert!(format!("{error}").contains("contradicts the release-asset manifest"));
+        catalog["claims"][index]["dimensions"]["windows_arm64"]
+            .as_object_mut()
+            .expect("test: object")
+            .remove("published_receipt_v0_17_0");
+        let error = validate_receipt_binding(&catalog, &manifest)
+            .expect_err("missing receipt field must fail");
+        assert!(format!("{error}").contains("missing published_receipt_v0_17_0"));
+    }
+
+    /// Seam: the regenerated artifact binds exact digests of all three live
+    /// inputs; swapping any input changes the artifact.
+    #[test]
+    fn seam_input_digests_binding() {
+        let root = repo_root();
+        let doc_bytes = read_repo_bytes(&root, DOC_PATH).expect("doc readable");
+        let schema_bytes = read_repo_bytes(&root, SCHEMA_PATH).expect("schema readable");
+        let manifest_bytes =
+            read_repo_bytes(&root, RECEIPT_MANIFEST_PATH).expect("manifest readable");
+        let catalog = committed_catalog();
+        let expected: [(&str, &[u8]); 3] = [
+            ("inventory_document", &doc_bytes),
+            ("schema", &schema_bytes),
+            ("release_receipt_manifest", &manifest_bytes),
+        ];
+        for (key, bytes) in expected {
+            let digest = catalog
+                .pointer(&format!("/input_digests/{key}"))
+                .and_then(Value::as_str)
+                .unwrap_or_else(|| panic!("test: digest {key} present"));
+            assert_eq!(digest, format!("sha256:{}", sha256_hex(bytes)), "digest {key}");
+        }
+        let mutated = with_input_digests(
+            &catalog,
+            &sha256_hex(b"other doc"),
+            &sha256_hex(&schema_bytes),
+            &sha256_hex(&manifest_bytes),
+        );
+        assert_ne!(mutated, catalog, "a swapped digest changes the artifact");
+    }
+
+    /// Seam: validate_schema_closure counts closed object nodes.
+    #[test]
+    fn seam_schema_closure_walk_count() {
+        let schema_bytes = read_repo_bytes(&repo_root(), SCHEMA_PATH).expect("schema readable");
+        let schema: Value = serde_json::from_slice(&schema_bytes).expect("schema parses");
+        let closed = validate_schema_closure(&schema).expect("closure walk");
+        assert!(closed >= 13, "walked {closed} objects");
     }
 }
