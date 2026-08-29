@@ -134,7 +134,7 @@ impl<'a> Parser<'a> {
                     // Check for postfix dereference operators
                     match self.peek_kind() {
                         Some(TokenKind::ArraySigil) => {
-                            // ->@* or ->@[...]
+                            // ->@*, ->@[...], or ->@{...}
                             self.tokens.next()?; // consume @
 
                             if self.peek_kind() == Some(TokenKind::Star) {
@@ -167,6 +167,23 @@ impl<'a> Parser<'a> {
                                         op: "->@[]".to_string(),
                                         left: Box::new(expr),
                                         right: Box::new(index),
+                                    },
+                                    SourceLocation { start, end },
+                                );
+                            } else if self.peek_kind() == Some(TokenKind::LeftBrace) {
+                                // ->@{...} postfix hash slice
+                                self.tokens.next()?; // consume {
+                                let keys = self.parse_hash_subscript_key()?;
+                                self.expect_closing_delimiter(TokenKind::RightBrace)?;
+
+                                let start = expr.location.start;
+                                let end = self.previous_position();
+
+                                record_postfix_layer()?;
+                                expr = Node::new(
+                                    NodeKind::HashSlice {
+                                        target: Box::new(expr),
+                                        keys: Box::new(keys),
                                     },
                                     SourceLocation { start, end },
                                 );
@@ -905,6 +922,7 @@ impl<'a> Parser<'a> {
                                     )
                                 });
 
+                            let mut scalar_filehandle = false;
                             if self.is_implicit_arg_terminator()
                                 || is_nullary_without_args
                                 || is_comma_terminated
@@ -1114,8 +1132,18 @@ impl<'a> Parser<'a> {
                                 {
                                     args.push(self.parse_shift()?);
                                 } else {
+                                    scalar_filehandle =
+                                        self.is_expression_scalar_filehandle_pattern(name);
+
                                     // Parse the first argument
-                                    args.push(self.parse_assignment_or_declaration()?);
+                                    if scalar_filehandle {
+                                        // Parse the filehandle alone. Parsing it as a full
+                                        // assignment first would consume `$fh %hash` as a
+                                        // modulo expression and lose the indirect-call boundary.
+                                        args.push(self.parse_primary()?);
+                                    } else {
+                                        args.push(self.parse_assignment_or_declaration()?);
+                                    }
 
                                     // Generic bare calls can also take implicit list arguments
                                     // after a leading block/hash argument, just like parse_args()
@@ -1215,10 +1243,30 @@ impl<'a> Parser<'a> {
                                     .location
                                     .end;
 
-                                expr = Node::new(
-                                    NodeKind::FunctionCall { name: name.clone(), args },
-                                    SourceLocation { start, end },
-                                );
+                                expr = if scalar_filehandle {
+                                    let mut message_args = args;
+                                    let object = if message_args.is_empty() {
+                                        return Err(ParseError::syntax(
+                                            "Missing scalar filehandle",
+                                            start,
+                                        ));
+                                    } else {
+                                        message_args.remove(0)
+                                    };
+                                    Node::new(
+                                        NodeKind::IndirectCall {
+                                            method: name.clone(),
+                                            object: Box::new(object),
+                                            args: message_args,
+                                        },
+                                        SourceLocation { start, end },
+                                    )
+                                } else {
+                                    Node::new(
+                                        NodeKind::FunctionCall { name: name.clone(), args },
+                                        SourceLocation { start, end },
+                                    )
+                                };
                             }
                         }
                     } else if matches!(expr.kind, NodeKind::Undef) {
