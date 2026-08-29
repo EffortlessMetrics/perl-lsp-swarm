@@ -119,8 +119,7 @@ impl LifecycleProcess {
             match self.messages.recv_timeout(remaining.min(Duration::from_millis(250))) {
                 Ok(Ok(message))
                     if message.get("id").and_then(Value::as_u64) == Some(id)
-                        && (message.get("result").is_some()
-                            || message.get("error").is_some()) =>
+                        && (message.get("result").is_some() || message.get("error").is_some()) =>
                 {
                     return Ok(message);
                 }
@@ -192,10 +191,7 @@ impl LifecycleProcess {
         }
         while let Ok(message) = self.messages.try_recv() {
             if let Err(error) = message {
-                bail!(
-                    "server emitted invalid LSP output: {error}\n{}",
-                    self.render_stderr_tail()
-                );
+                bail!("server emitted invalid LSP output: {error}\n{}", self.render_stderr_tail());
             }
         }
         Ok(())
@@ -271,9 +267,7 @@ fn read_message(reader: &mut impl BufRead) -> Result<Option<Value>> {
     let length = content_length.context("LSP frame omitted Content-Length")?;
     let mut body = vec![0; length];
     reader.read_exact(&mut body).context("failed to read complete LSP body")?;
-    serde_json::from_slice(&body)
-        .map(Some)
-        .context("failed to parse LSP JSON body")
+    serde_json::from_slice(&body).map(Some).context("failed to parse LSP JSON body")
 }
 
 #[test]
