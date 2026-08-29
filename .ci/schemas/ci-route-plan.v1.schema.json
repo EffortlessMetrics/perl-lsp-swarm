@@ -26,8 +26,8 @@
     "producer": { "const": "xtask::ci_route_plan" },
     "subject": { "$ref": "#/$defs/subject" },
     "requested_profile": {
-      "description": "Closed profile vocabulary owned by ci_route_profile.v1 (#10178).",
-      "enum": ["commit", "pr_fast", "merge_gate", "nightly", "all", "release"]
+      "description": "Closed profile vocabulary owned by ci_route_profile.v1 (#10178). `stack_local` is the #11229 S1 advisory stack-increment profile.",
+      "enum": ["commit", "pr_fast", "merge_gate", "nightly", "all", "release", "stack_local"]
     },
     "included_native_tiers": {
       "description": "Set-like: normalized to ascending canonical order in the canonical encoding; duplicates are rejected by the domain validator.",

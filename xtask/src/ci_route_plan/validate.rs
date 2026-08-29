@@ -11,9 +11,11 @@ use super::{
 /// this set mirrors it for validation only; the authority remains the
 /// derivation owner and the adapter projects its exact value. The #10179
 /// schema drift test consumes this list so the checked-in JSON-Schema
-/// projection cannot silently drift from the typed vocabulary.
+/// projection cannot silently drift from the typed vocabulary. `stack_local`
+/// is the #11229 S1 advisory stack-increment profile admitted through the
+/// same owner; it can never enter a protected-main denominator.
 pub const KNOWN_PROFILES: &[&str] =
-    &["commit", "pr_fast", "merge_gate", "nightly", "all", "release"];
+    &["commit", "pr_fast", "merge_gate", "nightly", "all", "release", "stack_local"];
 
 pub(super) fn validate(plan: &CiRoutePlanV1) -> Result<(), String> {
     if plan.schema != CI_ROUTE_PLAN_SCHEMA {
