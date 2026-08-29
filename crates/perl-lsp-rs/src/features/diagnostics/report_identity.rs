@@ -175,6 +175,9 @@ pub struct PullReportSubject {
     exclude: BTreeSet<String>,
     legacy_policy_digest: Option<ContentDigest>,
     facts_generation: Option<u64>,
+    // Deliberately remains an opaque, normalized string fragment in this
+    // bounded PR. Typed provenance for project configuration belongs to the
+    // configuration authority; this field does not claim to model it.
     project_version: Option<String>,
     configuration_generation: Option<u64>,
     resolver_roots: BTreeSet<String>,
