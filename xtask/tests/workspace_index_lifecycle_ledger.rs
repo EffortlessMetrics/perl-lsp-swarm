@@ -32,30 +32,20 @@ const RUNTIME_OWNERSHIP_PATH: &str = "policy/workspace-runtime-ownership.v1.tsv"
 const UPDATE_ENV: &str = "WSI_LIFECYCLE_MAP_UPDATE";
 const COLUMN_COUNT: usize = 18;
 
-/// Source files whose index lifecycle declarations must all be mapped.
-const COVERED_SOURCE_DIRS: &[&str] = &[
+/// Modules that exist solely to define index lifecycle vocabulary. EVERY public
+/// enum or struct declared in these files must carry a ledger row — there is no
+/// per-name allowlist to forget, so a lifecycle type with a novel name cannot
+/// appear unmapped.
+const LIFECYCLE_SCOPED_MODULES: &[&str] = &[
     "crates/perl-workspace/src/monitoring/mod.rs",
     "crates/perl-workspace/src/state_machine/mod.rs",
-    "crates/perl-workspace/src/workspace/workspace_index.rs",
 ];
 
-/// Lifecycle type names whose declarations require a ledger row.
-const COVERED_TYPE_NAMES: &[&str] = &[
-    "IndexState",
-    "IndexStateMachine",
-    "IndexStateKind",
-    "IndexPhase",
-    "IndexCoordinator",
-    "DegradationReason",
-    "ResourceKind",
-    "BuildPhase",
-    "IndexStateTransition",
-    "IndexResourceLimits",
-    "IndexPerformanceCaps",
-    "InvalidationReason",
-    "TransitionResult",
-    "BuildPhaseTransition",
-];
+/// `workspace_index.rs` is a large mixed module: it legitimately declares symbol,
+/// location and index-storage types alongside lifecycle ones. Only the lifecycle
+/// declarations are mapped, so this list is explicit and deliberately tiny.
+const MIXED_MODULE: &str = "crates/perl-workspace/src/workspace/workspace_index.rs";
+const MIXED_MODULE_LIFECYCLE_TYPES: &[&str] = &["IndexState", "IndexCoordinator"];
 
 const ALLOWED_STATES: &[&str] = &["live", "absent_on_main", "doctrine_only"];
 
@@ -86,6 +76,7 @@ const ALLOWED_DISPOSITIONS: &[&str] = &[
     "canonical_lifecycle_state",
     "canonical_operation_settlement",
     "canonical_payload_of_owner",
+    "canonical_telemetry_projection",
     "telemetry_projection_only",
     "provider_readiness_projection_only",
     "compatibility_forwarder_with_exit",
@@ -100,6 +91,7 @@ const ALLOWED_DISPOSITIONS: &[&str] = &[
 const OWNER_DISPOSITIONS: &[&str] = &[
     "canonical_lifecycle_state",
     "canonical_operation_settlement",
+    "canonical_telemetry_projection",
     "provider_readiness_projection_only",
     "blocked_on_root_generation",
     "blocked_on_workspace_snapshot",
@@ -396,14 +388,12 @@ fn validate_owner_selection(rows: &[PropositionRow]) -> Result<()> {
     let by_id: BTreeMap<&str, &PropositionRow> =
         rows.iter().map(|row| (row.id.as_str(), row)).collect();
     let mut owners: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
-    let mut families_with_semantic_rows: BTreeSet<&str> = BTreeSet::new();
+    let mut represented_families: BTreeSet<&str> = BTreeSet::new();
 
     for row in rows {
+        represented_families.insert(row.family.as_str());
         if row.is_owner() {
             owners.entry(row.family.as_str()).or_default().push(row.id.as_str());
-        }
-        if row.authority_kind == "semantic" {
-            families_with_semantic_rows.insert(row.family.as_str());
         }
         if !row.is_owner() && row.owner_row != "none" {
             let owner = by_id.get(row.owner_row.as_str()).with_context(|| {
@@ -434,11 +424,12 @@ fn validate_owner_selection(rows: &[PropositionRow]) -> Result<()> {
         );
     }
 
-    for family in families_with_semantic_rows {
-        ensure!(
-            owners.contains_key(family),
-            "family {family} carries semantic lifecycle authority but selects no owner"
-        );
+    // Every represented proposition family selects an owner, including families
+    // whose rows are purely telemetry. A telemetry-only family is owned by a
+    // `canonical_telemetry_projection` row, which is still barred from holding
+    // semantic lifecycle or readiness authority.
+    for family in represented_families {
+        ensure!(owners.contains_key(family), "family {family} is represented but selects no owner");
     }
 
     Ok(())
@@ -530,28 +521,55 @@ fn declared_type_name(marker: &str) -> Option<String> {
     (!name.is_empty()).then(|| name.to_string())
 }
 
-/// Every index lifecycle declaration in the covered modules must be mapped. A new
-/// lifecycle enum, state machine or coordinator cannot appear without a row.
+/// Every index lifecycle declaration must be mapped. A new lifecycle enum, state
+/// machine or coordinator cannot appear without a row.
 fn declared_lifecycle_sites() -> Result<BTreeSet<(String, String)>> {
     let root = repo_root()?;
     let mut sites = BTreeSet::new();
-    for path in COVERED_SOURCE_DIRS {
+
+    for path in LIFECYCLE_SCOPED_MODULES.iter().chain(std::iter::once(&MIXED_MODULE)) {
         let source = fs::read_to_string(root.join(path)).with_context(|| format!("read {path}"))?;
+        let restricted = *path == MIXED_MODULE;
         for line in source.lines() {
-            if !line.starts_with("pub enum ") && !line.starts_with("pub struct ") {
+            let keyword = if line.starts_with("pub enum ") {
+                "pub enum"
+            } else if line.starts_with("pub struct ") {
+                "pub struct"
+            } else {
                 continue;
-            }
+            };
             let Some(name) = declared_type_name(line) else {
                 continue;
             };
-            if !COVERED_TYPE_NAMES.contains(&name.as_str()) {
+            if restricted && !MIXED_MODULE_LIFECYCLE_TYPES.contains(&name.as_str()) {
                 continue;
             }
-            let keyword = if line.starts_with("pub enum ") { "pub enum" } else { "pub struct" };
             sites.insert(((*path).to_string(), format!("{keyword} {name}")));
         }
     }
     Ok(sites)
+}
+
+/// The coverage ratchet itself. Both the positive test and its controlled
+/// mutation call this, so the mutation exercises the real check rather than
+/// re-asserting set arithmetic it computed itself.
+fn validate_declaration_coverage(mapped: &BTreeSet<(String, String)>) -> Result<()> {
+    let declared = declared_lifecycle_sites()?;
+    ensure!(
+        !declared.is_empty(),
+        "lifecycle declaration scan found nothing; the coverage ratchet would be vacuous"
+    );
+    let missing: Vec<&(String, String)> =
+        declared.iter().filter(|site| !mapped.contains(*site)).collect();
+    ensure!(
+        missing.is_empty(),
+        "index lifecycle declarations are unmapped in {LEDGER_PATH}: {missing:?}"
+    );
+    Ok(())
+}
+
+fn mapped_sites(rows: &[PropositionRow]) -> BTreeSet<(String, String)> {
+    rows.iter().map(|row| (row.source_path.clone(), row.source_marker.clone())).collect()
 }
 
 fn markdown_cell(value: &str) -> String {
@@ -667,22 +685,7 @@ fn runtime_ownership_rows_are_joined_not_duplicated() -> Result<()> {
 #[test]
 fn every_lifecycle_declaration_is_mapped() -> Result<()> {
     let rows = load_rows()?;
-    let mapped: BTreeSet<(String, String)> =
-        rows.iter().map(|row| (row.source_path.clone(), row.source_marker.clone())).collect();
-
-    let declared = declared_lifecycle_sites()?;
-    ensure!(
-        !declared.is_empty(),
-        "lifecycle declaration scan found nothing; the coverage ratchet would be vacuous"
-    );
-
-    let missing: Vec<&(String, String)> =
-        declared.iter().filter(|site| !mapped.contains(*site)).collect();
-    ensure!(
-        missing.is_empty(),
-        "index lifecycle declarations are unmapped in {LEDGER_PATH}: {missing:?}"
-    );
-    Ok(())
+    validate_declaration_coverage(&mapped_sites(&rows))
 }
 
 #[test]
@@ -890,18 +893,12 @@ fn missing_live_source_marker_is_rejected() -> Result<()> {
 #[test]
 fn unmapped_lifecycle_declaration_is_rejected() -> Result<()> {
     let rows = load_rows()?;
-    let mut mapped: BTreeSet<(String, String)> =
-        rows.iter().map(|row| (row.source_path.clone(), row.source_marker.clone())).collect();
-
+    let mut mapped = mapped_sites(&rows);
     let declared = declared_lifecycle_sites()?;
     let dropped = declared.iter().next().cloned().context("expected a declared lifecycle site")?;
     mapped.remove(&dropped);
 
-    ensure!(
-        declared.iter().any(|site| !mapped.contains(site)),
-        "removing a mapped declaration must leave the coverage ratchet unsatisfied"
-    );
-    Ok(())
+    assert_rejected_because(validate_declaration_coverage(&mapped), "are unmapped in")
 }
 
 #[test]
