@@ -211,6 +211,88 @@ pub const LWP_USER_AGENT_METHODS: &[(&str, &str)] = &[
     ("is_protocol_supported", "Check whether a protocol is supported"),
 ];
 
+/// Static constructors and factories documented by `Path::Tiny`.
+pub const PATH_TINY_STATIC_METHODS: &[(&str, &str)] = &[
+    ("new", "Create a Path::Tiny object"),
+    ("cwd", "Return the current directory as an absolute Path::Tiny object"),
+    ("rootdir", "Return the filesystem root as a Path::Tiny object"),
+    ("tempfile", "Create a temporary file path"),
+    ("tempdir", "Create a temporary directory path"),
+];
+
+/// Documented, non-deprecated `Path::Tiny` instance methods.
+pub const PATH_TINY_METHODS: &[(&str, &str)] = &[
+    ("absolute", "Return an absolute path"),
+    ("append", "Append data to a file"),
+    ("append_raw", "Append raw bytes to a file"),
+    ("append_utf8", "Append UTF-8 text to a file"),
+    ("assert", "Assert a condition and return the path"),
+    ("basename", "Return the final path component"),
+    ("cached_temp", "Return the cached temporary-file object"),
+    ("canonpath", "Return the platform-canonical path string"),
+    ("child", "Return a child path"),
+    ("children", "List child paths"),
+    ("chmod", "Set file or directory permissions"),
+    ("copy", "Copy the path to a destination"),
+    ("digest", "Calculate a file digest"),
+    ("edit", "Edit a file through a callback"),
+    ("edit_lines", "Edit file lines through a callback"),
+    ("edit_lines_raw", "Edit raw file lines through a callback"),
+    ("edit_lines_utf8", "Edit UTF-8 file lines through a callback"),
+    ("edit_raw", "Edit a raw file through a callback"),
+    ("edit_utf8", "Edit a UTF-8 file through a callback"),
+    ("exists", "Check whether the path exists"),
+    ("filehandle", "Open and return a file handle"),
+    ("has_same_bytes", "Compare file contents byte for byte"),
+    ("is_absolute", "Check whether the path is absolute"),
+    ("is_dir", "Check whether the path is a directory"),
+    ("is_file", "Check whether the path is a non-directory file"),
+    ("is_relative", "Check whether the path is relative"),
+    ("is_rootdir", "Check whether the path is a filesystem root"),
+    ("iterator", "Return a lazy directory iterator"),
+    ("lines", "Read file contents as lines"),
+    ("lines_raw", "Read raw file contents as lines"),
+    ("lines_utf8", "Read UTF-8 file contents as lines"),
+    ("lstat", "Return lstat metadata for the path"),
+    ("mkdir", "Create the directory and missing parents"),
+    ("move", "Move the path to a destination"),
+    ("opena", "Open a file handle for appending"),
+    ("opena_raw", "Open a raw file handle for appending"),
+    ("opena_utf8", "Open a UTF-8 file handle for appending"),
+    ("openr", "Open a file handle for reading"),
+    ("openr_raw", "Open a raw file handle for reading"),
+    ("openr_utf8", "Open a UTF-8 file handle for reading"),
+    ("openrw", "Open a file handle for reading and writing"),
+    ("openrw_raw", "Open a raw file handle for reading and writing"),
+    ("openrw_utf8", "Open a UTF-8 file handle for reading and writing"),
+    ("openw", "Open a file handle for writing"),
+    ("openw_raw", "Open a raw file handle for writing"),
+    ("openw_utf8", "Open a UTF-8 file handle for writing"),
+    ("parent", "Return a parent path"),
+    ("realpath", "Resolve the path against the filesystem"),
+    ("relative", "Return a path relative to another base"),
+    ("remove", "Remove a file path"),
+    ("remove_tree", "Remove a directory tree"),
+    ("sibling", "Return a sibling path"),
+    ("size", "Return file size in bytes"),
+    ("size_human", "Return a human-readable file size"),
+    ("slurp", "Read an entire file"),
+    ("slurp_raw", "Read an entire file as raw bytes"),
+    ("slurp_utf8", "Read an entire file as UTF-8 text"),
+    ("spew", "Write an entire file atomically"),
+    ("spew_raw", "Write raw bytes atomically"),
+    ("spew_utf8", "Write UTF-8 text atomically"),
+    ("stat", "Return stat metadata for the path"),
+    ("stringify", "Return the normalized path string"),
+    ("subsumes", "Check whether this path contains another path"),
+    ("tempdir", "Create a temporary directory under this path"),
+    ("tempfile", "Create a temporary file under this path"),
+    ("touch", "Create the file or update its timestamps"),
+    ("touchpath", "Create missing parents and touch the file"),
+    ("visit", "Visit directory descendants through a callback"),
+    ("volume", "Return the path volume component"),
+];
+
 const GENERIC_OBJECT_METHODS: &[(&str, &str)] = &[
     ("new", "Constructor"),
     ("isa", "Check if object is of given class"),
@@ -293,6 +375,118 @@ fn is_code_position(source: &str, position: usize) -> bool {
         || is_in_regex(source, position)
         || is_in_pod(source, position)
         || find_data_marker_byte_lexed(source).is_some_and(|marker| position >= marker))
+}
+
+fn is_module_identifier_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_' || c == ':'
+}
+
+fn any_module_use_before(
+    source: &str,
+    position: usize,
+    module: &str,
+    mut predicate: impl FnMut(&str) -> bool,
+) -> bool {
+    let source = source.get(..position).unwrap_or(source);
+    let mut search_start = 0usize;
+
+    while let Some(relative_use) = source[search_start..].find("use") {
+        let use_start = search_start + relative_use;
+        let after_use_start = use_start + "use".len();
+        search_start = after_use_start;
+
+        if !is_code_position(source, use_start)
+            || source[..use_start].chars().next_back().is_some_and(is_module_identifier_char)
+        {
+            continue;
+        }
+
+        let after_use = &source[after_use_start..];
+        let trimmed_after_use = after_use.trim_start_matches(char::is_whitespace);
+        if trimmed_after_use.len() == after_use.len() {
+            continue;
+        }
+
+        let module_start = after_use_start + after_use.len() - trimmed_after_use.len();
+        let Some(after_module) = source[module_start..].strip_prefix(module) else {
+            continue;
+        };
+        if after_module.chars().next().is_some_and(is_module_identifier_char) {
+            continue;
+        }
+
+        let arguments_start = module_start + module.len();
+        let statement_end = source[arguments_start..].char_indices().find_map(|(relative, ch)| {
+            let index = arguments_start + relative;
+            (ch == ';' && is_code_position(source, index)).then_some(index)
+        });
+        let Some(statement_end) = statement_end else { continue };
+
+        if predicate(source[arguments_start..statement_end].trim()) {
+            return true;
+        }
+        search_start = statement_end + 1;
+    }
+
+    false
+}
+
+fn looks_like_version_argument(argument: &str) -> bool {
+    let version = argument.strip_prefix('v').unwrap_or(argument);
+    !version.is_empty() && version.chars().all(|c| c.is_ascii_digit() || c == '.' || c == '_')
+}
+
+fn strip_optional_version_argument(arguments: &str) -> &str {
+    let arguments = arguments.trim();
+    let first_end = arguments.find(char::is_whitespace).unwrap_or(arguments.len());
+    let first = &arguments[..first_end];
+    if looks_like_version_argument(first) { arguments[first_end..].trim_start() } else { arguments }
+}
+
+fn module_was_used_before(source: &str, position: usize, module: &str) -> bool {
+    any_module_use_before(source, position, module, |_| true)
+}
+
+fn module_imported_symbol_before(
+    source: &str,
+    position: usize,
+    module: &str,
+    symbol: &str,
+) -> bool {
+    any_module_use_before(source, position, module, |arguments| {
+        let stripped = strip_line_comments_outside_lists(arguments);
+        let arguments = strip_optional_version_argument(&stripped);
+        if arguments.is_empty() {
+            return true;
+        }
+
+        arguments
+            .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == ':'))
+            .any(|word| word == symbol || word == ":all")
+    })
+}
+
+/// Drop `#`-to-end-of-line comments that sit outside bracketed import lists,
+/// so `use Path::Tiny # load defaults\n;` still reads as a default import
+/// while `#` stays literal inside `qw( ... )` lists.
+fn strip_line_comments_outside_lists(arguments: &str) -> String {
+    let mut stripped = String::with_capacity(arguments.len());
+    let mut depth = 0usize;
+    for ch in arguments.chars() {
+        match ch {
+            '(' => {
+                depth += 1;
+                stripped.push(ch);
+            }
+            ')' => {
+                depth = depth.saturating_sub(1);
+                stripped.push(ch);
+            }
+            '#' if depth == 0 => break,
+            _ => stripped.push(ch),
+        }
+    }
+    stripped
 }
 
 fn binding_at_position<'a>(
@@ -424,29 +618,63 @@ fn is_list_assignment_target(after_receiver: &str) -> bool {
     left_hand_side.starts_with(',') || left_hand_side.starts_with(')')
 }
 
-fn expression_calls_constructor(expression: &str, module: &str) -> bool {
+fn expression_calls_static_method(expression: &str, module: &str, method: &str) -> bool {
     let Some(after_module) = expression.strip_prefix(module) else {
         return false;
     };
     let Some(after_arrow) = after_module.trim_start().strip_prefix("->") else {
         return false;
     };
-    let Some(after_new) = after_arrow.trim_start().strip_prefix("new") else {
+    let Some(after_method) = after_arrow.trim_start().strip_prefix(method) else {
         return false;
     };
 
-    let after_new = after_new.trim_start();
-    if after_new.is_empty() {
-        return true;
+    match after_method.chars().next() {
+        None => true,
+        Some('(') => call_arguments_end_expression(after_method),
+        Some(c) if c.is_whitespace() => call_ends_at_indirect_arguments(after_method),
+        _ => false,
     }
-    if !after_new.starts_with('(') {
+}
+
+fn expression_calls_function(expression: &str, function: &str) -> bool {
+    let Some(after_function) = expression.strip_prefix(function) else {
         return false;
+    };
+
+    match after_function.chars().next() {
+        Some('(') => call_arguments_end_expression(after_function),
+        Some(c) if c.is_whitespace() => call_ends_at_indirect_arguments(after_function),
+        _ => false,
+    }
+}
+
+/// Arming evidence for an indirect (whitespace-separated) argument form:
+/// parenthesized arguments must close and end the expression, while paren-less
+/// arguments terminate with the expression itself.
+fn call_ends_at_indirect_arguments(after_name: &str) -> bool {
+    let argument = after_name.trim_start();
+    if argument.starts_with('(') {
+        return call_arguments_end_expression(argument);
+    }
+    !argument.is_empty() && !argument.starts_with("=>")
+}
+
+/// Whether a call's argument list both closes and ends the expression: after
+/// the balanced close parenthesis (quote/escape aware) only whitespace may
+/// follow. A method-call chain continuing past the call
+/// (`path("x")->stringify`) produces a derived plain value, so it rejects and
+/// factory evidence never arms a catalog for the wrong receiver type.
+fn call_arguments_end_expression(after_name: &str) -> bool {
+    let after_name = after_name.trim_start();
+    if !after_name.starts_with('(') {
+        return after_name.is_empty();
     }
 
     let mut depth = 0usize;
     let mut escaped = false;
     let mut quote = None;
-    for (index, byte) in after_new.bytes().enumerate() {
+    for (index, byte) in after_name.bytes().enumerate() {
         if escaped {
             escaped = false;
             continue;
@@ -470,7 +698,7 @@ fn expression_calls_constructor(expression: &str, module: &str) -> bool {
             b')' => {
                 depth = depth.saturating_sub(1);
                 if depth == 0 {
-                    return after_new[index + 1..].trim().is_empty();
+                    return after_name[index + 1..].trim().is_empty();
                 }
             }
             _ => {}
@@ -479,19 +707,75 @@ fn expression_calls_constructor(expression: &str, module: &str) -> bool {
     false
 }
 
+fn expression_calls_constructor(expression: &str, module: &str) -> bool {
+    let Some(after_module) = expression.strip_prefix(module) else {
+        return false;
+    };
+    let Some(after_arrow) = after_module.trim_start().strip_prefix("->") else {
+        return false;
+    };
+    let Some(after_new) = after_arrow.trim_start().strip_prefix("new") else {
+        return false;
+    };
+
+    call_arguments_end_expression(after_new)
+}
+
+/// Infer a `Path::Tiny` receiver type from imported factory evidence.
+///
+/// Claim bound (#13192): factory evidence is gated on an active `Path::Tiny`
+/// import, including version-only (`use Path::Tiny 0.150;`) and symbol-list
+/// (`use Path::Tiny qw(path);`) forms, and takes priority over constructor
+/// evidence and naming heuristics. Exact same-name scalar bindings only;
+/// aliases fail closed.
+fn infer_imported_factory_receiver_type(
+    context: &CompletionContext,
+    source: &str,
+    symbol_table: &SymbolTable,
+) -> Option<&'static str> {
+    let receiver = context.receiver_prefix().trim_end_matches("->");
+    let source_before_cursor = source.get(..context.position).unwrap_or(source);
+    let receiver_pos = source_before_cursor.rfind(receiver)?;
+    let binding =
+        binding_at_position(symbol_table, receiver, context.cursor_scope_id, receiver_pos)?;
+    let expression = latest_assignment_for_binding(
+        symbol_table,
+        source,
+        receiver,
+        binding,
+        context.cursor_scope_id,
+        receiver_pos + receiver.len(),
+    )?;
+
+    if module_was_used_before(source, context.position, "Path::Tiny")
+        && ((module_imported_symbol_before(source, context.position, "Path::Tiny", "path")
+            && expression_calls_function(expression, "path"))
+            || ["new", "cwd", "rootdir", "tempfile", "tempdir"]
+                .into_iter()
+                .any(|method| expression_calls_static_method(expression, "Path::Tiny", method)))
+    {
+        return Some("Path::Tiny");
+    }
+
+    None
+}
+
 /// Infer an HTTP client receiver type from the binding's latest constructor
 /// assignment.
 ///
 /// Claim bound: this is a bounded local bridge over exact same-name scalar
-/// assignments only. Aliases (`my $alias = $http`) and reblessed/derived
-/// namespaces are intentionally unresolved and fail closed (no completion);
-/// parser/semantic-flow backing arrives with #13244, which also owns
-/// migrating this inference onto the canonical workspace facts.
+/// assignments only. `Path::Tiny` factory evidence is owned exclusively by
+/// [`infer_imported_factory_receiver_type`], which runs first at dispatch;
+/// this inference covers the remaining constructor-built clients
+/// (`HTTP::Tiny`, `LWP::UserAgent`) through the hardened
+/// ends-at-close-paren boundary matcher. Aliases (`my $alias = $http`) and
+/// reblessed/derived namespaces are intentionally unresolved and fail closed
+/// (no completion); parser/semantic-flow backing arrives with #13244, which
+/// also owns migrating this inference onto the canonical workspace facts.
 fn infer_imported_constructor_receiver_type(
     context: &CompletionContext,
     source: &str,
     symbol_table: &SymbolTable,
-    used_modules: &HashSet<String>,
 ) -> Option<&'static str> {
     let receiver = context.receiver_prefix().trim_end_matches("->");
     let source_before_cursor = source.get(..context.position).unwrap_or(source);
@@ -508,16 +792,18 @@ fn infer_imported_constructor_receiver_type(
     )?;
 
     ["HTTP::Tiny", "LWP::UserAgent"].into_iter().find(|&module| {
-        used_modules.contains(module) && expression_calls_constructor(expression, module)
+        module_was_used_before(source, context.position, module)
+            && expression_calls_constructor(expression, module)
     })
 }
 
 fn imported_static_methods(
     prefix: &str,
-    used_modules: &HashSet<String>,
+    source: &str,
+    position: usize,
 ) -> Option<&'static [(&'static str, &'static str)]> {
     let module = static_receiver_module(prefix)?;
-    if !used_modules.contains(module) {
+    if !module_was_used_before(source, position, module) {
         return None;
     }
 
@@ -525,6 +811,7 @@ fn imported_static_methods(
         "HTTP::Tiny" => Some(HTTP_TINY_STATIC_METHODS),
         "Mojo::Pg" => Some(MOJO_PG_METHODS),
         "Mojo::mysql" => Some(MOJO_MYSQL_METHODS),
+        "Path::Tiny" => Some(PATH_TINY_STATIC_METHODS),
         _ => None,
     }
 }
@@ -535,6 +822,7 @@ fn known_instance_methods(
     match receiver_type {
         Some("HTTP::Tiny") => Some(HTTP_TINY_METHODS),
         Some("LWP::UserAgent") => Some(LWP_USER_AGENT_METHODS),
+        Some("Path::Tiny") => Some(PATH_TINY_METHODS),
         _ => None,
     }
 }
@@ -673,7 +961,6 @@ pub fn add_method_completions(
     context: &CompletionContext,
     source: &str,
     symbol_table: &SymbolTable,
-    used_modules: &HashSet<String>,
 ) {
     let mut seen: HashSet<&str> = HashSet::new();
 
@@ -725,13 +1012,15 @@ pub fn add_method_completions(
         }
     }
 
-    // Exact imported constructor evidence takes priority over naming heuristics.
-    let receiver_type =
-        infer_imported_constructor_receiver_type(context, source, symbol_table, used_modules)
-            .map(str::to_owned)
-            .or_else(|| infer_receiver_type(context, source));
+    // Exact imported factory evidence, then constructor evidence, take
+    // priority over naming heuristics.
+    let receiver_type = infer_imported_factory_receiver_type(context, source, symbol_table)
+        .or_else(|| infer_imported_constructor_receiver_type(context, source, symbol_table))
+        .map(str::to_owned)
+        .or_else(|| infer_receiver_type(context, source));
 
-    let static_api_methods = imported_static_methods(context.receiver_prefix(), used_modules);
+    let static_api_methods =
+        imported_static_methods(context.receiver_prefix(), source, context.position);
     let instance_api_methods = known_instance_methods(receiver_type.as_deref());
 
     // Choose methods based on inferred type
