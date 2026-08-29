@@ -218,21 +218,26 @@ fn test_public_range_formatting_replay_preserves_non_bmp_prefix_and_crlf() {
         insert_final_newline: None,
         trim_final_newlines: None,
     };
-    let source = "my $emoji = \"😀\";\r\nwhile($n){next;}\r\n";
+    let source = "my $emoji = \"😀\";\r\nwhile($n){next;} # 😀\r\n";
+    let selected_line = "while($n){next;} # 😀";
     let range = WireRange {
         start: WirePosition::new(1, 0),
-        end: WirePosition::new(1, "while($n){next;}".encode_utf16().count() as u32),
+        end: WirePosition::new(1, selected_line.encode_utf16().count() as u32),
     };
 
     let edits = must(formatter.format_range(source, &range, &options));
     assert_eq!(edits.len(), 1);
     let edit = &edits[0];
+    assert_eq!(edit.range.end.character, selected_line.encode_utf16().count() as u32);
+    assert_ne!(selected_line.len(), selected_line.encode_utf16().count());
     let start = utf16_offset(source, edit.range.start.line, edit.range.start.character);
     let end = utf16_offset(source, edit.range.end.line, edit.range.end.character);
+    assert_eq!(start, source.find("while").expect("edited line must be present"));
+    assert_eq!(end - start, selected_line.len());
     let mut replayed = source.to_string();
     replayed.replace_range(start..end, &edit.new_text);
 
-    assert_eq!(replayed, "my $emoji = \"😀\";\r\nwhile ($n) {\r\n    next;\r\n}\r\n");
+    assert_eq!(replayed, "my $emoji = \"😀\";\r\nwhile ($n) {\r\n    next;\r\n} # 😀\r\n");
 }
 
 fn utf16_offset(source: &str, line: u32, character: u32) -> usize {
