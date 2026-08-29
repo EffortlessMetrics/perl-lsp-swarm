@@ -52,3 +52,15 @@ reason = "The committed non-Rust inventory is generated from tracked files and t
 covered_by = ["cargo xtask check-generated", "cargo xtask non-rust inventory"]
 created = "2026-08-24"
 review_after = "2026-11-22"
+
+[[allow]]
+id = "generated-repository-topology"
+path = "docs/architecture/repository-topology.md"
+kind = "status_page"
+generated_by = "cargo xtask repo-topology"
+regenerate = "cargo xtask repo-topology"
+owner = "release/ci"
+reason = "Repository/package ownership and migration state projected from policy/repository-topology.toml (#7675)."
+covered_by = ["cargo xtask check-generated", "cargo xtask repo-topology --check"]
+created = "2026-08-29"
+review_after = "2026-11-27"
