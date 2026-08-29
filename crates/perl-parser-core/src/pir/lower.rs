@@ -17,10 +17,9 @@ use crate::hir::{
 
 use super::model::{
     LexicalName, PIR_RECEIPT_VERSION, PirAccessMode, PirAnchorCoverage, PirCallee, PirContext,
-    PirEvaluationDemand,
-    PirDynamicBoundaryKind, PirEdge, PirEdgeKind, PirGraph, PirId, PirLiteralKind, PirLoweringMode,
-    PirMethod, PirNode, PirOperation, PirReceipt, PirReceiver, PirRegexModifiers, PirRegexTarget,
-    PirSourceAnchor, PirTargetAccess, SymbolName,
+    PirDynamicBoundaryKind, PirEdge, PirEdgeKind, PirEvaluationDemand, PirGraph, PirId,
+    PirLiteralKind, PirLoweringMode, PirMethod, PirNode, PirOperation, PirReceipt, PirReceiver,
+    PirRegexModifiers, PirRegexTarget, PirSourceAnchor, PirTargetAccess, SymbolName,
 };
 
 fn access_for_operation(operation: &PirOperation) -> PirAccessMode {
@@ -566,13 +565,15 @@ impl Lowerer {
         self.last_in_scope.insert(scope, id);
 
         let is_parent = is_expression_parent(&operation);
+        let demand = demand_for_operation(&operation);
+        let access = access_for_operation(&operation);
         self.nodes.push(PirNode {
             id,
             source_anchor,
             operation,
             context,
-            demand: demand_for_operation(&operation),
-            access: access_for_operation(&operation),
+            demand,
+            access,
             dynamic_boundary,
             scope,
             package_context: item.package_context.clone(),
@@ -612,13 +613,15 @@ impl Lowerer {
         self.edges.push(PirEdge { from: id, to: Some(parent), kind: PirEdgeKind::Fallthrough });
 
         let is_parent = is_expression_parent(&operation);
+        let demand = demand_for_operation(&operation);
+        let access = access_for_operation(&operation);
         self.nodes.push(PirNode {
             id,
             source_anchor,
             operation,
             context: PirContext::Unknown,
-            demand: demand_for_operation(&operation),
-            access: access_for_operation(&operation),
+            demand,
+            access,
             dynamic_boundary,
             scope: item.scope_context,
             package_context: item.package_context.clone(),
@@ -1651,13 +1654,15 @@ impl BodyLowerer {
         self.last_in_scope.insert(scope, id);
 
         let _ = file; // reserved for future scope/package lookup from ScopeGraph
+        let demand = demand_for_operation(&operation);
+        let access = access_for_operation(&operation);
         self.nodes.push(PirNode {
             id,
             source_anchor,
             operation,
             context,
-            demand: demand_for_operation(&operation),
-            access: access_for_operation(&operation),
+            demand,
+            access,
             dynamic_boundary,
             scope,
             package_context: None, // deferred: body arenas don't carry package_context yet
