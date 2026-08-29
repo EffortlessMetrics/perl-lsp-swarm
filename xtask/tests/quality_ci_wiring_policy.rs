@@ -435,6 +435,23 @@ fn coverage_workflow_is_manual_or_nightly_only_and_requires_receipts() {
         coverage_reference_rows_contract(wrapped_stale_route, "wrapped reference").is_err(),
         "coverage documentation contract must reject stale route wording across wrapped lines"
     );
+    let wrapped_three_line_stale_route =
+        "Coverage is advisory, but\nruns through the\nfull CI deep lane.";
+    assert!(
+        coverage_reference_rows_contract(
+            wrapped_three_line_stale_route,
+            "three-line wrapped reference"
+        )
+        .is_err(),
+        "coverage documentation contract must reject stale route wording across three wrapped lines"
+    );
+    let wrapped_boundary_control =
+        "Coverage is advisory, but\nthis sentence ends here.\nfull CI deep lane.";
+    assert!(
+        coverage_reference_rows_contract(wrapped_boundary_control, "wrapped boundary control")
+            .is_ok(),
+        "coverage documentation contract must not join across a completed sentence"
+    );
     let stale_risk_doc =
         risk_pack_doc.replacen("`mutation`, `fuzz` |", "`mutation`, `fuzz`, `coverage` |", 1);
     assert!(
@@ -1359,6 +1376,9 @@ fn has_positive_stale_route_claim_across_wrap(lines: &[&str]) -> bool {
             .windows(2)
             .any(|window| window == ["pull", "request"] || window == ["pull", "requests"])
             || following
+                .windows(2)
+                .any(|window| window == ["deep", "lane"] || window == ["risk", "pack"])
+            || following
                 .iter()
                 .any(|token| matches!(*token, "pr" | "prs" | "merge" | "queue" | "group" | "label"))
         {
@@ -1397,6 +1417,29 @@ fn coverage_reference_rows_contract(document: &str, context: &str) -> Result<()>
             ensure!(
                 !has_positive_stale_route_claim_across_wrap(window),
                 "{context} contains stale coverage route wording across wrapped lines: {joined}"
+            );
+        }
+    }
+    for window in lines.windows(3) {
+        let first_line = window[0].trim_end();
+        let first_word = first_line
+            .split(|character: char| !character.is_ascii_alphanumeric())
+            .filter(|word| !word.is_empty())
+            .next_back();
+        if matches!(first_line.chars().last(), Some('|' | '.' | '!' | '?' | ':'))
+            || matches!(window[1].trim_end().chars().last(), Some('|' | '.' | '!' | '?' | ':'))
+            || window[1].trim_start().starts_with('|')
+            || window[2].trim_start().starts_with('|')
+            || !matches!(first_word, Some("but" | "and" | "or" | "without" | "never"))
+        {
+            continue;
+        }
+        let joined = format!("{} {} {}", window[0], window[1], window[2]);
+        let lower = joined.to_ascii_lowercase();
+        if lower.contains("coverage") || lower.contains("codecov") {
+            ensure!(
+                !has_positive_stale_route_claim_across_wrap(window),
+                "{context} contains stale coverage route wording across three wrapped lines: {joined}"
             );
         }
     }
