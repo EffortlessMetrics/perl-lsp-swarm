@@ -29,10 +29,7 @@ where
 }
 
 fn body_tokens(tokens: &[Token]) -> Vec<&Token> {
-    tokens
-        .iter()
-        .filter(|token| matches!(&token.token_type, TokenType::HeredocBody(_)))
-        .collect()
+    tokens.iter().filter(|token| matches!(&token.token_type, TokenType::HeredocBody(_))).collect()
 }
 
 fn assert_clean_continuation(source: &str, tokens: &[Token], marker: &str) -> R {
@@ -51,10 +48,7 @@ fn assert_clean_continuation(source: &str, tokens: &[Token], marker: &str) -> R 
         "clean queued heredoc fixture emitted a recovery token",
     )?;
     require_eq(
-        &tokens
-            .iter()
-            .filter(|token| matches!(&token.token_type, TokenType::EOF))
-            .count(),
+        &tokens.iter().filter(|token| matches!(&token.token_type, TokenType::EOF)).count(),
         &1,
         "terminal EOF count",
     )?;
@@ -156,13 +150,8 @@ fn a_later_entry_label_cannot_terminate_the_front_entry() -> R {
 
 #[test]
 fn an_empty_duplicate_body_does_not_collapse_the_next_entry() -> R {
-    let source = concat!(
-        "print <<END, <<END;\n",
-        "END\n",
-        "second\n",
-        "END\n",
-        "my $after = 3;\n",
-    );
+    let source =
+        concat!("print <<END, <<END;\n", "END\n", "second\n", "END\n", "my $after = 3;\n",);
 
     assert_queue_case(
         source,
@@ -197,20 +186,7 @@ fn duplicate_labels_across_mixed_forms_keep_declaration_order() -> R {
 
 #[test]
 fn duplicate_unicode_labels_keep_distinct_body_geometry() -> R {
-    let source = concat!(
-        "print <<Δ, <<Δ;\n",
-        "α\n",
-        "Δ\n",
-        "β\n",
-        "Δ\n",
-        "my $after = 5;\n",
-    );
+    let source = concat!("print <<Δ, <<Δ;\n", "α\n", "Δ\n", "β\n", "Δ\n", "my $after = 5;\n",);
 
-    assert_queue_case(
-        source,
-        &["<<Δ", "<<Δ"],
-        &["α\n", "β\n"],
-        &["Δ\n", "Δ\n"],
-        "my $after = 5;",
-    )
+    assert_queue_case(source, &["<<Δ", "<<Δ"], &["α\n", "β\n"], &["Δ\n", "Δ\n"], "my $after = 5;")
 }
