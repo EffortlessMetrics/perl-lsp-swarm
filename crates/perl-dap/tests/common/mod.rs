@@ -924,12 +924,15 @@ mod explicit_pin_tests {
     }
 
     /// Unix mode bits are only a hint when an ACL or ownership rule can deny
-    /// the current user.  This control leaves execute bits on group/other,
-    /// denies execute to the file owner through a real POSIX ACL, and requires
-    /// PATH lookup to continue to the next candidate.  It is Linux-only because
-    /// `setfacl` is not a portable Unix interface; unsupported hosts report an
-    /// explicit skip rather than claiming ACL coverage.
+    /// the current user.  This control exercises the kernel's real-user ACL
+    /// decision and requires PATH lookup to continue to the next candidate.
+    /// It is an explicitly ignored Linux-only probe because an ordinary test
+    /// process cannot portably arrange a named ACL for a different effective
+    /// user.  Running it manually requires a non-root account and `setfacl`;
+    /// unsupported environments fail the ignored probe instead of claiming
+    /// ACL coverage.
     #[cfg(target_os = "linux")]
+    #[ignore = "requires a non-root Linux account and setfacl; run manually for ACL proof"]
     #[test]
     fn path_lookup_skips_acl_inaccessible_first_candidate() -> Result<(), String> {
         use std::os::unix::fs::PermissionsExt;
@@ -939,19 +942,14 @@ mod explicit_pin_tests {
         // denial from root's special-case access semantics.
         // SAFETY: `getuid` has no preconditions and does not retain pointers.
         if unsafe { libc::getuid() } == 0 {
-            eprintln!("skipping ACL access control when running as root");
-            return Ok(());
+            return Err("ACL access control requires a non-root Linux account".to_string());
         }
 
         match Command::new("setfacl").arg("--version").status() {
             Ok(status) if status.success() => {}
-            Ok(_) => {
-                eprintln!("skipping ACL access control: setfacl is unavailable");
-                return Ok(());
-            }
+            Ok(_) => return Err("setfacl is unavailable".to_string()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                eprintln!("skipping ACL access control: setfacl is not installed");
-                return Ok(());
+                return Err("setfacl is not installed".to_string());
             }
             Err(error) => return Err(format!("could not invoke setfacl: {error}")),
         }
@@ -1075,6 +1073,22 @@ mod explicit_pin_tests {
                 Err(error) => error,
             };
         if !error.contains("was not found") {
+            return Err(format!("unexpected failure reason: {error}"));
+        }
+        Ok(())
+    }
+
+    /// A bare candidate without a captured PATH is a resolution failure, not a
+    /// relative path that can leak through to the probe or launch boundary.
+    #[test]
+    fn bare_candidate_without_search_path_fails_closed() -> Result<(), String> {
+        let error = match resolve_debuggee_candidate(Path::new("perl"), None) {
+            Ok(resolved) => {
+                return Err(format!("candidate unexpectedly resolved to {resolved:?}"));
+            }
+            Err(error) => error,
+        };
+        if !error.contains("no search path is available") {
             return Err(format!("unexpected failure reason: {error}"));
         }
         Ok(())
@@ -2656,10 +2670,10 @@ fn candidate_is_executable(_path: &Path) -> bool {
 /// Every failure is a resolution failure: a candidate this function accepts
 /// is always canonicalizable, so the launch boundary can never inherit a
 /// probe-validated value it cannot resolve.
-fn resolve_debuggee_candidate(
+fn resolve_debuggee_candidates(
     path: &Path,
     search_path: Option<&std::ffi::OsStr>,
-) -> Result<PathBuf, String> {
+) -> Result<Vec<PathBuf>, String> {
     if !is_bare_program_name(path) {
         let absolute = if path.is_absolute() {
             path.to_path_buf()
@@ -2674,6 +2688,7 @@ fn resolve_debuggee_candidate(
                 .join(path)
         };
         return fs::canonicalize(&absolute)
+            .map(|candidate| vec![candidate])
             .map_err(|error| format!("cannot canonicalize candidate {}: {error}", path.display()));
     }
 
@@ -2683,18 +2698,38 @@ fn resolve_debuggee_candidate(
             path.display()
         )
     })?;
+    let mut candidates = Vec::new();
     for directory in std::env::split_paths(search_path) {
         for variant in bare_name_lookup_variants(path.as_os_str()) {
             let candidate = directory.join(&variant);
             if let Ok(canonical) = fs::canonicalize(&candidate)
                 && canonical.is_file()
                 && candidate_is_executable(&canonical)
+                && !candidates.contains(&canonical)
             {
-                return Ok(canonical);
+                candidates.push(canonical);
             }
         }
     }
-    Err(format!("candidate {} was not found on the search path", path.display()))
+    if candidates.is_empty() {
+        Err(format!("candidate {} was not found on the search path", path.display()))
+    } else {
+        Ok(candidates)
+    }
+}
+
+/// Resolve the first eligible candidate for focused lookup tests.  Production
+/// resolution uses [`resolve_debuggee_candidates`] so a candidate that passes
+/// filesystem checks but fails at actual process spawn can be probed before a
+/// later PATH candidate is selected.
+fn resolve_debuggee_candidate(
+    path: &Path,
+    search_path: Option<&std::ffi::OsStr>,
+) -> Result<PathBuf, String> {
+    resolve_debuggee_candidates(path, search_path)?
+        .into_iter()
+        .next()
+        .ok_or_else(|| format!("candidate {} was not found on the search path", path.display()))
 }
 
 /// One uncached resolution sweep over every candidate interpreter.
@@ -2702,10 +2737,10 @@ fn resolve_debuggee_perl_uncached() -> DebuggeePerlResolution {
     let explicit = std::env::var_os(DEBUGGEE_PERL_OVERRIDE_ENV).is_some();
     let mut diagnostics = Vec::new();
     let mut transient_failure = false;
-    for raw_candidate in debuggee_perl_candidates() {
-        let candidate = if explicit {
+    'raw_candidates: for raw_candidate in debuggee_perl_candidates() {
+        let candidates = if explicit {
             match normalize_explicit_debuggee_pin(&raw_candidate) {
-                Ok(candidate) => candidate,
+                Ok(candidate) => vec![candidate],
                 Err(reason) => {
                     diagnostics.push(format!(
                         "{DEBUGGEE_PERL_OVERRIDE_ENV} pin {}: {reason}",
@@ -2715,35 +2750,35 @@ fn resolve_debuggee_perl_uncached() -> DebuggeePerlResolution {
                 }
             }
         } else {
-            match resolve_debuggee_candidate(&raw_candidate, std::env::var_os("PATH").as_deref()) {
-                Ok(candidate) => candidate,
+            match resolve_debuggee_candidates(&raw_candidate, std::env::var_os("PATH").as_deref()) {
+                Ok(candidates) => candidates,
                 Err(reason) => {
                     diagnostics.push(format!("{}: {reason}", raw_candidate.display()));
                     continue;
                 }
             }
         };
-        match probe_debuggee_perl(&candidate) {
-            Ok(perl) => {
-                return DebuggeePerlResolution {
-                    resolved: Some(perl),
-                    diagnostics,
-                    transient_failure: false,
-                };
-            }
-            Err(failure) => {
-                transient_failure |= failure.transient;
-                if explicit {
-                    // An explicitly pinned identity must not fall through:
-                    // surface its failure and stop.
-                    diagnostics.push(format!(
-                        "{DEBUGGEE_PERL_OVERRIDE_ENV} pin {}: {}",
-                        candidate.display(),
-                        failure.reason
-                    ));
-                    break;
+        for candidate in candidates {
+            match probe_debuggee_perl(&candidate) {
+                Ok(perl) => {
+                    return DebuggeePerlResolution {
+                        resolved: Some(perl),
+                        diagnostics,
+                        transient_failure: false,
+                    };
                 }
-                diagnostics.push(format!("{}: {}", candidate.display(), failure.reason));
+                Err(failure) => {
+                    transient_failure |= failure.transient;
+                    if explicit {
+                        diagnostics.push(format!(
+                            "{DEBUGGEE_PERL_OVERRIDE_ENV} pin {}: {}",
+                            candidate.display(),
+                            failure.reason
+                        ));
+                        break 'raw_candidates;
+                    }
+                    diagnostics.push(format!("{}: {}", candidate.display(), failure.reason));
+                }
             }
         }
     }
