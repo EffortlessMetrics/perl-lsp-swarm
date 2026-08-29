@@ -107,6 +107,14 @@ pub mod workspace_import_extractor {
     }
 }
 
+/// Non-published DBIx::QuickORM table-column field candidates.
+///
+/// This module has no canonical-shard or provider consumer. Promotion requires
+/// a separate admission receipt and must not reinterpret columns as generated
+/// methods.
+#[path = "generated_member_extractor_quickorm.rs"]
+pub(crate) mod dbix_quickorm_candidate;
+
 /// Per-provider scorecard gate fixture suites (test-only).
 #[cfg(test)]
 mod scorecard_gate_fixtures;
