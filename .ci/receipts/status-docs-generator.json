@@ -1,0 +1,4 @@
+{
+  "owner": "status-docs",
+  "command": "cargo xtask update-status --write"
+}
