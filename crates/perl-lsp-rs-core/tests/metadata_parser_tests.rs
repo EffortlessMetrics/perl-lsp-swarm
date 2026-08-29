@@ -447,3 +447,303 @@ fn workspace_config_refreshes_declared_dependency_cache() -> TestResult {
     );
     Ok(())
 }
+
+// ─── Conditional cpanfile declarations (#13695) ─────────────────────────────
+//
+// Canonical `on '<phase>' => sub { ... }` declarations must keep their phase,
+// and declarations inside `feature`, platform conditionals, loops, and
+// arbitrary callback blocks must produce no unconditional advisory fact,
+// because `DeclaredDependency` cannot retain their predicates.
+
+fn cpanfile_dependency<'a>(
+    deps: &'a [DeclaredDependency],
+    module: &str,
+) -> Option<&'a DeclaredDependency> {
+    deps.iter().find(|dependency| dependency.module == module)
+}
+
+#[test]
+fn cpanfile_on_block_declarations_keep_their_phase() {
+    let cpanfile = r#"
+        requires 'Plack';
+        on 'test' => sub {
+            requires 'Test::More', '0.98';
+            recommends 'Test::Deep';
+        };
+        on 'develop' => sub { requires 'Perl::Critic'; };
+    "#;
+
+    let deps = extract_cpanfile_requirements(cpanfile);
+
+    assert_eq!(
+        cpanfile_dependency(&deps, "Test::More"),
+        Some(&DeclaredDependency::new(
+            "Test::More",
+            Some("0.98"),
+            "test.requires",
+            DeclaredDependencySource::Cpanfile,
+        )),
+    );
+    assert_eq!(
+        cpanfile_dependency(&deps, "Test::Deep"),
+        Some(&DeclaredDependency::new(
+            "Test::Deep",
+            None,
+            "test.recommends",
+            DeclaredDependencySource::Cpanfile,
+        )),
+    );
+    assert_eq!(
+        cpanfile_dependency(&deps, "Perl::Critic"),
+        Some(&DeclaredDependency::new(
+            "Perl::Critic",
+            None,
+            "develop.requires",
+            DeclaredDependencySource::Cpanfile,
+        )),
+    );
+    assert_eq!(
+        cpanfile_dependency(&deps, "Plack"),
+        Some(&DeclaredDependency::new(
+            "Plack",
+            None,
+            "requires",
+            DeclaredDependencySource::Cpanfile,
+        )),
+    );
+}
+
+#[test]
+fn cpanfile_conditional_blocks_produce_no_unconditional_advisory() {
+    let cpanfile = r#"
+        requires 'Plack';
+        feature 'soup' => sub {
+            recommends 'JSON::XS';
+            requires 'Feature::Bound';
+        };
+        if ($ENV{PERL_LSP_SWARM}) {
+            suggests 'Conditional::Block';
+            requires 'Env::Bound';
+        }
+        foreach my $mod ('Loop::One', 'Loop::Two') {
+            requires 'Loop::Bound';
+        }
+        my $callback = sub {
+            requires 'Callback::Bound';
+        };
+    "#;
+
+    let deps = extract_cpanfile_requirements(cpanfile);
+
+    assert_eq!(
+        deps,
+        vec![DeclaredDependency::new(
+            "Plack",
+            None,
+            "requires",
+            DeclaredDependencySource::Cpanfile,
+        )]
+    );
+}
+
+#[test]
+fn cpanfile_unsupported_blocks_suppress_nested_canonical_blocks() {
+    let cpanfile = r#"
+        feature 'soup' => sub {
+            on 'test' => sub {
+                requires 'Nested::Suppressed';
+                recommends 'Nested::SuppressedToo';
+            };
+        };
+        on 'test' => sub { requires 'Real::Test'; };
+    "#;
+
+    let deps = extract_cpanfile_requirements(cpanfile);
+
+    assert_eq!(
+        deps,
+        vec![DeclaredDependency::new(
+            "Real::Test",
+            None,
+            "test.requires",
+            DeclaredDependencySource::Cpanfile,
+        )]
+    );
+}
+
+#[test]
+fn cpanfile_postfix_conditionals_produce_no_advisory_fact() {
+    let cpanfile = r#"
+        requires 'Win::Only' if $^O eq 'MSWin32';
+        requires 'Old::Perl' unless $] >= 5.016;
+        requires 'Plack';
+    "#;
+
+    let deps = extract_cpanfile_requirements(cpanfile);
+
+    assert_eq!(
+        deps,
+        vec![DeclaredDependency::new(
+            "Plack",
+            None,
+            "requires",
+            DeclaredDependencySource::Cpanfile,
+        )]
+    );
+}
+
+#[test]
+fn cpanfile_unknown_on_phases_produce_no_advisory_fact() {
+    let cpanfile = r#"
+        on 'staging' => sub {
+            requires 'Staging::Bound';
+            recommends 'Staging::BoundToo';
+        };
+        on 'test' => sub { requires 'Real::Test'; };
+    "#;
+
+    let deps = extract_cpanfile_requirements(cpanfile);
+
+    assert_eq!(
+        deps,
+        vec![DeclaredDependency::new(
+            "Real::Test",
+            None,
+            "test.requires",
+            DeclaredDependencySource::Cpanfile,
+        )]
+    );
+}
+
+#[test]
+fn cpanfile_quoted_braces_and_semicolons_do_not_alter_block_state() {
+    let cpanfile = concat!(
+        r#"my $advice = 'always; requires "Quoted::Leak";';"#,
+        "\n",
+        r#"my $open = '{'; my $close = '}';"#,
+        "\n",
+        r#"requires 'Real::One';"#,
+        "\n",
+        r#"recommends 'Real::Two';"#,
+    );
+
+    let deps = extract_cpanfile_requirements(cpanfile);
+
+    assert_eq!(
+        deps,
+        vec![
+            DeclaredDependency::new(
+                "Real::One",
+                None,
+                "requires",
+                DeclaredDependencySource::Cpanfile,
+            ),
+            DeclaredDependency::new(
+                "Real::Two",
+                None,
+                "recommends",
+                DeclaredDependencySource::Cpanfile,
+            ),
+        ],
+    );
+}
+
+#[test]
+fn cpanfile_forced_phase_and_bareword_on_align_with_substrate() {
+    let cpanfile = r#"
+        on develop => sub {
+            requires 'Bareword::Develop';
+            test_requires 'Forced::Test';
+        };
+        on 'runtime' => sub {
+            on 'test' => sub {
+                requires 'Nested::Canonical';
+            };
+        };
+        build_requires 'Build::Dep', '0.1';
+    "#;
+
+    let deps = extract_cpanfile_requirements(cpanfile);
+
+    assert_eq!(
+        cpanfile_dependency(&deps, "Bareword::Develop"),
+        Some(&DeclaredDependency::new(
+            "Bareword::Develop",
+            None,
+            "develop.requires",
+            DeclaredDependencySource::Cpanfile,
+        )),
+    );
+    assert_eq!(
+        cpanfile_dependency(&deps, "Forced::Test"),
+        Some(&DeclaredDependency::new(
+            "Forced::Test",
+            None,
+            "test.requires",
+            DeclaredDependencySource::Cpanfile,
+        )),
+    );
+    assert_eq!(
+        cpanfile_dependency(&deps, "Nested::Canonical"),
+        Some(&DeclaredDependency::new(
+            "Nested::Canonical",
+            None,
+            "test.requires",
+            DeclaredDependencySource::Cpanfile,
+        )),
+    );
+    assert_eq!(
+        cpanfile_dependency(&deps, "Build::Dep"),
+        Some(&DeclaredDependency::new(
+            "Build::Dep",
+            Some("0.1"),
+            "build_requires",
+            DeclaredDependencySource::Cpanfile,
+        )),
+    );
+    assert_eq!(deps.len(), 4);
+}
+
+#[test]
+fn cpanfile_keyword_boundaries_and_substrate_keywords() {
+    let cpanfile = r#"
+        requires_extra 'Not::A::Prereq';
+        on 'nonphase' => sub { requires 'Unknown::Phase'; };
+        suggests 'Suggested::Module';
+        conflicts 'Conflicting::Module';
+        author_requires 'Author::Module';
+        requires 'Real::One';
+    "#;
+
+    let deps = extract_cpanfile_requirements(cpanfile);
+
+    assert_eq!(
+        deps,
+        vec![
+            DeclaredDependency::new(
+                "Suggested::Module",
+                None,
+                "suggests",
+                DeclaredDependencySource::Cpanfile,
+            ),
+            DeclaredDependency::new(
+                "Conflicting::Module",
+                None,
+                "conflicts",
+                DeclaredDependencySource::Cpanfile,
+            ),
+            DeclaredDependency::new(
+                "Author::Module",
+                None,
+                "author_requires",
+                DeclaredDependencySource::Cpanfile,
+            ),
+            DeclaredDependency::new(
+                "Real::One",
+                None,
+                "requires",
+                DeclaredDependencySource::Cpanfile,
+            ),
+        ],
+    );
+}

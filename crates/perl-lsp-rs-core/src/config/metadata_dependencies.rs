@@ -1,7 +1,12 @@
 //! Static project metadata dependency extraction.
 //!
 //! These extractors intentionally read common literal metadata shapes without
-//! executing Perl project files.
+//! executing Perl project files. The `cpanfile` extractor is transitional
+//! (#13695): it keeps top-level and canonical `on '<phase>' => sub { ... }`
+//! declarations while suppressing conditional declarations (`feature`,
+//! conditionals, loops, arbitrary callbacks, unknown phases) that
+//! `DeclaredDependency` cannot attribute, until #13631 converges the
+//! duplicated parsers.
 
 use serde_json::Value;
 use std::fs;
@@ -72,8 +77,39 @@ impl DeclaredDependencySource {
     }
 }
 
-const CPANFILE_KEYS: &[&str] =
-    &["requires", "test_requires", "recommends", "build_requires", "configure_requires"];
+/// A literal `cpanfile` statement keyword mapped to the advisory relation it
+/// declares and the phase it forces when no enclosing block provides one.
+struct CpanfileKeyword {
+    keyword: &'static str,
+    relation: &'static str,
+    forced_phase: Option<&'static str>,
+}
+
+const CPANFILE_KEYWORDS: &[CpanfileKeyword] = &[
+    CpanfileKeyword { keyword: "requires", relation: "requires", forced_phase: None },
+    CpanfileKeyword { keyword: "recommends", relation: "recommends", forced_phase: None },
+    CpanfileKeyword { keyword: "suggests", relation: "suggests", forced_phase: None },
+    CpanfileKeyword { keyword: "conflicts", relation: "conflicts", forced_phase: None },
+    CpanfileKeyword { keyword: "test_requires", relation: "requires", forced_phase: Some("test") },
+    CpanfileKeyword {
+        keyword: "build_requires",
+        relation: "requires",
+        forced_phase: Some("build"),
+    },
+    CpanfileKeyword {
+        keyword: "configure_requires",
+        relation: "requires",
+        forced_phase: Some("configure"),
+    },
+    CpanfileKeyword {
+        keyword: "author_requires",
+        relation: "requires",
+        forced_phase: Some("develop"),
+    },
+];
+
+/// Canonical `on` phases with an explicit `{phase}.{relation}` advisory kind.
+const CPANFILE_PHASES: &[&str] = &["configure", "build", "test", "runtime", "develop"];
 const MAKEFILE_KEYS: &[&str] =
     &["PREREQ_PM", "BUILD_REQUIRES", "TEST_REQUIRES", "CONFIGURE_REQUIRES"];
 const BUILD_PL_KEYS: &[&str] =
@@ -121,35 +157,300 @@ pub fn detect_declared_dependencies(workspace_root: &Path) -> Vec<DeclaredDepend
 }
 
 /// Extract literal dependencies from a `cpanfile`.
+///
+/// Transitional structural scan (#13695) over staged text only. Top-level
+/// declarations keep their literal relation keyword, canonical
+/// `on '<phase>' => sub { ... }` blocks are attributed as
+/// `{phase}.{relation}`, and declarations inside `feature` blocks,
+/// conditionals, loops, arbitrary callbacks, or unknown `on` phases are
+/// suppressed because `DeclaredDependency` cannot retain their predicates.
+/// Exact duplicate identity remains delegated to the complete-identity path
+/// (#13628).
 #[must_use]
 pub fn extract_cpanfile_requirements(source: &str) -> Vec<DeclaredDependency> {
     let source = strip_comments_preserving_strings(source);
+    let bytes = source.as_bytes();
     let mut dependencies = Vec::new();
+    // Open blocks as `(phase, open brace depth)`. `None` marks an unsupported
+    // block (`feature`, conditionals, loops, arbitrary callbacks, unknown
+    // `on` phases); unsupported state propagates to nested blocks.
+    let mut blocks: Vec<(Option<&'static str>, usize)> = Vec::new();
+    let mut brace_depth = 0usize;
+    let mut at_boundary = true;
+    let mut pending_start = 0usize;
 
-    for statement in source.split(';') {
-        let statement = statement.trim();
-        for key in CPANFILE_KEYS {
-            if !starts_with_keyword(statement, key) {
+    let mut idx = 0usize;
+    while idx < source.len() {
+        if at_boundary {
+            skip_ws(bytes, &mut idx);
+            if bytes.get(idx).is_none() {
+                break;
+            }
+            if let Some(end) = ascii_ident_end(bytes, idx) {
+                let word = &source[idx..end];
+                at_boundary = false;
+                idx = end;
+                if let Some(declared) = CPANFILE_KEYWORDS.iter().find(|kw| kw.keyword == word)
+                    && cpanfile_call_boundary(bytes, idx)
+                    && blocks.last().is_none_or(|(phase, _)| phase.is_some())
+                {
+                    let block_phase = blocks.last().and_then(|(phase, _)| *phase);
+                    emit_cpanfile_declaration(
+                        &source,
+                        idx,
+                        declared,
+                        block_phase,
+                        &mut dependencies,
+                    );
+                }
                 continue;
             }
-            let args = quoted_strings(statement);
-            let Some(module) = args.first().and_then(|value| normalize_module_name(value)) else {
-                continue;
-            };
-            let version = args.get(1).and_then(|value| normalize_version(value));
-            push_unique(
-                &mut dependencies,
-                DeclaredDependency::new(
-                    module,
-                    version.as_deref(),
-                    *key,
-                    DeclaredDependencySource::Cpanfile,
-                ),
-            );
+            at_boundary = false;
+        }
+
+        match bytes[idx] {
+            b'\'' | b'"' => match parse_quoted_string(&source, idx) {
+                Some((_, consumed)) => idx += consumed,
+                None => idx += 1,
+            },
+            b'{' => {
+                brace_depth = brace_depth.saturating_add(1);
+                if is_block_opener(bytes, idx) {
+                    // Unsupported ancestors suppress canonical descendants.
+                    let inherited = matches!(blocks.last(), Some((None, _)));
+                    let phase =
+                        if inherited { None } else { on_block_phase(&source[pending_start..idx]) };
+                    blocks.push((phase, brace_depth));
+                }
+                at_boundary = true;
+                pending_start = idx + 1;
+                idx += 1;
+            }
+            b'}' => {
+                brace_depth = brace_depth.saturating_sub(1);
+                while matches!(blocks.last(), Some((_, open)) if *open > brace_depth) {
+                    blocks.pop();
+                }
+                at_boundary = true;
+                pending_start = idx + 1;
+                idx += 1;
+            }
+            b';' => {
+                at_boundary = true;
+                pending_start = idx + 1;
+                idx += 1;
+            }
+            _ => idx += 1,
         }
     }
 
     dependencies
+}
+
+/// Parse the declaration arguments that follow a `cpanfile` relation keyword
+/// and push one advisory fact when they are literal and unconditional.
+fn emit_cpanfile_declaration(
+    source: &str,
+    args_start: usize,
+    declared: &CpanfileKeyword,
+    block_phase: Option<&'static str>,
+    dependencies: &mut Vec<DeclaredDependency>,
+) {
+    let (args, conditional) = cpanfile_statement_args(source, args_start);
+    if conditional {
+        return;
+    }
+    let Some(module) = args.first().and_then(|value| normalize_module_name(value)) else {
+        return;
+    };
+    let version = args.get(1).and_then(|value| normalize_version(value));
+    let kind = match block_phase {
+        None => declared.keyword.to_string(),
+        Some(phase) => {
+            format!("{}.{}", declared.forced_phase.unwrap_or(phase), declared.relation)
+        }
+    };
+    push_unique(
+        dependencies,
+        DeclaredDependency::new(
+            module,
+            version.as_deref(),
+            kind,
+            DeclaredDependencySource::Cpanfile,
+        ),
+    );
+}
+
+/// Collect the quoted strings of one `cpanfile` statement.
+///
+/// Returns the strings and whether a postfix `if`/`unless` conditional was
+/// reached; conditional declarations produce no advisory fact.
+fn cpanfile_statement_args(source: &str, start: usize) -> (Vec<String>, bool) {
+    let bytes = source.as_bytes();
+    let mut values = Vec::new();
+    let mut idx = start;
+
+    while idx < bytes.len() {
+        if let Some((value, consumed)) = parse_quoted_string(source, idx) {
+            values.push(value);
+            idx += consumed;
+            continue;
+        }
+        match bytes[idx] {
+            b';' | b'{' => return (values, false),
+            c if c.is_ascii_alphabetic() || c == b'_' => {
+                let end = ascii_ident_end(bytes, idx).unwrap_or(idx + 1);
+                if matches!(&source[idx..end], "if" | "unless") {
+                    return (values, true);
+                }
+                idx = end;
+            }
+            _ => idx += 1,
+        }
+    }
+
+    (values, false)
+}
+
+/// Whether the source position after a relation keyword can start its
+/// argument list (whitespace, call parentheses, or a quoted module).
+fn cpanfile_call_boundary(bytes: &[u8], idx: usize) -> bool {
+    bytes
+        .get(idx)
+        .is_none_or(|byte| byte.is_ascii_whitespace() || matches!(byte, b'(' | b'\'' | b'"'))
+}
+
+/// Classify the statement that opens a block: `Some(phase)` for canonical
+/// `on '<phase>' => sub` headers, `None` for every other unsupported block.
+fn on_block_phase(pending: &str) -> Option<&'static str> {
+    let mut idx = 0usize;
+    let mut token = next_cpanfile_token(pending, &mut idx);
+    if matches!(token, Some(CpanfileToken::OpenParen)) {
+        token = next_cpanfile_token(pending, &mut idx);
+    }
+    match token? {
+        CpanfileToken::Ident("on") => {}
+        _ => return None,
+    }
+    let mut token = next_cpanfile_token(pending, &mut idx);
+    if matches!(token, Some(CpanfileToken::OpenParen)) {
+        token = next_cpanfile_token(pending, &mut idx);
+    }
+    let phase = match token? {
+        CpanfileToken::Str(value) => value,
+        CpanfileToken::Ident(word) => word.to_string(),
+        _ => return None,
+    };
+    match next_cpanfile_token(pending, &mut idx)? {
+        CpanfileToken::FatComma | CpanfileToken::Comma => {}
+        _ => return None,
+    }
+    match next_cpanfile_token(pending, &mut idx)? {
+        CpanfileToken::Ident("sub") => {}
+        _ => return None,
+    }
+    CPANFILE_PHASES.iter().find(|canonical| **canonical == phase).copied()
+}
+
+/// One literal token of a `cpanfile` block header.
+enum CpanfileToken<'a> {
+    Ident(&'a str),
+    Str(String),
+    FatComma,
+    Comma,
+    OpenParen,
+    CloseParen,
+    Other,
+}
+
+/// Read the next literal token of a block header, advancing `idx`.
+fn next_cpanfile_token<'a>(source: &'a str, idx: &mut usize) -> Option<CpanfileToken<'a>> {
+    let bytes = source.as_bytes();
+    while *idx < bytes.len() {
+        let byte = bytes[*idx];
+        if byte.is_ascii_whitespace() {
+            *idx += 1;
+            continue;
+        }
+        return match byte {
+            b'(' => {
+                *idx += 1;
+                Some(CpanfileToken::OpenParen)
+            }
+            b')' => {
+                *idx += 1;
+                Some(CpanfileToken::CloseParen)
+            }
+            b',' => {
+                *idx += 1;
+                Some(CpanfileToken::Comma)
+            }
+            b'=' if bytes.get(*idx + 1) == Some(&b'>') => {
+                *idx += 2;
+                Some(CpanfileToken::FatComma)
+            }
+            b'\'' | b'"' => {
+                let (value, consumed) = parse_quoted_string(source, *idx)?;
+                *idx += consumed;
+                Some(CpanfileToken::Str(value))
+            }
+            c if c.is_ascii_alphabetic() || c == b'_' => {
+                let end = ascii_ident_end(bytes, *idx).unwrap_or(*idx + 1);
+                let word = &source[*idx..end];
+                *idx = end;
+                Some(CpanfileToken::Ident(word))
+            }
+            _ => {
+                *idx += 1;
+                Some(CpanfileToken::Other)
+            }
+        };
+    }
+    None
+}
+
+/// Whether the `{` at `open_idx` opens a block instead of a hash subscript
+/// such as `$ENV{name}` or `$hash->{name}`.
+fn is_block_opener(bytes: &[u8], open_idx: usize) -> bool {
+    let mut before = open_idx;
+    while before > 0 && bytes[before - 1].is_ascii_whitespace() {
+        before -= 1;
+    }
+    let Some(prev) = before.checked_sub(1).and_then(|idx| bytes.get(idx)).copied() else {
+        return true;
+    };
+    match prev {
+        // Dereference and subscript sigils: `${...}`, `@{$list}`, `$ENV{key}`.
+        b'$' | b'@' | b'%' | b'&' | b'*' => false,
+        // Arrowed subscripts: `$hash->{key}`.
+        b'>' => before >= 2 && bytes[before - 2] == b'-',
+        c if c.is_ascii_alphanumeric() || c == b'_' => {
+            let mut start = before - 1;
+            while start > 0
+                && (bytes[start - 1].is_ascii_alphanumeric() || bytes[start - 1] == b'_')
+            {
+                start -= 1;
+            }
+            if start == 0 {
+                return true;
+            }
+            !matches!(bytes[start - 1], b'$' | b'@' | b'%' | b'&' | b'*')
+        }
+        _ => true,
+    }
+}
+
+/// End index of the ASCII identifier starting at `start`, if any.
+fn ascii_ident_end(bytes: &[u8], start: usize) -> Option<usize> {
+    let first = *bytes.get(start)?;
+    if !(first.is_ascii_alphabetic() || first == b'_') {
+        return None;
+    }
+    let mut end = start + 1;
+    while bytes.get(end).is_some_and(|byte| byte.is_ascii_alphanumeric() || *byte == b'_') {
+        end += 1;
+    }
+    Some(end)
 }
 
 /// Extract literal dependencies from `Makefile.PL`.
@@ -419,29 +720,6 @@ fn meta_json_version(value: &Value) -> Option<String> {
         Value::Number(value) => normalize_version(&value.to_string()),
         _ => None,
     }
-}
-
-fn starts_with_keyword(statement: &str, key: &str) -> bool {
-    let Some(rest) = statement.strip_prefix(key) else {
-        return false;
-    };
-    rest.chars().next().is_none_or(|ch| ch.is_whitespace() || matches!(ch, '(' | '\'' | '"'))
-}
-
-fn quoted_strings(source: &str) -> Vec<String> {
-    let mut values = Vec::new();
-    let mut idx = 0;
-
-    while idx < source.len() {
-        if let Some((value, consumed)) = parse_quoted_string(source, idx) {
-            values.push(value);
-            idx += consumed;
-        } else {
-            idx += source[idx..].chars().next().map_or(1, char::len_utf8);
-        }
-    }
-
-    values
 }
 
 fn parse_literal_or_bare_value(source: &str, idx: &mut usize) -> Option<String> {
