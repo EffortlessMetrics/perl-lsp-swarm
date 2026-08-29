@@ -14,14 +14,31 @@ This file provides guidance to Claude Code when working with code in this reposi
 cargo build -p perl-corpus
 cargo test -p perl-corpus
 cargo test -p perl-corpus --features ci-fast
+cargo test -p perl-corpus --test root_path_authority
+cargo test -p perl-corpus --test distribution_contract
 cargo run -p perl-corpus -- --help
 
 # Generation is self-contained; always retain the seed.
 cargo run -p perl-corpus -- gen program --count 10 --seed 42
 
-cargo clippy -p perl-corpus
+cargo package -p perl-corpus --allow-dirty --list
+cargo clippy -p perl-corpus --all-targets -- -D warnings -A missing_docs
 cargo doc -p perl-corpus --open
 ```
+
+## Root authority
+
+`CorpusRoot` and `CorpusPaths` serve different contracts.
+
+- `CorpusRoot::resolve_authoritative(explicit)` selects explicit input, then `PERL_CORPUS_ROOT`, then returns `AuthoritativeRootRequired`.
+- Invalid explicit input fails immediately. It never falls through to a valid environment value or workspace discovery.
+- Strict roots must be absolute, directories, and free of symbolic-link or Windows reparse-point components.
+- A strict root retains a shared open `same_file::Handle`. The canonical path is diagnostic context; clones share the retained directory identity and do not reopen the path.
+- `CorpusRoot::require_repository_layout()` proves only the `test_corpus/` and `crates/perl-corpus/fuzz/` directory chains. It does not recurse, select extensions, inspect leaves, or redefine `CorpusTopology`.
+- `CorpusPaths::discover()` and `CorpusPaths::from_root()` remain unchecked compatibility APIs. Their raw mutable paths are never authority.
+- `CorpusPaths::try_from_root`, `try_discover`, and `resolve_authoritative` return immutable `ResolvedCorpusPaths`; `into_paths()` is an explicit authority downgrade.
+- Component-by-component selected-member opening must consume the retained root capability. Do not add another root-opening path.
+- The published package ships APIs and deliberately included crate assets. Repository corpus data remains an external root.
 
 ## Typed loading authority
 
@@ -46,6 +63,8 @@ cargo doc -p perl-corpus --open
 - `serde`, `serde_json` - Corpus index serialization
 - `regex` - Section delimiter and metadata parsing
 - `glob` - Legacy corpus file discovery pending topology migration
+- `same-file` - Cross-platform retained directory and opened-file identity
+- `toml` - Structured topology and package-contract parsing
 - `clap` - CLI argument parsing
 - `chrono` - Timestamps in coverage reports
 - `anyhow` - Error handling
@@ -54,7 +73,9 @@ cargo doc -p perl-corpus --open
 
 | Type/Module | Location | Purpose |
 |-------------|----------|---------|
-| `CorpusPaths` / `CorpusFile` / `CorpusLayer` | `files.rs` | Current compatibility discovery and layer classification |
+| `CorpusRoot` / `CorpusRootError` / `CorpusRootSource` | `api/root.rs` | Strict external root selection, retained directory identity, provenance, and typed failures |
+| `CorpusPaths` / `ResolvedCorpusPaths` | `files.rs` | Unchecked compatibility paths versus immutable paths bound to strict root authority |
+| `CorpusFile` / `CorpusLayer` | `files.rs` | Legacy layer classification |
 | `CorpusTopology` / `CorpusAsset` | `api/topology.rs` | Versioned root-relative topology identity for migrated asset populations |
 | `PlainPerlSource` / `SectionedCorpusDocument` / `CorpusLoadError` | `loading/typed.rs` | Explicit plain-versus-sectioned loading, opened-handle source authority, structured case identity, and typed failures |
 | `Section` | `meta.rs` | Parsed corpus section with id, title, tags, flags, body, line number |
@@ -70,7 +91,9 @@ cargo doc -p perl-corpus --open
 
 ### Public API
 
-- `CorpusPaths::discover` / `CorpusPaths::from_root` - unchecked compatibility discovery; explicit root authority remains #7705
+- `CorpusRoot::resolve_authoritative` / `CorpusRoot::explicit` / `CorpusRoot::try_discover` - strict typed root authority
+- `CorpusPaths::try_from_root` / `CorpusPaths::resolve_authoritative` - strict paths retaining their root authority
+- `CorpusPaths::discover` / `CorpusPaths::from_root` - unchecked compatibility discovery
 - `load_plain_perl_source` - strict UTF-8 ordinary source loading without delimiter interpretation
 - `load_sectioned_corpus_document` - strict section expansion with structured parent-plus-section IDs
 - `parse_file(path)` / `parse_dir(dir)` - legacy sectioned corpus compatibility APIs
@@ -82,12 +105,14 @@ cargo doc -p perl-corpus --open
 ## Important Notes
 
 - The `gen` module is accessed as `r#gen` in Rust source.
-- `PERL_CORPUS_ROOT` overrides corpus root discovery; validated root authority remains #7705.
+- Do not pass `CorpusPaths::discover()` where evidence authority is required.
 - Do not add current-working-directory fallback to load-bearing paths.
+- Do not reopen a root pathname when a retained `CorpusRoot` capability is available.
+- Do not recursively turn root validation into topology, population, member, or leaf policy.
 - Do not infer loader type from `.txt` alone.
 - Do not accept a partial section population because at least one section parsed.
 - Do not validate one path and reopen it for the load-bearing read; authority stays with one opened handle.
 - Do not treat legacy `Section.id` as global asset authority.
-- Do not package the complete repository corpus implicitly. A self-contained asset distribution would require a separate reviewed contract.
-- Required selected assets and directories must fail closed on absence, symbolic link, non-regular type, unreadable state, or escape.
+- Do not package the complete repository corpus implicitly. A self-contained asset distribution requires a separate reviewed contract.
+- Required selected assets and directories must fail closed on absence, symbolic link/reparse point, non-regular type, unreadable state, or escape under their owning layer.
 - Generated inputs used as evidence require an explicit seed and eventual registry/profile identity under #6708.
