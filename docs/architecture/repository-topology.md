@@ -29,8 +29,8 @@ is #7695.
 | `tree-sitter-perl-c` | `EffortlessMetrics/tree-sitter-perl-c` | `preparing` | `historical_comparison_subject` | `preserve_path_history` | #7378 | #7378 | #7378, #3111, #7255, #7256, #2428 |
 | `lsp-framework` | _undecided, #9661_ | `preparing` | `generic_lsp_framework` | `undecided` | #7384 | #7384 | #7384, #9661 |
 | `perl-parser` | `EffortlessMetrics/perl-parser` | `preparing` | `native_parser_workspace` | `preserve_path_history` | #7398 | #7398 | #7398, #7400, #2477, #7399 |
-| `perl-corpus` | `EffortlessMetrics/perl-corpus` | `preparing` | `corpus_assets` | `preserve_path_history` | #7405 | #7405 | #7405, #6980, #6696 |
-| `source-identity-lower` | _undecided, #7663_ | `embedded` | `lower_source_identity` | `undecided` | #7652 | #7663 | #7663 |
+| `perl-corpus` | `EffortlessMetrics/perl-corpus` | `preparing` | `corpus_assets` | `preserve_path_history` | #7405 | #7405 | #7405, #7406, #8841, #6980, #6696 |
+| `source-identity-lower` | _undecided, #7663_ | `preparing` | `lower_source_identity` | `undecided` | #7652 | #7663 | #7663 |
 
 ## Package ownership
 

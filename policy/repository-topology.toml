@@ -30,36 +30,42 @@ state = "embedded"
 description = "Source lives in this repository and no extraction work has started."
 legal_integration_modes = ["workspace_path"]
 allows_embedded_workspace_source = true
+requires_immutable_consumption = false
 
 [[migration_states]]
 state = "preparing"
 description = "Extraction is being prepared. Source remains a workspace member and may stay a workspace path while isolation proof is red."
 legal_integration_modes = ["workspace_path"]
 allows_embedded_workspace_source = true
+requires_immutable_consumption = false
 
 [[migration_states]]
 state = "extracting"
 description = "History and source are being transferred. A temporary exact Git bridge is permitted alongside the workspace path."
 legal_integration_modes = ["workspace_path", "exact_git_bridge"]
 allows_embedded_workspace_source = true
+requires_immutable_consumption = false
 
 [[migration_states]]
 state = "externalizing"
 description = "Source ownership has moved out. Consumption is an immutable exact Git bridge or a released version; the bridge requires an owner and exit condition."
 legal_integration_modes = ["exact_git_bridge", "released_registry"]
 allows_embedded_workspace_source = false
+requires_immutable_consumption = true
 
 [[migration_states]]
 state = "external"
 description = "The repository owns its source independently and is consumed as an immutable dependency. Embedded workspace source is not permitted."
 legal_integration_modes = ["released_registry", "exact_git_bridge"]
 allows_embedded_workspace_source = false
+requires_immutable_consumption = true
 
 [[migration_states]]
 state = "retired"
 description = "No longer consumed by this repository."
 legal_integration_modes = ["none", "repository_local_only"]
 allows_embedded_workspace_source = false
+requires_immutable_consumption = false
 
 # ---------------------------------------------------------------------------
 # Repositories.
@@ -113,7 +119,7 @@ target_decision_owner = "#9661"
 migration_state = "preparing"
 role = "generic_lsp_framework"
 allowed_dependencies = []
-forbidden_dependencies = ["swarm-product", "perl-parser", "perl-corpus"]
+forbidden_dependencies = ["swarm-product", "perl-parser", "perl-corpus", "source-identity-lower"]
 history_transfer = "undecided"
 controller = "#7384"
 move_issue = "#7384"
@@ -145,14 +151,14 @@ forbidden_dependencies = ["swarm-product", "perl-parser"]
 history_transfer = "preserve_path_history"
 controller = "#7405"
 move_issue = "#7405"
-blocking_prerequisites = ["#7405", "#6980", "#6696"]
+blocking_prerequisites = ["#7405", "#7406", "#8841", "#6980", "#6696"]
 authority_refs = ["#7369"]
 notes = "Reusable Perl corpus assets, schemas, generators, and tooling. Must not own production parser implementation; parser execution stays an adapter."
 
 [[repositories]]
 repository_id = "source-identity-lower"
 target_decision_owner = "#7663"
-migration_state = "embedded"
+migration_state = "preparing"
 role = "lower_source_identity"
 allowed_dependencies = []
 forbidden_dependencies = ["swarm-product", "perl-parser", "lsp-framework"]

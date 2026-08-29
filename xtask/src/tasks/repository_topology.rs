@@ -13,6 +13,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::fs;
 use std::path::Path;
+use std::process::Command;
 
 pub const TOPOLOGY_PATH: &str = "policy/repository-topology.toml";
 pub const PROJECTION_PATH: &str = "docs/architecture/repository-topology.md";
@@ -20,6 +21,8 @@ const SCHEMA: &str = "repository_topology.v1";
 
 /// Integration modes that make a dependency immutable for a consumer.
 const IMMUTABLE_MODES: &[&str] = &["exact_git_bridge", "released_registry"];
+/// The one mode that means "still compiled from source in this workspace".
+const WORKSPACE_PATH_MODE: &str = "workspace_path";
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -38,7 +41,14 @@ pub struct MigrationState {
     pub state: String,
     pub description: String,
     pub legal_integration_modes: Vec<String>,
+    /// Whether a package owned by a repository in this state is still compiled
+    /// from source in this workspace.
     pub allows_embedded_workspace_source: bool,
+    /// Whether consumption across this boundary must be immutable. This is
+    /// declared, not inferred from `allows_embedded_workspace_source`: `retired`
+    /// also has no embedded source but is consumed through nothing at all, so
+    /// inferring the requirement would make that state unsatisfiable.
+    pub requires_immutable_consumption: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -126,7 +136,8 @@ pub fn run(check: bool) -> Result<()> {
     let root = project_root()?;
     let topology = load(&root)?;
     let manifests = read_workspace_manifests(&root)?;
-    validate(&topology, &manifests)?;
+    let excludes = read_workspace_excludes(&root)?;
+    validate(&topology, &manifests, &excludes)?;
 
     let projection = render(&topology);
     let projection_path = root.join(PROJECTION_PATH);
@@ -180,7 +191,11 @@ fn is_issue_ref(value: &str) -> bool {
     let Some(digits) = value.strip_prefix('#') else {
         return false;
     };
-    !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit())
+    // Issue numbering starts at 1, and a leading zero would give one issue two
+    // spellings, so neither can resolve to a single real issue.
+    !digits.is_empty()
+        && !digits.starts_with('0')
+        && digits.bytes().all(|byte| byte.is_ascii_digit())
 }
 
 fn check_issue_ref(errors: &mut Vec<String>, subject: &str, field: &str, value: &str) {
@@ -190,7 +205,11 @@ fn check_issue_ref(errors: &mut Vec<String>, subject: &str, field: &str, value: 
     }
 }
 
-pub fn validate(topology: &Topology, manifests: &[ManifestPackage]) -> Result<()> {
+pub fn validate(
+    topology: &Topology,
+    manifests: &[ManifestPackage],
+    workspace_excludes: &BTreeSet<String>,
+) -> Result<()> {
     let mut errors = Vec::new();
 
     if topology.schema_version != SCHEMA {
@@ -223,6 +242,28 @@ pub fn validate(topology: &Topology, manifests: &[ManifestPackage]) -> Result<()
                     state.state
                 ));
             }
+        }
+        // A state must be satisfiable by at least one of its own declared modes.
+        // Without this, a state can silently become a trap that rejects every
+        // package assigned to it.
+        if !state.allows_embedded_workspace_source
+            && state.legal_integration_modes.iter().any(|mode| mode == WORKSPACE_PATH_MODE)
+        {
+            errors.push(format!(
+                "migration state {:?} forbids embedded source but lists {WORKSPACE_PATH_MODE:?} as legal",
+                state.state
+            ));
+        }
+        if state.requires_immutable_consumption
+            && let Some(mode) = state
+                .legal_integration_modes
+                .iter()
+                .find(|mode| !IMMUTABLE_MODES.contains(&mode.as_str()))
+        {
+            errors.push(format!(
+                "migration state {:?} requires immutable consumption but lists mutable mode {mode:?}",
+                state.state
+            ));
         }
     }
 
@@ -278,6 +319,14 @@ pub fn validate(topology: &Topology, manifests: &[ManifestPackage]) -> Result<()
             repo.allowed_dependencies.iter().map(String::as_str).collect();
         let forbidden: BTreeSet<&str> =
             repo.forbidden_dependencies.iter().map(String::as_str).collect();
+        // Collapsing into sets would otherwise hide a copy-paste duplicate that
+        // is masking a missing distinct target.
+        if allowed.len() != repo.allowed_dependencies.len() {
+            errors.push(format!("{subject}: allowed_dependencies contains a duplicate"));
+        }
+        if forbidden.len() != repo.forbidden_dependencies.len() {
+            errors.push(format!("{subject}: forbidden_dependencies contains a duplicate"));
+        }
         for edge in allowed.iter().chain(forbidden.iter()) {
             if !repository_ids.contains(edge) {
                 errors.push(format!("{subject}: unknown dependency target {edge:?}"));
@@ -357,7 +406,7 @@ pub fn validate(topology: &Topology, manifests: &[ManifestPackage]) -> Result<()
                 ));
             }
             if !state.allows_embedded_workspace_source
-                && package.current_integration_mode == "workspace_path"
+                && package.current_integration_mode == WORKSPACE_PATH_MODE
             {
                 errors.push(format!(
                     "{subject}: owner state {:?} forbids embedded workspace source",
@@ -365,7 +414,7 @@ pub fn validate(topology: &Topology, manifests: &[ManifestPackage]) -> Result<()
                 ));
             }
             // Anything consumed across a real repository boundary must be immutable.
-            if !state.allows_embedded_workspace_source
+            if state.requires_immutable_consumption
                 && !IMMUTABLE_MODES.contains(&package.current_integration_mode.as_str())
             {
                 errors.push(format!(
@@ -384,6 +433,13 @@ pub fn validate(topology: &Topology, manifests: &[ManifestPackage]) -> Result<()
             errors.push(format!("duplicate excluded tree {:?}", tree.path));
         }
         check_issue_ref(&mut errors, &subject, "owner", &tree.owner);
+        // The rows here are a curated subset of `[workspace] exclude`, but a row
+        // naming a tree the workspace no longer excludes is stale, not curated.
+        if !workspace_excludes.contains(&tree.path) {
+            errors.push(format!(
+                "{subject}: not listed in the root workspace `exclude`, so this row is stale"
+            ));
+        }
     }
 
     errors.extend(reconcile_with_manifests(topology, manifests));
@@ -403,6 +459,16 @@ pub fn validate(topology: &Topology, manifests: &[ManifestPackage]) -> Result<()
 /// package, no invented package, and no stale publish/metadata classification.
 fn reconcile_with_manifests(topology: &Topology, manifests: &[ManifestPackage]) -> Vec<String> {
     let mut errors = Vec::new();
+    let embedded_states: BTreeMap<&str, bool> = topology
+        .migration_states
+        .iter()
+        .map(|state| (state.state.as_str(), state.allows_embedded_workspace_source))
+        .collect();
+    let owner_states: BTreeMap<&str, &str> = topology
+        .repositories
+        .iter()
+        .map(|repo| (repo.repository_id.as_str(), repo.migration_state.as_str()))
+        .collect();
     let rows: BTreeMap<&str, &Package> =
         topology.packages.iter().map(|package| (package.name.as_str(), package)).collect();
     let actual: BTreeMap<&str, &ManifestPackage> =
@@ -433,66 +499,143 @@ fn reconcile_with_manifests(topology: &Topology, manifests: &[ManifestPackage]) 
                 row.metadata_authority
             ));
         }
+        if expects_embedded_source(row, &owner_states, &embedded_states) == Some(false) {
+            errors.push(format!(
+                "package {name:?}: owner {:?} has taken its source out, but it is still a root-workspace member",
+                row.current_owner
+            ));
+        }
     }
-    for name in rows.keys() {
-        if !actual.contains_key(name) {
-            errors.push(format!("repository-topology row {name:?} is not a root-workspace member"));
+    for (name, row) in &rows {
+        if actual.contains_key(name) {
+            continue;
+        }
+        // A legitimately external package is not a workspace member, and its row
+        // is the only surviving record of who owns it and how it is consumed.
+        if expects_embedded_source(row, &owner_states, &embedded_states) != Some(false) {
+            errors.push(format!(
+                "repository-topology row {name:?} is not a root-workspace member, and its owner {:?} still holds embedded source",
+                row.current_owner
+            ));
         }
     }
     errors
 }
 
+/// Whether this package's current owner still holds embedded workspace source.
+/// `None` when the owner or its migration state is unknown — both are reported
+/// separately, so membership is not judged on a broken reference.
+fn expects_embedded_source(
+    package: &Package,
+    owner_states: &BTreeMap<&str, &str>,
+    embedded_states: &BTreeMap<&str, bool>,
+) -> Option<bool> {
+    let state = owner_states.get(package.current_owner.as_str())?;
+    embedded_states.get(state).copied()
+}
+
 /// Read the root workspace members and classify each one from its own manifest.
 pub fn read_workspace_manifests(root: &Path) -> Result<Vec<ManifestPackage>> {
+    // Cargo, not the literal `members` array, is the authority on membership: a
+    // path dependency living under the workspace root becomes a member without
+    // ever being listed, and `members` may hold globs. Reading the array alone
+    // would under-report exactly the package that arrived unclassified.
     let manifest_path = root.join("Cargo.toml");
-    let text = fs::read_to_string(&manifest_path)
-        .wrap_err_with(|| format!("failed to read {}", manifest_path.display()))?;
-    let manifest: toml::Value = toml::from_str(&text)
-        .wrap_err_with(|| format!("failed to parse {}", manifest_path.display()))?;
-    let members = manifest
-        .get("workspace")
-        .and_then(|workspace| workspace.get("members"))
-        .and_then(toml::Value::as_array)
-        .ok_or_else(|| color_eyre::eyre::eyre!("root Cargo.toml has no [workspace] members"))?;
+    let output = Command::new("cargo")
+        .arg("metadata")
+        .arg("--format-version")
+        .arg("1")
+        .arg("--no-deps")
+        .arg("--manifest-path")
+        .arg(&manifest_path)
+        .output()
+        .wrap_err("failed to run `cargo metadata`")?;
+    if !output.status.success() {
+        bail!("cargo metadata failed:\n{}", String::from_utf8_lossy(&output.stderr));
+    }
+    let metadata: CargoMetadata =
+        serde_json::from_slice(&output.stdout).wrap_err("failed to parse cargo metadata")?;
+    let members: BTreeSet<&str> = metadata.workspace_members.iter().map(String::as_str).collect();
 
     let mut packages = Vec::new();
-    for member in members {
-        let Some(member) = member.as_str() else {
-            bail!("workspace member entries must be strings");
-        };
-        let member_manifest = root.join(member).join("Cargo.toml");
-        let member_text = fs::read_to_string(&member_manifest)
-            .wrap_err_with(|| format!("failed to read {}", member_manifest.display()))?;
-        let parsed: toml::Value = toml::from_str(&member_text)
-            .wrap_err_with(|| format!("failed to parse {}", member_manifest.display()))?;
-        let package = parsed
-            .get("package")
-            .ok_or_else(|| color_eyre::eyre::eyre!("{member} has no [package] table"))?;
-        let name = package
-            .get("name")
-            .and_then(toml::Value::as_str)
-            .ok_or_else(|| color_eyre::eyre::eyre!("{member} has no package name"))?;
-        // `publish = false` is the only way a member opts out of publication;
-        // any other shape (absent, `true`, a registry list) stays publishable.
-        let published = package.get("publish").and_then(toml::Value::as_bool) != Some(false);
-        let explicit_metadata = package.get("repository").and_then(toml::Value::as_str).is_some();
+    for package in &metadata.packages {
+        if !members.contains(package.id.as_str()) {
+            continue;
+        }
+        let dir = Path::new(&package.manifest_path)
+            .parent()
+            .ok_or_else(|| color_eyre::eyre::eyre!("{} has no parent", package.manifest_path))?;
+        let path = dir
+            .strip_prefix(root)
+            .map(|rel| rel.to_string_lossy().replace('\\', "/"))
+            .unwrap_or_else(|_| package.manifest_path.clone());
         packages.push(ManifestPackage {
-            name: name.to_string(),
-            path: member.to_string(),
-            publish_disposition: if published {
-                PublishDisposition::Published
-            } else {
-                PublishDisposition::PrivateWorkspaceMember
+            name: package.name.clone(),
+            path,
+            // Cargo resolves `publish` to `None` for publishable-anywhere and to
+            // an explicit list otherwise; `publish = false` becomes an empty list.
+            publish_disposition: match package.publish.as_deref() {
+                Some([]) => PublishDisposition::PrivateWorkspaceMember,
+                _ => PublishDisposition::Published,
             },
-            metadata_authority: if explicit_metadata {
-                MetadataAuthority::PackageExplicit
-            } else {
-                MetadataAuthority::WorkspaceInherited
-            },
+            metadata_authority: read_metadata_authority(dir)?,
         });
     }
     packages.sort_by(|left, right| left.name.cmp(&right.name));
     Ok(packages)
+}
+
+/// Whether the package sets `repository` itself or inherits the workspace value.
+///
+/// This reads the raw manifest on purpose: `cargo metadata` has already resolved
+/// `repository.workspace = true` into the inherited string, so the resolved view
+/// cannot tell an explicit override from an inherited default.
+fn read_metadata_authority(dir: &Path) -> Result<MetadataAuthority> {
+    let manifest_path = dir.join("Cargo.toml");
+    let text = fs::read_to_string(&manifest_path)
+        .wrap_err_with(|| format!("failed to read {}", manifest_path.display()))?;
+    let parsed: toml::Value = toml::from_str(&text)
+        .wrap_err_with(|| format!("failed to parse {}", manifest_path.display()))?;
+    let explicit = parsed
+        .get("package")
+        .and_then(|package| package.get("repository"))
+        .and_then(toml::Value::as_str)
+        .is_some();
+    Ok(if explicit {
+        MetadataAuthority::PackageExplicit
+    } else {
+        MetadataAuthority::WorkspaceInherited
+    })
+}
+
+/// The subset of `cargo metadata --no-deps` this check consumes.
+#[derive(Debug, Deserialize)]
+struct CargoMetadata {
+    packages: Vec<CargoPackage>,
+    workspace_members: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CargoPackage {
+    id: String,
+    name: String,
+    manifest_path: String,
+    publish: Option<Vec<String>>,
+}
+
+/// Directories the root workspace deliberately excludes.
+fn read_workspace_excludes(root: &Path) -> Result<BTreeSet<String>> {
+    let manifest_path = root.join("Cargo.toml");
+    let text = fs::read_to_string(&manifest_path)
+        .wrap_err_with(|| format!("failed to read {}", manifest_path.display()))?;
+    let parsed: toml::Value = toml::from_str(&text)
+        .wrap_err_with(|| format!("failed to parse {}", manifest_path.display()))?;
+    Ok(parsed
+        .get("workspace")
+        .and_then(|workspace| workspace.get("exclude"))
+        .and_then(toml::Value::as_array)
+        .map(|entries| entries.iter().filter_map(toml::Value::as_str).map(str::to_string).collect())
+        .unwrap_or_default())
 }
 
 fn placement_label(package: &Package) -> String {
@@ -654,12 +797,14 @@ state = "embedded"
 description = "Source lives here."
 legal_integration_modes = ["workspace_path"]
 allows_embedded_workspace_source = true
+requires_immutable_consumption = false
 
 [[migration_states]]
 state = "external"
 description = "Owned elsewhere."
 legal_integration_modes = ["released_registry"]
 allows_embedded_workspace_source = false
+requires_immutable_consumption = true
 
 [[repositories]]
 repository_id = "product"
@@ -733,9 +878,13 @@ metadata_authority = "workspace_inherited"
 
     /// Assert the topology is rejected for the stated reason, so a negative control
     /// cannot pass by failing for some unrelated reason.
+    fn excludes() -> BTreeSet<String> {
+        BTreeSet::new()
+    }
+
     fn expect_rejected(source: &str, needle: &str) -> TestResult {
         let topology = parse(source)?;
-        let error = match validate(&topology, &manifests()) {
+        let error = match validate(&topology, &manifests(), &excludes()) {
             Ok(()) => bail!("expected validation to reject: {needle}"),
             Err(error) => error.to_string(),
         };
@@ -750,7 +899,7 @@ metadata_authority = "workspace_inherited"
         actual: &[ManifestPackage],
         needle: &str,
     ) -> TestResult {
-        let error = match validate(topology, actual) {
+        let error = match validate(topology, actual, &excludes()) {
             Ok(()) => bail!("expected validation to reject: {needle}"),
             Err(error) => error.to_string(),
         };
@@ -763,7 +912,7 @@ metadata_authority = "workspace_inherited"
     #[test]
     fn accepts_the_fixture() -> TestResult {
         let topology = parse(&fixture())?;
-        validate(&topology, &manifests())?;
+        validate(&topology, &manifests(), &excludes())?;
         Ok(())
     }
 
@@ -909,6 +1058,130 @@ metadata_authority = "workspace_inherited"
         expect_rejected_against(&topology, &actual, "contradicts its manifest")
     }
 
+    /// Without this, deleting the whole path-reconciliation branch leaves the
+    /// suite green: real data never disagrees with itself.
+    #[test]
+    fn rejects_a_row_whose_path_is_not_the_member_path() -> TestResult {
+        let topology = parse(&fixture())?;
+        let mut actual = manifests();
+        actual[0].path = "crates/somewhere-else".into();
+        expect_rejected_against(&topology, &actual, "does not match workspace member path")
+    }
+
+    /// A package owned by a repository that has taken its source away must still
+    /// be representable — otherwise the external states can never hold anything.
+    #[test]
+    fn accepts_a_package_owned_by_an_external_repository() -> TestResult {
+        let source = fixture()
+            .replace(
+                "repository_id = \"library\"\ntarget = \"Org/library\"\nmigration_state = \"embedded\"",
+                "repository_id = \"library\"\ntarget = \"Org/library\"\nmigration_state = \"external\"",
+            )
+            .replace(
+                "name = \"alpha\"\npath = \"crates/alpha\"\ncurrent_owner = \"product\"",
+                "name = \"alpha\"\npath = \"crates/alpha\"\ncurrent_owner = \"library\"",
+            )
+            .replace(
+                "migration_owner = \"#3\"\npublish_disposition = \"published\"\ncurrent_integration_mode = \"workspace_path\"",
+                "migration_owner = \"#3\"\npublish_disposition = \"published\"\ncurrent_integration_mode = \"released_registry\"",
+            );
+        let topology = parse(&source)?;
+        // `alpha` has left the workspace, so only `beta` remains a member.
+        let actual = vec![manifests()[1].clone()];
+        validate(&topology, &actual, &excludes())?;
+        Ok(())
+    }
+
+    /// The other direction: externalized source must not still be in the workspace.
+    #[test]
+    fn rejects_an_externalized_package_still_in_the_workspace() -> TestResult {
+        let source = fixture()
+            .replace(
+                "repository_id = \"library\"\ntarget = \"Org/library\"\nmigration_state = \"embedded\"",
+                "repository_id = \"library\"\ntarget = \"Org/library\"\nmigration_state = \"external\"",
+            )
+            .replace(
+                "name = \"alpha\"\npath = \"crates/alpha\"\ncurrent_owner = \"product\"",
+                "name = \"alpha\"\npath = \"crates/alpha\"\ncurrent_owner = \"library\"",
+            )
+            .replace(
+                "migration_owner = \"#3\"\npublish_disposition = \"published\"\ncurrent_integration_mode = \"workspace_path\"",
+                "migration_owner = \"#3\"\npublish_disposition = \"published\"\ncurrent_integration_mode = \"released_registry\"",
+            );
+        // `alpha` is external but still a workspace member.
+        expect_rejected(&source, "still a root-workspace member")
+    }
+
+    /// `retired` declares no immutable modes; inferring the requirement from
+    /// "no embedded source" made it a state no package could ever satisfy.
+    #[test]
+    fn accepts_a_state_with_no_embedded_source_and_no_immutable_requirement() -> TestResult {
+        let source = fixture().replace(
+            "state = \"external\"\ndescription = \"Owned elsewhere.\"\nlegal_integration_modes = [\"released_registry\"]\nallows_embedded_workspace_source = false\nrequires_immutable_consumption = true",
+            "state = \"external\"\ndescription = \"No longer consumed.\"\nlegal_integration_modes = [\"none\"]\nallows_embedded_workspace_source = false\nrequires_immutable_consumption = false",
+        );
+        let topology = parse(&source)?;
+        validate(&topology, &manifests(), &excludes())?;
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_a_state_requiring_immutability_but_listing_a_mutable_mode() -> TestResult {
+        let source = fixture().replace(
+            "legal_integration_modes = [\"released_registry\"]\nallows_embedded_workspace_source = false\nrequires_immutable_consumption = true",
+            "legal_integration_modes = [\"released_registry\", \"none\"]\nallows_embedded_workspace_source = false\nrequires_immutable_consumption = true",
+        );
+        expect_rejected(&source, "lists mutable mode")
+    }
+
+    #[test]
+    fn rejects_a_state_forbidding_embedded_source_but_allowing_workspace_path() -> TestResult {
+        let source = fixture().replace(
+            "legal_integration_modes = [\"released_registry\"]\nallows_embedded_workspace_source = false",
+            "legal_integration_modes = [\"released_registry\", \"workspace_path\"]\nallows_embedded_workspace_source = false",
+        );
+        expect_rejected(&source, "forbids embedded source but lists")
+    }
+
+    #[test]
+    fn rejects_issue_zero_and_leading_zero_refs() {
+        assert!(!is_issue_ref("#0"), "#0 cannot resolve to a real issue");
+        assert!(!is_issue_ref("#007675"), "a leading zero gives one issue two spellings");
+        assert!(!is_issue_ref("#"), "a bare hash is not a reference");
+        assert!(!is_issue_ref("7675"), "a reference must carry its hash");
+        assert!(is_issue_ref("#7675"), "an ordinary reference must still pass");
+    }
+
+    #[test]
+    fn rejects_duplicate_dependency_entries() -> TestResult {
+        let source = fixture().replace(
+            "allowed_dependencies = [\"library\"]",
+            "allowed_dependencies = [\"library\", \"library\"]",
+        );
+        expect_rejected(&source, "allowed_dependencies contains a duplicate")
+    }
+
+    #[test]
+    fn rejects_an_excluded_tree_the_workspace_does_not_exclude() -> TestResult {
+        let source = format!(
+            "{}\n[[excluded_trees]]\npath = \"vendor\"\nkind = \"vendored_upstream_source\"\nowner = \"#9\"\nnotes = \"n\"\n",
+            fixture()
+        );
+        expect_rejected(&source, "this row is stale")
+    }
+
+    #[test]
+    fn accepts_an_excluded_tree_the_workspace_really_excludes() -> TestResult {
+        let source = format!(
+            "{}\n[[excluded_trees]]\npath = \"vendor\"\nkind = \"vendored_upstream_source\"\nowner = \"#9\"\nnotes = \"n\"\n",
+            fixture()
+        );
+        let topology = parse(&source)?;
+        let excludes = BTreeSet::from(["vendor".to_string()]);
+        validate(&topology, &manifests(), &excludes)?;
+        Ok(())
+    }
+
     #[test]
     fn rejects_unknown_fields() {
         let source = format!("{}\nunexpected_key = true\n", fixture());
@@ -922,7 +1195,29 @@ metadata_authority = "workspace_inherited"
         let root = project_root()?;
         let topology = load(&root)?;
         let manifests = read_workspace_manifests(&root)?;
-        validate(&topology, &manifests)?;
+        let excludes = read_workspace_excludes(&root)?;
+        validate(&topology, &manifests, &excludes)?;
+        Ok(())
+    }
+
+    /// Cargo, not the literal `members` array, decides membership. If this ever
+    /// disagrees, an implicit member could sit unclassified while the gate stays
+    /// green.
+    #[test]
+    fn workspace_membership_comes_from_cargo() -> TestResult {
+        let root = project_root()?;
+        let resolved = read_workspace_manifests(&root)?;
+        let text = fs::read_to_string(root.join("Cargo.toml"))?;
+        let parsed: toml::Value = toml::from_str(&text)?;
+        let literal = parsed
+            .get("workspace")
+            .and_then(|workspace| workspace.get("members"))
+            .and_then(toml::Value::as_array)
+            .map(Vec::len)
+            .unwrap_or_default();
+        if resolved.len() < literal {
+            bail!("cargo resolved {} members, fewer than the {literal} listed", resolved.len());
+        }
         Ok(())
     }
 
