@@ -68,6 +68,58 @@ fn pod_section_symbols(source: &str) -> Vec<Value> {
 }
 
 impl LspServer {
+    /// Canonical Dancer2 route/hook document symbols (#8928).
+    ///
+    /// Returns labeled `[Dancer2 route]` / `[Dancer2 hook]` entries anchored
+    /// to the source declaration. Under exact activation only; zero entries
+    /// otherwise. Byte spans are converted to LSP positions through the
+    /// document's canonical rope converter.
+    fn dancer2_document_symbol_values(
+        &self,
+        uri: &str,
+        snapshot: &crate::state::ParsedSnapshot,
+        text: &str,
+        ast: &perl_parser::ast::Node,
+    ) -> Vec<Value> {
+        use perl_lsp_rs_core::providers::dancer2::{
+            dancer2_document_symbols, dancer2_request_kind,
+        };
+
+        let context = self.dancer2_request_context(uri, text, snapshot.content_hash(), ast);
+        if !context.activations.has_exact() {
+            return Vec::new();
+        }
+        let symbols = dancer2_document_symbols(&context.facts);
+        let mut values = Vec::with_capacity(symbols.len());
+        for symbol in symbols {
+            let ((sl, sc), (el, ec)) = {
+                let documents = self.documents_guard();
+                self.get_document(&documents, uri)
+                    .map(|doc| {
+                        (
+                            self.offset_to_pos16(doc, usize::try_from(symbol.start).unwrap_or(0)),
+                            self.offset_to_pos16(doc, usize::try_from(symbol.end).unwrap_or(0)),
+                        )
+                    })
+                    .unwrap_or(((0, 0), (0, 0)))
+            };
+            values.push(json!({
+                "name": symbol.name,
+                "detail": symbol.detail,
+                "kind": dancer2_request_kind(symbol.is_route),
+                "range": {
+                    "start": { "line": sl, "character": sc },
+                    "end": { "line": el, "character": ec },
+                },
+                "selectionRange": {
+                    "start": { "line": sl, "character": sc },
+                    "end": { "line": el, "character": ec },
+                },
+            }));
+        }
+        values
+    }
+
     /// Cancellation-aware wrapper for `textDocument/documentSymbol`.
     ///
     /// Polls the cancellation token before the symbol-extraction pipeline
@@ -119,6 +171,26 @@ impl LspServer {
         if let Some(params) = params {
             let uri = req_uri(&params)?;
 
+            // Canonical Dancer2 route/hook symbols (#8928): labeled,
+            // source-anchored framework projections appended to the outline.
+            // Computed without holding the documents lock (module resolution
+            // inside the request context re-locks).
+            let dancer2_probe = {
+                let documents = self.documents_guard();
+                self.get_document(&documents, uri).and_then(|doc| {
+                    doc.current_parsed().and_then(|snapshot| {
+                        snapshot.ast().cloned().map(|ast| (snapshot, doc.text_arc.to_string(), ast))
+                    })
+                })
+            };
+            // Computed with the documents lock released: the request
+            // context re-enters module resolution, which locks documents.
+            let dancer2_symbols = dancer2_probe
+                .map(|(snapshot, text, ast)| {
+                    self.dancer2_document_symbol_values(uri, &snapshot, &text, &ast)
+                })
+                .unwrap_or_default();
+
             let documents = self.documents_guard();
             if let Some(doc) = self.get_document(&documents, uri) {
                 let parsed = doc.current_parsed();
@@ -131,24 +203,30 @@ impl LspServer {
                             ast,
                             &doc.text,
                         );
-                    let mut document_symbols = document_symbols_to_json(live_result.symbols);
 
-                    // Append Test2/Test::More subtest symbols so the outline shows
-                    // the subtest tree. Subtest calls only exist in test files, so
+                    // Merge Test2/Test::More subtests into their lexically
+                    // enclosing outline scopes (#1792): each subtest nests under
+                    // the innermost scope the parse proves instead of floating at
+                    // the top level. Subtest calls only exist in test files, so
                     // this is empty for ordinary source.
+                    let mut outline = live_result.symbols;
                     let subtests = perl_lsp_rs_core::providers::testing::subtest::discover_subtests(
                         ast, &doc.text,
                     );
                     if !subtests.is_empty() {
-                        let subtest_symbols =
-                            perl_lsp_rs_core::providers::testing::subtest::subtest_document_symbols(
-                                &subtests,
-                            );
-                        document_symbols.extend(document_symbols_to_json(subtest_symbols));
+                        perl_lsp_rs_core::providers::testing::subtest::nest_subtest_symbols_in_outline(
+                            &mut outline,
+                            &subtests,
+                            &doc.text,
+                        );
                     }
+                    let mut document_symbols = document_symbols_to_json(outline);
 
                     // Append POD section symbols from a direct line scan
                     document_symbols.extend(pod_section_symbols(&doc.text));
+
+                    // Canonical Dancer2 route/hook entries (#8928).
+                    document_symbols.extend(dancer2_symbols);
 
                     // Apply cap to document symbols
                     if document_symbols.len() > cap {

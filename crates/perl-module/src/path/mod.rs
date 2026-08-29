@@ -5,6 +5,8 @@
 
 use std::borrow::Cow;
 
+use crate::token_core::is_module_identifier_segment;
+
 /// Normalize legacy package separator `'` to canonical `::`.
 #[must_use]
 pub fn normalize_package_separator(module_name: &str) -> Cow<'_, str> {
@@ -21,7 +23,11 @@ pub fn module_name_to_path(module_name: &str) -> String {
 /// Returns true when `module_name` is safe to map to a relative `.pm` path for @INC probing.
 ///
 /// Rejects path-shaped input, traversal segments, sigils, and other values that must not
-/// reach filesystem existence checks.
+/// reach filesystem existence checks. Package segments use the lexer-compatible Unicode XID
+/// class, intentionally excluding the token parser's emoji and join-control extensions because
+/// those values are not safe filesystem lookup module names. XID continuations, including
+/// combining marks, remain accepted: for example, `Foo::Bar\u{0301}` is one lookup-safe name,
+/// not a partial `Foo::Bar` extraction.
 #[must_use]
 pub fn is_lookup_safe_module_name(module_name: &str) -> bool {
     if module_name.is_empty() {
@@ -35,12 +41,7 @@ pub fn is_lookup_safe_module_name(module_name: &str) -> bool {
     }
 
     let normalized = normalize_package_separator(module_name);
-    normalized.split("::").all(|part| {
-        !part.is_empty()
-            && part != ".."
-            && part.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
-            && part.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-    })
+    normalized.split("::").all(|part| part != ".." && is_module_identifier_segment(part))
 }
 
 /// Convert a module path/key into a module name.
