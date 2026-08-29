@@ -593,6 +593,26 @@ fn competing_quote_like_method_imports_invalidate_quickorm_authority()
 }
 
 #[test]
+fn dynamic_receiver_method_import_invalidates_quickorm_authority()
+-> Result<(), Box<dyn std::error::Error>> {
+    let source = r#"
+package User;
+use DBIx::QuickORM type => 'table';
+table "first" => sub {};
+my $dsl = Other::DSL;
+$dsl->import(qw(table));
+table "second" => sub {};
+1;
+"#;
+
+    assert!(
+        generated_facts_from_source(source)?.is_empty(),
+        "a parser-backed import through an unknown receiver must consume QuickORM authority"
+    );
+    Ok(())
+}
+
+#[test]
 fn double_quoted_static_table_name_emits_qorm_table() -> Result<(), Box<dyn std::error::Error>> {
     let facts = generated_facts_from_source(
         r#"
