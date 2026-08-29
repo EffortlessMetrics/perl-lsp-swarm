@@ -15,9 +15,11 @@
 //! candidate derived from a removed document instance is rejected by instance
 //! identity (`Arc::ptr_eq`), even when its numeric counter still matches.
 //!
-//! Lock order: sink lock → documents lock (brief, read-only inside
-//! validation). No path may acquire them in reverse order; publish paths take
-//! their snapshots under the documents lock and release it before committing.
+//! Lock order: sink lock → documents lock → config lock (each brief and
+//! read-only inside validation). No path may acquire them in reverse order;
+//! publish paths take their snapshots under the documents lock and release it
+//! before committing, and read configuration only in scoped blocks that end
+//! before the commit call.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -38,6 +40,27 @@ pub(crate) struct PushDiagnosticIdentity {
     pub(crate) normalized_uri: String,
     pub(crate) document_instance: Arc<AtomicU32>,
     pub(crate) generation: u32,
+    /// Accepted native critic policy the candidate's critic rows were produced
+    /// under (#13304), when the payload carries any. `None` means the payload
+    /// is policy-independent: a clear, a syntax-only or fast parse-error
+    /// publication, or a run that produced no publishable native rows.
+    pub(crate) accepted_critic_policy: Option<AcceptedCriticPolicy>,
+}
+
+/// Exact accepted critic policy identity behind one push candidate (#13304).
+///
+/// Document identity and generation say nothing about configuration: a
+/// `didChangeConfiguration` between analysis and the sink leaves both
+/// unchanged while the policy that produced the rows is dead. This value is
+/// what the sink re-checks against live configuration inside the same
+/// critical section that performs the irreversible enqueue.
+#[derive(Clone)]
+pub(crate) struct AcceptedCriticPolicy {
+    /// Owning root key the accepted state was derived for, exactly as passed
+    /// to the #8253 authority at snapshot time.
+    pub(crate) owning_root: Option<String>,
+    /// Fingerprint of the accepted state the published rows came from.
+    pub(crate) fingerprint: String,
 }
 
 impl PushDiagnosticIdentity {
@@ -50,7 +73,20 @@ impl PushDiagnosticIdentity {
             normalized_uri: normalized_uri.to_string(),
             document_instance: Arc::clone(document_instance),
             generation,
+            accepted_critic_policy: None,
         }
+    }
+
+    /// Bind the accepted critic policy the candidate's critic rows were
+    /// produced under, so the sink can reject a publication whose policy moved
+    /// after analysis (#13304).
+    #[must_use]
+    pub(crate) fn with_accepted_critic_policy(
+        mut self,
+        policy: Option<AcceptedCriticPolicy>,
+    ) -> Self {
+        self.accepted_critic_policy = policy;
+        self
     }
 }
 
@@ -82,6 +118,11 @@ pub(crate) enum PushDiagnosticsCommitOutcome {
     /// this candidate reached the boundary (or after an earlier commit in the
     /// ledger).
     RejectedSupersededGeneration,
+    /// Document identity and generation are current, but the accepted critic
+    /// policy the candidate's rows were produced under is no longer live
+    /// configuration (#13304). Publishing would present dead-policy rows as
+    /// the current answer.
+    RejectedSupersededCriticPolicy,
     /// Validation passed but the outbound transport rejected the frame; the
     /// ledger entry is rolled back so receipt truth reflects the client.
     OutboundFailure,
@@ -141,12 +182,30 @@ impl LspServer {
                 PushDiagnosticsCommitOutcome::RejectedSupersededGeneration
             }
             Some((true, _)) => {
-                return self.enqueue_committed_push_diagnostic(
-                    &mut committed,
-                    identity,
-                    payload,
-                    disposition,
-                );
+                // 2b. Accepted critic policy currency, re-checked inside this
+                // same critical section (#13304). Document identity and
+                // generation cannot observe configuration movement, so without
+                // this a `didChangeConfiguration` landing between analysis and
+                // the sink publishes dead-policy rows as current. The config
+                // lock is taken briefly and read-only, and released before the
+                // enqueue below.
+                let policy_current =
+                    identity.accepted_critic_policy.as_ref().is_none_or(|policy| {
+                        self.config
+                            .lock()
+                            .effective_critic_state(policy.owning_root.as_deref())
+                            .fingerprint()
+                            == policy.fingerprint
+                    });
+                if policy_current {
+                    return self.enqueue_committed_push_diagnostic(
+                        &mut committed,
+                        identity,
+                        payload,
+                        disposition,
+                    );
+                }
+                PushDiagnosticsCommitOutcome::RejectedSupersededCriticPolicy
             }
         };
 

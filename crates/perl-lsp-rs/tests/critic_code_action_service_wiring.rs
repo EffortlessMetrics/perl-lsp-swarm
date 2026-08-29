@@ -39,11 +39,7 @@ fn code_action_source() -> Result<String, Box<dyn Error>> {
 }
 
 fn require(condition: bool, message: impl Into<String>) -> Result<(), Box<dyn Error>> {
-    if condition {
-        Ok(())
-    } else {
-        Err(io::Error::other(message.into()).into())
-    }
+    if condition { Ok(()) } else { Err(io::Error::other(message.into()).into()) }
 }
 
 #[test]

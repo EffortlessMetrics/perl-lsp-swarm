@@ -14,11 +14,6 @@
 //! findings, or flattening metadata differently — turns this red instead of
 //! silently reintroducing the split the issue closed.
 
-#![expect(
-    clippy::panic,
-    reason = "test-only barrier failure is a hard test error, not a production path"
-)]
-
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -54,18 +49,21 @@ const ALLOWED_SITES: [(&str, &str); 4] = [
     ),
 ];
 
-fn collect_rust_sources(dir: &Path, out: &mut Vec<PathBuf>) {
-    let entries = fs::read_dir(dir).unwrap_or_else(|error| {
-        panic!("source directory {} must be readable: {error}", dir.display())
-    });
+/// Walk `dir` for Rust sources, reporting the exact unreadable path instead of
+/// unwinding. An instrument failure must stay distinguishable from an ownership
+/// violation, so it surfaces as a contextual error rather than a bare panic.
+fn collect_rust_sources(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
+    let entries = fs::read_dir(dir)
+        .map_err(|error| format!("source directory {} must be readable: {error}", dir.display()))?;
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
-            collect_rust_sources(&path, out);
+            collect_rust_sources(&path, out)?;
         } else if path.extension().is_some_and(|extension| extension == "rs") {
             out.push(path);
         }
     }
+    Ok(())
 }
 
 /// Strip each `#[cfg(test)]`-gated item so inline test modules do not count
@@ -378,21 +376,21 @@ fn raw_strings_comments_and_char_literals_do_not_skew_the_strip_span() {
 }
 
 #[test]
-fn the_native_critic_pipeline_is_composed_only_by_its_service() {
+fn the_native_critic_pipeline_is_composed_only_by_its_service() -> Result<(), String> {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let mut sources = Vec::new();
     let base = Path::new(manifest_dir);
-    let crates_dir = match base.parent() {
-        Some(parent) => parent.to_path_buf(),
-        None => panic!("manifest dir {manifest_dir} must have a parent"),
-    };
+    let crates_dir = base
+        .parent()
+        .ok_or_else(|| format!("manifest dir {manifest_dir} must have a parent"))?
+        .to_path_buf();
     for crate_src in [base.join("src"), crates_dir.join("perl-lsp-rs").join("src")] {
         assert!(
             crate_src.is_dir(),
             "owning package source tree {} must exist",
             crate_src.display()
         );
-        collect_rust_sources(&crate_src, &mut sources);
+        collect_rust_sources(&crate_src, &mut sources)?;
     }
     assert!(
         sources.len() > 100,
@@ -431,9 +429,9 @@ fn the_native_critic_pipeline_is_composed_only_by_its_service() {
         };
         let relative = relative_path.to_string_lossy().replace('\\', "/");
 
-        let source = fs::read_to_string(path).unwrap_or_else(|error| {
-            panic!("production source {} must be readable: {error}", path.display())
-        });
+        let source = fs::read_to_string(path).map_err(|error| {
+            format!("production source {} must be readable: {error}", path.display())
+        })?;
         let production = production_portion(&source);
         for token in SERVICE_ONLY_COMPOSITION {
             if production.contains(token) {
@@ -459,4 +457,5 @@ fn the_native_critic_pipeline_is_composed_only_by_its_service() {
         "native critic composition ownership violated:\n{}",
         violations.join("\n")
     );
+    Ok(())
 }

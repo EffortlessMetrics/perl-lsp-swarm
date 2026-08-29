@@ -49,6 +49,53 @@ use super::{
 /// (fail-closed, full-report-without-ID).
 const PROVIDER_DEFAULT_ROOT_AUTHORITY: &str = "perl-lsp:pull-provider-default-root";
 
+/// Live currentness predicate for the accepted critic state behind one pull
+/// report (#9062/#13304).
+///
+/// `PullDiagnosticsContext` carries an immutable `EffectiveCriticState`
+/// snapshot taken when the report subject was composed. Rule evaluation and
+/// report composition both happen after that snapshot, so configuration can
+/// move underneath a run in flight. This predicate is the transport's live
+/// authority: production wires it to the same fingerprint comparison the push
+/// path uses, and it is consulted twice — inside the native critic service at
+/// its settlement barrier, and again at the report boundary before a reusable
+/// result ID may be minted.
+///
+/// The default is `always_current`, which is honest only where no live
+/// configuration exists to move: default and test contexts.
+#[derive(Clone)]
+pub struct AcceptedStateCurrentness(Option<std::sync::Arc<dyn Fn() -> bool + Send + Sync>>);
+
+impl AcceptedStateCurrentness {
+    /// A predicate for contexts with no live configuration authority behind
+    /// them; the snapshot cannot go stale because nothing can move it.
+    #[must_use]
+    pub fn always_current() -> Self {
+        Self(None)
+    }
+
+    /// Bind one caller-owned liveness predicate. `true` means the accepted
+    /// state behind this context still equals live configuration.
+    #[must_use]
+    pub fn new(check: std::sync::Arc<dyn Fn() -> bool + Send + Sync>) -> Self {
+        Self(Some(check))
+    }
+
+    /// Whether the accepted state behind this context is still current.
+    #[must_use]
+    pub fn holds(&self) -> bool {
+        self.0.as_ref().is_none_or(|check| check())
+    }
+}
+
+impl std::fmt::Debug for AcceptedStateCurrentness {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("AcceptedStateCurrentness")
+            .field(&if self.0.is_some() { "live" } else { "always-current" })
+            .finish()
+    }
+}
+
 /// Context for pull diagnostics operations.
 ///
 /// Contains all configuration and state needed to compute diagnostics
@@ -93,6 +140,12 @@ pub struct PullDiagnosticsContext {
     /// native critic service consults; the raw sibling fields above remain
     /// solely for the pre-migration legacy engine path and report identity.
     pub accepted_critic_state: perl_lsp_rs_core::config::EffectiveCriticState,
+    /// Live currentness authority for [`Self::accepted_critic_state`]
+    /// (#9062/#13304). Consulted at the native critic service's settlement
+    /// barrier and again at the report boundary, so configuration movement
+    /// under an in-flight run can neither publish stale native rows nor mint a
+    /// reusable result ID for a report that dropped them.
+    pub accepted_state_currentness: AcceptedStateCurrentness,
     /// Behavior-bearing negotiated wire-projection state (#7480).
     pub projection: DiagnosticProjectionFragment,
 }
@@ -135,6 +188,7 @@ impl PullDiagnosticsContext {
                 3,
                 Some(PROVIDER_DEFAULT_ROOT_AUTHORITY),
             ),
+            accepted_state_currentness: AcceptedStateCurrentness::always_current(),
             projection: DiagnosticProjectionFragment {
                 position_encoding: PullPositionEncoding::Utf16,
                 markup_messages: false,
@@ -165,6 +219,7 @@ impl PullDiagnosticsContext {
                 severity,
                 Some(PROVIDER_DEFAULT_ROOT_AUTHORITY),
             ),
+            accepted_state_currentness: AcceptedStateCurrentness::always_current(),
             projection: DiagnosticProjectionFragment {
                 position_encoding: PullPositionEncoding::Utf16,
                 markup_messages: false,
@@ -197,6 +252,7 @@ impl PullDiagnosticsContext {
                 3,
                 Some(PROVIDER_DEFAULT_ROOT_AUTHORITY),
             ),
+            accepted_state_currentness: AcceptedStateCurrentness::always_current(),
             projection: DiagnosticProjectionFragment {
                 position_encoding: PullPositionEncoding::Utf16,
                 markup_messages: false,
@@ -222,6 +278,7 @@ impl std::fmt::Debug for PullDiagnosticsContext {
             .field("identity_root_key", &self.identity_root_key)
             .field("facts_generation", &self.facts_generation)
             .field("accepted_critic_state_fingerprint", &self.accepted_critic_state.fingerprint())
+            .field("accepted_state_currentness", &self.accepted_state_currentness)
             .field("projection", &self.projection)
             .field("workspace_index", &"<WorkspaceIndex>")
             .finish()
@@ -272,12 +329,17 @@ impl PullDiagnosticsProvider {
         context: &PullDiagnosticsContext,
         doc_state: Option<&DocumentState>,
     ) -> DocumentDiagnosticReport {
+        // The report subject encodes the accepted critic policy snapshotted
+        // when this context was built. If configuration has already moved, the
+        // composed identity describes a policy that is no longer live: it must
+        // neither answer `Unchanged` nor be handed back as reusable (#13304).
+        let accepted_state_current = context.accepted_state_currentness.holds();
         let result_id = compose_report_identity(
             &uri.to_string(),
             content,
             doc_state.map(DocumentState::current_generation).map(u64::from),
             context,
-            true,
+            accepted_state_current,
         );
 
         // `Unchanged` only for a prior ID that parses under the current schema
@@ -292,7 +354,12 @@ impl PullDiagnosticsProvider {
 
         let diagnostics =
             self.collect_diagnostics_for_text_with_context(uri, content, context, doc_state);
-        self.build_full_report(result_id, diagnostics)
+        // Revalidate at the result boundary: policy may have moved while rules
+        // evaluated. The native run itself settles `Stale` and contributes no
+        // rows, so this report is complete only for the core tier — it must not
+        // be cacheable as the current answer for the snapshotted policy.
+        let reusable_id = context.accepted_state_currentness.holds().then_some(result_id).flatten();
+        self.build_full_report(reusable_id, diagnostics)
     }
 
     /// Handle workspace/diagnostic request.
@@ -322,7 +389,12 @@ impl PullDiagnosticsProvider {
             // A pending-parse gap (#3396 PR4) is an explicit not-ready subject:
             // the report stays full but never carries a reusable ID, so it can
             // never be echoed back as `Unchanged` (#7480).
-            let ready = doc_state.current_parsed().is_some();
+            //
+            // Accepted critic policy that has already moved is the same kind of
+            // not-ready subject: the composed identity would describe a dead
+            // policy (#13304).
+            let ready =
+                doc_state.current_parsed().is_some() && context.accepted_state_currentness.holds();
             let result_id = compose_report_identity(
                 uri_str,
                 &doc_state.text,
@@ -340,9 +412,13 @@ impl PullDiagnosticsProvider {
                 None => {
                     // Without readiness the composed identity is suppressed so
                     // the not-ready subject cannot be cached client-side.
-                    let reusable_id = ready.then_some(result_id).flatten();
                     let diagnostics =
                         self.collect_diagnostics_for_state_with_context(&uri, doc_state, context);
+                    // Revalidated after collection for the same reason as the
+                    // single-document path (#13304).
+                    let reusable_id = (ready && context.accepted_state_currentness.holds())
+                        .then_some(result_id)
+                        .flatten();
                     self.build_full_report(reusable_id, diagnostics)
                 }
             };
@@ -369,11 +445,20 @@ impl PullDiagnosticsProvider {
                 let uri = parse_uri(uri_str);
                 // Partial workspace progress items use the same per-document
                 // identity authority as document and full workspace reports.
-                let result_id = compose_report_identity(uri_str, content, None, context, true);
+                let result_id = compose_report_identity(
+                    uri_str,
+                    content,
+                    None,
+                    context,
+                    context.accepted_state_currentness.holds(),
+                );
                 // For partial results, we need to parse the content
                 let diagnostics =
                     self.collect_diagnostics_for_text_with_context(&uri, content, context, None);
-                let report = self.build_full_report(result_id, diagnostics);
+                // Revalidated after collection (#13304).
+                let reusable_id =
+                    context.accepted_state_currentness.holds().then_some(result_id).flatten();
+                let report = self.build_full_report(reusable_id, diagnostics);
 
                 items.push(self.to_workspace_report(uri, None, report));
             }
@@ -744,6 +829,12 @@ impl PullDiagnosticsProvider {
         // so an unpublishable run retains every independent core row.
         let overlap_observations = critic_overlap_observations(core_diagnostics);
 
+        // The accepted state was snapshotted when the report subject was
+        // composed; configuration can move while rules evaluate. The service
+        // re-checks this gate at its settlement barrier, so a run whose policy
+        // moved underneath it settles `Stale` and publishes nothing (#13304).
+        let accepted_state_is_current = || context.accepted_state_currentness.holds();
+
         let run = NativeCriticService::analyze(NativeCriticSubject::accepted(
             &uri.to_string(),
             source_identity,
@@ -752,7 +843,7 @@ impl PullDiagnosticsProvider {
             context.accepted_critic_state.clone(),
             overlap_observations,
             RunGate::open(),
-            RunGate::open(),
+            RunGate::new(&accepted_state_is_current),
         ));
 
         if !run.is_publishable() {

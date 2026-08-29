@@ -19,11 +19,6 @@
 //! site cuts over to the service, its obligations move with it into the
 //! service-ownership gates below.
 
-#![expect(
-    clippy::panic,
-    reason = "test-only barrier failure is a hard test error, not a production path"
-)]
-
 use std::fs;
 use std::path::Path;
 
@@ -61,29 +56,31 @@ const NATIVE_CONSUMER_SOURCES: [&str; 4] = [
     "execute_command/provider.rs",
 ];
 
-fn production_source(rel_path: &str) -> String {
+/// Read one production source file of this crate.
+///
+/// An unreadable instrument is reported as a contextual error, not a panic:
+/// the workspace denies `clippy::panic` in tests as well as production, and an
+/// instrument failure must stay distinguishable from a wiring violation.
+fn production_source(rel_path: &str) -> Result<String, String> {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     let path = manifest_dir.join("src").join(rel_path);
-    fs::read_to_string(&path).unwrap_or_else(|error| {
-        panic!("production source {} must be readable: {error}", path.display())
-    })
+    fs::read_to_string(&path)
+        .map_err(|error| format!("production source {} must be readable: {error}", path.display()))
 }
 
-fn core_service_source() -> String {
+fn core_service_source() -> Result<String, String> {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     let path = manifest_dir.join(SERVICE_SOURCE_REL);
-    fs::read_to_string(&path).unwrap_or_else(|error| {
-        panic!("service source {} must be readable: {error}", path.display())
-    })
+    fs::read_to_string(&path)
+        .map_err(|error| format!("service source {} must be readable: {error}", path.display()))
 }
 
 /// Read one production source file of the `perl-lsp-rs-core` workspace crate.
-fn core_source(rel_path: &str) -> String {
+fn core_source(rel_path: &str) -> Result<String, String> {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     let path = manifest_dir.join("..").join("perl-lsp-rs-core").join("src").join(rel_path);
-    fs::read_to_string(&path).unwrap_or_else(|error| {
-        panic!("production source {} must be readable: {error}", path.display())
-    })
+    fs::read_to_string(&path)
+        .map_err(|error| format!("production source {} must be readable: {error}", path.display()))
 }
 
 /// The reviewed built-in overlap cohort (#11915/#11918): exactly these seven
@@ -100,8 +97,9 @@ const BUILT_IN_IDENTITY_CONSTRUCTORS: [&str; 7] = [
 ];
 
 #[test]
-fn built_in_identity_constructors_admit_exactly_the_reviewed_overlap_cohort() {
-    let source = core_source("tooling/perl_critic/identity.rs");
+fn built_in_identity_constructors_admit_exactly_the_reviewed_overlap_cohort() -> Result<(), String>
+{
+    let source = core_source("tooling/perl_critic/identity.rs")?;
     let mut declared_constructors: Vec<String> = source
         .lines()
         .filter_map(|line| {
@@ -136,49 +134,53 @@ fn built_in_identity_constructors_admit_exactly_the_reviewed_overlap_cohort() {
         declared_constructors, expected,
         "a new built-in identity constructor must be consciously admitted into the reviewed overlap cohort list"
     );
+    Ok(())
 }
 
 #[test]
-fn both_transports_route_native_evaluation_through_the_service() {
+fn both_transports_route_native_evaluation_through_the_service() -> Result<(), String> {
     for rel_path in MIGRATED_TRANSPORTS {
-        let source = production_source(rel_path);
+        let source = production_source(rel_path)?;
         assert!(
             source.contains(SERVICE_ENTRYPOINT),
             "{rel_path} must route native critic evaluation through NativeCriticService (#9062)"
         );
     }
+    Ok(())
 }
 
 #[test]
-fn direct_native_consumers_account_for_rejected_producer_identities() {
+fn direct_native_consumers_account_for_rejected_producer_identities() -> Result<(), String> {
     // #7475/#11919: sites still collecting raw candidates directly must use
     // the accounting entrypoint. Service-routed surfaces carry the identical
     // guarantee inside the shared service via
     // `rejected_producer_identities_stay_accounted_inside_the_service`.
     for rel_path in DIRECT_NATIVE_CONSUMER_SOURCES {
-        let source = production_source(rel_path);
+        let source = production_source(rel_path)?;
         assert!(
             source.contains(ACCOUNTING_ENTRYPOINT),
             "{rel_path} must route native candidates through the accounting entrypoint \
              (#7475, #11919)"
         );
     }
+    Ok(())
 }
 
 #[test]
-fn no_production_site_uses_the_unaccounted_candidate_entrypoint() {
+fn no_production_site_uses_the_unaccounted_candidate_entrypoint() -> Result<(), String> {
     for rel_path in NATIVE_CONSUMER_SOURCES {
-        let source = production_source(rel_path);
+        let source = production_source(rel_path)?;
         assert!(
             !source.contains(UNACCOUNTED_ENTRYPOINT),
             "{rel_path} must not collect native candidates outside an accounted seam (#7475)"
         );
     }
+    Ok(())
 }
 
 #[test]
-fn the_service_owns_candidate_collection_and_policy_composition() {
-    let service = core_service_source();
+fn the_service_owns_candidate_collection_and_policy_composition() -> Result<(), String> {
+    let service = core_service_source()?;
     assert!(
         service.contains(SERVICE_ENTRYPOINT),
         "NativeCriticService must expose the analyze seam (#9062)"
@@ -189,10 +191,11 @@ fn the_service_owns_candidate_collection_and_policy_composition() {
             "the service must compose through the settled {composition} seam"
         );
     }
+    Ok(())
 }
 
 #[test]
-fn every_direct_native_consumer_applies_the_post_merge_normalized_policy() {
+fn every_direct_native_consumer_applies_the_post_merge_normalized_policy() -> Result<(), String> {
     // #11919: a consumer that filters raw findings by rule ID before (or
     // instead of) the post-merge policy can leave a second registered spelling
     // active after an alias-aware exclusion or suppression — exactly the
@@ -201,19 +204,20 @@ fn every_direct_native_consumer_applies_the_post_merge_normalized_policy() {
     // the identical guarantee from
     // `the_service_owns_candidate_collection_and_policy_composition`.
     for rel_path in DIRECT_NATIVE_CONSUMER_SOURCES {
-        let source = production_source(rel_path);
+        let source = production_source(rel_path)?;
         assert!(
             source.contains(POST_MERGE_POLICY_ENTRYPOINT),
             "{rel_path} must apply the shared post-merge policy so alias exclusion/suppression \
              cannot leave a second spelling active (#7475 bullet 7, #11919)"
         );
     }
+    Ok(())
 }
 
 #[test]
-fn no_migrated_transport_composes_its_own_native_pipeline() {
+fn no_migrated_transport_composes_its_own_native_pipeline() -> Result<(), String> {
     for rel_path in MIGRATED_TRANSPORTS {
-        let source = production_source(rel_path);
+        let source = production_source(rel_path)?;
         for composition in SERVICE_ONLY_COMPOSITION {
             assert!(
                 !source.contains(composition),
@@ -221,35 +225,37 @@ fn no_migrated_transport_composes_its_own_native_pipeline() {
             );
         }
     }
+    Ok(())
 }
 
 #[test]
-fn rejected_producer_identities_stay_accounted_inside_the_service() {
+fn rejected_producer_identities_stay_accounted_inside_the_service() -> Result<(), String> {
     // #7475: findings without a registered producer disposition are logged and
     // counted, never silently dropped. After the #9062 cutover this accounting
     // lives exactly once, inside the service every transport shares.
-    let service = core_service_source();
+    let service = core_service_source()?;
     assert!(
         service.contains("account_unresolved_native_identities("),
         "the service must account rejected producer identities (#7475)"
     );
     let unguarded = "native_finding_candidates((";
     assert!(
-        !production_source(MIGRATED_TRANSPORTS[0]).contains(unguarded)
-            && !production_source(MIGRATED_TRANSPORTS[1]).contains(unguarded),
+        !production_source(MIGRATED_TRANSPORTS[0])?.contains(unguarded)
+            && !production_source(MIGRATED_TRANSPORTS[1])?.contains(unguarded),
         "no migrated transport may collect candidates outside the accounted seam"
     );
+    Ok(())
 }
 
 #[test]
-fn both_transports_feed_built_in_overlap_observations_into_the_service() {
+fn both_transports_feed_built_in_overlap_observations_into_the_service() -> Result<(), String> {
     // #11918/#9062: the reviewed core-overlap producers reach canonical
     // normalization only if each transport extracts emitter-owned
     // observations from its core rows and hands them to the service subject.
     // A transport that stops consuming them reverts to duplicate or unmerged
     // rows end-to-end.
     for rel_path in MIGRATED_TRANSPORTS {
-        let source = production_source(rel_path);
+        let source = production_source(rel_path)?;
         assert!(
             source.contains("take_critic_overlap_observations("),
             "{rel_path} must consume emitter-declared overlap observations (#11918)"
@@ -259,32 +265,34 @@ fn both_transports_feed_built_in_overlap_observations_into_the_service() {
             "{rel_path} must pass overlap observations into the service subject (#9062)"
         );
     }
+    Ok(())
 }
 
 #[test]
-fn superseded_runs_cannot_populate_current_result_storage() {
+fn superseded_runs_cannot_populate_current_result_storage() -> Result<(), String> {
     // #9062 publication boundary: every migrated transport must consult the
     // run's publishability before projecting rows, so late/stale work can
     // never surface as current.
     for rel_path in MIGRATED_TRANSPORTS {
-        let source = production_source(rel_path);
+        let source = production_source(rel_path)?;
         assert!(
             source.contains("is_publishable()"),
             "{rel_path} must check run publishability before publishing (#9062)"
         );
     }
+    Ok(())
 }
 
 #[test]
-fn transport_coincidence_dedup_stays_retired_for_upstream_merged_aliases() {
+fn transport_coincidence_dedup_stays_retired_for_upstream_merged_aliases() -> Result<(), String> {
     // #11918: duplicate prevention for the reviewed core/native alias pairs
     // moved upstream into the normalized seam. The transport-level #5088 XOR
     // dedup must keep exempting exactly those pairs; restoring the collapse
     // here would silently mask a merge regression as "no duplicates".
-    let source = production_source("runtime/diagnostics.rs");
+    let source = production_source("runtime/diagnostics.rs")?;
     let dedup_start = source
         .find("fn dedup_overlapping_diagnostics")
-        .unwrap_or_else(|| panic!("transport dedup must remain defined for non-migrated pairs"));
+        .ok_or("transport dedup must remain defined for non-migrated pairs")?;
     let dedup_body = &source[dedup_start..dedup_start + 2000];
     assert!(
         dedup_body.contains("is_upstream_merged_alias_pair("),
@@ -307,4 +315,5 @@ fn transport_coincidence_dedup_stays_retired_for_upstream_merged_aliases() {
     ] {
         assert!(source.contains(retired), "the exemption must keep covering {retired} (#11918)");
     }
+    Ok(())
 }

@@ -10,6 +10,28 @@ use super::super::{
     TestGenerator, Value, json,
 };
 
+/// One immutable accepted subject for a native critic code-action run (#9062).
+///
+/// `handle_code_action` fills this under the runtime document guard and then
+/// releases that guard before any rule evaluates. Everything the run and its
+/// projection need travels in the value — including the rope and line index the
+/// captured offsets are expressed in — so finding ranges are mapped against the
+/// exact text that was analyzed rather than against whatever the live document
+/// has become.
+struct NativeCriticActionSubject {
+    ast: std::sync::Arc<perl_parser::ast::Node>,
+    text: std::sync::Arc<str>,
+    /// Accepted document generation, revalidated after analysis.
+    generation: u32,
+    rope: ropey::Rope,
+    line_starts: perl_position_tracking::LineStartsCache,
+    accepted_state: perl_lsp_rs_core::config::EffectiveCriticState,
+    root_key: Option<String>,
+    /// Producer-declared core overlap observations (#11918) over this exact
+    /// generation — the same set push and pull hand the service.
+    overlap_observations: Vec<perl_lsp_rs_core::tooling::perl_critic::BuiltInCriticObservation>,
+}
+
 /// Serialize a slice of typed values to a JSON array (#4995).
 fn to_json_array<T: serde::Serialize>(values: &[T]) -> Value {
     serde_json::to_value(values).unwrap_or(Value::Array(Vec::new()))
@@ -602,112 +624,35 @@ impl LspServer {
                 let cfg = self.config.lock();
                 (cfg.critic_engine, cfg.effective_critic_state(root_key.as_deref()))
             };
+            // The last live-document read the rest of this branch needs, hoisted
+            // so the guard can be released before the native critic run.
+            let doc_version = doc.version;
+
+            // #9062: the native run must observe an immutable accepted subject
+            // with NO document lock held. Capture everything it needs here —
+            // AST, exact source, accepted generation, the position index those
+            // offsets are expressed in, and the producer-declared overlap
+            // observations from the SAME collected diagnostic set push and pull
+            // feed the service — then evaluate after the guard is released
+            // further down. `native_insert_at` holds this arm's position in the
+            // emitted action order so the deferred run splices back in place.
+            let native_insert_at = code_actions.len();
+            let mut native_critic_subject = None;
             match critic_engine {
                 perl_lsp_rs_core::config::CriticEngine::Native => {
-                    use perl_lsp_rs_core::tooling::perl_critic::{
-                        NativeCriticService, NativeCriticSubject, RunGate,
-                    };
-
-                    let expected_fingerprint = accepted_state.fingerprint();
-                    let config = std::sync::Arc::clone(&self.config);
-                    let config_is_current = move || {
-                        config.lock().effective_critic_state(root_key.as_deref()).fingerprint()
-                            == expected_fingerprint
-                    };
-                    let source_identity =
-                        perl_lsp_rs_core::tooling::perl_critic::critic_source_identity_for_uri(
-                            uri,
-                            doc.current_generation(),
-                        );
-
-                    let run = NativeCriticService::analyze(NativeCriticSubject::accepted(
-                        uri,
-                        source_identity,
-                        ast,
-                        &doc.text,
-                        accepted_state.clone(),
-                        Vec::new(),
-                        RunGate::open(),
-                        RunGate::new(&config_is_current),
-                    ));
-
-                    // A superseded run offers no actions this round; the next
-                    // request re-snapshots current state (#9062). A disabled
-                    // accepted state contributes none by configuration (#8253).
-                    if run.is_publishable() {
-                        for normalized in run.findings() {
-                            // Normalization decides whether this logical finding
-                            // is admitted. The raw producer is retained only for
-                            // its existing safe edit and title; no raw finding
-                            // can bypass alias-aware exclusion or suppression.
-                            let Some(finding) = run.producer_findings().iter().find(|finding| {
-                                finding.range == normalized.range()
-                                    && normalized.contributors().iter().any(|contributor| {
-                                        let identity = contributor.identity();
-                                        identity.origin()
-                                            == perl_lsp_rs_core::tooling::perl_critic::CriticFindingOrigin::NativeCritic
-                                            && identity.code() == finding.rule_id
-                                            && identity.shape() == finding.observed_shape
-                                    })
-                            }) else {
-                                continue;
-                            };
-                            // Only findings that carry a Safe automatic edit become
-                            // quick-fixes. Suggested fixes need user confirmation
-                            // (declaration-only renames corrupt references);
-                            // ManualOnly and empty edits are diagnostic-only guidance.
-                            let Some(fix) = finding.fix.as_ref() else {
-                                continue;
-                            };
-                            if fix.safety != crate::perl_critic::FixSafety::Safe
-                                || fix.edits.is_empty()
-                            {
-                                continue;
-                            }
-                            let (start_line, start_char) =
-                                self.offset_to_pos16(doc, finding.range.start.byte);
-                            let (end_line, end_char) =
-                                self.offset_to_pos16(doc, finding.range.end.byte);
-
-                            let edits: Vec<Value> = fix
-                                .edits
-                                .iter()
-                                .map(|edit| {
-                                    let (es_line, es_char) =
-                                        self.offset_to_pos16(doc, edit.range.start.byte);
-                                    let (ee_line, ee_char) =
-                                        self.offset_to_pos16(doc, edit.range.end.byte);
-                                    json!({
-                                        "range": {
-                                            "start": {"line": es_line, "character": es_char},
-                                            "end": {"line": ee_line, "character": ee_char},
-                                        },
-                                        "newText": edit.new_text.clone(),
-                                    })
-                                })
-                                .collect();
-                            let mut changes = HashMap::new();
-                            changes.insert(uri.to_string(), edits);
-
-                            code_actions.push(json!({
-                                "title": fix.title.clone(),
-                                "kind": "quickfix",
-                                "diagnostics": [{
-                                    "range": {
-                                        "start": {"line": start_line, "character": start_char},
-                                        "end": {"line": end_line, "character": end_char},
-                                    },
-                                    "severity": finding.severity.to_diagnostic_severity(),
-                                    "code": finding.rule_id.clone(),
-                                    "source": "perl-lsp",
-                                    "message": finding.message.clone(),
-                                }],
-                                "edit": {
-                                    "changes": changes,
-                                },
-                            }));
-                        }
-                    }
+                    native_critic_subject = Some(NativeCriticActionSubject {
+                        ast: std::sync::Arc::clone(ast),
+                        text: std::sync::Arc::clone(&doc.text_arc),
+                        generation: doc.current_generation(),
+                        rope: doc.rope.clone(),
+                        line_starts: doc.line_starts.clone(),
+                        accepted_state,
+                        root_key,
+                        overlap_observations:
+                            perl_lsp_rs_core::providers::diagnostics::critic_overlap_observations(
+                                &diagnostics,
+                            ),
+                    });
                 }
                 perl_lsp_rs_core::config::CriticEngine::Legacy => {
                     let builtin_analyzer = BuiltInAnalyzer::new();
@@ -948,6 +893,17 @@ impl LspServer {
                 }));
             }
 
+            // Every remaining consumer of the document snapshot is done, so the
+            // runtime document lock is released before the native critic run
+            // evaluates a single rule (#9062). The subject captured above is
+            // immutable and self-contained: the analysis, its range mapping and
+            // its revalidation all read from it, never from live server state.
+            drop(documents);
+            if let Some(subject) = native_critic_subject {
+                let native_actions = self.native_critic_code_actions(uri, subject);
+                code_actions.splice(native_insert_at..native_insert_at, native_actions);
+            }
+
             // Emit a disabled "Extract variable" placeholder when the selection
             // is zero-width (cursor-only) and the client declared
             // `textDocument.codeAction.disabledSupport`.
@@ -993,7 +949,7 @@ impl LspServer {
                 convert_pragma_quickfix_edits_to_snippet_text_edits(
                     &mut code_actions,
                     uri,
-                    doc.version,
+                    doc_version,
                 );
             }
 
@@ -1086,6 +1042,142 @@ impl LspServer {
             retain_requested_code_action_kinds(&mut code_actions, &requested_kinds);
             Ok(Some(to_json_array(&code_actions)))
         }
+    }
+
+    /// Evaluate native critic quick-fixes over one immutable accepted subject
+    /// with no document lock held (#9062), then revalidate before returning.
+    ///
+    /// The action run consumes the same accepted overlap candidates as the
+    /// diagnostic transports, so a reviewed core/native alias carries identical
+    /// contributors and public identity on both surfaces, and each embedded
+    /// diagnostic is projected from the normalized finding — the public code,
+    /// severity and message a client must match against the published
+    /// diagnostic — not from producer-local fields.
+    fn native_critic_code_actions(
+        &self,
+        uri: &str,
+        subject: NativeCriticActionSubject,
+    ) -> Vec<Value> {
+        use perl_lsp_rs_core::tooling::perl_critic::{
+            NativeCriticService, NativeCriticSubject, RunGate,
+        };
+
+        let expected_fingerprint = subject.accepted_state.fingerprint();
+        let config = std::sync::Arc::clone(&self.config);
+        let root_key = subject.root_key.clone();
+        let config_is_current = move || {
+            config.lock().effective_critic_state(root_key.as_deref()).fingerprint()
+                == expected_fingerprint
+        };
+        let source_identity =
+            perl_lsp_rs_core::tooling::perl_critic::critic_source_identity_for_uri(
+                uri,
+                subject.generation,
+            );
+
+        let run = NativeCriticService::analyze(NativeCriticSubject::accepted(
+            uri,
+            source_identity,
+            &subject.ast,
+            &subject.text,
+            subject.accepted_state.clone(),
+            subject.overlap_observations.clone(),
+            RunGate::open(),
+            RunGate::new(&config_is_current),
+        ));
+
+        // A superseded run offers no actions this round; the next request
+        // re-snapshots current state (#9062). A disabled accepted state
+        // contributes none by configuration (#8253).
+        if !run.is_publishable() {
+            return Vec::new();
+        }
+
+        // Revalidate the document subject itself before returning actions: the
+        // guard was released for the duration of the run, so the edit the user
+        // is acting on may already be gone. Stale ranges must not be offered as
+        // applicable edits.
+        let still_current = {
+            let documents = self.documents_guard();
+            self.get_document(&documents, uri)
+                .is_some_and(|doc| doc.current_generation() == subject.generation)
+        };
+        if !still_current {
+            return Vec::new();
+        }
+
+        let pos16 =
+            |offset: usize| subject.line_starts.offset_to_position_rope(&subject.rope, offset);
+
+        let mut actions = Vec::new();
+        for normalized in run.findings() {
+            // Normalization decides whether this logical finding is admitted.
+            // The raw producer is retained only for its existing safe edit and
+            // title; no raw finding can bypass alias-aware exclusion or
+            // suppression, and none of its local fields reach the wire.
+            let Some(finding) = run.producer_findings().iter().find(|finding| {
+                finding.range == normalized.range()
+                    && normalized.contributors().iter().any(|contributor| {
+                        let identity = contributor.identity();
+                        identity.origin()
+                            == perl_lsp_rs_core::tooling::perl_critic::CriticFindingOrigin::NativeCritic
+                            && identity.code() == finding.rule_id
+                            && identity.shape() == finding.observed_shape
+                    })
+            }) else {
+                continue;
+            };
+            // Only findings that carry a Safe automatic edit become quick-fixes.
+            // Suggested fixes need user confirmation (declaration-only renames
+            // corrupt references); ManualOnly and empty edits are
+            // diagnostic-only guidance.
+            let Some(fix) = finding.fix.as_ref() else {
+                continue;
+            };
+            if fix.safety != crate::perl_critic::FixSafety::Safe || fix.edits.is_empty() {
+                continue;
+            }
+
+            let (start_line, start_char) = pos16(normalized.range().start.byte);
+            let (end_line, end_char) = pos16(normalized.range().end.byte);
+
+            let edits: Vec<Value> = fix
+                .edits
+                .iter()
+                .map(|edit| {
+                    let (es_line, es_char) = pos16(edit.range.start.byte);
+                    let (ee_line, ee_char) = pos16(edit.range.end.byte);
+                    json!({
+                        "range": {
+                            "start": {"line": es_line, "character": es_char},
+                            "end": {"line": ee_line, "character": ee_char},
+                        },
+                        "newText": edit.new_text.clone(),
+                    })
+                })
+                .collect();
+            let mut changes = HashMap::new();
+            changes.insert(uri.to_string(), edits);
+
+            actions.push(json!({
+                "title": fix.title.clone(),
+                "kind": "quickfix",
+                "diagnostics": [{
+                    "range": {
+                        "start": {"line": start_line, "character": start_char},
+                        "end": {"line": end_line, "character": end_char},
+                    },
+                    "severity": normalized.severity().to_diagnostic_severity(),
+                    "code": normalized.public_code(),
+                    "source": "perl-lsp",
+                    "message": normalized.message(),
+                }],
+                "edit": {
+                    "changes": changes,
+                },
+            }));
+        }
+        actions
     }
 
     /// Cancellation-aware wrapper for `textDocument/codeAction`.

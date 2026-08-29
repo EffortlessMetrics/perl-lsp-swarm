@@ -10,7 +10,8 @@ use super::{
     Arc, BuiltInAnalyzer, DiagnosticsProvider, DocumentState, InternalDiagnosticSeverity,
     JsonRpcError, LspServer, Mutex, Ordering, Value,
     diagnostics_sink::{
-        PushDiagnosticIdentity, PushDiagnosticsCommitOutcome, PushDiagnosticsDisposition,
+        AcceptedCriticPolicy, PushDiagnosticIdentity, PushDiagnosticsCommitOutcome,
+        PushDiagnosticsDisposition,
     },
     json, source_path_from_uri,
 };
@@ -18,8 +19,9 @@ use crate::features::diagnostics::report_identity::{
     DiagnosticProjectionFragment, PullPositionEncoding, PullReportResultId, compose_report_identity,
 };
 use crate::features::diagnostics::{
-    Diagnostic as InternalDiagnostic, DiagnosticTag as InternalDiagnosticTag,
-    PullDiagnosticsContext, RelatedInformation as InternalRelatedInformation,
+    AcceptedStateCurrentness as PullAcceptedStateCurrentness, Diagnostic as InternalDiagnostic,
+    DiagnosticTag as InternalDiagnosticTag, PullDiagnosticsContext,
+    RelatedInformation as InternalRelatedInformation,
 };
 use crate::runtime::window::RequestProgressGuard;
 use perl_diagnostics::codes::DiagnosticCode;
@@ -272,6 +274,20 @@ impl PullDiagnosticsOrchestrator {
             )
         };
 
+        // Live currentness authority for the snapshot above (#9062/#13304).
+        // Same fingerprint comparison the push path uses, bound to the same
+        // owning root, so one document cannot be judged current under a policy
+        // that has already moved.
+        let accepted_state_currentness = {
+            let expected_fingerprint = accepted_critic_state.fingerprint();
+            let config = std::sync::Arc::clone(&server.config);
+            let currentness_root_key = root_key.clone();
+            PullAcceptedStateCurrentness::new(std::sync::Arc::new(move || {
+                config.lock().effective_critic_state(currentness_root_key.as_deref()).fingerprint()
+                    == expected_fingerprint
+            }))
+        };
+
         let profile =
             perlcritic_profile.and_then(|p| if p.trim().is_empty() { None } else { Some(p) });
 
@@ -328,6 +344,7 @@ impl PullDiagnosticsOrchestrator {
             identity_root_key: root_key,
             facts_generation,
             accepted_critic_state,
+            accepted_state_currentness,
             projection: DiagnosticProjectionFragment {
                 position_encoding: match position_encoding {
                     crate::textdoc::PosEnc::Utf8 => PullPositionEncoding::Utf8,
@@ -691,6 +708,10 @@ impl LspServer {
         // Position helper on the snapshotted line_starts + text (no rope clone).
         let pos16 = |offset: usize| line_starts.offset_to_position(&text, offset);
 
+        // Accepted native critic policy behind whatever critic rows this
+        // publication ends up carrying (#13304). Stays `None` for the
+        // parse-error-only branch, which depends on no critic configuration.
+        let mut accepted_critic_policy: Option<AcceptedCriticPolicy> = None;
         let lsp_diagnostics: Vec<Value> = if let Some(ast) = &ast_opt {
             // Get diagnostics (already includes unused variable detection).
             // resolver is called with the documents lock *released* — no reentrant deadlock.
@@ -810,7 +831,7 @@ impl LspServer {
 
             // Add configured policy critic diagnostics.
             let critic_source_identity = critic_source_identity_for(uri, gen_at_snapshot);
-            self.collect_policy_critic_diagnostics(
+            accepted_critic_policy = self.collect_policy_critic_diagnostics(
                 ast,
                 &text,
                 uri,
@@ -989,7 +1010,8 @@ impl LspServer {
         // document whose stale instance counter had not moved (close/reopen
         // ABA) and left the send itself outside any currentness decision.
         let identity =
-            PushDiagnosticIdentity::for_document(&normalized_uri, &generation, gen_at_snapshot);
+            PushDiagnosticIdentity::for_document(&normalized_uri, &generation, gen_at_snapshot)
+                .with_accepted_critic_policy(accepted_critic_policy);
         let disposition = if lsp_diagnostics.is_empty() {
             PushDiagnosticsDisposition::Clear
         } else {
@@ -1015,6 +1037,11 @@ impl LspServer {
                 current_gen = generation.load(Ordering::SeqCst),
                 "Skipping stale diagnostic publish (superseded at sink boundary; \
                  the debouncer fires again for the latest version)"
+            ),
+            PushDiagnosticsCommitOutcome::RejectedSupersededCriticPolicy => tracing::debug!(
+                uri = %normalized_uri,
+                gen_at_snapshot,
+                "Skipping diagnostic publish (critic policy moved before sink boundary;                  the next cycle re-analyzes under the live policy)"
             ),
             PushDiagnosticsCommitOutcome::OutboundFailure => {
                 tracing::error!(uri, "Failed to publish diagnostics")
@@ -1123,6 +1150,11 @@ impl LspServer {
                 gen_at_snapshot,
                 current_gen = generation.load(Ordering::SeqCst),
                 "Skipping stale syntax-only diagnostic publish (superseded at sink boundary)"
+            ),
+            PushDiagnosticsCommitOutcome::RejectedSupersededCriticPolicy => tracing::debug!(
+                uri = %normalized_uri,
+                gen_at_snapshot,
+                "Skipping syntax-only diagnostic publish (critic policy moved at sink boundary)"
             ),
             PushDiagnosticsCommitOutcome::OutboundFailure => {
                 tracing::error!(uri, "Failed to publish syntax-only diagnostics")
@@ -1268,6 +1300,11 @@ impl LspServer {
                 gen_at_snapshot,
                 current_gen = generation.load(Ordering::SeqCst),
                 "Skipping fast parse-error publish (superseded at sink boundary)"
+            ),
+            PushDiagnosticsCommitOutcome::RejectedSupersededCriticPolicy => tracing::debug!(
+                uri = %normalized_uri,
+                gen_at_snapshot,
+                "Skipping fast parse-error publish (critic policy moved at sink boundary)"
             ),
             PushDiagnosticsCommitOutcome::OutboundFailure => {
                 tracing::error!(
@@ -2208,6 +2245,12 @@ impl LspServer {
         Ok(Some(json!({ "items": items })))
     }
 
+    /// Collect configured policy critic diagnostics, returning the accepted
+    /// native critic policy the published rows were produced under (#13304).
+    ///
+    /// `None` means the resulting payload carries no native critic row that
+    /// depends on live configuration: the legacy engine (whose removal is
+    /// #9068) or a native run that produced nothing publishable.
     fn collect_policy_critic_diagnostics(
         &self,
         ast: &std::sync::Arc<perl_parser::ast::Node>,
@@ -2215,23 +2258,23 @@ impl LspServer {
         subject: &str,
         source_identity: perl_lsp_rs_core::tooling::perl_critic::CriticSourceIdentity,
         diagnostics: &mut Vec<InternalDiagnostic>,
-    ) {
+    ) -> Option<AcceptedCriticPolicy> {
         let critic_engine = { self.config.lock().critic_engine };
         match critic_engine {
             perl_lsp_rs_core::config::CriticEngine::Legacy => {
                 let built_in_analyzer = BuiltInAnalyzer::new();
                 let violations = built_in_analyzer.analyze(ast, doc_text);
                 diagnostics.extend(violations.iter().map(builtin_violation_to_diagnostic));
+                None
             }
-            perl_lsp_rs_core::config::CriticEngine::Native => {
-                self.collect_native_critic_diagnostics(
+            perl_lsp_rs_core::config::CriticEngine::Native => self
+                .collect_native_critic_diagnostics(
                     ast,
                     doc_text,
                     subject,
                     source_identity,
                     diagnostics,
-                );
-            }
+                ),
         }
     }
 
@@ -2242,7 +2285,7 @@ impl LspServer {
         subject: &str,
         source_identity: perl_lsp_rs_core::tooling::perl_critic::CriticSourceIdentity,
         diagnostics: &mut Vec<InternalDiagnostic>,
-    ) {
+    ) -> Option<AcceptedCriticPolicy> {
         use perl_lsp_rs_core::providers::diagnostics::{
             critic_overlap_observations, take_critic_overlap_observations,
         };
@@ -2266,9 +2309,11 @@ impl LspServer {
         let accepted_state = { self.config.lock().effective_critic_state(root_key.as_deref()) };
         let expected_fingerprint = accepted_state.fingerprint();
         let config = std::sync::Arc::clone(&self.config);
+        let gate_root_key = root_key.clone();
+        let gate_fingerprint = expected_fingerprint.clone();
         let config_is_current = move || {
-            config.lock().effective_critic_state(root_key.as_deref()).fingerprint()
-                == expected_fingerprint
+            config.lock().effective_critic_state(gate_root_key.as_deref()).fingerprint()
+                == gate_fingerprint
         };
 
         // Core lint emitters that declared a reviewed critic overlap
@@ -2296,10 +2341,16 @@ impl LspServer {
         // configuration moved underneath the analysis, so its rows are dropped
         // and the untouched core diagnostics stay intact for this publication.
         if !run.is_publishable() {
-            return;
+            return None;
         }
         take_critic_overlap_observations(diagnostics);
         diagnostics.extend(run.findings().iter().map(normalized_critic_finding_to_diagnostic));
+
+        // The rows above are only meaningful under this exact accepted policy.
+        // Hand it to the sink so the irreversible enqueue can re-check it
+        // against live configuration in its own critical section (#13304):
+        // this gate closed before the publication boundary, not at it.
+        Some(AcceptedCriticPolicy { owning_root: root_key, fingerprint: expected_fingerprint })
     }
 
     /// Collect external perlcritic diagnostics if the feature is enabled.
