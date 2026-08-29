@@ -26,14 +26,14 @@ cargo test -p perl-parser-pest
 cargo test -p perl-parser-pest --test fixture_manifest
 cargo clippy -p perl-parser-pest
 cargo doc -p perl-parser-pest --open
-
 ```
 
-The historical `ci-v2-bundle-sync` recipe and its archived comparison are not a
-package-local proof requirement. If historical parity is investigated while the
-retirement work in #8814 remains open, treat that check as bounded evidence of byte
-equality only; it does not establish current correctness, a second design authority,
-or a requirement to keep the live crate synchronized with the archive.
+The legacy `ci-v2-bundle-sync` recipe and its archived comparison remain active
+repository machinery while the retirement work in #8814 remains open, but they are not
+a package-local proof requirement. If that active check is investigated or run, treat it
+as bounded evidence of byte equality only; it does not establish current correctness, a
+second design authority, or a requirement to keep the live crate synchronized with the
+archive.
 
 ## Instrument contract
 
@@ -70,11 +70,11 @@ fail closed as instrument errors rather than being counted as parser results.
 
 Issue #8814 records the accepted direction for this boundary: the live crate is the
 canonical source for this experimental parser, while the archived `tree-sitter-perl-rs`
-v2 bundle is historical evidence and compatibility debt. The repository may still
-contain legacy synchronization machinery while that issue remains open, but this file
-does not prescribe it as a current contract. Do not expand the old synchronized set,
-copy new architecture into the archive, or treat archive equality as product
-correctness.
+v2 bundle is historical evidence and compatibility debt. The `ci-v2-bundle-sync` route
+and its archive comparison remain active transitional machinery until #8814 lands, but
+their presence does not make the archive current authority. Do not expand the old
+synchronized set, copy new architecture into the archive, or treat archive equality as
+product correctness.
 
 Changes here should improve comparison reliability, evidence honesty, legacy
 compatibility, or retirement readiness. Do not widen the crate into a competing
