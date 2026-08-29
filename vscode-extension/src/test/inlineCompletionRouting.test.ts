@@ -93,7 +93,10 @@ describe('decideInlineCompletionRoute', () => {
 
   test('an explicit invocation without a ready stream falls back to standard', () => {
     expect(
-      decideInlineCompletionRoute({ triggerKind: VSCODE_INLINE_TRIGGER_INVOKE, streamReady: false }),
+      decideInlineCompletionRoute({
+        triggerKind: VSCODE_INLINE_TRIGGER_INVOKE,
+        streamReady: false,
+      }),
     ).toBe('standard');
   });
 
@@ -233,7 +236,13 @@ describe('InlineCompletionOwner', () => {
       selectedCompletionInfo: { text: 'x' },
     } as unknown as vscode.InlineCompletionContext;
 
-    owner.provideInlineCompletionItems(realDoc, realPos, realContext, realToken, jest.fn(() => []));
+    owner.provideInlineCompletionItems(
+      realDoc,
+      realPos,
+      realContext,
+      realToken,
+      jest.fn(() => []),
+    );
 
     expect(adapter.provideInlineCompletionItems).toHaveBeenCalledWith(
       realDoc,

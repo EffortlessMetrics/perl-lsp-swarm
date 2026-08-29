@@ -114,7 +114,10 @@ export function toLspSelectedCompletionInfo(
     return undefined;
   }
   const range = selected.range as unknown as
-    | { start?: { line?: unknown; character?: unknown }; end?: { line?: unknown; character?: unknown } }
+    | {
+        start?: { line?: unknown; character?: unknown };
+        end?: { line?: unknown; character?: unknown };
+      }
     | undefined;
   const start = range?.start;
   const end = range?.end;
