@@ -806,12 +806,9 @@ fn quote_like_expression_end(raw: &str, start: usize) -> Option<usize> {
         return None;
     }
     let operators = [b"tr".as_slice(), b"qq", b"qx", b"qr", b"qw", b"q", b"m", b"s", b"y"];
-    let Some(operator) = operators
+    let operator = operators
         .iter()
-        .find(|operator| bytes.get(start..start + operator.len()) == Some(*operator))
-    else {
-        return None;
-    };
+        .find(|operator| bytes.get(start..start + operator.len()) == Some(*operator))?;
     let mut delimiter = start + operator.len();
     while bytes.get(delimiter).is_some_and(u8::is_ascii_whitespace) {
         delimiter += 1;
