@@ -186,7 +186,12 @@ impl ModuleMovePlan {
             .unwrap_or_default();
         let expected_source_path = module_path(&source.module)
             .map(|path| format!("{}/{path}", source.root.trim_end_matches('/')));
-        if !valid_package(&source.package) || !valid_package(&source.module)
+        if source.workspace.trim().is_empty()
+            || source.root.trim().is_empty()
+            || source.source_uri.trim().is_empty()
+            || source.relative_path.trim().is_empty()
+            || !valid_package(&source.package)
+            || !valid_package(&source.module)
             || expected_source_path.as_deref() != Some(source.relative_path.as_str())
             || !source.editable || source.restricted || source.primary_package_count != 1
         {
@@ -217,7 +222,9 @@ impl ModuleMovePlan {
             if occurrence.generation != source.generation {
                 blockers.push(ModuleMoveBlocker::StaleOrUnknownGeneration);
             }
-            if occurrence.dynamic { blockers.push(ModuleMoveBlocker::DynamicBoundary); }
+            if occurrence.dynamic || occurrence.kind == OccurrenceKind::DynamicBoundary {
+                blockers.push(ModuleMoveBlocker::DynamicBoundary);
+            }
             if occurrence.unsupported { blockers.push(ModuleMoveBlocker::UnsupportedProjection); }
             if occurrence.stale || occurrence.old_text.is_empty() || occurrence.end_byte <= occurrence.start_byte {
                 blockers.push(ModuleMoveBlocker::StaleOrUnknownGeneration);
