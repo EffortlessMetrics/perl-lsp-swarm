@@ -931,9 +931,10 @@ mod tests {
     #[test]
     fn project_version_is_used_as_pl900_fallback() {
         let diags =
-            version_compat_diags_with_project_version("sub f ($x) { return $x; }", Some("5.20"));
+            version_compat_diags_with_project_version("sub f ($x) { return $x; }", Some("v5.20"));
         assert!(
-            diags.iter().any(|diagnostic| diagnostic.message.contains("project [perl].version"))
+            diags.iter().any(|diagnostic| diagnostic.message.contains("requires Perl v5.36+")),
+            "v5.20 project fallback must remain the effective PL900 target: {diags:?}"
         );
     }
 
@@ -968,7 +969,7 @@ mod tests {
 
     #[test]
     fn project_version_rejects_trailing_components_and_patch_suffixes() {
-        for value in ["5.20.1", "v5.20.1", "5.20_1", "v5.20_1"] {
+        for value in ["5.20.1", "v5.20.1", "5.20_1", "v5.20_1", " 5.20", "5.20 ", " 5.20 "] {
             let diags =
                 version_compat_diags_with_project_version("sub f ($x) { return $x; }", Some(value));
             assert!(
@@ -980,12 +981,27 @@ mod tests {
 
     #[test]
     fn project_version_v5_40_fallback_is_applied() {
-        let below = version_compat_diags_with_project_version("use builtin 'inf';", Some("v5.38"));
+        let below = version_compat_diags_with_project_version(
+            "use builtin 'inf'; builtin::inf();",
+            Some("v5.38"),
+        );
         assert!(below.iter().any(|diagnostic| diagnostic.code.as_deref() == Some("PL900")));
 
-        let supported =
-            version_compat_diags_with_project_version("use builtin 'inf';", Some("v5.40"));
+        let supported = version_compat_diags_with_project_version(
+            "use builtin 'inf'; builtin::inf();",
+            Some("v5.40"),
+        );
         assert!(supported.iter().all(|diagnostic| diagnostic.code.as_deref() != Some("PL900")));
+    }
+
+    #[test]
+    fn project_version_fallback_does_not_enable_lexical_features() {
+        let diags =
+            version_compat_diags_with_project_version("sub f ($x) { return $x; }", Some("v5.40"));
+        assert!(
+            diags.iter().any(|diagnostic| diagnostic.message.contains("subroutine signatures")),
+            "a fallback target must not enable lexical signature features: {diags:?}"
+        );
     }
 
     #[test]

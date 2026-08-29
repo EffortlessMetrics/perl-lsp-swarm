@@ -107,6 +107,12 @@ fn workspace_root_for_doc(server: &LspServer, uri: &str) -> Option<std::path::Pa
         .or_else(|| server.root_path.lock().clone())
 }
 
+fn project_version_for_doc(server: &LspServer, uri: &str) -> Option<String> {
+    server
+        .folder_for_doc_uri(uri)
+        .and_then(|folder| folder.project_config.as_ref()?.perl.version.clone())
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn find_workspace_perlcritic_profile(
     workspace_root: Option<&std::path::Path>,
@@ -252,15 +258,12 @@ impl PullDiagnosticsOrchestrator {
         // Get workspace root for this document's containing folder (multi-root aware).
         // Falls back to the global root_path when no specific folder matches.
         //
-        // Note: we inline the resolution here rather than calling `workspace_root_for_doc`
+        // Note: resolve the folder inline rather than calling `workspace_root_for_doc`
         // because `build_context` runs on all targets (including wasm32), while
         // `workspace_root_for_doc` is `#[cfg(not(target_arch = "wasm32"))]` since it is
         // only needed from the native perlcritic diagnostic paths.
+        let project_version = project_version_for_doc(server, uri);
         let folder = server.folder_for_doc_uri(uri);
-        let project_version = folder
-            .as_ref()
-            .and_then(|folder| folder.project_config.as_ref())
-            .and_then(|config| config.perl.version.clone());
         let workspace_root = folder
             .and_then(|folder| folder.path.or_else(|| source_path_from_uri(&folder.uri)))
             .or_else(|| server.root_path.lock().clone());
@@ -268,10 +271,7 @@ impl PullDiagnosticsOrchestrator {
         // The owning folder authority key for the report subject (#7480).
         // Absent authority stays absent: the report is then served in full
         // without a reusable result ID instead of minting an unsound one.
-        let workspace_generation = server.workspace_identity_generation.load(Ordering::SeqCst);
-        let root_key = workspace_root.as_ref().map(|path| {
-            format!("{}#workspace-generation={workspace_generation}", path.to_string_lossy())
-        });
+        let root_key = workspace_root.as_ref().map(|path| path.to_string_lossy().into_owned());
 
         // Get include paths for the document
         let include_paths: Vec<String> = server
@@ -754,9 +754,7 @@ impl LspServer {
                 .map(|context| context.search_display_paths())
                 .unwrap_or_default();
             let source_path = source_path_from_uri(uri);
-            let project_version = self
-                .folder_for_doc_uri(uri)
-                .and_then(|folder| folder.project_config.as_ref()?.perl.version.clone());
+            let project_version = project_version_for_doc(self, uri);
 
             // Wait for index build, then sample staleness before touching the
             // workspace index tier (#5016 item 2).  Sample after readiness and
@@ -1936,9 +1934,7 @@ impl LspServer {
                     .map(|context| context.search_display_paths())
                     .unwrap_or_default();
                 let source_path = source_path_from_uri(uri_str);
-                let project_version = self
-                    .folder_for_doc_uri(uri_str)
-                    .and_then(|folder| folder.project_config.as_ref()?.perl.version.clone());
+                let project_version = project_version_for_doc(self, uri_str);
 
                 #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
                 let workspace_index_tier_enabled =
@@ -2101,11 +2097,6 @@ impl LspServer {
                     .and_then(|folder| folder.path.or_else(|| source_path_from_uri(&folder.uri)))
                     .or_else(|| self.root_path.lock().clone())
                     .map(|path| path.to_string_lossy().into_owned());
-                if let Some(root_key) = identity_context.identity_root_key.take() {
-                    identity_context.identity_root_key = Some(format!(
-                        "{root_key}#workspace-generation={workspace_gen_at_snapshot}"
-                    ));
-                }
                 #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
                 {
                     identity_context.facts_generation = workspace_index_tier_enabled
@@ -3148,7 +3139,7 @@ mod tests {
         let first_item = first["items"]
             .as_array()
             .and_then(|items| items.first())
-            .ok_or("first report item missing")?;
+            .ok_or_else(|| format!("first report item missing: {first}"))?;
         let first_id =
             first_item["resultId"].as_str().ok_or("first result ID missing")?.to_string();
 
@@ -3170,8 +3161,8 @@ mod tests {
             "project version changes must invalidate workspace report identity"
         );
         assert!(
-            !second_item.to_string().contains("PL900"),
-            "5.40 should satisfy the signature target"
+            second_item.to_string().contains("PL900"),
+            "5.40 project fallback must not enable lexical signature features: {second_item}"
         );
         Ok(())
     }
@@ -3279,7 +3270,9 @@ mod tests {
                 .with_path(second_folder.clone()),
         ]);
         server.load_and_apply_project_config();
-        let source = "sub f ($x) { return $x; }\n";
+        let source = "use builtin 'inf'; builtin::inf();\n";
+        let first_uri_key = server.normalize_uri_key(&first_uri);
+        let second_uri_key = server.normalize_uri_key(&second_uri);
         for uri in [&first_uri, &second_uri] {
             server.test_handle_did_open(Some(json!({
                 "textDocument": {"uri": uri, "languageId": "perl", "version": 1, "text": source}
@@ -3292,11 +3285,11 @@ mod tests {
         let first_items = first_report["items"].as_array().ok_or("initial report items missing")?;
         let first_item = first_items
             .iter()
-            .find(|item| item["uri"].as_str() == Some(first_uri.as_str()))
-            .ok_or("first folder report missing")?;
+            .find(|item| item["uri"].as_str() == Some(first_uri_key.as_str()))
+            .ok_or_else(|| format!("first folder report missing: {first_report}"))?;
         let second_item = first_items
             .iter()
-            .find(|item| item["uri"].as_str() == Some(second_uri.as_str()))
+            .find(|item| item["uri"].as_str() == Some(second_uri_key.as_str()))
             .ok_or("second folder report missing")?;
         let first_id = first_item["resultId"].as_str().ok_or("first folder result ID missing")?;
         let second_id =
@@ -3317,11 +3310,11 @@ mod tests {
         let reloaded_items = reloaded["items"].as_array().ok_or("reloaded report items missing")?;
         let reloaded_first = reloaded_items
             .iter()
-            .find(|item| item["uri"].as_str() == Some(first_uri.as_str()))
+            .find(|item| item["uri"].as_str() == Some(first_uri_key.as_str()))
             .ok_or("reloaded first report missing")?;
         let reloaded_second = reloaded_items
             .iter()
-            .find(|item| item["uri"].as_str() == Some(second_uri.as_str()))
+            .find(|item| item["uri"].as_str() == Some(second_uri_key.as_str()))
             .ok_or("reloaded second report missing")?;
         assert_eq!(reloaded_first["kind"], "full");
         assert!(!reloaded_first.to_string().contains("PL900"));
