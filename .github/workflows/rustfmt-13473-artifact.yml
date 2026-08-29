@@ -1,0 +1,70 @@
+name: Rustfmt #13473 repair artifact
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+    paths:
+      - .github/workflows/rustfmt-13473-artifact.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rustfmt-13473-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  generate:
+    if: >-
+      github.repository == 'EffortlessMetrics/perl-lsp-swarm' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.head_ref == 'codex/13473-rustfmt-main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout exact pull-request head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install pinned Rust formatter
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable
+        with:
+          toolchain: 1.95.0
+          components: rustfmt
+
+      - name: Produce exact formatted files and patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          before="$(git rev-parse HEAD)"
+          test "$before" = "${{ github.event.pull_request.head.sha }}"
+          cargo fmt --all
+          mkdir -p target/receipts/rustfmt-13473/files
+          git diff --binary > target/receipts/rustfmt-13473/rustfmt.patch
+          git diff --name-only -- '*.rs' > target/receipts/rustfmt-13473/paths.txt
+          while IFS= read -r path; do
+            test -n "$path"
+            mkdir -p "target/receipts/rustfmt-13473/files/$(dirname "$path")"
+            cp -- "$path" "target/receipts/rustfmt-13473/files/$path"
+          done < target/receipts/rustfmt-13473/paths.txt
+          sha256sum $(cat target/receipts/rustfmt-13473/paths.txt) \
+            > target/receipts/rustfmt-13473/sha256.txt
+          {
+            printf 'source_sha=%s\n' "$before"
+            rustfmt --version
+            printf 'changed_paths=%s\n' "$(wc -l < target/receipts/rustfmt-13473/paths.txt)"
+          } > target/receipts/rustfmt-13473/identity.txt
+          test -s target/receipts/rustfmt-13473/rustfmt.patch
+          test "$(wc -l < target/receipts/rustfmt-13473/paths.txt)" -eq 7
+
+      - name: Upload read-only formatter artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rustfmt-13473-${{ github.event.pull_request.head.sha }}
+          path: target/receipts/rustfmt-13473/
+          retention-days: 7
