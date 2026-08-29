@@ -1,0 +1,65 @@
+name: ChatGPT 13705 xtask Clippy residue
+
+on:
+  push:
+    branches:
+      - chatgpt/13705-xtask-bin-clippy-residue
+
+permissions:
+  contents: write
+
+concurrency:
+  group: chatgpt-13705-xtask-clippy-residue
+  cancel-in-progress: false
+
+jobs:
+  repair-and-prove:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out candidate
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.95.0
+          components: rustfmt, clippy
+
+      - name: Apply bounded source repair
+        run: python3 scripts/maintenance/chatgpt_13705_xtask_clippy_patch.py
+
+      - name: Format candidate
+        run: cargo fmt --all
+
+      - name: Prove gate-log scan behavior
+        run: cargo test -p xtask --bin xtask --locked log_reaches_test_execution
+
+      - name: Prove RIPR packet callers
+        run: cargo test -p xtask --bin xtask --locked pr_evidence_packet
+
+      - name: Prove lexical path handling
+        run: |
+          cargo test -p xtask --bin xtask --locked lexically_join
+          cargo test -p xtask --bin xtask --locked repo_relative_surface_path
+
+      - name: Prove exact production-bin Clippy subject
+        run: cargo clippy -p xtask --bin xtask --locked -- -D warnings -A missing_docs
+
+      - name: Check formatting and patch hygiene
+        run: |
+          cargo fmt --all -- --check
+          git diff --check
+
+      - name: Remove temporary executor and publish candidate
+        run: |
+          rm scripts/maintenance/chatgpt_13705_xtask_clippy_patch.py
+          rm .github/workflows/chatgpt-13705-xtask-clippy-residue.yml
+          git add -A
+          git diff --cached --check
+          git config user.name "EffortlessSteven"
+          git config user.email "git@effortlesssteven.com"
+          git commit -m "fix(xtask): clear production-bin Clippy residue (#13705)"
+          git push origin HEAD
