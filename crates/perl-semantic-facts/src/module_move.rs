@@ -268,7 +268,7 @@ impl ModuleMovePlan {
         let resource = ModuleMoveResourceTransition { source_path: source.relative_path.clone(),
             target_path, source_module: source.module.clone(), target_module: target_package.clone() };
         let disposition = if blockers.is_empty() { ModuleMoveDisposition::Complete } else { ModuleMoveDisposition::Blocked };
-        let fingerprint = crate::SemanticIdentityFingerprint::new("module-move-plan-v1")
+        let fingerprint = crate::semantic_identity::SemanticIdentityFingerprint::new("module-move-plan-v1")
             .field("source", &source.source_uri).field("generation", &format!("{:?}", source.generation))
             .field("target", &resource.target_module).field("path", &resource.target_path)
             .field("disposition", &format!("{disposition:?}"))
