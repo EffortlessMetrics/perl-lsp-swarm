@@ -877,7 +877,10 @@ const CALL_SITE_LEDGER: &[CallSiteLedgerEntry] = &[
     CallSiteLedgerEntry {
         file: "crates/perl-lsp-rs/src/runtime/text_sync.rs",
         needle: "= commit_parse_effect_if_current(",
-        expected_count: 2,
+        // #13183 (e64c033936) wrapped the workspace-index site in the
+        // serialized indexing-transition block (`let committed = { ... }`),
+        // leaving this result-binding shape with one production site.
+        expected_count: 1,
         effect_id: "compat.legacy-generic-callback-helper",
     },
     CallSiteLedgerEntry {
@@ -1037,16 +1040,18 @@ const CALL_SITE_LEDGER: &[CallSiteLedgerEntry] = &[
         effect_id: "parser-state.accepted-snapshot-publication",
     },
     // Workspace-task Coordinator lifecycle routes (async didOpen/scan paths).
+    // Counts re-registered after #13183 (e64c033936) consolidated the
+    // didChange/didOpen file-event paths into the serialized transition flow.
     CallSiteLedgerEntry {
         file: "crates/perl-lsp-rs/src/runtime/workspace.rs",
         needle: ".notify_parse_complete(",
-        expected_count: 7,
+        expected_count: 6,
         effect_id: "readiness.active-document-parse-lifecycle",
     },
     CallSiteLedgerEntry {
         file: "crates/perl-lsp-rs/src/runtime/workspace.rs",
         needle: ".notify_change(",
-        expected_count: 6,
+        expected_count: 5,
         effect_id: "readiness.active-document-parse-lifecycle",
     },
     CallSiteLedgerEntry {
