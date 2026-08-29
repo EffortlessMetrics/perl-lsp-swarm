@@ -572,7 +572,10 @@ impl SemanticQueryView {
             IndexCompleteness::Complete => IndexAnswer::Complete(found),
             IndexCompleteness::Partial { limitation_ids } => match found {
                 Some(entry) => {
-                    let ids = self.limitations_bounding_path(&limitation_ids, relative_path);
+                    let ids = self.limitations_bounding_path(
+                        limitation_ids.iter().map(String::as_str),
+                        relative_path,
+                    );
                     if ids.is_empty() {
                         IndexAnswer::Complete(Some(entry))
                     } else {
@@ -583,8 +586,10 @@ impl SemanticQueryView {
                     if self.unread_discovered.contains(relative_path) {
                         // The walk discovered this path and the read failed:
                         // its absence is bounded, never a legitimate empty.
-                        let ids =
-                            self.limitations_bounding_path(&limitation_ids, relative_path);
+                        let ids = self.limitations_bounding_path(
+                            limitation_ids.iter().map(String::as_str),
+                            relative_path,
+                        );
                         IndexAnswer::Partial { rows: None, limitation_ids: ids }
                     } else {
                         IndexAnswer::Complete(None)
@@ -608,9 +613,10 @@ impl SemanticQueryView {
             IndexCompleteness::Partial { limitation_ids } => {
                 let mut ids: BTreeSet<&str> = BTreeSet::new();
                 for entry in &rows {
-                    ids.extend(
-                        self.limitations_bounding_path(&limitation_ids, &entry.relative_path),
-                    );
+                    ids.extend(self.limitations_bounding_path(
+                        limitation_ids.iter().map(String::as_str),
+                        &entry.relative_path,
+                    ));
                 }
                 if ids.is_empty() {
                     IndexAnswer::Complete(rows)
@@ -764,7 +770,7 @@ impl SemanticQueryView {
             Ok(()) => Ok(()),
             Err(IndexAnswer::Partial { limitation_ids, .. }) => match self.file_path_of(file_id) {
                 Some(path) => {
-                    let ids = self.limitations_bounding_path(&limitation_ids, path);
+                    let ids = self.limitations_bounding_path(limitation_ids.iter().copied(), path);
                     if ids.is_empty() {
                         Ok(())
                     } else {
@@ -786,7 +792,8 @@ impl SemanticQueryView {
                 let ids: Vec<&str> = limitation_ids.iter().map(String::as_str).collect();
                 Err(IndexAnswer::Partial { rows: (), limitation_ids: ids })
             }
-            _ => Err(IndexAnswer::NotProven(NotProvenReason::FactClassNotAdmitted)),
+            Some(IndexCompleteness::NotProven(reason)) => Err(IndexAnswer::NotProven(*reason)),
+            None => Err(IndexAnswer::NotProven(NotProvenReason::FactClassNotAdmitted)),
         }
     }
 
@@ -805,19 +812,17 @@ impl SemanticQueryView {
     /// absent from the structural map predate it and keep the textual
     /// `<kind>:<path>` convention (`:<path>` suffix), so legacy limitations
     /// bound exactly as before.
-    fn limitations_bounding_path<'a, T: AsRef<str>>(
-        &self,
-        family_ids: &'a [T],
+    fn limitations_bounding_path<'v>(
+        &'v self,
+        family_ids: impl Iterator<Item = &'v str>,
         path: &str,
-    ) -> Vec<&'a str> {
+    ) -> Vec<&'v str> {
         let suffix = format!(":{path}");
         family_ids
-            .iter()
-            .filter(|id| match self.limitation_paths.get(id.as_ref()) {
+            .filter(|id| match self.limitation_paths.get(*id) {
                 Some(paths) => paths.iter().any(|bounded| bounded == path),
-                None => id.as_ref().ends_with(&suffix),
+                None => id.ends_with(&suffix),
             })
-            .map(|id| id.as_ref())
             .collect()
     }
 }
@@ -1029,11 +1034,7 @@ fn declarations_completeness(model: &ProjectModel) -> IndexCompleteness {
     // proven-empty denominator for its file: extraction that never ran is
     // not a proven zero. Builder-built models carry no shard states and stay
     // bounded by file-level parse limitations instead.
-    if model
-        .shard_states
-        .values()
-        .any(|state| !state.populated.contains(FactClasses::SYMBOLS))
-    {
+    if model.shard_states.values().any(|state| !state.populated.contains(FactClasses::SYMBOLS)) {
         return IndexCompleteness::NotProven(NotProvenReason::ShardClassNotPopulated {
             family: "declarations",
         });
@@ -1561,6 +1562,8 @@ mod tests {
                 schema_version: SCHEMA_VERSION - 1,
                 fingerprint: "fnv64:deadbeefdeadbeef".to_string(),
                 limitation_ids: Vec::new(),
+                populated: FactClasses::NONE,
+                limitation_paths: BTreeMap::new(),
             },
         );
         assert!(matches!(
@@ -1581,6 +1584,8 @@ mod tests {
                 schema_version: SCHEMA_VERSION,
                 fingerprint: "fnv64:0000000000000001".to_string(),
                 limitation_ids: Vec::new(),
+                populated: FactClasses::NONE,
+                limitation_paths: BTreeMap::new(),
             },
         );
         match SemanticQueryView::build(&model) {
@@ -1605,6 +1610,8 @@ mod tests {
                 schema_version: SCHEMA_VERSION,
                 fingerprint: "fnv64:0000000000000002".to_string(),
                 limitation_ids: Vec::new(),
+                populated: FactClasses::NONE,
+                limitation_paths: BTreeMap::new(),
             },
         );
         let err = SemanticQueryView::build_checked(CheckedBuildInput {
@@ -1932,13 +1939,13 @@ mod tests {
             IndexAnswer::Partial { rows: None, limitation_ids } => {
                 assert_eq!(limitation_ids, ["read-failed:lib/Locked.pm"]);
             }
-            other => panic!("expected bounded absent answer, got {other:?}"),
+            other => assert!(
+                matches!(other, IndexAnswer::Partial { rows: None, .. }),
+                "expected bounded absent answer, got {other:?}"
+            ),
         }
         // A never-discovered path stays a legitimate exact empty.
-        assert!(matches!(
-            view.source_by_path("lib/NeverSeen.pm"),
-            IndexAnswer::Complete(None)
-        ));
+        assert!(matches!(view.source_by_path("lib/NeverSeen.pm"), IndexAnswer::Complete(None)));
     }
 
     #[test]
@@ -1956,9 +1963,9 @@ mod tests {
         let view = SemanticQueryView::build(&model).unwrap();
         assert_eq!(
             view.family_completeness("declarations"),
-            Some(&IndexCompleteness::NotProven(
-                NotProvenReason::ShardClassNotPopulated { family: "declarations" }
-            ))
+            Some(&IndexCompleteness::NotProven(NotProvenReason::ShardClassNotPopulated {
+                family: "declarations"
+            }))
         );
         assert!(matches!(
             view.declarations_in_file(&FileId::new("lib/Quiet.pm", &Digest::of("quiet"))),
@@ -1985,7 +1992,8 @@ mod tests {
         // to Complete).
         let requested = FactClasses::FILES | FactClasses::SYMBOLS;
         let mut model = ProjectModel::empty("proj", requested);
-        let mut shard = ProjectFactShard::empty(file("lib/A.pm", "aaa"), 1, "test-producer", requested);
+        let mut shard =
+            ProjectFactShard::empty(file("lib/A.pm", "aaa"), 1, "test-producer", requested);
         shard.populated |= FactClasses::SYMBOLS;
         shard.source_len_bytes = 3;
         shard.limitations.push(ModelLimitation {
@@ -2012,7 +2020,10 @@ mod tests {
                     "non-suffixed id must bound the scoped answer"
                 );
             }
-            other => panic!("expected partial scoped answer, got {other:?}"),
+            other => assert!(
+                matches!(other, IndexAnswer::Partial { .. }),
+                "expected partial scoped answer, got {other:?}"
+            ),
         }
     }
 
@@ -2030,16 +2041,14 @@ mod tests {
             paths: vec!["lib/A.pm".to_string()],
         });
         model.unread_discovered.insert("lib/A.pm".to_string());
-        let mut shard = ProjectFactShard::empty(file("lib/A.pm", "aaa"), 1, "test-producer", requested);
+        let mut shard =
+            ProjectFactShard::empty(file("lib/A.pm", "aaa"), 1, "test-producer", requested);
         shard.populated |= FactClasses::SYMBOLS;
         shard.source_len_bytes = 3;
         model.insert_or_replace(shard).unwrap();
         assert!(model.unread_discovered.is_empty());
 
         let view = SemanticQueryView::build(&model).unwrap();
-        assert!(matches!(
-            view.source_by_path("lib/A.pm"),
-            IndexAnswer::Complete(_)
-        ));
+        assert!(matches!(view.source_by_path("lib/A.pm"), IndexAnswer::Complete(_)));
     }
 }

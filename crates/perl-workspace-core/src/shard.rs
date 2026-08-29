@@ -18,6 +18,12 @@ use crate::relation::RelationFact;
 use crate::symbol::SymbolRecord;
 use crate::test::TestFact;
 
+/// Serde default for retained populated classes: a state decoded from a
+/// pre-`populated` snapshot proves no class population.
+fn default_populated() -> FactClasses {
+    FactClasses::NONE
+}
+
 /// Metadata retained for each shard adopted by a [`crate::ProjectModel`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProjectShardState {
@@ -34,7 +40,7 @@ pub struct ProjectShardState {
     pub limitation_ids: Vec<String>,
     /// Fact classes the adopted shard actually populated. A class that was
     /// requested but never populated cannot back a proven-empty denominator.
-    #[serde(default)]
+    #[serde(default = "default_populated")]
     pub populated: FactClasses,
     /// Structural limitation-to-path association retained from the adopted
     /// shard (limitation id -> relative paths it bounds). Limitations that
