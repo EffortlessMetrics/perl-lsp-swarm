@@ -25,6 +25,28 @@
 # the merged PR, not by ancestry, because a squashed branch is never an ancestor
 # of its base.
 #
+# --dry-run is an inspection front door and is strictly read-only: it performs no
+# fetch, no `git worktree prune`, no worktree removal, no branch deletion, and no
+# other write to Git metadata, refs, config, or the filesystem. Observation must
+# never call a primitive that can erase the evidence it is observing — a global
+# prune can drop an administrative registration whose path is merely unreachable
+# from the current OS view (a Windows-registered worktree seen from WSL), which
+# both destroys the registration and makes the row vanish from this report.
+#
+# Read-only is not the same as read-shaped. `git status` opportunistically
+# refreshes the index and rewrites `.git/worktrees/<id>/index` whenever a tracked
+# file's cached stat data is stale, so an apparently innocent query writes to Git
+# metadata. Every observation runs through `git_read`, which passes
+# `--no-optional-locks` to suppress exactly that class of incidental write.
+#
+# Because --dry-run does not fetch, it judges against the remote-tracking refs as
+# they already stand. Those refs usually only lag the remote, so verdicts usually
+# err toward KEEP — but they are not monotonic: a forced update can move
+# `origin/X` backward and a deleted branch can remove it, so a stale ref may still
+# contain commits the remote has since dropped. A dry-run REMOVE is therefore a
+# proposal, never proof. Nothing is removed on that evidence: the mutating sweep
+# fetches first and re-classifies against fresh refs before it acts.
+#
 # Usage:
 #   bash scripts/cleanup-completed-worktrees.sh [--dry-run] [--json]
 #
@@ -44,9 +66,18 @@ for arg in "$@"; do
 done
 
 BASE="${CLEANUP_BASE_BRANCH:-main}"
-REPO_ROOT="$(git rev-parse --path-format=absolute --git-common-dir | sed 's|/\.git$||')"
-MAIN_WT="$(git -C "$REPO_ROOT" rev-parse --show-toplevel)"
-CURRENT_WT="$(git rev-parse --show-toplevel)"
+
+# Every observation goes through here. `--no-optional-locks` stops git from
+# taking the index lock for opportunistic work — without it `git status` rewrites
+# a worktree's index whenever cached stat data is stale, which is a metadata
+# write on a path that promises none.
+git_read() {
+    git --no-optional-locks "$@"
+}
+
+REPO_ROOT="$(git_read rev-parse --path-format=absolute --git-common-dir | sed 's|/\.git$||')"
+MAIN_WT="$(git_read -C "$REPO_ROOT" rev-parse --show-toplevel)"
+CURRENT_WT="$(git_read rev-parse --show-toplevel)"
 STATE_FILE="$REPO_ROOT/.ops-perl-lsp/worktree-manager/state.json"
 
 # When emitting JSON, git stdout/stderr must not pollute the stream.
@@ -122,12 +153,26 @@ branch_landed_via_pr() {
 
 # Stale origin refs make "unpushed" wrong in the dangerous direction, so refresh
 # before judging. A fetch failure is not fatal, but it downgrades every verdict.
+#
+# A fetch updates refs/remotes/**, so it is a mutation and is not permitted on the
+# inspection path. Freshness is therefore tracked as its own axis, independent of
+# mutation authority:
+#
+#   fresh   refs refreshed from the remote this run
+#   stale   --dry-run; refs used as they already stand, so verdicts are proposals
+#   failed  fetch attempted and failed; remote-dependent verdicts are NOT_PROVEN
 FETCH_OK=true
-git_out git -C "$REPO_ROOT" fetch --quiet origin "$BASE" 2>/dev/null || FETCH_OK=false
+REMOTE_STATE=fresh
+if $DRY_RUN; then
+    REMOTE_STATE=stale
+else
+    git_out git -C "$REPO_ROOT" fetch --quiet origin "$BASE" 2>/dev/null ||
+        { FETCH_OK=false; REMOTE_STATE=failed; }
+fi
 BASE_REF="origin/$BASE"
-git -C "$REPO_ROOT" rev-parse --verify --quiet "$BASE_REF" >/dev/null || BASE_REF="$BASE"
+git_read -C "$REPO_ROOT" rev-parse --verify --quiet "$BASE_REF" >/dev/null || BASE_REF="$BASE"
 
-REMOVED=0; KEPT=0; SKIPPED=0; TOTAL=0
+REMOVED=0; KEPT=0; SKIPPED=0; REVIEWED=0; TOTAL=0
 ROWS=()
 
 if ! $JSON; then
@@ -135,7 +180,12 @@ if ! $JSON; then
     echo "Repo root:   $REPO_ROOT"
     echo "Base:        $BASE_REF"
     echo "Dry run:     $DRY_RUN"
-    $FETCH_OK || echo "WARNING:     fetch failed; 'unpushed' verdicts are NOT_PROVEN"
+    echo "Remote refs: $REMOTE_STATE"
+    case "$REMOTE_STATE" in
+        stale)  echo "NOTE:        read-only inspection; refs not refreshed, so verdicts are"
+                echo "             provisional — the sweep re-fetches before it acts" ;;
+        failed) echo "WARNING:     fetch failed; 'unpushed' verdicts are NOT_PROVEN" ;;
+    esac
     echo ""
     printf "%-26s %-40s %-14s %s\n" "WORKTREE" "BRANCH" "STATE" "ACTION"
     printf "%-26s %-40s %-14s %s\n" "--------" "------" "-----" "------"
@@ -152,7 +202,16 @@ emit() {
     fi
 }
 
-git_out git -C "$REPO_ROOT" worktree prune
+# `git worktree prune` rewrites .git/worktrees/**. It is mutation, and running it
+# before classification lets observation change its own subject: a registration
+# whose path is unreachable from this OS view is dropped, so the row disappears
+# from the report instead of being reported for review.
+prune_worktrees() {
+    $DRY_RUN && return 0
+    git_out git -C "$REPO_ROOT" worktree prune
+}
+
+prune_worktrees
 
 # Parse porcelain output so paths containing spaces survive.
 WT_PATH=""; WT_BRANCH=""; WT_LOCKED=false; WT_DETACHED=false
@@ -176,22 +235,31 @@ process_worktree() {
     if [[ -n "$owner" ]]; then
         emit "$name" "${branch:-(detached)}" "owned:$owner" "KEEP"; KEPT=$((KEPT + 1)); return 0
     fi
+    # An absent path is not proof that the registration is stale: it may simply be
+    # unreachable from this OS view. A drive-letter/backslash registration read on
+    # a POSIX host is the observed cross-OS signature. Neither is ever resolved by
+    # guessing a path conversion, and neither is ever a cleanup candidate.
     if [[ ! -d "$path" ]]; then
-        emit "$name" "${branch:-(detached)}" "missing" "SKIP"; SKIPPED=$((SKIPPED + 1)); return 0
+        local unreachable="missing"
+        if [[ "$path" == *\\* || "$path" =~ ^[A-Za-z]:[/\\] ]]; then
+            unreachable="foreign-path"
+        fi
+        emit "$name" "${branch:-(detached)}" "$unreachable" "REVIEW"
+        REVIEWED=$((REVIEWED + 1)); return 0
     fi
 
     # Uncommitted work is unique by definition. Check it first and never remove.
-    if [[ -n "$(git -C "$path" status --porcelain 2>/dev/null || echo dirty)" ]]; then
+    if [[ -n "$(git_read -C "$path" status --porcelain 2>/dev/null || echo dirty)" ]]; then
         emit "$name" "${branch:-(detached)}" "dirty" "KEEP"; KEPT=$((KEPT + 1)); return 0
     fi
 
     local head landed
-    head="$(git -C "$path" rev-parse HEAD 2>/dev/null || echo "")"
+    head="$(git_read -C "$path" rev-parse HEAD 2>/dev/null || echo "")"
     if [[ -z "$head" ]]; then
         emit "$name" "${branch:-(detached)}" "unreadable" "KEEP"; KEPT=$((KEPT + 1)); return 0
     fi
     landed=false
-    git -C "$REPO_ROOT" merge-base --is-ancestor "$head" "$BASE_REF" 2>/dev/null && landed=true
+    git_read -C "$REPO_ROOT" merge-base --is-ancestor "$head" "$BASE_REF" 2>/dev/null && landed=true
     if ! $landed && [[ "$detached" != "true" && -n "${branch:-}" ]]; then
         branch_landed_via_pr "$branch" && landed=true
     fi
@@ -223,7 +291,7 @@ process_worktree() {
     fi
 
     # Not landed: is every commit already on the remote?
-    if ! git -C "$REPO_ROOT" rev-parse --verify --quiet "origin/$branch" >/dev/null; then
+    if ! git_read -C "$REPO_ROOT" rev-parse --verify --quiet "origin/$branch" >/dev/null; then
         emit "$name" "$branch" "no-remote" "KEEP"; KEPT=$((KEPT + 1)); return 0
     fi
     if ! $FETCH_OK; then
@@ -231,7 +299,7 @@ process_worktree() {
     fi
 
     local ahead
-    ahead="$(git -C "$REPO_ROOT" rev-list --count "origin/$branch..$head" 2>/dev/null || echo 1)"
+    ahead="$(git_read -C "$REPO_ROOT" rev-list --count "origin/$branch..$head" 2>/dev/null || echo 1)"
     if [[ "$ahead" -gt 0 ]]; then
         emit "$name" "$branch" "unpushed:$ahead" "KEEP"; KEPT=$((KEPT + 1)); return 0
     fi
@@ -255,27 +323,45 @@ while IFS= read -r line; do
         detached)    WT_DETACHED=true ;;
         locked*)     WT_LOCKED=true ;;
     esac
-done < <(git -C "$REPO_ROOT" worktree list --porcelain)
+done < <(git_read -C "$REPO_ROOT" worktree list --porcelain)
 process_worktree "$WT_PATH" "$WT_BRANCH" "$WT_LOCKED" "$WT_DETACHED"
 
-git_out git -C "$REPO_ROOT" worktree prune
+prune_worktrees
 
 if $JSON; then
     WORKTREES_JSON="$(printf '%s\n' "${ROWS[@]}" | jq -s '.')"
+    # `fetch_ok` is retained for compatibility and means "remote-dependent
+    # verdicts are admissible", not "a fetch was performed" — under --dry-run no
+    # fetch happens and it is still true. `remote_state` is the precise axis.
     jq -cn \
         --argjson removed "$REMOVED" \
         --argjson kept "$KEPT" \
         --argjson skipped "$SKIPPED" \
+        --argjson review "$REVIEWED" \
         --argjson total "$TOTAL" \
         --argjson fetch_ok "$FETCH_OK" \
+        --arg remote_state "$REMOTE_STATE" \
+        --argjson dry_run "$DRY_RUN" \
         --argjson worktrees "$WORKTREES_JSON" \
-        '{removed:$removed, kept:$kept, skipped:$skipped, total:$total, fetch_ok:$fetch_ok, worktrees:$worktrees}'
+        '{removed:$removed, kept:$kept, skipped:$skipped, review:$review, total:$total, fetch_ok:$fetch_ok, remote_state:$remote_state, dry_run:$dry_run, worktrees:$worktrees}'
 else
     echo ""
     echo "=== Summary ==="
-    echo "Removed: $REMOVED"
+    # A read-only inspection has removed nothing. Naming the count "Removed"
+    # would report a proposed action as one already taken.
+    if $DRY_RUN; then
+        echo "Propose: $REMOVED (removal proposed, not performed)"
+    else
+        echo "Removed: $REMOVED"
+    fi
     echo "Kept:    $KEPT"
     echo "Skipped: $SKIPPED"
+    echo "Review:  $REVIEWED"
     echo "Total:   $TOTAL"
-    $DRY_RUN && echo "" && echo "(Dry run — no changes made.)"
+    # Guard the exit status: a bare `$DRY_RUN && ...` tail returns 1 on a real
+    # sweep, so every successful non-dry-run exited non-zero.
+    if $DRY_RUN; then
+        echo ""
+        echo "(Dry run — read-only: no fetch, prune, removal, or branch deletion.)"
+    fi
 fi

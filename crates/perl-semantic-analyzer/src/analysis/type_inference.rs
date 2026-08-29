@@ -572,9 +572,7 @@ impl TypeInferenceEngine {
                 let func_name = name.clone();
 
                 // Check built-in functions
-                if let Some(sig) = self.builtins.get(&func_name)
-                    && let Subroutine { returns, .. } = sig
-                {
+                if let Some(Subroutine { returns, .. }) = self.builtins.get(&func_name) {
                     if returns.len() == 1 {
                         return Ok(returns[0].clone());
                     } else if returns.is_empty() {
@@ -585,9 +583,7 @@ impl TypeInferenceEngine {
                 }
 
                 // Check user-defined functions
-                if let Some(ty) = env.get_subroutine(&func_name)
-                    && let Subroutine { returns, .. } = ty
-                {
+                if let Some(Subroutine { returns, .. }) = env.get_subroutine(&func_name) {
                     if returns.len() == 1 {
                         return Ok(returns[0].clone());
                     } else if returns.is_empty() {

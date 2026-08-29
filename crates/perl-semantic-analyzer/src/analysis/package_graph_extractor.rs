@@ -102,34 +102,22 @@ impl ExtractorState {
             }
 
             // `our @ISA = qw(Base1 Base2)` (VariableDeclaration form)
-            NodeKind::VariableDeclaration { variable, initializer: Some(init), .. } => {
-                if Self::is_isa_variable(variable) {
-                    let anchor_id = Self::anchor_from_node(node);
-                    let names = Self::collect_names_from_node(init);
-                    for name in names {
-                        self.emit_edge(
-                            name,
-                            PackageEdgeKind::Inherits,
-                            anchor_id,
-                            Confidence::High,
-                        );
-                    }
+            NodeKind::VariableDeclaration { variable, initializer: Some(init), .. }
+                if Self::is_isa_variable(variable) =>
+            {
+                let anchor_id = Self::anchor_from_node(node);
+                let names = Self::collect_names_from_node(init);
+                for name in names {
+                    self.emit_edge(name, PackageEdgeKind::Inherits, anchor_id, Confidence::High);
                 }
             }
 
             // `@ISA = qw(Base1 Base2)` (bare Assignment form)
-            NodeKind::Assignment { lhs, rhs, .. } => {
-                if Self::is_isa_variable(lhs) {
-                    let anchor_id = Self::anchor_from_node(node);
-                    let names = Self::collect_names_from_node(rhs);
-                    for name in names {
-                        self.emit_edge(
-                            name,
-                            PackageEdgeKind::Inherits,
-                            anchor_id,
-                            Confidence::High,
-                        );
-                    }
+            NodeKind::Assignment { lhs, rhs, .. } if Self::is_isa_variable(lhs) => {
+                let anchor_id = Self::anchor_from_node(node);
+                let names = Self::collect_names_from_node(rhs);
+                for name in names {
+                    self.emit_edge(name, PackageEdgeKind::Inherits, anchor_id, Confidence::High);
                 }
             }
 
