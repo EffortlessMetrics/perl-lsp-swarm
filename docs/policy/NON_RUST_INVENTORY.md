@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12318 |
-| Rust-family files | 3770 |
-| Non-Rust files | 8548 |
-| Allowlisted | 6313 |
+| Total tracked files | 12335 |
+| Rust-family files | 3779 |
+| Non-Rust files | 8556 |
+| Allowlisted | 6321 |
 | Unclassified | 2235 |
 
 ## Non-Rust files by category
@@ -17,9 +17,9 @@
 | Category | Count |
 |---|---|
 | config | 490 |
-| documentation | 2791 |
+| documentation | 2792 |
 | generated | 2 |
-| production | 339 |
+| production | 346 |
 | test | 2033 |
 | tooling | 658 |
 | unclassified | 2235 |
@@ -6036,6 +6036,7 @@
 | `docs/specs/PLSP-SPEC-0035-executable-profile-and-eir.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/specs/README.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/specs/RELEASE_CANDIDATE_BASELINE.md` | documentation | `non-rust-docs-tree` | docs |
+| `docs/specs/WORKTREE_FORENSIC_EVIDENCE_V1.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/specs/lsp-318-conformance-matrix.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/specs/lsp-final-surface-inventory.json` | documentation | `non-rust-docs-tree` | docs |
 | `docs/specs/protocol-type-substrate-matrix.json` | documentation | `non-rust-docs-tree` | docs |
@@ -8322,6 +8323,10 @@
 | `vscode-extension/src/boundedHttpJson.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/clientMeasurement.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/clientPerformancePolicy.ts` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/src/coexistenceAdvisory.ts` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/src/coexistenceCommandGroup.ts` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/src/coexistenceDetector.ts` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/src/coexistenceRegistry.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/commandResults.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/configurationMigrationRegistry.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/configurationMigrationRuntime.ts` | production | `non-rust-vscode-extension` | editor/vscode |
@@ -8398,6 +8403,9 @@
 | `vscode-extension/src/test/boundedHttpJson.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/clientMeasurement.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/clientPerformancePolicy.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/src/test/coexistenceAdvisory.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/src/test/coexistenceCommandGroup.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/src/test/coexistenceDetector.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/commandResults.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/commands.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/configuration.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
