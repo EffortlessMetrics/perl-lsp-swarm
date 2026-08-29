@@ -543,19 +543,34 @@ fn competing_quote_like_table_imports_invalidate_quickorm_authority()
 #[test]
 fn malformed_quote_like_table_imports_remain_fail_closed() -> Result<(), Box<dyn std::error::Error>>
 {
-    for import in [
-        "use Other::DSL qw/table;",
-        "use Other::DSL qw{table] ;",
-        "use Other::DSL qw[table};",
-        "use Other::DSL qw(table] ;",
-    ] {
+    let mut parser = Parser::new(
+        "package User; use DBIx::QuickORM type => 'table'; use Other::DSL qw/table; table users => sub {};",
+    );
+    let ast =
+        parser.parse().map_err(|error| format!("failed to inspect malformed import: {error:?}"))?;
+    let malformed_use = ast
+        .children()
+        .into_iter()
+        .find(|node| matches!(&node.kind, NodeKind::Use { module, .. } if module == "Other::DSL"))
+        .ok_or("missing malformed Other::DSL use node")?;
+    let NodeKind::Use { args, .. } = &malformed_use.kind else {
+        return Err("expected malformed Other::DSL use node".into());
+    };
+    assert!(
+        !imports_table_builder(args),
+        "the parser-recovered malformed quote-like argument is not an actionable competing import"
+    );
+
+    for import in
+        ["use Other::DSL qw{table] ;", "use Other::DSL qw[table};", "use Other::DSL qw(table] ;"]
+    {
         let source = format!(
-            "package User; use DBIx::QuickORM type => 'table'; {import} table users => sub {{}};"
+            "package User; use DBIx::QuickORM type => 'table'; table users => sub {{}}; {import}"
         );
         assert_eq!(
             canonical_names(&generated_facts_from_source(&source)?),
             vec!["User::qorm_table"],
-            "malformed recovered import must not consume authority: {source}"
+            "malformed recovered import must not invalidate an already-earned fact: {source}"
         );
     }
     Ok(())

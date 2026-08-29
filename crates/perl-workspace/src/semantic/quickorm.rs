@@ -322,16 +322,6 @@ fn imports_table_builder(args: &[String]) -> bool {
     args.iter().any(|arg| imports_table_builder_value(arg))
 }
 
-fn imports_table_builder_from_nodes(args: &[Node]) -> bool {
-    args.iter().any(|arg| match &arg.kind {
-        NodeKind::String { value, .. } | NodeKind::Identifier { name: value } => {
-            imports_table_builder_value(value)
-        }
-        NodeKind::ArrayLiteral { elements } => imports_table_builder_from_nodes(elements),
-        _ => false,
-    })
-}
-
 fn imports_table_builder_value(value: &str) -> bool {
     let value = value.trim();
     if matches!(value, "table" | "view" | "'table'" | "\"table\"" | "'view'" | "\"view\"") {
