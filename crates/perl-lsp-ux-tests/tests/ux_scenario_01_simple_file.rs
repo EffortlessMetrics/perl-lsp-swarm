@@ -22,21 +22,49 @@ use perl_lsp_ux_tests::{
 };
 use serde_json::{Map, Value, json};
 use std::collections::BTreeSet;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const HOVER_FILE: &str = "test.pl";
 const HOVER_SOURCE: &str = "use strict;\nuse warnings;\n\nmy $x = 42;\nmy $y = $x + 1;\n";
 const HOVER_LINE: u32 = 3;
 const HOVER_CHARACTER: u32 = 3;
-const HOVER_ATTEMPTS: usize = 5;
-const HOVER_RETRY_DELAY: Duration = Duration::from_millis(200);
 const HOVER_MARKERS: [&str; 2] = ["$x", "Scalar Variable"];
 
 const COMPLETION_FILE: &str = "complete.pl";
 const COMPLETION_SOURCE: &str = "pri\n";
 const COMPLETION_LABEL: &str = "print";
-const COMPLETION_ATTEMPTS: usize = 5;
-const COMPLETION_RETRY_DELAY: Duration = Duration::from_millis(200);
+
+/// Deadline+condition polling window for first useful results. Mirrors the
+/// crate's readiness deadlines (`UxHarness::wait_for_index_ready` callers use
+/// 20 s) and the 50 ms poll cadence of `UxHarness::wait_for_workspace_symbols`
+/// and `DiagnosticsTracker::wait_for_uri_matching`.
+const USEFUL_RESULT_TIMEOUT: Duration = Duration::from_secs(20);
+const POLL_INTERVAL: Duration = Duration::from_millis(50);
+
+/// Poll `attempt` until it reports a useful result, bounded by a wall-clock
+/// deadline instead of a fixed attempt count.
+///
+/// Mirrors `DiagnosticsTracker::wait_for_uri_matching`: at least one attempt
+/// always runs before the deadline is tested, and `Ok(None)` keeps polling
+/// while `Err` propagates immediately (malformed content must not be retried
+/// away). Returns the deadline-exhaustion error unchanged when no attempt
+/// produces a useful result before `timeout` elapses.
+fn poll_until_useful<T>(
+    timeout: Duration,
+    description: &str,
+    mut attempt: impl FnMut() -> Result<Option<T>>,
+) -> Result<T> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Some(useful) = attempt()? {
+            return Ok(useful);
+        }
+        if Instant::now() >= deadline {
+            anyhow::bail!("expected {description} within {timeout:?}");
+        }
+        std::thread::sleep(POLL_INTERVAL);
+    }
+}
 
 fn object_keys(map: &Map<String, Value>) -> BTreeSet<&str> {
     map.keys().map(String::as_str).collect()
@@ -106,18 +134,15 @@ fn useful_static_variable_hover(result: &Value) -> Result<String> {
 }
 
 fn static_variable_hover_with_retry(harness: &UxHarness) -> Result<Value> {
-    for attempt in 1..=HOVER_ATTEMPTS {
-        if let Some(result) = harness.hover(HOVER_FILE, HOVER_LINE, HOVER_CHARACTER)? {
-            useful_static_variable_hover(&result)?;
-            return Ok(result);
+    poll_until_useful(USEFUL_RESULT_TIMEOUT, "useful hover for `$x` at test.pl:3:3", || {
+        match harness.hover(HOVER_FILE, HOVER_LINE, HOVER_CHARACTER)? {
+            Some(result) => {
+                useful_static_variable_hover(&result)?;
+                Ok(Some(result))
+            }
+            None => Ok(None),
         }
-        if attempt < HOVER_ATTEMPTS {
-            std::thread::sleep(HOVER_RETRY_DELAY);
-        }
-    }
-    anyhow::bail!(
-        "expected useful hover for `$x` at {HOVER_FILE}:{HOVER_LINE}:{HOVER_CHARACTER} after {HOVER_ATTEMPTS} attempts"
-    )
+    })
 }
 
 fn position_is_valid(position: &Value) -> bool {
@@ -183,19 +208,25 @@ fn includes_useful_completion(items: &[Value]) -> Result<bool> {
 }
 
 fn completion_with_retry(harness: &UxHarness) -> Result<Vec<Value>> {
-    for attempt in 1..=COMPLETION_ATTEMPTS {
-        let items = harness.completion(COMPLETION_FILE, 0, 3)?;
-        if includes_useful_completion(&items)? {
-            return Ok(items);
-        }
-        if attempt == COMPLETION_ATTEMPTS {
-            anyhow::bail!(
-                "expected protocol-valid `print` completion for `pri` after {COMPLETION_ATTEMPTS} attempts; last items: {items:?}"
-            );
-        }
-        std::thread::sleep(COMPLETION_RETRY_DELAY);
+    let mut last_items: Vec<Value> = Vec::new();
+    match poll_until_useful(
+        USEFUL_RESULT_TIMEOUT,
+        "protocol-valid `print` completion for `pri`",
+        || {
+            let items = harness.completion(COMPLETION_FILE, 0, 3)?;
+            if includes_useful_completion(&items)? {
+                return Ok(Some(items));
+            }
+            last_items = items;
+            Ok(None)
+        },
+    ) {
+        Ok(items) => Ok(items),
+        Err(deadline_error) => Err(anyhow::anyhow!(
+            "expected protocol-valid `print` completion for `pri` within \
+             {USEFUL_RESULT_TIMEOUT:?}; last items: {last_items:?} ({deadline_error})"
+        )),
     }
-    anyhow::bail!("completion retry loop exhausted without an attempt")
 }
 
 #[test]
