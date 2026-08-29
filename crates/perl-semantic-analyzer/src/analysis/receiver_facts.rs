@@ -847,6 +847,20 @@ mod tests {
         Ok(())
     }
 
+    fn binary_receiver_parts<'a>(
+        root: &'a Node,
+        method: &str,
+    ) -> Result<(&'a Node, &'a Node, &'a Node), String> {
+        let call = method_call_named(root, method).ok_or("expected method call")?;
+        let NodeKind::MethodCall { object, .. } = &call.kind else {
+            return Err("node is not a method call".to_string());
+        };
+        let NodeKind::Binary { left, right, .. } = &object.kind else {
+            return Err("receiver is not a subscript binary".to_string());
+        };
+        Ok((object, left, right))
+    }
+
     #[test]
     fn hash_receiver_fact_call_presence_observer() -> Result<(), String> {
         let mut env = TypeEnvironment::new();
@@ -854,12 +868,16 @@ mod tests {
             "data".to_string(),
             hash_of_hash_shape_fact("outer", "inner", "My::Leaf"),
         );
+        let code = "$data{outer}{inner}->render();";
+        let root = parse_ast(code)?;
+        let (receiver, left, right) = binary_receiver_parts(&root, "render")?;
+        let context = ReceiverFactContext::new(Some(&env)).with_source(code);
 
-        let fact = receiver_fact_for("$data{outer}{inner}->render();", "render", &env)?;
+        // Direct call observation: hash_receiver_fact admitted the inner
+        // slot through with_access_evidence(slot_fact, &container_fact,
+        // evidence).
+        let fact = super::hash_receiver_fact(receiver, left, right, context);
 
-        // Observes hash_receiver_fact's admission call: the slot fact was
-        // combined with the walked container fact and the hash-slot access
-        // evidence in one with_access_evidence call.
         assert_eq!(fact.kind, ReceiverKind::HashSlot);
         assert_eq!(fact.package.as_deref(), Some("My::Leaf"));
         assert_eq!(fact.confidence, Confidence::High);
@@ -881,11 +899,15 @@ mod tests {
             hash_of_array_shape_fact("staff", 0, "My::Group"),
         );
 
-        let fact = receiver_fact_for("$groups{staff}[0]->render();", "render", &env)?;
+        let code = "$groups{staff}[0]->render();";
+        let ast = parse_ast(code)?;
+        let (receiver, left, right) = binary_receiver_parts(&ast, "render")?;
+        let context = ReceiverFactContext::new(Some(&env)).with_source(code);
 
-        // Observes array_receiver_fact's admission call: the index fact was
-        // combined with the recursively walked container fact and the array
-        // index access evidence in one with_access_evidence call.
+        // Direct call observation: array_receiver_fact admitted the index
+        // through with_access_evidence(index_fact, &container_fact, evidence).
+        let fact = super::array_receiver_fact(receiver, left, right, context);
+
         assert_eq!(fact.kind, ReceiverKind::ArrayIndex);
         assert_eq!(fact.package.as_deref(), Some("My::Group"));
         assert_eq!(fact.confidence, Confidence::High);
@@ -957,6 +979,34 @@ mod tests {
         assert_eq!(fact.package, None);
         assert_eq!(fact.confidence, Confidence::Low);
         assert_eq!(fact.fallback_state, ReceiverFallbackState::Fallback);
+        Ok(())
+    }
+
+    #[test]
+    fn receiver_container_fact_boundary_discriminator() -> Result<(), String> {
+        // Some boundary: the container is a variable with an environment
+        // fact, so the variable-identity base case resolves it.
+        let mut env = TypeEnvironment::new();
+        env.set_variable_fact("data".to_string(), hash_shape_fact("k", "My::Known"));
+        let code = "$data{k}->render();";
+        let root = parse_ast(code)?;
+        let (_, left, _) = binary_receiver_parts(&root, "render")?;
+        let context = ReceiverFactContext::new(Some(&env)).with_source(code);
+        assert!(
+            super::receiver_container_fact(left, context).is_some(),
+            "variable container must resolve through the environment"
+        );
+
+        // None boundary: the container is a method-call result, so
+        // variable_identity returns None and no binary arm applies.
+        let code2 = "$srv->fetch->{k}->render();";
+        let root2 = parse_ast(code2)?;
+        let (_, left2, _) = binary_receiver_parts(&root2, "render")?;
+        let empty = ReceiverFactContext::new(None).with_source(code2);
+        assert!(
+            super::receiver_container_fact(left2, empty).is_none(),
+            "method-call container must miss the variable-identity boundary"
+        );
         Ok(())
     }
 
