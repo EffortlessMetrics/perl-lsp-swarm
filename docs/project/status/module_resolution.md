@@ -204,8 +204,8 @@ sources that affect cancellation, reachability, and filter behavior.
 | Kind | Source | Subject to `no lib` cancellation? | Notes |
 |---|---|---|---|
 | `WorkspaceRelative` | Relative configured include paths such as `lib`, `t/lib`, or `.` | Yes, when the matching configured path is cancelled at the request position | The `.` entry resolves to the workspace root and is **wildcard-like** for reachability filtering; it is not a separate kind |
-| `FileLocalLexical` | A relative `use lib '...'` path from the source under analysis | Yes (position-scoped) | Absolute lexical paths use `ExternalAbsolute`; cancellation is applied before effective roots are assembled |
-| `ExternalAbsolute` | An absolute configured or lexical include path | Yes when it is a cancelled configured or lexical path | The resolver treats the path as already absolute; upstream configuration validation owns trust-boundary checks |
+| `FileLocalLexical` | A `use lib '...'` path from the source under analysis after lexical resolution | Yes (position-scoped) | Workspace-contained absolute lexical paths are normalized to workspace-relative paths and use this kind; absolute lexical paths outside the workspace are rejected before effective roots are assembled |
+| `ExternalAbsolute` | An absolute configured include path already admitted by the upstream configuration boundary | Yes when it is a cancelled configured path | Lexical paths are normalized or rejected before effective-root classification; this kind is not the production representation for workspace-contained absolute lexical paths |
 | `Perl5LibEnv` | A `PERL5LIB` entry when `usePerl5lib` is enabled | No | Environment-supplied roots are labeled separately; subprocess environment handling is governed by #8551 |
 | `InterpreterStartup` | An entry returned by the selected interpreter's startup `@INC` probe when `useSystemInc` is enabled | No | Output of the subprocess seam — see [perl-subprocess-seams.md](../../architecture/perl-subprocess-seams.md) (#8555) |
 | `RuntimeDerived` | A future trusted runtime-derived include root | No | Reserved by the enum; the current effective-root builder does not produce it |

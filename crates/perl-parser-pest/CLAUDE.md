@@ -44,10 +44,13 @@ The current implementation has three useful stages:
    parsing for operator precedence.
 3. `SexpFormatter` serializes that AST into a crate-local comparison projection.
 
-The S-expression is not a Tree-sitter syntax tree, ABI, node-schema, source-range, or
-semantic-parity contract. Do not label matching text shapes as Tree-sitter
-compatibility. Benchmark and corpus evidence must identify this provider/package and
-the grammar/projection revision needed to reproduce the observation.
+The live crate API documentation describes this output as a Tree-sitter-compatible
+S-expression. That is a bounded serialized-format claim, not a promise that this crate
+produces a Tree-sitter syntax tree, ABI, node schema, source ranges, or semantic parity.
+Do not promote matching text shapes into any broader compatibility claim. The larger
+compatibility decision and its evidence belong to #9214; benchmark and corpus evidence
+must identify this provider/package and the grammar/projection revision needed to
+reproduce the observation.
 
 `parse()` remains the operative parser API. Typed outcome, attempt, diagnostic, failure,
 and source-range types are substrate until a current production path and discriminating

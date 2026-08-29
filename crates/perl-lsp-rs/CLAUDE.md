@@ -49,11 +49,14 @@ default and configured variants:
   `lib`, `.`, and `local/lib/perl5` entries. The `.` entry is not a separate enum
   variant; when it resolves to the workspace root, `EffectiveIncContext` treats it
   as a wildcard and excludes it from the direct module-file reachability check.
-- `FileLocalLexical` — a relative `use lib` path from the source under analysis. It is
-  position-scoped and subject to `no lib` cancellation before effective roots are
-  assembled. Absolute lexical paths are classified as `ExternalAbsolute`.
-- `ExternalAbsolute` — an absolute include path already admitted by the upstream
-  configuration boundary.
+- `FileLocalLexical` — a `use lib` path from the source under analysis after lexical
+  resolution. It is position-scoped and subject to `no lib` cancellation before effective
+  roots are assembled. A workspace-contained absolute lexical path is normalized to a
+  workspace-relative path and represented here; an absolute lexical path outside the
+  workspace is rejected by the resolver.
+- `ExternalAbsolute` — an absolute configured include path already admitted by the
+  upstream configuration boundary. Lexical paths are normalized or rejected before they
+  reach this effective-root classification.
 - `Perl5LibEnv` — a `PERL5LIB` entry when `use_perl5lib` is enabled.
 - `InterpreterStartup` — an entry returned by the selected interpreter's startup
   `@INC` probe when `use_system_inc` is enabled.
