@@ -105,15 +105,20 @@ impl EglotPatchPacket {
         );
         validate_after_anchor(&self.after_anchor)?;
         ensure!(
-            self.upstream_checks
-                == [
-                    "emacs --batch -Q -L lisp/progmodes -l eglot --eval '(message \"eglot-load-ok\")'",
+            strings_equal(
+                &self.upstream_checks,
+                &[
+                    "emacs --batch -Q -L lisp/progmodes -l eglot --eval '(message \\"eglot-load-ok\\")'",
                     "make -C test lisp/progmodes/eglot-tests",
-                ],
+                ]
+            ),
             "upstream checks must remain explicit and bounded"
         );
         ensure!(
-            self.actual_host_prerequisites == [7708, 7126, 7721],
+            self.actual_host_prerequisites
+                .iter()
+                .copied()
+                .eq([7708, 7126, 7721]),
             "packet must retain the exact host/protocol blockers"
         );
         ensure!(
@@ -122,12 +127,14 @@ impl EglotPatchPacket {
             "proposed upstream correspondence must be present"
         );
         ensure!(
-            self.limitations
-                == [
+            strings_equal(
+                &self.limitations,
+                &[
                     "no_actual_emacs_host_execution",
                     "no_upstream_submission_or_acceptance",
                     "no_released_client_discovery",
-                ],
+                ]
+            ),
             "claim limitations must remain complete and deterministic"
         );
         ensure!(
@@ -140,22 +147,26 @@ impl EglotPatchPacket {
     pub fn apply_to_source(&self, source: &str) -> Result<String> {
         self.validate()?;
         ensure!(
-            source.matches(&self.before_anchor).count() == 1,
+            source.matches(self.before_anchor.as_str()).count() == 1,
             "exact Eglot Perl contact must appear once before patching"
         );
         ensure!(
-            !source.contains(&self.after_anchor),
+            !source.contains(self.after_anchor.as_str()),
             "patched Eglot contact already exists in the source"
         );
-        Ok(source.replacen(&self.before_anchor, &self.after_anchor, 1))
+        Ok(source.replacen(
+            self.before_anchor.as_str(),
+            self.after_anchor.as_str(),
+            1,
+        ))
     }
 
     fn expected_packet_id(&self) -> Result<String> {
         let mut canonical = self.clone();
         canonical.packet_id.clear();
         let bytes = serde_json::to_vec(&canonical)?;
-        let digest = Sha256::digest(bytes);
-        Ok(format!("eglot_patch_{}", hex_prefix(&digest, 16)))
+        let digest = format!("{:x}", Sha256::digest(bytes));
+        Ok(format!("eglot_patch_{}", &digest[..16]))
     }
 }
 
@@ -170,7 +181,7 @@ pub fn checked_packet() -> Result<EglotPatchPacket> {
         after_anchor: AFTER_ANCHOR.to_string(),
         unified_diff: UNIFIED_DIFF.to_string(),
         upstream_checks: vec![
-            "emacs --batch -Q -L lisp/progmodes -l eglot --eval '(message \"eglot-load-ok\")'"
+            "emacs --batch -Q -L lisp/progmodes -l eglot --eval '(message \\"eglot-load-ok\\")'"
                 .to_string(),
             "make -C test lisp/progmodes/eglot-tests".to_string(),
         ],
@@ -237,10 +248,6 @@ fn validate_after_anchor(anchor: &str) -> Result<()> {
     Ok(())
 }
 
-fn hex_prefix(bytes: &[u8], digits: usize) -> String {
-    bytes
-        .iter()
-        .flat_map(|byte| format!("{byte:02x}").chars().collect::<Vec<_>>())
-        .take(digits)
-        .collect()
+fn strings_equal(actual: &[String], expected: &[&str]) -> bool {
+    actual.iter().map(String::as_str).eq(expected.iter().copied())
 }
