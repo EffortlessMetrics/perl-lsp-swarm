@@ -435,6 +435,34 @@ fn coverage_workflow_is_manual_or_nightly_only_and_requires_receipts() {
         coverage_reference_rows_contract(wrapped_stale_route, "wrapped reference").is_err(),
         "coverage documentation contract must reject stale route wording across wrapped lines"
     );
+    let wrapped_connector_on_second_line = "Coverage is advisory,\nbut runs on pull requests.";
+    assert!(
+        coverage_reference_rows_contract(
+            wrapped_connector_on_second_line,
+            "connector-led wrapped reference"
+        )
+        .is_err(),
+        "coverage documentation contract must reject a connector starting the wrapped line"
+    );
+    let wrapped_connector_sentence_boundary = "Coverage is advisory.\nbut runs on pull requests.";
+    assert!(
+        coverage_reference_rows_contract(
+            wrapped_connector_sentence_boundary,
+            "connector sentence boundary"
+        )
+        .is_ok(),
+        "coverage documentation contract must not join across a completed sentence"
+    );
+    let wrapped_connector_table_boundary =
+        "| Coverage is advisory,\n| but runs on pull requests.\n";
+    assert!(
+        coverage_reference_rows_contract(
+            wrapped_connector_table_boundary,
+            "connector table boundary"
+        )
+        .is_ok(),
+        "coverage documentation contract must not join separate table rows"
+    );
     let wrapped_three_line_stale_route =
         "Coverage is advisory, but\nruns through the\nfull CI deep lane.";
     assert!(
@@ -508,6 +536,14 @@ fn coverage_workflow_is_manual_or_nightly_only_and_requires_receipts() {
     assert!(
         has_positive_stale_route_claim("Coverage does not run on PRs or coverage runs on PRs."),
         "a positive disjunction must not be hidden by an unrelated negative clause"
+    );
+    assert!(
+        has_positive_stale_route_claim("Coverage does not run on PRs and\ncoverage runs on PRs."),
+        "a newline-separated positive conjunction must not be hidden by an unrelated negative clause"
+    );
+    assert!(
+        has_positive_stale_route_claim("Coverage does not run on PRs or\ncoverage runs on PRs."),
+        "a newline-separated positive disjunction must not be hidden by an unrelated negative clause"
     );
     assert!(
         !has_positive_stale_route_claim("Coverage does not run on PRs or merge queues."),
@@ -1246,7 +1282,7 @@ fn ensure_no_positive_stale_route_value(value: &TomlValue, context: &str) -> Res
 }
 
 fn has_positive_stale_route_claim(text: &str) -> bool {
-    let normalized = text.to_ascii_lowercase().replace(['_', '-'], " ");
+    let normalized = text.to_ascii_lowercase().replace(['_', '-', '\n', '\r'], " ");
     let has_pr_token = normalized
         .split(|character: char| !character.is_ascii_alphanumeric())
         .any(|token| token == "pr" || token == "prs");
@@ -1447,13 +1483,23 @@ fn coverage_reference_rows_contract(document: &str, context: &str) -> Result<()>
     }
     for window in lines.windows(2) {
         let first_line = window[0].trim_end();
+        let second_line = window[1].trim_start();
         let first_word = first_line
             .split(|character: char| !character.is_ascii_alphanumeric())
             .filter(|word| !word.is_empty())
             .next_back();
+        let second_first_word = second_line
+            .split(|character: char| !character.is_ascii_alphanumeric())
+            .filter(|word| !word.is_empty())
+            .next();
+        let first_line_continues =
+            matches!(first_word, Some("but" | "and" | "or" | "without" | "never"));
+        let connector_starts_second_line =
+            matches!(second_first_word, Some("but" | "and" | "or" | "without" | "never"))
+                && first_line.ends_with(',');
         if matches!(first_line.chars().last(), Some('|' | '.' | '!' | '?' | ':'))
-            || window[1].trim_start().starts_with('|')
-            || !matches!(first_word, Some("but" | "and" | "or" | "without" | "never"))
+            || window.iter().any(|line| line.contains('|'))
+            || (!first_line_continues && !connector_starts_second_line)
         {
             continue;
         }
