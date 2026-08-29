@@ -404,6 +404,9 @@ fn negative_machine_local_path_in_payload_fails_closed() {
         "\\\\build-server\\share\\secret.log",
         "//build-server/share/secret.log",
         "//build-server.example/share/secret.log",
+        "//build-server.example/C:/secret.log",
+        "//example.test/C:/tmp",
+        "//cdn/C:/tmp",
         "file:///tmp/agent-secret.json",
         "../private/secret.json",
         "..\\private\\secret.json",
@@ -425,7 +428,7 @@ fn positive_uri_text_is_not_misclassified_as_a_drive_path() {
             "drive_like_url": "https://example.test/C:/tmp",
             "posix_like_url": "https://example.test/home/dev/docs",
             "traversal_like_url": "https://example.test/../docs",
-            "protocol_relative_url": "//example.test/C:/tmp",
+            "protocol_relative_drive_like_url": "//example.test/C:/tmp",
         });
     });
     assert!(
@@ -442,6 +445,24 @@ fn negative_uri_boundary_does_not_exempt_a_following_local_path() {
         });
     });
     assert_contains(&violations, "local_path_in_payload");
+}
+
+#[test]
+fn negative_protocol_relative_url_boundary_is_not_a_path_exemption() {
+    let violations = mutant(base_manifest(), |doc| {
+        doc["events"][0]["payload"] = json!({
+            "message": "//example.test/docs C:/tmp"
+        });
+    });
+    assert_contains(&violations, "local_path_in_payload");
+}
+
+#[test]
+fn negative_posix_detector_ignores_division_text() {
+    let violations = mutant(base_manifest(), |doc| {
+        doc["events"][0]["payload"] = json!({"message": "ratio / 2"});
+    });
+    assert!(!violation_codes(&violations).contains(&"local_path_in_payload"));
 }
 
 #[test]

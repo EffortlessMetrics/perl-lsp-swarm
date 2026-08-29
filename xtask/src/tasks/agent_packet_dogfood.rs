@@ -550,10 +550,16 @@ fn has_path_boundary(text: &str, start: usize) -> bool {
     start == 0 || !text.as_bytes()[start - 1].is_ascii_alphanumeric()
 }
 
+/// Return the start of an unambiguous protocol-relative URL containing a
+/// path-like candidate. Bare `//host/share` is intentionally not exempted:
+/// it is indistinguishable from a UNC path. A URL whose first path segment is
+/// a drive-like component (`//example.test/C:/...`) is the one lexical form
+/// this guard can distinguish from a share, while later drive-like segments
+/// remain local UNC evidence.
 fn protocol_relative_url_start(text: &str, start: usize) -> Option<usize> {
-    let url_start = if text[start..].starts_with("//") {
+    let url_start = if text.get(start..)?.starts_with("//") {
         start
-    } else if start >= 1 && text[start - 1..].starts_with("//") {
+    } else if start >= 1 && text.get(start - 1..)?.starts_with("//") {
         start - 1
     } else {
         text[..start].rfind("//")?
@@ -564,6 +570,7 @@ fn protocol_relative_url_start(text: &str, start: usize) -> Option<usize> {
     if !has_path_boundary(text, url_start) {
         return None;
     }
+
     let host_start = url_start + 2;
     let host_end = text[host_start..]
         .find(|character: char| {
@@ -578,18 +585,24 @@ fn protocol_relative_url_start(text: &str, start: usize) -> Option<usize> {
     {
         return None;
     }
-    // A dotted host is not enough to distinguish a protocol-relative URL from
-    // a dotted UNC share on Windows.  Keep the exemption narrow to the URL
-    // form this validator needs to preserve: a URL carrying a drive-like
-    // segment. Ordinary `//host/share` remains local-path evidence.
-    let remainder = &text[host_end..];
-    let has_drive_like_segment = remainder.as_bytes().windows(3).any(|bytes| {
-        bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && bytes[2] == b'/'
-    });
-    if !has_drive_like_segment {
+
+    // Require the first URL path segment to be the drive-like component. This
+    // prevents `//server.example/share/C:/secret` from being reclassified as
+    // a URL, and prevents a URL from exempting a later whitespace-separated
+    // local path.
+    let path_start = host_end.checked_add(1)?;
+    let bytes = text.as_bytes();
+    if bytes.get(host_end) != Some(&b'/')
+        || !bytes.get(path_start).is_some_and(u8::is_ascii_alphabetic)
+        || bytes.get(path_start + 1) != Some(&b':')
+        || bytes.get(path_start + 2) != Some(&b'/')
+    {
         return None;
     }
-    Some(url_start)
+    let url_end = text[path_start..]
+        .find(char::is_whitespace)
+        .map_or(text.len(), |offset| path_start + offset);
+    (start < url_end).then_some(url_start)
 }
 
 fn is_exempt_uri_path(text: &str, start: usize) -> bool {
@@ -656,6 +669,7 @@ fn contains_local_path(text: &str) -> bool {
     for index in 0..bytes.len() {
         if bytes[index] == b'/'
             && bytes.get(index + 1) != Some(&b'/')
+            && bytes.get(index + 1).is_some_and(|byte| !byte.is_ascii_whitespace())
             && has_path_boundary(&lowered, index)
             && !is_exempt_uri_path(&lowered, index)
         {
