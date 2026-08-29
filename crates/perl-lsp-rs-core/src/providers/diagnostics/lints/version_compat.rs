@@ -184,6 +184,15 @@ pub fn check_version_compat_with_project_version(
         }
     }
 
+    // Validate the configured target independently of source authority. An invalid
+    // project value is still actionable configuration state even when a valid
+    // source declaration supplies the effective PL900 target.
+    if let Some(project_version) = project_version
+        && parse_configured_project_version(project_version).is_none()
+    {
+        diagnostics.push(invalid_project_version_diagnostic(project_version));
+    }
+
     // A project version is only a fallback. Source declarations remain authoritative.
     let using_project_version = declared_version.is_none();
     let declared_version = match declared_version {
@@ -193,7 +202,6 @@ pub fn check_version_compat_with_project_version(
                 return;
             };
             let Some(version) = parse_configured_project_version(project_version) else {
-                diagnostics.push(invalid_project_version_diagnostic(project_version));
                 return;
             };
             version
@@ -519,7 +527,11 @@ pub fn check_version_compat_with_project_version(
     }
 }
 
-fn parse_configured_project_version(value: &str) -> Option<PerlVersion> {
+/// Parse the documented `[perl].version` spelling into its effective target.
+///
+/// Project configuration accepts only a major/minor pair, optionally prefixed
+/// with `v`; callers must not use the raw spelling as the effective target.
+pub fn parse_configured_project_version(value: &str) -> Option<PerlVersion> {
     let version = value.strip_prefix('v').unwrap_or(value);
     let mut components = version.split('.');
     let (Some(major), Some(minor), None) =
@@ -1024,15 +1036,37 @@ mod tests {
             "use v5.40; use builtin 'inf'; builtin::inf();",
             Some("not-a-version"),
         );
-        assert!(
-            diags.iter().all(|diagnostic| {
-                !diagnostic.message.contains("Invalid project [perl].version")
-            }),
-            "source authority must prevent an invalid fallback diagnostic: {diags:?}"
+        assert_eq!(
+            diags
+                .iter()
+                .filter(|diagnostic| diagnostic.message.contains("Invalid project [perl].version"))
+                .count(),
+            1,
+            "invalid project values must remain actionable with source authority: {diags:?}"
         );
         assert!(
-            diags.iter().all(|diagnostic| diagnostic.code.as_deref() != Some("PL900")),
-            "the valid source target should support builtin::inf: {diags:?}"
+            diags.iter().all(|diagnostic| !diagnostic.message.contains("requires Perl")),
+            "the valid source target should not receive a fallback PL900: {diags:?}"
+        );
+        assert!(
+            diags.iter().all(|diagnostic| !diagnostic.message.contains("target from project")),
+            "invalid project values must not become the effective fallback target: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn malformed_source_version_does_not_fall_back_to_project_target() {
+        let diags = version_compat_diags_with_project_version(
+            "use v5.20.1; use builtin 'inf'; builtin::inf();",
+            Some("v5.40"),
+        );
+        assert!(
+            diags.iter().any(|diagnostic| diagnostic.code.as_deref() == Some("PL900")),
+            "the parser-supported source spelling must remain authoritative: {diags:?}"
+        );
+        assert!(
+            diags.iter().all(|diagnostic| !diagnostic.message.contains("target from project")),
+            "source authority must prevent project fallback on a recovered spelling: {diags:?}"
         );
     }
 

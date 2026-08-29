@@ -229,7 +229,11 @@ pub fn pull_report_subject(
         engine: context.critic_engine,
         profile,
         facts_generation: context.facts_generation,
-        project_version: context.project_version.clone(),
+        project_version: context
+            .project_version
+            .as_deref()
+            .and_then(perl_lsp_rs_core::providers::diagnostics::version_compat::parse_configured_project_version)
+            .map(|version| format!("{}.{}", version.major, version.minor)),
         projection: context.projection,
         critic_enabled: context.perlcritic_enabled,
         legacy_policy_digest,
@@ -503,6 +507,12 @@ mod tests {
         context.project_version = Some("5.20".to_string());
         let project_id = subject_for(&context, URI_A, CONTENT).compose().ok().unwrap();
         assert_ne!(baseline, project_id);
+        context.project_version = Some("v5.20".to_string());
+        assert_eq!(
+            project_id,
+            subject_for(&context, URI_A, CONTENT).compose().ok().unwrap(),
+            "equivalent project version spellings must share the effective identity"
+        );
         context.project_version = Some("5.38".to_string());
         assert_ne!(project_id, subject_for(&context, URI_A, CONTENT).compose().ok().unwrap());
 

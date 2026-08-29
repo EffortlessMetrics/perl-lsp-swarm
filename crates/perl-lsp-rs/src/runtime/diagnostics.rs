@@ -108,9 +108,19 @@ fn workspace_root_for_doc(server: &LspServer, uri: &str) -> Option<std::path::Pa
 }
 
 fn project_version_for_doc(server: &LspServer, uri: &str) -> Option<String> {
-    server
+    let raw_version = server
         .folder_for_doc_uri(uri)
         .and_then(|folder| folder.project_config.as_ref()?.perl.version.clone())
+        .or_else(|| {
+            let path = source_path_from_uri(uri)?;
+            let directory = std::path::Path::new(&path).parent()?;
+            perl_lsp_rs_core::config::load_project_config(directory).ok().flatten()?.perl.version
+        })?;
+
+    perl_lsp_rs_core::providers::diagnostics::version_compat::parse_configured_project_version(
+        &raw_version,
+    )
+    .map(|version| format!("{}.{}", version.major, version.minor))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -266,6 +276,11 @@ impl PullDiagnosticsOrchestrator {
         let folder = server.folder_for_doc_uri(uri);
         let workspace_root = folder
             .and_then(|folder| folder.path.or_else(|| source_path_from_uri(&folder.uri)))
+            .or_else(|| {
+                project_version_for_doc(server, uri)?;
+                let path = source_path_from_uri(uri)?;
+                std::path::Path::new(&path).parent().map(ToOwned::to_owned)
+            })
             .or_else(|| server.root_path.lock().clone());
 
         // The owning folder authority key for the report subject (#7480).
@@ -3182,7 +3197,7 @@ mod tests {
         let folder_uri = url::Url::from_directory_path(&folder)
             .map_err(|()| "failed to build lifecycle folder URI")?
             .to_string();
-        let server = make_server_with_capture().0;
+        let (server, output) = make_server_with_capture();
         server.workspace_folders.lock().push(
             crate::runtime::workspace_folder::WorkspaceFolderState::new(folder_uri)
                 .with_path(folder.clone()),
@@ -3206,6 +3221,12 @@ mod tests {
 
         std::fs::write(&config_path, "[perl]\nversion = \"5.20.1\"\n")?;
         server.load_and_apply_project_config();
+        let warning_output = String::from_utf8(output.lock().clone())?;
+        assert!(
+            warning_output.contains("invalid [perl].version")
+                && warning_output.contains("expected a major.minor target"),
+            "invalid project versions must produce an actionable warning: {warning_output}"
+        );
         let malformed = server
             .handle_workspace_diagnostic(Some(json!({
                 "previousResultIds": [{"uri": uri, "value": initial_id}]
@@ -4776,6 +4797,24 @@ mod tests {
         let context = PullDiagnosticsOrchestrator::new().build_context(&server, &doc_uri);
         assert!(context.project_version.is_none());
         assert!(context.identity_root_key.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn build_context_discovers_single_file_project_version()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let script = temp.path().join("script.pl");
+        std::fs::write(temp.path().join(".perl-lsp.toml"), "[perl]\nversion = \"v5.20\"\n")?;
+        std::fs::write(&script, "sub f ($x) { $x }\n")?;
+        let doc_uri = url::Url::from_file_path(&script).map_err(|_| "bad uri")?.to_string();
+        let (server, _buf) = make_server_with_capture();
+
+        let context = PullDiagnosticsOrchestrator::new().build_context(&server, &doc_uri);
+
+        assert_eq!(context.project_version.as_deref(), Some("5.20"));
+        assert_eq!(context.workspace_root.as_deref(), Some(temp.path()));
+        assert_eq!(context.identity_root_key.as_deref(), temp.path().to_str());
         Ok(())
     }
 

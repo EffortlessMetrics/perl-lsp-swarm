@@ -150,6 +150,11 @@ impl LspServer {
             // open document's directory. This is a common workflow — opening
             // a lone .pl file that has a .perl-lsp.toml next to it. (#UX15)
             if let Some(config) = self.discover_single_file_config() {
+                if let Some(raw_version) = config.perl.version.as_deref()
+                    && perl_lsp_rs_core::providers::diagnostics::version_compat::parse_configured_project_version(raw_version).is_none()
+                {
+                    self.emit_invalid_project_version_warning(raw_version, "single-file project");
+                }
                 let mut server_config = self.config.lock();
                 config.apply_to_server_config(&mut server_config);
             }
@@ -190,6 +195,15 @@ impl LspServer {
                     }
                     Ok(Some(project_config)) => {
                         tracing::debug!(path = %folder_path.display(), "Loaded .perl-lsp.toml for folder");
+
+                        if let Some(raw_version) = project_config.perl.version.as_deref()
+                            && perl_lsp_rs_core::providers::diagnostics::version_compat::parse_configured_project_version(raw_version).is_none()
+                        {
+                            self.emit_invalid_project_version_warning(
+                                raw_version,
+                                &format!("project folder {}", folder_path.display()),
+                            );
+                        }
 
                         // Store project config in the folder state
                         folder.project_config = Some(project_config.clone());
@@ -271,6 +285,16 @@ impl LspServer {
         let path = super::super::source_path_from_uri(&uri)?;
         let dir = std::path::Path::new(&path).parent()?;
         perl_lsp_rs_core::config::load_project_config(dir).ok().flatten()
+    }
+
+    fn emit_invalid_project_version_warning(&self, raw_version: &str, authority: &str) {
+        let user_msg = format!(
+            "Perl LSP: invalid [perl].version {raw_version:?} in {authority}; expected a major.minor target such as 5.20 or v5.20. The project fallback is disabled until it is corrected."
+        );
+        tracing::warn!(message = %user_msg, "Invalid project Perl version");
+        if let Err(error) = self.show_message(MessageType::Warning, &user_msg) {
+            tracing::warn!(%error, "Failed to send invalid project version warning");
+        }
     }
 
     /// Emit a `window/showMessage` Warning describing the conflicting
