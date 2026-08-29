@@ -968,47 +968,63 @@ mod explicit_pin_tests {
     }
 
     #[test]
-    fn probe_candidate_sequence_continues_after_a_failed_probe() -> Result<(), String> {
+    fn uncached_resolver_continues_after_a_failed_path_probe() -> Result<(), String> {
         let controls = tempfile::tempdir().map_err(|error| error.to_string())?;
-        let first = controls.path().join("first-perl");
-        let second = controls.path().join("second-perl");
+        let first_dir = controls.path().join("first");
+        let second_dir = controls.path().join("second");
+        fs::create_dir_all(&first_dir).map_err(|error| error.to_string())?;
+        fs::create_dir_all(&second_dir).map_err(|error| error.to_string())?;
+        let first = first_dir.join(if cfg!(windows) { "perl.exe" } else { "perl" });
+        let second = second_dir.join(if cfg!(windows) { "perl.exe" } else { "perl" });
         fs::write(&first, b"first candidate").map_err(|error| error.to_string())?;
         fs::write(&second, b"second candidate").map_err(|error| error.to_string())?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            for candidate in [&first, &second] {
+                let mut permissions =
+                    fs::metadata(candidate).map_err(|error| error.to_string())?.permissions();
+                permissions.set_mode(0o755);
+                fs::set_permissions(candidate, permissions).map_err(|error| error.to_string())?;
+            }
+        }
 
         let mut attempted = Vec::new();
-        let mut diagnostics = Vec::new();
-        let mut transient_failure = false;
-        let resolved = super::probe_debuggee_candidates(
-            [first.clone(), second.clone()],
-            &mut diagnostics,
-            &mut transient_failure,
+        let search_path =
+            std::env::join_paths([&first_dir, &second_dir]).map_err(|error| error.to_string())?;
+        let first = fs::canonicalize(first).map_err(|error| error.to_string())?;
+        let second = fs::canonicalize(second).map_err(|error| error.to_string())?;
+        let resolution = super::resolve_debuggee_perl_uncached_with(
+            [Path::new("perl").to_path_buf()],
+            false,
+            Some(search_path.as_os_str()),
             |candidate| {
                 attempted.push(candidate.to_path_buf());
                 if candidate == first {
-                    Err(super::ProbeFailure {
+                    return Err(super::ProbeFailure {
                         reason: "simulated spawn failure".to_string(),
                         transient: false,
-                    })
-                } else {
-                    Ok(super::DebuggeePerl {
-                        binary: candidate.to_path_buf(),
-                        identity: "fixture candidate".to_string(),
-                    })
+                    });
                 }
+                Ok(super::DebuggeePerl {
+                    binary: candidate.to_path_buf(),
+                    identity: "fixture candidate".to_string(),
+                })
             },
-        )
-        .ok_or("the later candidate should be selected after the first probe fails")?;
+        );
 
         if attempted != [first.clone(), second.clone()] {
             return Err(format!("probe sequence was {attempted:?}"));
         }
+        let resolved = resolution.resolved.ok_or("the later candidate should be selected")?;
         if resolved.binary != second {
             return Err(format!("unexpected selected candidate: {:?}", resolved.binary));
         }
-        if diagnostics != [format!("{}: simulated spawn failure", first.display())] {
-            return Err(format!("unexpected probe diagnostics: {diagnostics:?}"));
+        if resolution.diagnostics != [format!("{}: simulated spawn failure", first.display())] {
+            return Err(format!("unexpected probe diagnostics: {:?}", resolution.diagnostics));
         }
-        if transient_failure {
+        if resolution.transient_failure {
             return Err("deterministic fixture failure was marked transient".to_string());
         }
         Ok(())
@@ -1016,21 +1032,15 @@ mod explicit_pin_tests {
 
     #[cfg(windows)]
     #[test]
-    fn invalid_pathext_falls_back_to_exe() -> Result<(), String> {
-        let empty = super::bare_name_lookup_variants_with_pathext(
-            std::ffi::OsStr::new("perl"),
-            Some(std::ffi::OsStr::new("")),
-        );
-        if !empty.iter().any(|variant| variant == "perl.EXE") {
-            return Err(format!("empty PATHEXT variants were {empty:?}"));
+    fn bare_name_lookup_uses_only_exe_as_the_implicit_extension() -> Result<(), String> {
+        let bare = super::bare_name_lookup_variants(std::ffi::OsStr::new("perl"));
+        if bare != [std::ffi::OsString::from("perl"), std::ffi::OsString::from("perl.exe")] {
+            return Err(format!("bare-name variants were {bare:?}"));
         }
 
-        let invalid = super::bare_name_lookup_variants_with_pathext(
-            std::ffi::OsStr::new("perl"),
-            Some(std::ffi::OsStr::new("COM;CMD")),
-        );
-        if !invalid.iter().any(|variant| variant == "perl.EXE") {
-            return Err(format!("invalid PATHEXT variants were {invalid:?}"));
+        let extended = super::bare_name_lookup_variants(std::ffi::OsStr::new("perl.cmd"));
+        if extended != [std::ffi::OsString::from("perl.cmd")] {
+            return Err(format!("extended-name variants were {extended:?}"));
         }
         Ok(())
     }
@@ -2612,41 +2622,17 @@ fn is_bare_program_name(path: &Path) -> bool {
 }
 
 /// The lookup names `Command` would try for a bare program name: the exact
-/// name first, then the `PATHEXT` extensions on Windows (defaulting to the
-/// CreateProcess `.EXE` default when `PATHEXT` is unset or unusable).
+/// name first, then the implicit `.exe` extension on Windows.  Rust's
+/// `Command` lookup does not use the shell's `PATHEXT` list.
 #[cfg(windows)]
 fn bare_name_lookup_variants(name: &std::ffi::OsStr) -> Vec<std::ffi::OsString> {
-    bare_name_lookup_variants_with_pathext(name, std::env::var_os("PATHEXT").as_deref())
-}
-
-#[cfg(windows)]
-fn bare_name_lookup_variants_with_pathext(
-    name: &std::ffi::OsStr,
-    path_ext: Option<&std::ffi::OsStr>,
-) -> Vec<std::ffi::OsString> {
     let mut variants = vec![name.to_os_string()];
     if Path::new(name).extension().is_some() {
         return variants;
     }
-    let path_ext = path_ext.unwrap_or_else(|| std::ffi::OsStr::new(".COM;.EXE;.BAT;.CMD"));
-    let mut found_valid_extension = false;
-    for extension in path_ext.to_string_lossy().split(';') {
-        let extension = extension.trim();
-        if extension.is_empty() || !extension.starts_with('.') {
-            continue;
-        }
-        found_valid_extension = true;
-        let mut with_extension = name.to_os_string();
-        with_extension.push(extension);
-        if !variants.contains(&with_extension) {
-            variants.push(with_extension);
-        }
-    }
-    if !found_valid_extension {
-        let mut with_extension = name.to_os_string();
-        with_extension.push(".EXE");
-        variants.push(with_extension);
-    }
+    let mut with_extension = name.to_os_string();
+    with_extension.push(".exe");
+    variants.push(with_extension);
     variants
 }
 
@@ -2772,9 +2758,27 @@ where
 /// One uncached resolution sweep over every candidate interpreter.
 fn resolve_debuggee_perl_uncached() -> DebuggeePerlResolution {
     let explicit = std::env::var_os(DEBUGGEE_PERL_OVERRIDE_ENV).is_some();
+    let search_path = std::env::var_os("PATH");
+    resolve_debuggee_perl_uncached_with(
+        debuggee_perl_candidates(),
+        explicit,
+        search_path.as_deref(),
+        probe_debuggee_perl,
+    )
+}
+
+fn resolve_debuggee_perl_uncached_with<F>(
+    raw_candidates: impl IntoIterator<Item = PathBuf>,
+    explicit: bool,
+    search_path: Option<&std::ffi::OsStr>,
+    mut probe: F,
+) -> DebuggeePerlResolution
+where
+    F: FnMut(&Path) -> Result<DebuggeePerl, ProbeFailure>,
+{
     let mut diagnostics = Vec::new();
     let mut transient_failure = false;
-    'raw_candidates: for raw_candidate in debuggee_perl_candidates() {
+    'raw_candidates: for raw_candidate in raw_candidates {
         let candidates = if explicit {
             match normalize_explicit_debuggee_pin(&raw_candidate) {
                 Ok(candidate) => vec![candidate],
@@ -2787,7 +2791,7 @@ fn resolve_debuggee_perl_uncached() -> DebuggeePerlResolution {
                 }
             }
         } else {
-            match resolve_debuggee_candidates(&raw_candidate, std::env::var_os("PATH").as_deref()) {
+            match resolve_debuggee_candidates(&raw_candidate, search_path) {
                 Ok(candidates) => candidates,
                 Err(reason) => {
                     diagnostics.push(format!("{}: {reason}", raw_candidate.display()));
@@ -2797,7 +2801,7 @@ fn resolve_debuggee_perl_uncached() -> DebuggeePerlResolution {
         };
         if explicit {
             let Some(candidate) = candidates.into_iter().next() else { break };
-            match probe_debuggee_perl(&candidate) {
+            match probe(&candidate) {
                 Ok(perl) => {
                     return DebuggeePerlResolution {
                         resolved: Some(perl),
@@ -2819,7 +2823,7 @@ fn resolve_debuggee_perl_uncached() -> DebuggeePerlResolution {
             candidates,
             &mut diagnostics,
             &mut transient_failure,
-            probe_debuggee_perl,
+            &mut probe,
         ) {
             return DebuggeePerlResolution {
                 resolved: Some(perl),
