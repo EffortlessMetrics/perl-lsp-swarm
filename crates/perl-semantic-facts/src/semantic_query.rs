@@ -5,8 +5,8 @@
 //! exact value; it does not execute queries or decide how a transport renders
 //! them.
 
-use crate::{BoundaryKind, FactId};
 use crate::semantic_identity::SemanticFactFamily;
+use crate::{BoundaryKind, FactId};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashSet};
 
@@ -63,6 +63,7 @@ pub struct SemanticQueryEvidence {
 
 impl SemanticQueryEvidence {
     /// Construct evidence and reject malformed identity or duplicate-family records.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         project_identity: impl Into<String>,
         root_identity: impl Into<String>,
@@ -208,9 +209,17 @@ pub enum SemanticQueryOutcome<T> {
     /// Required facts are still being built or admitted.
     NotReady { reason: String, evidence: SemanticQueryEvidence },
     /// The result belongs to a different source/model generation.
-    Stale { expected: crate::SourceGeneration, observed: crate::SourceGeneration, evidence: SemanticQueryEvidence },
+    Stale {
+        expected: crate::SourceGeneration,
+        observed: crate::SourceGeneration,
+        evidence: SemanticQueryEvidence,
+    },
     /// Multiple candidates remain and no exact choice was proven.
-    Ambiguous { candidates: Vec<T>, limitations: Vec<SemanticQueryLimitation>, evidence: SemanticQueryEvidence },
+    Ambiguous {
+        candidates: Vec<T>,
+        limitations: Vec<SemanticQueryLimitation>,
+        evidence: SemanticQueryEvidence,
+    },
     /// A dynamic boundary prevents exact resolution.
     Dynamic { boundary: BoundaryKind, evidence: SemanticQueryEvidence },
     /// This query family is not supported by the current producer/profile.
@@ -274,11 +283,15 @@ impl std::fmt::Display for SemanticQueryContractError {
             Self::EmptyIdentity(field) => format!("empty semantic query identity: {field}"),
             Self::UnknownProducer => "semantic query producer is unknown".to_owned(),
             Self::DuplicateFactFamily => "semantic query fact family is duplicated".to_owned(),
-            Self::CompleteFamilyNotRequired => "complete family is outside the denominator".to_owned(),
+            Self::CompleteFamilyNotRequired => {
+                "complete family is outside the denominator".to_owned()
+            }
             Self::DuplicateConsumedFact => "consumed fact identity is duplicated".to_owned(),
             Self::SchemaMismatch => "semantic query schema does not match requirement".to_owned(),
             Self::IncompleteDenominator => "semantic query denominator is incomplete".to_owned(),
-            Self::ExactOutcomeLacksEvidence => "exact semantic query outcome lacks complete evidence".to_owned(),
+            Self::ExactOutcomeLacksEvidence => {
+                "exact semantic query outcome lacks complete evidence".to_owned()
+            }
         };
         formatter.write_str(&message)
     }
@@ -297,39 +310,76 @@ fn has_duplicates<T: Ord>(values: &[T]) -> bool {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 
     fn evidence(complete: bool) -> SemanticQueryEvidence {
         SemanticQueryEvidence::new(
-            "project", "root", crate::SourceGeneration::known("doc-1"),
-            crate::SourceGeneration::known("ws-1"), "semantic-query-v1",
+            "project",
+            "root",
+            crate::SourceGeneration::known("doc-1"),
+            crate::SourceGeneration::known("ws-1"),
+            "semantic-query-v1",
             crate::SemanticProducer::SemanticAnalyzer,
             crate::SemanticProvenance::Known(crate::Provenance::SemanticAnalyzer),
             crate::SemanticConfidence::Known(crate::Confidence::High),
             vec![SemanticFactFamily::ScopeLocalDeclaration],
             complete.then_some(SemanticFactFamily::ScopeLocalDeclaration).into_iter().collect(),
-            vec![FactId(1)], vec![],
-        ).expect("fixture evidence is valid")
+            vec![FactId(1)],
+            vec![],
+        )
+        .expect("fixture evidence is valid")
     }
 
     #[test]
     fn exact_and_legitimate_empty_require_complete_evidence() {
-        assert!(SemanticQueryOutcome::<u32>::Complete { value: 7, evidence: evidence(true) }.validate().is_ok());
-        assert!(SemanticQueryOutcome::<u32>::LegitimateEmpty { evidence: evidence(true) }.validate().is_ok());
-        assert!(SemanticQueryOutcome::<u32>::Complete { value: 7, evidence: evidence(false) }.validate().is_err());
-        assert!(SemanticQueryOutcome::<u32>::LegitimateEmpty { evidence: evidence(false) }.validate().is_err());
+        assert!(
+            SemanticQueryOutcome::<u32>::Complete { value: 7, evidence: evidence(true) }
+                .validate()
+                .is_ok()
+        );
+        assert!(
+            SemanticQueryOutcome::<u32>::LegitimateEmpty { evidence: evidence(true) }
+                .validate()
+                .is_ok()
+        );
+        assert!(
+            SemanticQueryOutcome::<u32>::Complete { value: 7, evidence: evidence(false) }
+                .validate()
+                .is_err()
+        );
+        assert!(
+            SemanticQueryOutcome::<u32>::LegitimateEmpty { evidence: evidence(false) }
+                .validate()
+                .is_err()
+        );
     }
 
     #[test]
     fn every_non_exact_state_remains_distinct() {
         let e = evidence(true);
         let states = [
-            SemanticQueryOutcome::Partial { value: 1_u8, limitations: vec![SemanticQueryLimitation::BudgetExceeded], evidence: e.clone() },
+            SemanticQueryOutcome::Partial {
+                value: 1_u8,
+                limitations: vec![SemanticQueryLimitation::BudgetExceeded],
+                evidence: e.clone(),
+            },
             SemanticQueryOutcome::NotReady { reason: "building".into(), evidence: e.clone() },
-            SemanticQueryOutcome::Stale { expected: crate::SourceGeneration::known("doc-2"), observed: crate::SourceGeneration::known("doc-1"), evidence: e.clone() },
-            SemanticQueryOutcome::Ambiguous { candidates: vec![1_u8, 2], limitations: vec![], evidence: e.clone() },
-            SemanticQueryOutcome::Dynamic { boundary: BoundaryKind::DynamicValue, evidence: e.clone() },
+            SemanticQueryOutcome::Stale {
+                expected: crate::SourceGeneration::known("doc-2"),
+                observed: crate::SourceGeneration::known("doc-1"),
+                evidence: e.clone(),
+            },
+            SemanticQueryOutcome::Ambiguous {
+                candidates: vec![1_u8, 2],
+                limitations: vec![],
+                evidence: e.clone(),
+            },
+            SemanticQueryOutcome::Dynamic {
+                boundary: BoundaryKind::DynamicValue,
+                evidence: e.clone(),
+            },
             SemanticQueryOutcome::Unsupported { reason: "profile".into(), evidence: e },
         ];
         assert!(states.iter().all(|state| state.validate().is_ok() && !state.is_exact()));
@@ -338,8 +388,11 @@ mod tests {
     #[test]
     fn requirement_rejects_schema_or_denominator_mismatch() {
         let requirement = SemanticQueryRequirement::new(
-            "definitions", "semantic-query-v1", vec![SemanticFactFamily::ScopeLocalDeclaration],
-        ).expect("fixture requirement is valid");
+            "definitions",
+            "semantic-query-v1",
+            vec![SemanticFactFamily::ScopeLocalDeclaration],
+        )
+        .expect("fixture requirement is valid");
         assert!(requirement.validate_evidence(&evidence(true)).is_ok());
         assert!(requirement.validate_evidence(&evidence(false)).is_err());
     }
@@ -347,15 +400,29 @@ mod tests {
     #[test]
     fn malformed_evidence_and_empty_normalization_are_rejected() {
         let duplicate = SemanticQueryEvidence::new(
-            "project", "root", crate::SourceGeneration::known("doc-1"),
-            crate::SourceGeneration::known("ws-1"), "semantic-query-v1",
+            "project",
+            "root",
+            crate::SourceGeneration::known("doc-1"),
+            crate::SourceGeneration::known("ws-1"),
+            "semantic-query-v1",
             crate::SemanticProducer::SemanticAnalyzer,
             crate::SemanticProvenance::Known(crate::Provenance::SemanticAnalyzer),
             crate::SemanticConfidence::Known(crate::Confidence::High),
-            vec![SemanticFactFamily::ScopeLocalDeclaration, SemanticFactFamily::ScopeLocalDeclaration],
-            vec![], vec![], vec![],
+            vec![
+                SemanticFactFamily::ScopeLocalDeclaration,
+                SemanticFactFamily::ScopeLocalDeclaration,
+            ],
+            vec![],
+            vec![],
+            vec![],
         );
         assert_eq!(duplicate, Err(SemanticQueryContractError::DuplicateFactFamily));
-        assert!(!SemanticQueryOutcome::<u8>::Dynamic { boundary: BoundaryKind::DynamicValue, evidence: evidence(true) }.is_exact());
+        assert!(
+            !SemanticQueryOutcome::<u8>::Dynamic {
+                boundary: BoundaryKind::DynamicValue,
+                evidence: evidence(true)
+            }
+            .is_exact()
+        );
     }
 }
