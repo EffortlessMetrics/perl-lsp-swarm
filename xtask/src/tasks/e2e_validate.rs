@@ -29,9 +29,18 @@ use crate::utils::project_root;
 // Configuration
 // =============================================================================
 
-/// Exact public-binary integration targets exercised as E2E proof.
+/// The two exact public-process targets governed by issue #13057, exercised
+/// as E2E proof. This is the issue's selected contract set, deliberately not
+/// the full `*_process.rs` inventory under `crates/perllsp/tests/`; the
+/// `governed_public_process_targets_exist_in_perllsp_test_inventory` test
+/// fails if any governed target disappears from that inventory.
 const PUBLIC_PROCESS_TARGETS: &[&str] =
     &["lsp_stdio_process_contract", "lsp_document_lifecycle_process"];
+
+/// How long the large-workspace liveness smoke waits before requiring the
+/// public binary to still be running. A liveness-only signal, not protocol
+/// proof; named so the window is greppable and single-sourced.
+const LIVENESS_WINDOW: Duration = Duration::from_secs(2);
 
 /// Core crates whose release-mode lib tests are exercised.
 const CORE_CRATES: &[&str] = &["perl-parser", "perl-lsp-rs", "perl-dap"];
@@ -417,12 +426,40 @@ fn find_lsp_binary(project_root: &std::path::Path) -> Option<PathBuf> {
     None
 }
 
-/// Start the LSP binary with `--stdio`, wait briefly, and require it to remain
-/// alive for the liveness window. Protocol behavior is proved separately.
-fn run_lsp_liveness_smoke(
+/// What the liveness window observed about the spawned server process.
+#[derive(Debug)]
+enum LivenessObservation {
+    /// The process was still running when the window closed.
+    Alive,
+    /// The process exited before the window closed.
+    ExitedEarly { status: std::process::ExitStatus, stderr: String },
+    /// The probe itself failed (e.g. `try_wait` errored).
+    ProbeFailed(String),
+}
+
+/// Map a liveness observation to the step's pass/fail surface. Diagnostic
+/// wording lives only here, so tests assert on the classification instead of
+/// coupling to message text.
+fn render_liveness(observation: LivenessObservation) -> (bool, Option<String>) {
+    match observation {
+        LivenessObservation::Alive => (true, None),
+        LivenessObservation::ExitedEarly { status, stderr } => (
+            false,
+            Some(format!(
+                "LSP server exited before the liveness window completed with status {status}: {stderr}"
+            )),
+        ),
+        LivenessObservation::ProbeFailed(reason) => (false, Some(reason)),
+    }
+}
+
+/// Start the LSP binary with `--stdio`, wait one liveness window, and
+/// classify what the window observed. Protocol behavior is proved separately
+/// by the exact public-process targets.
+fn observe_liveness_window(
     binary: &std::path::Path,
     workspace_dir: &std::path::Path,
-) -> Result<(bool, Option<String>)> {
+) -> Result<LivenessObservation> {
     use std::process::{Command, Stdio};
 
     let mut child = Command::new(binary)
@@ -430,39 +467,51 @@ fn run_lsp_liveness_smoke(
         .current_dir(workspace_dir)
         .env("PERL_LSP_QUIET", "1")
         .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
+        // The liveness window does not observe the server's stdout, and a
+        // piped-but-never-drained handle could block the child once the OS
+        // pipe buffer fills, so send it to null instead.
+        .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
         .with_context(|| format!("Failed to spawn {}", binary.display()))?;
 
+    // Drain stderr in the background for the whole window so the child can
+    // never block on a full stderr pipe either; the drained bytes remain
+    // available as early-exit diagnostics.
+    let stderr_tail = child.stderr.take().map(|mut stderr| {
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = std::io::Read::read_to_end(&mut stderr, &mut buf);
+            String::from_utf8_lossy(&buf).to_string()
+        })
+    });
+
     // Give the server a moment to initialize (or exit/crash).
-    std::thread::sleep(Duration::from_secs(2));
+    std::thread::sleep(LIVENESS_WINDOW);
 
     match child.try_wait() {
         Ok(Some(status)) => {
-            let stderr_output = child
-                .stderr
-                .take()
-                .map(|mut s| {
-                    let mut buf = String::new();
-                    std::io::Read::read_to_string(&mut s, &mut buf).ok();
-                    buf
-                })
-                .unwrap_or_default();
-            Ok((
-                false,
-                Some(format!(
-                    "LSP server exited before the liveness window completed with status {status}: {stderr_output}"
-                )),
-            ))
+            let stderr = stderr_tail.and_then(|handle| handle.join().ok()).unwrap_or_default();
+            Ok(LivenessObservation::ExitedEarly { status, stderr })
         }
         Ok(None) => {
             let _ = child.kill();
             let _ = child.wait();
-            Ok((true, None))
+            Ok(LivenessObservation::Alive)
         }
-        Err(e) => Ok((false, Some(format!("Failed to check process status: {e}")))),
+        Err(e) => {
+            Ok(LivenessObservation::ProbeFailed(format!("Failed to check process status: {e}")))
+        }
     }
+}
+
+/// Start the LSP binary, observe one liveness window, and report pass/fail
+/// with diagnostics for the step outcome.
+fn run_lsp_liveness_smoke(
+    binary: &std::path::Path,
+    workspace_dir: &std::path::Path,
+) -> Result<(bool, Option<String>)> {
+    Ok(render_liveness(observe_liveness_window(binary, workspace_dir)?))
 }
 
 /// Create a temporary directory for the large-workspace test.
@@ -513,6 +562,30 @@ mod tests {
         assert_eq!(
             PUBLIC_PROCESS_TARGETS,
             &["lsp_stdio_process_contract", "lsp_document_lifecycle_process"]
+        );
+    }
+
+    #[test]
+    fn governed_public_process_targets_exist_in_perllsp_test_inventory() -> Result<()> {
+        let root = project_root()?;
+        for target in PUBLIC_PROCESS_TARGETS {
+            let test_path =
+                root.join("crates").join("perllsp").join("tests").join(format!("{target}.rs"));
+            assert!(
+                test_path.is_file(),
+                "governed target {target} missing from crates/perllsp/tests: {}",
+                test_path.display()
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn liveness_rendering_maps_classifications_to_pass_fail() {
+        assert_eq!(render_liveness(LivenessObservation::Alive), (true, None));
+        assert_eq!(
+            render_liveness(LivenessObservation::ProbeFailed("boom".to_string())),
+            (false, Some("boom".to_string()))
         );
     }
 
@@ -634,11 +707,13 @@ mod tests {
             let script = temp_root.join("fake_perllsp.sh");
             write_executable_script(&script, "#!/usr/bin/env bash\necho crash >&2\nexit 7\n")?;
 
-            let (passed, detail) = run_lsp_liveness_smoke(&script, &temp_root)?;
-            assert!(!passed);
-            let message = detail.unwrap_or_default();
-            assert!(message.contains("status"));
-            assert!(message.contains("crash"));
+            let observation = observe_liveness_window(&script, &temp_root)?;
+            let (status, stderr) = match observation {
+                LivenessObservation::ExitedEarly { status, stderr } => (status, stderr),
+                other => panic!("expected ExitedEarly, got {other:?}"),
+            };
+            assert_eq!(status.code(), Some(7));
+            assert!(stderr.contains("crash"));
 
             fs::remove_dir_all(temp_root)?;
             Ok(())
@@ -651,9 +726,12 @@ mod tests {
             let script = temp_root.join("fake_perllsp.sh");
             write_executable_script(&script, "#!/usr/bin/env bash\nexit 0\n")?;
 
-            let (passed, detail) = run_lsp_liveness_smoke(&script, &temp_root)?;
-            assert!(!passed);
-            assert!(detail.unwrap_or_default().contains("before the liveness window completed"));
+            let observation = observe_liveness_window(&script, &temp_root)?;
+            let status = match observation {
+                LivenessObservation::ExitedEarly { status, .. } => status,
+                other => panic!("expected ExitedEarly, got {other:?}"),
+            };
+            assert!(status.success());
 
             fs::remove_dir_all(temp_root)?;
             Ok(())
@@ -666,9 +744,11 @@ mod tests {
             let script = temp_root.join("fake_perllsp.sh");
             write_executable_script(&script, "#!/usr/bin/env bash\nsleep 5\n")?;
 
-            let (passed, detail) = run_lsp_liveness_smoke(&script, &temp_root)?;
-            assert!(passed);
-            assert!(detail.is_none());
+            let observation = observe_liveness_window(&script, &temp_root)?;
+            assert!(
+                matches!(observation, LivenessObservation::Alive),
+                "expected Alive, got {observation:?}"
+            );
 
             fs::remove_dir_all(temp_root)?;
             Ok(())
