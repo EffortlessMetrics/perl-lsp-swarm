@@ -58,11 +58,13 @@ fn assert_reasoned_reply<'a>(skill: &'a str, provider: &str) -> Result<&'a str, 
 }
 
 #[test]
-fn provider_rules_require_reasoned_inline_replies() -> Result<(), Box<dyn Error>> {
+fn review_response_surfaces_require_reasoned_inline_replies() -> Result<(), Box<dyn Error>> {
     let root = project_root()?;
     let codex = fs::read_to_string(root.join(".agents/skills/address-review-comments/SKILL.md"))?;
     let claude = fs::read_to_string(root.join(".claude/skills/address-review-comments/SKILL.md"))?;
     let droid = fs::read_to_string(root.join(".factory/rules/droid-review.md"))?;
+    let github_surfaces = fs::read_to_string(root.join("docs/agents/GITHUB_SURFACES.md"))?;
+    let threads = fs::read_to_string(root.join("scripts/reviews/threads"))?;
 
     let codex_section = assert_reasoned_reply(&codex, "Codex")?;
     let claude_section = assert_reasoned_reply(&claude, "Claude")?;
@@ -85,6 +87,34 @@ fn provider_rules_require_reasoned_inline_replies() -> Result<(), Box<dyn Error>
             "Droid review-response rules must retain marker {marker:?}"
         );
     }
+
+    for marker in [
+        "## Finding disposition",
+        "concise engineering decision record",
+        "<judgment, architectural reason",
+        "Evaluate the concern and the suggested repair separately",
+        "Do not blindly agree",
+        "not reflexively defend the candidate",
+        "repair the owning seam",
+        "A bare `fixed`",
+    ] {
+        assert!(
+            github_surfaces.contains(marker),
+            "shared GitHub-surface rules must retain marker {marker:?}"
+        );
+    }
+
+    let reasoned_template = "--reply 'Disposition: fixed\n\n\
+<concise judgment: what failed, why this boundary owns it, and what changed>\n\n\
+Evidence: <claim-bounded evidence>'";
+    assert!(
+        threads.contains(reasoned_template),
+        "the sanctioned thread helper must emit the reasoned reply template"
+    );
+    assert!(
+        !threads.contains("Disposition: fixed\nEvidence:"),
+        "the sanctioned thread helper must not emit the old labels-only template"
+    );
 
     Ok(())
 }
