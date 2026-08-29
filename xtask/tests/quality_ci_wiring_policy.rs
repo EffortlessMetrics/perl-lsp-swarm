@@ -537,6 +537,22 @@ fn coverage_workflow_is_manual_or_nightly_only_and_requires_receipts() {
         "positive stale coverage prose must not be hidden by `and never`"
     );
     assert!(
+        !has_positive_stale_route_claim("Coverage is advisory for PRs."),
+        "a bare advisory `for PRs` phrase must not be classified as a route"
+    );
+    assert!(
+        !has_positive_stale_route_claim("Coverage for PRs."),
+        "a bare `coverage for PRs` phrase must not be classified as a route"
+    );
+    assert!(
+        has_positive_stale_route_claim("Coverage is required for PRs."),
+        "an explicit required `for PRs` route must remain classified as stale"
+    );
+    assert!(
+        has_positive_stale_route_claim("Coverage runs for PRs."),
+        "an explicit runs `for PRs` route must remain classified as stale"
+    );
+    assert!(
         has_positive_stale_route_claim("Coverage does not run on PRs and coverage runs on PRs."),
         "a positive conjunction must not be hidden by an unrelated negative clause"
     );
@@ -589,6 +605,18 @@ fn coverage_workflow_is_manual_or_nightly_only_and_requires_receipts() {
     assert!(
         has_positive_stale_route_claim("Coverage is disabled, but coverage runs on pull requests."),
         "a positive coverage route must remain visible beside a disabled clause"
+    );
+    assert!(
+        has_positive_stale_route_claim(
+            "Coverage runs on PRs even though the coverage job is disabled."
+        ),
+        "a positive route must remain visible before an `even though` negative clause"
+    );
+    assert!(
+        !has_positive_stale_route_claim(
+            "Coverage does not run on PRs even though the coverage job is disabled."
+        ),
+        "an entirely negative `even though` sentence must remain allowed"
     );
     assert!(
         !has_positive_stale_route_claim("Coverage is advisory, and never a full CI deep lane."),
@@ -1332,7 +1360,7 @@ fn route_prose_clauses(normalized: &str) -> Vec<&str> {
         let mut remaining = punctuation_clause;
         loop {
             let Some((separator, separator_text)) =
-                [" but ", " without ", " never ", " and ", " or "]
+                [" but ", " without ", " never ", " even though ", " and ", " or "]
                     .iter()
                     .filter_map(|separator| {
                         remaining.find(separator).map(|index| (index, *separator))
@@ -1367,11 +1395,9 @@ fn has_positive_stale_route_clause(normalized: &str) -> bool {
             .iter()
             .any(|marker| normalized.contains(marker))
             || (has_pr_token
-                && [
-                    "coverage", "run", "runs", "required", "gate", "gated", "trigger", "on", "for",
-                ]
-                .iter()
-                .any(|marker| normalized.contains(marker)));
+                && ["run", "runs", "required", "gate", "gated", "trigger", "on"]
+                    .iter()
+                    .any(|marker| normalized.contains(marker)));
     let has_coverage_term = normalized.contains("coverage") || normalized.contains("codecov");
     [
         "pull request coverage",
