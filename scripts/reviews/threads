@@ -227,7 +227,7 @@ if [[ "$UNRESOLVED" -gt 0 ]]; then
 Disposition each unresolved thread through the sanctioned reply-with-evidence path.
 Terminal classes resolve the thread; current blockers and NOT_PROVEN keep it open:
 
-  scripts/reviews/disposition --pr $PR --repo $REPO --thread <id> \
+  scripts/reviews/disposition --pr $PR --repo $REPO --thread <id> \\
       --class fixed --commit <sha> --reply 'Disposition: fixed
 Evidence: <claim-bounded evidence>'
 
