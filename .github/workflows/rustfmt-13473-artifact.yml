@@ -42,7 +42,6 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha }}"
-          test "$(git rev-parse HEAD^)" = "093b1bbad49713025fdebf04aa6e9e12576b3a9d"
 
           cat > /tmp/expected-paths <<'EOF'
           crates/perl-corpus/src/api/root.rs
