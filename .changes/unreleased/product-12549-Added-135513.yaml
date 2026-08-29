@@ -1,5 +1,8 @@
+project: product
 component: "Developer experience"
 kind: Added
 body: "Added the machine-owned compiler-critical test-topology inventory, check, and report commands with deterministic committed artifacts (#8437)."
-time: 
-13:55:13
+time: 2026-08-25T13:55:13-04:00
+custom:
+  PR: "12549"
+  Breaking: "no"
