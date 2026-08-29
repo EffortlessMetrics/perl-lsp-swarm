@@ -165,6 +165,21 @@ describe('gherkin outline providers', () => {
     expect(links).toHaveLength(0);
   });
 
+  test('skips named backreference regex step definitions', () => {
+    const links = provideGherkinStepDefinitionLinks(
+      ['Feature: Named backreference', '  Scenario: Unsafe', '    Given a'].join('\n'),
+      { line: 2, character: 15 } as vscode.Position,
+      [
+        {
+          uri: vscode.Uri.file('/project/steps.pm'),
+          text: 'Given qr/^(?<value>a)\\k<value>$/, sub { return; };',
+        },
+      ],
+    );
+
+    expect(links).toHaveLength(0);
+  });
+
   test.each([
     ['an escaped pipe', '^(foo\\|bar)+$'],
     ['a character-class pipe', '^(foo[|]bar)+$'],

@@ -31,12 +31,17 @@ import {
 // past them, without re-asserting the stricter policy #6158 deliberately
 // rejected to avoid the ordinary-pattern false negatives in #859.
 describe('Gherkin regex safety', () => {
-  it.each(['^(a|aa)+$', '^(a|a?)+$', '^(a+)+$', '^(a{1,})+$', '^(a)\\1$', '^(?=a)a$'])(
-    'rejects catastrophic workspace regex %s without executing it',
-    (source) => {
-      expect(isPotentiallyExpensiveRegex(source)).toBe(true);
-    },
-  );
+  it.each([
+    '^(a|aa)+$',
+    '^(a|a?)+$',
+    '^(a+)+$',
+    '^(a{1,})+$',
+    '^(a)\\1$',
+    '^(?<value>a)\\k<value>$',
+    '^(?=a)a$',
+  ])('rejects catastrophic workspace regex %s without executing it', (source) => {
+    expect(isPotentiallyExpensiveRegex(source)).toBe(true);
+  });
 
   it.each(['^I have "([^"]+)"$', '^I have ([0-9]{2}) items$', '^status: (pass|fail)$', '^a+b$'])(
     'keeps ordinary anchored capture regex %s available',

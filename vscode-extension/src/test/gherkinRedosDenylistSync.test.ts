@@ -54,6 +54,7 @@ describe('gherkin ReDoS guard (#6154)', () => {
     ['nested quantifier', '^(a+)+$', 'aaaaaaaa'],
     ['quantified alternation', '^(a|aa)+$', 'aaaaaaaa'],
     ['backreference', '^(a)\\1$', 'aa'],
+    ['named backreference', '^(?<value>a)\\k<value>$', 'a'],
     ['lookahead', '^(?=a)a$', 'a'],
     ['quantified wildcard', '^.*$', 'anything'],
     ['adjacent variable repetition', '^a*a*$', 'aaaa'],

@@ -4,7 +4,7 @@
 // is linear-time and safe — flagging it produced false negatives or ambiguous
 // classifications for ordinary step definitions (see #859).
 const POTENTIALLY_EXPENSIVE_REGEX_RE =
-  /(?:\([^)]*(?:[+*]|\{[0-9]+(?:,[0-9]*)?\})[^)]*\))[+*{]|\\[1-9]|\(\?<[=!]|(\(\?[!=])/;
+  /(?:\([^)]*(?:[+*]|\{[0-9]+(?:,[0-9]*)?\})[^)]*\))[+*{]|\\[1-9]|\\k<|\(\?<[=!]|(\(\?[!=])/;
 
 export const MAX_MATCH_REGEX_LENGTH = 256;
 export const MAX_MATCH_STEP_TEXT_LENGTH = 512;
