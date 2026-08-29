@@ -1,0 +1,149 @@
+name: Temporary Dancer2 1.x finalization v2
+
+on:
+  push:
+    branches: ["fix/13089-dancer2-dsl-keywords"]
+
+permissions:
+  contents: write
+
+jobs:
+  finalize:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout candidate branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: fix/13089-dancer2-dsl-keywords
+          fetch-depth: 1
+
+      - name: Apply remaining review dispositions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          from pathlib import Path
+          import textwrap
+
+          workflow_path = Path(
+              ".github/workflows/temp-dancer2-13178-finalize.yml"
+          )
+          workflow = workflow_path.read_text()
+          start_marker = "          python3 <<'PY'\n"
+          end_marker = "\n          PY\n"
+          start = workflow.index(start_marker) + len(start_marker)
+          end = workflow.index(end_marker, start)
+          script = textwrap.dedent(workflow[start:end])
+
+          block_start_marker = '''routes = replace_once(
+              routes,
+              ''' + "'''" + '''            handler_context_facts.push(mint_handler_context_fact(
+          '''
+          block_end_marker = '''routes = replace_once(
+              routes,
+              ''' + "'''" + '''fn mint_handler_context_fact(
+          '''
+          block_start = script.index(block_start_marker)
+          block_end = script.index(block_end_marker, block_start)
+          robust_call_patch = '''call_start = routes.index(
+              "handler_context_facts.push(mint_handler_context_fact("
+          )
+          call_end = routes.index("));", call_start) + len("));")
+          call = routes[call_start:call_end]
+          call = replace_once(
+              call,
+              "                framework_version,\\n                source_generation,\\n",
+              "                framework_version,\\n                dsl_contract_version,\\n                source_generation,\\n",
+              "handler context call",
+          )
+          routes = routes[:call_start] + call + routes[call_end:]
+          '''
+          script = script[:block_start] + robust_call_patch + script[block_end:]
+          exec(compile(script, "dancer2-13178-finalize", "exec"))
+          PY
+
+          cargo fmt --all
+          cargo fmt --all -- --check
+          git diff --check
+
+      - name: Prove semantic fact and route-family contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked -p perl-semantic-facts
+          cargo test --locked -p perl-semantic-analyzer --test dancer2_route_facts
+
+      - name: Prove Dancer2 provider behavior
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked -p perl-lsp-rs-core providers::dancer2
+          cargo test --locked -p perl-test-must
+
+      - name: Check changelog and strict lint posture
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo xtask changelog check
+          cargo clippy --locked -p perl-semantic-facts --all-targets -- -D warnings
+          cargo clippy --locked -p perl-semantic-analyzer --test dancer2_route_facts -- -D warnings
+          cargo clippy --locked -p perl-lsp-rs-core --lib --tests -- -D warnings
+          python3 <<'PY'
+          from pathlib import Path
+
+          text = Path(
+              "crates/perl-lsp-rs-core/src/providers/dancer2/diagnostics.rs"
+          ).read_text()
+          selected = [
+              '.expect("fixture must parse")',
+              '.expect("declaration keyword offset")',
+              '.expect("params offset")',
+          ]
+          remaining = [needle for needle in selected if needle in text]
+          if remaining:
+              raise SystemExit(f"selected diagnostics extraction debt remains: {remaining}")
+          PY
+
+      - name: Commit verified repair and remove temporary executors
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm \
+            .github/workflows/temp-dancer2-13178-finalize.yml \
+            .github/workflows/temp-dancer2-13178-finalize-v2.yml
+          python3 <<'PY'
+          import subprocess
+
+          expected = {
+              ".changes/unreleased/product-13178-Fixed-091500.yaml",
+              ".github/workflows/temp-dancer2-13178-finalize-v2.yml",
+              ".github/workflows/temp-dancer2-13178-finalize.yml",
+              "crates/perl-lsp-rs-core/src/providers/dancer2/diagnostics.rs",
+              "crates/perl-semantic-analyzer/tests/dancer2_route_facts.rs",
+              "crates/perl-semantic-facts/src/framework_adapters/dancer2.rs",
+              "crates/perl-semantic-facts/src/framework_adapters/dancer2_routes.rs",
+          }
+          changed = set(
+              subprocess.check_output(["git", "diff", "--name-only"], text=True).splitlines()
+          )
+          if changed != expected:
+              raise SystemExit(
+                  "unexpected changed-file set:\n"
+                  f"expected={sorted(expected)}\nobserved={sorted(changed)}"
+              )
+          PY
+          git diff --check
+          git config user.name "EffortlessSteven"
+          git config user.email "git@effortlesssteven.com"
+          git add \
+            .changes/unreleased/product-13178-Fixed-091500.yaml \
+            .github/workflows/temp-dancer2-13178-finalize-v2.yml \
+            .github/workflows/temp-dancer2-13178-finalize.yml \
+            crates/perl-lsp-rs-core/src/providers/dancer2/diagnostics.rs \
+            crates/perl-semantic-analyzer/tests/dancer2_route_facts.rs \
+            crates/perl-semantic-facts/src/framework_adapters/dancer2.rs \
+            crates/perl-semantic-facts/src/framework_adapters/dancer2_routes.rs
+          git commit -m "fix(dancer2): close versioned contract gaps (#13089)"
+          git push origin HEAD:fix/13089-dancer2-dsl-keywords
