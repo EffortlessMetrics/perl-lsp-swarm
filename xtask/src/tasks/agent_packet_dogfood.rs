@@ -26,7 +26,7 @@
 
 use crate::utils::project_root;
 use clap::Subcommand;
-use color_eyre::eyre::{Context, Result, bail};
+use color_eyre::eyre::{bail, Context, Result};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -286,7 +286,73 @@ fn envelope_identity(identity: &Map<String, Value>) -> Value {
 /// generators stamp, validators re-verify. Stamping never reports success
 /// without writing a digest: a document missing any semantic envelope input
 /// is a typed error, not a silent no-op.
+fn stamp_validation_document(doc: &Value) -> Value {
+    let mut candidate = doc.clone();
+    let Some(root) = candidate.as_object_mut() else {
+        return candidate;
+    };
+
+    // Stamping is allowed to create or repair digest fields, so validate the
+    // semantic document with those recomputable fields normalized first. The
+    // clone keeps the caller's document untouched if any contract violation is
+    // found, while all non-digest rules still come from validate_manifest.
+    let digest_values = |slot: Option<&mut Value>| -> Vec<Option<String>> {
+        match slot {
+            Some(Value::Array(records)) => records
+                .iter_mut()
+                .map(|record| {
+                    record.as_object_mut().and_then(|object| {
+                        let digest = record_digest(object);
+                        if let Some(digest) = &digest {
+                            object.insert("digest".to_string(), Value::String(digest.clone()));
+                        }
+                        digest
+                    })
+                })
+                .collect(),
+            _ => Vec::new(),
+        }
+    };
+    let event_digests = digest_values(root.get_mut("events"));
+    let result_digests = digest_values(root.get_mut("results"));
+
+    let identity_input = root.get("identity").and_then(as_str_map).map(envelope_identity);
+    let subject =
+        root.get("subject").and_then(as_str_map).map(|subject| Value::Object(subject.clone()));
+    let run_id = root.get("run_id").and_then(Value::as_str);
+    let disposition = root.get("disposition").and_then(Value::as_str);
+    let human_intervention =
+        root.get("human_intervention").cloned().unwrap_or_else(|| Value::Array(Vec::new()));
+    if let (Some(identity_input), Some(subject), Some(run_id), Some(disposition)) =
+        (identity_input, subject, run_id, disposition)
+    {
+        let packet_digest = envelope_digest(
+            &identity_input,
+            &subject,
+            run_id,
+            disposition,
+            &event_digests,
+            &result_digests,
+            &human_intervention,
+        );
+        if let Some(identity) = root.get_mut("identity").and_then(Value::as_object_mut) {
+            identity.insert("packet_digest".to_string(), Value::String(packet_digest));
+        }
+    }
+
+    candidate
+}
+
 pub fn stamp_manifest(doc: &mut Value) -> Result<()> {
+    let validation_doc = stamp_validation_document(doc);
+    let violations = validate_manifest(&validation_doc);
+    if !violations.is_empty() {
+        bail!(
+            "manifest failed closed validation before stamping: {:?}",
+            violation_codes(&violations)
+        );
+    }
+
     let Some(root) = doc.as_object_mut() else {
         bail!("manifest must be a JSON object");
     };
@@ -654,6 +720,12 @@ pub(crate) fn validate_manifest(doc: &Value) -> Vec<Violation> {
     check_unknown_keys(root, ROOT_KEYS, "manifest", &mut violations);
     contains_forbidden_mutable_state(doc, "manifest", &mut violations);
     scan_document_hygiene(doc, "manifest", &mut violations);
+    if root.get("metadata").is_some_and(|metadata| !metadata.is_object()) {
+        violations.push(Violation::new(
+            "not_an_object",
+            "manifest: metadata must be an object when present".to_string(),
+        ));
+    }
     require_non_empty(root, "run_id", "missing_run_id", "manifest", &mut violations);
 
     // Packet/tree/spec identity digests.
@@ -1485,7 +1557,11 @@ fn validate_schema_file(root: &Path) -> Result<Vec<String>> {
 
 /// Stable display label for a schema path segment list.
 fn segments_label(path_segments: &[&str]) -> String {
-    if path_segments.is_empty() { "<root>".to_string() } else { path_segments.join(".") }
+    if path_segments.is_empty() {
+        "<root>".to_string()
+    } else {
+        path_segments.join(".")
+    }
 }
 
 #[cfg(test)]

@@ -17,6 +17,7 @@
   "credential_in_payload.json": "credential_in_payload",
   "credential_in_metadata.json": "credential_in_payload",
   "structured_credential_keys.json": "credential_in_payload",
+  "metadata_not_object.json": "not_an_object",
   "machine_local_path_in_payload.json": "local_path_in_payload",
   "machine_local_path_in_subject.json": "local_path_in_payload",
   "chain_of_thought_in_payload.json": "cot_key_in_payload",

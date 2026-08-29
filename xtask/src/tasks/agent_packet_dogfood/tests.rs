@@ -32,6 +32,7 @@ const EXPECTED_INVALID: &[(&str, &str)] = &[
     ("credential_in_payload.json", "credential_in_payload"),
     ("credential_in_metadata.json", "credential_in_payload"),
     ("structured_credential_keys.json", "credential_in_payload"),
+    ("metadata_not_object.json", "not_an_object"),
     ("machine_local_path_in_payload.json", "local_path_in_payload"),
     ("machine_local_path_in_subject.json", "local_path_in_payload"),
     ("chain_of_thought_in_payload.json", "cot_key_in_payload"),
@@ -317,6 +318,14 @@ fn negative_credential_outside_payload_fails_closed() {
 }
 
 #[test]
+fn negative_metadata_must_match_the_schema_object_boundary() {
+    let violations = mutant(base_manifest(), |doc| {
+        doc["metadata"] = json!("caller metadata");
+    });
+    assert_contains(&violations, "not_an_object");
+}
+
+#[test]
 fn negative_structured_credential_key_fails_closed() {
     for key in ["api_key", "accessToken", "clientSecret", "credentials"] {
         let violations = mutant(base_manifest(), |doc| {
@@ -475,6 +484,27 @@ fn stamp_requires_semantic_envelope_inputs() {
         before["identity"].get("packet_digest"),
         "a failed stamp must not write a packet digest"
     );
+}
+
+#[test]
+fn stamp_rejects_unsafe_manifests_before_mutating_them() {
+    let mut credential_manifest = base_manifest();
+    credential_manifest["metadata"] = json!({"accessToken": "should-not-persist"});
+    let credential_before = credential_manifest.clone();
+    assert!(
+        stamp_manifest(&mut credential_manifest).is_err(),
+        "credential-bearing metadata must fail closed before stamping"
+    );
+    assert_eq!(credential_manifest, credential_before);
+
+    let mut missing_revision = base_manifest();
+    missing_revision["subject"]["model"].as_object_mut().unwrap().remove("revision");
+    let missing_revision_before = missing_revision.clone();
+    assert!(
+        stamp_manifest(&mut missing_revision).is_err(),
+        "missing model revision must fail closed before stamping"
+    );
+    assert_eq!(missing_revision, missing_revision_before);
 }
 
 // ---------------------------------------------------------------------------
