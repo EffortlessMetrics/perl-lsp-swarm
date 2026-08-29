@@ -321,16 +321,8 @@ fn coverage_workflow_is_manual_or_nightly_only_and_requires_receipts() {
     );
 
     let workflow_mutations = [
-        (
-            "push trigger",
-            "on:\n",
-            "on:\n  push:\n    branches: [main]\n",
-        ),
-        (
-            "merge-group trigger",
-            "on:\n",
-            "on:\n  merge_group:\n",
-        ),
+        ("push trigger", "on:\n", "on:\n  push:\n    branches: [main]\n"),
+        ("merge-group trigger", "on:\n", "on:\n  merge_group:\n"),
         (
             "label route",
             "      (github.event_name == 'workflow_dispatch' && inputs.run_coverage)",
@@ -848,7 +840,8 @@ fn coverage_workflow_contract(workflow: &Value) -> Result<()> {
         .filter(|character| !character.is_whitespace())
         .collect::<String>();
     ensure!(
-        condition == "github.event_name=='schedule'||(github.event_name=='workflow_dispatch'&&inputs.run_coverage)",
+        condition
+            == "github.event_name=='schedule'||(github.event_name=='workflow_dispatch'&&inputs.run_coverage)",
         "coverage job must select only the top-level schedule or manual coverage route"
     );
     Ok(())
