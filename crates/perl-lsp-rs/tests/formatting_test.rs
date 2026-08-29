@@ -297,6 +297,51 @@ fn test_public_range_formatting_replay_infers_crlf_for_unterminated_final_line()
     assert!(!edit.new_text.ends_with('\n'));
 }
 
+#[test]
+fn test_public_range_formatting_replay_infers_prefix_ending_for_unterminated_final_line_with_insert()
+ {
+    let formatter = CodeFormatter::new();
+    let options = FormattingOptions {
+        tab_size: 4,
+        insert_spaces: true,
+        trim_trailing_whitespace: None,
+        insert_final_newline: Some(true),
+        trim_final_newlines: None,
+    };
+
+    for (label, source, expected_edit, expected_document) in [
+        (
+            "LF prefix",
+            "my $before=1;\nwhile($n){next;}",
+            "while ($n) {\n    next;\n}\n",
+            "my $before=1;\nwhile ($n) {\n    next;\n}\n",
+        ),
+        (
+            "CRLF prefix",
+            "my $before=1;\r\nwhile($n){next;}",
+            "while ($n) {\r\n    next;\r\n}\r\n",
+            "my $before=1;\r\nwhile ($n) {\r\n    next;\r\n}\r\n",
+        ),
+    ] {
+        let selected_line = "while($n){next;}";
+        let range = WireRange {
+            start: WirePosition::new(1, 0),
+            end: WirePosition::new(1, selected_line.encode_utf16().count() as u32),
+        };
+
+        let edits = must(formatter.format_range(source, &range, &options));
+        assert_eq!(edits.len(), 1, "{label}");
+        let edit = &edits[0];
+        let start = utf16_offset(source, edit.range.start.line, edit.range.start.character);
+        let end = utf16_offset(source, edit.range.end.line, edit.range.end.character);
+        let mut replayed = source.to_string();
+        replayed.replace_range(start..end, &edit.new_text);
+
+        assert_eq!(edit.new_text, expected_edit, "{label}");
+        assert_eq!(replayed, expected_document, "{label}");
+    }
+}
+
 fn utf16_offset(source: &str, line: u32, character: u32) -> usize {
     let mut offset = 0;
     for (line_index, line_text) in source.split_inclusive('\n').enumerate() {
