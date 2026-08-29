@@ -566,26 +566,26 @@ QUIT
     let mut continue_count = 0;
 
     for node in &for_nodes {
-        if let NodeKind::For { continue_block, .. } = &node.kind {
-            if continue_block.is_some() {
-                continue_count += 1;
-            }
+        if let NodeKind::For { continue_block, .. } = &node.kind
+            && continue_block.is_some()
+        {
+            continue_count += 1;
         }
     }
 
     for node in &foreach_nodes {
-        if let NodeKind::Foreach { continue_block, .. } = &node.kind {
-            if continue_block.is_some() {
-                continue_count += 1;
-            }
+        if let NodeKind::Foreach { continue_block, .. } = &node.kind
+            && continue_block.is_some()
+        {
+            continue_count += 1;
         }
     }
 
     for node in &while_nodes {
-        if let NodeKind::While { continue_block, .. } = &node.kind {
-            if continue_block.is_some() {
-                continue_count += 1;
-            }
+        if let NodeKind::While { continue_block, .. } = &node.kind
+            && continue_block.is_some()
+        {
+            continue_count += 1;
         }
     }
 

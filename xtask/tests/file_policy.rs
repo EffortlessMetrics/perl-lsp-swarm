@@ -5,7 +5,7 @@
 //! `xtask/src/tasks/file_policy.rs` as `#[cfg(test)]` modules.
 
 use assert_cmd::Command;
-use color_eyre::eyre::{Result, eyre};
+use color_eyre::eyre::{Result, ensure, eyre};
 use serde_yaml_ng::Value;
 use std::path::PathBuf;
 use std::sync::{LazyLock, Mutex, MutexGuard};
@@ -38,9 +38,15 @@ fn non_rust_inventory_subcommand_help_exits_zero() -> Result<()> {
 }
 
 #[test]
-fn non_rust_inventory_inventory_help_exits_zero() -> Result<()> {
+fn non_rust_inventory_inventory_help_describes_fail_closed_snapshot_check() -> Result<()> {
     let output = Command::cargo_bin("xtask")?.args(["non-rust", "inventory", "--help"]).output()?;
     assert!(output.status.success(), "non-rust inventory --help should exit 0");
+    let help = String::from_utf8(output.stdout)?;
+    ensure!(
+        help.contains("Require the generated Markdown snapshot")
+            && help.contains("after line-ending normalization"),
+        "inventory --help must describe the fail-closed normalized snapshot check"
+    );
     Ok(())
 }
 
@@ -217,6 +223,13 @@ fn non_rust_inventory_check_is_wired_to_policy_shard() -> Result<()> {
 
     assert_eq!(gate.get("tier").and_then(Value::as_str), Some("merge_gate"));
     assert_eq!(gate.get("required").and_then(Value::as_bool), Some(true));
+    ensure!(
+        gate.get("description").and_then(Value::as_str)
+            == Some(
+                "Scan and classify tracked non-Rust files and require the normalized committed snapshot to match"
+            ),
+        "the required gate description must promise exact normalized snapshot parity"
+    );
     assert_eq!(
         gate.get("command").and_then(Value::as_str),
         Some("cargo xtask non-rust inventory --check")

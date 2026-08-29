@@ -56,7 +56,7 @@ EOF
 
     // Verify heredoc declaration is present in AST
     assert!(
-        sexp.contains("(heredoc_interpolated \"EOF\" \"content here\")"),
+        sexp.contains("(heredoc_interpolated (delimiter EOF) (content \"content here\")"),
         "Expected heredoc declaration with label EOF and content, got: {}",
         sexp
     );
@@ -78,7 +78,7 @@ fn test_heredoc_decl_bare_label_alphanumeric() {
 
         let sexp = parse_to_sexp(&input);
         assert!(
-            sexp.contains(&format!("(heredoc_interpolated \"{}\"", label)),
+            sexp.contains(&format!("(heredoc_interpolated (delimiter {label})")),
             "AST should contain heredoc label {}: {}",
             label,
             sexp
@@ -105,7 +105,7 @@ EOF
 
     // Validate AST indicates interpolation is enabled for this heredoc
     assert!(
-        sexp.contains("(heredoc_interpolated \"EOF\""),
+        sexp.contains("(heredoc_interpolated (delimiter EOF)"),
         "Expected double-quoted heredoc to have interpolated flag, got: {}",
         sexp
     );
@@ -126,7 +126,8 @@ LINE
 
     let sexp = parse_to_sexp(input);
     assert!(
-        sexp.contains("(heredoc_interpolated \"END\\nLINE\" \"content here\\nEND\\nLINE\")"),
+        sexp.contains(r#"(delimiter "END\\nLINE")"#)
+            && sexp.contains(r#"(content "content here\nEND\nLINE")"#),
         "Expected label with newline and content, got: {}",
         sexp
     );
@@ -156,7 +157,7 @@ EOF
 
     // Validate AST indicates interpolation is disabled for this heredoc
     assert!(
-        sexp.contains("(heredoc \"EOF\""),
+        sexp.contains("(heredoc (delimiter EOF)"),
         "Expected single-quoted heredoc to NOT have interpolated flag in name, got: {}",
         sexp
     );
@@ -176,7 +177,7 @@ END$DATA
 
     let sexp = parse_to_sexp(input);
     assert!(
-        sexp.contains("(heredoc \"END$DATA\" \"content here\")"),
+        sexp.contains("(heredoc (delimiter END$DATA) (content \"content here\")"),
         "Special chars in label should be preserved literal: {}",
         sexp
     );
@@ -201,7 +202,7 @@ EOF
 
     // Validate AST indicates command execution for this heredoc
     assert!(
-        sexp.contains("(heredoc_command \"EOF\""),
+        sexp.contains("(heredoc_command (delimiter EOF)"),
         "Expected backtick heredoc to have command flag, got: {}",
         sexp
     );
@@ -221,7 +222,7 @@ CMD
 
     let sexp = parse_to_sexp(input);
     assert!(
-        sexp.contains("(heredoc_command \"CMD\""),
+        sexp.contains("(heredoc_command (delimiter CMD)"),
         "Backtick heredoc should have command flag: {}",
         sexp
     );
@@ -245,7 +246,7 @@ END	TAB
 
     let sexp = parse_to_sexp(input);
     assert!(
-        sexp.contains("(heredoc_interpolated \"END\\tTAB\" \"content with tab in label\")"),
+        sexp.contains(r#"(delimiter "END\\tTAB")"#) && sexp.contains("content with tab in label"),
         "Expected label with tab and content, got: {}",
         sexp
     );
@@ -266,7 +267,7 @@ END\SLASH
 
     let sexp = parse_to_sexp(input);
     assert!(
-        sexp.contains("(heredoc_interpolated \"END\\\\SLASH\" \"content here\")"),
+        sexp.contains(r#"(delimiter "END\\\\SLASH")"#) && sexp.contains("content here"),
         "Expected label with backslash and content, got: {}",
         sexp
     );
@@ -288,7 +289,9 @@ fn test_heredoc_decl_crlf_line_endings() {
 
     let sexp = parse_to_sexp(input);
     assert!(
-        sexp.contains("(heredoc_interpolated \"EOF\" \"content line 1\\ncontent line 2\")"),
+        sexp.contains(
+            "(heredoc_interpolated (delimiter EOF) (content \"content line 1\\ncontent line 2\")"
+        ),
         "CRLF heredoc content mismatch: {}",
         sexp
     );
@@ -305,7 +308,7 @@ fn test_heredoc_decl_mixed_line_endings() {
 
     let sexp = parse_to_sexp(input);
     assert!(
-        sexp.contains("(heredoc_interpolated \"EOF\" \"content with LF\")"),
+        sexp.contains("(heredoc_interpolated (delimiter EOF) (content \"content with LF\")"),
         "Mixed line ending content mismatch: {}",
         sexp
     );
@@ -352,7 +355,7 @@ content
 
     let sexp = parse_to_sexp(input);
     assert!(
-        sexp.contains("(heredoc_interpolated \"EOF\" \"content\")")
+        sexp.contains("(heredoc_interpolated (delimiter EOF) (content content)")
             && sexp.contains("(UNKNOWN_REST)"),
         "Leading whitespace label should trigger UNKNOWN_REST if not terminated: {}",
         sexp
@@ -418,7 +421,8 @@ fn test_heredoc_decl_empty_label() {
         Err(e) => format!("(ERROR \"{}\")", e),
     };
     assert!(
-        sexp.contains("(heredoc_interpolated \"\" \"content\")") || sexp.contains("(ERROR"),
+        sexp.contains("(heredoc_interpolated (delimiter \"\") (content \"content\")")
+            || sexp.contains("(ERROR"),
         "Empty label missing in AST or valid Error: {}",
         sexp
     );
@@ -463,12 +467,12 @@ SECOND
     // Validate that both heredoc declarations are recognized
     // and bodies are associated correctly in FIFO order
     assert!(
-        sexp.contains("(heredoc_interpolated \"FIRST\" \"body of first\")"),
+        sexp.contains("(heredoc_interpolated (delimiter FIRST) (content \"body of first\")"),
         "Missing first heredoc: {}",
         sexp
     );
     assert!(
-        sexp.contains("(heredoc_interpolated \"SECOND\" \"body of second\")"),
+        sexp.contains("(heredoc_interpolated (delimiter SECOND) (content \"body of second\")"),
         "Missing second heredoc: {}",
         sexp
     );
@@ -492,17 +496,17 @@ LITERAL
 
     let sexp = parse_to_sexp(input);
     assert!(
-        sexp.contains("(heredoc_interpolated \"EOF\" \"unquoted body\")"),
+        sexp.contains("(heredoc_interpolated (delimiter EOF) (content \"unquoted body\")"),
         "Missing EOF heredoc: {}",
         sexp
     );
     assert!(
-        sexp.contains("(heredoc_interpolated \"QUOTED\" \"quoted body\")"),
+        sexp.contains("(heredoc_interpolated (delimiter QUOTED) (content \"quoted body\")"),
         "Missing QUOTED heredoc: {}",
         sexp
     );
     assert!(
-        sexp.contains("(heredoc \"LITERAL\" \"literal body\")"),
+        sexp.contains("(heredoc (delimiter LITERAL) (content \"literal body\")"),
         "Missing LITERAL heredoc: {}",
         sexp
     );
@@ -524,12 +528,12 @@ B
 
     let sexp = parse_to_sexp(input);
     assert!(
-        sexp.contains("(heredoc_interpolated \"A\" \"first content\")"),
+        sexp.contains("(heredoc_interpolated (delimiter A) (content \"first content\")"),
         "Missing A heredoc: {}",
         sexp
     );
     assert!(
-        sexp.contains("(heredoc_interpolated \"B\" \"second content\")"),
+        sexp.contains("(heredoc_interpolated (delimiter B) (content \"second content\")"),
         "Missing B heredoc: {}",
         sexp
     );
@@ -555,7 +559,7 @@ fn test_heredoc_decl_indented_style() {
     let sexp = parse_to_sexp(input);
     assert!(
         sexp.contains(
-            "(heredoc_indented_interpolated \"EOF\" \"  indented content\\n  more indented\")"
+            "(heredoc_indented_interpolated (delimiter EOF) (content \"  indented content\\n  more indented\")"
         ),
         "Indented heredoc mismatch: {}",
         sexp
@@ -578,12 +582,12 @@ B
 
     let sexp = parse_to_sexp(input);
     assert!(
-        sexp.contains("(heredoc_interpolated \"A\" \"first value\")"),
+        sexp.contains("(heredoc_interpolated (delimiter A) (content \"first value\")"),
         "Missing A in list: {}",
         sexp
     );
     assert!(
-        sexp.contains("(heredoc_interpolated \"B\" \"second value\")"),
+        sexp.contains("(heredoc_interpolated (delimiter B) (content \"second value\")"),
         "Missing B in list: {}",
         sexp
     );
@@ -601,7 +605,11 @@ EOF
     parse_and_verify_success(input, "test_heredoc_decl_empty_body");
 
     let sexp = parse_to_sexp(input);
-    assert!(sexp.contains("(heredoc_interpolated \"EOF\" \"\")"), "Empty body mismatch: {}", sexp);
+    assert!(
+        sexp.contains("(heredoc_interpolated (delimiter EOF) (content \"\")"),
+        "Empty body mismatch: {}",
+        sexp
+    );
 }
 
 /// Tests feature spec: Sprint A Issue #183 - heredoc label max length
@@ -616,7 +624,7 @@ fn test_heredoc_decl_long_label() {
 
     let sexp = parse_to_sexp(&input);
     assert!(
-        sexp.contains(&format!("(heredoc_interpolated \"{}\"", long_label)),
+        sexp.contains(&format!("(heredoc_interpolated (delimiter {long_label})")),
         "Long label missing: {}",
         sexp
     );
@@ -636,7 +644,7 @@ content here
 
     let sexp = parse_to_sexp(input);
     assert!(
-        sexp.contains("(heredoc_interpolated \"データ\""),
+        sexp.contains("(heredoc_interpolated (delimiter データ)"),
         "Unicode label missing or incorrect: {}",
         sexp
     );

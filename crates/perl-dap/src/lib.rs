@@ -1,7 +1,7 @@
 //! Native Debug Adapter Protocol implementation for Perl.
 //!
 //! `perl-dap` is the Rust DAP server shipped with `perl-lsp`. It speaks DAP over
-//! stdio or TCP, launches or attaches to Perl debug sessions, validates
+//! stdio to editors, launches or attaches to Perl debug sessions, validates
 //! breakpoints with the native parser stack, and serves stack, variable,
 //! evaluation, and execution-control requests to DAP-capable editors.
 //!
@@ -28,11 +28,10 @@
 //! perl-dap --stdio
 //! ```
 //!
-//! Native TCP mode:
-//!
-//! ```text
-//! perl-dap --socket --port 13603
-//! ```
+//! Native editor TCP (`--socket` / editor `--port`) is retired. Those flags still
+//! parse via shared transport options and fail before bind with a `perl-dap --stdio`
+//! migration, including when combined with `--external-peer`. They are not a
+//! supported editor run mode.
 //!
 //! # Programmatic launch
 //!
@@ -122,8 +121,12 @@ pub mod breakpoint;
 pub mod command_args;
 /// DAP launch and attach configuration types (from perl-dap-config).
 pub mod config;
+/// Fixed-origin operational error classification for the #8739 DAP slice.
+mod error_class;
 /// Safe expression evaluation validation (from perl-dap-eval).
 pub mod eval;
+/// Caller-supplied origin for stack/variable parser inputs (#8746).
+pub mod parse_origin;
 /// Cross-platform utilities for Perl path resolution and environment setup (from perl-dap-platform).
 pub mod platform;
 /// Security validation and hardening (from perl-dap-security).
@@ -187,7 +190,7 @@ pub use configuration::{
     create_launch_json_snippet,
 };
 pub use debug_adapter::{DapMessage, DebugAdapter};
-pub use server::{DapConfig, DapMode, DapServer, DapSocketBindError};
+pub use server::{DapConfig, DapMode, DapServer};
 
 pub use breakpoints::{BreakpointRecord, BreakpointStore, interpolate_logpoint_message};
 pub use protocol::{

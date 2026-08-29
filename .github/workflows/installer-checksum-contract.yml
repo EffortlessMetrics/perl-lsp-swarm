@@ -5,14 +5,22 @@ on:
     branches: [main, master, agent/installer-bootstrap-identity-6097]
     paths:
       - 'scripts/install.sh'
+      - 'install.ps1'
       - 'scripts/tests/test-installer-checksum-required.sh'
+      - 'scripts/tests/test-installer-archive-safety.sh'
+      - 'scripts/tests/lib/standalone_archive_fixtures.py'
+      - 'policy/standalone-archive-safety.v1.toml'
       - 'docs/how-to/INSTALLATION.md'
       - '.github/workflows/installer-checksum-contract.yml'
   push:
     branches: [main, master]
     paths:
       - 'scripts/install.sh'
+      - 'install.ps1'
       - 'scripts/tests/test-installer-checksum-required.sh'
+      - 'scripts/tests/test-installer-archive-safety.sh'
+      - 'scripts/tests/lib/standalone_archive_fixtures.py'
+      - 'policy/standalone-archive-safety.v1.toml'
       - 'docs/how-to/INSTALLATION.md'
       - '.github/workflows/installer-checksum-contract.yml'
   workflow_dispatch:
@@ -22,9 +30,9 @@ permissions:
 
 jobs:
   validate:
-    name: Installer checksum required
+    name: Installer checksum and archive safety
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 8
     steps:
       - name: Checkout exact candidate
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -40,7 +48,10 @@ jobs:
           test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
 
       - name: Parse shell sources
-        run: bash -n scripts/install.sh scripts/tests/test-installer-checksum-required.sh
+        run: bash -n scripts/install.sh scripts/tests/test-installer-checksum-required.sh scripts/tests/test-installer-archive-safety.sh
 
       - name: Run checksum negative controls
         run: bash scripts/tests/test-installer-checksum-required.sh
+
+      - name: Run archive-safety controls
+        run: bash scripts/tests/test-installer-archive-safety.sh
