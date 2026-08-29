@@ -30,10 +30,8 @@ use crate::utils::project_root;
 // =============================================================================
 
 /// Exact public-binary integration targets exercised as E2E proof.
-const PUBLIC_PROCESS_TARGETS: &[&str] = &[
-    "lsp_stdio_process_contract",
-    "lsp_document_lifecycle_process",
-];
+const PUBLIC_PROCESS_TARGETS: &[&str] =
+    &["lsp_stdio_process_contract", "lsp_document_lifecycle_process"];
 
 /// Core crates whose release-mode lib tests are exercised.
 const CORE_CRATES: &[&str] = &["perl-parser", "perl-lsp-rs", "perl-dap"];
@@ -69,10 +67,7 @@ pub fn run(config: E2eConfig) -> Result<()> {
     let mut results = Vec::new();
 
     // ── Phase 1: Exact public-binary process contracts ─────────────────
-    println!(
-        "\n{}",
-        bold.apply_to("Phase 1: Exact public perllsp process contracts")
-    );
+    println!("\n{}", bold.apply_to("Phase 1: Exact public perllsp process contracts"));
     for target in PUBLIC_PROCESS_TARGETS {
         let outcome = run_public_process_test(target, config.verbose)?;
         results.push(outcome);
@@ -87,10 +82,7 @@ pub fn run(config: E2eConfig) -> Result<()> {
 
     // ── Phase 3: Large-workspace process-liveness smoke ─────────────────
     if !config.skip_workspace {
-        println!(
-            "\n{}",
-            bold.apply_to("Phase 3: Large-workspace process-liveness smoke")
-        );
+        println!("\n{}", bold.apply_to("Phase 3: Large-workspace process-liveness smoke"));
         let outcome = run_workspace_liveness_smoke_test(config.workspace_size, &root)?;
         results.push(outcome);
     }
@@ -116,11 +108,7 @@ pub fn run(config: E2eConfig) -> Result<()> {
     let failures: Vec<&StepOutcome> = results.iter().filter(|r| !r.passed).collect();
     if !failures.is_empty() {
         let names: Vec<&str> = failures.iter().map(|f| f.name.as_str()).collect();
-        Err(color_eyre::eyre::eyre!(
-            "{} step(s) failed: {}",
-            failures.len(),
-            names.join(", ")
-        ))
+        Err(color_eyre::eyre::eyre!("{} step(s) failed: {}", failures.len(), names.join(", ")))
     } else {
         Ok(())
     }
@@ -175,12 +163,7 @@ fn run_public_process_test(target: &str, verbose: bool) -> Result<StepOutcome> {
 
     let label = format!("perllsp exact-process target {target}");
     print_step_result(&spinner, &label, passed, elapsed);
-    Ok(StepOutcome {
-        name: label,
-        passed,
-        duration: elapsed,
-        detail,
-    })
+    Ok(StepOutcome { name: label, passed, duration: elapsed, detail })
 }
 
 /// Run `cargo test -p <crate> --lib --release` and capture result.
@@ -212,31 +195,18 @@ fn run_crate_test(crate_name: &str, verbose: bool) -> Result<StepOutcome> {
 
     let label = format!("{} release tests", crate_name);
     print_step_result(&spinner, &label, passed, elapsed);
-    Ok(StepOutcome {
-        name: label,
-        passed,
-        duration: elapsed,
-        detail,
-    })
+    Ok(StepOutcome { name: label, passed, duration: elapsed, detail })
 }
 
 fn perllsp_release_build_args() -> &'static [&'static str] {
-    &[
-        "build",
-        "-p",
-        "perllsp",
-        "--bin",
-        "perllsp",
-        "--release",
-        "--locked",
-    ]
+    &["build", "-p", "perllsp", "--bin", "perllsp", "--release", "--locked"]
 }
 
 fn perllsp_binary_path(project_root: &std::path::Path, profile: &str) -> PathBuf {
-    project_root.join("target").join(profile).join(format!(
-        "perllsp{}",
-        std::env::consts::EXE_SUFFIX
-    ))
+    project_root
+        .join("target")
+        .join(profile)
+        .join(format!("perllsp{}", std::env::consts::EXE_SUFFIX))
 }
 
 /// Generate N Perl files in a temp directory, start the public LSP binary,
@@ -274,10 +244,8 @@ fn run_workspace_liveness_smoke_test(
         None => {
             // Try building the actual public binary first.
             spinner.set_message("Building public perllsp binary (release)...");
-            let build_result = cmd("cargo", perllsp_release_build_args())
-                .stderr_to_stdout()
-                .unchecked()
-                .run();
+            let build_result =
+                cmd("cargo", perllsp_release_build_args()).stderr_to_stdout().unchecked().run();
             match build_result {
                 Ok(output) if output.status.success() => {
                     let bin = perllsp_binary_path(project_root, "release");
@@ -312,12 +280,7 @@ fn run_workspace_liveness_smoke_test(
     // Clean up
     drop(tmp_dir);
 
-    Ok(StepOutcome {
-        name: label,
-        passed,
-        duration: elapsed,
-        detail,
-    })
+    Ok(StepOutcome { name: label, passed, duration: elapsed, detail })
 }
 
 /// Verify that benchmarks compile (without running them).
@@ -326,10 +289,7 @@ fn run_bench_compile_check() -> Result<StepOutcome> {
     spinner.set_message("Checking benchmark compilation...");
 
     let start = Instant::now();
-    let result = cmd("cargo", &["bench", "--no-run"])
-        .stderr_to_stdout()
-        .unchecked()
-        .run();
+    let result = cmd("cargo", &["bench", "--no-run"]).stderr_to_stdout().unchecked().run();
 
     let elapsed = start.elapsed();
     let (passed, detail) = match result {
@@ -347,12 +307,7 @@ fn run_bench_compile_check() -> Result<StepOutcome> {
 
     let label = "Benchmark compilation".to_string();
     print_step_result(&spinner, &label, passed, elapsed);
-    Ok(StepOutcome {
-        name: label,
-        passed,
-        duration: elapsed,
-        detail,
-    })
+    Ok(StepOutcome { name: label, passed, duration: elapsed, detail })
 }
 
 // =============================================================================
@@ -389,11 +344,7 @@ fn make_spinner() -> Result<ProgressBar> {
 
 fn print_step_result(spinner: &ProgressBar, label: &str, passed: bool, duration: Duration) {
     let icon = if passed { "PASS" } else { "FAIL" };
-    let style = if passed {
-        Style::new().green()
-    } else {
-        Style::new().red()
-    };
+    let style = if passed { Style::new().green() } else { Style::new().red() };
     spinner.finish_with_message(format!(
         "[{}] {} ({:.1}s)",
         style.apply_to(icon),
@@ -448,8 +399,7 @@ fn write_report(results: &[StepOutcome], total: Duration, path: &std::path::Path
     let mut file =
         fs::File::create(path).with_context(|| format!("Failed to create {}", path.display()))?;
     let json_bytes = serde_json::to_vec_pretty(&report).context("Failed to serialize report")?;
-    file.write_all(&json_bytes)
-        .with_context(|| format!("Failed to write {}", path.display()))?;
+    file.write_all(&json_bytes).with_context(|| format!("Failed to write {}", path.display()))?;
 
     Ok(())
 }
@@ -511,10 +461,7 @@ fn run_lsp_liveness_smoke(
             let _ = child.wait();
             Ok((true, None))
         }
-        Err(e) => Ok((
-            false,
-            Some(format!("Failed to check process status: {e}")),
-        )),
+        Err(e) => Ok((false, Some(format!("Failed to check process status: {e}")))),
     }
 }
 
@@ -565,10 +512,7 @@ mod tests {
     fn exact_public_process_targets_are_selected() {
         assert_eq!(
             PUBLIC_PROCESS_TARGETS,
-            &[
-                "lsp_stdio_process_contract",
-                "lsp_document_lifecycle_process"
-            ]
+            &["lsp_stdio_process_contract", "lsp_document_lifecycle_process"]
         );
     }
 
@@ -609,15 +553,7 @@ mod tests {
     fn public_binary_fallback_builds_the_perllsp_package_and_binary() {
         assert_eq!(
             perllsp_release_build_args(),
-            &[
-                "build",
-                "-p",
-                "perllsp",
-                "--bin",
-                "perllsp",
-                "--release",
-                "--locked"
-            ]
+            &["build", "-p", "perllsp", "--bin", "perllsp", "--release", "--locked"]
         );
     }
 
@@ -669,10 +605,7 @@ mod tests {
         let report_json: serde_json::Value = serde_json::from_str(&raw)?;
         assert_eq!(report_json["passed"].as_u64(), Some(1));
         assert_eq!(report_json["failed"].as_u64(), Some(1));
-        assert_eq!(
-            report_json["steps"][1]["detail"].as_str(),
-            Some("boom")
-        );
+        assert_eq!(report_json["steps"][1]["detail"].as_str(), Some("boom"));
 
         let parent = report_path
             .parent()
@@ -720,11 +653,7 @@ mod tests {
 
             let (passed, detail) = run_lsp_liveness_smoke(&script, &temp_root)?;
             assert!(!passed);
-            assert!(
-                detail
-                    .unwrap_or_default()
-                    .contains("before the liveness window completed")
-            );
+            assert!(detail.unwrap_or_default().contains("before the liveness window completed"));
 
             fs::remove_dir_all(temp_root)?;
             Ok(())
