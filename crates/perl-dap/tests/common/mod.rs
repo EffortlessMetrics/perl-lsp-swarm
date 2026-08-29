@@ -797,8 +797,9 @@ fn normalize_windows_path_prefix(path: PathBuf) -> PathBuf {
 
 #[cfg(test)]
 mod explicit_pin_tests {
-    use super::{launch_arguments, normalize_explicit_debuggee_pin};
+    use super::{launch_arguments, normalize_explicit_debuggee_pin, resolve_debuggee_candidate};
     use std::fs;
+    use std::path::Path;
 
     #[test]
     fn nested_relative_pin_is_frozen_before_different_launch_cwd() -> Result<(), String> {
@@ -862,6 +863,68 @@ mod explicit_pin_tests {
         };
         if !error.contains("not valid UTF-8") {
             return Err(format!("unexpected error: {error}"));
+        }
+        Ok(())
+    }
+
+    /// A bare program name reachable only through the search path must resolve
+    /// to the absolute path the probe will execute, so the launch boundary's
+    /// pin canonicalization sees the same value (#13553).
+    #[test]
+    fn path_only_candidate_is_frozen_to_absolute_path() -> Result<(), String> {
+        let controls = tempfile::tempdir().map_err(|error| error.to_string())?;
+        let binary = controls.path().join(if cfg!(windows) { "perl.exe" } else { "perl" });
+        fs::write(&binary, b"path candidate").map_err(|error| error.to_string())?;
+        let search_path =
+            std::env::join_paths([controls.path()]).map_err(|error| error.to_string())?;
+        let resolved = resolve_debuggee_candidate(Path::new("perl"), Some(search_path.as_os_str()))
+            .map_err(|error| format!("the PATH-only candidate should resolve: {error}"))?;
+        let expected = fs::canonicalize(&binary).map_err(|error| error.to_string())?;
+        if resolved != expected {
+            return Err(format!(
+                "PATH candidate was not frozen absolutely: {resolved:?} != {expected:?}"
+            ));
+        }
+        Ok(())
+    }
+
+    /// A bare name absent from the search path is a resolution failure, never
+    /// an accepted candidate: the resolver must not hand the probe a value the
+    /// launch boundary would later reject.
+    #[test]
+    fn bare_candidate_absent_from_search_path_fails_closed() -> Result<(), String> {
+        let controls = tempfile::tempdir().map_err(|error| error.to_string())?;
+        let search_path =
+            std::env::join_paths([controls.path()]).map_err(|error| error.to_string())?;
+        let error =
+            match resolve_debuggee_candidate(Path::new("perl"), Some(search_path.as_os_str())) {
+                Ok(resolved) => {
+                    return Err(format!("absent candidate unexpectedly resolved to {resolved:?}"));
+                }
+                Err(error) => error,
+            };
+        if !error.contains("was not found") {
+            return Err(format!("unexpected failure reason: {error}"));
+        }
+        Ok(())
+    }
+
+    /// A non-bare candidate that does not exist on disk must fail closed at
+    /// resolution instead of reaching the probe or the launch boundary.
+    #[test]
+    fn absolute_candidate_missing_on_disk_fails_closed() -> Result<(), String> {
+        let controls = tempfile::tempdir().map_err(|error| error.to_string())?;
+        let absent = controls.path().join("absent-perl");
+        let error = match resolve_debuggee_candidate(&absent, None) {
+            Ok(resolved) => {
+                return Err(format!(
+                    "missing absolute candidate unexpectedly resolved to {resolved:?}"
+                ));
+            }
+            Err(error) => error,
+        };
+        if !error.contains("cannot canonicalize") {
+            return Err(format!("unexpected failure reason: {error}"));
         }
         Ok(())
     }
@@ -2358,6 +2421,88 @@ pub fn resolve_debuggee_perl() -> Option<&'static DebuggeePerl> {
     resolved_debuggee_perl_or_reason().ok()
 }
 
+/// Whether `path` is a single unadorned program name — no root, prefix, `.`,
+/// `..`, or directory component — whose location must come from the search
+/// path, exactly as the spawning `Command` would resolve it.
+fn is_bare_program_name(path: &Path) -> bool {
+    use std::path::Component;
+    matches!(path.components().collect::<Vec<_>>().as_slice(), [Component::Normal(_)])
+}
+
+/// The lookup names `Command` would try for a bare program name: the exact
+/// name first, then the `PATHEXT` extensions on Windows (defaulting to the
+/// CreateProcess `.EXE` default when `PATHEXT` is unset or unusable).
+#[cfg(windows)]
+fn bare_name_lookup_variants(name: &std::ffi::OsStr) -> Vec<std::ffi::OsString> {
+    let mut variants = vec![name.to_os_string()];
+    let path_ext = std::env::var_os("PATHEXT")
+        .unwrap_or_else(|| std::ffi::OsString::from(".COM;.EXE;.BAT;.CMD"));
+    for extension in path_ext.to_string_lossy().split(';') {
+        let extension = extension.trim();
+        if extension.is_empty() || !extension.starts_with('.') {
+            continue;
+        }
+        let mut with_extension = name.to_os_string();
+        with_extension.push(extension);
+        if !variants.contains(&with_extension) {
+            variants.push(with_extension);
+        }
+    }
+    variants
+}
+
+#[cfg(not(windows))]
+fn bare_name_lookup_variants(name: &std::ffi::OsStr) -> Vec<std::ffi::OsString> {
+    vec![name.to_os_string()]
+}
+
+/// Resolve one ambient candidate to the absolute interpreter path the probe
+/// will validate, so the launch-time pin canonicalization sees the same value
+/// the probe executed (#13553). A bare program name is looked up on the
+/// search path; absolute and multi-component candidates must exist as paths.
+/// Every failure is a resolution failure: a candidate this function accepts
+/// is always canonicalizable, so the launch boundary can never inherit a
+/// probe-validated value it cannot resolve.
+fn resolve_debuggee_candidate(
+    path: &Path,
+    search_path: Option<&std::ffi::OsStr>,
+) -> Result<PathBuf, String> {
+    if !is_bare_program_name(path) {
+        let absolute = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            std::env::current_dir()
+                .map_err(|error| {
+                    format!(
+                        "cannot resolve candidate {} relative to the test process: {error}",
+                        path.display()
+                    )
+                })?
+                .join(path)
+        };
+        return fs::canonicalize(&absolute)
+            .map_err(|error| format!("cannot canonicalize candidate {}: {error}", path.display()));
+    }
+
+    let search_path = search_path.ok_or_else(|| {
+        format!(
+            "candidate {} is a bare program name but no search path is available",
+            path.display()
+        )
+    })?;
+    for directory in std::env::split_paths(search_path) {
+        for variant in bare_name_lookup_variants(path.as_os_str()) {
+            let candidate = directory.join(&variant);
+            if let Ok(canonical) = fs::canonicalize(&candidate)
+                && canonical.is_file()
+            {
+                return Ok(canonical);
+            }
+        }
+    }
+    Err(format!("candidate {} was not found on the search path", path.display()))
+}
+
 /// One uncached resolution sweep over every candidate interpreter.
 fn resolve_debuggee_perl_uncached() -> DebuggeePerlResolution {
     let explicit = std::env::var_os(DEBUGGEE_PERL_OVERRIDE_ENV).is_some();
@@ -2376,7 +2521,13 @@ fn resolve_debuggee_perl_uncached() -> DebuggeePerlResolution {
                 }
             }
         } else {
-            raw_candidate
+            match resolve_debuggee_candidate(&raw_candidate, std::env::var_os("PATH").as_deref()) {
+                Ok(candidate) => candidate,
+                Err(reason) => {
+                    diagnostics.push(format!("{}: {reason}", raw_candidate.display()));
+                    continue;
+                }
+            }
         };
         match probe_debuggee_perl(&candidate) {
             Ok(perl) => {
