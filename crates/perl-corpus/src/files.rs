@@ -31,6 +31,12 @@ pub struct CorpusPaths {
 /// down, either as the borrowed view [`Self::as_paths`] or the consuming
 /// [`Self::into_paths`].
 ///
+/// The examples below are illustrative, not enforcement. This repository runs
+/// no `cargo test --doc` gate (see issue #13774), so a doctest here cannot fail
+/// CI. The boundary is actually held by `assert_does_not_implement!` in
+/// `tests/root_path_authority.rs`, which stops that test target from compiling
+/// if such an impl reappears.
+///
 /// A resolved value is not accepted where unchecked compatibility paths are
 /// expected:
 ///
@@ -95,6 +101,11 @@ impl ResolvedCorpusPaths {
     ///
     /// Downgrading discards the retained root authority, so the resulting
     /// [`CorpusPaths`] is no longer evidence that the root was validated.
+    ///
+    /// The example is illustrative rather than enforced proof: no gate in this
+    /// repository runs `cargo test --doc` (see issue #13774), so a false
+    /// assertion here would not fail CI. The executed regression lives in
+    /// `tests/root_path_authority.rs`.
     ///
     /// ```
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {

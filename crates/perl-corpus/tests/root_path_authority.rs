@@ -194,14 +194,21 @@ fn explicit_downgrade_remains_the_supported_compatibility_boundary() -> TestResu
         )));
     }
 
-    // The downgrade is a one-way authority loss: the resulting value carries no
-    // root capability and must be re-validated to become authority again.
+    // What the downgrade drops is the retained `CorpusRoot`, not a capability
+    // encoded in `CorpusPaths` itself: `CorpusPaths` has public mutable fields,
+    // so the downgraded value never carried authority at the type level. The
+    // narrower property worth pinning is that it is not validated by
+    // construction either, so a caller wanting authority back has to go through
+    // `CorpusRoot::explicit` again. Mutating `root` first forces a specific
+    // `RelativePath` rejection instead of depending on whatever the validated
+    // root happened to be. The `as_paths()`/`into_paths()` boundary itself is
+    // guarded by `assert_does_not_implement!` above, not here.
     let mut mutated = downgraded;
     mutated.root = PathBuf::from("relative-compatibility-root");
     expect_error(
         CorpusRoot::explicit(&mutated.root),
         |error| matches!(error, CorpusRootError::RelativePath { .. }),
-        "downgraded paths remain unchecked",
+        "re-validating a downgraded value goes back through CorpusRoot::explicit",
     )
 }
 
