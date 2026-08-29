@@ -119,9 +119,7 @@ impl crate::UxHarness {
     /// successfully and refuses to reset an already-open version owner.
     pub fn open_editor_buffer(&self, relative_path: &str, content: &str) -> Result<()> {
         let uri = self.workspace.uri(relative_path);
-        open_tracked_document(&self.document_versions, &uri, || {
-            self.client.did_open(&uri, content)
-        })
+        open_tracked_document(&self.document_versions, &uri, || self.client.did_open(&uri, content))
     }
 
     /// Replace an open editor buffer without changing its backing workspace file.
@@ -143,7 +141,7 @@ impl crate::UxHarness {
     ///
     /// The map entry is removed only after `textDocument/didClose` is written
     /// successfully. This operation does not delete or rewrite the backing file.
-    pub fn close_file(&self, relative_path: &str) -> Result<()> {
+    pub fn close_editor_buffer(&self, relative_path: &str) -> Result<()> {
         let uri = self.workspace.uri(relative_path);
         close_tracked_document(&self.document_versions, &uri, || {
             self.client.notify(
@@ -160,11 +158,7 @@ impl crate::UxHarness {
     /// Return the client version currently owned for an open editor buffer.
     pub fn tracked_document_version(&self, relative_path: &str) -> Option<i32> {
         let uri = self.workspace.uri(relative_path);
-        self.document_versions
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .get(&uri)
-            .copied()
+        self.document_versions.lock().unwrap_or_else(|error| error.into_inner()).get(&uri).copied()
     }
 }
 
@@ -177,7 +171,10 @@ fn open_tracked_document(
     if let Some(version) = versions.get(uri) {
         bail!("editor buffer is already open at version {version}: {uri}");
     }
-    notify()?;
+    // The version map stays untouched until the transport succeeds; a panic in
+    // `notify` leaves the pre-notify state behind under the poisoned lock, so
+    // every helper here fails closed for later callers.
+    notify().with_context(|| format!("failed to open editor buffer: {uri}"))?;
     versions.insert(uri.to_string(), 1);
     Ok(())
 }
@@ -195,7 +192,8 @@ fn change_tracked_document(
     let next = current
         .checked_add(1)
         .ok_or_else(|| anyhow!("editor buffer version overflow for {uri}: {current}"))?;
-    notify(next)?;
+    notify(next)
+        .with_context(|| format!("failed to change editor buffer at version {next}: {uri}"))?;
     versions.insert(uri.to_string(), next);
     Ok(next)
 }
@@ -221,13 +219,10 @@ mod editor_buffer_version_tests {
     use anyhow::{Result, anyhow};
     use std::collections::HashMap;
     use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn version(versions: &Mutex<HashMap<String, i32>>, uri: &str) -> Option<i32> {
-        versions
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .get(uri)
-            .copied()
+        versions.lock().unwrap_or_else(|error| error.into_inner()).get(uri).copied()
     }
 
     #[test]
@@ -259,9 +254,7 @@ mod editor_buffer_version_tests {
         let uri = "file:///workspace/live.pl";
         let versions = Mutex::new(HashMap::new());
 
-        assert!(
-            open_tracked_document(&versions, uri, || Err(anyhow!("open transport"))).is_err()
-        );
+        assert!(open_tracked_document(&versions, uri, || Err(anyhow!("open transport"))).is_err());
         assert_eq!(version(&versions, uri), None);
 
         open_tracked_document(&versions, uri, || Ok(()))?;
@@ -278,17 +271,57 @@ mod editor_buffer_version_tests {
     }
 
     #[test]
+    fn change_overflow_fails_without_mutating_version() -> Result<()> {
+        let uri = "file:///workspace/live.pl";
+        let versions = Mutex::new(HashMap::from([(uri.to_string(), i32::MAX)]));
+
+        assert!(change_tracked_document(&versions, uri, |_| Ok(())).is_err());
+        assert_eq!(version(&versions, uri), Some(i32::MAX));
+        Ok(())
+    }
+
+    #[test]
     fn invalid_lifecycle_transitions_fail_without_notification() -> Result<()> {
         let uri = "file:///workspace/live.pl";
         let versions = Mutex::new(HashMap::new());
+        let notifications = AtomicUsize::new(0);
 
-        assert!(change_tracked_document(&versions, uri, |_| Ok(())).is_err());
-        assert!(close_tracked_document(&versions, uri, || Ok(())).is_err());
+        // Rejected transitions must fail before a notification closure is ever
+        // invoked, so every accepted notification below is counted and the
+        // counts around each rejection pin the no-send invariant.
+        assert!(
+            change_tracked_document(&versions, uri, count_notify_change(&notifications)).is_err()
+        );
+        assert!(close_tracked_document(&versions, uri, count_notify(&notifications)).is_err());
+        assert_eq!(notifications.load(Ordering::SeqCst), 0);
 
-        open_tracked_document(&versions, uri, || Ok(()))?;
-        assert!(open_tracked_document(&versions, uri, || Ok(())).is_err());
-        close_tracked_document(&versions, uri, || Ok(()))?;
-        assert!(close_tracked_document(&versions, uri, || Ok(())).is_err());
+        open_tracked_document(&versions, uri, count_notify(&notifications))?;
+        assert_eq!(notifications.load(Ordering::SeqCst), 1);
+
+        assert!(open_tracked_document(&versions, uri, count_notify(&notifications)).is_err());
+        assert_eq!(notifications.load(Ordering::SeqCst), 1);
+
+        close_tracked_document(&versions, uri, count_notify(&notifications))?;
+        assert_eq!(notifications.load(Ordering::SeqCst), 2);
+
+        assert!(close_tracked_document(&versions, uri, count_notify(&notifications)).is_err());
+        assert_eq!(notifications.load(Ordering::SeqCst), 2);
         Ok(())
+    }
+
+    fn count_notify(notifications: &AtomicUsize) -> impl FnOnce() -> anyhow::Result<()> + '_ {
+        move || {
+            notifications.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    fn count_notify_change(
+        notifications: &AtomicUsize,
+    ) -> impl FnOnce(i32) -> anyhow::Result<()> + '_ {
+        move |_| {
+            notifications.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
     }
 }
