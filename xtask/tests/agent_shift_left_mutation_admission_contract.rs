@@ -29,10 +29,7 @@ const REQUIREMENTS: &[(&str, &[&str])] = &[
     ("proof ceiling", &["proof ceiling"]),
     ("NOT_PROVEN boundary", &["explicit `not_proven` boundary"]),
     ("deferred proof", &["deferred broader proof"]),
-    (
-        "next or backward route",
-        &["named next or backward route", "named next/backward route"],
-    ),
+    ("next or backward route", &["named next or backward route", "named next/backward route"]),
     ("mechanical key", &["mechanical key"]),
     ("repository identity", &["repository, common-dir, and remote identity"]),
     ("issue and claim identity", &["issue and claim identity"]),
@@ -46,10 +43,7 @@ const REQUIREMENTS: &[(&str, &[&str])] = &[
         "writer preflight",
         &["writer-preflight/admission decision", "writer admission/preflight decision"],
     ),
-    (
-        "same-subject join",
-        &["must identify the same exact claim/candidate/writer boundary"],
-    ),
+    ("same-subject join", &["must identify the same exact claim/candidate/writer boundary"]),
     ("semantic/mechanical separation", &["does not establish mechanical safety"]),
     (
         "mechanical/semantic separation",
@@ -64,10 +58,7 @@ const REQUIREMENTS: &[(&str, &[&str])] = &[
     ),
     ("midstream coverage", &["entry midstream does not bypass admission"]),
     ("read-only precursor", &["read-only research may precede admission"]),
-    (
-        "fresh mechanical identity",
-        &["re-derive or revalidate volatile mechanical identity"],
-    ),
+    ("fresh mechanical identity", &["re-derive or revalidate volatile mechanical identity"]),
     (
         "pre-mutation refusal",
         &["do not mutate when either key is missing, stale, contradictory, or cross-subject"],
@@ -82,16 +73,10 @@ const REQUIREMENTS: &[(&str, &[&str])] = &[
     ("blocked", &["`blocked`"]),
     ("not proven", &["`not_proven`"]),
     ("runtime-local", &["runtime-local"]),
-    (
-        "durable exception",
-        &["unless it changes durable claim, authority, or proof state"],
-    ),
+    ("durable exception", &["unless it changes durable claim, authority, or proof state"]),
     ("non-stage", &["not a stage record"]),
     ("non-database", &["second work database"]),
-    (
-        "non-lease/scheduler/frontier",
-        &["does not create a lease, scheduler, or tracked frontier"],
-    ),
+    ("non-lease/scheduler/frontier", &["does not create a lease, scheduler, or tracked frontier"]),
 ];
 
 fn repo_root() -> io::Result<PathBuf> {
@@ -106,7 +91,7 @@ fn h2_section(text: &str, heading: &str) -> Option<String> {
     let mut lines = Vec::new();
 
     for line in text.lines() {
-        if line.trim() == heading {
+        if line.trim().eq_ignore_ascii_case(heading) {
             in_section = true;
             continue;
         }
@@ -121,25 +106,32 @@ fn h2_section(text: &str, heading: &str) -> Option<String> {
     in_section.then(|| lines.join("\n"))
 }
 
+fn h2_headings(text: &str) -> Vec<&str> {
+    text.lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with("## ") && !line.starts_with("### "))
+        .filter_map(|line| line.strip_prefix("## "))
+        .collect()
+}
+
 fn validate(text: &str) -> Vec<String> {
     let Some(section) = h2_section(text, SECTION_HEADING) else {
-        return vec![format!("missing section '{SECTION_HEADING}'")];
+        let found = h2_headings(text).join("; ");
+        return vec![format!("missing section '{SECTION_HEADING}'; found h2 headings: [{found}]")];
     };
-    let section = section
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .to_ascii_lowercase();
+    let section = section.split_whitespace().collect::<Vec<_>>().join(" ").to_ascii_lowercase();
 
     REQUIREMENTS
         .iter()
         .filter_map(|&(label, alternatives)| {
-            (!alternatives.iter().any(|&term| section.contains(term))).then(|| {
-                format!(
-                    "mutation admission is missing {label}; expected one of: {}",
-                    alternatives.join(", ")
-                )
-            })
+            (!alternatives.iter().any(|&term| section.contains(&term.to_ascii_lowercase()))).then(
+                || {
+                    format!(
+                        "mutation admission is missing {label}; expected one of: {}",
+                        alternatives.join(", ")
+                    )
+                },
+            )
         })
         .collect()
 }
@@ -235,11 +227,7 @@ fn two_keys_without_a_same_subject_join_fail_closed() {
         "Both keys are present.",
     );
 
-    assert!(
-        validate(&text)
-            .iter()
-            .any(|error| error.contains("same-subject join"))
-    );
+    assert!(validate(&text).iter().any(|error| error.contains("same-subject join")));
 }
 
 #[test]
@@ -250,9 +238,7 @@ fn delegated_only_admission_does_not_cover_direct_root_mutation() {
     );
 
     assert!(
-        validate(&text)
-            .iter()
-            .any(|error| error.contains("direct and delegated pre-mutation"))
+        validate(&text).iter().any(|error| error.contains("direct and delegated pre-mutation"))
     );
 }
 
@@ -263,17 +249,22 @@ fn cross_subject_input_without_pre_mutation_refusal_fails_closed() {
         "A cross-subject key is recorded after mutation.",
     );
 
-    assert!(
-        validate(&text)
-            .iter()
-            .any(|error| error.contains("pre-mutation refusal"))
-    );
+    assert!(validate(&text).iter().any(|error| error.contains("pre-mutation refusal")));
 }
 
 #[test]
 fn missing_admission_section_fails_closed() {
-    assert_eq!(
-        validate("## Procedure\nBuild the candidate."),
-        vec![format!("missing section '{SECTION_HEADING}'")]
+    let errors = validate("## Procedure\nBuild the candidate.");
+
+    assert_eq!(errors.len(), 1);
+    assert!(
+        errors[0].starts_with(&format!("missing section '{SECTION_HEADING}'")),
+        "unexpected error: {}",
+        errors[0]
+    );
+    assert!(
+        errors[0].contains("found h2 headings: [Procedure]"),
+        "diagnostics must point at the heading actually found: {}",
+        errors[0]
     );
 }
