@@ -1,0 +1,192 @@
+name: Apply linear prerequisite dedupe review fix
+
+on:
+  push:
+    branches:
+      - agent/13628-preserve-prerequisite-facts
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor == 'EffortlessSteven'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out patch branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+
+      - name: Install repository Rust toolchain
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: 1.95.0
+          components: rustfmt,clippy
+
+      - name: Apply exact review patch
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("crates/perl-lsp-rs-core/src/config/metadata_dependencies.rs")
+          source = path.read_text(encoding="utf-8")
+
+          source = source.replace(
+              "use serde_json::Value;\nuse std::fs;",
+              "use serde_json::Value;\nuse std::collections::HashSet;\nuse std::fs;",
+              1,
+          )
+          source = source.replace(
+              "#[derive(Debug, Clone, PartialEq, Eq)]\npub struct DeclaredDependency",
+              "#[derive(Debug, Clone, PartialEq, Eq, Hash)]\npub struct DeclaredDependency",
+              1,
+          )
+          source = source.replace("push_unique(", "push_candidate(")
+
+          old_helper = """fn push_candidate(into: &mut Vec<DeclaredDependency>, dependency: DeclaredDependency) {
+              if into.contains(&dependency) {
+                  return;
+              }
+              into.push(dependency);
+          }
+          """
+          new_helper = """fn push_candidate(into: &mut Vec<DeclaredDependency>, dependency: DeclaredDependency) {
+              into.push(dependency);
+          }
+
+          fn dedupe_dependencies(dependencies: Vec<DeclaredDependency>) -> Vec<DeclaredDependency> {
+              let mut seen = HashSet::with_capacity(dependencies.len());
+              dependencies
+                  .into_iter()
+                  .filter(|dependency| seen.insert(dependency.clone()))
+                  .collect()
+          }
+          """
+          if source.count(old_helper) != 1:
+              raise SystemExit("expected exactly one prior dedupe helper")
+          source = source.replace(old_helper, new_helper, 1)
+
+          returns = [
+              (
+                  """    dependencies
+          }
+
+          /// Extract literal dependencies from a `cpanfile`.
+          """,
+                  """    dedupe_dependencies(dependencies)
+          }
+
+          /// Extract literal dependencies from a `cpanfile`.
+          """,
+              ),
+              (
+                  """    dependencies
+          }
+
+          /// Extract literal dependencies from `Makefile.PL`.
+          """,
+                  """    dedupe_dependencies(dependencies)
+          }
+
+          /// Extract literal dependencies from `Makefile.PL`.
+          """,
+              ),
+              (
+                  """    dependencies
+          }
+
+          /// Extract dependencies from CPAN `META.json` prerequisite maps.
+          """,
+                  """    dedupe_dependencies(dependencies)
+          }
+
+          /// Extract dependencies from CPAN `META.json` prerequisite maps.
+          """,
+              ),
+              (
+                  """    collect_meta_json_requirements(&value, &mut dependencies);
+              dependencies
+          }
+
+          /// Extract dependencies from simple CPAN `META.yml` prerequisite maps.
+          """,
+                  """    collect_meta_json_requirements(&value, &mut dependencies);
+              dedupe_dependencies(dependencies)
+          }
+
+          /// Extract dependencies from simple CPAN `META.yml` prerequisite maps.
+          """,
+              ),
+              (
+                  """    dependencies
+          }
+
+          fn collect_from_file(
+          """,
+                  """    dedupe_dependencies(dependencies)
+          }
+
+          fn collect_from_file(
+          """,
+              ),
+              (
+                  """    dependencies
+          }
+
+          fn parse_hash_dependency_pairs(
+          """,
+                  """    dedupe_dependencies(dependencies)
+          }
+
+          fn parse_hash_dependency_pairs(
+          """,
+              ),
+          ]
+          for old, new in returns:
+              if source.count(old) != 1:
+                  raise SystemExit(f"expected one return boundary, found {source.count(old)}: {old!r}")
+              source = source.replace(old, new, 1)
+
+          source = source.replace(
+              "fn push_unique_uses_complete_fact_identity()",
+              "fn dedupe_dependencies_uses_complete_fact_identity()",
+              1,
+          )
+          old_assert = """        push_candidate(&mut dependencies, cpanfile.clone());
+
+                  assert_eq!(dependencies, vec![runtime, test, newer, cpanfile]);
+          """
+          new_assert = """        push_candidate(&mut dependencies, cpanfile.clone());
+
+                  assert_eq!(
+                      dedupe_dependencies(dependencies),
+                      vec![runtime, test, newer, cpanfile]
+                  );
+          """
+          if source.count(old_assert) != 1:
+              raise SystemExit("expected focused identity assertion")
+          source = source.replace(old_assert, new_assert, 1)
+
+          path.write_text(source, encoding="utf-8")
+          PY
+          cargo fmt --all
+          git diff --check
+
+      - name: Run focused regression
+        run: cargo test -p perl-lsp-rs-core --locked dedupe_dependencies_uses_complete_fact_identity
+
+      - name: Run focused lint
+        run: cargo clippy -p perl-lsp-rs-core --all-targets --locked -- -D warnings
+
+      - name: Commit clean source diff
+        shell: bash
+        run: |
+          git config user.name "EffortlessSteven"
+          git config user.email "git@effortlesssteven.com"
+          git rm .github/workflows/agent-13628-review-fix.yml
+          git add crates/perl-lsp-rs-core/src/config/metadata_dependencies.rs
+          git diff --cached --check
+          git commit -m "fix(config): dedupe prerequisite facts in linear time (#13628)"
+          git push origin HEAD:agent/13628-preserve-prerequisite-facts
