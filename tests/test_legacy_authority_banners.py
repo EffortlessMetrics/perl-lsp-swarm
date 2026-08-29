@@ -183,6 +183,41 @@ def historical_blob_sha1(commit: str, path: str) -> str:
     return hashlib.sha1(f"blob {len(payload)}\0".encode() + payload).hexdigest()
 
 
+def trusted_historical_commit() -> str:
+    result = subprocess.run(
+        ["git", "merge-base", "HEAD", "origin/main"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip()
+
+
+def historical_identity_findings(
+    path: str,
+    row: dict[str, Any],
+    head: str,
+    trusted_commit: str,
+) -> list[str]:
+    links = historical_links(head)
+    if len(links) != 1:
+        return [f"{path}: expected one historical blob link, found {len(links)}"]
+
+    _href, linked_commit, linked_path = links[0]
+    trusted_blob = historical_blob_sha1(trusted_commit, path)
+    findings: list[str] = []
+    if linked_path != path:
+        findings.append(f"{path}: historical link points at {linked_path}")
+    if linked_commit != trusted_commit:
+        findings.append(f"{path}: historical link is not on {trusted_commit}")
+    if row.get("historical_source_commit") != trusted_commit:
+        findings.append(f"{path}: registry commit is not {trusted_commit}")
+    if row.get("historical_source_blob_sha1") != trusted_blob:
+        findings.append(f"{path}: registry blob is not {trusted_blob}")
+    return findings
+
+
 def workflow_event_paths(event: str) -> set[str]:
     lines = WORKFLOW.read_text(encoding="utf-8").splitlines()
     event_indent = None
@@ -366,6 +401,7 @@ class LegacyAuthorityBannerTests(unittest.TestCase):
 
     def test_rollout_redirects_bind_exact_historical_subject(self) -> None:
         rows = registry_rows()
+        trusted_commit = trusted_historical_commit()
         for path, expected in ROLLOUT_REDIRECTS.items():
             with self.subTest(path=path):
                 row = rows[path]
@@ -374,18 +410,32 @@ class LegacyAuthorityBannerTests(unittest.TestCase):
                 )
                 self.assertEqual(row["status"], "superseded")
                 self.assertEqual(row["successor"], expected["successor"])
-                links = historical_links(head)
-                self.assertEqual(len(links), 1)
-                href, commit, historical_path = links[0]
-                self.assertEqual(historical_path, path)
-                self.assertEqual(commit, row["historical_source_commit"])
                 self.assertEqual(
-                    row["historical_source_blob_sha1"],
-                    historical_blob_sha1(commit, historical_path),
+                    historical_identity_findings(path, row, head, trusted_commit), []
                 )
-                self.assertIn(f"/blob/{commit}/{path}", href)
                 self.assertIn("stable redirect", head)
                 self.assertIn("non-executable", head)
+
+        path = next(iter(ROLLOUT_REDIRECTS))
+        row = dict(rows[path])
+        candidate_commit = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        row["historical_source_commit"] = candidate_commit
+        row["historical_source_blob_sha1"] = historical_blob_sha1(candidate_commit, path)
+        head = "\n".join(
+            (ROOT / path).read_text(encoding="utf-8").splitlines()[:24]
+        )
+        self.assertNotEqual(
+            historical_identity_findings(path, row, head, trusted_commit),
+            [],
+            "changing both registry identity fields to a matching candidate blob "
+            "must remain rejected",
+        )
 
     def test_rollout_redirects_do_not_retain_executable_queue_prose(self) -> None:
         forbidden = (
