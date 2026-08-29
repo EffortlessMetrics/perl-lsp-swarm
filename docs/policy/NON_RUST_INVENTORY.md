@@ -6,23 +6,23 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12403 |
+| Total tracked files | 12406 |
 | Rust-family files | 3814 |
-| Non-Rust files | 8589 |
-| Allowlisted | 6354 |
-| Unclassified | 2235 |
+| Non-Rust files | 8592 |
+| Allowlisted | 6356 |
+| Unclassified | 2236 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 490 |
-| documentation | 2803 |
+| config | 491 |
+| documentation | 2804 |
 | generated | 2 |
 | production | 346 |
 | test | 2052 |
 | tooling | 661 |
-| unclassified | 2235 |
+| unclassified | 2236 |
 
 ## Unclassified files
 
@@ -2022,6 +2022,7 @@
 | `tests/test_review_claim_fail_closed.py` | `py` |
 | `tests/test_review_claim_hidden_comments.py` | `py` |
 | `tests/test_semantic_review_currentness.py` | `py` |
+| `tests/test_worked_lane_corpus.py` | `py` |
 | `tokmd.toml` | `toml` |
 | `tree-sitter-perl/.clang-format` | `` |
 | `tree-sitter-perl/.editorconfig` | `` |
@@ -2961,6 +2962,7 @@
 | `.github/workflows/vscode-managed-binary-smoke.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/vscode-published-extension-smoke.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/winget-bump.yml` | config | `non-rust-github-workflows` | release/ci |
+| `.github/workflows/worked-lane-corpus.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/workflow-contracts-advisory.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/workflow-policy.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/workflow-security-ratchet-selftest.yml` | config | `non-rust-github-workflows` | release/ci |
@@ -4471,6 +4473,7 @@
 | `docs/agents/bounded-subagent-brief-v1.schema.json` | documentation | `non-rust-docs-tree` | docs |
 | `docs/agents/bounded-subagent-result-v1.fixtures.json` | documentation | `non-rust-docs-tree` | docs |
 | `docs/agents/bounded-subagent-result-v1.schema.json` | documentation | `non-rust-docs-tree` | docs |
+| `docs/agents/examples/README.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/agents/examples/integration-trigger-and-proof-caller.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/agents/ledgers/ub-review-calibration.jsonl` | documentation | `non-rust-docs-tree` | docs |
 | `docs/agents/ledgers/workflow-outcomes.jsonl` | documentation | `non-rust-docs-tree` | docs |
