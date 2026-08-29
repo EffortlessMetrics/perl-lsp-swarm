@@ -95,9 +95,11 @@ impl LineStartsCache {
 
     /// Converts a byte offset in `text` to `(line, column_utf16)`.
     pub fn offset_to_position(&self, text: &str, offset: usize) -> (u32, u32) {
-        let offset = Self::normalize_text_offset(text, offset);
+        let mut offset = Self::normalize_text_offset(text, offset);
         let line = self.line_starts.binary_search(&offset).unwrap_or_else(|i| i.saturating_sub(1));
         let ls = self.line_starts[line];
+        let separator_end = self.line_starts.get(line + 1).copied().unwrap_or(text.len());
+        offset = offset.min(line_content_end(text, ls, separator_end));
         (line as u32, text[ls..offset].chars().map(|c| c.len_utf16()).sum::<usize>() as u32)
     }
 
@@ -129,9 +131,11 @@ impl LineStartsCache {
 
     /// Converts a byte offset in `rope` to `(line, column_utf16)`.
     pub fn offset_to_position_rope(&self, rope: &Rope, offset: usize) -> (u32, u32) {
-        let offset = Self::normalize_rope_offset(rope, offset);
+        let mut offset = Self::normalize_rope_offset(rope, offset);
         let line = self.line_starts.binary_search(&offset).unwrap_or_else(|i| i.saturating_sub(1));
         let ls = self.line_starts[line];
+        let separator_end = self.line_starts.get(line + 1).copied().unwrap_or(rope.len_bytes());
+        offset = offset.min(rope_line_content_end(rope, ls, separator_end));
         (
             line as u32,
             rope.byte_slice(ls..offset).chars().map(|c| c.len_utf16()).sum::<usize>() as u32,
@@ -469,6 +473,17 @@ mod newline_policy_tests {
         assert_eq!(index.position_to_offset(0, 3), None);
         assert_eq!(cache.position_to_offset(text, 1, 2), text.len());
         assert_eq!(rope_cache.position_to_offset_rope(&rope, 1, 2), text.len());
+    }
+
+    #[test]
+    fn crlf_interior_forward_offsets_clamp_to_content_end() {
+        let text = "ab\r\ncd";
+        let rope = Rope::from_str(text);
+        let cache = LineStartsCache::new(text);
+        let rope_cache = LineStartsCache::new_rope(&rope);
+
+        assert_eq!(cache.offset_to_position(text, 3), (0, 2));
+        assert_eq!(rope_cache.offset_to_position_rope(&rope, 3), (0, 2));
     }
 
     #[test]
