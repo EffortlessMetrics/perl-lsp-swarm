@@ -130,7 +130,7 @@ permanent coordinators, or branch-refresh examples.
 ## Retired Rust and Clippy rollout graph
 
 Five old operational queues are superseded and remain available through exact links to
-their retained `main@f6d3f9919dca35095fa8a7b26923c3190008d040` versions:
+their retained `main@4dc745fd3513d1a345cd1d6258bb96a13e284ae2` versions:
 
 | Superseded path | Current authority |
 | --- | --- |

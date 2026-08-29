@@ -185,7 +185,7 @@ def historical_blob_sha1(commit: str, path: str) -> str:
 
 def trusted_historical_commit() -> str:
     result = subprocess.run(
-        ["git", "merge-base", "HEAD", "origin/main"],
+        ["git", "rev-parse", "--verify", "origin/main^{commit}"],
         cwd=ROOT,
         check=True,
         capture_output=True,
