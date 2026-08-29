@@ -73,6 +73,8 @@
 pub mod ast;
 /// Static classification metadata for [`NodeKind`] variants: categories and flags.
 pub mod classification;
+/// Owner-neutral source syntax for declaration attributes.
+pub mod declaration;
 /// Exhaustive invariant policy metadata for every [`NodeKind`] variant.
 pub mod invariant_policy;
 /// Bounded structural validation for parser-produced ASTs.
@@ -99,6 +101,12 @@ pub use ast::{
     NATIVE_DEBUG_SEXP_DEPTH_LIMIT_MARKER, NATIVE_DEBUG_SEXP_GRAMMAR,
     NativeDebugSexpInstrumentCause, NativeDebugSexpLimits, NativeDebugSexpOmitted,
     NativeDebugSexpResult, NativeDebugSexpTruncation, NativeDebugSexpWork, Node, NodeKind,
+};
+/// Owner-neutral declaration-attribute source contracts.
+pub use declaration::{
+    DeclarationAttributeArgumentDisposition, DeclarationAttributeArgumentSyntax,
+    DeclarationAttributeCompleteness, DeclarationAttributeDelimiter, DeclarationAttributeSeparator,
+    DeclarationAttributeSyntax, DeclarationAttributeSyntaxError,
 };
 /// Exhaustive AST invariant policy types and registry.
 pub use invariant_policy::{
