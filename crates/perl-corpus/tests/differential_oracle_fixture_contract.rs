@@ -150,17 +150,9 @@ fn import_export_fixture_is_a_declared_two_file_module_graph() -> TestResult {
     assert_contains(&producer, "sub answer", "producer module")?;
 
     assert_contains(&consumer, "package Accuracy::ImportsConsumer;", "consumer fixture")?;
-    assert_contains(
-        &consumer,
-        "use Accuracy::ImportsExports qw(answer);",
-        "consumer fixture",
-    )?;
+    assert_contains(&consumer, "use Accuracy::ImportsExports qw(answer);", "consumer fixture")?;
     assert_contains(&consumer, "return answer();", "consumer fixture")?;
-    assert_not_contains(
-        &consumer,
-        "package Accuracy::ImportsExports;",
-        "consumer fixture",
-    )?;
+    assert_not_contains(&consumer, "package Accuracy::ImportsExports;", "consumer fixture")?;
 
     Ok(())
 }
@@ -184,13 +176,7 @@ fn import_export_fixture_loads_the_expected_imported_symbol() -> TestResult {
     let root = fixture_root();
     let consumer = root.join("imports_exports.pl");
     let mut command = isolated_perl_command()?;
-    command
-        .current_dir(&root)
-        .arg("-I")
-        .arg(&root)
-        .arg("-e")
-        .arg(IMPORT_PROBE)
-        .arg(&consumer);
+    command.current_dir(&root).arg("-I").arg(&root).arg("-e").arg(IMPORT_PROBE).arg(&consumer);
 
     let output = run_bounded(command, "ImportExport fixture load probe")?;
     require_success(&output, "ImportExport fixture load probe")?;
@@ -199,9 +185,7 @@ fn import_export_fixture_loads_the_expected_imported_symbol() -> TestResult {
     if stdout == "fixture-ok\n" {
         Ok(())
     } else {
-        Err(failure(format!(
-            "unexpected ImportExport fixture load receipt: {stdout:?}"
-        )))
+        Err(failure(format!("unexpected ImportExport fixture load receipt: {stdout:?}")))
     }
 }
 
