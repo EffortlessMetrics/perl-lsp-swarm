@@ -52,6 +52,7 @@ import { registerGherkinProviders } from './gherkinProviders';
 import { registerGherkinStepDefinitionSupport } from './gherkinStepDefinitions';
 import { registerDocumentFeatureGroup } from './documentFeatureGroup';
 import { StreamingCompletionController } from './streamingCompletion';
+import { InlineCompletionOwner } from './inlineCompletionRouting';
 import {
   runAllTestsWithProve,
   runCurrentTestWithProve,
@@ -181,6 +182,15 @@ let statusBarItem: vscode.StatusBarItem | undefined;
 let healthWidget: HealthWidget | undefined;
 let healthWidgetDataSource: HealthWidgetDataSource | undefined;
 let streamingController: StreamingCompletionController | undefined;
+
+/**
+ * The single owner for Perl inline completion in VS Code (#8282).
+ *
+ * Consults the current streaming adapter through a getter rather than holding
+ * it, so a controller disposed by configuration change, restart, or extension
+ * disposal stops being routed to without rebuilding the owner.
+ */
+const inlineCompletionOwner = new InlineCompletionOwner(() => streamingController);
 let languageClientLifecycle:
   | ExtensionLanguageClientLifecycle<LanguageClient, StateChangeEvent>
   | undefined;
@@ -2042,6 +2052,22 @@ function createLanguageClient(serverPath: string): LanguageClient {
           },
           null,
           (error) => handleLspProviderError('Completion', error),
+        );
+      },
+      // The one authoritative provider for Perl inline completion (#8282).
+      // Installing the owner as middleware keeps it on the language client's
+      // own provider registration, so no second provider competes for the same
+      // document selector.
+      provideInlineCompletionItems: (document, position, context, token, next) => {
+        if (languageClientLifecycle?.snapshot.state !== 'running') {
+          return null;
+        }
+        return inlineCompletionOwner.provideInlineCompletionItems(
+          document,
+          position,
+          context,
+          token,
+          next,
         );
       },
       provideDefinition: async (document, position, token, next) => {

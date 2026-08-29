@@ -20,6 +20,28 @@
 
 **Trusted actor guard.** Manual `@droid` commands are gated by GitHub author association (OWNER, MEMBER, COLLABORATOR). Public comments cannot trigger secrets-backed jobs.
 
+## Replying to Inline Findings
+
+When Droid is acting as the PR author or repair agent rather than the reviewer, the
+inline reply is a concise engineering decision record, not a completion signal.
+
+Evaluate the concern and the suggested repair separately. Do not blindly agree and do
+not reflexively defend the candidate. A comment can identify a valid failure at the
+wrong layer: preserve the concern, repair the owning seam, and explain why that is the
+right boundary. Refute only from current source, governing authority, or discriminating
+evidence.
+
+A bare `fixed`, `done`, `addressed`, generic thanks, labels-only response, or paraphrase
+of the diff is inadequate. Use the same disposition shape as the repository agents:
+
+```text
+Disposition: <class>
+
+<judgment, architectural reason, and what changed or why no change is warranted>
+
+Evidence: <specific current source, proof, commit, authority, or linked issue>
+```
+
 ## Inspection Record
 
 Clean reviews (no actionable findings) must include:
