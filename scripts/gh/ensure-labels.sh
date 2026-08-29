@@ -21,6 +21,20 @@ ensure() {
   fi
 }
 
+ensure_reconciled() {
+  local name="$1"
+  local color="$2"
+  local desc="$3"
+
+  if [[ "$existing" == *"|$name|"* ]]; then
+    echo "↻ reconciling label: $name"
+    gh label edit "$name" --color "$color" --description "$desc"
+  else
+    echo "→ creating label: $name"
+    gh label create "$name" --color "$color" --description "$desc"
+  fi
+}
+
 echo "=== Type Labels ==="
 ensure "type:bug"            "d73a4a" "Something is incorrect or broken"
 ensure "type:enhancement"    "a2eeef" "New capability or improvement"
@@ -57,6 +71,10 @@ ensure "area:tests"   "e4e669" "Testing infrastructure"
 ensure "area:docs"    "0075ca" "Documentation"
 ensure "area:lexer"   "d4edda" "Lexer and tokenization"
 ensure "area:semantic" "c2e0c6" "Semantic analysis"
+
+echo ""
+echo "=== Lane Trigger Labels ==="
+ensure_reconciled "ci:public-api" "0052cc" "Run public API surface validation"
 
 echo ""
 echo "=== Done ==="

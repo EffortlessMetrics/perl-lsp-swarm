@@ -286,7 +286,7 @@ struct Rollup {
 #[test]
 fn scenario_67_golden_editor_workload_receipt() {
     run_ux_scenario(
-        "golden_daily_driver_workload",
+        "golden_editor_workload",
         SCENARIO_FILE,
         "scenario_67_golden_editor_workload_receipt",
         UxCiTier::Pr,
