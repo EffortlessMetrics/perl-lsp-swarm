@@ -2131,6 +2131,20 @@ impl LspServer {
                 tracing::warn!(error = %e, "Failed to refresh client after workspace folder changes");
             }
 
+            // Legacy push clients never observe `workspace/diagnostic/refresh`
+            // (the action above is pull-only), so their already-open documents
+            // would keep stale PL900 rows after a folder reload installs a new
+            // `[perl].version` until the next edit or reopen. Schedule push
+            // republish for every open document; the sink boundary re-validates
+            // currency and the debouncer coalesces the burst (#13195 review).
+            let open_uris: Vec<String> = {
+                let documents = self.documents.lock();
+                documents.keys().cloned().collect()
+            };
+            for open_uri in open_uris {
+                self.publish_diagnostics_debounced(&open_uri);
+            }
+
             // Rebuild workspace index after folder changes
             #[cfg(feature = "workspace")]
             self.start_workspace_indexing();

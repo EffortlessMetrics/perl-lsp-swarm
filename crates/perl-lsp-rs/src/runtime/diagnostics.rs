@@ -3330,6 +3330,145 @@ mod tests {
     }
 
     #[test]
+    fn single_file_did_open_discovers_project_version_without_manual_reload()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Production single-file mode never runs config discovery before the
+        // first didOpen (initialize finds no documents), so the opened
+        // document itself must populate the retained single-file authority:
+        // no manual load_and_apply call here.
+        let temp = tempfile::tempdir()?;
+        let (server, buffer) = make_server_with_capture();
+        let (uri, _) = install_single_file_project_config(&temp, "5.20")?;
+        server.test_handle_did_open(Some(json!({
+            "textDocument": {
+                "uri": uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": "use builtin 'inf'; builtin::inf();\n"
+            }
+        })))?;
+        assert_eq!(
+            project_version_for_doc(&server, &uri).as_deref(),
+            Some("5.20"),
+            "didOpen alone must resolve the single-file project fallback"
+        );
+        server.publish_diagnostics(&uri);
+        let output = String::from_utf8(buffer.lock().clone())?;
+        assert!(
+            output.contains("PL900"),
+            "push publication must emit the discovered fallback PL900: {output}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn workspace_folder_change_republishes_push_diagnostics_for_open_documents()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Legacy push clients keep stale PL900 rows after a folder reload
+        // installs a new [perl].version unless the folder-change path
+        // schedules push republish. The document starts outside every folder
+        // and in a subdirectory without its own .perl-lsp.toml, so the first
+        // publish cannot carry the fallback.
+        let temp = tempfile::tempdir()?;
+        let ws = temp.path().join("ws");
+        let sub = ws.join("sub");
+        std::fs::create_dir_all(&sub)?;
+        std::fs::write(ws.join(".perl-lsp.toml"), "[perl]\nversion = \"5.20\"\n")?;
+        let doc = sub.join("main.pl");
+        let uri = url::Url::from_file_path(&doc)
+            .map_err(|()| "failed to build document URI")?
+            .to_string();
+        let folder_uri = url::Url::from_directory_path(&ws)
+            .map_err(|()| "failed to build folder URI")?
+            .to_string();
+
+        let (server, buffer) = make_server_with_capture();
+        server.test_handle_did_open(Some(json!({
+            "textDocument": {
+                "uri": uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": "use builtin 'inf'; builtin::inf();\n"
+            }
+        })))?;
+        let before = String::from_utf8(buffer.lock().clone())?;
+        assert!(
+            !before.contains("requires Perl"),
+            "pre-folder publish must not carry a project-version PL900: {before}"
+        );
+
+        server.handle_did_change_workspace_folders(Some(json!({
+            "event": {
+                "added": [{ "uri": folder_uri, "name": "ws" }],
+                "removed": []
+            }
+        })))?;
+
+        let after = capture_until(&buffer, |output| output.contains("requires Perl"));
+        assert!(
+            after.contains("PL900"),
+            "folder change must republish push diagnostics with the new project fallback: {after}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn folder_mode_clears_retained_single_file_authority()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // A registered folder is the per-folder configuration authority: once
+        // folder mode begins, a config discovered from a document directory in
+        // single-file mode must not leak into a folder that has no
+        // .perl-lsp.toml of its own.
+        let temp = tempfile::tempdir()?;
+        let root = temp.path().join("root");
+        let sub = root.join("sub");
+        std::fs::create_dir_all(&sub)?;
+        std::fs::write(sub.join(".perl-lsp.toml"), "[perl]\nversion = \"5.20\"\n")?;
+        let doc = sub.join("main.pl");
+        let uri = url::Url::from_file_path(&doc)
+            .map_err(|()| "failed to build document URI")?
+            .to_string();
+        let folder_uri = url::Url::from_directory_path(&root)
+            .map_err(|()| "failed to build folder URI")?
+            .to_string();
+
+        let (server, buffer) = make_server_with_capture();
+        server.test_handle_did_open(Some(json!({
+            "textDocument": {
+                "uri": uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": "use builtin 'inf'; builtin::inf();\n"
+            }
+        })))?;
+        assert_eq!(
+            project_version_for_doc(&server, &uri).as_deref(),
+            Some("5.20"),
+            "single-file discovery must apply before the folder change"
+        );
+        server.publish_diagnostics(&uri);
+        let before = String::from_utf8(buffer.lock().clone())?;
+        assert!(
+            before.contains("PL900"),
+            "single-file fallback must reach publication before the folder change: {before}"
+        );
+
+        server.handle_did_change_workspace_folders(Some(json!({
+            "event": {
+                "added": [{ "uri": folder_uri, "name": "root" }],
+                "removed": []
+            }
+        })))?;
+
+        assert!(
+            project_version_for_doc(&server, &uri).is_none(),
+            "a registered folder without its own .perl-lsp.toml must not inherit \
+             the retained single-file version"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn concurrent_single_file_reload_and_workspace_pull_complete_without_lock_cycle()
     -> Result<(), Box<dyn std::error::Error>> {
         let temp = tempfile::tempdir()?;

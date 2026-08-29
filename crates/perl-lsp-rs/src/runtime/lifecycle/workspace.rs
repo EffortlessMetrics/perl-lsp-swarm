@@ -169,6 +169,12 @@ impl LspServer {
             return;
         }
 
+        // Folder mode now owns per-folder configuration. Drop any retained
+        // single-file authority so a registered folder without its own
+        // `.perl-lsp.toml` cannot inherit a config discovered from an
+        // unrelated document directory (#13195 review).
+        self.set_single_file_project_config(None);
+
         // Collect (display_name, project_config) for folders that have a
         // .perl-lsp.toml, in workspace-folder iteration order, so the server-global
         // sections can be merged with first-folder-wins semantics after the loop.
@@ -311,6 +317,21 @@ impl LspServer {
         let path = super::super::source_path_from_uri(&uri)?;
         let dir = std::path::Path::new(&path).parent()?;
         perl_lsp_rs_core::config::load_project_config(dir).ok().flatten()
+    }
+
+    /// Re-run single-file project discovery after a document install.
+    ///
+    /// The initialize-time [`Self::load_and_apply_project_config`] pass runs
+    /// before any document can be open, so in single-file mode (no workspace
+    /// folders) its discovery always finds nothing. This cold didOpen-time
+    /// refresh is therefore the only production moment that can populate the
+    /// retained single-file authority; without it the documented
+    /// `[perl].version` PL900 fallback stays unreachable for the single-file
+    /// workflow (#13195 review).
+    pub(crate) fn refresh_single_file_project_config_if_unowned(&self) {
+        if self.workspace_folders.lock().is_empty() {
+            self.load_and_apply_project_config();
+        }
     }
 
     fn emit_invalid_project_version_warning(&self, raw_version: &str, authority: &str) {

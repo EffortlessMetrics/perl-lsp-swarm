@@ -409,6 +409,14 @@ impl LspServer {
                 None,
             );
 
+            // Single-file mode: this cold didOpen path is the only production
+            // moment that can populate the retained single-file project
+            // authority (the initialize-time pass runs before any document
+            // exists). Refresh it before the first publish so the documented
+            // `[perl].version` PL900 fallback reaches the opened document
+            // (#13195 review).
+            self.refresh_single_file_project_config_if_unowned();
+
             if let Some(ref ast) = ast_arc {
                 self.commit_document_symbols_from_ast(&symbol_identity, ast, text);
                 // Update the workspace-wide index for cross-file features.
