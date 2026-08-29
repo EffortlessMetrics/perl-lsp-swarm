@@ -867,6 +867,25 @@ mod explicit_pin_tests {
         Ok(())
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn path_only_candidate_honors_pathext_for_perl_exe() -> Result<(), String> {
+        let controls = tempfile::tempdir().map_err(|error| error.to_string())?;
+        let binary = controls.path().join("perl.exe");
+        fs::write(&binary, b"path candidate").map_err(|error| error.to_string())?;
+        let search_path =
+            std::env::join_paths([controls.path()]).map_err(|error| error.to_string())?;
+        let resolved =
+            resolve_debuggee_candidate(Path::new("perl"), Some(search_path.as_os_str()))?;
+        let expected = fs::canonicalize(binary).map_err(|error| error.to_string())?;
+        if resolved != expected {
+            return Err(format!(
+                "PATHEXT candidate was not resolved: {resolved:?} != {expected:?}"
+            ));
+        }
+        Ok(())
+    }
+
     #[cfg(unix)]
     #[test]
     fn non_utf8_pin_is_rejected_before_launch() -> Result<(), String> {
@@ -2396,11 +2415,25 @@ fn resolve_debuggee_candidate(path: &Path, search_path: Option<&OsStr>) -> Resul
     let search_path = search_path
         .ok_or_else(|| "PATH is unavailable while resolving a Perl candidate".to_string())?;
     for directory in std::env::split_paths(search_path) {
-        let candidate = directory.join(path);
-        if let Ok(canonical) = fs::canonicalize(&candidate)
-            && canonical.is_file()
-        {
-            return Ok(canonical);
+        let mut candidates = vec![directory.join(path)];
+        #[cfg(windows)]
+        if path.extension().is_none() {
+            let pathext = std::env::var_os("PATHEXT")
+                .unwrap_or_else(|| std::ffi::OsString::from(".COM;.EXE;.BAT;.CMD"));
+            candidates.extend(
+                pathext.to_string_lossy().split(';').filter(|extension| !extension.is_empty()).map(
+                    |extension| {
+                        directory.join(path).with_extension(extension.trim_start_matches('.'))
+                    },
+                ),
+            );
+        }
+        for candidate in candidates {
+            if let Ok(canonical) = fs::canonicalize(&candidate)
+                && canonical.is_file()
+            {
+                return Ok(canonical);
+            }
         }
     }
     Err(format!("candidate {} was not found on PATH", path.display()))
