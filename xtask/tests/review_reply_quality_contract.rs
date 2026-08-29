@@ -2,7 +2,6 @@
 
 use std::error::Error;
 use std::fs;
-use std::io;
 use std::path::PathBuf;
 
 fn project_root() -> Result<PathBuf, Box<dyn Error>> {
@@ -12,15 +11,10 @@ fn project_root() -> Result<PathBuf, Box<dyn Error>> {
         .to_path_buf())
 }
 
-fn marker_index(skill: &str, marker: &str, provider: &str) -> Result<usize, io::Error> {
-    skill.find(marker).ok_or_else(|| {
-        io::Error::other(format!(
-            "{provider} review-response rules must retain marker {marker:?}"
-        ))
-    })
-}
-
-fn assert_reasoned_reply<'a>(skill: &'a str, provider: &str) -> Result<&'a str, Box<dyn Error>> {
+fn assert_reasoned_reply<'a>(
+    skill: &'a str,
+    provider: &str,
+) -> Result<&'a str, Box<dyn Error>> {
     for marker in [
         "## Reply quality",
         "concise engineering decision record",
@@ -39,8 +33,12 @@ fn assert_reasoned_reply<'a>(skill: &'a str, provider: &str) -> Result<&'a str, 
         );
     }
 
-    let start = marker_index(skill, "## Reply quality", provider)?;
-    let procedure = marker_index(skill, "\n## Procedure", provider)?;
+    let start = skill
+        .find("## Reply quality")
+        .ok_or("review-response rules are missing the reply-quality section")?;
+    let procedure = skill
+        .find("\n## Procedure")
+        .ok_or("review-response rules are missing the procedure section")?;
     assert!(
         start < procedure,
         "{provider} must establish reply judgment before the mutation procedure"
