@@ -139,6 +139,30 @@ mod tests {
             prop_assert_eq!(generated_line_ending(&source), "\n");
         }
 
+        /// A `(?s).*` strategy only lands on `\r\n` in well under 1% of cases,
+        /// so the properties above barely exercise CRLF. Build the document
+        /// from explicit (body, terminator) pairs instead, and take the
+        /// expectation from how it was *constructed* rather than from a second
+        /// copy of the rule under test — an independent oracle, not a mirror.
+        #[test]
+        fn the_terminator_of_the_last_built_line_decides(
+            lines in proptest::collection::vec(
+                ("[^\r\n]*", prop_oneof![Just("\n"), Just("\r\n")]),
+                1..6,
+            ),
+            unterminated_tail in "[^\r\n]*",
+        ) {
+            let mut source = String::new();
+            for (body, ending) in &lines {
+                source.push_str(body);
+                source.push_str(ending);
+            }
+            source.push_str(&unterminated_tail);
+
+            let expected = lines.last().map(|(_, ending)| *ending).expect("1..6 is non-empty");
+            prop_assert_eq!(generated_line_ending(&source), expected);
+        }
+
         /// Text appended after the last terminator never changes the answer.
         #[test]
         fn a_trailing_unterminated_line_is_inert(prefix in "(?s).*", tail in "[^\n]*") {
