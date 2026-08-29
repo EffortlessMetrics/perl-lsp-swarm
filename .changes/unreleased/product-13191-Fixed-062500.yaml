@@ -1,0 +1,9 @@
+project: product
+component: Perl::Tidy
+kind: Fixed
+body: The native formatter now preserves CRLF throughout generated multiline block and wrapped-expression layouts, including unterminated final source lines, document output, and range edits, instead of mixing generated LF lines into CRLF source.
+time: 2026-08-28T06:25:00Z
+custom:
+  PR: "13191"
+  Slug: perltidy-generated-layout-crlf
+  Breaking: "no"
