@@ -1302,27 +1302,7 @@ impl<'a> Parser<'a> {
         // result is `Assignment { lhs: pos($s), rhs: value }` rather than
         // leaving `= value` as an unparsed token sequence.
         if func_name == "pos" {
-            let assign_op = match self.peek_kind() {
-                Some(TokenKind::Assign) => Some("="),
-                Some(TokenKind::PlusAssign) => Some("+="),
-                Some(TokenKind::MinusAssign) => Some("-="),
-                Some(TokenKind::StarAssign) => Some("*="),
-                Some(TokenKind::SlashAssign) => Some("/="),
-                Some(TokenKind::PercentAssign) => Some("%="),
-                Some(TokenKind::DotAssign) => Some(".="),
-                Some(TokenKind::AndAssign) => Some("&="),
-                Some(TokenKind::OrAssign) => Some("|="),
-                Some(TokenKind::XorAssign) => Some("^="),
-                Some(TokenKind::PowerAssign) => Some("**="),
-                Some(TokenKind::LeftShiftAssign) => Some("<<="),
-                Some(TokenKind::RightShiftAssign) => Some(">>="),
-                Some(TokenKind::LogicalAndAssign) => Some("&&="),
-                Some(TokenKind::LogicalOrAssign) => Some("||="),
-                Some(TokenKind::DefinedOrAssign) => Some("//="),
-                _ => None,
-            };
-            if let Some(op) = assign_op {
-                self.tokens.next()?; // consume the assignment operator
+            if let Some((op, _op_start)) = self.consume_assignment_operator()? {
                 let rhs = self.parse_assignment()?;
                 let assign_end = rhs.location.end;
                 expr = Node::new(
