@@ -629,7 +629,13 @@ fn check_relative_pattern_guard(root: &Path, violations: &mut Vec<Violation>) ->
             "file_watcher_relative_pattern_support",
             "GlobPattern::Relative",
             "RelativePattern",
-            "OneOf::Right",
+            // Substrate delta (#11803): gen-lsp-types 0.11 models watcher globs
+            // as the typed `GlobPattern` enum instead of lsp-types 0.97's
+            // `OneOf<String, RelativePattern>`; constructing a relative-pattern
+            // watcher is now spelled `GlobPattern::RelativePattern(..)`. Same
+            // LSP 3.18 wire semantics (`glob.pattern` vs `glob.relative.baseUri`),
+            // marker updated so the gate keeps pinning the typed variant.
+            "GlobPattern::RelativePattern",
             "string_file_watchers",
         ],
         "RelativePattern file watcher registration gate",

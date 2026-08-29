@@ -1,4 +1,4 @@
-use lsp_types::Position;
+use gen_lsp_types::Position;
 use perl_lsp::features::lsp_document_link::collect_document_links;
 use url::Url;
 
@@ -48,10 +48,10 @@ fn quoted_file_document_link_resolves_relative_to_current_file() -> TestResult {
     let do_target = do_link.target.as_ref().ok_or("do link missing target")?;
 
     assert!(
-        require_target.as_str().ends_with("/bin/lib/Local.pm"),
+        require_target.as_ref().ends_with("/bin/lib/Local.pm"),
         "unexpected require target: {require_target:?}"
     );
-    assert!(do_target.as_str().ends_with("/bin/script.pl"), "unexpected do target: {do_target:?}");
+    assert!(do_target.as_ref().ends_with("/bin/script.pl"), "unexpected do target: {do_target:?}");
     assert_eq!(require_link.range.end, Position::new(1, 21));
     assert_eq!(do_link.range.end, Position::new(2, 13));
     Ok(())

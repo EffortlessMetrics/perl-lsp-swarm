@@ -1610,7 +1610,7 @@ impl LspServer {
         &self,
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
-        use lsp_types::{DidChangeWatchedFilesParams, FileChangeType};
+        use gen_lsp_types::{DidChangeWatchedFilesParams, FileChangeType};
 
         let Some(params) = params else {
             return Ok(None);
@@ -1623,12 +1623,12 @@ impl LspServer {
 
         for change in params.changes {
             let uri = change.uri.to_string();
-            let change_type = change.typ;
+            let change_type = change.kind;
 
             tracing::debug!(uri, change_type = ?change_type, "File change detected");
 
             match change_type {
-                FileChangeType::DELETED => {
+                FileChangeType::Deleted => {
                     // DELETED must be processed immediately — the file is gone and
                     // stale index data should not linger.
                     #[cfg(feature = "workspace")]
@@ -1645,7 +1645,9 @@ impl LspServer {
                         coordinator.notify_parse_complete(&uri);
                     }
                 }
-                FileChangeType::CREATED | FileChangeType::CHANGED
+                // gen-lsp-types 0.11 names these variants Created/Changed
+                // (lsp-types used CREATED/CHANGED associated consts).
+                FileChangeType::Created | FileChangeType::Changed
                     // CREATED and CHANGED are debounced so that bulk operations
                     // (git checkout, formatter rewrites, etc.) coalesce into a
                     // single batch rather than triggering many sequential file reads.

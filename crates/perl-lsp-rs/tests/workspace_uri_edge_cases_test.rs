@@ -4,7 +4,7 @@ mod support;
 #[cfg(test)]
 mod tests {
     use crate::support::env_guard::EnvGuard;
-    use lsp_types::Position;
+    use gen_lsp_types::Position;
     use parking_lot::Mutex;
     use perl_lsp::LspServer;
     use serde_json::json;

@@ -355,7 +355,13 @@ thiserror = "2.0.18"
 tempfile = "3.24.0"
 anyhow = "1.0.103"
 url = "2.5.8"
+# Legacy incumbent protocol-type package: retained ONLY for the compatibility-gated
+# lower edges owned by #9632/#9893/#1421 sequencing (see protocol-type-substrate-matrix
+# section 4). The surviving final adapter (perl-lsp-rs, perl-lsp-rs-core) must not use it.
 lsp-types = "0.97.0"
+# Pinned exact release of the selected protocol-type substrate (#11802 matrix;
+# gen-lsp-types has a zero-ver breaking policy, so updates are reviewed changes).
+gen-lsp-types = "=0.11.0"
 parking_lot = { version = "0.12.5", features = ["arc_lock"] }
 tracing = "0.1.44"
 walkdir = "2.5.0"

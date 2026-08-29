@@ -14,7 +14,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 #[cfg(feature = "lsp-compat")]
-use lsp_types;
+use gen_lsp_types;
 
 /// Single entry in the violation cache.
 struct CacheEntry {
@@ -193,20 +193,20 @@ impl CriticAnalyzer {
 
     /// Convert violations to diagnostics
     #[cfg(feature = "lsp-compat")]
-    pub fn to_diagnostics(&self, violations: &[Violation]) -> Vec<lsp_types::Diagnostic> {
+    pub fn to_diagnostics(&self, violations: &[Violation]) -> Vec<gen_lsp_types::Diagnostic> {
         violations
             .iter()
             .map(|v| {
-                let lsp_range = lsp_types::Range::new(
-                    lsp_types::Position::new(v.range.start.line, v.range.start.column),
-                    lsp_types::Position::new(v.range.end.line, v.range.end.column),
+                let lsp_range = gen_lsp_types::Range::new(
+                    gen_lsp_types::Position::new(v.range.start.line, v.range.start.column),
+                    gen_lsp_types::Position::new(v.range.end.line, v.range.end.column),
                 );
-                lsp_types::Diagnostic {
+                gen_lsp_types::Diagnostic {
                     range: lsp_range,
                     severity: Some(v.severity.to_diagnostic_severity()),
-                    code: Some(lsp_types::NumberOrString::String(v.policy.clone())),
+                    code: Some(gen_lsp_types::Code::String(v.policy.clone())),
                     source: Some("perl-lsp-critic".to_string()),
-                    message: v.description.clone(),
+                    message: v.description.clone().into(),
                     related_information: None,
                     tags: None,
                     code_description: None,

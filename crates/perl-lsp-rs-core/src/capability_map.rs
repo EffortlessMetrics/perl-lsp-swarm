@@ -2,19 +2,20 @@
 //! LSP capability/feature translation helpers.
 //!
 //! This microcrate owns one responsibility: map between
-//! [`lsp_types::ServerCapabilities`] and canonical Perl LSP feature IDs.
+//! [`gen_lsp_types::ServerCapabilities`] and canonical Perl LSP feature IDs.
 
 use crate::features::ids::{
     LSP_CALL_HIERARCHY, LSP_CODE_ACTION, LSP_CODE_LENS, LSP_COLOR, LSP_COMPLETION, LSP_DECLARATION,
     LSP_DEFINITION, LSP_DOCUMENT_COLOR, LSP_DOCUMENT_HIGHLIGHT, LSP_DOCUMENT_LINK,
     LSP_DOCUMENT_SYMBOL, LSP_EXECUTE_COMMAND, LSP_FOLDING_RANGE, LSP_FORMATTING, LSP_HOVER,
-    LSP_IMPLEMENTATION, LSP_INLAY_HINT, LSP_INLINE_VALUE, LSP_LINKED_EDITING_RANGE, LSP_MONIKER,
-    LSP_NOTEBOOK_DOCUMENT_SYNC, LSP_ON_TYPE_FORMATTING, LSP_PULL_DIAGNOSTICS, LSP_RANGE_FORMATTING,
-    LSP_REFERENCES, LSP_RENAME, LSP_SELECTION_RANGE, LSP_SEMANTIC_TOKENS, LSP_SIGNATURE_HELP,
-    LSP_TYPE_DEFINITION, LSP_TYPE_HIERARCHY, LSP_WORKSPACE_SYMBOL,
+    LSP_IMPLEMENTATION, LSP_INLAY_HINT, LSP_INLINE_COMPLETION, LSP_INLINE_VALUE,
+    LSP_LINKED_EDITING_RANGE, LSP_MONIKER, LSP_NOTEBOOK_DOCUMENT_SYNC, LSP_ON_TYPE_FORMATTING,
+    LSP_PULL_DIAGNOSTICS, LSP_RANGE_FORMATTING, LSP_RANGES_FORMATTING, LSP_REFERENCES, LSP_RENAME,
+    LSP_SELECTION_RANGE, LSP_SEMANTIC_TOKENS, LSP_SIGNATURE_HELP, LSP_TYPE_DEFINITION,
+    LSP_TYPE_HIERARCHY, LSP_WORKSPACE_SYMBOL,
 };
 use crate::protocol::capabilities::completion_trigger_characters;
-use lsp_types::ServerCapabilities;
+use gen_lsp_types::ServerCapabilities;
 
 /// Extract feature IDs from LSP `ServerCapabilities`.
 pub fn feature_ids_from_caps(c: &ServerCapabilities) -> Vec<&'static str> {
@@ -72,6 +73,15 @@ pub fn feature_ids_from_caps(c: &ServerCapabilities) -> Vec<&'static str> {
     if c.document_range_formatting_provider.is_some() {
         v.push(LSP_RANGE_FORMATTING);
     }
+    // PATCH-RANGESSUPPORT typed once: multi-range (3.18) support is read from
+    // the typed `ranges_support` field instead of a JSON-only patch.
+    if matches!(
+        c.document_range_formatting_provider,
+        Some(gen_lsp_types::DocumentRangeFormattingProvider::DocumentRangeFormattingOptions(opts))
+            if opts.ranges_support == Some(true)
+    ) {
+        v.push(LSP_RANGES_FORMATTING);
+    }
     if c.document_on_type_formatting_provider.is_some() {
         v.push(LSP_ON_TYPE_FORMATTING);
     }
@@ -96,10 +106,15 @@ pub fn feature_ids_from_caps(c: &ServerCapabilities) -> Vec<&'static str> {
     if c.moniker_provider.is_some() {
         v.push(LSP_MONIKER);
     }
-    // lsp-types 0.97 lacks a `type_hierarchy_provider` field; detect it via
-    // the `experimental` object where `capabilities_for()` advertises it.
-    if c.experimental.as_ref().and_then(|e| e.get("typeHierarchyProvider")).is_some() {
+    // The selected substrate carries a typed `type_hierarchy_provider` field
+    // (PATCH-TYPEHIERARCHY); the former experimental-object readback is gone.
+    if c.type_hierarchy_provider.is_some() {
         v.push(LSP_TYPE_HIERARCHY);
+    }
+    // PATCH-INLINECOMPLETION typed once: the static inline-completion
+    // advertisement is read from the typed field instead of a JSON-only patch.
+    if c.inline_completion_provider.is_some() {
+        v.push(LSP_INLINE_COMPLETION);
     }
     if c.inline_value_provider.is_some() {
         v.push(LSP_INLINE_VALUE);
@@ -127,7 +142,7 @@ pub fn feature_ids_from_caps(c: &ServerCapabilities) -> Vec<&'static str> {
 /// Build LSP `ServerCapabilities` from feature IDs.
 pub fn caps_from_feature_ids(features: &[&str]) -> ServerCapabilities {
     #[allow(clippy::wildcard_imports)]
-    use lsp_types::*;
+    use gen_lsp_types::*;
 
     let mut caps = ServerCapabilities::default();
 
@@ -140,7 +155,7 @@ pub fn caps_from_feature_ids(features: &[&str]) -> ServerCapabilities {
                 });
             }
             LSP_HOVER => {
-                caps.hover_provider = Some(HoverProviderCapability::Simple(true));
+                caps.hover_provider = Some(HoverProvider::Bool(true));
             }
             LSP_SIGNATURE_HELP => {
                 caps.signature_help_provider = Some(SignatureHelpOptions {
@@ -149,101 +164,121 @@ pub fn caps_from_feature_ids(features: &[&str]) -> ServerCapabilities {
                 });
             }
             LSP_DEFINITION => {
-                caps.definition_provider = Some(OneOf::Left(true));
+                caps.definition_provider = Some(DefinitionProvider::Bool(true));
             }
             LSP_DECLARATION => {
-                caps.declaration_provider = Some(DeclarationCapability::Simple(true));
+                caps.declaration_provider = Some(DeclarationProvider::Bool(true));
             }
             LSP_NOTEBOOK_DOCUMENT_SYNC => {
-                caps.notebook_document_sync = Some(OneOf::Left(NotebookDocumentSyncOptions {
-                    notebook_selector: vec![NotebookSelector::ByNotebook {
-                        notebook: Notebook::String("jupyter-notebook".to_string()),
-                        cells: Some(vec![NotebookCellSelector { language: "perl".to_string() }]),
-                    }],
-                    save: Some(true),
-                }));
+                caps.notebook_document_sync =
+                    Some(NotebookDocumentSync::Options(NotebookDocumentSyncOptions {
+                        notebook_selector: vec![
+                            NotebookSelector::NotebookDocumentFilterWithNotebook(
+                                NotebookDocumentFilterWithNotebook {
+                                    notebook: Notebook::String("jupyter-notebook".to_string()),
+                                    cells: Some(vec![NotebookCellLanguage {
+                                        language: "perl".to_string(),
+                                    }]),
+                                },
+                            ),
+                        ],
+                        save: Some(true),
+                    }));
             }
             LSP_TYPE_DEFINITION => {
-                caps.type_definition_provider =
-                    Some(TypeDefinitionProviderCapability::Simple(true));
+                caps.type_definition_provider = Some(TypeDefinitionProvider::Bool(true));
             }
             LSP_IMPLEMENTATION => {
-                caps.implementation_provider = Some(ImplementationProviderCapability::Simple(true));
+                caps.implementation_provider = Some(ImplementationProvider::Bool(true));
             }
             LSP_REFERENCES => {
-                caps.references_provider = Some(OneOf::Left(true));
+                caps.references_provider = Some(ReferencesProvider::Bool(true));
             }
             LSP_DOCUMENT_SYMBOL => {
-                caps.document_symbol_provider = Some(OneOf::Left(true));
+                caps.document_symbol_provider = Some(DocumentSymbolProvider::Bool(true));
             }
             LSP_CODE_ACTION => {
-                caps.code_action_provider = Some(CodeActionProviderCapability::Simple(true));
+                caps.code_action_provider = Some(CodeActionProvider::Bool(true));
             }
             LSP_FORMATTING => {
-                caps.document_formatting_provider = Some(OneOf::Left(true));
+                caps.document_formatting_provider = Some(DocumentFormattingProvider::Bool(true));
             }
             LSP_RANGE_FORMATTING => {
-                caps.document_range_formatting_provider = Some(OneOf::Left(true));
+                caps.document_range_formatting_provider =
+                    Some(DocumentRangeFormattingProvider::Bool(true));
             }
-            LSP_RENAME => {
-                caps.rename_provider = Some(OneOf::Left(true));
-            }
-            LSP_FOLDING_RANGE => {
-                caps.folding_range_provider = Some(FoldingRangeProviderCapability::Simple(true));
-            }
-            LSP_SEMANTIC_TOKENS => {
-                caps.semantic_tokens_provider =
-                    Some(SemanticTokensServerCapabilities::SemanticTokensOptions(
-                        SemanticTokensOptions {
-                            legend: SemanticTokensLegend {
-                                token_types: vec![
-                                    SemanticTokenType::NAMESPACE,
-                                    SemanticTokenType::TYPE,
-                                    SemanticTokenType::CLASS,
-                                    SemanticTokenType::ENUM,
-                                    SemanticTokenType::INTERFACE,
-                                    SemanticTokenType::STRUCT,
-                                    SemanticTokenType::TYPE_PARAMETER,
-                                    SemanticTokenType::PARAMETER,
-                                    SemanticTokenType::VARIABLE,
-                                    SemanticTokenType::PROPERTY,
-                                    SemanticTokenType::ENUM_MEMBER,
-                                    SemanticTokenType::EVENT,
-                                    SemanticTokenType::FUNCTION,
-                                    SemanticTokenType::METHOD,
-                                    SemanticTokenType::MACRO,
-                                    SemanticTokenType::KEYWORD,
-                                    SemanticTokenType::MODIFIER,
-                                    SemanticTokenType::COMMENT,
-                                    SemanticTokenType::STRING,
-                                    SemanticTokenType::NUMBER,
-                                    SemanticTokenType::REGEXP,
-                                    SemanticTokenType::OPERATOR,
-                                ],
-                                token_modifiers: vec![
-                                    SemanticTokenModifier::DECLARATION,
-                                    SemanticTokenModifier::DEFINITION,
-                                    SemanticTokenModifier::READONLY,
-                                    SemanticTokenModifier::STATIC,
-                                    SemanticTokenModifier::DEPRECATED,
-                                    SemanticTokenModifier::ABSTRACT,
-                                    SemanticTokenModifier::ASYNC,
-                                    SemanticTokenModifier::MODIFICATION,
-                                    SemanticTokenModifier::DOCUMENTATION,
-                                    SemanticTokenModifier::DEFAULT_LIBRARY,
-                                ],
-                            },
-                            full: Some(SemanticTokensFullOptions::Bool(true)),
-                            range: Some(true),
+            LSP_RANGES_FORMATTING => {
+                // Reverse of PATCH-RANGESSUPPORT: advertise multi-range
+                // support through the typed `ranges_support` field so
+                // feature_ids_from_caps reads it back (#11803 repair).
+                caps.document_range_formatting_provider =
+                    Some(DocumentRangeFormattingProvider::DocumentRangeFormattingOptions(
+                        DocumentRangeFormattingOptions {
+                            ranges_support: Some(true),
                             ..Default::default()
                         },
                     ));
             }
+            LSP_RENAME => {
+                caps.rename_provider = Some(RenameProvider::Bool(true));
+            }
+            LSP_FOLDING_RANGE => {
+                caps.folding_range_provider = Some(FoldingRangeProvider::Bool(true));
+            }
+            LSP_SEMANTIC_TOKENS => {
+                caps.semantic_tokens_provider =
+                    Some(SemanticTokensProvider::SemanticTokensOptions(SemanticTokensOptions {
+                        legend: SemanticTokensLegend {
+                            token_types: vec![
+                                SemanticTokenTypes::Namespace.into(),
+                                SemanticTokenTypes::Type.into(),
+                                SemanticTokenTypes::Class.into(),
+                                SemanticTokenTypes::Enum.into(),
+                                SemanticTokenTypes::Interface.into(),
+                                SemanticTokenTypes::Struct.into(),
+                                SemanticTokenTypes::TypeParameter.into(),
+                                SemanticTokenTypes::Parameter.into(),
+                                SemanticTokenTypes::Variable.into(),
+                                SemanticTokenTypes::Property.into(),
+                                SemanticTokenTypes::EnumMember.into(),
+                                SemanticTokenTypes::Event.into(),
+                                SemanticTokenTypes::Function.into(),
+                                SemanticTokenTypes::Method.into(),
+                                SemanticTokenTypes::Macro.into(),
+                                SemanticTokenTypes::Keyword.into(),
+                                SemanticTokenTypes::Modifier.into(),
+                                SemanticTokenTypes::Comment.into(),
+                                SemanticTokenTypes::String.into(),
+                                SemanticTokenTypes::Number.into(),
+                                SemanticTokenTypes::Regexp.into(),
+                                SemanticTokenTypes::Operator.into(),
+                            ],
+                            token_modifiers: vec![
+                                SemanticTokenModifiers::Declaration.into(),
+                                SemanticTokenModifiers::Definition.into(),
+                                SemanticTokenModifiers::Readonly.into(),
+                                SemanticTokenModifiers::Static.into(),
+                                SemanticTokenModifiers::Deprecated.into(),
+                                SemanticTokenModifiers::Abstract.into(),
+                                SemanticTokenModifiers::Async.into(),
+                                SemanticTokenModifiers::Modification.into(),
+                                SemanticTokenModifiers::Documentation.into(),
+                                SemanticTokenModifiers::DefaultLibrary.into(),
+                            ],
+                        },
+                        full: Some(Full::Bool(true)),
+                        range: Some(SemanticTokensOptionsRange::Bool(true)),
+                        ..Default::default()
+                    }));
+            }
             LSP_DOCUMENT_HIGHLIGHT => {
-                caps.document_highlight_provider = Some(OneOf::Left(true));
+                caps.document_highlight_provider = Some(DocumentHighlightProvider::Bool(true));
             }
             LSP_CODE_LENS => {
-                caps.code_lens_provider = Some(CodeLensOptions { resolve_provider: Some(true) });
+                caps.code_lens_provider = Some(CodeLensOptions {
+                    resolve_provider: Some(true),
+                    work_done_progress_options: WorkDoneProgressOptions::default(),
+                });
             }
             LSP_DOCUMENT_LINK => {
                 caps.document_link_provider = Some(DocumentLinkOptions {
@@ -252,7 +287,7 @@ pub fn caps_from_feature_ids(features: &[&str]) -> ServerCapabilities {
                 });
             }
             LSP_DOCUMENT_COLOR | LSP_COLOR => {
-                caps.color_provider = Some(ColorProviderCapability::Simple(true));
+                caps.color_provider = Some(ColorProvider::Bool(true));
             }
             LSP_ON_TYPE_FORMATTING => {
                 caps.document_on_type_formatting_provider = Some(DocumentOnTypeFormattingOptions {
@@ -261,37 +296,55 @@ pub fn caps_from_feature_ids(features: &[&str]) -> ServerCapabilities {
                 });
             }
             LSP_SELECTION_RANGE => {
-                caps.selection_range_provider =
-                    Some(SelectionRangeProviderCapability::Simple(true));
+                caps.selection_range_provider = Some(SelectionRangeProvider::Bool(true));
             }
             LSP_LINKED_EDITING_RANGE => {
-                caps.linked_editing_range_provider =
-                    Some(LinkedEditingRangeServerCapabilities::Simple(true));
+                caps.linked_editing_range_provider = Some(LinkedEditingRangeProvider::Bool(true));
             }
             LSP_CALL_HIERARCHY => {
-                caps.call_hierarchy_provider = Some(CallHierarchyServerCapability::Simple(true));
+                caps.call_hierarchy_provider = Some(CallHierarchyProvider::Bool(true));
+            }
+            LSP_TYPE_HIERARCHY => {
+                // Reverse of PATCH-TYPEHIERARCHY: advertisement through the
+                // typed top-level `type_hierarchy_provider` field, matching
+                // the production construction in protocol::capabilities::sections
+                // (#11803 repair; the former experimental-object workaround is
+                // retired, so this mapper must rebuild the typed field).
+                caps.type_hierarchy_provider =
+                    Some(TypeHierarchyProvider::TypeHierarchyOptions(TypeHierarchyOptions {
+                        work_done_progress_options: WorkDoneProgressOptions::default(),
+                    }));
             }
             LSP_MONIKER => {
-                caps.moniker_provider =
-                    Some(OneOf::Right(MonikerServerCapabilities::Options(MonikerOptions {
+                caps.moniker_provider = Some(MonikerProvider::MonikerOptions(MonikerOptions {
+                    work_done_progress_options: WorkDoneProgressOptions::default(),
+                }));
+            }
+            LSP_INLINE_COMPLETION => {
+                // Reverse of PATCH-INLINECOMPLETION: static advertisement
+                // through the typed top-level provider field, matching the
+                // production construction in protocol::capabilities::sections
+                // (#11803 repair).
+                caps.inline_completion_provider = Some(
+                    InlineCompletionProvider::InlineCompletionOptions(InlineCompletionOptions {
                         work_done_progress_options: WorkDoneProgressOptions::default(),
-                    })));
+                    }),
+                );
             }
             LSP_INLINE_VALUE => {
-                caps.inline_value_provider = Some(OneOf::Right(
-                    InlineValueServerCapabilities::Options(InlineValueOptions::default()),
-                ));
+                caps.inline_value_provider =
+                    Some(InlineValueProvider::InlineValueOptions(InlineValueOptions::default()));
             }
             LSP_INLAY_HINT => {
                 caps.inlay_hint_provider =
-                    Some(OneOf::Right(InlayHintServerCapabilities::Options(InlayHintOptions {
+                    Some(InlayHintProvider::InlayHintOptions(InlayHintOptions {
                         resolve_provider: Some(true),
                         ..Default::default()
-                    })));
+                    }));
             }
             LSP_PULL_DIAGNOSTICS => {
                 caps.diagnostic_provider =
-                    Some(DiagnosticServerCapabilities::Options(DiagnosticOptions {
+                    Some(DiagnosticProvider::DiagnosticOptions(DiagnosticOptions {
                         identifier: Some("perl-lsp".to_string()),
                         inter_file_dependencies: true,
                         workspace_diagnostics: true,
@@ -299,7 +352,7 @@ pub fn caps_from_feature_ids(features: &[&str]) -> ServerCapabilities {
                     }));
             }
             LSP_WORKSPACE_SYMBOL => {
-                caps.workspace_symbol_provider = Some(OneOf::Left(true));
+                caps.workspace_symbol_provider = Some(WorkspaceSymbolProvider::Bool(true));
             }
             LSP_EXECUTE_COMMAND => {
                 caps.execute_command_provider = Some(ExecuteCommandOptions {
@@ -319,15 +372,14 @@ pub fn caps_from_feature_ids(features: &[&str]) -> ServerCapabilities {
 #[cfg(test)]
 #[allow(clippy::field_reassign_with_default)]
 mod tests {
-    use lsp_types::{ColorProviderCapability, ServerCapabilities};
-
     use super::*;
     use super::{LSP_COLOR, LSP_DOCUMENT_COLOR, caps_from_feature_ids, feature_ids_from_caps};
+    use gen_lsp_types::{ColorProvider, ServerCapabilities, TypeHierarchyProvider};
 
     #[test]
     fn feature_ids_from_caps_reports_catalog_color_id() {
         let caps = ServerCapabilities {
-            color_provider: Some(ColorProviderCapability::Simple(true)),
+            color_provider: Some(ColorProvider::Bool(true)),
             ..Default::default()
         };
 
@@ -383,12 +435,15 @@ mod tests {
             LSP_DOCUMENT_COLOR,
             LSP_FORMATTING,
             LSP_RANGE_FORMATTING,
+            LSP_RANGES_FORMATTING,
+            LSP_INLINE_COMPLETION,
             LSP_ON_TYPE_FORMATTING,
             LSP_RENAME,
             LSP_FOLDING_RANGE,
             LSP_SELECTION_RANGE,
             LSP_LINKED_EDITING_RANGE,
             LSP_CALL_HIERARCHY,
+            LSP_TYPE_HIERARCHY,
             LSP_SEMANTIC_TOKENS,
             LSP_MONIKER,
             LSP_INLINE_VALUE,
@@ -497,29 +552,72 @@ mod tests {
         assert!(caps.notebook_document_sync.is_some());
     }
 
-    /// Verify that `feature_ids_from_caps` can detect `lsp.type_hierarchy` when
-    /// advertised via the `experimental` field (lsp-types 0.97 gap workaround).
+    /// Verify that `feature_ids_from_caps` detects `lsp.type_hierarchy` from the
+    /// typed `type_hierarchy_provider` field carried by the selected substrate
+    /// (the former experimental-field workaround exited with #11803).
     #[test]
-    fn feature_ids_from_caps_detects_type_hierarchy_via_experimental() {
+    fn feature_ids_from_caps_detects_type_hierarchy_via_typed_field() {
         let mut caps = ServerCapabilities::default();
-        caps.experimental = Some(serde_json::json!({ "typeHierarchyProvider": true }));
+        caps.type_hierarchy_provider = Some(TypeHierarchyProvider::Bool(true));
         let ids = feature_ids_from_caps(&caps);
         assert!(
             ids.contains(&LSP_TYPE_HIERARCHY),
-            "feature_ids_from_caps must detect lsp.type_hierarchy via experimental field; \
-             got ids={ids:?}"
+            "feature_ids_from_caps must detect lsp.type_hierarchy via the typed \
+             type_hierarchy_provider field; got ids={ids:?}"
         );
     }
 
-    /// Verify that `feature_ids_from_caps` does not report `lsp.type_hierarchy` when
-    /// the experimental field is absent.
+    /// Verify that `feature_ids_from_caps` does not report `lsp.type_hierarchy`
+    /// when the typed field is absent.
     #[test]
-    fn feature_ids_from_caps_no_type_hierarchy_when_experimental_absent() {
+    fn feature_ids_from_caps_no_type_hierarchy_when_typed_field_absent() {
         let caps = ServerCapabilities::default();
         let ids = feature_ids_from_caps(&caps);
         assert!(
             !ids.contains(&LSP_TYPE_HIERARCHY),
             "feature_ids_from_caps must not report lsp.type_hierarchy when not advertised"
         );
+    }
+
+    /// Round-trip discriminator (#11803 repair): `lsp.ranges_formatting` must
+    /// survive `caps_from_feature_ids` → `feature_ids_from_caps`. The reverse
+    /// arm advertises through the typed `ranges_support` field, which the
+    /// forward arm reads back. The output necessarily also reports
+    /// `lsp.range_formatting`, because multi-range support implies the
+    /// singular provider.
+    #[test]
+    fn round_trip_ranges_formatting_via_typed_ranges_support() {
+        let caps = caps_from_feature_ids(&[LSP_RANGES_FORMATTING]);
+        let ids = feature_ids_from_caps(&caps);
+        assert!(
+            ids.contains(&LSP_RANGES_FORMATTING),
+            "round-trip lost lsp.ranges_formatting; got ids={ids:?}"
+        );
+        assert!(
+            ids.contains(&LSP_RANGE_FORMATTING),
+            "multi-range advertisement must imply the singular range provider; got ids={ids:?}"
+        );
+    }
+
+    /// Round-trip discriminator (#11803 repair): `lsp.inline_completion` must
+    /// round-trip with exact identity — the reverse arm sets only the typed
+    /// top-level `inline_completion_provider`, so no other feature may be
+    /// reported.
+    #[test]
+    fn round_trip_inline_completion_identity() {
+        let caps = caps_from_feature_ids(&[LSP_INLINE_COMPLETION]);
+        let ids = feature_ids_from_caps(&caps);
+        assert_eq!(ids, vec![LSP_INLINE_COMPLETION], "lsp.inline_completion must round-trip alone");
+    }
+
+    /// Round-trip discriminator (#11803 repair): `lsp.type_hierarchy` must
+    /// round-trip with exact identity — the reverse arm rebuilds the typed
+    /// top-level `type_hierarchy_provider` that the forward arm reads back,
+    /// replacing the retired experimental-object workaround.
+    #[test]
+    fn round_trip_type_hierarchy_identity() {
+        let caps = caps_from_feature_ids(&[LSP_TYPE_HIERARCHY]);
+        let ids = feature_ids_from_caps(&caps);
+        assert_eq!(ids, vec![LSP_TYPE_HIERARCHY], "lsp.type_hierarchy must round-trip alone");
     }
 }

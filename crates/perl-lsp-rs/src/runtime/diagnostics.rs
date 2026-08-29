@@ -1373,7 +1373,7 @@ impl LspServer {
 
         use crate::features::diagnostics::PullDiagnosticsProvider;
         use crate::protocol::invalid_params;
-        use lsp_types::Uri;
+        use gen_lsp_types::Uri;
 
         // LSP 3.17: missing or malformed params/URI is a client protocol error, not a
         // silent empty response.  Return InvalidParams so the client can distinguish
@@ -1387,8 +1387,9 @@ impl LspServer {
         let previous_result_id = params["previousResultId"].as_str().map(|s| s.to_string());
 
         // Parse URI — an unparseable URI is a client-side protocol error (LSP 3.17)
-        let uri: Uri =
-            uri_str.parse().map_err(|_| invalid_params("Invalid URI in textDocument.uri"))?;
+        let uri: Uri = url::Url::parse(uri_str)
+            .map(|parsed| Uri(parsed.as_str().to_string()))
+            .map_err(|_| invalid_params("Invalid URI in textDocument.uri"))?;
 
         // Syntax-only short-circuit for pull diagnostics. Mirrors the
         // push-path gate in `publish_diagnostics`.
@@ -1549,15 +1550,15 @@ impl LspServer {
     /// Convert DocumentDiagnosticReport to JSON, merging perlcritic diagnostics.
     fn document_report_to_json(
         &self,
-        report: &lsp_types::DocumentDiagnosticReport,
+        report: &gen_lsp_types::DocumentDiagnosticReport,
         doc: &crate::state::DocumentState,
         uri: &str,
         perlcritic_diags: &[InternalDiagnostic],
     ) -> Value {
-        use lsp_types::DocumentDiagnosticReport;
+        use gen_lsp_types::DocumentDiagnosticReport;
 
         match report {
-            DocumentDiagnosticReport::Full(full) => {
+            DocumentDiagnosticReport::RelatedFullDocumentDiagnosticReport(full) => {
                 let markup_message_support = self.client_capabilities.lock().markup_message_support;
                 let mut items: Vec<Value> = full
                     .full_document_diagnostic_report
@@ -1587,7 +1588,7 @@ impl LspServer {
                 }
                 payload
             }
-            DocumentDiagnosticReport::Unchanged(unchanged) => {
+            DocumentDiagnosticReport::RelatedUnchangedDocumentDiagnosticReport(unchanged) => {
                 json!({
                     "kind": "unchanged",
                     "resultId": unchanged.unchanged_document_diagnostic_report.result_id
@@ -1600,11 +1601,11 @@ impl LspServer {
     ///
     /// Uses `serde_json::to_value` for the standard fields (aligning push and
     /// pull on the same wire shape — the pull path already uses
-    /// `lsp_types::Diagnostic` directly), then overrides `message` with the
+    /// `gen_lsp_types::Diagnostic` directly), then overrides `message` with the
     /// markup-aware version when the client supports markdown messages (#5017).
     fn lsp_diagnostic_to_json(
         &self,
-        d: &lsp_types::Diagnostic,
+        d: &gen_lsp_types::Diagnostic,
         _doc: &crate::state::DocumentState,
         _uri: &str,
         markup_message_support: bool,
@@ -1625,8 +1626,12 @@ impl LspServer {
         // client supports markdown, render structured markup from `data`; when
         // it does not, the plain string is correct (and `to_value` already
         // produced it, so this is a no-op in the common case).
+        let message_str = match &d.message {
+            gen_lsp_types::Message::String(s) => s.as_str(),
+            gen_lsp_types::Message::MarkupContent(markup) => markup.value.as_str(),
+        };
         let message_value =
-            Self::diagnostic_message_value(&d.message, d.data.as_ref(), markup_message_support);
+            Self::diagnostic_message_value(message_str, d.data.as_ref(), markup_message_support);
         if diag.get("message") != Some(&message_value) {
             diag["message"] = message_value;
         }

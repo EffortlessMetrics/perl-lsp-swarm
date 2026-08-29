@@ -61,10 +61,10 @@ use super::references_pir_shadow::{PromotionMode, ReferenceOptions, references_p
 /// granularity via `shadow_references_with_pir` and never calls this mapper.
 /// Kept as a free function so the coverage tool can track it independently of
 /// the call site that constructs the closure.
-fn identity_byte_mapper(start: usize, end: usize) -> lsp_types::Range {
-    lsp_types::Range {
-        start: lsp_types::Position { line: 0, character: start as u32 },
-        end: lsp_types::Position { line: 0, character: end as u32 },
+fn identity_byte_mapper(start: usize, end: usize) -> gen_lsp_types::Range {
+    gen_lsp_types::Range {
+        start: gen_lsp_types::Position { line: 0, character: start as u32 },
+        end: gen_lsp_types::Position { line: 0, character: end as u32 },
     }
 }
 
@@ -434,7 +434,7 @@ mod tests {
         assert!(ranges.len() >= 2, "expected >=2 $x sites, got {ranges:?}");
     }
 
-    /// `identity_byte_mapper` constructs a valid `lsp_types::Range` from byte offsets.
+    /// `identity_byte_mapper` constructs a valid `gen_lsp_types::Range` from byte offsets.
     ///
     /// Coverage target: `identity_byte_mapper` is the named free function used as the
     /// uri_mapper argument in `find_references_with_pir_shadow`. Shadow mode never

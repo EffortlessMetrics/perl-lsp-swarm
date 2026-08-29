@@ -19,8 +19,9 @@ mod experimental;
 mod sections;
 
 pub use crate::features::flags::{AdvertisedFeatures, BuildFlags};
-/// Re-export `ServerCapabilities` from `lsp_types` for public access.
-pub use lsp_types::ServerCapabilities;
+/// Re-export `ServerCapabilities` from the selected protocol-type substrate
+/// (gen-lsp-types, pinned 0.11.0) for public access.
+pub use gen_lsp_types::ServerCapabilities;
 
 /// Canonical completion trigger characters advertised to LSP clients.
 ///
@@ -69,33 +70,13 @@ pub fn capabilities_json(build: BuildFlags) -> Value {
         serde_json::json!({})
     });
 
-    // Manually add typeHierarchyProvider for LSP compatibility
-    if build.type_hierarchy {
-        json["typeHierarchyProvider"] = serde_json::json!({
-            "workDoneProgressOptions": {}
-        });
-    }
-
-    // Manually add rangesSupport (LSP 3.18) because lsp-types 0.97
-    // lacks this field on DocumentRangeFormattingOptions. Multi-range formatting
-    // is advertised through the existing documentRangeFormattingProvider key.
-    if build.range_formatting {
-        json["documentRangeFormattingProvider"] = serde_json::json!({
-            "rangesSupport": true
-        });
-    }
-    // Manually add inlineCompletionProvider (LSP 3.18) because lsp-types 0.97
-    // predates this field. This JSON surface has no client context and
-    // represents the static/default advertisement; runtime initialize removes
-    // it when a client opts into dynamic inline-completion registration.
-    if build.inline_completion {
-        json["inlineCompletionProvider"] = serde_json::json!({});
-    }
-
-    // Manually add insertTextModes (LSP 3.17) because lsp-types 0.97 lacks this field.
-    // We advertise PlainText (1) and Snippet (2) modes, which we already support.
-    // Clients can use this to determine if they should rely on server-provided
-    // insertReplaceEdit and insertTextFormat/insertTextMode negotiation.
+    // Manually add insertTextModes (LSP 3.17) because the selected substrate does not
+    // model a server-side completionItem.insertTextModes field (it is not a valid
+    // server-capability shape per #2892/#8032). We advertise PlainText (1) and Snippet
+    // (2) modes, which we already support. Clients can use this to determine if they
+    // should rely on server-provided insertReplaceEdit and insertTextFormat/
+    // insertTextMode negotiation. PATCH-INSERTTEXTMODES: removal is owned by #8032,
+    // NOT by the substrate migration.
     if build.completion
         && let Some(comp_provider) = json["completionProvider"].as_object_mut()
         && let Some(comp_item) =
@@ -164,24 +145,22 @@ pub fn default_capabilities() -> ServerCapabilities {
 mod tests {
     use super::*;
     use crate::features::contracts::feature_ids_from_caps;
-    use lsp_types::{
-        CodeActionKind, CodeActionProviderCapability, OneOf, SemanticTokensServerCapabilities,
-        TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncSaveOptions,
+    use gen_lsp_types::{
+        CodeActionKind, CodeActionProvider, DocumentSymbolProvider, Save, SemanticTokensProvider,
+        TextDocumentSync, TextDocumentSyncKind, WorkspaceSymbolProvider,
     };
     use std::collections::BTreeSet;
 
-    /// Feature IDs that `to_feature_ids()` correctly emits but
-    /// `feature_ids_from_caps()` cannot detect because lsp-types 0.97
-    /// lacks the corresponding `ServerCapabilities` field.
+    /// Feature IDs that `to_feature_ids()` emits but `feature_ids_from_caps()`
+    /// cannot detect from the typed `ServerCapabilities`.
     ///
-    /// - `inline_completion`: injected in `capabilities_json()` (LSP 3.18, not in lsp-types 0.97)
     /// - `notebook_cell_execution`: sub-feature of notebook sync, no own field
-    /// - `ranges_formatting`: injected in `capabilities_json()` (LSP 3.18, not in lsp-types 0.97)
     ///
-    /// Note: `type_hierarchy` was previously a gap but is now advertised via
-    /// `experimental` in `capabilities_for()` and detected by `feature_ids_from_caps`.
-    const KNOWN_STRUCTURAL_GAPS: &[&str] =
-        &["lsp.inline_completion", "lsp.notebook_cell_execution", "lsp.ranges_formatting"];
+    /// The former gaps for `type_hierarchy`, `inline_completion` and
+    /// `ranges_formatting` exited with the substrate migration (#11803): the
+    /// selected substrate carries those as typed fields and the detector reads
+    /// them directly.
+    const KNOWN_STRUCTURAL_GAPS: &[&str] = &["lsp.notebook_cell_execution"];
 
     /// Guard: feature IDs from BuildFlags must match feature IDs extracted
     /// from the ServerCapabilities that `capabilities_for()` actually builds.
@@ -457,13 +436,13 @@ mod tests {
     fn text_document_sync_advertises_did_save_support() {
         let caps = capabilities_for(BuildFlags::default());
         let save = caps.text_document_sync.as_ref().and_then(|sync| match sync {
-            TextDocumentSyncCapability::Options(opts) => opts.save.as_ref(),
-            TextDocumentSyncCapability::Kind(_) => None,
+            TextDocumentSync::Options(opts) => opts.save.as_ref(),
+            TextDocumentSync::Kind(_) => None,
         });
 
         assert_eq!(
             save,
-            Some(&TextDocumentSyncSaveOptions::Supported(true)),
+            Some(&Save::Bool(true)),
             "textDocumentSync.save must advertise didSave support"
         );
     }
@@ -487,10 +466,10 @@ mod tests {
     fn text_document_sync_advertises_full_sync_and_open_close() {
         let caps = capabilities_for(BuildFlags::default());
         match caps.text_document_sync.as_ref() {
-            Some(TextDocumentSyncCapability::Options(opts)) => {
+            Some(TextDocumentSync::Options(opts)) => {
                 assert_eq!(
                     opts.change,
-                    Some(TextDocumentSyncKind::FULL),
+                    Some(TextDocumentSyncKind::Full),
                     "textDocumentSync.change must be FULL (1) — the server reparses the whole \
                      document on every didChange; INCREMENTAL would be inaccurate"
                 );
@@ -525,7 +504,7 @@ mod tests {
         let caps = capabilities_for(flags);
 
         let kinds: Vec<String> = match caps.code_action_provider.as_ref() {
-            Some(CodeActionProviderCapability::Options(opts)) => opts
+            Some(CodeActionProvider::CodeActionOptions(opts)) => opts
                 .code_action_kinds
                 .as_ref()
                 .expect("code_action_kinds must be Some when code_actions is enabled")
@@ -566,7 +545,7 @@ mod tests {
         ] {
             let caps = capabilities_for(flags);
             let kinds: Vec<String> = match caps.code_action_provider.as_ref() {
-                Some(CodeActionProviderCapability::Options(opts)) => opts
+                Some(CodeActionProvider::CodeActionOptions(opts)) => opts
                     .code_action_kinds
                     .as_ref()
                     .map(|kinds| kinds.iter().map(|k| k.as_str().to_string()).collect())
@@ -648,7 +627,7 @@ mod tests {
         let caps = capabilities_for(flags);
 
         let types: Vec<String> = match caps.semantic_tokens_provider.as_ref() {
-            Some(SemanticTokensServerCapabilities::SemanticTokensOptions(opts)) => {
+            Some(SemanticTokensProvider::SemanticTokensOptions(opts)) => {
                 opts.legend.token_types.iter().map(|t| t.as_str().to_string()).collect()
             }
             other => panic!(
@@ -705,7 +684,7 @@ mod tests {
         let caps = capabilities_for(flags);
 
         let modifiers: Vec<String> = match caps.semantic_tokens_provider.as_ref() {
-            Some(SemanticTokensServerCapabilities::SemanticTokensOptions(opts)) => {
+            Some(SemanticTokensProvider::SemanticTokensOptions(opts)) => {
                 opts.legend.token_modifiers.iter().map(|m| m.as_str().to_string()).collect()
             }
             other => panic!(
@@ -750,8 +729,8 @@ mod tests {
         let caps = capabilities_for(flags);
 
         match caps.document_symbol_provider.as_ref() {
-            Some(OneOf::Left(true)) => {}
-            Some(OneOf::Left(false)) => {
+            Some(DocumentSymbolProvider::Bool(true)) => {}
+            Some(DocumentSymbolProvider::Bool(false)) => {
                 panic!(
                     "documentSymbolProvider must be true when document_symbol is enabled, \
                      not false"
@@ -787,7 +766,7 @@ mod tests {
         let caps = capabilities_for(flags);
 
         match caps.workspace_symbol_provider.as_ref() {
-            Some(OneOf::Right(opts)) => {
+            Some(WorkspaceSymbolProvider::WorkspaceSymbolOptions(opts)) => {
                 assert_eq!(
                     opts.resolve_provider,
                     Some(true),
@@ -795,7 +774,7 @@ mod tests {
                      workspace_symbol_resolve is enabled"
                 );
             }
-            Some(OneOf::Left(_)) => {
+            Some(WorkspaceSymbolProvider::Bool(_)) => {
                 panic!(
                     "expected workspaceSymbolProvider to use the Options variant (with \
                      resolveProvider), not the simple boolean variant, when \
@@ -835,7 +814,7 @@ mod tests {
         let caps = capabilities_for(flags);
 
         let kinds: Vec<String> = match caps.code_action_provider.as_ref() {
-            Some(CodeActionProviderCapability::Options(opts)) => opts
+            Some(CodeActionProvider::CodeActionOptions(opts)) => opts
                 .code_action_kinds
                 .as_ref()
                 .expect("code_action_kinds must be Some")
@@ -846,11 +825,11 @@ mod tests {
         };
 
         assert!(
-            kinds.iter().any(|k| k == CodeActionKind::QUICKFIX.as_str()),
+            kinds.iter().any(|k| k == CodeActionKind::QuickFix.as_str()),
             "codeActionKinds must contain \"quickfix\""
         );
         assert!(
-            kinds.iter().any(|k| k == CodeActionKind::SOURCE_FIX_ALL.as_str()),
+            kinds.iter().any(|k| k == CodeActionKind::SourceFixAll.as_str()),
             "codeActionKinds must contain \"source.fixAll\""
         );
     }

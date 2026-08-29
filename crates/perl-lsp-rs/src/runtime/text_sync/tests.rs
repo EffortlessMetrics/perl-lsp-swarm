@@ -40,7 +40,9 @@ fn make_server_with_capture() -> (LspServer, StdArc<parking_lot::Mutex<Vec<u8>>>
 #[cfg(feature = "incremental")]
 #[test]
 fn test_build_incremental_edits_uses_evolving_document_ranges() {
-    use lsp_types::{Position, Range, TextDocumentContentChangeEvent};
+    use gen_lsp_types::{
+        Position, Range, TextDocumentContentChangeEvent, TextDocumentContentChangePartial,
+    };
 
     // Original text: "abcde" (all ASCII — one byte per character)
     let original_str = "abcde";
@@ -48,25 +50,29 @@ fn test_build_incremental_edits_uses_evolving_document_ranges() {
     let changes = vec![
         // Edit 0: insert "X" at char 1 (between 'a' and 'b').
         // After this edit the working document becomes "aXbcde".
-        TextDocumentContentChangeEvent {
-            range: Some(Range {
-                start: Position { line: 0, character: 1 },
-                end: Position { line: 0, character: 1 },
-            }),
-            range_length: None,
-            text: "X".to_string(),
-        },
+        TextDocumentContentChangeEvent::TextDocumentContentChangePartial(
+            TextDocumentContentChangePartial {
+                range: Range {
+                    start: Position { line: 0, character: 1 },
+                    end: Position { line: 0, character: 1 },
+                },
+                text: "X".to_string(),
+                ..Default::default()
+            },
+        ),
         // Edit 1: replace chars 4..6 on the *post-insert* document "aXbcde".
         // Characters 4..6 of "aXbcde" are "de".  In original-doc space that
         // maps to bytes 3..5 (we subtract the +1 shift from the prior insert).
-        TextDocumentContentChangeEvent {
-            range: Some(Range {
-                start: Position { line: 0, character: 4 },
-                end: Position { line: 0, character: 6 },
-            }),
-            range_length: None,
-            text: "YZ".to_string(),
-        },
+        TextDocumentContentChangeEvent::TextDocumentContentChangePartial(
+            TextDocumentContentChangePartial {
+                range: Range {
+                    start: Position { line: 0, character: 4 },
+                    end: Position { line: 0, character: 6 },
+                },
+                text: "YZ".to_string(),
+                ..Default::default()
+            },
+        ),
     ];
 
     let edit_set =
@@ -107,29 +113,35 @@ fn test_build_incremental_edits_uses_evolving_document_ranges() {
 #[cfg(feature = "incremental")]
 #[test]
 fn test_build_incremental_edits_returns_none_when_follow_up_edit_targets_inserted_text() {
-    use lsp_types::{Position, Range, TextDocumentContentChangeEvent};
+    use gen_lsp_types::{
+        Position, Range, TextDocumentContentChangeEvent, TextDocumentContentChangePartial,
+    };
 
     let original = ropey::Rope::from_str("abc");
     let changes = vec![
-        TextDocumentContentChangeEvent {
-            range: Some(Range {
-                start: Position { line: 0, character: 1 },
-                end: Position { line: 0, character: 1 },
-            }),
-            range_length: None,
-            text: "XYZ".to_string(),
-        },
+        TextDocumentContentChangeEvent::TextDocumentContentChangePartial(
+            TextDocumentContentChangePartial {
+                range: Range {
+                    start: Position { line: 0, character: 1 },
+                    end: Position { line: 0, character: 1 },
+                },
+                text: "XYZ".to_string(),
+                ..Default::default()
+            },
+        ),
         // This second edit applies to the inserted text in the evolving
         // document ("aXYZbc"), which cannot be represented with
         // original-document byte offsets.
-        TextDocumentContentChangeEvent {
-            range: Some(Range {
-                start: Position { line: 0, character: 1 },
-                end: Position { line: 0, character: 2 },
-            }),
-            range_length: None,
-            text: "_".to_string(),
-        },
+        TextDocumentContentChangeEvent::TextDocumentContentChangePartial(
+            TextDocumentContentChangePartial {
+                range: Range {
+                    start: Position { line: 0, character: 1 },
+                    end: Position { line: 0, character: 2 },
+                },
+                text: "_".to_string(),
+                ..Default::default()
+            },
+        ),
     ];
 
     assert!(
@@ -144,33 +156,39 @@ fn test_build_incremental_edits_returns_none_when_follow_up_edit_targets_inserte
 #[cfg(feature = "incremental")]
 #[test]
 fn test_build_incremental_edits_negative_shift_uses_checked_add() {
-    use lsp_types::{Position, Range, TextDocumentContentChangeEvent};
+    use gen_lsp_types::{
+        Position, Range, TextDocumentContentChangeEvent, TextDocumentContentChangePartial,
+    };
 
     // Original: "abcde" (5 bytes, all ASCII).
     let original = ropey::Rope::from_str("abcde");
     let changes = vec![
         // Edit 0: delete [1,3) → removes "bc", leaving evolving doc "ade".
         // cumulative_shift becomes 0 - (3-1) = -2.
-        TextDocumentContentChangeEvent {
-            range: Some(Range {
-                start: Position { line: 0, character: 1 },
-                end: Position { line: 0, character: 3 },
-            }),
-            range_length: None,
-            text: String::new(),
-        },
+        TextDocumentContentChangeEvent::TextDocumentContentChangePartial(
+            TextDocumentContentChangePartial {
+                range: Range {
+                    start: Position { line: 0, character: 1 },
+                    end: Position { line: 0, character: 3 },
+                },
+                text: String::new(),
+                ..Default::default()
+            },
+        ),
         // Edit 1: replace [1,2) on evolving "ade" (the 'd') with "D".
         // evolving_start=1, evolving_end=2, cumulative_shift=-2.
         // map_offset(1, -2) = 1.checked_add(2) = Some(3)  (in original-doc space: 'd' = byte 3).
         // map_offset(2, -2) = 2.checked_add(2) = Some(4)  (in original-doc space: 'e' = byte 4).
-        TextDocumentContentChangeEvent {
-            range: Some(Range {
-                start: Position { line: 0, character: 1 },
-                end: Position { line: 0, character: 2 },
-            }),
-            range_length: None,
-            text: "D".to_string(),
-        },
+        TextDocumentContentChangeEvent::TextDocumentContentChangePartial(
+            TextDocumentContentChangePartial {
+                range: Range {
+                    start: Position { line: 0, character: 1 },
+                    end: Position { line: 0, character: 2 },
+                },
+                text: "D".to_string(),
+                ..Default::default()
+            },
+        ),
     ];
 
     let edit_set = build_incremental_edit_set(&original, &changes)

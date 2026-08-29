@@ -6,7 +6,7 @@
 
 use std::error::Error;
 
-use lsp_types::{Position, Range};
+use gen_lsp_types::{Position, Range};
 use perl_lsp_rs_core::providers::inline_completion::{
     InlineCompletionEnvironment, InlineCompletionItem, InlineCompletionList,
     InlineCompletionProvider, InlinePackageMethodFact,

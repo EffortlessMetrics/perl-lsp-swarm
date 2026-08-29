@@ -2,7 +2,7 @@
 //!
 //! Decision D5 specified optional gating of lsp-types via lsp-compat feature.
 //! Orchestrator decision (Option A): Keep lsp-types as required, lsp-compat as signal feature.
-//! Rationale: rs-core uses lsp_types unconditionally in 5+ modules (capability_map, protocol,
+//! Rationale: rs-core uses gen_lsp_types unconditionally in 5+ modules (capability_map, protocol,
 //! providers, tooling, uri), making conditional compilation invasive. Real optional-gating
 //! (WASM-style builds) is deferred as a follow-up issue.
 //!
@@ -24,7 +24,7 @@ fn g3_lsp_compat_feature_signal_not_gating() {
     // Keep lsp-types as REQUIRED, not optional. Keep lsp-compat as an empty SIGNAL feature.
     //
     // Rationale: capability_map, protocol, providers, tooling, and uri modules all use
-    // lsp_types unconditionally. Making it optional requires invasive per-module cfg gating.
+    // gen_lsp_types unconditionally. Making it optional requires invasive per-module cfg gating.
     // The lsp-compat feature is a consumer signal for dependent crates like perl-lsp-rs
     // that need compatibility tracking. Real optional-gating for WASM-style builds is
     // deferred as a follow-up issue.
@@ -44,13 +44,22 @@ fn g3_lsp_compat_feature_signal_not_gating() {
         "lsp-compat feature should exist as a signal feature: 'lsp-compat = []'"
     );
 
-    // Check that lsp-types is required (not optional)
-    let has_lsp_types_required = content.contains("lsp-types.workspace = true")
-        || (content.contains("lsp-types = { workspace = true }")
-            && !content.contains("lsp-types = { workspace = true, optional = true }"));
+    // Check that gen-lsp-types is required (not optional). Named explicitly
+    // (#11803 substrate switch): the former `contains("lsp-types.workspace")`
+    // check passed vacuously as a substring of "gen-lsp-types.workspace".
+    let has_lsp_types_required = content.contains("gen-lsp-types.workspace = true");
     assert!(
         has_lsp_types_required,
-        "lsp-types should be a required dependency (not optional). Follow-up: implement optional gating for WASM-style builds."
+        "gen-lsp-types should be a required dependency (not optional). Follow-up: implement optional gating for WASM-style builds."
+    );
+    // Inverse guard: the retired lsp-types dependency must not come back
+    // alongside or instead of gen-lsp-types. Line-anchored because
+    // "gen-lsp-types.workspace" contains "lsp-types.workspace" as a substring.
+    let has_retired_lsp_types_line =
+        content.lines().any(|line| line.trim_start().starts_with("lsp-types"));
+    assert!(
+        !has_retired_lsp_types_line,
+        "retired lsp-types dependency must not be re-introduced; gen-lsp-types is the selected substrate (#11803)"
     );
 }
 

@@ -1,49 +1,59 @@
 use super::{BuildFlags, completion_trigger_characters, get_supported_commands};
 #[allow(clippy::wildcard_imports)]
-use lsp_types::*;
+use gen_lsp_types::*;
 
 pub(super) fn apply_document_sync(caps: &mut ServerCapabilities) {
     // Use Options instead of Kind to comply with LSP 3.18 shape requirements.
-    // TextDocumentSyncKind::FULL (1): the server always reparses the full document
+    // TextDocumentSyncKind::Full (1): the server always reparses the full document
     // on every didChange notification. INCREMENTAL (2) would be inaccurate — no
     // incremental AST state is maintained between edits.
-    caps.text_document_sync = Some(TextDocumentSyncCapability::Options(TextDocumentSyncOptions {
+    caps.text_document_sync = Some(TextDocumentSync::Options(TextDocumentSyncOptions {
         open_close: Some(true),
-        change: Some(TextDocumentSyncKind::FULL),
+        change: Some(TextDocumentSyncKind::Full),
         will_save: None,
         will_save_wait_until: None,
         // The server handles didSave for diagnostics refresh and post-save hooks.
-        save: Some(TextDocumentSyncSaveOptions::Supported(true)),
+        save: Some(Save::Bool(true)),
     }));
 }
 
 pub(super) fn apply_navigation_features(caps: &mut ServerCapabilities, build: &BuildFlags) {
     if build.hover {
-        caps.hover_provider = Some(HoverProviderCapability::Simple(true));
+        caps.hover_provider = Some(HoverProvider::Bool(true));
     }
 
     if build.document_highlight {
-        caps.document_highlight_provider = Some(OneOf::Left(true));
+        caps.document_highlight_provider = Some(DocumentHighlightProvider::Bool(true));
     }
 
     if build.declaration {
-        caps.declaration_provider = Some(DeclarationCapability::Simple(true));
+        caps.declaration_provider = Some(DeclarationProvider::Bool(true));
     }
 
     if build.definition {
-        caps.definition_provider = Some(OneOf::Left(true));
+        caps.definition_provider = Some(DefinitionProvider::Bool(true));
     }
 
     if build.type_definition {
-        caps.type_definition_provider = Some(TypeDefinitionProviderCapability::Simple(true));
+        caps.type_definition_provider = Some(TypeDefinitionProvider::Bool(true));
     }
 
     if build.implementation {
-        caps.implementation_provider = Some(ImplementationProviderCapability::Simple(true));
+        caps.implementation_provider = Some(ImplementationProvider::Bool(true));
     }
 
     if build.references {
-        caps.references_provider = Some(OneOf::Left(true));
+        caps.references_provider = Some(ReferencesProvider::Bool(true));
+    }
+
+    if build.type_hierarchy {
+        // PATCH-TYPEHIERARCHY typed once (#11802 matrix): the selected substrate
+        // carries `type_hierarchy_provider` natively, replacing both the post-hoc
+        // JSON injection and the experimental workaround (removed together).
+        caps.type_hierarchy_provider =
+            Some(TypeHierarchyProvider::TypeHierarchyOptions(TypeHierarchyOptions {
+                work_done_progress_options: WorkDoneProgressOptions::default(),
+            }));
     }
 }
 
@@ -68,22 +78,31 @@ pub(super) fn apply_editing_features(caps: &mut ServerCapabilities, build: &Buil
             trigger_characters: Some(completion_trigger_characters()),
             all_commit_characters: None,
             work_done_progress_options: WorkDoneProgressOptions::default(),
-            completion_item: Some(CompletionOptionsCompletionItem {
+            completion_item: Some(ServerCompletionItemOptions {
                 label_details_support: Some(true),
             }),
         });
     }
 
     if build.formatting {
-        caps.document_formatting_provider = Some(OneOf::Left(true));
+        caps.document_formatting_provider = Some(DocumentFormattingProvider::Bool(true));
     }
 
     if build.range_formatting {
-        caps.document_range_formatting_provider = Some(OneOf::Left(true));
+        // PATCH-RANGESSUPPORT typed once (#11802 matrix): the selected substrate
+        // carries `ranges_support` natively, so multi-range formatting is advertised
+        // through the options form instead of a post-hoc JSON overwrite.
+        caps.document_range_formatting_provider =
+            Some(DocumentRangeFormattingProvider::DocumentRangeFormattingOptions(
+                DocumentRangeFormattingOptions {
+                    ranges_support: Some(true),
+                    work_done_progress_options: WorkDoneProgressOptions::default(),
+                },
+            ));
     }
 
     if build.rename {
-        caps.rename_provider = Some(OneOf::Right(RenameOptions {
+        caps.rename_provider = Some(RenameProvider::RenameOptions(RenameOptions {
             prepare_provider: Some(true),
             work_done_progress_options: WorkDoneProgressOptions::default(),
         }));
@@ -97,8 +116,18 @@ pub(super) fn apply_editing_features(caps: &mut ServerCapabilities, build: &Buil
     }
 
     if build.linked_editing {
-        caps.linked_editing_range_provider =
-            Some(LinkedEditingRangeServerCapabilities::Simple(true));
+        caps.linked_editing_range_provider = Some(LinkedEditingRangeProvider::Bool(true));
+    }
+
+    if build.inline_completion {
+        // PATCH-INLINECOMPLETION typed once (#11802 matrix): the selected substrate
+        // carries `inline_completion_provider` by default (no proposed gating). This
+        // is the static/default advertisement; runtime initialize still removes it
+        // when a client opts into dynamic inline-completion registration.
+        caps.inline_completion_provider =
+            Some(InlineCompletionProvider::InlineCompletionOptions(InlineCompletionOptions {
+                work_done_progress_options: WorkDoneProgressOptions::default(),
+            }));
     }
 }
 
@@ -107,46 +136,49 @@ pub(super) fn apply_symbol_and_workspace_features(
     build: &BuildFlags,
 ) {
     if build.document_symbol {
-        caps.document_symbol_provider = Some(OneOf::Left(true));
+        caps.document_symbol_provider = Some(DocumentSymbolProvider::Bool(true));
     }
 
     if build.workspace_symbol {
-        caps.workspace_symbol_provider = Some(OneOf::Left(true));
+        caps.workspace_symbol_provider = Some(WorkspaceSymbolProvider::Bool(true));
     }
 
     if build.workspace_symbol_resolve {
-        caps.workspace_symbol_provider = Some(OneOf::Right(WorkspaceSymbolOptions {
-            resolve_provider: Some(true),
-            work_done_progress_options: WorkDoneProgressOptions::default(),
-        }));
+        caps.workspace_symbol_provider =
+            Some(WorkspaceSymbolProvider::WorkspaceSymbolOptions(WorkspaceSymbolOptions {
+                resolve_provider: Some(true),
+                work_done_progress_options: WorkDoneProgressOptions::default(),
+            }));
     }
 
     if build.notebook_document_sync {
-        caps.notebook_document_sync = Some(OneOf::Left(NotebookDocumentSyncOptions {
-            notebook_selector: vec![NotebookSelector::ByNotebook {
-                notebook: Notebook::String("jupyter-notebook".to_string()),
-                cells: Some(vec![NotebookCellSelector { language: "perl".to_string() }]),
-            }],
-            save: Some(true),
-        }));
+        caps.notebook_document_sync =
+            Some(NotebookDocumentSync::Options(NotebookDocumentSyncOptions {
+                notebook_selector: vec![NotebookSelector::NotebookDocumentFilterWithNotebook(
+                    NotebookDocumentFilterWithNotebook {
+                        notebook: Notebook::String("jupyter-notebook".to_string()),
+                        cells: Some(vec![NotebookCellLanguage { language: "perl".to_string() }]),
+                    },
+                )],
+                save: Some(true),
+            }));
     }
 }
 
 pub(super) fn apply_analysis_features(caps: &mut ServerCapabilities, build: &BuildFlags) {
     if build.folding_range {
-        caps.folding_range_provider = Some(FoldingRangeProviderCapability::Simple(true));
+        caps.folding_range_provider = Some(FoldingRangeProvider::Bool(true));
     }
 
     if build.inlay_hints {
-        caps.inlay_hint_provider =
-            Some(OneOf::Right(InlayHintServerCapabilities::Options(InlayHintOptions {
-                resolve_provider: Some(true), // Resolver implemented in misc.rs:handle_inlay_hint_resolve
-                work_done_progress_options: WorkDoneProgressOptions::default(),
-            })));
+        caps.inlay_hint_provider = Some(InlayHintProvider::InlayHintOptions(InlayHintOptions {
+            resolve_provider: Some(true), // Resolver implemented in misc.rs:handle_inlay_hint_resolve
+            work_done_progress_options: WorkDoneProgressOptions::default(),
+        }));
     }
 
     if build.pull_diagnostics {
-        caps.diagnostic_provider = Some(DiagnosticServerCapabilities::Options(DiagnosticOptions {
+        caps.diagnostic_provider = Some(DiagnosticProvider::DiagnosticOptions(DiagnosticOptions {
             inter_file_dependencies: false,
             workspace_diagnostics: true,
             work_done_progress_options: WorkDoneProgressOptions::default(),
@@ -156,17 +188,19 @@ pub(super) fn apply_analysis_features(caps: &mut ServerCapabilities, build: &Bui
 
     if build.semantic_tokens {
         caps.semantic_tokens_provider =
-            Some(SemanticTokensServerCapabilities::SemanticTokensOptions(SemanticTokensOptions {
+            Some(SemanticTokensProvider::SemanticTokensOptions(SemanticTokensOptions {
                 work_done_progress_options: WorkDoneProgressOptions::default(),
                 legend: SemanticTokensLegend {
                     token_types: semantic_token_types(),
                     token_modifiers: semantic_token_modifiers(),
                 },
-                range: Some(true),
+                range: Some(SemanticTokensOptionsRange::Bool(true)),
                 // Advertise delta support so clients send
                 // `textDocument/semanticTokens/full/delta` for incremental
                 // token updates (LSP 3.17).
-                full: Some(SemanticTokensFullOptions::Delta { delta: Some(true) }),
+                full: Some(Full::SemanticTokensFullDelta(SemanticTokensFullDelta {
+                    delta: Some(true),
+                })),
             }));
     }
 }
@@ -174,8 +208,9 @@ pub(super) fn apply_analysis_features(caps: &mut ServerCapabilities, build: &Bui
 pub(super) fn apply_code_action_features(caps: &mut ServerCapabilities, build: &BuildFlags) {
     if build.code_actions {
         caps.code_action_provider =
-            Some(CodeActionProviderCapability::Options(CodeActionOptions {
+            Some(CodeActionProvider::CodeActionOptions(CodeActionOptions {
                 code_action_kinds: Some(code_action_kinds(build)),
+                documentation: None,
                 resolve_provider: Some(true),
                 work_done_progress_options: WorkDoneProgressOptions::default(),
             }));
@@ -200,81 +235,87 @@ pub(super) fn apply_misc_features(caps: &mut ServerCapabilities, build: &BuildFl
     }
 
     if build.selection_ranges {
-        caps.selection_range_provider = Some(SelectionRangeProviderCapability::Simple(true));
+        caps.selection_range_provider = Some(SelectionRangeProvider::Bool(true));
     }
 
     if build.code_lens {
-        caps.code_lens_provider = Some(CodeLensOptions { resolve_provider: Some(true) });
+        caps.code_lens_provider = Some(CodeLensOptions {
+            resolve_provider: Some(true),
+            work_done_progress_options: WorkDoneProgressOptions::default(),
+        });
     }
 
     if build.inline_values {
-        caps.inline_value_provider = Some(OneOf::Left(true));
+        caps.inline_value_provider = Some(InlineValueProvider::Bool(true));
     }
 
     if build.moniker {
-        caps.moniker_provider = Some(OneOf::Left(true));
+        caps.moniker_provider = Some(MonikerProvider::Bool(true));
     }
 
     if build.document_color {
-        caps.color_provider = Some(ColorProviderCapability::Simple(true));
+        caps.color_provider = Some(ColorProvider::Bool(true));
     }
 
     if build.call_hierarchy {
-        caps.call_hierarchy_provider = Some(CallHierarchyServerCapability::Simple(true));
+        caps.call_hierarchy_provider = Some(CallHierarchyProvider::Bool(true));
     }
 }
 
-fn semantic_token_types() -> Vec<SemanticTokenType> {
+fn semantic_token_types() -> Vec<String> {
     vec![
-        SemanticTokenType::NAMESPACE,
-        SemanticTokenType::TYPE,
-        SemanticTokenType::CLASS,
-        SemanticTokenType::INTERFACE,
-        SemanticTokenType::ENUM,
-        SemanticTokenType::ENUM_MEMBER,
-        SemanticTokenType::TYPE_PARAMETER,
-        SemanticTokenType::FUNCTION,
-        SemanticTokenType::METHOD,
-        SemanticTokenType::PROPERTY,
-        SemanticTokenType::MACRO,
-        SemanticTokenType::VARIABLE,
-        SemanticTokenType::PARAMETER,
-        SemanticTokenType::KEYWORD,
-        SemanticTokenType::MODIFIER,
-        SemanticTokenType::COMMENT,
-        SemanticTokenType::STRING,
-        SemanticTokenType::NUMBER,
-        SemanticTokenType::REGEXP,
-        SemanticTokenType::OPERATOR,
-        SemanticTokenType::new("sql_string"), // DBI/SQL string context (Issue #2337)
-        SemanticTokenType::new("sql_heredoc_keyword"), // SQL keyword in <<SQL heredoc (Issue #2059)
-        SemanticTokenType::new("json_heredoc_key"), // JSON key in <<JSON heredoc (Issue #2059)
-        // SemanticTokenType::LABEL is not available in lsp-types 0.97.
-        SemanticTokenType::new("label"),
+        SemanticTokenTypes::Namespace.into(),
+        SemanticTokenTypes::Type.into(),
+        SemanticTokenTypes::Class.into(),
+        SemanticTokenTypes::Interface.into(),
+        SemanticTokenTypes::Enum.into(),
+        SemanticTokenTypes::EnumMember.into(),
+        SemanticTokenTypes::TypeParameter.into(),
+        SemanticTokenTypes::Function.into(),
+        SemanticTokenTypes::Method.into(),
+        SemanticTokenTypes::Property.into(),
+        SemanticTokenTypes::Macro.into(),
+        SemanticTokenTypes::Variable.into(),
+        SemanticTokenTypes::Parameter.into(),
+        SemanticTokenTypes::Keyword.into(),
+        SemanticTokenTypes::Modifier.into(),
+        SemanticTokenTypes::Comment.into(),
+        SemanticTokenTypes::String.into(),
+        SemanticTokenTypes::Number.into(),
+        SemanticTokenTypes::Regexp.into(),
+        SemanticTokenTypes::Operator.into(),
+        // Perl-specific extensions:
+        "sql_string".to_string(), // DBI/SQL string context (Issue #2337)
+        "sql_heredoc_keyword".to_string(), // SQL keyword in <<SQL heredoc (Issue #2059)
+        "json_heredoc_key".to_string(), // JSON key in <<JSON heredoc (Issue #2059)
+        // The selected substrate models `label` natively (LSP 3.18); the wire
+        // bytes are identical to the previous custom-string advertisement.
+        SemanticTokenTypes::Label.into(),
     ]
 }
 
-fn semantic_token_modifiers() -> Vec<SemanticTokenModifier> {
+fn semantic_token_modifiers() -> Vec<String> {
     vec![
-        SemanticTokenModifier::DECLARATION,
-        SemanticTokenModifier::DEFINITION,
-        SemanticTokenModifier::READONLY,
-        SemanticTokenModifier::STATIC,
-        SemanticTokenModifier::DEPRECATED,
-        SemanticTokenModifier::ABSTRACT,
-        SemanticTokenModifier::ASYNC,
-        SemanticTokenModifier::MODIFICATION,
-        SemanticTokenModifier::DOCUMENTATION,
-        SemanticTokenModifier::DEFAULT_LIBRARY,
-        SemanticTokenModifier::new("scalarVariable"),
-        SemanticTokenModifier::new("arrayVariable"),
-        SemanticTokenModifier::new("hashVariable"),
+        SemanticTokenModifiers::Declaration.into(),
+        SemanticTokenModifiers::Definition.into(),
+        SemanticTokenModifiers::Readonly.into(),
+        SemanticTokenModifiers::Static.into(),
+        SemanticTokenModifiers::Deprecated.into(),
+        SemanticTokenModifiers::Abstract.into(),
+        SemanticTokenModifiers::Async.into(),
+        SemanticTokenModifiers::Modification.into(),
+        SemanticTokenModifiers::Documentation.into(),
+        SemanticTokenModifiers::DefaultLibrary.into(),
+        // Perl-specific modifiers:
+        "scalarVariable".to_string(),
+        "arrayVariable".to_string(),
+        "hashVariable".to_string(),
     ]
 }
 
 fn code_action_kinds(_build: &BuildFlags) -> Vec<CodeActionKind> {
     // Build code action kinds based on flags.
-    let mut kinds = vec![CodeActionKind::QUICKFIX];
+    let mut kinds = vec![CodeActionKind::QuickFix];
 
     // `source.organizeImports` is intentionally NOT advertised (#8305): its
     // only implementation was a destructive line-oriented sorter that has been
@@ -286,17 +327,17 @@ fn code_action_kinds(_build: &BuildFlags) -> Vec<CodeActionKind> {
     // Advertise generic `refactor` plus concrete sub-kinds so clients can
     // surface the full refactoring menu and send precise `context.only`
     // filters (for example `refactor.rewrite`).
-    kinds.push(CodeActionKind::REFACTOR);
+    kinds.push(CodeActionKind::Refactor);
 
     // REFACTOR_EXTRACT is implemented in code_actions_enhanced.rs.
     // Tests verified in lsp_code_actions_tests.rs (Issue #181).
-    kinds.push(CodeActionKind::REFACTOR_EXTRACT);
+    kinds.push(CodeActionKind::RefactorExtract);
     // Note: refactor.inline is NOT advertised because no inline action
     // is currently implemented.
-    kinds.push(CodeActionKind::REFACTOR_REWRITE);
+    kinds.push(CodeActionKind::RefactorRewrite);
 
     // SOURCE_FIX_ALL aggregates every safe `quickfix` action into a single invocation.
-    kinds.push(CodeActionKind::SOURCE_FIX_ALL);
+    kinds.push(CodeActionKind::SourceFixAll);
 
     // SOURCE_MODERNIZE actions (3-arg open, use strict, Carp::croak, etc.)
     // are produced by modernize.rs but were missing from the advertised kinds.

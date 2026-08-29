@@ -3,10 +3,10 @@
 //! Handles registration of file watchers for workspace files.
 
 use super::super::{LspServer, json};
-use lsp_types::{
-    DidChangeWatchedFilesRegistrationOptions, FileSystemWatcher, GlobPattern, OneOf, Registration,
-    RegistrationParams, RelativePattern, Uri, WatchKind,
-    notification::{DidChangeWatchedFiles, Notification},
+use gen_lsp_types::{
+    BaseUri, DidChangeWatchedFilesNotification, DidChangeWatchedFilesRegistrationOptions,
+    FileSystemWatcher, GlobPattern, Notification, Registration, RegistrationParams,
+    RelativePattern, Uri, WatchKind,
 };
 
 const PERL_WATCH_PATTERNS: &[&str] = &["**/*.pl", "**/*.pm", "**/*.t", "**/*.psgi"];
@@ -15,11 +15,22 @@ fn perl_watch_kind() -> WatchKind {
     WatchKind::Create | WatchKind::Change | WatchKind::Delete
 }
 
+/// Validate a workspace URI string and wrap it in the substrate's String-backed `Uri`.
+fn validated_workspace_uri(uri: &str) -> Option<Uri> {
+    match url::Url::parse(uri) {
+        Ok(parsed) => Some(Uri(parsed.as_str().to_string())),
+        Err(error) => {
+            tracing::debug!(uri, %error, "Skipping invalid workspace URI for file watcher RelativePattern");
+            None
+        }
+    }
+}
+
 fn string_file_watchers() -> Vec<FileSystemWatcher> {
     PERL_WATCH_PATTERNS
         .iter()
         .map(|pattern| FileSystemWatcher {
-            glob_pattern: GlobPattern::String((*pattern).into()),
+            glob_pattern: GlobPattern::Pattern((*pattern).to_string()),
             kind: Some(perl_watch_kind()),
         })
         .collect()
@@ -59,7 +70,7 @@ impl LspServer {
         };
         let reg = Registration {
             id: "perl-didChangeWatchedFiles".into(),
-            method: <DidChangeWatchedFiles as Notification>::METHOD.to_string(),
+            method: <DidChangeWatchedFilesNotification as Notification>::METHOD.to_string(),
             register_options,
         };
 
@@ -81,13 +92,7 @@ impl LspServer {
         let workspace_uris = self.workspace_folder_uris();
         let base_uris = workspace_uris
             .iter()
-            .filter_map(|uri| match uri.parse::<Uri>() {
-                Ok(parsed) => Some(parsed),
-                Err(error) => {
-                    tracing::debug!(uri, %error, "Skipping invalid workspace URI for file watcher RelativePattern");
-                    None
-                }
-            })
+            .filter_map(|uri| validated_workspace_uri(uri))
             .collect::<Vec<_>>();
 
         if base_uris.is_empty() {
@@ -101,9 +106,9 @@ impl LspServer {
             .into_iter()
             .flat_map(|base_uri| {
                 PERL_WATCH_PATTERNS.iter().map(move |pattern| FileSystemWatcher {
-                    glob_pattern: GlobPattern::Relative(RelativePattern {
-                        base_uri: OneOf::Right(base_uri.clone()),
-                        pattern: (*pattern).into(),
+                    glob_pattern: GlobPattern::RelativePattern(RelativePattern {
+                        base_uri: BaseUri::Uri(base_uri.clone()),
+                        pattern: (*pattern).to_string(),
                     }),
                     kind: Some(perl_watch_kind()),
                 })

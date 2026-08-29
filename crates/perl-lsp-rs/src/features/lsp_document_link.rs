@@ -5,7 +5,7 @@
 //! - File paths in require/do -> local files
 
 use crate::documentation_targets::metacpan_pod_uri;
-use lsp_types::{DocumentLink, Position, Range, Uri};
+use gen_lsp_types::{DocumentLink, Position, Range, Uri};
 use std::path::PathBuf;
 use url::Url;
 
@@ -48,7 +48,8 @@ fn to_range(content: &str, start: usize, end: usize) -> Range {
 
 fn metacpan_document_link_target(module_name: &str) -> Option<Uri> {
     let target = metacpan_pod_uri(module_name)?;
-    Url::parse(&target).ok()?.to_string().parse::<Uri>().ok()
+    let parsed = Url::parse(&target).ok()?;
+    Some(Uri(parsed.as_str().to_string()))
 }
 
 /// Collects clickable document links from Perl source code.
@@ -155,13 +156,13 @@ pub fn collect_document_links(text: &str, uri: &Url) -> Result<Vec<DocumentLink>
                             path.to_string()
                         };
                         links.push(DocumentLink {
-                                range: to_range(text, s, e),
-                                target: target_url.to_string().parse::<Uri>().map_err(|e| {
-                                    tracing::debug!(error = %e, "document link: failed to parse file URI");
-                                }).ok(),
-                                tooltip: Some(format!("Open {}", display_path)),
-                                data: None,
-                            });
+                            range: to_range(text, s, e),
+                            // `target_url` is already a validated `url::Url`; the
+                            // String-backed substrate Uri carries it verbatim.
+                            target: Some(Uri(target_url.as_str().to_string())),
+                            tooltip: Some(format!("Open {}", display_path)),
+                            data: None,
+                        });
                     }
                 }
             }
@@ -174,7 +175,7 @@ pub fn collect_document_links(text: &str, uri: &Url) -> Result<Vec<DocumentLink>
 #[cfg(test)]
 mod tests {
     use super::{collect_document_links, line_start_offsets};
-    use lsp_types::{DocumentLink, Position};
+    use gen_lsp_types::{DocumentLink, Position};
     use std::path::Path;
     use url::Url;
 
@@ -194,7 +195,7 @@ mod tests {
     }
 
     fn target_text(link: &DocumentLink) -> TestResult<&str> {
-        Ok(link.target.as_ref().ok_or("document link missing target")?.as_str())
+        Ok(link.target.as_ref().ok_or("document link missing target")?.as_ref())
     }
 
     #[test]

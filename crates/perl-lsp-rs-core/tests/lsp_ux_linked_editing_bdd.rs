@@ -29,7 +29,7 @@ impl LinkedEditingScenario {
         Ok(Self { text, line, character })
     }
 
-    fn linked_ranges(&self) -> Option<lsp_types::LinkedEditingRanges> {
+    fn linked_ranges(&self) -> Option<gen_lsp_types::LinkedEditingRanges> {
         handle_linked_editing(&self.text, self.line, self.character)
     }
 
@@ -61,7 +61,7 @@ impl LinkedEditingScenario {
     }
 }
 
-fn slice_for_range<'a>(text: &'a str, range: &lsp_types::Range) -> Result<&'a str, String> {
+fn slice_for_range<'a>(text: &'a str, range: &gen_lsp_types::Range) -> Result<&'a str, String> {
     let start = perl_parser_core::position::utf16_line_col_to_offset(
         text,
         range.start.line,

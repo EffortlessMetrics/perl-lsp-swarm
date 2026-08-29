@@ -8,7 +8,7 @@
 //! - **Function names**: name -> signature -> full sub definition
 //! - **General**: word -> trimmed line -> statement -> block -> function -> file
 
-use lsp_types::{Position, Range, SelectionRange};
+use gen_lsp_types::{Position, Range, SelectionRange};
 use perl_position_tracking::{offset_to_utf16_line_col, utf16_line_col_to_offset};
 
 // ---------------------------------------------------------------------------

@@ -2,35 +2,49 @@ use std::env;
 use std::fs;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use lsp_types::{DocumentDiagnosticReport, NumberOrString, Uri};
+use gen_lsp_types::{Code, DocumentDiagnosticReport, Message, Uri};
 use perl_lsp::features::diagnostics::PullDiagnosticsProvider;
 use url::Url;
+/// Wrap a URI string in the substrate's String-backed `Uri` after validation.
+fn substrate_uri(uri_str: &str) -> Result<Uri, url::ParseError> {
+    Ok(Uri(Url::parse(uri_str)?.as_str().to_string()))
+}
+
+/// Plain-string view of the substrate `Message` union.
+fn message_str(diag: &gen_lsp_types::Diagnostic) -> &str {
+    match &diag.message {
+        Message::String(s) => s,
+        Message::MarkupContent(markup) => &markup.value,
+    }
+}
 
 /// Extract items from a full diagnostic report, returning an error if it is Unchanged.
 fn items_from_report(
     report: DocumentDiagnosticReport,
-) -> Result<Vec<lsp_types::Diagnostic>, Box<dyn std::error::Error>> {
+) -> Result<Vec<gen_lsp_types::Diagnostic>, Box<dyn std::error::Error>> {
     match report {
-        DocumentDiagnosticReport::Full(full) => Ok(full.full_document_diagnostic_report.items),
-        DocumentDiagnosticReport::Unchanged(_) => {
+        DocumentDiagnosticReport::RelatedFullDocumentDiagnosticReport(full) => {
+            Ok(full.full_document_diagnostic_report.items)
+        }
+        DocumentDiagnosticReport::RelatedUnchangedDocumentDiagnosticReport(_) => {
             Err("expected Full diagnostic report, got Unchanged".into())
         }
     }
 }
 
 /// Returns true when a diagnostic has the given code string (e.g. "PL102").
-fn has_code(diag: &lsp_types::Diagnostic, code: &str) -> bool {
-    matches!(&diag.code, Some(NumberOrString::String(s)) if s == code)
+fn has_code(diag: &gen_lsp_types::Diagnostic, code: &str) -> bool {
+    matches!(&diag.code, Some(Code::String(s)) if s == code)
 }
 
-fn has_deterministic_source(diag: &lsp_types::Diagnostic) -> bool {
+fn has_deterministic_source(diag: &gen_lsp_types::Diagnostic) -> bool {
     matches!(diag.source.as_deref(), Some("perl-lsp") | Some("perl-lsp-critic"))
 }
 
 #[test]
 fn pull_diagnostics_unused_variable_emits_pl102() -> Result<(), Box<dyn std::error::Error>> {
     let provider = PullDiagnosticsProvider::new();
-    let uri = "file:///test_unused.pl".parse()?;
+    let uri = substrate_uri("file:///test_unused.pl")?;
     // $used is referenced; $unused is not — should produce PL102 for $unused only.
     let content = "use strict;\nuse warnings;\nsub foo {\n    my $used = 123;\n    my $unused = 456;\n    return $used;\n}\n";
 
@@ -45,8 +59,9 @@ fn pull_diagnostics_unused_variable_emits_pl102() -> Result<(), Box<dyn std::err
     }
 
     // At least one PL102 must mention $unused
-    let mentions_unused =
-        pl102_diags.iter().any(|d| d.message.contains("$unused") || d.message.contains("unused"));
+    let mentions_unused = pl102_diags
+        .iter()
+        .any(|d| message_str(d).contains("$unused") || message_str(d).contains("unused"));
     if !mentions_unused {
         return Err(format!(
             "Expected a PL102 diagnostic mentioning '$unused', got: {pl102_diags:#?}"
@@ -55,8 +70,9 @@ fn pull_diagnostics_unused_variable_emits_pl102() -> Result<(), Box<dyn std::err
     }
 
     // No PL102 should mention $used (it is referenced)
-    let false_positive =
-        pl102_diags.iter().any(|d| d.message.contains("$used") && !d.message.contains("$unused"));
+    let false_positive = pl102_diags
+        .iter()
+        .any(|d| message_str(d).contains("$used") && !message_str(d).contains("$unused"));
     if false_positive {
         return Err(format!(
             "Unexpected PL102 diagnostic for '$used' (it is referenced): {pl102_diags:#?}"
@@ -71,7 +87,7 @@ fn pull_diagnostics_unused_variable_emits_pl102() -> Result<(), Box<dyn std::err
 fn pull_diagnostics_unused_variable_severity_is_warning() -> Result<(), Box<dyn std::error::Error>>
 {
     let provider = PullDiagnosticsProvider::new();
-    let uri = "file:///test_unused_sev.pl".parse()?;
+    let uri = substrate_uri("file:///test_unused_sev.pl")?;
     let content = "sub bar {\n    my $never_used = 1;\n}\n";
 
     let items = items_from_report(provider.get_document_diagnostics(&uri, content, None, None))?;
@@ -82,7 +98,7 @@ fn pull_diagnostics_unused_variable_severity_is_warning() -> Result<(), Box<dyn 
         .ok_or("Expected PL102 diagnostic for unused variable $never_used")?;
 
     let severity = pl102.severity.ok_or("PL102 diagnostic must have a severity")?;
-    if severity != lsp_types::DiagnosticSeverity::WARNING {
+    if severity != gen_lsp_types::DiagnosticSeverity::Warning {
         return Err(format!("Expected WARNING severity for PL102, got {:?}", severity).into());
     }
 
@@ -93,12 +109,12 @@ fn pull_diagnostics_unused_variable_severity_is_warning() -> Result<(), Box<dyn 
 fn pull_diagnostics_interpolated_variable_counts_as_used() -> Result<(), Box<dyn std::error::Error>>
 {
     let provider = PullDiagnosticsProvider::new();
-    let uri = "file:///test_interpolated.pl".parse()?;
+    let uri = substrate_uri("file:///test_interpolated.pl")?;
     let content = "use strict;\nuse warnings;\nmy $msg = 'hello';\nprint \"$msg\\n\";\n";
 
     let items = items_from_report(provider.get_document_diagnostics(&uri, content, None, None))?;
 
-    let msg_unused = items.iter().any(|d| has_code(d, "PL102") && d.message.contains("$msg"));
+    let msg_unused = items.iter().any(|d| has_code(d, "PL102") && message_str(d).contains("$msg"));
     if msg_unused {
         return Err(format!(
             "Interpolated variable $msg must not be flagged unused.\nDiagnostics: {items:#?}"
@@ -115,8 +131,9 @@ fn pull_diagnostics_script_uri_suppresses_missing_package_warning()
     let provider = PullDiagnosticsProvider::new();
     let uri: Uri = Url::from_file_path(env::temp_dir().join("Makefile.PL"))
         .map_err(|_| "failed to build Makefile.PL test URI")?
+        .as_str()
         .to_string()
-        .parse()?;
+        .into();
     let content = "use strict;\nuse warnings;\nprint \"ok\\n\";\n";
 
     let items = items_from_report(provider.get_document_diagnostics(&uri, content, None, None))?;
@@ -136,7 +153,7 @@ fn pull_diagnostics_script_uri_suppresses_missing_package_warning()
 fn pull_diagnostics_shebang_suppresses_missing_package_warning()
 -> Result<(), Box<dyn std::error::Error>> {
     let provider = PullDiagnosticsProvider::new();
-    let uri = "file:///smoke_script.txt".parse()?;
+    let uri = substrate_uri("file:///smoke_script.txt")?;
     let content = "#!/usr/bin/env perl\nuse strict;\nuse warnings;\nprint \"ok\\n\";\n";
 
     let items = items_from_report(provider.get_document_diagnostics(&uri, content, None, None))?;
@@ -156,14 +173,15 @@ fn pull_diagnostics_shebang_suppresses_missing_package_warning()
 fn pull_diagnostics_underscore_prefix_suppresses_unused_warning()
 -> Result<(), Box<dyn std::error::Error>> {
     let provider = PullDiagnosticsProvider::new();
-    let uri = "file:///test_underscore.pl".parse()?;
+    let uri = substrate_uri("file:///test_underscore.pl")?;
     // _intentionally_unused should NOT produce PL102 (underscore prefix = intentionally unused)
     let content = "sub baz {\n    my $_intentionally_unused = 1;\n    return 42;\n}\n";
 
     let items = items_from_report(provider.get_document_diagnostics(&uri, content, None, None))?;
 
-    let pl102_for_underscore =
-        items.iter().find(|d| has_code(d, "PL102") && d.message.contains("_intentionally_unused"));
+    let pl102_for_underscore = items
+        .iter()
+        .find(|d| has_code(d, "PL102") && message_str(d).contains("_intentionally_unused"));
 
     if pl102_for_underscore.is_some() {
         return Err(
@@ -178,12 +196,12 @@ fn pull_diagnostics_underscore_prefix_suppresses_unused_warning()
 #[test]
 fn pull_diagnostics_full_then_unchanged() -> Result<(), Box<dyn std::error::Error>> {
     let provider = PullDiagnosticsProvider::new();
-    let uri = "file:///test.pl".parse()?;
+    let uri = substrate_uri("file:///test.pl")?;
     let content = "my $x = ;";
 
     let first = provider.get_document_diagnostics(&uri, content, None, None);
     let result_id = match &first {
-        DocumentDiagnosticReport::Full(full) => {
+        DocumentDiagnosticReport::RelatedFullDocumentDiagnosticReport(full) => {
             let report = &full.full_document_diagnostic_report;
             assert!(!report.items.is_empty(), "expected diagnostics for parse error");
             let unexpected_sources: Vec<String> = report
@@ -212,14 +230,14 @@ fn pull_diagnostics_full_then_unchanged() -> Result<(), Box<dyn std::error::Erro
             }
             report.result_id.clone().ok_or("result id missing")?
         }
-        DocumentDiagnosticReport::Unchanged(_) => {
+        DocumentDiagnosticReport::RelatedUnchangedDocumentDiagnosticReport(_) => {
             return Err("expected full diagnostics report for initial request".into());
         }
     };
 
     let second = provider.get_document_diagnostics(&uri, content, Some(result_id), None);
     assert!(
-        matches!(second, DocumentDiagnosticReport::Unchanged(_)),
+        matches!(second, DocumentDiagnosticReport::RelatedUnchangedDocumentDiagnosticReport(_)),
         "expected unchanged diagnostics report on identical content"
     );
 
@@ -239,16 +257,16 @@ fn pull_diagnostics_full_then_unchanged() -> Result<(), Box<dyn std::error::Erro
 /// parse-error (PL001 / PL002 / PL003) ones.
 fn parse_error_diagnostics_for(
     content: &str,
-) -> Result<Vec<lsp_types::Diagnostic>, Box<dyn std::error::Error>> {
+) -> Result<Vec<gen_lsp_types::Diagnostic>, Box<dyn std::error::Error>> {
     let provider = PullDiagnosticsProvider::new();
-    let uri: Uri = "file:///hint_test.pl".parse()?;
+    let uri: Uri = substrate_uri("file:///hint_test.pl")?;
     let all = items_from_report(provider.get_document_diagnostics(&uri, content, None, None))?;
     Ok(all
         .into_iter()
         .filter(|d| {
             matches!(
                 &d.code,
-                Some(NumberOrString::String(s))
+                Some(Code::String(s))
                     if s == "PL001" || s == "PL002" || s == "PL003"
             )
         })
@@ -269,7 +287,7 @@ fn parse_error_fallback_missing_semicolon_includes_hint() -> Result<(), Box<dyn 
     }
     let first = &diags[0];
     assert!(
-        first.message.contains("Suggestion:") || first.message.contains(';'),
+        message_str(first).contains("Suggestion:") || message_str(first).contains(';'),
         "Parse error diagnostic should include a semicolon hint, got: {:?}",
         first.message
     );
@@ -288,7 +306,7 @@ fn parse_error_fallback_unclosed_block_includes_hint() -> Result<(), Box<dyn std
     }
     let first = &diags[0];
     assert!(
-        first.message.contains("Suggestion:"),
+        message_str(first).contains("Suggestion:"),
         "Unclosed block parse error should include a hint, got: {:?}",
         first.message
     );
@@ -306,7 +324,7 @@ fn parse_error_fallback_unclosed_string_includes_hint() -> Result<(), Box<dyn st
     }
     let first = &diags[0];
     assert!(
-        first.message.contains("Suggestion:"),
+        message_str(first).contains("Suggestion:"),
         "Unterminated string parse error should include a hint, got: {:?}",
         first.message
     );
@@ -325,7 +343,7 @@ fn parse_error_fallback_missing_comma_includes_hint() -> Result<(), Box<dyn std:
     }
     let first = &diags[0];
     assert!(
-        first.message.contains("Suggestion:"),
+        message_str(first).contains("Suggestion:"),
         "Missing comma parse error should include a hint, got: {:?}",
         first.message
     );
@@ -342,7 +360,7 @@ fn parse_error_fallback_missing_comma_includes_hint() -> Result<(), Box<dyn std:
 #[test]
 fn pl701_pull_diagnostics_includes_inc_paths() -> Result<(), Box<dyn std::error::Error>> {
     let provider = PullDiagnosticsProvider::new();
-    let uri = "file:///test_missing_module.pl".parse()?;
+    let uri = substrate_uri("file:///test_missing_module.pl")?;
     // Use a non-core module that will definitely not be found
     let content = "use Missing::Module::That::Does::Not::Exist;\n";
 
@@ -359,7 +377,7 @@ fn pl701_pull_diagnostics_includes_inc_paths() -> Result<(), Box<dyn std::error:
         .ok_or("Expected at least one PL701 (missing module) diagnostic")?;
 
     // Verify the message includes the searched paths
-    let message = &pl701.message;
+    let message = message_str(pl701);
     if !message.contains("/test/path1") {
         return Err(format!(
             "PL701 message should include '/test/path1' from include_paths, got: {}",
@@ -390,7 +408,7 @@ fn pl701_pull_diagnostics_includes_inc_paths() -> Result<(), Box<dyn std::error:
 fn pl701_pull_diagnostics_empty_inc_paths_shows_fallback_message()
 -> Result<(), Box<dyn std::error::Error>> {
     let provider = PullDiagnosticsProvider::new();
-    let uri = "file:///test_missing_module.pl".parse()?;
+    let uri = substrate_uri("file:///test_missing_module.pl")?;
     let content = "use Missing::Module::That::Does::Not::Exist;\n";
 
     // Pass None for include_paths - should use fallback message
@@ -405,7 +423,7 @@ fn pl701_pull_diagnostics_empty_inc_paths_shows_fallback_message()
         .ok_or("Expected at least one PL701 (missing module) diagnostic")?;
 
     // With empty include_paths, should show the fallback message
-    let message = &pl701.message;
+    let message = message_str(pl701);
     if !message.contains("workspace or configured include paths") {
         return Err(format!(
             "PL701 message with no include_paths should show fallback message, got: {}",
@@ -428,8 +446,9 @@ fn pl701_respects_use_lib_paths_from_document() -> Result<(), Box<dyn std::error
     let script_path = project_root.join("script.pl");
     let uri: Uri = Url::from_file_path(&script_path)
         .map_err(|_| "failed to create script URI for @INC test")?
+        .as_str()
         .to_string()
-        .parse()?;
+        .into();
 
     let content = "use lib 'lib';\nuse My::Test;\n";
     let items = items_from_report(provider.get_document_diagnostics(&uri, content, None, None))?;
@@ -464,8 +483,9 @@ fn pl701_respects_use_lib_without_terminating_semicolon() -> Result<(), Box<dyn 
     let script_path = project_root.join("script.pl");
     let uri: Uri = Url::from_file_path(&script_path)
         .map_err(|_| "failed to create script URI for incomplete-pragma @INC test")?
+        .as_str()
         .to_string()
-        .parse()?;
+        .into();
 
     // No semicolon after the pragma — the buffer state while typing.
     let content = "use lib 'lib'\nuse My::Test;\n";
@@ -496,7 +516,7 @@ fn pl701_respects_use_lib_without_terminating_semicolon() -> Result<(), Box<dyn 
 #[test]
 fn recovered_parse_error_is_reported_at_its_real_line() -> Result<(), Box<dyn std::error::Error>> {
     let provider = PullDiagnosticsProvider::new();
-    let uri = "file:///recovered_position_paren.pl".parse()?;
+    let uri = substrate_uri("file:///recovered_position_paren.pl")?;
     // The unclosed `(` is on line 5 (zero-based line 4). The parser recovers by
     // inserting the closer and emits `ParseError::Recovered`, which used to be
     // pinned to byte offset 0 by the diagnostic mapper's catch-all arm.
@@ -526,7 +546,7 @@ fn recovered_parse_error_is_reported_at_its_real_line() -> Result<(), Box<dyn st
 fn recovered_parse_error_from_missing_operand_is_reported_at_its_real_line()
 -> Result<(), Box<dyn std::error::Error>> {
     let provider = PullDiagnosticsProvider::new();
-    let uri = "file:///recovered_position_operand.pl".parse()?;
+    let uri = substrate_uri("file:///recovered_position_operand.pl")?;
     // Trailing `+` with no right-hand operand on line 5 (zero-based line 4).
     let content = "use strict;\nuse warnings;\n\nmy $unused_two = 7;\nmy $g = 1 +\n";
 
@@ -552,7 +572,7 @@ fn recovered_parse_error_from_missing_operand_is_reported_at_its_real_line()
 #[test]
 fn recovered_parse_error_does_not_suppress_lints() -> Result<(), Box<dyn std::error::Error>> {
     let provider = PullDiagnosticsProvider::new();
-    let uri = "file:///recovered_lints_survive.pl".parse()?;
+    let uri = substrate_uri("file:///recovered_lints_survive.pl")?;
     // One recovery point (unclosed `(` on line 5) plus an unused variable on
     // line 4. The parser produced a usable tree, so the scope/lint stack must
     // still run — a single missing paren must not delete every other warning.
@@ -562,7 +582,7 @@ fn recovered_parse_error_does_not_suppress_lints() -> Result<(), Box<dyn std::er
     let items = items_from_report(provider.get_document_diagnostics(&uri, content, None, None))?;
 
     let has_unused =
-        items.iter().any(|d| has_code(d, "PL102") && d.message.contains("$unused_one"));
+        items.iter().any(|d| has_code(d, "PL102") && message_str(d).contains("$unused_one"));
     if !has_unused {
         return Err(format!(
             "a recovered parse error must not suppress the unused-variable lint, got: {items:#?}"
@@ -578,7 +598,7 @@ fn unexpected_token_parse_error_keeps_its_real_line() -> Result<(), Box<dyn std:
     // Guard the other direction: variants that already reported a correct
     // position must keep doing so.
     let provider = PullDiagnosticsProvider::new();
-    let uri = "file:///unexpected_token_position.pl".parse()?;
+    let uri = substrate_uri("file:///unexpected_token_position.pl")?;
     let content = "use strict;\nuse warnings;\nmy $x = 1;\nmy = 2;\n";
 
     let items = items_from_report(provider.get_document_diagnostics(&uri, content, None, None))?;

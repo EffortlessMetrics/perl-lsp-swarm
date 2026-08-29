@@ -1,6 +1,6 @@
 mod support;
 
-use lsp_types::*;
+use gen_lsp_types::*;
 use serde_json::json;
 use support::lsp_harness::LspHarness;
 
