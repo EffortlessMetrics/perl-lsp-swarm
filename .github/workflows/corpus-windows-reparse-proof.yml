@@ -50,6 +50,7 @@ jobs:
         with:
           cache-on-failure: true
           shared-key: corpus-windows-reparse-proof-${{ hashFiles('Cargo.lock') }}
+          save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
 
       - name: Run non-skipping Windows reparse proof
         env:
