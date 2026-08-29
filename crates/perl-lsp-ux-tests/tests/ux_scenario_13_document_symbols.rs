@@ -133,10 +133,7 @@ fn ready_generation(event: &LspEvent, uri: &str) -> Option<u64> {
 }
 
 fn ready_generations(events: &[LspEvent], uri: &str) -> Vec<u64> {
-    events
-        .iter()
-        .filter_map(|event| ready_generation(event, uri))
-        .collect()
+    events.iter().filter_map(|event| ready_generation(event, uri)).collect()
 }
 
 fn has_generation_after(
@@ -306,18 +303,12 @@ fn scenario_13_close_reopen_requires_new_generation_and_open_buffer_authority() 
     let uri = harness.workspace.uri(LIFECYCLE_FILE);
 
     harness.client.did_open(&uri, INITIAL_SOURCE)?;
-    let initial_generations =
-        wait_for_ready_generation_after(&harness, &uri, 1, 0, READY_TIMEOUT)?;
+    let initial_generations = wait_for_ready_generation_after(&harness, &uri, 1, 0, READY_TIMEOUT)?;
     let initial_ready_count = initial_generations.len();
 
     harness.client.did_change_full(&uri, 2, PRE_CLOSE_SOURCE)?;
-    let pre_close_generations = wait_for_ready_generation_after(
-        &harness,
-        &uri,
-        2,
-        initial_ready_count,
-        READY_TIMEOUT,
-    )?;
+    let pre_close_generations =
+        wait_for_ready_generation_after(&harness, &uri, 2, initial_ready_count, READY_TIMEOUT)?;
     let pre_close_ready_count = pre_close_generations.len();
 
     harness.client.notify(
@@ -330,13 +321,8 @@ fn scenario_13_close_reopen_requires_new_generation_and_open_buffer_authority() 
     )?;
     harness.client.did_open(&uri, REOPENED_SOURCE)?;
 
-    let reopened_generations = wait_for_ready_generation_after(
-        &harness,
-        &uri,
-        1,
-        pre_close_ready_count,
-        READY_TIMEOUT,
-    )?;
+    let reopened_generations =
+        wait_for_ready_generation_after(&harness, &uri, 1, pre_close_ready_count, READY_TIMEOUT)?;
     assert!(
         reopened_generations.len() > pre_close_ready_count,
         "reopen barrier must be backed by post-snapshot readiness evidence: \
@@ -358,12 +344,12 @@ fn scenario_13_close_reopen_requires_new_generation_and_open_buffer_authority() 
     let symbols = harness.document_symbols(LIFECYCLE_FILE)?;
     let names = document_symbol_names(&symbols);
     assert!(
-        names.iter().any(|name| name == REOPENED_SYMBOL),
+        names.iter().any(|name| *name == REOPENED_SYMBOL),
         "document symbols after the reopen barrier must come from the reopened buffer; got {names:?}"
     );
     for stale_symbol in [DISK_SYMBOL, INITIAL_SYMBOL, PRE_CLOSE_SYMBOL] {
         assert!(
-            !names.iter().any(|name| name == stale_symbol),
+            !names.iter().any(|name| *name == stale_symbol),
             "document symbols after reopen must not expose stale/backing `{stale_symbol}`; got {names:?}"
         );
     }
@@ -374,9 +360,7 @@ fn scenario_13_close_reopen_requires_new_generation_and_open_buffer_authority() 
 
 #[cfg(test)]
 mod shape_unit_tests {
-    use super::{
-        READY_METHOD, assert_symbol_shapes, has_generation_after, ready_generations,
-    };
+    use super::{READY_METHOD, assert_symbol_shapes, has_generation_after, ready_generations};
     use perl_lsp_ux_tests::LspEvent;
     use serde_json::json;
 
