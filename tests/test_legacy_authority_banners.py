@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import re
+import subprocess
 import tomllib
 import unittest
 from pathlib import Path
@@ -12,7 +14,6 @@ REGISTRY = ROOT / "docs" / "agents" / "authority_status.toml"
 MIGRATOR = ROOT / "scripts" / "migrate-legacy-authority-banners.py"
 WORKFLOW = ROOT / ".github" / "workflows" / "legacy-authority-banners.yml"
 MARKER = "<!-- authority-status:v1 -->"
-HISTORICAL_COMMIT = "f6d3f9919dca35095fa8a7b26923c3190008d040"
 EXPECTED = {
     "docs/reference/ORCHESTRATION_DOCTRINE.md": (
         "superseded",
@@ -61,23 +62,18 @@ EXPECTED = {
 }
 ROLLOUT_REDIRECTS: dict[str, dict[str, str]] = {
     "docs/development/RUST_1_95_ROLLOUT.md": {
-        "blob": "61284c6ceca9395c7802b0d151e9847bdbba63d4",
         "successor": "docs/CLIPPY_POLICY.md",
     },
     "docs/development/STRONG_CLIPPY_LINTS_ROLLOUT.md": {
-        "blob": "1a676040c83475a9a2e7dd9a091da3bb732c4677",
         "successor": "docs/CLIPPY_POLICY.md",
     },
     "docs/development/RUST_1_95_PROACTIVE_GUARDS.md": {
-        "blob": "05bfe9bf9344b4f4ea469dddbafed78eaa815131",
         "successor": "docs/agents/DEVELOPMENT_METHOD.md",
     },
     "docs/ci/perl-lsp-rust-1.95-rollout.md": {
-        "blob": "b1667cef5512abb2700dd24080c2731b6e327733",
         "successor": "docs/CLIPPY_POLICY.md",
     },
     "docs/project/RAILS_INDEX.md": {
-        "blob": "5d27670786f80b7274e7e1d9ff357d7ee65bfb3b",
         "successor": "docs/agents/DEVELOPMENT_METHOD.md",
     },
 }
@@ -87,22 +83,66 @@ RETIRED_REFERENCE_METADATA = {
     "docs/agents/AUTHORITY_STATUS.md",
     "docs/agents/authority_status.toml",
     "docs/policy/NON_RUST_INVENTORY.md",
+    ".github/workflows/legacy-authority-banners.yml",
+    ".github/workflows/agent-authority-status.yml",
+    "tests/test_legacy_authority_banners.py",
 }
+HISTORICAL_MARKER = re.compile(r"(?i)\b(?:historical|superseded|immutable)\b")
+EXECUTABLE_MARKER = re.compile(
+    r"(?i)\b(?:active|authoritative|authority|canonical|current|execute|"
+    r"implementation|owns|run|select|source of truth|use|follow)\b"
+)
+HISTORICAL_BLOB_URL = re.compile(
+    r"https://github\.com/EffortlessMetrics/perl-lsp-swarm/blob/"
+    r"(?P<commit>[0-9a-f]{40})/(?P<path>[^?#]+)"
+)
 
 
 def unqualified_retired_references(document: str, body: str) -> list[str]:
-    """Return inbound rollout references without an explicit historical marker."""
+    """Return retired-path references that could still direct current work."""
     if document in RETIRED_REFERENCE_METADATA:
         return []
 
     findings: list[str] = []
     for line_number, line in enumerate(body.splitlines(), start=1):
-        if any(path in line for path in RETIRED_ROLLOUT_PATHS) and not re.search(
-            r"(?i)historical|superseded|immutable",
-            line,
-        ):
-            findings.append(f"{document}:{line_number}: {line}")
+        for path in RETIRED_ROLLOUT_PATHS:
+            start = line.find(path)
+            if start < 0:
+                continue
+            context = line
+            if not HISTORICAL_MARKER.search(context) or EXECUTABLE_MARKER.search(
+                context
+            ):
+                findings.append(f"{document}:{line_number}: {line}")
+                break
     return findings
+
+
+def current_source_documents() -> list[tuple[str, str]]:
+    """Read tracked UTF-8 source files, excluding inventory and test fixtures."""
+    listing = subprocess.run(
+        ["git", "ls-files", "-z"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+    )
+    documents: list[tuple[str, str]] = []
+    for raw_path in listing.stdout.split(b"\0"):
+        if not raw_path:
+            continue
+        relative = raw_path.decode("utf-8")
+        if relative in RETIRED_REFERENCE_METADATA:
+            continue
+        path = ROOT / relative
+        if not path.is_file():
+            continue
+        try:
+            body = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            continue
+        if "\x00" not in body:
+            documents.append((relative, body))
+    return documents
 
 
 def registry_rows() -> dict[str, dict[str, Any]]:
@@ -123,12 +163,24 @@ def banner_link_targets(document: str, head: str) -> dict[str, Path]:
     return targets
 
 
-def historical_urls(document: str, head: str) -> list[str]:
-    return [
-        href
-        for _text, href in re.findall(r"\[([^\]]+)\]\(([^)]+)\)", head)
-        if href.startswith("https://github.com/") and f"/blob/{HISTORICAL_COMMIT}/" in href
-    ]
+def historical_links(head: str) -> list[tuple[str, str, str]]:
+    links: list[tuple[str, str, str]] = []
+    for _text, href in re.findall(r"\[([^\]]+)\]\(([^)]+)\)", head):
+        match = HISTORICAL_BLOB_URL.fullmatch(href)
+        if match:
+            links.append((href, match.group("commit"), match.group("path")))
+    return links
+
+
+def historical_blob_sha1(commit: str, path: str) -> str:
+    result = subprocess.run(
+        ["git", "cat-file", "blob", f"{commit}:{path}"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+    )
+    payload = result.stdout
+    return hashlib.sha1(f"blob {len(payload)}\0".encode() + payload).hexdigest()
 
 
 def workflow_event_paths(event: str) -> set[str]:
@@ -165,15 +217,10 @@ def workflow_event_paths(event: str) -> set[str]:
 
 
 class LegacyAuthorityBannerTests(unittest.TestCase):
-    def test_current_docs_do_not_depend_on_retired_rollout_paths(self) -> None:
+    def test_current_sources_do_not_depend_on_retired_rollout_paths(self) -> None:
         findings: list[str] = []
-        for document in (ROOT / "docs").rglob("*.md"):
-            relative = document.relative_to(ROOT).as_posix()
-            findings.extend(
-                unqualified_retired_references(
-                    relative, document.read_text(encoding="utf-8")
-                )
-            )
+        for relative, body in current_source_documents():
+            findings.extend(unqualified_retired_references(relative, body))
 
         self.assertEqual(
             findings,
@@ -199,6 +246,16 @@ class LegacyAuthorityBannerTests(unittest.TestCase):
             ),
             [],
         )
+        for marker in ("historical", "superseded", "immutable"):
+            with self.subTest(marker=marker):
+                line = (
+                    f"Use the {marker} docs/development/RUST_1_95_ROLLOUT.md "
+                    "as the current implementation plan."
+                )
+                self.assertEqual(
+                    unqualified_retired_references("docs/current.md", line),
+                    [f"docs/current.md:1: {line}"],
+                )
 
     def test_local_banners_match_registry(self) -> None:
         by_path = registry_rows()
@@ -315,16 +372,18 @@ class LegacyAuthorityBannerTests(unittest.TestCase):
                 head = "\n".join(
                     (ROOT / path).read_text(encoding="utf-8").splitlines()[:24]
                 )
-                expected_url = (
-                    "https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/"
-                    f"{HISTORICAL_COMMIT}/{path}"
-                )
-
                 self.assertEqual(row["status"], "superseded")
                 self.assertEqual(row["successor"], expected["successor"])
-                self.assertEqual(row["historical_source_commit"], HISTORICAL_COMMIT)
-                self.assertEqual(row["historical_source_blob_sha1"], expected["blob"])
-                self.assertEqual(historical_urls(path, head), [expected_url])
+                links = historical_links(head)
+                self.assertEqual(len(links), 1)
+                href, commit, historical_path = links[0]
+                self.assertEqual(historical_path, path)
+                self.assertEqual(commit, row["historical_source_commit"])
+                self.assertEqual(
+                    row["historical_source_blob_sha1"],
+                    historical_blob_sha1(commit, historical_path),
+                )
+                self.assertIn(f"/blob/{commit}/{path}", href)
                 self.assertIn("stable redirect", head)
                 self.assertIn("non-executable", head)
 
