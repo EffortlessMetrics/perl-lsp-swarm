@@ -29,6 +29,10 @@ pub const INPUT_SCHEMA_VERSION: &str = "standalone_install_transition.v1";
 /// The action that means "nothing is required of the user".
 const NO_ACTION: &str = "no_action_required";
 
+/// Reasons in the packet-consistency family. A packet that contradicts the
+/// input contract must always reach one of these, never a product claim.
+const INVARIANT_PREFIX: &str = "inv_";
+
 const MANIFEST_TOP_LEVEL_KEYS: &[&str] = &[
     "schema_version",
     "registry",
@@ -1092,6 +1096,7 @@ fn validate_totality_and_reachability(root: &Map<String, Value>, violations: &mu
             gaps.join(", ")
         ));
     }
+    validate_invariants_are_never_shadowed(&manifest, violations);
     for (id, hits) in &first_match {
         if *hits == 0 {
             violations.push(format!(
@@ -1102,6 +1107,54 @@ fn validate_totality_and_reachability(root: &Map<String, Value>, violations: &mu
     for (id, hits) in &additional_match {
         if *hits == 0 {
             violations.push(format!("additional reason `{id}` never matches a typed combination"));
+        }
+    }
+}
+
+/// A packet-consistency invariant must never be shadowed by an ordinary reason.
+///
+/// First-match reachability alone proves only that each reason fires *somewhere*.
+/// It cannot see an `inv_` reason whose intended space has been eroded by a
+/// narrower reason placed ahead of it, which would report a self-contradictory
+/// packet as a product success. This asserts the stronger property: for every
+/// combination an invariant claims, the winning reason is itself an invariant.
+fn validate_invariants_are_never_shadowed(manifest: &Value, violations: &mut Vec<String>) {
+    let Some(reasons) = manifest.get("primary_reasons").and_then(Value::as_array) else {
+        return;
+    };
+    let mut reported: BTreeSet<String> = BTreeSet::new();
+    for reason in reasons {
+        let Some(id) = reason.get("reason_id").and_then(Value::as_str) else {
+            continue;
+        };
+        if !id.starts_with(INVARIANT_PREFIX) {
+            continue;
+        }
+        let Some(selector) = reason.get("selector").and_then(Value::as_object) else {
+            continue;
+        };
+        for combination in all_combinations() {
+            if !selector_matches(selector, &combination) {
+                continue;
+            }
+            let winner = primary_reason_for(manifest, &combination)
+                .and_then(|winner| winner.get("reason_id"))
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            if winner.starts_with(INVARIANT_PREFIX) {
+                continue;
+            }
+            if reported.insert(id.to_string()) {
+                violations.push(format!(
+                    "invariant `{id}` is shadowed by `{winner}` for {}/{}/{}/{}/{}/{}: a self-contradictory packet would be reported as a product outcome",
+                    combination.operation,
+                    combination.disposition,
+                    combination.product_units,
+                    combination.cleanup,
+                    combination.process_startup,
+                    combination.path_persistence
+                ));
+            }
         }
     }
 }
