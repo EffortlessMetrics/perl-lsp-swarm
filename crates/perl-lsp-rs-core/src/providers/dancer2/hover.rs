@@ -10,9 +10,7 @@
 
 use super::activation::Dancer2FileActivations;
 use super::facts::CanonicalDancer2FileFacts;
-use perl_semantic_facts::framework_adapters::dancer2::{
-    DANCER2_DSL_CONTRACT_VERSION, Dancer2KeywordState, DslKeywordScope,
-};
+use perl_semantic_facts::framework_adapters::dancer2::{Dancer2KeywordState, DslKeywordScope};
 use perl_semantic_facts::hook::HookNameSelection;
 use perl_semantic_facts::route::{
     RouteEffectivePattern, RouteHandler, RouteMethodSet, RouteNameSelection, RoutePatternKind,
@@ -58,14 +56,15 @@ pub fn hover_projection_at(
         return None;
     }
     let version = exact_version(&activation.facts)?;
+    let dsl_contract_version = activation.facts.dsl_contract_version;
 
     if let Some(hook) = facts.hook_at(offset) {
         return Some(hook_hover(hook, &version));
     }
     if let Some(route) = facts.route_at(offset) {
-        return Some(route_hover(route, facts, &version));
+        return Some(route_hover(route, facts, &version, dsl_contract_version));
     }
-    keyword_hover(&activation.facts, ast, offset, &version, package)
+    keyword_hover(&activation.facts, ast, offset, &version, dsl_contract_version, package)
 }
 
 /// `(package, name)` pairs of subroutine declarations in the AST.
@@ -112,6 +111,7 @@ fn route_hover(
     fact: &RouteFact,
     facts: &CanonicalDancer2FileFacts,
     version: &str,
+    dsl_contract_version: &str,
 ) -> RouteHoverProjection {
     let route = &fact.route;
     let mut lines = Vec::new();
@@ -193,7 +193,7 @@ fn route_hover(
     lines.push(format!(
         "- provenance: canonical framework fact, DSL contract `{}`; generated/framework \
          projection anchored to source — no fictional body",
-        DANCER2_DSL_CONTRACT_VERSION
+        dsl_contract_version
     ));
     let exact = fact.status() == perl_semantic_facts::SemanticFactStatus::Exact;
     if !exact {
@@ -237,6 +237,7 @@ fn keyword_hover(
     ast: &perl_parser_core::Node,
     offset: usize,
     version: &str,
+    dsl_contract_version: &str,
     package: &str,
 ) -> Option<RouteHoverProjection> {
     // Hover on a DSL keyword usage (identifier or call) whose name the
@@ -259,7 +260,7 @@ fn keyword_hover(
     }
     let content = format!(
         "**Dancer2 DSL keyword `{keyword_name}`** (`Dancer2` {version})\n- availability: \
-         {}\n- keyword contract: `{DANCER2_DSL_CONTRACT_VERSION}`\n- provenance: \
+         {}\n- keyword contract: `{dsl_contract_version}`\n- provenance: \
          canonical import fact of this activation (package `{package}`)",
         match facts.keywords.iter().find(|keyword| keyword.keyword == keyword_name)?.scope {
             DslKeywordScope::Global => {
@@ -319,9 +320,13 @@ mod tests {
     }
 
     fn setup(source: &'static str) -> Setup {
+        setup_with_version(source, "1.1.1")
+    }
+
+    fn setup_with_version(source: &'static str, framework_version: &str) -> Setup {
         let mut parser = Parser::new(source);
         let ast = must_with(parser.parse(), "fixture must parse");
-        let module = RuntimeDancer2Module::new("lib/Dancer2.pm", "1.1.1");
+        let module = RuntimeDancer2Module::new("lib/Dancer2.pm", framework_version);
         let activations =
             file_activations(&ast, FileId(1), Some(&module), &SourceGeneration::known("g1"));
         let facts = canonical_file_facts(&ast, FileId(1), &activations);
@@ -413,5 +418,25 @@ mod tests {
             "params keyword",
         );
         assert_eq!(params.scope, DslKeywordScope::RouteHandlerOnly);
+    }
+
+    #[test]
+    fn versioned_keyword_hover_uses_the_activation_contract() {
+        let source = "use Dancer2;\nget '/x' => sub { params; };";
+        let setup = setup_with_version(source, "1.0.0");
+        let offset = must_some_with(source.find("params"), "keyword offset");
+        let projection = must_some_with(
+            hover_projection_at(&setup.activations, &setup.facts, &setup.ast, "main", offset),
+            "keyword hover",
+        );
+        let content = must_some_with(
+            match projection {
+                RouteHoverProjection::Keyword { content } => Some(content),
+                RouteHoverProjection::Route { .. } | RouteHoverProjection::Hook { .. } => None,
+            },
+            "expected keyword hover",
+        );
+        assert!(content.contains("dancer2-dsl.1-0.v3"), "{content}");
+        assert!(!content.contains("dancer2-dsl.1-1.v3"), "{content}");
     }
 }

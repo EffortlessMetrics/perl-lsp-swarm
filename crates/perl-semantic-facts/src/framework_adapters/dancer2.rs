@@ -40,13 +40,18 @@ pub const DANCER2_ADAPTER_ID: AdapterId = AdapterId(0x0044_4E43);
 
 /// Versioned identity of the reviewed default-DSL keyword contract.
 ///
-/// The keyword table and its global/route-handler-only split follow the
-/// Dancer2 1.x `Dancer2::Core::DSL` registration contract; the workspace
-/// skeleton fixture mirrors the keyword list (it is a trimmed fixture and
-/// does not carry every registered keyword). v2 adds the keywords the #8921
-/// route context needs, both registered by the reviewed upstream v1.1.1
-/// contract: `prefix` (global) and `route_parameters` (route-handler-only).
-pub const DANCER2_DSL_CONTRACT_VERSION: &str = "dancer2-dsl.1-1.v2";
+/// The table is the reviewed Dancer2 1.x union: the v1.0.0 registry at
+/// `PerlDancer/Dancer2@ab2a50a478f81b005d0a6f4f1ff2a1f6f9ce1aa5`
+/// is the base, while `uri_for_route` was introduced by
+/// `PerlDancer/Dancer2@1211dbf5e19ffbe46026ddf983c444ce1f5c0b6d`
+/// and shipped in v1.1.0. Facts are filtered against the observed
+/// framework version before publication. v3 also corrects `redirect`
+/// and `cookie` scope, preserves the four upstream-deprecated exports,
+/// and removes route/hook names that the reviewed DSL does not register
+/// as keywords (#13089).
+pub const DANCER2_DSL_CONTRACT_VERSION: &str = "dancer2-dsl.1-1.v3";
+const DANCER2_DSL_1_0_CONTRACT_VERSION: &str = "dancer2-dsl.1-0.v3";
+const DANCER2_URI_FOR_ROUTE_VERSION_CONSTRAINT: &str = ">=1.1.0,<2.0.0";
 
 /// Reviewed versioned-descriptor schema revision for this adapter. Tracks
 /// [`FRAMEWORK_ADAPTER_SCHEMA_VERSION`](crate::framework::FRAMEWORK_ADAPTER_SCHEMA_VERSION):
@@ -81,66 +86,123 @@ const ROUTE: DslKeywordScope = DslKeywordScope::RouteHandlerOnly;
 const fn kw(name: &'static str, scope: DslKeywordScope) -> Dancer2DslKeyword {
     Dancer2DslKeyword { name, scope, deprecated: false }
 }
+const fn deprecated_kw(name: &'static str, scope: DslKeywordScope) -> Dancer2DslKeyword {
+    Dancer2DslKeyword { name, scope, deprecated: true }
+}
 
-/// Reviewed default Dancer2 DSL keyword contract (Dancer2 1.x).
+/// Reviewed default Dancer2 1.x DSL keyword union.
+///
+/// Entries intentionally follow the v1.1.1 upstream `dsl_keywords`
+/// registration order so review can compare the two tables without
+/// reconstructing a second grouping. Per-activation facts filter additions
+/// that were unavailable at the observed framework version. Hook names such
+/// as `before` and `after` are operands to `hook`, not imported DSL keywords.
 pub const DANCER2_DSL_KEYWORDS: &[Dancer2DslKeyword] = &[
-    // HTTP verbs and route construction.
-    kw("get", GLOBAL),
-    kw("post", GLOBAL),
-    kw("put", GLOBAL),
-    kw("del", GLOBAL),
-    kw("options", GLOBAL),
-    kw("patch", GLOBAL),
     kw("any", GLOBAL),
-    kw("route", GLOBAL),
-    // Route path grouping (#8921 prefix facts); global per the reviewed
-    // upstream v1.1.1 registration (`prefix => { is_global => 1 }`).
-    kw("prefix", GLOBAL),
-    // Hooks and dispatch phases.
-    kw("hook", GLOBAL),
-    kw("before", GLOBAL),
-    kw("after", GLOBAL),
-    // Request context (route-handler-only in the reviewed contract).
-    kw("params", ROUTE),
-    kw("body", ROUTE),
-    kw("header", ROUTE),
-    kw("headers", ROUTE),
-    kw("status", ROUTE),
-    kw("request", ROUTE),
-    kw("response", ROUTE),
-    kw("send_file", ROUTE),
-    kw("send_error", ROUTE),
-    kw("halt", ROUTE),
-    kw("session", ROUTE),
-    kw("var", ROUTE),
-    kw("vars", ROUTE),
+    kw("app", GLOBAL),
     kw("captures", ROUTE),
-    kw("splat", ROUTE),
-    // Route-local parameter access (#8921); route-handler-only per the
-    // reviewed upstream v1.1.1 registration (`route_parameters =>
-    // { is_global => 0 }`).
+    kw("config", GLOBAL),
+    kw("content", ROUTE),
+    kw("content_type", ROUTE),
+    deprecated_kw("context", ROUTE),
+    kw("cookie", ROUTE),
+    kw("cookies", ROUTE),
+    kw("dance", GLOBAL),
+    kw("dancer_app", GLOBAL),
+    kw("dancer_version", GLOBAL),
+    kw("dancer_major_version", GLOBAL),
+    kw("debug", GLOBAL),
+    kw("decode_json", GLOBAL),
+    kw("del", GLOBAL),
+    kw("delayed", ROUTE),
+    kw("dirname", GLOBAL),
+    kw("done", ROUTE),
+    kw("dsl", GLOBAL),
+    kw("encode_json", GLOBAL),
+    kw("engine", GLOBAL),
+    kw("error", GLOBAL),
+    kw("false", GLOBAL),
+    kw("flush", ROUTE),
+    kw("forward", ROUTE),
+    kw("from_dumper", GLOBAL),
+    kw("from_json", GLOBAL),
+    kw("from_yaml", GLOBAL),
+    kw("get", GLOBAL),
+    kw("halt", ROUTE),
+    deprecated_kw("header", ROUTE),
+    deprecated_kw("headers", ROUTE),
+    kw("hook", GLOBAL),
+    kw("info", GLOBAL),
+    kw("log", GLOBAL),
+    kw("mime", GLOBAL),
+    kw("options", GLOBAL),
+    kw("param", ROUTE),
+    kw("params", ROUTE),
+    kw("query_parameters", ROUTE),
+    kw("body_parameters", ROUTE),
     kw("route_parameters", ROUTE),
-    // Application-level configuration and utilities.
-    kw("redirect", GLOBAL),
-    kw("cookie", GLOBAL),
-    kw("template", GLOBAL),
+    kw("pass", ROUTE),
+    kw("patch", GLOBAL),
+    kw("path", GLOBAL),
+    kw("post", GLOBAL),
+    kw("prefix", GLOBAL),
+    kw("prepare_app", GLOBAL),
+    kw("psgi_app", GLOBAL),
+    deprecated_kw("push_header", ROUTE),
+    kw("push_response_header", ROUTE),
+    kw("put", GLOBAL),
+    kw("redirect", ROUTE),
+    kw("request", ROUTE),
+    kw("request_data", ROUTE),
+    kw("request_header", ROUTE),
+    kw("response", ROUTE),
+    kw("response_header", ROUTE),
+    kw("response_headers", ROUTE),
+    kw("runner", GLOBAL),
+    kw("send_as", ROUTE),
+    kw("send_error", ROUTE),
+    kw("send_file", ROUTE),
+    kw("session", ROUTE),
     kw("set", GLOBAL),
     kw("setting", GLOBAL),
-    kw("config", GLOBAL),
-    kw("dance", GLOBAL),
+    kw("splat", ROUTE),
     kw("start", GLOBAL),
-    kw("log", GLOBAL),
-    kw("debug", GLOBAL),
-    kw("info", GLOBAL),
-    kw("warning", GLOBAL),
-    kw("error", GLOBAL),
-    kw("from_json", GLOBAL),
+    kw("status", ROUTE),
+    kw("template", GLOBAL),
+    kw("to_app", GLOBAL),
+    kw("to_dumper", GLOBAL),
     kw("to_json", GLOBAL),
-    kw("from_yaml", GLOBAL),
     kw("to_yaml", GLOBAL),
-    kw("encode_json", GLOBAL),
-    kw("decode_json", GLOBAL),
+    kw("true", GLOBAL),
+    kw("upload", ROUTE),
+    kw("uri_for", ROUTE),
+    kw("uri_for_route", ROUTE),
+    kw("var", ROUTE),
+    kw("vars", ROUTE),
+    kw("warning", GLOBAL),
 ];
+
+fn supports_uri_for_route(framework_version: &str) -> bool {
+    matches!(
+        crate::framework::version_constraint_matches(
+            DANCER2_URI_FOR_ROUTE_VERSION_CONSTRAINT,
+            framework_version,
+        ),
+        Some(true)
+    )
+}
+
+fn keyword_is_available_in_version(keyword: &Dancer2DslKeyword, framework_version: &str) -> bool {
+    keyword.name != "uri_for_route" || supports_uri_for_route(framework_version)
+}
+
+fn dsl_contract_version_for(framework_version: &str) -> &'static str {
+    if supports_uri_for_route(framework_version) {
+        DANCER2_DSL_CONTRACT_VERSION
+    } else {
+        DANCER2_DSL_1_0_CONTRACT_VERSION
+    }
+}
 
 /// Build the Dancer2 adapter descriptor.
 ///
@@ -562,20 +624,21 @@ pub fn dancer2_activation_facts(
                 dsl,
                 dsl_contract_version: DANCER2_DSL_CONTRACT_VERSION,
                 keywords: Vec::new(),
-                unknown_exclusions: unknown_exclusions(evidence),
+                unknown_exclusions: unknown_exclusions(evidence, None),
             };
         }
     };
 
+    let dsl_contract_version = dsl_contract_version_for(&framework_version);
     let appname = dancer2_application_identity(package_name, evidence.appname.as_ref());
     let boundary_reason = dynamic_boundary_reason(&appname, &dsl, evidence);
     if let Some(reason) = boundary_reason {
         return Dancer2ActivationFacts {
             state: Dancer2ActivationState::DynamicBoundary { reason },
             dsl,
-            dsl_contract_version: DANCER2_DSL_CONTRACT_VERSION,
+            dsl_contract_version,
             keywords: Vec::new(),
-            unknown_exclusions: unknown_exclusions(evidence),
+            unknown_exclusions: unknown_exclusions(evidence, Some(&framework_version)),
         };
     }
 
@@ -583,8 +646,9 @@ pub fn dancer2_activation_facts(
         AppNameSelection::Literal(name) => name.clone(),
         _ => package_name.map(ToOwned::to_owned).unwrap_or_default(),
     };
+    let keywords = default_keyword_facts(evidence, &framework_version);
+    let unknown_exclusions = unknown_exclusions(evidence, Some(&framework_version));
 
-    let keywords = default_keyword_facts(evidence);
     Dancer2ActivationFacts {
         state: Dancer2ActivationState::Exact {
             application_name,
@@ -592,9 +656,9 @@ pub fn dancer2_activation_facts(
             source_generation,
         },
         dsl,
-        dsl_contract_version: DANCER2_DSL_CONTRACT_VERSION,
+        dsl_contract_version,
         keywords,
-        unknown_exclusions: unknown_exclusions(evidence),
+        unknown_exclusions,
     }
 }
 
@@ -627,9 +691,13 @@ fn dynamic_boundary_reason(
     }
 }
 
-fn default_keyword_facts(evidence: &Dancer2ImportEvidence) -> Vec<Dancer2KeywordImportFact> {
+fn default_keyword_facts(
+    evidence: &Dancer2ImportEvidence,
+    framework_version: &str,
+) -> Vec<Dancer2KeywordImportFact> {
     DANCER2_DSL_KEYWORDS
         .iter()
+        .filter(|keyword| keyword_is_available_in_version(keyword, framework_version))
         .map(|keyword| Dancer2KeywordImportFact {
             keyword: keyword.name.to_string(),
             scope: keyword.scope,
@@ -643,11 +711,29 @@ fn default_keyword_facts(evidence: &Dancer2ImportEvidence) -> Vec<Dancer2Keyword
         .collect()
 }
 
-fn unknown_exclusions(evidence: &Dancer2ImportEvidence) -> Vec<String> {
+fn keyword_is_reviewed_for_version(
+    keyword: &Dancer2DslKeyword,
+    framework_version: Option<&str>,
+) -> bool {
+    match framework_version {
+        Some(version) => keyword_is_available_in_version(keyword, version),
+        None => true,
+    }
+}
+
+fn unknown_exclusions(
+    evidence: &Dancer2ImportEvidence,
+    framework_version: Option<&str>,
+) -> Vec<String> {
     evidence
         .excluded_keywords
         .iter()
-        .filter(|excluded| !DANCER2_DSL_KEYWORDS.iter().any(|keyword| &keyword.name == excluded))
+        .filter(|excluded| {
+            !DANCER2_DSL_KEYWORDS.iter().any(|keyword| {
+                keyword.name == excluded.as_str()
+                    && keyword_is_reviewed_for_version(keyword, framework_version)
+            })
+        })
         .cloned()
         .collect()
 }
@@ -678,28 +764,128 @@ mod tests {
     }
 
     #[test]
-    fn keyword_table_covers_skeleton_vocabulary_with_scope_split() {
-        let names: Vec<_> = DANCER2_DSL_KEYWORDS.iter().map(|keyword| keyword.name).collect();
-        for skeleton_keyword in ["get", "post", "any", "hook", "template", "session", "splat"] {
-            assert!(names.contains(&skeleton_keyword), "missing {skeleton_keyword}");
-        }
+    fn keyword_table_matches_reviewed_v1_1_registration() {
+        let expected: &[(&str, DslKeywordScope, bool)] = &[
+            ("any", GLOBAL, false),
+            ("app", GLOBAL, false),
+            ("captures", ROUTE, false),
+            ("config", GLOBAL, false),
+            ("content", ROUTE, false),
+            ("content_type", ROUTE, false),
+            ("context", ROUTE, true),
+            ("cookie", ROUTE, false),
+            ("cookies", ROUTE, false),
+            ("dance", GLOBAL, false),
+            ("dancer_app", GLOBAL, false),
+            ("dancer_version", GLOBAL, false),
+            ("dancer_major_version", GLOBAL, false),
+            ("debug", GLOBAL, false),
+            ("decode_json", GLOBAL, false),
+            ("del", GLOBAL, false),
+            ("delayed", ROUTE, false),
+            ("dirname", GLOBAL, false),
+            ("done", ROUTE, false),
+            ("dsl", GLOBAL, false),
+            ("encode_json", GLOBAL, false),
+            ("engine", GLOBAL, false),
+            ("error", GLOBAL, false),
+            ("false", GLOBAL, false),
+            ("flush", ROUTE, false),
+            ("forward", ROUTE, false),
+            ("from_dumper", GLOBAL, false),
+            ("from_json", GLOBAL, false),
+            ("from_yaml", GLOBAL, false),
+            ("get", GLOBAL, false),
+            ("halt", ROUTE, false),
+            ("header", ROUTE, true),
+            ("headers", ROUTE, true),
+            ("hook", GLOBAL, false),
+            ("info", GLOBAL, false),
+            ("log", GLOBAL, false),
+            ("mime", GLOBAL, false),
+            ("options", GLOBAL, false),
+            ("param", ROUTE, false),
+            ("params", ROUTE, false),
+            ("query_parameters", ROUTE, false),
+            ("body_parameters", ROUTE, false),
+            ("route_parameters", ROUTE, false),
+            ("pass", ROUTE, false),
+            ("patch", GLOBAL, false),
+            ("path", GLOBAL, false),
+            ("post", GLOBAL, false),
+            ("prefix", GLOBAL, false),
+            ("prepare_app", GLOBAL, false),
+            ("psgi_app", GLOBAL, false),
+            ("push_header", ROUTE, true),
+            ("push_response_header", ROUTE, false),
+            ("put", GLOBAL, false),
+            ("redirect", ROUTE, false),
+            ("request", ROUTE, false),
+            ("request_data", ROUTE, false),
+            ("request_header", ROUTE, false),
+            ("response", ROUTE, false),
+            ("response_header", ROUTE, false),
+            ("response_headers", ROUTE, false),
+            ("runner", GLOBAL, false),
+            ("send_as", ROUTE, false),
+            ("send_error", ROUTE, false),
+            ("send_file", ROUTE, false),
+            ("session", ROUTE, false),
+            ("set", GLOBAL, false),
+            ("setting", GLOBAL, false),
+            ("splat", ROUTE, false),
+            ("start", GLOBAL, false),
+            ("status", ROUTE, false),
+            ("template", GLOBAL, false),
+            ("to_app", GLOBAL, false),
+            ("to_dumper", GLOBAL, false),
+            ("to_json", GLOBAL, false),
+            ("to_yaml", GLOBAL, false),
+            ("true", GLOBAL, false),
+            ("upload", ROUTE, false),
+            ("uri_for", ROUTE, false),
+            ("uri_for_route", ROUTE, false),
+            ("var", ROUTE, false),
+            ("vars", ROUTE, false),
+            ("warning", GLOBAL, false),
+        ];
+        let observed: Vec<_> = DANCER2_DSL_KEYWORDS
+            .iter()
+            .map(|keyword| (keyword.name, keyword.scope, keyword.deprecated))
+            .collect();
+        assert_eq!(observed.as_slice(), expected);
+    }
+
+    #[test]
+    fn reviewed_keyword_exclusion_is_known_and_preserved() {
+        let evidence = parse_dancer2_import_args(&["!uri_for_route".to_string()]);
+        let facts = default_keyword_facts(&evidence, "1.1.1");
+        let uri_for_route = facts
+            .iter()
+            .find(|fact| fact.keyword == "uri_for_route")
+            .expect("reviewed keyword fact");
+        assert_eq!(uri_for_route.state, Dancer2KeywordState::Excluded);
+        assert!(unknown_exclusions(&evidence, Some("1.1.1")).is_empty());
+        assert_eq!(dsl_contract_version_for("1.1.1"), DANCER2_DSL_CONTRACT_VERSION);
+    }
+
+    #[test]
+    fn uri_for_route_is_not_imported_before_v1_1() {
+        let evidence = parse_dancer2_import_args(&["!uri_for_route".to_string()]);
+        let facts = default_keyword_facts(&evidence, "1.0.0");
+        assert_eq!(facts.len(), DANCER2_DSL_KEYWORDS.len() - 1);
         assert!(
-            DANCER2_DSL_KEYWORDS
-                .iter()
-                .any(|keyword| keyword.name == "get" && keyword.scope == DslKeywordScope::Global)
+            facts.iter().all(|fact| fact.keyword != "uri_for_route"),
+            "Dancer2 1.0.x did not register `uri_for_route`"
         );
-        assert!(DANCER2_DSL_KEYWORDS.iter().any(|keyword| keyword.name == "request"
-            && keyword.scope == DslKeywordScope::RouteHandlerOnly));
-        // v2 additions registered by the reviewed upstream v1.1.1 contract.
-        assert!(DANCER2_DSL_KEYWORDS.iter().any(|keyword| keyword.name == "prefix"
-            && keyword.scope == DslKeywordScope::Global));
-        assert!(DANCER2_DSL_KEYWORDS.iter().any(|keyword| keyword.name == "route_parameters"
-            && keyword.scope == DslKeywordScope::RouteHandlerOnly));
-        // Table entries are unique.
-        let mut sorted = names.clone();
-        sorted.sort_unstable();
-        sorted.dedup();
-        assert_eq!(sorted.len(), names.len());
+        assert_eq!(unknown_exclusions(&evidence, Some("1.0.0")), vec!["uri_for_route".to_string()]);
+        assert_eq!(dsl_contract_version_for("1.0.0"), DANCER2_DSL_1_0_CONTRACT_VERSION);
+    }
+
+    #[test]
+    fn non_keyword_hook_name_remains_an_unknown_exclusion() {
+        let evidence = parse_dancer2_import_args(&["!before".to_string()]);
+        assert_eq!(unknown_exclusions(&evidence, Some("1.1.1")), vec!["before".to_string()]);
     }
 
     #[test]

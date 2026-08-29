@@ -16,9 +16,7 @@
 
 use super::activation::Dancer2FileActivations;
 use super::facts::CanonicalDancer2FileFacts;
-use perl_semantic_facts::framework_adapters::dancer2::{
-    DANCER2_DSL_CONTRACT_VERSION, Dancer2KeywordState, DslKeywordScope,
-};
+use perl_semantic_facts::framework_adapters::dancer2::{Dancer2KeywordState, DslKeywordScope};
 
 /// Sort penalty applied to Dancer2 keyword completion items so ordinary
 /// lexical/workspace results rank ahead of framework keywords.
@@ -67,6 +65,7 @@ pub fn keyword_completion_candidates(
         _ => return Vec::new(),
     };
     let inside_handler = facts.inside_handler_context(offset);
+    let dsl_contract_version = activation.facts.dsl_contract_version;
     let mut candidates = Vec::new();
     for keyword in &activation.facts.keywords {
         if keyword.state != Dancer2KeywordState::Imported {
@@ -93,9 +92,9 @@ pub fn keyword_completion_candidates(
                     DslKeywordScope::RouteHandlerOnly => "route handler only",
                     _ => "unknown",
                 },
-                DANCER2_DSL_CONTRACT_VERSION
+                dsl_contract_version
             ),
-            dsl_contract_version: DANCER2_DSL_CONTRACT_VERSION,
+            dsl_contract_version,
         });
     }
     candidates
@@ -117,9 +116,16 @@ mod tests {
     use perl_semantic_facts::{FileId, SourceGeneration};
 
     fn setup(source: &'static str) -> (Dancer2FileActivations, CanonicalDancer2FileFacts) {
+        setup_with_version(source, "1.1.1")
+    }
+
+    fn setup_with_version(
+        source: &'static str,
+        framework_version: &str,
+    ) -> (Dancer2FileActivations, CanonicalDancer2FileFacts) {
         let mut parser = Parser::new(source);
         let ast = parser.parse().expect("fixture must parse");
-        let module = RuntimeDancer2Module::new("lib/Dancer2.pm", "1.1.1");
+        let module = RuntimeDancer2Module::new("lib/Dancer2.pm", framework_version);
         let activations =
             file_activations(&ast, FileId(1), Some(&module), &SourceGeneration::known("g1"));
         let facts = canonical_file_facts(&ast, FileId(1), &activations);
@@ -131,7 +137,7 @@ mod tests {
     }
 
     #[test]
-    fn bare_activation_offers_global_keywords() {
+    fn bare_activation_offers_complete_global_vocabulary_only() {
         let (activations, facts) = setup("use Dancer2;\nget '/x' => sub { 1 };\n");
         // Offset at the `get` route keyword: outside every handler body.
         let keyword_offset = "use Dancer2;\n".len();
@@ -142,18 +148,29 @@ mod tests {
             keyword_offset,
             &none_declared,
         );
-        let labels: Vec<&str> = candidates.iter().map(|c| c.label.as_str()).collect();
-        for expected in ["get", "post", "prefix", "hook", "set", "template"] {
+        let labels: Vec<&str> =
+            candidates.iter().map(|candidate| candidate.label.as_str()).collect();
+        for expected in
+            ["get", "app", "dancer_version", "mime", "prepare_app", "to_app", "template"]
+        {
             assert!(labels.contains(&expected), "missing {expected} in {labels:?}");
         }
-        assert!(
-            labels.iter().all(|label| *label != "params"),
-            "handler-only keyword must not be offered outside a handler: {labels:?}"
-        );
+        for handler_only in ["params", "uri_for", "redirect", "cookie", "content_type"] {
+            assert!(
+                !labels.contains(&handler_only),
+                "handler-only keyword `{handler_only}` offered outside a handler: {labels:?}"
+            );
+        }
+        for non_keyword in ["route", "before", "after", "body"] {
+            assert!(
+                !labels.contains(&non_keyword),
+                "non-keyword `{non_keyword}` offered by the default DSL: {labels:?}"
+            );
+        }
     }
 
     #[test]
-    fn inside_handler_offers_handler_only_keywords() {
+    fn inside_handler_offers_complete_request_context_vocabulary() {
         let source = "use Dancer2;\nget '/x' => sub { params; };\n";
         let (activations, facts) = setup(source);
         let handler_offset = source.find("params").expect("handler body offset");
@@ -164,9 +181,45 @@ mod tests {
             handler_offset,
             &none_declared,
         );
-        let labels: Vec<&str> = candidates.iter().map(|c| c.label.as_str()).collect();
-        assert!(labels.contains(&"params"), "handler-only keyword offered inside handler");
-        assert!(labels.contains(&"splat"), "splat offered inside handler");
+        let labels: Vec<&str> =
+            candidates.iter().map(|candidate| candidate.label.as_str()).collect();
+        for expected in [
+            "params",
+            "body_parameters",
+            "query_parameters",
+            "uri_for_route",
+            "redirect",
+            "cookie",
+            "response_header",
+            "splat",
+        ] {
+            assert!(labels.contains(&expected), "missing {expected} in {labels:?}");
+        }
+    }
+
+    #[test]
+    fn dancer2_1_0_omits_uri_for_route_and_uses_v1_0_contract() {
+        let source = "use Dancer2;
+get '/x' => sub { params; };
+";
+        let (activations, facts) = setup_with_version(source, "1.0.0");
+        let handler_offset = source.find("params").expect("handler body offset");
+        let candidates = keyword_completion_candidates(
+            &activations,
+            &facts,
+            "main",
+            handler_offset,
+            &none_declared,
+        );
+        assert!(
+            candidates.iter().all(|candidate| candidate.label != "uri_for_route"),
+            "Dancer2 1.0.x must not receive a v1.1 keyword"
+        );
+        let uri_for = candidates
+            .iter()
+            .find(|candidate| candidate.label == "uri_for")
+            .expect("v1.0 request helper");
+        assert_eq!(uri_for.dsl_contract_version, "dancer2-dsl.1-0.v3");
     }
 
     #[test]
@@ -174,9 +227,29 @@ mod tests {
         let (activations, facts) = setup("use Dancer2 '!get';\npost '/x' => sub { 1 };\n");
         let candidates =
             keyword_completion_candidates(&activations, &facts, "main", 40, &none_declared);
-        let labels: Vec<&str> = candidates.iter().map(|c| c.label.as_str()).collect();
+        let labels: Vec<&str> =
+            candidates.iter().map(|candidate| candidate.label.as_str()).collect();
         assert!(!labels.contains(&"get"), "excluded `get` offered: {labels:?}");
         assert!(labels.contains(&"post"));
+    }
+
+    #[test]
+    fn excluded_reviewed_handler_keyword_is_never_offered() {
+        let source = "use Dancer2 '!uri_for_route';\nget '/x' => sub { params; };\n";
+        let (activations, facts) = setup(source);
+        let handler_offset = source.find("params").expect("handler body offset");
+        let candidates = keyword_completion_candidates(
+            &activations,
+            &facts,
+            "main",
+            handler_offset,
+            &none_declared,
+        );
+        let labels: Vec<&str> =
+            candidates.iter().map(|candidate| candidate.label.as_str()).collect();
+        assert!(!labels.contains(&"uri_for_route"), "excluded `uri_for_route` offered: {labels:?}");
+        assert!(labels.contains(&"uri_for"), "unrelated request helper remains imported");
+        assert!(labels.contains(&"params"), "unrelated request helper remains imported");
     }
 
     #[test]
@@ -186,11 +259,12 @@ mod tests {
             keyword_completion_candidates(&activations, &facts, "main", 30, &|name: &str| {
                 name == "get"
             });
-        let labels: Vec<&str> = candidates.iter().map(|c| c.label.as_str()).collect();
+        let labels: Vec<&str> =
+            candidates.iter().map(|candidate| candidate.label.as_str()).collect();
         assert!(!labels.contains(&"get"), "local `sub get` owns the name");
         assert!(labels.contains(&"post"));
         assert!(
-            candidates.iter().all(|c| c.rank_penalty >= KEYWORD_RANK_PENALTY),
+            candidates.iter().all(|candidate| candidate.rank_penalty >= KEYWORD_RANK_PENALTY),
             "every keyword carries the ranking penalty"
         );
     }
