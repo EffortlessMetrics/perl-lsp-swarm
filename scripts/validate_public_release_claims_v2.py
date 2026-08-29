@@ -573,6 +573,28 @@ def compare_catalog(artifact: dict[str, Any], inventory: dict[str, Any], manifes
         raise ValidationError(
             f"catalog.schema_version: expected `{SCHEMA_VERSION}`, found `{artifact.get('schema_version')}`"
         )
+    # Generated-provenance root constants (schema consts): an artifact that
+    # mutates any of these is no longer the sanctioned generator's output.
+    for key, expected in (
+        ("status", "generated"),
+        ("generator", "cargo xtask public-release-claims-v2 build --write"),
+        ("issue", 11548),
+    ):
+        if artifact.get(key) != expected:
+            raise ValidationError(
+                f"catalog.{key}: expected `{expected}`, found `{artifact.get(key)}` "
+                "(generated-provenance constant)"
+            )
+
+    # D1: the receipt manifest is bound to the inventory's own drift anchor.
+    # A manifest copied from another release must fail before any
+    # published_receipt_* value is derived from it.
+    if manifest["release"] != inventory["release_anchor"]:
+        raise ValidationError(
+            f"catalog: receipt manifest release `{manifest['release']}` does not match the "
+            f"inventory drift anchor `{inventory['release_anchor']}` "
+            "(D1: receipt facts derive only from the anchored release)"
+        )
 
     source_inventory = artifact.get("source_inventory") or {}
     expected_source = {
@@ -858,6 +880,30 @@ def run_tamper_probes(
     probe("d6:asset:rogue_key", lambda copy: mutate(copy, ["release_receipts", 0, "assets", 0, "rogue"], True))
     probe("digest:inventory_document_swapped",
           lambda copy: mutate(copy, ["input_digests", "inventory_document"], "sha256:" + "0" * 64))
+
+    # Review hardening probes: root provenance constants and the D1 manifest
+    # anchor binding (a copied successor manifest must fail, not silently
+    # rewrite the historical receipt facts).
+    probe("d6:root:status_flipped",
+          lambda copy: mutate(copy, ["status"], "hand_edited"))
+    probe("d6:root:generator_flipped",
+          lambda copy: mutate(copy, ["generator"], "hand-edited"))
+    probe("d6:root:issue_flipped", lambda copy: mutate(copy, ["issue"], 99999))
+    anchor = inventory["release_anchor"]
+
+    def manifest_release_mismatch(copy_manifest: dict[str, Any]) -> None:
+        bad = json.loads(json.dumps(copy_manifest))
+        bad["release"] = "v9.9.9" if anchor != "v9.9.9" else "v0.0.1"
+        compare_catalog(artifact, inventory, bad)
+
+    try:
+        manifest_release_mismatch(manifest)
+    except ValidationError as error:
+        results.append(("d1:manifest_release_mismatch", True, str(error)))
+    else:
+        results.append(("d1:manifest_release_mismatch", False,
+                        "a successor manifest still derived the v0.17.0 receipt facts"))
+        all_caught = False
 
     row_probes = [r for r in results if r[0].startswith("row:")]
     d1_probes = [r for r in results if r[0].startswith("d1:")]
