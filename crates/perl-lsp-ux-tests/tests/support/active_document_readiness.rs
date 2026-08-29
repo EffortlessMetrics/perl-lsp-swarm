@@ -45,10 +45,7 @@ pub(crate) fn ready_generation(event: &LspEvent, uri: &str) -> Option<u64> {
 }
 
 pub(crate) fn ready_generations(events: &[LspEvent], uri: &str) -> Vec<u64> {
-    events
-        .iter()
-        .filter_map(|event| ready_generation(event, uri))
-        .collect()
+    events.iter().filter_map(|event| ready_generation(event, uri)).collect()
 }
 
 pub(crate) fn ready_event_count(harness: &UxHarness, uri: &str) -> usize {
@@ -88,8 +85,7 @@ pub(crate) fn wait_for_generation_after(
     let deadline = Instant::now() + timeout;
     loop {
         let generations = ready_generations(&harness.peek_notifications(), uri);
-        if let Some(observation) =
-            generation_after(&generations, already_seen, expected_generation)
+        if let Some(observation) = generation_after(&generations, already_seen, expected_generation)
         {
             return Ok(observation);
         }
