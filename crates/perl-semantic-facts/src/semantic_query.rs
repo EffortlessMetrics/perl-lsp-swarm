@@ -196,6 +196,50 @@ impl SemanticQueryRequirement {
     }
 }
 
+/// Versioned registry of query-family completeness requirements.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SemanticQueryRequirementRegistry {
+    /// Requirements keyed by their stable query-family names.
+    pub requirements: Vec<SemanticQueryRequirement>,
+}
+
+impl SemanticQueryRequirementRegistry {
+    /// Construct an empty requirement registry.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self { requirements: Vec::new() }
+    }
+
+    /// Add a requirement, rejecting duplicate query-family/schema pairs.
+    pub fn insert(
+        &mut self,
+        requirement: SemanticQueryRequirement,
+    ) -> Result<(), SemanticQueryContractError> {
+        if self.requirements.iter().any(|existing| {
+            existing.query_family == requirement.query_family
+                && existing.schema == requirement.schema
+        }) {
+            return Err(SemanticQueryContractError::DuplicateRequirement);
+        }
+        self.requirements.push(requirement);
+        Ok(())
+    }
+
+    /// Find a requirement by query family and schema identity.
+    #[must_use]
+    pub fn get(&self, query_family: &str, schema: &str) -> Option<&SemanticQueryRequirement> {
+        self.requirements.iter().find(|requirement| {
+            requirement.query_family == query_family && requirement.schema == schema
+        })
+    }
+}
+
+impl Default for SemanticQueryRequirementRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Transport-neutral semantic query result.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -275,6 +319,8 @@ pub enum SemanticQueryContractError {
     IncompleteDenominator,
     /// Exact result was claimed without complete evidence.
     ExactOutcomeLacksEvidence,
+    /// A query-family requirement was registered more than once.
+    DuplicateRequirement,
 }
 
 impl std::fmt::Display for SemanticQueryContractError {
@@ -292,6 +338,7 @@ impl std::fmt::Display for SemanticQueryContractError {
             Self::ExactOutcomeLacksEvidence => {
                 "exact semantic query outcome lacks complete evidence".to_owned()
             }
+            Self::DuplicateRequirement => "semantic query requirement is duplicated".to_owned(),
         };
         formatter.write_str(&message)
     }
@@ -423,6 +470,27 @@ mod tests {
                 evidence: evidence(true)
             }
             .is_exact()
+        );
+        assert!(
+            !SemanticQueryOutcome::<u8>::InstrumentFailure { reason: "probe unavailable".into() }
+                .is_exact()
+        );
+    }
+
+    #[test]
+    fn registry_is_versioned_and_rejects_duplicate_entries() {
+        let requirement = SemanticQueryRequirement::new(
+            "definitions",
+            "semantic-query-v1",
+            vec![SemanticFactFamily::ScopeLocalDeclaration],
+        )
+        .expect("fixture requirement is valid");
+        let mut registry = SemanticQueryRequirementRegistry::new();
+        assert!(registry.insert(requirement.clone()).is_ok());
+        assert!(registry.get("definitions", "semantic-query-v1").is_some());
+        assert_eq!(
+            registry.insert(requirement),
+            Err(SemanticQueryContractError::DuplicateRequirement)
         );
     }
 }
