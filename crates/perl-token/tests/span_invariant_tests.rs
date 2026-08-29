@@ -1,3 +1,4 @@
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 use perl_token::{Token, TokenKind, TokenSpan, TokenSpanError};
 
 #[test]
@@ -31,8 +32,9 @@ fn new_checked_allows_empty_eof_tokens() -> Result<(), Box<dyn std::error::Error
 
 #[test]
 fn new_checked_allows_empty_unknown_tokens() -> Result<(), Box<dyn std::error::Error>> {
-    let tok = Token::new_checked(TokenKind::Unknown, "<synthetic>", 11, 11)?;
+    let tok = Token::new_checked(TokenKind::Unknown, "", 11, 11)?;
     assert_eq!(tok.kind(), TokenKind::Unknown);
+    assert_eq!(&*tok.text, "");
     assert_eq!(tok.start(), 11);
     assert_eq!(tok.end(), 11);
     assert!(tok.is_empty());
@@ -51,8 +53,9 @@ fn eof_at_preserves_position() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn unknown_at_supports_synthetic_empty_spans() -> Result<(), Box<dyn std::error::Error>> {
-    let unknown = Token::unknown_at("<synthetic>", 17, 17)?;
+    let unknown = Token::unknown_at("", 17, 17)?;
     assert_eq!(unknown.kind(), TokenKind::Unknown);
+    assert_eq!(&*unknown.text, "");
     assert_eq!(unknown.start(), 17);
     assert_eq!(unknown.end(), 17);
     assert!(unknown.is_empty());
@@ -129,5 +132,57 @@ fn try_from_span_rejects_empty_identifier() -> Result<(), Box<dyn std::error::Er
         Err(err) => err,
     };
     assert_eq!(err, TokenSpanError::EmptySpanNotAllowed { kind: TokenKind::Identifier, at: 4 });
+    Ok(())
+}
+
+#[test]
+fn new_checked_rejects_text_length_mismatch() -> Result<(), Box<dyn std::error::Error>> {
+    let err = match Token::new_checked(TokenKind::Identifier, "hello", 0, 1) {
+        Ok(_) => return Err("source-inconsistent token must be rejected".into()),
+        Err(err) => err,
+    };
+    assert_eq!(
+        err,
+        TokenSpanError::TextLengthMismatch { text_len: 5, span_len: 1, start: 0, end: 1 }
+    );
+    Ok(())
+}
+
+#[test]
+fn new_checked_rejects_empty_eof_with_payload_text() -> Result<(), Box<dyn std::error::Error>> {
+    let err = match Token::new_checked(TokenKind::Eof, "x", 4, 4) {
+        Ok(_) => return Err("empty EOF must not carry payload text".into()),
+        Err(err) => err,
+    };
+    assert_eq!(
+        err,
+        TokenSpanError::TextLengthMismatch { text_len: 1, span_len: 0, start: 4, end: 4 }
+    );
+    Ok(())
+}
+
+#[test]
+fn unknown_at_rejects_empty_span_with_payload_text() -> Result<(), Box<dyn std::error::Error>> {
+    let err = match Token::unknown_at("<synthetic>", 17, 17) {
+        Ok(_) => return Err("empty Unknown must not carry payload text".into()),
+        Err(err) => err,
+    };
+    assert_eq!(
+        err,
+        TokenSpanError::TextLengthMismatch { text_len: 11, span_len: 0, start: 17, end: 17 }
+    );
+    Ok(())
+}
+
+#[test]
+fn new_checked_rejects_utf8_text_length_mismatch() -> Result<(), Box<dyn std::error::Error>> {
+    let err = match Token::new_checked(TokenKind::Identifier, "é", 0, 1) {
+        Ok(_) => return Err("UTF-8 byte length must equal span width".into()),
+        Err(err) => err,
+    };
+    assert_eq!(
+        err,
+        TokenSpanError::TextLengthMismatch { text_len: 2, span_len: 1, start: 0, end: 1 }
+    );
     Ok(())
 }

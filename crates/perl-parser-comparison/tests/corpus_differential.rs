@@ -30,6 +30,7 @@
 //! ```
 //!
 //! The smoke test (top-level test_corpus only) runs automatically.
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use std::collections::HashMap;
 use std::path::PathBuf;

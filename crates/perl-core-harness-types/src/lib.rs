@@ -2,6 +2,7 @@
 #![cfg_attr(clippy, allow(missing_docs))]
 
 //! Shared receipt contracts for the upstream Perl core harness lane.
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
