@@ -735,6 +735,30 @@ mod tests {
         }
     }
 
+    fn hash_of_hash_shape_fact(outer_slot: &str, inner_slot: &str, package: &str) -> TypeFact {
+        let mut inner_slots = BTreeMap::new();
+        inner_slots.insert(inner_slot.to_string(), object_fact(package, Confidence::High));
+        let inner = TypeFact {
+            ty: PerlType::Hash { key: Box::new(PerlType::Any), value: Box::new(PerlType::Any) },
+            confidence: Confidence::High,
+            evidence: vec![TypeEvidence::Literal],
+            dynamic_boundary: None,
+            shape: Some(ShapeFact::Hash(super::super::type_facts::HashShape::new(
+                inner_slots,
+                None,
+            ))),
+        };
+        let mut slots = BTreeMap::new();
+        slots.insert(outer_slot.to_string(), inner);
+        TypeFact {
+            ty: PerlType::Hash { key: Box::new(PerlType::Any), value: Box::new(PerlType::Any) },
+            confidence: Confidence::High,
+            evidence: vec![TypeEvidence::Literal],
+            dynamic_boundary: None,
+            shape: Some(ShapeFact::Hash(super::super::type_facts::HashShape::new(slots, None))),
+        }
+    }
+
     fn object_field_shape_fact(field: &str, field_package: &str) -> TypeFact {
         let mut fields = BTreeMap::new();
         fields.insert(field.to_string(), object_fact(field_package, Confidence::Medium));
@@ -811,11 +835,68 @@ mod tests {
         let fact = receiver_fact_for("$groups{staff}[0]->render();", "render", &env)?;
 
         // The [0] receiver resolves through the recursive container walk:
-        // $groups env fact -> {staff} slot fact -> [0] element fact.
+        // $groups env fact -> {staff} slot fact -> [0] element fact. The
+        // admission inherits the walked container's hash-slot evidence.
         assert_eq!(fact.kind, ReceiverKind::ArrayIndex);
         assert_eq!(fact.package.as_deref(), Some("My::Group"));
         assert_eq!(fact.confidence, Confidence::High);
         assert_eq!(fact.fallback_state, ReceiverFallbackState::Exact);
+        assert!(fact.evidence.iter().any(|evidence| {
+            matches!(evidence, TypeEvidence::HashSlot { hash, key } if hash == "$groups" && key == "staff")
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn hash_receiver_fact_call_presence_observer() -> Result<(), String> {
+        let mut env = TypeEnvironment::new();
+        env.set_variable_fact(
+            "data".to_string(),
+            hash_of_hash_shape_fact("outer", "inner", "My::Leaf"),
+        );
+
+        let fact = receiver_fact_for("$data{outer}{inner}->render();", "render", &env)?;
+
+        // Observes hash_receiver_fact's admission call: the slot fact was
+        // combined with the walked container fact and the hash-slot access
+        // evidence in one with_access_evidence call.
+        assert_eq!(fact.kind, ReceiverKind::HashSlot);
+        assert_eq!(fact.package.as_deref(), Some("My::Leaf"));
+        assert_eq!(fact.confidence, Confidence::High);
+        assert_eq!(fact.fallback_state, ReceiverFallbackState::Exact);
+        assert!(fact.evidence.iter().any(|evidence| {
+            matches!(evidence, TypeEvidence::HashSlot { hash, key } if hash == "$data" && key == "outer")
+        }));
+        assert!(fact.evidence.iter().any(
+            |evidence| matches!(evidence, TypeEvidence::HashSlot { hash, key } if key == "inner")
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn array_receiver_fact_call_presence_observer() -> Result<(), String> {
+        let mut env = TypeEnvironment::new();
+        env.set_variable_fact(
+            "groups".to_string(),
+            hash_of_array_shape_fact("staff", 0, "My::Group"),
+        );
+
+        let fact = receiver_fact_for("$groups{staff}[0]->render();", "render", &env)?;
+
+        // Observes array_receiver_fact's admission call: the index fact was
+        // combined with the recursively walked container fact and the array
+        // index access evidence in one with_access_evidence call.
+        assert_eq!(fact.kind, ReceiverKind::ArrayIndex);
+        assert_eq!(fact.package.as_deref(), Some("My::Group"));
+        assert_eq!(fact.confidence, Confidence::High);
+        assert_eq!(fact.fallback_state, ReceiverFallbackState::Exact);
+        assert!(fact.evidence.iter().any(|evidence| {
+            matches!(evidence, TypeEvidence::HashSlot { hash, key } if hash == "$groups" && key == "staff")
+        }));
+        assert!(fact
+            .evidence
+            .iter()
+            .any(|evidence| matches!(evidence, TypeEvidence::Heuristic { reason } if reason == "array index receiver")));
         Ok(())
     }
 
@@ -834,6 +915,48 @@ mod tests {
         assert_eq!(fact.package.as_deref(), Some("My::Handle"));
         assert_eq!(fact.confidence, Confidence::High);
         assert_eq!(fact.fallback_state, ReceiverFallbackState::Exact);
+        assert!(fact.evidence.iter().any(|evidence| {
+            matches!(evidence, TypeEvidence::HashRefSlot { base, key } if base.contains("config") && key == "db")
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn nested_hash_of_hash_slot_admits_through_recursive_container_resolution() -> Result<(), String>
+    {
+        let mut env = TypeEnvironment::new();
+        env.set_variable_fact(
+            "data".to_string(),
+            hash_of_hash_shape_fact("outer", "inner", "My::Leaf"),
+        );
+
+        let fact = receiver_fact_for("$data{outer}{inner}->render();", "render", &env)?;
+
+        // The inner {inner} hash-slot admission runs with the container fact
+        // produced by the recursive {outer} walk and inherits its evidence.
+        assert_eq!(fact.kind, ReceiverKind::HashSlot);
+        assert_eq!(fact.package.as_deref(), Some("My::Leaf"));
+        assert_eq!(fact.fallback_state, ReceiverFallbackState::Exact);
+        assert!(fact.evidence.iter().any(|evidence| {
+            matches!(evidence, TypeEvidence::HashSlot { hash, key } if hash == "$data" && key == "outer")
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn method_call_container_discriminates_the_variable_identity_boundary() -> Result<(), String> {
+        let mut env = TypeEnvironment::new();
+        env.set_variable_fact("srv".to_string(), object_fact("My::Server", Confidence::High));
+
+        // The {k} container is a method-call result, not a variable, so the
+        // variable-identity base case returns None and the receiver falls
+        // back without inventing a package.
+        let fact = receiver_fact_for("$srv->fetch->{k}->render();", "render", &env)?;
+
+        assert_eq!(fact.kind, ReceiverKind::HashRefSlot);
+        assert_eq!(fact.package, None);
+        assert_eq!(fact.confidence, Confidence::Low);
+        assert_eq!(fact.fallback_state, ReceiverFallbackState::Fallback);
         Ok(())
     }
 
