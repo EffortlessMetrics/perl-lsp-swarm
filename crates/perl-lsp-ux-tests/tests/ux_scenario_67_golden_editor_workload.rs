@@ -5,10 +5,14 @@
 //! journey without promoting a support tier or turning a fallback into an
 //! exactness claim.
 
+#[path = "support/active_document_readiness.rs"]
+mod active_document_readiness;
+
+use active_document_readiness::{ReadyObservation, ready_event_count, wait_for_generation_after};
 use anyhow::{Context, Result, anyhow, ensure};
 use perl_lsp_ux_tests::{
     ProjectFixtureFile, ScenarioConfig, UxCiTier, UxComponent, UxHarness, binary_available,
-    fixture_content, fixture_scenario_config, load_catalyst_fixture_files,
+    document_symbol_names, fixture_content, fixture_scenario_config, load_catalyst_fixture_files,
     load_dancer2_fixture_files, load_mojolicious_fixture_files, missing_binary_skip,
     open_all_fixture_files, run_ux_scenario,
 };
@@ -23,6 +27,9 @@ use url::Url;
 const SCENARIO_FILE: &str = "ux_scenario_67_golden_editor_workload.rs";
 const MANIFEST: &str = include_str!("../fixtures/golden_editor_workload.json");
 const PLAIN_ACTIVE_FILE: &str = "lib/Plain/App.pm";
+const READY_TIMEOUT: Duration = Duration::from_secs(30);
+const PRE_CLOSE_SYMBOL: &str = "__golden_preclose_symbol";
+const REOPENED_SYMBOL: &str = "__golden_reopened_symbol";
 const PLAIN_SOURCE: &str = r#"package Plain::App;
 use strict;
 use warnings;
@@ -119,6 +126,43 @@ fn unexplained_empty_results_count_against_zero_budget() -> Result<()> {
 fn protocol_crashes_are_preserved_in_the_rollup() -> Result<()> {
     let rollup = build_rollup(&[], &[], 2)?;
     ensure!(rollup.protocol_crash_count == 2);
+    Ok(())
+}
+
+#[test]
+fn lifecycle_error_cannot_be_promoted_to_current() -> Result<()> {
+    let mut row = test_workload_row("error", "readiness timeout");
+    row.readiness_state = "active_document_not_observed".to_owned();
+    let row = apply_lifecycle_receipt(row);
+    ensure!(row.freshness == "not_observed");
+    ensure!(row.proof_class == "baseline_only");
+    ensure!(row.fallback_or_blocker == "readiness timeout");
+    Ok(())
+}
+
+#[test]
+fn edit_burst_receipt_cannot_inherit_current_freshness() -> Result<()> {
+    let mut row = test_workload_row("partial", "not_observed");
+    row.readiness_state =
+        "active_document_pending_during_request;restored_generation=22;restored_readiness_ordinal=4"
+            .to_owned();
+    row.freshness = "current".to_owned();
+    row.proof_class = "provider_receipt".to_owned();
+    let row = apply_edit_burst_receipt_boundary(row);
+    ensure!(row.freshness == "not_proven");
+    ensure!(row.proof_class == "baseline_only");
+    ensure!(row.fallback_or_blocker == "response_decision_correlation_not_proven");
+    Ok(())
+}
+
+#[test]
+fn lifecycle_symbol_matching_is_namespace_component_exact() -> Result<()> {
+    let names = vec![
+        "Golden::Reopened::__golden_reopened_symbol".to_owned(),
+        "not___golden_reopened_symbol".to_owned(),
+    ];
+    ensure!(contains_symbol_name(&names, REOPENED_SYMBOL));
+    ensure!(!contains_symbol_name(&names, "golden_reopened_symbol"));
     Ok(())
 }
 
@@ -283,6 +327,18 @@ struct Rollup {
     p95_latency_ms: Option<f64>,
 }
 
+#[derive(Debug)]
+struct EditBurstObservation {
+    response: Value,
+    readiness_state: String,
+}
+
+#[derive(Debug)]
+struct LifecycleObservation {
+    evidence: Value,
+    readiness_state: String,
+}
+
 #[test]
 fn scenario_67_golden_editor_workload_receipt() {
     run_ux_scenario(
@@ -317,11 +373,25 @@ fn scenario_67_golden_editor_workload_receipt() {
                     open_all_fixture_files(&harness, &files)?;
                 }
                 let active_uri = harness.workspace.uri(&project.active_file);
-                let active_document_ready =
-                    harness.wait_for_active_document_ready(&active_uri, Duration::from_secs(30));
+                let initial_generation = harness
+                    .tracked_document_version(&project.active_file)
+                    .context("active workload file is not tracked after open")?;
+                let initial_readiness = wait_for_generation_after(
+                    &harness,
+                    &active_uri,
+                    u64::try_from(initial_generation)?,
+                    0,
+                    READY_TIMEOUT,
+                )
+                .with_context(|| {
+                    format!(
+                        "after-ready workload project {} did not reach active-document readiness",
+                        project.name
+                    )
+                })?;
                 ensure!(
-                    active_document_ready,
-                    "after-ready workload project {} did not reach active-document readiness",
+                    initial_readiness.generation == u64::try_from(initial_generation)?,
+                    "initial readiness generation drift for {}",
                     project.name
                 );
                 project_receipts.push(ProjectReceipt {
@@ -331,7 +401,7 @@ fn scenario_67_golden_editor_workload_receipt() {
                     file_count: files.len()
                         + usize::from(project.fixture == "inline_plain_modern_oo"),
                     active_file: project.active_file.clone(),
-                    active_document_ready,
+                    active_document_ready: true,
                     runtime: RuntimeReceipt::default(),
                 });
 
@@ -341,7 +411,6 @@ fn scenario_67_golden_editor_workload_receipt() {
                     project,
                     &source,
                     &harness,
-                    active_document_ready,
                     &mut rows,
                 )?;
                 let runtime = wait_for_runtime_receipt(&harness, Duration::from_secs(10))
@@ -595,7 +664,6 @@ fn run_project_workload(
     project: &ProjectSpec,
     source: &str,
     harness: &UxHarness,
-    active_document_ready: bool,
     rows: &mut Vec<WorkloadRow>,
 ) -> Result<()> {
     let completion_cursor = position_after(source, &project.completion_needle)?;
@@ -607,7 +675,7 @@ fn run_project_workload(
         let operation = operation_name(project, journey);
         recorder.mark_request_start(&operation);
         let request_started = Instant::now();
-        let (cursor, response, actual_edits) = match journey.id.as_str() {
+        let (cursor, response, actual_edits, readiness_state) = match journey.id.as_str() {
             "completion_after_ready" => (
                 completion_cursor,
                 capture(harness.completion(
@@ -616,6 +684,7 @@ fn run_project_workload(
                     completion_cursor.character,
                 )),
                 Value::Null,
+                "active_document_ready".to_owned(),
             ),
             "hover_after_ready" => (
                 reference_cursor,
@@ -629,6 +698,7 @@ fn run_project_workload(
                         .map(|value| value.unwrap_or(Value::Null)),
                 ),
                 Value::Null,
+                "active_document_ready".to_owned(),
             ),
             "definition_local_or_imported" => (
                 definition_cursor,
@@ -638,6 +708,7 @@ fn run_project_workload(
                     definition_cursor.character,
                 )),
                 Value::Null,
+                "active_document_ready".to_owned(),
             ),
             "references_lexical" => (
                 reference_cursor,
@@ -648,45 +719,72 @@ fn run_project_workload(
                     true,
                 )),
                 Value::Null,
+                "active_document_ready".to_owned(),
             ),
             "rename_safe_lexical" => {
                 let result = capture(request_rename(harness, &project.active_file, rename_cursor));
                 let edits = result.clone();
-                (rename_cursor, result, edits)
+                (
+                    rename_cursor,
+                    result,
+                    edits,
+                    "active_document_ready".to_owned(),
+                )
             }
             "diagnostics_present_import" => {
                 let diagnostics =
                     harness.wait_for_diagnostics(&project.active_file, Duration::from_secs(5));
-                (CursorReceipt { line: 0, character: 0 }, json!(diagnostics), Value::Null)
+                (
+                    CursorReceipt { line: 0, character: 0 },
+                    json!(diagnostics),
+                    Value::Null,
+                    "active_document_ready".to_owned(),
+                )
             }
             "workspace_symbols_after_ready" => (
                 CursorReceipt { line: 0, character: 0 },
                 capture(harness.workspace_symbols("new")),
                 Value::Null,
+                "active_document_ready".to_owned(),
             ),
-            "edit_burst_completion" => (
-                completion_cursor,
-                run_edit_burst_completion(
+            "edit_burst_completion" => {
+                let observed = run_edit_burst_completion(
                     harness,
                     &project.active_file,
                     source,
                     completion_cursor,
-                )?,
-                Value::Null,
-            ),
-            "edit_burst_hover" => (
-                reference_cursor,
-                run_edit_burst_hover(harness, &project.active_file, source, reference_cursor)?,
-                Value::Null,
-            ),
-            "close_reopen_pending" => {
-                let uri = harness.workspace.uri(&project.active_file);
-                harness
-                    .client
-                    .notify("textDocument/didClose", json!({"textDocument": {"uri": uri}}))?;
-                harness.open_file(&project.active_file, source)?;
-                (CursorReceipt { line: 0, character: 0 }, json!({"reopened": true}), Value::Null)
+                )?;
+                (
+                    completion_cursor,
+                    observed.response,
+                    Value::Null,
+                    observed.readiness_state,
+                )
             }
+            "edit_burst_hover" => {
+                let observed =
+                    run_edit_burst_hover(harness, &project.active_file, source, reference_cursor)?;
+                (
+                    reference_cursor,
+                    observed.response,
+                    Value::Null,
+                    observed.readiness_state,
+                )
+            }
+            "close_reopen_pending" => match run_close_reopen_pending(harness, project, source) {
+                Ok(observed) => (
+                    CursorReceipt { line: 0, character: 0 },
+                    observed.evidence,
+                    Value::Null,
+                    observed.readiness_state,
+                ),
+                Err(error) => (
+                    CursorReceipt { line: 0, character: 0 },
+                    json!({"_golden_error": format!("{error:#}")}),
+                    Value::Null,
+                    "active_document_not_observed".to_owned(),
+                ),
+            },
             other => return Err(anyhow!("unhandled golden workload journey {other}")),
         };
         let request_latency_ms = request_started.elapsed().as_secs_f64() * 1000.0;
@@ -697,7 +795,7 @@ fn run_project_workload(
             cursor,
             response,
             actual_edits,
-            if active_document_ready { "active_document_ready" } else { "active_document_pending" },
+            &readiness_state,
             request_latency_ms,
             harness,
         )?;
@@ -717,7 +815,15 @@ fn run_project_workload(
                 journey.id.as_str(),
                 cursor,
             )?;
-            apply_provider_receipt(row, Ok(provider_receipt))
+            let row = apply_provider_receipt(row, Ok(provider_receipt));
+            if matches!(
+                journey.id.as_str(),
+                "edit_burst_completion" | "edit_burst_hover"
+            ) {
+                apply_edit_burst_receipt_boundary(row)
+            } else {
+                row
+            }
         };
         if row.actual_result_class != "empty" && row.actual_result_class != "error" {
             recorder.mark_first_useful_result(&operation);
@@ -739,16 +845,13 @@ fn run_edit_burst_completion(
     file: &str,
     source: &str,
     cursor: CursorReceipt,
-) -> Result<Value> {
+) -> Result<EditBurstObservation> {
     for edit in 0..20 {
-        harness.change_file_full(file, &format!("{source}\n# golden editor burst {edit}"))?;
+        harness.change_editor_buffer_full(file, &format!("{source}\n# golden editor burst {edit}"))?;
     }
-    // The initial active-document-ready gate is already established. The
-    // burst intentionally measures provider behavior while edits are pending;
-    // it does not claim post-edit workspace readiness.
     let response = capture(harness.completion(file, cursor.line, cursor.character));
-    harness.change_file_full(file, source)?;
-    Ok(response)
+    let readiness_state = restore_after_edit_burst(harness, file, source)?;
+    Ok(EditBurstObservation { response, readiness_state })
 }
 
 fn run_edit_burst_hover(
@@ -756,17 +859,131 @@ fn run_edit_burst_hover(
     file: &str,
     source: &str,
     cursor: CursorReceipt,
-) -> Result<Value> {
+) -> Result<EditBurstObservation> {
     for edit in 0..20 {
-        harness.change_file_full(file, &format!("{source}\n# golden editor burst {edit}"))?;
+        harness.change_editor_buffer_full(file, &format!("{source}\n# golden editor burst {edit}"))?;
     }
     let response = capture(
         harness
             .hover(file, cursor.line, cursor.character)
             .map(|value| value.unwrap_or(Value::Null)),
     );
-    harness.change_file_full(file, source)?;
-    Ok(response)
+    let readiness_state = restore_after_edit_burst(harness, file, source)?;
+    Ok(EditBurstObservation { response, readiness_state })
+}
+
+fn restore_after_edit_burst(harness: &UxHarness, file: &str, source: &str) -> Result<String> {
+    let uri = harness.workspace.uri(file);
+    let ready_cursor = ready_event_count(harness, &uri);
+    let restored_generation = harness.change_editor_buffer_full(file, source)?;
+    let readiness = wait_for_generation_after(
+        harness,
+        &uri,
+        u64::try_from(restored_generation)?,
+        ready_cursor,
+        READY_TIMEOUT,
+    )?;
+    Ok(format!(
+        "active_document_pending_during_request;restored_generation={restored_generation};restored_readiness_ordinal={}",
+        readiness.matching_ordinal
+    ))
+}
+
+fn run_close_reopen_pending(
+    harness: &UxHarness,
+    project: &ProjectSpec,
+    source: &str,
+) -> Result<LifecycleObservation> {
+    let uri = harness.workspace.uri(&project.active_file);
+    let pre_close_source = lifecycle_source("PreClose", &project.name, PRE_CLOSE_SYMBOL);
+    let reopened_source = lifecycle_source("Reopened", &project.name, REOPENED_SYMBOL);
+
+    harness.change_editor_buffer_full(&project.active_file, &pre_close_source)?;
+    let ready_cursor = ready_event_count(harness, &uri);
+    harness.close_file(&project.active_file)?;
+    harness.open_editor_buffer(&project.active_file, &reopened_source)?;
+
+    let readiness =
+        wait_for_generation_after(harness, &uri, 1, ready_cursor, READY_TIMEOUT)?;
+    let symbols = harness.document_symbols(&project.active_file)?;
+    let names = document_symbol_names(&symbols)
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+
+    ensure!(
+        contains_symbol_name(&names, REOPENED_SYMBOL),
+        "post-reopen document symbols did not expose the reopened buffer marker; got {names:?}"
+    );
+    ensure!(
+        !contains_symbol_name(&names, PRE_CLOSE_SYMBOL),
+        "post-reopen document symbols exposed the pre-close buffer marker; got {names:?}"
+    );
+    ensure!(
+        !contains_symbol_name(&names, &project.definition_needle),
+        "post-reopen document symbols still exposed the backing/initial source discriminator `{}`; got {names:?}",
+        project.definition_needle
+    );
+    let disk_source = fs::read_to_string(harness.workspace.path(&project.active_file))?;
+    ensure!(
+        disk_source == source,
+        "close/reopen lifecycle changed the backing-file oracle for {}",
+        project.name
+    );
+
+    let symbol_response = Value::Array(symbols);
+    let provider_result_class = classify_result(&symbol_response, "document_symbols");
+    let evidence = json!({
+        "readiness": {
+            "pre_close_matching_count": ready_cursor,
+            "expected_generation": 1,
+            "observed_generation": readiness.generation,
+            "matching_ordinal": readiness.matching_ordinal
+        },
+        "provider": {
+            "method": "textDocument/documentSymbol",
+            "result_class": provider_result_class,
+            "reopened_symbol": REOPENED_SYMBOL,
+            "reopened_symbol_observed": true,
+            "pre_close_symbol": PRE_CLOSE_SYMBOL,
+            "pre_close_symbol_observed": false,
+            "backing_source_discriminator": project.definition_needle,
+            "backing_source_discriminator_observed": false,
+            "symbol_names": names,
+            "result": symbol_response
+        },
+        "backing_file_unchanged": true
+    });
+
+    Ok(LifecycleObservation {
+        evidence,
+        readiness_state: format!(
+            "active_document_ready;generation={};readiness_ordinal={}",
+            readiness.generation, readiness.matching_ordinal
+        ),
+    })
+}
+
+fn lifecycle_source(phase: &str, project_name: &str, symbol: &str) -> String {
+    let package_component = project_name
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    format!(
+        "package Golden::{phase}::{package_component};\nuse strict;\nuse warnings;\n\nsub {symbol} {{\n    return 1;\n}}\n\n1;\n"
+    )
+}
+
+fn contains_symbol_name(names: &[String], expected: &str) -> bool {
+    names
+        .iter()
+        .any(|name| name == expected || name.rsplit("::").next() == Some(expected))
 }
 
 fn request_rename(harness: &UxHarness, file: &str, cursor: CursorReceipt) -> Result<Value> {
@@ -810,7 +1027,10 @@ fn response_row(
                 }
             },
         );
-    let actual_locations = if matches!(journey.provider.as_str(), "definition" | "references") {
+    let actual_locations = if matches!(
+        journey.provider.as_str(),
+        "definition" | "references" | "lifecycle"
+    ) {
         harness.normalize_response(&response)
     } else {
         Value::Array(Vec::new())
@@ -860,12 +1080,29 @@ fn classify_error(response: &Value) -> String {
 }
 
 fn apply_lifecycle_receipt(mut row: WorkloadRow) -> WorkloadRow {
+    if row.actual_result_class == "error" {
+        row.answering_tier = "not_observed".to_owned();
+        row.fact_producer = "not_observed".to_owned();
+        row.proof_class = "baseline_only".to_owned();
+        row.confidence = "not_observed".to_owned();
+        row.freshness = "not_observed".to_owned();
+        return row;
+    }
     row.answering_tier = "lifecycle".to_owned();
-    row.fact_producer = "transport".to_owned();
+    row.fact_producer = "transport_and_document_symbols".to_owned();
     row.proof_class = "lifecycle".to_owned();
     row.confidence = "not_applicable".to_owned();
     row.freshness = "current".to_owned();
     row.fallback_or_blocker = "lifecycle_evidence".to_owned();
+    row
+}
+
+fn apply_edit_burst_receipt_boundary(mut row: WorkloadRow) -> WorkloadRow {
+    row.freshness = "not_proven".to_owned();
+    row.proof_class = "baseline_only".to_owned();
+    if row.actual_result_class != "error" {
+        row.fallback_or_blocker = "response_decision_correlation_not_proven".to_owned();
+    }
     row
 }
 
