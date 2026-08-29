@@ -517,9 +517,13 @@ mod tests {
 
         let mut frame = format!("Content-Length: {}\r\n\r\n", body.len()).into_bytes();
         frame.extend_from_slice(&body);
+        frame.extend(framed_request(2, "recovered"));
         let mut reader = BufReader::new(Cursor::new(frame));
 
-        assert!(read_message(&mut reader)?.is_none());
+        let request = read_message(&mut reader)?.ok_or_else(|| {
+            io::Error::new(io::ErrorKind::UnexpectedEof, "expected recovery request")
+        })?;
+        assert_eq!(request.method, "recovered");
         Ok(())
     }
 
@@ -737,10 +741,20 @@ mod tests {
 
         let mut payload = format!("Content-Length: {}\r\n\r\n", body.len()).into_bytes();
         payload.extend_from_slice(&body);
+        payload.extend(framed_request(10, "recovered"));
 
         let mut cursor = Cursor::new(payload);
         let mut reader = ContentLengthMessageReader::new();
-        assert!(reader.read_next(&mut cursor)?.is_none());
+        let outcome = reader.read_next_outcome(&mut cursor)?;
+        assert!(matches!(
+            outcome,
+            Some(Err(crate::transport::IncomingMessageError::InvalidUtf8 { .. }))
+        ));
+
+        let request = reader.read_next(&mut cursor)?.ok_or_else(|| {
+            io::Error::new(io::ErrorKind::UnexpectedEof, "expected recovery request")
+        })?;
+        assert_eq!(request.method, "recovered");
         Ok(())
     }
 
