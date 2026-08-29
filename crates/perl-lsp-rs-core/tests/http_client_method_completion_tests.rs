@@ -245,3 +245,32 @@ fn redeclared_our_bindings_share_constructor_evidence() {
         "a redeclared `our` binding aliases the same package variable, so the child write must replace stale constructor evidence: {item_labels:?}"
     );
 }
+
+#[test]
+fn other_package_our_redeclaration_does_not_clear_shared_evidence() {
+    let source = "use HTTP::Tiny;\nour $http = HTTP::Tiny->new;\n{\n    package Other;\n    our $http;\n    $http = Other::Client->new;\n}\n$http->po";
+    let item_labels = labels(&completions_at_end(source));
+
+    assert!(
+        has_label(&item_labels, "post"),
+        "a different package's `our $http` is a distinct variable and must not clear the outer HTTP evidence: {item_labels:?}"
+    );
+}
+
+#[test]
+fn undef_named_method_or_sub_call_does_not_clear_evidence() {
+    let method_call =
+        "use HTTP::Tiny;\nmy $http = HTTP::Tiny->new;\n$cleaner->undef($http);\n$http->po";
+    let method_labels = labels(&completions_at_end(method_call));
+    assert!(
+        has_label(&method_labels, "post"),
+        "`$cleaner->undef($http)` does not change $http; evidence must survive: {method_labels:?}"
+    );
+
+    let sub_call = "use HTTP::Tiny;\nmy $http = HTTP::Tiny->new;\n&undef($http);\n$http->po";
+    let sub_labels = labels(&completions_at_end(sub_call));
+    assert!(
+        has_label(&sub_labels, "post"),
+        "`&undef($http)` is a subroutine call, not the builtin; evidence must survive: {sub_labels:?}"
+    );
+}

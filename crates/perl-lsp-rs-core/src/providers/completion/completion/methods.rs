@@ -347,12 +347,16 @@ fn latest_assignment_for_binding<'a>(
         if occurrence_binding.scope_id != binding.scope_id
             || occurrence_binding.location.start != binding.location.start
         {
-            // Redeclared `our` bindings of the same name alias one package
-            // variable, so a write through the redeclaration replaces the
-            // shared evidence instead of being skipped as unrelated.
-            let redeclared_our_binding = occurrence_binding.declaration.as_deref() == Some("our")
-                && binding.declaration.as_deref() == Some("our");
-            if !redeclared_our_binding {
+            // Redeclared `our` bindings of the same name in the SAME package
+            // alias one package variable, so a write through the redeclaration
+            // replaces the shared evidence instead of being skipped as
+            // unrelated. A different package's `our $name` is a distinct
+            // variable and must keep its own evidence.
+            let redeclared_same_package_our_binding = occurrence_binding.declaration.as_deref()
+                == Some("our")
+                && binding.declaration.as_deref() == Some("our")
+                && occurrence_binding.qualified_name == binding.qualified_name;
+            if !redeclared_same_package_our_binding {
                 continue;
             }
         }
@@ -446,7 +450,14 @@ fn occurrence_is_undef_operand(source: &str, receiver_pos: usize, after_receiver
     let trimmed = source[..receiver_pos].trim_end_matches([' ', '\t']);
     let trimmed = trimmed.strip_suffix('(').unwrap_or(trimmed);
     let word_start = ascii_word_start(trimmed);
-    trimmed.get(word_start..) == Some("undef")
+    if trimmed.get(word_start..) != Some("undef") {
+        return false;
+    }
+    // A word spelled `undef` reached through a method call (`$c->undef`),
+    // subroutine sigil (`&undef`), or qualified name (`Foo::undef`) is a user
+    // sub call, not the built-in clearing operator.
+    let before_word = &trimmed[..word_start];
+    !before_word.ends_with('&') && !before_word.ends_with("->") && !before_word.ends_with("::")
 }
 
 /// Byte index of the first statement-terminating `;` that sits outside quoted
