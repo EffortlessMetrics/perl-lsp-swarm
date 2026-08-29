@@ -469,6 +469,16 @@ fn coverage_workflow_is_manual_or_nightly_only_and_requires_receipts() {
         coverage_risk_pack_contract(&stale_risk_labels, &economics_document).is_err(),
         "risk-pack contract must reject coverage label routing"
     );
+    let stale_risk_description_source = risk_pack_policy.replacen(
+        "description = \"Parser, lexer, token, AST, tree-sitter, corpus, POD, regex, source-position, and parser support changes.\"",
+        "description = \"Coverage runs on PRs.\"",
+        1,
+    );
+    let stale_risk_description: TomlValue = must(toml::from_str(&stale_risk_description_source));
+    assert!(
+        coverage_risk_pack_contract(&stale_risk_description, &economics_document).is_err(),
+        "risk-pack contract must reject positive stale coverage prose"
+    );
     let weak_codecov_target = codecov_config.replacen("target: 95%", "target: 90%", 1);
     let weak_codecov_target: Value = must(serde_yaml_ng::from_str(&weak_codecov_target));
     assert!(
@@ -1087,12 +1097,12 @@ fn toml_target_tables<'a>(
 
 fn ensure_no_positive_stale_route_claim(table: &toml::value::Table, context: &str) -> Result<()> {
     for value in table.values() {
-        ensure_no_stale_route_value(value, context)?;
+        ensure_no_positive_stale_route_value(value, context)?;
     }
     Ok(())
 }
 
-fn ensure_no_stale_route_value(value: &TomlValue, context: &str) -> Result<()> {
+fn ensure_no_positive_stale_route_value(value: &TomlValue, context: &str) -> Result<()> {
     match value {
         TomlValue::String(text) => {
             ensure!(
@@ -1103,13 +1113,13 @@ fn ensure_no_stale_route_value(value: &TomlValue, context: &str) -> Result<()> {
         }
         TomlValue::Array(values) => {
             for value in values {
-                ensure_no_stale_route_value(value, context)?;
+                ensure_no_positive_stale_route_value(value, context)?;
             }
             Ok(())
         }
         TomlValue::Table(values) => {
             for value in values.values() {
-                ensure_no_stale_route_value(value, context)?;
+                ensure_no_positive_stale_route_value(value, context)?;
             }
             Ok(())
         }
@@ -1122,14 +1132,25 @@ fn has_positive_stale_route_claim(text: &str) -> bool {
     if has_negative_route_prose(&normalized) {
         return false;
     }
+    let has_pr_token = normalized
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .any(|token| token == "pr" || token == "prs");
     let has_route_term =
         ["pull request", "merge queue", "merge group", "label", "full ci", "master"]
             .iter()
-            .any(|marker| normalized.contains(marker));
+            .any(|marker| normalized.contains(marker))
+            || (has_pr_token
+                && [
+                    "coverage", "run", "runs", "required", "gate", "gated", "trigger", "on", "for",
+                ]
+                .iter()
+                .any(|marker| normalized.contains(marker)));
     let has_coverage_term = normalized.contains("coverage") || normalized.contains("codecov");
     [
         "pull request coverage",
         "pull requests coverage",
+        "pr coverage",
+        "prs coverage",
         "coverage pull request",
         "coverage runs on pull request",
         "coverage required for pull request",
@@ -1164,7 +1185,14 @@ fn has_negative_route_prose(normalized: &str) -> bool {
         "absent",
         "neither",
         "no pr",
+        "not prs",
+        "no prs",
+        "not a normal pr",
         "no pull request",
+        "coverage proof routed",
+        "outside the pr",
+        "instead of codecov",
+        "schedule/manual only",
     ]
     .iter()
     .any(|marker| normalized.contains(marker))
@@ -1228,6 +1256,10 @@ fn coverage_risk_pack_contract(policy: &TomlValue, lane_policy: &TomlValue) -> R
         let Some(pack) = pack.as_table() else {
             continue;
         };
+        let context = format!("risk pack `{pack_id}`");
+        for value in pack.values() {
+            ensure_no_positive_stale_route_value(value, &context)?;
+        }
         for field in ["lanes", "deep_lanes", "labels"] {
             if let Some(values) = pack.get(field).and_then(TomlValue::as_array) {
                 ensure!(
