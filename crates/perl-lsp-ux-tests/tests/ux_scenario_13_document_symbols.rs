@@ -18,12 +18,17 @@
 //!   snapshot or either prior open-document generation.
 //! - No request may return a JSON-RPC error or crash the server.
 
-use anyhow::{Result, bail};
-use perl_lsp_ux_tests::{
-    LspEvent, ScenarioConfig, UxHarness, binary_available, document_symbol_names,
+#[path = "support/active_document_readiness.rs"]
+mod active_document_readiness;
+
+use active_document_readiness::{
+    notify_close, ready_event_count, wait_for_generation_after,
 };
-use serde_json::{Value, json};
-use std::time::{Duration, Instant};
+use anyhow::Result;
+use perl_lsp_ux_tests::binary_available;
+use perl_lsp_ux_tests::{ScenarioConfig, UxHarness, document_symbol_names};
+use serde_json::Value;
+use std::time::Duration;
 
 /// Source with three named subs and a package declaration — rich symbol table.
 const SYMBOLS_SOURCE: &str = "\
@@ -54,13 +59,11 @@ const SYMBOL_RETRY_DELAY: Duration = Duration::from_millis(200);
 const EXPECTED_SYMBOLS: [&str; 4] = ["Greeter", "new", "greet", "farewell"];
 
 const LIFECYCLE_FILE: &str = "lifecycle.pl";
-const READY_METHOD: &str = "perl-lsp/active-document-ready";
 const DISK_SYMBOL: &str = "disk_symbol";
 const INITIAL_SYMBOL: &str = "initial_symbol";
 const PRE_CLOSE_SYMBOL: &str = "pre_close_symbol";
 const REOPENED_SYMBOL: &str = "reopened_symbol";
 const READY_TIMEOUT: Duration = Duration::from_secs(10);
-const READY_POLL_INTERVAL: Duration = Duration::from_millis(20);
 
 const DISK_SOURCE: &str = r#"use strict;
 use warnings;
@@ -120,58 +123,6 @@ fn document_symbols_with_retry(harness: &UxHarness, path: &str) -> Result<Vec<Va
         }
     }
     Ok(last)
-}
-
-fn ready_generation(event: &LspEvent, uri: &str) -> Option<u64> {
-    let LspEvent::Other { method, params } = event else {
-        return None;
-    };
-    if method != READY_METHOD || params.get("uri").and_then(Value::as_str) != Some(uri) {
-        return None;
-    }
-    params.get("generation").and_then(Value::as_u64)
-}
-
-fn ready_generations(events: &[LspEvent], uri: &str) -> Vec<u64> {
-    events
-        .iter()
-        .filter_map(|event| ready_generation(event, uri))
-        .collect()
-}
-
-fn has_generation_after(
-    generations: &[u64],
-    already_seen: usize,
-    expected_generation: u64,
-) -> bool {
-    generations
-        .get(already_seen..)
-        .is_some_and(|new_generations| new_generations.contains(&expected_generation))
-}
-
-fn wait_for_ready_generation_after(
-    harness: &UxHarness,
-    uri: &str,
-    expected_generation: u64,
-    already_seen: usize,
-    timeout: Duration,
-) -> Result<Vec<u64>> {
-    let deadline = Instant::now() + timeout;
-    loop {
-        let generations = ready_generations(&harness.peek_notifications(), uri);
-        if has_generation_after(&generations, already_seen, expected_generation) {
-            return Ok(generations);
-        }
-        if Instant::now() >= deadline {
-            bail!(
-                "timed out after {}ms waiting for a new {READY_METHOD} event for {uri} with \
-                 generation {expected_generation} after {already_seen} prior matching events; \
-                 observed matching generations: {generations:?}",
-                timeout.as_millis()
-            );
-        }
-        std::thread::sleep(READY_POLL_INTERVAL);
-    }
 }
 
 fn require_lsp_range(value: &Value, context: &str) -> Result<(), String> {
@@ -306,47 +257,19 @@ fn scenario_13_close_reopen_requires_new_generation_and_open_buffer_authority() 
     let uri = harness.workspace.uri(LIFECYCLE_FILE);
 
     harness.client.did_open(&uri, INITIAL_SOURCE)?;
-    let initial_generations =
-        wait_for_ready_generation_after(&harness, &uri, 1, 0, READY_TIMEOUT)?;
-    let initial_ready_count = initial_generations.len();
+    wait_for_generation_after(&harness, &uri, 1, 0, READY_TIMEOUT)?;
+    let initial_ready_count = ready_event_count(&harness, &uri);
 
     harness.client.did_change_full(&uri, 2, PRE_CLOSE_SOURCE)?;
-    let pre_close_generations = wait_for_ready_generation_after(
-        &harness,
-        &uri,
-        2,
-        initial_ready_count,
-        READY_TIMEOUT,
-    )?;
-    let pre_close_ready_count = pre_close_generations.len();
+    wait_for_generation_after(&harness, &uri, 2, initial_ready_count, READY_TIMEOUT)?;
+    let pre_close_ready_count = ready_event_count(&harness, &uri);
 
-    harness.client.notify(
-        "textDocument/didClose",
-        json!({
-            "textDocument": {
-                "uri": uri.clone()
-            }
-        }),
-    )?;
+    notify_close(&harness, LIFECYCLE_FILE)?;
     harness.client.did_open(&uri, REOPENED_SOURCE)?;
-
-    let reopened_generations = wait_for_ready_generation_after(
-        &harness,
-        &uri,
-        1,
-        pre_close_ready_count,
-        READY_TIMEOUT,
-    )?;
+    wait_for_generation_after(&harness, &uri, 1, pre_close_ready_count, READY_TIMEOUT)?;
     assert!(
-        reopened_generations.len() > pre_close_ready_count,
-        "reopen barrier must be backed by post-snapshot readiness evidence: \
-         snapshot={pre_close_ready_count}, observed={reopened_generations:?}"
-    );
-    let post_snapshot_generations = &reopened_generations[pre_close_ready_count..];
-    assert!(
-        post_snapshot_generations.contains(&1),
-        "reopen barrier must observe generation 1 after close/reopen; \
-         post-snapshot generations: {post_snapshot_generations:?}"
+        ready_event_count(&harness, &uri) > pre_close_ready_count,
+        "reopen barrier must be backed by post-snapshot readiness evidence"
     );
 
     let disk_source = std::fs::read_to_string(harness.workspace.path(LIFECYCLE_FILE))?;
@@ -374,9 +297,10 @@ fn scenario_13_close_reopen_requires_new_generation_and_open_buffer_authority() 
 
 #[cfg(test)]
 mod shape_unit_tests {
-    use super::{
-        READY_METHOD, assert_symbol_shapes, has_generation_after, ready_generations,
+    use super::active_document_readiness::{
+        ACTIVE_DOCUMENT_READY_METHOD, has_generation_after, ready_generations,
     };
+    use super::assert_symbol_shapes;
     use perl_lsp_ux_tests::LspEvent;
     use serde_json::json;
 
@@ -457,11 +381,11 @@ mod shape_unit_tests {
         let wanted_uri = "file:///workspace/lifecycle.pl";
         let events = vec![
             LspEvent::Other {
-                method: READY_METHOD.to_string(),
+                method: ACTIVE_DOCUMENT_READY_METHOD.to_string(),
                 params: json!({"uri": wanted_uri, "generation": 1}),
             },
             LspEvent::Other {
-                method: READY_METHOD.to_string(),
+                method: ACTIVE_DOCUMENT_READY_METHOD.to_string(),
                 params: json!({"uri": "file:///workspace/other.pl", "generation": 2}),
             },
             LspEvent::Other {
@@ -469,7 +393,7 @@ mod shape_unit_tests {
                 params: json!({"uri": wanted_uri, "generation": 3}),
             },
             LspEvent::Other {
-                method: READY_METHOD.to_string(),
+                method: ACTIVE_DOCUMENT_READY_METHOD.to_string(),
                 params: json!({"uri": wanted_uri, "generation": "4"}),
             },
         ];
