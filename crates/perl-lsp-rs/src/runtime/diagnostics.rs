@@ -3413,8 +3413,8 @@ mod tests {
     }
 
     #[test]
-    fn folder_mode_clears_retained_single_file_authority()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn folder_mode_clears_retained_single_file_authority() -> Result<(), Box<dyn std::error::Error>>
+    {
         // A registered folder is the per-folder configuration authority: once
         // folder mode begins, a config discovered from a document directory in
         // single-file mode must not leak into a folder that has no
