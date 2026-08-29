@@ -59,11 +59,7 @@ impl LegacyFixtureInput {
     /// Construct one fixture subject from exact source bytes.
     #[must_use]
     pub fn new(fixture_id: String, source_path: String, source_bytes: Vec<u8>) -> Self {
-        Self {
-            fixture_id,
-            source_path,
-            source_bytes,
-        }
+        Self { fixture_id, source_path, source_bytes }
     }
 }
 
@@ -167,8 +163,8 @@ impl LegacyPopulation {
 
     /// Serialize the deterministic summary with one terminal newline.
     pub fn canonical_summary_json(&self) -> Result<String, LegacyPopulationError> {
-        let mut output =
-            serde_json::to_string_pretty(&self.summary()?).map_err(LegacyPopulationError::Serialize)?;
+        let mut output = serde_json::to_string_pretty(&self.summary()?)
+            .map_err(LegacyPopulationError::Serialize)?;
         output.push('\n');
         Ok(output)
     }
@@ -248,7 +244,9 @@ impl fmt::Display for LegacyPopulationError {
                 formatter,
                 "unsupported parser-accuracy manifest schema {observed}; expected {SUPPORTED_MANIFEST_SCHEMA_VERSION}"
             ),
-            Self::EmptyPopulation => write!(formatter, "legacy population must retain at least one fixture"),
+            Self::EmptyPopulation => {
+                write!(formatter, "legacy population must retain at least one fixture")
+            }
             Self::InvalidFixtureId { fixture_id } => {
                 write!(formatter, "invalid parser-accuracy fixture id {fixture_id:?}")
             }
@@ -258,19 +256,11 @@ impl fmt::Display for LegacyPopulationError {
             Self::DuplicateCaseId { case_id } => {
                 write!(formatter, "duplicate legacy population case id {case_id:?}")
             }
-            Self::InvalidSourcePath {
-                fixture_id,
-                source_path,
-                reason,
-            } => write!(
+            Self::InvalidSourcePath { fixture_id, source_path, reason } => write!(
                 formatter,
                 "invalid source path {source_path:?} for fixture {fixture_id:?}: {reason}"
             ),
-            Self::SourceNotUtf8 {
-                fixture_id,
-                source_path,
-                source,
-            } => write!(
+            Self::SourceNotUtf8 { fixture_id, source_path, source } => write!(
                 formatter,
                 "legacy source {source_path:?} for fixture {fixture_id:?} is not UTF-8: {source}"
             ),
@@ -315,15 +305,10 @@ pub fn load_legacy_whitespace_population(
     project_root: &Path,
 ) -> Result<LegacyPopulation, LegacyPopulationError> {
     let manifest_path = project_root.join(DEFAULT_PARSER_ACCURACY_MANIFEST);
-    let manifest_bytes = fs::read(&manifest_path).map_err(|source| LegacyPopulationError::Read {
-        path: manifest_path.clone(),
-        source,
-    })?;
-    let manifest: Manifest =
-        serde_json::from_slice(&manifest_bytes).map_err(|source| LegacyPopulationError::DecodeManifest {
-            path: manifest_path,
-            source,
-        })?;
+    let manifest_bytes = fs::read(&manifest_path)
+        .map_err(|source| LegacyPopulationError::Read { path: manifest_path.clone(), source })?;
+    let manifest: Manifest = serde_json::from_slice(&manifest_bytes)
+        .map_err(|source| LegacyPopulationError::DecodeManifest { path: manifest_path, source })?;
 
     if manifest.schema_version != SUPPORTED_MANIFEST_SCHEMA_VERSION {
         return Err(LegacyPopulationError::UnsupportedManifestSchema {
@@ -337,16 +322,9 @@ pub fn load_legacy_whitespace_population(
         validate_source_path(&fixture.id, &fixture.source_path)?;
 
         let source_path = project_root.join(&fixture.source_path);
-        let source_bytes =
-            fs::read(&source_path).map_err(|source| LegacyPopulationError::Read {
-                path: source_path,
-                source,
-            })?;
-        fixtures.push(LegacyFixtureInput::new(
-            fixture.id,
-            fixture.source_path,
-            source_bytes,
-        ));
+        let source_bytes = fs::read(&source_path)
+            .map_err(|source| LegacyPopulationError::Read { path: source_path, source })?;
+        fixtures.push(LegacyFixtureInput::new(fixture.id, fixture.source_path, source_bytes));
     }
 
     build_legacy_whitespace_population(manifest.schema_version, fixtures)
@@ -382,12 +360,13 @@ pub fn build_legacy_whitespace_population(
             });
         }
 
-        let source =
-            str::from_utf8(&fixture.source_bytes).map_err(|source| LegacyPopulationError::SourceNotUtf8 {
+        let source = str::from_utf8(&fixture.source_bytes).map_err(|source| {
+            LegacyPopulationError::SourceNotUtf8 {
                 fixture_id: fixture.fixture_id.clone(),
                 source_path: fixture.source_path.clone(),
                 source,
-            })?;
+            }
+        })?;
         let applied = legacy_whitespace_case_applies(source);
         let case_id = format!("{LEGACY_WHITESPACE_PROFILE}::{}", fixture.fixture_id);
         if !case_ids.insert(case_id.clone()) {
@@ -416,10 +395,7 @@ pub fn build_legacy_whitespace_population(
 
     rows.sort_by(|left, right| left.case_id.cmp(&right.case_id));
 
-    Ok(LegacyPopulation {
-        manifest_schema_version,
-        rows,
-    })
+    Ok(LegacyPopulation { manifest_schema_version, rows })
 }
 
 fn legacy_whitespace_case_applies(source: &str) -> bool {
@@ -436,17 +412,12 @@ fn legacy_whitespace_case_applies(source: &str) -> bool {
 
 fn validate_fixture_id(fixture_id: &str) -> Result<(), LegacyPopulationError> {
     if fixture_id.is_empty() || fixture_id.chars().any(char::is_control) {
-        return Err(LegacyPopulationError::InvalidFixtureId {
-            fixture_id: fixture_id.to_owned(),
-        });
+        return Err(LegacyPopulationError::InvalidFixtureId { fixture_id: fixture_id.to_owned() });
     }
     Ok(())
 }
 
-fn validate_source_path(
-    fixture_id: &str,
-    source_path: &str,
-) -> Result<(), LegacyPopulationError> {
+fn validate_source_path(fixture_id: &str, source_path: &str) -> Result<(), LegacyPopulationError> {
     let invalid = |reason| LegacyPopulationError::InvalidSourcePath {
         fixture_id: fixture_id.to_owned(),
         source_path: source_path.to_owned(),
