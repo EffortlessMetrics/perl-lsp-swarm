@@ -134,7 +134,7 @@ impl<'a> Parser<'a> {
                     // Check for postfix dereference operators
                     match self.peek_kind() {
                         Some(TokenKind::ArraySigil) => {
-                            // ->@* or ->@[...]
+                            // ->@*, ->@[...], or ->@{...}
                             self.tokens.next()?; // consume @
 
                             if self.peek_kind() == Some(TokenKind::Star) {
@@ -167,6 +167,23 @@ impl<'a> Parser<'a> {
                                         op: "->@[]".to_string(),
                                         left: Box::new(expr),
                                         right: Box::new(index),
+                                    },
+                                    SourceLocation { start, end },
+                                );
+                            } else if self.peek_kind() == Some(TokenKind::LeftBrace) {
+                                // ->@{...} postfix hash slice
+                                self.tokens.next()?; // consume {
+                                let keys = self.parse_hash_subscript_key()?;
+                                self.expect_closing_delimiter(TokenKind::RightBrace)?;
+
+                                let start = expr.location.start;
+                                let end = self.previous_position();
+
+                                record_postfix_layer()?;
+                                expr = Node::new(
+                                    NodeKind::HashSlice {
+                                        target: Box::new(expr),
+                                        keys: Box::new(keys),
                                     },
                                     SourceLocation { start, end },
                                 );
@@ -277,8 +294,8 @@ impl<'a> Parser<'a> {
                             // Check for ->$#* (postfix last-index dereference, Perl 5.20+).
                             // The lexer produces Identifier("$#") for `$#` when no array
                             // name follows, so we handle it here before the method-call path.
-                            if self.tokens.peek().is_ok_and(|t| t.text.as_ref() == "$#") {
-                                if self
+                            if self.tokens.peek().is_ok_and(|t| t.text.as_ref() == "$#")
+                                && self
                                     .tokens
                                     .peek_second()
                                     .is_ok_and(|t| t.kind() == TokenKind::Star)
@@ -297,7 +314,6 @@ impl<'a> Parser<'a> {
                                     );
                                     continue;
                                 }
-                            }
 
                             // Method call
                             let method = self.consume_token()?.text.to_string();
@@ -408,8 +424,8 @@ impl<'a> Parser<'a> {
 
                 Some(TokenKind::LeftBracket) => {
                     // Builtin function identifiers treat [ as anonymous-arrayref argument.
-                    if let NodeKind::Identifier { name } = &expr.kind {
-                        if Self::is_builtin_function(name) || self.looks_like_bare_call(name) {
+                    if let NodeKind::Identifier { name } = &expr.kind
+                        && (Self::is_builtin_function(name) || self.looks_like_bare_call(name)) {
                             let name = name.clone();
                             let start = expr.location.start;
                             let mut args = vec![self.parse_ternary()?];
@@ -430,7 +446,6 @@ impl<'a> Parser<'a> {
                             );
                             continue;
                         }
-                    }
                     // Detect array slices: @arr[...] or @{$aref}[...]
                     let is_array_slice = matches!(&expr.kind, NodeKind::Variable { sigil, .. } if sigil == "@")
                         || matches!(&expr.kind, NodeKind::Unary { op, .. } if op == "@{}");

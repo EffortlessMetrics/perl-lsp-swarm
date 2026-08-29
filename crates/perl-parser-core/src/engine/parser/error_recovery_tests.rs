@@ -363,25 +363,20 @@ fn test_451_ac9_block_level_recovery() {
     assert!(result.is_ok(), "AC9: Block-level parsing should recover");
     let ast = must(result);
 
-    if let NodeKind::Program { statements } = &ast.kind {
-        if let Some(sub_node) = statements.first() {
-            if let NodeKind::Subroutine { body, .. } = &sub_node.kind {
-                if let NodeKind::Block { statements: block_stmts } = &body.kind {
-                    assert_eq!(block_stmts.len(), 4, "AC9: Block should have all statements");
+    if let NodeKind::Program { statements } = &ast.kind
+        && let Some(sub_node) = statements.first()
+        && let NodeKind::Subroutine { body, .. } = &sub_node.kind
+        && let NodeKind::Block { statements: block_stmts } = &body.kind
+    {
+        assert_eq!(block_stmts.len(), 4, "AC9: Block should have all statements");
 
-                    // Phase 2: the bad declarations are VariableDeclaration (not Error).
-                    // The two print statements are ExpressionStatement.
-                    let print_count = block_stmts
-                        .iter()
-                        .filter(|s| matches!(s.kind, NodeKind::ExpressionStatement { .. }))
-                        .count();
-                    assert_eq!(
-                        print_count, 2,
-                        "AC9: Should have 2 valid ExpressionStatement in block"
-                    );
-                }
-            }
-        }
+        // Phase 2: the bad declarations are VariableDeclaration (not Error).
+        // The two print statements are ExpressionStatement.
+        let print_count = block_stmts
+            .iter()
+            .filter(|s| matches!(s.kind, NodeKind::ExpressionStatement { .. }))
+            .count();
+        assert_eq!(print_count, 2, "AC9: Should have 2 valid ExpressionStatement in block");
     }
 
     let errors = parser.errors();

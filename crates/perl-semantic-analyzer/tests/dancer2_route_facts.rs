@@ -1,3 +1,5 @@
+#![deny(clippy::map_err_ignore)]
+// Cohort C1 activation (#12598): all production rows exact-excepted; new findings move the crate back to non-C1.
 //! End-to-end canonical Dancer2 route fact proof (#8918).
 //!
 //! Drives the full #8918 chain — AST route extraction
@@ -274,45 +276,72 @@ fn dancer2_skeleton_corpus_round_trips() -> Result<(), serde_json::Error> {
     Ok(())
 }
 
-// Falsifier 4: the legacy extractor's behavior is untouched — the #8910
-// containment still holds on the live path, and the legacy route synthesis
-// keeps producing route-path Subroutine symbols.
+// Falsifier 4 (#8928 retirement): containment still holds, the admitted
+// forms are retired to canonical facts, and the unadmitted forms keep the
+// legacy path with the recorded boundary.
 #[test]
-fn legacy_extractor_behavior_is_untouched() {
+fn legacy_extractor_retirement_boundary() {
     // Containment: no `use Dancer2`, no legacy route symbol.
-    let unactivated = "package App;\nget '/hello' => sub { 'x' };\n";
+    let unactivated = "package App;
+get '/hello' => sub { 'x' };
+";
     let table = legacy_symbols(unactivated);
     assert!(
         legacy_route_symbol(&table, "/hello").is_none(),
         "bare `get` without `use Dancer2` must not produce a legacy route symbol"
     );
 
-    // Legacy live path still synthesizes the route-path Subroutine symbol.
-    let activated = "package App;\nuse Dancer2;\nget '/hello' => sub { 'x' };\n";
+    // Admitted form: retired — the canonical facts own the route identity.
+    let activated = "package App;
+use Dancer2;
+get '/hello' => sub { 'x' };
+";
     let table = legacy_symbols(activated);
+    assert!(
+        legacy_route_symbol(&table, "/hello").is_none(),
+        "the admitted form must not synthesize a legacy route-path symbol (#8928)"
+    );
+
+    // Unadmitted form (excluded keyword): the legacy path keeps it.
+    let excluded = "package App;
+use Dancer2 '!get';
+get '/hello' => sub { 'x' };
+";
+    let table = legacy_symbols(excluded);
     let symbol = must_some(legacy_route_symbol(&table, "/hello"));
     assert!(symbol.attributes.iter().any(|attr| attr == "http_method=GET"));
+
+    // Unadmitted form (bare `delete`, not a Dancer2 keyword): legacy keeps it.
+    let bare_delete = "package App;
+use Dancer2;
+delete '/x' => sub { 1 };
+";
+    let table = legacy_symbols(bare_delete);
+    let symbol = must_some(legacy_route_symbol(&table, "/x"));
+    assert!(symbol.attributes.iter().any(|attr| attr == "http_method=DELETE"));
 }
 
-// Shadow parity: classify the intended canonical-vs-legacy deltas over the
-// #8918 fixture forms. The legacy extractor is NOT retired here (#8928 gate).
+// Shadow parity (#8918 receipts, post-#8928 retirement): the canonical
+// values are unchanged; the legacy route-path symbols for the admitted
+// forms are retired. Parity over these forms was proven before retirement
+// landed (frozen legacy oracle: `dancer2_provider_cutover_parity.rs`).
 #[test]
 fn shadow_parity_classifies_intended_deltas() {
-    // Exact-equivalent simple literal route.
+    // Exact-equivalent simple literal route: canonical keeps the pattern;
+    // the admitted form is retired from the legacy path.
     let simple = "package App;\nuse Dancer2;\nget '/x' => sub { 1 };\n";
     let facts = canonical_facts(simple, "gen-1");
     let table = legacy_symbols(simple);
     assert_eq!(facts.len(), 1);
-    assert!(legacy_route_symbol(&table, "/x").is_some());
+    assert!(legacy_route_symbol(&table, "/x").is_none(), "admitted form retired (#8928)");
     assert_eq!(facts[0].route.pattern.value.as_deref(), Some("/x"));
 
-    // Intended GET→HEAD enrichment.
-    let symbol = must_some(legacy_route_symbol(&table, "/x"));
-    assert_eq!(symbol.attributes, vec!["http_method=GET".to_string()]);
+    // Intended GET→HEAD enrichment over the retired legacy GET-only value.
     assert!(exact_methods(&facts[0]).contains(&"HEAD".to_string()));
 
-    // Intended named-route correction: legacy names the symbol by the route
-    // NAME and loses the pattern; canonical keeps both distinct.
+    // Intended named-route correction: the retired legacy path named the
+    // symbol by the route NAME and lost the pattern; canonical keeps both
+    // distinct.
     let named = "package App;\nuse Dancer2;\nget 'user_show', '/users/:id', sub { 1 };\n";
     let facts = canonical_facts(named, "gen-1");
     let table = legacy_symbols(named);
@@ -320,22 +349,22 @@ fn shadow_parity_classifies_intended_deltas() {
     assert_eq!(literal_name_value(&facts[0]), "user_show");
     assert_eq!(facts[0].route.pattern.value.as_deref(), Some("/users/:id"));
     assert!(
-        legacy_route_symbol(&table, "user_show").is_some(),
-        "legacy synthesizes the symbol under the name operand"
+        legacy_route_symbol(&table, "user_show").is_none(),
+        "the admitted named form is retired (#8928); canonical keeps name and pattern distinct"
     );
-    assert!(legacy_route_symbol(&table, "/users/:id").is_none(), "legacy loses the actual pattern");
+    assert!(legacy_route_symbol(&table, "/users/:id").is_none());
 
-    // Intended `any` method-set correction.
+    // Intended `any` method-set correction over the retired legacy ANY value.
     let any_route = "package App;\nuse Dancer2;\nany '/multi' => sub { 1 };\n";
     let facts = canonical_facts(any_route, "gen-1");
     let table = legacy_symbols(any_route);
-    let symbol = must_some(legacy_route_symbol(&table, "/multi"));
-    assert!(symbol.attributes.iter().any(|attr| attr == "http_method=ANY"));
+    assert!(legacy_route_symbol(&table, "/multi").is_none(), "admitted `any` is retired (#8928)");
     let methods = exact_methods(&facts[0]);
     assert!(!methods.iter().any(|method| method == "ANY"));
     assert_eq!(methods.len(), 7, "bare any records the reviewed default set");
 
-    // Intended `options` coverage: the legacy verb table lacks `options`.
+    // Intended `options` coverage: the legacy verb table never covered
+    // `options`; canonical does, and the admitted form is retired.
     let options_route = "package App;\nuse Dancer2;\noptions '/x' => sub { 1 };\n";
     let facts = canonical_facts(options_route, "gen-1");
     let table = legacy_symbols(options_route);
@@ -343,7 +372,7 @@ fn shadow_parity_classifies_intended_deltas() {
     assert_eq!(exact_methods(&facts[0]), vec!["OPTIONS".to_string()]);
     assert!(
         legacy_route_symbol(&table, "/x").is_none(),
-        "legacy does not cover the `options` verb"
+        "admitted `options` is retired (#8928); pre-retirement legacy never covered it either"
     );
 
     // Intended bare-`delete` rejection: legacy accepts it, canonical does not.

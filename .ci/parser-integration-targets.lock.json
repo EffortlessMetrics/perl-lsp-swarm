@@ -60,6 +60,10 @@
       "invocation_sha256": "8e9d842d8c175d5356de9abcb262ee2ca637df79ee58a367c2e3ca06b08f1337"
     },
     {
+      "id": "parser.red_black_tree_access_paths",
+      "invocation_sha256": "bda2415c986c80554803c795134977c94e6052d57d6782c5dc4cf217932f2e0d"
+    },
+    {
       "id": "parser.ripr.seam_proof",
       "invocation_sha256": "ec3dc815f097e8edd072678a0ff03eca48908dd1c4e29845d86340481cddc1f7"
     },

@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "stage": "declared_host",
+  "source_sha": "0000000000000000000000000000000000000000",
+  "declared_ide": {
+    "product": "IntelliJ IDEA Community Edition",
+    "build_number": "IC-241.18034.62",
+    "platform": "windows",
+    "arch": "x64",
+    "distribution_root": "${PERLLSP_INTELLIJ_CE_HOME}"
+  },
+  "lsp4ij_plugin": {
+    "id": "com.redhat.devtools.lsp4ij",
+    "version": "0.20.1",
+    "upstream_repository": "redhat-developer/lsp4ij",
+    "pinned_commit": "1f62a3f8d8718db00b3db9189772f3a9172e4fb3",
+    "source": "pinned_release_archive"
+  },
+  "server_binary": {
+    "path": "${CARGO_TARGET_DIR}/release/perllsp.exe",
+    "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "command": ["${CARGO_TARGET_DIR}/release/perllsp.exe", "--stdio"]
+  },
+  "sandbox": {
+    "config_root": "${PERLLSP_LSP4IJ_SANDBOX}/config",
+    "system_root": "${PERLLSP_LSP4IJ_SANDBOX}/system",
+    "plugins_root": "${PERLLSP_LSP4IJ_SANDBOX}/plugins",
+    "log_root": "${PERLLSP_LSP4IJ_SANDBOX}/log"
+  },
+  "fixture_project": {
+    "root": "integrations/lsp4ij/host-journey/host-fixture"
+  }
+}
