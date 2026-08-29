@@ -1,9 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Toolchain guard (#12593): refuse a stale non-rustup cargo before any build work.
-. "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)/lib/cargo-toolchain-guard.sh" && cargo_toolchain_guard
-
 first_commit="d174ec1e9845056b8e1a193001ce88a2ea9eaebe"
 first_parent="470277161c18cd5cfa00e31ea6545e2e7baee461"
 second_commit="0f6a4334eb5a53df54a5ed40103659a63578b6f5"
@@ -34,8 +31,9 @@ git merge --no-edit origin/main
 
 # The merge may have raised the workspace floor: re-run the guard against the
 # merged tree so every later cargo invocation is validated by the toolchain
-# contract actually being built (#12593).
-cargo_toolchain_guard
+# contract actually being built (#12593). Sourcing after the merge validates
+# against the merged tree's own guard contract.
+. "$(dirname -- "${BASH_SOURCE[0]}")/../lib/cargo-toolchain-guard.sh" && cargo_toolchain_guard
 
 git cat-file -e "${first_commit}^{commit}"
 git cat-file -e "${second_commit}^{commit}"
