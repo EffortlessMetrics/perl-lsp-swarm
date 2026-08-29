@@ -36,9 +36,7 @@ fn config_requires_a_ledger_entry() -> Result<()> {
         bail!("unledgered disallowed-fields config should fail");
     };
     assert!(
-        error
-            .to_string()
-            .contains("must contain an active or debt clippy::disallowed_fields row")
+        error.to_string().contains("must contain an active or debt clippy::disallowed_fields row")
     );
     Ok(())
 }
@@ -53,9 +51,9 @@ fn jointly_missing_policy_inputs_fail_closed() -> Result<()> {
         bail!("joint Cargo/ledger/config policy removal must fail closed");
     };
     assert!(
-        error
-            .to_string()
-            .contains("removing or demoting the policy identity together with its Cargo/config hooks")
+        error.to_string().contains(
+            "removing or demoting the policy identity together with its Cargo/config hooks"
+        )
     );
     Ok(())
 }
@@ -71,9 +69,7 @@ fn disallowed_fields_cannot_be_demoted_to_future_planned() -> Result<()> {
         bail!("demoting disallowed_fields out of the active catalog must fail closed");
     };
     assert!(
-        error
-            .to_string()
-            .contains("must contain an active or debt clippy::disallowed_fields row")
+        error.to_string().contains("must contain an active or debt clippy::disallowed_fields row")
     );
     Ok(())
 }
@@ -260,9 +256,30 @@ not-json"#;
     Ok(())
 }
 
+#[test]
+fn blank_json_record_inside_stream_is_rejected() -> Result<()> {
+    let stdout = br#"{"message":{"code":{"code":"clippy::disallowed_fields"}}}
+
+"#;
+
+    let result = contains_disallowed_fields_lint(stdout);
+    if result.is_ok() {
+        bail!("an interior blank JSON record must fail closed");
+    }
+    Ok(())
+}
+
 fn contains_disallowed_fields_lint(stdout: &[u8]) -> Result<bool> {
     let mut found_lint = false;
-    for line in stdout.split(|byte| *byte == b'\n').filter(|line| !line.is_empty()) {
+    let lines = stdout.split(|byte| *byte == b'\n').collect::<Vec<_>>();
+    for (index, line) in lines.iter().enumerate() {
+        if line.is_empty() {
+            let is_single_terminal_newline = index + 1 == lines.len();
+            if is_single_terminal_newline {
+                continue;
+            }
+            bail!("blank JSON record in strict stdout stream");
+        }
         // `--message-format=json` makes stdout a strict machine channel. A
         // non-JSON line is instrument failure and must not be skipped as if it
         // were unrelated compiler chatter; ordinary notices belong on stderr.
@@ -275,25 +292,18 @@ fn contains_disallowed_fields_lint(stdout: &[u8]) -> Result<bool> {
     Ok(found_lint)
 }
 
-fn disallowed_fields_ledger(
-    status: &str,
-    state: Option<ConfigurationState>,
-) -> LintLedger {
+fn disallowed_fields_ledger(status: &str, state: Option<ConfigurationState>) -> LintLedger {
     let mut lint = lint_entry("clippy::disallowed_fields", status);
     lint.configuration_state = state;
     ledger_with(vec![lint])
 }
 
 fn disallowed_fields_config(entries: &str) -> Result<Value> {
-    Ok(toml::from_str(&format!(
-        "msrv = \"1.95\"\ndisallowed-fields = {entries}\n"
-    ))?)
+    Ok(toml::from_str(&format!("msrv = \"1.95\"\ndisallowed-fields = {entries}\n"))?)
 }
 
 fn configured_disallowed_field() -> String {
-    format!(
-        r#"[{{ path = "std::ops::Range::start", reason = "{DISALLOWED_FIELD_REASON}" }}]"#
-    )
+    format!(r#"[{{ path = "std::ops::Range::start", reason = "{DISALLOWED_FIELD_REASON}" }}]"#)
 }
 
 fn bounded_diagnostic(bytes: &[u8]) -> String {
