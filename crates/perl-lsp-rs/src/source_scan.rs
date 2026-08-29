@@ -125,10 +125,26 @@ pub(crate) fn scan_comment_or_string(source: &str, i: usize) -> Option<usize> {
         });
     }
     if rest.starts_with("/*") {
-        return Some(match rest.get(2..).and_then(|tail| tail.find("*/")) {
-            Some(n) => i + 2 + n + 2,
-            None => source.len(),
-        });
+        // Rust block comments nest; skip to the matching outer `*/` so a
+        // panic-family attribute after an inner close stays comment text.
+        let bytes = rest.as_bytes();
+        let mut depth = 0usize;
+        let mut j = 0usize;
+        while j + 1 < bytes.len() {
+            if bytes[j] == b'/' && bytes[j + 1] == b'*' {
+                depth += 1;
+                j += 2;
+            } else if bytes[j] == b'*' && bytes[j + 1] == b'/' {
+                depth = depth.saturating_sub(1);
+                j += 2;
+                if depth == 0 {
+                    return Some(i + j);
+                }
+            } else {
+                j += 1;
+            }
+        }
+        return Some(source.len());
     }
     if let Some(end) = scan_char_literal(source, i) {
         return Some(end);

@@ -133,12 +133,19 @@ fn lib_selector_hides_unit_and_integration_tests() {
     );
 }
 
+/// Whether a manifest declares a live `[[bench]]` table header. Comment and
+/// string mentions do not count: the bench subject must actually exist for
+/// `--all-targets` to include it.
+fn manifest_declares_bench_target(manifest: &str) -> bool {
+    manifest.lines().any(|line| line.split('#').next().unwrap_or("").trim() == "[[bench]]")
+}
+
 #[test]
 fn package_has_bench_and_build_subjects_all_targets_must_include() -> Result<(), String> {
     let root = crate_root();
     let manifest = read_source(&root.join("Cargo.toml"))?;
     assert!(
-        manifest.contains("[[bench]]"),
+        manifest_declares_bench_target(&manifest),
         "perl-lsp-rs must keep a bench target so --all-targets is not --tests"
     );
     assert!(
@@ -329,6 +336,31 @@ const MARKER: &str = "#![allow(clippy::panic)]";
         panic_family_suppressions(source).is_empty(),
         "comment/string markers must not count as live suppressions"
     );
+}
+
+#[test]
+fn nested_block_comment_is_not_a_live_carve_out() {
+    let source = r##"
+/* outer comment /* inner comment #![allow(clippy::panic)] */
+#![allow(clippy::expect_used)] still inside the outer comment */
+fn production() {}
+"##;
+    assert!(
+        panic_family_suppressions(source).is_empty(),
+        "text after an inner block-comment close is still inside the outer \
+         comment and must not count as a live suppression"
+    );
+}
+
+#[test]
+fn bench_target_declaration_requires_live_table_header() {
+    let commented = "# a [[bench]] mention\n[package]\nname = \"x [[bench]] y\"\n";
+    assert!(
+        !manifest_declares_bench_target(commented),
+        "a comment or string mention of [[bench]] must not satisfy bench occupancy"
+    );
+    let declared = "[package]\nname = \"x\"\n\n[[bench]]\nname = \"occupied\"\nharness = false\n";
+    assert!(manifest_declares_bench_target(declared));
 }
 
 #[test]
