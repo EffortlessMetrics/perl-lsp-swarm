@@ -13,11 +13,12 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 #[test]
 fn existing_long_tail_fixture_is_discovered_and_emits_exact_nodekinds() -> TestResult {
     let workspace_root = fs::canonicalize(workspace_root())?;
-    let fixture_path = workspace_root.join("test_corpus/key_value_slice_and_vstring.pl");
+    let corpus_paths = perl_corpus::files::CorpusPaths::try_from_root(&workspace_root)?;
+    let fixture_path =
+        corpus_paths.root_authority().path().join("test_corpus/key_value_slice_and_vstring.pl");
     let source = fs::read_to_string(&fixture_path)?;
-    let corpus_paths = perl_corpus::files::CorpusPaths::from_root(workspace_root);
 
-    if !perl_corpus::files::get_test_files_from(&corpus_paths).contains(&fixture_path) {
+    if !perl_corpus::files::get_test_files_from(corpus_paths.as_paths()).contains(&fixture_path) {
         return Err(
             "the checkout fixture must be part of the explicitly rooted project-corpus population"
                 .into(),
