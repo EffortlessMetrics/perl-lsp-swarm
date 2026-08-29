@@ -6,7 +6,7 @@
 
 use perl_parser_core::Parser;
 use perl_parser_core::hir::{HirFile, lower_ast};
-use perl_parser_core::pir::{PirContext, PirGraph, PirOperation, lower_hir};
+use perl_parser_core::pir::{PirContext, PirEvaluationDemand, PirGraph, PirOperation, lower_hir};
 use perl_tdd_support::must_some;
 
 fn lower(source: &str) -> PirGraph {
@@ -36,6 +36,7 @@ fn if_block_lowers_to_one_branch_node_with_void_context() {
 
     // Context must be Void — the branch statement yields no value at this level.
     assert_eq!(branch.context, PirContext::Void, "Branch node must have Void context");
+    assert_eq!(branch.demand, PirEvaluationDemand::TruthTest);
 
     // Source anchor must be set — we lower from an explicit HIR source range.
     assert!(branch.source_anchor.is_anchored(), "Branch node must preserve a source anchor");
@@ -137,6 +138,8 @@ fn branch_receipt_counts_are_consistent() {
 
     let ctx_total: usize = graph.receipt.context_counts.values().sum();
     assert_eq!(ctx_total, graph.nodes.len(), "context_counts must sum to node count");
+    let demand_total: usize = graph.receipt.demand_counts.values().sum();
+    assert_eq!(demand_total, graph.nodes.len(), "demand_counts must sum to node count");
 
     assert_eq!(graph.receipt.node_count, graph.nodes.len(), "receipt.node_count must match nodes");
     assert_eq!(graph.receipt.edge_count, graph.edges.len(), "receipt.edge_count must match edges");
