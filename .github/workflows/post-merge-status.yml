@@ -3,6 +3,14 @@ name: Post-Merge Status Regeneration
 # Generate status documentation from trusted default-branch source without write
 # authority. A separate minimal job validates one content-addressed payload and
 # proposes the exact five generated files through a reviewable pull request.
+#
+# #12606: runs queue instead of cancelling, so a run can finish generating long
+# after newer commits landed on the default branch. Two guards close that stale
+# window without touching the pinned-event-SHA generation model:
+#   1. the writer refuses to publish unless the payload's source SHA still
+#      equals the live default-branch tip at write time;
+#   2. when a run finds the canonical files already current (changed=false), it
+#      closes any open proposal PR whose embedded source SHA is behind main.
 
 on:
   push:
@@ -13,7 +21,16 @@ on:
 
 concurrency:
   group: post-merge-status-${{ github.ref }}
-  cancel-in-progress: true
+  # #10199: this run is the only automated healer for the generated status
+  # documents and docs/policy/NON_RUST_INVENTORY.md (#11731). With
+  # cancel-in-progress the next merge superseded each in-flight run before its
+  # ~10-minute generate cycle finished, so under merge cadence the healing PR
+  # never opened and main's committed inventory drifted permanently. Every
+  # later branch then failed the strict inventory ratchet in
+  # xtask/tests/file_policy.rs, reding PR Smoke on healthy PRs. Queued runs are
+  # safe: each regenerates from its own pinned event SHA and the writer updates
+  # the same automation branch, so the newest completed run converges.
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -57,7 +74,7 @@ jobs:
           shared-key: post-merge-status-${{ hashFiles('Cargo.lock') }}
 
       - name: Regenerate status subsystem files and roadmap
-        run: cargo run -p xtask -- update-status --write
+        run: cargo run --locked -p xtask -- update-status --write
 
       # Merge-time non-Rust inventory refresh (#11731): any merge that changes
       # tracked file counts drifts docs/policy/NON_RUST_INVENTORY.md, and the
@@ -65,7 +82,7 @@ jobs:
       # unit_routed_full. Regenerating here lands the drift with the same
       # reviewable PR as the status documents instead of on an unlucky branch.
       - name: Regenerate the non-Rust inventory
-        run: cargo run -p xtask -- non-rust inventory --write
+        run: cargo run --locked -p xtask -- non-rust inventory --write
 
       - name: Validate and stage exact generated payload
         id: payload
@@ -98,7 +115,16 @@ jobs:
           # rest, so the abort below is scoped to writes that escape the
           # generator-owned surface entirely (source, workflows, scripts, ...).
           owned_prefixes = ("docs/project/status/",)
-          owned_paths = {"docs/project/ROADMAP.md", "docs/policy/NON_RUST_INVENTORY.md"}
+          # Cargo.lock churns whenever the checked-out manifests and the
+          # committed lock disagree: that refresh is the generator's own
+          # `cargo run` build state, not an escape into the repository surface,
+          # and it never reaches the payload — the artifact below and the
+          # privileged writer stay bounded to the canonical files. (#13355)
+          owned_paths = {
+              "docs/project/ROADMAP.md",
+              "docs/policy/NON_RUST_INVENTORY.md",
+              "Cargo.lock",
+          }
           root = Path.cwd().resolve()
           payload_root = root / "target" / "post-merge-status-payload"
           files_root = payload_root / "files"
@@ -210,6 +236,57 @@ jobs:
       - name: Report current generated state
         if: steps.payload.outputs.changed != 'true'
         run: echo "::notice::Generated status files are already current."
+
+  # #12606: with queued runs (#10199), a stale payload PR lingers when a
+  # later run regenerates at the newest SHA, finds the canonical files
+  # already current, and skips open-pr — the earlier PR is then neither
+  # updated nor invalidated. changed=false means the committed state
+  # matches a fresh deterministic regeneration, so any open
+  # automation/post-merge-status PR is by construction a no-op or a stale
+  # payload: close it as superseded. This also closes the case where main
+  # moved after the stale write landed, which a write-time source_sha
+  # rejection (the alternative interpretation) cannot reach.
+  #
+  # This job is deliberately separate from generate: it holds
+  # pull-requests: write and must never execute repository code or Cargo
+  # dependencies (the workflow treats a compromised generator or build
+  # dependency as untrusted; a persisted gh shim must never see this
+  # token). No checkout, no build — API calls only.
+  close-superseded:
+    name: Close superseded generated status PRs
+    needs: generate
+    if: needs.generate.outputs.changed == 'false'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Close superseded generated status PRs
+        run: |
+          set -euo pipefail
+          # changed=false describes only the tree pinned to this run's event
+          # SHA. An older rerun (or an unlucky concurrency-group ordering)
+          # must not close a PR produced against a newer tree: close only
+          # when this run's SHA is still the default-branch tip. A skip is
+          # safe — the next push re-fires the healer.
+          tip=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_REF_NAME}" --jq .sha)
+          if [ "$tip" != "$GITHUB_SHA" ]; then
+            echo "::notice::run SHA ${GITHUB_SHA} is no longer the default-branch tip (${tip}); skipping closure"
+            exit 0
+          fi
+          # --head matches branch name only, including fork branches; restrict
+          # closure to same-repository PRs so a fork branch that happens to
+          # share the automation branch name is never touched.
+          gh pr list --state open --head automation/post-merge-status \
+            --json number,isCrossRepository \
+            --jq '.[] | select(.isCrossRepository | not) | .number' |
+          while read -r pr; do
+            [ -n "$pr" ] || continue
+            gh pr close "$pr" --comment "Superseded: regeneration at ${GITHUB_SHA} found the canonical generated files already current (changed=false), so this open payload is stale (#12606)."
+          done
 
   open-pr:
     name: Open generated status PR
@@ -374,6 +451,61 @@ jobs:
               raise SystemExit(f"writer staged unexpected paths: {unexpected}")
           PY
 
+      # #12606: while this queued run was generating, newer commits may have
+      # landed on the default branch. Publishing a payload generated from an
+      # older tree would strand a stale proposal PR: the newest run converges,
+      # but a changed=false successor skips open-pr entirely and never revisits
+      # it. Refusing here is fail-safe — the payload artifact from the generate
+      # job remains uploaded as the regeneration receipt, and no automation
+      # branch mutation has happened yet. Equality, not ancestry, is the
+      # discriminator: the pinned event commit stays an ancestor of every later
+      # tip, so a reachability test cannot tell this payload apart from a fresh
+      # one. When equality fails, a newer queued run already owns convergence.
+      - name: Reject payload whose source fell behind the default branch
+        id: freshness
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          EXPECTED_SOURCE_SHA: ${{ github.sha }}
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          import os
+          import subprocess
+          from pathlib import Path
+
+          expected = os.environ["EXPECTED_SOURCE_SHA"]
+          repository = os.environ["REPOSITORY"]
+          default_branch = os.environ["DEFAULT_BRANCH"]
+          completed = subprocess.run(
+              ["gh", "api", f"repos/{repository}/branches/{default_branch}",
+               "--jq", ".commit.sha"],
+              check=True,
+              stdout=subprocess.PIPE,
+              text=True,
+          )
+          tip = completed.stdout.strip()
+          if len(tip) != 40 or any(ch not in "0123456789abcdef" for ch in tip):
+              raise SystemExit("live default-branch tip query returned an invalid object name")
+
+          output_path = Path(os.environ["GITHUB_OUTPUT"])
+          with output_path.open("a", encoding="utf-8") as output:
+              if tip == expected:
+                  output.write("publish=true\n")
+                  print(f"payload source {expected} matches the live default-branch tip; publishing")
+              else:
+                  output.write("publish=false\n")
+                  print(
+                      "::notice::payload source "
+                      f"{expected} no longer matches live default-branch tip {tip}; "
+                      "refusing to publish a stale proposal because a newer queued "
+                      "run owns convergence (#12606)"
+                  )
+          PY
+
       # Established peter-evans/create-pull-request pattern (see
       # post-merge-corpus-ratchet.yml, version-bump.yml). A PR opened by
       # GITHUB_TOKEN raises no pull_request events (GitHub loop prevention),
@@ -384,12 +516,16 @@ jobs:
       # remedy is the baseline this replaces).
       - name: Create generated status PR
         id: create-pr
+        if: steps.freshness.outputs.publish == 'true'
         uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
         with:
           token: ${{ github.token }}
           branch: automation/post-merge-status
           base: ${{ github.event.repository.default_branch }}
-          delete-branch: true
+          # No delete-branch: an open PR that names this generated branch
+          # as its base is a live dependency on it, and deleting the base
+          # auto-closes that child (#12885). Cleanup is a separate admitted
+          # decision via `xtask branch-deletion-admission admit`.
           title: "chore(docs): regenerate post-merge status and inventory (#6012, #11731)"
           commit-message: "chore(docs): regenerate post-merge status and inventory (#6012, #11731)"
           body: |
@@ -401,6 +537,8 @@ jobs:
             verified the source SHA and every path, size, and SHA-256 digest.
 
             Refs #6012. Refs #11731.
+
+            <!-- post-merge-status: source_sha=${{ github.sha }} -->
           add-paths: |
             docs/project/status/lsp.md
             docs/project/status/tests.md
@@ -418,21 +556,143 @@ jobs:
         # workflow_dispatch is the documented GITHUB_TOKEN exception to loop
         # prevention: dispatching each required-check workflow on the branch
         # attaches its check runs to the PR head commit.
-        if: steps.create-pr.outputs.pull-request-number != '0'
+        # The freshness gate is load-bearing here too: a skipped create-pr step
+        # exposes empty outputs, and an empty string is not equal to '0', so the
+        # old condition alone would dispatch CI after a refused publication.
+        if: >-
+          steps.freshness.outputs.publish == 'true' &&
+          steps.create-pr.outputs.pull-request-number != '0'
         env:
           GH_TOKEN: ${{ github.token }}
           BRANCH: automation/post-merge-status
+          BASE_SHA: ${{ github.sha }}
+          GENERATED_HEAD_SHA: ${{ steps.create-pr.outputs.pull-request-head-sha }}
         run: |
+          # ci.yml's workflow_dispatch declares required inputs (since #13019):
+          # the dispatched subject's exact base and head SHAs. Dispatching it
+          # bare fails with HTTP 422 "Required input 'base_sha' not provided",
+          # so the generated PR's required checks never populate (#13355).
+          # base_sha is this run's event SHA — the freshness gate above proved
+          # it equals the live default-branch tip, i.e. the generated PR's
+          # base. head_sha is the automation branch head the create-pr step
+          # just wrote, which is the same commit the --ref below dispatches.
+          # The other three workflows declare no dispatch inputs and stay bare.
           # Keep attempting every required workflow so one transient dispatch
           # failure cannot strand the later required checks. The final status
           # remains failing when any dispatch failed.
           set +e
           failed=0
           for workflow in ci.yml em-ci-routed-rust.yml ripr.yml pr-title-check.yml; do
-            if gh workflow run "$workflow" --ref "$BRANCH"; then
+            if [ "$workflow" = ci.yml ]; then
+              if gh workflow run "$workflow" --ref "$BRANCH" \
+                -f "base_sha=$BASE_SHA" \
+                -f "head_sha=$GENERATED_HEAD_SHA"; then
+                continue
+              fi
+            elif gh workflow run "$workflow" --ref "$BRANCH"; then
               continue
             fi
             echo "::error::Failed to dispatch $workflow"
             failed=1
           done
           exit "$failed"
+
+  supersede-stale:
+    name: Supersede stale generated status PR
+    needs: generate
+    # #12606: when this run's regeneration finds every canonical file already
+    # current (changed=false), any still-open proposal PR can only have been
+    # generated from an older source SHA — a fresh proposal would either carry
+    # this run's drift (changed=true) or have been refreshed on the same
+    # automation branch by the writer. Close such stranded proposals so a
+    # queued stale run cannot leave them open indefinitely.
+    if: needs.generate.outputs.changed == 'false'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Close proposal PRs generated from older sources
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          import json
+          import os
+          import re
+          import subprocess
+
+          repository = os.environ["REPOSITORY"]
+          default_branch = os.environ["DEFAULT_BRANCH"]
+          marker = re.compile(r"post-merge-status: source_sha=([0-9a-f]{40})")
+          visible = re.compile(r"`([0-9a-f]{40})`")
+
+          def gh(*arguments: str) -> str:
+              completed = subprocess.run(
+                  ["gh", *arguments],
+                  check=True,
+                  stdout=subprocess.PIPE,
+                  text=True,
+              )
+              return completed.stdout
+
+          tip = gh(
+              "api", f"repos/{repository}/branches/{default_branch}",
+              "--jq", ".commit.sha",
+          ).strip()
+          if len(tip) != 40 or any(ch not in "0123456789abcdef" for ch in tip):
+              raise SystemExit("live default-branch tip query returned an invalid object name")
+
+          open_proposals = json.loads(
+              gh(
+                  "pr", "list",
+                  "--repo", repository,
+                  "--head", "automation/post-merge-status",
+                  "--state", "open",
+                  "--json", "number,body",
+              )
+          )
+
+          closed = 0
+          for proposal in open_proposals:
+              number = proposal.get("number")
+              body = proposal.get("body") or ""
+              match = marker.search(body) or visible.search(body)
+              if match is None:
+                  # The source SHA is only trusted when our own template wrote
+                  # it; an unparseable body is left for reviewer attention.
+                  print(f"::warning::proposal PR #{number} exposes no source SHA; leaving it untouched")
+                  continue
+              source_sha = match.group(1)
+              if source_sha == tip:
+                  continue
+              comparison = json.loads(gh("api", f"repos/{repository}/compare/{source_sha}...{tip}"))
+              if comparison.get("status") != "ahead" or not comparison.get("ahead_by"):
+                  # Divergent or unrelated history is not provably behind main;
+                  # the strict inventory ratchet already reds such payloads.
+                  print(f"proposal PR #{number} source {source_sha} is not strictly behind {tip}; leaving untouched")
+                  continue
+              gh(
+                  "pr", "close", str(number),
+                  "--repo", repository,
+                  "--comment",
+                  (
+                      f"Superseding this proposal: it was generated from `{source_sha}`, "
+                      f"which is behind the current default-branch tip `{tip}`, and a "
+                      "regeneration run at that tip found every canonical file already "
+                      "current, so no fresh proposal was needed. The next canonical-file "
+                      "drift re-fires the healer. (#12606)"
+                  ),
+              )
+              closed += 1
+              print(f"closed proposal PR #{number} (generated from {source_sha}, behind {tip})")
+
+          print(f"superseded {closed} stale proposal PR(s); default-branch tip {tip}")
+          PY
+

@@ -10,7 +10,7 @@
 //! - cancel signal during step operations
 //! - goto with unknown target id
 //! - restartFrame and terminateThreads unsupported paths
-//! - Variable inspection request during a stepping sequence
+//! - Variable and scope inspection after rejected stepping requests
 //! - Sequence monotonicity across stepping operations
 //!
 //! Run with: cargo test -p perl-dap --test dap_step_through_tests
@@ -340,68 +340,62 @@ fn test_step_in_targets_with_real_perl_function_calls() -> Result<(), Box<dyn st
 }
 
 // ---------------------------------------------------------------------------
-// 4. Variable inspection during a stepping sequence
+// 4. Variable and scope inspection after rejected stepping requests
 // ---------------------------------------------------------------------------
 
 #[test]
 // AC:3535
-fn test_variables_request_during_stepping_sequence() -> Result<(), Box<dyn std::error::Error>> {
-    // After issuing step commands, variable requests must still be serviced.
+fn test_variables_request_after_rejected_stepping_without_session_is_empty()
+-> Result<(), Box<dyn std::error::Error>> {
+    // Without an active session, execution-control requests must not fabricate
+    // stopped-frame authority or inspection data.
     let mut adapter = make_adapter();
 
-    // Step a few times
-    adapter.handle_request(1, "next", Some(json!({"threadId": 1})));
-    adapter.handle_request(2, "stepIn", Some(json!({"threadId": 1})));
-    adapter.handle_request(3, "next", Some(json!({"threadId": 1})));
+    for (request_seq, command) in [(1, "next"), (2, "stepIn"), (3, "next")] {
+        let response = adapter.handle_request(request_seq, command, Some(json!({"threadId": 1})));
+        let body = assert_response(response, command, false)?;
+        if body.is_some() {
+            return Err(format!("rejected {command} must not return a response body").into());
+        }
+    }
 
-    // Now request variables (default scope reference = 11)
+    // A reference with no admitted stopped session returns honest empty data.
     let var_response =
         adapter.handle_request(4, "variables", Some(json!({"variablesReference": 11})));
-
-    match var_response {
-        DapMessage::Response { success, command, body, .. } => {
-            assert!(success, "variables request after stepping should succeed");
-            assert_eq!(command, "variables");
-            let body = body.ok_or("variables response must have a body")?;
-            let vars = body
-                .get("variables")
-                .and_then(|v| v.as_array())
-                .ok_or("variables body must have a variables array")?;
-            // Placeholder variables (@_ and $self) are returned without a session
-            assert!(!vars.is_empty(), "expected placeholder variables");
-        }
-        _ => return Err("Expected Response for variables".into()),
+    let body = assert_response(var_response, "variables", true)?
+        .ok_or("variables response must have a body")?;
+    let vars = body
+        .get("variables")
+        .and_then(|v| v.as_array())
+        .ok_or("variables body must have a variables array")?;
+    if !vars.is_empty() {
+        return Err("variables must be empty without an admitted stopped frame".into());
     }
     Ok(())
 }
 
 #[test]
 // AC:3535
-fn test_scopes_request_during_stepping_sequence() -> Result<(), Box<dyn std::error::Error>> {
-    // Scopes must be available between step operations.
+fn test_scopes_request_after_rejected_next_without_session_is_empty()
+-> Result<(), Box<dyn std::error::Error>> {
+    // Without an active session, a rejected next must not fabricate stopped-frame authority.
     let mut adapter = make_adapter();
 
-    adapter.handle_request(1, "next", Some(json!({"threadId": 1})));
+    let next_response = adapter.handle_request(1, "next", Some(json!({"threadId": 1})));
+    let next_body = assert_response(next_response, "next", false)?;
+    if next_body.is_some() {
+        return Err("rejected next must not return a response body".into());
+    }
 
     let scopes_response = adapter.handle_request(2, "scopes", Some(json!({"frameId": 1})));
-
-    match scopes_response {
-        DapMessage::Response { success, command, body, .. } => {
-            assert!(success, "scopes request after stepping should succeed");
-            assert_eq!(command, "scopes");
-            let body = body.ok_or("scopes response must have a body")?;
-            let scopes = body
-                .get("scopes")
-                .and_then(|v| v.as_array())
-                .ok_or("scopes body must have a scopes array")?;
-            assert!(!scopes.is_empty(), "expected at least one scope");
-            assert_eq!(
-                scopes[0].get("name").and_then(|n| n.as_str()),
-                Some("Locals"),
-                "first scope should be Locals"
-            );
-        }
-        _ => return Err("Expected Response for scopes".into()),
+    let body = assert_response(scopes_response, "scopes", true)?
+        .ok_or("scopes response must have a body")?;
+    let scopes = body
+        .get("scopes")
+        .and_then(|v| v.as_array())
+        .ok_or("scopes body must have a scopes array")?;
+    if !scopes.is_empty() {
+        return Err("scopes must be empty without an admitted stopped frame".into());
     }
     Ok(())
 }

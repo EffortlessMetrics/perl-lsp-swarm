@@ -12,6 +12,10 @@
 
 // Group 1 -- helpers (no inter-provider dependencies)
 pub mod completion_item;
+/// Canonical Dancer2 read-only provider slice (#8928): one selected
+/// authority per request from canonical activation/import/route/context/
+/// hook facts, never a union of canonical and legacy answers.
+pub mod dancer2;
 pub mod provider_decision;
 pub mod semantic_port;
 pub mod semantic_port_adapters;

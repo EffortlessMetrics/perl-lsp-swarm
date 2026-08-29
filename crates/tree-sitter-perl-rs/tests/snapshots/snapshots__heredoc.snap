@@ -2,4 +2,4 @@
 source: crates/tree-sitter-perl-rs/tests/snapshots.rs
 expression: sexp
 ---
-(source_file (my_declaration (variable $ text)(heredoc_interpolated "END" "hello world")))
+(source_file (statements (my_declaration (declarator my) (variable (variable (sigil $) (name text))) (initializer (heredoc_interpolated (delimiter END) (content "hello world") (interpolated true))))))

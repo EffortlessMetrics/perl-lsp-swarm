@@ -39,7 +39,7 @@ fn wave2b_push_fat_arrow() -> Result<(), Box<dyn std::error::Error>> {
     let ast = parser.parse()?;
     let sexp = ast.to_sexp();
     assert!(!sexp.contains("ERROR"), "push @array => $value should parse cleanly, got: {sexp}");
-    assert!(sexp.contains("call push"), "should be a function call");
+    assert!(sexp.contains("(call (name push)"), "should be a function call");
     Ok(())
 }
 
@@ -70,7 +70,7 @@ fn wave2b_push_comma_regression() -> Result<(), Box<dyn std::error::Error>> {
     let ast = parser.parse()?;
     let sexp = ast.to_sexp();
     assert!(!sexp.contains("ERROR"), "push @array, $value should still work, got: {sexp}");
-    assert!(sexp.contains("call push"), "should be a function call");
+    assert!(sexp.contains("(call (name push)"), "should be a function call");
     Ok(())
 }
 
@@ -99,7 +99,7 @@ fn wave2b_unshift_fat_arrow() -> Result<(), Box<dyn std::error::Error>> {
     let ast = parser.parse()?;
     let sexp = ast.to_sexp();
     assert!(!sexp.contains("ERROR"), "unshift @arr => $val should parse cleanly, got: {sexp}");
-    assert!(sexp.contains("call unshift"), "should be a function call");
+    assert!(sexp.contains("(call (name unshift)"), "should be a function call");
     Ok(())
 }
 
@@ -116,7 +116,7 @@ fn wave2b_splice_mixed_comma_fat_arrow() -> Result<(), Box<dyn std::error::Error
     );
     // splice uses the generic builtin path; the sexp uses ambiguous_function_call_expression
     assert!(
-        sexp.contains("function_call_expression") || sexp.contains("call splice"),
+        sexp.contains("function_call_expression") || sexp.contains("(call (name splice)"),
         "should be a function call, got: {sexp}"
     );
     Ok(())
@@ -178,7 +178,7 @@ fn wave2b_bless_hash_literal_fat_arrow() -> Result<(), Box<dyn std::error::Error
     let ast = parser.parse()?;
     let sexp = ast.to_sexp();
     assert!(!sexp.contains("ERROR"), "bless {{}} => $class should parse cleanly, got: {sexp}");
-    assert!(sexp.contains("call bless"), "should be a bless call, got: {sexp}");
+    assert!(sexp.contains("(call (name bless)"), "should be a bless call, got: {sexp}");
     Ok(())
 }
 
@@ -212,7 +212,7 @@ fn wave2b_unshift_fat_arrow_multiple() -> Result<(), Box<dyn std::error::Error>>
     let ast = parser.parse()?;
     let sexp = ast.to_sexp();
     assert!(!sexp.contains("ERROR"), "unshift @arr => 1, 2, 3 should parse cleanly, got: {sexp}");
-    assert!(sexp.contains("call unshift"), "should be an unshift call, got: {sexp}");
+    assert!(sexp.contains("(call (name unshift)"), "should be an unshift call, got: {sexp}");
     Ok(())
 }
 

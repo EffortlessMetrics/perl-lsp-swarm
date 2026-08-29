@@ -424,11 +424,11 @@ fn test_set_variable_response_value_reflects_new_value() -> TestResult {
     );
 
     // The response type field must also be present when available.
-    if let DapMessage::Response { body: Some(body), .. } = &response {
-        if let Some(t) = body.get("type").and_then(Value::as_str) {
-            // DAP spec: `type` is optional but should not be empty if present.
-            assert!(!t.is_empty(), "setVariable response `type` field must not be empty");
-        }
+    if let DapMessage::Response { body: Some(body), .. } = &response
+        && let Some(t) = body.get("type").and_then(Value::as_str)
+    {
+        // DAP spec: `type` is optional but should not be empty if present.
+        assert!(!t.is_empty(), "setVariable response `type` field must not be empty");
     }
 
     session.disconnect()?;

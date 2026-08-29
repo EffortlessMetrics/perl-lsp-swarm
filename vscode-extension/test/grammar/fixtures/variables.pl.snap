@@ -27,8 +27,7 @@
 #        ^ source.perl
 #         ^ source.perl keyword.operator.assignment.perl
 #          ^^^^^^ source.perl
-#                ^ source.perl keyword.operator.assignment.perl
-#                 ^ source.perl keyword.operator.comparison.perl
+#                ^^ source.perl keyword.operator.fat-comma.perl
 #                  ^ source.perl
 #                   ^ source.perl string.quoted.single.perl
 #                    ^^^^^ source.perl string.quoted.single.perl
@@ -94,11 +93,8 @@
 #           ^ source.perl
 #            ^^^^ source.perl variable.other.scalar.perl
 #                ^ source.perl
-#                 ^ source.perl keyword.operator.arithmetic.perl
-#                  ^ source.perl keyword.operator.comparison.perl
-#                   ^ source.perl
-#                    ^^ source.perl keyword.operator.comparison.perl
-#                      ^^^^^^^ source.perl
+#                 ^^ source.perl keyword.operator.arrow.perl
+#                   ^^^^^^^^^^ source.perl
 >my $special = $@;
 #^^ source.perl keyword.other.perl
 #  ^ source.perl

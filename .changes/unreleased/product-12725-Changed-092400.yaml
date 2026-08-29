@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Changed
+body: Sealed public perl-token geometry. Token, TokenRef, and TokenSpan start/end fields are private; kind is a read accessor so empty-span policy cannot be bypassed by assignment; unchecked constructors and silent reversed-span clamping are removed. Empty spans remain valid only for Eof and Unknown. This is an intentional pre-1.0 public API break.
+time: 2026-08-26T09:24:00Z
+custom:
+  PR: "12725"
+  Slug: seal-token-geometry
+  Breaking: "yes"

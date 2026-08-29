@@ -533,21 +533,20 @@ impl IndexCoordinator {
         let pending = self.metrics.decrement_pending_parses();
 
         // Check for recovery from parse storm
-        if pending == 0 {
-            if let IndexState::Degraded { reason: DegradationReason::ParseStorm { .. }, .. } =
+        if pending == 0
+            && let IndexState::Degraded { reason: DegradationReason::ParseStorm { .. }, .. } =
                 self.state()
-            {
-                // Attempt recovery - transition back to Building for re-scan
-                let mut state = self.state.write();
-                let from_kind = state.kind();
-                self.instrumentation.record_state_transition(from_kind, IndexStateKind::Building);
-                *state = IndexState::Building {
-                    phase: IndexPhase::Idle,
-                    indexed_count: 0,
-                    total_count: 0,
-                    started_at: Instant::now(),
-                };
-            }
+        {
+            // Attempt recovery - transition back to Building for re-scan
+            let mut state = self.state.write();
+            let from_kind = state.kind();
+            self.instrumentation.record_state_transition(from_kind, IndexStateKind::Building);
+            *state = IndexState::Building {
+                phase: IndexPhase::Idle,
+                indexed_count: 0,
+                total_count: 0,
+                started_at: Instant::now(),
+            };
         }
 
         // Enforce resource limits after parse completion
@@ -2472,14 +2471,14 @@ impl WorkspaceIndex {
             // the async parse worker -- the only caller that ever supplies
             // a real, monotonically-increasing generation for the same
             // in-flight document -- without touching any untracked caller.
-            if generation > 0 {
-                if let Some(existing) = files.get(&key) {
-                    let high_water = existing.generation.max(existing.pending_generation);
-                    if high_water > 0 && high_water > generation {
-                        #[cfg(test)]
-                        reindex_metrics::record_stale_rejected_post_parse();
-                        return Ok(IndexFileWithGenerationOutcome::RejectedStale);
-                    }
+            if generation > 0
+                && let Some(existing) = files.get(&key)
+            {
+                let high_water = existing.generation.max(existing.pending_generation);
+                if high_water > 0 && high_water > generation {
+                    #[cfg(test)]
+                    reindex_metrics::record_stale_rejected_post_parse();
+                    return Ok(IndexFileWithGenerationOutcome::RejectedStale);
                 }
             }
 
@@ -2951,10 +2950,10 @@ impl WorkspaceIndex {
             // Check if content unchanged
             {
                 let files = self.files.read();
-                if let Some(existing) = files.get(&key) {
-                    if existing.content_hash == content_hash {
-                        continue;
-                    }
+                if let Some(existing) = files.get(&key)
+                    && existing.content_hash == content_hash
+                {
+                    continue;
                 }
             }
 
@@ -3748,9 +3747,17 @@ impl WorkspaceIndex {
         let source_uri = new_shard.source_uri.clone();
 
         // ── Update cross-file semantic indexes per category ──
-        // Occurrences and edges are both managed by the ReferenceIndex.
-        // When either changes we must remove+re-add the file in that index.
-        if replacement.occurrences_updated || replacement.edges_updated {
+        // Occurrences, edges, and entities all feed the ReferenceIndex: it
+        // synthesizes one edge per non-definition occurrence, takes target
+        // candidates from `EdgeKind::References`, and derives each edge's
+        // canonical name from the shard's entity rows. Because that name
+        // decides which projection an occurrence lands in — named or
+        // unresolved — an entity-only change moves rows just as an
+        // occurrence or edge change does, and must rebuild the file here.
+        if replacement.occurrences_updated
+            || replacement.edges_updated
+            || replacement.entities_updated
+        {
             let mut ref_idx = self.semantic_reference_index.write();
             if old_shard.is_some() {
                 ref_idx.remove_file(&source_uri);
@@ -4715,10 +4722,11 @@ impl WorkspaceIndex {
             if used_names.contains(qualified) {
                 return true;
             }
-            if let Some((_, bare)) = qualified.rsplit_once("::") {
-                if bare != symbol.name.as_str() && used_names.contains(bare) {
-                    return true;
-                }
+            if let Some((_, bare)) = qualified.rsplit_once("::")
+                && bare != symbol.name.as_str()
+                && used_names.contains(bare)
+            {
+                return true;
             }
         }
         false
@@ -4749,18 +4757,18 @@ impl WorkspaceIndex {
         for (_uri_key, file_index) in files.iter() {
             for symbol in &file_index.symbols {
                 // Check if symbol belongs to this package
-                if let Some(ref container) = symbol.container_name {
-                    if container == package_name {
-                        members.push(symbol.clone());
-                    }
+                if let Some(ref container) = symbol.container_name
+                    && container == package_name
+                {
+                    members.push(symbol.clone());
                 }
                 // Also check qualified names
-                if let Some(ref qname) = symbol.qualified_name {
-                    if qname.starts_with(&format!("{}::", package_name)) {
-                        // Avoid duplicates - only add if not already in via container_name
-                        if symbol.container_name.as_deref() != Some(package_name) {
-                            members.push(symbol.clone());
-                        }
+                if let Some(ref qname) = symbol.qualified_name
+                    && qname.starts_with(&format!("{}::", package_name))
+                {
+                    // Avoid duplicates - only add if not already in via container_name
+                    if symbol.container_name.as_deref() != Some(package_name) {
+                        members.push(symbol.clone());
                     }
                 }
             }
@@ -5520,15 +5528,15 @@ impl IndexVisitor {
                 // `our @ISA = qw(Base1 Base2)` — register inheritance dependencies.
                 if let (NodeKind::Variable { sigil, name }, Some(init)) =
                     (&variable.kind, initializer.as_deref())
+                    && sigil == "@"
+                    && name == "ISA"
                 {
-                    if sigil == "@" && name == "ISA" {
-                        for module_name in
-                            extract_module_names_from_call_args(std::slice::from_ref(init))
-                        {
-                            file_index
-                                .dependencies
-                                .insert(normalize_dependency_module_name(&module_name));
-                        }
+                    for module_name in
+                        extract_module_names_from_call_args(std::slice::from_ref(init))
+                    {
+                        file_index
+                            .dependencies
+                            .insert(normalize_dependency_module_name(&module_name));
                     }
                 }
                 // Visit initializer
@@ -5601,14 +5609,13 @@ impl IndexVisitor {
                     }
                 } else if name == "push" {
                     // `push @ISA, 'Base'` — register inheritance dependencies.
-                    if let Some(first) = args.first() {
-                        if matches!(&first.kind, NodeKind::Variable { sigil, name } if sigil == "@" && name == "ISA")
-                        {
-                            for module_name in extract_module_names_from_call_args(&args[1..]) {
-                                file_index
-                                    .dependencies
-                                    .insert(normalize_dependency_module_name(&module_name));
-                            }
+                    if let Some(first) = args.first()
+                        && matches!(&first.kind, NodeKind::Variable { sigil, name } if sigil == "@" && name == "ISA")
+                    {
+                        for module_name in extract_module_names_from_call_args(&args[1..]) {
+                            file_index
+                                .dependencies
+                                .insert(normalize_dependency_module_name(&module_name));
                         }
                     }
                 }
@@ -5815,11 +5822,11 @@ impl IndexVisitor {
 
             NodeKind::Method { body, signature, .. } => {
                 // Visit params
-                if let Some(sig) = signature {
-                    if let NodeKind::Signature { parameters } = &sig.kind {
-                        for param in parameters {
-                            self.visit_node(param, file_index);
-                        }
+                if let Some(sig) = signature
+                    && let NodeKind::Signature { parameters } = &sig.kind
+                {
+                    for param in parameters {
+                        self.visit_node(param, file_index);
                     }
                 }
 
@@ -5908,10 +5915,8 @@ impl IndexVisitor {
                     self.visit_node(value, file_index);
                 }
             }
-            NodeKind::Return { value } => {
-                if let Some(val) = value {
-                    self.visit_node(val, file_index);
-                }
+            NodeKind::Return { value: Some(val) } => {
+                self.visit_node(val, file_index);
             }
             NodeKind::Eval { block } | NodeKind::Do { block } | NodeKind::Defer { block } => {
                 self.visit_node(block, file_index);
@@ -6065,11 +6070,11 @@ impl IndexVisitor {
             }
 
             NodeKind::Method { body, signature, .. } => {
-                if let Some(sig) = signature {
-                    if let NodeKind::Signature { parameters } = &sig.kind {
-                        for param in parameters {
-                            self.walk_unified(param, file_index, symbol_refs);
-                        }
+                if let Some(sig) = signature
+                    && let NodeKind::Signature { parameters } = &sig.kind
+                {
+                    for param in parameters {
+                        self.walk_unified(param, file_index, symbol_refs);
                     }
                 }
                 self.walk_unified(body, file_index, symbol_refs);
@@ -6126,15 +6131,15 @@ impl IndexVisitor {
                 // `our @ISA = qw(Base1 Base2)` — register inheritance dependencies.
                 if let (NodeKind::Variable { sigil, name }, Some(init)) =
                     (&variable.kind, initializer.as_deref())
+                    && sigil == "@"
+                    && name == "ISA"
                 {
-                    if sigil == "@" && name == "ISA" {
-                        for module_name in
-                            extract_module_names_from_call_args(std::slice::from_ref(init))
-                        {
-                            file_index
-                                .dependencies
-                                .insert(normalize_dependency_module_name(&module_name));
-                        }
+                    for module_name in
+                        extract_module_names_from_call_args(std::slice::from_ref(init))
+                    {
+                        file_index
+                            .dependencies
+                            .insert(normalize_dependency_module_name(&module_name));
                     }
                 }
                 if let Some(init) = initializer {
@@ -6218,14 +6223,13 @@ impl IndexVisitor {
                     file_index.dependencies.insert(normalize_dependency_module_name(&module_name));
                 } else if name == "push" {
                     // `push @ISA, 'Base'` — register inheritance dependencies.
-                    if let Some(first) = args.first() {
-                        if matches!(&first.kind, NodeKind::Variable { sigil, name } if sigil == "@" && name == "ISA")
-                        {
-                            for module_name in extract_module_names_from_call_args(&args[1..]) {
-                                file_index
-                                    .dependencies
-                                    .insert(normalize_dependency_module_name(&module_name));
-                            }
+                    if let Some(first) = args.first()
+                        && matches!(&first.kind, NodeKind::Variable { sigil, name } if sigil == "@" && name == "ISA")
+                    {
+                        for module_name in extract_module_names_from_call_args(&args[1..]) {
+                            file_index
+                                .dependencies
+                                .insert(normalize_dependency_module_name(&module_name));
                         }
                     }
                 }
@@ -8265,23 +8269,23 @@ use Data::Dumper;
         // Test that URI -> path -> URI conversion preserves the URI
         let original_uri = "file:///tmp/path%20with%20spaces/caf%C3%A9.pl";
 
-        if let Some(path) = uri_to_fs_path(original_uri) {
-            if let Ok(converted_uri) = fs_path_to_uri(&path) {
-                // Should be able to round-trip back to an equivalent URI
-                assert!(converted_uri.starts_with("file://"));
+        if let Some(path) = uri_to_fs_path(original_uri)
+            && let Ok(converted_uri) = fs_path_to_uri(&path)
+        {
+            // Should be able to round-trip back to an equivalent URI
+            assert!(converted_uri.starts_with("file://"));
 
-                // The path component should decode correctly
-                if let Some(roundtrip_path) = uri_to_fs_path(&converted_uri) {
-                    #[cfg(windows)]
-                    if let Ok(rootless) = path.strip_prefix(std::path::Path::new(r"\")) {
-                        assert!(roundtrip_path.ends_with(rootless));
-                    } else {
-                        assert_eq!(path, roundtrip_path);
-                    }
-
-                    #[cfg(not(windows))]
+            // The path component should decode correctly
+            if let Some(roundtrip_path) = uri_to_fs_path(&converted_uri) {
+                #[cfg(windows)]
+                if let Ok(rootless) = path.strip_prefix(std::path::Path::new(r"\")) {
+                    assert!(roundtrip_path.ends_with(rootless));
+                } else {
                     assert_eq!(path, roundtrip_path);
                 }
+
+                #[cfg(not(windows))]
+                assert_eq!(path, roundtrip_path);
             }
         }
     }
@@ -10575,23 +10579,23 @@ helper_one();
         };
         let mut found_parent_use = false;
         for stmt in statements {
-            if let NodeKind::Use { module, args, .. } = &stmt.kind {
-                if module == "parent" {
-                    found_parent_use = true;
-                    assert_eq!(
-                        args,
-                        &["'MyBase'".to_string()],
-                        "Expected args=[\"'MyBase'\"] for `use parent 'MyBase'`, got: {:?}",
-                        args
-                    );
-                    let extracted = extract_module_names_from_use_args(args);
-                    assert_eq!(
-                        extracted,
-                        vec!["MyBase".to_string()],
-                        "extract_module_names_from_use_args should return [\"MyBase\"], got {:?}",
-                        extracted
-                    );
-                }
+            if let NodeKind::Use { module, args, .. } = &stmt.kind
+                && module == "parent"
+            {
+                found_parent_use = true;
+                assert_eq!(
+                    args,
+                    &["'MyBase'".to_string()],
+                    "Expected args=[\"'MyBase'\"] for `use parent 'MyBase'`, got: {:?}",
+                    args
+                );
+                let extracted = extract_module_names_from_use_args(args);
+                assert_eq!(
+                    extracted,
+                    vec!["MyBase".to_string()],
+                    "extract_module_names_from_use_args should return [\"MyBase\"], got {:?}",
+                    extracted
+                );
             }
         }
         assert!(found_parent_use, "No Use node with module='parent' found in AST");
@@ -11533,6 +11537,81 @@ MixedMod->import(qw(qw_one qw_two));
         assert!(!result.entities_updated, "entities hash unchanged → skip");
         assert!(result.occurrences_updated, "occurrences hash changed → update");
         assert!(result.edges_updated, "edges hash changed → update");
+        Ok(())
+    }
+
+    /// An entity-only shard replacement must refresh the reference index.
+    ///
+    /// `ReferenceIndex::add_file` derives each occurrence's canonical name from
+    /// `shard.entities`, so which projection an occurrence lands in — named or
+    /// unresolved — depends on the entity category, not only on occurrences and
+    /// edges. Adding the declaring entity row while the occurrence and edge
+    /// facts stay byte-identical must move the occurrence into the name
+    /// projection; skipping the rebuild leaves a stale row the current shard
+    /// contradicts.
+    #[test]
+    fn incremental_replace_refreshes_reference_index_on_entity_only_change()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let index = WorkspaceIndex::new();
+        let uri = "file:///lib/EntityOnly.pm";
+        let key = DocumentStore::uri_key(uri);
+        let entity_id = EntityId(700);
+        let occ_id = OccurrenceId(701);
+        let anchor_id = AnchorId(702);
+
+        // The occurrence names its entity, but v1 carries no entity row: the
+        // canonical name cannot be derived, so the reference is unresolved.
+        let occurrences = vec![OccurrenceFact {
+            id: occ_id,
+            kind: OccurrenceKind::Call,
+            entity_id: Some(entity_id),
+            anchor_id,
+            scope_id: None,
+            provenance: Provenance::ExactAst,
+            confidence: Confidence::High,
+        }];
+        let mut shard_v1 = make_shard(uri, 1, Some(10), Some(20), Some(30), Some(40));
+        shard_v1.occurrences.clone_from(&occurrences);
+        let file_id = shard_v1.file_id;
+        index.replace_fact_shard_incremental(&key, shard_v1);
+
+        let unresolved_key =
+            crate::semantic::references::UnresolvedOccurrenceKey::new(file_id, occ_id, anchor_id);
+        assert_eq!(
+            index.semantic_reference_index.read().get_unresolved(&unresolved_key).len(),
+            1,
+            "v1 has no entity row, so the occurrence starts unresolved"
+        );
+
+        // v2 adds only the declaring entity row: occurrences and edges keep
+        // their exact v1 hashes.
+        let mut shard_v2 = make_shard(uri, 2, Some(10), Some(21), Some(30), Some(40));
+        shard_v2.occurrences = occurrences;
+        shard_v2.entities.push(EntityFact {
+            id: entity_id,
+            kind: EntityKind::Subroutine,
+            canonical_name: "EntityOnly::run".to_string(),
+            anchor_id: None,
+            scope_id: None,
+            provenance: Provenance::ExactAst,
+            confidence: Confidence::High,
+        });
+        let result = index.replace_fact_shard_incremental(&key, shard_v2);
+
+        assert!(result.entities_updated, "entities hash changed → update");
+        assert!(!result.occurrences_updated, "occurrences hash is deliberately unchanged");
+        assert!(!result.edges_updated, "edges hash is deliberately unchanged");
+
+        let ref_idx = index.semantic_reference_index.read();
+        assert_eq!(
+            ref_idx.get_by_name("EntityOnly::run").len(),
+            1,
+            "the newly declared entity must make the occurrence findable by name"
+        );
+        assert!(
+            ref_idx.get_unresolved(&unresolved_key).is_empty(),
+            "the stale unresolved row must not survive its own entity's arrival"
+        );
         Ok(())
     }
 

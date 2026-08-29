@@ -1,3 +1,5 @@
+#![deny(clippy::map_err_ignore)]
+// Cohort C1 activation (#12598): all production rows exact-excepted; new findings move the crate back to non-C1.
 //! Tests for PL_sv_* internal special variable recognition — issue #3542
 //!
 //! $PL_sv_yes, $PL_sv_no, and $PL_sv_undef are Perl internal special values

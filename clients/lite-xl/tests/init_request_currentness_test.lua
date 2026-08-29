@@ -223,6 +223,11 @@ package.preload["plugins.lsp.listbox"] = function()
   }
 end
 
+-- Local patch (#11172): the staged modules fold their capability
+-- advertisement and command projection through the exact manifest source.
+package.preload["plugins.lsp.capability_manifest"] = function()
+  return dofile(here .. "/../upstream/capability_manifest.lua")
+end
 package.preload["plugins.lsp.diagnostics"] = function()
   -- Lifecycle seams consumed by init.lua (#11124); inert in this suite,
   -- whose subject is document-session/version behavior, not publications.
@@ -793,8 +798,10 @@ do
 end
 
 -- ===========================================================================
--- Case 10: rename subjects refuse stale results; current ones keep the
--- existing logging behavior.
+-- Case 10: rename is projection-gated (#11172). The server advertising
+-- renameProvider is not enough: with no client application consumer (#8986)
+-- the request is never sent, so stale-versus-current response semantics
+-- cannot even arise at this sender.
 -- ===========================================================================
 do
   local lsp = fresh_module_load()
@@ -807,37 +814,27 @@ do
   local doc = make_doc("C:/proj/ren.pl", { "rn\n" }, 1, 3)
 
   open_admitted(lsp, doc, server)
-  lsp.request_symbol_rename(doc, 1, 3, "new_name")
-  local held = server.outbound[1]
-  table.remove(server.outbound, 1)
-
   accept_edit(lsp, doc, server, 1, 3, "!")
-  local function effect_logs()
-    local count = 0
-    for _, record in ipairs(log_records) do
-      if record:find("file:///C:/proj/ren%.pl", 1, false) then
-        count = count + 1
-      end
-    end
-    return count
-  end
-  local effects_before = effect_logs()
-  held.callback(server, { result = { changes = { ["file:///C:/proj/ren.pl"] = {} } } })
-  ok(effect_logs() == effects_before,
-    "case10: stale rename result produces no application effects")
 
   lsp.request_symbol_rename(doc, 1, 3, "new_name")
-  effects_before = effect_logs()
-  ok(play_response(server, "textDocument/rename",
-    { result = { changes = { ["file:///C:/proj/ren.pl"] = {} } } }),
-    "case10: current rename response played")
-  ok(effect_logs() > effects_before,
-    "case10: current rename result keeps its existing behavior surface")
+  ok(#server.outbound == 0,
+    "case10: gated rename sends nothing under an unsupported client row")
+
+  local saw_owner_message = false
+  for _, record in ipairs(log_records) do
+    if tostring(record):find("#8986", 1, true) then
+      saw_owner_message = true
+    end
+  end
+  ok(saw_owner_message,
+    "case10: one explicit refusal message names the rename owner")
 end
 
 -- ===========================================================================
--- Case 11: prepareCallHierarchy subjects are bound like every other
--- document-bound request (held stale response is inert).
+-- Case 11: prepareCallHierarchy is projection-gated (#11172). The server
+-- advertising callHierarchyProvider is not enough: with no client result
+-- consumer (#10719) the request is never sent and one explicit message
+-- explains why.
 -- ===========================================================================
 do
   local lsp = fresh_module_load()
@@ -851,19 +848,17 @@ do
 
   open_admitted(lsp, doc, server)
   lsp.request_call_hierarchy(doc, 1, 2)
-  local held = server.outbound[1]
-  table.remove(server.outbound, 1)
+  ok(#server.outbound == 0,
+    "case11: gated call hierarchy sends nothing under an unsupported row")
 
-  accept_edit(lsp, doc, server, 1, 2, "!")
-  -- The stale callback must run without error and without effects; the
-  -- upstream body only reacts to well-formed current results.
-  held.callback(server, { result = { { name = "stale_item" } } })
-  ok(true, "case11: stale call-hierarchy response inert without error")
-
-  lsp.request_call_hierarchy(doc, 1, 2)
-  ok(play_response(server, "textDocument/prepareCallHierarchy",
-    { result = {} }) == true,
-    "case11: fresh call-hierarchy response playable")
+  local saw_owner_message = false
+  for _, record in ipairs(log_records) do
+    if tostring(record):find("#10719", 1, true) then
+      saw_owner_message = true
+    end
+  end
+  ok(saw_owner_message,
+    "case11: one explicit refusal message names the call-hierarchy owner")
 end
 
 print(string.format("%d passed, %d failed", passed, failed))

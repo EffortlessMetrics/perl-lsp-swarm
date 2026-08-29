@@ -1,3 +1,4 @@
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 use perl_lsp_perltidy::{
     BracePlacement, ElsePlacement, FinalNewline, FormatConfig, FormatDiagnostic,
     FormatDiagnosticSeverity, FormatResult, FormatterMode, KeywordSpacing, TextEdit, TextPosition,
