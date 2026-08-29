@@ -24,9 +24,11 @@ import unittest
 from pathlib import Path
 
 _SCRIPTS_DIR = Path(__file__).parent
+_REPO_ROOT = _SCRIPTS_DIR.parent.parent.resolve()
 _FORMAT_RESULTS = _SCRIPTS_DIR / "format-results.py"
 _COMPARE = _SCRIPTS_DIR / "compare.py"
 _SIDECAR = _SCRIPTS_DIR / "validate-native-pipeline-sidecar.py"
+_WORKFLOW = _SCRIPTS_DIR.parent.parent / ".github" / "workflows" / "ci-nightly.yml"
 
 
 def _run(script: Path, args: "list[str]") -> subprocess.CompletedProcess:
@@ -185,6 +187,36 @@ class NativePipelineSidecarGuardTests(unittest.TestCase):
             path = self._write(Path(tmp), [self._row(self.EXPECTED[0]), self._row(self.EXPECTED[0])])
             proc = self._run(path)
             self.assertNotEqual(proc.returncode, 0)
+
+    def test_workflow_style_array_invocation_accepts_valid_sidecar(self) -> None:
+        workflow = _WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn('sidecar_args=()', workflow)
+        self.assertIn('sidecar_args+=(--expect-id "$expected_id")', workflow)
+        self.assertIn('"${sidecar_args[@]}"', workflow)
+
+        with tempfile.TemporaryDirectory(dir=_REPO_ROOT) as tmp:
+            path = self._write(Path(tmp), [self._row(bench_id) for bench_id in self.EXPECTED])
+            expected_ids = [
+                "native_pipeline_document/delimited_n8_lf_tabs",
+                "native_pipeline_document/delimited_n32_lf_tabs",
+            ]
+            sidecar_args = [arg for expected_id in expected_ids for arg in ("--expect-id", expected_id)]
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    str(_SIDECAR.resolve()),
+                    "--sidecar",
+                    str(path.resolve()),
+                    "--expected-run-id",
+                    self.RUN_ID,
+                    *sidecar_args,
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+                cwd=_REPO_ROOT,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
 
 
 if __name__ == "__main__":

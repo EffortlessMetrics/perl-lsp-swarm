@@ -258,10 +258,14 @@ jobs:
             expected_ids+=("native_pipeline_document/${family}_n32_lf_${indent}")
           done
         done
+        sidecar_args=()
+        for expected_id in "${expected_ids[@]}"; do
+          sidecar_args+=(--expect-id "$expected_id")
+        done
         python3 ./benchmarks/scripts/validate-native-pipeline-sidecar.py \
           --sidecar target/criterion/native-pipeline-measurements.v1.json \
           --expected-run-id "$NATIVE_PIPELINE_RUN_ID" \
-          "${expected_ids[@]/#/--expect-id }"
+          "${sidecar_args[@]}"
 
     - name: Real-repo first-diagnostics perf gate (Catalyst 5000+ lines)
       run: |
