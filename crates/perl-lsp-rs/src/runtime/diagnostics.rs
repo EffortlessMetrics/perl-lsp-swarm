@@ -3356,13 +3356,27 @@ mod tests {
             .to_string();
         let server = make_server_with_capture().0;
         server.workspace_folders.lock().extend([
-            crate::runtime::workspace_folder::WorkspaceFolderState::new(first_folder_uri)
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(first_folder_uri.clone())
                 .with_path(first_folder.clone()),
-            crate::runtime::workspace_folder::WorkspaceFolderState::new(second_folder_uri)
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(second_folder_uri.clone())
                 .with_path(second_folder.clone()),
         ]);
         server.load_and_apply_project_config();
         let source = "use builtin 'inf'; builtin::inf();\n";
+        let (first_config_generation, second_config_generation) = {
+            let folders = server.workspace_folders.lock();
+            let first = folders
+                .iter()
+                .find(|folder| folder.uri == first_folder_uri)
+                .ok_or("first folder state missing")?
+                .project_config_generation;
+            let second = folders
+                .iter()
+                .find(|folder| folder.uri == second_folder_uri)
+                .ok_or("second folder state missing")?
+                .project_config_generation;
+            (first, second)
+        };
         let first_uri_key = server.normalize_uri_key(&first_uri);
         let second_uri_key = server.normalize_uri_key(&second_uri);
         for uri in [&first_uri, &second_uri] {
@@ -3391,6 +3405,22 @@ mod tests {
 
         std::fs::write(first_folder.join(".perl-lsp.toml"), "[perl]\nversion = \"5.40\"\n")?;
         server.load_and_apply_project_config();
+        let (reloaded_first_config_generation, reloaded_second_config_generation) = {
+            let folders = server.workspace_folders.lock();
+            let first = folders
+                .iter()
+                .find(|folder| folder.uri == first_folder_uri)
+                .ok_or("reloaded first folder state missing")?
+                .project_config_generation;
+            let second = folders
+                .iter()
+                .find(|folder| folder.uri == second_folder_uri)
+                .ok_or("reloaded second folder state missing")?
+                .project_config_generation;
+            (first, second)
+        };
+        assert_eq!(reloaded_first_config_generation, first_config_generation + 1);
+        assert_eq!(reloaded_second_config_generation, second_config_generation);
         let reloaded = server
             .handle_workspace_diagnostic(Some(json!({
                 "previousResultIds": [
