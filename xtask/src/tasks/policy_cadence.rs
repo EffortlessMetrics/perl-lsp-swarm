@@ -226,7 +226,7 @@ fn quality_obligations(root: &Path) -> Result<Vec<RawObligation>> {
             evidence_identity: nonempty(entry.evidence),
             expected_debt_class: Some(entry.scope),
             required_decision: "remove, narrow, or re-justify with fresh evidence".to_string(),
-            reproduce: Some("cargo xtask quality-gate --mode transition".to_string()),
+            reproduce: Some("cargo xtask quality-gate --mode enforce-new-ripr".to_string()),
             invalid_reason: None,
         })
         .collect())
