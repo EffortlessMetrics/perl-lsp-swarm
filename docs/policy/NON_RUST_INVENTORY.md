@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12406 |
-| Rust-family files | 3814 |
-| Non-Rust files | 8592 |
-| Allowlisted | 6357 |
+| Total tracked files | 12408 |
+| Rust-family files | 3815 |
+| Non-Rust files | 8593 |
+| Allowlisted | 6358 |
 | Unclassified | 2235 |
 
 ## Non-Rust files by category
@@ -17,7 +17,7 @@
 | Category | Count |
 |---|---|
 | config | 490 |
-| documentation | 2804 |
+| documentation | 2805 |
 | generated | 2 |
 | production | 348 |
 | test | 2052 |
@@ -4432,6 +4432,7 @@
 | `docs/adr/0045-noncurrent-frame-mutation-disposition.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/adr/0046-loaded-module-reload-semantics.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/adr/0047-dap-stdio-only-editor-transport.md` | documentation | `non-rust-docs-tree` | docs |
+| `docs/adr/0048-source-line-contract.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/adr/ADR_001_AGENT_ARCHITECTURE.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/adr/ADR_002_API_DOCUMENTATION_INFRASTRUCTURE.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/adr/ADR_003_MISSING_DOCUMENTATION_INFRASTRUCTURE.md` | documentation | `non-rust-docs-tree` | docs |

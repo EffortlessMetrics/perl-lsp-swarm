@@ -98,6 +98,7 @@ Current generated and human-owned status sources include:
 | [ADR-0045](0045-noncurrent-frame-mutation-disposition.md) | Accepted | 2026-08-24 | Non-Current-Frame Mutation Disposition | #11324 ruling: not_proven with named missing evidence; #11325 stays non-selectable; frame-blind setVariable refusal path recorded |
 | [ADR-0046](0046-loaded-module-reload-semantics.md) | Accepted | 2026-08-24 | Loaded-Module Reload Semantics (R01 Contract) | #10097 contract: exact subject identity, closed 13-class eligibility, possibly-applied boundary, per-process RuntimeModuleGeneration, per-object-kind invalidation composed with stopped_generation; wire stays with #10138 |
 | [ADR-0047](0047-dap-stdio-only-editor-transport.md) | Accepted | 2026-08-25 | Stdio-Only Editor Transport for perl-dap | #10564 ruling: stdio is the sole product editor transport; native and external-peer editor sockets are retire; debugger-peer TCP stays authenticated and separate; no runtime removal in the inventory PR |
+| [ADR-0048](0048-source-line-contract.md) | Accepted | 2026-08-29 | LF-Delimited Source-Line Contract | #4973 ruling: LF is the only source-row terminator, CRLF is one separator, bare CR and VT/FF/NEL/LS/PS are content; rows carry start/content_end/separator_end; BOM is a source-subject decision (#8707); Ropey line APIs are not row authority |
 | [ADR-0041](0041-microcrate-collapse.md) | Accepted | 2026-04-14 | Microcrate Collapse | Collapse from 132 published crates to ~30; ~100 internal microcrates become subfolder modules |
 
 ## About ADRs
