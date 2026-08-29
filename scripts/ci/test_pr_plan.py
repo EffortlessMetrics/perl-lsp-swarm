@@ -76,6 +76,26 @@ class PrPlanTests(unittest.TestCase):
         self.assertEqual(["docs_gate"], [lane["id"] for lane in selected])
         self.assertEqual([], skipped)
 
+    def test_full_ci_does_not_select_schedule_manual_coverage(self) -> None:
+        lanes = {
+            "coverage": {"base_lem": 45, "blocking": False},
+            "mutation": {"base_lem": 60, "blocking": False},
+        }
+        risk_packs = {
+            "parser": {"deep_lanes": ["coverage", "mutation"]},
+        }
+
+        selected, skipped = pr_plan.select_lanes(
+            files=["crates/perl-parser/src/parser.rs"],
+            labels=["full-ci"],
+            risk_pack_ids=["parser"],
+            risk_packs=risk_packs,
+            lanes=lanes,
+        )
+
+        self.assertEqual(["mutation"], [lane["id"] for lane in selected])
+        self.assertEqual([], skipped)
+
     def test_select_lanes_reports_path_filtered_default_lane_when_it_does_not_match(self) -> None:
         lanes = {
             "rust_small": {"default_pr": True, "base_lem": 10, "blocking": True},

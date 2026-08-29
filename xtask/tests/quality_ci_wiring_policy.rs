@@ -2,7 +2,7 @@
 
 use std::{fs, path::PathBuf};
 
-use anyhow::{anyhow, ensure, Result};
+use anyhow::{Result, anyhow, ensure};
 use assert_cmd::Command;
 use perl_tdd_support::{must, must_some};
 use serde_yaml_ng::Value;
@@ -172,11 +172,15 @@ fn coverage_workflow_is_manual_or_nightly_only_and_requires_receipts() {
     let policy = must(fs::read_to_string(root.join(".ci/policies/required-checks.toml")));
     let lane_economics = must(fs::read_to_string(root.join("policy/ci-lanes.toml")));
     let lane_whitelist = must(fs::read_to_string(root.join("policy/ci-lane-whitelist.toml")));
+    let risk_pack_policy = must(fs::read_to_string(root.join("policy/ci-risk-packs.toml")));
     let inventory = must(fs::read_to_string(root.join("docs/ci/inventory.md")));
     let coverage_guide = must(fs::read_to_string(root.join("docs/how-to/COVERAGE.md")));
     let evidence_lanes_doc = must(fs::read_to_string(root.join("docs/ci/test-evidence-lanes.md")));
     let verification_ladder_doc =
         must(fs::read_to_string(root.join("docs/ci/verification-ladder.md")));
+    let risk_pack_doc = must(fs::read_to_string(root.join("docs/ci/risk-packs.md")));
+    let codecov_rollout = must(fs::read_to_string(root.join("docs/ci/codecov-rollout.md")));
+    let codecov_config = must(fs::read_to_string(root.join("codecov.yml")));
     let justfile = must(fs::read_to_string(root.join("justfile")));
     let codecov_router = must(fs::read_to_string(root.join("scripts/ci/route-codecov-packs.py")));
     let coverage_start = must_some(workflow.find("  test-coverage:"));
@@ -202,8 +206,12 @@ fn coverage_workflow_is_manual_or_nightly_only_and_requires_receipts() {
 
     let whitelist_document: TomlValue = must(toml::from_str(&lane_whitelist));
     let required_checks_document: TomlValue = must(toml::from_str(&policy));
+    let risk_pack_document: TomlValue = must(toml::from_str(&risk_pack_policy));
+    let codecov_document: Value = must(serde_yaml_ng::from_str(&codecov_config));
     must(coverage_required_check_contract(&required_checks_document));
     must(coverage_whitelist_contract(&whitelist_document));
+    must(coverage_risk_pack_contract(&risk_pack_document));
+    must(codecov_threshold_contract(&codecov_document));
     let coverage_whitelist_table = must_some(toml_lane(&whitelist_document, "coverage"));
     let allowed_triggers =
         must_some(must_some(coverage_whitelist_table.get("allowed_triggers")).as_array())
@@ -306,6 +314,17 @@ fn coverage_workflow_is_manual_or_nightly_only_and_requires_receipts() {
             && !coverage_guide.contains("/branch/master/"),
         "coverage guide must describe the live main branch and badge"
     );
+    must(coverage_reference_rows_contract(&evidence_lanes_doc, "test-evidence-lanes.md"));
+    must(coverage_reference_rows_contract(&verification_ladder_doc, "verification-ladder.md"));
+    must(coverage_reference_rows_contract(&inventory, "inventory.md"));
+    must(coverage_reference_rows_contract(&coverage_guide, "COVERAGE.md"));
+    must(coverage_risk_pack_docs_contract(&risk_pack_doc));
+    assert!(
+        codecov_rollout
+            .contains("Codecov patch gate remains advisory; project coverage remains burn-down:")
+            && !codecov_rollout.contains("Codecov patch gate remains blocking"),
+        "Codecov rollout checklist must keep patch coverage advisory"
+    );
     assert!(
         inventory.contains(
             "| `ci-nightly.yml` (test-coverage) | `schedule`, `workflow_dispatch` | no | `ubuntu-24.04` | Coverage | 45 | `coverage` | keep |"
@@ -319,6 +338,7 @@ fn coverage_workflow_is_manual_or_nightly_only_and_requires_receipts() {
             && !inventory.contains("| Default branch | `master` |"),
         "CI inventory must name the live default branch"
     );
+    must(coverage_baseline_contract(coverage_job, coverage_yaml_job, &justfile));
 
     let workflow_mutations = [
         ("push trigger", "on:\n", "on:\n  push:\n    branches: [main]\n"),
@@ -344,18 +364,97 @@ fn coverage_workflow_is_manual_or_nightly_only_and_requires_receipts() {
         );
     }
     let duplicate_checks_source = format!(
-        "{policy}\n[[checks]]\nname = \"Codecov / Patch 95\"\nworkflow = \".github/workflows/ci-nightly.yml\"\njob = \"test-coverage\"\nevents = [\"schedule\", \"workflow_dispatch\"]\n"
+        "{policy}\n[[checks]]\nname = \"Codecov / Patch 95 (nightly alias)\"\nworkflow = \".github/workflows/ci-nightly.yml\"\njob = \"test-coverage\"\nevents = [\"schedule\", \"workflow_dispatch\"]\n"
     );
     let duplicate_checks: TomlValue = must(toml::from_str(&duplicate_checks_source));
     assert!(
         coverage_required_check_contract(&duplicate_checks).is_err(),
         "coverage policy contract must reject duplicate coverage entries"
     );
-    let duplicate_lanes_source = format!("{lane_whitelist}\n[[lane]]\nid = \"coverage\"\n");
+    let duplicate_lanes_source = format!(
+        "{lane_whitelist}\n[[lane]]\nid = \"coverage\"\nworkflow = \".github/workflows/ci-nightly.yml\"\njob = \"test-coverage\"\n"
+    );
     let duplicate_lanes: TomlValue = must(toml::from_str(&duplicate_lanes_source));
     assert!(
         coverage_whitelist_contract(&duplicate_lanes).is_err(),
         "coverage whitelist contract must reject duplicate coverage entries"
+    );
+    let duplicate_alias_lanes_source = format!(
+        "{lane_whitelist}\n[[lane]]\nid = \"coverage-nightly\"\nworkflow = \".github/workflows/ci-nightly.yml\"\njob = \"test-coverage\"\n"
+    );
+    let duplicate_alias_lanes: TomlValue = must(toml::from_str(&duplicate_alias_lanes_source));
+    assert!(
+        coverage_whitelist_contract(&duplicate_alias_lanes).is_err(),
+        "coverage whitelist contract must reject renamed semantic duplicates"
+    );
+    let stale_reason_source = policy.replacen(
+        "scheduled or explicitly manual coverage runs",
+        "pull_request coverage runs",
+        1,
+    );
+    let stale_reason: TomlValue = must(toml::from_str(&stale_reason_source));
+    assert!(
+        coverage_required_check_contract(&stale_reason).is_err(),
+        "coverage policy contract must reject stale route wording in free text"
+    );
+    let stale_inventory = inventory.replacen(
+        "`schedule`, `workflow_dispatch` | no | `ubuntu-24.04` | Coverage",
+        "`schedule`, `workflow_dispatch`, label | no | `ubuntu-24.04` | Coverage",
+        1,
+    );
+    assert!(
+        coverage_reference_rows_contract(&stale_inventory, "mutated inventory").is_err(),
+        "coverage documentation contract must reject stale route wording in alternate rows"
+    );
+    let stale_risk_doc =
+        risk_pack_doc.replacen("`mutation`, `fuzz` |", "`mutation`, `fuzz`, `coverage` |", 1);
+    assert!(
+        coverage_risk_pack_docs_contract(&stale_risk_doc).is_err(),
+        "risk-pack documentation contract must reject coverage as a full-ci lane"
+    );
+    let stale_deep_lane_source = risk_pack_policy.replacen(
+        "deep_lanes = [\"mutation\", \"fuzz\"]",
+        "deep_lanes = [\"mutation\", \"fuzz\", \"coverage\"]",
+        1,
+    );
+    let stale_deep_lanes: TomlValue = must(toml::from_str(&stale_deep_lane_source));
+    assert!(
+        coverage_risk_pack_contract(&stale_deep_lanes).is_err(),
+        "risk-pack contract must reject coverage as a full-ci deep lane"
+    );
+    let stale_risk_label_source = risk_pack_policy.replacen(
+        "labels = [\"ci:parser\", \"ci:mutation\"]",
+        "labels = [\"ci:parser\", \"ci:mutation\", \"ci:coverage\"]",
+        1,
+    );
+    let stale_risk_labels: TomlValue = must(toml::from_str(&stale_risk_label_source));
+    assert!(
+        coverage_risk_pack_contract(&stale_risk_labels).is_err(),
+        "risk-pack contract must reject coverage label routing"
+    );
+    let weak_codecov_target = codecov_config.replacen("target: 95%", "target: 90%", 1);
+    let weak_codecov_target: Value = must(serde_yaml_ng::from_str(&weak_codecov_target));
+    assert!(
+        codecov_threshold_contract(&weak_codecov_target).is_err(),
+        "Codecov contract must reject an altered informational target"
+    );
+    let blocking_codecov_status =
+        codecov_config.replacen("informational: true", "informational: false", 1);
+    let blocking_codecov_status: Value = must(serde_yaml_ng::from_str(&blocking_codecov_status));
+    assert!(
+        codecov_threshold_contract(&blocking_codecov_status).is_err(),
+        "Codecov contract must reject a blocking status regression"
+    );
+    let proof_recipe_start = must_some(justfile.find("coverage-proof base='origin/main':"));
+    let (justfile_prefix, proof_recipe) = justfile.split_at(proof_recipe_start);
+    let weak_baseline_enforcement = format!(
+        "{justfile_prefix}{}",
+        proof_recipe.replacen("--mode enforce-patch-coverage", "--mode report-patch-coverage", 1)
+    );
+    assert!(
+        coverage_baseline_contract(coverage_job, coverage_yaml_job, &weak_baseline_enforcement)
+            .is_err(),
+        "coverage contract must reject non-enforcing baseline quality-gate mode"
     );
     let checkout_ref = must_some(checkout_action_ref(coverage_job));
     assert!(
@@ -848,19 +947,19 @@ fn coverage_workflow_contract(workflow: &Value) -> Result<()> {
 }
 
 fn coverage_required_check_contract(policy: &TomlValue) -> Result<()> {
-    let checks = policy
-        .get("checks")
-        .and_then(TomlValue::as_array)
-        .ok_or_else(|| anyhow!("required-checks policy must contain a checks array"))?;
-    let coverage_checks = checks
-        .iter()
-        .filter(|check| check.get("name").and_then(TomlValue::as_str) == Some("Codecov / Patch 95"))
-        .collect::<Vec<_>>();
+    let coverage_checks =
+        toml_target_tables(policy, "checks", ".github/workflows/ci-nightly.yml", "test-coverage")?;
     ensure!(
         coverage_checks.len() == 1,
         "required-checks policy must contain exactly one Codecov / Patch 95 entry"
     );
-    let coverage = coverage_checks[0];
+    let coverage = coverage_checks
+        .first()
+        .ok_or_else(|| anyhow!("coverage required-check entry is missing"))?;
+    ensure!(
+        coverage.get("name").and_then(TomlValue::as_str) == Some("Codecov / Patch 95"),
+        "coverage required-check entry must retain the canonical display name"
+    );
     ensure!(
         coverage.get("workflow").and_then(TomlValue::as_str)
             == Some(".github/workflows/ci-nightly.yml")
@@ -885,20 +984,20 @@ fn coverage_required_check_contract(policy: &TomlValue) -> Result<()> {
             && coverage.get("enforcement").and_then(TomlValue::as_str) == Some("neither"),
         "coverage required-check entry must remain advisory and conditional"
     );
+    ensure_no_stale_route_wording(coverage, "required-check coverage entry")?;
     Ok(())
 }
 
 fn coverage_whitelist_contract(policy: &TomlValue) -> Result<()> {
-    let lanes = policy
-        .get("lane")
-        .and_then(TomlValue::as_array)
-        .ok_or_else(|| anyhow!("coverage whitelist must contain a lane array"))?;
-    let coverage_lanes = lanes
-        .iter()
-        .filter(|lane| lane.get("id").and_then(TomlValue::as_str) == Some("coverage"))
-        .collect::<Vec<_>>();
+    let coverage_lanes =
+        toml_target_tables(policy, "lane", ".github/workflows/ci-nightly.yml", "test-coverage")?;
     ensure!(coverage_lanes.len() == 1, "coverage whitelist must contain exactly one coverage lane");
-    let coverage = coverage_lanes[0];
+    let coverage =
+        coverage_lanes.first().ok_or_else(|| anyhow!("coverage whitelist entry is missing"))?;
+    ensure!(
+        coverage.get("id").and_then(TomlValue::as_str) == Some("coverage"),
+        "coverage whitelist entry must retain the canonical lane id"
+    );
     ensure!(
         coverage.get("workflow").and_then(TomlValue::as_str)
             == Some(".github/workflows/ci-nightly.yml")
@@ -925,6 +1024,179 @@ fn coverage_whitelist_contract(policy: &TomlValue) -> Result<()> {
             ),
         }
     }
+    ensure_no_stale_route_wording(coverage, "coverage whitelist entry")?;
+    Ok(())
+}
+
+fn toml_target_tables<'a>(
+    document: &'a TomlValue,
+    array_key: &str,
+    workflow: &str,
+    job: &str,
+) -> Result<Vec<&'a toml::value::Table>> {
+    let records = document
+        .get(array_key)
+        .and_then(TomlValue::as_array)
+        .ok_or_else(|| anyhow!("policy must contain a `{array_key}` array"))?;
+    Ok(records
+        .iter()
+        .filter_map(TomlValue::as_table)
+        .filter(|record| {
+            record.get("workflow").and_then(TomlValue::as_str) == Some(workflow)
+                && record.get("job").and_then(TomlValue::as_str) == Some(job)
+        })
+        .collect())
+}
+
+fn ensure_no_stale_route_wording(table: &toml::value::Table, context: &str) -> Result<()> {
+    for value in table.values() {
+        ensure_no_stale_route_value(value, context)?;
+    }
+    Ok(())
+}
+
+fn ensure_no_stale_route_value(value: &TomlValue, context: &str) -> Result<()> {
+    match value {
+        TomlValue::String(text) => {
+            ensure!(
+                !has_stale_route_wording(text),
+                "{context} contains stale PR, push, merge-group, label, full-ci, or master wording"
+            );
+            Ok(())
+        }
+        TomlValue::Array(values) => {
+            for value in values {
+                ensure_no_stale_route_value(value, context)?;
+            }
+            Ok(())
+        }
+        TomlValue::Table(values) => {
+            for value in values.values() {
+                ensure_no_stale_route_value(value, context)?;
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
+fn has_stale_route_wording(text: &str) -> bool {
+    let normalized = text.to_ascii_lowercase().replace(['_', '-'], " ");
+    [
+        "pull request",
+        "merge group",
+        "push",
+        "label",
+        "label gated",
+        "labeled",
+        "labels",
+        "full ci",
+        "master",
+        "ci coverage",
+    ]
+    .iter()
+    .any(|marker| normalized.contains(marker))
+}
+
+fn coverage_reference_rows_contract(document: &str, context: &str) -> Result<()> {
+    for line in document.lines() {
+        let lower = line.to_ascii_lowercase();
+        if lower.contains("coverage") || lower.contains("codecov") {
+            ensure!(
+                !has_stale_route_wording(line),
+                "{context} contains stale coverage route wording: {line}"
+            );
+        }
+    }
+    Ok(())
+}
+
+fn coverage_risk_pack_contract(policy: &TomlValue) -> Result<()> {
+    let packs = policy
+        .get("risk_pack")
+        .and_then(TomlValue::as_table)
+        .ok_or_else(|| anyhow!("risk-pack policy must contain a risk_pack table"))?;
+    for (pack_id, pack) in packs {
+        let Some(pack) = pack.as_table() else {
+            continue;
+        };
+        for field in ["deep_lanes", "labels"] {
+            if let Some(values) = pack.get(field).and_then(TomlValue::as_array) {
+                ensure!(
+                    !values.iter().filter_map(TomlValue::as_str).any(|value| {
+                        value == "coverage" || value.eq_ignore_ascii_case("ci:coverage")
+                    }),
+                    "risk pack `{pack_id}` must not route schedule/manual-only coverage through `{field}`"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+fn coverage_risk_pack_docs_contract(document: &str) -> Result<()> {
+    let parser_row = document
+        .lines()
+        .find(|line| line.contains("| `parser` |"))
+        .ok_or_else(|| anyhow!("risk-pack docs must contain the parser catalog row"))?;
+    ensure!(
+        !parser_row.to_ascii_lowercase().contains("coverage")
+            && !has_stale_route_wording(parser_row),
+        "parser risk-pack docs must not advertise coverage as a PR deep lane"
+    );
+    Ok(())
+}
+
+fn codecov_threshold_contract(config: &Value) -> Result<()> {
+    let status = yaml_mapping_entry(yaml_mapping_entry(config, "coverage")?, "status")?;
+    for (section, target, threshold) in [("project", "95%", "2%"), ("patch", "95%", "0%")] {
+        let default = yaml_mapping_entry(yaml_mapping_entry(status, section)?, "default")?;
+        ensure!(
+            mapping_value(default, "target").and_then(Value::as_str) == Some(target)
+                && mapping_value(default, "threshold").and_then(Value::as_str) == Some(threshold)
+                && mapping_value(default, "informational").and_then(Value::as_bool) == Some(true)
+                && mapping_value(default, "if_ci_failed").and_then(Value::as_str) == Some("ignore"),
+            "Codecov `{section}` status must retain its informational {target} target and {threshold} threshold"
+        );
+    }
+    Ok(())
+}
+
+fn coverage_baseline_contract(
+    coverage_job: &str,
+    coverage_yaml_job: &Value,
+    justfile: &str,
+) -> Result<()> {
+    ensure!(
+        mapping_value(coverage_yaml_job, "continue-on-error").is_none(),
+        "nightly/manual coverage baseline enforcement must remain job-blocking"
+    );
+    ensure!(
+        coverage_job.contains("just coverage-proof \"origin/$base_ref\""),
+        "nightly/manual coverage must execute the shared baseline proof recipe"
+    );
+    let recipe_start = justfile
+        .find("coverage-proof base='origin/main':")
+        .ok_or_else(|| anyhow!("justfile must define the workspace coverage proof recipe"))?;
+    let recipe_tail = &justfile[recipe_start..];
+    let recipe_end =
+        recipe_tail.find("\n# Generate route-selected coverage").unwrap_or(recipe_tail.len());
+    let recipe = &recipe_tail[..recipe_end];
+    for required in [
+        "cargo xtask coverage-baseline",
+        "--codecov codecov.yml",
+        "--receipt target/receipts/quality/coverage-baseline.json",
+        "cargo xtask quality-gate",
+        "--mode enforce-patch-coverage",
+        "--receipt target/receipts/quality/quality-gate-coverage.json",
+        "--summary target/receipts/quality/quality-gate-coverage.md",
+    ] {
+        ensure!(recipe.contains(required), "coverage proof recipe must contain `{required}`");
+    }
+    ensure!(
+        recipe.matches("--mode enforce-patch-coverage").count() == 2,
+        "coverage proof recipe must enforce the patch gate on write and check passes"
+    );
     Ok(())
 }
 
@@ -978,11 +1250,7 @@ fn workflow_step<'a>(content: &'a str, name: &str) -> Option<&'a str> {
         })
         .find_map(
             |(offset, line)| {
-                if line.trim_start().starts_with("- name:") {
-                    Some(offset)
-                } else {
-                    None
-                }
+                if line.trim_start().starts_with("- name:") { Some(offset) } else { None }
             },
         )
         .unwrap_or(rest.len());

@@ -362,7 +362,7 @@ or release readiness.
 - Scope matches PR title:
 - Files touched are expected:
 - No duplicate coverage upload lane:
-- Codecov patch gate remains blocking; project coverage remains burn-down:
+- Codecov patch gate remains advisory; project coverage remains burn-down:
 - Codecov comments remain disabled:
 - Coverage / Test Analytics distinction preserved:
 - Local validation:

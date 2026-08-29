@@ -42,8 +42,8 @@ paths = [
   "tree-sitter-perl/**",
 ]
 lanes = ["pr_smoke", "merge_gate_shards", "ripr_advisory"]
-deep_lanes = ["mutation", "fuzz", "coverage"]
-labels = ["ci:parser", "ci:mutation", "ci:coverage"]
+deep_lanes = ["mutation", "fuzz"]
+labels = ["ci:parser", "ci:mutation"]
 
 # -----------------------------------------------------------------------------
 # LSP provider risk: LSP, completion, diagnostics, navigation, code action,
