@@ -45,7 +45,7 @@ The repository has no executable `.spec` graph validator and no Gherkin/
 feature-status generator on current main (recorded as the ledger evolution in
 `context.md`). Do not invent a generated receipt or claim a missing tool
 passed. From the candidate worktree, run the following PowerShell check twice
-after the files are complete. It enforces: the exact three files; required
+after the files are complete. It reads the exact three packet files and enforces: required
 required headings; required contract terms (authority identities, registry
 vocabulary, profile names, evidence-chain owners, schema/schema-path terms,
 outcome ladder terms); the exact forty-two host-qualified scenario IDs bound
@@ -54,7 +54,12 @@ rail); and all twenty-two falsifiers with exact scenario/kind/verdict text in
 fixed order. Exact-string comparisons are deliberately case-sensitive
 (`-cmatch`, `-cne`, `-CaseSensitive`). Its changed-path assertion unions the
 candidate patch with unstaged/staged/untracked paths fail-closed and requires
-that union to equal the exact three-file set.
+that union to equal this two-file repair set (`acceptance.md` and `checklist.md`).
+This is not a provenance checker:
+it does not resolve Markdown links or inspect source ownership, schema emitters,
+validators, adapters, or generated projections. Those claims remain explicitly
+bounded in `acceptance.md` and require source/link review or a future executable
+owner proof.
 
 ```powershell
 function Get-SpecStatusPaths {
@@ -88,10 +93,10 @@ function Get-SpecStatusPaths {
   for ($i = 0; $i -lt $records.Count; $i++) {
     $record = [string]$records[$i]
     if ($record.Length -lt 4 -or $record[2] -ne ' ' -or $record.Substring(0,2) -notmatch '^[ MADRCU?!]{2}$') { throw 'malformed porcelain record' }
-    $found.Add($record.Substring(3))
+    $found.Add($record.Substring(3).Replace('\', '/'))
     if ($record.Substring(0,2) -match '[RC]') {
       if ($i + 1 -ge $records.Count -or [string]::IsNullOrEmpty($records[$i + 1])) { throw 'rename/copy record has no source path' }
-      $found.Add([string]$records[++$i])
+      $found.Add(([string]$records[++$i]).Replace('\', '/'))
     }
   }
   return @($found)
@@ -200,11 +205,10 @@ for ($i = 0; $i -lt $expectedRows.Count; $i++) {
   }
 }
 
-# Bind the proof to the explicit candidate range. Concurrent lanes move
-# origin/main freely, so the base anchors at the merge-base with HEAD: with a
-# conflict-free candidate on a fast-forwarding main that is exactly the
-# branch-point commit, independent of when other lanes land.
-$candidateBaseRef = 'origin/main'
+# Bind the proof to PR #12965's verified base. A moving origin/main may contain
+# unrelated work from concurrent lanes; the PR base is the compare authority
+# for this bounded repair.
+$candidateBaseRef = '1c274cfcc6f5538f00e9b0d725c7be799c5bcd21'
 $candidateHeadRef = 'HEAD'
 $candidateBase = (& git merge-base $candidateBaseRef $candidateHeadRef 2>&1 | Select-Object -Last 1)
 $candidateHead = (& git rev-parse --verify "$candidateHeadRef^{commit}" 2>&1).Trim()
@@ -226,7 +230,6 @@ $changed = @($rangePaths + $worktreePaths + $cachedPaths + (Get-SpecStatusPaths)
 $expected = @(
   '.spec/10815-coc-bdd-journeys/acceptance.md'
   '.spec/10815-coc-bdd-journeys/checklist.md'
-  '.spec/10815-coc-bdd-journeys/context.md'
 )
 if ($changed.Count -ne $expected.Count -or (Compare-Object -CaseSensitive $changed $expected)) { throw 'unexpected changed paths' }
 'SPEC_10815_STRUCTURAL_CHECK=PASS'
@@ -237,6 +240,14 @@ The proof must execute the checker twice with fingerprinted inputs, using
 this wrapper around the exact checker body above:
 
 ```powershell
+function Get-SpecSha256([string]$path) {
+  $sha = [Security.Cryptography.SHA256]::Create()
+  try {
+    return ([BitConverter]::ToString($sha.ComputeHash([IO.File]::ReadAllBytes($path)))).Replace('-', '')
+  } finally {
+    $sha.Dispose()
+  }
+}
 function Get-SpecFingerprints {
   $expected = @(
     '.spec/10815-coc-bdd-journeys/acceptance.md'
@@ -245,7 +256,7 @@ function Get-SpecFingerprints {
   )
   return @($expected | ForEach-Object {
     if (-not (Test-Path -LiteralPath $_ -PathType Leaf)) { throw "missing spec file: $_" }
-    "$_=$((Get-FileHash -Algorithm SHA256 -LiteralPath $_ -ErrorAction Stop).Hash)"
+    "$_=$(Get-SpecSha256 $_)"
   })
 }
 $ErrorActionPreference = 'Stop'
@@ -266,8 +277,8 @@ try {
   foreach ($captured in @($tmp1, $tmp2)) {
     if (-not (Test-Path -LiteralPath $captured -PathType Leaf)) { throw "checker output capture failed: $captured" }
   }
-  $h1 = (Get-FileHash -Algorithm SHA256 -LiteralPath $tmp1 -ErrorAction Stop).Hash
-  $h2 = (Get-FileHash -Algorithm SHA256 -LiteralPath $tmp2 -ErrorAction Stop).Hash
+  $h1 = Get-SpecSha256 $tmp1
+  $h2 = Get-SpecSha256 $tmp2
   if ($h1 -cne $h2) { throw 'second run is not deterministic' }
 } finally {
   Remove-Item -LiteralPath $tmpDir -Recurse -Force -ErrorAction SilentlyContinue

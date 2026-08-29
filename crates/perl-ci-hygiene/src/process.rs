@@ -1,5 +1,6 @@
 use color_eyre::eyre::{Context, Result};
 use std::env;
+use std::ffi::OsStr;
 use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -192,14 +193,132 @@ pub(crate) fn command_status_strict(
 }
 
 pub(crate) fn command_exists(command: &str) -> bool {
+    let path = env::var_os("PATH");
+    command_exists_in_path(command, path.as_deref())
+}
+
+fn command_exists_in_path(command: &str, path: Option<&OsStr>) -> bool {
     #[cfg(windows)]
     let suffixes: &[&str] = &[".exe", ".cmd", ".bat", ""];
     #[cfg(not(windows))]
     let suffixes: &[&str] = &[""];
-    env::split_paths(&env::var_os("PATH").unwrap_or_default())
-        .any(|dir| suffixes.iter().any(|ext| dir.join(format!("{command}{ext}")).exists()))
+    let Some(path) = path else {
+        return false;
+    };
+
+    env::split_paths(path)
+        .any(|dir| suffixes.iter().any(|ext| dir.join(format!("{command}{ext}")).is_file()))
 }
 
 pub(crate) fn command_output_lines(output: &str) -> Vec<String> {
     output.lines().map(str::trim).filter(|line| !line.is_empty()).map(ToString::to_string).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::command_exists_in_path;
+    use std::env;
+    use std::error::Error;
+    use std::ffi::OsString;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    type TestResult<T = ()> = Result<T, Box<dyn Error>>;
+
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new(label: &str) -> TestResult<Self> {
+            let nanos = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+            let path = env::temp_dir().join(format!(
+                "perl-ci-hygiene-command-exists-{label}-{}-{nanos}",
+                std::process::id()
+            ));
+            fs::create_dir_all(&path)?;
+            Ok(Self(path))
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn command_candidate_name(command: &str) -> String {
+        #[cfg(windows)]
+        {
+            format!("{command}.exe")
+        }
+        #[cfg(not(windows))]
+        {
+            command.to_owned()
+        }
+    }
+
+    fn joined_path(paths: &[&Path]) -> TestResult<OsString> {
+        Ok(env::join_paths(paths.iter().copied())?)
+    }
+
+    #[test]
+    fn command_exists_in_path_rejects_directory_candidate() -> TestResult {
+        let temp = TempDir::new("directory-only")?;
+        let command = "ci-hygiene-probe";
+        fs::create_dir(temp.path().join(command_candidate_name(command)))?;
+        let path = joined_path(&[temp.path()])?;
+
+        assert!(!command_exists_in_path(command, Some(path.as_os_str())));
+        Ok(())
+    }
+
+    #[test]
+    fn command_exists_in_path_accepts_regular_file_candidate() -> TestResult {
+        let temp = TempDir::new("regular-file")?;
+        let command = "ci-hygiene-probe";
+        fs::write(temp.path().join(command_candidate_name(command)), b"")?;
+        let path = joined_path(&[temp.path()])?;
+
+        assert!(command_exists_in_path(command, Some(path.as_os_str())));
+        Ok(())
+    }
+
+    #[test]
+    fn command_exists_in_path_skips_missing_path_entry() -> TestResult {
+        let missing_entry_root = TempDir::new("missing-before-file")?;
+        let regular_file_candidate = TempDir::new("file-after-missing")?;
+        let command = "ci-hygiene-probe";
+        let missing_entry = missing_entry_root.path().join("not-created");
+        fs::write(regular_file_candidate.path().join(command_candidate_name(command)), b"")?;
+        let path = joined_path(&[missing_entry.as_path(), regular_file_candidate.path()])?;
+
+        assert!(command_exists_in_path(command, Some(path.as_os_str())));
+        Ok(())
+    }
+
+    #[test]
+    fn command_exists_in_path_continues_past_directory_candidate() -> TestResult {
+        let directory_candidate = TempDir::new("directory-before-file")?;
+        let regular_file_candidate = TempDir::new("file-after-directory")?;
+        let command = "ci-hygiene-probe";
+        let candidate_name = command_candidate_name(command);
+        fs::create_dir(directory_candidate.path().join(&candidate_name))?;
+        let regular_file = regular_file_candidate.path().join(candidate_name);
+        fs::write(&regular_file, b"")?;
+        let path = joined_path(&[directory_candidate.path(), regular_file_candidate.path()])?;
+
+        assert!(command_exists_in_path(command, Some(path.as_os_str())));
+        fs::remove_file(regular_file)?;
+        assert!(!command_exists_in_path(command, Some(path.as_os_str())));
+        Ok(())
+    }
+
+    #[test]
+    fn command_exists_in_path_returns_false_without_path() {
+        assert!(!command_exists_in_path("ci-hygiene-probe", None));
+    }
 }
