@@ -1,0 +1,9 @@
+project: vscode
+component: Editor behavior
+kind: Fixed
+body: "Server binary downloads now stop after five redirects with a \"Too many redirects\" error instead of following a redirect chain indefinitely; an error while auto-populating a newly created Perl file is now reported to the output channel instead of escaping the file-creation handler; and test discovery stops after 500 .t files so a large workspace no longer freezes the extension host."
+time: 2026-07-27T20:07:15Z
+custom:
+  PR: "5141"
+  Slug: batch-19-fixes-extension
+  Breaking: "no"
