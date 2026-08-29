@@ -10,6 +10,22 @@ use super::{
     format_recovery_shape_note, replace_parser_status_block, short_day,
 };
 
+/// Row label for the generated `corpus_audit` NodeKind projection.
+///
+/// The generic "Node-kind coverage" wording invited denominator substitution:
+/// it reads as if the parser is proven against a NodeKind population, when the
+/// audit answers the narrower question of which canonical variant names were
+/// observed at all in the repo-owned corpus it parsed (#13742).
+const NODEKIND_ROW_LABEL: &str = "Broad-corpus NodeKind reachability";
+
+/// Bounded meaning of that row's numerator.
+///
+/// Names what `corpus_audit` actually counts and excludes the two readings the
+/// old label allowed: authored parser-accuracy gold (#11583) and an occurrence
+/// or case/file count. Kept separate from [`format_nodekind_gap_note`] so the
+/// actionable/recovery-only gap detail stays intact behind it.
+const NODEKIND_SCOPE_NOTE: &str = "unique canonical NodeKind variants observed at least once in the current project-corpus audit; not parser-accuracy gold and not an occurrence count";
+
 pub(super) fn generate_parser_status(metrics: &ParserMetrics, original: &str) -> Result<String> {
     let system_row = metrics.system_receipt.as_ref().map_or_else(
         || {
@@ -63,8 +79,9 @@ pub(super) fn generate_parser_status(metrics: &ParserMetrics, original: &str) ->
 
     let nodekind_row = metrics.project_corpus.as_ref().map_or_else(
         || {
-            "| **Node-kind coverage** | UNVERIFIED | live repo scan unavailable | `corpus_audit` |"
-                .to_string()
+            format!(
+                "| **{NODEKIND_ROW_LABEL}** | UNVERIFIED | {NODEKIND_SCOPE_NOTE}; live repo scan unavailable | `corpus_audit` |"
+            )
         },
         |summary| {
             let pct = if summary.nodekind_total == 0 {
@@ -74,8 +91,13 @@ pub(super) fn generate_parser_status(metrics: &ParserMetrics, original: &str) ->
             };
             let gap_note = format_nodekind_gap_note(summary);
             format!(
-                "| **Node-kind coverage** | {}/{} ({:.1}%) | {} | `corpus_audit` |",
-                summary.nodekind_covered, summary.nodekind_total, pct, gap_note,
+                "| **{}** | {}/{} ({:.1}%) | {}; {} | `corpus_audit` |",
+                NODEKIND_ROW_LABEL,
+                summary.nodekind_covered,
+                summary.nodekind_total,
+                pct,
+                NODEKIND_SCOPE_NOTE,
+                gap_note,
             )
         },
     );

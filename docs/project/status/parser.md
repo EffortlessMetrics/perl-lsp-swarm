@@ -17,7 +17,7 @@
 | Metric | Value | Notes | Source |
 | --- | --- | --- | --- |
 <!-- BEGIN: PARSER_NODEKIND_ROW -->
-| **Node-kind coverage** | 73/76 (96.1%) | 0 actionable never-seen; 3 recovery-only allowlisted | `corpus_audit` |
+| **Project-corpus NodeKind reachability** | 73/76 (96.1%) | unique canonical NodeKind variants observed at least once in the broad project-corpus audit this row reports; extraction skips files that do not decode as UTF-8; not parser-accuracy gold and not an occurrence count; 0 actionable never-seen; 3 recovery-only allowlisted | `corpus_audit` |
 <!-- END: PARSER_NODEKIND_ROW -->
 <!-- BEGIN: PARSER_RELIABILITY_ROW -->
 | **Reliability** | Ubuntu: 48 unread / CPAN: 6 unread / Project: 0 timeout, 0 panic, 0 unread | -- | `.ci/*-baseline.json` |

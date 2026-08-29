@@ -161,6 +161,134 @@ fn test_parser_nodekind_row_renders() -> Result<()> {
     Ok(())
 }
 
+/// The generated row must name what `corpus_audit` actually measured.
+///
+/// The old label, `Node-kind coverage`, reads as a proven-coverage claim over a
+/// NodeKind population and makes denominator substitution cheap. A wrong
+/// implementation this test rejects is one that renames the row but leaves the
+/// numerator unbounded, or that bounds it while dropping the gap detail (#13742).
+#[test]
+fn test_parser_nodekind_row_is_named_and_bounded_as_broad_corpus_reachability() -> Result<()> {
+    let summary = super::super::super::corpus_audit::StatusSummary {
+        total_files: 91,
+        ok_files: 91,
+        error_files: 0,
+        timeout_files: 0,
+        panic_files: 0,
+        test_corpus_files: 69,
+        perl_corpus_files: 22,
+        nodekind_covered: 65,
+        nodekind_total: 69,
+        nodekind_never_seen: 3,
+        nodekind_allowlisted_never_seen: 1,
+        nodekind_actionable_never_seen: 2,
+        ga_covered: 12,
+        ga_total: 12,
+    };
+    let metrics = ParserMetrics {
+        syntax_sections: 611,
+        system_receipt: None,
+        cpan_receipt: None,
+        project_corpus: Some(summary),
+        common_corpus_receipt: None,
+        common_corpus_pinned: 10,
+        performance_scorecard: None,
+        parser_accuracy: None,
+        token_metrics: token::token_metrics_fixture(),
+    };
+    let row = nodekind_row_from(&metrics)?;
+
+    assert!(
+        row.contains("**Broad-corpus NodeKind reachability**"),
+        "row must name the metric as broad-corpus reachability, got: {row}"
+    );
+    assert!(
+        !row.contains("Node-kind coverage"),
+        "unqualified `Node-kind coverage` wording must not survive, got: {row}"
+    );
+    assert!(
+        row.contains("unique canonical NodeKind variants observed at least once"),
+        "note must identify the numerator as unique observed variants, got: {row}"
+    );
+    assert!(
+        row.contains("current project-corpus audit"),
+        "note must name the project-corpus audit as the population, got: {row}"
+    );
+    assert!(
+        row.contains("not parser-accuracy gold"),
+        "note must exclude parser-accuracy gold meaning, got: {row}"
+    );
+    assert!(
+        row.contains("not an occurrence count"),
+        "note must exclude occurrence-count meaning, got: {row}"
+    );
+
+    // The rename is presentation-only: value, gap classification, and source
+    // must survive it unchanged.
+    assert!(row.contains("65/69 (94.2%)"), "row must preserve the audit value, got: {row}");
+    assert!(
+        row.contains("2 actionable never-seen; 1 recovery-only allowlisted; 3 total never-seen"),
+        "row must preserve the existing gap detail, got: {row}"
+    );
+    assert!(row.contains("`corpus_audit`"), "row must preserve its source column, got: {row}");
+    Ok(())
+}
+
+/// Without a live repo scan the row states the metric's bounded meaning and
+/// reports `UNVERIFIED` — it must not fabricate a ratio for a population it
+/// never observed (#13742).
+#[test]
+fn test_parser_nodekind_row_unverified_states_scope_without_a_ratio() -> Result<()> {
+    let metrics = ParserMetrics {
+        syntax_sections: 611,
+        system_receipt: None,
+        cpan_receipt: None,
+        project_corpus: None,
+        common_corpus_receipt: None,
+        common_corpus_pinned: 10,
+        performance_scorecard: None,
+        parser_accuracy: None,
+        token_metrics: token::token_metrics_fixture(),
+    };
+    let row = nodekind_row_from(&metrics)?;
+
+    assert!(
+        row.contains("**Broad-corpus NodeKind reachability**"),
+        "unverified row must use the same bounded label, got: {row}"
+    );
+    assert!(
+        !row.contains("Node-kind coverage"),
+        "unverified row must not use the old label: {row}"
+    );
+    assert!(row.contains("UNVERIFIED"), "unverified row must report UNVERIFIED, got: {row}");
+    assert!(
+        row.contains("live repo scan unavailable"),
+        "unverified row must keep its existing reason, got: {row}"
+    );
+    assert!(
+        row.contains("not parser-accuracy gold and not an occurrence count"),
+        "unverified row must still bound the metric's meaning, got: {row}"
+    );
+    assert!(!row.contains('%'), "unverified row must not fabricate a ratio, got: {row}");
+    Ok(())
+}
+
+/// Extract the rendered `PARSER_NODEKIND_ROW` block so a row assertion cannot
+/// be satisfied by text some other row happens to contain.
+fn nodekind_row_from(metrics: &ParserMetrics) -> Result<String> {
+    let rendered = generate_parser_status(metrics, parser_status_template())?;
+    let begin = "<!-- BEGIN: PARSER_NODEKIND_ROW -->";
+    let end = "<!-- END: PARSER_NODEKIND_ROW -->";
+    let start = rendered
+        .find(begin)
+        .ok_or_else(|| color_eyre::eyre::eyre!("rendered status is missing {begin}"))?
+        + begin.len();
+    let stop = rendered
+        .find(end)
+        .ok_or_else(|| color_eyre::eyre::eyre!("rendered status is missing {end}"))?;
+    Ok(rendered[start..stop].trim().to_string())
+}
+
 #[test]
 fn test_nodekind_gap_note_distinguishes_actionable_and_allowlisted() {
     let mut summary = super::super::super::corpus_audit::StatusSummary {
