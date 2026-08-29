@@ -296,8 +296,9 @@ fn check_reports_fatal_and_earlier_recovered_errors() -> Result<(), Box<dyn std:
         .arg(file_str)
         .assert()
         .failure()
-        // the fatal condition
-        .stdout(predicates::str::contains("Nesting depth limit exceeded"))
+        // the fatal condition (the parser may report structural nesting or
+        // production recursion exhaustion for this same boundary)
+        .stdout(predicates::str::contains("depth limit exceeded"))
         // and the earlier recoverable one, which the old code dropped
         .stdout(predicates::str::contains("Missing operand"));
 
