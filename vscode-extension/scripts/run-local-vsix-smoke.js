@@ -756,6 +756,20 @@ function checkVerdictWord(status) {
 }
 
 /**
+ * Every fact this projection quotes is one line.
+ *
+ * Receipt text is not authored here — it carries subprocess stderr, file paths,
+ * and error messages — so a line break inside it would otherwise let a stage
+ * reason open a heading, a list, or a second table in the job summary, above
+ * the authoritative one. Normalizing at the single point where receipt strings
+ * enter the projection keeps every downstream surface (headline, annotations,
+ * table cells, remaining-proof bullets) structurally safe by construction.
+ */
+function singleLine(value) {
+  return String(value).replace(/\s+/g, ' ').trim();
+}
+
+/**
  * Why a stage reached its verdict, in one line, without repeating the verdict.
  *
  * @param {SmokeStage | undefined} stage
@@ -766,19 +780,19 @@ function checkStageDetail(stage) {
   }
   const parts = [];
   if (stage.classification && stage.classification !== stage.status) {
-    parts.push(stage.classification);
+    parts.push(singleLine(stage.classification));
   }
   if (stage.transition_state) {
-    parts.push(stage.transition_state);
+    parts.push(singleLine(stage.transition_state));
   }
   if (stage.reason) {
-    parts.push(stage.reason);
+    parts.push(singleLine(stage.reason));
   }
   if (typeof stage.exit_code === 'number') {
     parts.push(`exit ${stage.exit_code}`);
   }
   for (const violation of Array.isArray(stage.violations) ? stage.violations : []) {
-    parts.push(violation);
+    parts.push(singleLine(violation));
   }
   // The stage label and verdict already carry the fact; a stage that recorded
   // nothing further gets a placeholder rather than invented prose.
@@ -818,7 +832,7 @@ function checkBehavioralPhrase(stage) {
   if (stage.status === 'pass' || stage.status === 'failed' || !stage.reason) {
     return phrase;
   }
-  return `${phrase}: ${stage.reason}`;
+  return `${phrase}: ${singleLine(stage.reason)}`;
 }
 
 /**
@@ -829,10 +843,13 @@ function checkHeadline(receipt) {
   const stages = receipt.stages ?? {};
   const segments = [checkPackagePhrase(stages), checkBehavioralPhrase(stages.behavioral_smoke)];
   if (receipt.instrument_failure) {
-    segments.push(`smoke instrument failed: ${receipt.instrument_failure}`);
+    segments.push(`smoke instrument failed: ${singleLine(receipt.instrument_failure)}`);
   }
-  if (receipt.cleanup_failure) {
-    segments.push(`cleanup failed: ${Object.keys(receipt.cleanup_failure).sort().join(', ')}`);
+  // An empty object is not a cleanup failure: naming one with nothing after the
+  // colon would assert a failure the receipt does not record.
+  const cleanupFailures = Object.keys(receipt.cleanup_failure ?? {}).sort();
+  if (cleanupFailures.length > 0) {
+    segments.push(`cleanup failed: ${cleanupFailures.join(', ')}`);
   }
   return segments.join('; ');
 }
@@ -935,8 +952,16 @@ function publishCheckSummary(receipt, options = {}) {
   } = options;
 
   const summary = composeCheckSummary(receipt);
+  // The two channels fail independently: a closed stdout (EPIPE) must not also
+  // cost the job summary, which writes to a different destination entirely.
   for (const annotation of summary.annotations) {
-    writeAnnotation(annotation);
+    try {
+      writeAnnotation(annotation);
+    } catch (error) {
+      writeDiagnostic(
+        `Unable to emit a smoke stage annotation: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
   }
   if (summaryPath) {
     try {

@@ -1637,7 +1637,7 @@ void test('every stage present in the receipt reaches the summary table', () => 
   }
 });
 
-void test('annotation and table content is escaped rather than able to forge structure', () => {
+void test('stage detail reaches annotations and table cells without forging structure', () => {
   const summary = composeCheckSummary(
     checkReceipt({
       overall: 'failed',
@@ -1657,10 +1657,11 @@ void test('annotation and table content is escaped rather than able to forge str
     line.startsWith('::error title=package inventory failed'),
   );
   assert.ok(inventoryAnnotation, 'the failing inventory stage must carry an error annotation');
-  // Message data escapes %, CR and LF, so receipt text cannot forge a second
-  // workflow command. ':' and ',' are literal in message position and are only
-  // escaped inside a property value.
-  assert.match(inventoryAnnotation, /grew 50%25 ,: over%0Abaseline/);
+  // Line breaks are already normalized out of receipt text as it enters the
+  // projection, so the annotation carries one line. The '%' escape still
+  // applies; ':' and ',' are literal in message position and are only escaped
+  // inside a property value.
+  assert.match(inventoryAnnotation, /grew 50%25 ,: over baseline/);
   for (const annotation of summary.annotations) {
     assert.doesNotMatch(annotation, /[\r\n]/);
   }
@@ -1813,4 +1814,81 @@ void test('multi-line stage detail cannot reshape the summary table', () => {
   // One header row plus exactly the five stage rows.
   assert.equal(tableRows.length, 6);
   assert.match(summary.markdown, /host failed \\\| forged \\\| row \\\| after restart/);
+});
+
+// Receipt text is not authored by this projection: it carries subprocess
+// stderr, file paths, and error messages. Every surface that quotes it must
+// stay structurally intact, not just the table cell.
+
+void test('an instrument failure cannot forge a heading or a table in the summary', () => {
+  const summary = composeCheckSummary(
+    checkReceipt({
+      overall: 'not_proven',
+      instrument_failure:
+        'boom\n\n### FORGED HEADING\n\n| stage | result | detail |\n| --- | --- | --- |\n| behavioral smoke | `pass` | FORGED ROW |',
+    }),
+  );
+
+  // The payload survives as inert text — evidence is not discarded — but it
+  // cannot open a heading or a table, because it no longer starts a line.
+  const lines = summary.markdown.split('\n');
+  assert.equal(lines.filter((line) => line.startsWith('#')).length, 1);
+  // Exactly one table: its header, its separator, and the five stage rows.
+  assert.equal(lines.filter((line) => line.startsWith('|')).length, 7);
+  assert.match(summary.headline, /smoke instrument failed: boom ### FORGED HEADING/);
+  assert.match(summary.headline, /FORGED ROW/);
+  assert.equal(summary.headline.includes('\n'), false);
+});
+
+void test('a remaining-proof reason cannot forge structure in the summary', () => {
+  const summary = composeCheckSummary(
+    checkReceipt({
+      overall: 'not_proven',
+      stages: {
+        behavioral_smoke: {
+          status: 'not_run',
+          reason: 'declined\n\n### FORGED FROM REMAINING PROOF\n',
+        },
+      },
+    }),
+  );
+
+  assert.doesNotMatch(summary.markdown, /\n### FORGED FROM REMAINING PROOF/);
+  assert.equal(summary.markdown.split('\n').filter((line) => line.startsWith('#')).length, 1);
+  assert.match(
+    summary.markdown,
+    /- behavioral smoke \(not_run\): declined ### FORGED FROM REMAINING PROOF/,
+  );
+});
+
+void test('an empty cleanup_failure object does not assert a cleanup failure', () => {
+  const summary = composeCheckSummary(checkReceipt({ cleanup_failure: {} }));
+
+  assert.equal(
+    summary.headline,
+    'package creation and package inventory passed; behavioral smoke passed',
+  );
+  assert.doesNotMatch(summary.headline, /cleanup failed/);
+});
+
+void test('a failing annotation write does not cost the job summary', () => {
+  const diagnostics = [];
+  const appended = [];
+  let attempts = 0;
+
+  const summary = publishCheckSummary(checkReceipt(), {
+    summaryPath: '/tmp/step-summary',
+    appendSummary: (target, text) => appended.push([target, text]),
+    writeAnnotation: () => {
+      attempts += 1;
+      throw new Error('EPIPE: broken pipe');
+    },
+    writeDiagnostic: (line) => diagnostics.push(line),
+  });
+
+  // Every annotation was attempted, and the independent summary channel still ran.
+  assert.equal(attempts, summary.annotations.length);
+  assert.equal(appended.length, 1);
+  assert.equal(appended[0][1], summary.markdown);
+  assert.match(diagnostics[0], /Unable to emit a smoke stage annotation: EPIPE/);
 });
