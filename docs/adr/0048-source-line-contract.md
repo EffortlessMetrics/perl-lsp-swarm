@@ -21,6 +21,7 @@ Measured on current `main` (`e78f2a2`), the row models actually present are:
 | `LineStartsCache::new` (`line_index.rs`) | breaks | breaks | **breaks** | content |
 | `LineStartsCache::new_rope` (Ropey 1.6.1) | breaks | breaks | **breaks** | **breaks** |
 | `LineIndex::new` (`perl-position-tracking`) | breaks | breaks | **breaks** | content |
+| `PositionMapper::byte_to_lsp_pos` (`mapper.rs`) | breaks | breaks | **breaks** | **breaks** |
 | `offset_to_utf16_line_col` (`convert.rs`) | breaks | breaks | content | content |
 | `perl-line-index::LineIndex::new` | breaks | breaks | content | content |
 
@@ -28,6 +29,10 @@ That is **three** distinct models, not two. Ropey 1.6.1 resolves with default
 features, which enable `unicode_lines`, so every Rope-backed row query silently
 recognizes eight break forms. A `U+2028` inside a Perl string literal or comment
 therefore shifts row identity for Rope-backed consumers and for nobody else.
+
+`PositionMapper` matters most of these: it is the provider-facing mapper, and
+`byte_to_lsp_pos` resolves rows with `Rope::byte_to_line`, so the Ropey model
+reaches LSP positions that editors actually consume.
 
 The divergence was not merely undetected — it was *masked*. The committed
 property `prop_text_and_rope_offsets_agree`
@@ -184,6 +189,11 @@ Costs and follow-up obligations:
   contract rows, and the exact legacy divergence map as a recurrence gate.
 
 ```bash
-cargo test -p perl-position-tracking --locked source_line_policy_authority
-cargo test -p perl-position-tracking --locked source_lines_chunk_stability
+cargo test -p perl-position-tracking --locked --test source_line_policy_authority
+cargo test -p perl-position-tracking --locked --test source_lines_chunk_stability
 ```
+
+`--test <NAME>` selects the integration target. A bare positional argument is a
+*filter on test-function names*, and since no function here contains its file's
+name, the positional form runs zero tests and still exits `0` — green output
+proving nothing.

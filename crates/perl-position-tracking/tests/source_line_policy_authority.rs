@@ -26,8 +26,8 @@
 //! owner-assigned divergence into red `main`. It is asserted explicitly instead.
 
 use perl_position_tracking::{
-    LineIndex, LineRecord, LineRecordTable, LineStartsCache, SOURCE_LINE_POLICY_ID, SeparatorKind,
-    offset_to_utf16_line_col,
+    LineIndex, LineRecord, LineRecordTable, LineStartsCache, PositionMapper, SOURCE_LINE_POLICY_ID,
+    SeparatorKind, offset_to_utf16_line_col,
 };
 use ropey::Rope;
 use std::str::FromStr;
@@ -60,15 +60,49 @@ fn bounds(record: LineRecord) -> (usize, usize, usize) {
 }
 
 /// Row index reported for the final byte of `source` by each legacy surface.
-fn legacy_last_rows(source: &str) -> (u32, u32, u32, u32) {
+///
+/// `PositionMapper` is included because it is the most production-reachable of
+/// these: LSP providers map through `byte_to_lsp_pos`, which resolves rows with
+/// `Rope::byte_to_line` (`mapper.rs`). Classifying it in the ADR without gating
+/// it here would leave a real provider-facing surface unpinned.
+fn legacy_last_rows(source: &str) -> LegacyRows {
     let rope = Rope::from_str(source);
     let end = source.len();
-    (
-        LineStartsCache::new(source).offset_to_position(source, end).0,
-        LineStartsCache::new_rope(&rope).offset_to_position_rope(&rope, end).0,
-        LineIndex::new(source.to_string()).offset_to_position(end).0,
-        offset_to_utf16_line_col(source, end).0,
-    )
+    LegacyRows {
+        str_cache: LineStartsCache::new(source).offset_to_position(source, end).0,
+        rope_cache: LineStartsCache::new_rope(&rope).offset_to_position_rope(&rope, end).0,
+        line_index: LineIndex::new(source.to_string()).offset_to_position(end).0,
+        position_mapper: PositionMapper::new(source).byte_to_lsp_pos(end).line,
+        convert: offset_to_utf16_line_col(source, end).0,
+    }
+}
+
+/// Row index each legacy surface reports for the same byte offset.
+#[derive(Debug, PartialEq, Eq)]
+struct LegacyRows {
+    /// `LineStartsCache::new` — local scan, CR-aware.
+    str_cache: u32,
+    /// `LineStartsCache::new_rope` — Ropey line model.
+    rope_cache: u32,
+    /// `LineIndex::new` — local scan, CR-aware.
+    line_index: u32,
+    /// `PositionMapper::byte_to_lsp_pos` — Ropey line model, provider-facing.
+    position_mapper: u32,
+    /// `offset_to_utf16_line_col` — LF-only.
+    convert: u32,
+}
+
+impl LegacyRows {
+    /// Every surface reporting the same row.
+    const fn all(row: u32) -> Self {
+        Self {
+            str_cache: row,
+            rope_cache: row,
+            line_index: row,
+            position_mapper: row,
+            convert: row,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -172,42 +206,45 @@ fn bom_is_row_content_not_a_boundary() {
 // Legacy divergence map — behavior ADR-0048 rules against, pinned for #8687
 // ---------------------------------------------------------------------------
 
-/// All four legacy surfaces already agree with the ruling on LF and CRLF. Only
+/// All five legacy surfaces already agree with the ruling on LF and CRLF. Only
 /// bare CR and the Ropey-only set are contested.
 #[test]
 fn legacy_surfaces_agree_with_the_ruling_on_lf_and_crlf() {
-    assert_eq!(legacy_last_rows("a\nb"), (1, 1, 1, 1));
-    assert_eq!(legacy_last_rows("a\r\nb"), (1, 1, 1, 1));
+    assert_eq!(legacy_last_rows("a\nb"), LegacyRows::all(1));
+    assert_eq!(legacy_last_rows("a\r\nb"), LegacyRows::all(1));
 }
 
 /// PINNED DIVERGENCE (#8687): the ruling makes bare CR content, so every entry
-/// here should become `0`. Three of the four surfaces still break on it.
+/// here should become `0`. Four of the five surfaces still break on it.
 #[test]
 fn legacy_bare_cr_divergence_is_pinned() {
-    let (str_cache, rope_cache, line_index, convert) = legacy_last_rows("a\rb");
+    let rows = legacy_last_rows("a\rb");
 
-    assert_eq!(str_cache, 1, "LineStartsCache::new still breaks on bare CR");
-    assert_eq!(rope_cache, 1, "LineStartsCache::new_rope still breaks on bare CR");
-    assert_eq!(line_index, 1, "LineIndex still breaks on bare CR");
-    assert_eq!(convert, 0, "offset_to_utf16_line_col already matches the ruling");
+    assert_eq!(rows.str_cache, 1, "LineStartsCache::new still breaks on bare CR");
+    assert_eq!(rows.rope_cache, 1, "LineStartsCache::new_rope still breaks on bare CR");
+    assert_eq!(rows.line_index, 1, "LineIndex still breaks on bare CR");
+    assert_eq!(rows.position_mapper, 1, "PositionMapper still breaks on bare CR");
+    assert_eq!(rows.convert, 0, "offset_to_utf16_line_col already matches the ruling");
 
-    // The accepted contract disagrees with the first three.
+    // The accepted contract disagrees with the first four.
     assert_eq!(table("a\rb").line_count(), 1);
 }
 
-/// PINNED DIVERGENCE (#8687): only the Rope-backed constructor inherits Ropey's
+/// PINNED DIVERGENCE (#8687): only the Rope-backed surfaces inherit Ropey's
 /// Unicode line model. This is the seam masked by the fuzz corpus gap, and the
-/// one that can shift a row for a `U+2028` inside an ordinary Perl string.
+/// one that can shift a row for a `U+2028` inside an ordinary Perl string —
+/// including through `PositionMapper`, which LSP providers map with.
 #[test]
 fn legacy_ropey_only_separator_divergence_is_pinned() {
     for (name, separator) in ROPEY_ONLY_SEPARATORS {
         let source = format!("a{separator}b");
-        let (str_cache, rope_cache, line_index, convert) = legacy_last_rows(&source);
+        let rows = legacy_last_rows(&source);
 
-        assert_eq!(rope_cache, 1, "{name}: new_rope still inherits Ropey's Unicode line model");
-        assert_eq!(str_cache, 0, "{name}: LineStartsCache::new already matches the ruling");
-        assert_eq!(line_index, 0, "{name}: LineIndex already matches the ruling");
-        assert_eq!(convert, 0, "{name}: convert.rs already matches the ruling");
+        assert_eq!(rows.rope_cache, 1, "{name}: new_rope still inherits Ropey's line model");
+        assert_eq!(rows.position_mapper, 1, "{name}: PositionMapper still inherits it too");
+        assert_eq!(rows.str_cache, 0, "{name}: LineStartsCache::new already matches the ruling");
+        assert_eq!(rows.line_index, 0, "{name}: LineIndex already matches the ruling");
+        assert_eq!(rows.convert, 0, "{name}: convert.rs already matches the ruling");
 
         assert_eq!(table(&source).line_count(), 1, "{name}: accepted contract keeps one row");
     }
