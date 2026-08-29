@@ -1019,6 +1019,8 @@ mod explicit_pin_tests {
     #[test]
     fn path_candidate_with_extension_does_not_gain_pathext_suffix() -> Result<(), String> {
         let controls = tempfile::tempdir().map_err(|error| error.to_string())?;
+        // A faulty extension replacement would reinterpret `perl.cmd` as
+        // `perl.EXE`; keep that decoy present so the negative control fails.
         let misleading = controls.path().join("perl.EXE");
         fs::write(&misleading, b"path candidate").map_err(|error| error.to_string())?;
         let search_path =
@@ -1034,6 +1036,53 @@ mod explicit_pin_tests {
         };
         if !error.contains("was not found") {
             return Err(format!("unexpected failure reason: {error}"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn probe_candidate_sequence_continues_after_a_failed_probe() -> Result<(), String> {
+        let controls = tempfile::tempdir().map_err(|error| error.to_string())?;
+        let first = controls.path().join("first-perl");
+        let second = controls.path().join("second-perl");
+        fs::write(&first, b"first candidate").map_err(|error| error.to_string())?;
+        fs::write(&second, b"second candidate").map_err(|error| error.to_string())?;
+
+        let mut attempted = Vec::new();
+        let mut diagnostics = Vec::new();
+        let mut transient_failure = false;
+        let resolved = super::probe_debuggee_candidates(
+            [first.clone(), second.clone()],
+            &mut diagnostics,
+            &mut transient_failure,
+            |candidate| {
+                attempted.push(candidate.to_path_buf());
+                if candidate == first {
+                    Err(super::ProbeFailure {
+                        reason: "simulated spawn failure".to_string(),
+                        transient: false,
+                    })
+                } else {
+                    Ok(super::DebuggeePerl {
+                        binary: candidate.to_path_buf(),
+                        identity: "fixture candidate".to_string(),
+                    })
+                }
+            },
+        )
+        .ok_or("the later candidate should be selected after the first probe fails")?;
+
+        if attempted != [first.clone(), second.clone()] {
+            return Err(format!("probe sequence was {attempted:?}"));
+        }
+        if resolved.binary != second {
+            return Err(format!("unexpected selected candidate: {:?}", resolved.binary));
+        }
+        if diagnostics != [format!("{}: simulated spawn failure", first.display())] {
+            return Err(format!("unexpected probe diagnostics: {diagnostics:?}"));
+        }
+        if transient_failure {
+            return Err("deterministic fixture failure was marked transient".to_string());
         }
         Ok(())
     }
@@ -2732,6 +2781,32 @@ fn resolve_debuggee_candidate(
         .ok_or_else(|| format!("candidate {} was not found on the search path", path.display()))
 }
 
+/// Probe every eligible ambient candidate in order, preserving the operating
+/// system's PATH fall-through behavior when a candidate cannot actually be
+/// spawned.  Production callers provide the real pipe-conformance probe;
+/// tests inject a deterministic failure so the ordering contract stays
+/// independently executable.
+fn probe_debuggee_candidates<F>(
+    candidates: impl IntoIterator<Item = PathBuf>,
+    diagnostics: &mut Vec<String>,
+    transient_failure: &mut bool,
+    mut probe: F,
+) -> Option<DebuggeePerl>
+where
+    F: FnMut(&Path) -> Result<DebuggeePerl, ProbeFailure>,
+{
+    for candidate in candidates {
+        match probe(&candidate) {
+            Ok(perl) => return Some(perl),
+            Err(failure) => {
+                *transient_failure |= failure.transient;
+                diagnostics.push(format!("{}: {}", candidate.display(), failure.reason));
+            }
+        }
+    }
+    None
+}
+
 /// One uncached resolution sweep over every candidate interpreter.
 fn resolve_debuggee_perl_uncached() -> DebuggeePerlResolution {
     let explicit = std::env::var_os(DEBUGGEE_PERL_OVERRIDE_ENV).is_some();
@@ -2758,7 +2833,8 @@ fn resolve_debuggee_perl_uncached() -> DebuggeePerlResolution {
                 }
             }
         };
-        for candidate in candidates {
+        if explicit {
+            let Some(candidate) = candidates.into_iter().next() else { break };
             match probe_debuggee_perl(&candidate) {
                 Ok(perl) => {
                     return DebuggeePerlResolution {
@@ -2769,17 +2845,25 @@ fn resolve_debuggee_perl_uncached() -> DebuggeePerlResolution {
                 }
                 Err(failure) => {
                     transient_failure |= failure.transient;
-                    if explicit {
-                        diagnostics.push(format!(
-                            "{DEBUGGEE_PERL_OVERRIDE_ENV} pin {}: {}",
-                            candidate.display(),
-                            failure.reason
-                        ));
-                        break 'raw_candidates;
-                    }
-                    diagnostics.push(format!("{}: {}", candidate.display(), failure.reason));
+                    diagnostics.push(format!(
+                        "{DEBUGGEE_PERL_OVERRIDE_ENV} pin {}: {}",
+                        candidate.display(),
+                        failure.reason
+                    ));
+                    break 'raw_candidates;
                 }
             }
+        } else if let Some(perl) = probe_debuggee_candidates(
+            candidates,
+            &mut diagnostics,
+            &mut transient_failure,
+            probe_debuggee_perl,
+        ) {
+            return DebuggeePerlResolution {
+                resolved: Some(perl),
+                diagnostics,
+                transient_failure: false,
+            };
         }
     }
     DebuggeePerlResolution { resolved: None, diagnostics, transient_failure }
