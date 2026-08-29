@@ -52,11 +52,15 @@ The following findings remain valid inputs to #7384 and its leaves:
 
 ## Current Route Map
 
+The references below are current GitHub **issues** unless explicitly labelled
+as a PR. They are the subjects linked from #7384, not historical PR-number
+references from older forensic documents.
+
 | Concern from the former plan | Current #7384 owner |
 | --- | --- |
-| Strict incoming decode and message kinds | #7596, #7626, #9636 |
-| Neutral generic errors and Perl classification | #7611, #7612, controller #7599 |
-| Content-Length codec and DAP sidecar | #9638, #7602 |
+| Strict incoming decode and message kinds | [#7596](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/7596), [#7626](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/7626), [#9636](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/9636) |
+| Neutral generic errors and Perl classification | [#7611](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/7611), [#7612](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/7612), controller [#7599](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/7599) |
+| Content-Length codec and DAP sidecar | [#9638](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/9638), [#7602](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/7602) |
 | Application boundary and route authority | #9640, #9642, #7609, #7610, #9503, #9504 |
 | Ordered scheduling, priority, pressure, and freshness | #9643, #9644, #9505, #7098, #9506, #9646 |
 | Reverse requests and write-boundary delivery | #7007 / PR #7245, #7010, #8402, #9507 |
@@ -106,8 +110,11 @@ cargo xtask check-support-claims
 
 Missing or unavailable command evidence is `NOT_PROVEN`, not pass.
 
-## Rollback
+## Successor and Rollback
 
-Revert the documentation change if #7384 is explicitly replaced. Reopening one
-of the historical candidates also requires evidence that its exact claim is not
-covered by the successor controller and concrete leaves.
+Supersession survives controller replacement. If #7384 is explicitly replaced,
+update this document to name the accepted successor and its concrete leaves; do
+not restore the obsolete numbered crate-first sequence.
+
+Reopening one of the historical candidates requires evidence that its exact
+claim is not covered by #7384 or the accepted successor controller.
