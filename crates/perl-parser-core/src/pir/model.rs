@@ -135,7 +135,7 @@ impl PirSourceAnchor {
     }
 }
 
-/// Expression context modeled by PIR v0.
+/// Value context modeled by PIR.
 ///
 /// Unknown context is allowed when the compiler substrate cannot prove context
 /// without executing Perl. Unknown context is visible in receipts and is never
@@ -149,8 +149,6 @@ pub enum PirContext {
     List,
     /// Void context.
     Void,
-    /// Lvalue (assignment-target) context.
-    Lvalue,
     /// Context that cannot be proven statically.
     Unknown,
 }
@@ -163,8 +161,55 @@ impl PirContext {
             Self::Scalar => "Scalar",
             Self::List => "List",
             Self::Void => "Void",
-            Self::Lvalue => "Lvalue",
             Self::Unknown => "Unknown",
+        }
+    }
+}
+
+/// Evaluation demand is independent from the value context.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum PirEvaluationDemand {
+    /// The expression's value is consumed.
+    Value,
+    /// The expression is consumed as a boolean condition.
+    TruthTest,
+    /// The expression is consumed only for definedness.
+    DefinednessTest,
+}
+
+impl PirEvaluationDemand {
+    /// Stable name used in receipts and snapshots.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Value => "Value",
+            Self::TruthTest => "TruthTest",
+            Self::DefinednessTest => "DefinednessTest",
+        }
+    }
+}
+
+/// Access mode is independent from value context and identifies place use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum PirAccessMode {
+    /// Read a value.
+    Read,
+    /// Write a place.
+    Write,
+    /// Read and then write a place.
+    ReadModifyWrite,
+}
+
+impl PirAccessMode {
+    /// Stable name used in receipts and snapshots.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Read => "Read",
+            Self::Write => "Write",
+            Self::ReadModifyWrite => "ReadModifyWrite",
         }
     }
 }
@@ -719,6 +764,10 @@ pub struct PirNode {
     pub operation: PirOperation,
     /// Expression context, possibly `Unknown`.
     pub context: PirContext,
+    /// How the node's value is consumed.
+    pub demand: PirEvaluationDemand,
+    /// Whether the node reads or writes a place.
+    pub access: PirAccessMode,
     /// Link to a dynamic-boundary node this operation defers to, when any.
     pub dynamic_boundary: Option<PirId>,
     /// HIR scope this node belongs to, when known.
@@ -833,6 +882,10 @@ pub struct PirReceipt {
     pub operation_counts: BTreeMap<&'static str, usize>,
     /// Context counts, keyed by context name.
     pub context_counts: BTreeMap<&'static str, usize>,
+    /// Evaluation-demand counts, keyed by demand name.
+    pub demand_counts: BTreeMap<&'static str, usize>,
+    /// Access-mode counts, keyed by access name.
+    pub access_counts: BTreeMap<&'static str, usize>,
     /// Source-anchor coverage summary.
     pub source_anchor_coverage: PirAnchorCoverage,
     /// Dynamic-boundary counts, keyed by boundary-kind name.
@@ -900,8 +953,15 @@ mod tests {
         assert_eq!(PirContext::Scalar.name(), "Scalar");
         assert_eq!(PirContext::List.name(), "List");
         assert_eq!(PirContext::Void.name(), "Void");
-        assert_eq!(PirContext::Lvalue.name(), "Lvalue");
         assert_eq!(PirContext::Unknown.name(), "Unknown");
+    }
+
+    #[test]
+    fn context_demand_and_access_are_orthogonal() {
+        assert_eq!(PirEvaluationDemand::TruthTest.name(), "TruthTest");
+        assert_eq!(PirEvaluationDemand::DefinednessTest.name(), "DefinednessTest");
+        assert_eq!(PirAccessMode::ReadModifyWrite.name(), "ReadModifyWrite");
+        assert_ne!(PirContext::Scalar, PirContext::Unknown);
     }
 
     #[test]
@@ -1156,6 +1216,8 @@ mod tests {
                 edge_count: 0,
                 operation_counts: Default::default(),
                 context_counts: Default::default(),
+                demand_counts: Default::default(),
+                access_counts: Default::default(),
                 source_anchor_coverage: Default::default(),
                 dynamic_boundary_counts: Default::default(),
                 unsupported_construct_counts: Default::default(),
@@ -1174,6 +1236,8 @@ mod tests {
             source_anchor: PirSourceAnchor::explicit(loc, HirId::from_index(1)),
             operation: PirOperation::Assign,
             context: PirContext::Void,
+            demand: PirEvaluationDemand::Value,
+            access: PirAccessMode::Read,
             dynamic_boundary: None,
             scope: None,
             package_context: None,
@@ -1189,6 +1253,8 @@ mod tests {
                 edge_count: 0,
                 operation_counts: Default::default(),
                 context_counts: Default::default(),
+                demand_counts: Default::default(),
+                access_counts: Default::default(),
                 source_anchor_coverage: Default::default(),
                 dynamic_boundary_counts: Default::default(),
                 unsupported_construct_counts: Default::default(),
@@ -1207,6 +1273,8 @@ mod tests {
             source_anchor: PirSourceAnchor::explicit(loc, HirId::from_index(1)),
             operation: PirOperation::Assign,
             context: PirContext::Void,
+            demand: PirEvaluationDemand::Value,
+            access: PirAccessMode::Read,
             dynamic_boundary: None,
             scope: None,
             package_context: None,
@@ -1222,6 +1290,8 @@ mod tests {
                 edge_count: 0,
                 operation_counts: Default::default(),
                 context_counts: Default::default(),
+                demand_counts: Default::default(),
+                access_counts: Default::default(),
                 source_anchor_coverage: Default::default(),
                 dynamic_boundary_counts: Default::default(),
                 unsupported_construct_counts: Default::default(),
@@ -1246,6 +1316,8 @@ mod tests {
                 edge_count: 0,
                 operation_counts: Default::default(),
                 context_counts: Default::default(),
+                demand_counts: Default::default(),
+                access_counts: Default::default(),
                 source_anchor_coverage: Default::default(),
                 dynamic_boundary_counts: Default::default(),
                 unsupported_construct_counts: Default::default(),
