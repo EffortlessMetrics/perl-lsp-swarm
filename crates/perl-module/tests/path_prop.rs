@@ -1,10 +1,22 @@
 use perl_module::{
-    file_path_to_module_name, module_name_to_path, module_path_to_name, normalize_package_separator,
+    file_path_to_module_name, is_lookup_safe_module_name, module_name_to_path, module_path_to_name,
+    normalize_package_separator,
 };
 use proptest::prelude::*;
 
 fn module_segment_strategy() -> impl Strategy<Value = String> {
-    ("[A-Za-z_]", "[A-Za-z0-9_]{0,7}").prop_map(|(head, tail)| format!("{head}{tail}"))
+    (
+        prop::sample::select(vec!['A', 'z', '_', 'λ', 'Ж', '界', 'é']),
+        proptest::collection::vec(
+            prop::sample::select(vec!['A', 'z', '0', '9', '_', 'λ', 'Ж', '界', 'é']),
+            0..=7,
+        ),
+    )
+        .prop_map(|(head, tail)| {
+            let mut segment = head.to_string();
+            segment.extend(tail);
+            segment
+        })
 }
 
 fn module_name_strategy() -> impl Strategy<Value = String> {
@@ -52,6 +64,11 @@ proptest! {
         let roundtrip = module_path_to_name(&path);
 
         prop_assert_eq!(roundtrip, normalized);
+    }
+
+    #[test]
+    fn prop_generated_unicode_module_names_are_lookup_safe(module_name in module_name_strategy()) {
+        prop_assert!(is_lookup_safe_module_name(&module_name));
     }
 
     #[test]

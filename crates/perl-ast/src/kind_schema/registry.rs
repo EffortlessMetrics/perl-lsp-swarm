@@ -1,8 +1,9 @@
 //! `NodeKind` structural registry.
 //!
 //! One row per primary variant. This table is production authority for
-//! [`crate::FieldId`] set membership and field-aware child traversal. It does
-//! not drive rendering, status, fingerprint, or `source_boundary` classification.
+//! [`crate::FieldId`] set membership and field-aware child traversal, and the
+//! input to schema identity / NodeKind inventory. It does not drive rendering
+//! or `source_boundary` classification.
 
 use super::{
     ChildFieldSpec, FieldCardinality, GrammarNameSpec, KindBody, KindStructuralRow,

@@ -122,10 +122,10 @@ impl InferrerState {
             }
 
             // `$self` reference inside a method body.
-            NodeKind::Variable { sigil, name } if sigil == "$" && is_self_like_name(name) => {
-                if self.in_method {
-                    self.record_self_like_variable(node, Confidence::Medium);
-                }
+            NodeKind::Variable { sigil, name }
+                if sigil == "$" && is_self_like_name(name) && self.in_method =>
+            {
+                self.record_self_like_variable(node, Confidence::Medium);
             }
 
             _ => {}

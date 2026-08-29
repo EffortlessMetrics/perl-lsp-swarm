@@ -544,13 +544,11 @@ fn test_test_quality_validation() -> TestResult {
                     "High complexity tests should have dependencies"
                 );
             }
-            ComplexityLevel::Low => {
-                if test_metadata.target_timeline > Duration::from_hours(336) {
-                    assert!(
-                        !validation_result.warnings.is_empty(),
-                        "Low complexity with long timeline should generate warnings"
-                    );
-                }
+            ComplexityLevel::Low if test_metadata.target_timeline > Duration::from_hours(336) => {
+                assert!(
+                    !validation_result.warnings.is_empty(),
+                    "Low complexity with long timeline should generate warnings"
+                );
             }
             _ => {}
         }

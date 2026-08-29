@@ -28,6 +28,8 @@
 //! }
 //! ```
 
+#[cfg(all(not(target_arch = "wasm32"), test))]
+use std::cell::Cell;
 #[cfg(not(target_arch = "wasm32"))]
 use std::collections::BTreeMap;
 #[cfg(not(target_arch = "wasm32"))]
@@ -40,6 +42,18 @@ use std::time::Duration;
 #[cfg(not(target_arch = "wasm32"))]
 use super::SYSTEM_INC_PROBE_TIMEOUT;
 use super::WorkspaceConfig;
+
+#[cfg(all(not(target_arch = "wasm32"), test))]
+thread_local! {
+    static STARTUP_INC_PROBE_TIMEOUT_OVERRIDE: Cell<Option<Duration>> = const { Cell::new(None) };
+}
+
+#[cfg(all(not(target_arch = "wasm32"), test))]
+fn effective_startup_inc_probe_timeout() -> Duration {
+    STARTUP_INC_PROBE_TIMEOUT_OVERRIDE
+        .with(|timeout| timeout.get())
+        .unwrap_or(SYSTEM_INC_PROBE_TIMEOUT)
+}
 
 #[cfg(all(not(target_arch = "wasm32"), windows))]
 const PERLDOC_EXECUTABLE_CANDIDATES: &[&str] =
@@ -136,6 +150,21 @@ pub struct PerlOracleEnv {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl PerlOracleEnv {
+    /// Run a test with a wider startup `@INC` probe deadline.
+    ///
+    /// The production deadline remains unchanged. The override is scoped to
+    /// the current test thread so a slow host cannot make concurrent tests
+    /// silently change their latency contract.
+    #[cfg(test)]
+    pub(crate) fn with_startup_inc_probe_timeout<T>(timeout: Duration, f: impl FnOnce() -> T) -> T {
+        STARTUP_INC_PROBE_TIMEOUT_OVERRIDE.with(|override_timeout| {
+            let previous = override_timeout.replace(Some(timeout));
+            let result = f();
+            override_timeout.set(previous);
+            result
+        })
+    }
+
     /// Apply this oracle's environment contract to an existing [`Command`].
     ///
     /// The sequence is:
@@ -232,7 +261,16 @@ impl PerlOracleEnv {
         Some(Self {
             perl_binary,
             cwd,
-            timeout: SYSTEM_INC_PROBE_TIMEOUT,
+            timeout: {
+                #[cfg(test)]
+                {
+                    effective_startup_inc_probe_timeout()
+                }
+                #[cfg(not(test))]
+                {
+                    SYSTEM_INC_PROBE_TIMEOUT
+                }
+            },
             allow_perl5lib: config.use_perl5lib,
             allow_perl5opt: false,
             allow_local_lib: false,

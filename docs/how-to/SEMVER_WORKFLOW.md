@@ -28,7 +28,10 @@ just semver-diff perl-parser
 ```
 
 **In your PR:**
-- Add `ci:semver` label to run automated checks
+- Semver checks run automatically when a PR touches a published facade crate
+  under `crates/` or `.ci/public-api-baselines/` (#2266); add the `ci:semver`
+  label only to force a wider manual run (that label gate lives on
+  `ci-nightly.yml`, whose `pull_request` trigger includes `labeled`)
 - Document any breaking changes in PR description
 - Follow migration guide template (see below)
 
@@ -185,7 +188,11 @@ let result = parser.parse(source, &config)?;
 
 ### Triggering CI Checks
 
-Add the `ci:semver` label to your PR:
+Semver checks select themselves when the PR diff touches a published facade
+crate (`crates/perl-parser`, `crates/perl-lexer`, `crates/perl-parser-core`,
+`crates/perl-lsp-rs`, `crates/perllsp`) or `.ci/public-api-baselines/`
+(#2266). To force a manual run on an otherwise untouched PR, add the
+`ci:semver` label:
 
 ```
 Labels: ci:semver
