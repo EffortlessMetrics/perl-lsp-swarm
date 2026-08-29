@@ -1,3 +1,4 @@
+pub(crate) mod root;
 mod topology;
 
 pub use crate::cases::{
@@ -15,8 +16,8 @@ pub use crate::continue_redo::{
     valid_cases as valid_continue_redo_cases,
 };
 pub use crate::files::{
-    CORPUS_ROOT_ENV, CorpusFile, CorpusLayer, CorpusPaths, get_all_test_files, get_corpus_files,
-    get_corpus_files_from, get_fuzz_files, get_test_files,
+    CorpusFile, CorpusLayer, CorpusPaths, ResolvedCorpusPaths, get_all_test_files,
+    get_corpus_files, get_corpus_files_from, get_fuzz_files, get_test_files,
 };
 pub use crate::format_statements::{
     FormatStatementCase, FormatStatementGenerator, find_format_case, format_statement_cases,
@@ -37,6 +38,7 @@ pub use crate::tie_interface::{
     TieInterfaceCase, find_tie_case, tie_cases_by_tag, tie_cases_by_tags_all,
     tie_cases_by_tags_any, tie_interface_cases,
 };
+pub use root::{CORPUS_ROOT_ENV, CorpusRoot, CorpusRootError, CorpusRootSource};
 pub use topology::{
     AssetRequirement, CORPUS_TOPOLOGY_SCHEMA_VERSION, CorpusAsset, CorpusAssetKind,
     CorpusAssetLayer, CorpusTopology, CorpusTopologyError,

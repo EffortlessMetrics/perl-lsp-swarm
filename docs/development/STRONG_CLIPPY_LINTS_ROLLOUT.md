@@ -34,7 +34,7 @@ Each row is one PR. Branch names follow `chore/clippy-activate-<lint_name>`.
 | #8601 | `clippy::manual_take` | 1.95 stable | warn | 0 |
 | #8602 | `clippy::manual_pop_if` | 1.95 stable | warn | 0 |
 | #8603 | `clippy::same_length_and_capacity` | 1.94 stable | deny | 0 |
-| #8604 | `clippy::manual_ilog2` | 1.94 stable | warn | 0 |
+| #8604 / #9896 | `clippy::manual_ilog2` | 1.94 stable | deny | 0 |
 | #8605 | `clippy::decimal_bitwise_operands` | 1.94 stable | warn | 0 |
 | #8606 | `clippy::needless_type_cast` | 1.94 stable | warn | 0 |
 
