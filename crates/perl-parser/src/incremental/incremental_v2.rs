@@ -289,17 +289,16 @@ impl IncrementalParserV2 {
         self.materialized_reuse_nodes = 0;
 
         // Try incremental parsing if we have a previous tree and edits
-        if let Some(ref last_tree) = self.last_tree {
-            if !self.pending_edits.is_empty() {
-                let last_tree_clone = last_tree.clone();
-                // Check if we can do incremental parsing
-                if let Some(new_tree) = self.try_incremental_parse(source, &last_tree_clone) {
-                    self.used_incremental_path = true;
-                    self.last_tree =
-                        Some(IncrementalTree::new(new_tree.clone(), source.to_string()));
-                    self.pending_edits = EditSet::new();
-                    return Ok(new_tree);
-                }
+        if let Some(ref last_tree) = self.last_tree
+            && !self.pending_edits.is_empty()
+        {
+            let last_tree_clone = last_tree.clone();
+            // Check if we can do incremental parsing
+            if let Some(new_tree) = self.try_incremental_parse(source, &last_tree_clone) {
+                self.used_incremental_path = true;
+                self.last_tree = Some(IncrementalTree::new(new_tree.clone(), source.to_string()));
+                self.pending_edits = EditSet::new();
+                return Ok(new_tree);
             }
         }
 
@@ -546,38 +545,28 @@ impl IncrementalParserV2 {
                 Some(node) => {
                     match &node.kind {
                         // Support string and numeric literals
-                        NodeKind::Number { .. } | NodeKind::String { .. } => {
-                            // Ensure the edit stays within the literal node bounds
+                        NodeKind::Number { .. } | NodeKind::String { .. }
                             if original_start >= node.location.start
-                                && original_end <= node.location.end
-                            {
-                                cumulative_shift += edit.byte_shift();
-                                continue;
-                            } else {
-                                return false;
-                            }
+                                && original_end <= node.location.end =>
+                        {
+                            cumulative_shift += edit.byte_shift();
+                            continue;
                         }
                         // Support simple identifier edits (variable names)
-                        NodeKind::Variable { .. } => {
+                        NodeKind::Variable { .. }
                             if original_start >= node.location.start
-                                && original_end <= node.location.end
-                            {
-                                cumulative_shift += edit.byte_shift();
-                                continue;
-                            } else {
-                                return false;
-                            }
+                                && original_end <= node.location.end =>
+                        {
+                            cumulative_shift += edit.byte_shift();
+                            continue;
                         }
                         // Support identifier edits (identifiers can often be treated like simple values)
-                        NodeKind::Identifier { .. } => {
+                        NodeKind::Identifier { .. }
                             if original_start >= node.location.start
-                                && original_end <= node.location.end
-                            {
-                                cumulative_shift += edit.byte_shift();
-                                continue;
-                            } else {
-                                return false;
-                            }
+                                && original_end <= node.location.end =>
+                        {
+                            cumulative_shift += edit.byte_shift();
+                            continue;
                         }
                         _ => {
                             return false; // Not a simple value
@@ -764,25 +753,19 @@ impl IncrementalParserV2 {
                         return false;
                     }
                 }
-                NodeKind::String { value, .. } => {
-                    // String content validation - should include quotes if present
+                NodeKind::String { value, .. }
                     if !node_text.is_empty()
-                        && !value.contains(node_text.trim_matches(|c| c == '"' || c == '\''))
-                    {
-                        // Be lenient for string validation as quotes might be handled differently
-                    }
+                        && !value.contains(node_text.trim_matches(|c| c == '"' || c == '\'')) =>
+                {
+                    // Be lenient for string validation as quotes might be handled differently
                 }
-                NodeKind::Variable { name, .. } => {
+                NodeKind::Variable { name, .. } if !node_text.contains(name) => {
                     // Variable name should appear in the source text
-                    if !node_text.contains(name) {
-                        return false;
-                    }
+                    return false;
                 }
-                NodeKind::Identifier { name } => {
+                NodeKind::Identifier { name } if name.trim() != node_text.trim() => {
                     // Identifier name should match source text
-                    if name.trim() != node_text.trim() {
-                        return false;
-                    }
+                    return false;
                 }
                 _ => {
                     // For container nodes, just ensure they have reasonable bounds
@@ -825,18 +808,22 @@ impl IncrementalParserV2 {
                 if !self.validate_node_tree_consistency(variable, source, depth + 1, max_depth) {
                     return false;
                 }
-                if let Some(init) = initializer {
-                    if !self.validate_node_tree_consistency(init, source, depth + 1, max_depth) {
-                        return false;
-                    }
-                }
-            }
-            NodeKind::Binary { left, right, .. } => {
-                if !self.validate_node_tree_consistency(left, source, depth + 1, max_depth)
-                    || !self.validate_node_tree_consistency(right, source, depth + 1, max_depth)
+                if let Some(init) = initializer
+                    && !self.validate_node_tree_consistency(init, source, depth + 1, max_depth)
                 {
                     return false;
                 }
+            }
+            NodeKind::Binary { left, right, .. }
+                if !self.validate_node_tree_consistency(left, source, depth + 1, max_depth)
+                    || !self.validate_node_tree_consistency(
+                        right,
+                        source,
+                        depth + 1,
+                        max_depth,
+                    ) =>
+            {
+                return false;
             }
             _ => {
                 // Leaf nodes don't need recursive validation
@@ -1443,7 +1430,7 @@ mod tests {
 
     #[test]
     fn advanced_reuse_selects_only_exact_old_subtrees() {
-        let mut parser = IncrementalParserV2::new();
+        let parser = IncrementalParserV2::new();
         let location = |start, end| SourceLocation { start, end };
         let old_tree = Node::new(
             NodeKind::Program {
@@ -1617,14 +1604,12 @@ mod tests {
         );
 
         // Verify the tree is correct
-        if let NodeKind::Program { statements } = &tree2.kind {
-            if let NodeKind::VariableDeclaration { initializer: Some(init), .. } =
+        if let NodeKind::Program { statements } = &tree2.kind
+            && let NodeKind::VariableDeclaration { initializer: Some(init), .. } =
                 &statements[0].kind
-            {
-                if let NodeKind::Number { value } = &init.kind {
-                    assert_eq!(value, "4242");
-                }
-            }
+            && let NodeKind::Number { value } = &init.kind
+        {
+            assert_eq!(value, "4242");
         }
 
         Ok(())
@@ -1704,17 +1689,15 @@ mod tests {
         if let NodeKind::Program { statements } = &tree.kind {
             if let NodeKind::VariableDeclaration { initializer: Some(init), .. } =
                 &statements[0].kind
+                && let NodeKind::Number { value } = &init.kind
             {
-                if let NodeKind::Number { value } = &init.kind {
-                    assert_eq!(value, "100");
-                }
+                assert_eq!(value, "100");
             }
             if let NodeKind::VariableDeclaration { initializer: Some(init), .. } =
                 &statements[1].kind
+                && let NodeKind::Number { value } = &init.kind
             {
-                if let NodeKind::Number { value } = &init.kind {
-                    assert_eq!(value, "200");
-                }
+                assert_eq!(value, "200");
             }
         }
 
@@ -1784,14 +1767,12 @@ mod tests {
         // Note: reused_nodes may be > 0 due to advanced reuse algorithms
 
         // Tree should still be correct
-        if let NodeKind::Program { statements } = &tree.kind {
-            if let NodeKind::VariableDeclaration { initializer: Some(init), .. } =
+        if let NodeKind::Program { statements } = &tree.kind
+            && let NodeKind::VariableDeclaration { initializer: Some(init), .. } =
                 &statements[0].kind
-            {
-                if let NodeKind::Number { value } = &init.kind {
-                    assert_eq!(value, "123");
-                }
-            }
+            && let NodeKind::Number { value } = &init.kind
+        {
+            assert_eq!(value, "123");
         }
 
         Ok(())
@@ -1827,14 +1808,12 @@ mod tests {
         assert_eq!(parser.reparsed_nodes, 1); // Only String
 
         // Verify the string was updated
-        if let NodeKind::Program { statements } = &tree.kind {
-            if let NodeKind::VariableDeclaration { initializer: Some(init), .. } =
+        if let NodeKind::Program { statements } = &tree.kind
+            && let NodeKind::VariableDeclaration { initializer: Some(init), .. } =
                 &statements[0].kind
-            {
-                if let NodeKind::String { value, .. } = &init.kind {
-                    assert_eq!(value, "\"world\"");
-                }
-            }
+            && let NodeKind::String { value, .. } = &init.kind
+        {
+            assert_eq!(value, "\"world\"");
         }
 
         Ok(())

@@ -1,0 +1,47 @@
+name: Authority Transfer Graph
+
+on:
+  pull_request:
+    branches: [main, master]
+    paths:
+      - '.ci/authority-transfer-programme/**'
+      - 'scripts/check-authority-transfer-graph.sh'
+      - 'xtask/src/bin/authority-transfer-graph.rs'
+      - '.github/workflows/authority-transfer-graph.yml'
+  push:
+    branches: [main, master]
+    paths:
+      - '.ci/authority-transfer-programme/**'
+      - 'scripts/check-authority-transfer-graph.sh'
+      - 'xtask/src/bin/authority-transfer-graph.rs'
+      - '.github/workflows/authority-transfer-graph.yml'
+  workflow_dispatch: {}
+
+concurrency:
+  group: authority-transfer-graph-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate stable programme graph
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
+        with:
+          toolchain: 1.95.0
+          components: rustfmt
+
+      - name: Run stable programme graph gate
+        shell: bash
+        run: bash scripts/check-authority-transfer-graph.sh

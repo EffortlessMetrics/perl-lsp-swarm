@@ -5,6 +5,7 @@ use super::{
     SetVariableArguments, SetVariableResponseBody, Value, VariableCacheKind, VariablesArguments,
     is_valid_set_variable_name, json, lock_or_recover, parse_dap_arguments, slice_variables,
 };
+use crate::parse_origin::{DebuggerOutputOrigin, ParseIdentity};
 use crate::value_format::ValueFormatPolicy;
 #[cfg(test)]
 use perl_tdd_support::must_some;
@@ -347,8 +348,14 @@ impl DebugAdapter {
                 }
 
                 let (full_roots, child_cache) = if let Some(lines) = framed_scope_lines.as_ref() {
-                    let (framed_vars, framed_child_cache) =
-                        Self::parse_scope_variables_from_lines(lines, variables_ref, 0, 1024);
+                    let (framed_vars, framed_child_cache) = Self::parse_scope_variables_from_lines(
+                        lines,
+                        variables_ref,
+                        0,
+                        1024,
+                        DebuggerOutputOrigin::DebuggerControlPayload,
+                        ParseIdentity::new().with_operation_id_from_i64(request_seq),
+                    );
                     if framed_vars.is_empty() {
                         // A failed or empty framed locals response is unavailable;
                         // never reinterpret unrelated session history as this
@@ -706,7 +713,15 @@ impl DebugAdapter {
             .and_then(|(begin, end)| {
                 self.capture_framed_debugger_output(begin, end, DEBUGGER_QUERY_WAIT_MS * 8)
             })
-            .and_then(|lines| Self::parse_evaluate_result_from_lines(&lines, name, true));
+            .and_then(|lines| {
+                Self::parse_evaluate_result_from_lines(
+                    &lines,
+                    name,
+                    true,
+                    DebuggerOutputOrigin::DebuggerControlPayload,
+                    ParseIdentity::new().with_operation_id_from_i64(request_seq),
+                )
+            });
 
         let Some((default_value, rendered_type, typed)) = parsed else {
             return DapMessage::Response {
@@ -1244,8 +1259,14 @@ mod hazard_invariant_tests {
     fn parsed_array_literal_preserves_a_deep_page() {
         let values = (1..=500).map(|value| value.to_string()).collect::<Vec<_>>().join(",");
         let lines = vec![format!("@big = [{values}]")];
-        let (roots, child_cache) =
-            DebugAdapter::parse_scope_variables_from_lines(&lines, 11, 0, 1024);
+        let (roots, child_cache) = DebugAdapter::parse_scope_variables_from_lines(
+            &lines,
+            11,
+            0,
+            1024,
+            DebuggerOutputOrigin::FixtureOrInstrumentInput,
+            ParseIdentity::new(),
+        );
         let root = must_some(roots.iter().find(|variable| variable.row.name == "@big"));
         assert_eq!(root.row.indexed_variables, Some(500));
         assert!(root.row.variables_reference > 0);
@@ -1358,8 +1379,14 @@ mod value_format_family_tests {
             "$u = undef".to_string(),
             "$zero = 0".to_string(),
         ];
-        let (roots, _children) =
-            DebugAdapter::parse_scope_variables_from_lines(&lines, wire, 0, 16);
+        let (roots, _children) = DebugAdapter::parse_scope_variables_from_lines(
+            &lines,
+            wire,
+            0,
+            16,
+            DebuggerOutputOrigin::FixtureOrInstrumentInput,
+            ParseIdentity::new(),
+        );
         let mut session = lock_or_recover(&adapter.session, "value_format_family_tests.seed");
         if let Some(ref mut sess) = *session {
             sess.variable_cache.upsert(wire, VariableCacheKind::Root, roots);
@@ -1483,7 +1510,14 @@ mod value_format_family_tests {
         seed_current_frame(&adapter);
 
         let lines = vec!["@arr = [10, 20]".to_string()];
-        let (roots, children) = DebugAdapter::parse_scope_variables_from_lines(&lines, 11, 0, 16);
+        let (roots, children) = DebugAdapter::parse_scope_variables_from_lines(
+            &lines,
+            11,
+            0,
+            16,
+            DebuggerOutputOrigin::FixtureOrInstrumentInput,
+            ParseIdentity::new(),
+        );
         let child_ref = roots[0].row.variables_reference;
         {
             let mut session = lock_or_recover(&adapter.session, "value_format_family_tests.child");

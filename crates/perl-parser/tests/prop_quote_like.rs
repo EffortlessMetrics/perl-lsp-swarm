@@ -50,10 +50,10 @@ mod tests {
 
     fn inspect_use_args(node: &Node, name: &str, found: &mut bool) {
         match &node.kind {
-            NodeKind::Use { args, .. } | NodeKind::No { args, .. } => {
-                if args.iter().any(|arg| token_contains_name(arg, name)) {
-                    *found = true;
-                }
+            NodeKind::Use { args, .. } | NodeKind::No { args, .. }
+                if args.iter().any(|arg| token_contains_name(arg, name)) =>
+            {
+                *found = true;
             }
             NodeKind::Identifier { name: ident } if ident == name => *found = true,
             NodeKind::String { value, .. } if token_contains_name(value, name) => *found = true,

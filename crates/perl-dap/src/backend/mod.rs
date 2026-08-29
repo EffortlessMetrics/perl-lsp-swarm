@@ -23,11 +23,10 @@ use std::path::PathBuf;
 
 pub use capabilities::{DebugBackendCapabilities, intersect_dap_capabilities};
 pub use external_peer::PeerSessionToken;
-pub use peer_bridge::{DapPeerBridge, run_external_peer_session, run_external_peer_session_stdio};
+pub use peer_bridge::{DapPeerBridge, run_external_peer_session_stdio};
 pub use peer_launch::{
     ExternalPeerLaunchConfig, MirrorPeerBridge, PeerListenEndpoint, PeerRendezvousMode,
-    prepare_mirror_listen_session, run_mirror_listen_session_socket,
-    run_mirror_listen_session_stdio, static_mirror_capabilities,
+    prepare_mirror_listen_session, run_mirror_listen_session_stdio, static_mirror_capabilities,
 };
 
 use crate::model::{

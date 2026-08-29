@@ -124,13 +124,6 @@ def valid_inventory() -> dict:
                 "transport_id": "debugger-peer-tcp",
                 "disposition": "retain",
             },
-            {
-                "id": "external-peer-editor-listener",
-                "path": "crates/perl-dap/src/main.rs",
-                "role": "editor",
-                "transport_id": "external-peer-editor-tcp",
-                "disposition": "retire",
-            },
         ],
         "cli_flags": [
             {
@@ -227,9 +220,8 @@ def write_valid_tree(root: Path, inventory: dict | None = None) -> dict:
     write(
         root / "crates/perl-dap/src/main.rs",
         "transport: perl_lsp_rs_core::runtime::launcher::TransportArgs\n"
-        "fn bind_editor_listener() { std::net::TcpListener::bind((\"127.0.0.1\", 1)).ok(); }\n"
-        "fn run_external_peer_bridge() { bind_editor_listener(); }\n"
-        "fn run_external_peer_listen() { bind_editor_listener(); }\n"
+        "fn run_external_peer_bridge_stdio() {}\n"
+        "fn run_external_peer_listen() {}\n"
         "fn main() { let _ = native_editor_socket_retired(); }\n",
     )
     write(
@@ -477,15 +469,14 @@ class EditorTransportInventoryTests(unittest.TestCase):
             root = Path(tmp)
             write_valid_tree(root)
             write(
-                root / "crates/perl-dap/src/main.rs",
-                "transport: perl_lsp_rs_core::runtime::launcher::TransportArgs\n"
-                "fn bind_editor_listener() { std::net::TcpListener::bind((\"127.0.0.1\", 1)).ok(); }\n"
-                "fn bind_second_listener() { std::net::TcpListener::bind((\"127.0.0.1\", 2)).ok(); }\n",
+                root / "crates/perl-dap/src/backend/peer_launch.rs",
+                "fn listen() { TcpListener::bind(resolved.as_slice()).ok(); }\n"
+                "fn bind_second_listener() { TcpListener::bind((\"127.0.0.1\", 2)).ok(); }\n",
             )
             errors = run_check(root)
             self.assertTrue(
                 any(
-                    "main.rs" in item and "bind_site" in item and "count" in item
+                    "peer_launch.rs" in item and "bind_site" in item and "count" in item
                     for item in errors
                 )
             )
@@ -585,6 +576,30 @@ class EditorTransportInventoryTests(unittest.TestCase):
             errors = run_check(root)
             self.assertTrue(
                 any("fn run_native_socket calls bind_editor_listener" in item for item in errors),
+                errors,
+            )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_valid_tree(root)
+            write(
+                root / "crates/perl-dap/src/main.rs",
+                "transport: perl_lsp_rs_core::runtime::launcher::TransportArgs\n"
+                "fn bind_editor_listener() { std::net::TcpListener::bind((\"127.0.0.1\", 1)).ok(); }\n"
+                "fn run_external_peer_bridge() { bind_editor_listener(); }\n"
+                "fn run_external_peer_listen() { bind_editor_listener(); }\n"
+                "fn main() { let _ = native_editor_socket_retired(); }\n",
+            )
+            errors = run_check(root)
+            self.assertTrue(
+                any("bind_editor_listener returned after #10566" in item for item in errors),
+                errors,
+            )
+            self.assertTrue(
+                any(
+                    "fn run_external_peer_bridge calls bind_editor_listener after #10566" in item
+                    for item in errors
+                ),
                 errors,
             )
 

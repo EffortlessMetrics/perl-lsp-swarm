@@ -17,6 +17,10 @@ devplane-init:
 storage-doctor:
     ./scripts/storage-doctor
 
+# Dry-run report of stale repo-local target/ dirs (default 30d; --days=N, --apply to delete).
+target-gc *args:
+    ./scripts/target-gc.sh {{args}}
+
 agent-preflight: storage-doctor
     @echo "agent preflight ok"
 
@@ -36,44 +40,11 @@ agent-nextest:
 agent-pr-fast:
     {{cargo_safe}} xtask gates --tier pr-fast --receipt
 
-# ============================================================================
-# Multi-worktree shared build cache (#12596)
-# ============================================================================
-#
-# Each worktree building with plain `cargo` owns a private multi-GB `target/`
-# tree; on a box running several worktrees they multiply and thrash the disk.
-# These cached recipes route through scripts/cargo-safe, which redirects
-# CARGO_TARGET_DIR/CARGO_HOME into a per-user devplane keyed by repository
-# identity (the main checkout's git dir), so every linked worktree shares one
-# devplane — one target/, one sccache store — by default. Cross-worktree
-# sharing is structural, not sccache-variable based. They are the documented
-# default for local multi-worktree development — see CONTRIBUTING.md
-# "Shared build cache".
-
-# PR-fast gate through the shared devplane cache (multi-worktree default).
-# Mirrors pr-fast's explicit CI_SCOPE_BASE forwarding: when an invalid or
-# unavailable base is passed, the gate must fall back the same way the plain
-# recipe does, never silently narrow to a default base.
-pr-fast-cached: _check-tools-basic
-    #!/usr/bin/env bash
-    set -euo pipefail
-    args=(--tier pr-fast --receipt)
-    if [ -n "${CI_SCOPE_BASE:-}" ]; then
-        args+=(--base "$CI_SCOPE_BASE")
-    fi
-    exec {{cargo_safe}} xtask gates "${args[@]}"
-
-# Workspace tests through the shared devplane cache.
-test-cached:
-    {{cargo_safe}} test --workspace --locked
-
-# Compile-check the workspace through the shared devplane cache.
-check-cached:
-    {{cargo_safe}} check --workspace --locked
-
-# Lint the workspace through the shared devplane cache.
-clippy-cached:
-    {{cargo_safe}} clippy --workspace --all-targets --profile agent --locked -- -D warnings -A missing_docs
+# Run any cargo command with shared multi-worktree build caching (devplane
+# target dir, sccache, build flock, disk gate). Documented default for local
+# multi-worktree development — see docs/how-to/MULTI_WORKTREE_BUILD_CACHING.md.
+cached *args:
+    {{cargo_safe}} {{args}}
 
 # M4b (#3763): assert review/audit agents are mechanically read-only
 # (no Edit/Write/NotebookEdit/Agent in their tools: allowlist).
@@ -132,6 +103,8 @@ check-all-targets:
     cargo check --workspace --all-targets --locked
     @echo "Compiling all targets (all features) — deep verification check..."
     cargo check --workspace --all-targets --all-features --locked
+    @echo "Compiling example test modules — cargo check --all-targets checks examples as non-test targets only, so their #[cfg(test)] code bit-rots unseen (#12650)..."
+    cargo test --workspace --examples --locked --no-run
     @echo "All targets compile clean."
 
 # Scan every tracked file for committed git conflict marker lines.
@@ -2332,6 +2305,9 @@ public-api-check:
     set -euo pipefail
     just _public-api-install
     echo "Checking public API surface for facade crates..."
+    # Evidence: record the rustdoc-JSON toolchain the comparison runs under
+    # (CI pins this channel; see the workflow install steps).
+    rustc +nightly --version || echo "WARN: no nightly toolchain visible to cargo-public-api"
     FAILED=0
     for crate in perl-lsp-rs perl-parser perl-uri perl-dap perllsp; do
         BASELINE=".ci/public-api-baselines/${crate}.txt"
@@ -2340,7 +2316,24 @@ public-api-check:
             FAILED=1
             continue
         fi
-        ./scripts/cargo-safe public-api -p "$crate" --simplified 2>/dev/null | grep "^pub " > "/tmp/${crate}-current.txt" || true
+        # Instrument failure must never become a semantic verdict: a failed
+        # or empty generation is INSTRUMENT-FAIL, not an API diff (#12861 —
+        # CI without a nightly toolchain produced empty surfaces that
+        # reported as ~6.6k phantom API removals).
+        if ! ./scripts/cargo-safe public-api -p "$crate" --simplified > "/tmp/${crate}-raw.txt" 2> "/tmp/${crate}-err.txt"; then
+            echo "INSTRUMENT-FAIL ${crate}: cargo public-api failed; stderr:"
+            cat "/tmp/${crate}-err.txt"
+            FAILED=1
+            continue
+        fi
+        # grep exits 1 on no matches; under set -e that would abort before
+        # the named INSTRUMENT-FAIL classification below — tolerate it here.
+        grep "^pub " "/tmp/${crate}-raw.txt" > "/tmp/${crate}-current.txt" || true
+        if [ ! -s "/tmp/${crate}-current.txt" ]; then
+            echo "INSTRUMENT-FAIL ${crate}: generated API surface is empty (nightly toolchain missing?) — an empty surface is never a diff"
+            FAILED=1
+            continue
+        fi
         if ! diff -u "$BASELINE" "/tmp/${crate}-current.txt" > "/tmp/${crate}-diff.txt" 2>&1; then
             echo "FAIL Public API changed in ${crate}:"
             cat "/tmp/${crate}-diff.txt"
@@ -2359,8 +2352,22 @@ public-api-update:
     echo "Regenerating public API baselines..."
     mkdir -p .ci/public-api-baselines
     for crate in perl-lsp-rs perl-parser perl-uri perl-dap perllsp; do
-        ./scripts/cargo-safe public-api -p "$crate" --simplified 2>/dev/null | grep "^pub " \
-            > ".ci/public-api-baselines/${crate}.txt" || true
+        # Fail closed: never overwrite a baseline with a failed or empty
+        # generation — an empty baseline would make the ratchet vacuous
+        # (#12861).
+        if ! ./scripts/cargo-safe public-api -p "$crate" --simplified > "/tmp/${crate}-raw.txt" 2> "/tmp/${crate}-err.txt"; then
+            echo "INSTRUMENT-FAIL ${crate}: cargo public-api failed; refusing to overwrite the baseline:" >&2
+            cat "/tmp/${crate}-err.txt" >&2
+            exit 1
+        fi
+        # grep exits 1 on no matches; under set -e that would abort before
+        # the named INSTRUMENT-FAIL classification below — tolerate it here.
+        grep "^pub " "/tmp/${crate}-raw.txt" > "/tmp/${crate}-new-baseline.txt" || true
+        if [ ! -s "/tmp/${crate}-new-baseline.txt" ]; then
+            echo "INSTRUMENT-FAIL ${crate}: generated API surface is empty; refusing to overwrite the baseline" >&2
+            exit 1
+        fi
+        mv "/tmp/${crate}-new-baseline.txt" ".ci/public-api-baselines/${crate}.txt"
         echo "Updated ${crate}: $(wc -l < .ci/public-api-baselines/${crate}.txt) lines"
     done
     echo "Commit .ci/public-api-baselines/ with your PR."
@@ -3117,7 +3124,7 @@ ci-metrics-ratchet:
     cargo run -p xtask -- metrics ratchet-check engineering_health
     cargo run -p xtask -- metrics ratchet-check parser_accuracy
     cargo run -p xtask -- metrics ratchet-check token
-    cargo run -p xtask -- metrics ratchet-check editor_ux
+    cargo run -p xtask -- ux-scorecard --format json --ratchet-check
     @echo "Scorecard ratchet passed"
 
 # Tier C: full suite (nightly, all integration tests)

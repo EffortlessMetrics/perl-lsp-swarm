@@ -38,60 +38,16 @@ just pr-fast
 The repository pins Rust channel `1.95.0` in `rust-toolchain.toml` and currently
 requires MSRV 1.95.
 
-### Shared build cache for multi-worktree development (#12596)
+### Windows symlink-privilege skips (#12567)
 
-Each worktree that builds with plain `cargo` owns a private multi-GB
-`target/`; on a box running several worktrees these multiply and thrash the
-disk. The documented default for local multi-worktree development is the
-shared devplane cache through the cached recipes:
-
-```bash
-just pr-fast-cached   # recommended default for every PR iteration
-just test-cached      # workspace tests
-just check-cached     # compile-only check
-just clippy-cached    # lint
-```
-
-These route through `scripts/cargo-safe`, which sets
-`CARGO_TARGET_DIR`/`CARGO_HOME` under
-`${XDG_CACHE_HOME:-$HOME/.cache}/devplane/<main-checkout-name>`, wraps `rustc`
-in `sccache`, and keys the devplane by repository identity (the main
-checkout's git dir), so every linked worktree of one repository shares a
-single devplane by default — one `target/`, one sccache store, so sibling
-worktrees share compiler output structurally. No `SCCACHE_BASEDIRS` variable
-is exported: the sccache versions this repository documents do not support
-it, and sharing does not depend on it. To isolate a worktree instead, pin a
-private root explicitly
-(`DEVPLANE=<private-root>/devplane just pr-fast-cached`). cargo-safe
-serializes shared-devplane builds with its bounded flock where available and
-an atomic directory-lock fallback (bounded wait, stale-owner reclaim) where
-`flock` does not exist, such as Windows Git Bash. The manual equivalent
-for tools that bypass `just` (IDE rust-analyzer tasks):
-
-```bash
-export CARGO_TARGET_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/devplane/perl-lsp-swarm/target"
-```
-
-Tradeoffs to know before adopting:
-
-- **Version/toolchain churn**: a workspace version bump or toolchain move
-  invalidates shared artifacts for every worktree at once. If builds turn
-  inexplicably slow or dirty after such a move, reclaim with
-  `CARGO_TARGET_DIR=<devplane>/target cargo clean`, and inspect state with
-  `just storage-doctor`.
-- **Lock serialization**: concurrent builds sharing one target dir queue on
-  cargo's file locks. The cached recipes carry cargo-safe's bounded flock and
-  disk gate; hand-rolled `CARGO_TARGET_DIR` exports have no lock discipline,
-  so parallel lanes should use the recipes rather than raw exports.
-- **sccache vs shared target**: the default devplane is already shared across
-  worktrees, so rustc invocations use identical paths and sccache entries hit
-  regardless of path rewriting; a fully shared `target/` additionally skips
-  duplicate codegen but serializes builds. cargo-safe composes both.
-
-Adoption evidence ties into #9178's cache-strategy receipts: capture
-`just storage-doctor` output (devplane + sccache stats) and cold-build timing
-(`scripts/build-timing-receipt.sh`) on per-worktree baselines versus the
-cached recipes for this box class.
+Creating file symlinks on Windows requires `SeCreateSymbolicLinkPrivilege`,
+which unprivileged sessions hold only with Developer Mode enabled. Tests whose
+subject is symlink/reparse-point **rejection** use
+`perl_tdd_support::try_create_file_symlink` (and `try_create_dir_symlink`):
+they print a visible skip note and pass when the session lacks the privilege,
+and fail loudly on every other error. Enable Windows Developer Mode to opt out
+of these skips entirely — it is opt-in, never a requirement, and CI is
+unaffected (Linux runners hold the equivalent capability).
 
 ## Choose one coherent claim
 
@@ -194,6 +150,8 @@ Useful command choices:
 | Fast inner loop | `just pr-fast` |
 | Full local merge gate | `just ci-gate` |
 | Agent compile/test/lint | `just agent-check`, `just agent-test`, `just agent-clippy` |
+| Multi-worktree shared build cache | `just cached <cargo args>` — see [Multi-Worktree Build Caching](docs/how-to/MULTI_WORKTREE_BUILD_CACHING.md) |
+| Build disk grew / stale target trees | `just target-gc` (dry-run report), then `just target-gc --apply` |
 | Parser or generated status changed | `just status-update` then `just status-check` |
 | Public API documentation changed | `just ci-docs-check` and `just docs-verify` |
 | Release/version surfaces changed | `just version-check` then `just release-check` |

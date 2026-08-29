@@ -31,7 +31,7 @@ mod parser;
 mod visibility;
 
 pub use classifier::{FrameCategory, FrameClassifier, PerlFrameClassifier};
-pub use parser::{PerlStackParser, StackParseError};
+pub use parser::{FixedOriginStackParseError, PerlStackParser, StackParseError};
 pub use visibility::{
     filter_user_visible_frames, is_internal_frame, is_internal_frame_name_and_path,
 };

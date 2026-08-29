@@ -133,7 +133,7 @@ mod tests {
         );
         assert!(sexp.contains("PATH"), "Expected localized hash element key in sexp, got: {sexp}");
         assert!(
-            sexp.contains("(variable $ next)"),
+            sexp.contains("(variable (sigil $) (name next))"),
             "Expected trailing argument to stay separate, got: {sexp}",
         );
     }
@@ -153,8 +153,8 @@ mod tests {
         // $y must be a separate argument, not part of the declaration initializer
         // The sexp should contain both the declaration and a separate variable for $y
         assert!(
-            sexp.contains("(variable $ y)"),
-            "Expected separate (variable $ y) in sexp, got: {sexp}",
+            sexp.contains("(variable (sigil $) (name y))"),
+            "Expected separate (variable (sigil $) (name y)) in sexp, got: {sexp}",
         );
     }
 
@@ -170,8 +170,14 @@ mod tests {
         let sexp = stmt.to_sexp();
         // VariableListDeclaration sexp format should contain the declarator
         assert!(sexp.contains("my"), "Expected 'my' in sexp, got: {sexp}");
-        assert!(sexp.contains("(variable $ a)"), "Expected variable $a in sexp, got: {sexp}");
-        assert!(sexp.contains("(variable $ b)"), "Expected variable $b in sexp, got: {sexp}");
+        assert!(
+            sexp.contains("(variable (sigil $) (name a))"),
+            "Expected variable $a in sexp, got: {sexp}"
+        );
+        assert!(
+            sexp.contains("(variable (sigil $) (name b))"),
+            "Expected variable $b in sexp, got: {sexp}"
+        );
     }
 
     // ---------------------------------------------------------------
@@ -186,11 +192,17 @@ mod tests {
         let stmt = first_stmt(code);
         let sexp = stmt.to_sexp();
         // Both $x and $y must appear in the local declaration
-        assert!(sexp.contains("(variable $ x)"), "Expected localized $x in sexp, got: {sexp}");
-        assert!(sexp.contains("(variable $ y)"), "Expected localized $y in sexp, got: {sexp}");
+        assert!(
+            sexp.contains("(variable (sigil $) (name x))"),
+            "Expected localized $x in sexp, got: {sexp}"
+        );
+        assert!(
+            sexp.contains("(variable (sigil $) (name y))"),
+            "Expected localized $y in sexp, got: {sexp}"
+        );
         // $z must be a separate argument, not inside the local()
         assert!(
-            sexp.contains("(variable $ z)"),
+            sexp.contains("(variable (sigil $) (name z))"),
             "Expected trailing $z as separate arg, got: {sexp}",
         );
     }

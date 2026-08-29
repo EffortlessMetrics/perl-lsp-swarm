@@ -480,7 +480,7 @@ mod to_sexp_edges {
         let s = node.to_sexp();
         assert!(s.contains("sub"), "expected 'sub' in sexp, got: {s}");
         assert!(s.contains("myfunc"), "expected sub name in sexp, got: {s}");
-        assert!(s.contains("()"), "expected empty proto marker in sexp, got: {s}");
+        assert!(s.contains("(signature "), "expected nested signature, got: {s}");
         Ok(())
     }
 
@@ -582,7 +582,7 @@ mod to_sexp_edges {
         );
         let s = node.to_sexp();
         assert!(s.contains("method_declaration_statement"), "got: {s}");
-        assert!(!s.contains("attrlist"), "empty attrs should produce no attrlist, got: {s}");
+        assert!(!s.contains("attributes"), "empty attrs should produce no attrlist, got: {s}");
         Ok(())
     }
 
@@ -600,7 +600,7 @@ mod to_sexp_edges {
         );
         let s = node.to_sexp();
         assert!(s.contains("class"), "got: {s}");
-        assert!(s.contains(":isa("), "expected :isa() in sexp, got: {s}");
+        assert!(s.contains("(parents "), "expected :isa() in sexp, got: {s}");
         assert!(s.contains("Animal"), "got: {s}");
         Ok(())
     }
@@ -720,11 +720,9 @@ mod to_sexp_inner_edges {
     use super::*;
 
     #[test]
-    fn expression_statement_wrapping_named_subroutine_is_unwrapped()
+    fn expression_statement_wrapping_named_subroutine_stays_wrapped()
     -> Result<(), Box<dyn std::error::Error>> {
-        // ExpressionStatement containing a NAMED subroutine.
-        // The inner match at line 811 checks `name.is_none()` - the False branch
-        // means a named sub should be unwrapped (expression.to_sexp() is returned).
+        // ExpressionStatement containing a named subroutine stays one root form.
         let sub_node = Node::new(
             NodeKind::Subroutine {
                 name: Some("named_func".to_string()),
@@ -741,14 +739,9 @@ mod to_sexp_inner_edges {
             Node::new(NodeKind::ExpressionStatement { expression: Box::new(sub_node) }, loc());
         let inner = expr_stmt.to_sexp_inner();
         let outer = expr_stmt.to_sexp();
-        // Inner should be the sub's own sexp (unwrapped from expression_statement)
-        assert!(inner.contains("sub"), "inner should contain 'sub', got: {inner}");
+        assert_eq!(inner, outer, "to_sexp_inner is the same projection");
+        assert!(inner.contains("expression_statement"), "got: {inner}");
         assert!(inner.contains("named_func"), "inner should contain sub name, got: {inner}");
-        // The outer wraps it in expression_statement
-        assert!(
-            outer.contains("expression_statement"),
-            "outer should wrap in expression_statement, got: {outer}"
-        );
         Ok(())
     }
 

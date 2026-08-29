@@ -280,7 +280,7 @@ mod output_tests {
     #[cfg(windows)]
     #[test]
     fn dangling_protected_source_rejects_before_publication_write() -> Result<()> {
-        use std::os::windows::fs::symlink_file;
+        use perl_tdd_support::try_create_file_symlink;
 
         // Typed skip when the Windows session lacks the symlink privilege
         // (os error 1314): the environment gap is not a product defect. With
@@ -297,7 +297,11 @@ mod output_tests {
         let original = b"existing receipt\n";
         fs::write(&out, original)?;
         fs::write(&input, "{}")?;
-        symlink_file(&missing_target, &dangling)?;
+        if try_create_file_symlink(&missing_target, &dangling)?.is_none() {
+            // Unprivileged Windows session: the typed skip is the honest
+            // outcome; junction/copy fixtures cannot prove reparse rejection.
+            return Ok(());
+        }
 
         let error = ensure_safe_output(&out, &input, Some(&dangling))
             .expect_err("dangling protected source must fail closed");
