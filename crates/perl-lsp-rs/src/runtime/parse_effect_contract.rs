@@ -877,9 +877,18 @@ const CALL_SITE_LEDGER: &[CallSiteLedgerEntry] = &[
     CallSiteLedgerEntry {
         file: "crates/perl-lsp-rs/src/runtime/text_sync.rs",
         needle: "= commit_parse_effect_if_current(",
-        // #13183 (e64c033936) wrapped the workspace-index site in the
-        // serialized indexing-transition block (`let committed = { ... }`),
-        // leaving this result-binding shape with one production site.
+        expected_count: 1,
+        effect_id: "compat.legacy-generic-callback-helper",
+    },
+    // #13183 (e64c033936) moved the open-path free-function invocation
+    // inside the serialized indexing-transition block (`let committed = {
+    // ... }`), so its result binding no longer sits on the call expression.
+    // The mutation site is unchanged and stays ratcheted on its own argument
+    // shape; this row keeps its coverage registered instead of silently
+    // narrowing the ratchet.
+    CallSiteLedgerEntry {
+        file: "crates/perl-lsp-rs/src/runtime/text_sync.rs",
+        needle: "commit_parse_effect_if_current(\n                                &documents_for_task,",
         expected_count: 1,
         effect_id: "compat.legacy-generic-callback-helper",
     },
