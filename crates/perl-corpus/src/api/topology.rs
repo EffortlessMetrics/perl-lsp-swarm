@@ -840,11 +840,9 @@ mod tests {
 
     #[test]
     fn binding_canonicalizes_relative_runtime_root() {
-        let current = std::env::current_dir().expect("current directory");
         let topology =
             topology_with(Vec::new()).with_root(".").expect("bind relative runtime root");
-        let expected =
-            strip_verbatim_prefix(fs::canonicalize(current).expect("canonical runtime root"));
+        let expected = canonical_runtime_root(Path::new(".")).expect("canonical runtime root");
 
         assert_eq!(topology.root(), Some(expected.as_path()));
     }
