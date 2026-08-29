@@ -51,6 +51,11 @@ pub enum IncomingMessageError {
         /// Original typed deserialization error.
         source: serde_json::Error,
     },
+    /// The body declared JSON-RPC request and response members together.
+    MixedRequestResponse {
+        /// Number of bytes in the complete frame body.
+        payload_bytes: usize,
+    },
     /// The frame's JSON-RPC version is missing or is not `2.0`.
     InvalidJsonRpcVersion {
         /// Number of bytes in the complete frame body.
@@ -76,6 +81,7 @@ impl IncomingMessageError {
             Self::InvalidUtf8 { .. } => "invalid_utf8",
             Self::MalformedJson { .. } => "malformed_json",
             Self::InvalidMessageShape { .. } => "invalid_message_shape",
+            Self::MixedRequestResponse { .. } => "mixed_request_response",
             Self::InvalidJsonRpcVersion { .. } => "invalid_jsonrpc_version",
             Self::UnsupportedBatch { .. } => "unsupported_batch",
             Self::TruncatedFrame { .. } => "truncated_frame",
@@ -94,7 +100,8 @@ impl IncomingMessageError {
             | Self::MalformedJson { payload_bytes, .. }
             | Self::InvalidMessageShape { payload_bytes, .. } => Some(*payload_bytes),
             Self::InvalidJsonRpcVersion { payload_bytes }
-            | Self::UnsupportedBatch { payload_bytes } => Some(*payload_bytes),
+            | Self::UnsupportedBatch { payload_bytes }
+            | Self::MixedRequestResponse { payload_bytes } => Some(*payload_bytes),
             Self::TruncatedFrame { .. } => None,
         }
     }
@@ -122,6 +129,10 @@ impl fmt::Debug for IncomingMessageError {
                 .finish_non_exhaustive(),
             Self::InvalidJsonRpcVersion { payload_bytes } => f
                 .debug_struct("InvalidJsonRpcVersion")
+                .field("payload_bytes", payload_bytes)
+                .finish(),
+            Self::MixedRequestResponse { payload_bytes } => f
+                .debug_struct("MixedRequestResponse")
                 .field("payload_bytes", payload_bytes)
                 .finish(),
             Self::UnsupportedBatch { payload_bytes } => {
@@ -165,6 +176,11 @@ impl fmt::Display for IncomingMessageError {
                 "incoming body has a missing or unsupported JSON-RPC version \
                  ({payload_bytes} payload bytes)"
             ),
+            Self::MixedRequestResponse { payload_bytes } => write!(
+                f,
+                "incoming body mixes JSON-RPC request and response members \
+                 ({payload_bytes} payload bytes)"
+            ),
             Self::UnsupportedBatch { payload_bytes } => write!(
                 f,
                 "incoming JSON-RPC batch is not supported ({payload_bytes} payload bytes)"
@@ -188,6 +204,7 @@ impl std::error::Error for IncomingMessageError {
             }
             Self::InvalidJsonRpcVersion { .. }
             | Self::UnsupportedBatch { .. }
+            | Self::MixedRequestResponse { .. }
             | Self::TruncatedFrame { .. } => None,
         }
     }
@@ -311,15 +328,10 @@ fn decode_current_message_shape(
 
     // Serde ignores unknown fields on `JsonRpcRequest`; reject a mixed
     // request/response object before deserialization so response members
-    // cannot be silently discarded.
+    // cannot be silently discarded. This rejection is a message-shape fact,
+    // not an I/O condition, so it carries no synthetic `serde_json` cause.
     if has_method && (has_result || has_error) {
-        return Err(IncomingMessageError::InvalidMessageShape {
-            payload_bytes,
-            source: serde_json::Error::io(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "JSON-RPC request cannot contain response fields",
-            )),
-        });
+        return Err(IncomingMessageError::MixedRequestResponse { payload_bytes });
     }
 
     if has_method {

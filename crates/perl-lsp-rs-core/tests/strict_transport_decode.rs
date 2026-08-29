@@ -1,9 +1,9 @@
 //! Regression coverage for strict incoming transport decoding (#7596).
 
 use perl_lsp_rs_core::protocol::JsonRpcRequest;
-use perl_lsp_rs_core::transport::framing::{read_message, MAX_FRAME_SIZE};
+use perl_lsp_rs_core::transport::framing::{MAX_FRAME_SIZE, read_message};
 use perl_lsp_rs_core::transport::{
-    frame, ContentLengthMessageReader, FramingError, IncomingMessageError,
+    ContentLengthMessageReader, FramingError, IncomingMessageError, frame,
 };
 use serde_json::Value;
 use std::error::Error;
@@ -246,32 +246,88 @@ fn invalid_jsonrpc_version_and_batch_are_distinct_outcomes() -> TestResult {
 }
 
 #[test]
+fn mixed_request_response_envelope_is_a_dedicated_outcome() -> TestResult {
+    let mixed = br#"{"jsonrpc":"2.0","id":7,"method":"shutdown","result":{"secret-token":true}}"#;
+    let mixed_len = mixed.len();
+    let mut input = Cursor::new(frame(mixed));
+    let mut reader = ContentLengthMessageReader::new();
+    let error = required_error(&mut reader, &mut input)?;
+
+    let IncomingMessageError::MixedRequestResponse { payload_bytes } = &error else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("expected mixed request/response outcome, got {error}"),
+        )
+        .into());
+    };
+    if *payload_bytes != mixed_len {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("expected {mixed_len} payload bytes, got {payload_bytes}"),
+        )
+        .into());
+    }
+    if error.source().is_some() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "mixed request/response outcome must not expose a synthetic cause",
+        )
+        .into());
+    }
+    if error.is_terminal_at_eof() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "mixed request/response outcome must stay recoverable",
+        )
+        .into());
+    }
+    if error.to_string().contains("secret-token") || format!("{error:?}").contains("secret-token") {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "mixed request/response outcome leaked payload contents",
+        )
+        .into());
+    }
+    Ok(())
+}
+
+#[test]
 fn malformed_response_envelopes_are_rejected_and_recovery_preserves_valid_input() -> TestResult {
-    let malformed_responses: [&[u8]; 8] = [
-        br#"{"jsonrpc":"2.0","id":true,"result":{}}"#,
-        br#"{"jsonrpc":"2.0","id":1}"#,
-        br#"{"jsonrpc":"2.0","id":1,"result":{},"error":{"code":-1,"message":"bad"}}"#,
-        br#"{"jsonrpc":"2.0","id":1,"error":null}"#,
-        br#"{"jsonrpc":"2.0","id":1,"error":7}"#,
-        br#"{"jsonrpc":"2.0","id":1,"error":{}}"#,
-        br#"{"jsonrpc":"2.0","id":1,"method":"shutdown","result":{}}"#,
-        br#"{"jsonrpc":"2.0","id":1,"method":"shutdown","error":{"code":-1,"message":"bad"}}"#,
+    // (payload, mixed) — mixed entries declare request and response members
+    // together and must surface the dedicated `MixedRequestResponse` outcome.
+    let malformed_responses: [(&[u8], bool); 8] = [
+        (br#"{"jsonrpc":"2.0","id":true,"result":{}}"#, false),
+        (br#"{"jsonrpc":"2.0","id":1}"#, false),
+        (br#"{"jsonrpc":"2.0","id":1,"result":{},"error":{"code":-1,"message":"bad"}}"#, false),
+        (br#"{"jsonrpc":"2.0","id":1,"error":null}"#, false),
+        (br#"{"jsonrpc":"2.0","id":1,"error":7}"#, false),
+        (br#"{"jsonrpc":"2.0","id":1,"error":{}}"#, false),
+        (br#"{"jsonrpc":"2.0","id":1,"method":"shutdown","result":{}}"#, true),
+        (
+            br#"{"jsonrpc":"2.0","id":1,"method":"shutdown","error":{"code":-1,"message":"bad"}}"#,
+            true,
+        ),
     ];
     let valid_request = request_body(11, "shutdown", "{}");
     let mut stream = Vec::new();
-    for response in &malformed_responses {
+    for (response, _) in &malformed_responses {
         stream.extend(frame(response));
     }
     stream.extend(frame(&valid_request));
 
     let mut input = Cursor::new(stream);
     let mut reader = ContentLengthMessageReader::new();
-    for _ in &malformed_responses {
+    for (_, mixed) in &malformed_responses {
         let error = required_error(&mut reader, &mut input)?;
-        if !matches!(&error, IncomingMessageError::InvalidMessageShape { .. }) {
+        let expected = if *mixed {
+            matches!(&error, IncomingMessageError::MixedRequestResponse { .. })
+        } else {
+            matches!(&error, IncomingMessageError::InvalidMessageShape { .. })
+        };
+        if !expected {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("expected malformed response rejection, got {error}"),
+                format!("expected typed malformed response rejection, got {error}"),
             )
             .into());
         }
