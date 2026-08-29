@@ -191,6 +191,13 @@ fn walk_direct_statement(
                 invalidate_qorm_table_fact(&package, facts);
             }
         }
+        NodeKind::Use { module, args, .. }
+            if module != QUICKORM_MODULE && imports_table_builder(args) =>
+        {
+            let package = current_package(context).to_string();
+            context.table_package_authority.remove(&package);
+            invalidate_qorm_table_fact(&package, facts);
+        }
         NodeKind::No { module, .. } if module == QUICKORM_MODULE => {
             let package = current_package(context).to_string();
             context.table_package_authority.remove(&package);
@@ -232,6 +239,20 @@ fn walk_direct_statement(
 
 fn current_package(context: &WalkContext) -> &str {
     context.current_package.as_deref().unwrap_or("main")
+}
+
+fn imports_table_builder(args: &[String]) -> bool {
+    args.iter().any(|arg| {
+        let value = arg.trim();
+        if matches!(value, "table" | "'table'" | "\"table\"") {
+            return true;
+        }
+
+        value
+            .strip_prefix("qw(")
+            .and_then(|words| words.strip_suffix(')'))
+            .is_some_and(|words| words.split_whitespace().any(|word| word == "table"))
+    })
 }
 
 fn invalidate_qorm_table_fact(package: &str, facts: &mut Vec<GeneratedMemberFact>) {

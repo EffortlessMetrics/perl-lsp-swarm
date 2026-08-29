@@ -373,6 +373,20 @@ table later_users => sub {};
 }
 
 #[test]
+fn competing_table_import_invalidates_quickorm_authority() -> Result<(), Box<dyn std::error::Error>>
+{
+    let facts = generated_facts_from_source(
+        "package User; use DBIx::QuickORM type => 'table'; use Other::DSL qw(table); table users => sub {};",
+    )?;
+
+    assert!(
+        facts.is_empty(),
+        "a competing imported table builder must not retain QuickORM authority"
+    );
+    Ok(())
+}
+
+#[test]
 fn double_quoted_static_table_name_emits_qorm_table() -> Result<(), Box<dyn std::error::Error>> {
     let facts = generated_facts_from_source(
         r#"
