@@ -41,6 +41,8 @@ REQUIRED_PATHS = {
 TARGETS = (
     "docs/specs/PLSP-SPEC-0006-pr-queue-disposition.md",
     ".github/PULL_REQUEST_TEMPLATE.md",
+    ".agents/skills/**",
+    ".claude/skills/**",
     "xtask/tests/shift_left_publication_contract.rs",
 )
 REQUIRED_COMMAND = (
