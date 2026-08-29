@@ -953,23 +953,24 @@ mod tests {
 
     #[test]
     fn binary_receiver_parts_exact_error_variant() -> Result<(), String> {
-        // Missing-call boundary: an AST with no matching method call yields
-        // the exact "expected method call" error variant.
-        let missing = parse_ast("my $x = 1;")?;
-        let err = match binary_receiver_parts(&missing, "render") {
-            Err(err) => err,
-            Ok(_) => return Err("expected the missing-method-call error variant".to_string()),
-        };
-        assert_eq!(err, "expected method call");
-
-        // Non-subscript receiver boundary: a plain variable receiver yields
-        // the exact "receiver is not a subscript binary" error variant.
-        let plain = parse_ast("$srv->render();")?;
-        let err = match binary_receiver_parts(&plain, "render") {
-            Err(err) => err,
-            Ok(_) => return Err("expected the non-subscript-receiver error variant".to_string()),
-        };
+        // Non-subscript receiver boundary: a plain variable receiver triggers
+        // the exact "receiver is not a subscript binary" error variant named
+        // by the RIPR review guidance.
+        let root = parse_ast("$srv->render();")?;
+        let err = binary_receiver_parts(&root, "render")
+            .expect_err("expected the non-subscript-receiver error variant");
         assert_eq!(err, "receiver is not a subscript binary");
+        Ok(())
+    }
+
+    #[test]
+    fn binary_receiver_parts_missing_call_error_variant() -> Result<(), String> {
+        // Missing-call boundary: an AST with no matching method call triggers
+        // the exact "expected method call" error variant.
+        let root = parse_ast("my $x = 1;")?;
+        let err = binary_receiver_parts(&root, "render")
+            .expect_err("expected the missing-method-call error variant");
+        assert_eq!(err, "expected method call");
         Ok(())
     }
 
@@ -1058,6 +1059,65 @@ mod tests {
             super::receiver_container_fact(left2, empty).is_none(),
             "method-call container must miss the variable-identity boundary"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn receiver_container_fact_boundary_discriminates_subscript_arms() -> Result<(), String> {
+        let mut env = TypeEnvironment::new();
+        env.set_variable_fact(
+            "groups".to_string(),
+            hash_of_array_shape_fact("staff", 0, "My::Group"),
+        );
+
+        // Hash-slot arm boundary (op == "{}"): the {staff} subscript resolves
+        // through the recursive walk and carries HashSlot access evidence.
+        let hash_code = "$groups{staff}[0]->render();";
+        let hash_root = parse_ast(hash_code)?;
+        let (_, hash_slot_binary, _) = binary_receiver_parts(&hash_root, "render")?;
+        let NodeKind::Binary { op, .. } = &hash_slot_binary.kind else {
+            return Err("expected the slot subscript binary".to_string());
+        };
+        assert_eq!(op, "{}");
+        let hash_context = ReceiverFactContext::new(Some(&env)).with_source(hash_code);
+        let hash_fact = super::receiver_container_fact(hash_slot_binary, hash_context)
+            .ok_or("expected the {staff} container fact")?;
+        assert!(matches!(hash_fact.shape, Some(ShapeFact::Array(_))));
+        assert!(hash_fact.evidence.iter().any(|evidence| {
+            matches!(evidence, TypeEvidence::HashSlot { hash, key } if hash == "$groups" && key == "staff")
+        }));
+
+        // Hashref arm boundary (op == "->{}"): the is_hashref branch resolves
+        // the same slot through HashRefSlot evidence instead.
+        let ref_code = "$groups->{staff}[0]->render();";
+        let ref_root = parse_ast(ref_code)?;
+        let (_, ref_slot_binary, _) = binary_receiver_parts(&ref_root, "render")?;
+        let NodeKind::Binary { op: ref_op, .. } = &ref_slot_binary.kind else {
+            return Err("expected the hashref slot subscript binary".to_string());
+        };
+        assert_eq!(ref_op, "->{}");
+        let ref_context = ReceiverFactContext::new(Some(&env)).with_source(ref_code);
+        let ref_fact = super::receiver_container_fact(ref_slot_binary, ref_context)
+            .ok_or("expected the ->{staff} container fact")?;
+        assert!(matches!(ref_fact.shape, Some(ShapeFact::Array(_))));
+        assert!(ref_fact.evidence.iter().any(|evidence| {
+            matches!(evidence, TypeEvidence::HashRefSlot { base, key } if base == "$groups" && key == "staff")
+        }));
+
+        // Array-index arm boundary (op == "[]"): the [0] subscript resolves
+        // to the element fact through the recursive array arm.
+        let (index_binary, _, _) = binary_receiver_parts(&hash_root, "render")?;
+        let NodeKind::Binary { op: index_op, .. } = &index_binary.kind else {
+            return Err("expected the index subscript binary".to_string());
+        };
+        assert_eq!(index_op, "[]");
+        let array_context = ReceiverFactContext::new(Some(&env)).with_source(hash_code);
+        let array_fact = super::receiver_container_fact(index_binary, array_context)
+            .ok_or("expected the [0] container fact")?;
+        assert_eq!(array_fact.ty, PerlType::Object("My::Group".to_string()));
+        assert!(array_fact.evidence.iter().any(|evidence| {
+            matches!(evidence, TypeEvidence::HashSlot { hash, key } if hash == "$groups" && key == "staff")
+        }));
         Ok(())
     }
 
@@ -1509,6 +1569,18 @@ mod tests {
         assert_eq!(fact.confidence, Confidence::Low);
         assert_eq!(fact.dynamic_boundary, Some(DynamicBoundary::DynamicHashKey));
         assert_eq!(fact.fallback_state, ReceiverFallbackState::Fallback);
+        Ok(())
+    }
+
+    #[test]
+    fn source_derived_receiver_fact_for_reports_missing_method_call() -> Result<(), String> {
+        // Exact error-variant observation: an AST without the requested
+        // method call fails the source-derived helper with the exact
+        // "expected method call" variant.
+        let err = source_derived_receiver_fact_for("my $x = 1;", "render")
+            .err()
+            .ok_or("expected the missing-method-call error variant")?;
+        assert_eq!(err, "expected method call");
         Ok(())
     }
 
