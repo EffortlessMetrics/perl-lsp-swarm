@@ -20,6 +20,7 @@ EXPECTED_COUNT_FIELDS = (
     "unsuppressed_exposure_gaps",
     "unsuppressed_test_efficiency_findings",
 )
+EXPECTED_RIPR_VERSION = "0.9.0"
 
 
 def bounded_stderr(stderr: str) -> str:
@@ -113,15 +114,57 @@ def badge_from_ripr(payload: object) -> dict[str, object]:
     return {"schemaVersion": 1, "label": "ripr+", "message": str(unresolved), "color": "brightgreen" if unresolved == 0 else "yellow"}
 
 
-def generate(root: Path, check: bool, ripr_timeout_seconds: float = RIPR_TIMEOUT_SECONDS) -> None:
+def badge_from_receipt(
+    receipt_path: Path, producer_path: Path, expected_source_sha: str
+) -> dict[str, object]:
+    """Map only an exact, successful RIPR producer artifact to the badge."""
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    producer = json.loads(producer_path.read_text(encoding="utf-8"))
+    if receipt.get("schema_version") != 2 or receipt.get("kind") != "ripr_plus_baseline":
+        raise ValueError("RIPR receipt has an unsupported schema or kind")
+    if receipt.get("head") != expected_source_sha:
+        raise ValueError("RIPR receipt head does not match the requested source SHA")
+    if receipt.get("root") != ".":
+        raise ValueError("RIPR receipt root is not the repository root")
+    if not str(receipt.get("source_format", "")).startswith("ripr check --format repo-badge-json"):
+        raise ValueError("RIPR receipt is not based on repo-badge-json")
+    if producer.get("schema_version") != 1 or producer.get("kind") != "ripr_badge_producer":
+        raise ValueError("RIPR producer receipt has an unsupported schema or kind")
+    if producer.get("head") != expected_source_sha or producer.get("root") != ".":
+        raise ValueError("RIPR producer receipt is not bound to the requested source SHA")
+    if producer.get("ripr_version") != EXPECTED_RIPR_VERSION:
+        raise ValueError("RIPR producer receipt version is not reviewed")
+    counts = receipt.get("counts")
+    if not isinstance(counts, dict):
+        raise ValueError("RIPR receipt counts are missing")
+    return badge_from_ripr({"counts": counts})
+
+
+def generate(
+    root: Path,
+    check: bool,
+    ripr_timeout_seconds: float = RIPR_TIMEOUT_SECONDS,
+    receipt_path: Path | None = None,
+    producer_path: Path | None = None,
+    source_sha: str | None = None,
+) -> None:
     started = time.monotonic()
-    print(f"badges: starting RIPR analysis ({time.monotonic() - started:.1f}s)", flush=True)
-    stdout = run_ripr(root, ripr_timeout_seconds)
-    print(f"badges: RIPR analysis finished ({time.monotonic() - started:.1f}s)", flush=True)
-    try:
-        badge = badge_from_ripr(json.loads(stdout))
-    except (json.JSONDecodeError, ValueError) as error:
-        raise RuntimeError(f"invalid repo-badge-json from RIPR: {error}") from error
+    if receipt_path is not None or producer_path is not None:
+        if receipt_path is None or producer_path is None or source_sha is None:
+            raise RuntimeError("RIPR receipt mode requires receipt, producer, and source SHA")
+        print(f"badges: consuming exact RIPR receipt ({time.monotonic() - started:.1f}s)", flush=True)
+        try:
+            badge = badge_from_receipt(receipt_path, producer_path, source_sha)
+        except (OSError, json.JSONDecodeError, ValueError) as error:
+            raise RuntimeError(f"invalid exact RIPR receipt: {error}") from error
+    else:
+        print(f"badges: starting RIPR analysis ({time.monotonic() - started:.1f}s)", flush=True)
+        stdout = run_ripr(root, ripr_timeout_seconds)
+        print(f"badges: RIPR analysis finished ({time.monotonic() - started:.1f}s)", flush=True)
+        try:
+            badge = badge_from_ripr(json.loads(stdout))
+        except (json.JSONDecodeError, ValueError) as error:
+            raise RuntimeError(f"invalid repo-badge-json from RIPR: {error}") from error
 
     target = root / "target" / "xtask" / "badges" / "ripr-plus.json"
     committed = root / "badges" / "ripr-plus.json"
@@ -144,8 +187,18 @@ def generate(root: Path, check: bool, ripr_timeout_seconds: float = RIPR_TIMEOUT
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--check", action="store_true")
+    parser.add_argument("--ripr-receipt", type=Path)
+    parser.add_argument("--producer-receipt", type=Path)
+    parser.add_argument("--source-sha")
     try:
-        generate(Path(__file__).resolve().parents[1], parser.parse_args().check)
+        args = parser.parse_args()
+        generate(
+            Path(__file__).resolve().parents[1],
+            args.check,
+            receipt_path=args.ripr_receipt,
+            producer_path=args.producer_receipt,
+            source_sha=args.source_sha,
+        )
     except (OSError, RuntimeError) as error:
         print(f"badges: {error}", file=sys.stderr)
         return 1

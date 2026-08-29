@@ -877,7 +877,17 @@ const CALL_SITE_LEDGER: &[CallSiteLedgerEntry] = &[
     CallSiteLedgerEntry {
         file: "crates/perl-lsp-rs/src/runtime/text_sync.rs",
         needle: "= commit_parse_effect_if_current(",
-        expected_count: 2,
+        expected_count: 1,
+        effect_id: "compat.legacy-generic-callback-helper",
+    },
+    // #13183 moved the open-path free-function invocation inside a scoped
+    // `indexing_transition_lock` block, so its binding no longer sits on the
+    // call expression. The mutation site is unchanged and stays ratcheted on
+    // its own argument shape.
+    CallSiteLedgerEntry {
+        file: "crates/perl-lsp-rs/src/runtime/text_sync.rs",
+        needle: "commit_parse_effect_if_current(\n                                &documents_for_task,",
+        expected_count: 1,
         effect_id: "compat.legacy-generic-callback-helper",
     },
     CallSiteLedgerEntry {
@@ -1037,16 +1047,22 @@ const CALL_SITE_LEDGER: &[CallSiteLedgerEntry] = &[
         effect_id: "parser-state.accepted-snapshot-publication",
     },
     // Workspace-task Coordinator lifecycle routes (async didOpen/scan paths).
+    // #13183 deleted the bespoke `handle_did_create_files` indexing arm and
+    // routed explicit creates through `process_file_watcher_uri_immediate`,
+    // which carries its own notify_change/notify_parse_complete pair. That
+    // removed exactly one pair from this file (7 -> 6 and 6 -> 5); the
+    // lifecycle invariant is unchanged, since the surviving shared path still
+    // decrements exactly once on every exit.
     CallSiteLedgerEntry {
         file: "crates/perl-lsp-rs/src/runtime/workspace.rs",
         needle: ".notify_parse_complete(",
-        expected_count: 7,
+        expected_count: 6,
         effect_id: "readiness.active-document-parse-lifecycle",
     },
     CallSiteLedgerEntry {
         file: "crates/perl-lsp-rs/src/runtime/workspace.rs",
         needle: ".notify_change(",
-        expected_count: 6,
+        expected_count: 5,
         effect_id: "readiness.active-document-parse-lifecycle",
     },
     CallSiteLedgerEntry {
