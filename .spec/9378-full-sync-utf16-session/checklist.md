@@ -23,7 +23,7 @@
       / lifecycle integration + census + ownership map green; per-package
       fmt clean; clippy: perl-lsp-rs --all-targets clean, perl-lsp-rs-core
       findings confined to pre-existing untouched files (host baseline).
-- [ ] PR opened citing (#9378), closes #9378 on merge if acceptance is met.
+- [x] PR opened citing (#9378): EffortlessMetrics/perl-lsp-swarm#14159, closes #9378 on merge if acceptance is met.
 
 Known-unrelated observations (documented for review):
 
