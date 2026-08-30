@@ -793,10 +793,18 @@ fn execution_point_errors(
                     census.qualified(index)
                 ));
             }
-            ExecutionPoint::AfterResponse if before.contains(&index) && !after.contains(&index) => {
+            ExecutionPoint::AfterResponse if !after.contains(&index) => {
+                // Requiring a post-response root to actually reach the function
+                // closes the symmetric hole: without it a row nothing reaches
+                // would sit in `after_response` and take that point's migration
+                // timing, when `on_demand` is what the source supports.
+                let reason = if before.contains(&index) {
+                    "is reachable only from the response-committing root"
+                } else {
+                    "is reached by no lifecycle root, so `on_demand` is the derived point"
+                };
                 errors.push(format!(
-                    "row {} declares `after_response` but `{}` is reachable only from the \
-                     response-committing root",
+                    "row {} declares `after_response` but `{}` {reason}",
                     row.operation_id,
                     census.qualified(index)
                 ));

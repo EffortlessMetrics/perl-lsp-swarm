@@ -442,5 +442,34 @@ pub fn ledger_rows() -> Vec<InitOperationRow> {
             call_site_argument: "",
             owns_exposure: false,
         },
+        InitOperationRow {
+            operation_id: "init.instrumentation.timing_file_sink",
+            file: F_TIMING,
+            function: "file_writer",
+            // The sink is a separate operation from the mode selection above:
+            // it touches the filesystem, and only on the `TimingMode::File`
+            // branch. Folding it into the mode row would let one proposition
+            // stand for two different exposures.
+            proposition: "the file timing sink is created and opened the first time a span is \
+                          written under `TimingMode::File`",
+            side_effects: &[],
+            declared_exposure: &[Exposure::Filesystem],
+            triggers: &[Trigger::FirstUse],
+            exactly_once: false,
+            current_point: ExecutionPoint::OnDemand,
+            phase: PhaseDisposition::ExistingExternalOwnerNoMove,
+            migration_wave: MigrationWave::None,
+            affects_static_initialize_result: false,
+            static_surface_join: "",
+            affects_dynamic_registration_plan: false,
+            affects_negotiation: false,
+            affects_initial_native_semantics: false,
+            current_owner: "#8077 startup measurement",
+            target_owner: "#8077 startup measurement",
+            proof_family: "initialize_instrumentation_has_no_semantic_effect",
+            memoization: "the handle is opened once into a static",
+            call_site_argument: "",
+            owns_exposure: false,
+        },
     ]
 }

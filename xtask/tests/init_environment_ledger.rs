@@ -1048,6 +1048,33 @@ fn an_on_demand_claim_over_lifecycle_reachable_work_is_rejected() {
 }
 
 #[test]
+fn an_after_response_claim_over_work_no_root_reaches_is_rejected() {
+    // The symmetric hole: requiring only "not reachable *solely* from the
+    // response-committing root" would let a row nothing reaches at all sit in
+    // `after_response` and inherit that point's migration timing.
+    let census = Census::from_sources(&lifecycle_timing_sources());
+    let unreached = InitOperationRow {
+        operation_id: "synthetic.unreached",
+        file: SYNTHETIC_HELPER_FILE,
+        function: "resolve_timing_mode",
+        declared_exposure: &[Exposure::EnvRead],
+        current_point: ExecutionPoint::AfterResponse,
+        phase: PhaseDisposition::DeferToPostInitializeEnvironment,
+        migration_wave: MigrationWave::None,
+        owns_exposure: false,
+        ..baseline_row()
+    };
+
+    let errors = ledger_errors_with_roots(
+        &[pre_response_row(), post_response_row(), unreached],
+        &census,
+        &lifecycle_roots(),
+    );
+    assert_reports(&errors, "synthetic.unreached");
+    assert_reports(&errors, "is reached by no lifecycle root");
+}
+
+#[test]
 fn an_on_demand_row_no_root_reaches_is_accepted() {
     // Negative control for the rule above: a genuinely lazy leaf, reached by no
     // lifecycle root, must not be forced into a response-relative point.
