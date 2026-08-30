@@ -1,4 +1,6 @@
-use super::super::model::{GatePolicyFile, LintLedger, RustToolchainFile, RustVersion};
+use super::super::model::{
+    ConfigurationState, GatePolicyFile, LintLedger, RustToolchainFile, RustVersion,
+};
 use super::super::read::{read_toml, read_toml_as, read_yaml_as, value_at};
 use super::super::{CLIPPY_CONFIG, GATE_POLICY, LINT_LEDGER, ROOT_MANIFEST, RUST_TOOLCHAIN};
 use super::common::ensure_version_matches;
@@ -13,6 +15,8 @@ const TEST_CARVEOUTS: &[&str] = &[
     "allow-indexing-slicing-in-tests",
     "allow-dbg-in-tests",
 ];
+const DISALLOWED_FIELDS_CONFIG: &str = "disallowed-fields";
+const DISALLOWED_FIELDS_LINT: &str = "clippy::disallowed_fields";
 
 pub(super) fn validate_policy_header(ledger: &LintLedger) -> Result<()> {
     if ledger.schema != 2 {
@@ -85,10 +89,12 @@ pub(super) fn validate_workspace_members_inherit_lints(root: &Path, cargo: &Valu
     Ok(())
 }
 
-pub(super) fn validate_clippy_config(root: &Path, ledger: &LintLedger) -> Result<()> {
+pub(super) fn validate_clippy_config(root: &Path, ledger: &LintLedger) -> Result<usize> {
     let path = root.join(CLIPPY_CONFIG);
     let config = read_toml(path.clone())?;
-    validate_clippy_config_value(&config, ledger).map_err(|err| eyre!("{}: {err}", path.display()))
+    validate_clippy_config_value(&config, ledger)
+        .map_err(|err| eyre!("{}: {err}", path.display()))?;
+    disallowed_field_selector_count(&config).map_err(|err| eyre!("{}: {err}", path.display()))
 }
 
 pub(crate) fn validate_clippy_config_value(config: &Value, ledger: &LintLedger) -> Result<()> {
@@ -100,5 +106,75 @@ pub(crate) fn validate_clippy_config_value(config: &Value, ledger: &LintLedger) 
             bail!("clippy.toml must not contain test carveout {carveout}");
         }
     }
-    Ok(())
+    validate_disallowed_fields_policy(config, ledger)
+}
+
+fn validate_disallowed_fields_policy(config: &Value, ledger: &LintLedger) -> Result<()> {
+    for lint in &ledger.lint {
+        if lint.name != DISALLOWED_FIELDS_LINT && lint.configuration_state.is_some() {
+            bail!(
+                "lint {} sets configuration_state, but only config-backed lints may do so",
+                lint.name
+            );
+        }
+    }
+
+    let Some(lint) = ledger.lint.iter().find(|lint| lint.name == DISALLOWED_FIELDS_LINT) else {
+        bail!(
+            "{LINT_LEDGER} must contain an active or debt {DISALLOWED_FIELDS_LINT} row; removing or demoting the policy identity together with its Cargo/config hooks is not a valid rollback"
+        );
+    };
+
+    if !matches!(lint.status.as_str(), "active" | "debt") {
+        if lint.configuration_state.is_some() {
+            bail!(
+                "{LINT_LEDGER} row {} with status {} cannot set configuration_state; the marker is valid only for active or debt lints",
+                lint.name,
+                lint.status
+            );
+        }
+        if config.get(DISALLOWED_FIELDS_CONFIG).is_some() {
+            bail!(
+                "{CLIPPY_CONFIG} configures {DISALLOWED_FIELDS_CONFIG}, but {LINT_LEDGER} row {} is {}",
+                lint.name,
+                lint.status
+            );
+        }
+        bail!(
+            "{LINT_LEDGER} row {} must remain active or debt; {} is not a valid status for this config-backed policy",
+            lint.name,
+            lint.status
+        );
+    }
+
+    let selector_count = disallowed_field_selector_count(config)?;
+    match (selector_count, lint.configuration_state) {
+        (0, Some(ConfigurationState::EmptyByDesign)) => Ok(()),
+        (0, None) => bail!(
+            "active config-backed lint {} has an empty {CLIPPY_CONFIG} {DISALLOWED_FIELDS_CONFIG} list; set configuration_state = \"empty-by-design\"",
+            lint.name
+        ),
+        (_, Some(ConfigurationState::EmptyByDesign)) => bail!(
+            "{} has {selector_count} configured selectors; remove stale configuration_state = \"empty-by-design\" and land the governed selector contract",
+            lint.name
+        ),
+        (_, None) => bail!(
+            "{} has {selector_count} configured selectors, but Phase 1 permits only the validated empty set; land selector ownership, replacement, consumer-denominator, and bypass proof before populating {DISALLOWED_FIELDS_CONFIG}",
+            lint.name
+        ),
+    }
+}
+
+fn disallowed_field_selector_count(config: &Value) -> Result<usize> {
+    let entries = config
+        .get(DISALLOWED_FIELDS_CONFIG)
+        .ok_or_else(|| {
+            eyre!(
+                "{CLIPPY_CONFIG} must define {DISALLOWED_FIELDS_CONFIG} for active {DISALLOWED_FIELDS_LINT}"
+            )
+        })?
+        .as_array()
+        .ok_or_else(|| eyre!("{CLIPPY_CONFIG} {DISALLOWED_FIELDS_CONFIG} must be an array"))?;
+
+    Ok(entries.len())
 }
