@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt;
 
+pub mod result_axes;
+
 pub const DISCOVERY_SCHEMA_VERSION: &str = "perl_core_harness.discovery.v1";
 pub const RUN_REPORT_SCHEMA_VERSION: &str = "perl_core_harness.report.v1";
 pub const COMPILE_BASELINE_SCHEMA_VERSION: &str = "perl_core_harness.compile_baseline.v1";
@@ -31,6 +33,8 @@ pub const CURRENT_AUTHORITY_INDEX_SCHEMA_VERSION: &str =
     "perl_core_harness.current_authority_index.v1";
 pub const COMPILER_COMPATIBILITY_SCHEMA_VERSION: &str =
     "perl_core_harness.compiler_compatibility.v1";
+/// Strict separated result axes; see [`result_axes`] for the invariants.
+pub const RESULT_AXES_SCHEMA_VERSION: &str = "perl_core_harness.result_axes.v2";
 
 /// Upstream Perl test scheduler to query.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, ValueEnum)]
@@ -1138,6 +1142,9 @@ mod tests {
         }
         if COMPILER_COMPATIBILITY_SCHEMA_VERSION != "perl_core_harness.compiler_compatibility.v1" {
             return Err("compiler compatibility schema constant changed".to_string());
+        }
+        if RESULT_AXES_SCHEMA_VERSION != "perl_core_harness.result_axes.v2" {
+            return Err("result axes schema constant changed".to_string());
         }
         Ok(())
     }
