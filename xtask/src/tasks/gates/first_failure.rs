@@ -136,3 +136,45 @@ pub fn is_cargo_test_command(command: &str) -> bool {
     let is_cargo = first == "cargo" || first.ends_with("/cargo") || first.contains("\\cargo");
     is_cargo && tokens.next().is_some_and(|t| t == "test")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::log_reaches_test_execution;
+    use color_eyre::eyre::Result;
+    use std::fs;
+
+    const CARGO_TEST_COMMAND: &str = "cargo test -p xtask --locked";
+
+    #[test]
+    fn invalid_utf8_line_does_not_hide_a_later_libtest_marker() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let log_path = temp.path().join("gate-invalid-utf8.log");
+        let mut with_marker = b"   Compiling xtask v0.17.0\n".to_vec();
+        with_marker.extend_from_slice(&[0xff, 0xfe, b'\n']);
+        with_marker.extend_from_slice(b"running 2 tests\n");
+        fs::write(&log_path, with_marker)?;
+
+        assert_eq!(
+            log_reaches_test_execution(CARGO_TEST_COMMAND, &log_path)?,
+            Some(true),
+            "an invalid UTF-8 line before a later libtest marker must not end the scan"
+        );
+
+        let mut compile_only = b"   Compiling xtask v0.17.0\n".to_vec();
+        compile_only.extend_from_slice(&[0xff, 0xfe, b'\n']);
+        fs::write(&log_path, compile_only)?;
+        assert_eq!(
+            log_reaches_test_execution(CARGO_TEST_COMMAND, &log_path)?,
+            Some(false),
+            "invalid UTF-8 without a later marker remains measured compile-only"
+        );
+
+        assert!(
+            log_reaches_test_execution(CARGO_TEST_COMMAND, &temp.path().join("missing.log"))
+                .is_err(),
+            "an unreadable log must remain instrumentation-unknown"
+        );
+
+        Ok(())
+    }
+}
