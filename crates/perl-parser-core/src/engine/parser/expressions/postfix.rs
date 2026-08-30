@@ -1467,12 +1467,14 @@ impl<'a> Parser<'a> {
     }
 
     /// Attempt to parse a keyword or word operator (`not`, `and`, `or`, `xor`,
-    /// `do`, `eval`, `cmp`, etc.) as a bareword hash key when it appears directly
-    /// before `}` or as part of a comma-separated hash slice.
+    /// `do`, `eval`, `cmp`, etc.) as a bareword hash key. Non-control keywords
+    /// are accepted directly before `}` or within a comma-separated subscript.
+    /// `return`, `next`, `last`, and `redo` are accepted only as the initial,
+    /// sole key directly before `}`; after a comma they remain executable.
     ///
-    /// Returns `Some(Node)` if the current token is a keyword/operator followed
-    /// by `}` or `,`, otherwise returns `None` to fall through to general
-    /// expression parsing.
+    /// Returns `Some(Node)` when the current token satisfies the applicable
+    /// position-sensitive boundary, otherwise returns `None` to fall through
+    /// to general expression parsing.
     fn try_parse_keyword_bareword_key(&mut self) -> ParseResult<Option<Node>> {
         if !self.peek_is_keyword_bareword_key(true) {
             return Ok(None);
