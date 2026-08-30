@@ -485,6 +485,7 @@ class FileEntryPointTests(unittest.TestCase):
     def test_missing_receipt_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             rendered = render_summary.render_receipt_file(str(Path(tmp) / "absent.json"))
+        self.assertIn("**Status**: NOT_PROVEN — receipt file is missing", rendered)
         self.assertIn("Receipt not found at", rendered)
 
     def test_malformed_json(self) -> None:
@@ -492,7 +493,53 @@ class FileEntryPointTests(unittest.TestCase):
             path = Path(tmp) / "receipt.json"
             path.write_text("{not json", encoding="utf-8")
             rendered = render_summary.render_receipt_file(str(path))
+        self.assertIn("**Status**: NOT_PROVEN — receipt could not be read", rendered)
         self.assertIn("Failed to read receipt", rendered)
+
+    def test_undecodable_receipt_file(self) -> None:
+        """Invalid UTF-8 is a read failure, not a crash."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "receipt.json"
+            path.write_bytes(b'{"gates": [\xff\xfe]}')
+            rendered = render_summary.render_receipt_file(str(path))
+        self.assertIn("**Status**: NOT_PROVEN — receipt could not be read", rendered)
+
+    def test_every_rendering_carries_exactly_one_status_line(self) -> None:
+        """The invariant behind the whole claim: no output is silent about its verdict.
+
+        A rendering with no `**Status**` line leaves a consumer scanning for one
+        with nothing to find, which is the failure mode this module exists to
+        remove — reached by omission rather than by a false pass.
+        """
+        renderings = [
+            render_summary.render(receipt(gate("fmt", "pass"))),
+            render_summary.render(receipt(gate("fmt", "fail"), gate("u", "skip"))),
+            render_summary.render(receipt()),
+            render_summary.render(receipt(gate("fmt", "passed"))),
+            render_summary.render(receipt(**{"gates": {"fmt": "pass"}})),
+            render_summary.render(receipt(**{"gates": ["fmt"]})),
+            render_summary.render({"gates": [{"status": "pass"}]}),
+            render_summary.render(["not", "a", "receipt"]),
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            renderings.append(
+                render_summary.render_receipt_file(str(Path(tmp) / "absent.json"))
+            )
+            bad = Path(tmp) / "bad.json"
+            bad.write_text("{not json", encoding="utf-8")
+            renderings.append(render_summary.render_receipt_file(str(bad)))
+            good = Path(tmp) / "good.json"
+            good.write_text(json.dumps(receipt(gate("fmt", "pass"))), encoding="utf-8")
+            renderings.append(render_summary.render_receipt_file(str(good)))
+
+        for rendered in renderings:
+            with self.subTest(first_line=rendered.splitlines()[:1]):
+                status_lines = [
+                    line
+                    for line in rendered.splitlines()
+                    if line.startswith("**Status**")
+                ]
+                self.assertEqual(len(status_lines), 1, rendered)
 
     def test_main_writes_the_rendered_summary(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

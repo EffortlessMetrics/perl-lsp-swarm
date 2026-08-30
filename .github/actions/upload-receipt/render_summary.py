@@ -24,6 +24,11 @@ missing the fields the contract requires of one, the summary reports
 accounts for every gate: skips are reported alongside failures rather than
 dropped.
 
+Every rendering carries exactly one ``**Status**`` line, including the ones
+where no receipt could be read at all — a missing or unparseable file is the
+most unusable input there is, and reporting no verdict for it would leave a
+consumer scanning for a status with nothing to find.
+
 **How deep the checking goes**, deliberately: presence for structure (the
 `required` lists in the schema), the contract enum for `status` — the one field
 the verdict rests on — and visible degradation for everything else, so an
@@ -298,6 +303,7 @@ def render_receipt_file(receipt_path_raw: str) -> str:
     if not receipt_path.is_file():
         return (
             "### Gate Receipt\n\n"
+            "**Status**: NOT_PROVEN — receipt file is missing\n\n"
             f"> Receipt not found at {summary_code(receipt_path_raw)}\n"
         )
     try:
@@ -305,6 +311,7 @@ def render_receipt_file(receipt_path_raw: str) -> str:
     except (json.JSONDecodeError, OSError, UnicodeDecodeError) as error:
         return (
             "### Gate Receipt\n\n"
+            "**Status**: NOT_PROVEN — receipt could not be read\n\n"
             f"> Failed to read receipt: {summary_code(error)}\n"
         )
     return render(data)
