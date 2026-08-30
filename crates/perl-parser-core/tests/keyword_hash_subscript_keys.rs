@@ -1,4 +1,8 @@
 //! Boundary-sensitive regression coverage for keyword-shaped hash keys.
+//!
+//! The local parse wrapper is deliberate: these regressions require a clean
+//! parse with zero diagnostics and no recovery nodes. Corpus-oriented shared
+//! helpers may accept recovered trees and therefore cannot satisfy this claim.
 
 use perl_parser_core::{Node, NodeKind, Parser};
 
@@ -41,9 +45,9 @@ fn contains_loop_control(node: &Node, expected_op: &str, expected_label: Option<
         .any(|child| contains_loop_control(child, expected_op, expected_label))
 }
 
-fn contains_return(node: &Node) -> bool {
-    matches!(&node.kind, NodeKind::Return { .. })
-        || node.children().into_iter().any(contains_return)
+fn count_returns(node: &Node) -> usize {
+    usize::from(matches!(&node.kind, NodeKind::Return { .. }))
+        + node.children().into_iter().map(count_returns).sum::<usize>()
 }
 
 #[test]
@@ -79,9 +83,18 @@ fn terminal_control_words_are_static_direct_hash_keys() -> TestResult {
 #[test]
 fn comma_followed_control_words_remain_executable_expressions() -> TestResult {
     for (op, source) in [
-        ("next", "sub f { my %hash; my $value; while (1) { my $x = $hash{next, $value}; } }"),
-        ("last", "sub f { my %hash; my $value; while (1) { my $x = $hash{last, $value}; } }"),
-        ("redo", "sub f { my %hash; my $value; while (1) { my $x = $hash{redo, $value}; } }"),
+        (
+            "next",
+            "sub f { my %hash; my $value; while (1) { my $x = $hash{next, $value}; } }",
+        ),
+        (
+            "last",
+            "sub f { my %hash; my $value; while (1) { my $x = $hash{last, $value}; } }",
+        ),
+        (
+            "redo",
+            "sub f { my %hash; my $value; while (1) { my $x = $hash{redo, $value}; } }",
+        ),
     ] {
         let ast = parse_clean(source)?;
         if !contains_loop_control(&ast, op, None) {
@@ -94,8 +107,11 @@ fn comma_followed_control_words_remain_executable_expressions() -> TestResult {
 
     let source = "sub f { my %hash; my $value; my $x = $hash{return, $value}; return 99; }";
     let ast = parse_clean(source)?;
-    if !contains_return(&ast) {
-        return Err(format!("comma-followed return stopped being executable: {}", ast.to_sexp()));
+    if count_returns(&ast) != 2 {
+        return Err(format!(
+            "comma-followed return stopped being a distinct executable return: {}",
+            ast.to_sexp()
+        ));
     }
     Ok(())
 }
@@ -108,7 +124,7 @@ fn ordinary_executable_control_forms_keep_their_ast() -> TestResult {
     }
 
     let return_ast = parse_clean("return $value;")?;
-    if !contains_return(&return_ast) {
+    if count_returns(&return_ast) != 1 {
         return Err(format!(
             "valued return stopped being a return expression: {}",
             return_ast.to_sexp()
