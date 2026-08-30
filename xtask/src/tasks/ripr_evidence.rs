@@ -3713,23 +3713,27 @@ mod tests {
 
     #[test]
     fn lexically_join_refuses_paths_that_escape_the_root() {
-        // Only this assertion exercises the `components.pop()?` branch this
-        // leaf changed. Under a default-to-root repair
-        // (`let _ = components.pop();`) the exhausted pop is swallowed, the
-        // trailing segments repopulate `components`, and the join wrongly
-        // yields Some("etc/passwd"). Verified: that repair fails here and
-        // nowhere else in this test.
+        // Only this assertion *discriminates* against a default-to-root
+        // repair (`let _ = components.pop();`): the exhausted pop is
+        // swallowed, the trailing `etc/passwd` segments repopulate
+        // `components`, and the join wrongly yields Some("etc/passwd").
+        // Verified — that repair fails here and nowhere else in this test.
         assert_eq!(lexically_join("crates/a", "../../../etc/passwd"), None);
 
-        // The remaining three are refused by the post-loop
-        // `components.is_empty()` guard, not by the `..` branch: each ends the
-        // loop with nothing left, so they hold under both the original code
-        // and that broken repair. They are defense-in-depth for the
-        // root-escape contract, not falsifiers for this change (#13809
-        // review).
+        // These two also reach `components.pop()?` on an exhausted stack and
+        // return there, so they do exercise the changed branch. They do not
+        // discriminate, for a different reason than the line below: under the
+        // broken repair they fall through to the post-loop
+        // `components.is_empty()` guard, which yields `None` as well. Same
+        // answer by a different route, so the assertion cannot tell them
+        // apart.
         assert_eq!(lexically_join("", ".."), None);
         assert_eq!(lexically_join("a", "../.."), None);
-        // Popping exactly to empty is refusal too, not an empty join.
+
+        // This one never reaches an exhausted pop at all: `..` pops "a"
+        // successfully and the loop ends empty, so the post-loop guard is its
+        // refusal path under both implementations. Popping exactly to empty
+        // is refusal, not an empty join.
         assert_eq!(lexically_join("a", ".."), None);
     }
 
