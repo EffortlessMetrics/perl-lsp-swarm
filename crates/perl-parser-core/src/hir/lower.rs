@@ -2391,16 +2391,19 @@ impl Lowerer {
     }
 }
 
-/// Storage class for a declaration, given whether it sits inside a Perl 5.38+
-/// `class` body.
+/// Storage class for a declaration.
 ///
-/// `in_class_body` only affects `field`. The parser accepts `field` as a
+/// `is_class_field_decl` is `field`-specific: it says that *this* declaration
+/// is a direct statement of a Perl 5.38+ `class` body, and it is consumed only
+/// by the `field` arm. No other declarator's storage depends on it.
+///
+/// The distinction is needed because the parser accepts `field` as a
 /// declarator wherever the next token starts a variable, so legacy code that
 /// calls a `field` sub (`field $x;`) produces the same AST shape as a real
-/// field declaration. Only a declaration lexically inside a class body earns
-/// class-field storage; outside one, `field` keeps the ordinary
-/// unknown-declarator fallback it had before (#13817).
-fn storage_class_for_declarator(declarator: &str, in_class_body: bool) -> StorageClass {
+/// field declaration. Only a class-level declaration earns class-field
+/// storage; everywhere else `field` keeps the ordinary unknown-declarator
+/// fallback it had before (#13817).
+fn storage_class_for_declarator(declarator: &str, is_class_field_decl: bool) -> StorageClass {
     match declarator {
         "my" => StorageClass::LexicalMy,
         "our" => StorageClass::PackageOur,
@@ -2409,7 +2412,7 @@ fn storage_class_for_declarator(declarator: &str, in_class_body: bool) -> Storag
         // A `field` in a class body is per-object storage. Without this arm it
         // fell to `PackageGlobal` below, which made `field $x`
         // indistinguishable from an undeclared package global (#13817).
-        "field" if in_class_body => StorageClass::ClassField,
+        "field" if is_class_field_decl => StorageClass::ClassField,
         _ => StorageClass::PackageGlobal,
     }
 }
