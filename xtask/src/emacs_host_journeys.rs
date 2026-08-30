@@ -174,6 +174,14 @@ pub enum DiagnosticCohort {
     LspModeObserved,
 }
 
+impl DiagnosticCohort {
+    /// The closed cohort contract in published order. Membership summaries
+    /// and registry rows both read this list, so a new variant cannot be
+    /// admitted by a row while staying invisible in the published summary.
+    pub const ALL: [Self; 3] =
+        [Self::BundledEglotPush, Self::StandaloneEglotPull, Self::LspModeObserved];
+}
+
 /// Required host surface / action class. Distinguishes genuinely host-visible
 /// semantics from protocol-frame observation: [`HostSurface::is_host_visible`]
 /// is false only for [`HostSurface::DiagnosticsPollProtocol`].
@@ -258,7 +266,8 @@ pub struct JourneyCell {
     pub depth: DepthClass,
     /// Diagnostic cohorts whose membership may ever earn this cell.
     pub cohorts: Vec<DiagnosticCohort>,
-    /// Fixture authorities this cell binds (within [`SUBJECT_FIXTURE_SUBSTRATE`]).
+    /// Subject-fixture authorities bound to this cell from the registry-wide
+    /// [`SUBJECT_FIXTURE_SUBSTRATE`].
     pub fixture_owners: Vec<String>,
     /// Canonical expectation owners referenced, not copied.
     pub expectation_owner: ExpectationRef,
@@ -332,12 +341,6 @@ fn root_ref(role: &str) -> Option<RootReference> {
     Some(RootReference { role_token: format!("root_11366.{role}") })
 }
 
-const ALL_COHORTS: [DiagnosticCohort; 3] = [
-    DiagnosticCohort::BundledEglotPush,
-    DiagnosticCohort::StandaloneEglotPull,
-    DiagnosticCohort::LspModeObserved,
-];
-
 const PULL_ONLY: [DiagnosticCohort; 1] = [DiagnosticCohort::StandaloneEglotPull];
 
 const DIM_DOCUMENT_PROCESS: [&str; 2] = ["document.generation", "process.identity"];
@@ -365,7 +368,6 @@ struct CellSpec<'a> {
     class: &'static str,
     depth: DepthClass,
     cohorts: &'a [DiagnosticCohort],
-    fixtures: &'a [&'a str],
     expectations: &'a [&'a str],
     root_role: Option<&'a str>,
     dimensions: &'a [&'a str],
@@ -378,6 +380,13 @@ struct CellSpec<'a> {
 }
 
 impl<'a> CellSpec<'a> {
+    /// Registry-wide v1 invariants live here rather than on every row: the
+    /// subject-fixture substrate, `platform_applicability`, and the `11361.*`
+    /// producer mapping have exactly one admitted value in
+    /// `emacs_host_journeys.v1`. They stay validated per cell because
+    /// [`validate_registry`] also accepts registries this constructor did not
+    /// build; the first row that needs a second value must become a `CellSpec`
+    /// field rather than a second constant here.
     fn build(self) -> JourneyCell {
         let limitations: &[&str] = match self.evidence_kind {
             EvidenceKind::ProtocolMembershipOnly => &["protocol_membership_not_host_visible"],
@@ -396,7 +405,7 @@ impl<'a> CellSpec<'a> {
             journey_class: self.class.to_string(),
             depth: self.depth,
             cohorts: self.cohorts.to_vec(),
-            fixture_owners: self.fixtures.iter().map(|f| (*f).to_string()).collect(),
+            fixture_owners: SUBJECT_FIXTURE_SUBSTRATE.iter().map(|f| (*f).to_string()).collect(),
             expectation_owner: expect_ref(self.expectations),
             root_reference: self.root_role.and_then(root_ref),
             dimensions: self.dimensions.iter().map(|d| (*d).to_string()).collect(),
@@ -421,16 +430,13 @@ pub fn registry() -> Vec<JourneyCell> {
     use EvidenceKind::{HostVisibleObservation as HostVisible, ProtocolMembershipOnly};
     use HostSurface::*;
 
-    let fixtures: &[&str] = SUBJECT_FIXTURE_SUBSTRATE;
-
     vec![
         // -- registration ---------------------------------------------------
         CellSpec {
             cell_id: "emacs.registration_subject_selection.exact_selected_perllsp",
             class: "registration_subject_selection",
             depth: DepthClass::Core,
-            cohorts: &ALL_COHORTS,
-            fixtures,
+            cohorts: &DiagnosticCohort::ALL,
             expectations: &["lifecycle.shutdown"],
             root_role: None,
             dimensions: &["process.identity", "session.generation"],
@@ -452,8 +458,7 @@ pub fn registry() -> Vec<JourneyCell> {
             cell_id: "emacs.mode_attachment.perl_mode_language_id",
             class: "mode_attachment",
             depth: DepthClass::Core,
-            cohorts: &ALL_COHORTS,
-            fixtures,
+            cohorts: &DiagnosticCohort::ALL,
             expectations: &["hover.widget_name"],
             root_role: Some("stock_project"),
             dimensions: &DIM_DOCUMENT_PROCESS,
@@ -470,8 +475,7 @@ pub fn registry() -> Vec<JourneyCell> {
             cell_id: "emacs.mode_attachment.cperl_mode_language_id",
             class: "mode_attachment",
             depth: DepthClass::Core,
-            cohorts: &ALL_COHORTS,
-            fixtures,
+            cohorts: &DiagnosticCohort::ALL,
             expectations: &["hover.widget_name"],
             root_role: Some("stock_project"),
             dimensions: &DIM_DOCUMENT_PROCESS,
@@ -489,8 +493,7 @@ pub fn registry() -> Vec<JourneyCell> {
             cell_id: "emacs.workspace_readiness.stock_root_ready",
             class: "workspace_readiness",
             depth: DepthClass::Core,
-            cohorts: &ALL_COHORTS,
-            fixtures,
+            cohorts: &DiagnosticCohort::ALL,
             expectations: &["workspace.partial_not_ready"],
             root_role: Some("stock_discovery"),
             dimensions: DIM_ROOT_READY.as_slice(),
@@ -511,8 +514,7 @@ pub fn registry() -> Vec<JourneyCell> {
             cell_id: "emacs.diagnostics_host_visibility.arrival_update_clear",
             class: "diagnostics_host_visibility",
             depth: DepthClass::Core,
-            cohorts: &ALL_COHORTS,
-            fixtures,
+            cohorts: &DiagnosticCohort::ALL,
             expectations: &["diagnostic.syntax"],
             root_role: Some("stock_project"),
             dimensions: &DIM_DOCUMENT_SESSION,
@@ -534,7 +536,6 @@ pub fn registry() -> Vec<JourneyCell> {
             class: "diagnostics_host_visibility",
             depth: DepthClass::Core,
             cohorts: &PULL_ONLY,
-            fixtures,
             expectations: &["diagnostic.syntax"],
             root_role: Some("stock_project"),
             dimensions: &DIM_DOCUMENT_SESSION,
@@ -553,7 +554,6 @@ pub fn registry() -> Vec<JourneyCell> {
             class: "diagnostics_pull_protocol",
             depth: DepthClass::Core,
             cohorts: &PULL_ONLY,
-            fixtures,
             expectations: &["diagnostic.syntax"],
             root_role: None,
             dimensions: &DIM_DOCUMENT_SESSION,
@@ -571,7 +571,6 @@ pub fn registry() -> Vec<JourneyCell> {
             class: "diagnostics_pull_protocol",
             depth: DepthClass::Core,
             cohorts: &PULL_ONLY,
-            fixtures,
             expectations: &["diagnostic.syntax"],
             root_role: None,
             dimensions: &DIM_DOCUMENT_SESSION,
@@ -589,7 +588,6 @@ pub fn registry() -> Vec<JourneyCell> {
             class: "diagnostics_pull_protocol",
             depth: DepthClass::Core,
             cohorts: &PULL_ONLY,
-            fixtures,
             expectations: &["diagnostic.syntax"],
             root_role: None,
             dimensions: &DIM_DOCUMENT_SESSION,
@@ -606,7 +604,6 @@ pub fn registry() -> Vec<JourneyCell> {
             class: "diagnostics_pull_protocol",
             depth: DepthClass::Core,
             cohorts: &PULL_ONLY,
-            fixtures,
             expectations: &["edit_requery.widget_greet", "diagnostic.syntax"],
             root_role: None,
             dimensions: &DIM_DOCUMENT_SESSION,
@@ -624,7 +621,6 @@ pub fn registry() -> Vec<JourneyCell> {
             class: "diagnostics_pull_protocol",
             depth: DepthClass::Core,
             cohorts: &PULL_ONLY,
-            fixtures,
             expectations: &["diagnostic.syntax"],
             root_role: None,
             dimensions: &DIM_DOCUMENT_SESSION,
@@ -641,8 +637,7 @@ pub fn registry() -> Vec<JourneyCell> {
             cell_id: "emacs.completion_capf_buffer_state.capf_selection_applied",
             class: "completion_capf_buffer_state",
             depth: DepthClass::Core,
-            cohorts: &ALL_COHORTS,
-            fixtures,
+            cohorts: &DiagnosticCohort::ALL,
             expectations: &["edit_requery.widget_greet"],
             root_role: Some("stock_project"),
             dimensions: &DIM_DOCUMENT_SESSION,
@@ -664,8 +659,7 @@ pub fn registry() -> Vec<JourneyCell> {
             cell_id: "emacs.eldoc_hover_observation.hover_rendered",
             class: "eldoc_hover_observation",
             depth: DepthClass::Core,
-            cohorts: &ALL_COHORTS,
-            fixtures,
+            cohorts: &DiagnosticCohort::ALL,
             expectations: &["hover.widget_name"],
             root_role: Some("stock_project"),
             dimensions: &DIM_DOCUMENT_SESSION,
@@ -685,8 +679,7 @@ pub fn registry() -> Vec<JourneyCell> {
             cell_id: "emacs.xref_navigation.definition_and_references",
             class: "xref_navigation",
             depth: DepthClass::Core,
-            cohorts: &ALL_COHORTS,
-            fixtures,
+            cohorts: &DiagnosticCohort::ALL,
             expectations: &["definition.widget_new", "references.widget_greet"],
             root_role: Some("stock_project"),
             dimensions: &DIM_DOCUMENT_SESSION,
@@ -707,8 +700,7 @@ pub fn registry() -> Vec<JourneyCell> {
             cell_id: "emacs.multi_file_rename_workspace_edit.exact_application",
             class: "multi_file_rename_workspace_edit",
             depth: DepthClass::Core,
-            cohorts: &ALL_COHORTS,
-            fixtures,
+            cohorts: &DiagnosticCohort::ALL,
             expectations: &["rename_preview.greet"],
             root_role: Some("stock_project"),
             dimensions: &DIM_DOCUMENT_SESSION,
@@ -730,8 +722,7 @@ pub fn registry() -> Vec<JourneyCell> {
             cell_id: "emacs.stale_generation_rejection.prior_generation_rejected",
             class: "stale_generation_rejection",
             depth: DepthClass::Core,
-            cohorts: &ALL_COHORTS,
-            fixtures,
+            cohorts: &DiagnosticCohort::ALL,
             expectations: &["edit_requery.widget_greet"],
             root_role: None,
             dimensions: &DIM_DOCUMENT_PROCESS,
@@ -753,8 +744,7 @@ pub fn registry() -> Vec<JourneyCell> {
             cell_id: "emacs.configuration_behavior.config_effect_observed",
             class: "configuration_behavior",
             depth: DepthClass::Core,
-            cohorts: &ALL_COHORTS,
-            fixtures,
+            cohorts: &DiagnosticCohort::ALL,
             expectations: &["workspace.partial_not_ready"],
             root_role: None,
             dimensions: &["config.generation", "session.generation"],
@@ -774,8 +764,7 @@ pub fn registry() -> Vec<JourneyCell> {
             cell_id: "emacs.clean_shutdown_cleanup.process_clean_after_exit",
             class: "clean_shutdown_cleanup",
             depth: DepthClass::Core,
-            cohorts: &ALL_COHORTS,
-            fixtures,
+            cohorts: &DiagnosticCohort::ALL,
             expectations: &["lifecycle.shutdown"],
             root_role: None,
             dimensions: &["process.identity", "session.generation"],
@@ -796,8 +785,7 @@ pub fn registry() -> Vec<JourneyCell> {
             cell_id: "emacs.coordinate_discriminators.unicode_non_bmp_positions",
             class: "coordinate_discriminators",
             depth: DepthClass::Core,
-            cohorts: &ALL_COHORTS,
-            fixtures,
+            cohorts: &DiagnosticCohort::ALL,
             expectations: &["unicode.utf16"],
             root_role: Some("stock_project"),
             dimensions: &DIM_DOCUMENT_SESSION,
@@ -814,8 +802,7 @@ pub fn registry() -> Vec<JourneyCell> {
             cell_id: "emacs.coordinate_discriminators.lf_crlf_newlines",
             class: "coordinate_discriminators",
             depth: DepthClass::Core,
-            cohorts: &ALL_COHORTS,
-            fixtures,
+            cohorts: &DiagnosticCohort::ALL,
             expectations: &["unicode.utf16"],
             root_role: Some("stock_project"),
             dimensions: &DIM_DOCUMENT_SESSION,
@@ -833,8 +820,7 @@ pub fn registry() -> Vec<JourneyCell> {
             cell_id: "emacs.wrong_competing_selection.competing_server_rejected",
             class: "wrong_competing_selection",
             depth: DepthClass::Core,
-            cohorts: &ALL_COHORTS,
-            fixtures,
+            cohorts: &DiagnosticCohort::ALL,
             expectations: &["lifecycle.shutdown"],
             root_role: None,
             dimensions: &["process.identity", "session.generation"],
@@ -857,8 +843,7 @@ pub fn registry() -> Vec<JourneyCell> {
             cell_id: "emacs.opt_native_formatting.format_document_depth",
             class: "opt_native_formatting",
             depth: DepthClass::Optional,
-            cohorts: &ALL_COHORTS,
-            fixtures,
+            cohorts: &DiagnosticCohort::ALL,
             expectations: &["rename_preview.greet"],
             root_role: Some("stock_project"),
             dimensions: &DIM_DOCUMENT_SESSION,
@@ -874,8 +859,7 @@ pub fn registry() -> Vec<JourneyCell> {
             cell_id: "emacs.opt_code_action_application.apply_or_refuse_depth",
             class: "opt_code_action_application",
             depth: DepthClass::Optional,
-            cohorts: &ALL_COHORTS,
-            fixtures,
+            cohorts: &DiagnosticCohort::ALL,
             expectations: &["code_action_preview.syntax"],
             root_role: Some("stock_project"),
             dimensions: &DIM_DOCUMENT_SESSION,
@@ -891,8 +875,7 @@ pub fn registry() -> Vec<JourneyCell> {
             cell_id: "emacs.opt_inlay_hints.request_render_refresh_depth",
             class: "opt_inlay_hints",
             depth: DepthClass::Optional,
-            cohorts: &ALL_COHORTS,
-            fixtures,
+            cohorts: &DiagnosticCohort::ALL,
             expectations: &["hover.widget_name"],
             root_role: Some("stock_project"),
             dimensions: &DIM_DOCUMENT_SESSION,
@@ -980,11 +963,7 @@ pub fn validate_registry(cells: &[JourneyCell]) -> Result<RegistrySummary> {
     // Cohort independence made explicit: publish per-cohort membership counts
     // so a cohort can only ever earn what its own cells admit.
     let mut cohort_membership = BTreeMap::new();
-    for cohort in [
-        DiagnosticCohort::BundledEglotPush,
-        DiagnosticCohort::StandaloneEglotPull,
-        DiagnosticCohort::LspModeObserved,
-    ] {
+    for cohort in DiagnosticCohort::ALL {
         let count = cells.iter().filter(|cell| cell.cohorts.contains(&cohort)).count();
         let spelling = wire(&cohort)?;
         cohort_membership.insert(spelling, count);
@@ -1035,12 +1014,13 @@ fn validate_cell(cell: &JourneyCell, classes: &[&str]) -> Result<()> {
     ensure!(!cell.cohorts.is_empty(), "cell {} must admit at least one cohort", cell.cell_id);
     let mut cohorts = BTreeSet::new();
     for cohort in &cell.cohorts {
-        ensure!(cohorts.insert(*cohort), "duplicate cohort {cohort:?} in cell {}", cell.cell_id);
+        let spelling = wire(cohort)?;
+        ensure!(cohorts.insert(*cohort), "duplicate cohort {spelling} in cell {}", cell.cell_id);
     }
     let pull_surface = cell.host_surfaces.contains(&HostSurface::DiagnosticsPollProtocol);
     ensure!(
         !(pull_surface && cohorts != BTreeSet::from([DiagnosticCohort::StandaloneEglotPull])),
-        "cell {} exposes a pull-protocol surface outside the standalone-Eglot-pull cohort",
+        "cell {} exposes a pull-protocol surface outside the standalone_eglot_pull cohort",
         cell.cell_id
     );
 
@@ -1434,6 +1414,32 @@ mod tests {
         let mut reversed = registry();
         reversed.reverse();
         ensure!(forward == registry_digest(&reversed)?, "registry digest depends on row order");
+        Ok(())
+    }
+
+    #[test]
+    fn cohort_summary_publishes_every_registered_cohort() -> Result<()> {
+        let summary = validate_registry(&registry())?;
+        ensure!(
+            summary.cohort_membership.len() == DiagnosticCohort::ALL.len(),
+            "cohort summary omitted a registered cohort"
+        );
+        for cohort in DiagnosticCohort::ALL {
+            let spelling = wire(&cohort)?;
+            ensure!(
+                summary.cohort_membership.contains_key(&spelling),
+                "cohort summary omitted {spelling}"
+            );
+        }
+        for (index, cohort) in DiagnosticCohort::ALL.iter().enumerate() {
+            let spelling = wire(cohort)?;
+            for other in DiagnosticCohort::ALL.iter().skip(index + 1) {
+                ensure!(
+                    spelling != wire(other)?,
+                    "cohort wire spellings are not pairwise distinct"
+                );
+            }
+        }
         Ok(())
     }
 }

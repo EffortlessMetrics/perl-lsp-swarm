@@ -92,7 +92,7 @@ fn pull_protocol_surfaces_reject_push_and_lsp_mode_cohorts() -> Result<()> {
         Ok(_) => bail!("push cohort inherited a pull-protocol cell"),
     };
     ensure!(
-        error.contains("standalone-Eglot-pull"),
+        error.contains("standalone_eglot_pull"),
         "unexpected rejection for mixed-cohort pull cell: {error}"
     );
     Ok(())
