@@ -15,9 +15,11 @@
 //! candidate derived from a removed document instance is rejected by instance
 //! identity (`Arc::ptr_eq`), even when its numeric counter still matches.
 //!
-//! Lock order: sink lock → documents lock (brief, read-only inside
-//! validation). No path may acquire them in reverse order; publish paths take
-//! their snapshots under the documents lock and release it before committing.
+//! Lock order: workspace identity lock → sink `committed` lock → documents lock
+//! (brief, read-only inside validation). No path may acquire them in reverse
+//! order; `workspace_folders` must never be acquired while any of those locks
+//! are held. Publish paths take their snapshots under the documents lock and
+//! release it before committing.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -143,8 +145,9 @@ impl LspServer {
         &self,
         config: Option<perl_lsp_rs_core::config::ProjectConfig>,
     ) {
-        let changed = *self.single_file_project_config.lock() != config;
-        *self.single_file_project_config.lock() = config;
+        let mut single_file_project_config = self.single_file_project_config.lock();
+        let changed = *single_file_project_config != config;
+        *single_file_project_config = config;
         if changed {
             self.single_file_project_config_generation
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -169,6 +172,8 @@ impl LspServer {
     ) -> PushDiagnosticsCommitOutcome {
         // Serialize the generation check and irreversible enqueue with
         // configuration invalidation.
+        let folder_config_generation =
+            self.project_config_generation_for_uri(&identity.normalized_uri);
         let _identity_guard = self.workspace_identity_lock.lock();
         let mut committed = self.push_diagnostics_sink.committed.lock();
 
@@ -178,9 +183,7 @@ impl LspServer {
             return PushDiagnosticsCommitOutcome::RejectedSupersededGeneration;
         }
 
-        if self.project_config_generation_for_uri(&identity.normalized_uri)
-            != identity.folder_config_generation
-        {
+        if folder_config_generation != identity.folder_config_generation {
             return PushDiagnosticsCommitOutcome::RejectedSupersededGeneration;
         }
 

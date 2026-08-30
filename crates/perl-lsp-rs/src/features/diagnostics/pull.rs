@@ -78,7 +78,9 @@ pub struct PullDiagnosticsContext {
     pub include_paths: Vec<String>,
     /// Folder-owned `[perl].version` fallback for PL900.
     pub project_version: Option<String>,
-    /// Accepted workspace-configuration generation for report identity.
+    /// Owning folder's `project_config_generation`, or the single-file
+    /// project-config generation when no folder owns the document; distinct
+    /// from the server-wide `workspace_identity_generation`.
     pub configuration_generation: Option<u64>,
     /// Whether client supports LSP 3.18 markup messages
     pub markup_message_support: bool,

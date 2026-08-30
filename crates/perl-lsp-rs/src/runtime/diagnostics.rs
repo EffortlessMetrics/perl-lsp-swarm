@@ -3678,7 +3678,10 @@ mod tests {
             initial_config_generation + 1,
             "malformed config must advance the folder-local report generation"
         );
-        let warning_output = String::from_utf8(output.lock().clone())?;
+        let warning_output = capture_until(&output, |output| {
+            output.contains("invalid [perl].version")
+                && output.contains("expected a major.minor target")
+        });
         assert!(
             warning_output.contains("invalid [perl].version")
                 && warning_output.contains("expected a major.minor target"),
@@ -3835,9 +3838,34 @@ mod tests {
             .ok_or("reloaded second report missing")?;
         assert_eq!(reloaded_first["kind"], "full");
         assert!(!reloaded_first.to_string().contains("PL900"));
-        assert!(reloaded_second.to_string().contains("PL900"));
+        assert_eq!(
+            reloaded_second["kind"], "unchanged",
+            "an unchanged folder configuration must keep the client's cached report valid: {reloaded_second}"
+        );
         assert_ne!(reloaded_first["resultId"].as_str(), Some(first_id));
         assert_eq!(reloaded_second["resultId"].as_str(), Some(second_id));
+
+        let recomputed = server
+            .handle_workspace_diagnostic(Some(json!({"previousResultIds": []})))?
+            .ok_or("recomputed workspace diagnostic response missing")?;
+        let recomputed_items =
+            recomputed["items"].as_array().ok_or("recomputed report items missing")?;
+        let recomputed_first = recomputed_items
+            .iter()
+            .find(|item| item["uri"].as_str() == Some(first_uri_key.as_str()))
+            .ok_or("recomputed first report missing")?;
+        let recomputed_second = recomputed_items
+            .iter()
+            .find(|item| item["uri"].as_str() == Some(second_uri_key.as_str()))
+            .ok_or("recomputed second report missing")?;
+        assert!(
+            !recomputed_first.to_string().contains("PL900"),
+            "recomputed first folder must retain its 5.40 target: {recomputed_first}"
+        );
+        assert!(
+            recomputed_second.to_string().contains("PL900"),
+            "recomputed second folder must retain its 5.20 target: {recomputed_second}"
+        );
         Ok(())
     }
 

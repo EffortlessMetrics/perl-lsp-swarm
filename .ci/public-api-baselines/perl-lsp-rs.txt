@@ -137,6 +137,7 @@ pub fn perl_lsp::features::diagnostics::pull::DiagnosticData::fmt(&self, f: &mut
 pub fn perl_lsp::features::diagnostics::pull::DiagnosticData::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 pub fn perl_lsp::features::diagnostics::pull::DiagnosticData::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub struct perl_lsp::features::diagnostics::pull::PullDiagnosticsContext
+pub perl_lsp::features::diagnostics::pull::PullDiagnosticsContext::configuration_generation: core::option::Option<u64>
 pub perl_lsp::features::diagnostics::pull::PullDiagnosticsContext::critic_engine: perl_lsp_rs_core::config::CriticEngine
 pub perl_lsp::features::diagnostics::pull::PullDiagnosticsContext::facts_generation: core::option::Option<u64>
 pub perl_lsp::features::diagnostics::pull::PullDiagnosticsContext::identity_root_key: core::option::Option<alloc::string::String>
@@ -216,6 +217,7 @@ pub fn perl_lsp::features::diagnostics::report_identity::DiagnosticProjectionFra
 pub fn perl_lsp::features::diagnostics::report_identity::DiagnosticProjectionFragment::eq(&self, other: &perl_lsp::features::diagnostics::report_identity::DiagnosticProjectionFragment) -> bool
 pub fn perl_lsp::features::diagnostics::report_identity::DiagnosticProjectionFragment::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_lsp::features::diagnostics::PullDiagnosticsContext
+pub perl_lsp::features::diagnostics::PullDiagnosticsContext::configuration_generation: core::option::Option<u64>
 pub perl_lsp::features::diagnostics::PullDiagnosticsContext::critic_engine: perl_lsp_rs_core::config::CriticEngine
 pub perl_lsp::features::diagnostics::PullDiagnosticsContext::facts_generation: core::option::Option<u64>
 pub perl_lsp::features::diagnostics::PullDiagnosticsContext::identity_root_key: core::option::Option<alloc::string::String>
