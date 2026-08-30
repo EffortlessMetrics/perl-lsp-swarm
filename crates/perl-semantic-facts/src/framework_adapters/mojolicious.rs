@@ -1036,13 +1036,18 @@ fn identity_reconciliation_reason(detection: &AdapterDetectionResult) -> Option<
             "version evidence does not equal the matched activation's observed version".to_string(),
         );
     }
-    if let DetectionOutcome::Detected { framework_version: Some(reported), .. } = &detection.outcome
-        && activation.observed_version.as_ref().map(|evidence| &evidence.version) != Some(reported)
-    {
-        return Some(
-            "reported framework version does not equal the matched activation's observed version"
-                .to_string(),
-        );
+    if let DetectionOutcome::Detected { framework_version, .. } = &detection.outcome {
+        // Unconditional: a result that simply omits the reported version must
+        // not slip past this binding and publish an exact fact with no
+        // observed version. Presence and equality are both required.
+        let observed =
+            activation.observed_version.as_ref().map(|evidence| evidence.version.as_str());
+        if observed.is_none() || framework_version.as_deref() != observed {
+            return Some(format!(
+                "reported framework version {framework_version:?} does not equal the matched \
+                 activation's observed version {observed:?}"
+            ));
+        }
     }
     None
 }
@@ -2127,6 +2132,51 @@ mod tests {
             MojoliciousLiteImportSelection::Default,
             "a quoted literal is not malformed source"
         );
+    }
+
+    #[test]
+    fn a_detected_result_without_a_reported_version_cannot_become_exact() {
+        // The reported-version binding was written as a conditional on
+        // `Some(reported)`. A forged result that simply omits the version
+        // would skip the check entirely and publish an exact fact whose
+        // observed framework version is empty.
+        let input = AdapterDetectionInput::new(
+            mojolicious_lite_descriptor(),
+            receipt(
+                "gen-1",
+                vec![lite_evaluation(
+                    MOJOLICIOUS_LITE_MODULE,
+                    Some("9.34"),
+                    "gen-1",
+                    DetectionEvidenceClass::ResolvedModule,
+                )],
+            ),
+            None,
+            AdapterCancellation::active(),
+        );
+        let activation = ModuleActivationIdentity::new(
+            MOJOLICIOUS_LITE_MODULE,
+            Some(FileId(11)),
+            SourceGeneration::known("gen-1"),
+        )
+        .with_observed_version(ModuleVersionEvidence::new(
+            "9.34",
+            SourceGeneration::known("gen-1"),
+        ));
+        let forged = AdapterDetectionResult::for_input(
+            &input,
+            DetectionOutcome::Detected { confidence: Confidence::High, framework_version: None },
+        )
+        .with_contributing_modules(vec![activation])
+        .with_version_evidence(ModuleVersionEvidence::new(
+            "9.34",
+            SourceGeneration::known("gen-1"),
+        ));
+
+        let facts =
+            mojolicious_lite_activation_facts(&forged, &lite_anchor("main", "gen-1"), &parse(&[]));
+        assert_eq!(facts.role(), None, "a result with no reported version is not exact");
+        assert!(facts.framework_version.is_empty(), "and it must publish no observed version");
     }
 
     #[test]
