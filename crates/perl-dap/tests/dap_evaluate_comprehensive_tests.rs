@@ -1293,7 +1293,7 @@ fn test_evaluate_hash_result_returns_nonzero_variables_reference() -> TestResult
     let response = adapter.handle_request(
         1,
         "evaluate",
-        Some(json!({ "expression": "\\%h", "allowSideEffects": true })),
+        Some(json!({ "expression": "\\%h", "context": "repl", "allowSideEffects": true })),
     );
     match response {
         DapMessage::Response { success: true, body: Some(body), .. } => {
@@ -1320,7 +1320,7 @@ fn test_evaluate_scalar_result_returns_zero_variables_reference() -> TestResult 
     let response = adapter.handle_request(
         1,
         "evaluate",
-        Some(json!({ "expression": "$x", "allowSideEffects": true })),
+        Some(json!({ "expression": "$x", "context": "repl", "allowSideEffects": true })),
     );
     match response {
         DapMessage::Response { success: true, body: Some(body), .. } => {

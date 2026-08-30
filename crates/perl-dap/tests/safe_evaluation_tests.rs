@@ -128,17 +128,28 @@ fn test_evaluate_allows_side_effects_opt_in() -> Result<(), Box<dyn std::error::
     let mut adapter = create_test_adapter();
     let args = json!({
         "expression": "$x = 42",
+        // #9385: the opt-in is honored only in the explicit REPL context.
+        "context": "repl",
         "allowSideEffects": true
     });
-    // Without active session, it will fail at execution, but pass safety validation
+    // Without an active session, it fails at execution — but only *after* passing
+    // safety validation, which is what this test is about.
     let response = adapter.handle_request(1, "evaluate", Some(args));
 
-    if let DapMessage::Response { success, message, .. } = response {
-        // If it failed due to safety, success=false and message mentions "assignment"
-        // If it passed safety, it would fail due to "No debugger session"
-        if !success {
-            assert!(!message.ok_or("Expected error message")?.contains("assignment operator"));
+    match response {
+        DapMessage::Response { success, message, .. } => {
+            assert!(!success, "no debugger session is active, so evaluate cannot succeed");
+            let message = message.ok_or("Expected error message")?;
+            // Assert positively on the reason. A bare "does not mention assignment"
+            // check passes for any unrelated refusal, so it would silently stop
+            // proving the opt-in works if the admission path ever changed.
+            assert_eq!(
+                message, "No debugger session",
+                "the assignment must clear safety validation and fail only for want of \
+                 a session, got: {message}"
+            );
         }
+        other => return Err(format!("expected Response, got {other:?}").into()),
     }
     Ok(())
 }
