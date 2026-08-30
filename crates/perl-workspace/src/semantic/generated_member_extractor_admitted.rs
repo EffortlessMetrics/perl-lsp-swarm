@@ -44,9 +44,9 @@ pub(crate) fn extract_generated_member_facts(
     collect_quarantined_dbix_ranges(ast, &mut WalkCtx::default(), &mut quarantined);
 
     facts.retain(|fact| {
-        !quarantined.iter().any(|range| {
-            range.contains(fact.anchor.span_start_byte, fact.anchor.span_end_byte)
-        })
+        !quarantined
+            .iter()
+            .any(|range| range.contains(fact.anchor.span_start_byte, fact.anchor.span_end_byte))
     });
     facts
 }
@@ -159,11 +159,7 @@ fn expand_symbol_list(raw: &str) -> Vec<String> {
 
 fn normalize_symbol_name(raw: &str) -> Option<String> {
     let trimmed = raw.trim().trim_matches('\'').trim_matches('"').trim();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_string())
-    }
+    if trimmed.is_empty() { None } else { Some(trimmed.to_string()) }
 }
 
 fn is_dbix_class_module(module: &str) -> bool {
@@ -181,10 +177,7 @@ mod tests {
     }
 
     fn names(facts: &[GeneratedMemberFact]) -> Vec<&str> {
-        facts
-            .iter()
-            .map(|fact| fact.entity.canonical_name.as_str())
-            .collect()
+        facts.iter().map(|fact| fact.entity.canonical_name.as_str()).collect()
     }
 
     #[test]
@@ -203,10 +196,7 @@ __PACKAGE__->add_columns(qw/id name email/);
         assert!(names(&legacy).contains(&"MyApp::Schema::Result::User::id"));
 
         let admitted = extract_generated_member_facts(&ast, FileId(1));
-        assert!(
-            admitted.is_empty(),
-            "raw DBIx spelling must not publish generated members"
-        );
+        assert!(admitted.is_empty(), "raw DBIx spelling must not publish generated members");
     }
 
     #[test]
