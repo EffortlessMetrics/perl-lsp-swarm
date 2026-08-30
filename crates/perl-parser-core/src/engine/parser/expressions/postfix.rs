@@ -1520,6 +1520,10 @@ impl<'a> Parser<'a> {
                 | TokenKind::Try
                 | TokenKind::Defer
                 | TokenKind::StringCompare
+                | TokenKind::Return
+                | TokenKind::Next
+                | TokenKind::Last
+                | TokenKind::Redo
         ) || matches!(first.text.as_ref(), "tie" | "untie");
 
         if !is_keyword_key {
