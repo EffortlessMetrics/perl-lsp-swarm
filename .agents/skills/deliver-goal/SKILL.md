@@ -110,7 +110,7 @@ cross-PR contracts, shared blockers/wake events, merged effects, residual claims
 completion judgment. Keep runtime topology, task lists, liveness, retries, raw logs,
 and unchanged status local to the root.
 
-## Bounded related-PR review
+## Bounded related-PR review orchestration
 
 When directly linked PRs have interacting contracts, authority, or merge order, each PR
 still receives its own provider-native review through its claim frame:
@@ -127,7 +127,16 @@ still receives its own provider-native review through its claim frame:
 ```
 
 The root may synthesize cross-PR contracts and order only after each candidate has its
-own review evidence. A green aggregate cannot outrun untrustworthy children.
+own review evidence:
+
+| PR | Candidate identity | Current checks | Substantive review result | Integration posture | Explicit prerequisite |
+| --- | --- | --- | --- | --- | --- |
+
+Verify complete candidate identity, semantic ownership, status and limitation
+propagation, `NOT_PROVEN` visibility, and real repair/merge order.
+
+A green aggregate cannot outrun untrustworthy children. The synthesis is goal-level
+judgment, not batch approval or a substitute for per-PR review.
 
 ## Loop
 
