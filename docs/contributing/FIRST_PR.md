@@ -44,6 +44,9 @@ Without Nix, install the pinned Rust toolchain through
 [rustup](https://rustup.rs/), install `just`, and run the same checks:
 
 ```bash
+# Install rustup first if the toolchain manager is not present
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+
 rustup show
 cargo install just
 just devex
@@ -77,12 +80,19 @@ Start from an existing issue when one owns the work. Keep one pull request cente
 Browse the development backlog explicitly in this repository:
 
 ```bash
+# The whole open backlog
 gh issue list --repo EffortlessMetrics/perl-lsp-swarm --state open
+
+# Beginner-friendly slices; either list can legitimately be empty
+gh issue list --repo EffortlessMetrics/perl-lsp-swarm --state open --label "good first issue"
+gh issue list --repo EffortlessMetrics/perl-lsp-swarm --state open --label size/S
 ```
 
-Beginner-friendly issues normally carry a good-first-issue or small-size label and a
-bounded acceptance section. Do not select release-operation or swarm-orchestration work
-for a first contribution merely because the file change looks small.
+The live label names are `good first issue` and `size/XS` through `size/XL`; the filtered
+lists are a convenience, not a queue guarantee. When both come back empty, read a few
+issues from the unfiltered list and pick one with a bounded acceptance section. Do not
+select release-operation or swarm-orchestration work for a first contribution merely
+because the file change looks small.
 
 ## 4. Read the local owner guidance
 
