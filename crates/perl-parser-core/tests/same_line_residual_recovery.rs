@@ -2,10 +2,15 @@
 
 mod cpan_test_helpers;
 
-use cpan_test_helpers::assert_clean_parse;
+use cpan_test_helpers::{assert_clean_parse, assert_no_blocking_diagnostics};
 use perl_parser_core::error::{ParseError, RecoveryKind, RecoverySite};
 use perl_parser_core::{Node, NodeKind, Parser};
 use std::process::Command;
+
+fn assert_valid_case(source: &str) {
+    assert_clean_parse(source);
+    assert_no_blocking_diagnostics(source);
+}
 
 fn has_recovery_node(node: &Node) -> bool {
     if matches!(node.kind, NodeKind::Error { .. } | NodeKind::MissingExpression) {
@@ -136,7 +141,7 @@ fn invalid_same_line_residue_is_not_clean() -> Result<(), String> {
 #[test]
 fn command_line_ne_wrapper_is_not_same_line_residue() -> Result<(), String> {
     let source = "-ne print;";
-    assert_clean_parse(source);
+    assert_valid_case(source);
     assert_no_same_line_residual(source)
 }
 
@@ -172,7 +177,7 @@ fn valid_same_line_statement_boundaries_remain_clean() -> Result<(), String> {
         "my $x = 1; $x += 2;",
         "foo($x, $y); bar($z);",
     ] {
-        assert_clean_parse(source);
+        assert_valid_case(source);
     }
     Ok(())
 }
@@ -298,7 +303,7 @@ fn valid_low_precedence_and_directive_continuations_do_not_gain_residual_errors(
         "print $fh \"message\" or die $!;",
         "$ok = do_work() if $enabled;",
     ] {
-        assert_clean_parse(source);
+        assert_valid_case(source);
     }
     Ok(())
 }
@@ -406,7 +411,7 @@ fn valid_class_method_source_does_not_gain_a_false_semicolon_error() -> Result<(
         "no warnings 'experimental::class';\n",
         "class C { method m { 1 } }\n",
     );
-    assert_clean_parse(source);
+    assert_valid_case(source);
     Ok(())
 }
 
