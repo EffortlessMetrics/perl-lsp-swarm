@@ -181,7 +181,11 @@ pub(crate) fn owning_package<'a>(
 ///
 /// `None` means "the index says nothing that contradicts the worktree", not
 /// "safe to rewrite". It is a fallback, never a permission: the worktree check
-/// still has to pass on its own, so an absent entry cannot admit a symlink.
+/// still has to pass on its own, so an absent entry cannot admit a *worktree*
+/// symlink. It can still admit a path the index calls `120000` whose worktree
+/// copy looks regular, so `None` must mean "this path genuinely has no index
+/// entry" and never "we could not read one" — [`parse_staged_index_modes`]
+/// refuses rather than dropping a record precisely to keep that true.
 /// [`run_staged`] never reaches it — it takes staged paths from
 /// [`classify_staged_paths`] and modes from [`staged_index_modes`], both read
 /// off the same index, so every path it passes here has an entry. The case
@@ -669,15 +673,34 @@ fn staged_index_modes() -> Result<HashMap<PathBuf, String>> {
         return Err(eyre!("git ls-files -s -z failed"));
     }
 
+    parse_staged_index_modes(&out.stdout)
+}
+
+/// Parses `git ls-files -s -z` output into `path -> index mode`.
+///
+/// Refuses the whole run on any record it cannot parse, rather than skipping
+/// it. Skipping is not neutral here: a dropped record leaves its path with no
+/// entry, and [`is_rewritable_staged_file`] reads an absent mode as "no
+/// objection". An index entry we failed to parse would therefore become
+/// permission to rewrite — turning an unreadable `120000` into exactly the
+/// symlink rewrite the mode check exists to prevent. Refusing matches
+/// [`bytes_to_path`]: formatting the wrong file is worse than refusing.
+fn parse_staged_index_modes(stdout: &[u8]) -> Result<HashMap<PathBuf, String>> {
     let mut modes = HashMap::new();
-    for record in out.stdout.split(|byte| *byte == 0).filter(|record| !record.is_empty()) {
+    for record in stdout.split(|byte| *byte == 0).filter(|record| !record.is_empty()) {
         let Some(tab) = record.iter().position(|byte| *byte == b'\t') else {
-            continue;
+            return Err(eyre!(
+                "git ls-files -s -z produced a record with no tab separator; refusing to \
+                 rewrite staged files against an index entry that cannot be read"
+            ));
         };
         let (meta, path) = record.split_at(tab);
         let Some(mode) = String::from_utf8_lossy(meta).split_whitespace().next().map(String::from)
         else {
-            continue;
+            return Err(eyre!(
+                "git ls-files -s -z produced a record with no mode field; refusing to \
+                 rewrite staged files against an index entry that cannot be read"
+            ));
         };
         modes.insert(bytes_to_path(&path[1..])?, mode);
     }
@@ -1042,6 +1065,56 @@ mod tests {
     fn a_worktree_symlink_with_no_index_entry_is_refused() {
         // The absent-entry case must not become a blanket accept.
         assert!(!is_rewritable_staged_file(false, None));
+    }
+
+    // `parse_staged_index_modes` — the parser half of the symlink refusal
+    // (#9555 review). `is_rewritable_staged_file` reads an absent mode as "no
+    // objection", so a record this parser drops becomes permission to rewrite.
+    // These pin that an unreadable record refuses the run instead.
+
+    fn record(meta: &str, path: &str) -> Vec<u8> {
+        format!("{meta}\t{path}\0").into_bytes()
+    }
+
+    #[test]
+    fn well_formed_index_records_parse_to_their_modes() {
+        let mut input = record("100644 abc123 0", "src/lib.rs");
+        input.extend(record("120000 def456 0", "src/link.rs"));
+        let modes = super::parse_staged_index_modes(&input).expect("well-formed input parses");
+        assert_eq!(modes.get(Path::new("src/lib.rs")).map(String::as_str), Some("100644"));
+        assert_eq!(modes.get(Path::new("src/link.rs")).map(String::as_str), Some("120000"));
+    }
+
+    #[test]
+    fn a_record_with_no_tab_refuses_rather_than_dropping_the_path() {
+        // Dropping it would leave the path with no mode, which the predicate
+        // reads as permission — the exact bypass this refusal closes.
+        let input = b"100644 abc123 0 src/lib.rs\0".to_vec();
+        let error = super::parse_staged_index_modes(&input).expect_err("must refuse");
+        assert!(format!("{error}").contains("no tab separator"), "unexpected: {error}");
+    }
+
+    #[test]
+    fn a_record_with_no_mode_field_refuses_rather_than_dropping_the_path() {
+        let input = record("", "src/lib.rs");
+        let error = super::parse_staged_index_modes(&input).expect_err("must refuse");
+        assert!(format!("{error}").contains("no mode field"), "unexpected: {error}");
+    }
+
+    #[test]
+    fn an_unreadable_index_record_never_reaches_the_predicate_as_none() {
+        // End-to-end of the reported bypass: a staged symlink whose record is
+        // malformed must not arrive at `is_rewritable_staged_file` as `None`
+        // (which, with a regular-looking worktree file, would return true).
+        let input = b"120000 def456 0 src/link.rs\0".to_vec();
+        assert!(super::parse_staged_index_modes(&input).is_err());
+        assert!(is_rewritable_staged_file(true, None), "None is permissive by design");
+    }
+
+    #[test]
+    fn empty_index_output_is_an_empty_map_not_an_error() {
+        let modes = super::parse_staged_index_modes(b"").expect("empty input is not an anomaly");
+        assert!(modes.is_empty());
     }
 
     #[test]
