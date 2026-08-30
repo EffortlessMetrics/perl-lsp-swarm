@@ -113,11 +113,36 @@ fn inherited_paths(value: &Value) -> Vec<String> {
     found
 }
 
-fn dependency_tables(manifest: &Value) -> Vec<(&'static str, &toml::map::Map<String, Value>)> {
-    ["dependencies", "dev-dependencies", "build-dependencies"]
+const DEPENDENCY_SECTIONS: [&str; 3] = ["dependencies", "dev-dependencies", "build-dependencies"];
+
+/// Every dependency table Cargo resolves for this package: the three top-level
+/// sections plus their `[target.<cfg>.…]` counterparts.
+///
+/// Target-specific tables are included because a `path` dependency declared
+/// under `[target.'cfg(unix)'.dependencies]` resolves exactly like a top-level
+/// one, so omitting them would leave a silent hole in the standalone ratchet
+/// this file exists to hold (#8771).
+fn dependency_tables(manifest: &Value) -> Vec<(String, &toml::map::Map<String, Value>)> {
+    let mut tables: Vec<(String, &toml::map::Map<String, Value>)> = DEPENDENCY_SECTIONS
         .into_iter()
-        .filter_map(|section| Some((section, manifest.get(section)?.as_table()?)))
-        .collect()
+        .filter_map(|section| Some((section.to_string(), manifest.get(section)?.as_table()?)))
+        .collect();
+
+    let Some(targets) = manifest.get("target").and_then(Value::as_table) else {
+        return tables;
+    };
+    for (target, spec) in targets {
+        let Some(spec) = spec.as_table() else {
+            continue;
+        };
+        for section in DEPENDENCY_SECTIONS {
+            let Some(table) = spec.get(section).and_then(Value::as_table) else {
+                continue;
+            };
+            tables.push((format!("target.{target}.{section}"), table));
+        }
+    }
+    tables
 }
 
 /// Minimal matcher for the `include` patterns this manifest actually uses:
@@ -239,6 +264,39 @@ fn every_dependency_is_versioned_and_path_free() -> Result<(), Box<dyn Error>> {
             );
         }
     }
+    Ok(())
+}
+
+/// The path-free ratchet above is only as wide as the tables it walks, and a
+/// manifest that never uses `[target.<cfg>.…]` cannot demonstrate that reach.
+/// This drives the collector with a synthetic manifest that hides a path
+/// dependency in a target section: before target tables were collected the
+/// dependency was invisible here, so this fails closed on that regression
+/// rather than waiting for a real one to be introduced.
+#[test]
+fn target_specific_path_dependencies_are_not_invisible() -> Result<(), Box<dyn Error>> {
+    let manifest: Value = toml::from_str(
+        r#"
+        [dependencies]
+        pest = { version = "2.7" }
+
+        [target.'cfg(unix)'.dev-dependencies]
+        sneaky = { path = "../sneaky" }
+        "#,
+    )?;
+
+    let tables = dependency_tables(&manifest);
+    let (section, table) = tables
+        .iter()
+        .find(|(section, _)| section.contains("target."))
+        .ok_or("dependency_tables must collect [target.<cfg>.…] sections")?;
+    assert_eq!(section, "target.cfg(unix).dev-dependencies");
+
+    let spec = table.get("sneaky").ok_or("target section must expose its dependencies")?;
+    assert!(
+        spec.as_table().is_some_and(|detail| detail.contains_key("path")),
+        "the target-section path dependency must reach the path-free assertion"
+    );
     Ok(())
 }
 
