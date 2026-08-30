@@ -6,7 +6,7 @@ The native parser contract remains directly available while compatibility and pr
 
 ## Current boundary
 
-- Authority digest: `06827c82a4c76d8d882f330d15377b933553af780ff4f368d5ed771202b14d13`
+- Authority digest: `8f993ff8abc81bdfadc631b5994df553d7e6f7bf5e5a96713f9b443aef3f325f`
 - Digest input: `full_normalized_ledger`
 - Public modules: 14
 - Public re-exports: 139
@@ -24,11 +24,11 @@ gates `src/`. A feature that gates only test, bench, or example source is a test
 profile, and a feature that gates nothing is taxonomy. Neither may be presented as
 an architectural boundary.
 
-Production boundaries (5): `incremental`, `lsp-compat`, `modernize`, `workspace`, `workspace_refactor`.
+Production boundaries (6): `cli`, `incremental`, `lsp-compat`, `modernize`, `workspace`, `workspace_refactor`.
 
 Test profiles (9): `constant-advanced`, `crash-repros`, `doc-coverage`, `error-classifier-v2`, `package-qualified`, `parser-extras`, `qw-variants`, `semantic-phase2`, `slow_tests`.
 
-Taxonomy only, isolating nothing (8): `cli`, `experimental-features`, `expose_lsp_test_api`, `lsp-advanced`, `lsp-ga-lock`, `substitution-advanced`, `test-performance`, `utf16-complete`.
+Taxonomy only, isolating nothing (7): `experimental-features`, `expose_lsp_test_api`, `lsp-advanced`, `lsp-ga-lock`, `substitution-advanced`, `test-performance`, `utf16-complete`.
 
 ## Dependency direction
 
