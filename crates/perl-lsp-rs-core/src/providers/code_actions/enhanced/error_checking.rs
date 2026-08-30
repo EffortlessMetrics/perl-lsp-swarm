@@ -71,6 +71,7 @@ pub fn has_error_checking_nearby(source: &str, pos: usize) -> bool {
 #[cfg(test)]
 mod utf8_boundary_tests {
     use super::*;
+    use perl_tdd_support::must_some;
 
     /// The lookahead window must not bisect a multi-byte character.
     ///
@@ -120,7 +121,10 @@ mod utf8_boundary_tests {
     #[test]
     fn lookahead_window_still_finds_error_checking() {
         let source = "open my $fh, '<', 'f' or die \"no: $!\";";
-        assert!(has_error_checking_nearby(source, 21));
+        // Derive the scan start from the fixture rather than hard-coding a byte
+        // index, so the assertion stays honest if the fixture is ever edited.
+        let pos = must_some(source.find(" or "));
+        assert!(has_error_checking_nearby(source, pos));
     }
 
     /// The window is bounded: an idiom beyond 50 characters must not be seen.
