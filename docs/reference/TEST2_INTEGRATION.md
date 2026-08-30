@@ -57,11 +57,13 @@ V0/V1 `-target` helpers. A generic `.t` file no longer silently receives the
 whole Test::More callable table.
 
 This remains a provider-local migration path. It is not yet a version-aware
-first-party fact authority. Current admission remains fail-open for explicit
-imports from structurally recognized `Test2::Tools::*`, `Test2::Plugin::*`, and
-`Test2::Bundle::*` namespaces, so an unknown module/export spelling can still
-be projected as a completion fact. #13347 owns fail-closed admission. #13527
-owns the exact pinned first-party module/import/generated-helper contract; its
+first-party fact authority. Explicit-name admission remains fail-open for every
+recognized Test2 module, so a misspelled or unknown requested export can still
+be projected as a completion fact. The `Test2::Tools::*`, `Test2::Plugin::*`,
+and `Test2::Bundle::*` prefixes additionally recognize unknown module names,
+widening that limitation beyond inventoried modules. #13347 owns fail-closed
+admission. #13527 owns the exact pinned first-party module/import/generated-helper
+contract; its
 [draft pinned-source receipt PR #13534](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/13534)
 is source-review input, not canonical authority. #13225 and #13226 own the
 independent runtime oracle and durable falsification corpus; and #13544 owns
