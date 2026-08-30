@@ -468,7 +468,7 @@ mod tests {
     use super::*;
     use crate::token_stream::TokenKind;
     use perl_tdd_support::{must, must_some};
-    use std::panic::{catch_unwind, AssertUnwindSafe};
+    use std::panic::{AssertUnwindSafe, catch_unwind};
 
     fn assert_incremental_matches_fresh(
         source: &str,

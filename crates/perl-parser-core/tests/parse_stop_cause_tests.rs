@@ -492,6 +492,31 @@ fn lexer_budget_exhaustion_sets_typed_stop_cause() {
     );
 }
 
+/// A lexer-budget `UnknownRest` can occur below the statement boundary.  Each
+/// expression context must preserve the typed lexer cause instead of turning
+/// the truncation into an ordinary unexpected-expression recovery.
+#[test]
+fn nested_lexer_budget_exhaustion_preserves_typed_stop_cause() {
+    let oversized_regex = "a".repeat(70_000);
+    let cases = [
+        ("assignment", format!("my $x = /{oversized_regex}/;")),
+        ("call argument", format!("consume(/{oversized_regex}/);")),
+        ("condition", format!("if (/{oversized_regex}/) {{ my $x = 1; }}")),
+        ("block statement", format!("sub f {{ /{oversized_regex}/; }}")),
+    ];
+
+    for (context, source) in cases {
+        let mut parser = Parser::new(&source);
+        let output = parser.parse_with_recovery();
+        assert_eq!(
+            output.stop_cause().as_ref().map(ParseStopCause::as_str),
+            Some("lexer_budget_exhausted"),
+            "nested {context} truncation must preserve the typed lexer cause",
+        );
+        assert!(output.terminated_early(), "nested {context} truncation must terminate early");
+    }
+}
+
 /// Deep expression recursion trips `check_recursion()` (the production
 /// recursion guard). Its exhaustion must stay typed as
 /// `RecursionBudgetExhausted` carrying the guard's budget values — the same

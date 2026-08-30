@@ -537,6 +537,9 @@ impl<'a> Parser<'a> {
     /// Expect a specific token kind
     fn expect(&mut self, kind: TokenKind) -> ParseResult<Token> {
         let token = self.tokens.next()?;
+        if token.kind() == TokenKind::UnknownRest {
+            self.operation.record_terminal(ParseStopCause::LexerBudgetExhausted);
+        }
         if token.kind() != kind {
             return Err(ParseError::unexpected(
                 kind.display_name(),
@@ -564,6 +567,9 @@ impl<'a> Parser<'a> {
     /// Consume next token and track position
     fn consume_token(&mut self) -> ParseResult<Token> {
         let token = self.tokens.next()?;
+        if token.kind() == TokenKind::UnknownRest {
+            self.operation.record_terminal(ParseStopCause::LexerBudgetExhausted);
+        }
         self.last_end_position = token.end();
         Ok(token)
     }
