@@ -709,12 +709,14 @@ pub fn parse_declared_items(source: &str) -> Vec<(String, SymbolKind, Visibility
     for line in code_lines(source) {
         let trimmed = line.trim();
 
+        let mut on_header_line = false;
         if depth == 0
             && !awaiting_impl_body
             && (trimmed.starts_with("impl ") || trimmed.starts_with("impl<"))
         {
             impl_type = inherent_impl_type(trimmed);
             awaiting_impl_body = true;
+            on_header_line = true;
         } else if let Some((name, kind, visibility)) = parse_item(trimmed) {
             if depth == 0 {
                 out.push((name, kind, visibility));
@@ -727,7 +729,7 @@ pub fn parse_declared_items(source: &str) -> Vec<(String, SymbolKind, Visibility
         }
 
         let delta = brace_delta(trimmed);
-        if awaiting_impl_body && impl_body_opens(trimmed, delta) {
+        if awaiting_impl_body && impl_body_opens(trimmed, delta, on_header_line) {
             awaiting_impl_body = false;
         }
 
@@ -749,20 +751,35 @@ pub fn parse_declared_items(source: &str) -> Vec<(String, SymbolKind, Visibility
 
 /// Whether an `impl` body's opening brace is on this line.
 ///
-/// Three shapes have to be told apart, and a bare `contains('{')` conflates the
-/// last two:
+/// A brace left open can only be the body. The hard case is a line whose braces
+/// balance, which is either an empty body or a braced const-generic argument
+/// inside the type — and which one depends on where the line sits:
 ///
-/// * `impl Foo {` — a brace is left open, so it can only be the body.
-/// * `impl Foo {}` — balanced, but the group *is* the body, opened and closed.
-/// * `impl Foo<{ N + 1 }>` — also balanced, but the group is a const-generic
-///   argument inside the type, and the body is still to come on a later line.
+/// | line | shape | body? |
+/// |---|---|---|
+/// | header | `impl Foo {}` | yes — an empty body is written on the header |
+/// | header | `impl Foo<{ N + 1 }>` | no — the group is inside the type |
+/// | continuation | `{ N + 1 }` | no — a const argument spanning lines |
+/// | continuation | `{}` | yes — the body, on its own line |
 ///
-/// The discriminator is what the line ends on: a body that closes on its own
-/// line ends in `}`, whereas a braced type argument is always followed by the
-/// rest of the type. Literals and comments are already blanked by `code_lines`,
-/// so their braces cannot reach this.
-fn impl_body_opens(trimmed: &str, delta: i32) -> bool {
-    delta > 0 || (delta == 0 && trimmed.ends_with('}'))
+/// On the header a balanced group that *ends* the line is the body, because a
+/// type argument is always followed by the rest of the type. On a continuation
+/// line only a bare `{}` is, because a wrapped header's remaining tokens are
+/// type syntax.
+///
+/// This deliberately reads braces and line shape rather than tracking
+/// angle-bracket depth: `<` and `>` are ambiguous in Rust (comparison, shifts,
+/// nested generics), so counting them would add a larger failure surface than
+/// the one it closes. Literals and comments are already blanked by `code_lines`,
+/// so their braces cannot reach here.
+fn impl_body_opens(trimmed: &str, delta: i32, on_header_line: bool) -> bool {
+    if delta > 0 {
+        return true;
+    }
+    if delta != 0 {
+        return false;
+    }
+    if on_header_line { trimmed.ends_with('}') } else { trimmed == "{}" }
 }
 
 /// The type an inherent `impl` block belongs to, or `None` for a trait impl.
@@ -2241,6 +2258,61 @@ pub fn free() -> usize {
                 ("free".to_string(), SymbolKind::Function),
             ],
             "the braced const argument is part of the type, not the body"
+        );
+        Ok(())
+    }
+
+    /// A const argument that itself spans lines puts a balanced `{ … }` on a
+    /// continuation line, where the header's "balanced group that ends the line
+    /// is the body" rule would misfire. On a continuation line only a bare `{}`
+    /// is a body.
+    #[test]
+    fn a_multiline_const_generic_header_keeps_its_methods() -> TestResult {
+        let source = "\
+impl Grid<
+    { N + 1 }
+>
+{
+    pub fn cells(&self) -> usize {
+        0
+    }
+}
+
+pub fn free() -> usize {
+    0
+}
+";
+        assert_eq!(
+            parse_public_items(source),
+            vec![
+                ("Grid::cells".to_string(), SymbolKind::Method),
+                ("free".to_string(), SymbolKind::Function),
+            ],
+            "a const argument spanning lines is type syntax, not the body"
+        );
+        Ok(())
+    }
+
+    /// The control the rule above needs: a body written as a bare `{}` on its
+    /// own line is still a body. Without this, narrowing the continuation rule
+    /// to \"nothing balanced is ever a body\" would leave the header pending and
+    /// swallow whatever follows.
+    #[test]
+    fn a_wrapped_header_with_an_empty_body_on_its_own_line_closes() -> TestResult {
+        let source = "\
+impl Grid<
+    { N + 1 }
+>
+{}
+
+pub fn free() -> usize {
+    0
+}
+";
+        assert_eq!(
+            parse_public_items(source),
+            vec![("free".to_string(), SymbolKind::Function)],
+            "the empty body closes, so the following function stays free"
         );
         Ok(())
     }
