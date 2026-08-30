@@ -433,6 +433,89 @@ mod compiler_operating_profile_oracle_adapter {
     }
 
     #[test]
+    fn falsifier_08_not_applicable_freshness_is_bounded_but_distinct_from_unknown() -> Result<()> {
+        // The two states are separate members of the source vocabulary and
+        // must not be flattened into each other. `unknown` blocks: nobody knows
+        // whether the fact is current. `not_applicable` is a positive
+        // declaration that the fact has no freshness dimension, so it does not
+        // block — but it is not evidence of freshness either, so it stays a
+        // visible bound and cannot reach the top ceiling silently.
+        let inapplicable = adapt(&agreeing_with(|receipt| {
+            receipt["normalized_facts"]["rust"][0]["freshness"] = json!("not_applicable");
+            receipt["normalized_facts"]["oracle"][0]["freshness"] = json!("not_applicable");
+        }))?;
+        assert_eq!(inapplicable.disposition, ObservationDisposition::Pass);
+        assert_eq!(inapplicable.currentness, CurrentnessDisposition::Current);
+        assert!(
+            matches!(inapplicable.limitation, LimitationDisposition::AcceptedDebt { .. }),
+            "inapplicable freshness stays visible: {:?}",
+            inapplicable.limitation
+        );
+        assert_eq!(inapplicable.ceiling.claim_ceiling(), ClaimCeiling::ObservedEvidence);
+
+        // `unknown` is the stronger statement and keeps blocking.
+        let unknown = adapt(&agreeing_with(|receipt| {
+            receipt["normalized_facts"]["rust"][0]["freshness"] = json!("unknown");
+            receipt["normalized_facts"]["oracle"][0]["freshness"] = json!("unknown");
+        }))?;
+        assert_eq!(unknown.disposition, ObservationDisposition::NotProven);
+        assert_eq!(unknown.currentness, CurrentnessDisposition::NotProven);
+        Ok(())
+    }
+
+    #[test]
+    fn a_range_that_ends_before_it_starts_anchors_nothing() -> Result<()> {
+        // The schema constrains each coordinate to be non-negative but cannot
+        // relate them. Two sides carrying the *same* malformed range would
+        // otherwise agree and count as source-backed.
+        let reversed = json!({
+            "path_class": "public_test_fixture",
+            "start_line": 7, "start_character": 4,
+            "end_line": 3, "end_character": 0
+        });
+
+        assert_rejected(
+            &agreeing_with(|receipt| {
+                receipt["normalized_facts"]["rust"][0]["source_range"] = reversed.clone();
+                receipt["normalized_facts"]["oracle"][0]["source_range"] = reversed.clone();
+            }),
+            "anchors no region of the source",
+        )?;
+        assert_rejected(
+            &agreeing_with(|receipt| {
+                receipt["generated_inputs"] = json!([{
+                    "framework": "Moo",
+                    "provenance": "SourceBackedGenerated",
+                    "source_range": reversed.clone()
+                }]);
+            }),
+            "generated input",
+        )?;
+        assert_rejected(
+            &agreeing_with(|receipt| {
+                receipt["dynamic_boundaries"] =
+                    json!([{ "kind": "symbolic-call", "source_range": reversed.clone() }]);
+            }),
+            "boundary",
+        )?;
+
+        // A zero-width range at one point is well formed, not reversed.
+        adapt(&agreeing_with(|receipt| {
+            receipt["normalized_facts"]["rust"][0]["source_range"] = json!({
+                "path_class": "public_test_fixture",
+                "start_line": 3, "start_character": 8,
+                "end_line": 3, "end_character": 8
+            });
+            receipt["normalized_facts"]["oracle"][0]["source_range"] = json!({
+                "path_class": "public_test_fixture",
+                "start_line": 3, "start_character": 8,
+                "end_line": 3, "end_character": 8
+            });
+        }))?;
+        Ok(())
+    }
+
+    #[test]
     fn falsifier_08_fallback_and_low_confidence_stay_visible() -> Result<()> {
         let fallback = adapt(&agreeing_with(|receipt| {
             receipt["normalized_facts"]["rust"][0]["fallback"] = json!("legacy_provider");
@@ -631,8 +714,14 @@ mod compiler_operating_profile_oracle_adapter {
         // `oracle_agrees` is mislabelled rather than agreed.
         let cases: [(&str, fn(&mut Value)); 5] = [
             ("name", |r| r["normalized_facts"]["oracle"][0]["name"] = json!("Child::OTHER")),
+            // A well-formed range at a different place — the point is that the
+            // two sides disagree, not that either range is malformed.
             ("source range", |r| {
-                r["normalized_facts"]["oracle"][0]["source_range"]["start_line"] = json!(99)
+                r["normalized_facts"]["oracle"][0]["source_range"] = json!({
+                    "path_class": "public_test_fixture",
+                    "start_line": 99, "start_character": 0,
+                    "end_line": 99, "end_character": 24
+                })
             }),
             ("provenance", |r| {
                 r["normalized_facts"]["oracle"][0]["provenance"] = json!("SourceBackedGenerated")

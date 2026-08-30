@@ -806,6 +806,38 @@ pub fn ensure_adapter_invariants(receipt: &OracleReceiptV1) -> Result<()> {
     for comparison in &receipt.comparisons {
         ensure_private_safe_text("comparison fact id", &comparison.fact_id)?;
     }
+
+    // A range whose end precedes its start describes no region of the source.
+    // The schema constrains each coordinate to be non-negative but cannot
+    // relate them, and an anchor that cannot be resolved is not an anchor —
+    // two sides carrying the *same* malformed range would otherwise agree and
+    // count as source-backed.
+    for fact in receipt.normalized_facts.rust.iter().chain(&receipt.normalized_facts.oracle) {
+        ensure_ordered_range("normalized fact", fact.source_range.as_ref())?;
+    }
+    for input in &receipt.generated_inputs {
+        ensure_ordered_range("generated input", input.source_range.as_ref())?;
+    }
+    for entry in receipt.dynamic_boundaries.iter().chain(&receipt.unsupported_effects) {
+        ensure_ordered_range("boundary", entry.source_range.as_ref())?;
+    }
+    Ok(())
+}
+
+fn ensure_ordered_range(owner: &str, range: Option<&SourceRange>) -> Result<()> {
+    let Some(range) = range else {
+        return Ok(());
+    };
+    if (range.end_line, range.end_character) < (range.start_line, range.start_character) {
+        bail!(
+            "a {owner} source range ends at {}:{} before it starts at {}:{}, so it anchors no \
+             region of the source",
+            range.end_line,
+            range.end_character,
+            range.start_line,
+            range.start_character
+        );
+    }
     Ok(())
 }
 
@@ -1392,6 +1424,21 @@ fn collect_findings(receipt: &OracleReceiptV1) -> Findings {
     let stale_facts = facts().filter(|fact| fact.freshness == Freshness::Stale).count();
     if stale_facts > 0 {
         findings.stale.push(format!("{stale_facts} normalized fact(s) are stale"));
+    }
+    // `not_applicable` is a real declaration, not an absence: the fact has no
+    // freshness dimension of its own (its currency rides on the source
+    // snapshot hash, which the Source invalidation input already binds). So it
+    // does not block, the way `unknown` does — but it is not positive evidence
+    // of freshness either, so it stays visible as a bound and caps the
+    // ceiling. This mirrors how sub-high confidence is treated a few lines
+    // down, and keeps the two source states distinct rather than flattening
+    // `not_applicable` into `unknown`.
+    let inapplicable_freshness =
+        facts().filter(|fact| fact.freshness == Freshness::NotApplicable).count();
+    if inapplicable_freshness > 0 {
+        findings.limitations.push(format!(
+            "{inapplicable_freshness} normalized fact(s) declare freshness not applicable"
+        ));
     }
     let unknown_freshness = facts().filter(|fact| fact.freshness == Freshness::Unknown).count();
     if unknown_freshness > 0 {
