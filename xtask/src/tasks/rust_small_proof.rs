@@ -1433,6 +1433,103 @@ tests::gamma: test
     }
 
     #[test]
+    fn every_step_position_is_checked_not_just_the_ones_the_point_tests_pick() {
+        // The point-tests above mutate fixed indices, so a regression that only
+        // breaks certain positions — an off-by-one skipping the last step, or a
+        // check that fires for `CARGO_STEPS` entries but silently misses the
+        // census/replay/diff-hygiene steps at 6/7/8 — could survive them. Each
+        // mutation below is re-run at every index, which also documents that
+        // these checks are position-independent.
+        let count = expected_steps().len();
+        assert_eq!(count, 9, "the sweep must cover the whole lane");
+
+        for index in 0..count {
+            let name = || receipt_step_name(index);
+
+            let mut swallowed = success_receipt();
+            swallowed.steps[index].outcome = StepOutcome::ProductFailure;
+            swallowed.steps[index].exit_code = Some(101);
+            assert!(
+                rejection(&swallowed, None).contains("swallowed failure"),
+                "a swallowed failure at step {index} ({}) was accepted",
+                name()
+            );
+
+            let mut omitted = success_receipt();
+            omitted.steps.remove(index);
+            assert!(
+                rejection(&omitted, None).contains("omitted or extra step"),
+                "omitting step {index} ({}) was accepted",
+                name()
+            );
+
+            let mut renamed = success_receipt();
+            renamed.steps[index].name = format!("not the {} step", name());
+            assert!(
+                rejection(&renamed, None).contains("is not the expected"),
+                "renaming step {index} ({}) was accepted",
+                name()
+            );
+
+            let mut drifted = success_receipt();
+            drifted.steps[index].argv.push("--smuggled-flag".to_string());
+            assert!(
+                rejection(&drifted, None).contains("does not match the pinned lane argv"),
+                "argv drift at step {index} ({}) was accepted",
+                name()
+            );
+
+            let mut bad_exit = success_receipt();
+            bad_exit.steps[index].exit_code = Some(101);
+            assert!(
+                rejection(&bad_exit, None).contains("ok with nonzero exit code"),
+                "an ok step {index} ({}) with a nonzero exit code was accepted",
+                name()
+            );
+        }
+    }
+
+    /// Name of the canonical step at `index`, for failure messages.
+    fn receipt_step_name(index: usize) -> String {
+        expected_steps()
+            .get(index)
+            .map(|(name, _)| name.clone())
+            .unwrap_or_else(|| format!("step {index}"))
+    }
+
+    #[test]
+    fn every_failure_position_reconciles_with_its_terminal_result() {
+        // Same sweep for the failure-shape rules: a lane can stop at any step,
+        // and the terminal result must reconcile wherever that happens.
+        for index in 0..expected_steps().len() {
+            let honest =
+                failure_receipt(index, StepOutcome::ProductFailure, ProofResult::ProductFailure);
+            assert!(
+                verify_receipt(&honest, Some(&sample_subject())).is_ok(),
+                "an honest failure at step {index} must verify"
+            );
+
+            let mut contradictory = honest.clone();
+            contradictory.result = ProofResult::InstrumentFailure;
+            assert!(
+                rejection(&contradictory, None).contains("implies ProductFailure"),
+                "a contradictory result at step {index} was accepted"
+            );
+
+            // An `ok` step after the unreached suffix cannot have happened.
+            if index + 2 < expected_steps().len() {
+                let mut resumed = honest.clone();
+                resumed.steps[index + 2].outcome = StepOutcome::Ok;
+                resumed.steps[index + 2].exit_code = Some(0);
+                assert!(
+                    rejection(&resumed, None).contains("must form a suffix"),
+                    "a resumed lane after step {index} was accepted"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn receipt_round_trips_and_uses_a_stable_wire_vocabulary() {
         let receipt = success_receipt();
         let Ok(json) = serde_json::to_string_pretty(&receipt) else {
