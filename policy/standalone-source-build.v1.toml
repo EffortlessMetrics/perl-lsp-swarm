@@ -1,0 +1,74 @@
+# Exact registry-source build policy (#11514).
+# This is a contract for planning and evidence; it does not execute Cargo.
+schema_version = "standalone_source_build.v1"
+policy_id = "standalone-source-build.v1"
+owner = "#11514"
+review_after = "2026-11-26"
+
+[source_subject]
+route_mode = "first_party_posix_or_powershell"
+registry_protocol = "crates.io_sparse_or_git_index"
+package_name = "perllsp"
+version_selector = "exact_semver_only"
+# Resolved plans must carry a concrete registry version; selectors are not executable subjects.
+profile = "explicit_release_or_reviewed"
+source_kind = "registry_package_only"
+checksum_required = true
+lockfile_required = true
+workspace_source_forbidden = true
+path_source_forbidden = true
+git_source_forbidden = true
+mutable_branch_forbidden = true
+
+[execution]
+mode = "advanced_explicit_source"
+archive_failure_fallback = "forbidden"
+consent = "required_before_code_execution"
+build_scripts_and_proc_macros = "may_execute_with_installer_authority"
+isolated_directory = "containment_and_reproducibility_only"
+security_sandbox_claim = "not_proven_by_directory_isolation"
+product_unit = "advanced_source_server_only"
+perl_dap_pair = "not_satisfied"
+
+[network]
+materialization = "explicit_policy_input"
+build = "explicit_policy_input"
+implicit_network = "rejected"
+
+[configuration]
+cargo_home = "explicit_bounded_input"
+rustup_home = "explicit_bounded_input"
+cargo_config = "explicit_bounded_input"
+registry_credentials = "never_durable_or_unrestricted"
+proxies_and_ca = "explicit_bounded_input"
+rustflags = "explicit_bounded_input"
+rustdocflags = "explicit_bounded_input"
+rustc = "exact_toolchain_identity"
+rustc_wrapper = "explicit_bounded_input"
+rustc_workspace_wrapper = "explicit_bounded_input"
+linker = "explicit_bounded_input"
+runner = "explicit_bounded_input"
+path = "toolchain_and_product_lookup_only"
+git_config = "explicit_bounded_input"
+credential_helpers = "rejected"
+shared_target_or_incremental_cache = "explicit_bounded_input"
+build_script_environment = "allowlist_only"
+
+[authority]
+unknown_configuration = "narrows_claim"
+missing_dependency_graph = "not_proven"
+missing_toolchain_observation = "not_proven"
+missing_instrument_observation = "not_proven"
+elevated_or_system_root = "unsupported_without_separate_review"
+private_values_in_receipts = "forbidden"
+
+[result_vocabulary]
+accepted = ["plan_valid", "source_unavailable", "source_checksum_mismatch", "lockfile_missing_or_mismatch", "dependency_graph_not_proven", "toolchain_unavailable_or_mismatch", "ambient_configuration_rejected", "consent_required", "resource_or_deadline_exhausted", "cancelled", "build_failed", "instrument_failure", "not_proven"]
+reason_codes = ["exact_version_required", "workspace_source_forbidden", "source_checksum_mismatch", "lockfile_missing_or_mismatch", "product_unit_mismatch", "archive_failure_fallback_forbidden", "consent_required", "network_policy_contradiction", "ambient_configuration_rejected", "security_sandbox_not_proven", "private_output_leakage"]
+stages = ["planned", "materialized", "built", "observed", "promotable"]
+terminal_success = ["plan_valid"]
+terminal_failure = ["invalid_or_ambiguous_subject", "source_unavailable", "source_checksum_mismatch", "lockfile_missing_or_mismatch", "dependency_graph_not_proven", "toolchain_unavailable_or_mismatch", "ambient_configuration_rejected", "consent_required", "resource_or_deadline_exhausted", "cancelled", "build_failed", "instrument_failure", "not_proven"]
+
+[receipt]
+binds = ["transaction_id", "attempt_id", "resolved_source_digest", "package_checksum", "lockfile_digest", "target", "toolchain", "feature_policy", "profile", "product_unit", "policy_id", "schema_version"]
+redacts = ["credentials", "tokens", "complete_environment", "private_paths"]

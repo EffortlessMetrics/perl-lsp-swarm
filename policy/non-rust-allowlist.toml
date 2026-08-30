@@ -3923,3 +3923,30 @@ reason = "Driver template for declared launches only; carries placeholders and z
 covered_by = ["python3 -m unittest discover -s integrations/lsp4ij/host-journey/tests -p test_*.py", "cargo xtask check-file-policy"]
 created = "2026-08-26"
 review_after = "2027-02-26"
+
+[[allow]]
+id = "non-rust-standalone-source-build-schema"
+path = "schemas/standalone_source_build.v1.schema.json"
+kind = "install_contract"
+language = "json"
+surface = "release"
+classification = "config"
+owner = "install/release"
+reason = "Closed machine-readable plan schema for exact registry-source build identity and trust boundaries (#11514)."
+covered_by = ["cargo test -p xtask --test standalone_source_build_contract --locked", "cargo xtask check-file-policy"]
+created = "2026-08-29"
+review_after = "2027-02-28"
+
+[[allow]]
+id = "non-rust-standalone-source-build-fixtures"
+glob = "fixtures/experience/standalone_source_build/*.json"
+kind = "install_contract_fixture"
+language = "json"
+surface = "release"
+classification = "test"
+owner = "install/release"
+reason = "Positive and negative deterministic vectors for the standalone source-build contract (#11514)."
+covered_by = ["cargo test -p xtask --test standalone_source_build_contract --locked", "cargo xtask check-file-policy"]
+broad_glob_reason = "All vectors share one closed schema and are consumed by the single contract test; per-vector allowlist rows would not add policy precision."
+created = "2026-08-29"
+review_after = "2027-02-28"

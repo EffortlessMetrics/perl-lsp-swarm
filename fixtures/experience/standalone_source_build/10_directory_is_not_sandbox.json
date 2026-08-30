@@ -1,0 +1,78 @@
+{
+  "schema_version": "standalone_source_build.vector.v1",
+  "plan": {
+    "schema_version": "standalone_source_build.v1",
+    "transaction_id": "tx-11514-1",
+    "attempt_id": "attempt-1",
+    "registry": {
+      "protocol": "crates.io_sparse",
+      "index": "crates.io",
+      "identity": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "package": {
+      "name": "perllsp",
+      "version": "0.18.0",
+      "checksum": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "manifest_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "materialized_checksum": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    "source": {
+      "kind": "registry_package",
+      "resolved_source_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "lockfile_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    },
+    "target": {
+      "platform": "linux",
+      "triple": "x86_64-unknown-linux-gnu",
+      "libc": "gnu"
+    },
+    "toolchain": {
+      "rustc": "rustc 1.95.0",
+      "cargo": "cargo 1.95.0",
+      "rustup_toolchain": "1.95.0"
+    },
+    "features": {
+      "default_features": true,
+      "enabled": []
+    },
+    "product_unit": "advanced_source_server_only",
+    "execution": {
+      "consent": "recorded",
+      "code_execution": "build_scripts_and_proc_macros_may_execute",
+      "isolation_claim": "isolated_directory_is_sandbox",
+      "archive_fallback": "forbidden",
+      "performed": false,
+      "network_accessed": false
+    },
+    "network": {
+      "materialization": "explicit",
+      "build": "forbidden"
+    },
+    "configuration": {
+      "inputs": [
+        "cargo_home",
+        "rustup_home",
+        "cargo_config",
+        "rustflags",
+        "path"
+      ],
+      "redactions": [
+        "credentials",
+        "tokens",
+        "complete_environment",
+        "private_paths"
+      ]
+    },
+    "resource_policy": {
+      "deadline_seconds": 1800,
+      "max_parallel_jobs": 1,
+      "cancellation": "forced_with_cleanup"
+    },
+    "policy_id": "standalone-source-build.v1",
+    "profile": "release"
+  },
+  "expectation": {
+    "verdict": "reject",
+    "reason_code": "security_sandbox_not_proven"
+  }
+}
