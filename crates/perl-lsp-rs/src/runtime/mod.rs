@@ -79,7 +79,6 @@ pub use crate::protocol::{JsonRpcError, JsonRpcId, JsonRpcRequest, JsonRpcRespon
 pub use window::{MessageType, ShowDocumentOptions};
 
 use perl_lsp_rs_core::tooling::performance::SymbolIndex;
-use perl_lsp_rs_core::tooling::perl_critic::BuiltInAnalyzer;
 use perl_parser::{
     Parser,
     ast::{Node, NodeKind},

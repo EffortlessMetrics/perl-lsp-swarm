@@ -198,37 +198,6 @@ impl PullDiagnosticsContext {
         }
     }
 
-    /// Create a context with perlcritic enabled.
-    #[cfg(test)]
-    pub fn with_perlcritic(severity: i32, profile: Option<String>) -> Self {
-        Self {
-            perlcritic_enabled: true,
-            perlcritic_severity: severity,
-            perlcritic_profile: profile,
-            critic_engine: CriticEngine::Legacy,
-            native_critic_profile: "recommended".to_string(),
-            native_critic_include: Vec::new(),
-            native_critic_exclude: Vec::new(),
-            workspace_root: None,
-            include_paths: Vec::new(),
-            markup_message_support: false,
-            identity_root_key: Some(PROVIDER_DEFAULT_ROOT_AUTHORITY.to_string()),
-            facts_generation: None,
-            accepted_critic_state: Self::accepted_state_from_defaults(
-                true,
-                severity,
-                Some(PROVIDER_DEFAULT_ROOT_AUTHORITY),
-            ),
-            accepted_state_currentness: AcceptedStateCurrentness::always_current(),
-            projection: DiagnosticProjectionFragment {
-                position_encoding: PullPositionEncoding::Utf16,
-                markup_messages: false,
-            },
-            #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
-            workspace_index: None,
-        }
-    }
-
     /// Create a context with workspace index for dead code detection.
     #[cfg(all(feature = "workspace", not(target_arch = "wasm32"), test))]
     pub fn with_workspace_index(
@@ -736,63 +705,21 @@ impl PullDiagnosticsProvider {
         core_diagnostics: &mut Vec<InternalDiagnostic>,
         critic_rows: &mut Vec<LspDiagnostic>,
     ) {
-        match context.critic_engine {
-            CriticEngine::Legacy => {
-                self.add_builtin_critic_diagnostics(uri, ast, content, critic_rows);
-            }
-            CriticEngine::Native => {
-                self.add_native_critic_diagnostics(
-                    uri,
-                    ast,
-                    content,
-                    context,
-                    source_identity,
-                    core_diagnostics,
-                    critic_rows,
-                );
-            }
-        }
-    }
-
-    /// Add built-in Perl::Critic policy diagnostics.
-    fn add_builtin_critic_diagnostics(
-        &self,
-        uri: &Uri,
-        ast: &std::sync::Arc<perl_parser::ast::Node>,
-        content: &str,
-        diagnostics: &mut Vec<LspDiagnostic>,
-    ) {
-        use perl_lsp_rs_core::tooling::perl_critic::BuiltInAnalyzer;
-
-        let built_in_analyzer = BuiltInAnalyzer::new();
-        let violations = built_in_analyzer.analyze(ast, content);
-
-        for violation in violations {
-            let lsp_severity = violation.severity.to_diagnostic_severity();
-            let internal_severity = match lsp_severity {
-                lsp_types::DiagnosticSeverity::ERROR => InternalDiagnosticSeverity::Error,
-                lsp_types::DiagnosticSeverity::WARNING => InternalDiagnosticSeverity::Warning,
-                lsp_types::DiagnosticSeverity::INFORMATION => {
-                    InternalDiagnosticSeverity::Information
-                }
-                lsp_types::DiagnosticSeverity::HINT => InternalDiagnosticSeverity::Hint,
-                _ => InternalDiagnosticSeverity::Hint,
-            };
-
-            let internal_diag = InternalDiagnostic {
-                range: (violation.range.start.byte, violation.range.end.byte),
-                severity: internal_severity,
-                code: Some(violation.policy.clone()),
-                message: violation.description.clone(),
-                related_information: Vec::new(),
-                tags: Vec::new(),
-                suggestion: None,
-                fixable: is_fixable_diagnostic(&violation.policy),
-                critic_observation: None,
-            };
-
-            diagnostics.push(self.to_lsp_diagnostic(uri, content, internal_diag));
-        }
+        // #9062: routing authority is the accepted state (#8253), never the raw
+        // engine setting. `EffectiveCriticState` is `Disabled | Native`, so a
+        // deprecated `legacy`/`external`/`perlcritic` value is a migration
+        // observation that cannot construct runtime state and cannot select a
+        // second evaluator here. The service owns the disabled contribution
+        // too, so there is no consumer-side branch left to get wrong.
+        self.add_native_critic_diagnostics(
+            uri,
+            ast,
+            content,
+            context,
+            source_identity,
+            core_diagnostics,
+            critic_rows,
+        );
     }
 
     /// Add native critic policy diagnostics.
@@ -1124,81 +1051,6 @@ impl PullDiagnosticsProvider {
                     },
                 )
             }
-        }
-    }
-
-    fn to_lsp_diagnostic(
-        &self,
-        uri: &Uri,
-        text: &str,
-        diagnostic: InternalDiagnostic,
-    ) -> LspDiagnostic {
-        let range = lsp_range_from_offsets(text, diagnostic.range.0, diagnostic.range.1);
-        let severity = Some(to_lsp_severity(diagnostic.severity));
-        let code = diagnostic.code.map(NumberOrString::String);
-        let related_information =
-            to_lsp_related_information(uri, text, &diagnostic.related_information);
-
-        // Collect tag strings before diagnostic is partially moved by the suggestion match
-        let tag_strings: Vec<String> = diagnostic
-            .tags
-            .iter()
-            .map(|t| match t {
-                InternalDiagnosticTag::Unnecessary => "Unnecessary".to_string(),
-                InternalDiagnosticTag::Deprecated => "Deprecated".to_string(),
-                // Forward-compatible fallback for future variants (#2898)
-                _ => "Unnecessary".to_string(),
-            })
-            .collect();
-        let tags = to_lsp_tags(&diagnostic.tags);
-        let fixable = diagnostic.fixable;
-
-        // Append the context_hint and suggestion to the message so users
-        // see actionable remediation inline (#5109). context_hint comes from
-        // the DiagnosticCode metadata (codes/metadata.rs) and provides
-        // targeted fix instructions for each PL* code.
-        let mut message = diagnostic.message.clone();
-        if let Some(code_str) = code.as_ref().and_then(|c| match c {
-            NumberOrString::String(s) => Some(s.as_str()),
-            _ => None,
-        }) && let Some(dc) = DiagnosticCode::parse_code(code_str)
-            && let Some(hint) = dc.context_hint()
-        {
-            message = format!("{message}\n\n💡 {hint}");
-        }
-        if let Some(ref suggestion) = diagnostic.suggestion {
-            message = format!("{message}\nSuggestion: {suggestion}");
-        }
-
-        let data = code.as_ref().and_then(|c| {
-            if let NumberOrString::String(code_str) = c {
-                let category = DiagnosticCode::parse_code(code_str)
-                    .map(|dc| format!("{:?}", dc.category()))
-                    .unwrap_or_else(|| "Other".to_string());
-                serde_json::to_value(DiagnosticData {
-                    code: code_str.clone(),
-                    category,
-                    fixable,
-                    tags: tag_strings,
-                })
-                .ok()
-            } else {
-                None
-            }
-        });
-
-        let code_description = lsp_code_description(code.as_ref());
-
-        LspDiagnostic {
-            range,
-            severity,
-            code,
-            code_description,
-            source: Some("perl-lsp".to_string()),
-            message,
-            related_information,
-            tags,
-            data,
         }
     }
 

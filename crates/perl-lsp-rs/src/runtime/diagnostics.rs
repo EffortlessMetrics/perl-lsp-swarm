@@ -7,8 +7,8 @@
 #[cfg(test)]
 use super::*;
 use super::{
-    Arc, BuiltInAnalyzer, DiagnosticsProvider, DocumentState, InternalDiagnosticSeverity,
-    JsonRpcError, LspServer, Mutex, Ordering, Value,
+    Arc, DiagnosticsProvider, DocumentState, InternalDiagnosticSeverity, JsonRpcError, LspServer,
+    Mutex, Ordering, Value,
     diagnostics_sink::{
         AcceptedCriticPolicy, PushDiagnosticIdentity, PushDiagnosticsCommitOutcome,
         PushDiagnosticsDisposition,
@@ -2329,23 +2329,12 @@ impl LspServer {
         source_identity: perl_lsp_rs_core::tooling::perl_critic::CriticSourceIdentity,
         diagnostics: &mut Vec<InternalDiagnostic>,
     ) -> NativeCriticContribution {
-        let critic_engine = { self.config.lock().critic_engine };
-        match critic_engine {
-            perl_lsp_rs_core::config::CriticEngine::Legacy => {
-                let built_in_analyzer = BuiltInAnalyzer::new();
-                let violations = built_in_analyzer.analyze(ast, doc_text);
-                diagnostics.extend(violations.iter().map(builtin_violation_to_diagnostic));
-                NativeCriticContribution::PolicyIndependent
-            }
-            perl_lsp_rs_core::config::CriticEngine::Native => self
-                .collect_native_critic_diagnostics(
-                    ast,
-                    doc_text,
-                    subject,
-                    source_identity,
-                    diagnostics,
-                ),
-        }
+        // #9062: routing authority is the accepted state (#8253), never the raw
+        // engine setting. `EffectiveCriticState` is `Disabled | Native`, so a
+        // deprecated `legacy`/`external`/`perlcritic` value is a migration
+        // observation that cannot construct runtime state and cannot select a
+        // second evaluator here. The service owns the disabled contribution too.
+        self.collect_native_critic_diagnostics(ast, doc_text, subject, source_identity, diagnostics)
     }
 
     fn collect_native_critic_diagnostics(
@@ -2846,13 +2835,6 @@ fn push_diagnostic_source(code: Option<&str>) -> &'static str {
 /// incomplete for its own snapshotted policy, so it must never be cached as the
 /// current answer.
 enum NativeCriticContribution {
-    /// No native row in this report depends on live critic configuration: the
-    /// legacy engine, whose removal is #9068.
-    ///
-    /// A disabled accepted state is deliberately NOT here: it still carries a
-    /// fingerprint, and binding it is what makes a later enable invalidate a
-    /// cached report.
-    PolicyIndependent,
     /// Rows were published under exactly this accepted policy.
     Published(AcceptedCriticPolicy),
     /// The run finished but could not publish - the policy moved underneath it,
@@ -2865,7 +2847,7 @@ impl NativeCriticContribution {
     fn published_policy(&self) -> Option<AcceptedCriticPolicy> {
         match self {
             Self::Published(policy) => Some(policy.clone()),
-            Self::PolicyIndependent | Self::Withheld => None,
+            Self::Withheld => None,
         }
     }
 
@@ -2883,7 +2865,6 @@ impl NativeCriticContribution {
     ) -> bool {
         match self {
             Self::Withheld => false,
-            Self::PolicyIndependent => true,
             Self::Published(policy) => {
                 live_fingerprint(policy.owning_root.as_deref()) == policy.fingerprint
             }
@@ -2950,23 +2931,6 @@ pub(crate) fn critic_severity_to_internal(
         }
         crate::perl_critic::Severity::Cruel => InternalDiagnosticSeverity::Information,
         crate::perl_critic::Severity::Brutal => InternalDiagnosticSeverity::Hint,
-    }
-}
-
-/// Convert a built-in analyzer violation to an internal diagnostic.
-fn builtin_violation_to_diagnostic(
-    violation: &crate::perl_critic::Violation,
-) -> InternalDiagnostic {
-    InternalDiagnostic {
-        range: (violation.range.start.byte, violation.range.end.byte),
-        severity: critic_severity_to_internal(violation.severity),
-        code: Some(violation.policy.clone()),
-        message: violation.description.clone(),
-        related_information: Vec::new(),
-        tags: Vec::new(),
-        suggestion: None,
-        fixable: is_fixable_diagnostic(&violation.policy),
-        critic_observation: None,
     }
 }
 
@@ -3834,37 +3798,49 @@ mod tests {
     }
 
     #[test]
-    fn legacy_critic_engine_keeps_legacy_policy_diagnostics_for_push() {
-        let (server, buf) = make_server_with_capture();
-        server.test_configure_critic_engine(perl_lsp_rs_core::config::CriticEngine::Legacy);
-        let uri = "file:///legacy_critic_push_test.pl";
-        server
-            .test_handle_did_open(Some(json!({
-                "textDocument": {
-                    "uri": uri,
-                    "languageId": "perl",
-                    "version": 1,
-                    "text": "my $x = 1;\n"
-                }
-            })))
-            .unwrap();
+    fn deprecated_engine_value_cannot_select_the_legacy_analyzer_for_push() {
+        // #9062/#8253: `EffectiveCriticState` is `Disabled | Native`, so a
+        // deprecated raw `legacy` value is a migration observation and cannot
+        // construct runtime state. The proposition is behavioral equivalence:
+        // the deprecated value cannot change what the push transport publishes.
+        //
+        // Asserting on a native rule code would be the wrong observable here --
+        // the transport dedup (#5088) collapses `native.testing.require_use_strict`
+        // into the core `PL100` row at the same range and severity. Comparing the
+        // two configurations directly is immune to that.
+        fn published_for(engine: perl_lsp_rs_core::config::CriticEngine) -> String {
+            let (server, buf) = make_server_with_capture();
+            server.test_configure_critic_engine(engine);
+            server.test_configure_native_critic_profile("strict");
+            let uri = "file:///deprecated_engine_push_test.pl";
+            server
+                .test_handle_did_open(Some(json!({
+                    "textDocument": {
+                        "uri": uri,
+                        "languageId": "perl",
+                        "version": 1,
+                        "text": "my $path = 'f.txt';
+system($path);
+"
+                    }
+                })))
+                .expect("did_open must succeed");
+            server.publish_diagnostics(uri);
+            drop(server);
+            std::thread::sleep(Duration::from_millis(50));
+            String::from_utf8(buf.lock().clone()).unwrap_or_default()
+        }
 
-        server.publish_diagnostics(uri);
-        drop(server);
-        std::thread::sleep(Duration::from_millis(50));
+        let deprecated = published_for(perl_lsp_rs_core::config::CriticEngine::Legacy);
+        let native = published_for(perl_lsp_rs_core::config::CriticEngine::Native);
 
-        let bytes = buf.lock().clone();
-        let text = String::from_utf8(bytes).unwrap_or_default();
-        // After dedup (#5088), the legacy critic's RequireUseStrict collapses to
-        // PL100 (same range + severity).  Verify the strict finding is present via
-        // PL100 and that native policy IDs are absent.
         assert!(
-            text.contains("PL100"),
-            "legacy critic strict finding should be present (PL100 after dedup); got: {text:?}"
+            !deprecated.contains("Perl::Critic"),
+            "a deprecated raw engine value must not brand rows with Perl::Critic; got: {deprecated:?}"
         );
-        assert!(
-            !text.contains("native.testing.require_use_strict"),
-            "explicit legacy critic engine should not publish native policy IDs; got: {text:?}"
+        assert_eq!(
+            deprecated, native,
+            "a deprecated raw engine value must not change what the push transport publishes"
         );
     }
 
@@ -4321,25 +4297,6 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn builtin_violation_maps_gentle_to_error() {
-        let violation = crate::perl_critic::Violation {
-            policy: "GentlePolicy".to_string(),
-            description: "gentle".to_string(),
-            explanation: String::new(),
-            severity: crate::perl_critic::Severity::Gentle,
-            range: perl_parser::position::Range {
-                start: perl_parser::position::Position { byte: 0, line: 0, column: 0 },
-                end: perl_parser::position::Position { byte: 0, line: 0, column: 1 },
-            },
-            file: "test.pl".to_string(),
-        };
-
-        let diagnostic = builtin_violation_to_diagnostic(&violation);
-        assert_eq!(diagnostic.severity, InternalDiagnosticSeverity::Error);
-        assert_eq!(diagnostic.code.as_deref(), Some("GentlePolicy"));
-    }
-
     // --- build_context workspace root tests ---
 
     /// build_context must use the workspace root of the folder that owns the document,
@@ -4776,13 +4733,6 @@ print \"unreachable\\n\";\n";
             "a withheld run must never yield a reusable result ID"
         );
 
-        // Nothing in the report depends on critic configuration.
-        assert!(
-            NativeCriticContribution::PolicyIndependent
-                .permits_reusable_result_id(|_| "anything".to_string()),
-            "a policy-independent report stays cacheable"
-        );
-
         // Published under a policy that is still live.
         assert!(
             NativeCriticContribution::Published(policy(Some("/root"), "fp-a"))
@@ -5007,20 +4957,24 @@ system($path);
     }
 
     #[test]
-    fn legacy_critic_code_actions_keep_perl_critic_source() {
-        // The opt-in legacy compatibility engine still shares the external
-        // tool's policy names, so its code actions keep `source: Perl::Critic`.
-        // This is the compatibility adapter path — the brand is expected here.
+    fn deprecated_engine_value_cannot_select_the_legacy_analyzer_for_code_actions() {
+        // Same ruling on the action transport: the deprecated raw value cannot
+        // select a second evaluator, so no action may carry the external
+        // `Perl::Critic` brand or a legacy policy name. Before the cutover this
+        // path ran `BuiltInAnalyzer` directly and emitted both.
         let (server, _buf) = make_server_with_capture();
         server.test_configure_critic_engine(perl_lsp_rs_core::config::CriticEngine::Legacy);
-        let uri = "file:///legacy_critic_code_action.pl";
+        server.test_configure_native_critic_profile("strict");
+        let uri = "file:///deprecated_engine_code_action.pl";
         server
             .test_handle_did_open(Some(json!({
                 "textDocument": {
                     "uri": uri,
                     "languageId": "perl",
                     "version": 1,
-                    "text": "my $x = 1;\nprint $x;\n"
+                    "text": "my $x = 1;
+print $x;
+"
                 }
             })))
             .expect("did_open must succeed");
@@ -5032,13 +4986,23 @@ system($path);
         let text = result.to_string();
 
         assert!(
-            text.contains("Perl::Critic"),
-            "legacy engine code actions keep the Perl::Critic source; got: {text}"
+            !text.contains("Perl::Critic"),
+            "a deprecated raw engine value must not brand actions with Perl::Critic; got: {text}"
         );
         assert!(
-            text.contains("TestingAndDebugging::RequireUseStrict"),
-            "legacy engine code actions keep the legacy policy code; got: {text}"
+            !text.contains("TestingAndDebugging::RequireUseStrict"),
+            "a deprecated raw engine value must not select the legacy analyzer; got: {text}"
         );
+        let actions = result.as_array().cloned().unwrap_or_default();
+        let native_action = actions.iter().any(|action| {
+            action["diagnostics"].as_array().is_some_and(|diags| {
+                diags.iter().any(|d| {
+                    d["code"].as_str().is_some_and(|c| c.starts_with("native."))
+                        && d["source"].as_str() == Some("perl-lsp")
+                })
+            })
+        });
+        assert!(native_action, "the native service must still supply the action rows; got: {text}");
     }
 
     fn native_critic_quickfixes_for_code<'a>(actions: &'a [Value], code: &str) -> Vec<&'a Value> {

@@ -4,10 +4,9 @@
 //! Provides quick fixes, refactoring actions, and source actions.
 
 use super::super::{
-    BuiltInAnalyzer, CodeActionsProvider, CodeActionsProviderV2, DiagnosticsProvider,
-    EnhancedCodeActionsProvider, GLOBAL_CANCELLATION_REGISTRY, HashMap, InternalCodeActionKind,
-    InternalCodeActionKindV2, JsonRpcError, JsonRpcId, LspServer, PerlLspCancellationToken,
-    TestGenerator, Value, json,
+    CodeActionsProvider, CodeActionsProviderV2, DiagnosticsProvider, EnhancedCodeActionsProvider,
+    GLOBAL_CANCELLATION_REGISTRY, HashMap, InternalCodeActionKind, InternalCodeActionKindV2,
+    JsonRpcError, JsonRpcId, LspServer, PerlLspCancellationToken, TestGenerator, Value, json,
 };
 
 /// One immutable accepted subject for a native critic code-action run (#9062).
@@ -620,10 +619,7 @@ impl LspServer {
             // the one protocol-neutral service over that immutable subject, so
             // a torn split (stale engine + fresh policy) can never exist and
             // no consumer composes its own registry/policy pipeline.
-            let (critic_engine, accepted_state) = {
-                let cfg = self.config.lock();
-                (cfg.critic_engine, cfg.effective_critic_state(root_key.as_deref()))
-            };
+            let accepted_state = { self.config.lock().effective_critic_state(root_key.as_deref()) };
             // The last live-document read the rest of this branch needs, hoisted
             // so the guard can be released before the native critic run.
             let doc_version = doc.version;
@@ -637,68 +633,24 @@ impl LspServer {
             // further down. `native_insert_at` holds this arm's position in the
             // emitted action order so the deferred run splices back in place.
             let native_insert_at = code_actions.len();
-            let mut native_critic_subject = None;
-            match critic_engine {
-                perl_lsp_rs_core::config::CriticEngine::Native => {
-                    native_critic_subject = Some(NativeCriticActionSubject {
-                        ast: std::sync::Arc::clone(ast),
-                        text: std::sync::Arc::clone(&doc.text_arc),
-                        generation: doc.current_generation(),
-                        rope: doc.rope.clone(),
-                        line_starts: doc.line_starts.clone(),
-                        accepted_state,
-                        root_key,
-                        overlap_observations:
-                            perl_lsp_rs_core::providers::diagnostics::critic_overlap_observations(
-                                &diagnostics,
-                            ),
-                    });
-                }
-                perl_lsp_rs_core::config::CriticEngine::Legacy => {
-                    let builtin_analyzer = BuiltInAnalyzer::new();
-                    let violations = builtin_analyzer.analyze(ast, &doc.text);
-                    for violation in &violations {
-                        if let Some(quick_fix) =
-                            builtin_analyzer.get_quick_fix(violation, &doc.text)
-                        {
-                            let mut changes = HashMap::new();
-                            let (start_line, start_char) =
-                                self.offset_to_pos16(doc, violation.range.start.byte);
-                            let (end_line, end_char) =
-                                self.offset_to_pos16(doc, violation.range.end.byte);
-
-                            changes.insert(
-                                uri.to_string(),
-                                vec![json!({
-                                    "range": {
-                                        "start": {"line": start_line, "character": start_char},
-                                        "end": {"line": end_line, "character": end_char},
-                                    },
-                                    "newText": quick_fix.edit.new_text,
-                                })],
-                            );
-
-                            code_actions.push(json!({
-                                "title": quick_fix.title,
-                                "kind": "quickfix",
-                                "diagnostics": [{
-                                    "range": {
-                                        "start": {"line": start_line, "character": start_char},
-                                        "end": {"line": end_line, "character": end_char},
-                                    },
-                                    "severity": violation.severity.to_diagnostic_severity(),
-                                    "code": violation.policy.clone(),
-                                    "source": "Perl::Critic",
-                                    "message": violation.description.clone()
-                                }],
-                                "edit": {
-                                    "changes": changes,
-                                },
-                            }));
-                        }
-                    }
-                }
-            }
+            // #9062: routing authority is the accepted state (#8253), never the
+            // raw engine setting. `EffectiveCriticState` is `Disabled | Native`,
+            // so a deprecated `legacy`/`external`/`perlcritic` value is a
+            // migration observation that cannot construct runtime state and
+            // cannot select a second evaluator here.
+            let native_critic_subject = Some(NativeCriticActionSubject {
+                ast: std::sync::Arc::clone(ast),
+                text: std::sync::Arc::clone(&doc.text_arc),
+                generation: doc.current_generation(),
+                rope: doc.rope.clone(),
+                line_starts: doc.line_starts.clone(),
+                accepted_state,
+                root_key,
+                overlap_observations:
+                    perl_lsp_rs_core::providers::diagnostics::critic_overlap_observations(
+                        &diagnostics,
+                    ),
+            });
 
             // Get quick-fixes from the V2 provider (diagnostic-based)
             let provider_v2 = CodeActionsProviderV2::new(doc.text_arc.to_string());

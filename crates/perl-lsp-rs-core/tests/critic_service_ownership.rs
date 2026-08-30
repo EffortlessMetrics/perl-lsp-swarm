@@ -21,9 +21,9 @@ use std::path::{Path, PathBuf};
 ///
 /// `BuiltInAnalyzer::new(` is included deliberately: the legacy analyzer is a
 /// second critic evaluator that runs outside the service, its accepted-state
-/// and currentness gates, canonical normalization, and work receipt. Its
-/// remaining transport call sites are an explicitly recorded, owned deferral
-/// below rather than an invisible bypass, so a NEW one turns this gate red.
+/// and currentness gates, canonical normalization, and work receipt. After the
+/// #9062 cutover no diagnostic or action transport may reach it; only the
+/// #6969 command adapter is still allowed to, and that allowance is temporary.
 const SERVICE_ONLY_COMPOSITION: [&str; 7] = [
     "native_finding_candidates(",
     "normalize_with_native_policy(",
@@ -37,7 +37,7 @@ const SERVICE_ONLY_COMPOSITION: [&str; 7] = [
 /// Files allowed to contain composition entry points, with the reason each
 /// allowance exists. Paths are relative to the workspace `crates/` directory
 /// using forward slashes so the table reads identically on every platform.
-const ALLOWED_SITES: [(&str, &str); 7] = [
+const ALLOWED_SITES: [(&str, &str); 4] = [
     (
         "perl-lsp-rs-core/src/tooling/perl_critic/service.rs",
         "#9062: the one protocol-neutral service",
@@ -53,18 +53,6 @@ const ALLOWED_SITES: [(&str, &str); 7] = [
     (
         "perl-lsp-rs/src/execute_command/provider.rs",
         "#6969 pending: the perl.runCritic command adapter cuts over separately",
-    ),
-    (
-        "perl-lsp-rs/src/features/diagnostics/pull.rs",
-        "#9068 pending: the opt-in legacy engine arm still calls BuiltInAnalyzer;          deleting that product reachability is #9068's claim, not #9062's",
-    ),
-    (
-        "perl-lsp-rs/src/runtime/diagnostics.rs",
-        "#9068 pending: same opt-in legacy engine arm on the push transport",
-    ),
-    (
-        "perl-lsp-rs/src/runtime/language/code_actions.rs",
-        "#9068 pending: same opt-in legacy engine arm on the action transport",
     ),
 ];
 
