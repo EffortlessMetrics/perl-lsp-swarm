@@ -587,6 +587,61 @@ class ParserFacadeAuthorityTests(unittest.TestCase):
         self.write_conditional_module(guard, taxonomy)
         check(self.root, self.ledger_path)
 
+    def test_negated_module_guard_does_not_hide_a_real_gate(self) -> None:
+        """Under `not(feature = ...)` the module exists without the feature."""
+        taxonomy = next(
+            r["name"] for r in self.ledger["features"] if r["isolation"] == "taxonomy_only"
+        )
+        guard = self.independent_source_only_feature()["name"]
+        lib = self.root / "crates/perl-parser/src/lib.rs"
+        lib.write_text(
+            lib.read_text() + f'\n#[cfg(not(feature = "{guard}"))]\nmod negated_probe;\n'
+        )
+        self.write(
+            "crates/perl-parser/src/negated_probe/mod.rs",
+            f'#[cfg(feature = "{taxonomy}")]\nfn probe() {{}}\n',
+        )
+        with self.assertRaisesRegex(
+            ValueError, f"feature {taxonomy} claims isolation taxonomy_only but selects source_only"
+        ):
+            check(self.root, self.ledger_path)
+
+    def test_disjunctive_module_guard_does_not_hide_a_real_gate(self) -> None:
+        """Under `any(feature = ..., unix)` the module can exist without the feature."""
+        taxonomy = next(
+            r["name"] for r in self.ledger["features"] if r["isolation"] == "taxonomy_only"
+        )
+        guard = self.independent_source_only_feature()["name"]
+        lib = self.root / "crates/perl-parser/src/lib.rs"
+        lib.write_text(
+            lib.read_text() + f'\n#[cfg(any(feature = "{guard}", unix))]\nmod any_probe;\n'
+        )
+        self.write(
+            "crates/perl-parser/src/any_probe/mod.rs",
+            f'#[cfg(feature = "{taxonomy}")]\nfn probe() {{}}\n',
+        )
+        with self.assertRaisesRegex(ValueError, f"feature {taxonomy} claims isolation taxonomy_only"):
+            check(self.root, self.ledger_path)
+
+    def test_private_and_file_backed_conditional_modules_are_discovered(self) -> None:
+        """Discovery must not depend on a module being public or directory-backed."""
+        taxonomy = next(
+            r["name"] for r in self.ledger["features"] if r["isolation"] == "taxonomy_only"
+        )
+        guard = self.independent_source_only_feature()["name"]
+        lib = self.root / "crates/perl-parser/src/lib.rs"
+        lib.write_text(lib.read_text() + "\nmod outer_probe;\n")
+        # Private outer module, declared as a file, itself declaring a gated child file.
+        self.write(
+            "crates/perl-parser/src/outer_probe.rs",
+            f'#[cfg(feature = "{guard}")]\nmod inner_probe;\n',
+        )
+        self.write(
+            "crates/perl-parser/src/inner_probe.rs",
+            f'#[cfg(feature = "{taxonomy}")]\nfn probe() {{}}\n',
+        )
+        check(self.root, self.ledger_path)
+
     def test_disabling_the_conditional_module_exclusion_would_promote_the_gate(self) -> None:
         """Negative control: the same gate outside a conditional module does count."""
         taxonomy = next(

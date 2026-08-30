@@ -28,12 +28,12 @@ CFG_TEST_MODULE_PATTERN = re.compile(
     r"#\[cfg\(test\)\]\s*(?:pub\s+(?:\([^)]*\)\s*)?)?mod\s+[A-Za-z_][A-Za-z0-9_]*\s*\{"
 )
 
-# `#[cfg(feature = "x")] pub mod y;` — the module only exists when the feature is on,
-# so gates inside it do not establish unconditional production source.
+# `#[cfg(<predicate>)] mod y;` — capture the predicate and the module name. Whether
+# the module *requires* a feature is decided by `requires_feature`, not by this match.
 CONDITIONAL_MODULE_PATTERN = re.compile(
-    r"#\[cfg\([^\]]*feature\s*=\s*\"[^\"]+\"[^\]]*\)\]\s*"
+    r"#\[cfg\((?P<predicate>[^\]]*)\)\]\s*"
     r"(?:///[^\n]*\n\s*|//[^\n]*\n\s*)*"
-    r"(?:pub\s+(?:\([^)]*\)\s*)?)?mod\s+([A-Za-z_][A-Za-z0-9_]*)\s*;"
+    r"(?:pub\s+(?:\([^)]*\)\s*)?)?mod\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*;"
 )
 
 
@@ -239,31 +239,46 @@ def strip_cfg_test_modules(source: str) -> str:
         index = cursor
 
 
+def requires_feature(predicate: str) -> bool:
+    """Whether a cfg predicate proves the item requires a positive feature.
+
+    `feature = "x"` and `all(feature = "x", unix)` require the feature. Under
+    `not(...)` or `any(...)` the item can exist without it, so those must not be
+    treated as feature-guarded — excluding them would hide real source gates.
+    Anything not proven positive is treated as not requiring a feature, which
+    keeps the observation conservative.
+    """
+    if "feature" not in predicate:
+        return False
+    if "not(" in predicate or "any(" in predicate:
+        return False
+    return bool(re.search(r"feature\s*=\s*\"[^\"]+\"", predicate))
+
+
 def conditional_module_roots(crate_root: Path) -> set[Path]:
-    """Directories and files whose module is itself declared behind a feature.
+    """Directories and files whose module is declared behind a required feature.
 
     A gate inside such a module is conditional on that module existing, so it
     cannot establish that its feature gates unconditional production source. The
     declaring `#[cfg(feature = ...)] mod x;` line is itself an unconditional gate
     and is still counted where it appears.
+
+    Every `.rs` file under `src/` is scanned rather than walked as a module tree,
+    so private modules, `name.rs` and `name/mod.rs` layouts, and nested
+    declarations are all covered without modelling reachability.
     """
     roots: set[Path] = set()
-    pending = [crate_root / "src" / "lib.rs"]
-    seen: set[Path] = set()
-    while pending:
-        declaring = pending.pop()
-        if declaring in seen or not declaring.is_file():
-            continue
-        seen.add(declaring)
-        parent = declaring.parent
-        source = declaring.read_text(encoding="utf-8", errors="replace")
-        for name in CONDITIONAL_MODULE_PATTERN.findall(source):
-            roots.add(parent / name)
-            roots.add(parent / f"{name}.rs")
-        for name in public_module_names(source):
-            nested = parent / name / "mod.rs"
-            if nested.is_file():
-                pending.append(nested)
+    source_root = crate_root / "src"
+    if not source_root.is_dir():
+        return roots
+    for path in sorted(source_root.rglob("*.rs")):
+        source = path.read_text(encoding="utf-8", errors="replace")
+        for match in CONDITIONAL_MODULE_PATTERN.finditer(source):
+            if not requires_feature(match.group("predicate")):
+                continue
+            name = match.group("name")
+            roots.add(path.parent / name)
+            roots.add(path.parent / f"{name}.rs")
     return roots
 
 
