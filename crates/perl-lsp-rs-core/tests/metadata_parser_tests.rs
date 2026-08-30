@@ -877,3 +877,47 @@ fn cpanfile_substitution_replacement_braces_do_not_corrupt_blocks() {
         )],
     );
 }
+
+#[test]
+fn cpanfile_bare_numeric_version_forms_stay_unconditional() {
+    // Exponents, `_` separators, and leading decimal points are literal
+    // Perl numbers: they must not mark a declaration dynamic.
+    let cpanfile = concat!(
+        "requires 'Num::Version', 1.5_0;\n",
+        "requires 'Exp::Version', 1.5e-2;\n",
+        "requires 'Dot::Version', .5;\n",
+        "requires 'Real::One';",
+    );
+
+    let deps = extract_cpanfile_requirements(cpanfile);
+
+    assert_eq!(
+        deps,
+        vec![
+            DeclaredDependency::new(
+                "Num::Version",
+                None,
+                "requires",
+                DeclaredDependencySource::Cpanfile,
+            ),
+            DeclaredDependency::new(
+                "Exp::Version",
+                None,
+                "requires",
+                DeclaredDependencySource::Cpanfile,
+            ),
+            DeclaredDependency::new(
+                "Dot::Version",
+                None,
+                "requires",
+                DeclaredDependencySource::Cpanfile,
+            ),
+            DeclaredDependency::new(
+                "Real::One",
+                None,
+                "requires",
+                DeclaredDependencySource::Cpanfile,
+            ),
+        ],
+    );
+}

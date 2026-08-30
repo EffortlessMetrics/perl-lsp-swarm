@@ -325,8 +325,18 @@ fn cpanfile_statement_args(source: &str, start: usize) -> (Vec<String>, bool) {
             b';' | b'{' | b'}' => return (values, dynamic),
             c if c.is_ascii_whitespace() || c == b',' || c == b'(' || c == b')' => idx += 1,
             b'=' if bytes.get(idx + 1) == Some(&b'>') => idx += 2,
+            // Bare numeric version literals stay literal in every Perl form:
+            // digits, a decimal point (leading or embedded), `_` separators,
+            // and exponent notation with an optional sign.
             c if c.is_ascii_digit() => idx += 1,
-            b'.' if idx > 0 && bytes[idx - 1].is_ascii_digit() => idx += 1,
+            b'.' if bytes.get(idx + 1).is_some_and(|b| b.is_ascii_digit()) => idx += 1,
+            b'_' if bytes.get(idx + 1).is_some_and(|b| b.is_ascii_digit())
+                || (idx > 0 && bytes[idx - 1].is_ascii_digit()) =>
+            {
+                idx += 1
+            }
+            b'e' | b'E' if idx > 0 && bytes[idx - 1].is_ascii_digit() => idx += 1,
+            b'+' | b'-' if idx > 0 && matches!(bytes[idx - 1], b'e' | b'E') => idx += 1,
             c if c.is_ascii_alphabetic() || c == b'_' => {
                 let end = ascii_ident_end(bytes, idx).unwrap_or(idx + 1);
                 if matches!(&source[idx..end], "if" | "unless") {
