@@ -413,6 +413,58 @@ fn include_matcher_rejects_uncovered_paths() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// Build artifacts that are never published and carry no source.
+const UNPUBLISHED_ROOT_ARTIFACTS: &[&str] = &["target", "Cargo.lock"];
+
+/// No top-level entry may sit outside the `include` list.
+///
+/// `required_assets_exist_and_are_packaged` walks an enumerated list, so it
+/// proves those assets ship but cannot notice a *new* one. Since `include`
+/// covers whole subtrees (`src/**`, `tests/**`, `examples/**`) plus named root
+/// files, the reachable gap is a new top-level entry — a `build.rs`, a
+/// `benches/` — that would be silently absent from the published package while
+/// every enumerated assertion still passed.
+///
+/// This closes that gap, so the crate's "no unpackaged load-bearing asset"
+/// claim is a completeness check at the root rather than a spot-check.
+#[test]
+fn no_top_level_entry_is_left_unpackaged() -> Result<(), Box<dyn Error>> {
+    let manifest = manifest()?;
+    let include: Vec<&str> = manifest
+        .get("package")
+        .and_then(|package| package.get("include"))
+        .and_then(Value::as_array)
+        .ok_or("manifest has no [package] include list")?
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+
+    for entry in fs::read_dir(package_root())? {
+        let entry = entry?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with('.') || UNPUBLISHED_ROOT_ARTIFACTS.contains(&name.as_str()) {
+            continue;
+        }
+
+        // `include_pattern_covers` deliberately reports `src/**` as not covering
+        // the bare directory `src`, so directories match on the pattern prefix.
+        let covered = if entry.file_type()?.is_dir() {
+            include
+                .iter()
+                .any(|pattern| pattern.strip_suffix("/**").is_some_and(|prefix| prefix == name))
+        } else {
+            include.iter().any(|pattern| include_pattern_covers(pattern, &name))
+        };
+
+        assert!(
+            covered,
+            "top-level `{name}` is not covered by the include list {include:?}; it would be \
+             missing from the published package"
+        );
+    }
+    Ok(())
+}
+
 #[test]
 fn no_source_reaches_for_a_swarm_test_helper() -> Result<(), Box<dyn Error>> {
     let root = package_root();
