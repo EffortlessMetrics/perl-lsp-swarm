@@ -11,6 +11,7 @@
 use crate::{FakeWorkspace, ScenarioConfig};
 use anyhow::{Context, Result, anyhow};
 use serde_json::{Value, json};
+use server_request_script::{ObservedServerRequest, ScriptedServerRequest, ServerRequestScript};
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -24,6 +25,8 @@ fn next_id() -> u64 {
     NEXT_ID.fetch_add(1, Ordering::Relaxed)
 }
 
+pub mod server_request_script;
+
 /// A server-initiated event captured during a scenario.
 #[derive(Debug, Clone)]
 pub enum LspEvent {
@@ -31,20 +34,38 @@ pub enum LspEvent {
     WindowMessage {
         /// LSP MessageType (1=Error, 2=Warning, 3=Info, 4=Log).
         message_type: u32,
+        /// The user-visible message text.
         message: String,
     },
     /// `window/logMessage` — IDE output panel message.
-    LogMessage { message_type: u32, message: String },
+    LogMessage {
+        /// LSP MessageType (1=Error, 2=Warning, 3=Info, 4=Log).
+        message_type: u32,
+        /// The output-panel message text.
+        message: String,
+    },
     /// `textDocument/publishDiagnostics` — diagnostic update.
-    Diagnostics { uri: String, version: Option<i64>, diagnostics: Vec<Value> },
+    Diagnostics {
+        /// The document URI.
+        uri: String,
+        /// The document version, when supplied.
+        version: Option<i64>,
+        /// The diagnostics reported for the document.
+        diagnostics: Vec<Value>,
+    },
     /// Any other server-initiated notification.
-    Other { method: String, params: Value },
+    Other {
+        /// The notification method.
+        method: String,
+        /// The notification parameters.
+        params: Value,
+    },
 }
 
 /// A lightweight LSP client that speaks directly to a spawned perl-lsp process.
 pub struct UxClient {
     child: Mutex<Child>,
-    stdin: Mutex<ChildStdin>,
+    stdin: Arc<Mutex<Option<ChildStdin>>>,
     initialize_result: Value,
     /// Events buffered from the server's stdout (notifications, etc.)
     events: Arc<Mutex<VecDeque<Value>>>,
@@ -52,8 +73,9 @@ pub struct UxClient {
     responses: Arc<Mutex<VecDeque<Value>>>,
     /// Stderr lines captured from the server process.
     stderr_lines: Arc<Mutex<Vec<String>>>,
-    _stdout_thread: std::thread::JoinHandle<()>,
-    _stderr_thread: std::thread::JoinHandle<()>,
+    script: Option<ServerRequestScript>,
+    stdout_thread: Option<std::thread::JoinHandle<()>>,
+    stderr_thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl UxClient {
@@ -64,90 +86,42 @@ impl UxClient {
         workspace: &FakeWorkspace,
         config: &ScenarioConfig,
     ) -> Result<Self> {
-        let mut cmd = build_command(binary_path, config)?;
-
-        let mut child = cmd
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .with_context(|| format!("Failed to spawn perl-lsp from {:?}", binary_path))?;
-
-        let stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| anyhow!("perl-lsp stdin not available after spawn"))?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| anyhow!("perl-lsp stdout not available after spawn"))?;
-        let stderr = child
-            .stderr
-            .take()
-            .ok_or_else(|| anyhow!("perl-lsp stderr not available after spawn"))?;
-
-        let events: Arc<Mutex<VecDeque<Value>>> = Arc::new(Mutex::new(VecDeque::new()));
-        let responses: Arc<Mutex<VecDeque<Value>>> = Arc::new(Mutex::new(VecDeque::new()));
-        let stderr_lines: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-
-        // ── stdout reader thread ──────────────────────────────────────────────
-        let ev_clone = events.clone();
-        let resp_clone = responses.clone();
-        let _stdout_thread = std::thread::Builder::new()
-            .name("ux-lsp-stdout".into())
-            .spawn(move || {
-                let mut reader = BufReader::new(stdout);
-                while let Ok(msg) = read_one_message(&mut reader) {
-                    let has_id = msg.get("id").is_some() && !msg["id"].is_null();
-                    let is_response =
-                        has_id && (msg.get("result").is_some() || msg.get("error").is_some());
-                    if is_response {
-                        if let Ok(mut guard) = resp_clone.lock() {
-                            guard.push_back(msg);
-                        }
-                    } else if let Ok(mut guard) = ev_clone.lock() {
-                        guard.push_back(msg);
-                    }
-                }
-            })
-            .context("Failed to spawn stdout reader thread")?;
-
-        // ── stderr drain thread ───────────────────────────────────────────────
-        let echo = config.echo_stderr;
-        let stderr_clone = stderr_lines.clone();
-        let _stderr_thread = std::thread::Builder::new()
-            .name("ux-lsp-stderr".into())
-            .spawn(move || {
-                let reader = BufReader::new(stderr);
-                for l in reader.lines().map_while(Result::ok) {
-                    if let Ok(mut guard) = stderr_clone.lock() {
-                        guard.push(l.clone());
-                    }
-                    if echo {
-                        eprintln!("[perl-lsp stderr] {}", l);
-                    }
-                }
-            })
-            .context("Failed to spawn stderr drain thread")?;
-
-        // Allow the server a moment to start before we send initialize.
-        std::thread::sleep(Duration::from_millis(50));
-
-        let mut client = Self {
-            child: Mutex::new(child),
-            stdin: Mutex::new(stdin),
-            initialize_result: Value::Null,
-            events,
-            responses,
-            stderr_lines,
-            _stdout_thread,
-            _stderr_thread,
-        };
+        let process = spawn_process(binary_path, config, None)?;
+        let mut client = Self::from_process(process);
 
         // ── LSP handshake ─────────────────────────────────────────────────────
         client.initialize_result = client.handshake(workspace, config, config.timeout)?;
 
         Ok(client)
+    }
+
+    /// Spawn the fixture binary and install scripted responses for its
+    /// server-initiated requests.
+    pub fn spawn_scripted(
+        binary_path: &str,
+        root_uri: &str,
+        script: Vec<ScriptedServerRequest>,
+        timeout: Duration,
+    ) -> Result<Self> {
+        let config = ScenarioConfig::default();
+        let process = spawn_process(binary_path, &config, Some(script))?;
+        let mut client = Self::from_process(process);
+        client.initialize_result = client.scripted_handshake(root_uri, timeout)?;
+        Ok(client)
+    }
+
+    fn from_process(process: SpawnedProcess) -> Self {
+        Self {
+            child: Mutex::new(process.child),
+            stdin: process.stdin,
+            initialize_result: Value::Null,
+            events: process.events,
+            responses: process.responses,
+            stderr_lines: process.stderr_lines,
+            script: process.script,
+            stdout_thread: Some(process.stdout_thread),
+            stderr_thread: Some(process.stderr_thread),
+        }
     }
 
     fn handshake(
@@ -220,6 +194,23 @@ impl UxClient {
 
         self.notify("initialized", json!({}))?;
 
+        Ok(init_resp)
+    }
+
+    fn scripted_handshake(&self, root_uri: &str, timeout: Duration) -> Result<Value> {
+        let init_resp = self.request(
+            "initialize",
+            json!({
+                "processId": null,
+                "rootUri": root_uri,
+                "capabilities": {}
+            }),
+            timeout,
+        )?;
+        if let Some(err) = init_resp.get("error") {
+            return Err(anyhow!("LSP initialize returned error: {}", err));
+        }
+        self.notify("initialized", json!({}))?;
         Ok(init_resp)
     }
 
@@ -344,6 +335,22 @@ impl UxClient {
         self.stderr_lines.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
+    /// Wait for all scripted server requests to be observed and answered.
+    pub fn wait_for_script(&self, timeout: Duration) -> Result<Vec<ObservedServerRequest>> {
+        self.script
+            .as_ref()
+            .ok_or_else(|| anyhow!("client has no scripted server-request script"))?
+            .wait(timeout)
+    }
+
+    /// Fail if the server sent a server-initiated request not in the script.
+    pub fn assert_no_unscripted_requests(&self) -> Result<()> {
+        self.script
+            .as_ref()
+            .ok_or_else(|| anyhow!("client has no scripted server-request script"))?
+            .assert_no_unscripted()
+    }
+
     /// Wait up to `timeout` for any `window/showMessage` containing `needle`.
     pub fn wait_for_message(&self, needle: &str, timeout: Duration) -> bool {
         let deadline = Instant::now() + timeout;
@@ -370,13 +377,9 @@ impl UxClient {
     // ── Internal helpers ──────────────────────────────────────────────────────
 
     fn send_raw(&self, msg: &Value) -> Result<()> {
-        let body = msg.to_string();
-        let header = format!("Content-Length: {}\r\n\r\n", body.len());
         let mut stdin = self.stdin.lock().unwrap_or_else(|e| e.into_inner());
-        stdin.write_all(header.as_bytes()).context("Failed to write LSP header to stdin")?;
-        stdin.write_all(body.as_bytes()).context("Failed to write LSP body to stdin")?;
-        stdin.flush().context("Failed to flush LSP stdin")?;
-        Ok(())
+        let stdin = stdin.as_mut().ok_or_else(|| anyhow!("LSP client stdin is already closed"))?;
+        write_framed(stdin, msg)
     }
 
     fn wait_for_response(&self, id: u64, timeout: Duration) -> Result<Value> {
@@ -405,6 +408,107 @@ impl UxClient {
     }
 }
 
+struct SpawnedProcess {
+    child: Child,
+    stdin: Arc<Mutex<Option<ChildStdin>>>,
+    events: Arc<Mutex<VecDeque<Value>>>,
+    responses: Arc<Mutex<VecDeque<Value>>>,
+    stderr_lines: Arc<Mutex<Vec<String>>>,
+    script: Option<ServerRequestScript>,
+    stdout_thread: std::thread::JoinHandle<()>,
+    stderr_thread: std::thread::JoinHandle<()>,
+}
+
+fn spawn_process(
+    binary_path: &str,
+    config: &ScenarioConfig,
+    scripted_requests: Option<Vec<ScriptedServerRequest>>,
+) -> Result<SpawnedProcess> {
+    let mut cmd = build_command(binary_path, config)?;
+    let mut child = cmd
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .with_context(|| format!("Failed to spawn perl-lsp from {:?}", binary_path))?;
+    let stdin = Arc::new(Mutex::new(Some(
+        child.stdin.take().ok_or_else(|| anyhow!("perl-lsp stdin not available after spawn"))?,
+    )));
+    let stdout =
+        child.stdout.take().ok_or_else(|| anyhow!("perl-lsp stdout not available after spawn"))?;
+    let stderr =
+        child.stderr.take().ok_or_else(|| anyhow!("perl-lsp stderr not available after spawn"))?;
+    let events: Arc<Mutex<VecDeque<Value>>> = Arc::new(Mutex::new(VecDeque::new()));
+    let responses: Arc<Mutex<VecDeque<Value>>> = Arc::new(Mutex::new(VecDeque::new()));
+    let stderr_lines: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let (script, observer) = match scripted_requests {
+        Some(script) => {
+            let (script, observer) = ServerRequestScript::new(stdin.clone(), script)?;
+            (Some(script), Some(observer))
+        }
+        None => (None, None),
+    };
+
+    let event_queue = events.clone();
+    let response_queue = responses.clone();
+    let stdout_thread = std::thread::Builder::new()
+        .name("ux-lsp-stdout".into())
+        .spawn(move || {
+            let mut reader = BufReader::new(stdout);
+            while let Ok(message) = read_one_message(&mut reader) {
+                let has_id = message.get("id").is_some_and(|id| !id.is_null());
+                let is_response =
+                    has_id && (message.get("result").is_some() || message.get("error").is_some());
+                if is_response {
+                    if let Ok(mut queue) = response_queue.lock() {
+                        queue.push_back(message);
+                    }
+                } else {
+                    if has_id
+                        && message.get("method").and_then(Value::as_str).is_some()
+                        && let Some(observer) = observer.as_ref()
+                    {
+                        observer.observe(&message);
+                    }
+                    if let Ok(mut queue) = event_queue.lock() {
+                        queue.push_back(message);
+                    }
+                }
+            }
+        })
+        .context("Failed to spawn stdout reader thread")?;
+
+    let echo = config.echo_stderr;
+    let captured_stderr = stderr_lines.clone();
+    let stderr_thread = std::thread::Builder::new()
+        .name("ux-lsp-stderr".into())
+        .spawn(move || {
+            for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+                if let Ok(mut lines) = captured_stderr.lock() {
+                    lines.push(line.clone());
+                }
+                if echo {
+                    eprintln!("[perl-lsp stderr] {}", line);
+                }
+            }
+        })
+        .context("Failed to spawn stderr drain thread")?;
+
+    // Allow the server a moment to start before we send initialize.
+    std::thread::sleep(Duration::from_millis(50));
+
+    Ok(SpawnedProcess {
+        child,
+        stdin,
+        events,
+        responses,
+        stderr_lines,
+        script,
+        stdout_thread,
+        stderr_thread,
+    })
+}
+
 fn merge_json(target: &mut Value, overlay: &Value) {
     let (Some(target_obj), Some(overlay_obj)) = (target.as_object_mut(), overlay.as_object())
     else {
@@ -426,34 +530,59 @@ fn merge_json(target: &mut Value, overlay: &Value) {
 
 impl Drop for UxClient {
     fn drop(&mut self) {
+        if let Some(script) = self.script.take() {
+            script.settle();
+        }
         // Best-effort graceful shutdown.
-        let shutdown = r#"{"jsonrpc":"2.0","id":999998,"method":"shutdown","params":{}}"#;
-        let exit = r#"{"jsonrpc":"2.0","method":"exit"}"#;
+        if let Ok(mut stdin) = self.stdin.lock()
+            && let Some(stdin) = stdin.as_mut()
+        {
+            let shutdown = json!({
+                "jsonrpc": "2.0",
+                "id": 999998,
+                "method": "shutdown",
+                "params": {}
+            });
+            let exit = json!({"jsonrpc": "2.0", "method": "exit"});
+            let _ = write_framed(stdin, &shutdown);
+            let _ = write_framed(stdin, &exit);
+        }
         if let Ok(mut stdin) = self.stdin.lock() {
-            for body in [shutdown, exit] {
-                let hdr = format!("Content-Length: {}\r\n\r\n", body.len());
-                let _ = stdin.write_all(hdr.as_bytes());
-                let _ = stdin.write_all(body.as_bytes());
-                let _ = stdin.flush();
-            }
+            let _ = stdin.take();
         }
         // Wait briefly for graceful exit then force-kill.
+        let mut exited = false;
         for _ in 0..50 {
             if let Ok(mut child) = self.child.lock()
                 && child.try_wait().ok().flatten().is_some()
             {
-                return;
+                exited = true;
+                break;
             }
             std::thread::sleep(Duration::from_millis(10));
         }
-        if let Ok(mut child) = self.child.lock() {
+        if !exited && let Ok(mut child) = self.child.lock() {
             let _ = child.kill();
             let _ = child.wait();
+        }
+        if let Some(thread) = self.stdout_thread.take() {
+            let _ = thread.join();
+        }
+        if let Some(thread) = self.stderr_thread.take() {
+            let _ = thread.join();
         }
     }
 }
 
 // ── Message framing ───────────────────────────────────────────────────────────
+
+fn write_framed(stdin: &mut ChildStdin, message: &Value) -> Result<()> {
+    let body = message.to_string();
+    let header = format!("Content-Length: {}\r\n\r\n", body.len());
+    stdin.write_all(header.as_bytes()).context("Failed to write LSP header")?;
+    stdin.write_all(body.as_bytes()).context("Failed to write LSP body")?;
+    stdin.flush().context("Failed to flush LSP message")
+}
 
 fn read_one_message(reader: &mut impl BufRead) -> Result<Value> {
     // Parse LSP Content-Length headers.

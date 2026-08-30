@@ -1,28 +1,49 @@
-use super::write_shared_message;
+//! Scripted handling for server-initiated JSON-RPC requests.
+
 use anyhow::{Context, Result, anyhow};
 use serde_json::{Map, Value, json};
 use std::collections::VecDeque;
-use std::process::ChildStdin;
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+/// A response that the scripted client should send to a server request.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ScriptedServerResponse {
-    Success { result: Value, delay: Duration },
-    Error { code: i64, message: String, data: Option<Value>, delay: Duration },
+    /// Return a successful JSON-RPC result.
+    Success {
+        /// The JSON-RPC result value.
+        result: Value,
+        /// The delay before writing the response.
+        delay: Duration,
+    },
+    /// Return a JSON-RPC error, optionally including error data.
+    Error {
+        /// The JSON-RPC error code.
+        code: i64,
+        /// The JSON-RPC error message.
+        message: String,
+        /// Optional JSON-RPC error data.
+        data: Option<Value>,
+        /// The delay before writing the response.
+        delay: Duration,
+    },
+    /// Deliberately leave the request unanswered.
     NoResponse,
 }
 
 impl ScriptedServerResponse {
+    /// Create an immediate successful response.
     pub fn success(result: Value) -> Self {
         Self::Success { result, delay: Duration::ZERO }
     }
 
+    /// Create an immediate error response with data.
     pub fn error_with_data(code: i64, message: impl Into<String>, data: Value) -> Self {
         Self::Error { code, message: message.into(), data: Some(data), delay: Duration::ZERO }
     }
 
+    /// Delay this response by the specified duration.
     #[must_use]
     pub fn after(mut self, delay: Duration) -> Self {
         match &mut self {
@@ -57,41 +78,59 @@ impl ScriptedServerResponse {
     }
 }
 
+/// A server-initiated request and the response scripted for its method.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ScriptedServerRequest {
+    /// The JSON-RPC method to match.
     pub method: String,
+    /// The response behavior for matching requests.
     pub response: ScriptedServerResponse,
 }
 
 impl ScriptedServerRequest {
+    /// Create a scripted request entry.
     pub fn new(method: impl Into<String>, response: ScriptedServerResponse) -> Self {
         Self { method: method.into(), response }
     }
 
+    /// Create an immediate successful response entry.
     pub fn success(method: impl Into<String>, result: Value) -> Self {
         Self::new(method, ScriptedServerResponse::success(result))
     }
 
+    /// Create an intentionally unanswered request entry.
     pub fn no_response(method: impl Into<String>) -> Self {
         Self::new(method, ScriptedServerResponse::NoResponse)
     }
 }
 
+/// The observed delivery state of a scripted server request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ServerRequestDelivery {
+    /// No matching script entry was found.
     Unscripted,
+    /// The script intentionally omitted a response.
     IntentionallyPending,
+    /// A response worker has been scheduled but has not finished.
     Scheduled,
+    /// The response was written to the client process.
     Sent,
+    /// The response could not be written.
     Failed(String),
 }
 
+/// A server-initiated request observed by the client.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ObservedServerRequest {
+    /// The exact JSON-RPC request ID.
     pub id: Value,
+    /// The request method.
     pub method: String,
+    /// The request parameters, or null when omitted.
     pub params: Value,
+    /// The response JSON that was scheduled, if any.
     pub scripted_response: Option<Value>,
+    /// The response delivery state.
     pub delivery: ServerRequestDelivery,
 }
 
@@ -107,30 +146,36 @@ struct State {
     observed: Vec<ObservedServerRequest>,
 }
 
-pub struct ServerRequestScript {
+pub(crate) struct ServerRequestScript {
     state: Arc<Mutex<State>>,
-    _dispatcher: std::thread::JoinHandle<()>,
+    response_tx: Arc<Mutex<Option<Sender<(usize, ResponsePlan)>>>>,
+    dispatcher: Option<std::thread::JoinHandle<()>>,
+    workers: Arc<Mutex<Vec<std::thread::JoinHandle<()>>>>,
 }
 
 #[derive(Clone)]
-pub struct ServerRequestObserver {
+pub(crate) struct ServerRequestObserver {
     state: Arc<Mutex<State>>,
-    response_tx: Sender<(usize, ResponsePlan)>,
+    response_tx: Arc<Mutex<Option<Sender<(usize, ResponsePlan)>>>>,
 }
 
 impl ServerRequestScript {
-    pub fn new(
-        stdin: Arc<Mutex<ChildStdin>>,
+    pub(crate) fn new(
+        stdin: Arc<Mutex<Option<std::process::ChildStdin>>>,
         script: Vec<ScriptedServerRequest>,
     ) -> Result<(Self, ServerRequestObserver)> {
         let state = Arc::new(Mutex::new(State { script: script.into(), observed: Vec::new() }));
         let (response_tx, response_rx) = mpsc::channel::<(usize, ResponsePlan)>();
+        let response_tx = Arc::new(Mutex::new(Some(response_tx)));
+        let workers = Arc::new(Mutex::new(Vec::new()));
         let dispatch_state = state.clone();
-        let _dispatcher = std::thread::Builder::new()
+        let dispatch_stdin = stdin.clone();
+        let dispatch_workers = workers.clone();
+        let dispatcher = std::thread::Builder::new()
             .name("ux-scripted-responses".into())
             .spawn(move || {
                 while let Ok((index, plan)) = response_rx.recv() {
-                    let worker_stdin = stdin.clone();
+                    let worker_stdin = dispatch_stdin.clone();
                     let worker_state = dispatch_state.clone();
                     let worker = std::thread::Builder::new()
                         .name(format!("ux-scripted-response-{index}"))
@@ -138,30 +183,49 @@ impl ServerRequestScript {
                             if !plan.delay.is_zero() {
                                 std::thread::sleep(plan.delay);
                             }
-                            let delivery = match write_shared_message(&worker_stdin, &plan.response)
-                            {
-                                Ok(()) => ServerRequestDelivery::Sent,
-                                Err(error) => ServerRequestDelivery::Failed(format!("{error:#}")),
+                            let delivery = match worker_stdin.lock() {
+                                Ok(mut stdin) => match stdin.as_mut() {
+                                    Some(stdin) => match super::write_framed(stdin, &plan.response)
+                                    {
+                                        Ok(()) => ServerRequestDelivery::Sent,
+                                        Err(error) => {
+                                            ServerRequestDelivery::Failed(format!("{error:#}"))
+                                        }
+                                    },
+                                    None => ServerRequestDelivery::Failed(
+                                        "LSP client stdin is already closed".into(),
+                                    ),
+                                },
+                                Err(error) => ServerRequestDelivery::Failed(format!(
+                                    "failed to lock LSP client stdin: {error}"
+                                )),
                             };
                             set_delivery(&worker_state, index, delivery);
                         });
-                    if let Err(error) = worker {
-                        set_delivery(
+                    match worker {
+                        Ok(worker) => {
+                            dispatch_workers
+                                .lock()
+                                .unwrap_or_else(|error| error.into_inner())
+                                .push(worker);
+                        }
+                        Err(error) => set_delivery(
                             &dispatch_state,
                             index,
                             ServerRequestDelivery::Failed(format!(
                                 "failed to spawn response worker: {error}"
                             )),
-                        );
+                        ),
                     }
                 }
             })
             .context("failed to spawn scripted response dispatcher")?;
-        let observer = ServerRequestObserver { state: state.clone(), response_tx };
-        Ok((Self { state, _dispatcher }, observer))
+        let observer =
+            ServerRequestObserver { state: state.clone(), response_tx: response_tx.clone() };
+        Ok((Self { state, response_tx, dispatcher: Some(dispatcher), workers }, observer))
     }
 
-    pub fn wait(&self, timeout: Duration) -> Result<Vec<ObservedServerRequest>> {
+    pub(crate) fn wait(&self, timeout: Duration) -> Result<Vec<ObservedServerRequest>> {
         let deadline = Instant::now() + timeout;
         loop {
             let (remaining, observed) = {
@@ -174,6 +238,7 @@ impl ServerRequestScript {
                 }
                 _ => None,
             }) {
+                self.join_workers()?;
                 return Err(anyhow!("failed to answer {}: {}", failure.0, failure.1));
             }
             let scheduled = observed
@@ -181,6 +246,7 @@ impl ServerRequestScript {
                 .filter(|request| request.delivery == ServerRequestDelivery::Scheduled)
                 .count();
             if remaining == 0 && scheduled == 0 {
+                self.join_workers()?;
                 return Ok(observed);
             }
             if Instant::now() >= deadline {
@@ -193,7 +259,7 @@ impl ServerRequestScript {
         }
     }
 
-    pub fn assert_no_unscripted(&self) -> Result<()> {
+    pub(crate) fn assert_no_unscripted(&self) -> Result<()> {
         let unscripted = self
             .state
             .lock()
@@ -209,10 +275,31 @@ impl ServerRequestScript {
             Err(anyhow!("unscripted server requests: {}", unscripted.join(", ")))
         }
     }
+
+    fn join_workers(&self) -> Result<()> {
+        let workers = self
+            .workers
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .drain(..)
+            .collect::<Vec<_>>();
+        for worker in workers {
+            worker.join().map_err(|_| anyhow!("scripted response worker panicked"))?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn settle(mut self) {
+        self.response_tx.lock().unwrap_or_else(|error| error.into_inner()).take();
+        if let Some(dispatcher) = self.dispatcher.take() {
+            let _ = dispatcher.join();
+        }
+        let _ = self.join_workers();
+    }
 }
 
 impl ServerRequestObserver {
-    pub fn observe(&self, message: &Value) {
+    pub(crate) fn observe(&self, message: &Value) {
         let Some(id) = message.get("id").filter(|id| !id.is_null()).cloned() else {
             return;
         };
@@ -249,14 +336,20 @@ impl ServerRequestObserver {
             });
             (index, plan)
         };
-        if let Some(plan) = plan
-            && self.response_tx.send((index, plan)).is_err()
-        {
-            set_delivery(
-                &self.state,
-                index,
-                ServerRequestDelivery::Failed("response dispatcher stopped".into()),
-            );
+        if let Some(plan) = plan {
+            let send_result = self
+                .response_tx
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .as_ref()
+                .map(|sender| sender.send((index, plan)));
+            if send_result.is_none_or(|result| result.is_err()) {
+                set_delivery(
+                    &self.state,
+                    index,
+                    ServerRequestDelivery::Failed("response dispatcher stopped".into()),
+                );
+            }
         }
     }
 }
