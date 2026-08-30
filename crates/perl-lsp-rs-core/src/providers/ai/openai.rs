@@ -3,6 +3,7 @@
 use super::destination::{ApprovedDestination, credential_may_attach, validate_endpoint};
 use super::prompt::build_fim_prompt;
 use super::rate_limiter::RateLimiter;
+use super::sanitize::sanitize_completion_text;
 use super::sse::SseParser;
 use crate::config::{
     DEFAULT_AI_API_KEY_HEADER, DEFAULT_AI_API_KEY_PREFIX, is_safe_http_header_value_part,
@@ -423,7 +424,15 @@ impl InlineCompletionBackend for OpenAiProvider {
                         let is_final = Self::extract_finish_reason(&event.data)
                             .is_some_and(|r| r == "stop" || r == "length");
 
-                        let control = sink(StreamChunk { text: cumulative.clone(), is_final });
+                        // Strip a Markdown fence wrapper before the candidate
+                        // reaches any consumer (#5049): both the buffered
+                        // `complete` buffer and the streaming sink see only
+                        // sanitized cumulative text, so the parse-safety seam
+                        // judges the actual completion, not its packaging.
+                        let control = sink(StreamChunk {
+                            text: sanitize_completion_text(&cumulative),
+                            is_final,
+                        });
 
                         if control == StreamControl::Stop || is_final {
                             break;
@@ -433,7 +442,10 @@ impl InlineCompletionBackend for OpenAiProvider {
                 Ok(None) => {
                     // Stream ended -- emit final chunk if we have content
                     if !cumulative.is_empty() {
-                        sink(StreamChunk { text: cumulative, is_final: true });
+                        sink(StreamChunk {
+                            text: sanitize_completion_text(&cumulative),
+                            is_final: true,
+                        });
                     }
                     break;
                 }
