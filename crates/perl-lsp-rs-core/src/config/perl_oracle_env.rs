@@ -48,6 +48,24 @@ thread_local! {
     static STARTUP_INC_PROBE_TIMEOUT_OVERRIDE: Cell<Option<Duration>> = const { Cell::new(None) };
 }
 
+/// Restores the previous startup-probe timeout override on drop, including
+/// during unwind, so a panicking or early-returning control cannot leak the
+/// widened deadline onto a reused libtest thread. Same unwind-restoration
+/// contract as `InjectedProbeGuard` in `config::tests`.
+#[cfg(all(not(target_arch = "wasm32"), test))]
+struct StartupIncProbeTimeoutRestorer {
+    previous: Option<Duration>,
+}
+
+#[cfg(all(not(target_arch = "wasm32"), test))]
+impl Drop for StartupIncProbeTimeoutRestorer {
+    fn drop(&mut self) {
+        STARTUP_INC_PROBE_TIMEOUT_OVERRIDE.with(|override_timeout| {
+            override_timeout.set(self.previous);
+        });
+    }
+}
+
 #[cfg(all(not(target_arch = "wasm32"), test))]
 fn effective_startup_inc_probe_timeout() -> Duration {
     STARTUP_INC_PROBE_TIMEOUT_OVERRIDE
@@ -154,15 +172,16 @@ impl PerlOracleEnv {
     ///
     /// The production deadline remains unchanged. The override is scoped to
     /// the current test thread so a slow host cannot make concurrent tests
-    /// silently change their latency contract.
+    /// silently change their latency contract. Restoration is unwind-safe
+    /// (same contract as `InjectedProbeGuard` in `config::tests`): a failed
+    /// control cannot leak the widened deadline onto a reused libtest thread
+    /// and stall later probe tests.
     #[cfg(test)]
     pub(crate) fn with_startup_inc_probe_timeout<T>(timeout: Duration, f: impl FnOnce() -> T) -> T {
-        STARTUP_INC_PROBE_TIMEOUT_OVERRIDE.with(|override_timeout| {
-            let previous = override_timeout.replace(Some(timeout));
-            let result = f();
-            override_timeout.set(previous);
-            result
-        })
+        let previous = STARTUP_INC_PROBE_TIMEOUT_OVERRIDE
+            .with(|override_timeout| override_timeout.replace(Some(timeout)));
+        let _restorer = StartupIncProbeTimeoutRestorer { previous };
+        f()
     }
 
     /// Apply this oracle's environment contract to an existing [`Command`].
