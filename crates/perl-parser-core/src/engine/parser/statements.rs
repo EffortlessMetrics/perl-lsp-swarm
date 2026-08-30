@@ -685,30 +685,35 @@ impl<'a> Parser<'a> {
             }
         }
 
-        // Only report when the leftover token begins a later line.
-        //
-        // Reaching here mid-line means the statement stopped short of its own
-        // end — the parser did not consume a construct it should have. Three
-        // such gaps exist in this repository's own corpus today (`no warnings
-        // qw(...)`, the `x=` repetition-assignment operator, and `method NAME
-        // {...}` in a class body), and reporting a missing `;` for them would
-        // reject valid Perl to describe a defect that is not the user's.
-        //
-        // A statement terminator the *user* omitted separates two statements
-        // written on different lines, which is also the only shape `perl`
-        // itself reports this way. Staying inside that shape trades some
-        // false negatives — `my $x = 1 print "hi";` on one line is missed —
-        // for no false positives, which is the correct direction for a check
-        // that gates a release.
-        if !self.line_break_precedes_current_token() {
-            return Ok(());
-        }
+        // All legal-continuation and known-unsupported boundaries return
+        // above. The remaining token is therefore the production route's
+        // first unconsumed token: classify its boundary explicitly instead of
+        // allowing a clean parse to hide it. The line-break check only chooses
+        // between two already-qualified residual causes; it is not the sole
+        // evidence that a statement stopped.
+        self.record_statement_residual()
+    }
 
-        let location = self.current_position();
+    /// Record the first token left after a statement route stopped.
+    ///
+    /// The structural guards in [`Self::finish_statement_terminator`] have
+    /// already excluded EOF, legal expression continuations, known parser
+    /// boundaries, and heredoc bodies. At this point a same-line token is
+    /// unexpected residue, while a token separated by a newline preserves the
+    /// existing inferred-semicolon contract. Keeping the token start as the
+    /// diagnostic location makes the recovery deterministic and actionable.
+    fn record_statement_residual(&mut self) -> ParseResult<()> {
+        let first_unconsumed_token = self.tokens.peek()?.start();
+        let kind = if self.line_break_precedes_current_token() {
+            RecoveryKind::InferredSemicolon
+        } else {
+            RecoveryKind::UnexpectedSameLineResidue
+        };
+
         self.errors.push(ParseError::Recovered {
             site: RecoverySite::Statement,
-            kind: RecoveryKind::InferredSemicolon,
-            location,
+            kind,
+            location: first_unconsumed_token,
         });
         Ok(())
     }

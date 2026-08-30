@@ -3,6 +3,7 @@
 mod cpan_test_helpers;
 
 use cpan_test_helpers::assert_clean_parse;
+use perl_parser_core::error::{ParseError, RecoveryKind, RecoverySite};
 use perl_parser_core::{Node, NodeKind, Parser};
 
 fn has_recovery_node(node: &Node) -> bool {
@@ -35,14 +36,49 @@ fn assert_non_clean(source: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn assert_same_line_residual_at(source: &str, token: &str) -> Result<(), String> {
+    let output = Parser::new(source).parse_with_recovery();
+    let expected = source
+        .find(token)
+        .ok_or_else(|| format!("test token {token:?} is absent from {source:?}"))?;
+    let locations: Vec<usize> = output
+        .diagnostics
+        .iter()
+        .filter_map(|error| {
+            matches!(
+                error,
+                ParseError::Recovered {
+                    site: RecoverySite::Statement,
+                    kind: RecoveryKind::UnexpectedSameLineResidue,
+                    ..
+                }
+            )
+            .then_some(error)
+            .and_then(|error| match error {
+                ParseError::Recovered { location, .. } => Some(*location),
+                _ => None,
+            })
+        })
+        .collect();
+
+    if locations != [expected] {
+        return Err(format!(
+            "same-line residual must identify exactly the first unconsumed token:\nsource={source:?}\nexpected={expected}\nlocations={locations:?}\ndiagnostics={:?}",
+            output.diagnostics
+        ));
+    }
+    Ok(())
+}
+
 #[test]
 fn invalid_same_line_residue_is_not_clean() -> Result<(), String> {
-    for source in [
-        "use strict; my $x = 1 print \"hi\";",
-        "use strict; my $x = 1; 1 2;",
-        "$value x = 3;",
+    for (source, token) in [
+        ("use strict; my $x = 1 print \"hi\";", "print"),
+        ("use strict; my $x = 1; 1 2;", "2"),
+        ("$value x = 3;", "x ="),
     ] {
         assert_non_clean(source)?;
+        assert_same_line_residual_at(source, token)?;
     }
     Ok(())
 }
@@ -107,7 +143,28 @@ fn valid_class_method_source_does_not_gain_a_false_semicolon_error() -> Result<(
 
 #[test]
 fn cross_line_missing_terminator_remains_non_clean() -> Result<(), String> {
-    assert_non_clean("my $x = 1\nprint \"hi\";")
+    let source = "my $x = 1\nprint \"hi\";";
+    assert_non_clean(source)?;
+    let output = Parser::new(source).parse_with_recovery();
+    let expected = source.find("print").ok_or("missing test token")?;
+    let locations: Vec<usize> = output
+        .diagnostics
+        .iter()
+        .filter_map(|error| match error {
+            ParseError::Recovered {
+                site: RecoverySite::Statement,
+                kind: RecoveryKind::InferredSemicolon,
+                location,
+            } => Some(*location),
+            _ => None,
+        })
+        .collect();
+    if locations != [expected] {
+        return Err(format!(
+            "cross-line recovery changed identity/location: expected [{expected}], got {locations:?}"
+        ));
+    }
+    Ok(())
 }
 
 #[test]
