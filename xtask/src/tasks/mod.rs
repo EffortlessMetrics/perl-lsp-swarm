@@ -136,6 +136,7 @@ pub mod pr_ledger;
 pub mod pre_push_plan;
 pub mod prep_crates_io_launch;
 pub mod product_health_rail_contract;
+pub mod product_health_status;
 pub mod product_identity;
 pub mod product_identity_workspace;
 pub mod protocol_type_substrate_matrix;

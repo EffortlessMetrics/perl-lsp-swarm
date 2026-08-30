@@ -1462,7 +1462,7 @@
     "oxfmt": "0.64.0",
     "oxlint": "1.79.0",
     "oxlint-tsgolint": "7.0.2001",
-    "rolldown": "1.2.4",
+    "rolldown": "1.2.5",
     "source-map": "0.8.0",
     "typescript": "^7.0.2",
     "vscode-tmgrammar-test": "^0.1.3"

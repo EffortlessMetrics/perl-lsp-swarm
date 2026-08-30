@@ -46,3 +46,18 @@ fn test_no_strict_disables() {
     assert!(!state.strict_subs);
     assert!(state.strict_refs);
 }
+
+#[test]
+fn test_decimal_development_version_updates_pragma_state_through_parser() {
+    let source = "use 5.043011;\nmy $value = 1;";
+    let mut parser = Parser::new(source);
+    let ast = must(parser.parse());
+
+    let state = PragmaTracker::final_state(&PragmaTracker::build(&ast));
+
+    assert!(state.strict_vars);
+    assert!(state.strict_subs);
+    assert!(state.strict_refs);
+    assert!(state.warnings);
+    assert!(state.has_feature("signatures"));
+}
