@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12421 |
-| Rust-family files | 3822 |
-| Non-Rust files | 8599 |
-| Allowlisted | 6362 |
+| Total tracked files | 12424 |
+| Rust-family files | 3824 |
+| Non-Rust files | 8600 |
+| Allowlisted | 6363 |
 | Unclassified | 2237 |
 
 ## Non-Rust files by category
@@ -21,7 +21,7 @@
 | generated | 2 |
 | production | 348 |
 | test | 2057 |
-| tooling | 662 |
+| tooling | 663 |
 | unclassified | 2237 |
 
 ## Unclassified files
@@ -3138,6 +3138,7 @@
 | `.spec/10918-emacs-train-graph/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/10918-emacs-train-graph/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/10918-emacs-train-graph/train.manifest.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/11036-lsp-runtime-train-schema/lsp_runtime_train.v1.json` | tooling | `non-rust-spec-tree` | developer-experience |
 | `.spec/11079-pl700-removal-containment/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11079-pl700-removal-containment/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11079-pl700-removal-containment/context.md` | documentation | `non-rust-root-governance-docs` | docs |
