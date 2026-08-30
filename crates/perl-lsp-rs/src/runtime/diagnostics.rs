@@ -184,7 +184,7 @@ impl PullDiagnosticsOrchestrator {
             native_critic_profile,
             native_critic_include,
             native_critic_exclude,
-            accepted_critic_state,
+            accepted_critic_snapshot,
         ) = {
             let cfg = server.config.lock();
             (
@@ -195,7 +195,7 @@ impl PullDiagnosticsOrchestrator {
                 cfg.native_critic_profile.clone(),
                 cfg.native_critic_include.clone(),
                 cfg.native_critic_exclude.clone(),
-                cfg.effective_critic_state(root_key.as_deref()),
+                AcceptedCriticSnapshot::capture(&cfg, root_key.as_deref()),
             )
         };
 
@@ -204,12 +204,10 @@ impl PullDiagnosticsOrchestrator {
         // owning root, so one document cannot be judged current under a policy
         // that has already moved.
         let accepted_state_currentness = {
-            let expected_fingerprint = accepted_critic_state.fingerprint();
+            let accepted_snapshot = accepted_critic_snapshot.clone();
             let config = std::sync::Arc::clone(&server.config);
-            let currentness_root_key = root_key.clone();
             PullAcceptedStateCurrentness::new(std::sync::Arc::new(move || {
-                config.lock().effective_critic_state(currentness_root_key.as_deref()).fingerprint()
-                    == expected_fingerprint
+                accepted_snapshot.is_current(&config.lock())
             }))
         };
 
@@ -268,7 +266,7 @@ impl PullDiagnosticsOrchestrator {
             markup_message_support,
             identity_root_key: root_key,
             facts_generation,
-            accepted_critic_state,
+            accepted_critic_snapshot,
             accepted_state_currentness,
             projection: DiagnosticProjectionFragment {
                 position_encoding: match position_encoding {
@@ -1395,37 +1393,6 @@ impl LspServer {
         let mut items = Vec::new();
         let markup_message_support = self.client_capabilities.lock().markup_message_support;
 
-        // Hoisted accepted-configuration subject values for report identity
-        // composition (#7480). Per-document resolver roots, folder authority
-        // and fact generation are sampled inside the loop below.
-        let (
-            identity_perlcritic_enabled,
-            identity_perlcritic_severity,
-            identity_perlcritic_profile,
-            identity_critic_engine,
-            identity_native_profile,
-            identity_native_include,
-            identity_native_exclude,
-        ) = {
-            let cfg = self.config.lock();
-            (
-                cfg.perlcritic_enabled,
-                cfg.perlcritic_severity,
-                cfg.perlcritic_profile.clone(),
-                cfg.critic_engine,
-                cfg.native_critic_profile.clone(),
-                cfg.native_critic_include.clone(),
-                cfg.native_critic_exclude.clone(),
-            )
-        };
-        let identity_projection = DiagnosticProjectionFragment {
-            position_encoding: match self.client_capabilities.lock().position_encoding {
-                crate::textdoc::PosEnc::Utf8 => PullPositionEncoding::Utf8,
-                crate::textdoc::PosEnc::Utf16 => PullPositionEncoding::Utf16,
-            },
-            markup_messages: markup_message_support,
-        };
-
         // Collect document snapshots without holding lock.
         // Also capture each document's generation Arc and the generation value
         // observed at snapshot time so we can guard against stale results below
@@ -1579,8 +1546,10 @@ impl LspServer {
                 // alike. Nothing Critic-policy-bearing is hoisted outside this
                 // loop any more: hoisting is what let identity describe an older
                 // policy than the rows.
+                let identity_context =
+                    PullDiagnosticsOrchestrator::new().build_context(self, uri_str);
                 let critic_source_identity = critic_source_identity_for(uri_str, *gen_at_snapshot);
-                let accepted_critic = self.capture_accepted_critic(uri_str);
+                let accepted_critic = identity_context.accepted_critic_snapshot.clone();
                 let pending_critic = self.evaluate_native_critic(
                     ast,
                     &doc.text,
@@ -1620,37 +1589,6 @@ impl LspServer {
                     continue;
                 }
 
-                // Complete-subject result identity (#7480): derives the result
-                // ID from the evaluation and projection subject, not from
-                // content alone.
-                let mut identity_context = PullDiagnosticsContext::new();
-                identity_context.perlcritic_enabled = identity_perlcritic_enabled;
-                identity_context.perlcritic_severity = identity_perlcritic_severity.into();
-                identity_context.perlcritic_profile =
-                    identity_perlcritic_profile.clone().filter(|p| !p.trim().is_empty());
-                identity_context.critic_engine = identity_critic_engine;
-                identity_context.native_critic_profile = identity_native_profile.clone();
-                identity_context.native_critic_include = identity_native_include.clone();
-                identity_context.native_critic_exclude = identity_native_exclude.clone();
-                identity_context.include_paths = self
-                    .include_paths_for_doc(uri_str)
-                    .into_iter()
-                    .map(|p| p.to_string_lossy().into_owned())
-                    .collect();
-                identity_context.identity_root_key = self
-                    .folder_for_doc_uri(uri_str)
-                    .and_then(|folder| folder.path.or_else(|| source_path_from_uri(&folder.uri)))
-                    .or_else(|| self.root_path.lock().clone())
-                    .map(|path| path.to_string_lossy().into_owned());
-                #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
-                {
-                    identity_context.facts_generation = workspace_index_tier_enabled
-                        .then(|| self.workspace_index())
-                        .flatten()
-                        .map(|index| index.write_version());
-                }
-                identity_context.projection = identity_projection;
-
                 // The composed identity encodes the critic policy this report
                 // was evaluated under. A run that could not publish leaves the
                 // report incomplete for that policy, and a policy that has since
@@ -1677,7 +1615,7 @@ impl LspServer {
                 let prev_matches = prev_id.as_deref().is_some_and(|prior| {
                     PullReportResultId::from_wire(prior)
                         .is_some_and(|prior| result_id.as_ref() == Some(&prior))
-                });
+                }) && identity_context.accepted_state_currentness.holds();
 
                 // Check if unchanged
                 let mut report = if let Some(prev) = prev_id {
