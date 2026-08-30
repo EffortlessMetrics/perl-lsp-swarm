@@ -2008,8 +2008,9 @@ mod tests {
 
     #[test]
     fn expand_arg_to_names_handles_multibyte_qw_delimiters_without_panic() {
-        // Multi-byte UTF-8 qw delimiters are valid Perl; byte-offset slicing
-        // must not panic or split mid-character (#12731 review).
+        // Byte-boundary safety only: a multi-byte delimiter must neither panic
+        // nor split mid-character. Whether Perl accepts this delimiter is not
+        // claimed here (#12731 review).
         assert_eq!(
             expand_arg_to_names("qw•Base1 Base2•"),
             ["Base1".to_string(), "Base2".to_string()]
@@ -2876,6 +2877,15 @@ has 'status' => (
         let models = build_models(code);
         let model = find_model(&models, "Child").expect("Child model");
         assert_eq!(model.framework, Framework::PlainOO);
+        assert!(model.parents.contains(&"Base1".to_string()), "parents should contain Base1");
+        assert!(model.parents.contains(&"Base2".to_string()), "parents should contain Base2");
+    }
+
+    #[test]
+    fn use_parent_brace_qw_delimiter() {
+        let code = "package Child; use parent qw{Base1 Base2}; 1;";
+        let models = build_models(code);
+        let model = find_model(&models, "Child").expect("Child model");
         assert!(model.parents.contains(&"Base1".to_string()), "parents should contain Base1");
         assert!(model.parents.contains(&"Base2".to_string()), "parents should contain Base2");
     }

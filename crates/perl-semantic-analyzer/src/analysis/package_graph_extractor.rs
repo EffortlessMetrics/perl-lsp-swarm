@@ -330,8 +330,9 @@ mod tests {
 
     #[test]
     fn expand_arg_to_names_handles_multibyte_qw_delimiters_without_panic() {
-        // Multi-byte UTF-8 qw delimiters are valid Perl; byte-offset slicing
-        // must not panic or split mid-character (#12731 review).
+        // Byte-boundary safety only: a multi-byte delimiter must neither panic
+        // nor split mid-character. Whether Perl accepts this delimiter is not
+        // claimed here (#12731 review).
         assert_eq!(
             ExtractorState::expand_arg_to_names("qw•Base1 Base2•"),
             ["Base1".to_string(), "Base2".to_string()]
