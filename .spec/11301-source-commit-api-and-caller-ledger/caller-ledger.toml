@@ -76,6 +76,7 @@ caller_paths = [
   "crates/perl-lsp-rs-core/src/providers/navigation/references_shadow.rs",
   "crates/perl-lsp-rs-core/tests/detect_dead_code_mid_surrogate_position.rs",
   "crates/perl-lsp-rs-core/tests/dynamic_callable_integration_tests.rs",
+  "crates/perl-lsp-rs-core/tests/resolve_at_position_shared_identity_tests.rs",
   "crates/perl-lsp-rs-core/tests/role_conflict_cross_file_wiring_tests.rs",
   "crates/perl-lsp-rs/src/features/workspace_rename.rs",
   "crates/perl-lsp-rs/src/runtime/dispatch/workspace/file_preflight.rs",

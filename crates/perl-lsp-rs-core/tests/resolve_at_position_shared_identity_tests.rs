@@ -124,7 +124,11 @@ fn occurrence(id: u64, anchor_id: u64, entity_id: u64, kind: OccurrenceKind) -> 
 fn indexed() -> WorkspaceIndex {
     let index = WorkspaceIndex::new();
     let uri = Url::parse(URI).expect("fixture uri parses");
-    index.index_file(uri, SHADOWED_LEXICALS.to_owned()).expect("fixture indexes");
+    // The canonical initial-discovery API (#11301), not the `index_file`
+    // compatibility wrapper: this fixture has no live-document generation
+    // semantics, and the caller ledger's owner row for this crate names the
+    // initial API as the successor for exactly this case.
+    index.index_initial_file(uri, SHADOWED_LEXICALS.to_owned()).expect("fixture indexes");
 
     let shard = FileFactShard {
         source_uri: URI.to_owned(),
