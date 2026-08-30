@@ -198,6 +198,7 @@ fn checked_typescript_projection_contains_every_current_literal()
     }
 
     for reason in all_reasons() {
+        every_reason_is_listed_by_all_reasons(reason);
         let name = serde_name(reason)?;
         assert!(
             typescript_declares(&typescript, &name),

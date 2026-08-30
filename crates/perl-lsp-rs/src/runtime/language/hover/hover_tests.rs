@@ -372,6 +372,42 @@ fn require_module_scan_rejects_non_module_suffixes() {
 }
 
 #[test]
+fn module_hover_lookup_boundary_rejects_emoji_for_use_and_require() {
+    use perl_parser::{Node, NodeKind, SourceLocation};
+
+    let unsafe_use = Node::new(
+        NodeKind::Use { module: "Foo::💥".to_string(), args: vec![], has_filter_risk: false },
+        SourceLocation { start: 0, end: 32 },
+    );
+    assert_eq!(LspServer::find_use_module_at_offset(&unsafe_use, 8), None);
+
+    let unsafe_require = "require Foo::💥;\n";
+    let unsafe_require_offset = must_some(unsafe_require.find('💥'));
+    assert_eq!(
+        LspServer::find_require_module_at_offset(unsafe_require, unsafe_require_offset),
+        None
+    );
+
+    let valid_use = Node::new(
+        NodeKind::Use {
+            module: "Δοκιμή::設定".to_string(), args: vec![], has_filter_risk: false
+        },
+        SourceLocation { start: 0, end: 32 },
+    );
+    assert_eq!(
+        LspServer::find_use_module_at_offset(&valid_use, 8).as_deref(),
+        Some("Δοκιμή::設定")
+    );
+
+    let valid_require = "require Δοκιμή::設定;\n";
+    let valid_require_offset = must_some(valid_require.find("Δοκιμή"));
+    assert_eq!(
+        LspServer::find_require_module_at_offset(valid_require, valid_require_offset).as_deref(),
+        Some("Δοκιμή::設定")
+    );
+}
+
+#[test]
 fn require_module_scan_has_explicit_boundary_discriminators() {
     let text = "require Local::Doc;\n";
     let head = must_some(perl_module::parse_module_import_head(text));

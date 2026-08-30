@@ -3124,7 +3124,7 @@ ci-metrics-ratchet:
     cargo run -p xtask -- metrics ratchet-check engineering_health
     cargo run -p xtask -- metrics ratchet-check parser_accuracy
     cargo run -p xtask -- metrics ratchet-check token
-    cargo run -p xtask -- metrics ratchet-check editor_ux
+    cargo run -p xtask -- ux-scorecard --format json --ratchet-check
     @echo "Scorecard ratchet passed"
 
 # Tier C: full suite (nightly, all integration tests)
