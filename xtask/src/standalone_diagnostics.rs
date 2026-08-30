@@ -1541,12 +1541,21 @@ fn stage_state(field: &str, value: &str) -> &'static str {
     }
 }
 
+/// What this transaction did to the current selection.
+///
+/// `current_unknown_after_contradiction` is the honest answer for a
+/// packet-consistency invariant. A packet claiming `selection_committed` while
+/// its product units say otherwise gives no basis for deciding whether the
+/// selection advanced or was preserved, so naming either would identify a
+/// specific installation as current on the strength of a record the projection
+/// has just declared self-contradictory.
 fn current_consequence(side_effect: &str) -> &'static str {
     match side_effect {
         "current_advanced" => "advanced_to_new_candidate",
         "current_restored" => "restored_to_prior_candidate",
         "current_preserved_known_good" => "preserved",
         "current_preserved_but_unproven" => "preserved_but_unproven",
+        "current_unknown_after_contradiction" => "unknown_after_contradiction",
         _ => "unchanged",
     }
 }
@@ -1555,13 +1564,18 @@ fn current_consequence(side_effect: &str) -> &'static str {
 /// establishes one. Verifying or publishing a candidate says nothing about a
 /// prior installation - the input contract permits both with no prior
 /// selection at all - so those outcomes must not manufacture a retained one.
+///
+/// A contradictory packet is the same case for a different reason: the record
+/// cannot support any claim about a retained installation, so it falls to the
+/// default rather than reporting one as retained-but-unproven.
 fn known_good_consequence(side_effect: &str) -> &'static str {
     match side_effect {
         "current_advanced" => "superseded_by_new_current",
         "current_restored" => "restored_as_current",
         "current_preserved_but_unproven" => "retained_but_startup_unproven",
         "current_preserved_known_good" => "retained",
-        // no_side_effect, candidate_published_not_current, residue_present
+        // no_side_effect, candidate_published_not_current, residue_present,
+        // current_unknown_after_contradiction
         _ => "not_established_by_this_transaction",
     }
 }

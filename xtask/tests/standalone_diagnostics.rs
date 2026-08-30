@@ -2203,3 +2203,103 @@ fn a_failed_cleanup_still_outranks_a_pending_user_step() -> TestResult {
     assert_eq!(projected["terminality"], json!("nonterminal_actionable"));
     Ok(())
 }
+
+#[test]
+fn a_contradictory_packet_never_names_a_current_installation() -> TestResult {
+    // The `inv_` family exists because the record contradicts itself. Naming a
+    // specific installation as current — preserved, advanced, or restored —
+    // decides on the strength of a record the projection has just declared
+    // untrustworthy, and "preserved" in particular asserts the *prior*
+    // installation is still current when a committed selection may well have
+    // advanced it. Swept over the whole cross-product so a later invariant row
+    // cannot reintroduce it.
+    let manifest = diagnostics::load_manifest(&repo_root())?;
+    let mut checked = 0usize;
+    for combination in diagnostics::all_combinations() {
+        let projection = diagnostics::project_combination(&manifest, &combination, None)?;
+        let primary = projection
+            .get("primary_reason")
+            .and_then(Value::as_str)
+            .ok_or("missing primary reason")?;
+        if !primary.starts_with("inv_") {
+            continue;
+        }
+        checked += 1;
+        let current = projection
+            .pointer("/consequences/current")
+            .and_then(Value::as_str)
+            .ok_or("missing current consequence")?;
+        assert!(
+            matches!(current, "unknown_after_contradiction" | "unchanged"),
+            "`{primary}` reported current as `{current}` for {combination:?}"
+        );
+        let known_good = projection
+            .pointer("/consequences/known_good")
+            .and_then(Value::as_str)
+            .ok_or("missing known_good consequence")?;
+        assert_eq!(
+            known_good, "not_established_by_this_transaction",
+            "`{primary}` claimed a known-good installation for {combination:?}"
+        );
+        assert_eq!(
+            projection.get("claim_ceiling").and_then(Value::as_str),
+            Some("support_claim_withheld"),
+            "`{primary}` must withhold the support claim for {combination:?}"
+        );
+    }
+    assert!(checked > 0, "no combination reached a packet-consistency invariant");
+    Ok(())
+}
+
+#[test]
+fn a_genuinely_preserved_current_still_reports_preservation() -> TestResult {
+    // Control: `preserved_but_unproven` remains correct where the packet does
+    // establish it, so the invariant fix must not have blanked the honest case.
+    let manifest = diagnostics::load_manifest(&repo_root())?;
+    let projected = diagnostics::project_combination(
+        &manifest,
+        &combination(
+            "install",
+            "failed_preserved_current",
+            "preserved_prior",
+            "completed",
+            "failed",
+            "not_applicable",
+        ),
+        None,
+    )?;
+    assert_eq!(
+        projected["primary_reason"],
+        json!("failed_preserved_current_known_good_startup_failed")
+    );
+    assert_eq!(projected.pointer("/consequences/current"), Some(&json!("preserved_but_unproven")));
+    assert_eq!(
+        projected.pointer("/consequences/known_good"),
+        Some(&json!("retained_but_startup_unproven"))
+    );
+    Ok(())
+}
+
+#[test]
+fn a_genuinely_known_good_current_still_reports_it_retained() -> TestResult {
+    // Second control, on the other preserved variant: a preserved current that
+    // did start must keep both its `preserved` current and its `retained`
+    // known-good.
+    let manifest = diagnostics::load_manifest(&repo_root())?;
+    let projected = diagnostics::project_combination(
+        &manifest,
+        &combination(
+            "install",
+            "failed_preserved_current",
+            "preserved_prior",
+            "completed",
+            "verified",
+            "not_applicable",
+        ),
+        None,
+    )?;
+    assert!(!projected["primary_reason"].as_str().unwrap_or_default().starts_with("inv_"));
+    assert_eq!(projected.pointer("/consequences/current"), Some(&json!("preserved")));
+    assert_eq!(projected.pointer("/consequences/known_good"), Some(&json!("retained")));
+    Ok(())
+}
