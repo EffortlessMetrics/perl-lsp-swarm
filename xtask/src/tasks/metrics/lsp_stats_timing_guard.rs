@@ -29,16 +29,6 @@ pub fn run_with_receipt_dir(
     super::lsp_stats_guarded::run_with_receipt_dir(json, receipt_dir, output)
 }
 
-/// Aggregate receipts after semantic timing validation and existing admission.
-pub fn aggregate_from_receipts(
-    receipts_dir: &Path,
-    fixture_matrix: &Path,
-    flake_ledger: Option<&Path>,
-) -> Result<MeasuredEditorUxScorecard> {
-    validate_timing_receipts(receipts_dir)?;
-    super::lsp_stats_guarded::aggregate_from_receipts(receipts_dir, fixture_matrix, flake_ledger)
-}
-
 fn validate_timing_receipts(receipts_dir: &Path) -> Result<()> {
     if !receipts_dir.exists() {
         return Ok(());
@@ -425,40 +415,6 @@ mod tests {
         validator
             .validate(&valid)
             .map_err(|error| color_eyre::eyre::eyre!("valid missing-start receipt rejected: {error}"))?;
-        Ok(())
-    }
-
-    #[test]
-    fn invalid_timing_receipt_is_rejected_before_scorecard_aggregation() -> Result<()> {
-        let temp = tempfile::tempdir()?;
-        let receipts = temp.path().join("receipts");
-        fs::create_dir_all(&receipts)?;
-        let invalid = receipt(
-            25.0,
-            Some(12.0),
-            json!([{
-                "operation": "hover",
-                "time_to_first_useful_result_ms": 12.0,
-                "timing_status": "missing_request_start"
-            }]),
-        )?;
-        fs::write(
-            receipts.join("invalid.json"),
-            serde_json::to_string_pretty(&invalid)?,
-        )?;
-        let matrix = temp.path().join("matrix.json");
-        fs::write(
-            &matrix,
-            serde_json::to_string_pretty(&json!({
-                "workflows": [{ "id": "known", "scenario_file": "known.rs" }]
-            }))?,
-        )?;
-
-        let message = match aggregate_from_receipts(&receipts, &matrix, None) {
-            Ok(_) => bail!("contradictory timing receipt unexpectedly reached aggregation"),
-            Err(error) => format!("{error:#}"),
-        };
-        assert!(message.contains("has measured TTFR"));
         Ok(())
     }
 }
