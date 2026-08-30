@@ -111,6 +111,20 @@ def update_cardinality_contract() -> None:
         replace_exact(doc, "TokenKind variants: 132", "TokenKind variants: 134")
 
 
+def update_xor_family_contracts() -> None:
+    path = "crates/perl-token/tests/extended_unit_tests.rs"
+    replace_exact(
+        path,
+        "    assert_eq!(compounds.len(), 15);",
+        "    assert_eq!(compounds.len(), 16);",
+    )
+    replace_exact(
+        path,
+        """#[test]\nfn word_xor_has_no_symbolic_counterpart() {\n    // BitwiseXor is ^, WordXor is xor — they're different concepts\n    assert_ne!(TokenKind::WordXor, TokenKind::BitwiseXor);\n}\n""",
+        """#[test]\nfn xor_operator_families_are_distinct() {\n    // `^` is bitwise XOR, `xor` is low-precedence logical XOR, and `^^` is\n    // medium-precedence logical XOR. Their spellings and parser roles must not\n    // collapse into one token identity.\n    let kinds = [TokenKind::BitwiseXor, TokenKind::WordXor, TokenKind::LogicalXor];\n    for (index, kind) in kinds.iter().enumerate() {\n        for other in &kinds[index + 1..] {\n            assert_ne!(kind, other);\n        }\n    }\n}\n""",
+    )
+
+
 def verify_old_cardinality_is_gone() -> None:
     checks = {
         Path("crates/perl-token/src/lib.rs"): (
@@ -122,6 +136,10 @@ def verify_old_cardinality_is_gone() -> None:
             '"LogicalOrAssign",\n            "DefinedOrAssign"',
             '"Or",\n            "Not"',
         ),
+        Path("crates/perl-token/tests/extended_unit_tests.rs"): (
+            "assert_eq!(compounds.len(), 15)",
+            "word_xor_has_no_symbolic_counterpart",
+        ),
         Path("crates/perl-token/README.md"): ("TokenKind variants: 132",),
         Path("crates/perl-token/ROADMAP.md"): ("TokenKind variants: 132",),
     }
@@ -129,12 +147,13 @@ def verify_old_cardinality_is_gone() -> None:
         text = path.read_text()
         for fragment in stale_fragments:
             if fragment in text:
-                raise SystemExit(f"{path}: stale 132-variant contract remains: {fragment!r}")
+                raise SystemExit(f"{path}: stale token contract remains: {fragment!r}")
 
 
 assignment_entries = insert_variant("LogicalOrAssign", "LogicalXorAssign", minimum=2)
 logical_entries = insert_variant("Or", "LogicalXor", minimum=2)
 update_cardinality_contract()
+update_xor_family_contracts()
 verify_old_cardinality_is_gone()
 print(
     "patched token test/public contract: "
