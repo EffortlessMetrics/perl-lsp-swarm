@@ -47,6 +47,7 @@ impl Checkpointable for PerlLexer<'_> {
                     label: pending.label.to_string(),
                     body_start: pending.body_start,
                     allow_indent: pending.allow_indent,
+                    interpolates: pending.interpolates,
                 })
                 .collect(),
             line_start_offset: self.line_start_offset,
@@ -82,6 +83,7 @@ impl Checkpointable for PerlLexer<'_> {
                 label: Arc::from(pending.label.as_str()),
                 body_start: pending.body_start,
                 allow_indent: pending.allow_indent,
+                interpolates: pending.interpolates,
             })
             .collect();
         self.line_start_offset = checkpoint.line_start_offset;
@@ -198,8 +200,12 @@ mod tests {
         lexer.paren_depth = 4;
         lexer.current_pos = Position { byte: 32, line: 3, column: 5 };
         lexer.after_newline = false;
-        lexer.pending_heredocs =
-            vec![HeredocSpec { label: Arc::from("END"), body_start: 48, allow_indent: true }];
+        lexer.pending_heredocs = vec![HeredocSpec {
+            label: Arc::from("END"),
+            body_start: 48,
+            allow_indent: true,
+            interpolates: true,
+        }];
         lexer.line_start_offset = 24;
         lexer.emit_heredoc_body_tokens = true;
         lexer.current_quote_op =

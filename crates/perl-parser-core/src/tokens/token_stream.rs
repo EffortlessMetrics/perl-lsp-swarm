@@ -400,11 +400,13 @@ impl<'a> TokenStream<'a> {
             LexerTokenType::Substitution => TokenKind::Substitution,
             LexerTokenType::Transliteration => TokenKind::Transliteration,
             LexerTokenType::QuoteSingle => TokenKind::QuoteSingle,
-            LexerTokenType::QuoteDouble => TokenKind::QuoteDouble,
+            LexerTokenType::QuoteDouble(_) => TokenKind::QuoteDouble,
             LexerTokenType::QuoteWords => TokenKind::QuoteWords,
             LexerTokenType::QuoteCommand => TokenKind::QuoteCommand,
             LexerTokenType::HeredocStart => TokenKind::HeredocStart,
-            LexerTokenType::HeredocBody(_) => TokenKind::HeredocBody,
+            LexerTokenType::HeredocBody(_) | LexerTokenType::InterpolatedHeredocBody(_) => {
+                TokenKind::HeredocBody
+            }
             LexerTokenType::FormatBody(_) => TokenKind::FormatBody,
             LexerTokenType::Version(_) => TokenKind::VString,
             LexerTokenType::DataMarker(_) => TokenKind::DataMarker,

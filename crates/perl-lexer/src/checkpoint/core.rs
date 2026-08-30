@@ -10,6 +10,9 @@ pub struct PendingHeredocCheckpoint {
     pub body_start: usize,
     /// Whether `<<~` indentation is allowed.
     pub allow_indent: bool,
+    /// Whether the body interpolates (#8779). Part of the replay-safe state:
+    /// a restored checkpoint must keep the body's interpolation disposition.
+    pub interpolates: bool,
 }
 
 /// Replay-safe representation of an in-progress quote-like operator.

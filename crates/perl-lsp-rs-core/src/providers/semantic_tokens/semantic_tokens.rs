@@ -1018,7 +1018,7 @@ pub fn collect_semantic_tokens_controlled(
 
             TokenType::StringLiteral
             | TokenType::QuoteSingle
-            | TokenType::QuoteDouble
+            | TokenType::QuoteDouble(_)
             | TokenType::QuoteWords
             | TokenType::QuoteCommand => "string",
 
@@ -1028,7 +1028,7 @@ pub fn collect_semantic_tokens_controlled(
                 "string"
             }
 
-            TokenType::HeredocBody(_) => {
+            TokenType::HeredocBody(_) | TokenType::InterpolatedHeredocBody(_) => {
                 // Pop the queued injection language for the corresponding heredoc start.
                 // NOTE: The Arc<str> inside HeredocBody is always empty_arc(); the actual
                 // body text must be sliced from the source using tok.start..tok.end.
