@@ -841,10 +841,18 @@ mod tests {
     use crate::model::{
         DebugPosition, DebugScope, DebugStackFrame, DebugVariable, ResolvedBreakpoint,
     };
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 
     #[derive(Default)]
     struct ScriptBackend {
         events: Vec<DebugEvent>,
+        /// Counts real `evaluate` calls that reached the backend.
+        ///
+        /// Shared with the test because the bridge takes ownership of the
+        /// backend. This turns "no debugger command was written" into a direct
+        /// observation instead of an inference from the response (#9573).
+        evaluate_calls: Arc<AtomicUsize>,
     }
 
     impl DebugBackend for ScriptBackend {
@@ -937,6 +945,7 @@ mod tests {
             }])
         }
         fn evaluate(&mut self, p: EvaluateParams) -> BackendResult<EvaluateResult> {
+            self.evaluate_calls.fetch_add(1, AtomicOrdering::SeqCst);
             Ok(EvaluateResult {
                 result: format!("={}", p.expression),
                 type_name: None,
@@ -1144,6 +1153,58 @@ mod tests {
         // Negative control: watch still evaluates against the same live backend.
         let ok = b.dispatch(8, "evaluate", Some(json!({ "expression": "$x", "context": "watch" })));
         assert_eq!(must_some(as_response(&ok[0])?.2)["result"], "=$x");
+        Ok(())
+    }
+
+    /// #9573 same-session receipt: false capability AND zero backend invocation.
+    ///
+    /// One initialized session carries both halves of the claim, which is what
+    /// makes this a receipt rather than two unrelated assertions:
+    ///
+    /// 1. `initialize` advertises `supportsEvaluateForHovers: false`;
+    /// 2. a hover request in that same session is refused;
+    /// 3. the backend recorded **zero** evaluate invocations.
+    ///
+    /// Step 3 upgrades "no debugger command was written" from an inference
+    /// about the response to a direct observation of the backend. The trailing
+    /// `watch` control is what keeps it honest: it drives the counter to 1
+    /// through the same seam, so a counter that never increments (or a bridge
+    /// that stopped delegating entirely) fails instead of reading as success.
+    #[test]
+    fn same_session_hover_is_false_and_never_reaches_the_backend() -> Result<(), String> {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut b = DapPeerBridge::new(Box::new(ScriptBackend {
+            events: Vec::new(),
+            evaluate_calls: Arc::clone(&calls),
+        }));
+
+        let init = b.dispatch(1, "initialize", Some(json!({ "adapterID": "perl" })));
+        let caps = must_some(as_response(&init[0])?.2);
+        assert_eq!(
+            caps["supportsEvaluateForHovers"], false,
+            "the session must advertise hover false"
+        );
+
+        let hover =
+            b.dispatch(2, "evaluate", Some(json!({ "expression": "$x", "context": "hover" })));
+        let (_, ok, body) = as_response(&hover[0])?;
+        assert!(!ok, "hover must be refused in this same session");
+        assert!(body.is_none(), "a refused hover must not carry a result body");
+        assert_eq!(
+            calls.load(AtomicOrdering::SeqCst),
+            0,
+            "a refused hover must reach the backend zero times — no evaluate was delegated"
+        );
+
+        // Control: the counter is live, and ordinary evaluation still delegates.
+        let watch =
+            b.dispatch(3, "evaluate", Some(json!({ "expression": "$x", "context": "watch" })));
+        assert_eq!(must_some(as_response(&watch[0])?.2)["result"], "=$x");
+        assert_eq!(
+            calls.load(AtomicOrdering::SeqCst),
+            1,
+            "watch must still reach the backend, or the zero above proves nothing"
+        );
         Ok(())
     }
 
