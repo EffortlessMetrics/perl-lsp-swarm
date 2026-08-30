@@ -95,6 +95,18 @@
           "axes": {"properties": {"observation": {"enum": ["clean", "failures_observed"]}}}
         }
       }
+    },
+    {
+      "$comment": "Legacy-adapted evidence stays historical. Without this a schema-only consumer would accept a v1 record promoted to a candidate or no-change transition, which the Rust validator rejects.",
+      "if": {
+        "properties": {"origin": {"const": "legacy_adapted"}},
+        "required": ["origin"]
+      },
+      "then": {
+        "properties": {
+          "current_versus_accepted": {"properties": {"transition": {"const": "historical"}}}
+        }
+      }
     }
   ],
   "$defs": {
@@ -249,6 +261,12 @@
           "$comment": "An available rail reports what it covered.",
           "if": {"properties": {"availability": {"const": "available"}}, "required": ["availability"]},
           "then": {"properties": {"files_total": {"type": "integer"}}}
+        },
+        {
+          "$comment": "Counts are both-or-neither: one populated count without the other is a half-reported rail, which the Rust validator rejects as RailCountsIncomplete.",
+          "if": {"properties": {"files_total": {"type": "integer"}}, "required": ["files_total"]},
+          "then": {"properties": {"files_passed": {"type": "integer"}}},
+          "else": {"properties": {"files_passed": {"const": null}}}
         }
       ]
     },

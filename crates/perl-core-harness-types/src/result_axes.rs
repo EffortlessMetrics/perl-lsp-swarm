@@ -973,6 +973,13 @@ pub enum ResultReportViolation {
     },
     /// A complete measurement claimed valid evidence while observing nothing.
     CompleteMeasurementObservedNothing,
+    /// An aggregate claimed support that no rail in the report backs.
+    AggregateSupportWithoutRail {
+        /// The positive support claim.
+        support: SemanticSupport,
+        /// The mechanism it named.
+        mechanism: CorrectnessMechanism,
+    },
     /// Evidence that is not valid cannot serve as current authority.
     EvidenceNotValidForCurrentAuthority {
         /// The evidence axis that disqualifies the report.
@@ -1073,6 +1080,11 @@ impl fmt::Display for ResultReportViolation {
                 f,
                 "the {axis} distribution uses category '{category}', which is not part of that \
                  axis vocabulary"
+            ),
+            Self::AggregateSupportWithoutRail { support, mechanism } => write!(
+                f,
+                "the aggregate claims support '{support}' from mechanism '{mechanism}', but no \
+                 correctness rail in this report ran with that mechanism"
             ),
             Self::CompleteMeasurementObservedNothing => f.write_str(
                 "a complete measurement with valid evidence recorded no observation; \
@@ -1223,6 +1235,9 @@ impl RunAxesReport {
         }
         for file in &self.files {
             require_non_blank("path", &file.path)?;
+            if let Some(bucket) = &file.bucket {
+                require_non_blank("bucket", bucket)?;
+            }
         }
         for invocation in &self.invocations {
             require_non_blank("invocation_identity", &invocation.invocation_identity)?;
@@ -1245,6 +1260,22 @@ impl RunAxesReport {
             // while every axis says nothing was assessed.
             if !self.axes.observation().is_domain_outcome() {
                 return Err(ResultReportViolation::CompleteMeasurementObservedNothing);
+            }
+        }
+        if self.axes.support().is_positive_claim() {
+            // A run-level support claim names the mechanism that produced it, so
+            // some rail must actually have run with that mechanism. Otherwise the
+            // aggregate asserts evidence no rail in the report carries.
+            let mechanism = self.axes.mechanism();
+            let backed = self
+                .correctness_rails
+                .values()
+                .any(|rail| rail.ran() && rail.mechanism == mechanism);
+            if !backed {
+                return Err(ResultReportViolation::AggregateSupportWithoutRail {
+                    support: self.axes.support(),
+                    mechanism,
+                });
             }
         }
         if self.origin == EvidenceOrigin::LegacyAdapted {
@@ -1316,27 +1347,25 @@ impl LegacyAdaptation {
 
     /// Whether the adapted record can satisfy current authority.
     ///
-    /// False whenever any axis is unassessed, which is always true of
-    /// status-only v1 evidence: it carries no admission, support, or mechanism
-    /// fact to promote.
+    /// Always false. A `LegacyAdaptation` is historical evidence by
+    /// construction, so no arrangement of its axes promotes it — deriving this
+    /// from the axes would still let a forged record with every axis filled in
+    /// claim authority it never earned.
     #[must_use]
     pub fn sufficient_for_current_authority(&self) -> bool {
-        self.unavailable_axes().is_empty()
+        false
     }
 
     /// Reject an adapted record being used as current authority.
     ///
     /// # Errors
     ///
-    /// Returns [`ResultReportViolation::LegacyAdaptedRecordClaimsCurrentAuthority`]
+    /// Always returns
+    /// [`ResultReportViolation::LegacyAdaptedRecordClaimsCurrentAuthority`],
     /// naming the axes the historical evidence could not fill.
     pub fn require_current_authority(&self) -> Result<(), ResultReportViolation> {
-        let unavailable = self.unavailable_axes();
-        if unavailable.is_empty() {
-            return Ok(());
-        }
         Err(ResultReportViolation::LegacyAdaptedRecordClaimsCurrentAuthority {
-            unavailable_axes: unavailable,
+            unavailable_axes: self.unavailable_axes(),
         })
     }
 }
@@ -1428,7 +1457,17 @@ mod tests {
                 source_locked_count: 0,
                 downstream_blocking_count: 0,
             },
-            correctness_rails: BTreeMap::new(),
+            correctness_rails: BTreeMap::from([(
+                "eir".to_string(),
+                CorrectnessRailSummary {
+                    mechanism: CorrectnessMechanism::EirExecution,
+                    availability: CompatibilityRailAvailability::Available,
+                    reason: "eir rail ran".to_string(),
+                    evidence_refs: vec!["bundle-1".to_string()],
+                    files_total: Some(4),
+                    files_passed: Some(4),
+                },
+            )]),
             current_versus_accepted: transition,
             files: Vec::new(),
             invocations: Vec::new(),
@@ -1745,6 +1784,40 @@ mod tests {
                 ],
             })
         );
+    }
+
+    /// A `LegacyAdaptation` is historical by construction. Deriving authority
+    /// from its axes still let a forged record with every axis filled in claim
+    /// it, so the refusal must be unconditional.
+    #[test]
+    fn a_fully_assessed_legacy_record_still_cannot_claim_authority()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let forged = LegacyAdaptation {
+            axes: ResultAxes::new(
+                EvidenceValidity::Valid,
+                ObservedOutcome::Clean,
+                CompatibilityAdmission::Implemented,
+                SemanticSupport::General,
+                CorrectnessMechanism::EirExecution,
+            )?,
+            source_schema_version: "perl_core_harness.report.v1".to_string(),
+        };
+        assert!(
+            forged.unavailable_axes().is_empty(),
+            "this fixture is only meaningful while every axis is assessed"
+        );
+        assert!(!forged.sufficient_for_current_authority());
+        assert!(
+            forged.require_current_authority().is_err(),
+            "legacy evidence is historical however complete its axes look"
+        );
+
+        // The same forgery through deserialization.
+        let decoded: LegacyAdaptation = serde_json::from_str(
+            r#"{"axes":{"evidence":"valid","observation":"clean","admission":"implemented","support":"general","mechanism":"eir_execution"},"source_schema_version":"perl_core_harness.report.v1"}"#,
+        )?;
+        assert!(decoded.require_current_authority().is_err());
+        Ok(())
     }
 
     #[test]
@@ -2404,6 +2477,57 @@ mod tests {
             SchemaAgreement::Same,
         ));
 
+        let mut legacy_promoted = valid_report()?;
+        legacy_promoted.origin = EvidenceOrigin::LegacyAdapted;
+        fixtures.push((
+            "legacy-adapted record carrying a non-historical transition",
+            serde_json::to_value(legacy_promoted)?,
+            false,
+            SchemaAgreement::Same,
+        ));
+
+        let mut half_counts = valid_report()?;
+        half_counts.correctness_rails.insert(
+            "eir".to_string(),
+            CorrectnessRailSummary {
+                mechanism: CorrectnessMechanism::EirExecution,
+                availability: CompatibilityRailAvailability::Partial,
+                reason: "partial rail".to_string(),
+                evidence_refs: vec!["bundle-1".to_string()],
+                files_total: Some(4),
+                files_passed: None,
+            },
+        );
+        fixtures.push((
+            "rail reporting one count without the other",
+            serde_json::to_value(half_counts)?,
+            false,
+            SchemaAgreement::Same,
+        ));
+
+        let mut blank_bucket = valid_report()?;
+        blank_bucket.files.push(FileModeAxesResult {
+            path: "base/ok.t".to_string(),
+            mode: HarnessMode::Compile,
+            axes: blank_bucket.axes,
+            bucket: Some("   ".to_string()),
+        });
+        fixtures.push((
+            "file carrying a blank failure bucket",
+            serde_json::to_value(blank_bucket)?,
+            false,
+            SchemaAgreement::Same,
+        ));
+
+        let mut unbacked_support = valid_report()?;
+        unbacked_support.correctness_rails = BTreeMap::new();
+        fixtures.push((
+            "aggregate support with no rail backing its mechanism",
+            serde_json::to_value(unbacked_support)?,
+            false,
+            SchemaAgreement::RustStricter,
+        ));
+
         let mut blank_boundary = valid_report()?;
         blank_boundary.claim_boundary = "   ".to_string();
         fixtures.push((
@@ -2611,9 +2735,10 @@ mod tests {
             CorrectnessMechanism::EirExecution,
         )?;
         let mut candidate = report(observed, no_change());
-        candidate
-            .correctness_rails
-            .insert("eir".to_string(), CorrectnessRailSummary::unavailable("not provisioned"));
+        candidate.correctness_rails.insert(
+            "curated_gold".to_string(),
+            CorrectnessRailSummary::unavailable("no curated gold rail"),
+        );
         candidate.files.push(FileModeAxesResult {
             path: "base/ok.t".to_string(),
             mode: HarnessMode::Compile,
