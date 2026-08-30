@@ -16,7 +16,7 @@ use super::{
 /// it reads as if the parser is proven against a NodeKind population, when the
 /// audit answers the narrower question of which canonical variant names were
 /// observed at all in the repo-owned corpus it parsed (#13742).
-const NODEKIND_ROW_LABEL: &str = "Broad-corpus NodeKind reachability";
+const NODEKIND_ROW_LABEL: &str = "Project-corpus NodeKind reachability";
 
 /// Bounded meaning of that row's numerator.
 ///
@@ -24,7 +24,25 @@ const NODEKIND_ROW_LABEL: &str = "Broad-corpus NodeKind reachability";
 /// old label allowed: authored parser-accuracy gold (#11583) and an occurrence
 /// or case/file count. Kept separate from [`format_nodekind_gap_note`] so the
 /// actionable/recovery-only gap detail stays intact behind it.
-const NODEKIND_SCOPE_NOTE: &str = "unique canonical NodeKind variants observed at least once in the current project-corpus audit; not parser-accuracy gold and not an occurrence count";
+///
+/// Deliberately carries no freshness adjective. This row is an unversioned
+/// static projection: it is regenerated after merge, not on read, so any
+/// committed instance is a snapshot that ages. Calling the population "current"
+/// would assert exactly the kind of unearned evidence this note exists to
+/// prevent. Binding a receipt timestamp and freshness rule to the row belongs to
+/// the receipt-backed status cutover in #11588.
+///
+/// It also names the UTF-8 exclusion, because the extraction population is a
+/// strict subset of the counted one. Corpus discovery reads bytes and decodes
+/// with `String::from_utf8_lossy` (`corpus_audit/corpus.rs`), so a non-UTF-8
+/// fixture such as `test_corpus/legacy_encoding.pl` is parsed and counted; but
+/// `extract_nodekinds_from_content` (`corpus_audit/nodekind_analysis.rs`) reads
+/// through `fs::read_to_string` and silently yields no kinds when decoding
+/// fails. A variant reachable only from such a file is therefore absent from the
+/// numerator while the file is present in the population. Reconciling the two
+/// read paths would move the metric's value and belongs to #7044's evidence
+/// model; naming the boundary keeps this row honest in the meantime.
+const NODEKIND_SCOPE_NOTE: &str = "unique canonical NodeKind variants observed at least once in the broad project-corpus audit this row reports; extraction skips files that do not decode as UTF-8; not parser-accuracy gold and not an occurrence count";
 
 pub(super) fn generate_parser_status(metrics: &ParserMetrics, original: &str) -> Result<String> {
     let system_row = metrics.system_receipt.as_ref().map_or_else(

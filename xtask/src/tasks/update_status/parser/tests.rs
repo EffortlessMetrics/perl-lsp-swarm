@@ -175,7 +175,7 @@ fn test_parser_nodekind_row_renders() -> Result<()> {
 /// committed row's numbers stay owned by `corpus_audit` and the post-merge
 /// regeneration. Reading a committed value out of this fixture would be wrong.
 #[test]
-fn test_parser_nodekind_row_is_named_and_bounded_as_broad_corpus_reachability() -> Result<()> {
+fn test_parser_nodekind_row_is_named_and_bounded_as_project_corpus_reachability() -> Result<()> {
     let summary = super::super::super::corpus_audit::StatusSummary {
         total_files: 91,
         ok_files: 91,
@@ -206,8 +206,8 @@ fn test_parser_nodekind_row_is_named_and_bounded_as_broad_corpus_reachability() 
     let row = nodekind_row_from(&metrics)?;
 
     assert!(
-        row.contains("**Broad-corpus NodeKind reachability**"),
-        "row must name the metric as broad-corpus reachability, got: {row}"
+        row.contains("**Project-corpus NodeKind reachability**"),
+        "row must name the population in the label itself, got: {row}"
     );
     assert!(
         !row.contains("Node-kind coverage"),
@@ -218,8 +218,8 @@ fn test_parser_nodekind_row_is_named_and_bounded_as_broad_corpus_reachability() 
         "note must identify the numerator as unique observed variants, got: {row}"
     );
     assert!(
-        row.contains("current project-corpus audit"),
-        "note must name the project-corpus audit as the population, got: {row}"
+        row.contains("broad project-corpus audit this row reports"),
+        "note must name the population without asserting freshness, got: {row}"
     );
     assert!(
         row.contains("not parser-accuracy gold"),
@@ -228,6 +228,16 @@ fn test_parser_nodekind_row_is_named_and_bounded_as_broad_corpus_reachability() 
     assert!(
         row.contains("not an occurrence count"),
         "note must exclude occurrence-count meaning, got: {row}"
+    );
+
+    // The extraction population is a strict subset of the counted one: corpus
+    // discovery decodes with `from_utf8_lossy` and counts a non-UTF-8 fixture,
+    // while `extract_nodekinds_from_content` reads through `read_to_string` and
+    // silently contributes no kinds. The note must name that boundary rather
+    // than imply the numerator saw every counted file.
+    assert!(
+        row.contains("extraction skips files that do not decode as UTF-8"),
+        "note must name the UTF-8 extraction boundary, got: {row}"
     );
 
     // The row is an unversioned static projection regenerated after merge, so
@@ -275,7 +285,7 @@ fn test_parser_nodekind_row_unverified_states_scope_without_a_ratio() -> Result<
     let row = nodekind_row_from(&metrics)?;
 
     assert!(
-        row.contains("**Broad-corpus NodeKind reachability**"),
+        row.contains("**Project-corpus NodeKind reachability**"),
         "unverified row must use the same bounded label, got: {row}"
     );
     assert!(
@@ -286,6 +296,14 @@ fn test_parser_nodekind_row_unverified_states_scope_without_a_ratio() -> Result<
     assert!(
         row.contains("live repo scan unavailable"),
         "unverified row must keep its existing reason, got: {row}"
+    );
+    assert!(
+        !row.contains("current"),
+        "unverified row must not assert freshness either, got: {row}"
+    );
+    assert!(
+        row.contains("extraction skips files that do not decode as UTF-8"),
+        "unverified row must name the same extraction boundary, got: {row}"
     );
     assert!(
         row.contains("not parser-accuracy gold and not an occurrence count"),
