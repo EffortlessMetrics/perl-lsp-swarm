@@ -880,12 +880,10 @@ const CALL_SITE_LEDGER: &[CallSiteLedgerEntry] = &[
         expected_count: 1,
         effect_id: "compat.legacy-generic-callback-helper",
     },
-    // #13183 (e64c033936) moved the open-path free-function invocation
-    // inside the serialized indexing-transition block (`let committed = {
-    // ... }`), so its result binding no longer sits on the call expression.
-    // The mutation site is unchanged and stays ratcheted on its own argument
-    // shape; this row keeps its coverage registered instead of silently
-    // narrowing the ratchet.
+    // #13183 moved the open-path free-function invocation inside a scoped
+    // `indexing_transition_lock` block, so its binding no longer sits on the
+    // call expression. The mutation site is unchanged and stays ratcheted on
+    // its own argument shape.
     CallSiteLedgerEntry {
         file: "crates/perl-lsp-rs/src/runtime/text_sync.rs",
         needle: "commit_parse_effect_if_current(\n                                &documents_for_task,",
@@ -1049,8 +1047,12 @@ const CALL_SITE_LEDGER: &[CallSiteLedgerEntry] = &[
         effect_id: "parser-state.accepted-snapshot-publication",
     },
     // Workspace-task Coordinator lifecycle routes (async didOpen/scan paths).
-    // Counts re-registered after #13183 (e64c033936) consolidated the
-    // didChange/didOpen file-event paths into the serialized transition flow.
+    // #13183 deleted the bespoke `handle_did_create_files` indexing arm and
+    // routed explicit creates through `process_file_watcher_uri_immediate`,
+    // which carries its own notify_change/notify_parse_complete pair. That
+    // removed exactly one pair from this file (7 -> 6 and 6 -> 5); the
+    // lifecycle invariant is unchanged, since the surviving shared path still
+    // decrements exactly once on every exit.
     CallSiteLedgerEntry {
         file: "crates/perl-lsp-rs/src/runtime/workspace.rs",
         needle: ".notify_parse_complete(",
