@@ -672,6 +672,11 @@ fn verify_vocabulary(schema: &Value) -> Result<()> {
         &["$defs", "environment", "properties", "denied", "items", "enum"],
         ["PERL5LIB", "PERL5OPT", "local::lib"],
     )?;
+    ensure_nested_enum_matches(
+        schema,
+        &["$defs", "ambient_input", "properties", "authority", "enum"],
+        ["reported_only", "declared_input", "unbounded"],
+    )?;
     Ok(())
 }
 
@@ -1611,19 +1616,28 @@ fn normalize(receipt: &OracleReceiptV1) -> Result<CompilerProfileObservationV1> 
 fn subject_identity(receipt: &OracleReceiptV1) -> Result<CandidateSubjectIdentity> {
     let mut subject = CandidateSubjectIdentity::not_proven();
 
+    // Every variable field below is written quoted and escaped (`{:?}`), and
+    // every variable list through canonical JSON. The schema allows arbitrary
+    // strings in these fields, so plain delimiter joining would let one value
+    // impersonate a delimiter: an extractor named `a` at version `b@c` and one
+    // named `a@b` at version `c` both flatten to `a@b@c`, and two different
+    // environment key sets can join to one comma-separated string. A dimension
+    // that claims exact, non-transferable identity cannot be built out of an
+    // encoding that lets distinct receipts collide.
+
     // A redacted private fixture never exposes its bounded source identity; a
     // public test fixture may name it.  The class travels with the identity so
     // a private subject can never be read as a public one.
     let fixture_source = match receipt.source_snapshot.path_class {
         PathClass::PublicTestFixture => {
-            format!(" source={}", receipt.source_snapshot.fixture_source)
+            format!(" source={:?}", receipt.source_snapshot.fixture_source)
         }
         PathClass::RedactedPrivateFixture => String::new(),
     };
     subject.bind(
         SubjectDimensionKind::FixtureSeries,
         SubjectDimension::proven(&format!(
-            "fixture={} class={} path_class={} content_hash={}{fixture_source}",
+            "fixture={:?} class={} path_class={} content_hash={:?}{fixture_source}",
             receipt.fixture_id,
             receipt.comparison_class.tag(),
             receipt.source_snapshot.path_class.tag(),
@@ -1634,7 +1648,7 @@ fn subject_identity(receipt: &OracleReceiptV1) -> Result<CandidateSubjectIdentit
     subject.bind(
         SubjectDimensionKind::Toolchain,
         SubjectDimension::proven(&format!(
-            "rust_extractor={}@{} perl={}@{} invocation={}",
+            "rust_extractor={:?}@{:?} perl={}@{:?} invocation={}",
             receipt.rust_extractor.name,
             receipt.rust_extractor.version,
             receipt.perl_oracle.interpreter.tag(),
@@ -1651,13 +1665,14 @@ fn subject_identity(receipt: &OracleReceiptV1) -> Result<CandidateSubjectIdentit
     // give.
     // Order is preserved for the same reason it is in the canonical receipt
     // text: include-path precedence is semantic, so the digest must separate
-    // two orderings of the same roots.
+    // two orderings of the same roots. The preimage is canonical JSON rather
+    // than a separator join, so no root value can forge the separator.
     let roots = &receipt.module_path_authority.declared_roots;
-    let roots_digest = sha256_hex(roots.join("\u{1f}").as_bytes());
+    let roots_digest = sha256_hex(canonical_list(roots)?.as_bytes());
     subject.bind(
         SubjectDimensionKind::CompilerPolicy,
         SubjectDimension::proven(&format!(
-            "fact_model={} module_path_authority={} declared_roots={} roots_digest={} \
+            "fact_model={:?} module_path_authority={} declared_roots={} roots_digest={} \
              ambient_roots_reported={}",
             receipt.rust_extractor.fact_model,
             receipt.module_path_authority.authority.tag(),
@@ -1675,13 +1690,20 @@ fn subject_identity(receipt: &OracleReceiptV1) -> Result<CandidateSubjectIdentit
         SubjectDimensionKind::ProducerConfiguration,
         SubjectDimension::proven(&format!(
             "source_schema={SOURCE_SCHEMA_TAG} adapter={ADAPTER_ID}@{ADAPTER_VERSION} \
-             denied_env=[{}] declared_env=[{}]",
-            denied.join(","),
-            declared.join(","),
+             denied_env={} declared_env={}",
+            canonical_list(&denied)?,
+            canonical_list(&declared)?,
         ))?,
     );
 
     Ok(subject)
+}
+
+/// Canonical JSON rendering of a string list, used wherever a list enters
+/// subject text or a digest preimage. Unlike a separator join, no element can
+/// forge the separator.
+fn canonical_list<T: serde::Serialize>(values: &[T]) -> Result<String> {
+    serde_json::to_string(values).context("subject list must render as canonical JSON")
 }
 
 /// Adapt one `oracle_receipt.v1` document into a normalized observation.

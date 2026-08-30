@@ -563,6 +563,68 @@ mod compiler_operating_profile_oracle_adapter {
     }
 
     #[test]
+    fn falsifier_02_no_field_value_can_forge_a_subject_delimiter() -> Result<()> {
+        // The schema allows arbitrary strings in these fields, so a subject
+        // built by plain delimiter joining would let one value impersonate the
+        // delimiter and two distinct receipts collide on a dimension that
+        // claims exact, non-transferable identity.
+        let split_left = agreeing_with(|receipt| {
+            receipt["rust_extractor"]["name"] = json!("a");
+            receipt["rust_extractor"]["version"] = json!("b@c");
+        });
+        let split_right = agreeing_with(|receipt| {
+            receipt["rust_extractor"]["name"] = json!("a@b");
+            receipt["rust_extractor"]["version"] = json!("c");
+        });
+        assert_ne!(
+            dimension(&adapt(&split_left)?, SubjectDimensionKind::Toolchain),
+            dimension(&adapt(&split_right)?, SubjectDimensionKind::Toolchain),
+            "an extractor value must not be able to move the @ delimiter"
+        );
+        assert_ne!(identity(&split_left)?, identity(&split_right)?);
+
+        // The same hazard on a list: a comma inside one environment key.
+        let comma_left = agreeing_with(|receipt| {
+            receipt["environment"]["declared"] = json!(["A,B"]);
+        });
+        let comma_right = agreeing_with(|receipt| {
+            receipt["environment"]["declared"] = json!(["A", "B"]);
+        });
+        assert_ne!(
+            dimension(&adapt(&comma_left)?, SubjectDimensionKind::ProducerConfiguration),
+            dimension(&adapt(&comma_right)?, SubjectDimensionKind::ProducerConfiguration)
+        );
+
+        // And on the digest preimage: a root containing the unit separator.
+        let sep_left = agreeing_with(|receipt| {
+            receipt["module_path_authority"]["declared_roots"] = json!(["a\u{1f}b"]);
+        });
+        let sep_right = agreeing_with(|receipt| {
+            receipt["module_path_authority"]["declared_roots"] = json!(["a", "b"]);
+        });
+        assert_ne!(
+            dimension(&adapt(&sep_left)?, SubjectDimensionKind::CompilerPolicy),
+            dimension(&adapt(&sep_right)?, SubjectDimensionKind::CompilerPolicy),
+            "a root value must not be able to forge the digest separator"
+        );
+
+        // The fixture dimension composes three variable fields the same way.
+        let fixture_left = agreeing_with(|receipt| {
+            receipt["fixture_id"] = json!("x");
+            receipt["source_snapshot"]["content_hash"] = json!("y z");
+        });
+        let fixture_right = agreeing_with(|receipt| {
+            receipt["fixture_id"] = json!("x\" content_hash=\"y");
+            receipt["source_snapshot"]["content_hash"] = json!("z");
+        });
+        assert_ne!(
+            dimension(&adapt(&fixture_left)?, SubjectDimensionKind::FixtureSeries),
+            dimension(&adapt(&fixture_right)?, SubjectDimensionKind::FixtureSeries)
+        );
+        Ok(())
+    }
+
+    #[test]
     fn falsifier_09c_agreement_over_disagreeing_facts_is_not_agreement() -> Result<()> {
         // Both sides name `fact-isa-1`, so the row is two-sided — but the two
         // observations differ in a field that has its own mismatch class, so
@@ -1231,6 +1293,16 @@ mod compiler_operating_profile_oracle_adapter {
 
         assert_eq!(observation.work, WorkDisposition::ZeroWork);
         assert_eq!(observation.disposition, ObservationDisposition::NotProven);
+
+        // The axes are independent by design, but zero work cannot also read
+        // as complete here: the schema requires at least one comparison, and
+        // with no facts every comparison ranges over an unnamed one, so the
+        // denominator never closes.
+        assert!(
+            matches!(observation.completeness, CompletenessDisposition::Partial { .. }),
+            "zero fact evidence cannot be complete: {:?}",
+            observation.completeness
+        );
         Ok(())
     }
 
