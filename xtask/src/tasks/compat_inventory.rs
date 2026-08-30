@@ -245,6 +245,9 @@ pub struct Discovered {
     /// Crate source files the digest is computed over.
     pub source_files: Vec<String>,
     pub source_digest: String,
+    /// `path::fn_name` for every function declared in the crate's own tracked
+    /// Rust sources. A ledger `fixture` must name one of these.
+    pub fixtures: BTreeSet<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -357,8 +360,41 @@ pub fn discover(root: &Path) -> Result<Discovered> {
     references.sort();
 
     let (source_files, source_digest) = digest_sources(root, &tracked)?;
+    let fixtures = discover_fixtures(root, &tracked)?;
 
-    Ok(Discovered { exports, cargo_dependents, references, source_files, source_digest })
+    Ok(Discovered { exports, cargo_dependents, references, source_files, source_digest, fixtures })
+}
+
+/// `path::fn_name` for every function declared in the crate's own tracked Rust
+/// sources.
+///
+/// Requiring a ledger fixture to resolve here does two things: it catches a
+/// fixture naming a test that no longer exists, and it keeps proof inside the
+/// digested source, so a renamed test cannot quietly rot a
+/// `unique_and_required` row without also invalidating the audit.
+fn discover_fixtures(root: &Path, tracked: &[String]) -> Result<BTreeSet<String>> {
+    let prefix = format!("{CRATE_DIR}/");
+    let mut out = BTreeSet::new();
+    for path in tracked.iter().filter(|p| p.starts_with(&prefix) && p.ends_with(".rs")) {
+        let text = fs::read_to_string(root.join(path))
+            .wrap_err_with(|| format!("failed to read {path}"))?;
+        for line in text.lines() {
+            let trimmed = line.trim();
+            let Some(rest) = trimmed
+                .strip_prefix("fn ")
+                .or_else(|| trimmed.strip_prefix("pub fn "))
+                .or_else(|| trimmed.strip_prefix("async fn "))
+            else {
+                continue;
+            };
+            let name: String =
+                rest.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+            if !name.is_empty() {
+                out.insert(format!("{path}::{name}"));
+            }
+        }
+    }
+    Ok(out)
 }
 
 fn tracked_files(root: &Path) -> Result<Vec<String>> {
@@ -374,10 +410,115 @@ fn tracked_files(root: &Path) -> Result<Vec<String>> {
     Ok(text.lines().map(str::to_string).collect())
 }
 
+/// Blank comments and literal contents, one output line per input line, so
+/// that brace depth reflects real nesting and no item is read out of prose.
+///
+/// This is load-bearing rather than cosmetic. `convert.rs` contains
+/// `"{".repeat(5000)` inside its test module; counting that brace would leave
+/// the scanner permanently one level deep, and every item declared after it
+/// would be silently dropped from discovery — a fail-open hole in a task whose
+/// entire job is to fail closed.
+fn code_lines(source: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut in_block_comment = false;
+    let mut in_string = false;
+    let mut raw_hashes: Option<usize> = None;
+
+    for line in source.lines() {
+        let chars: Vec<char> = line.chars().collect();
+        let mut sanitized = String::with_capacity(line.len());
+        let mut i = 0;
+
+        while i < chars.len() {
+            let c = chars[i];
+
+            if in_block_comment {
+                if c == '*' && chars.get(i + 1) == Some(&'/') {
+                    in_block_comment = false;
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+                continue;
+            }
+            if let Some(hashes) = raw_hashes {
+                let closes = c == '"'
+                    && chars[i + 1..].iter().take(hashes).filter(|c| **c == '#').count() == hashes;
+                if closes {
+                    raw_hashes = None;
+                    i += 1 + hashes;
+                } else {
+                    i += 1;
+                }
+                continue;
+            }
+            if in_string {
+                if c == '\\' {
+                    i += 2;
+                } else {
+                    if c == '"' {
+                        in_string = false;
+                    }
+                    i += 1;
+                }
+                continue;
+            }
+            if c == '/' && chars.get(i + 1) == Some(&'/') {
+                break;
+            }
+            if c == '/' && chars.get(i + 1) == Some(&'*') {
+                in_block_comment = true;
+                i += 2;
+                continue;
+            }
+            if c == 'r' && matches!(chars.get(i + 1), Some('"') | Some('#')) {
+                let mut j = i + 1;
+                let mut hashes = 0;
+                while chars.get(j) == Some(&'#') {
+                    hashes += 1;
+                    j += 1;
+                }
+                if chars.get(j) == Some(&'"') {
+                    raw_hashes = Some(hashes);
+                    i = j + 1;
+                    continue;
+                }
+            }
+            if c == '"' {
+                in_string = true;
+                i += 1;
+                continue;
+            }
+            if c == '\'' {
+                // A char literal, or a lifetime like `'tree` that must not be
+                // mistaken for one.
+                if chars.get(i + 1) == Some(&'\\') {
+                    let mut j = i + 2;
+                    while j < chars.len() && chars[j] != '\'' {
+                        j += 1;
+                    }
+                    i = j + 1;
+                    continue;
+                }
+                if chars.get(i + 2) == Some(&'\'') {
+                    i += 3;
+                    continue;
+                }
+                i += 1;
+                continue;
+            }
+            sanitized.push(c);
+            i += 1;
+        }
+        out.push(sanitized);
+    }
+    out
+}
+
 /// `pub mod <name>;` declarations in `lib.rs`.
 pub fn parse_modules(lib_rs: &str) -> Vec<String> {
     let mut modules = Vec::new();
-    for line in lib_rs.lines() {
+    for line in code_lines(lib_rs) {
         let line = line.trim();
         if let Some(rest) = line.strip_prefix("pub mod ")
             && let Some(name) = rest.strip_suffix(';')
@@ -396,7 +537,7 @@ pub fn parse_modules(lib_rs: &str) -> Vec<String> {
 /// `pub use <module>::{A, B};` and `pub use <module>::A;` in `lib.rs`.
 pub fn parse_root_reexports(lib_rs: &str) -> Vec<(String, String)> {
     let mut out = Vec::new();
-    for line in lib_rs.lines() {
+    for line in code_lines(lib_rs) {
         let line = line.trim();
         let Some(rest) = line.strip_prefix("pub use ") else {
             continue;
@@ -436,12 +577,8 @@ pub fn parse_public_items(source: &str) -> Vec<(String, SymbolKind)> {
     let mut depth: i32 = 0;
     let mut impl_type: Option<String> = None;
 
-    for line in source.lines() {
+    for line in code_lines(source) {
         let trimmed = line.trim();
-        // Comment lines cannot declare an item, and their braces are prose.
-        if trimmed.starts_with("//") {
-            continue;
-        }
 
         if depth == 0 && (trimmed.starts_with("impl ") || trimmed.starts_with("impl<")) {
             impl_type = inherent_impl_type(trimmed);
@@ -530,24 +667,67 @@ fn discover_cargo_dependents(root: &Path, tracked: &[String]) -> Result<Vec<Carg
         }
         let text = fs::read_to_string(root.join(path))
             .wrap_err_with(|| format!("failed to read {path}"))?;
-        let Ok(value) = text.parse::<toml::Value>() else {
-            continue;
+        // `toml::Value`'s `FromStr` parses a single value, not a document, so
+        // a manifest must be read as a `Table` or every parse fails and the
+        // dependent population is silently empty.
+        let value = match toml::from_str::<toml::Table>(&text) {
+            Ok(table) => toml::Value::Table(table),
+            // A manifest that names the package but will not parse could be
+            // declaring the dependency, and skipping it would let a false
+            // `unused` through. One that never names the package cannot
+            // declare it under any spelling — a renamed entry still writes
+            // `package = "perl-tree-sitter-compat"` — so an unrelated
+            // malformed fixture manifest is safe to pass over.
+            Err(error) if text.contains(PACKAGE) => {
+                bail!(
+                    "failed to parse {path}, which names {PACKAGE}; the Cargo dependent \
+                     population must be complete: {error}"
+                );
+            }
+            Err(_) => continue,
         };
-        for (table, kind) in [
-            ("dependencies", "normal"),
-            ("dev-dependencies", "dev"),
-            ("build-dependencies", "build"),
-        ] {
-            if value
-                .get(table)
-                .and_then(toml::Value::as_table)
-                .is_some_and(|t| t.contains_key(PACKAGE))
-            {
-                out.push(CargoDependent { manifest: path.clone(), kind: kind.to_string() });
+
+        collect_dependents(&value, path, None, &mut out);
+        // `[target.'cfg(...)'.dependencies]` links just as hard as a plain one.
+        if let Some(targets) = value.get("target").and_then(toml::Value::as_table) {
+            for (cfg, target_value) in targets {
+                collect_dependents(target_value, path, Some(cfg), &mut out);
             }
         }
     }
     Ok(out)
+}
+
+/// Record every dependency table in `value` that resolves to the package.
+///
+/// A dependency resolves either by table key or through a renamed entry —
+/// `tsc = { package = "perl-tree-sitter-compat" }` links against the crate
+/// while never spelling its name as a key, so matching keys alone would report
+/// zero dependents and wrongly permit `unused`.
+fn collect_dependents(
+    value: &toml::Value,
+    manifest: &str,
+    cfg: Option<&str>,
+    out: &mut Vec<CargoDependent>,
+) {
+    for (table, kind) in
+        [("dependencies", "normal"), ("dev-dependencies", "dev"), ("build-dependencies", "build")]
+    {
+        let Some(entries) = value.get(table).and_then(toml::Value::as_table) else {
+            continue;
+        };
+        let declared = entries.iter().any(|(key, entry)| {
+            key.as_str() == PACKAGE
+                || entry.get("package").and_then(toml::Value::as_str) == Some(PACKAGE)
+        });
+        if declared {
+            let kind = match cfg {
+                Some(cfg) => format!("{kind} (target `{cfg}`)"),
+                None => kind.to_string(),
+            };
+            out.push(CargoDependent { manifest: manifest.to_string(), kind });
+        }
+    }
 }
 
 /// Tracked files mentioning the package name or its Rust module path.
@@ -640,6 +820,7 @@ pub fn validate(ledger: &Ledger, discovered: &Discovered) -> Result<()> {
     validate_symbols(ledger, discovered)?;
     validate_consumers(ledger, discovered)?;
     validate_row_requirements(ledger)?;
+    validate_fixtures_resolve(ledger, discovered)?;
     validate_unused_needs_cargo_evidence(ledger, discovered)?;
     validate_no_unknown_rows(ledger)?;
     Ok(())
@@ -797,6 +978,26 @@ fn require(
     };
     if missing {
         bail!("{label} is `{}` and must record `{field}`", disposition.as_str());
+    }
+    Ok(())
+}
+
+/// A named fixture must resolve to a real function in the crate's digested
+/// source. A non-empty string is not proof that the proof exists.
+fn validate_fixtures_resolve(ledger: &Ledger, discovered: &Discovered) -> Result<()> {
+    for row in &ledger.symbols {
+        let Some(fixture) = &row.fixture else {
+            continue;
+        };
+        if !discovered.fixtures.contains(fixture) {
+            bail!(
+                "symbol `{}::{}` names fixture `{fixture}`, which does not resolve to a function \
+                 in {PACKAGE}'s tracked sources. A fixture must be `<tracked path>::<fn name>` \
+                 inside {CRATE_DIR}, so that renaming the proof also invalidates this audit.",
+                row.module,
+                row.name
+            );
+        }
     }
     Ok(())
 }
@@ -1098,7 +1299,26 @@ mod tests {
             references: references.into_iter().map(str::to_string).collect(),
             source_files: vec![format!("{CRATE_DIR}/src/lib.rs")],
             source_digest: "sha256:abc".to_string(),
+            fixtures: [format!("{CRATE_DIR}/tests/adapter.rs::t")].into_iter().collect(),
         }
+    }
+
+    fn dependents_of(text: &str) -> Vec<CargoDependent> {
+        let Ok(table) = toml::from_str::<toml::Table>(text) else {
+            return vec![CargoDependent {
+                manifest: "UNPARSEABLE TEST MANIFEST".to_string(),
+                kind: "invalid".to_string(),
+            }];
+        };
+        let value = toml::Value::Table(table);
+        let mut out = Vec::new();
+        collect_dependents(&value, "crates/other/Cargo.toml", None, &mut out);
+        if let Some(targets) = value.get("target").and_then(toml::Value::as_table) {
+            for (cfg, target_value) in targets {
+                collect_dependents(target_value, "crates/other/Cargo.toml", Some(cfg), &mut out);
+            }
+        }
+        out
     }
 
     fn export(name: &str) -> Export {
@@ -1169,6 +1389,65 @@ mod tests {
 
         let err = validate(&l, &d).unwrap_err().to_string();
         assert!(err.contains("must be recorded as `cargo_dependency`"), "unexpected error: {err}");
+        Ok(())
+    }
+
+    /// A renamed dependency links against the crate without ever spelling its
+    /// name as a table key. Matching keys alone would report zero dependents
+    /// and wrongly permit `unused`.
+    #[test]
+    fn a_renamed_dependency_is_discovered() -> TestResult {
+        let found = dependents_of(
+            "[dependencies]\ntsc = { package = \"perl-tree-sitter-compat\", version = \"0.17.0\" }\n",
+        );
+        assert_eq!(found.len(), 1, "renamed dependency must be found: {found:?}");
+        assert_eq!(found[0].kind, "normal");
+        Ok(())
+    }
+
+    /// A target-gated dependency links just as hard as a plain one.
+    #[test]
+    fn a_target_specific_dependency_is_discovered() -> TestResult {
+        let found = dependents_of(
+            "[target.'cfg(unix)'.dev-dependencies]\nperl-tree-sitter-compat = { workspace = true }\n",
+        );
+        assert_eq!(found.len(), 1, "target dependency must be found: {found:?}");
+        assert!(found[0].kind.contains("dev"), "kind should record dev: {}", found[0].kind);
+        assert!(
+            found[0].kind.contains("cfg(unix)"),
+            "kind should record the cfg: {}",
+            found[0].kind
+        );
+        Ok(())
+    }
+
+    /// The control for the two above: an unrelated crate, and an alias whose
+    /// `package` is something else, must not be counted. Without this a
+    /// permissive matcher would look correct.
+    #[test]
+    fn an_unrelated_dependency_is_not_discovered() -> TestResult {
+        let found = dependents_of(concat!(
+            "[dependencies]\n",
+            "serde = \"1\"\n",
+            "tsc = { package = \"perl-tree-sitter-other\" }\n",
+            "\n",
+            "[target.'cfg(windows)'.dependencies]\n",
+            "winapi = \"0.3\"\n",
+        ));
+        assert!(found.is_empty(), "unrelated dependencies must not count: {found:?}");
+        Ok(())
+    }
+
+    /// A fixture string that names nothing is not proof that proof exists.
+    #[test]
+    fn an_unresolvable_fixture_fails_closed() -> TestResult {
+        let mut row = symbol("parse_to_tree", Disposition::UniqueAndRequired);
+        row.fixture = Some(format!("{CRATE_DIR}/tests/adapter.rs::renamed_away"));
+        let l = ledger(vec![row], vec![]);
+        let d = discovered(vec![export("parse_to_tree")], vec![]);
+
+        let err = validate(&l, &d).unwrap_err().to_string();
+        assert!(err.contains("does not resolve to a function"), "unexpected error: {err}");
         Ok(())
     }
 
@@ -1440,6 +1719,59 @@ pub fn pascal_to_snake(name: &str) -> String {
                 ("pascal_to_snake".to_string(), SymbolKind::Function),
             ],
             "methods must be qualified and free functions must stay free"
+        );
+        Ok(())
+    }
+
+    /// The real failure this scanner exists to prevent: `convert.rs` holds
+    /// `"{".repeat(5000)` inside its test module. Counting that brace leaves
+    /// the scanner one level deep forever, so every later item is dropped from
+    /// discovery and never needs a ledger row — the inventory would silently
+    /// stop covering the crate.
+    #[test]
+    fn an_unbalanced_brace_in_a_literal_does_not_hide_later_items() -> TestResult {
+        let source = concat!(
+            "#[cfg(test)]\n",
+            "mod tests {\n",
+            "    #[test]\n",
+            "    fn rejects_deep_nesting() {\n",
+            "        let bad = \"{\".repeat(5000);\n",
+            "        let brace = '{';\n",
+            "        let raw = r#\"} } {\"#;\n",
+            "    }\n",
+            "}\n",
+            "\n",
+            "pub fn declared_after_the_test_module() -> u32 {\n",
+            "    42\n",
+            "}\n",
+        );
+        assert_eq!(
+            parse_public_items(source),
+            vec![("declared_after_the_test_module".to_string(), SymbolKind::Function)],
+            "an item after an unbalanced literal brace must still be discovered"
+        );
+        Ok(())
+    }
+
+    /// A lifetime is not a char literal; treating `'tree` as one would swallow
+    /// the rest of the signature.
+    #[test]
+    fn a_lifetime_is_not_mistaken_for_a_char_literal() -> TestResult {
+        let source = concat!(
+            "pub struct Node<'tree> {\n",
+            "    inner: &'tree str,\n",
+            "}\n",
+            "\n",
+            "pub fn borrow<'tree>(node: &'tree Node<'tree>) -> &'tree str {\n",
+            "    node.inner\n",
+            "}\n",
+        );
+        assert_eq!(
+            parse_public_items(source),
+            vec![
+                ("Node".to_string(), SymbolKind::Struct),
+                ("borrow".to_string(), SymbolKind::Function),
+            ]
         );
         Ok(())
     }

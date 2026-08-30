@@ -30,6 +30,18 @@
 # On `unused`: the crate currently has zero Cargo dependents, which is what
 # permits that disposition at all. A text search could not establish it, because
 # a manifest can declare a dependency that no `use` line ever names.
+#
+# Discovery boundary: rows are derived from `pub fn` / `pub struct` / `pub enum`
+# declarations and inherent `pub fn` methods. Trait implementations are public
+# behaviour but are not separate rows, because a trait impl has no declaration
+# of its own to disposition. The crate has two — `Display` and
+# `std::error::Error` on `TreeError` — and they are recorded on that type's row
+# so the migration owner still sees them.
+#
+# A row's disposition is about the BEHAVIOUR, not only the symbol. A symbol may
+# be obsolete as an authority while the behaviour it produces is still required
+# by another row; `pascal_to_snake` is exactly that case and carries a migration
+# dependency despite being `unique_but_invalid_or_obsolete`.
 
 schema_version = "tree_sitter_compat_inventory.v1"
 package = "perl-tree-sitter-compat"
@@ -56,7 +68,7 @@ canonical_owner = "#8790"
 fixture = "crates/perl-tree-sitter-compat/tests/adapter.rs::parse_failures_at_different_offsets_differ_by_native_diagnostic"
 migration_dependency = "#8889"
 removal_condition = "Retires when #8790 projects parser-evidence-backed error/missing/recovery state and #8889 moves the offset/kind mapping onto it."
-note = "Maps native ParseError to a compat parse failure carrying offset and kind. No other crate projects native parse failure into a Tree-sitter-shaped error."
+note = "Maps native ParseError to a compat parse failure carrying offset and kind. No other crate projects native parse failure into a Tree-sitter-shaped error. Its Display and std::error::Error impls migrate with it: they are public behaviour (pinned by convert.rs::tree_error_displays_readably) that this inventory records here rather than as separate rows, because discovery covers declarations, not trait impls — see the boundary note at the head of this file."
 
 [[symbols]]
 name = "parse_to_tree"
@@ -78,7 +90,7 @@ canonical_owner = "#8751"
 fixture = "crates/perl-tree-sitter-compat/tests/adapter.rs::nodes_carry_byte_and_point_ranges"
 migration_dependency = "#8889"
 removal_condition = "Retires when #8751 owns native-AST-to-compat-node construction and #8926 geometry supplies the byte/point ranges."
-note = "Named by docs/explanation/TREE_SITTER_COMPATIBILITY.md as part of the current Tier-A surface. Converts one native AST node, carrying byte offsets and UTF-8 points."
+note = "Named by docs/explanation/TREE_SITTER_COMPATIBILITY.md as part of the current Tier-A surface. Converts one native AST node, carrying byte offsets and UTF-8 points. The fixture exercises it transitively: adapter.rs never imports to_ts_node, but parse_to_tree reaches it for every node, and nodes_carry_byte_and_point_ranges asserts the ranges it produces."
 
 [[symbols]]
 name = "Highlight"
@@ -147,16 +159,18 @@ name = "TsNode::descendant_count"
 module = "node"
 kind = "method"
 disposition = "unused"
-note = "Unique to this crate — tree-sitter-perl-rs has no descendant_count — but no consumer links against it, no test in tests/adapter.rs exercises it, and no documented Tier-A claim names it. Incidental API; it retires with the crate. If #8803 later needs a subtree size it should derive one from the canonical tree rather than port this."
+note = "Unique to this crate — tree-sitter-perl-rs has no descendant_count — but no consumer links against it and no documented Tier-A claim names it. It does have a crate-local unit test (node.rs::descendant_count_walks_the_subtree), which retires with the crate; what it lacks is a consumer and a product claim, not coverage. Incidental API. If #8803 later needs a subtree size it should derive one from the canonical tree rather than port this."
 
 [[symbols]]
 name = "TsPoint"
 module = "node"
 kind = "struct"
-disposition = "already_equivalent"
+disposition = "unique_and_required"
 canonical_owner = "#9526"
-removal_condition = "Retires when #9526 becomes the single Tree-sitter byte/Point/range authority; tree-sitter-perl-rs::Point already carries the same zero-based row/UTF-8-column pair today."
-note = "tree-sitter-perl-rs/src/lib.rs:83 declares Point { row, column } with identical zero-based UTF-8 column semantics; only the integer width differs (u32 here, usize there)."
+fixture = "crates/perl-tree-sitter-compat/tests/adapter.rs::serializes_to_json"
+migration_dependency = "#8889"
+removal_condition = "Retires when #9526 becomes the single Tree-sitter byte/Point/range authority AND that authority carries a serializable point type. Deleting this before then breaks TsNode's derived Serialize."
+note = "The row/UTF-8-column semantics match tree-sitter-perl-rs::Point (src/lib.rs:83), but the shape is not already provided: that crate has no serde dependency at all, and its Point is #[non_exhaustive], so it is neither Serialize nor externally constructible. TsPoint is a field type of TsNode, whose derived Serialize — pinned by serializes_to_json — requires it. Same reasoning as the TsNode row; recording this as already_equivalent would let #8890 delete a serializable point type nothing replaces."
 
 [[symbols]]
 name = "pascal_to_snake"
@@ -164,8 +178,10 @@ module = "node"
 kind = "function"
 disposition = "unique_but_invalid_or_obsolete"
 canonical_owner = "#8708"
-removal_condition = "Retires when #8708 generates the closed node/field metadata registry. It must not be carried across: a name transform cannot be the node-kind authority."
-note = "Derives tree-sitter node-kind names from native NodeKind spelling. The crate's own CLAUDE.md flags this as the seam most likely to silently diverge from real grammars when upstream variants are added, which is precisely why #8708 replaces the heuristic with a generated registry instead of adopting it."
+fixture = "crates/perl-tree-sitter-compat/tests/adapter.rs::sexp_round_trips_a_realistic_snippet"
+migration_dependency = "#8889"
+removal_condition = "The implementation must not be carried across — a name transform cannot be the node-kind authority — but the naming behaviour is load-bearing and must not be dropped with it. #8708's generated registry has to produce the kind names first; only then may #8889 repoint to_ts_node at it and #8890 delete this function."
+note = "Derives tree-sitter node-kind names from native NodeKind spelling. The crate's own CLAUDE.md flags this as the seam most likely to silently diverge from real grammars when upstream variants are added, which is precisely why #8708 supersedes the heuristic rather than adopting it. Obsolete as an authority, but not free-standing: convert.rs:92 sets TsNode.kind from it, so the snake_case names pinned by sexp_round_trips_a_realistic_snippet are this function's output. It therefore carries a migration dependency despite being obsolete — deleting it without the registry replacement would silently change required to_ts_node behaviour."
 
 [[symbols]]
 name = "to_sexp"
@@ -183,7 +199,7 @@ name = "to_sexp_pretty"
 module = "sexp"
 kind = "function"
 disposition = "unused"
-note = "Indented variant of to_sexp. No consumer links against it, no test in tests/adapter.rs exercises it, and the documented Tier-A surface names only to_sexp. Incidental debug convenience; it retires with the crate."
+note = "Indented variant of to_sexp. No consumer links against it and the documented Tier-A surface (TREE_SITTER_COMPATIBILITY.md) names only to_sexp. It has a crate-local unit test (sexp.rs::pretty_indents_children) that retires with the crate, and the crate README does advertise it alongside to_sexp — that README claim is inside the crate being removed and is not a Tier-A product claim, so it does not make the function required. Incidental debug convenience."
 
 # ---------------------------------------------------------------------------
 # References
