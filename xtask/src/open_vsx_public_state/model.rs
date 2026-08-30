@@ -87,6 +87,9 @@ pub(crate) struct Transport {
     pub(crate) response_bytes: Option<u64>,
     pub(crate) truncated: bool,
     pub(crate) error_kind: Option<ErrorKind>,
+    /// Wall-clock duration of the attempt, so the declared timeout budget is
+    /// evidenced rather than asserted.
+    pub(crate) elapsed_ms: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
@@ -255,6 +258,7 @@ pub(crate) struct CellResult {
     pub(crate) response_bytes: Option<u64>,
     pub(crate) truncated: bool,
     pub(crate) error_kind: Option<&'static str>,
+    pub(crate) elapsed_ms: Option<u64>,
     pub(crate) identity_match: Option<bool>,
     /// Version rows this surface published, where it publishes any. Kept per
     /// surface so the metadata record and the versions endpoint stay separate

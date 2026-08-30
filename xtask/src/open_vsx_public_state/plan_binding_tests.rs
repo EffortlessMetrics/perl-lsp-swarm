@@ -56,6 +56,7 @@ const PERMITTED_OBSERVATION_PROPERTIES: &[&str] = &[
     "response_bytes",
     "truncated",
     "error_kind",
+    "elapsed_ms",
     "matched_identity",
     "namespace_present",
     "identity_matches",

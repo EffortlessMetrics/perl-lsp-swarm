@@ -196,7 +196,8 @@
         "redirects",
         "response_bytes",
         "truncated",
-        "error_kind"
+        "error_kind",
+        "elapsed_ms"
       ],
       "properties": {
         "url": {
@@ -262,6 +263,18 @@
                 "schema_drift",
                 "parse_error"
               ]
+            }
+          ]
+        },
+        "elapsed_ms": {
+          "description": "Wall-clock duration of the attempt in milliseconds. Required whenever a request was actually made, so the declared timeout budget is evidenced by the record rather than taken on faith like the byte and redirect budgets already are not.",
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "integer",
+              "minimum": 0
             }
           ]
         }

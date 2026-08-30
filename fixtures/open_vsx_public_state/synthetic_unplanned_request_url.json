@@ -30,7 +30,8 @@
         "redirects": 0,
         "response_bytes": 8192,
         "truncated": false,
-        "error_kind": null
+        "error_kind": null,
+        "elapsed_ms": 180
       }
     },
     "search": {
@@ -42,7 +43,8 @@
         "redirects": 0,
         "response_bytes": 2048,
         "truncated": false,
-        "error_kind": null
+        "error_kind": null,
+        "elapsed_ms": 180
       },
       "matched_identity": true
     },
@@ -55,7 +57,8 @@
         "redirects": 0,
         "response_bytes": 512,
         "truncated": false,
-        "error_kind": null
+        "error_kind": null,
+        "elapsed_ms": 180
       },
       "namespace_present": true
     },
@@ -68,7 +71,8 @@
         "redirects": 0,
         "response_bytes": 4096,
         "truncated": false,
-        "error_kind": null
+        "error_kind": null,
+        "elapsed_ms": 180
       },
       "identity_matches": true,
       "versions": [
@@ -84,7 +88,8 @@
         "redirects": 0,
         "response_bytes": 1024,
         "truncated": false,
-        "error_kind": null
+        "error_kind": null,
+        "elapsed_ms": 180
       },
       "versions": [
         "0.17.0"
@@ -99,7 +104,8 @@
         "redirects": 0,
         "response_bytes": 9000000,
         "truncated": false,
-        "error_kind": null
+        "error_kind": null,
+        "elapsed_ms": 4200
       },
       "version": "0.17.0",
       "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1",

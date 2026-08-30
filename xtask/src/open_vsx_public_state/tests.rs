@@ -663,6 +663,56 @@ fn path_and_credential_shaped_references_cannot_cross_the_publication_boundary()
     Ok(())
 }
 
+#[test]
+fn a_package_endpoint_that_yielded_no_identity_is_not_retrievable() -> Result<()> {
+    // `listing_missing_version_retrievable` asserts the package can still be
+    // fetched. A clean 2xx that produced no package identity would otherwise
+    // make that claim beside a null `public_bytes` — the receipt contradicting
+    // its own state.
+    let receipt = receipt_with(LISTING_MISSING, |document| {
+        let file = &mut document["cells"]["versioned_file"];
+        file["version"] = Value::Null;
+        file["sha256"] = Value::Null;
+        file["byte_length"] = Value::Null;
+    })?;
+    expect_state(&receipt, PublicState::ProviderNotProven, "unparsed package response")?;
+    expect_blocker(&receipt, "package_response_not_parsed")?;
+    if receipt.public_bytes.is_some() {
+        bail!("no package identity was parsed, so none may be reported");
+    }
+    Ok(())
+}
+
+#[test]
+fn every_declared_bound_is_evidenced_by_the_record() -> Result<()> {
+    // Bytes and redirects were already checkable from the observation. The
+    // timeout was declared in the plan and then never evidenced, so a consumer
+    // had to take that third bound on faith.
+    let unmeasured = receipt_with(AVAILABLE_EXACT, |document| {
+        document["cells"]["listing"]["transport"]["elapsed_ms"] = Value::Null;
+    })?;
+    expect_state(&unmeasured, PublicState::Invalid, "unmeasured duration")?;
+    expect_blocker(&unmeasured, "unmeasured_duration")?;
+
+    let overran = receipt_with(AVAILABLE_EXACT, |document| {
+        document["cells"]["listing"]["transport"]["elapsed_ms"] = json!(90_000);
+    })?;
+    expect_state(&overran, PublicState::Invalid, "silent timeout overrun")?;
+    expect_blocker(&overran, "timeout_budget_exceeded")?;
+
+    // A reported timeout is an instrument outcome, not a structural defect.
+    let reported = receipt_with(AVAILABLE_EXACT, |document| {
+        let transport = &mut document["cells"]["listing"]["transport"];
+        transport["outcome"] = json!("transport_error");
+        transport["status"] = Value::Null;
+        transport["response_bytes"] = Value::Null;
+        transport["elapsed_ms"] = json!(90_000);
+        transport["error_kind"] = json!("timeout");
+    })?;
+    expect_state(&reported, PublicState::ProviderNotProven, "reported timeout")?;
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Receipt shape
 // ---------------------------------------------------------------------------

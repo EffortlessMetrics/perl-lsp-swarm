@@ -335,7 +335,8 @@
         "truncated",
         "error_kind",
         "identity_match",
-        "versions"
+        "versions",
+        "elapsed_ms"
       ],
       "properties": {
         "cell": {
@@ -420,6 +421,18 @@
               "items": {
                 "$ref": "#/$defs/version_string"
               }
+            }
+          ]
+        },
+        "elapsed_ms": {
+          "description": "Wall-clock duration of the attempt in milliseconds, carried through so a consumer can check the timeout budget the plan declared.",
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "integer",
+              "minimum": 0
             }
           ]
         }

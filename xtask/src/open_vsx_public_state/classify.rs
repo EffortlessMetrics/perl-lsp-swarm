@@ -298,6 +298,37 @@ fn structural_findings(
                 ),
             ));
         }
+        // The plan declares three bounds. Bytes and redirects were already
+        // checkable from the record; the timeout was declared and then never
+        // evidenced, so a consumer had to take that third bound on faith.
+        if matches!(
+            transport.outcome,
+            TransportOutcome::HttpResponse | TransportOutcome::TransportError
+        ) && transport.elapsed_ms.is_none()
+        {
+            findings.push(Blocker::new(
+                "unmeasured_duration",
+                format!(
+                    "{} was attempted without recording how long it took, so its timeout budget \
+                     is unevidenced",
+                    cell.key()
+                ),
+            ));
+        }
+        if let Some(elapsed) = transport.elapsed_ms
+            && elapsed > planned.timeout_ms
+            && transport.error_kind != Some(ErrorKind::Timeout)
+        {
+            findings.push(Blocker::new(
+                "timeout_budget_exceeded",
+                format!(
+                    "{} ran {elapsed}ms past the {}ms budget without reporting a timeout",
+                    cell.key(),
+                    planned.timeout_ms
+                ),
+            ));
+        }
+
         // A 2xx that never reported how much it read cannot evidence a bounded
         // read, and without it the budget check below silently does nothing.
         if transport.outcome == TransportOutcome::HttpResponse
@@ -600,6 +631,28 @@ fn classify_state(
         }
     } else if listing == CellObservation::ProvenAbsent {
         if versioned_file == CellObservation::Present {
+            // The state name asserts the package is retrievable, so it has to be
+            // backed by bytes actually retrieved. A clean 2xx that yielded no
+            // package identity would otherwise produce a receipt claiming
+            // retrievability beside a null `public_bytes`.
+            let Some(bytes) = public_bytes else {
+                blockers.push(Blocker::new(
+                    "package_response_not_parsed",
+                    "the versioned package endpoint responded but no package identity was parsed \
+                     from it, so retrievability is unproven",
+                ));
+                return (PublicState::ProviderNotProven, blockers, limitations);
+            };
+            if subject_version.is_some_and(|subject| subject != bytes.version) {
+                blockers.push(Blocker::new(
+                    "public_version_mismatch",
+                    format!(
+                        "the retrieved package reports version {:?}, not the subject",
+                        bytes.version
+                    ),
+                ));
+                return (PublicState::AvailableIdentityNotProven, blockers, limitations);
+            }
             blockers.push(Blocker::new(
                 "listing_absent_with_retrievable_package",
                 "the gallery listing does not resolve while the versioned package still does",
@@ -696,6 +749,7 @@ fn build_cells(observation: &Observation) -> Vec<CellResult> {
                 response_bytes: transport.response_bytes,
                 truncated: transport.truncated,
                 error_kind: transport.error_kind.map(ErrorKind::key),
+                elapsed_ms: transport.elapsed_ms,
                 identity_match: identity_match(observation, cell),
                 versions: published_versions(observation, cell),
             }
