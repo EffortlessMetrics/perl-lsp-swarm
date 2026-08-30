@@ -7,7 +7,6 @@
 
 use crate::files::{CorpusLayer, CorpusPaths};
 use serde::{Deserialize, Serialize};
-use std::ffi::OsStr;
 use std::fmt;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -306,18 +305,9 @@ impl CorpusTopology {
     pub fn from_paths(paths: &CorpusPaths) -> Result<Self, CorpusTopologyError> {
         let canonical_root = canonical_runtime_root(&paths.root)?;
         let paths = CorpusPaths::from_root(canonical_root.clone());
-        let mut assets = collect_layer_assets(
-            &paths,
-            &paths.test_corpus,
-            CorpusAssetLayer::TestCorpus,
-            classify_test_asset,
-        )?;
-        assets.extend(collect_layer_assets(
-            &paths,
-            &paths.fuzz,
-            CorpusAssetLayer::Fuzz,
-            classify_fuzz_asset,
-        )?);
+        let mut assets =
+            collect_layer_assets(&paths, &paths.test_corpus, CorpusAssetLayer::TestCorpus)?;
+        assets.extend(collect_layer_assets(&paths, &paths.fuzz, CorpusAssetLayer::Fuzz)?);
         assets.sort_by(|left, right| left.id.cmp(&right.id));
 
         let topology = Self { schema_version: CORPUS_TOPOLOGY_SCHEMA_VERSION, assets, root: None };
@@ -425,23 +415,17 @@ fn validate_asset_identity(asset: &CorpusAsset) -> Result<(), CorpusTopologyErro
         });
     }
 
+    let path = Path::new(&asset.relative_path);
     let required_prefix = layer_prefix(asset.layer);
-    if !Path::new(&asset.relative_path).starts_with(required_prefix) {
-        return Err(CorpusTopologyError::LayerPathMismatch {
+    let layer_relative =
+        path.strip_prefix(required_prefix).map_err(|_| CorpusTopologyError::LayerPathMismatch {
             id: asset.id.clone(),
             layer: asset.layer,
             required_prefix,
-        });
-    }
+        })?;
 
-    let path = Path::new(&asset.relative_path);
-    let classified = match asset.layer {
-        CorpusAssetLayer::TestCorpus => classify_test_asset(path),
-        CorpusAssetLayer::Fuzz => classify_fuzz_asset(path),
-    }
-    .ok_or_else(|| CorpusTopologyError::UnclassifiedAssetPath {
-        id: asset.id.clone(),
-        layer: asset.layer,
+    let classified = classify_selected_asset(asset.layer, layer_relative).ok_or_else(|| {
+        CorpusTopologyError::UnclassifiedAssetPath { id: asset.id.clone(), layer: asset.layer }
     })?;
     if classified != asset.kind {
         return Err(CorpusTopologyError::AssetKindMismatch {
@@ -654,7 +638,6 @@ fn collect_layer_assets(
     paths: &CorpusPaths,
     root: &Path,
     layer: CorpusAssetLayer,
-    classify: fn(&Path) -> Option<CorpusAssetKind>,
 ) -> Result<Vec<CorpusAsset>, CorpusTopologyError> {
     match fs::symlink_metadata(root) {
         Ok(metadata) if metadata.file_type().is_symlink() => {
@@ -694,7 +677,7 @@ fn collect_layer_assets(
             })?;
             let path = entry.path();
             let file_name = entry.file_name();
-            if is_ignored_name(&file_name) {
+            if is_ignored_path(Path::new(&file_name)) {
                 continue;
             }
 
@@ -702,7 +685,12 @@ fn collect_layer_assets(
                 path: path.clone(),
                 message: error.to_string(),
             })?;
-            let kind = classify(&path);
+            let layer_relative =
+                path.strip_prefix(root).map_err(|_| CorpusTopologyError::PathOutsideRoot {
+                    path: path.clone(),
+                    root: root.to_path_buf(),
+                })?;
+            let kind = classify_selected_asset(layer, layer_relative);
 
             if file_type.is_symlink() {
                 // Selected assets must fail closed as SymlinkUnsupported before any
@@ -748,8 +736,24 @@ fn collect_layer_assets(
     Ok(assets)
 }
 
-fn is_ignored_name(name: &OsStr) -> bool {
-    name.as_encoded_bytes().first().is_some_and(|byte| *byte == b'.' || *byte == b'_')
+fn is_ignored_path(path: &Path) -> bool {
+    path.components().any(|component| {
+        let Component::Normal(name) = component else {
+            return false;
+        };
+        name.as_encoded_bytes().first().is_some_and(|byte| *byte == b'.' || *byte == b'_')
+    })
+}
+
+fn classify_selected_asset(layer: CorpusAssetLayer, path: &Path) -> Option<CorpusAssetKind> {
+    if is_ignored_path(path) {
+        return None;
+    }
+
+    match layer {
+        CorpusAssetLayer::TestCorpus => classify_test_asset(path),
+        CorpusAssetLayer::Fuzz => classify_fuzz_asset(path),
+    }
 }
 
 fn classify_test_asset(path: &Path) -> Option<CorpusAssetKind> {
@@ -1159,15 +1163,116 @@ mod tests {
     }
 
     #[test]
-    fn validation_preserves_valid_round_trip_identity() -> Result<(), Box<dyn std::error::Error>> {
-        let relative_path = "crates/perl-corpus/fuzz/case.txt";
-        let topology = topology_with(vec![CorpusAsset {
+    fn validation_rejects_test_corpus_kind_mismatch() -> Result<(), Box<dyn std::error::Error>> {
+        let relative_path = "test_corpus/case.pl";
+        let asset = CorpusAsset {
             id: relative_path.to_string(),
-            layer: CorpusAssetLayer::Fuzz,
+            layer: CorpusAssetLayer::TestCorpus,
             kind: CorpusAssetKind::TextFixture,
             relative_path: relative_path.to_string(),
             requirement: AssetRequirement::Required,
-        }]);
+        };
+
+        match topology_with(vec![asset]).validate() {
+            Err(CorpusTopologyError::AssetKindMismatch {
+                id,
+                declared: CorpusAssetKind::TextFixture,
+                classified: CorpusAssetKind::PerlSource,
+            }) if id == relative_path => Ok(()),
+            result => Err(format!(
+                "unexpected validation result for test-corpus kind mismatch: {result:?}"
+            )
+            .into()),
+        }
+    }
+
+    #[test]
+    fn discovery_and_validation_reject_same_ignored_paths() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let cases = [
+            (CorpusAssetLayer::TestCorpus, "test_corpus/.hidden.pl", CorpusAssetKind::PerlSource),
+            (
+                CorpusAssetLayer::Fuzz,
+                "crates/perl-corpus/fuzz/_ignored.txt",
+                CorpusAssetKind::TextFixture,
+            ),
+            (
+                CorpusAssetLayer::TestCorpus,
+                "test_corpus/_ignored/case.pl",
+                CorpusAssetKind::PerlSource,
+            ),
+            (
+                CorpusAssetLayer::Fuzz,
+                "crates/perl-corpus/fuzz/.ignored/case.pl",
+                CorpusAssetKind::PerlSource,
+            ),
+        ];
+        let valid_paths = ["crates/perl-corpus/fuzz/case.txt", "test_corpus/case.pl"];
+        let root = tempfile::tempdir()?;
+        for relative_path in valid_paths
+            .iter()
+            .copied()
+            .chain(cases.iter().map(|(_, relative_path, _)| *relative_path))
+        {
+            let fixture_path = root.path().join(relative_path);
+            let parent = fixture_path
+                .parent()
+                .ok_or_else(|| format!("fixture {relative_path:?} has no parent"))?;
+            fs::create_dir_all(parent)?;
+            fs::write(fixture_path, "my $value = 1;")?;
+        }
+
+        let discovered = topology_from_root(root.path())?;
+        let discovered_ids =
+            discovered.assets.iter().map(|asset| asset.id.as_str()).collect::<Vec<_>>();
+        if discovered_ids != valid_paths {
+            return Err(format!(
+                "discovery must retain only the valid two-layer controls, got {discovered_ids:?}"
+            )
+            .into());
+        }
+
+        for (layer, relative_path, kind) in cases {
+            let asset = CorpusAsset {
+                id: relative_path.to_string(),
+                layer,
+                kind,
+                relative_path: relative_path.to_string(),
+                requirement: AssetRequirement::Required,
+            };
+            match topology_with(vec![asset]).validate() {
+                Err(CorpusTopologyError::UnclassifiedAssetPath { id, layer: rejected_layer })
+                    if id == relative_path && rejected_layer == layer => {}
+                result => {
+                    return Err(format!(
+                        "discovery-excluded path {relative_path:?} must fail validation, got {result:?}"
+                    )
+                    .into());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn validation_preserves_valid_round_trip_identity_for_both_layers()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let topology = topology_with(vec![
+            CorpusAsset {
+                id: "crates/perl-corpus/fuzz/case.txt".to_string(),
+                layer: CorpusAssetLayer::Fuzz,
+                kind: CorpusAssetKind::TextFixture,
+                relative_path: "crates/perl-corpus/fuzz/case.txt".to_string(),
+                requirement: AssetRequirement::Required,
+            },
+            CorpusAsset {
+                id: "test_corpus/case.pl".to_string(),
+                layer: CorpusAssetLayer::TestCorpus,
+                kind: CorpusAssetKind::PerlSource,
+                relative_path: "test_corpus/case.pl".to_string(),
+                requirement: AssetRequirement::Required,
+            },
+        ]);
 
         let payload = serde_json::to_string(&topology)?;
         let loaded = serde_json::from_str::<CorpusTopology>(&payload)?;
