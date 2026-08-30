@@ -350,7 +350,12 @@ impl LspServer {
                     return Ok(Self::inject_hover_range_opt(hv, &hover_range));
                 }
                 #[cfg(feature = "workspace")]
-                HoverExtracted::InheritedMethod(receiver_pkg, method_name, doc_uri) => {
+                HoverExtracted::InheritedMethod(
+                    receiver_pkg,
+                    method_name,
+                    doc_uri,
+                    dynamic_fallback,
+                ) => {
                     if !self.workspace_index_stale_for_document(&doc_uri) {
                         let _ = self.check_index_readiness(IndexReadinessPolicy::WaitBriefly);
                         if let Some(hover_value) =
@@ -358,6 +363,12 @@ impl LspServer {
                         {
                             return Self::inject_hover_range(hover_value, &hover_range);
                         }
+                    }
+                    // The workspace lookup found nothing (or the index is stale).
+                    // Fall back to the same-file dynamic-boundary card rather than
+                    // dropping to generic token hover.
+                    if let Some(hover_value) = dynamic_fallback {
+                        return Self::inject_hover_range(hover_value, &hover_range);
                     }
                 }
                 #[cfg(not(feature = "workspace"))]
@@ -705,15 +716,14 @@ impl LspServer {
                             // Low would then mislabel it. Only DynamicBoundary
                             // means the signature is a handler rather than an
                             // exact definition of the requested method.
-                            let heading = if matches!(
-                                hover_info.provenance,
-                                Some(Provenance::DynamicBoundary)
-                            ) {
+                            let is_dynamic =
+                                matches!(hover_info.provenance, Some(Provenance::DynamicBoundary));
+                            let heading = if is_dynamic {
                                 "**Method (dynamic dispatch)**"
                             } else {
                                 "**Method**"
                             };
-                            return HoverExtracted::Complete(json!({
+                            let card = json!({
                                 "contents": {
                                     "kind": "markdown",
                                     "value": format!(
@@ -723,7 +733,22 @@ impl LspServer {
                                         details
                                     ),
                                 },
-                            }));
+                            });
+                            if is_dynamic {
+                                // The same-file model only sees same-file classes,
+                                // so its AUTOLOAD answer is not authoritative: an
+                                // ancestor in another file may define the method
+                                // exactly, and an exact method outranks AUTOLOAD.
+                                // Defer to the workspace pass, carrying this card
+                                // as the fallback if that finds nothing.
+                                return HoverExtracted::InheritedMethod(
+                                    receiver_pkg,
+                                    method_name,
+                                    uri.to_string(),
+                                    Some(card),
+                                );
+                            }
+                            return HoverExtracted::Complete(card);
                         }
 
                         // No in-file ancestor found — defer to Phase 2 workspace BFS
@@ -731,6 +756,7 @@ impl LspServer {
                             receiver_pkg,
                             method_name,
                             uri.to_string(),
+                            None,
                         );
                     }
                 }
@@ -1699,6 +1725,7 @@ impl LspServer {
 
         // Collect the full resolution order first, receiver included, so the exact
         // and AUTOLOAD passes below both see every package.
+        let universal_pkg = "UNIVERSAL".to_string();
         let mut resolution_order = vec![receiver_pkg.to_string()];
         enqueue_related(receiver_pkg, &mut queue, &visited);
 
@@ -1711,8 +1738,14 @@ impl LspServer {
             resolution_order.push(package_name);
         }
 
-        // Phase 1 — exact method anywhere in the order.
-        for package_name in &resolution_order {
+        // Phase 1 — exact method anywhere in the order, then `UNIVERSAL`.
+        //
+        // Perl permits user-defined `UNIVERSAL::` methods beyond the four builtins
+        // `is_universal_method` knows, and they outrank a class's AUTOLOAD. The
+        // workspace index is the only place such a definition can be seen, so
+        // `UNIVERSAL` is searched here — after the receiver's own ancestors, before
+        // any AUTOLOAD.
+        for package_name in resolution_order.iter().chain(std::iter::once(&universal_pkg)) {
             if let Some(hover) = build_exact_hover(package_name) {
                 return Some(hover);
             }

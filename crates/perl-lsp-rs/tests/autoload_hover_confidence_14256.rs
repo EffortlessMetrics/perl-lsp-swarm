@@ -290,4 +290,58 @@ sub caller_method {
         );
         Ok(())
     }
+
+    /// The same-file analyzer cannot see a parent that lives in another file, so
+    /// its AUTOLOAD answer must not pre-empt the workspace lookup. Here the child
+    /// (with AUTOLOAD) is in the open document and the parent (with the exact
+    /// method) is in a separate file — the case the in-file resolver alone gets
+    /// wrong, because it finds a local AUTOLOAD and stops.
+    #[test]
+    fn local_autoload_does_not_preempt_cross_file_parent_method()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::fs;
+
+        let temp = tempfile::tempdir()?;
+        let workspace = temp.path().join("workspace");
+        let lib_dir = workspace.join("lib");
+        fs::create_dir_all(&lib_dir)?;
+        fs::write(
+            lib_dir.join("FarBase.pm"),
+            "package FarBase;\n\nsub far_method { return 1; }\n\n1;\n",
+        )?;
+
+        // The child, with AUTOLOAD, is defined in the document being hovered.
+        let script = workspace.join("child.pl");
+        let code = "use lib 'lib';\nuse FarBase;\n\n\
+                    package LocalChild;\n\
+                    our @ISA = ('FarBase');\n\n\
+                    sub AUTOLOAD {\n    our $AUTOLOAD;\n    return 0;\n}\n\n\
+                    sub caller_method {\n    my $self = shift;\n    \
+                    $self->far_method();\n    return;\n}\n";
+        fs::write(&script, code)?;
+
+        let workspace_path = workspace.to_str().ok_or("non-UTF-8 workspace path")?;
+        let script_uri =
+            url::Url::from_file_path(&script).map_err(|_| "invalid script file path")?.to_string();
+
+        let server = TestServerBuilder::new().with_workspace(workspace_path).build();
+        server.open_document(&script_uri, code);
+
+        let (line, character) = find_pos(code, "far_method", 13)?;
+        let response = server.get_hover(&script_uri, line, character);
+        println!("LOCAL-AUTOLOAD/CROSS-FILE-PARENT HOVER RESPONSE: {response:#}");
+
+        let content = hover_content(&response)
+            .ok_or("expected hover content for the cross-file parent method")?;
+
+        assert!(
+            !content.contains("dynamic dispatch"),
+            "a local AUTOLOAD must not label an exact cross-file parent method dynamic, got: {content}"
+        );
+        assert!(
+            !content.contains("resolved at runtime"),
+            "an exact cross-file parent method must not claim runtime resolution, got: {content}"
+        );
+        Ok(())
+    }
 }
