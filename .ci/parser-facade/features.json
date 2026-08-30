@@ -41,7 +41,7 @@
       "disposition": "gate",
       "owner": "#2477",
       "target_owner": "#7063",
-      "isolation": "dependencies_only",
+      "isolation": "dependencies_and_source",
       "default": true,
       "exit_condition": "Move LSP compatibility out of the minimal parser surface and retain only bounded migration paths."
     },
