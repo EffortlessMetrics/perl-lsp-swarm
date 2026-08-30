@@ -47,15 +47,6 @@ fn contains_word_operator_with_goto(node: &Node, expected_op: &str) -> bool {
     node.children().into_iter().any(|child| contains_word_operator_with_goto(child, expected_op))
 }
 
-fn word_operator_rhs_is_goto(node: &Node, expected_op: &str) -> bool {
-    if let NodeKind::Binary { op, right, .. } = &node.kind {
-        if op == expected_op && matches!(&right.kind, NodeKind::Goto { .. }) {
-            return true;
-        }
-    }
-    node.children().into_iter().any(|child| word_operator_rhs_is_goto(child, expected_op))
-}
-
 fn is_postfix_goto(node: &Node) -> bool {
     matches!(
         &node.kind,
@@ -66,13 +57,17 @@ fn is_postfix_goto(node: &Node) -> bool {
     )
 }
 
-fn contains_unary_postfix_goto(node: &Node, expected_op: &str) -> bool {
-    if let NodeKind::Unary { op, operand } = &node.kind {
-        if op == expected_op && is_postfix_goto(operand) {
-            return true;
-        }
-    }
-    node.children().into_iter().any(|child| contains_unary_postfix_goto(child, expected_op))
+fn or_rhs_is_unary_postfix_goto(node: &Node, expected_op: &str) -> bool {
+    matches!(
+        &node.kind,
+        NodeKind::Binary { op, right, .. }
+            if op == "or"
+                && matches!(
+                    &right.kind,
+                    NodeKind::Unary { op, operand }
+                        if op == expected_op && is_postfix_goto(operand)
+                )
+    )
 }
 
 fn assert_non_clean(source: &str) -> Result<(), String> {
@@ -339,11 +334,39 @@ fn bare_word_goto_forms_preserve_control_flow_rhs() -> Result<(), String> {
             return Err(format!("real Perl rejected valid bare goto form: {source:?}"));
         }
         let output = Parser::new(source).parse_with_recovery();
+        let has_missing_target_recovery = output.diagnostics.iter().any(|error| {
+            matches!(
+                error,
+                ParseError::Recovered {
+                    site: RecoverySite::InfixRhs,
+                    kind: RecoveryKind::MissingOperand,
+                    ..
+                }
+            )
+        });
+        let missing_target_is_word_operator_rhs = match &output.ast.kind {
+            NodeKind::Program { statements } => matches!(
+                statements.first().map(|statement| &statement.kind),
+                Some(NodeKind::ExpressionStatement { expression })
+                    if matches!(
+                        &expression.kind,
+                        NodeKind::Binary { op, right, .. }
+                            if op == operator
+                                && matches!(
+                                    &right.kind,
+                                    NodeKind::Goto { target, .. }
+                                        if matches!(target.kind, NodeKind::MissingExpression)
+                                )
+                    )
+            ),
+            _ => false,
+        };
         if has_unrecovered_blocking_diagnostic(&output.diagnostics)
-            || !word_operator_rhs_is_goto(&output.ast, operator)
+            || !has_missing_target_recovery
+            || !missing_target_is_word_operator_rhs
         {
             return Err(format!(
-                "bare {operator} goto must preserve a NodeKind::Goto RHS:\nsource={source:?}\ndiagnostics={:?}\nast={}",
+                "bare {operator} goto must recover a MissingExpression Goto RHS with an InfixRhs/MissingOperand marker:\nsource={source:?}\ndiagnostics={:?}\nast={}",
                 output.diagnostics,
                 output.ast.to_sexp()
             ));
@@ -398,7 +421,7 @@ fn unary_goto_postfix_arrow_forms_match_perl_boundaries() -> Result<(), String> 
             NodeKind::FunctionCall { name, args } if name == "print" && !args.is_empty()
         );
         if !first_is_or
-            || !contains_unary_postfix_goto(first_expression, unary_op)
+            || !or_rhs_is_unary_postfix_goto(first_expression, unary_op)
             || !second_is_print
             || contains_goto(first_expression)
         {
