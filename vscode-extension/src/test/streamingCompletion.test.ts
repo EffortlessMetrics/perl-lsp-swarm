@@ -863,6 +863,57 @@ describe('StreamingCompletionController — request identity and cache correctne
     );
   });
 
+  test('a backend failure whose message merely mentions cancelling still revokes', async () => {
+    // The failure is real, but its prose contains the word this arm used to
+    // match on as a bare substring. Classifying it as a cancellation would
+    // settle quietly and strand the partial text on screen.
+    (mockClient.sendRequest as jest.Mock).mockReturnValue(
+      Promise.reject(new Error('upstream provider refused to honour the cancellation handshake')),
+    );
+
+    const provider = getStreamAdapter();
+    const doc = makeMockDoc('file:///a.pl', 1);
+    const pos = makeMockPos(5, 10);
+    showGhostText(provider, doc, pos);
+
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(
+      provider.provideInlineCompletionItems(
+        doc,
+        pos,
+        {} as vscode.InlineCompletionContext,
+        {} as vscode.CancellationToken,
+      ),
+    ).toBeUndefined();
+    expect(vscode.commands.executeCommand as jest.Mock).toHaveBeenCalledWith(
+      'editor.action.inlineSuggest.hide',
+    );
+  });
+
+  test('a structured JSON-RPC cancellation code settles quietly whatever its message', async () => {
+    // A server-initiated cancel our own token knows nothing about, carrying no
+    // recognisable prose. The structured code is the authority.
+    (mockClient.sendRequest as jest.Mock).mockReturnValue(
+      Promise.reject(Object.assign(new Error('request superseded'), { code: -32802 })),
+    );
+
+    const provider = getStreamAdapter();
+    const doc = makeMockDoc('file:///a.pl', 1);
+    const pos = makeMockPos(5, 10);
+    showGhostText(provider, doc, pos);
+
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(vscode.commands.executeCommand as jest.Mock).not.toHaveBeenCalledWith(
+      'editor.action.inlineSuggest.hide',
+    );
+  });
+
   test('a cancelled request settles quietly and stays retryable', async () => {
     (mockClient.sendRequest as jest.Mock).mockReturnValue(Promise.reject(new Error('Canceled')));
 

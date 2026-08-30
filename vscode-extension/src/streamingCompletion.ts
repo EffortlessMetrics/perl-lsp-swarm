@@ -19,20 +19,47 @@ interface StreamReplacementRange {
   end: { line: number; character: number };
 }
 
+/** LSP `RequestCancelled`, and the server-initiated `ServerCancelled`. */
+const LSP_REQUEST_CANCELLED = -32800;
+const LSP_SERVER_CANCELLED = -32802;
+
 /**
  * Whether a rejected request was cancelled rather than genuinely failing.
  *
- * The spellings differ by source: `vscode-jsonrpc` reports "cancelled", VS
- * Code's own `CancellationError` carries "Canceled", and LSP servers commonly
- * send "canceled". Matching one spelling would misclassify the others as real
- * failures and send them down the revoke-and-retrigger path.
+ * Ordered by authority, because misclassifying a real failure as a
+ * cancellation is not symmetric: cancellation settles quietly, so a backend
+ * error mistaken for one leaves its partial ghost text on screen — exactly the
+ * outcome this module exists to prevent.
+ *
+ * 1. The token we handed to `sendRequest`. If it is cancelled, we cancelled
+ *    this request, whatever the transport chose to call the rejection.
+ * 2. A structured JSON-RPC cancellation code, for a server-initiated cancel
+ *    that our token knows nothing about.
+ * 3. Message text, only as a last resort for errors carrying no structured
+ *    signal at all. The spellings differ by source: `vscode-jsonrpc` reports
+ *    "cancelled", VS Code's own `CancellationError` carries "Canceled", and
+ *    LSP servers commonly send "canceled" — so this matches a whole word
+ *    rather than any substring, which would swallow a genuine failure whose
+ *    message merely mentions cancelling something else.
  */
-function isCancellationError(err: unknown): boolean {
+function isCancellationError(err: unknown, token?: vscode.CancellationToken): boolean {
+  if (token?.isCancellationRequested === true) {
+    return true;
+  }
+  if (typeof err !== 'object' || err === null) {
+    return false;
+  }
+  const code = (err as { code?: unknown }).code;
+  if (code === LSP_REQUEST_CANCELLED || code === LSP_SERVER_CANCELLED) {
+    return true;
+  }
   if (!(err instanceof Error)) {
     return false;
   }
-  const message = err.message.toLowerCase();
-  return message.includes('cancel');
+  if (err.name === 'Canceled' || err.name === 'CancellationError' || err.name === 'AbortError') {
+    return true;
+  }
+  return /\bcancell?ed\b/i.test(err.message);
 }
 
 /** Payload sent by the server via $/progress for streaming inline completions. */
@@ -568,7 +595,7 @@ export class StreamingCompletionController implements vscode.Disposable, InlineS
         // Classify before touching state. Cancellation is expected and quiet,
         // and whoever cancelled owns the cleanup — `cancelActiveStream` has
         // already discarded the candidate.
-        if (isCancellationError(err)) {
+        if (isCancellationError(err, requestToken)) {
           this.settleActiveStream(requestIdentity);
           return;
         }
