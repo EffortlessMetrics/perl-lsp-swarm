@@ -1574,6 +1574,15 @@ jobs:
       - name: Publish-provenance contract (required merge surface)
         run: cargo test -p xtask --test post_publish_smoke_version_provenance --locked -- --nocapture
 
+      # Same reasoning as the contracts above, and the #10544 recurrence #10433
+      # exists to prevent: the merge gate runs `cargo test --workspace --lib`, so
+      # this ledger would otherwise only execute via advisory pr-smoke. It is the
+      # architecture check that stops a second canonical index lifecycle authority,
+      # a telemetry-as-readiness disposition, or an unmapped lifecycle declaration
+      # from merging, so the producer needs a blocking execution route here.
+      - name: Index lifecycle ownership ledger (required merge surface)
+        run: cargo test -p xtask --test workspace_index_lifecycle_ledger --locked -- --nocapture
+
       # Same reasoning as the contracts above: the #11382 TDD-facade
       # recurrence guard otherwise only executes through diff-routed advisory
       # lanes, so stale facade imports could merge without it ever running.
