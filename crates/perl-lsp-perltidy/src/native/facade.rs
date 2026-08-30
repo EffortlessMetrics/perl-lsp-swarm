@@ -9,8 +9,13 @@
 //!   formatting even when their opener lies outside the requested lines.
 //!
 //! The claim covered here is the native provider API. Public LSP
-//! `rangeFormatting` reachability and incremental snapshot replay are
-//! intentionally out of scope until a real stateful request path exists.
+//! `rangeFormatting` reaches this facade through
+//! `runtime/language/formatting_policy/handlers.rs::handle_range_formatting_policy`
+//! → `FormattingProvider::format_range_decision`
+//! (`crates/perl-lsp-rs-core/src/providers/formatting/formatting.rs:201`)
+//! → `native_range_decision` (line 262) → this facade. The guard applies when
+//! the formatter mode selects the native engine. Incremental snapshot replay
+//! remains out of scope.
 //!
 //! Every existing parse, literal-preservation, render, and post-parse gate still
 //! runs in the underlying engine.
@@ -20,11 +25,11 @@ use super::implementation::{
 };
 use super::outcome::{
     FormatContext, FormatIdentity, FormatReasonCode, FormatRequestTarget, TypedFormatResult,
+    classify_format_result,
 };
 use perl_parser_core::{SourceRegionIndex, SourceRegionKind};
 
 const LITERAL_PRESERVE_CODE: &str = "native.format.literal_preserve_region";
-const CLASSIFIER_HEREDOC_SOURCE: &str = "print <<'EOF';\nbody\nEOF\n";
 
 /// Parse-gated Rust-native Perl formatter with lexical preserve-region guards.
 #[derive(Debug, Default, Clone, Copy)]
@@ -53,15 +58,12 @@ impl NativeFormatter {
         let Some(sanitized) = sanitize_non_code_heredoc_markers(source) else {
             return engine.format_document_typed(source, config, context);
         };
-        let source_identity =
-            engine.format_document_typed(source, config, context).outcome.identity;
-
-        restore_typed_result(
-            source,
-            &sanitized,
-            source_identity,
-            engine.format_document_typed(&sanitized.text, config, context),
-        )
+        let source_identity = FormatIdentity::for_request(source, config, context);
+        let typed = engine.format_document_typed(&sanitized.text, config, context);
+        match restore_typed_result(source, &sanitized, source_identity, typed) {
+            Some(result) => result,
+            None => engine.format_document_typed(source, config, context),
+        }
     }
 
     /// Format one range and return an explicit typed terminal outcome.
@@ -74,6 +76,7 @@ impl NativeFormatter {
         context: &FormatContext,
     ) -> TypedFormatResult {
         let engine = implementation::NativeFormatter::new();
+        let lines = source_line_ranges(source);
         let baseline = engine.format_range_typed(source, range, config, context);
         if matches!(config.mode, FormatterMode::Off)
             || baseline.outcome.reason == FormatReasonCode::UnsafeRange
@@ -81,7 +84,7 @@ impl NativeFormatter {
             return baseline;
         }
 
-        if range_overlaps_completed_heredoc(source, range) {
+        if range_overlaps_completed_heredoc(source, range, &lines) {
             return typed_heredoc_range_refusal(
                 source,
                 range,
@@ -95,12 +98,12 @@ impl NativeFormatter {
             return baseline;
         };
 
-        restore_typed_result(
-            source,
-            &sanitized,
-            baseline.outcome.identity,
-            engine.format_range_typed(&sanitized.text, range, config, context),
-        )
+        let typed = engine.format_range_typed(&sanitized.text, range, config, context);
+        let source_identity = baseline.outcome.identity.clone();
+        match restore_typed_result(source, &sanitized, source_identity, typed) {
+            Some(result) => result,
+            None => baseline,
+        }
     }
 }
 
@@ -119,25 +122,30 @@ impl PerlFormatter for NativeFormatter {
             );
         };
 
-        restore_format_result(
-            source,
-            &sanitized,
-            <implementation::NativeFormatter as PerlFormatter>::format_document(
-                &engine,
-                &sanitized.text,
-                config,
+        let result = <implementation::NativeFormatter as PerlFormatter>::format_document(
+            &engine,
+            &sanitized.text,
+            config,
+        );
+        match restore_format_result(source, &sanitized, result) {
+            Some(result) => result,
+            None => <implementation::NativeFormatter as PerlFormatter>::format_document(
+                &engine, source, config,
             ),
-        )
+        }
     }
 
     fn format_range(&self, source: &str, range: TextRange, config: &FormatConfig) -> FormatResult {
         let engine = implementation::NativeFormatter::new();
+        let lines = source_line_ranges(source);
         if matches!(config.mode, FormatterMode::Off) {
             return <implementation::NativeFormatter as PerlFormatter>::format_range(
                 &engine, source, range, config,
             );
         }
-        if valid_range(source, range) && range_overlaps_completed_heredoc(source, range) {
+        if valid_range(source, range, &lines)
+            && range_overlaps_completed_heredoc(source, range, &lines)
+        {
             return heredoc_range_refusal(source);
         }
 
@@ -147,22 +155,25 @@ impl PerlFormatter for NativeFormatter {
             );
         };
 
-        restore_format_result(
-            source,
-            &sanitized,
-            <implementation::NativeFormatter as PerlFormatter>::format_range(
-                &engine,
-                &sanitized.text,
-                range,
-                config,
+        let result = <implementation::NativeFormatter as PerlFormatter>::format_range(
+            &engine,
+            &sanitized.text,
+            range,
+            config,
+        );
+        match restore_format_result(source, &sanitized, result) {
+            Some(result) => result,
+            None => <implementation::NativeFormatter as PerlFormatter>::format_range(
+                &engine, source, range, config,
             ),
-        )
+        }
     }
 }
 
 struct SanitizedSource {
     text: String,
     sentinel: String,
+    substitutions: usize,
 }
 
 fn sanitize_non_code_heredoc_markers(source: &str) -> Option<SanitizedSource> {
@@ -185,22 +196,32 @@ fn sanitize_non_code_heredoc_markers(source: &str) -> Option<SanitizedSource> {
         return None;
     }
 
+    let substitutions = offsets.len();
     let sentinel = unused_two_letter_sentinel(source)?;
     let mut text = source.to_string();
     for offset in offsets.into_iter().rev() {
         text.replace_range(offset..offset + 2, &sentinel);
     }
 
-    Some(SanitizedSource { text, sentinel })
+    Some(SanitizedSource { text, sentinel, substitutions })
 }
 
 fn unused_two_letter_sentinel(source: &str) -> Option<String> {
+    let mut used = [0_u64; 11];
+    for pair in source.as_bytes().windows(2) {
+        if pair[0].is_ascii_uppercase() && pair[1].is_ascii_uppercase() {
+            let index = usize::from(pair[0] - b'A') * 26 + usize::from(pair[1] - b'A');
+            used[index / 64] |= 1_u64 << (index % 64);
+        }
+    }
+
     for first in b'A'..=b'Z' {
         for second in b'A'..=b'Z' {
-            let mut candidate = String::with_capacity(2);
-            candidate.push(char::from(first));
-            candidate.push(char::from(second));
-            if !source.contains(candidate.as_str()) {
+            let index = usize::from(first - b'A') * 26 + usize::from(second - b'A');
+            if used[index / 64] & (1_u64 << (index % 64)) == 0 {
+                let mut candidate = String::with_capacity(2);
+                candidate.push(char::from(first));
+                candidate.push(char::from(second));
                 return Some(candidate);
             }
         }
@@ -213,17 +234,20 @@ fn restore_typed_result(
     sanitized: &SanitizedSource,
     source_identity: FormatIdentity,
     mut typed: TypedFormatResult,
-) -> TypedFormatResult {
-    typed.result = restore_format_result(source, sanitized, typed.result);
+) -> Option<TypedFormatResult> {
+    typed.result = restore_format_result(source, sanitized, typed.result)?;
     typed.outcome.identity = source_identity;
-    typed
+    Some(typed)
 }
 
 fn restore_format_result(
     source: &str,
     sanitized: &SanitizedSource,
     mut result: FormatResult,
-) -> FormatResult {
+) -> Option<FormatResult> {
+    if result.formatted.match_indices(&sanitized.sentinel).count() != sanitized.substitutions {
+        return None;
+    }
     result.formatted = result.formatted.replace(&sanitized.sentinel, "<<");
     for edit in &mut result.edits {
         edit.new_text = edit.new_text.replace(&sanitized.sentinel, "<<");
@@ -236,7 +260,7 @@ fn restore_format_result(
     if !result.changed {
         result.edits.clear();
     }
-    result
+    Some(result)
 }
 
 fn typed_heredoc_range_refusal(
@@ -246,18 +270,14 @@ fn typed_heredoc_range_refusal(
     context: &FormatContext,
     source_identity: FormatIdentity,
 ) -> TypedFormatResult {
-    // Reuse the existing outcome classifier instead of creating a second
-    // disposition/config-fingerprint authority. The synthetic source reaches
-    // the same literal-preservation refusal, after which the subject, target,
-    // and compatibility result are rebound to the caller's request.
-    let mut typed = implementation::NativeFormatter::new().format_document_typed(
-        CLASSIFIER_HEREDOC_SOURCE,
+    let mut typed = classify_format_result(
+        source,
         config,
         context,
+        FormatRequestTarget::Range { range },
+        heredoc_range_refusal(source),
     );
-    typed.result = heredoc_range_refusal(source);
     typed.outcome.identity = source_identity;
-    typed.outcome.target = FormatRequestTarget::Range { range };
     typed
 }
 
@@ -269,12 +289,16 @@ fn heredoc_range_refusal(source: &str) -> FormatResult {
     )
 }
 
-fn range_overlaps_completed_heredoc(source: &str, range: TextRange) -> bool {
+fn range_overlaps_completed_heredoc(
+    source: &str,
+    range: TextRange,
+    lines: &[(usize, usize)],
+) -> bool {
     if !source.contains("<<") {
         return false;
     }
 
-    let (range_start, range_end) = byte_span_for_line_range(source, range);
+    let (range_start, range_end) = byte_span_for_line_range(source, range, lines);
     if range_start == range_end {
         return false;
     }
@@ -289,22 +313,26 @@ fn range_overlaps_completed_heredoc(source: &str, range: TextRange) -> bool {
         region.kind == SourceRegionKind::Heredoc
             && region.end < source.len()
             && region.start < range_end
-            && byte_offset_after_line(source, region.end) > range_start
+            && byte_offset_after_line(source, region.end, lines) > range_start
     })
 }
 
-fn byte_offset_after_line(source: &str, offset: usize) -> usize {
-    source_line_ranges(source)
-        .into_iter()
+fn byte_offset_after_line(source: &str, offset: usize, lines: &[(usize, usize)]) -> usize {
+    lines
+        .iter()
         .find(|(start, end)| *start <= offset && offset < *end)
-        .map_or(source.len(), |(_, end)| end)
+        .map_or(source.len(), |(_, end)| *end)
 }
 
-fn byte_span_for_line_range(source: &str, range: TextRange) -> (usize, usize) {
+fn byte_span_for_line_range(
+    source: &str,
+    range: TextRange,
+    lines: &[(usize, usize)],
+) -> (usize, usize) {
     let mut byte_start = 0_usize;
     let mut byte_end = source.len();
     let mut found_start = false;
-    for (line_index, (line_start, line_end)) in source_line_ranges(source).into_iter().enumerate() {
+    for (line_index, (line_start, line_end)) in lines.iter().copied().enumerate() {
         let line_index = line_index as u32;
         if line_index == range.start.line {
             byte_start = line_start;
@@ -321,11 +349,10 @@ fn byte_span_for_line_range(source: &str, range: TextRange) -> (usize, usize) {
     (byte_start, byte_end)
 }
 
-fn valid_range(source: &str, range: TextRange) -> bool {
+fn valid_range(source: &str, range: TextRange, lines: &[(usize, usize)]) -> bool {
     if (range.start.line, range.start.character) > (range.end.line, range.end.character) {
         return false;
     }
-    let lines = source_line_ranges(source);
     let position_is_valid = |position: implementation::TextPosition| {
         lines
             .get(position.line as usize)
@@ -368,4 +395,26 @@ fn strip_line_ending(line: &str) -> &str {
         .or_else(|| line.strip_suffix('\n'))
         .or_else(|| line.strip_suffix('\r'))
         .unwrap_or(line)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sentinel_selection_scans_all_existing_ascii_pairs() {
+        assert_eq!(unused_two_letter_sentinel("AA AB AC <<LABEL"), Some("AD".to_string()));
+    }
+
+    #[test]
+    fn restoration_rejects_missing_sentinel_text() {
+        let sanitized = SanitizedSource {
+            text: "AA".to_string(),
+            sentinel: "AA".to_string(),
+            substitutions: 1,
+        };
+        let result = FormatResult::replace_document("<<", "");
+
+        assert!(restore_format_result("<<", &sanitized, result).is_none());
+    }
 }

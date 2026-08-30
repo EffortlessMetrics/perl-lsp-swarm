@@ -255,11 +255,10 @@ fn heredoc_opener_at(line: &str, marker: usize) -> Option<(String, bool)> {
     if label.is_empty() { None } else { Some((label, allow_indented)) }
 }
 
-/// A bare identifier after `<<` is a valid heredoc label, but an identifier
-/// immediately before `<<` makes the operator a Perl left shift instead. Keep
-/// the recovery scanner from treating the shift's RHS as a heredoc body.
-/// Keyword-led forms such as `print <<EOF` and `return <<EOF` remain genuine
-/// heredocs.
+/// Identify left shifts by the shape of their operand rather than by callers.
+///
+/// This is only a recovery heuristic for distinguishing a shift from a
+/// heredoc opener. Lexer-backed heredoc spans remain authoritative.
 fn ends_with_left_shift_operand(before: &str) -> bool {
     let trimmed = before.trim_end_matches([' ', '\t']);
     let Some(last) = trimmed.chars().next_back() else {
@@ -282,7 +281,13 @@ fn ends_with_left_shift_operand(before: &str) -> bool {
         .last()
         .map_or(trimmed.len(), |(index, _)| index);
     let token = &trimmed[token_start..];
-    !matches!(token, "print" | "printf" | "say" | "return" | "die" | "warn")
+    if token.starts_with(['$', '@', '%', '&', '*']) {
+        return true;
+    }
+    if token.bytes().all(|byte| byte.is_ascii_digit()) {
+        return true;
+    }
+    token.bytes().all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_')
 }
 
 /// Whether `rest` starts an unquoted heredoc label, i.e. a Perl identifier.
@@ -1105,7 +1110,7 @@ mod tests {
             "my $y = $x << 2;\n",
             "my $y = $x <<< 2;\n",
             "my $y = $x << EOF;\nnot a heredoc body\nEOF\nmy $after = 1;\n",
-            "my $y = bareword << EOF;\nnot a heredoc body\nEOF\nmy $after = 1;\n",
+            "my $y = MASK << EOF;\nnot a heredoc body\nEOF\nmy $after = 1;\n",
         ] {
             assert!(
                 scan_heredoc_regions(source).is_empty(),
@@ -1120,6 +1125,28 @@ mod tests {
             let regions = scan_heredoc_regions(source);
             assert_eq!(regions.len(), 1, "keyword-led heredoc must remain visible: {source:?}");
             assert!(regions[0].end < source.len(), "keyword-led heredoc must close: {source:?}");
+        }
+    }
+
+    #[test]
+    fn structural_shift_heuristic_keeps_callable_and_keyword_heredocs_open() {
+        for source in ["croak <<EOF", "exec <<EOF", "sprintf <<EOF", "note <<EOF", "$h->(<<EOF)"] {
+            assert_eq!(
+                heredoc_opener_on_line(source),
+                Some(("EOF".to_string(), false)),
+                "bare caller forms must remain heredoc openers: {source:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn structural_shift_heuristic_rejects_operand_shapes_as_heredocs() {
+        for source in ["$x << MASK", "MASK << BITS", "$x << 2", "1 << 32", "$hash{x} << 2"] {
+            assert_eq!(
+                heredoc_opener_on_line(source),
+                None,
+                "operand-shaped left shifts must not open heredocs: {source:?}"
+            );
         }
     }
 
