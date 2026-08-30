@@ -35,8 +35,6 @@ pub struct QuoteOperatorCheckpoint {
 pub struct LexerCheckpoint {
     /// Current position in the input.
     pub position: usize,
-    /// Interpolation policy used to produce replayed string parts.
-    pub parse_interpolation: bool,
     /// Current lexer mode (`ExpectTerm`, `ExpectOperator`, etc.).
     pub mode: LexerMode,
     /// Stack for nested delimiters in `s{}{} ` constructs.
@@ -116,7 +114,6 @@ impl LexerCheckpoint {
     pub fn new() -> Self {
         Self {
             position: 0,
-            parse_interpolation: true,
             mode: LexerMode::ExpectTerm,
             delimiter_stack: Vec::new(),
             in_prototype: false,
@@ -186,8 +183,7 @@ impl LexerCheckpoint {
                 || self.line_start_offset != other.line_start_offset
                 || self.emit_heredoc_body_tokens != other.emit_heredoc_body_tokens
                 || self.current_quote_op != other.current_quote_op
-                || self.qw_recovery_enabled != other.qw_recovery_enabled
-                || self.parse_interpolation != other.parse_interpolation,
+                || self.qw_recovery_enabled != other.qw_recovery_enabled,
         }
     }
 

@@ -445,6 +445,8 @@ impl PerlLexer<'_> {
             self.position = saved_position;
             return vec![StringPart::Literal(Arc::from(&self.input[body_start..body_end]))];
         }
+        let saved_scan_limit = self.scan_limit;
+        self.scan_limit = Some(body_end);
         self.position = body_start;
         let mut parts: Vec<StringPart> = Vec::new();
         let mut literal = String::new();
@@ -473,6 +475,7 @@ impl PerlLexer<'_> {
 
         Self::flush_literal(&mut literal, &mut parts);
         self.position = saved_position;
+        self.scan_limit = saved_scan_limit;
         parts
     }
 }

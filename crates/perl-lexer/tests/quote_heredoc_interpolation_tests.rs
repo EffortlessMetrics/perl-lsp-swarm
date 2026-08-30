@@ -317,6 +317,25 @@ fn interpolating_heredoc_allows_multiline_interpolation_islands() {
 }
 
 #[test]
+fn unclosed_heredoc_interpolation_stays_within_body_boundary() {
+    let source = "my $text = <<\"END\";\nbefore ${\n$name\nEND\nprint $text;\n";
+    let tokens = heredoc_tokens_with(source, true);
+    let body = tokens
+        .iter()
+        .find_map(|token| match &token.token_type {
+            TokenType::InterpolatedHeredocBody(parts) => Some(parts),
+            _ => None,
+        })
+        .expect("interpolated heredoc body");
+    assert_eq!(
+        body,
+        &vec![StringPart::Literal("before ".into()), StringPart::Expression("${\n$name\n".into()),]
+    );
+    assert!(body.iter().all(|part| !format!("{part:?}").contains("END")));
+    assert!(tokens.iter().any(|token| token.text == "print".into()));
+}
+
+#[test]
 fn indented_interpolating_heredoc_segments_too() {
     let source = String::from("my $text = <<~\"END\";\n    value $v\n    END\n");
     match heredoc_body_kind(&source, true) {
