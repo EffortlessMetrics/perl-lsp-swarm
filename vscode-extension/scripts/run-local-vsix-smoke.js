@@ -833,12 +833,19 @@ function checkPackagePhrase(stages) {
  * The behavioural half of the headline. `not_run` and `not_proven` carry their
  * reason, because "did not run" and "ran and failed" are the two facts this
  * projection exists to keep apart.
+ *
+ * `pass` and `failed` deliberately stop at the verdict, unlike the journey
+ * segments below: this stage's verdict is itself the triage surface, and its
+ * failure reason is a restatement of it (`published_extension_smoke_failed`).
+ * The table row carries the full `checkStageDetail` either way, so the
+ * asymmetry costs no evidence — do not "fix" it into a journey-style line.
  */
 function checkBehavioralPhrase(stage) {
+  const label = CHECK_STAGE_LABELS.behavioral_smoke;
   if (!stage) {
-    return 'behavioral smoke absent from the receipt';
+    return `${label} absent from the receipt`;
   }
-  const phrase = `behavioral smoke ${checkVerdictWord(stage.status)}`;
+  const phrase = `${label} ${checkVerdictWord(stage.status)}`;
   if (stage.status === 'pass' || stage.status === 'failed' || !stage.reason) {
     return phrase;
   }
