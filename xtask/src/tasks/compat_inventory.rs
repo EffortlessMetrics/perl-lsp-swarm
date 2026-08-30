@@ -700,12 +700,21 @@ pub fn parse_declared_items(source: &str) -> Vec<(String, SymbolKind, Visibility
     let mut out = Vec::new();
     let mut depth: i32 = 0;
     let mut impl_type: Option<String> = None;
+    // Set from an `impl` header until its body actually opens. The brace can sit
+    // on a later line — rustfmt does that for a long header, and a `where`
+    // clause always does — and depth is still 0 in between, so without this the
+    // type would be cleared before any method is read.
+    let mut awaiting_impl_body = false;
 
     for line in code_lines(source) {
         let trimmed = line.trim();
 
-        if depth == 0 && (trimmed.starts_with("impl ") || trimmed.starts_with("impl<")) {
+        if depth == 0
+            && !awaiting_impl_body
+            && (trimmed.starts_with("impl ") || trimmed.starts_with("impl<"))
+        {
             impl_type = inherent_impl_type(trimmed);
+            awaiting_impl_body = true;
         } else if let Some((name, kind, visibility)) = parse_item(trimmed) {
             if depth == 0 {
                 out.push((name, kind, visibility));
@@ -718,9 +727,17 @@ pub fn parse_declared_items(source: &str) -> Vec<(String, SymbolKind, Visibility
         }
 
         depth += brace_delta(trimmed);
+        if depth > 0 {
+            // The body is open, so the type is now anchored by depth alone.
+            awaiting_impl_body = false;
+        }
         if depth <= 0 {
             depth = 0;
-            impl_type = None;
+            // Only a closed impl clears the type; a header still waiting for its
+            // brace keeps it.
+            if !awaiting_impl_body {
+                impl_type = None;
+            }
         }
     }
 
@@ -2148,6 +2165,66 @@ fn private() {}
         internal.reexported_at_root = false;
 
         validate(&ledger(vec![row], vec![]), &discovered(vec![internal], vec![]))
+    }
+
+    /// rustfmt breaks a long `impl` header before its brace, and a `where`
+    /// clause always does. The type must survive those lines: at depth 0 with no
+    /// brace yet, clearing it drops every method in the block.
+    #[test]
+    fn an_impl_header_that_wraps_before_its_brace_keeps_its_methods() -> TestResult {
+        let source = "\
+pub struct TsNode {}
+
+impl TsNode
+{
+    pub fn child_count(&self) -> usize {
+        0
+    }
+}
+
+pub fn free(name: &str) -> String {
+    String::new()
+}
+";
+        assert_eq!(
+            parse_public_items(source),
+            vec![
+                ("TsNode".to_string(), SymbolKind::Struct),
+                ("TsNode::child_count".to_string(), SymbolKind::Method),
+                ("free".to_string(), SymbolKind::Function),
+            ],
+            "a wrapped impl header still qualifies its methods, and the impl still closes"
+        );
+        Ok(())
+    }
+
+    /// The control for the rule above: a trait impl whose header wraps must stay
+    /// excluded. An implementation that simply kept the last seen type across
+    /// lines would attribute these to the preceding inherent block.
+    #[test]
+    fn a_wrapped_trait_impl_header_contributes_no_methods() -> TestResult {
+        let source = "\
+impl TsNode
+{
+    pub fn kept(&self) -> usize {
+        0
+    }
+}
+
+impl fmt::Display
+    for TsNode
+{
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, \"x\")
+    }
+}
+";
+        assert_eq!(
+            parse_public_items(source),
+            vec![("TsNode::kept".to_string(), SymbolKind::Method)],
+            "the trait impl adds nothing and does not resurrect the earlier type"
+        );
+        Ok(())
     }
 
     /// A private `mod` can hold `pub(crate)` items. Matching only `pub mod`
