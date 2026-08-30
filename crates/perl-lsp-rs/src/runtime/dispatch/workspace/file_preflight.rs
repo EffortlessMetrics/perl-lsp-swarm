@@ -544,11 +544,14 @@ mod tests {
         let old_uri =
             Url::from_file_path(&script_path).map_err(|_| "invalid old path")?.to_string();
         let new_uri = Url::from_file_path(&new_path).map_err(|_| "invalid new path")?.to_string();
+        // Canonical initial-state seeding (#11301): the fixture pre-seeds the
+        // closed file's pre-change facts; the compatibility `index_file`
+        // surface stays out of new callers per the #13185 ledger precedent.
         server
             .coordinator()
             .ok_or("workspace coordinator unavailable")?
             .index()
-            .index_file(Url::parse(&old_uri)?, shebang_source.to_string())?;
+            .index_initial_file(Url::parse(&old_uri)?, shebang_source.to_string())?;
         // The disk object loses its Perl shebang after the index snapshot.
         std::fs::write(&script_path, "#!/bin/sh\npackage Hook;\nsub hook_symbol { 1 }\n1;\n")?;
 
