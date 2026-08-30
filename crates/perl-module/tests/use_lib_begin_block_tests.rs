@@ -74,6 +74,7 @@ fn heredoc_bodies_do_not_create_lib_operations() {
     let sources = [
         "my $s = <<'EOF';\nBEGIN { use lib 'phantom'; }\nEOF\n",
         "my $s = <<\"EOF\";\nBEGIN { use lib 'phantom'; }\nEOF\n",
+        "my $out = <<`CMD`;\nBEGIN { use lib 'phantom'; }\nCMD\n",
         "my $s = <<~'EOF';\n    BEGIN { use lib 'phantom'; }\n    EOF\n",
         "my $s = <<EOF;\nBEGIN { use lib 'phantom'; }\nEOF\n",
         "my $a = <<A; my $b = <<B;\nBEGIN { use lib 'phantom'; }\nA\nBEGIN { use lib 'phantom'; }\nB\n",
@@ -84,6 +85,39 @@ fn heredoc_bodies_do_not_create_lib_operations() {
         assert!(
             extract_use_lib_operations(source).is_empty(),
             "heredoc body created an operation: {source:?}"
+        );
+    }
+}
+
+#[test]
+fn pod_cut_prefix_does_not_terminate_pod() {
+    let source = "\
+use strict;\n\
+=pod\n\
+=cutlery\n\
+BEGIN { use lib 'phantom_pod'; }\n\
+=cut\n\
+use Local::Thing;\n";
+
+    assert!(extract_use_lib_operations(source).is_empty());
+}
+
+#[test]
+fn unterminated_bareword_heredocs_do_not_hide_later_pragmas() {
+    let sources = [
+        "my $r = qr/<<MISSING/;\nuse lib 'later';\n",
+        "my $x = 1 << MISSING;\nuse lib 'later';\n",
+        "my $x = <<~MISSING;\nuse lib 'later';\n",
+    ];
+
+    for source in sources {
+        assert_eq!(
+            extract_use_lib_operations(source),
+            vec![UseLibAction::Add(vec![UseLibPath {
+                path: "later".to_string(),
+                from_findbin: false,
+            }])],
+            "unterminated bareword heredoc hid a later pragma: {source:?}"
         );
     }
 }

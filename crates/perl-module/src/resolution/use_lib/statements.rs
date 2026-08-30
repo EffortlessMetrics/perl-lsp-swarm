@@ -72,7 +72,9 @@ pub(super) fn split_perl_statements(source: &str) -> Vec<&str> {
         if ch == '<'
             && !in_single
             && !in_double
-            && let Some((heredoc_end, tag, strip_indent)) = parse_heredoc_opener(source, idx)
+            && let Some((heredoc_end, tag, strip_indent, quoted)) =
+                parse_heredoc_opener(source, idx)
+            && (quoted || has_heredoc_terminator(source, heredoc_end, &tag, strip_indent))
         {
             pending_heredocs.push_back((tag, strip_indent));
             has_content = true;
@@ -144,7 +146,15 @@ fn skip_pod_section(source: &str, start: usize) -> usize {
     while line_start < source.len() {
         let newline = source[line_start..].find('\n');
         let line_end = newline.map_or(source.len(), |offset| line_start + offset);
-        if source[line_start..line_end].starts_with("=cut") {
+        let mut line = &source[line_start..line_end];
+        if line.ends_with('\r') {
+            line = &line[..line.len() - 1];
+        }
+        if line == "=cut"
+            || line
+                .strip_prefix("=cut")
+                .is_some_and(|suffix| suffix.chars().next().is_some_and(char::is_whitespace))
+        {
             return newline.map_or(source.len(), |_| line_end + 1);
         }
         let Some(_offset) = newline else {
@@ -156,7 +166,7 @@ fn skip_pod_section(source: &str, start: usize) -> usize {
     source.len()
 }
 
-fn parse_heredoc_opener(source: &str, start: usize) -> Option<(usize, String, bool)> {
+fn parse_heredoc_opener(source: &str, start: usize) -> Option<(usize, String, bool, bool)> {
     if source.get(start..start + 2)? != "<<" {
         return None;
     }
@@ -168,7 +178,7 @@ fn parse_heredoc_opener(source: &str, start: usize) -> Option<(usize, String, bo
     }
 
     let first = *source.as_bytes().get(tag_start)?;
-    if first == b'\'' || first == b'"' {
+    if first == b'\'' || first == b'"' || first == b'`' {
         let quote = first as char;
         let content_start = tag_start + 1;
         let quote_offset = source[content_start..].find(quote)?;
@@ -177,7 +187,7 @@ fn parse_heredoc_opener(source: &str, start: usize) -> Option<(usize, String, bo
         if tag.is_empty() || tag.contains('\n') {
             return None;
         }
-        return Some((quote_end + 1, tag.to_string(), strip_indent));
+        return Some((quote_end + 1, tag.to_string(), strip_indent, true));
     }
 
     if !(first.is_ascii_alphabetic() || first == b'_') {
@@ -192,7 +202,34 @@ fn parse_heredoc_opener(source: &str, start: usize) -> Option<(usize, String, bo
         tag_end += 1;
     }
 
-    Some((tag_end, source[tag_start..tag_end].to_string(), strip_indent))
+    Some((tag_end, source[tag_start..tag_end].to_string(), strip_indent, false))
+}
+
+fn has_heredoc_terminator(source: &str, start: usize, tag: &str, strip_indent: bool) -> bool {
+    let Some(first_newline) = source[start..].find('\n') else {
+        return false;
+    };
+
+    let mut line_start = start + first_newline + 1;
+    while line_start < source.len() {
+        let newline = source[line_start..].find('\n');
+        let line_end = newline.map_or(source.len(), |offset| line_start + offset);
+        let mut line = &source[line_start..line_end];
+        if line.ends_with('\r') {
+            line = &line[..line.len() - 1];
+        }
+        let content = if strip_indent { line.trim_start() } else { line };
+        if content == tag {
+            return true;
+        }
+
+        let Some(_offset) = newline else {
+            return false;
+        };
+        line_start = line_end + 1;
+    }
+
+    false
 }
 
 fn skip_heredoc_bodies(
