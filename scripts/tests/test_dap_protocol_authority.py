@@ -762,6 +762,46 @@ class DapProtocolAuthorityTests(unittest.TestCase):
                 )
                 self.assertAuthorityError(self._production_rows)
 
+    def test_command_cannot_be_delegated_out_of_the_match(self) -> None:
+        # Pinning the body's shape is not sufficient on its own: these keep
+        # the arm count, the single match, every keyword rule and the
+        # no-string-literal rule intact, while handing the command to code
+        # the table does not generate.
+        fallback = (
+            "                    _ => DapMessage::Response {\n"
+            "                        seq,\n"
+            "                        request_seq,\n"
+            "                        success: false,\n"
+            "                        command: command.to_string(),\n"
+            "                        body: None,\n"
+            "                        message: Some(Self::unknown_command_message(command)),\n"
+            "                    },"
+        )
+        delegations = {
+            "fallback_delegates_to_helper": (
+                fallback,
+                "                    _ => self.route_unknown(seq, request_seq, command),",
+            ),
+            "fallback_delegates_to_assoc_fn": (
+                fallback,
+                "                    _ => Self::vendor(command),",
+            ),
+            "scrutinee_is_normalized": (
+                "match command {",
+                "match self.normalize(command) {",
+            ),
+        }
+        for label, (anchor, replacement) in delegations.items():
+            with self.subTest(delegation=label):
+                self.assertIn(anchor, self.MACRO_DEFINITION)
+                definition = self.MACRO_DEFINITION.replace(anchor, replacement, 1)
+                self._write_production(
+                    dispatch_source=self._render_table(
+                        ("initialize", "inlineValues"), macro_definition=definition
+                    )
+                )
+                self.assertAuthorityError(self._production_rows)
+
     def test_a_second_dispatch_definition_fails_closed(self) -> None:
         source = self._render_table(("initialize", "inlineValues"))
         source += (

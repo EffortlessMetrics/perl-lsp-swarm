@@ -54,6 +54,20 @@ DISPATCH_FN_RE = re.compile(r"\bfn\s+dispatch_request\b")
 # a hunt for known-bad spellings: anything that can branch, return early, or
 # name a wire string is rejected outright.
 FORBIDDEN_DISPATCH_BODY_KEYWORDS = ("if", "else", "return", "while", "loop", "for")
+# The `command` identifier, ignoring `$command` (the macro row capture) and
+# any longer identifier that merely contains the word.
+COMMAND_IDENT_RE = re.compile(r"(?<![\w$])command(?!\w)")
+# The only places the command value may appear in the generated body. Pinning
+# the body's shape is not enough on its own: a fallback such as
+# `_ => self.route_unknown(seq, request_seq, command)` keeps the arm count and
+# every keyword rule intact while handing the command to a helper that can
+# route it outside the table. Command-dependent routing must not be able to
+# leave the match at all, so every use is allow-listed.
+PERMITTED_COMMAND_USES = (
+    re.compile(r"match\s+command\s*\{"),
+    re.compile(r"command\s*:\s*command\s*\.\s*to_string\s*\(\s*\)"),
+    re.compile(r"unknown_command_message\s*\(\s*command\s*\)"),
+)
 
 
 STRING_CONTENT_MASK = "\x01"
@@ -259,6 +273,21 @@ def validate_generated_dispatch(text: str, masked: str) -> None:
         raise AuthorityError(
             "generated dispatch body contains a string literal; wire names may "
             "only come from request-table rows"
+        )
+
+    # The command value must not escape the match. Strike out every permitted
+    # use; anything left is a path by which routing could be delegated to code
+    # the table does not generate.
+    residue = body
+    for permitted in PERMITTED_COMMAND_USES:
+        residue = permitted.sub(" ", residue)
+    escaped = COMMAND_IDENT_RE.search(residue)
+    if escaped is not None:
+        line = body.count("\n", 0, escaped.start()) + 1
+        raise AuthorityError(
+            "generated dispatch body passes `command` somewhere other than the "
+            f"match scrutinee and the unknown-command response (body line {line}); "
+            "command-dependent routing must not be delegated outside the table"
         )
 
 
