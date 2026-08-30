@@ -467,6 +467,17 @@ fn next_action(reason: FormatReasonCode) -> Option<&'static str> {
     }
 }
 
+/// Summarize the transformation between the source and the rendered output.
+///
+/// Contract: callers normalize before calling. A rendered no-op reaches this
+/// function with an already-empty edit set (`classify_native_result` clears it),
+/// so the `source == formatted` branch reports `edit_count: 0`. The branch does
+/// not itself enforce that — passing a non-empty edit set alongside identical
+/// bytes would report a non-zero `edit_count` beside zero byte deltas, which is
+/// exactly the envelope inconsistency #7585 forbids. The sibling implementation
+/// in `perl-lsp-rs-core` guards the same condition with `edits.is_empty() ||
+/// source == formatted`, so the two answer an unnormalized call differently;
+/// unifying them belongs to #7138, which owns this duplication.
 fn change_summary(source: &str, formatted: &str, edits: &[TextEdit]) -> FormatChangeSummary {
     if source == formatted {
         return FormatChangeSummary {

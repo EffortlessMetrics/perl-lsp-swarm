@@ -451,18 +451,26 @@ fn unproven_range_projection(content: &str, mut outcome: FormatOutcome) -> Forma
 enum ExternalEnvelope {
     /// The render reproduces the source; any returned edits were no-ops.
     NoChange,
-    /// The render differs from the source and returned edits account for it.
+    /// The render differs from the source and the adapter returned at least one
+    /// edit for it.
+    ///
+    /// Whether those edits actually reproduce the render is **not** verified
+    /// here. Proving that needs an independent strict applicator, which is
+    /// #7138's oracle; building a second one at this seam would duplicate that
+    /// authority. This arm therefore establishes that the change is
+    /// *attributed*, not that it is *reproduced*.
     Applied,
-    /// The render differs from the source but no edit accounts for it.
+    /// The render differs from the source and no edit is attributed to it.
     Unaccounted,
 }
 
-/// Validate an external adapter's envelope instead of trusting its edit list.
+/// Judge an external adapter's envelope from all three of source, render, and
+/// edits rather than from the edit list alone.
 ///
-/// The adapter supplies both rendered bytes and edits, so the two are checked
-/// against each other: a render that reproduces the source carries no edits,
-/// and rendered bytes that no returned edit accounts for are reported as
-/// unaccounted rather than as a legitimate no-change (#7585).
+/// A render that reproduces the source carries no edits, and rendered bytes
+/// with no edit attributed to them are reported as unaccounted rather than as
+/// a legitimate no-change (#7585). Edit-to-render reproduction is out of scope
+/// here — see [`ExternalEnvelope::Applied`].
 fn classify_external_envelope(content: &str, document: &mut FormattedDocument) -> ExternalEnvelope {
     if document.text == content {
         document.edits.clear();
