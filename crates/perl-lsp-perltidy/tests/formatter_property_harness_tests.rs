@@ -28,9 +28,10 @@ mod formatter_property_harness;
 
 use formatter_property_harness::{
     DormantStatus, FUZZ_INDEX_SPACE, Family, GeneratedCase, HARNESS_SCHEMA_VERSION, LineEndingKind,
-    MAX_PLAN_EDITS, MAX_SUBJECT_BYTES, MAX_SUBJECT_LINES, apply_plan_strict, case_from_fuzz_input,
-    convention_present_in_bytes, dormant_registry, family_registry, generate_case,
-    generate_case_neutral_control, generate_invalidation_case, record_for, run_case, variants_for,
+    MAX_PLAN_EDITS, MAX_SUBJECT_BYTES, MAX_SUBJECT_LINES, apply_plan_strict,
+    body_line_endings_preserved, case_from_fuzz_input, convention_present_in_bytes,
+    dormant_registry, family_registry, generate_case, generate_case_neutral_control,
+    generate_invalidation_case, record_for, run_case, variants_for,
 };
 use perl_lsp_perltidy::native::{FinalNewline, TextEdit, TextPosition, TextRange};
 
@@ -688,7 +689,8 @@ proptest! {
     /// rather than a vacuous pass: bare-CR preservation, block-family
     /// subjects whose convention set contains CRLF or bare CR (inserted wrap
     /// lines and touched separators are always LF today), and the Insert/Trim
-    /// final-newline policies that own the final terminator by contract
+    /// final-newline policies that own only the final terminator while body
+    /// separator convention integrity remains checked
     /// (`final_newline_policy_owns_terminator`).
     #[test]
     fn line_endings_and_utf16_geometry_survive_variants(case in arb_valid_case()) {
@@ -700,8 +702,15 @@ proptest! {
         let wrap_inserts_foreign_separator = record.renders_closed_blocks
             && case.profile.line_ending != LineEndingKind::Lf;
         prop_assert!(
-            receipt.line_endings_preserved || bare_cr || policy_owns_terminator
+            receipt.line_endings_preserved
+                || bare_cr
                 || wrap_inserts_foreign_separator
+                || policy_owns_terminator
+                    && body_line_endings_preserved(
+                        &case.subject.text,
+                        &receipt.formatted,
+                        case.profile.line_ending,
+                    )
         );
         if receipt.outcome_disposition == "applied" {
             prop_assert!(receipt.utf16_geometry_verified);
@@ -726,6 +735,55 @@ proptest! {
         prop_assert!(receipt.normalized.contains(&family_field));
         prop_assert!(!receipt.digest.is_empty());
     }
+}
+
+#[test]
+fn body_separator_comparison_rejects_interior_crlf_flip() {
+    assert!(!body_line_endings_preserved(
+        "one\r\ntwo\r\nthree",
+        "one\ntwo\r\nthree",
+        LineEndingKind::Crlf,
+    ));
+    assert!(!body_line_endings_preserved(
+        "one\rtwo\rthree",
+        "one\r\ntwo\rthree",
+        LineEndingKind::BareCr,
+    ));
+    assert!(!body_line_endings_preserved("one\r\ntwo", "onetwo", LineEndingKind::Crlf,));
+    // Block expansion inserts additional LF separators without corrupting an
+    // LF document, so counts and positions are intentionally not pinned.
+    assert!(body_line_endings_preserved(
+        "\tforeach$e(@list){next;} # 😀𝕏\n",
+        "\tforeach $e (@list) {\n\t    next;\n\t} # 😀𝕏\n",
+        LineEndingKind::Lf,
+    ));
+    assert!(body_line_endings_preserved("one\ntwo", "one\ntwo\n", LineEndingKind::Lf,));
+    assert!(body_line_endings_preserved("one\ntwo\n", "one\ntwo", LineEndingKind::Lf,));
+    assert!(body_line_endings_preserved("one\r\ntwo", "one\r\ntwo\r\n", LineEndingKind::Crlf,));
+    assert!(body_line_endings_preserved("one\r\ntwo\r\n", "one\r\ntwo", LineEndingKind::Crlf,));
+    assert!(body_line_endings_preserved("one\r\ntwo\r\n", "one\r\ntwo\r\n", LineEndingKind::Crlf,));
+}
+
+#[test]
+fn fuzz_decoder_consumes_bytes_past_the_selector() -> TestResult {
+    let seed = 0x0123_4567_89ab_cdef_u64;
+    let selector = 0x2a_u8;
+    let mut base = seed.to_le_bytes().to_vec();
+    base.push(selector);
+
+    let decoded_a = case_from_fuzz_input(&base).ok_or("9-byte input must decode")?;
+    let decoded_b = case_from_fuzz_input(&base).ok_or("9-byte input must decode")?;
+    assert_eq!(decoded_a, decoded_b);
+    assert_eq!(decoded_a, generate_case(seed, usize::from(selector & 0x3f)));
+
+    let mut tail_a = base.clone();
+    tail_a.push(0x00);
+    let mut tail_b = base;
+    tail_b.push(0x01);
+    let receipt_a = run_case(&case_from_fuzz_input(&tail_a).ok_or("10-byte input A must decode")?)?;
+    let receipt_b = run_case(&case_from_fuzz_input(&tail_b).ok_or("10-byte input B must decode")?)?;
+    assert_ne!(receipt_a, receipt_b);
+    Ok(())
 }
 
 /// FPH-008: dormant invariant slots exist as registered dispositions and fail

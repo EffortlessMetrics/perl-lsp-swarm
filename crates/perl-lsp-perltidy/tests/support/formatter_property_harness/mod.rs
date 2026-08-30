@@ -15,6 +15,9 @@
 //! - No runtime fuzzing campaign has been run; FPH-010 crash evidence is
 //!   decoder-replay only.
 //! - The FPH-009 index-safety clause is not mechanically scanned.
+//! - FPH-006 checks body line-ending convention integrity, but does not pin
+//!   body separator counts or positions because formatter expansion may insert
+//!   separators within the declared convention.
 //!
 //! The module owns four concerns:
 //!
@@ -37,6 +40,8 @@
 //! this file verbatim via `#[path]` and drives the same checker from
 //! structured byte mutations. The committed replay-control vectors are
 //! predetermined decoder controls, not crash-derived corpus evidence.
+
+use std::collections::BTreeSet;
 
 use perl_lsp_perltidy::native::{
     BracePlacement, FinalNewline, FormatContext, FormatDisposition, FormatLineEndingDisposition,
@@ -478,6 +483,9 @@ pub struct CaseReceipt {
     pub utf16_geometry_verified: bool,
     /// Whether line-ending conventions were preserved.
     pub line_endings_preserved: bool,
+    /// First-pass rendered bytes, retained so tests can independently inspect
+    /// body separator preservation when the terminal-newline policy changes.
+    pub formatted: String,
     /// Second-pass observation.
     pub second_pass: Option<SecondPassObservation>,
     /// Canonical normalized receipt text.
@@ -750,7 +758,10 @@ pub fn generate_invalidation_case(seed: u64, index: usize) -> GeneratedCase {
 
 /// Decode a cargo-fuzz input into exactly the case the fuzz target would run:
 /// the first eight little-endian bytes select the seed, the ninth byte selects
-/// the case index (low six bits) and the invalidation path (bit 7).
+/// the case index (low six bits) and the invalidation path (bit 7). Any bytes
+/// after the selector are folded into the seed with an FNV-1a-style update so
+/// mutations past byte nine can reach distinct cases; this is mutation reach,
+/// not cryptographic mixing.
 ///
 /// Both the fuzz target and the predetermined replay-control vectors in
 /// `fuzz_target_and_regression_pipeline_are_wired` call this one decoder, so
@@ -762,8 +773,11 @@ pub fn case_from_fuzz_input(data: &[u8]) -> Option<GeneratedCase> {
     }
     let mut seed_bytes = [0_u8; 8];
     seed_bytes.copy_from_slice(&data[..8]);
-    let seed = u64::from_le_bytes(seed_bytes);
+    let mut seed = u64::from_le_bytes(seed_bytes);
     let selector = data[8];
+    for byte in &data[9..] {
+        seed = (seed ^ u64::from(*byte)).wrapping_mul(0x0100_0000_01b3);
+    }
     let index = usize::from(selector & 0x3f) % FUZZ_INDEX_SPACE;
     Some(if selector & 0x80 != 0 {
         generate_invalidation_case(seed, index)
@@ -840,6 +854,57 @@ pub fn convention_present_in_bytes(kind: LineEndingKind, text: &str) -> bool {
             text.contains("\r\n") && stripped.contains('\n') && !stripped.contains('\r')
         }
     }
+}
+
+fn split_terminal_newline_run(text: &str) -> (&str, &str) {
+    let body = text.trim_end_matches(['\r', '\n']);
+    let terminal_run = &text[body.len()..];
+    (body, terminal_run)
+}
+
+fn separator_sequence(body: &str) -> Vec<&'static str> {
+    let mut separators = Vec::new();
+    let mut characters = body.chars().peekable();
+    while let Some(character) = characters.next() {
+        match character {
+            '\r' if characters.peek() == Some(&'\n') => {
+                let _ = characters.next();
+                separators.push("\r\n");
+            }
+            '\r' => separators.push("\r"),
+            '\n' => separators.push("\n"),
+            _ => {}
+        }
+    }
+    separators
+}
+
+/// Check body line-ending convention integrity after excluding each text's
+/// terminal newline run. Rendered separators must use only the declared
+/// convention, and every source separator kind must remain represented.
+/// Separator counts and positions are deliberately not pinned because
+/// formatter expansion may insert separators within the declared convention;
+/// this is the bounded residual proven by this helper.
+pub fn body_line_endings_preserved(
+    source: &str,
+    rendered: &str,
+    convention: LineEndingKind,
+) -> bool {
+    let (source_body, _) = split_terminal_newline_run(source);
+    let (rendered_body, _) = split_terminal_newline_run(rendered);
+    let allowed: BTreeSet<&'static str> = match convention {
+        LineEndingKind::Lf => ["\n"].into_iter().collect(),
+        LineEndingKind::Crlf => ["\r\n"].into_iter().collect(),
+        LineEndingKind::BareCr => ["\r"].into_iter().collect(),
+        LineEndingKind::Mixed => ["\r\n", "\n"].into_iter().collect(),
+    };
+    let source_kinds = separator_kinds(source_body);
+    let rendered_kinds = separator_kinds(rendered_body);
+    rendered_kinds.is_subset(&allowed) && source_kinds.is_subset(&rendered_kinds)
+}
+
+fn separator_kinds(body: &str) -> BTreeSet<&'static str> {
+    separator_sequence(body).into_iter().collect()
 }
 
 /// Independent UTF-16 geometry table over the exact subject bytes: line count
@@ -1071,9 +1136,8 @@ pub fn run_case(case: &GeneratedCase) -> Result<CaseReceipt, Violation> {
     //     contains CRLF or bare CR: the inserted wrap lines and touched
     //     separators are always LF, changing the convention set
     //     (`wrap_line_separators_follow_source_convention`);
-    //   - Insert/Trim final-newline policies own the final terminator by
-    //     contract, so policy-driven `ChangedByFormatter` evidence is
-    //     recorded rather than treated as a violation
+    //   - Insert/Trim final-newline policies own only the final terminator by
+    //     contract; body separator convention integrity must still hold
     //     (`final_newline_policy_owns_terminator`).
     let line_endings_preserved =
         matches!(outcome.safety.line_endings, FormatLineEndingDisposition::Preserved);
@@ -1103,6 +1167,19 @@ pub fn run_case(case: &GeneratedCase) -> Result<CaseReceipt, Violation> {
             rule: "safety.line_endings",
             detail: format!(
                 "line endings not preserved for the {} convention",
+                case.profile.line_ending.name()
+            ),
+        });
+    }
+    if policy_owns_terminator
+        && !bare_cr_subject
+        && !wrap_inserts_foreign_separator
+        && !body_line_endings_preserved(source, &result.formatted, case.profile.line_ending)
+    {
+        return Err(Violation {
+            rule: "safety.body_line_endings",
+            detail: format!(
+                "body line endings not preserved for the {} convention",
                 case.profile.line_ending.name()
             ),
         });
@@ -1216,6 +1293,7 @@ pub fn run_case(case: &GeneratedCase) -> Result<CaseReceipt, Violation> {
         plan_ordering_verified,
         utf16_geometry_verified,
         line_endings_preserved,
+        formatted: result.formatted.clone(),
         second_pass,
         digest: format!("fph-receipt:{}", digest_hex(fnv1a64(normalized.as_bytes()))),
         normalized,
