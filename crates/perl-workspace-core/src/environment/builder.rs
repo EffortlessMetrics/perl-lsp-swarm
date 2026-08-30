@@ -826,14 +826,14 @@ impl EnvironmentSnapshotSlot {
         Self::default()
     }
 
-    /// Install a snapshot tagged with the configuration generation it was
-    /// compiled from, replacing any previous snapshot.
-    pub fn install(
-        &mut self,
-        configuration_generation: u64,
-        snapshot: Arc<ProjectEnvironmentSnapshot>,
-    ) {
-        self.generation = configuration_generation;
+    /// Install a snapshot, replacing any previous snapshot.
+    ///
+    /// The slot's generation tag is derived from the snapshot's own
+    /// [`ProjectEnvironmentSnapshot::configuration_generation`], so a
+    /// snapshot can never be installed under a tag it was not compiled
+    /// from and stale readers fail closed.
+    pub fn install(&mut self, snapshot: Arc<ProjectEnvironmentSnapshot>) {
+        self.generation = snapshot.configuration_generation;
         self.snapshot = Some(snapshot);
     }
 
@@ -1409,7 +1409,7 @@ mod tests {
         assert!(slot.current().is_none());
         assert!(slot.generation().is_none());
 
-        slot.install(7, std::sync::Arc::new(snapshot));
+        slot.install(std::sync::Arc::new(snapshot));
         assert_eq!(slot.generation(), Some(7));
         let (_, installed) = slot.current().ok_or("installed snapshot must be present")?;
         assert_eq!(installed.workspace_id, "workspace:s1");
@@ -1420,7 +1420,40 @@ mod tests {
             WorkspaceEnvironmentDeclaration::new("workspace:s1", 8, WorkspaceTrust::Trusted)
                 .with_user_include_roots([root("site", "path:site")])
                 .compile()?;
-        slot.install(8, std::sync::Arc::new(refreshed));
+        slot.install(std::sync::Arc::new(refreshed));
+        assert!(slot.current_for_generation(7).is_none());
+        assert!(slot.current_for_generation(8).is_some());
+        Ok(())
+    }
+
+    /// The slot tag must come from the installed snapshot's own
+    /// `configuration_generation`, never from caller belief or the slot's
+    /// previous tag: otherwise `install` could present generation-8 data as
+    /// generation 7 and a stale read would silently accept it.
+    #[test]
+    fn slot_derives_tag_from_installed_snapshot() -> Result<(), Box<dyn std::error::Error>> {
+        let gen7 = WorkspaceEnvironmentDeclaration::new("workspace:s1", 7, WorkspaceTrust::Trusted)
+            .with_user_include_roots([root("lib", "path:lib")])
+            .compile()?;
+        let gen8 = WorkspaceEnvironmentDeclaration::new("workspace:s1", 8, WorkspaceTrust::Trusted)
+            .with_user_include_roots([root("site", "path:site")])
+            .compile()?;
+        assert_eq!(gen7.configuration_generation, 7);
+        assert_eq!(gen8.configuration_generation, 8);
+
+        let mut slot = EnvironmentSnapshotSlot::new();
+        slot.install(std::sync::Arc::new(gen7));
+        assert_eq!(slot.generation(), Some(7));
+
+        // Installing a newer snapshot over a slot tagged 7 must retag from
+        // the snapshot itself: the reported tag tracks the embedded
+        // generation, and the stale generation-7 read fails closed instead
+        // of serving generation-8 data under the old tag.
+        slot.install(std::sync::Arc::new(gen8));
+        assert_eq!(slot.generation(), Some(8));
+        let (tag, installed) = slot.current().ok_or("installed snapshot must be present")?;
+        assert_eq!(tag, installed.configuration_generation);
+        assert_eq!(installed.configuration_generation, 8);
         assert!(slot.current_for_generation(7).is_none());
         assert!(slot.current_for_generation(8).is_some());
         Ok(())
