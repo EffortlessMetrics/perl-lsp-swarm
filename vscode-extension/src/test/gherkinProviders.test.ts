@@ -300,6 +300,28 @@ describe('gherkin outline providers', () => {
     expect(links).toHaveLength(1);
   });
 
+  test('rejects case-folded adjacent repetition through both matching consumers', () => {
+    const pattern = '^a+A+$';
+    const step = parseGherkinStepLine('Given aaAA', 0);
+    expect(step).not.toBeNull();
+    expect(classifyStepDefinitionStatus(step!, [`Given qr/${pattern}/i, sub { return; };`])).toBe(
+      'ambiguous',
+    );
+
+    expect(
+      provideGherkinStepDefinitionLinks(
+        ['Feature: Flags', '  Scenario: Folded overlap', '    Given aaAA'].join('\n'),
+        { line: 2, character: 12 } as vscode.Position,
+        [
+          {
+            uri: vscode.Uri.file('/project/steps.pm'),
+            text: `Given qr/${pattern}/i, sub { return; };`,
+          },
+        ],
+      ),
+    ).toEqual([]);
+  });
+
   test('fails closed when the shared match budget is exhausted', () => {
     const featureText = [
       'Feature: Budget',

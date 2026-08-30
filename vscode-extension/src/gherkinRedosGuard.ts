@@ -38,17 +38,23 @@ function branchesOverlap(branchFirsts: BranchFirst[]): boolean {
   return false;
 }
 
-function hasUnboundedQuantifier(source: string, index: number): boolean {
+function unboundedQuantifierEnd(source: string, index: number): number | null {
   const character = source[index];
   if (character === '+' || character === '*') {
-    return true;
+    return index + 1;
   }
   if (character !== '{') {
-    return false;
+    return null;
   }
 
   const closingBrace = source.indexOf('}', index + 1);
-  return closingBrace > index && /^\{\d+,\}$/.test(source.slice(index, closingBrace + 1));
+  return closingBrace > index && /^\{\d+,\}$/.test(source.slice(index, closingBrace + 1))
+    ? closingBrace + 1
+    : null;
+}
+
+function hasUnboundedQuantifier(source: string, index: number): boolean {
+  return unboundedQuantifierEnd(source, index) !== null;
 }
 
 function hasOverlappingQuantifiedAlternation(source: string): boolean {
@@ -162,32 +168,91 @@ function hasOverlappingQuantifiedAlternation(source: string): boolean {
   return false;
 }
 
-export function isPotentiallyExpensiveRegex(source: string): boolean {
+export function isPotentiallyExpensiveRegex(source: string, flags = ''): boolean {
+  const normalizedFlags = normalizeGherkinRegexFlags(flags);
+  if (normalizedFlags === null) {
+    return true;
+  }
+
   return (
     POTENTIALLY_EXPENSIVE_REGEX_RE.test(source) ||
     hasOverlappingQuantifiedAlternation(source) ||
     hasUnboundedWildcard(source) ||
-    hasAdjacentVariableRepetition(source)
+    hasAdjacentVariableRepetition(source, normalizedFlags)
   );
 }
 
 function hasUnboundedWildcard(source: string): boolean {
-  return /(^|[^\\])\.[+*]/.test(source);
+  for (let index = 0; index < source.length;) {
+    const atom = readRegexAtom(source, index);
+    if (atom === null) {
+      index += 1;
+      continue;
+    }
+    if (atom.source === '.' && unboundedQuantifierEnd(source, atom.end) !== null) {
+      return true;
+    }
+    index = atom.end;
+  }
+  return false;
 }
 
-function hasAdjacentVariableRepetition(source: string): boolean {
-  const adjacentRepetition =
-    /(\\.|\[(?:\\.|[^\]\\])*\]|[^\\()[\]|^$])(?:\+|\*)(\\.|\[(?:\\.|[^\]\\])*\]|[^\\()[\]|^$])(?:\+|\*)/g;
+function hasAdjacentVariableRepetition(source: string, flags: string): boolean {
+  for (let index = 0; index < source.length;) {
+    const left = readRegexAtom(source, index);
+    if (left === null) {
+      index += 1;
+      continue;
+    }
+    index = left.end;
 
-  return Array.from(source.matchAll(adjacentRepetition)).some((match) => {
-    const left = match[1];
-    const right = match[2];
-    return left !== undefined && right !== undefined && atomsMayOverlap(left, right);
-  });
+    const rightStart = unboundedQuantifierEnd(source, left.end);
+    if (rightStart === null) {
+      continue;
+    }
+    const right = readRegexAtom(source, rightStart);
+    if (
+      right !== null &&
+      unboundedQuantifierEnd(source, right.end) !== null &&
+      atomsMayOverlap(left.source, right.source, flags)
+    ) {
+      return true;
+    }
+  }
+  return false;
 }
 
-function atomsMayOverlap(left: string, right: string): boolean {
-  if (left === right) {
+interface RegexAtom {
+  source: string;
+  end: number;
+}
+
+function readRegexAtom(source: string, index: number): RegexAtom | null {
+  const character = source[index];
+  if (character === undefined || '()|^$+*?{}'.includes(character)) {
+    return null;
+  }
+  if (character === '\\') {
+    return source[index + 1] === undefined
+      ? null
+      : { source: source.slice(index, index + 2), end: index + 2 };
+  }
+  if (character !== '[') {
+    return { source: character, end: index + 1 };
+  }
+
+  for (let cursor = index + 1; cursor < source.length; cursor += 1) {
+    if (source[cursor] === '\\') {
+      cursor += 1;
+    } else if (source[cursor] === ']') {
+      return { source: source.slice(index, cursor + 1), end: cursor + 1 };
+    }
+  }
+  return null;
+}
+
+function atomsMayOverlap(left: string, right: string, flags: string): boolean {
+  if (left === right || (flags.includes('i') && left.toLowerCase() === right.toLowerCase())) {
     return true;
   }
 
@@ -198,8 +263,9 @@ function atomsMayOverlap(left: string, right: string): boolean {
   }
 
   try {
-    const leftAtom = new RegExp(`^(?:${left})$`);
-    const rightAtom = new RegExp(`^(?:${right})$`);
+    const atomFlags = flags.includes('i') ? 'i' : '';
+    const leftAtom = new RegExp(`^(?:${left})$`, atomFlags);
+    const rightAtom = new RegExp(`^(?:${right})$`, atomFlags);
     for (let code = 0; code <= 0x7f; code += 1) {
       const witness = String.fromCharCode(code);
       if (leftAtom.test(witness) && rightAtom.test(witness)) {
@@ -239,12 +305,12 @@ export function normalizeGherkinRegexFlags(flags: string): string | null {
   return normalized;
 }
 
-export function isSafeGherkinStepMatch(source: string, stepText: string): boolean {
+export function isSafeGherkinStepMatch(source: string, stepText: string, flags = ''): boolean {
   if (source.length > MAX_MATCH_REGEX_LENGTH || stepText.length > MAX_MATCH_STEP_TEXT_LENGTH) {
     return false;
   }
 
-  return !isPotentiallyExpensiveRegex(source);
+  return !isPotentiallyExpensiveRegex(source, flags);
 }
 
 export function createGherkinMatchBudget(): GherkinMatchBudget {

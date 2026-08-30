@@ -380,7 +380,7 @@ export async function collectWorkspaceStepDefinitionSources(
   let files: vscode.Uri[];
   try {
     files = await vscode.workspace.findFiles(
-      DEFAULT_STEP_DEFINITION_GLOB,
+      new vscode.RelativePattern(workspaceFolder, DEFAULT_STEP_DEFINITION_GLOB),
       DEFAULT_EXCLUDE_GLOB,
       MAX_STEP_DEFINITION_FILES,
     );
@@ -534,13 +534,13 @@ function testExtractedDefinition(
   definition: ExtractedStepDefinition,
   stepText: string,
 ): boolean | null {
-  if (!isSafeGherkinStepMatch(definition.pattern, stepText)) {
+  const flags = normalizeGherkinRegexFlags(definition.flags);
+  if (flags === null || !isSafeGherkinStepMatch(definition.pattern, stepText, flags)) {
     return null;
   }
 
   try {
-    const flags = normalizeGherkinRegexFlags(definition.flags);
-    return flags === null ? null : new RegExp(definition.pattern, flags).test(stepText);
+    return new RegExp(definition.pattern, flags).test(stepText);
   } catch {
     return null;
   }

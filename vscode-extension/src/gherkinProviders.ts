@@ -577,13 +577,13 @@ function stepTextMatches(stepText: string, matcher: StepMatcher): boolean {
     return matcher.text === stepText;
   }
 
-  if (!isSafeGherkinStepMatch(matcher.source, stepText)) {
+  const flags = normalizeGherkinRegexFlags(matcher.flags);
+  if (flags === null || !isSafeGherkinStepMatch(matcher.source, stepText, flags)) {
     return false;
   }
 
   try {
-    const flags = normalizeGherkinRegexFlags(matcher.flags);
-    return flags === null ? false : new RegExp(matcher.source, flags).test(stepText);
+    return new RegExp(matcher.source, flags).test(stepText);
   } catch {
     return false;
   }

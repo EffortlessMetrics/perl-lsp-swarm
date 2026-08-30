@@ -7,6 +7,15 @@ const findFiles = jest.fn<Promise<{ fsPath: string }[]>, unknown[]>();
 jest.mock(
   'vscode',
   () => ({
+    RelativePattern: class {
+      readonly baseUri: { fsPath: string };
+      readonly pattern: string;
+
+      constructor(folder: { uri: { fsPath: string } }, pattern: string) {
+        this.baseUri = folder.uri;
+        this.pattern = pattern;
+      }
+    },
     workspace: {
       isTrusted: true,
       findFiles: (...args: unknown[]) => findFiles(...args),
@@ -307,6 +316,22 @@ describe('bounded workspace step-definition scan', () => {
 
     await expect(scan()).resolves.toEqual({
       sources: ['Given qr/^ok$/, sub { return; };\n'],
+      complete: true,
+    });
+  });
+
+  it('scopes discovery to the selected workspace folder before applying the cap', async () => {
+    const filePath = await writeStepFile('selected_steps.pm', 'Given qr/^selected$/, sub {};\n');
+    findFiles.mockImplementation(async (include: unknown) => {
+      expect(include).toMatchObject({
+        baseUri: { fsPath: workspaceRoot },
+        pattern: '**/*.pm',
+      });
+      return [{ fsPath: filePath }];
+    });
+
+    await expect(scan()).resolves.toEqual({
+      sources: ['Given qr/^selected$/, sub {};\n'],
       complete: true,
     });
   });

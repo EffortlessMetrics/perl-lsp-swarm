@@ -48,6 +48,9 @@ describe('gherkin ReDoS guard (#6154)', () => {
     ['separated numeric repetition', '^\\d+\\.\\d+$', '12.34'],
     ['disjoint character-class repetition', '^[a-z]+[0-9]+$', 'abc123'],
     ['escaped disjoint class member', '^[a\\-]+[0-9]+$', 'a-1'],
+    ['literal dot character class', '^[.*]+$', '...'],
+    ['literal plus character class', '^[.+]*$', '++'],
+    ['finite adjacent repetition', '^a{1,3}a{1,3}$', 'aa'],
   ])('accepts %s through the shared match policy', (_name, source, stepText) => {
     expect(isSafeGherkinStepMatch(source, stepText)).toBe(true);
   });
@@ -66,7 +69,13 @@ describe('gherkin ReDoS guard (#6154)', () => {
     ['equivalent adjacent digit classes', '^\\d+[0-9]+$', '12'],
     ['complemented adjacent classes fail closed', '^[^a]+[^b]+$', 'xy'],
     ['Unicode adjacent atoms fail closed', '^é+[é]+$', 'éé'],
+    ['adjacent unbounded counted repetition', '^a{1,}a{1,}$', 'aa'],
   ])('rejects %s through the shared match policy', (_name, source, stepText) => {
     expect(isSafeGherkinStepMatch(source, stepText)).toBe(false);
+  });
+
+  test('rejects adjacent repetition that overlaps only after case folding', () => {
+    expect(isSafeGherkinStepMatch('^a+A+$', 'aaAA', 'i')).toBe(false);
+    expect(isSafeGherkinStepMatch('^a+A+$', 'aaAA')).toBe(true);
   });
 });
