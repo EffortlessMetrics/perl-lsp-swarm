@@ -6,18 +6,18 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12457 |
-| Rust-family files | 3847 |
-| Non-Rust files | 8610 |
-| Allowlisted | 6373 |
+| Total tracked files | 12466 |
+| Rust-family files | 3850 |
+| Non-Rust files | 8616 |
+| Allowlisted | 6379 |
 | Unclassified | 2237 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 491 |
-| documentation | 2805 |
+| config | 493 |
+| documentation | 2809 |
 | generated | 2 |
 | production | 348 |
 | test | 2058 |
@@ -2344,6 +2344,7 @@
 | `.changes/unreleased/product-13157-Fixed-023317.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-13159-Fixed-023400.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-13169-Fixed-024536.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-13180-Fixed-025800.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-13191-Fixed-062500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-13283-Fixed-122901.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-13796-Fixed-174500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -2876,6 +2877,8 @@
 | `.github/actions/setup-rust/action.yml` | config | `non-rust-github-actions` | release/ci |
 | `.github/actions/setup-vscode-toolchain/action.yml` | config | `non-rust-github-actions` | release/ci |
 | `.github/actions/upload-receipt/action.yml` | config | `non-rust-github-actions` | release/ci |
+| `.github/actions/upload-receipt/render_summary.py` | config | `non-rust-github-actions` | release/ci |
+| `.github/actions/upload-receipt/test_render_summary.py` | config | `non-rust-github-actions` | release/ci |
 | `.github/actions/upload-receipt/test_validate_paths.py` | config | `non-rust-github-actions` | release/ci |
 | `.github/actions/upload-receipt/validate_paths.py` | config | `non-rust-github-actions` | release/ci |
 | `.github/ci-config.yml` | config | `non-rust-github-policy` | release/ci |
@@ -3145,6 +3148,9 @@
 | `.spec/11079-pl700-removal-containment/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11079-pl700-removal-containment/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11084-import-cleanup-train-manifest/import_cleanup_train.v1.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/11097-declaration-attribute-syntax/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11097-declaration-attribute-syntax/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11097-declaration-attribute-syntax/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11178-lite-xl-bdd-journeys/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11178-lite-xl-bdd-journeys/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11178-lite-xl-bdd-journeys/context.md` | documentation | `non-rust-root-governance-docs` | docs |
