@@ -62,10 +62,10 @@ pub struct Repository {
     #[serde(default)]
     pub target_decision_owner: Option<String>,
     pub migration_state: String,
-    pub role: String,
+    pub role: RepositoryRole,
     pub allowed_dependencies: Vec<String>,
     pub forbidden_dependencies: Vec<String>,
-    pub history_transfer: String,
+    pub history_transfer: HistoryTransfer,
     pub controller: String,
     pub move_issue: String,
     pub blocking_prerequisites: Vec<String>,
@@ -93,6 +93,55 @@ pub struct Package {
     pub metadata_authority: MetadataAuthority,
 }
 
+/// What a repository is for. A closed vocabulary, like the other classification
+/// fields: an unrecognised role in an authority whose whole job is machine-checked
+/// classification would otherwise pass validation and land in the generated page.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RepositoryRole {
+    ProductIntegration,
+    ExperimentalParser,
+    HistoricalComparisonSubject,
+    GenericLspFramework,
+    NativeParserWorkspace,
+    CorpusAssets,
+    LowerSourceIdentity,
+}
+
+/// What happens to a repository's history when its source moves.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum HistoryTransfer {
+    PreservePathHistory,
+    NotApplicable,
+    Undecided,
+}
+
+/// What an excluded tree is.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ExcludedTreeKind {
+    VendoredUpstreamSource,
+    SeparateWorkspace,
+}
+
+/// Render a `snake_case`-serialised classification back for the projection.
+fn snake_case_name(value: &impl std::fmt::Debug) -> String {
+    let camel = format!("{value:?}");
+    let mut out = String::with_capacity(camel.len() + 4);
+    for (index, ch) in camel.char_indices() {
+        if ch.is_ascii_uppercase() {
+            if index != 0 {
+                out.push('_');
+            }
+            out.push(ch.to_ascii_lowercase());
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Placement {
@@ -118,7 +167,7 @@ pub enum MetadataAuthority {
 #[serde(deny_unknown_fields)]
 pub struct ExcludedTree {
     pub path: String,
-    pub kind: String,
+    pub kind: ExcludedTreeKind,
     pub owner: String,
     pub notes: String,
 }
@@ -715,8 +764,8 @@ pub fn render(topology: &Topology) -> String {
             repo.repository_id,
             target,
             repo.migration_state,
-            repo.role,
-            repo.history_transfer,
+            snake_case_name(&repo.role),
+            snake_case_name(&repo.history_transfer),
             repo.controller,
             repo.move_issue,
             blocked
@@ -791,7 +840,10 @@ pub fn render(topology: &Topology) -> String {
             let _ = writeln!(
                 out,
                 "| `{}` | `{}` | {} | {} |",
-                tree.path, tree.kind, tree.owner, tree.notes
+                tree.path,
+                snake_case_name(&tree.kind),
+                tree.owner,
+                tree.notes
             );
         }
     }
@@ -842,7 +894,7 @@ notes = "The product repository."
 repository_id = "library"
 target = "Org/library"
 migration_state = "embedded"
-role = "library"
+role = "corpus_assets"
 allowed_dependencies = []
 forbidden_dependencies = ["product"]
 history_transfer = "preserve_path_history"
@@ -1225,6 +1277,31 @@ metadata_authority = "workspace_inherited"
         let excludes = BTreeSet::from(["vendor".to_string()]);
         validate(&topology, &manifests(), &excludes)?;
         Ok(())
+    }
+
+    /// `role`, `history_transfer` and `kind` are closed vocabularies. A typo in
+    /// any of them used to pass validation untouched and land in the generated
+    /// page, because nothing but the renderer ever read them.
+    #[test]
+    fn rejects_an_unrecognised_repository_role() {
+        let source = fixture().replace("role = \"corpus_assets\"", "role = \"corpus_asets\"");
+        assert!(parse(&source).is_err(), "an unrecognised role must be rejected");
+    }
+
+    #[test]
+    fn rejects_an_unrecognised_history_transfer() {
+        let source = fixture()
+            .replace("history_transfer = \"not_applicable\"", "history_transfer = \"maybe\"");
+        assert!(parse(&source).is_err(), "an unrecognised history transfer must be rejected");
+    }
+
+    #[test]
+    fn rejects_an_unrecognised_excluded_tree_kind() {
+        let source = format!(
+            "{}\n[[excluded_trees]]\npath = \"vendor\"\nkind = \"mystery\"\nowner = \"#9\"\nnotes = \"n\"\n",
+            fixture()
+        );
+        assert!(parse(&source).is_err(), "an unrecognised excluded-tree kind must be rejected");
     }
 
     #[test]
