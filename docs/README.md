@@ -22,18 +22,17 @@ If a doc starts mixing multiple intents, split it and cross-link the parts.
 | Topic | Source | Verified By |
 | --- | --- | --- |
 | Current release line | [`../Cargo.toml`](../Cargo.toml) | Workspace manifest |
-| Status overview and subsystem map | [project/status/index.md](project/status/index.md) and its owner-designated subsystem links | Human review for human-owned pages; each generated page's declared generator and check, when provided |
+| Status overview and subsystem map | [project/status/index.md](project/status/index.md) and its subsystem links | The index `Owner` column is a summary; follow each linked page or section's ownership and update instructions |
 | Roadmap and active milestone | [project/ROADMAP.md](project/ROADMAP.md) | Human review |
 | Distribution and install-channel matrix | [project/DISTRIBUTION_MATRIX.md](project/DISTRIBUTION_MATRIX.md) | Release status + channel receipts |
 | Capability catalog | [`../features.toml`](../features.toml) | `just ci-gate` |
 | Local validation flow | [project/CI_LOCAL_VALIDATION.md](project/CI_LOCAL_VALIDATION.md) | `just ci-gate` |
 
 Rule: keep the project overview narrative in
-[project/status/index.md](project/status/index.md), and follow its owner column for
-human-owned subsystem status. Computed metrics belong only in owner-designated
-generated pages or sections; use the generator and any check declared by the owning
-page. For targets selected by `cargo xtask update-status`, verify them with `--check`
-rather than copying them into the index.
+[project/status/index.md](project/status/index.md). Its `Owner` column summarizes each
+subsystem; it is not complete edit authority for every linked page or mixed-ownership
+section. Follow the ownership, generator, and check instructions declared by the
+specific linked page or section, and do not copy computed metrics into the index.
 
 ## Compatibility posture
 
@@ -101,16 +100,18 @@ For complete workspace membership and canonical crate/version truth, use [`../Ca
 
 ## Maintenance
 
+For the generated pages and sections owned by `cargo xtask update-status`:
+
 ```bash
 nix develop -c just ci-gate
 just status-update
 just status-check
 ```
 
-- Keep overview narrative in [project/status/index.md](project/status/index.md) and
-  other human-owned status in the owner-designated subsystem pages. For generated
-  pages, run the generator and any check declared by that page; for targets selected
-  by `cargo xtask update-status`, regenerate with `--write`, then verify with `--check`.
+- Keep overview narrative in [project/status/index.md](project/status/index.md). For
+  each linked subsystem page or section, follow its own human/generated ownership and
+  its declared generation and verification commands; treat the index `Owner` column
+  as a subsystem summary, not complete edit authority.
 - Update [project/ROADMAP.md](project/ROADMAP.md) when the active milestone or release framing changes.
 - Keep top-level summary docs short and link back to the canonical project docs.
 - Keep each doc in the correct Diataxis category; prefer cross-links over hybrid docs that try to do everything.
