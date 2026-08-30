@@ -817,6 +817,9 @@ fn hir_kind_name(kind: &HirKind) -> &'static str {
         HirKind::HeredocMigrationAdapter(_) => "HeredocMigrationAdapter",
         HirKind::ReadlineMigrationAdapter(_) => "ReadlineMigrationAdapter",
         HirKind::GlobMigrationAdapter(_) => "GlobMigrationAdapter",
+        // Not yet lowered by PIR v0; falls through to the `other =>`
+        // unsupported-count fallback in `lower_item`, keyed by this name.
+        HirKind::DataSectionDecl(_) => "DataSectionDecl",
     }
 }
 

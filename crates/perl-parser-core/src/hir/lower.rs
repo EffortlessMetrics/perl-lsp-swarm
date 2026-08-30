@@ -16,17 +16,17 @@ use super::model::{
     BlockShell, BranchKeyword, BranchShell, CallExpr, CallForm, ClassDecl, CompileConfidence,
     CompileDirective, CompileDirectiveAction, CompileDirectiveKind, CompileEnvironment,
     CompileEnvironmentBoundary, CompileEnvironmentBoundaryKind, CompilePhase, CompilePhaseBlock,
-    CompileProvenance, ControlTransfer, ControlTransferKind, DeferExpr, DerefAggregateKind,
-    DerefExpr, DerefOperandKind, DynamicBoundary, DynamicBoundaryKind, ExportDeclaration,
-    ExportDeclarationKind, GlobMigrationAdapter, GlobSlot, GlobSlotKind, GlobSlotSource,
-    HIR_BODY_MODEL_VERSION, HeredocMigrationAdapter, HirBindingId, HirFile, HirId, HirItem,
-    HirKind, HirScopeId, IncRootAction, IncRootFact, IncRootKind, IndirectCallExpr,
-    InheritanceSource, LiteralExpr, LiteralKind, LoopKind, LoopShell, MatchExpr, MethodCallExpr,
-    MethodDecl, ModuleRequest, ModuleRequestKind, ModuleResolutionStatus, PackageDecl,
-    PackageInheritanceEdge, PackageStash, PragmaArgumentKind, PragmaEffect, PragmaStateFact,
-    PrototypeFact, PrototypeTable, ReadlineMigrationAdapter, ReadlineSource, RecoveryConfidence,
-    RegexExpr, RegexTargetKind, RequireDecl, ScopeFrame, ScopeGraph, ScopeKind, StashConfidence,
-    StashDynamicBoundary, StashDynamicBoundaryKind, StashGraph, StashProvenance,
+    CompileProvenance, ControlTransfer, ControlTransferKind, DataSectionDecl, DataSectionMarker,
+    DeferExpr, DerefAggregateKind, DerefExpr, DerefOperandKind, DynamicBoundary,
+    DynamicBoundaryKind, ExportDeclaration, ExportDeclarationKind, GlobMigrationAdapter, GlobSlot,
+    GlobSlotKind, GlobSlotSource, HIR_BODY_MODEL_VERSION, HeredocMigrationAdapter, HirBindingId,
+    HirFile, HirId, HirItem, HirKind, HirScopeId, IncRootAction, IncRootFact, IncRootKind,
+    IndirectCallExpr, InheritanceSource, LiteralExpr, LiteralKind, LoopKind, LoopShell, MatchExpr,
+    MethodCallExpr, MethodDecl, ModuleRequest, ModuleRequestKind, ModuleResolutionStatus,
+    PackageDecl, PackageInheritanceEdge, PackageStash, PragmaArgumentKind, PragmaEffect,
+    PragmaStateFact, PrototypeFact, PrototypeTable, ReadlineMigrationAdapter, ReadlineSource,
+    RecoveryConfidence, RegexExpr, RegexTargetKind, RequireDecl, ScopeFrame, ScopeGraph, ScopeKind,
+    StashConfidence, StashDynamicBoundary, StashDynamicBoundaryKind, StashGraph, StashProvenance,
     StatementModifierKind, StatementModifierShell, StorageClass, SubDecl, SubstitutionExpr,
     TransliterationExpr, TryExpr, UseDecl, VariableBinding, VariableDecl,
     glob_pattern_interpolates,
@@ -1177,6 +1177,38 @@ impl Lowerer {
             | NodeKind::MissingIdentifier
             | NodeKind::MissingBlock
             | NodeKind::UnknownRest => {}
+            NodeKind::DataSection { marker, marker_span, body_span, .. } => {
+                // Map the source-faithful marker text to its typed identity.
+                // Any text other than the two real Perl markers cannot occur
+                // from the parser, but this arm must not panic on it — fall
+                // back to the previous no-op (no HIR item emitted) instead.
+                let Some(marker_kind) = (match marker.as_str() {
+                    "__DATA__" => Some(DataSectionMarker::Data),
+                    "__END__" => Some(DataSectionMarker::End),
+                    _ => None,
+                }) else {
+                    return;
+                };
+                // Defensive: a missing marker span means no exact range is
+                // available, so no item is emitted rather than fabricating one.
+                let Some(marker_range) = *marker_span else {
+                    return;
+                };
+                self.push_item(
+                    node,
+                    *marker_span,
+                    confidence,
+                    HirKind::DataSectionDecl(DataSectionDecl {
+                        marker: marker_kind,
+                        marker_range,
+                        payload_range: *body_span,
+                    }),
+                    self.package_context.clone(),
+                    Some(self.current_scope()),
+                );
+                // No children: the payload is an opaque source region and is
+                // never traversed or lowered as Perl.
+            }
             _ => self.visit_children(node, confidence),
         }
     }
