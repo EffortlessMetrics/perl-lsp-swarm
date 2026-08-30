@@ -10,7 +10,7 @@
 //!
 //! - `GIT_CONFIG_NOSYSTEM=1`, `GIT_ATTR_NOSYSTEM=1`, and
 //!   `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM`
-//!   point at pinned fixture files (or an intentionally absent path), so
+//!   point at caller-owned empty or pinned fixture files, so
 //!   system and global configuration, aliases, hooks paths, templates,
 //!   attributes, filters, signing, and object-format defaults cannot leak in;
 //! - command-scoped `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_*`/`GIT_CONFIG_VALUE_*`
@@ -92,12 +92,6 @@ const AMBIENT_GIT_ENV: &[&str] = &[
     "LC_ALL",
     "LANG",
 ];
-
-/// A path that is intentionally never created, so Git treats it as an empty
-/// configuration file.
-fn absent_config_path() -> PathBuf {
-    std::env::temp_dir().join("plsw-hermetic-git-fixture-absent-config")
-}
 
 /// Renders a path as a Git configuration value. Git's INI parser treats
 /// backslashes as escape sequences, so configuration values must use the
@@ -275,12 +269,15 @@ pub fn init_git_repo(dir: &Path) -> Result<()> {
 /// Run a hermetic git command in `cwd`. Returns an error carrying argv, cwd,
 /// and stderr if the command fails.
 pub fn git_cmd(args: &[&str], cwd: Option<&Path>) -> Result<()> {
+    let config_scope = tempfile::tempdir().context("failed to create Git config scope")?;
+    let empty_config = config_scope.path().join("empty-config");
+    fs::write(&empty_config, "").context("failed to create empty Git config")?;
     let mut cmd = StdCommand::new("git");
     cmd.args(args);
     if let Some(dir) = cwd {
         cmd.current_dir(dir);
     }
-    apply_hermetic_config(&mut cmd, &absent_config_path(), &absent_config_path());
+    apply_hermetic_config(&mut cmd, &empty_config, &empty_config);
     let output = cmd.output().with_context(|| format!("git {} failed to start", args.join(" ")))?;
     if !output.status.success() {
         bail!("{}", fail_typed(args, cwd, &output));

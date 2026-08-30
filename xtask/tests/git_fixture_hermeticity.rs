@@ -344,7 +344,7 @@ fn hostile_global_hooks_path_cannot_mutate_staged_content() -> Result<()> {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(&hook, fs::Permissions::from_mode(0o755))?;
     }
-    let global = hostile_global(
+    let _global = hostile_global(
         tmp.path(),
         "hostile-global",
         &format!("[core]\n\thooksPath = {}\n", config_path_value(&hooks)),
@@ -352,35 +352,31 @@ fn hostile_global_hooks_path_cannot_mutate_staged_content() -> Result<()> {
     let hermetic = HermeticGit::at(&tmp.path().join("pins"))?;
 
     let hermetic_repo = tmp.path().join("hermetic-repo");
-    let (head, pinned) = hermetic_commit(&hermetic, &hermetic_repo, "content\n")?;
+    let (_head, pinned) = hermetic_commit(&hermetic, &hermetic_repo, "content\n")?;
     ensure!(
         committed_blob_id(&hermetic, &hermetic_repo)? == pinned,
         "hostile global hooks path must not mutate the hermetic fixture's staged content"
     );
 
-    let legacy_repo = tmp.path().join("legacy-repo");
-    legacy_init(&legacy_repo, &global)?;
-    fs::write(legacy_repo.join("tracked.txt"), "content\n")?;
-    legacy_git(&legacy_repo, &["add", "tracked.txt"], &global)?;
-    let legacy_commit =
-        legacy_git(&legacy_repo, &["commit", "-m", "hostile control subject"], &global);
-    match legacy_commit {
-        Ok(_) => {
-            let legacy_blob =
-                legacy_git(&legacy_repo, &["rev-parse", "HEAD:tracked.txt"], &global)?;
-            assert_ne!(
-                legacy_blob, pinned,
-                "legacy harness must show the hook-driven content drift the hermetic pin blocks"
-            );
-            ensure!(
-                legacy_git(&legacy_repo, &["rev-parse", "HEAD"], &global)? != head,
-                "hook drift must not reproduce the pinned hermetic identity"
-            );
-        }
-        Err(_) => {
-            // A host may refuse hook execution outright; the hermetic pin
-            // still held above.
-        }
+    // The legacy falsifier requires POSIX executable-bit semantics. The
+    // hermetic assertion above remains cross-platform; Windows cannot provide
+    // the same attributable hook-execution precondition.
+    #[cfg(unix)]
+    {
+        let legacy_repo = tmp.path().join("legacy-repo");
+        legacy_init(&legacy_repo, &_global)?;
+        fs::write(legacy_repo.join("tracked.txt"), "content\n")?;
+        legacy_git(&legacy_repo, &["add", "tracked.txt"], &_global)?;
+        legacy_git(&legacy_repo, &["commit", "-m", "hostile control subject"], &_global)?;
+        let legacy_blob = legacy_git(&legacy_repo, &["rev-parse", "HEAD:tracked.txt"], &_global)?;
+        assert_ne!(
+            legacy_blob, pinned,
+            "legacy harness must show the hook-driven content drift the hermetic pin blocks"
+        );
+        ensure!(
+            legacy_git(&legacy_repo, &["rev-parse", "HEAD"], &_global)? != _head,
+            "hook drift must not reproduce the pinned hermetic identity"
+        );
     }
     Ok(())
 }
@@ -390,7 +386,7 @@ fn hostile_global_content_filters_cannot_change_the_pinned_tree() -> Result<()> 
     let tmp = tempfile::tempdir()?;
     let attributes = tmp.path().join("hostile-attributes");
     fs::write(&attributes, "*.txt\tfilter=hostile\n")?;
-    let global = hostile_global(
+    let _global = hostile_global(
         tmp.path(),
         "hostile-global",
         &format!(
@@ -407,25 +403,21 @@ fn hostile_global_content_filters_cannot_change_the_pinned_tree() -> Result<()> 
         "hostile global clean filter must not change the hermetic fixture's pinned blob"
     );
 
-    let legacy_repo = tmp.path().join("legacy-repo");
-    legacy_init(&legacy_repo, &global)?;
-    fs::write(legacy_repo.join("tracked.txt"), "content\n")?;
-    legacy_git(&legacy_repo, &["add", "tracked.txt"], &global)?;
-    let legacy_commit =
-        legacy_git(&legacy_repo, &["commit", "-m", "hostile control subject"], &global);
-    match legacy_commit {
-        Ok(_) => {
-            let legacy_blob =
-                legacy_git(&legacy_repo, &["rev-parse", "HEAD:tracked.txt"], &global)?;
-            assert_ne!(
-                legacy_blob, pinned,
-                "legacy harness must show the clean-filter drift the hermetic pin blocks"
-            );
-        }
-        Err(_) => {
-            // Filter execution may be unavailable on a host; the hermetic pin
-            // still held above.
-        }
+    // `tr` is the observable hostile filter and is a POSIX dependency. On
+    // Unix the legacy branch must execute successfully and visibly drift;
+    // other platforms exercise the cross-platform hermetic assertion above.
+    #[cfg(unix)]
+    {
+        let legacy_repo = tmp.path().join("legacy-repo");
+        legacy_init(&legacy_repo, &_global)?;
+        fs::write(legacy_repo.join("tracked.txt"), "content\n")?;
+        legacy_git(&legacy_repo, &["add", "tracked.txt"], &_global)?;
+        legacy_git(&legacy_repo, &["commit", "-m", "hostile control subject"], &_global)?;
+        let legacy_blob = legacy_git(&legacy_repo, &["rev-parse", "HEAD:tracked.txt"], &_global)?;
+        assert_ne!(
+            legacy_blob, pinned,
+            "legacy harness must show the clean-filter drift the hermetic pin blocks"
+        );
     }
     Ok(())
 }
@@ -498,6 +490,13 @@ fn hostile_command_scoped_config_injection_is_scrubbed() -> Result<()> {
         ensure!(
             legacy_git(&legacy_repo, &["rev-parse", "HEAD"], &global)? != head,
             "command-scoped signing injection must not reproduce the pinned identity"
+        );
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr).to_ascii_lowercase();
+        ensure!(
+            stderr.contains("sign"),
+            "legacy refusal must be attributable to injected signing, not an unrelated failure: {}",
+            String::from_utf8_lossy(&output.stderr)
         );
     }
     Ok(())
