@@ -6,21 +6,21 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12416 |
-| Rust-family files | 3821 |
-| Non-Rust files | 8595 |
-| Allowlisted | 6360 |
+| Total tracked files | 12430 |
+| Rust-family files | 3822 |
+| Non-Rust files | 8608 |
+| Allowlisted | 6373 |
 | Unclassified | 2235 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 490 |
+| config | 492 |
 | documentation | 2803 |
 | generated | 2 |
 | production | 348 |
-| test | 2055 |
+| test | 2066 |
 | tooling | 662 |
 | unclassified | 2235 |
 
@@ -6209,6 +6209,17 @@
 | `fixtures/experience/standalone_candidate_selection/20_previous_current_alias.json` | test | `non-rust-standalone-candidate-selection-fixtures` | release/ci |
 | `fixtures/experience/standalone_candidate_selection/21_private_path_leakage.json` | test | `non-rust-standalone-candidate-selection-fixtures` | release/ci |
 | `fixtures/experience/standalone_candidate_selection/22_current_names_missing_candidate.json` | test | `non-rust-standalone-candidate-selection-fixtures` | release/ci |
+| `fixtures/experience/standalone_source_build/01_exact_plan.json` | test | `non-rust-standalone-source-build-fixtures` | install/release |
+| `fixtures/experience/standalone_source_build/02_latest_selector_rejected.json` | test | `non-rust-standalone-source-build-fixtures` | install/release |
+| `fixtures/experience/standalone_source_build/03_workspace_source_rejected.json` | test | `non-rust-standalone-source-build-fixtures` | install/release |
+| `fixtures/experience/standalone_source_build/04_checksum_mismatch.json` | test | `non-rust-standalone-source-build-fixtures` | install/release |
+| `fixtures/experience/standalone_source_build/05_lockfile_missing.json` | test | `non-rust-standalone-source-build-fixtures` | install/release |
+| `fixtures/experience/standalone_source_build/06_source_as_pair_rejected.json` | test | `non-rust-standalone-source-build-fixtures` | install/release |
+| `fixtures/experience/standalone_source_build/07_implicit_fallback_rejected.json` | test | `non-rust-standalone-source-build-fixtures` | install/release |
+| `fixtures/experience/standalone_source_build/08_no_consent_rejected.json` | test | `non-rust-standalone-source-build-fixtures` | install/release |
+| `fixtures/experience/standalone_source_build/09_ambient_configuration_rejected.json` | test | `non-rust-standalone-source-build-fixtures` | install/release |
+| `fixtures/experience/standalone_source_build/10_directory_is_not_sandbox.json` | test | `non-rust-standalone-source-build-fixtures` | install/release |
+| `fixtures/experience/standalone_source_build/11_private_receipt_rejected.json` | test | `non-rust-standalone-source-build-fixtures` | install/release |
 | `fixtures/product_health_status/expected/status.json` | test | `non-rust-product-health-status-fixtures` | tooling/product-health |
 | `fixtures/product_health_status/registry.json` | test | `non-rust-product-health-status-fixtures` | tooling/product-health |
 | `fixtures/product_health_status/sources/chk-a.json` | test | `non-rust-product-health-status-fixtures` | tooling/product-health |
@@ -6374,6 +6385,7 @@
 | `policy/semantic-token-classes.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/skill-provider-parity.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/standalone-archive-safety.v1.toml` | config | `non-rust-policy-ledgers` | release/ci |
+| `policy/standalone-source-build.v1.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/trust-lanes.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/ub-review.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/workflow-contracts.toml` | config | `non-rust-policy-ledgers` | release/ci |
@@ -6411,6 +6423,7 @@
 | `schemas/standalone_candidate.v1.schema.json` | config | `non-rust-standalone-candidate-schema` | release/ci |
 | `schemas/standalone_current_selection.v1.schema.json` | config | `non-rust-standalone-current-selection-schema` | release/ci |
 | `schemas/standalone_install_transition.v1.schema.json` | config | `non-rust-standalone-install-transition-schema` | release/ci |
+| `schemas/standalone_source_build.v1.schema.json` | config | `non-rust-standalone-source-build-schema` | install/release |
 | `schemas/train_edge_contract.v1.schema.json` | config | `non-rust-train-edge-contract-schema` | tooling/train-graph |
 | `schemas/vsix_candidate_payload.v1.schema.json` | config | `non-rust-vsix-candidate-payload-schema` | release/ci |
 | `scripts/.ignored-baseline` | tooling | `non-rust-ci-scripts-tree` | release/ci |

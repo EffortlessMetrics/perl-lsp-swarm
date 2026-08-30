@@ -1,0 +1,356 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/EffortlessMetrics/perl-lsp-swarm/schemas/standalone_source_build.v1.schema.json",
+  "title": "standalone_source_build.v1",
+  "description": "Exact registry-source build plan and bounded execution policy (#11514). Planning is not execution; source mode is advanced and server-only.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "transaction_id",
+    "attempt_id",
+    "registry",
+    "package",
+    "source",
+    "target",
+    "toolchain",
+    "features",
+    "profile",
+    "product_unit",
+    "execution",
+    "network",
+    "configuration",
+    "resource_policy",
+    "policy_id"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "standalone_source_build.v1"
+    },
+    "transaction_id": {
+      "$ref": "#/$defs/id"
+    },
+    "attempt_id": {
+      "$ref": "#/$defs/id"
+    },
+    "registry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocol",
+        "index",
+        "identity"
+      ],
+      "properties": {
+        "protocol": {
+          "enum": [
+            "crates.io_sparse",
+            "crates.io_git"
+          ]
+        },
+        "index": {
+          "$ref": "#/$defs/text"
+        },
+        "identity": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "package": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "version",
+        "checksum",
+        "manifest_sha256",
+        "materialized_checksum"
+      ],
+      "properties": {
+        "name": {
+          "const": "perllsp"
+        },
+        "version": {
+          "$ref": "#/$defs/version"
+        },
+        "checksum": {
+          "$ref": "#/$defs/sha256"
+        },
+        "manifest_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "materialized_checksum": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "resolved_source_sha256",
+        "lockfile_sha256"
+      ],
+      "properties": {
+        "kind": {
+          "const": "registry_package"
+        },
+        "resolved_source_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "lockfile_sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "platform",
+        "triple",
+        "libc"
+      ],
+      "properties": {
+        "platform": {
+          "enum": [
+            "linux",
+            "macos",
+            "windows"
+          ]
+        },
+        "triple": {
+          "$ref": "#/$defs/text"
+        },
+        "libc": {
+          "enum": [
+            "gnu",
+            "musl",
+            "msvc",
+            "none"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "platform": { "const": "linux" } } },
+          "then": { "properties": { "triple": { "pattern": "linux" }, "libc": { "enum": ["gnu", "musl", "none"] } } }
+        },
+        {
+          "if": { "properties": { "platform": { "const": "macos" } } },
+          "then": { "properties": { "triple": { "pattern": "apple-darwin" }, "libc": { "const": "none" } } }
+        },
+        {
+          "if": { "properties": { "platform": { "const": "windows" } } },
+          "then": { "properties": { "triple": { "pattern": "windows" }, "libc": { "const": "msvc" } } }
+        }
+      ]
+    },
+    "toolchain": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "rustc",
+        "cargo"
+      ],
+      "properties": {
+        "rustc": {
+          "$ref": "#/$defs/text"
+        },
+        "cargo": {
+          "$ref": "#/$defs/text"
+        },
+        "rustup_toolchain": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 128
+        }
+      }
+    },
+    "features": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "default_features",
+        "enabled"
+      ],
+      "properties": {
+        "default_features": {
+          "type": "boolean"
+        },
+        "enabled": {
+          "type": "array",
+          "maxItems": 32,
+          "items": {
+            "$ref": "#/$defs/text"
+          }
+        }
+      }
+    },
+    "profile": {
+      "enum": ["dev", "release", "agent", "dist", "bench"]
+    },
+    "product_unit": {
+      "enum": [
+        "advanced_source_server_only"
+      ]
+    },
+    "execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "consent",
+        "code_execution",
+        "isolation_claim",
+        "archive_fallback",
+        "performed",
+        "network_accessed"
+      ],
+      "properties": {
+        "consent": {
+          "enum": [
+            "required",
+            "recorded"
+          ]
+        },
+        "code_execution": {
+          "const": "build_scripts_and_proc_macros_may_execute"
+        },
+        "isolation_claim": {
+          "const": "not_a_security_sandbox"
+        },
+        "archive_fallback": {
+          "const": "forbidden"
+        },
+        "performed": {
+          "type": "boolean"
+        },
+        "network_accessed": {
+          "type": "boolean"
+        }
+      }
+    },
+    "network": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "materialization",
+        "build"
+      ],
+      "properties": {
+        "materialization": {
+          "enum": [
+            "allowed",
+            "forbidden",
+            "explicit"
+          ]
+        },
+        "build": {
+          "enum": [
+            "allowed",
+            "forbidden",
+            "explicit"
+          ]
+        }
+      }
+    },
+    "configuration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "inputs",
+        "redactions"
+      ],
+      "properties": {
+        "inputs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "enum": [
+              "cargo_home",
+              "rustup_home",
+              "cargo_config",
+              "proxy_ca",
+              "rustflags",
+              "rustdocflags",
+              "rustc_wrapper",
+              "rustc_workspace_wrapper",
+              "linker",
+              "runner",
+              "path",
+              "git_config",
+              "target_cache"
+            ]
+          }
+        },
+        "redactions": {
+          "type": "array",
+          "minItems": 4,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "credentials",
+              "tokens",
+              "complete_environment",
+              "private_paths"
+            ]
+          }
+        }
+      }
+    },
+    "resource_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "deadline_seconds",
+        "max_parallel_jobs",
+        "cancellation"
+      ],
+      "properties": {
+        "deadline_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 86400
+        },
+        "max_parallel_jobs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 64
+        },
+        "cancellation": {
+          "enum": [
+            "cooperative",
+            "forced_with_cleanup"
+          ]
+        }
+      }
+    },
+    "policy_id": {
+      "const": "standalone-source-build.v1"
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "text": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  }
+}
