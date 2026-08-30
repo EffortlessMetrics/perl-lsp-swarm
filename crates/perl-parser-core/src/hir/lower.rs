@@ -3191,46 +3191,76 @@ impl<'a> BodyBuilder2<'a> {
         }
     }
 
-    /// Resolve whether a variable is lexically bound or package-global.
+    /// Resolve the canonical [`Binding`] visible for `sigil`/`name` from this
+    /// body's current scope, walking the parent chain (#14166, family #6659).
     ///
-    /// A variable is `Lexical` if a `my`/`state` binding for it is visible in
-    /// the current scope chain. An `our` binding resolves to `Package` (package
-    /// alias). A qualified name (`Foo::x`) is always `Package`.
+    /// This is the single resolution used for both the coarse [`VariableKind`]
+    /// and the canonical [`HirBindingId`] threaded onto body occurrences, so the
+    /// two can never disagree and no second lookup is performed.
     ///
-    /// Uses the same parent-chain walk as the first-pass `resolve_visible_binding`
-    /// (lower.rs ~1892). Starting from `start_scope`, walk up through
-    /// `scope_graph.scopes[id].parent` until None — matching the identical
-    /// algorithm used in pass 1.
-    fn resolve_variable_kind(&self, sigil: &str, name: &str) -> VariableKind {
-        // Qualified names are always package-qualified.
+    /// Because `start_scope` is re-pointed while descending nested blocks (see
+    /// `lower_nested_block`), two same-spelling lexicals declared in nested
+    /// scopes of one body resolve to their own bindings.
+    ///
+    /// Two known boundaries, both pre-existing and deliberately preserved here
+    /// rather than changed under an identity-threading slice:
+    ///
+    /// 1. Within a *single* scope the walk takes the last matching binding, so a
+    ///    read placed between two same-scope redeclarations resolves to the
+    ///    later one. This position-insensitivity is shared with the first-pass
+    ///    `resolve_visible_binding` (lower.rs ~1892). A `foreach my $i` iterator
+    ///    is recorded in the *enclosing* scope rather than a loop-private one,
+    ///    so it is an instance of this boundary: an outer `my $i` and any read
+    ///    after the loop resolve to the loop's binding.
+    /// 2. The walk only ascends. A `package NAME;` statement opens a *child*
+    ///    scope, while the program-root body still starts at the file scope, so
+    ///    declarations made at package top level are not visible to program-root
+    ///    occurrences and resolve to `None`. The pre-existing `VariableKind`
+    ///    fallback already mis-reported such a `my` as `Package`; see the
+    ///    follow-up issue tracked from #14166.
+    fn resolve_visible_binding(&self, sigil: &str, name: &str) -> Option<&'a Binding> {
+        // Qualified names are always package-qualified and never lexically bound.
         if name.contains("::") {
-            return VariableKind::Package;
+            return None;
         }
         let mut cursor = Some(self.start_scope);
         while let Some(current_scope) = cursor {
-            for binding in self.scope_graph.bindings.iter().rev() {
-                if binding.scope_id == current_scope
-                    && binding.sigil == sigil
-                    && binding.name == name
-                {
-                    return match binding.storage {
-                        StorageClass::LexicalMy
-                        | StorageClass::LexicalState
-                        | StorageClass::Parameter => VariableKind::Lexical,
-                        StorageClass::PackageOur
-                        | StorageClass::LocalizedPackage
-                        | StorageClass::PackageGlobal
-                        | StorageClass::MethodInvocant
-                        | StorageClass::Implicit => VariableKind::Package,
-                    };
-                }
+            let found = self.scope_graph.bindings.iter().rev().find(|binding| {
+                binding.scope_id == current_scope && binding.sigil == sigil && binding.name == name
+            });
+            if found.is_some() {
+                return found;
             }
             // Walk up to the parent scope — identical to first-pass resolve_visible_binding.
             cursor =
                 self.scope_graph.scopes.get(current_scope.index() as usize).and_then(|s| s.parent);
         }
-        // No binding found in any ancestor scope — treat as package global.
-        VariableKind::Package
+        None
+    }
+
+    /// Canonical binding identity for an occurrence, when one is visible.
+    fn resolve_binding_id(&self, sigil: &str, name: &str) -> Option<HirBindingId> {
+        self.resolve_visible_binding(sigil, name).map(|binding| binding.id)
+    }
+
+    /// Coarse lexical/package classification derived from a resolved binding.
+    ///
+    /// No visible binding — an unresolved package global or a qualified name —
+    /// classifies as `Package`, preserving the previous behaviour exactly.
+    fn kind_of(binding: Option<&Binding>) -> VariableKind {
+        match binding.map(|binding| binding.storage) {
+            Some(
+                StorageClass::LexicalMy | StorageClass::LexicalState | StorageClass::Parameter,
+            ) => VariableKind::Lexical,
+            Some(
+                StorageClass::PackageOur
+                | StorageClass::LocalizedPackage
+                | StorageClass::PackageGlobal
+                | StorageClass::MethodInvocant
+                | StorageClass::Implicit,
+            ) => VariableKind::Package,
+            None => VariableKind::Package,
+        }
     }
 
     fn lower_statement(&mut self, node: &Node) -> HirStmtId {
@@ -3281,6 +3311,11 @@ impl<'a> BodyBuilder2<'a> {
                 };
                 let sigil = sigil_from_str(sigil_str);
                 let storage = storage_class_for_decl(declarator);
+                // Canonical identity for the binding this declaration introduces
+                // (#14166). Resolved from the current scope, so a nested
+                // redeclaration of the same spelling gets its own binding rather
+                // than the outer one.
+                let binding = self.resolve_binding_id(sigil_str, &var_name);
 
                 let init_expr_id = initializer.as_ref().map(|init_node| {
                     // Allocate the write-place for the declared variable.
@@ -3295,6 +3330,7 @@ impl<'a> BodyBuilder2<'a> {
                         name: var_name.clone(),
                         kind: place_kind,
                         access: AccessMode::Write,
+                        binding,
                     });
                     let place_id = self.alloc_expr(place_expr, variable.location);
 
@@ -3318,6 +3354,7 @@ impl<'a> BodyBuilder2<'a> {
                         storage,
                         init: init_expr_id,
                         binding_range: binding_node.location,
+                        binding,
                     },
                     range,
                 )
@@ -3347,12 +3384,13 @@ impl<'a> BodyBuilder2<'a> {
             NodeKind::ExpressionStatement { expression } => self.lower_expr(expression),
 
             NodeKind::Variable { sigil, name } => {
-                let kind = self.resolve_variable_kind(sigil, name);
+                let resolved = self.resolve_visible_binding(sigil, name);
                 let var = HirVariable {
                     sigil: sigil_from_str(sigil),
                     name: name.clone(),
-                    kind,
+                    kind: Self::kind_of(resolved),
                     access: AccessMode::Read,
+                    binding: resolved.map(|binding| binding.id),
                 };
                 self.alloc_expr(HirExpr::Variable(var), range)
             }
@@ -3974,9 +4012,14 @@ impl<'a> BodyBuilder2<'a> {
         let range = node.location;
         match &node.kind {
             NodeKind::Variable { sigil, name } => {
-                let kind = self.resolve_variable_kind(sigil, name);
-                let var =
-                    HirVariable { sigil: sigil_from_str(sigil), name: name.clone(), kind, access };
+                let resolved = self.resolve_visible_binding(sigil, name);
+                let var = HirVariable {
+                    sigil: sigil_from_str(sigil),
+                    name: name.clone(),
+                    kind: Self::kind_of(resolved),
+                    access,
+                    binding: resolved.map(|binding| binding.id),
+                };
                 self.alloc_expr(HirExpr::Variable(var), range)
             }
             // A subscript element on the LHS of an assignment (or under `++`/`--`)
@@ -4086,6 +4129,9 @@ impl<'a> BodyBuilder2<'a> {
                         name: name.to_string(),
                         kind,
                         access: AccessMode::Write,
+                        // The `foreach my $i` iterator binding, resolved from the
+                        // loop's own scope (#14166).
+                        binding: self.resolve_binding_id(sigil, &name),
                     }),
                     binding_node.location,
                 )

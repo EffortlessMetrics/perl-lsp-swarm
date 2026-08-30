@@ -1371,6 +1371,8 @@ fn pir_a_rmw_variable_in_expr_position_is_fail_closed() {
         name: "x".to_string(),
         kind: VariableKind::Lexical,
         access: AccessMode::ReadModifyWrite,
+        // Synthetic body with no scope graph behind it (#14166).
+        binding: None,
     });
     let expr_idx = exprs.alloc(rmw_var);
     let expr_id = HirExprId(expr_idx);
