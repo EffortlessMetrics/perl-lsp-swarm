@@ -370,6 +370,23 @@ pub fn mojolicious_lite_import_evidence(
         evidence.source_version_requirement = Some(normalize_version_requirement(first));
         tokens.remove(0);
     }
+    // The parser folds only the FIRST numeric component into the module name,
+    // so `use Mojolicious::Lite 9.34.1;` leaves `.` and `1` behind. Left
+    // alone they would both widen the profile and — worse — leave the
+    // recorded requirement truncated to `9.34`, which a lower installed
+    // version could then satisfy. Rejoin the continuation onto the
+    // requirement instead of treating it as import options.
+    if let Some(required) = evidence.source_version_requirement.as_mut() {
+        while tokens.len() >= 2
+            && tokens[0] == "."
+            && !tokens[1].is_empty()
+            && tokens[1].chars().all(|c| c.is_ascii_digit() || c == '_')
+        {
+            required.push('.');
+            required.push_str(&tokens[1]);
+            tokens.drain(0..2);
+        }
+    }
     // `use Mojolicious::Lite VERSION ();` reaches here as the parenthesis
     // tokens; the source-level check is authoritative either way.
     let only_parens = !tokens.is_empty() && tokens.iter().all(|token| token == "(" || token == ")");
@@ -2177,6 +2194,59 @@ mod tests {
             mojolicious_lite_activation_facts(&forged, &lite_anchor("main", "gen-1"), &parse(&[]));
         assert_eq!(facts.role(), None, "a result with no reported version is not exact");
         assert!(facts.framework_version.is_empty(), "and it must publish no observed version");
+    }
+
+    #[test]
+    fn a_truncated_version_requirement_cannot_grant_a_role_it_should_refuse() {
+        // The parser folds only the first numeric component into the module
+        // name, leaving `.` and `1` in the arguments. Recording only `9.34`
+        // would let an installed 9.34 satisfy a `9.34.9` requirement.
+        let evidence = mojolicious_lite_import_evidence(
+            &[".".to_string(), "9".to_string()],
+            false,
+            Some("9.34"),
+        );
+        assert_eq!(evidence.source_version_requirement, Some("9.34.9".to_string()));
+        assert!(
+            evidence.unmodeled_options.is_empty(),
+            "the version continuation is not an import option"
+        );
+
+        let facts = mojolicious_lite_activation_facts(
+            &detect_mojolicious_lite(&lite_input("gen-1")),
+            &lite_anchor("main", "gen-1"),
+            &evidence,
+        );
+        assert_eq!(facts.role(), None, "9.34.9 is not satisfied by an installed 9.34");
+    }
+
+    #[test]
+    fn a_satisfied_multipart_version_requirement_keeps_the_role() {
+        // Positive control so the fix is not merely a blanket refusal.
+        let evidence = mojolicious_lite_import_evidence(
+            &[".".to_string(), "0".to_string()],
+            false,
+            Some("9.34"),
+        );
+        assert_eq!(evidence.source_version_requirement, Some("9.34.0".to_string()));
+        let facts = mojolicious_lite_activation_facts(
+            &detect_mojolicious_lite(&lite_input("gen-1")),
+            &lite_anchor("main", "gen-1"),
+            &evidence,
+        );
+        assert_eq!(facts.role(), Some(MojoliciousRole::LiteApplication));
+    }
+
+    #[test]
+    fn a_non_version_dot_token_is_not_absorbed_into_the_requirement() {
+        // Containment: only a digit continuation joins the version.
+        let evidence = mojolicious_lite_import_evidence(
+            &[".".to_string(), "signatures".to_string()],
+            false,
+            Some("9.34"),
+        );
+        assert_eq!(evidence.source_version_requirement, Some("9.34".to_string()));
+        assert_eq!(evidence.unmodeled_options, vec![".".to_string(), "signatures".to_string()]);
     }
 
     #[test]

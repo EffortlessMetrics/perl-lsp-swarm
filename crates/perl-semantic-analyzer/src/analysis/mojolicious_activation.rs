@@ -104,8 +104,16 @@ fn has_explicit_empty_import(source: &str, span_start: u32, span_end: u32) -> bo
     let Some(module_at) = statement.find(MOJOLICIOUS_LITE_MODULE) else {
         return false;
     };
-    let rest = &statement[module_at + MOJOLICIOUS_LITE_MODULE.len()..];
-    skip_version_token(rest.trim_start()).trim_start().starts_with("()")
+    let rest =
+        skip_version_token(statement[module_at + MOJOLICIOUS_LITE_MODULE.len()..].trim_start())
+            .trim_start();
+    // Perl's explicit empty import list may carry whitespace or newlines
+    // between the parentheses; `( )` and a multiline `(\n)` suppress `import`
+    // exactly as `()` does.
+    let Some(after_open) = rest.strip_prefix('(') else {
+        return false;
+    };
+    after_open.trim_start().starts_with(')')
 }
 
 /// Skip a leading `VERSION` requirement token, in either the numeric or
@@ -394,6 +402,51 @@ mod tests {
             Some("9.34".to_string())
         );
         assert_eq!(sites("use Mojolicious::Lite;\n")[0].evidence.source_version_requirement, None);
+    }
+
+    #[test]
+    fn a_spaced_or_multiline_empty_import_list_is_still_suppressed() {
+        // Perl's explicit empty import list may carry whitespace between the
+        // parentheses; all of these suppress `import`.
+        for code in [
+            "use Mojolicious::Lite ();\n",
+            "use Mojolicious::Lite ( );\n",
+            "use Mojolicious::Lite (\n);\n",
+            "use Mojolicious::Lite 9.34 ( );\n",
+        ] {
+            let found = sites(code);
+            assert_eq!(found.len(), 1, "{code}");
+            assert_eq!(
+                found[0].evidence.selection,
+                MojoliciousLiteImportSelection::ImportSuppressed,
+                "{code} suppresses import"
+            );
+        }
+    }
+
+    #[test]
+    fn a_non_empty_parenthesized_import_list_is_not_suppressed() {
+        // Negative control for the whitespace relaxation: a real import list
+        // in parentheses must not read as an empty one.
+        let found = sites("use Mojolicious::Lite (-signatures);\n");
+        assert_eq!(found.len(), 1);
+        assert_ne!(
+            found[0].evidence.selection,
+            MojoliciousLiteImportSelection::ImportSuppressed,
+            "a populated list does not suppress import"
+        );
+    }
+
+    #[test]
+    fn a_three_part_version_requirement_is_recorded_whole() {
+        let found = sites("use Mojolicious::Lite 9.34.1;\n");
+        assert_eq!(found.len(), 1);
+        assert_eq!(
+            found[0].evidence.source_version_requirement,
+            Some("9.34.1".to_string()),
+            "the requirement must not be truncated to its first component"
+        );
+        assert!(found[0].evidence.unmodeled_options.is_empty());
     }
 
     #[test]
