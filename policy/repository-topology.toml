@@ -18,6 +18,18 @@
 # recorded only where a maintainer ruling exists. Everything still under review carries
 # placement = "pending" with the owning issue and the exact open question, rather than a
 # false final answer.
+#
+# CLOSED VS OPEN VOCABULARIES. Every classification field here is a closed set,
+# validated at parse time: `role`, `history_transfer`, `placement`,
+# `publish_disposition`, `metadata_authority`, and `excluded_trees.kind` are
+# rejected outright if the value is not a recognised member. Adding a role or a
+# transfer policy is therefore a code change in
+# `xtask/src/tasks/repository_topology.rs`, on purpose — a new repository role is
+# a governance decision that should be reviewed, not a string someone can coin in
+# passing. The two genuinely open fields are `migration_state` and
+# `current_integration_mode`, and neither is free text either: both are checked
+# against the `[[migration_states]]` vocabulary declared below in this file, so
+# they can be extended here without touching code.
 
 schema_version = "repository_topology.v1"
 
