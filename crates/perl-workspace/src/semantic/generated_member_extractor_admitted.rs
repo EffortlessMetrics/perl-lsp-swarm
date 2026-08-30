@@ -85,8 +85,9 @@ fn collect_quarantined_dbix_ranges(
         NodeKind::No { module, .. } if is_dbix_class_module(module) => {
             ctx.dbix_class_active = false;
         }
-        NodeKind::ExpressionStatement { expression } if ctx.dbix_class_active => {
-            if is_dbix_class_member_method(expression)
+        NodeKind::ExpressionStatement { expression } => {
+            if ctx.dbix_class_active
+                && is_dbix_class_member_method(expression)
                 && is_current_package_method_call(expression, ctx)
             {
                 out.push(QuarantinedRange {
@@ -243,18 +244,52 @@ has 'name' => (is => 'ro');
 
     #[test]
     fn supported_accessor_frameworks_remain_admitted() {
-        for (framework, source) in [
-            ("Moo", "package MyApp::Moo; use Moo; has 'name' => (is => 'ro'); 1;"),
-            ("Moose", "package MyApp::Moose; use Moose; has 'name' => (is => 'ro'); 1;"),
-            ("Mouse", "package MyApp::Mouse; use Mouse; has 'name' => (is => 'ro'); 1;"),
-            ("Class::Tiny", "package MyApp::ClassTiny; use Class::Tiny; has 'name'; 1;"),
+        for (framework, source, expected_name) in [
+            (
+                "Moo",
+                "package MyApp::Moo; use Moo; has 'name' => (is => 'ro'); 1;",
+                "MyApp::Moo::name",
+            ),
+            (
+                "Moose",
+                "package MyApp::Moose; use Moose; has 'name' => (is => 'ro'); 1;",
+                "MyApp::Moose::name",
+            ),
+            (
+                "Mouse",
+                "package MyApp::Mouse; use Mouse; has 'name' => (is => 'ro'); 1;",
+                "MyApp::Mouse::name",
+            ),
+            (
+                "Class::Tiny",
+                "package MyApp::ClassTiny; use Class::Tiny; has 'name'; 1;",
+                "MyApp::ClassTiny::name",
+            ),
         ] {
             let admitted = extract_generated_member_facts(&parse(source), FileId(1));
             assert!(
-                names(&admitted).iter().any(|name| name.ends_with("::name")),
+                names(&admitted).contains(&expected_name),
                 "{framework} generated member should remain admitted"
             );
         }
+    }
+
+    #[test]
+    fn nested_package_expression_does_not_leak_context_into_dbix_quarantine() {
+        let ast = parse(
+            r#"
+package MyApp::Schema::Result::User;
+do { package Nested::Scope; };
+use DBIx::Class;
+MyApp::Schema::Result::User->add_columns(qw/id/);
+1;
+"#,
+        );
+
+        let legacy =
+            legacy_generated_member_extractor::extract_generated_member_facts(&ast, FileId(1));
+        assert!(names(&legacy).contains(&"MyApp::Schema::Result::User::id"));
+        assert!(extract_generated_member_facts(&ast, FileId(1)).is_empty());
     }
 
     #[test]
