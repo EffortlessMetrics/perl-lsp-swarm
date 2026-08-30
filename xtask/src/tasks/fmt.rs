@@ -1010,8 +1010,12 @@ mod tests {
     fn an_unrecognised_index_mode_fails_closed() {
         // The rule admits two modes by name rather than excluding known-bad
         // ones, so a mode git adds later is refused rather than rewritten.
+        // Both inputs are well-formed six-digit modes `git ls-files --stage`
+        // does not currently emit, which is the shape a future mode would
+        // arrive in — a malformed mode is not reachable through
+        // `staged_index_modes` and would prove nothing about this rule.
         assert!(!is_rewritable_staged_file(true, Some("100600")));
-        assert!(!is_rewritable_staged_file(true, Some("")));
+        assert!(!is_rewritable_staged_file(true, Some("100000")));
     }
 
     #[test]
