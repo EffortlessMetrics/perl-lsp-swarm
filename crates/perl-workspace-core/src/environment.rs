@@ -1933,4 +1933,896 @@ mod tests {
         assert_eq!(decoded, snapshot);
         Ok(())
     }
+
+    #[test]
+    fn empty_workspace_id_fails_closed() {
+        let result = ProjectEnvironmentSnapshotBuilder::new("", 1, WorkspaceTrust::Unknown).build();
+
+        assert!(matches!(result, Err(EnvironmentBuildError::EmptyWorkspaceId)));
+    }
+
+    #[test]
+    fn empty_input_fields_fail_closed() {
+        for (semantic_key, source_id, explanation_code, field) in [
+            ("", "source", "explanation", "semantic_key"),
+            ("semantic", "", "explanation", "source_id"),
+            ("semantic", "source", "", "explanation_code"),
+        ] {
+            let candidate = EnvironmentInput::new(
+                semantic_key,
+                EnvironmentInputAuthority::UserConfiguration,
+                EnvironmentInputState::Accepted,
+                source_id,
+                Some(Digest::of("value")),
+                explanation_code,
+            );
+            let input_id = candidate.id.clone();
+            let result = ProjectEnvironmentSnapshotBuilder::new(
+                "workspace:fixture",
+                1,
+                WorkspaceTrust::Trusted,
+            )
+            .with_input(candidate)
+            .build();
+
+            assert!(matches!(
+                result,
+                Err(EnvironmentBuildError::EmptyInputField {
+                    input_id: actual,
+                    field: actual_field,
+                }) if actual == input_id && actual_field == field
+            ));
+        }
+    }
+
+    #[test]
+    fn empty_path_fields_identify_owner_and_field() {
+        let include_input = input(
+            "include.empty",
+            EnvironmentInputAuthority::UserConfiguration,
+            "include",
+            "include",
+        );
+        let include = IncludeEntry::new(
+            IncludeEntryRole::Other,
+            EnvironmentPathRef::new("", "include:public"),
+            include_input.id.clone(),
+            0,
+        );
+        let include_result =
+            ProjectEnvironmentSnapshotBuilder::new("workspace:fixture", 1, WorkspaceTrust::Trusted)
+                .with_input(include_input)
+                .with_include_entry(include)
+                .build();
+        assert!(matches!(
+            include_result,
+            Err(EnvironmentBuildError::EmptyPathField {
+                owner: "include_entry",
+                field: "normalized"
+            })
+        ));
+
+        let root_input =
+            input("root.empty", EnvironmentInputAuthority::UserConfiguration, "root", "root");
+        let root = ProjectRoot::new(
+            ProjectRootRole::Other,
+            EnvironmentPathRef::new("/repo/root", ""),
+            root_input.id.clone(),
+        );
+        let root_result =
+            ProjectEnvironmentSnapshotBuilder::new("workspace:fixture", 1, WorkspaceTrust::Trusted)
+                .with_input(root_input)
+                .with_project_root(root)
+                .build();
+        assert!(matches!(
+            root_result,
+            Err(EnvironmentBuildError::EmptyPathField {
+                owner: "project_root",
+                field: "public_id"
+            })
+        ));
+
+        let tool_input =
+            input("tool.empty", EnvironmentInputAuthority::UserConfiguration, "tool", "tool");
+        let tool = ToolCandidate::new(
+            ToolCandidateRole::Other("empty".to_string()),
+            "tool",
+            EnvironmentPathRef::new("", "tool:public"),
+            tool_input.id.clone(),
+        );
+        let tool_result =
+            ProjectEnvironmentSnapshotBuilder::new("workspace:fixture", 1, WorkspaceTrust::Trusted)
+                .with_input(tool_input)
+                .with_tool_candidate(tool)
+                .build();
+        assert!(matches!(
+            tool_result,
+            Err(EnvironmentBuildError::EmptyPathField {
+                owner: "tool_candidate",
+                field: "normalized"
+            })
+        ));
+
+        let interpreter_input = input(
+            "interpreter.empty",
+            EnvironmentInputAuthority::UserConfiguration,
+            "interpreter",
+            "interpreter",
+        );
+        let interpreter = InterpreterIdentityRef {
+            logical_id: "perl:empty".to_string(),
+            executable: EnvironmentPathRef::new("/usr/bin/perl", ""),
+            evidence_fingerprint: Digest::of("interpreter"),
+            input_id: interpreter_input.id.clone(),
+        };
+        let interpreter_result =
+            ProjectEnvironmentSnapshotBuilder::new("workspace:fixture", 1, WorkspaceTrust::Trusted)
+                .with_input(interpreter_input)
+                .with_selected_interpreter(interpreter)
+                .build();
+        assert!(matches!(
+            interpreter_result,
+            Err(EnvironmentBuildError::EmptyPathField {
+                owner: "selected_interpreter",
+                field: "public_id",
+            })
+        ));
+    }
+
+    #[test]
+    fn missing_input_references_identify_each_remaining_owner() {
+        let missing = EnvironmentInputId("project_environment.input.v1:fnv64:missing".to_string());
+
+        let include = IncludeEntry::new(
+            IncludeEntryRole::Other,
+            EnvironmentPathRef::new("/repo/include", "include"),
+            missing.clone(),
+            0,
+        );
+        let include_result =
+            ProjectEnvironmentSnapshotBuilder::new("workspace:fixture", 1, WorkspaceTrust::Trusted)
+                .with_include_entry(include)
+                .build();
+        assert!(matches!(
+            include_result,
+            Err(EnvironmentBuildError::MissingInputReference {
+                owner: "include_entry",
+                input_id,
+            }) if input_id == missing
+        ));
+
+        let build_system =
+            BuildSystemFactRef::new(BuildSystemKind::Carton, Digest::of("build"), missing.clone());
+        let build_result =
+            ProjectEnvironmentSnapshotBuilder::new("workspace:fixture", 1, WorkspaceTrust::Trusted)
+                .with_build_system(build_system)
+                .build();
+        assert!(matches!(
+            build_result,
+            Err(EnvironmentBuildError::MissingInputReference {
+                owner: "build_system",
+                input_id,
+            }) if input_id == missing
+        ));
+
+        let tool = ToolCandidate::new(
+            ToolCandidateRole::BuildTool,
+            "carton",
+            EnvironmentPathRef::new("/usr/bin/carton", "carton"),
+            missing.clone(),
+        );
+        let tool_result =
+            ProjectEnvironmentSnapshotBuilder::new("workspace:fixture", 1, WorkspaceTrust::Trusted)
+                .with_tool_candidate(tool)
+                .build();
+        assert!(matches!(
+            tool_result,
+            Err(EnvironmentBuildError::MissingInputReference {
+                owner: "tool_candidate",
+                input_id,
+            }) if input_id == missing
+        ));
+    }
+
+    #[test]
+    fn missing_selected_interpreter_input_is_inactive() {
+        let missing = EnvironmentInputId("project_environment.input.v1:fnv64:missing".to_string());
+        let interpreter = InterpreterIdentityRef {
+            logical_id: "perl:missing".to_string(),
+            executable: EnvironmentPathRef::new("/missing/perl", "tool:perl"),
+            evidence_fingerprint: Digest::of("missing"),
+            input_id: missing.clone(),
+        };
+        let result =
+            ProjectEnvironmentSnapshotBuilder::new("workspace:fixture", 1, WorkspaceTrust::Unknown)
+                .with_selected_interpreter(interpreter)
+                .build();
+
+        assert!(matches!(
+            result,
+            Err(EnvironmentBuildError::InactiveSelectedInterpreter {
+                input_id,
+                state: None,
+            }) if input_id == missing
+        ));
+    }
+
+    #[test]
+    fn unfingerprinted_equal_authority_disagreement_conflicts() -> Result<(), EnvironmentBuildError>
+    {
+        let left = EnvironmentInput::new(
+            "include.primary",
+            EnvironmentInputAuthority::UserConfiguration,
+            EnvironmentInputState::Accepted,
+            "settings-a",
+            None,
+            "fixture",
+        );
+        let right = EnvironmentInput::new(
+            "include.primary",
+            EnvironmentInputAuthority::UserConfiguration,
+            EnvironmentInputState::Accepted,
+            "settings-b",
+            None,
+            "fixture",
+        );
+        let snapshot =
+            ProjectEnvironmentSnapshotBuilder::new("workspace:fixture", 1, WorkspaceTrust::Trusted)
+                .with_input(left)
+                .with_input(right)
+                .build()?;
+
+        assert_eq!(
+            snapshot
+                .inputs
+                .iter()
+                .filter(|item| item.state == EnvironmentInputState::Conflicting)
+                .count(),
+            2
+        );
+        assert!(!snapshot.inputs.iter().any(|item| item.state.is_active()));
+        Ok(())
+    }
+
+    #[test]
+    fn equal_authority_same_fingerprint_has_one_winner() -> Result<(), EnvironmentBuildError> {
+        let left = input(
+            "include.primary",
+            EnvironmentInputAuthority::UserConfiguration,
+            "same",
+            "settings-a",
+        );
+        let right = input(
+            "include.primary",
+            EnvironmentInputAuthority::UserConfiguration,
+            "same",
+            "settings-b",
+        );
+        let snapshot =
+            ProjectEnvironmentSnapshotBuilder::new("workspace:fixture", 1, WorkspaceTrust::Trusted)
+                .with_input(left)
+                .with_input(right)
+                .build()?;
+
+        assert_eq!(
+            snapshot
+                .inputs
+                .iter()
+                .filter(|item| item.state == EnvironmentInputState::Accepted)
+                .count(),
+            1
+        );
+        assert_eq!(
+            snapshot
+                .inputs
+                .iter()
+                .filter(|item| item.state == EnvironmentInputState::Superseded)
+                .count(),
+            1
+        );
+        assert!(snapshot.inputs.iter().any(|item| {
+            item.source_id == "settings-a" && item.state == EnvironmentInputState::Accepted
+        }));
+        assert!(snapshot.inputs.iter().any(|item| {
+            item.source_id == "settings-b" && item.state == EnvironmentInputState::Superseded
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn weaker_authority_is_superseded_by_stronger_input() -> Result<(), EnvironmentBuildError> {
+        let strongest = input(
+            "interpreter.selected",
+            EnvironmentInputAuthority::UserConfiguration,
+            "same",
+            "user",
+        );
+        let middle = input(
+            "interpreter.selected",
+            EnvironmentInputAuthority::WorkspaceConvention,
+            "same",
+            "workspace",
+        );
+        let weakest = input(
+            "interpreter.selected",
+            EnvironmentInputAuthority::BuildMetadata,
+            "same",
+            "build",
+        );
+        let snapshot =
+            ProjectEnvironmentSnapshotBuilder::new("workspace:fixture", 1, WorkspaceTrust::Trusted)
+                .with_input(strongest)
+                .with_input(middle)
+                .with_input(weakest)
+                .build()?;
+
+        assert_eq!(
+            snapshot
+                .inputs
+                .iter()
+                .filter(|item| item.state == EnvironmentInputState::Accepted)
+                .count(),
+            1
+        );
+        assert!(snapshot.inputs.iter().any(|item| {
+            item.authority == EnvironmentInputAuthority::UserConfiguration
+                && item.state == EnvironmentInputState::Accepted
+        }));
+        assert_eq!(
+            snapshot
+                .inputs
+                .iter()
+                .filter(|item| item.state == EnvironmentInputState::Superseded)
+                .count(),
+            2
+        );
+        assert!(snapshot.inputs.iter().any(|item| {
+            item.authority == EnvironmentInputAuthority::WorkspaceConvention
+                && item.state == EnvironmentInputState::Superseded
+        }));
+        assert!(snapshot.inputs.iter().any(|item| {
+            item.authority == EnvironmentInputAuthority::BuildMetadata
+                && item.state == EnvironmentInputState::Superseded
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn different_semantic_keys_do_not_supersede_each_other() -> Result<(), EnvironmentBuildError> {
+        let first = input(
+            "include.primary",
+            EnvironmentInputAuthority::UserConfiguration,
+            "same",
+            "settings",
+        );
+        let second =
+            input("root.primary", EnvironmentInputAuthority::UserConfiguration, "same", "settings");
+        let snapshot =
+            ProjectEnvironmentSnapshotBuilder::new("workspace:fixture", 1, WorkspaceTrust::Trusted)
+                .with_input(first)
+                .with_input(second)
+                .build()?;
+
+        assert_eq!(
+            snapshot
+                .inputs
+                .iter()
+                .filter(|item| item.state == EnvironmentInputState::Accepted)
+                .count(),
+            2
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn input_state_returns_none_for_unknown_id() -> Result<(), EnvironmentBuildError> {
+        let snapshot =
+            ProjectEnvironmentSnapshotBuilder::new("workspace:fixture", 1, WorkspaceTrust::Trusted)
+                .with_input(input(
+                    "include.primary",
+                    EnvironmentInputAuthority::UserConfiguration,
+                    "value",
+                    "settings",
+                ))
+                .build()?;
+
+        let missing = EnvironmentInputId("project_environment.input.v1:fnv64:missing".to_string());
+        assert_eq!(snapshot.input_state(&missing), None);
+        Ok(())
+    }
+
+    #[test]
+    fn active_candidate_accessors_filter_inactive_inputs() -> Result<(), EnvironmentBuildError> {
+        let active = input(
+            "environment.active",
+            EnvironmentInputAuthority::UserConfiguration,
+            "active",
+            "settings",
+        );
+        let inactive = EnvironmentInput::new(
+            "environment.inactive",
+            EnvironmentInputAuthority::Ambient,
+            EnvironmentInputState::Denied,
+            "environment",
+            Some(Digest::of("inactive")),
+            "denied",
+        );
+        let active_include = IncludeEntry::new(
+            IncludeEntryRole::Other,
+            EnvironmentPathRef::new("/repo/active", "include:active"),
+            active.id.clone(),
+            0,
+        );
+        let inactive_include = IncludeEntry::new(
+            IncludeEntryRole::Other,
+            EnvironmentPathRef::new("/repo/inactive", "include:inactive"),
+            inactive.id.clone(),
+            1,
+        );
+        let active_root = ProjectRoot::new(
+            ProjectRootRole::Source,
+            EnvironmentPathRef::new("/repo/active", "root:active"),
+            active.id.clone(),
+        );
+        let inactive_root = ProjectRoot::new(
+            ProjectRootRole::Source,
+            EnvironmentPathRef::new("/repo/inactive", "root:inactive"),
+            inactive.id.clone(),
+        );
+        let active_tool = ToolCandidate::new(
+            ToolCandidateRole::TestRunner,
+            "prove",
+            EnvironmentPathRef::new("/usr/bin/prove", "tool:active"),
+            active.id.clone(),
+        );
+        let inactive_tool = ToolCandidate::new(
+            ToolCandidateRole::TestRunner,
+            "prove",
+            EnvironmentPathRef::new("/missing/prove", "tool:inactive"),
+            inactive.id.clone(),
+        );
+        let snapshot =
+            ProjectEnvironmentSnapshotBuilder::new("workspace:fixture", 1, WorkspaceTrust::Trusted)
+                .with_input(active)
+                .with_input(inactive)
+                .with_include_entry(active_include)
+                .with_include_entry(inactive_include)
+                .with_project_root(active_root)
+                .with_project_root(inactive_root)
+                .with_tool_candidate(active_tool)
+                .with_tool_candidate(inactive_tool)
+                .build()?;
+
+        assert_eq!(snapshot.active_include_entries().count(), 1);
+        assert_eq!(
+            snapshot.active_include_entries().next().map(|entry| entry.path.public_id.as_str()),
+            Some("include:active")
+        );
+        assert_eq!(snapshot.active_project_roots().count(), 1);
+        assert_eq!(
+            snapshot.active_project_roots().next().map(|root| root.path.public_id.as_str()),
+            Some("root:active")
+        );
+        assert_eq!(snapshot.active_tool_candidates().count(), 1);
+        assert_eq!(
+            snapshot.active_tool_candidates().next().map(|tool| tool.executable.public_id.as_str()),
+            Some("tool:active")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn public_receipt_projects_all_public_fields() -> Result<(), Box<dyn std::error::Error>> {
+        let configured = input(
+            "environment.configured",
+            EnvironmentInputAuthority::UserConfiguration,
+            "configured",
+            "settings",
+        );
+        let interpreter = InterpreterIdentityRef {
+            logical_id: "perl:5.38".to_string(),
+            executable: EnvironmentPathRef::new(
+                "/private/interpreters/perl",
+                "interpreter:perl-538",
+            ),
+            evidence_fingerprint: Digest::of("perl-5.38"),
+            input_id: configured.id.clone(),
+        };
+        let include = IncludeEntry::new(
+            IncludeEntryRole::Other,
+            EnvironmentPathRef::new("/private/project/lib", "include:project"),
+            configured.id.clone(),
+            0,
+        );
+        let root = ProjectRoot::new(
+            ProjectRootRole::Other,
+            EnvironmentPathRef::new("/private/project", "root:project"),
+            configured.id.clone(),
+        );
+        let build_make = BuildSystemFactRef::new(
+            BuildSystemKind::ExtUtilsMakeMaker,
+            Digest::of("make"),
+            configured.id.clone(),
+        );
+        let build_custom = BuildSystemFactRef::new(
+            BuildSystemKind::Other("custom".to_string()),
+            Digest::of("custom"),
+            configured.id.clone(),
+        );
+        let tool_perl = ToolCandidate::new(
+            ToolCandidateRole::Perl,
+            "perl",
+            EnvironmentPathRef::new("/private/bin/perl", "tool:perl"),
+            configured.id.clone(),
+        );
+        let tool_shipit = ToolCandidate::new(
+            ToolCandidateRole::Other("shipit".to_string()),
+            "shipit",
+            EnvironmentPathRef::new("/private/bin/shipit", "tool:shipit"),
+            configured.id.clone(),
+        );
+        let limitation = EnvironmentLimitation {
+            code: "probe_limited".to_string(),
+            detail: "internal probe detail must remain private".to_string(),
+            input_id: Some(configured.id.clone()),
+        };
+        let snapshot =
+            ProjectEnvironmentSnapshotBuilder::new("workspace:fixture", 1, WorkspaceTrust::Trusted)
+                .with_input(configured)
+                .with_selected_interpreter(interpreter)
+                .with_include_entry(include)
+                .with_project_root(root)
+                .with_build_system(build_make)
+                .with_build_system(build_custom)
+                .with_tool_candidate(tool_perl)
+                .with_tool_candidate(tool_shipit)
+                .with_limitation(limitation)
+                .build()?;
+
+        let receipt = snapshot.public_receipt();
+        let json = serde_json::to_string(&receipt)?;
+        assert_eq!(
+            receipt.build_systems.iter().map(|build| build.kind.as_str()).collect::<BTreeSet<_>>(),
+            BTreeSet::from(["extutils_makemaker", "other:custom"])
+        );
+        assert_eq!(
+            receipt.tool_candidates.iter().map(|tool| tool.role.as_str()).collect::<BTreeSet<_>>(),
+            BTreeSet::from(["other:shipit", "perl"])
+        );
+        assert_eq!(receipt.limitation_codes, vec!["probe_limited".to_string()]);
+        assert!(!json.contains("internal probe detail must remain private"));
+        assert_eq!(
+            receipt.selected_interpreter.as_ref().map(|item| item.executable_public_id.as_str()),
+            Some("interpreter:perl-538")
+        );
+        assert!(!json.contains("/private/interpreters/perl"));
+        assert!(!json.contains("/private/project/lib"));
+        assert!(!json.contains("/private/project"));
+        assert!(!json.contains("/private/bin/perl"));
+        assert!(!json.contains("/private/bin/shipit"));
+        assert_eq!(receipt.fingerprint, snapshot.fingerprint);
+        Ok(())
+    }
+
+    #[test]
+    fn environment_build_error_display_contains_discriminating_material() {
+        let input_id = EnvironmentInputId("input:display".to_string());
+        let errors = [
+            (EnvironmentBuildError::EmptyWorkspaceId, vec!["empty"]),
+            (
+                EnvironmentBuildError::EmptyInputField {
+                    input_id: input_id.clone(),
+                    field: "semantic_key",
+                },
+                vec!["input:display", "semantic_key"],
+            ),
+            (
+                EnvironmentBuildError::MissingInputReference {
+                    owner: "include_entry",
+                    input_id: input_id.clone(),
+                },
+                vec!["include_entry", "input:display"],
+            ),
+            (
+                EnvironmentBuildError::InactiveSelectedInterpreter {
+                    input_id: input_id.clone(),
+                    state: Some(EnvironmentInputState::Unavailable),
+                },
+                vec!["input:display", "Unavailable"],
+            ),
+            (
+                EnvironmentBuildError::AmbientInputAccepted { input_id: input_id.clone() },
+                vec!["input:display", "ambient"],
+            ),
+            (
+                EnvironmentBuildError::TrustedProjectInputWithoutTrust {
+                    input_id: input_id.clone(),
+                    trust: WorkspaceTrust::Untrusted,
+                },
+                vec!["input:display", "Untrusted"],
+            ),
+            (
+                EnvironmentBuildError::UnsupportedSchemaVersion { schema_version: 99 },
+                vec!["99", "1"],
+            ),
+            (EnvironmentBuildError::StaleFingerprint, vec!["fingerprint"]),
+            (
+                EnvironmentBuildError::EmptyPathField {
+                    owner: "tool_candidate",
+                    field: "public_id",
+                },
+                vec!["tool_candidate", "public_id"],
+            ),
+        ];
+
+        for (error, fragments) in errors {
+            let rendered = error.to_string();
+            for fragment in fragments {
+                assert!(rendered.contains(fragment), "{rendered:?} missing {fragment:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn identity_strings_agree_with_display() {
+        let input_id = EnvironmentInputId("input:identity".to_string());
+        assert_eq!(input_id.as_str(), input_id.to_string());
+
+        let fingerprint = EnvironmentFingerprint(Digest::of("fingerprint"));
+        assert_eq!(fingerprint.as_str(), fingerprint.to_string());
+    }
+
+    #[test]
+    fn all_candidate_roles_participate_in_stable_ids() {
+        let input_id = EnvironmentInputId("input:roles".to_string());
+        let include_roles = [
+            IncludeEntryRole::WorkspaceDefault,
+            IncludeEntryRole::WorkspaceConfigured,
+            IncludeEntryRole::LexicalUseLib,
+            IncludeEntryRole::FindBinDerived,
+            IncludeEntryRole::Perl5Lib,
+            IncludeEntryRole::InterpreterStartup,
+            IncludeEntryRole::LocalLib,
+            IncludeEntryRole::BlibLib,
+            IncludeEntryRole::BlibArch,
+            IncludeEntryRole::Vendor,
+            IncludeEntryRole::Generated,
+            IncludeEntryRole::Other,
+        ];
+        let include_ids: BTreeSet<_> = include_roles
+            .into_iter()
+            .map(|role| {
+                IncludeEntry::new(
+                    role,
+                    EnvironmentPathRef::new("/same/path", "path"),
+                    input_id.clone(),
+                    0,
+                )
+                .id
+            })
+            .collect();
+        assert_eq!(include_ids.len(), 12);
+
+        let root_roles = [
+            ProjectRootRole::Workspace,
+            ProjectRootRole::Source,
+            ProjectRootRole::Test,
+            ProjectRootRole::Generated,
+            ProjectRootRole::Installed,
+            ProjectRootRole::Vendor,
+            ProjectRootRole::Local,
+            ProjectRootRole::Build,
+            ProjectRootRole::Other,
+        ];
+        let root_ids: BTreeSet<_> = root_roles
+            .into_iter()
+            .map(|role| {
+                ProjectRoot::new(
+                    role,
+                    EnvironmentPathRef::new("/same/path", "path"),
+                    input_id.clone(),
+                )
+                .id
+            })
+            .collect();
+        assert_eq!(root_ids.len(), 9);
+
+        let build_kinds = vec![
+            BuildSystemKind::ExtUtilsMakeMaker,
+            BuildSystemKind::ModuleBuild,
+            BuildSystemKind::DistZilla,
+            BuildSystemKind::Carton,
+            BuildSystemKind::Other("custom".to_string()),
+        ];
+        let build_ids: BTreeSet<_> = build_kinds
+            .into_iter()
+            .map(|kind| BuildSystemFactRef::new(kind, Digest::of("fact"), input_id.clone()).id)
+            .collect();
+        assert_eq!(build_ids.len(), 5);
+        let other_custom = BuildSystemFactRef::new(
+            BuildSystemKind::Other("custom".to_string()),
+            Digest::of("fact"),
+            input_id.clone(),
+        );
+        let other_shipit = BuildSystemFactRef::new(
+            BuildSystemKind::Other("shipit".to_string()),
+            Digest::of("fact"),
+            input_id.clone(),
+        );
+        assert_ne!(other_custom.id, other_shipit.id);
+
+        let tool_roles = vec![
+            ToolCandidateRole::Perl,
+            ToolCandidateRole::TestRunner,
+            ToolCandidateRole::Debugger,
+            ToolCandidateRole::Formatter,
+            ToolCandidateRole::Critic,
+            ToolCandidateRole::BuildTool,
+            ToolCandidateRole::Other("custom".to_string()),
+        ];
+        let tool_ids: BTreeSet<_> = tool_roles
+            .into_iter()
+            .map(|role| {
+                ToolCandidate::new(
+                    role,
+                    "tool",
+                    EnvironmentPathRef::new("/same/path", "path"),
+                    input_id.clone(),
+                )
+                .id
+            })
+            .collect();
+        assert_eq!(tool_ids.len(), 7);
+    }
+
+    #[test]
+    fn unknown_trust_participates_in_fingerprint() -> Result<(), EnvironmentBuildError> {
+        let unknown =
+            ProjectEnvironmentSnapshotBuilder::new("workspace:fixture", 1, WorkspaceTrust::Unknown)
+                .with_input(input(
+                    "environment.trust",
+                    EnvironmentInputAuthority::UserConfiguration,
+                    "value",
+                    "settings",
+                ))
+                .build()?;
+        let untrusted = ProjectEnvironmentSnapshotBuilder::new(
+            "workspace:fixture",
+            1,
+            WorkspaceTrust::Untrusted,
+        )
+        .with_input(input(
+            "environment.trust",
+            EnvironmentInputAuthority::UserConfiguration,
+            "value",
+            "settings",
+        ))
+        .build()?;
+
+        assert_ne!(unknown.fingerprint, untrusted.fingerprint);
+        Ok(())
+    }
+
+    #[test]
+    fn include_entries_deduplicate_and_sort_active_before_inactive()
+    -> Result<(), EnvironmentBuildError> {
+        let active = input(
+            "include.active",
+            EnvironmentInputAuthority::UserConfiguration,
+            "active",
+            "settings",
+        );
+        let inactive = EnvironmentInput::new(
+            "include.inactive",
+            EnvironmentInputAuthority::Ambient,
+            EnvironmentInputState::Denied,
+            "environment",
+            Some(Digest::of("inactive")),
+            "denied",
+        );
+        let duplicate = IncludeEntry::new(
+            IncludeEntryRole::Other,
+            EnvironmentPathRef::new("/repo/duplicate", "include:duplicate"),
+            active.id.clone(),
+            0,
+        );
+        let inactive_entry = IncludeEntry::new(
+            IncludeEntryRole::Other,
+            EnvironmentPathRef::new("/repo/inactive", "include:inactive"),
+            inactive.id.clone(),
+            0,
+        );
+        let snapshot =
+            ProjectEnvironmentSnapshotBuilder::new("workspace:fixture", 1, WorkspaceTrust::Trusted)
+                .with_input(active)
+                .with_input(inactive)
+                .with_include_entry(inactive_entry)
+                .with_include_entry(duplicate.clone())
+                .with_include_entry(duplicate)
+                .build()?;
+
+        assert_eq!(snapshot.include_entries.len(), 2);
+        assert_eq!(snapshot.include_entries[0].path.public_id, "include:duplicate");
+        assert_eq!(snapshot.include_entries[1].path.public_id, "include:inactive");
+        Ok(())
+    }
+
+    #[test]
+    fn deserialized_snapshot_rejects_forged_ambient_acceptance()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let ambient = EnvironmentInput::new(
+            "environment.ambient",
+            EnvironmentInputAuthority::Ambient,
+            EnvironmentInputState::Denied,
+            "environment",
+            Some(Digest::of("ambient")),
+            "ambient_observed",
+        );
+        let snapshot =
+            ProjectEnvironmentSnapshotBuilder::new("workspace:fixture", 1, WorkspaceTrust::Unknown)
+                .with_input(ambient.clone())
+                .build()?;
+        let mut value = serde_json::to_value(&snapshot)?;
+        value["inputs"][0]["state"] = serde_json::Value::String("accepted".to_string());
+
+        let decoded = serde_json::from_value::<ProjectEnvironmentSnapshot>(value);
+        let error = match decoded {
+            Ok(_) => return Err("forged ambient acceptance unexpectedly deserialized".into()),
+            Err(error) => error.to_string(),
+        };
+        assert!(error.contains("ambient input"));
+        assert!(error.contains(ambient.id.as_str()));
+        Ok(())
+    }
+
+    #[test]
+    fn directly_validated_snapshot_rejects_dangling_include_reference() {
+        let missing = EnvironmentInputId("input:dangling".to_string());
+        let include = IncludeEntry::new(
+            IncludeEntryRole::Other,
+            EnvironmentPathRef::new("/repo/include", "include"),
+            missing.clone(),
+            0,
+        );
+        let inputs = Vec::new();
+        let selected_interpreter: Option<InterpreterIdentityRef> = None;
+        let project_roots = Vec::new();
+        let build_systems = Vec::new();
+        let tool_candidates = Vec::new();
+        let limitations = Vec::new();
+        let fingerprint = compute_fingerprint(
+            "workspace:fixture",
+            1,
+            WorkspaceTrust::Trusted,
+            &inputs,
+            selected_interpreter.as_ref(),
+            std::slice::from_ref(&include),
+            &project_roots,
+            &build_systems,
+            &tool_candidates,
+            &limitations,
+        );
+        let snapshot = ProjectEnvironmentSnapshot {
+            schema_version: PROJECT_ENVIRONMENT_SCHEMA_VERSION,
+            workspace_id: "workspace:fixture".to_string(),
+            configuration_generation: 1,
+            trust: WorkspaceTrust::Trusted,
+            inputs,
+            selected_interpreter,
+            include_entries: vec![include],
+            project_roots,
+            build_systems,
+            tool_candidates,
+            limitations,
+            fingerprint,
+        };
+
+        assert!(matches!(
+            snapshot.validate(),
+            Err(EnvironmentBuildError::MissingInputReference {
+                owner: "include_entry",
+                input_id,
+            }) if input_id == missing
+        ));
+    }
 }
