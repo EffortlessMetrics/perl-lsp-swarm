@@ -59,41 +59,17 @@ pub const HTMX_HEADERS: &[HtmxHeaderSpec] = &[
         Request,
         "Set to `true` for a history restoration request after a local history-cache miss."
     ),
-    header!(
-        "HX-Location",
-        Response,
-        "Performs a client-side redirect without a full page reload."
-    ),
-    header!(
-        "HX-Prompt",
-        Request,
-        "Contains the user's response to an `hx-prompt` dialog."
-    ),
-    header!(
-        "HX-Push-Url",
-        Response,
-        "Pushes a URL into the browser history stack."
-    ),
+    header!("HX-Location", Response, "Performs a client-side redirect without a full page reload."),
+    header!("HX-Prompt", Request, "Contains the user's response to an `hx-prompt` dialog."),
+    header!("HX-Push-Url", Response, "Pushes a URL into the browser history stack."),
     header!(
         "HX-Redirect",
         Response,
         "Redirects the browser to a new location with a full page reload."
     ),
-    header!(
-        "HX-Refresh",
-        Response,
-        "When set to `true`, causes a full page refresh."
-    ),
-    header!(
-        "HX-Replace-Url",
-        Response,
-        "Replaces the current URL in the browser location bar."
-    ),
-    header!(
-        "HX-Request",
-        Request,
-        "Set to `true` on requests issued by htmx."
-    ),
+    header!("HX-Refresh", Response, "When set to `true`, causes a full page refresh."),
+    header!("HX-Replace-Url", Response, "Replaces the current URL in the browser location bar."),
+    header!("HX-Request", Request, "Set to `true` on requests issued by htmx."),
     header!(
         "HX-Reselect",
         Response,
@@ -109,11 +85,7 @@ pub const HTMX_HEADERS: &[HtmxHeaderSpec] = &[
         Response,
         "Uses a CSS selector to override the element that receives the swapped content."
     ),
-    header!(
-        "HX-Target",
-        Request,
-        "Contains the `id` of the target element when one exists."
-    ),
+    header!("HX-Target", Request, "Contains the `id` of the target element when one exists."),
     header!(
         "HX-Trigger",
         RequestAndResponse,
@@ -124,11 +96,7 @@ pub const HTMX_HEADERS: &[HtmxHeaderSpec] = &[
         Response,
         "Triggers client-side events after the settle step."
     ),
-    header!(
-        "HX-Trigger-After-Swap",
-        Response,
-        "Triggers client-side events after the swap step."
-    ),
+    header!("HX-Trigger-After-Swap", Response, "Triggers client-side events after the swap step."),
     header!(
         "HX-Trigger-Name",
         Request,
@@ -198,129 +166,51 @@ macro_rules! deprecated_attribute {
 /// `hx-on:` represents the dynamic event-handler family. The deprecated plain
 /// `hx-on` spelling is deliberately not a completion candidate.
 pub const HTMX_ATTRIBUTES: &[HtmxAttributeSpec] = &[
-    attribute!(
-        "hx-boost",
-        "Progressively enhances links and forms with htmx requests."
-    ),
-    attribute!(
-        "hx-confirm",
-        "Prompts for confirmation before issuing the request."
-    ),
-    attribute!(
-        "hx-delete",
-        "Issues an HTTP DELETE request to the specified URL."
-    ),
-    attribute!(
-        "hx-disable",
-        "Disables htmx processing for the element and its descendants."
-    ),
+    attribute!("hx-boost", "Progressively enhances links and forms with htmx requests."),
+    attribute!("hx-confirm", "Prompts for confirmation before issuing the request."),
+    attribute!("hx-delete", "Issues an HTTP DELETE request to the specified URL."),
+    attribute!("hx-disable", "Disables htmx processing for the element and its descendants."),
     attribute!(
         "hx-disabled-elt",
         "Selects elements to disable while an htmx request is in flight."
     ),
-    attribute!(
-        "hx-disinherit",
-        "Prevents selected inherited htmx attributes from propagating."
-    ),
-    attribute!(
-        "hx-encoding",
-        "Sets the request encoding, including multipart form uploads."
-    ),
-    attribute!(
-        "hx-ext",
-        "Enables or ignores named htmx extensions for an element."
-    ),
+    attribute!("hx-disinherit", "Prevents selected inherited htmx attributes from propagating."),
+    attribute!("hx-encoding", "Sets the request encoding, including multipart form uploads."),
+    attribute!("hx-ext", "Enables or ignores named htmx extensions for an element."),
     attribute!("hx-get", "Issues an HTTP GET request to the specified URL."),
     attribute!("hx-headers", "Adds headers to the htmx request."),
-    attribute!(
-        "hx-history",
-        "Controls whether sensitive page state may be cached in history."
-    ),
+    attribute!("hx-history", "Controls whether sensitive page state may be cached in history."),
     attribute!(
         "hx-history-elt",
         "Selects the element whose content is saved and restored for history."
     ),
-    attribute!(
-        "hx-include",
-        "Includes values from additional selected elements in the request."
-    ),
+    attribute!("hx-include", "Includes values from additional selected elements in the request."),
     attribute!("hx-indicator", "Selects the request indicator element."),
-    attribute!(
-        "hx-inherit",
-        "Forces selected htmx attributes to be inherited."
-    ),
+    attribute!("hx-inherit", "Forces selected htmx attributes to be inherited."),
     HtmxAttributeSpec {
         name: "hx-on:",
         family: HtmxAttributeFamily::EventHandler,
         documentation: "Starts an htmx event-handler attribute; append the event name.",
         deprecated: false,
     },
-    attribute!(
-        "hx-params",
-        "Filters the parameters submitted with an htmx request."
-    ),
-    attribute!(
-        "hx-patch",
-        "Issues an HTTP PATCH request to the specified URL."
-    ),
-    attribute!(
-        "hx-post",
-        "Issues an HTTP POST request to the specified URL."
-    ),
-    attribute!(
-        "hx-preserve",
-        "Keeps an element unchanged across HTML replacement."
-    ),
-    attribute!(
-        "hx-prompt",
-        "Prompts the user and sends the response with the request."
-    ),
-    attribute!(
-        "hx-push-url",
-        "Pushes a URL into browser history after an htmx response."
-    ),
+    attribute!("hx-params", "Filters the parameters submitted with an htmx request."),
+    attribute!("hx-patch", "Issues an HTTP PATCH request to the specified URL."),
+    attribute!("hx-post", "Issues an HTTP POST request to the specified URL."),
+    attribute!("hx-preserve", "Keeps an element unchanged across HTML replacement."),
+    attribute!("hx-prompt", "Prompts the user and sends the response with the request."),
+    attribute!("hx-push-url", "Pushes a URL into browser history after an htmx response."),
     attribute!("hx-put", "Issues an HTTP PUT request to the specified URL."),
-    attribute!(
-        "hx-replace-url",
-        "Replaces the current browser-history URL after a response."
-    ),
-    attribute!(
-        "hx-request",
-        "Configures request options such as timeout and credentials."
-    ),
-    attribute!(
-        "hx-select",
-        "Selects the response fragment to swap into the target."
-    ),
-    attribute!(
-        "hx-select-oob",
-        "Selects additional response fragments for out-of-band swaps."
-    ),
-    attribute!(
-        "hx-swap",
-        "Controls how and when response content is swapped."
-    ),
+    attribute!("hx-replace-url", "Replaces the current browser-history URL after a response."),
+    attribute!("hx-request", "Configures request options such as timeout and credentials."),
+    attribute!("hx-select", "Selects the response fragment to swap into the target."),
+    attribute!("hx-select-oob", "Selects additional response fragments for out-of-band swaps."),
+    attribute!("hx-swap", "Controls how and when response content is swapped."),
     attribute!("hx-swap-oob", "Marks content for an out-of-band swap."),
-    attribute!(
-        "hx-sync",
-        "Coordinates concurrent htmx requests between selected elements."
-    ),
-    attribute!(
-        "hx-target",
-        "Selects the element that receives the response content."
-    ),
-    attribute!(
-        "hx-trigger",
-        "Specifies the events or polling expression that trigger a request."
-    ),
-    attribute!(
-        "hx-validate",
-        "Enables HTML form validation before the htmx request."
-    ),
-    attribute!(
-        "hx-vals",
-        "Adds values to the parameters submitted with the request."
-    ),
+    attribute!("hx-sync", "Coordinates concurrent htmx requests between selected elements."),
+    attribute!("hx-target", "Selects the element that receives the response content."),
+    attribute!("hx-trigger", "Specifies the events or polling expression that trigger a request."),
+    attribute!("hx-validate", "Enables HTML form validation before the htmx request."),
+    attribute!("hx-vals", "Adds values to the parameters submitted with the request."),
     deprecated_attribute!(
         "hx-vars",
         "Deprecated expression-based request values; use `hx-vals` instead."

@@ -51,11 +51,7 @@ pub fn htmx_attribute_name_context(
         return None;
     }
 
-    Some(HtmxAttributeNameContext {
-        prefix,
-        prefix_start: tag_start + 1 + token_start,
-        position,
-    })
+    Some(HtmxAttributeNameContext { prefix, prefix_start: tag_start + 1 + token_start, position })
 }
 
 fn current_line_is_template_code(source_prefix: &str) -> bool {
@@ -184,12 +180,7 @@ fn scan_delimited(
     }
 }
 
-fn scan_start_tag(
-    bytes: &[u8],
-    index: &mut usize,
-    start: usize,
-    quote: Option<u8>,
-) -> MarkupState {
+fn scan_start_tag(bytes: &[u8], index: &mut usize, start: usize, quote: Option<u8>) -> MarkupState {
     if starts_template_region(bytes, *index) {
         *index += 1;
         return MarkupState::InvalidTag { quote };
@@ -232,9 +223,7 @@ fn scan_ignored_tag(bytes: &[u8], index: &mut usize, quote: Option<u8>) -> Marku
         Some(delimiter) => {
             let closes_quote = bytes.get(*index) == Some(&delimiter);
             *index += 1;
-            MarkupState::IgnoredTag {
-                quote: if closes_quote { None } else { Some(delimiter) },
-            }
+            MarkupState::IgnoredTag { quote: if closes_quote { None } else { Some(delimiter) } }
         }
         None => match bytes.get(*index).copied() {
             Some(delimiter @ (b'"' | b'\'')) => {
@@ -259,9 +248,7 @@ fn scan_invalid_tag(bytes: &[u8], index: &mut usize, quote: Option<u8>) -> Marku
         Some(delimiter) => {
             let closes_quote = bytes.get(*index) == Some(&delimiter);
             *index += 1;
-            MarkupState::InvalidTag {
-                quote: if closes_quote { None } else { Some(delimiter) },
-            }
+            MarkupState::InvalidTag { quote: if closes_quote { None } else { Some(delimiter) } }
         }
         None => match bytes.get(*index).copied() {
             Some(delimiter @ (b'"' | b'\'')) => {
@@ -324,11 +311,7 @@ fn raw_text_kind_for_start_tag(bytes: &[u8], start: usize, end: usize) -> Option
     .find(|kind| bytes_eq_ignore_ascii_case(name, kind.name()))
 }
 
-fn raw_text_end_tag_name_end(
-    bytes: &[u8],
-    index: usize,
-    kind: RawTextKind,
-) -> Option<usize> {
+fn raw_text_end_tag_name_end(bytes: &[u8], index: usize, kind: RawTextKind) -> Option<usize> {
     if !starts_with(bytes, index, b"</") {
         return None;
     }

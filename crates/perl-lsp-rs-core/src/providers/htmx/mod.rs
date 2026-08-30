@@ -4,12 +4,10 @@ mod catalog;
 mod markup;
 
 pub use catalog::{
-    HTMX_ATTRIBUTES, HTMX_HEADERS, HtmxAttributeFamily, HtmxAttributeSpec,
-    HtmxHeaderDirection, HtmxHeaderSpec,
+    HTMX_ATTRIBUTES, HTMX_HEADERS, HtmxAttributeFamily, HtmxAttributeSpec, HtmxHeaderDirection,
+    HtmxHeaderSpec,
 };
-pub use markup::{
-    MAX_MARKUP_SCAN_BYTES, HtmxAttributeNameContext, htmx_attribute_name_context,
-};
+pub use markup::{HtmxAttributeNameContext, MAX_MARKUP_SCAN_BYTES, htmx_attribute_name_context};
 
 use crate::providers::completion_item::{CompletionItem, CompletionItemKind, InsertTextFormat};
 use crate::providers::file_completion::FileCompletionContext;
@@ -247,10 +245,7 @@ mod tests {
         assert_eq!(canonical_labels.len(), HTMX_ATTRIBUTES.len());
         assert_eq!(
             canonical_labels,
-            HTMX_ATTRIBUTES
-                .iter()
-                .map(|attribute| attribute.name.to_string())
-                .collect::<Vec<_>>()
+            HTMX_ATTRIBUTES.iter().map(|attribute| attribute.name.to_string()).collect::<Vec<_>>()
         );
         assert_eq!(
             data_labels,
@@ -271,10 +266,7 @@ mod tests {
             labels == ["hx-replace-url", "hx-request"]
                 && items.iter().all(|item| {
                     item.text_edit_range == Some((source.len() - "HX-Re".len(), source.len()))
-                        && item
-                            .insert_text
-                            .as_deref()
-                            .is_some_and(|text| text.starts_with("hx-"))
+                        && item.insert_text.as_deref().is_some_and(|text| text.starts_with("hx-"))
                 })
         }));
     }
@@ -288,8 +280,7 @@ mod tests {
             items.len() == 1
                 && items.first().is_some_and(|item| {
                     item.label == "hx-on:"
-                        && item.detail.as_deref()
-                            == Some("htmx event-handler attribute family")
+                        && item.detail.as_deref() == Some("htmx event-handler attribute family")
                 })
         }));
     }

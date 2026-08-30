@@ -114,11 +114,11 @@ mod tests {
         let labels: Vec<&str> = completions.iter().map(|item| item.label.as_ref()).collect();
 
         assert_eq!(labels, expected);
-        assert!(
-            complete_header_names(&FileCompletionContext::new("HX", 0, 2)).is_some_and(|items| {
+        assert!(complete_header_names(&FileCompletionContext::new("HX", 0, 2)).is_some_and(
+            |items| {
                 items.iter().map(|item| item.label.as_ref()).collect::<Vec<_>>() == expected
-            })
-        );
+            }
+        ));
     }
 
     #[test]
