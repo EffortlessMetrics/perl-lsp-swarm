@@ -1566,7 +1566,8 @@ sub score {
 
 #[test]
 #[serial]
-fn bdd_pull_diagnostics_tracks_result_ids_per_document() -> Result<(), Box<dyn std::error::Error>> {
+fn bdd_pull_diagnostics_workspace_fact_movement_retires_cached_ids()
+-> Result<(), Box<dyn std::error::Error>> {
     let scenario = BddScenario::new("Pull diagnostics keep per-document resultId caches isolated");
 
     let healthy = r#"use strict;
@@ -2032,7 +2033,7 @@ Foo::do_foo();
                 std::time::Duration::from_secs(2),
             )
             .unwrap_or(serde_json::Value::Null);
-        if !reply.is_null() || std::time::Instant::now() >= hover_deadline {
+        if reply.get("contents").is_some() || std::time::Instant::now() >= hover_deadline {
             break reply;
         }
         std::thread::sleep(std::time::Duration::from_millis(25));
