@@ -2993,11 +2993,10 @@ impl SymbolExtractor {
         }
 
         let search_start = object.location.end.min(self.source.len());
-        let search_end = search_start.saturating_add(160).min(self.source.len());
+        let mut search_end = search_start.saturating_add(160).min(self.source.len());
         // Keep both window edges on char boundaries. `search_start` comes from a
         // node span; clamp the window end down when needed so method-token lookup
         // remains available.
-        let mut search_end = search_end;
         while search_end > search_start && !self.source.is_char_boundary(search_end) {
             search_end -= 1;
         }
@@ -4687,7 +4686,8 @@ sub jump {
         extractor.extract_vars_from_string("\u{FFFD}$trigger", loc);
         assert_eq!(
             extractor.table.references["trigger"][0].location,
-            SourceLocation { start: 3, end: 11 }
+            SourceLocation { start: 3, end: 11 },
+            "reference must span `$trigger`, not shift by a stripped quote"
         );
 
         // End edge mid-char: value starts with a quote byte but ends inside a
@@ -4696,7 +4696,8 @@ sub jump {
         extractor_end.extract_vars_from_string("\"$ok\u{FFFD}", loc);
         assert_eq!(
             extractor_end.table.references["ok"][0].location,
-            SourceLocation { start: 1, end: 4 }
+            SourceLocation { start: 1, end: 4 },
+            "reference must span `$ok`, not shift from malformed quote stripping"
         );
 
         // Behavior guard: real quoted values are still stripped before the
@@ -4705,7 +4706,8 @@ sub jump {
         extractor_quoted.extract_vars_from_string("\"$quoted\"", loc);
         assert_eq!(
             extractor_quoted.table.references["quoted"][0].location,
-            SourceLocation { start: 1, end: 8 }
+            SourceLocation { start: 1, end: 8 },
+            "reference must span `$quoted`, accounting for the stripped opening quote"
         );
     }
 
@@ -4727,6 +4729,10 @@ sub jump {
         let extractor = SymbolExtractor::new_with_source(&code);
         let table = extractor.extract(&ast);
 
-        assert_eq!(table.references["method"][0].location, SourceLocation { start: 6, end: 12 });
+        assert_eq!(
+            table.references["method"][0].location,
+            SourceLocation { start: 6, end: 12 },
+            "method reference must span the method token, not the whole call"
+        );
     }
 }
