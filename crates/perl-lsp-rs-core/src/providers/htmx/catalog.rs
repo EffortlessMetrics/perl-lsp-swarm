@@ -117,7 +117,7 @@ pub const HTMX_HEADERS: &[HtmxHeaderSpec] = &[
     header!(
         "HX-Trigger",
         RequestAndResponse,
-        "Request: contains the triggering element `id`. Response: triggers client-side events."
+        "Request: contains the `id` of the triggering element. Response: triggers client-side events when the response is received."
     ),
     header!(
         "HX-Trigger-After-Settle",

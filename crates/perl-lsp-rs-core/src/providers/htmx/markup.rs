@@ -229,6 +229,7 @@ enum AttributeState {
     AfterName,
     BeforeValue,
     QuotedValue { delimiter: u8 },
+    AfterValue,
     UnquotedValue,
     Invalid,
 }
@@ -294,9 +295,16 @@ fn active_attribute_name_start(tag_body: &str) -> Option<usize> {
             }
             AttributeState::QuotedValue { delimiter } => {
                 if byte == delimiter {
-                    AttributeState::Between
+                    AttributeState::AfterValue
                 } else {
                     AttributeState::QuotedValue { delimiter }
+                }
+            }
+            AttributeState::AfterValue => {
+                if is_html_space(byte) {
+                    AttributeState::Between
+                } else {
+                    AttributeState::Invalid
                 }
             }
             AttributeState::UnquotedValue => {
@@ -381,6 +389,7 @@ mod tests {
             "<!doctype html hx-",
             "<?xml hx-",
             "<div title=\"hx-",
+            "<div title=\"value\"hx-",
             "<div foo=hx-",
             "<div <span hx-",
             "<% my $x = '<div hx-'",
