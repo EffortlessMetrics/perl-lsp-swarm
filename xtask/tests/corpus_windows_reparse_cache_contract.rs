@@ -416,17 +416,16 @@ fn validate_workflow(source: &str) -> Result<()> {
     ensure!(
         !after_selected_declaration.lines().map(str::trim).any(|line| {
             let line = line.to_ascii_lowercase();
-            line.starts_with("selected_tests=")
-                || line.starts_with("selected_tests+=")
-                || line.starts_with("selected_tests[") && line.contains("]=")
-                || line == "unset selected_tests"
-                || line.starts_with("unset selected_tests[")
-                || line.starts_with("unset 'selected_tests[")
-                || line.starts_with("unset \"selected_tests[")
-                || line.starts_with("declare selected_tests")
-                || line.starts_with("declare -a selected_tests")
-                || line.starts_with("typeset selected_tests")
-                || line.starts_with("typeset -a selected_tests")
+            line.contains("selected_tests=")
+                || line.contains("selected_tests+=")
+                || line.contains("selected_tests[") && line.contains("]=")
+                || line.contains("unset selected_tests")
+                || line.contains("unset 'selected_tests[")
+                || line.contains("unset \"selected_tests[")
+                || line.contains("declare selected_tests")
+                || line.contains("declare -a selected_tests")
+                || line.contains("typeset selected_tests")
+                || line.contains("typeset -a selected_tests")
                 || (line.contains("mapfile") || line.contains("readarray"))
                     && line.contains("selected_tests")
         }),
@@ -644,6 +643,10 @@ fn static_contract_rejects_structural_proof_and_trigger_mutations() -> Result<()
         (
             "          )\n\n          test_list=\"$(mktemp)\"",
             "          )\n          readarray -t selected_tests < \"$test_list\"\n\n          test_list=\"$(mktemp)\"",
+        ),
+        (
+            "          )\n\n          test_list=\"$(mktemp)\"",
+            "          )\n          echo noop; selected_tests=()\n\n          test_list=\"$(mktemp)\"",
         ),
         (TOPOLOGY_EXECUTION_SOURCE_ANCHOR, ""),
     ] {
