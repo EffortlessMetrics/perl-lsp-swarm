@@ -62,38 +62,73 @@ fn run_git_ok(root: &Path, args: &[&str]) -> Result<String> {
         .with_context(|| format!("`git {}` output was not UTF-8", args.join(" ")))
 }
 
-/// Substrings that appear in `git cat-file -e`'s stderr specifically when
-/// the command ran fine and cleanly determined the path/ref combination
-/// just isn't there — a legitimate absence, not a broken invocation.
-/// Observed across every shape this module hits it with: `<tree>:<path>`
-/// where `<path>` isn't in `<tree>` ("does not exist in ..."), `:<path>`
-/// against the live index with no working-tree fallback ("does not exist
-/// (neither on disk nor in the index)"), and a syntactically-valid but
-/// nonexistent tree OID ("exists on disk, but not in ..."). Anything else
-/// — "invalid object name" for a malformed ref, a missing git binary, a
-/// corrupted repository — is a genuine instrument failure and must surface
-/// as a real `Err`, never get folded into "absent" (issue #4031 item 6).
-const GIT_PATH_ABSENT_MARKERS: &[&str] = &["does not exist", "but not in"];
+/// Whether `path` exists in the staged snapshot, distinguished from a
+/// genuine git failure **without parsing any of git's prose** (issue #4092
+/// gap 3).
+///
+/// The prior implementation ran `git cat-file -e <tree>:<path>` and decided
+/// "absent" by matching English substrings ("does not exist", "but not in")
+/// in stderr. On a non-English git locale those markers never match, so a
+/// legitimate absence surfaced as `Err` — fail-safe, but a locale-dependent
+/// false block once the commit tier blocks promotion.
+///
+/// The replacement is exit-code-structured, so there is no message text to
+/// localize:
+///
+/// - `tree_oid = Some(oid)`: first `git cat-file -t <oid>` validates the
+///   tree object itself — nonzero there is a malformed ref or a corrupted
+///   object database and stays a real instrument failure (`Err`), never
+///   "absent". Then `git ls-tree -z <oid> -- <path>` answers membership:
+///   success + a parsed entry naming exactly `path` = present, success +
+///   no such entry = absent.
+/// - `tree_oid = None`: `git ls-files -z -- <path>` answers index
+///   membership the same way (a `:<path>` spec has no ref component that
+///   could be malformed).
+///
+/// Entries are matched by exact path string, never by git's pathspec
+/// pattern semantics, so a query for `weird*name.rs` cannot be answered by
+/// an unrelated `weirdXname.rs` (and vice versa). A path recorded with a
+/// type-change mode (e.g. `120000` symlink) is present like any other
+/// entry — callers own mode policy (see [`list_staged_entries`]).
+fn staged_path_exists_in(root: &Path, tree_oid: Option<&str>, path: &str) -> Result<bool> {
+    match tree_oid {
+        Some(oid) => {
+            // Validate the tree object first: `ls-tree` on a malformed OID
+            // also exits nonzero, but only this step tells a bad ref from a
+            // legitimate membership question, and only a valid object may
+            // ever reach the membership query below.
+            let kind = run_git_ok(root, &["cat-file", "-t", oid])?;
+            if kind.trim() != "tree" {
+                bail!("staged snapshot `{oid}` is a {}, not a tree", kind.trim());
+            }
+            let raw = run_git_ok(root, &["ls-tree", "-z", "--", oid, path])?;
+            Ok(parse_ls_tree_paths(&raw).iter().any(|entry| entry == path))
+        }
+        None => {
+            let output = Command::new("git")
+                .current_dir(root)
+                .args(["ls-files", "-z", "--", path])
+                .output()
+                .with_context(|| format!("failed to check whether {path} is staged"))?;
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                bail!("`git ls-files -- {path}` failed: {stderr}");
+            }
+            let raw = String::from_utf8(output.stdout)
+                .with_context(|| format!("`git ls-files -- {path}` output was not UTF-8"))?;
+            Ok(raw.split('\0').any(|entry| entry == path))
+        }
+    }
+}
 
-/// Whether `spec` (a git rev-spec of the form `<tree>:<path>` or
-/// `:<path>`) resolves to a real object, distinguishing a clean "no, and
-/// here's why" from an actual git invocation failure by inspecting
-/// `cat-file -e`'s stderr rather than trusting the exit code alone. See
-/// [`GIT_PATH_ABSENT_MARKERS`].
-fn spec_exists(root: &Path, spec: &str) -> Result<bool> {
-    let output = Command::new("git")
-        .current_dir(root)
-        .args(["cat-file", "-e", spec])
-        .output()
-        .with_context(|| format!("failed to check whether {spec} exists"))?;
-    if output.status.success() {
-        return Ok(true);
-    }
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    if GIT_PATH_ABSENT_MARKERS.iter().any(|marker| stderr.contains(marker)) {
-        return Ok(false);
-    }
-    bail!("`git cat-file -e {spec}` failed: {stderr}");
+/// Repo-relative paths from `git ls-tree -z` output (records of the form
+/// `<mode> SP <type> SP <oid> TAB <path> NUL`; paths needing quotes in
+/// non-`-z` output are emitted raw under `-z`).
+fn parse_ls_tree_paths(raw: &str) -> Vec<String> {
+    raw.split('\0')
+        .filter(|record| !record.is_empty())
+        .filter_map(|record| record.split_once('\t').map(|(_, path)| path.to_string()))
+        .collect()
 }
 
 /// The OID of the tree that `git commit` would record right now — i.e.
@@ -277,26 +312,26 @@ pub enum StagedPathText {
 ///
 /// Distinguishes three outcomes (see [`StagedPathText`]) instead of
 /// conflating "the path isn't there" with "git failed to run": existence is
-/// checked first via [`spec_exists`], which itself tells a clean "no" (git
-/// ran fine and determined the path/ref combination doesn't resolve) apart
-/// from a real instrument failure (a malformed ref, a missing git binary, a
-/// corrupted object database) by inspecting *why* the check failed, not
-/// just whether it did. Only a genuine instrument failure — including a
-/// `git show` that fails even though the immediately-prior existence check
-/// passed, a TOCTOU race worth surfacing rather than swallowing — produces
-/// a real `Err` here.
+/// checked first via [`staged_path_exists_in`], which tells a clean "no"
+/// (git ran fine and determined the path isn't in the snapshot) apart from
+/// a real instrument failure (a malformed ref, a missing git binary, a
+/// corrupted object database) through exit-code structure, never by parsing
+/// localized message text (issue #4092 gap 3). Only a genuine instrument
+/// failure — including a `git show` that fails even though the
+/// immediately-prior existence check passed, a TOCTOU race worth surfacing
+/// rather than swallowing — produces a real `Err` here.
 pub fn read_staged_path_text(
     root: &Path,
     path: &str,
     tree_oid: Option<&str>,
 ) -> Result<StagedPathText> {
+    if !staged_path_exists_in(root, tree_oid, path)? {
+        return Ok(StagedPathText::Absent);
+    }
     let spec = match tree_oid {
         Some(oid) => format!("{oid}:{path}"),
         None => format!(":{path}"),
     };
-    if !spec_exists(root, &spec)? {
-        return Ok(StagedPathText::Absent);
-    }
     let output = Command::new("git")
         .current_dir(root)
         .args(["show", &spec])
@@ -317,11 +352,11 @@ pub fn read_staged_path_text(
 /// version of a config file (`rustfmt.toml`) which may or may not be part of
 /// the diff being committed (it might be untouched by this commit, or not
 /// tracked at all). Built on the same absent-vs-failure distinction as
-/// [`read_staged_path_text`] (via [`spec_exists`]), so a malformed
+/// [`read_staged_path_text`] (via [`staged_path_exists_in`]), so a malformed
 /// `tree_oid` or a genuine git failure surfaces as `Err` here too, rather
 /// than silently reporting `Ok(false)`.
 pub fn staged_path_exists(root: &Path, tree_oid: &str, path: &str) -> Result<bool> {
-    spec_exists(root, &format!("{tree_oid}:{path}"))
+    staged_path_exists_in(root, Some(tree_oid), path)
 }
 
 #[cfg(test)]
@@ -461,6 +496,50 @@ mod tests {
                 .context("failed to run git rm --cached")?;
             if !status.success() {
                 bail!("git rm --cached {rel_path} failed");
+            }
+            Ok(())
+        }
+
+        /// Stage `content` as a blob at `rel_path` with an explicit git
+        /// `mode` (`100644`, `120000` symlink, …) via
+        /// `git hash-object -w` + `git update-index --cacheinfo`. This
+        /// records the entry purely in the index/object database — no
+        /// working-tree file is created — so type-change fixtures work even
+        /// on platforms that cannot create real symlinks, and paths with
+        /// characters the local filesystem forbids (`*`) remain stageable.
+        fn stage_blob_at(&self, mode: &str, content: &str, rel_path: &str) -> Result<()> {
+            use std::io::Write;
+            use std::process::Stdio;
+
+            let mut child = Command::new("git")
+                .current_dir(self.root())
+                .args(["hash-object", "-w", "--stdin"])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .spawn()
+                .context("failed to spawn `git hash-object -w --stdin`")?;
+            child
+                .stdin
+                .take()
+                .context("git hash-object stdin was not piped")?
+                .write_all(content.as_bytes())
+                .context("failed to write blob content to git hash-object")?;
+            let output = child.wait_with_output().context("failed to wait for git hash-object")?;
+            if !output.status.success() {
+                bail!("git hash-object failed: {}", String::from_utf8_lossy(&output.stderr));
+            }
+            let blob = String::from_utf8(output.stdout)
+                .context("git hash-object output was not UTF-8")?
+                .trim()
+                .to_string();
+            let spec = format!("{mode},{blob},{rel_path}");
+            let status = Command::new("git")
+                .current_dir(self.root())
+                .args(["update-index", "--add", "--cacheinfo", &spec])
+                .status()
+                .context("failed to run git update-index --cacheinfo")?;
+            if !status.success() {
+                bail!("git update-index --add --cacheinfo {spec} failed");
             }
             Ok(())
         }
@@ -838,6 +917,122 @@ mod tests {
                 "expected a deleted staged path to read back as Absent from the pinned tree, \
                  got {other:?}"
             ),
+        }
+        Ok(())
+    }
+
+    // -------------------------------------------------------------------
+    // Issue #4092 gap 2: a `T` (type-change) staged entry must stay in the
+    // staged change-set with its own recorded mode, never vanish and never
+    // silently become clean content validation.
+    // -------------------------------------------------------------------
+
+    /// Stage a regular file, then replace the index entry with a `120000`
+    /// symlink blob pointing outside the tree — the realistic hostile
+    /// type-change. Proves the entry survives into `staged_diff_paths`
+    /// (both live and pinned) and keeps its non-regular mode for the
+    /// owning checks to reject.
+    #[test]
+    fn staged_diff_paths_includes_a_type_change_with_its_recorded_mode() -> Result<()> {
+        let repo = TempRepo::init()?;
+        repo.write("doomed.rs", "fn main() {}\n")?;
+        repo.add("doomed.rs")?;
+        repo.commit("initial")?;
+
+        // Type-change: regular file -> symlink (mode 120000) recorded only
+        // in the index; the working tree still holds the regular file.
+        repo.stage_blob_at("120000", "../../outside/target", "doomed.rs")?;
+
+        let live_paths = staged_diff_paths(repo.root(), None)?;
+        assert!(
+            live_paths.iter().any(|p| p == "doomed.rs"),
+            "a staged type change (T) must appear in staged_diff_paths: {live_paths:?}"
+        );
+
+        let tree_oid = staged_tree_oid(repo.root())?;
+        let pinned_paths = staged_diff_paths(repo.root(), Some(&tree_oid))?;
+        assert!(
+            pinned_paths.iter().any(|p| p == "doomed.rs"),
+            "the pinned-tree path must also include the type change: {pinned_paths:?}"
+        );
+
+        let entries = list_staged_entries(repo.root(), &tree_oid)?;
+        let entry = entries
+            .iter()
+            .find(|e| e.path == "doomed.rs")
+            .context("type-changed entry must remain listable")?;
+        assert_eq!(
+            entry.mode, "120000",
+            "the type-changed entry must carry its own recorded mode so owning checks can \
+             reject non-regular files instead of silently validating them"
+        );
+        assert!(!entry.is_executable());
+        Ok(())
+    }
+
+    // -------------------------------------------------------------------
+    // Issue #4092 gap 3: absence detection is exit-code-structured, never
+    // git-prose parsing — so it also cannot mis-answer through pathspec
+    // pattern semantics.
+    // -------------------------------------------------------------------
+
+    /// The exact-match guarantee behind locale independence: a queried path
+    /// is answered only by an identical staged path, never by git pathspec
+    /// pattern semantics. `evil[1]x.rs` is staged (brackets are legal in
+    /// index paths everywhere, unlike `*` on Windows); a query for
+    /// `evil1x.rs` — which the pathspec pattern `evil[1]x.rs` would match —
+    /// must be `Absent`, and the exact query must be `Present`.
+    #[test]
+    fn absent_query_never_matches_a_differently_named_staged_path() -> Result<()> {
+        let repo = TempRepo::init()?;
+        repo.stage_blob_at("100644", "payload\n", "evil[1]x.rs")?;
+
+        match read_staged_path_text(repo.root(), "evil1x.rs", None)? {
+            StagedPathText::Absent => {}
+            other => bail!(
+                "a pattern-neighboring query must not answer a staged `evil[1]x.rs`: got {other:?} \
+                 — path membership must be exact, not pattern-matched"
+            ),
+        }
+        match read_staged_path_text(repo.root(), "evil[1]x.rs", None)? {
+            StagedPathText::Present(text) => assert_eq!(text, "payload\n"),
+            other => bail!("the exact staged path must read back present, got {other:?}"),
+        }
+
+        // The same exactness holds against a pinned tree OID.
+        let tree_oid = staged_tree_oid(repo.root())?;
+        match read_staged_path_text(repo.root(), "evil1x.rs", Some(&tree_oid))? {
+            StagedPathText::Absent => {}
+            other => bail!(
+                "pinned exact-match must also reject the pattern-neighboring query: got {other:?}"
+            ),
+        }
+        Ok(())
+    }
+
+    /// A type-changed (symlink) entry is PRESENT for content reads — its
+    /// blob content is the link target — and the pinned form of a
+    /// never-staged path is still Absent. Presence must not depend on the
+    /// entry's mode being a regular file.
+    #[test]
+    fn type_changed_entry_is_present_and_never_staged_path_is_absent_when_pinned() -> Result<()> {
+        let repo = TempRepo::init()?;
+        repo.write("plain.rs", "fn main() {}\n")?;
+        repo.add("plain.rs")?;
+        repo.commit("initial")?;
+        repo.stage_blob_at("120000", "../elsewhere", "plain.rs")?;
+        let tree_oid = staged_tree_oid(repo.root())?;
+
+        match read_staged_path_text(repo.root(), "plain.rs", Some(&tree_oid))? {
+            StagedPathText::Present(text) => assert_eq!(text, "../elsewhere"),
+            other => bail!(
+                "a type-changed entry must be present with its own blob (the link target), got \
+                 {other:?}"
+            ),
+        }
+        match read_staged_path_text(repo.root(), "never-staged.rs", Some(&tree_oid))? {
+            StagedPathText::Absent => {}
+            other => bail!("expected pinned Absent for a never-staged path, got {other:?}"),
         }
         Ok(())
     }
