@@ -320,10 +320,7 @@ mod tests {
 
     fn admitted(source: &str, requested: FormatRange) -> AdmittedFormatRange {
         let geometry = SourceGeometry::new(source);
-        must_with(
-            admit_format_range(&geometry, source, &requested),
-            "test range must admit",
-        )
+        must_with(admit_format_range(&geometry, source, &requested), "test range must admit")
     }
 
     fn rejection(source: &str, requested: FormatRange) -> RangeAdmissionError {
@@ -377,24 +374,15 @@ mod tests {
         let geometry = SourceGeometry::new(source);
         assert_eq!(must_with(geometry.byte_offset(source, 0, 1), "start of crab"), 1);
         assert_eq!(must_with(geometry.byte_offset(source, 0, 3), "after crab"), 5);
-        assert_eq!(
-            must_with(geometry.byte_offset(source, 0, 4), "one past line body"),
-            6
-        );
-        assert_eq!(
-            must_with(geometry.byte_offset(source, 1, 4), "next line body end"),
-            12
-        );
+        assert_eq!(must_with(geometry.byte_offset(source, 0, 4), "one past line body"), 6);
+        assert_eq!(must_with(geometry.byte_offset(source, 1, 4), "next line body end"), 12);
     }
 
     #[test]
     fn surrogate_splits_and_past_end_characters_refuse() {
         let source = "a🦀b\n";
         let geometry = SourceGeometry::new(source);
-        let split = must_err_with(
-            geometry.byte_offset(source, 0, 2),
-            "mid-surrogate must refuse",
-        );
+        let split = must_err_with(geometry.byte_offset(source, 0, 2), "mid-surrogate must refuse");
         assert_eq!(split, RangePositionError::SurrogateSplit { line: 0, character: 2 });
         assert!(split.message().contains("splits a surrogate pair"));
         let past = must_err_with(geometry.byte_offset(source, 0, 99), "past end must refuse");
@@ -445,32 +433,20 @@ mod tests {
         let geometry = SourceGeometry::new(source);
 
         let exact_point = admitted(source, range(0, 3, 0, 3));
-        assert_eq!(
-            must_with(exact_point.allowed_edit_span(source, &geometry), "span"),
-            (3, 3)
-        );
+        assert_eq!(must_with(exact_point.allowed_edit_span(source, &geometry), "span"), (3, 3));
 
         let same_line = admitted(source, range(0, 1, 0, 2));
-        assert_eq!(
-            must_with(same_line.allowed_edit_span(source, &geometry), "span"),
-            (1, 2)
-        );
+        assert_eq!(must_with(same_line.allowed_edit_span(source, &geometry), "span"), (1, 2));
 
         let end_at_next_line_zero = admitted(source, range(0, 1, 1, 0));
         assert_eq!(
-            must_with(
-                end_at_next_line_zero.allowed_edit_span(source, &geometry),
-                "span"
-            ),
+            must_with(end_at_next_line_zero.allowed_edit_span(source, &geometry), "span"),
             (1, 4),
             "end-at-next-line-character-zero keeps the requested start exact"
         );
 
         let multiline = admitted(source, range(0, 1, 2, 2));
-        assert_eq!(
-            must_with(multiline.allowed_edit_span(source, &geometry), "span"),
-            (1, 10)
-        );
+        assert_eq!(must_with(multiline.allowed_edit_span(source, &geometry), "span"), (1, 10));
 
         let unterminated_tail = admitted(source, range(1, 0, 2, 3));
         assert_eq!(
