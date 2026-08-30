@@ -52,6 +52,10 @@
       "invocation_sha256": "d2c564eb6c78a731ad3ddfcc882da2b30fa7dc86e660940742d61925526135bf"
     },
     {
+      "id": "parser.postfix.dereference_matrix",
+      "invocation_sha256": "f0c3148a2b728538edff1e8210a653c9b9d4b70676860ccf5a52f20ca2d0ecc2"
+    },
+    {
       "id": "parser.recovery.incomplete_brace",
       "invocation_sha256": "60071e5852024c3ddc031285ad27e605e5cac7c3f5058ee1be91d3478174cfa8"
     },
