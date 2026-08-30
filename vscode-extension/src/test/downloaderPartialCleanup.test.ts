@@ -123,4 +123,57 @@ describe('BinaryDownloader partial-file cleanup ordering', () => {
     ).rejects.toBe(requestError);
     expect(fs.existsSync(destination)).toBe(false);
   });
+
+  test('settles immediately when a stream double closes synchronously', async () => {
+    const destination = path.join(tmpDir, 'partial-sync-close.bin');
+    fs.writeFileSync(destination, 'partial');
+
+    const downloader = new BinaryDownloader(
+      makeContext(tmpDir),
+      makeOutputChannel(),
+    ) as unknown as DownloaderSeams;
+    const request = new EventEmitter() as TestRequest;
+    request.destroy = jest.fn();
+    const requestError = new Error('request failed after synchronous close');
+    const file = new EventEmitter() as EventEmitter & {
+      closed: boolean;
+      destroy: jest.Mock;
+      write: jest.Mock;
+      end: jest.Mock;
+    };
+    file.closed = false;
+    file.destroy = jest.fn(() => {
+      file.emit('close');
+    });
+    file.write = jest.fn(() => true);
+    file.end = jest.fn();
+    jest.spyOn(downloader, 'createWriteStream').mockReturnValue(file as unknown as fs.WriteStream);
+    jest.spyOn(downloader, 'removePartialFile').mockImplementation(() => {});
+    jest.spyOn(downloader, 'httpGet').mockImplementation((_https, _url, _options, callback) => {
+      process.nextTick(() => {
+        const response = new EventEmitter() as EventEmitter & {
+          statusCode: number;
+          headers: Record<string, string>;
+          destroy: jest.Mock;
+          pause: jest.Mock;
+          resume: jest.Mock;
+        };
+        response.statusCode = 200;
+        response.headers = {};
+        response.destroy = jest.fn();
+        response.pause = jest.fn();
+        response.resume = jest.fn();
+        (callback as (response: unknown) => void)(response);
+        response.emit('data', Buffer.from('payload'));
+        response.emit('error', requestError);
+      });
+      return request;
+    });
+
+    await expect(
+      downloader.downloadFile('http://localhost/archive', destination, 1000),
+    ).rejects.toBe(requestError);
+    expect(file.destroy).toHaveBeenCalledTimes(1);
+    expect(fs.existsSync(destination)).toBe(false);
+  });
 });

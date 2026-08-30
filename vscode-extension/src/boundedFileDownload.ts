@@ -115,11 +115,18 @@ export function downloadBoundedFile(options: BoundedFileDownloadOptions): Promis
       file.once('close', rejectAfterClose);
       try {
         file.destroy();
+        if (closeHandled) {
+          return;
+        }
         // `emitClose: false` is a supported WriteStream option. Such a stream
         // closes its resource but never emits the event above, so observe the
         // documented closed state as a fallback. The undefined case is kept
         // out of this branch for lightweight test doubles without stream
         // lifecycle state.
+        if (file.closed === undefined) {
+          rejectAfterClose();
+          return;
+        }
         const pollClosedState = (): void => {
           if (file?.closed) {
             rejectAfterClose();
