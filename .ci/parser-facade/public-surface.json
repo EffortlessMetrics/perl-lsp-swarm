@@ -23,7 +23,13 @@
       "disposition": "review",
       "owner": "#2477",
       "target_owner": "#7063",
-      "exit_condition": "Retain only parser-owned builtin syntax data; move semantic/provider metadata above the parser."
+      "exit_condition": "Retain only parser-owned builtin syntax data; move semantic/provider metadata above the parser.",
+      "pending": {
+        "owner": "#7063",
+        "predecessor": "#2477",
+        "reason": "PF01 is inventory-only and cannot change the facade boundary; the staged compatibility decision belongs to the #7063 migration leaves.",
+        "resolves_when": "A #7063 migration leaf lands the recorded exit condition for this row."
+      }
     },
     {
       "name": "core",
@@ -47,7 +53,13 @@
       "disposition": "review",
       "owner": "#2477",
       "target_owner": "#7063",
-      "exit_condition": "Restrict to canonical parser contracts and remove product composition."
+      "exit_condition": "Restrict to canonical parser contracts and remove product composition.",
+      "pending": {
+        "owner": "#7063",
+        "predecessor": "#2477",
+        "reason": "PF01 is inventory-only and cannot change the facade boundary; the staged compatibility decision belongs to the #7063 migration leaves.",
+        "resolves_when": "A #7063 migration leaf lands the recorded exit condition for this row."
+      }
     },
     {
       "name": "refactor",
@@ -71,7 +83,13 @@
       "disposition": "review",
       "owner": "#2477",
       "target_owner": "#7063",
-      "exit_condition": "Retain only parser-owned token/trivia compatibility and canonical ownership."
+      "exit_condition": "Retain only parser-owned token/trivia compatibility and canonical ownership.",
+      "pending": {
+        "owner": "#7063",
+        "predecessor": "#2477",
+        "reason": "PF01 is inventory-only and cannot change the facade boundary; the staged compatibility decision belongs to the #7063 migration leaves.",
+        "resolves_when": "A #7063 migration leaf lands the recorded exit condition for this row."
+      }
     },
     {
       "name": "workspace",
@@ -134,6 +152,12 @@
       "owner": "#2477",
       "target_owner": "#7063",
       "exit_condition": "Retain only types/functions that belong to the minimal parser contract; move product helpers to their owners.",
+      "pending": {
+        "owner": "#7063",
+        "predecessor": "#2477",
+        "reason": "PF01 is inventory-only and cannot change the facade boundary; the staged compatibility decision belongs to the #7063 migration leaves.",
+        "resolves_when": "A #7063 migration leaf lands the recorded exit condition for this row."
+      },
       "members": [
         "perl_parser_core::line_index",
         "perl_parser_core::path_normalize",
@@ -152,6 +176,12 @@
       "owner": "#2477",
       "target_owner": "#7063",
       "exit_condition": "Converge on canonical parser-core token/trivia ownership and exact compatibility paths.",
+      "pending": {
+        "owner": "#7063",
+        "predecessor": "#2477",
+        "reason": "PF01 is inventory-only and cannot change the facade boundary; the staged compatibility decision belongs to the #7063 migration leaves.",
+        "resolves_when": "A #7063 migration leaf lands the recorded exit condition for this row."
+      },
       "members": [
         "pragma_tracker::PragmaState",
         "pragma_tracker::PragmaTracker",
@@ -327,90 +357,108 @@
   ],
   "targets": [
     {
-      "kind": "bin",
-      "required_features": [
-        "cli"
-      ],
       "name": "perl-parse",
+      "kind": "bin",
       "classification": "product_composition",
       "disposition": "review",
       "owner": "#2477",
       "target_owner": "#7063",
-      "exit_condition": "Keep only if parser CLI ownership remains an intentional facade responsibility."
+      "exit_condition": "Keep only if parser CLI ownership remains an intentional facade responsibility.",
+      "pending": {
+        "owner": "#7063",
+        "predecessor": "#2477",
+        "reason": "PF01 is inventory-only and cannot change the facade boundary; the staged compatibility decision belongs to the #7063 migration leaves.",
+        "resolves_when": "A #7063 migration leaf lands the recorded exit condition for this row."
+      },
+      "required_features": [
+        "cli"
+      ]
     },
     {
-      "kind": "bench",
-      "required_features": [],
       "name": "parser_benchmark",
+      "kind": "bench",
       "classification": "parser_kernel",
       "disposition": "retain",
       "owner": "#6698",
       "target_owner": "perl-parser",
-      "exit_condition": "Name the exact fresh parser regime and evidence subject."
+      "exit_condition": "Name the exact fresh parser regime and evidence subject.",
+      "required_features": []
     },
     {
-      "kind": "bench",
-      "required_features": [
-        "incremental"
-      ],
       "name": "incremental_benchmark",
+      "kind": "bench",
       "classification": "incremental_parser",
       "disposition": "review",
       "owner": "#6707",
       "target_owner": "#7099",
-      "exit_condition": "Retain only with truthful strategy/work receipt taxonomy."
+      "exit_condition": "Retain only with truthful strategy/work receipt taxonomy.",
+      "pending": {
+        "owner": "#7099",
+        "predecessor": "#6707",
+        "reason": "Benchmark ownership depends on the reviewed parser validation surface rather than the facade inventory.",
+        "resolves_when": "#7099 settles benchmark target ownership."
+      },
+      "required_features": [
+        "incremental"
+      ]
     },
     {
-      "kind": "bench",
-      "required_features": [],
       "name": "scope_benchmark",
+      "kind": "bench",
       "classification": "product_composition",
       "disposition": "move",
       "owner": "#2477",
       "target_owner": "#7063",
-      "exit_condition": "Move semantic/scope performance ownership above the parser facade."
+      "exit_condition": "Move semantic/scope performance ownership above the parser facade.",
+      "required_features": []
     },
     {
-      "kind": "bench",
-      "required_features": [],
       "name": "cpan_patterns_benchmark",
+      "kind": "bench",
       "classification": "experimental",
       "disposition": "review",
       "owner": "#6696",
       "target_owner": "#7099",
-      "exit_condition": "Bind to governed corpus identities and an exact parser regime or retire."
+      "exit_condition": "Bind to governed corpus identities and an exact parser regime or retire.",
+      "pending": {
+        "owner": "#7099",
+        "predecessor": "#6696",
+        "reason": "Benchmark ownership depends on the reviewed parser validation surface rather than the facade inventory.",
+        "resolves_when": "#7099 settles benchmark target ownership."
+      },
+      "required_features": []
     },
     {
-      "kind": "example",
-      "required_features": [
-        "incremental"
-      ],
       "name": "test_incremental_v2",
+      "kind": "example",
       "classification": "experimental",
       "disposition": "deprecate",
       "owner": "#6701",
       "target_owner": "#6975",
-      "exit_condition": "Replace with the canonical incremental API example or remove."
+      "exit_condition": "Replace with the canonical incremental API example or remove.",
+      "required_features": [
+        "incremental"
+      ]
     },
     {
-      "kind": "bench",
-      "required_features": [],
       "name": "positions_bench",
+      "kind": "bench",
       "classification": "parser_kernel",
       "disposition": "retain",
       "owner": "#6698",
       "target_owner": "perl-parser",
-      "exit_condition": "Declare harness mode so nightly --noplot invocation stays valid; bind to an exact parser regime evidence subject."
+      "exit_condition": "Declare harness mode so nightly --noplot invocation stays valid; bind to an exact parser regime evidence subject.",
+      "required_features": []
     },
     {
-      "kind": "bench",
-      "required_features": [],
       "name": "substitution_performance",
+      "kind": "bench",
       "classification": "parser_kernel",
       "disposition": "retain",
       "owner": "#6698",
       "target_owner": "perl-parser",
-      "exit_condition": "Declare harness mode so nightly --noplot invocation stays valid; bind to an exact parser regime evidence subject."
+      "exit_condition": "Declare harness mode so nightly --noplot invocation stays valid; bind to an exact parser regime evidence subject.",
+      "required_features": []
     }
   ]
 }

@@ -11,11 +11,31 @@ FORBIDDEN_KERNEL_DEPENDENCY_TOKENS = (
     "perl-lsp", "perllsp", "vscode", "perl-dap", "perl-workspace"
 )
 
+DEPENDENCY_TABLE_CONTEXTS = {
+    "dependencies": "normal",
+    "dev-dependencies": "dev",
+    "build-dependencies": "build",
+}
+
+FEATURE_PRODUCTION_DIRECTORIES = ("src",)
+FEATURE_TEST_DIRECTORIES = ("tests", "benches", "examples")
+
+FEATURE_GATE_PATTERN = re.compile(r"feature\s*=\s*\"([A-Za-z0-9_.+-]+)\"")
+
+
 @dataclass(frozen=True)
 class CargoTarget:
     kind: str
     name: str
     required_features: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class DependencyFact:
+    """One package identity observed across every manifest dependency table."""
+
+    contexts: tuple[str, ...]
+    optional: bool
 
 
 def load_toml(path: Path) -> dict[str, Any]:
@@ -132,6 +152,98 @@ def dependency_rows(manifest: dict[str, Any]) -> dict[str, bool]:
     return normalized_dependency_rows(dependencies, "dependencies")
 
 
+def contextual_dependency_tables(manifest: dict[str, Any]) -> Iterable[tuple[str, dict[str, Any]]]:
+    """Yield every dependency table with its normal/dev/build/target context."""
+    for key, context in DEPENDENCY_TABLE_CONTEXTS.items():
+        value = manifest.get(key)
+        if isinstance(value, dict):
+            yield context, value
+    target = manifest.get("target")
+    if isinstance(target, dict):
+        for specification in sorted(target):
+            target_table = target[specification]
+            if not isinstance(target_table, dict):
+                continue
+            for key, context in DEPENDENCY_TABLE_CONTEXTS.items():
+                value = target_table.get(key)
+                if isinstance(value, dict):
+                    yield f"target:{context}", value
+
+
+def dependency_universe(manifest: dict[str, Any]) -> dict[str, DependencyFact]:
+    """Inventory every declared dependency with the contexts that declare it."""
+    facts: dict[str, DependencyFact] = {}
+    for context, table in contextual_dependency_tables(manifest):
+        for package, optional in normalized_dependency_rows(table, context).items():
+            previous = facts.get(package)
+            contexts = set(previous.contexts) if previous else set()
+            contexts.add(context)
+            facts[package] = DependencyFact(
+                tuple(sorted(contexts)), optional or (previous.optional if previous else False)
+            )
+    if not facts:
+        raise ValueError("manifest declares no dependencies in any context")
+    return facts
+
+
+def feature_source_gates(crate_root: Path, directories: Iterable[str]) -> set[str]:
+    """Collect every feature name reached by a `feature = "..."` cfg predicate."""
+    gates: set[str] = set()
+    for directory in directories:
+        base = crate_root / directory
+        if not base.is_dir():
+            continue
+        for path in sorted(base.rglob("*.rs")):
+            gates.update(FEATURE_GATE_PATTERN.findall(path.read_text(encoding="utf-8", errors="replace")))
+    return gates
+
+
+def feature_isolation(manifest: dict[str, Any], crate_root: Path) -> dict[str, str]:
+    """Classify what each declared feature actually isolates.
+
+    A feature name is a production boundary only when it selects dependencies or
+    gates `src/`. A feature that gates only test, bench, or example source is a test
+    profile, and a feature that gates nothing is taxonomy; neither may be presented
+    as an architectural boundary.
+    """
+    features = manifest.get("features")
+    if not isinstance(features, dict):
+        raise ValueError("perl-parser manifest has no [features] table")
+    declared = set(features)
+    packages = set(dependency_universe(manifest))
+    gated = feature_source_gates(crate_root, FEATURE_PRODUCTION_DIRECTORIES)
+    test_gated = feature_source_gates(crate_root, FEATURE_TEST_DIRECTORIES)
+    result: dict[str, str] = {}
+    for name, entries in features.items():
+        if not isinstance(entries, list) or any(not isinstance(entry, str) for entry in entries):
+            raise ValueError(f"feature {name} must select a string list")
+        selects_dependency = False
+        selects_feature = False
+        for entry in entries:
+            if entry.startswith("dep:"):
+                selects_dependency = True
+            elif "/" in entry:
+                if entry.split("/", 1)[0].removesuffix("?") in packages:
+                    selects_dependency = True
+            elif entry in packages:
+                selects_dependency = True
+            elif entry in declared:
+                selects_feature = True
+        if selects_dependency and name in gated:
+            result[name] = "dependencies_and_source"
+        elif selects_dependency:
+            result[name] = "dependencies_only"
+        elif name in gated:
+            result[name] = "source_only"
+        elif name in test_gated:
+            result[name] = "test_source_only"
+        elif selects_feature:
+            result[name] = "feature_aggregate"
+        else:
+            result[name] = "taxonomy_only"
+    return result
+
+
 def cargo_targets(manifest: dict[str, Any]) -> set[CargoTarget]:
     result: set[CargoTarget] = set()
     for key in ("bin", "bench", "example"):
@@ -148,24 +260,13 @@ def cargo_targets(manifest: dict[str, Any]) -> set[CargoTarget]:
     return result
 
 
-def dependency_tables(manifest: dict[str, Any]) -> Iterable[dict[str, Any]]:
-    for key in ("dependencies", "dev-dependencies", "build-dependencies"):
-        value = manifest.get(key)
-        if isinstance(value, dict):
-            yield value
-    target = manifest.get("target")
-    if isinstance(target, dict):
-        for target_table in target.values():
-            if not isinstance(target_table, dict):
-                continue
-            for key in ("dependencies", "dev-dependencies", "build-dependencies"):
-                value = target_table.get(key)
-                if isinstance(value, dict):
-                    yield value
+def discover_consumer_contexts(root: Path, facade_manifest: Path) -> dict[str, tuple[str, ...]]:
+    """Map each workspace consumer of the facade to the contexts that reach it.
 
-
-def discover_consumers(root: Path, facade_manifest: Path) -> set[str]:
-    result: set[str] = set()
+    A crate that only test-depends on the facade is not evidence for keeping a
+    production surface, so the reaching context is retained rather than collapsed.
+    """
+    result: dict[str, tuple[str, ...]] = {}
     for manifest_path in sorted(root.rglob("Cargo.toml")):
         if manifest_path == facade_manifest:
             continue
@@ -173,9 +274,15 @@ def discover_consumers(root: Path, facade_manifest: Path) -> set[str]:
             manifest = load_toml(manifest_path)
         except ValueError:
             continue
-        if any(
-            "perl-parser" in normalized_dependency_rows(table, str(manifest_path))
-            for table in dependency_tables(manifest)
-        ):
-            result.add(manifest_path.relative_to(root).as_posix())
+        contexts = {
+            context
+            for context, table in contextual_dependency_tables(manifest)
+            if "perl-parser" in normalized_dependency_rows(table, str(manifest_path))
+        }
+        if contexts:
+            result[manifest_path.relative_to(root).as_posix()] = tuple(sorted(contexts))
     return result
+
+
+def discover_consumers(root: Path, facade_manifest: Path) -> set[str]:
+    return set(discover_consumer_contexts(root, facade_manifest))

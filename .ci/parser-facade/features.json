@@ -7,8 +7,15 @@
       "disposition": "review",
       "owner": "#7058",
       "target_owner": "#7063",
+      "isolation": "feature_aggregate",
+      "default": false,
       "exit_condition": "Replace the broad default bundle with the reviewed staged facade defaults.",
-      "default": false
+      "pending": {
+        "owner": "#7063",
+        "predecessor": "#7058",
+        "reason": "PF01 is inventory-only and cannot change the facade boundary; the staged compatibility decision belongs to the #7063 migration leaves.",
+        "resolves_when": "A #7063 migration leaf lands the recorded exit condition for this row."
+      }
     },
     {
       "name": "cli",
@@ -16,8 +23,9 @@
       "disposition": "gate",
       "owner": "#2477",
       "target_owner": "#7063",
-      "exit_condition": "Keep only if the parser facade remains the reviewed owner of perl-parse.",
-      "default": false
+      "isolation": "taxonomy_only",
+      "default": false,
+      "exit_condition": "Keep only if the parser facade remains the reviewed owner of perl-parse."
     },
     {
       "name": "incremental",
@@ -25,8 +33,9 @@
       "disposition": "retain",
       "owner": "#6701",
       "target_owner": "#6975",
-      "exit_condition": "Expose only the canonical incremental API after historical generations are dispositioned.",
-      "default": false
+      "isolation": "dependencies_and_source",
+      "default": false,
+      "exit_condition": "Expose only the canonical incremental API after historical generations are dispositioned."
     },
     {
       "name": "lsp-compat",
@@ -34,8 +43,9 @@
       "disposition": "gate",
       "owner": "#2477",
       "target_owner": "#7063",
-      "exit_condition": "Move LSP compatibility out of the minimal parser surface and retain only bounded migration paths.",
-      "default": true
+      "isolation": "dependencies_and_source",
+      "default": true,
+      "exit_condition": "Move LSP compatibility out of the minimal parser surface and retain only bounded migration paths."
     },
     {
       "name": "workspace",
@@ -43,8 +53,9 @@
       "disposition": "gate",
       "owner": "#2477",
       "target_owner": "#7063",
-      "exit_condition": "Move workspace composition behind an explicit product feature or product facade.",
-      "default": true
+      "isolation": "dependencies_only",
+      "default": true,
+      "exit_condition": "Move workspace composition behind an explicit product feature or product facade."
     },
     {
       "name": "test-performance",
@@ -52,8 +63,9 @@
       "disposition": "gate",
       "owner": "#2477",
       "target_owner": "#7065",
-      "exit_condition": "Keep non-default and prove any supported test-only regime explicitly.",
-      "default": false
+      "isolation": "taxonomy_only",
+      "default": false,
+      "exit_condition": "Keep non-default and prove any supported test-only regime explicitly."
     },
     {
       "name": "lsp-ga-lock",
@@ -61,8 +73,9 @@
       "disposition": "move",
       "owner": "#2477",
       "target_owner": "#7063",
-      "exit_condition": "Move product capability policy to the LSP product owner.",
-      "default": false
+      "isolation": "taxonomy_only",
+      "default": false,
+      "exit_condition": "Move product capability policy to the LSP product owner."
     },
     {
       "name": "experimental-features",
@@ -70,8 +83,9 @@
       "disposition": "gate",
       "owner": "#2477",
       "target_owner": "#7065",
-      "exit_condition": "Keep non-default and prevent production claims or consumers.",
-      "default": false
+      "isolation": "taxonomy_only",
+      "default": false,
+      "exit_condition": "Keep non-default and prevent production claims or consumers."
     },
     {
       "name": "constant-advanced",
@@ -79,8 +93,15 @@
       "disposition": "review",
       "owner": "#6663",
       "target_owner": "#7065",
+      "isolation": "test_source_only",
+      "default": false,
       "exit_condition": "Retain only with a named parser concept and supported feature-matrix row.",
-      "default": false
+      "pending": {
+        "owner": "#7065",
+        "predecessor": "#6663",
+        "reason": "The supported parser feature/API/downstream matrix does not yet exist, so no evidence can currently retire or confirm this row.",
+        "resolves_when": "#7065 publishes the supported feature/API/downstream matrix covering this row."
+      }
     },
     {
       "name": "qw-variants",
@@ -88,8 +109,15 @@
       "disposition": "review",
       "owner": "#6663",
       "target_owner": "#7065",
+      "isolation": "test_source_only",
+      "default": false,
       "exit_condition": "Retain only with a named parser concept and supported feature-matrix row.",
-      "default": false
+      "pending": {
+        "owner": "#7065",
+        "predecessor": "#6663",
+        "reason": "The supported parser feature/API/downstream matrix does not yet exist, so no evidence can currently retire or confirm this row.",
+        "resolves_when": "#7065 publishes the supported feature/API/downstream matrix covering this row."
+      }
     },
     {
       "name": "package-qualified",
@@ -97,8 +125,15 @@
       "disposition": "review",
       "owner": "#6663",
       "target_owner": "#7065",
+      "isolation": "test_source_only",
+      "default": false,
       "exit_condition": "Retain only with a named parser concept and supported feature-matrix row.",
-      "default": false
+      "pending": {
+        "owner": "#7065",
+        "predecessor": "#6663",
+        "reason": "The supported parser feature/API/downstream matrix does not yet exist, so no evidence can currently retire or confirm this row.",
+        "resolves_when": "#7065 publishes the supported feature/API/downstream matrix covering this row."
+      }
     },
     {
       "name": "error-classifier-v2",
@@ -106,8 +141,15 @@
       "disposition": "review",
       "owner": "#6597",
       "target_owner": "#7065",
+      "isolation": "test_source_only",
+      "default": false,
       "exit_condition": "Retain only while an executable migration contract names its consumer.",
-      "default": false
+      "pending": {
+        "owner": "#7065",
+        "predecessor": "#6597",
+        "reason": "The supported parser feature/API/downstream matrix does not yet exist, so no evidence can currently retire or confirm this row.",
+        "resolves_when": "#7065 publishes the supported feature/API/downstream matrix covering this row."
+      }
     },
     {
       "name": "lsp-advanced",
@@ -115,8 +157,9 @@
       "disposition": "move",
       "owner": "#2477",
       "target_owner": "#7063",
-      "exit_condition": "Move LSP product experiments to the LSP owner.",
-      "default": false
+      "isolation": "taxonomy_only",
+      "default": false,
+      "exit_condition": "Move LSP product experiments to the LSP owner."
     },
     {
       "name": "expose_lsp_test_api",
@@ -124,8 +167,9 @@
       "disposition": "move",
       "owner": "#2477",
       "target_owner": "#7063",
-      "exit_condition": "Move LSP test-only API exposure to the LSP product crates.",
-      "default": false
+      "isolation": "taxonomy_only",
+      "default": false,
+      "exit_condition": "Move LSP test-only API exposure to the LSP product crates."
     },
     {
       "name": "workspace_refactor",
@@ -133,8 +177,9 @@
       "disposition": "gate",
       "owner": "#2477",
       "target_owner": "#7063",
-      "exit_condition": "Remove from broad defaults and retain only through explicit product composition.",
-      "default": true
+      "isolation": "source_only",
+      "default": true,
+      "exit_condition": "Remove from broad defaults and retain only through explicit product composition."
     },
     {
       "name": "modernize",
@@ -142,8 +187,9 @@
       "disposition": "gate",
       "owner": "#2477",
       "target_owner": "#7063",
-      "exit_condition": "Move modernization composition behind an explicit product feature or owner.",
-      "default": false
+      "isolation": "source_only",
+      "default": false,
+      "exit_condition": "Move modernization composition behind an explicit product feature or owner."
     },
     {
       "name": "substitution-advanced",
@@ -151,8 +197,15 @@
       "disposition": "review",
       "owner": "#6663",
       "target_owner": "#7065",
+      "isolation": "taxonomy_only",
+      "default": false,
       "exit_condition": "Retain only with a named parser concept and supported feature-matrix row.",
-      "default": false
+      "pending": {
+        "owner": "#7065",
+        "predecessor": "#6663",
+        "reason": "The supported parser feature/API/downstream matrix does not yet exist, so no evidence can currently retire or confirm this row.",
+        "resolves_when": "#7065 publishes the supported feature/API/downstream matrix covering this row."
+      }
     },
     {
       "name": "utf16-complete",
@@ -160,8 +213,9 @@
       "disposition": "move",
       "owner": "#2298",
       "target_owner": "#7063",
-      "exit_condition": "Keep UTF-16 transport policy above the parser byte-coordinate contract.",
-      "default": false
+      "isolation": "taxonomy_only",
+      "default": false,
+      "exit_condition": "Keep UTF-16 transport policy above the parser byte-coordinate contract."
     },
     {
       "name": "semantic-phase2",
@@ -169,8 +223,9 @@
       "disposition": "move",
       "owner": "#2477",
       "target_owner": "#7063",
-      "exit_condition": "Move semantic product composition to the semantic/product owner.",
-      "default": false
+      "isolation": "test_source_only",
+      "default": false,
+      "exit_condition": "Move semantic product composition to the semantic/product owner."
     },
     {
       "name": "parser-extras",
@@ -178,8 +233,15 @@
       "disposition": "review",
       "owner": "#2477",
       "target_owner": "#7065",
+      "isolation": "test_source_only",
+      "default": false,
       "exit_condition": "Replace the generic feature with named supported combinations or retire it.",
-      "default": false
+      "pending": {
+        "owner": "#7065",
+        "predecessor": "#2477",
+        "reason": "The supported parser feature/API/downstream matrix does not yet exist, so no evidence can currently retire or confirm this row.",
+        "resolves_when": "#7065 publishes the supported feature/API/downstream matrix covering this row."
+      }
     },
     {
       "name": "crash-repros",
@@ -187,8 +249,9 @@
       "disposition": "gate",
       "owner": "#1820",
       "target_owner": "#7065",
-      "exit_condition": "Keep non-default and execute only through bounded reproducer policy.",
-      "default": false
+      "isolation": "test_source_only",
+      "default": false,
+      "exit_condition": "Keep non-default and execute only through bounded reproducer policy."
     },
     {
       "name": "slow_tests",
@@ -196,8 +259,9 @@
       "disposition": "gate",
       "owner": "#2477",
       "target_owner": "#7065",
-      "exit_condition": "Keep non-default and route through explicit bounded test profiles.",
-      "default": false
+      "isolation": "test_source_only",
+      "default": false,
+      "exit_condition": "Keep non-default and route through explicit bounded test profiles."
     },
     {
       "name": "doc-coverage",
@@ -205,8 +269,9 @@
       "disposition": "gate",
       "owner": "#2318",
       "target_owner": "#7065",
-      "exit_condition": "Keep only as an explicit documentation proof profile.",
-      "default": false
+      "isolation": "test_source_only",
+      "default": false,
+      "exit_condition": "Keep only as an explicit documentation proof profile."
     }
   ]
 }
