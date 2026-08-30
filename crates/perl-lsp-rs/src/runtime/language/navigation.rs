@@ -308,6 +308,10 @@ fn provider_decision_freshness_wire(freshness: ProviderDecisionFreshness) -> &'s
         ProviderDecisionFreshness::Stale => "stale",
         ProviderDecisionFreshness::Unknown => "unknown",
         ProviderDecisionFreshness::NotApplicable => "not_applicable",
+        // The enum is non-exhaustive. A future variant is evidence we do not yet
+        // know how to name, so the receipt fails closed rather than claiming
+        // freshness or inventing a private spelling.
+        _ => "unknown",
     }
 }
 
@@ -2729,11 +2733,8 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn serde_freshness_spelling(variant: ProviderDecisionFreshness) -> String {
-        serde_json::to_value(variant)
-            .ok()
-            .and_then(|value| value.as_str().map(str::to_owned))
-            .unwrap_or_else(|| panic!("{variant:?} did not serialize to a JSON string"))
+    fn serde_freshness_spelling(variant: ProviderDecisionFreshness) -> Option<String> {
+        serde_json::to_value(variant).ok().and_then(|value| value.as_str().map(str::to_owned))
     }
 
     /// The receipt wire spelling must track the enum's serde `snake_case`,
@@ -2747,10 +2748,9 @@ mod tests {
             ProviderDecisionFreshness::Unknown,
             ProviderDecisionFreshness::NotApplicable,
         ] {
-            let serde_spelling = serde_freshness_spelling(variant);
             assert_eq!(
-                provider_decision_freshness_wire(variant),
-                serde_spelling,
+                Some(provider_decision_freshness_wire(variant).to_string()),
+                serde_freshness_spelling(variant),
                 "{variant:?} receipt wire spelling drifted from ProviderDecisionFreshness serde"
             );
         }
@@ -2866,8 +2866,13 @@ mod tests {
             ProviderDecisionFreshness::NotApplicable,
         ]
         .into_iter()
-        .map(serde_freshness_spelling)
+        .filter_map(serde_freshness_spelling)
         .collect();
+        assert_eq!(
+            canonical.len(),
+            4,
+            "ProviderDecisionFreshness serde must yield four snake_case spellings"
+        );
 
         let emitted = [
             goto_definition_receipt_freshness(0, false),
