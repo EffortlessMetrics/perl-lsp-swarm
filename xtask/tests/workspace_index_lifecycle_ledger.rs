@@ -516,13 +516,28 @@ fn validate_family_target_identities(rows: &[PropositionRow]) -> Result<()> {
     Ok(())
 }
 
+/// Decide whether a marker binds to its source.
+///
+/// A declaration-shaped marker must match an actual declaration line, not a
+/// passing mention in a comment or doc block. Identifier and prose markers (LSP
+/// field names, constants, markdown status lines) keep substring matching, which
+/// is the right granularity for them; that stays a weaker binding, which is
+/// exactly why declarations are anchored.
+fn marker_binds(source: &str, marker: &str) -> bool {
+    if marker.starts_with("pub ") {
+        source.lines().any(|line| line.trim_start().starts_with(marker))
+    } else {
+        source.contains(marker)
+    }
+}
+
 fn validate_live_source_markers(rows: &[PropositionRow]) -> Result<()> {
     let root = repo_root()?;
     for row in rows.iter().filter(|row| !row.source_path.is_empty()) {
         let source = fs::read_to_string(root.join(&row.source_path))
             .with_context(|| format!("read live source {}", row.source_path))?;
         ensure!(
-            source.contains(&row.source_marker),
+            marker_binds(&source, &row.source_marker),
             "{}: live marker {:?} not found in {}",
             row.id,
             row.source_marker,
@@ -1113,10 +1128,10 @@ fn declared_members(module: &str, type_name: &str) -> Result<Vec<(String, String
             if let Some(name) = variant_name(line) {
                 current_variant = Some(name.clone());
                 members.push((name, "variant".to_string()));
-            } else if let Some(field) = field_name(line, "        ", None) {
-                if let Some(variant) = current_variant.as_ref() {
-                    members.push((format!("{variant}.{field}"), "variant_field".to_string()));
-                }
+            } else if let Some(field) = field_name(line, "        ", None)
+                && let Some(variant) = current_variant.as_ref()
+            {
+                members.push((format!("{variant}.{field}"), "variant_field".to_string()));
             }
         } else if let Some(field) = field_name(line, "    ", Some("pub ")) {
             members.push((field, "struct_field".to_string()));
@@ -1172,6 +1187,17 @@ fn validate_member_rows(rows: &[MemberRow], type_rows: &[PropositionRow]) -> Res
             row.type_row,
             type_row.source_path,
             expected_path
+        );
+        // A member and the type it belongs to must reach the same cutover owner.
+        // Two contradictory handoffs for one declaration would let #10791 and
+        // #10799 each believe the other owns the member.
+        ensure!(
+            type_row.successor_issue == row.successor_issue,
+            "{}: member routes to {} but its type row {} routes to {}",
+            row.id,
+            row.successor_issue,
+            row.type_row,
+            type_row.successor_issue
         );
         ensure!(
             declared_type_name(&type_row.source_marker).as_deref() == Some(row.type_name.as_str()),
@@ -1493,4 +1519,53 @@ fn member_cannot_join_an_unrelated_type_row() -> Result<()> {
         .context("expected a live IndexState member row")?;
     victim.type_row = "WSI-DEG-001".to_string();
     assert_rejected_because(validate_member_rows(&rows, &type_rows), "describes")
+}
+
+#[test]
+fn member_successor_must_match_its_type_row() -> Result<()> {
+    let type_rows = load_rows()?;
+    let mut rows = load_member_rows()?;
+    let victim = rows.first_mut().context("member ledger unexpectedly empty")?;
+    victim.successor_issue =
+        if victim.successor_issue == "#10791" { "#10799" } else { "#10791" }.to_string();
+    assert_rejected_because(validate_member_rows(&rows, &type_rows), "but its type row")
+}
+
+#[test]
+fn declaration_marker_in_a_comment_does_not_bind() -> Result<()> {
+    // No file in the repo currently mentions a declaration only inside a comment,
+    // so the discrimination is proven against a fixture rather than with a test
+    // that would pass simply because the marker is absent everywhere.
+    let commented_only = "\
+//! Module docs.
+/// Example:
+///     pub fn state(&self) -> IndexState
+// pub enum IndexState { Building }
+struct Unrelated;
+";
+    ensure!(
+        !marker_binds(commented_only, "pub fn state(&self) -> IndexState"),
+        "a declaration mentioned only in a doc comment must not bind"
+    );
+    ensure!(
+        !marker_binds(commented_only, "pub enum IndexState"),
+        "a declaration mentioned only in a line comment must not bind"
+    );
+
+    let declared = "pub enum IndexState {\n    Building,\n}\n";
+    ensure!(marker_binds(declared, "pub enum IndexState"), "a real declaration must still bind");
+
+    // Indented declarations still bind, so the anchor is leading-whitespace
+    // tolerant rather than column-zero only.
+    ensure!(
+        marker_binds("    pub fn helper() {}\n", "pub fn helper()"),
+        "an indented declaration must still bind"
+    );
+
+    // Non-declaration markers keep substring matching by design.
+    ensure!(
+        marker_binds("let x = indexing_in_progress.clone();", "indexing_in_progress"),
+        "identifier markers must keep substring binding"
+    );
+    Ok(())
 }

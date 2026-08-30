@@ -26,9 +26,9 @@ WSIM-INDEXS-002|WSI-KIND-001|monitoring|IndexStateKind|Ready|variant|telemetry_m
 WSIM-INDEXS-003|WSI-KIND-001|monitoring|IndexStateKind|Degraded|variant|telemetry_member|#10791
 WSIM-INDEXS-004|WSI-TRANS-001|monitoring|IndexStateTransition|from|struct_field|telemetry_member|#10791
 WSIM-INDEXS-005|WSI-TRANS-001|monitoring|IndexStateTransition|to|struct_field|telemetry_member|#10791
-WSIM-RESOUR-001|WSI-RES-002|monitoring|ResourceKind|MaxFiles|variant|canonical_member|#10799
-WSIM-RESOUR-002|WSI-RES-002|monitoring|ResourceKind|MaxSymbols|variant|canonical_member|#10799
-WSIM-RESOUR-003|WSI-RES-002|monitoring|ResourceKind|MaxCacheBytes|variant|canonical_member|#10799
+WSIM-RESOUR-001|WSI-RES-002|monitoring|ResourceKind|MaxFiles|variant|canonical_member|#10791
+WSIM-RESOUR-002|WSI-RES-002|monitoring|ResourceKind|MaxSymbols|variant|canonical_member|#10791
+WSIM-RESOUR-003|WSI-RES-002|monitoring|ResourceKind|MaxCacheBytes|variant|canonical_member|#10791
 WSIM-BUILDP-001|WSI-STATE-004|state_machine|BuildPhase|Idle|variant|duplicate_of_canonical_member|#10828
 WSIM-BUILDP-002|WSI-STATE-004|state_machine|BuildPhase|Scanning|variant|duplicate_of_canonical_member|#10828
 WSIM-BUILDP-003|WSI-STATE-004|state_machine|BuildPhase|Indexing|variant|duplicate_of_canonical_member|#10828
