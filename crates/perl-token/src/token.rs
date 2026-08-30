@@ -52,6 +52,7 @@ pub struct TokenRef<'src> {
     pub text: &'src str,
     start: usize,
     end: usize,
+    /// Whether this view originated as payload-free recovery geometry.
     geometry_only: bool,
 }
 
@@ -173,7 +174,7 @@ impl<'src> TokenRef<'src> {
     /// Its byte geometry identifies the unparsed remainder, while `text` is
     /// intentionally empty so budget recovery does not retain the remainder.
     pub fn is_geometry_only(self) -> bool {
-        self.kind == TokenKind::UnknownRest && self.text.is_empty() && self.start < self.end
+        self.geometry_only
     }
 
     /// Clone this view with a new token kind, enforcing empty-span policy.
@@ -255,6 +256,8 @@ pub struct Token {
     pub text: Arc<str>,
     start: usize,
     end: usize,
+    /// Whether this token originated as payload-free recovery geometry.
+    geometry_only: bool,
 }
 
 impl Token {
@@ -326,7 +329,8 @@ impl Token {
             text.as_ref().len() == end.saturating_sub(start)
                 || (kind == TokenKind::UnknownRest && text.is_empty() && start < end)
         );
-        Self { kind, text, start, end }
+        let geometry_only = kind == TokenKind::UnknownRest && text.is_empty() && start < end;
+        Self { kind, text, start, end, geometry_only }
     }
 
     /// Create an EOF token at `pos`.
@@ -434,7 +438,7 @@ impl Token {
 
     /// Return whether this is a payload-free `UnknownRest` recovery token.
     pub fn is_geometry_only(&self) -> bool {
-        self.kind == TokenKind::UnknownRest && self.text.is_empty() && self.start < self.end
+        self.geometry_only
     }
 
     /// Return a human-readable display name for this token.
@@ -449,7 +453,7 @@ impl Token {
             text: self.text.as_ref(),
             start: self.start,
             end: self.end,
-            geometry_only: self.is_geometry_only(),
+            geometry_only: self.geometry_only,
         }
     }
 }

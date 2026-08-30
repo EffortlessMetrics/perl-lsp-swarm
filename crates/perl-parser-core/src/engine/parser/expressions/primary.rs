@@ -224,7 +224,6 @@ impl<'a> Parser<'a> {
         match token_kind {
             TokenKind::UnknownRest => {
                 let token = self.consume_token()?;
-                self.operation.record_terminal(ParseStopCause::LexerBudgetExhausted);
                 Ok(Node::new(
                     NodeKind::UnknownRest,
                     SourceLocation { start: token.start(), end: token.end() },

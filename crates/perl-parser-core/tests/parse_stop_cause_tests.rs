@@ -23,9 +23,11 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
+use perl_lexer::{PerlLexer, TokenType as LexerTokenType};
 use perl_parser_core::{
     BudgetTracker, Node, NodeKind, ParseError, ParseOutput, ParseStopCause, Parser, SourceLocation,
 };
+use perl_token::{Token, TokenKind};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -515,6 +517,35 @@ fn nested_lexer_budget_exhaustion_preserves_typed_stop_cause() {
         );
         assert!(output.terminated_early(), "nested {context} truncation must terminate early");
     }
+}
+
+/// An unterminated heredoc also produces `UnknownRest`, but retains its source
+/// payload and is not a lexer-budget termination. The parser must preserve
+/// that distinction when the token is consumed at its public token boundary.
+#[test]
+fn unterminated_heredoc_unknown_rest_is_not_budget_exhaustion() {
+    let source = "my $x = <<EOF;\nbody without a terminator\n";
+    let mut lexer = PerlLexer::new(source);
+    let heredoc = loop {
+        let token = lexer.next_token().expect("lexer should emit a token");
+        if matches!(token.token_type, LexerTokenType::UnknownRest) {
+            break token;
+        }
+    };
+    assert!(!heredoc.text.is_empty(), "unterminated heredoc must retain payload");
+
+    let token = Token::new_checked(
+        TokenKind::UnknownRest,
+        heredoc.text.clone(),
+        heredoc.start,
+        heredoc.end,
+    )
+    .expect("lexer heredoc geometry and payload are width-valid");
+    let mut parser = Parser::from_tokens(vec![token], source);
+    let output = parser.parse_with_recovery();
+
+    assert_eq!(output.stop_cause(), None);
+    assert!(!output.terminated_early());
 }
 
 /// Deep expression recursion trips `check_recursion()` (the production
