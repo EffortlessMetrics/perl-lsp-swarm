@@ -206,8 +206,16 @@ const CI_POLICY_PACK: ProofPack = ProofPack {
     commands: &[
         "python -m unittest scripts/ci/test_ci_classify.py",
         "python -m unittest scripts/ci/test_docker_publish_metadata.py",
+        "python -m unittest scripts/ci/test_docker_publish_topology.py",
         "cargo xtask workflow-trigger-lint --policy .ci/policies/required-checks.toml --receipt target/receipts/workflow-trigger-lint.json",
         "cargo test -p xtask --test quality_ci_wiring_policy --profile agent --locked -- --nocapture",
+        // The #5432 shadow measurement lane is manual-only, so ordinary CI
+        // never executes it. These three targets are the only thing standing
+        // between that lane and silent drift, and compiling them is not
+        // running them.
+        "cargo test -p xtask --test release_artifact_size_shadow_workflow --profile agent --locked -- --nocapture",
+        "cargo test -p xtask --test release_artifact_size_stage_script --profile agent --locked -- --nocapture",
+        "cargo test -p xtask --test release_artifact_size_smoke_script --profile agent --locked -- --nocapture",
     ],
 };
 
@@ -727,11 +735,22 @@ fn route_file(file: &str, route: &mut RouteBuilder) {
         || file == "scripts/ci/test_ci_classify.py"
         || file == "scripts/ci/docker_publish_metadata.py"
         || file == "scripts/ci/test_docker_publish_metadata.py"
+        || file == "scripts/ci/test_docker_publish_topology.py"
         || matches!(
             file,
             "xtask/tests/codecov_patch_gate_policy.rs"
                 | "xtask/tests/quality_ci_wiring_policy.rs"
                 | "xtask/tests/quality_gate_patch_coverage_cli_policy.rs"
+                // The #5432 shadow measurement lane: its adapters, the shared
+                // constants the lane and the instrument both read, and the
+                // contracts that bind them together.
+                | "scripts/ci/release_artifact_size_stage.sh"
+                | "scripts/ci/release_artifact_size_smoke.sh"
+                | "xtask/examples/release_artifact_size.rs"
+                | "xtask/src/bin/release_artifact_size/policy.rs"
+                | "xtask/tests/release_artifact_size_shadow_workflow.rs"
+                | "xtask/tests/release_artifact_size_stage_script.rs"
+                | "xtask/tests/release_artifact_size_smoke_script.rs"
         )
     {
         route.add_surface("ci-policy");
