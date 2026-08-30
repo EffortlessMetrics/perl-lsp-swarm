@@ -1219,12 +1219,14 @@ pub fn read_packet(packet: &Value) -> Res<TransitionPacket> {
         violations.push(format!("transition packet is missing `{missing}`"));
     }
 
-    if opt_str(object, "schema_version") != Some(INPUT_SCHEMA_VERSION) {
+    if object.contains_key("schema_version")
+        && opt_str(object, "schema_version") != Some(INPUT_SCHEMA_VERSION)
+    {
         violations
             .push(format!("transition packet schema_version must be `{INPUT_SCHEMA_VERSION}`"));
     }
-    let route_mode = match opt_str(object, "route_mode") {
-        Some(value) if ROUTE_MODES.contains(&value) => value.to_string(),
+    let route_mode = match object.get("route_mode") {
+        Some(Value::String(value)) if ROUTE_MODES.contains(&value.as_str()) => value.clone(),
         Some(value) => {
             violations.push(format!(
                 "`route_mode` value `{value}` is outside the typed domain; a rendered parameter may not carry arbitrary text"
@@ -1233,18 +1235,20 @@ pub fn read_packet(packet: &Value) -> Res<TransitionPacket> {
         }
         None => String::new(),
     };
-    match opt_str(object, "bounded_reason") {
-        Some(text) if !text.is_empty() && text.len() <= 512 => {}
+    // An absent key is already reported once by the top-level key check above;
+    // these arms speak only to a key that is present and ill-shaped.
+    match object.get("bounded_reason") {
+        None => {}
+        Some(Value::String(text)) if !text.is_empty() && text.len() <= 512 => {}
         Some(_) => {
-            violations.push("`bounded_reason` must be between 1 and 512 characters".to_string());
+            violations.push("`bounded_reason` must be a string of 1 to 512 characters".to_string());
         }
-        None => violations.push("transition packet must carry `bounded_reason`".to_string()),
     }
     for key in ["transaction_id", "attempt_id"] {
-        match opt_str(object, key) {
-            Some(text) if is_bounded_id(text) => {}
+        match object.get(key) {
+            None => {}
+            Some(Value::String(text)) if is_bounded_id(text) => {}
             Some(_) => violations.push(format!("`{key}` is not a bounded identifier")),
-            None => violations.push(format!("`{key}` must be a string")),
         }
     }
     for key in ["candidate_id", "prior_current_candidate_id"] {
@@ -1272,6 +1276,8 @@ pub fn read_packet(packet: &Value) -> Res<TransitionPacket> {
     let process_startup = typed_field(dimensions, "process_startup", &mut violations);
     let path_persistence = typed_field(dimensions, "path_persistence", &mut violations);
 
+    let mut seen = BTreeSet::new();
+    violations.retain(|violation| seen.insert(violation.clone()));
     finish(violations)?;
     Ok(TransitionPacket {
         combination: Combination {

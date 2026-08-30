@@ -700,7 +700,8 @@ fn a_missing_reason_field_is_an_admission_failure() -> TestResult {
         Ok(_) => "packet unexpectedly admitted".to_string(),
         Err(error) => error.to_string(),
     };
-    assert!(error.contains("must carry `bounded_reason`"), "got: {error}");
+    assert!(error.contains("missing `bounded_reason`"), "got: {error}");
+    assert_eq!(error.matches("bounded_reason").count(), 1, "got: {error}");
     Ok(())
 }
 
@@ -891,7 +892,17 @@ fn rejects_a_packet_missing_required_transaction_identity() -> TestResult {
         subject.as_object_mut().ok_or("packet is not an object")?.remove(key);
         let error = admission_error(&subject);
         assert!(error.contains(&format!("missing `{key}`")), "for {key}, got: {error}");
+        assert_eq!(error.matches(key).count(), 1, "for {key}, got: {error}");
     }
+    Ok(())
+}
+
+#[test]
+fn rejects_a_packet_whose_route_mode_is_not_a_string() -> TestResult {
+    let mut subject = valid_packet();
+    subject["route_mode"] = json!(7);
+    let error = admission_error(&subject);
+    assert!(error.contains("`route_mode` value"), "got: {error}");
     Ok(())
 }
 
