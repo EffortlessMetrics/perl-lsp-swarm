@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12406 |
-| Rust-family files | 3814 |
-| Non-Rust files | 8592 |
-| Allowlisted | 6357 |
+| Total tracked files | 12413 |
+| Rust-family files | 3819 |
+| Non-Rust files | 8594 |
+| Allowlisted | 6359 |
 | Unclassified | 2235 |
 
 ## Non-Rust files by category
@@ -20,8 +20,8 @@
 | documentation | 2802 |
 | generated | 2 |
 | production | 348 |
-| test | 2054 |
-| tooling | 661 |
+| test | 2055 |
+| tooling | 662 |
 | unclassified | 2235 |
 
 ## Unclassified files
@@ -3738,6 +3738,7 @@
 | `crates/perl-corpus/concepts/positions.toml` | test | `non-rust-corpus-concepts` | parser/corpus |
 | `crates/perl-corpus/concepts/recovery.toml` | test | `non-rust-corpus-concepts` | parser/corpus |
 | `crates/perl-corpus/concepts/tree_sitter.toml` | test | `non-rust-corpus-concepts` | parser/corpus |
+| `crates/perl-corpus/fixtures/parser_accuracy/Accuracy/ImportsExports.pm` | test | `non-rust-perl-modules` | parser/lsp-fixtures |
 | `crates/perl-corpus/fixtures/parser_accuracy/autoload_boundary.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `crates/perl-corpus/fixtures/parser_accuracy/bad_heredoc_terminator.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `crates/perl-corpus/fixtures/parser_accuracy/control_do_until.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
@@ -6601,6 +6602,7 @@
 | `scripts/ci/test_ci_classify.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_codecov_test_results_workflows.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_docker_publish_metadata.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/ci/test_docker_publish_topology.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_droid_security_boundary.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_emit_ci_actuals.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_evaluate_ci_gate.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
