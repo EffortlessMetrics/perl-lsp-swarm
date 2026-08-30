@@ -405,15 +405,29 @@ fn the_canonical_registry_validates() -> Result<(), Box<dyn std::error::Error>> 
     Ok(())
 }
 
-/// The compile-time guard must not be silenceable with a rest pattern.
+/// Textual tripwire: the observer must not silence its own compile error with a
+/// rest pattern.
 ///
 /// Adding a geometry field to an existing variant fails to compile inside
-/// `observe_geometry_fields` — that is the point of listing every field. But an
+/// `observe_geometry_fields` — that is the point of listing every field. An
 /// author under time pressure can make that error disappear by writing `..`
-/// instead of classifying the field, which would silently restore exactly the
-/// drift this registry exists to prevent (it is the defect #13234 names in the
-/// hand-maintained payload mapper). Convention alone does not survive; this
-/// keeps it executable.
+/// instead of classifying the field, restoring exactly the drift this registry
+/// exists to prevent.
+///
+/// **What this is not.** This is a scan over source text, not a compile-time
+/// check and not a lint. It cannot see the parse tree, so it recognises a rest
+/// pattern only by shape: a `..` whose next non-whitespace character is `}`.
+/// That deliberately excludes ordinary `..` uses — `0..n`, `&chunks[0..]`,
+/// `a..=b`, `Foo { ..base }` — which an earlier version of this test would have
+/// failed on for the wrong reason. It follows that a sufficiently unusual
+/// formatting of a real rest pattern could still slip past it.
+///
+/// So do not read a green result here as proof that the observer is exhaustive.
+/// The load-bearing guard is
+/// `the_registry_covers_every_geometry_bearing_field_declared_in_the_enum`,
+/// which reads declared field types and does not depend on how the observer is
+/// written at all. This test is a cheap early warning that fires closer to the
+/// mistake; a rustc-side lint would be the precise version of it.
 #[test]
 fn the_observer_never_uses_a_rest_pattern() -> Result<(), Box<dyn std::error::Error>> {
     const SOURCE: &str = include_str!("../src/geometry_policy.rs");
@@ -422,17 +436,22 @@ fn the_observer_never_uses_a_rest_pattern() -> Result<(), Box<dyn std::error::Er
         .split_once("pub fn observe_geometry_fields")
         .ok_or("observe_geometry_fields must exist; it is the observation authority")?;
 
-    // Bound the scan to the function body so an unrelated later item using a
-    // range expression cannot fail this guard for the wrong reason. The body
-    // ends at the first line that closes a top-level item at column zero.
+    // Bound the scan to the function body so an unrelated later item cannot fail
+    // this guard. The body ends at the first line closing a top-level item.
     let body: Vec<&str> =
         after_signature.lines().take_while(|line| !line.starts_with('}')).collect();
     assert!(!body.is_empty(), "the observer body must be scannable");
 
     for (offset, line) in body.iter().enumerate() {
         let code = line.split("//").next().unwrap_or(line);
+
+        // A rest pattern closes its struct pattern: `{ name: _, .. }`. A range
+        // or slice never has `}` as its next non-whitespace character.
+        let is_rest_pattern =
+            code.match_indices("..").any(|(at, _)| code[at + 2..].trim_start().starts_with('}'));
+
         assert!(
-            !code.contains(".."),
+            !is_rest_pattern,
             "observe_geometry_fields must destructure every field explicitly, but line {} uses a \
              rest pattern: {}\nA `..` here would let a new geometry-bearing field compile without \
              being classified.",
