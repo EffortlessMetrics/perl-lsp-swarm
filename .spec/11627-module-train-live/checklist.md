@@ -43,11 +43,18 @@ git diff --check -> clean
 
 ## Residuals (recorded on #11627; not proven here)
 
-1. Review-thread observation (GraphQL) and review-head binding: typed blockers;
-   MERGE_READY_RECOMMENDATION unreachable from live observation (the classifier
-   branch exists and is covered by synthetic-fact tests).
+1. ~~Review-thread observation (GraphQL) and review-head binding~~ — **closed by
+   #14237**. Both facts are now observed through one gated read-only
+   `gh api graphql` document: `review_on_head` from review-to-commit binding,
+   `threads_resolved` from a bounded thread page. Both fail closed (unbound
+   review commit, truncated page, or GraphQL instrument failure stays
+   unprovable, never "current"/"resolved"). MERGE_READY_RECOMMENDATION remains
+   unreachable from live observation, now on residual 2 alone.
 2. Behavior-receipt/profile observation: typed blocker for fan-in/claim starts
-   and merge-ready.
+   and merge-ready. **Blocked by #11619** (P11A exact-process receipt
+   substrate, open): this tree has no `module-process` task and no
+   `module_resolution_composition.v1` schema, so the receipt kinds have no
+   producer to observe.
 3. Explicit stack parsing (`explicit_stack_member`) and cross-PR base/head edge
    validation: fail-closed reserved vocabulary (`stack_relation != "none"`
    fails closed).

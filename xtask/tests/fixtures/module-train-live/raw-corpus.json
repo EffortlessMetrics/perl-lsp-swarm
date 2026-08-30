@@ -118,7 +118,8 @@
           {
             "author_login": "reviewer-x",
             "state": "CHANGES_REQUESTED",
-            "submitted_at": "2026-08-24T08:30:00Z"
+            "submitted_at": "2026-08-24T08:30:00Z",
+            "commit_oid": "9999999999999999999999999999999999999999"
           }
         ],
         "checks": [
@@ -130,7 +131,12 @@
         ],
         "merge_commit_oid": null,
         "merge_commit_in_local_head": null,
-        "body": "Module train: #11625\nModule node: #10977\nParent/controller: #8479"
+        "body": "Module train: #11625\nModule node: #10977\nParent/controller: #8479",
+        "review_threads": {
+          "total": 400,
+          "unresolved": 0,
+          "truncated": true
+        }
       },
       {
         "number": 2003,
@@ -168,7 +174,8 @@
           {
             "author_login": "reviewer-y",
             "state": "APPROVED",
-            "submitted_at": "2026-08-24T08:59:00Z"
+            "submitted_at": "2026-08-24T08:59:00Z",
+            "commit_oid": "2222222222222222222222222222222222222222"
           }
         ],
         "checks": [
@@ -180,7 +187,12 @@
         ],
         "merge_commit_oid": null,
         "merge_commit_in_local_head": null,
-        "body": "Module train: #11625\nModule node: #10986\nParent/controller: #8479"
+        "body": "Module train: #11625\nModule node: #10986\nParent/controller: #8479",
+        "review_threads": {
+          "total": 2,
+          "unresolved": 0,
+          "truncated": false
+        }
       },
       {
         "number": 2005,

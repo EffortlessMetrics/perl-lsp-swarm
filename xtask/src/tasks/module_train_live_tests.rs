@@ -100,7 +100,6 @@ fn observation_inventory_is_read_only() {
             "apply",
             "restore",
             "stash",
-            "gh api",
             "pr merge",
             "pr close",
             "pr edit",
@@ -119,6 +118,74 @@ fn observation_inventory_is_read_only() {
     }
     assert!(observation_command_inventory().iter().any(|entry| entry.starts_with("git ")));
     assert!(observation_command_inventory().iter().any(|entry| entry.starts_with("gh ")));
+    // `gh api` is a general-purpose HTTP client and cannot be blanket-trusted.
+    // The only admitted shape is the gated GraphQL read: every other `gh api`
+    // entry is mutative until proven otherwise.
+    for entry in observation_command_inventory() {
+        if entry.starts_with("gh api") {
+            assert!(
+                entry.starts_with("gh api graphql -f query="),
+                "the only admitted gh api shape is the gated read-only GraphQL query, got {entry:?}"
+            );
+        }
+    }
+}
+
+/// The read-only law for GraphQL lives in the document, not the HTTP verb:
+/// `gh api graphql` is a POST either way.
+#[test]
+fn graphql_read_only_law_is_carried_by_the_document() {
+    // The document this observer actually sends must pass its own gate.
+    assert!(args_read_only(
+        "gh",
+        &[
+            "api",
+            "graphql",
+            "-f",
+            &format!("query={GH_REVIEW_GRAPHQL}"),
+            "-F",
+            "owner=EffortlessMetrics",
+            "-F",
+            "name=perl-lsp-swarm",
+            "-F",
+            "pr=14237",
+        ],
+    ));
+
+    for rejected in [
+        // A write operation, transported identically to a query.
+        "query=mutation { addComment(input: {}) { clientMutationId } }",
+        // A write smuggled in behind a legitimate-looking read.
+        "query=query Read { viewer { login } } mutation Write { closePullRequest { id } }",
+        "query=subscription Watch { x }",
+        // No operation keyword at all.
+        "query=",
+        "query={ viewer { login } }",
+        // Not a query field.
+        "mutation=mutation { x }",
+    ] {
+        assert!(
+            !args_read_only("gh", &["api", "graphql", "-f", rejected]),
+            "expected rejection for {rejected:?}"
+        );
+    }
+
+    // Flags outside the observation contract are rejected wholesale, and a
+    // variable may never carry a second document.
+    assert!(!args_read_only("gh", &["api", "graphql", "-X", "POST", "-f", "query=query A { b }"]));
+    assert!(!args_read_only("gh", &["api", "graphql", "--input", "body.json"]));
+    assert!(!args_read_only("gh", &["api", "graphql"]));
+    assert!(!args_read_only(
+        "gh",
+        &["api", "graphql", "-f", "query=query A { b }", "-F", "x=mutation { y }"],
+    ));
+    // Exactly one document; a second `-f query=` is a rejected shape.
+    assert!(!args_read_only(
+        "gh",
+        &["api", "graphql", "-f", "query=query A { b }", "-f", "query=query C { d }"],
+    ));
+    // A non-graphql api path stays rejected.
+    assert!(!args_read_only("gh", &["api", "repos/x/y/pulls"]));
 }
 
 #[test]
@@ -140,6 +207,8 @@ fn non_read_only_commands_are_rejected_before_spawning() -> Result<()> {
         ("gh", vec!["pr", "review", "3001", "--approve"]),
         ("gh", vec!["issue", "close", "11627"]),
         ("gh", vec!["api", "-X", "POST", "repos/x/y/pulls"]),
+        ("gh", vec!["api", "graphql", "-f", "query=mutation { closePullRequest { id } }"]),
+        ("gh", vec!["api", "graphql", "-X", "POST", "-f", "query=query A { b }"]),
         ("curl", vec!["https://example.invalid"]),
     ] {
         let refusal = run_observation(None, program, &args)
@@ -423,6 +492,154 @@ fn merge_ready_requires_threads_receipts_and_currency() {
     let classified = classify(&facts);
     assert_eq!(classified.action, Action::NotProven);
     assert!(classified.reasons.contains(&"review_threads_unresolved".to_string()));
+}
+
+fn review_at(commit: Option<&str>) -> ReviewFacts {
+    ReviewFacts {
+        author_login: "reviewer".to_string(),
+        state: "APPROVED".to_string(),
+        submitted_at: Some("2026-08-30T00:00:00Z".to_string()),
+        commit_oid: commit.map(str::to_string),
+    }
+}
+
+/// Head currency is proved by review-to-commit binding, and an unbindable
+/// review is unprovable rather than current.
+#[test]
+fn review_head_currency_is_bound_to_the_observed_commit() {
+    let head = "a".repeat(40);
+    let stale = "b".repeat(40);
+
+    assert_eq!(review_on_head(&head, &[review_at(Some(&head))]), Some(true));
+    // The head moved after the review was submitted: definitively not current.
+    assert_eq!(review_on_head(&head, &[review_at(Some(&stale))]), Some(false));
+    // One stale review among current ones still blocks currency.
+    assert_eq!(
+        review_on_head(&head, &[review_at(Some(&head)), review_at(Some(&stale))]),
+        Some(false)
+    );
+    // Unbindable inputs stay unprovable — never Some(true), and never
+    // Some(false) either: "cannot tell" must not raise head_moved_after_review.
+    assert_eq!(review_on_head(&head, &[review_at(None)]), None);
+    assert_eq!(review_on_head(&head, &[review_at(Some(""))]), None);
+    assert_eq!(review_on_head("", &[review_at(Some(&head))]), None);
+    assert_eq!(review_on_head(&head, &[]), None);
+}
+
+/// An unobserved or truncated thread page can never read as resolved.
+#[test]
+fn thread_resolution_never_passes_on_partial_observation() {
+    let observed = |total: usize, unresolved: usize, truncated: bool| ReviewThreadFacts {
+        observed: true,
+        total,
+        unresolved,
+        truncated,
+    };
+
+    assert_eq!(threads_resolved(&observed(3, 0, false)), Some(true));
+    assert_eq!(threads_resolved(&observed(3, 1, false)), Some(false));
+    // Zero threads observed is a real "nothing unresolved".
+    assert_eq!(threads_resolved(&observed(0, 0, false)), Some(true));
+    // Truncated: no unresolved thread was *seen*, which is not the same as
+    // none existing.
+    assert_eq!(threads_resolved(&observed(500, 0, true)), None);
+    // No instrument ran at all.
+    assert_eq!(threads_resolved(&ReviewThreadFacts::default()), None);
+}
+
+/// The typed blockers must name only what is actually unobservable. Behavior
+/// receipts have no producer in this tree (#11619) and stay blocking; the two
+/// review facts stop being claimed as unobservable once they are observed.
+#[test]
+fn observed_review_facts_stop_being_reported_as_blockers() {
+    let mut facts = facts_base();
+    let mut candidate = open_candidate();
+    candidate.review_decision = "APPROVED".to_string();
+    candidate.has_reviews = true;
+    candidate.review_on_head = Some(true);
+    candidate.threads_resolved = Some(true);
+    facts.open_bound = vec![candidate.clone()];
+
+    let classified = classify(&facts);
+    // Still not merge-ready: receipts remain a real blocker.
+    assert_eq!(classified.action, Action::NotProven);
+    assert!(
+        classified.limitations.contains(&"behavior_receipts_not_observable".to_string()),
+        "receipts have no producer yet and must stay a typed blocker"
+    );
+    // But the two now-observed facts must not be claimed unobservable.
+    assert!(!classified.limitations.contains(&"review_head_currency_not_observable".to_string()));
+    assert!(!classified.limitations.contains(&"review_threads_not_observable".to_string()));
+
+    // Conversely, when the instrument genuinely could not bind them, the
+    // blockers come back.
+    candidate.review_on_head = None;
+    candidate.threads_resolved = None;
+    facts.open_bound = vec![candidate];
+    let classified = classify(&facts);
+    assert!(classified.limitations.contains(&"review_head_currency_not_observable".to_string()));
+    assert!(classified.limitations.contains(&"review_threads_not_observable".to_string()));
+}
+
+/// A review bound to a superseded commit is a stale review, and the REVIEW
+/// route must say so rather than silently recommending review again.
+#[test]
+fn stale_review_on_the_review_route_flags_a_moved_head() {
+    let mut facts = facts_base();
+    let mut candidate = open_candidate();
+    // No decision yet, but reviews exist and were left on an older commit.
+    candidate.has_reviews = true;
+    candidate.review_on_head = Some(false);
+    candidate.threads_resolved = Some(true);
+    facts.open_bound = vec![candidate];
+
+    let classified = classify(&facts);
+    assert_eq!(classified.action, Action::Review);
+    assert!(classified.flags.contains(&"head_moved_after_review".to_string()));
+    assert!(classified.reasons.contains(&"review_not_on_current_head".to_string()));
+    assert!(!classified.limitations.contains(&"review_head_currency_not_observable".to_string()));
+}
+
+/// End-to-end: the observed review facts survive raw -> snapshot normalization
+/// and derive the same way the classifier consumes them.
+#[test]
+fn corpus_carries_observed_review_facts_through_normalization() -> Result<()> {
+    let snapshot = normalize_text(CORPUS_FIXTURE)?;
+    let pr = |number: u64| {
+        snapshot
+            .semantic
+            .github
+            .prs
+            .iter()
+            .find(|pr| pr.number == number)
+            .unwrap_or_else(|| panic!("fixture PR {number} must normalize"))
+    };
+
+    // 2004: review bound to the observed head, every thread observed+resolved.
+    let approved = pr(2004);
+    assert_eq!(approved.latest_reviews[0].commit_oid.as_deref(), Some(approved.head_oid.as_str()));
+    assert!(approved.review_threads.observed);
+    assert!(!approved.review_threads.truncated);
+    assert_eq!(review_on_head(&approved.head_oid, &approved.latest_reviews), Some(true));
+    assert_eq!(threads_resolved(&approved.review_threads), Some(true));
+
+    // 2002: review left on a superseded commit, thread page truncated.
+    let stale = pr(2002);
+    assert_ne!(stale.latest_reviews[0].commit_oid.as_deref(), Some(stale.head_oid.as_str()));
+    assert_eq!(review_on_head(&stale.head_oid, &stale.latest_reviews), Some(false));
+    assert!(stale.review_threads.truncated);
+    assert_eq!(
+        threads_resolved(&stale.review_threads),
+        None,
+        "a truncated thread page must never resolve"
+    );
+
+    // A candidate with no thread instrument keeps both facts unobserved.
+    let unobserved = pr(2001);
+    assert!(!unobserved.review_threads.observed);
+    assert_eq!(threads_resolved(&unobserved.review_threads), None);
+    assert_eq!(review_on_head(&unobserved.head_oid, &unobserved.latest_reviews), None);
+    Ok(())
 }
 
 #[test]
