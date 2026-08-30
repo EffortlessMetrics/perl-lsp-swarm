@@ -189,3 +189,42 @@ fn perl_auto_quotes_across_a_comment_before_the_fat_comma() {
         "a comment must not turn a comma into a fat comma: {called:?}"
     );
 }
+
+/// The separator repair made `source` a second authority beside the AST, and
+/// nothing in the signature forces the two to describe the same document.
+/// Source bytes must therefore not be able to exactify a tree they do not
+/// describe, even when the two documents are the same length and the operand
+/// bareword sits at the same offset in both.
+#[test]
+fn source_bytes_cannot_exactify_another_tree() {
+    // Same length, same `before` at the same offset; only the separator and
+    // the handler position differ.
+    let computed = "package App;\nuse Dancer2;\nhook(before , sub { 1 });";
+    let promoted = "package App;\nuse Dancer2;\nhook before => sub { 1 };";
+    assert_eq!(computed.len(), promoted.len(), "the two fixtures must be the same length");
+    let operand = must_some(computed.find("before"));
+    assert_eq!(operand, must_some(promoted.find("before")), "operand offset must coincide");
+
+    // Each source against its own tree: the expected classifications.
+    assert!(
+        matches!(hook_name(computed), HookNameSelection::Dynamic { .. }),
+        "the comma form is computed"
+    );
+    assert!(
+        matches!(hook_name(promoted), HookNameSelection::Literal(_)),
+        "the fat-comma form is a literal"
+    );
+
+    // Now cross them: parse the computed form, then hand the extractor the
+    // *other* document's bytes. The fat comma is present at the right offset
+    // in those bytes, so an unbound implementation would promote. It must not.
+    let mut parser = Parser::new(computed);
+    let ast = must(parser.parse());
+    let crossed = extract_dancer2_hook_declarations(&ast, FileId(1), promoted);
+    let crossed = must_some(crossed.into_iter().next());
+    assert!(
+        matches!(crossed.hook.name, HookNameSelection::Dynamic { .. }),
+        "source bytes must not exactify a tree they do not describe: {:?}",
+        crossed.hook.name
+    );
+}

@@ -38,6 +38,7 @@ use crate::ast::{Node, NodeKind};
 use perl_semantic_facts::framework_adapters::dancer2_hooks::{
     Dancer2HookDeclaration, normalize_dancer2_hook_name,
 };
+use perl_semantic_facts::handler::FrameworkHandler;
 use perl_semantic_facts::hook::{HookDeclaration, HookName, HookNameSelection};
 use perl_semantic_facts::{AnchorId, FileId, SourceAnchor};
 
@@ -67,9 +68,21 @@ pub fn extract_dancer2_hook_declarations(
         false,
     );
     for declaration in &mut declarations {
-        promote_fat_comma_barewords(&mut declaration.hook.name, source);
+        promote_fat_comma_barewords(declaration, source);
     }
     declarations
+}
+
+/// The byte offset at which the tree says this declaration's handler operand
+/// begins, when that operand owns a source interval.
+fn handler_start_byte(declaration: &Dancer2HookDeclaration) -> Option<u32> {
+    match &declaration.hook.handler {
+        FrameworkHandler::InlineSub { anchor } | FrameworkHandler::StaticCoderef { anchor, .. } => {
+            Some(anchor.start_byte)
+        }
+        FrameworkHandler::Bounded { anchor, .. } => anchor.map(|anchor| anchor.start_byte),
+        _ => None,
+    }
 }
 
 /// Promote a bareword hook-name operand that Perl's fat comma auto-quotes.
@@ -92,16 +105,31 @@ pub fn extract_dancer2_hook_declarations(
 /// Perl auto-quotes across those, so `hook before # note` / newline / `=> ...`
 /// is still a literal. Anything else — a comma, a qualified or sigil-bearing
 /// name, an interpolation — fails closed and stays a computed boundary.
-fn promote_fat_comma_barewords(name: &mut HookNameSelection, source: &str) {
-    let HookNameSelection::Dynamic { anchor, .. } = name else {
+fn promote_fat_comma_barewords(declaration: &mut Dancer2HookDeclaration, source: &str) {
+    // `source` is a second authority beside `ast`. Nothing in the signature
+    // forces the two to describe the same document, so before letting source
+    // bytes exactify a dynamic operand we require the two to *agree on the
+    // geometry of this declaration*: the separator the source shows must end
+    // exactly where the tree says the next operand begins.
+    //
+    // A per-operand check cannot do this — the same bareword can sit at the
+    // same offset in two different documents — but the handoff point between
+    // the two operands is a position both authorities independently commit
+    // to, and a tree describing another document disagrees about it.
+    let Some(handler_start) = handler_start_byte(declaration) else {
         return;
     };
-    let (Ok(start), Ok(end)) =
-        (usize::try_from(anchor.start_byte), usize::try_from(anchor.end_byte))
-    else {
+    let HookNameSelection::Dynamic { anchor, .. } = &declaration.hook.name else {
         return;
     };
-    if start >= end || end > source.len() {
+    let (Ok(start), Ok(end), Ok(handler_start)) = (
+        usize::try_from(anchor.start_byte),
+        usize::try_from(anchor.end_byte),
+        usize::try_from(handler_start),
+    ) else {
+        return;
+    };
+    if start >= end || end > source.len() || handler_start > source.len() {
         return;
     }
     let Some(literal) = source.get(start..end) else {
@@ -113,10 +141,19 @@ fn promote_fat_comma_barewords(name: &mut HookNameSelection, source: &str) {
     let Some(rest) = source.get(end..) else {
         return;
     };
-    if !skip_separator_trivia(rest).starts_with("=>") {
+    let after_trivia = skip_separator_trivia(rest);
+    let Some(after_arrow) = after_trivia.strip_prefix("=>") else {
+        return;
+    };
+    // Where the source's separator actually hands over, measured in the same
+    // coordinates the tree used.
+    let handover = source.len() - skip_separator_trivia(after_arrow).len();
+    if handover != handler_start {
+        // The tree and the text disagree about this declaration's shape, so
+        // the text is not describing this tree. Fail closed.
         return;
     }
-    *name = HookNameSelection::Literal(HookName {
+    declaration.hook.name = HookNameSelection::Literal(HookName {
         normalization: normalize_dancer2_hook_name(literal),
         literal: literal.to_string(),
         anchor: *anchor,
