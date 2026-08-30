@@ -184,7 +184,7 @@ fn shifted_position(position: usize, shift: isize) -> usize {
 }
 
 enum StructuralLexItem {
-    Token { kind: TokenType, text: Arc<str> },
+    Token { kind: TokenType, text: Arc<str>, start: usize, end: usize },
     End,
     Rejected,
 }
@@ -202,22 +202,60 @@ fn next_structural_token(lexer: &mut PerlLexer<'_>) -> StructuralLexItem {
         match token.token_type {
             TokenType::Whitespace | TokenType::Newline => continue,
             TokenType::EOF => return StructuralLexItem::End,
-            kind => return StructuralLexItem::Token { kind, text: token.text },
+            kind => {
+                return StructuralLexItem::Token {
+                    kind,
+                    text: token.text,
+                    start: token.start,
+                    end: token.end,
+                };
+            }
         }
     }
+}
+
+fn gap_class(source: &str, previous_end: usize, current_start: usize) -> Option<(bool, bool)> {
+    let gap = source.get(previous_end..current_start)?;
+    Some((gap.is_empty(), gap.contains('\n')))
 }
 
 fn structural_tokens_match(old_source: &str, new_source: &str) -> bool {
     let mut old_lexer = PerlLexer::new(old_source);
     let mut new_lexer = PerlLexer::new(new_source);
+    let mut old_previous_end = None;
+    let mut new_previous_end = None;
 
     loop {
         match (next_structural_token(&mut old_lexer), next_structural_token(&mut new_lexer)) {
             (StructuralLexItem::End, StructuralLexItem::End) => return true,
             (
-                StructuralLexItem::Token { kind: old_kind, text: old_text },
-                StructuralLexItem::Token { kind: new_kind, text: new_text },
-            ) if old_kind == new_kind && old_text == new_text => {}
+                StructuralLexItem::Token {
+                    kind: old_kind,
+                    text: old_text,
+                    start: old_start,
+                    end: old_end,
+                },
+                StructuralLexItem::Token {
+                    kind: new_kind,
+                    text: new_text,
+                    start: new_start,
+                    end: new_end,
+                },
+            ) if old_kind == new_kind && old_text == new_text => {
+                let gaps_match = match (old_previous_end, new_previous_end) {
+                    (Some(old_end), Some(new_end)) => {
+                        gap_class(old_source, old_end, old_start)
+                            == gap_class(new_source, new_end, new_start)
+                    }
+                    (None, None) => true,
+                    _ => false,
+                };
+                if !gaps_match {
+                    return false;
+                }
+                old_previous_end = Some(old_end);
+                new_previous_end = Some(new_end);
+            }
             _ => return false,
         }
     }
@@ -363,12 +401,12 @@ mod tests {
     }
 
     #[test]
-    fn admits_utf8_source_when_edit_offsets_are_boundaries() {
+    fn rejects_utf8_insertion_that_changes_adjacency() {
         let old = "print 'é';my $x = 1;";
         let insertion = old.find("my $x").unwrap_or(old.len());
         let new = "print 'é'; my $x = 1;";
         let edits = edit_set([edit(insertion, insertion, insertion + 1)]);
-        assert!(WhitespaceEditMap::try_new(old, new, &edits).is_some());
+        assert!(WhitespaceEditMap::try_new(old, new, &edits).is_none());
     }
 
     #[test]

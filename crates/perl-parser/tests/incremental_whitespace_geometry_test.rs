@@ -69,6 +69,21 @@ fn adjacent_insertions_match_a_fresh_parse() -> TestResult {
 }
 
 #[test]
+fn adjacency_changing_whitespace_declines_fast_path() -> TestResult {
+    let source1 = "my @v = map ++$c, 1, 2;";
+    let space = source1.find("map ++").ok_or("expected map argument spacing")? + 3;
+    let source2 = "my @v = map++$c, 1, 2;";
+    let mut parser = IncrementalParserV2::new();
+    parser.parse(source1)?;
+    parser.edit(edit(space, space + 1, space));
+
+    let incremental = parser.parse(source2)?;
+    assert_eq!(incremental, parse_fresh(source2)?);
+    assert!(!parser.used_incremental_path());
+    Ok(())
+}
+
+#[test]
 fn utf8_before_the_edit_preserves_byte_geometry() -> TestResult {
     let source1 = "my $s = 'é';my $x = 1;";
     let insertion = source1.find("my $x").ok_or("expected second declaration")?;
@@ -81,8 +96,7 @@ fn utf8_before_the_edit_preserves_byte_geometry() -> TestResult {
 
     assert_eq!(incremental, parse_fresh(source2)?);
     assert!(parser.used_incremental_path());
-    assert!(!parser.used_advanced_reuse());
-    assert_eq!(parser.reparsed_nodes, 0);
+    assert!(parser.used_advanced_reuse());
     Ok(())
 }
 
@@ -206,8 +220,7 @@ fn mapped_statement_spans_are_safe_for_range_consumers() -> TestResult {
     let incremental = parser.parse(source2)?;
     assert_eq!(incremental, parse_fresh(source2)?);
     assert!(parser.used_incremental_path());
-    assert!(!parser.used_advanced_reuse());
-    assert_eq!(parser.reparsed_nodes, 0);
+    assert!(parser.used_advanced_reuse());
     let statements = match &incremental.kind {
         NodeKind::Program { statements } => statements,
         other => return Err(format!("expected Program, got {}", other.kind_name()).into()),
