@@ -296,6 +296,46 @@ impl ReferencesAnsweringTier {
         }
     }
 
+    /// Freshness of the facts this tier answered from, relative to the request.
+    ///
+    /// Written to the provider-decision receipt, so it must be derived rather than
+    /// asserted: a receipt that always reports `fresh` cannot distinguish an answer
+    /// computed over current source from one computed over a workspace index that
+    /// the handler already observed to be stale (#14156, integrity rule 1 of
+    /// `docs/reference/SCOREBOARD_DOCTRINE.md`).
+    ///
+    /// `index_state` is the `"full" | "partial" | "none"` label captured at the
+    /// branch point, which is downgraded to `"none"` when the workspace index is
+    /// stale for any open document.
+    ///
+    /// `"none"` conflates a positively-observed stale index with an absent one, so
+    /// this reports `unknown` rather than `stale`: understating what we know is
+    /// fail-closed, whereas claiming `stale` would replace one false precision with
+    /// another. Splitting those cases requires `index_state` to carry the
+    /// distinction and is deliberately not attempted here.
+    pub(crate) fn freshness(self, index_state: &str) -> &'static str {
+        match self {
+            // These tiers read live compiler facts or the live open buffer, so no
+            // cached index stands between the request and the source it answered
+            // from. They are current whatever the workspace index is doing.
+            Self::SemanticSourceBacked | Self::OpenDocumentText | Self::SemanticAnalyzer => "fresh",
+            // Every remaining tier answers out of the workspace index, and so does
+            // `Empty`: a "no references" claim is exactly as complete as the index
+            // coverage behind it, which is the case most worth not overstating.
+            Self::WorkspaceExact
+            | Self::WorkspaceMixed
+            | Self::WorkspaceText
+            | Self::PartialIndex
+            | Self::Empty => {
+                if index_state == "full" {
+                    "fresh"
+                } else {
+                    "unknown"
+                }
+            }
+        }
+    }
+
     /// Fallback state normalized by the provider-decision receipt model.
     pub(crate) fn fallback_state(self, result_count: usize) -> &'static str {
         if result_count == 0 {
@@ -549,7 +589,7 @@ impl LspServer {
                 "source_backed_result_count": source_backed_result_count,
                 "fact_source": tier.fact_source(),
                 "confidence": confidence,
-                "freshness": "fresh",
+                "freshness": tier.freshness(index_state),
                 "source_backed": tier.is_source_backed(),
                 "source_backed_state": tier.source_backed_state(),
                 "answering_tier": tier.as_str(),
@@ -2028,6 +2068,127 @@ mod tests {
         Ok(())
     }
 
+    /// Exhaustive oracle for the derived receipt freshness (#14156).
+    ///
+    /// Every tier is listed explicitly rather than looped, so a new tier variant
+    /// forces an author to state its freshness instead of inheriting a default.
+    #[test]
+    fn answering_tier_freshness_is_derived_from_tier_and_index_state() -> Result<(), Box<dyn Error>>
+    {
+        use ReferencesAnsweringTier as Tier;
+
+        // Live-source tiers answer from the compiler or the open buffer, so they
+        // stay fresh even when the workspace index is stale or missing entirely.
+        for index_state in ["full", "partial", "none"] {
+            assert_eq!(
+                Tier::SemanticSourceBacked.freshness(index_state),
+                "fresh",
+                "source-backed tier answers from live facts ({index_state})"
+            );
+            assert_eq!(
+                Tier::OpenDocumentText.freshness(index_state),
+                "fresh",
+                "open-document text search reads the live buffer ({index_state})"
+            );
+            assert_eq!(
+                Tier::SemanticAnalyzer.freshness(index_state),
+                "fresh",
+                "same-file semantic analysis reads the live buffer ({index_state})"
+            );
+        }
+
+        // Index-backed tiers are only as current as the index behind them.
+        for tier in
+            [Tier::WorkspaceExact, Tier::WorkspaceMixed, Tier::WorkspaceText, Tier::PartialIndex]
+        {
+            assert_eq!(
+                tier.freshness("full"),
+                "fresh",
+                "{tier:?} over a full index is current for the request"
+            );
+            assert_eq!(
+                tier.freshness("partial"),
+                "unknown",
+                "{tier:?} cannot claim currency over a partial index"
+            );
+            assert_eq!(
+                tier.freshness("none"),
+                "unknown",
+                "{tier:?} cannot claim currency over a stale or absent index"
+            );
+        }
+
+        // The load-bearing row: an empty answer's completeness rests on index
+        // coverage, so a stale index must not be reported as a fresh "no results".
+        assert_eq!(Tier::Empty.freshness("full"), "fresh");
+        assert_eq!(Tier::Empty.freshness("partial"), "unknown");
+        assert_eq!(
+            Tier::Empty.freshness("none"),
+            "unknown",
+            "an empty result over a stale index must not claim freshness"
+        );
+
+        Ok(())
+    }
+
+    /// Counter-assertion for the freshness field (`SCOREBOARD_DOCTRINE.md`
+    /// integrity rule 3): the same tier must yield opposite values across index
+    /// states, and different tiers must disagree under one index state. A
+    /// hardcode of either polarity fails this test.
+    #[test]
+    fn answering_tier_freshness_is_not_a_constant() -> Result<(), Box<dyn Error>> {
+        use ReferencesAnsweringTier as Tier;
+
+        assert_ne!(
+            Tier::WorkspaceExact.freshness("full"),
+            Tier::WorkspaceExact.freshness("none"),
+            "freshness must vary with index state for an index-backed tier"
+        );
+        assert_ne!(
+            Tier::SemanticAnalyzer.freshness("none"),
+            Tier::WorkspaceExact.freshness("none"),
+            "freshness must vary by tier under one index state"
+        );
+
+        // Both canonical values this derivation can emit are actually reachable,
+        // so neither branch is dead.
+        assert_eq!(Tier::SemanticSourceBacked.freshness("none"), "fresh");
+        assert_eq!(Tier::WorkspaceText.freshness("none"), "unknown");
+
+        Ok(())
+    }
+
+    /// Every emitted value must belong to the canonical `ProviderDecisionFreshness`
+    /// vocabulary (`perl-lsp-rs-core::providers::provider_decision`), so the receipt
+    /// cannot drift into a private spelling.
+    #[test]
+    fn answering_tier_freshness_stays_in_the_canonical_vocabulary() -> Result<(), Box<dyn Error>> {
+        use ReferencesAnsweringTier as Tier;
+
+        const CANONICAL: [&str; 4] = ["fresh", "stale", "unknown", "not_applicable"];
+
+        for tier in [
+            Tier::SemanticSourceBacked,
+            Tier::WorkspaceExact,
+            Tier::WorkspaceMixed,
+            Tier::WorkspaceText,
+            Tier::PartialIndex,
+            Tier::OpenDocumentText,
+            Tier::SemanticAnalyzer,
+            Tier::Empty,
+        ] {
+            for index_state in ["full", "partial", "none"] {
+                let value = tier.freshness(index_state);
+                assert!(
+                    CANONICAL.contains(&value),
+                    "{tier:?}/{index_state} emitted {value:?}, outside ProviderDecisionFreshness"
+                );
+            }
+        }
+
+        Ok(())
+    }
+
     #[test]
     fn answering_tier_receipt_fact_source_is_tier_accurate() -> Result<(), Box<dyn Error>> {
         assert_eq!(ReferencesAnsweringTier::SemanticSourceBacked.fact_source(), "semantic_fact");
@@ -2658,6 +2819,99 @@ mod tests {
             receipt.get("index_state").and_then(serde_json::Value::as_str),
             Some("none"),
             "stale current-document index must downgrade references index access"
+        );
+
+        Ok(())
+    }
+
+    /// End-to-end counter-assertion that the receipt's `freshness` is wired to the
+    /// derivation rather than emitted as a literal (#14156).
+    ///
+    /// Both requests run against the *same* server with the *same* stale index, so
+    /// `index_state` is `"none"` for both and the only thing that differs is which
+    /// tier answered. A hardcoded `"fresh"` fails the empty case; a hardcoded
+    /// `"unknown"`, or a derivation keyed on `index_state` alone, fails the
+    /// semantic-analyzer case.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn handle_references_derives_receipt_freshness_from_the_answering_tier()
+    -> Result<(), Box<dyn Error>> {
+        use crate::runtime::LspServer;
+        use parking_lot::Mutex;
+        use std::io::Cursor;
+        use std::sync::Arc;
+
+        let output = Arc::new(Mutex::new(
+            Box::new(Cursor::new(Vec::new())) as Box<dyn std::io::Write + Send>
+        ));
+        let server = LspServer::with_output(output);
+        let uri = "file:///test/freshness-references.pl";
+        let text = "my $value = 1;\nmy $other = $value;\n";
+
+        make_document_index_stale(&server, uri, text)?;
+
+        let receipt_for = |character: u32| -> Result<serde_json::Value, Box<dyn Error>> {
+            server.test_handle_references(Some(serde_json::json!({
+                "textDocument": {"uri": uri, "version": 2},
+                "position": {"line": 0, "character": character},
+                "context": {"includeDeclaration": true}
+            })))?;
+            let explanation = server
+                .handle_execute_command(Some(serde_json::json!({
+                    "command": "perl.explainProviderDecision",
+                    "arguments": [{"provider": "references"}]
+                })))?
+                .ok_or("missing explain-provider-decision response")?;
+            explanation
+                .get("request_receipt")
+                .cloned()
+                .ok_or_else(|| "missing request_receipt".into())
+        };
+
+        // Cursor on `$value`: the same-file semantic analyzer answers from the live
+        // open buffer, so the answer really is current despite the stale index.
+        let live = receipt_for(5)?;
+        assert_eq!(
+            live.get("index_state").and_then(serde_json::Value::as_str),
+            Some("none"),
+            "the index is stale for this document"
+        );
+        assert_eq!(
+            live.get("answering_tier").and_then(serde_json::Value::as_str),
+            Some("semantic_analyzer")
+        );
+        assert_eq!(
+            live.get("freshness").and_then(serde_json::Value::as_str),
+            Some("fresh"),
+            "an answer read from the live buffer is current for the request"
+        );
+
+        // Cursor on the `my` keyword: no tier resolves a symbol, so the receipt
+        // reports an empty result. That "no references" claim is only as complete
+        // as the workspace index behind it, which is stale here — so it must not be
+        // reported as fresh. This is the row that was previously a lie.
+        let empty = receipt_for(0)?;
+        assert_eq!(
+            empty.get("index_state").and_then(serde_json::Value::as_str),
+            Some("none"),
+            "the same stale index backs both requests"
+        );
+        assert_eq!(empty.get("answering_tier").and_then(serde_json::Value::as_str), Some("empty"));
+        assert_eq!(
+            empty.get("result_count").and_then(serde_json::Value::as_u64),
+            Some(0),
+            "the empty tier returned no locations"
+        );
+        assert_eq!(
+            empty.get("freshness").and_then(serde_json::Value::as_str),
+            Some("unknown"),
+            "an empty answer over a stale index must not claim freshness"
+        );
+
+        assert_ne!(
+            live.get("freshness"),
+            empty.get("freshness"),
+            "freshness must discriminate between the two tiers under one index state"
         );
 
         Ok(())
