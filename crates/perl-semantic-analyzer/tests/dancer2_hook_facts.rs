@@ -1,3 +1,5 @@
+#![deny(clippy::map_err_ignore)]
+// Cohort C1 activation (#12598): all production rows exact-excepted; new findings move the crate back to non-C1.
 //! Integration falsifiers for the canonical Dancer2 hook fact chain (#8924).
 //!
 //! Full chain over one source: parse → activation sites → hook declarations

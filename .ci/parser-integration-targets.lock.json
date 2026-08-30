@@ -8,6 +8,10 @@
       "invocation_sha256": "04a692651ff6257474f4d8b7552eea2ab0b259ce9b0c1fc2596a1a9e77f03517"
     },
     {
+      "id": "parser.command_line.oneliners",
+      "invocation_sha256": "562d66111ff70e436552bfb60f662804c475f19d5d22beb7227028128cdf9349"
+    },
+    {
       "id": "parser.concepts.magic_token_arguments",
       "invocation_sha256": "3b687b9c5247a2017313d1c328e3a19bcc0b66e01c9fcce2936cb6b8245dea0c"
     },
@@ -58,6 +62,10 @@
     {
       "id": "parser.recovery.regression",
       "invocation_sha256": "8e9d842d8c175d5356de9abcb262ee2ca637df79ee58a367c2e3ca06b08f1337"
+    },
+    {
+      "id": "parser.red_black_tree_access_paths",
+      "invocation_sha256": "bda2415c986c80554803c795134977c94e6052d57d6782c5dc4cf217932f2e0d"
     },
     {
       "id": "parser.ripr.seam_proof",
