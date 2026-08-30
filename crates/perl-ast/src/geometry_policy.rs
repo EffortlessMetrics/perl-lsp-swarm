@@ -358,6 +358,22 @@ pub enum AstGeometryDrift {
         /// Role the row claimed.
         role: crate::AstPayloadPolicy,
     },
+    /// A geometry row omits its payload role although the owning variant declares one.
+    ///
+    /// `payload_role` is `None` only for a variant that declares no payload
+    /// policy at all. Allowing `None` elsewhere would let a row silently drop
+    /// its field semantics and fall back to classification-derived disposition,
+    /// which for a declaration name on a `ChildBearing` node happens to produce
+    /// the same answer — so the omission would validate clean while the registry
+    /// stopped recording *why* the disposition is what it is.
+    MissingPayloadRole {
+        /// Owning `NodeKind`.
+        kind_name: String,
+        /// Field identity.
+        field: String,
+        /// Roles the owning variant declares, one of which the row must name.
+        declared: Vec<crate::AstPayloadPolicy>,
+    },
     /// A row's disposition disagrees with its owning variant's classification.
     DispositionMismatch {
         /// Owning `NodeKind`.
@@ -423,6 +439,11 @@ impl std::fmt::Display for AstGeometryDrift {
                 f,
                 "{kind_name}.{field} claims payload role {role:?}, which {kind_name} does not \
                  declare in its invariant policy"
+            ),
+            Self::MissingPayloadRole { kind_name, field, declared } => write!(
+                f,
+                "{kind_name}.{field} declares no payload role, but {kind_name} declares \
+                 {declared:?}; a geometry row on such a variant must name the role it realizes"
             ),
             Self::DispositionMismatch { kind_name, field, registered, required } => write!(
                 f,
@@ -646,6 +667,14 @@ pub fn validate_geometry_registry() -> Result<(), AstGeometryDrift> {
                 field: row.field.to_string(),
             });
         };
+
+        if row.payload_role.is_none() && !policy.payload_policies.is_empty() {
+            return Err(AstGeometryDrift::MissingPayloadRole {
+                kind_name: row.kind_name.to_string(),
+                field: row.field.to_string(),
+                declared: policy.payload_policies.to_vec(),
+            });
+        }
 
         if let Some(role) = row.payload_role
             && !policy.payload_policies.contains(&role)

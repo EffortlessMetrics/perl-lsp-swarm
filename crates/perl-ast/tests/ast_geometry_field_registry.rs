@@ -170,6 +170,62 @@ fn dispositions_are_derived_from_the_field_role_and_owning_classification()
     Ok(())
 }
 
+/// A row may not drop its payload role where its variant declares one.
+///
+/// Raised in review, and it was a hole introduced by the role dimension itself.
+/// `validate_geometry_registry` derived the required disposition from the role
+/// with a classification fallback for `None` — so setting `Package.name_span` to
+/// `payload_role: None` fell back to `ChildBearing` -> `SourceExact`, matched the
+/// registered disposition, and validated clean. Reproduced before fixing: the
+/// whole suite stayed green (29/29) with the role silently removed.
+///
+/// The coincidence is the point. For a declaration name on a child-bearing node
+/// the fallback happens to agree, so nothing was red while the registry quietly
+/// stopped recording *why* the disposition holds. On `Format` the same omission
+/// would change the answer and be caught — which is exactly the kind of
+/// inconsistent coverage that makes a guard untrustworthy.
+///
+/// `payload_role` is now `None` only for a variant declaring no payload policy.
+#[test]
+fn a_row_may_not_omit_a_role_its_variant_declares() -> Result<(), Box<dyn std::error::Error>> {
+    for row in AST_NODE_GEOMETRY_FIELDS {
+        let policy = ast_node_policy(row.kind_name)
+            .ok_or_else(|| format!("{} has geometry rows but no policy row", row.kind_name))?;
+
+        if policy.payload_policies.is_empty() {
+            assert_eq!(
+                row.payload_role, None,
+                "{}.{}: {} declares no payload policy, so the row must not name a role",
+                row.kind_name, row.field, row.kind_name
+            );
+        } else {
+            assert!(
+                row.payload_role.is_some(),
+                "{}.{}: {} declares {:?}, so the row must name the role it realizes rather than \
+                 falling back to classification-derived disposition",
+                row.kind_name,
+                row.field,
+                row.kind_name,
+                policy.payload_policies
+            );
+        }
+    }
+
+    // The coincidence that hid the defect: for Package the fallback agrees with
+    // the role-derived answer, so disposition equality alone proves nothing here.
+    let policy = ast_node_policy("Package").ok_or("Package policy must exist")?;
+    assert_eq!(
+        geometry_disposition_for_role(None, policy.classification),
+        geometry_disposition_for_role(
+            Some(perl_ast::AstPayloadPolicy::DeclarationNameAnchor),
+            policy.classification
+        ),
+        "this control exists because these two agree for Package; if they ever diverge, the \
+         omission would be caught by the disposition check and this test is no longer the guard"
+    );
+    Ok(())
+}
+
 /// A declaration name is exact source even on a boundary-classified node.
 ///
 /// Raised in review. `Format` is classified `SourceBoundary` because its `body`
