@@ -5,8 +5,9 @@
 - [x] `.spec/11627-module-train-live/` bundle (this file's siblings) written
       before implementation.
 - [x] `xtask/src/tasks/module_train_live.rs`: raw-observation model, read-only
-      adapters (git local / git remote / gh pr list+view through the single
-      allowlisted choke point), deterministic normalizer, pure action
+      adapters (git local / git remote / gh pr list+view, plus one gated
+      `gh api graphql` review read, through the single allowlisted choke
+      point), deterministic normalizer, pure action
       classifier, check/next/explain renderers.
 - [x] Additive public seam on #11626's module: `LoadedManifest::node_statuses()`,
       `node_static_facts()`, `controller_issue()`, public
@@ -15,7 +16,7 @@
 - [x] Fixture corpus under `xtask/tests/fixtures/module-train-live/`
       (`raw-corpus.json` with 11 PRs covering every candidate state family,
       `raw-clean-surface.json` for the START baseline).
-- [x] 37 focused tests in `xtask/src/tasks/module_train_live_tests.rs`: all 18
+- [x] 46 focused tests in `xtask/src/tasks/module_train_live_tests.rs`: all 18
       shift-left falsifiers, determinism, plus the bot-review repair tests
       (repo-bound gh queries, fail-closed detail reads, partial-trailer node
       retention, manifest-digest validation binding, cancelled checks carry
@@ -28,7 +29,7 @@
 ## Proof (scoped; run on the final tree)
 
 ```text
-cargo test -p xtask --locked --bin xtask module_train_live -> 37 passed
+cargo test -p xtask --locked --bin xtask module_train_live -> 46 passed
 cargo test -p xtask --locked --bin xtask module_train      -> 58 passed (C02 regression)
 cargo fmt -p xtask -- --check                              -> clean
 cargo clippy -p xtask --all-targets --locked -- -D warnings -> zero findings in this PR's files
@@ -46,10 +47,13 @@ git diff --check -> clean
 1. ~~Review-thread observation (GraphQL) and review-head binding~~ — **closed by
    #14237**. Both facts are now observed through one gated read-only
    `gh api graphql` document: `review_on_head` from review-to-commit binding,
-   `threads_resolved` from a bounded thread page. Both fail closed (unbound
-   review commit, truncated page, or GraphQL instrument failure stays
-   unprovable, never "current"/"resolved"). MERGE_READY_RECOMMENDATION remains
-   unreachable from live observation, now on residual 2 alone.
+   `threads_resolved` from a bounded thread page. Both fail closed: an unbound
+   review commit, a truncated review **or** thread page, a head that moved
+   between the list and the review read, or any GraphQL instrument failure
+   leaves the fact unprovable, never "current"/"resolved". Currency is computed
+   from `latestOpinionatedReviews`, so an advisory comment on an older commit
+   does not report a current approval as stale. MERGE_READY_RECOMMENDATION
+   remains unreachable from live observation, now on residual 2 alone.
 2. Behavior-receipt/profile observation: typed blocker for fan-in/claim starts
    and merge-ready. **Blocked by #11619** (P11A exact-process receipt
    substrate, open): this tree has no `module-process` task and no

@@ -128,10 +128,20 @@ fn graphql_document_is_read_only(document: &str) -> bool {
 
 /// Returns true when a `-F name=value` GraphQL variable cannot itself carry a
 /// document: a bare identifier bound to a conservative scalar.
+///
+/// `query` and `operationName` are refused by name: `gh` lifts those two keys
+/// out of the variable map and into the top level of the request body, so a
+/// character-shape check alone would let them through as ordinary "variables"
+/// while they actually select or replace the document. Nothing emits them
+/// today, and the document scan would still reject an embedded write, but the
+/// gate should not depend on a future call site staying careful.
 fn graphql_variable_is_inert(field: &str) -> bool {
     let Some((name, value)) = field.split_once('=') else {
         return false;
     };
+    if matches!(name, "query" | "operationName") {
+        return false;
+    }
     if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
         return false;
     }
@@ -507,6 +517,10 @@ pub struct RawPr {
     /// never "this candidate has no threads".
     #[serde(default)]
     pub review_threads: Option<RawReviewThreads>,
+    /// The opinionated-review page did not cover every review, so an omitted
+    /// review could be stale: currency is unprovable.
+    #[serde(default)]
+    pub reviews_truncated: bool,
     #[serde(default)]
     pub checks: Option<Vec<RawCheck>>,
     #[serde(default)]
@@ -697,6 +711,9 @@ pub struct PrFacts {
     pub latest_reviews: Vec<ReviewFacts>,
     #[serde(default)]
     pub review_threads: ReviewThreadFacts,
+    /// The observed opinionated-review page was incomplete.
+    #[serde(default)]
+    pub review_page_truncated: bool,
     pub checks: ChecksFacts,
     pub merge_commit_oid: Option<String>,
     pub merge_commit_in_local_head: Option<bool>,
@@ -1293,20 +1310,36 @@ fn gh_list_args(state: &str, limit: usize, repo: &str) -> Vec<String> {
     ]
 }
 
-/// One bounded read-only document fetching exactly the two facts that
-/// `gh pr view --json` cannot express: the commit each latest review is bound
-/// to, and review-thread resolution. Kept a constant so the read-only gate
-/// inspects a document that observed data can never influence.
+/// One bounded read-only document fetching exactly the facts that
+/// `gh pr view --json` cannot express: the commit each opinionated review is
+/// bound to, and review-thread resolution. Kept a constant so the read-only
+/// gate inspects a document that observed data can never influence.
+///
+/// `headRefOid` is re-read here so review facts can be bound to the head the
+/// GraphQL read actually saw: the listed head arrives from an earlier
+/// `gh pr list`, and a push between the two observations would otherwise let
+/// reviews on the superseded commit compare equal to a stale listed head.
+///
+/// `latestOpinionatedReviews` — not `latestReviews` — is what currency means
+/// here: it returns the latest APPROVED/CHANGES_REQUESTED review per author,
+/// the reviews that actually carry a decision. `latestReviews` would also
+/// return COMMENTED reviews, so one advisory bot comment left on an older
+/// commit would report an otherwise-current approval as stale.
+///
+/// Both connections carry `totalCount` so a page that did not cover every
+/// entry is detectable; an undetected truncation could hide a stale review.
 const GH_REVIEW_GRAPHQL: &str = "\
 query ModuleTrainLiveReviewFacts($owner: String!, $name: String!, $pr: Int!, \
 $threads: Int!, $reviews: Int!) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $pr) {
+      headRefOid
       reviewThreads(first: $threads) {
         totalCount
         nodes { isResolved }
       }
-      latestReviews(first: $reviews) {
+      latestOpinionatedReviews(first: $reviews) {
+        totalCount
         nodes {
           state
           submittedAt
@@ -1337,9 +1370,24 @@ fn gh_graphql_review_args(number: u64, owner: &str, name: &str) -> Vec<String> {
     ]
 }
 
+/// Whether review facts observed at `observed_head` may be bound to the head
+/// an earlier `gh pr list` reported.
+///
+/// The two reads are separate observations. A push in between makes the listed
+/// head stale, and reviews fetched afterwards would then be compared against a
+/// commit that is no longer the head — reporting a superseded review as
+/// current. Disagreement (or an unusable oid on either side) binds nothing.
+fn review_facts_bind_to_listed_head(listed_head: &str, observed_head: &str) -> bool {
+    !listed_head.is_empty() && listed_head == observed_head
+}
+
 /// Review facts that only GraphQL can express, for one candidate.
 struct GraphqlReviewFacts {
+    /// The head this read actually observed, for agreement with the listed head.
+    head_oid: String,
     reviews: Vec<RawReview>,
+    /// The opinionated-review page did not cover every review.
+    reviews_truncated: bool,
     threads: RawReviewThreads,
 }
 
@@ -1384,32 +1432,41 @@ fn gh_review_facts(
         .count();
     let threads = RawReviewThreads { total, unresolved, truncated: total > thread_nodes.len() };
 
-    let reviews = pull
-        .pointer("/latestReviews/nodes")
-        .and_then(Value::as_array)
-        .map(|nodes| {
-            nodes
-                .iter()
-                .map(|review| RawReview {
-                    author_login: review
-                        .get("author")
-                        .and_then(|author| author.get("login"))
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                        .to_string(),
-                    state: string_field(review, "state"),
-                    submitted_at: opt_string_field(review, "submittedAt"),
-                    commit_oid: review
-                        .get("commit")
-                        .and_then(|commit| commit.get("oid"))
-                        .and_then(Value::as_str)
-                        .map(str::to_string),
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+    let head_oid = pull
+        .get("headRefOid")
+        .and_then(Value::as_str)
+        .ok_or_else(|| failure("response carried no headRefOid".to_string()))?
+        .to_string();
 
-    Ok(GraphqlReviewFacts { reviews, threads })
+    let review_nodes = pull
+        .pointer("/latestOpinionatedReviews/nodes")
+        .and_then(Value::as_array)
+        .ok_or_else(|| failure("response carried no latestOpinionatedReviews page".to_string()))?;
+    let review_total =
+        pull.pointer("/latestOpinionatedReviews/totalCount").and_then(Value::as_u64).ok_or_else(
+            || failure("response carried no latestOpinionatedReviews totalCount".to_string()),
+        )? as usize;
+    let reviews_truncated = review_total > review_nodes.len();
+    let reviews: Vec<RawReview> = review_nodes
+        .iter()
+        .map(|review| RawReview {
+            author_login: review
+                .get("author")
+                .and_then(|author| author.get("login"))
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            state: string_field(review, "state"),
+            submitted_at: opt_string_field(review, "submittedAt"),
+            commit_oid: review
+                .get("commit")
+                .and_then(|commit| commit.get("oid"))
+                .and_then(Value::as_str)
+                .map(str::to_string),
+        })
+        .collect();
+
+    Ok(GraphqlReviewFacts { head_oid, reviews, reviews_truncated, threads })
 }
 
 fn gh_view_args(number: u64, repo: &str) -> Vec<String> {
@@ -1482,6 +1539,7 @@ fn raw_pr_from_list(value: &Value) -> RawPr {
         review_decision: None,
         reviews: None,
         review_threads: None,
+        reviews_truncated: false,
         checks: None,
         merge_commit_oid: None,
         merge_commit_in_local_head: None,
@@ -1603,10 +1661,24 @@ fn observe_github(root: &Path) -> (RawGithub, InstrumentRecord) {
             // GraphQL. A failure here leaves both facts unobserved, which
             // classifies as not-proven; it never becomes "no threads".
             match gh_review_facts(root, raw.number, owner, name) {
+                // The head must agree with the one `gh pr list` reported. A
+                // push between the two observations makes the listed head
+                // stale, and comparing reviews against a stale head would
+                // report a superseded review as current. Disagreement leaves
+                // both facts unobserved rather than wrong.
+                Ok(facts) if !review_facts_bind_to_listed_head(&raw.head_oid, &facts.head_oid) => {
+                    let _ = write!(
+                        detail,
+                        "PR {} head moved between list and review observation; \
+                         review facts left unobserved; ",
+                        raw.number
+                    );
+                }
                 Ok(facts) => {
                     if !facts.reviews.is_empty() {
                         raw.reviews = Some(facts.reviews);
                     }
+                    raw.reviews_truncated = facts.reviews_truncated;
                     raw.review_threads = Some(facts.threads);
                 }
                 Err(failure) => {
@@ -2278,8 +2350,10 @@ fn finish(
 /// is `None` — deliberately not `Some(false)`: "we cannot tell" and "the head
 /// moved after review" are different facts and only the second one should
 /// raise `head_moved_after_review`.
-fn review_on_head(head_oid: &str, reviews: &[ReviewFacts]) -> Option<bool> {
-    if head_oid.is_empty() || reviews.is_empty() {
+fn review_on_head(head_oid: &str, reviews: &[ReviewFacts], page_truncated: bool) -> Option<bool> {
+    // An incomplete review page cannot prove currency: the review that was
+    // left off the page is exactly the one that might be stale.
+    if page_truncated || head_oid.is_empty() || reviews.is_empty() {
         return None;
     }
     let mut every_review_current = true;
@@ -2319,7 +2393,7 @@ fn candidate_view(pr: &PrFacts) -> CandidateView {
         checks_cancelled: pr.checks.cancelled > 0,
         merged_in_local_head: pr.merge_commit_in_local_head,
         head_oid: pr.head_oid.clone(),
-        review_on_head: review_on_head(&pr.head_oid, &pr.latest_reviews),
+        review_on_head: review_on_head(&pr.head_oid, &pr.latest_reviews, pr.review_page_truncated),
         threads_resolved: threads_resolved(&pr.review_threads),
         core_receipt_pass: None,
         edit_profile_pass: None,
@@ -2393,6 +2467,7 @@ pub fn normalize(raw: &RawObservation, loaded: &LoadedManifest) -> Result<LiveSn
                     truncated: threads.truncated,
                 })
                 .unwrap_or_default(),
+            review_page_truncated: raw_pr.reviews_truncated,
             checks: checks_facts(raw_pr),
             merge_commit_oid: raw_pr.merge_commit_oid.clone(),
             merge_commit_in_local_head: raw_pr.merge_commit_in_local_head,
@@ -3140,7 +3215,11 @@ pub fn render_explain(
             let _ = writeln!(
                 out,
                 "  review_on_head: {}",
-                match review_on_head(&candidate.head_oid, &candidate.latest_reviews) {
+                match review_on_head(
+                    &candidate.head_oid,
+                    &candidate.latest_reviews,
+                    candidate.review_page_truncated,
+                ) {
                     Some(true) => "yes".to_string(),
                     Some(false) => "no (head moved after review)".to_string(),
                     None => "not observable".to_string(),
@@ -3194,8 +3273,32 @@ pub fn render_explain(
     if node.limitations.is_empty() {
         out.push_str("  limitation: none recorded\n");
     }
+    // Derived from the node's own candidates: review currency and thread
+    // resolution are observable (#14237), so naming them unconditionally
+    // would contradict the per-candidate lines printed above. Behavior
+    // receipts have no producer yet (#11619) and stay unconditional.
     out.push_str("facts unavailable and their consequence:\n");
-    out.push_str("  review-head currency, review threads, behavior receipts: not observable in this slice -> merge-ready recommendations stay NOT_PROVEN, never guessed\n");
+    let mut unavailable: Vec<&str> = Vec::new();
+    if node.candidates.iter().any(|candidate| {
+        review_on_head(
+            &candidate.head_oid,
+            &candidate.latest_reviews,
+            candidate.review_page_truncated,
+        )
+        .is_none()
+    }) {
+        unavailable.push("review-head currency");
+    }
+    if node.candidates.iter().any(|candidate| threads_resolved(&candidate.review_threads).is_none())
+    {
+        unavailable.push("review threads");
+    }
+    unavailable.push("behavior receipts");
+    let _ = writeln!(
+        out,
+        "  {}: not observable -> merge-ready recommendations stay NOT_PROVEN, never guessed",
+        unavailable.join(", ")
+    );
     let _ = writeln!(
         out,
         "next bounded action: {} — {}",

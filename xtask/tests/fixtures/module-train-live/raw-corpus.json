@@ -84,7 +84,14 @@
         "merged_at": null,
         "updated_at": "2026-08-24T08:00:00Z",
         "review_decision": "",
-        "reviews": [],
+        "reviews": [
+          {
+            "author_login": "reviewer-z",
+            "state": "APPROVED",
+            "submitted_at": "2026-08-24T08:10:00Z",
+            "commit_oid": "dddddddddddddddddddddddddddddddddddddddd"
+          }
+        ],
         "checks": [
           {
             "name": "Perl LSP Rust Small Result",
@@ -99,7 +106,12 @@
         ],
         "merge_commit_oid": null,
         "merge_commit_in_local_head": null,
-        "body": "Implementation of validated requests.\n\nModule train: #11625\nModule node: #8497\nParent/controller: #4240\n\nCloses #8497."
+        "body": "Implementation of validated requests.\n\nModule train: #11625\nModule node: #8497\nParent/controller: #4240\n\nCloses #8497.",
+        "review_threads": {
+          "total": 1,
+          "unresolved": 0,
+          "truncated": false
+        }
       },
       {
         "number": 2002,

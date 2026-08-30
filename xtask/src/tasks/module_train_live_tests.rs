@@ -186,6 +186,86 @@ fn graphql_read_only_law_is_carried_by_the_document() {
     ));
     // A non-graphql api path stays rejected.
     assert!(!args_read_only("gh", &["api", "repos/x/y/pulls"]));
+
+    // `gh` lifts `query` and `operationName` out of the variable map into the
+    // top level of the request body, so they are not variables at all and must
+    // not pass the inert-variable shape check.
+    for reserved in ["query=Something", "operationName=Something"] {
+        assert!(
+            !args_read_only("gh", &["api", "graphql", "-f", "query=query A { b }", "-F", reserved]),
+            "reserved top-level field {reserved:?} must not pass as an inert variable"
+        );
+    }
+}
+
+/// `explain` must not print a fact as observed and then summarize it as
+/// unavailable in the same report.
+#[test]
+fn explain_unavailable_summary_matches_the_observed_facts() -> Result<()> {
+    let snapshot = normalize_text(CORPUS_FIXTURE)?;
+    let manifest = loaded()?;
+
+    // E00A's sole candidate is PR 2002: its review sits on a superseded
+    // commit (currency IS observed — the answer is "no") while its thread page
+    // is truncated (resolution is genuinely unprovable). The summary must
+    // separate the two rather than lumping both under "unavailable".
+    let mixed = render_explain(&snapshot, &manifest, "E00A")?;
+    assert!(mixed.contains("review_on_head: no (head moved after review)"), "{mixed}");
+    assert!(mixed.contains("truncated=true"), "{mixed}");
+    assert!(
+        !mixed.contains("review-head currency"),
+        "currency is observed here and must not be summarized as unavailable: {mixed}"
+    );
+    assert!(
+        mixed.contains("review threads"),
+        "a truncated thread page is genuinely unavailable and must be named: {mixed}"
+    );
+    // Behavior receipts have no producer (#11619) and stay unconditional.
+    assert!(mixed.contains("behavior receipts"), "{mixed}");
+
+    // E00C holds two candidates: 2004 is fully observed, 2003 has no review
+    // instrument at all. The node-level summary takes the weaker candidate, so
+    // both facts are named — conservative, and not a contradiction with 2004's
+    // own observed lines above it.
+    let mixed_candidates = render_explain(&snapshot, &manifest, "E00C")?;
+    assert!(mixed_candidates.contains("review_on_head: yes"), "{mixed_candidates}");
+    assert!(mixed_candidates.contains("review-head currency"), "{mixed_candidates}");
+    assert!(mixed_candidates.contains("review threads"), "{mixed_candidates}");
+    Ok(())
+}
+
+/// Review facts are fetched after the PR list, so the head they describe must
+/// be the head the list reported or they bind to nothing.
+#[test]
+fn review_facts_do_not_bind_across_a_moved_head() {
+    let listed = "a".repeat(40);
+    let moved = "b".repeat(40);
+
+    assert!(review_facts_bind_to_listed_head(&listed, &listed));
+    // A push landed between the list read and the review read.
+    assert!(!review_facts_bind_to_listed_head(&listed, &moved));
+    // An unusable oid on either side binds nothing.
+    assert!(!review_facts_bind_to_listed_head("", &listed));
+    assert!(!review_facts_bind_to_listed_head(&listed, ""));
+    assert!(!review_facts_bind_to_listed_head("", ""));
+}
+
+/// A review page that did not cover every review cannot prove currency: the
+/// omitted review is exactly the one that might be stale.
+#[test]
+fn truncated_review_page_cannot_prove_currency() {
+    let head = "a".repeat(40);
+    // Every *observed* review is on the head, but the page was incomplete.
+    assert_eq!(
+        review_on_head(&head, &[review_at(Some(&head)), review_at(Some(&head))], true),
+        None,
+        "an incomplete review page must never report currency"
+    );
+    // The same observation with a complete page does prove it.
+    assert_eq!(
+        review_on_head(&head, &[review_at(Some(&head)), review_at(Some(&head))], false),
+        Some(true)
+    );
 }
 
 #[test]
@@ -510,20 +590,23 @@ fn review_head_currency_is_bound_to_the_observed_commit() {
     let head = "a".repeat(40);
     let stale = "b".repeat(40);
 
-    assert_eq!(review_on_head(&head, &[review_at(Some(&head))]), Some(true));
+    assert_eq!(review_on_head(&head, &[review_at(Some(&head))], false), Some(true));
     // The head moved after the review was submitted: definitively not current.
-    assert_eq!(review_on_head(&head, &[review_at(Some(&stale))]), Some(false));
+    assert_eq!(review_on_head(&head, &[review_at(Some(&stale))], false), Some(false));
     // One stale review among current ones still blocks currency.
     assert_eq!(
-        review_on_head(&head, &[review_at(Some(&head)), review_at(Some(&stale))]),
+        review_on_head(&head, &[review_at(Some(&head)), review_at(Some(&stale))], false),
         Some(false)
     );
     // Unbindable inputs stay unprovable — never Some(true), and never
     // Some(false) either: "cannot tell" must not raise head_moved_after_review.
-    assert_eq!(review_on_head(&head, &[review_at(None)]), None);
-    assert_eq!(review_on_head(&head, &[review_at(Some(""))]), None);
-    assert_eq!(review_on_head("", &[review_at(Some(&head))]), None);
-    assert_eq!(review_on_head(&head, &[]), None);
+    assert_eq!(review_on_head(&head, &[review_at(None)], false), None);
+    assert_eq!(review_on_head(&head, &[review_at(Some(""))], false), None);
+    assert_eq!(review_on_head("", &[review_at(Some(&head))], false), None);
+    assert_eq!(review_on_head(&head, &[], false), None);
+    // An incomplete review page cannot prove currency: the omitted review is
+    // exactly the one that might be stale.
+    assert_eq!(review_on_head(&head, &[review_at(Some(&head))], true), None);
 }
 
 /// An unobserved or truncated thread page can never read as resolved.
@@ -620,13 +703,23 @@ fn corpus_carries_observed_review_facts_through_normalization() -> Result<()> {
     assert_eq!(approved.latest_reviews[0].commit_oid.as_deref(), Some(approved.head_oid.as_str()));
     assert!(approved.review_threads.observed);
     assert!(!approved.review_threads.truncated);
-    assert_eq!(review_on_head(&approved.head_oid, &approved.latest_reviews), Some(true));
+    assert_eq!(
+        review_on_head(
+            &approved.head_oid,
+            &approved.latest_reviews,
+            approved.review_page_truncated
+        ),
+        Some(true)
+    );
     assert_eq!(threads_resolved(&approved.review_threads), Some(true));
 
     // 2002: review left on a superseded commit, thread page truncated.
     let stale = pr(2002);
     assert_ne!(stale.latest_reviews[0].commit_oid.as_deref(), Some(stale.head_oid.as_str()));
-    assert_eq!(review_on_head(&stale.head_oid, &stale.latest_reviews), Some(false));
+    assert_eq!(
+        review_on_head(&stale.head_oid, &stale.latest_reviews, stale.review_page_truncated),
+        Some(false)
+    );
     assert!(stale.review_threads.truncated);
     assert_eq!(
         threads_resolved(&stale.review_threads),
@@ -634,11 +727,37 @@ fn corpus_carries_observed_review_facts_through_normalization() -> Result<()> {
         "a truncated thread page must never resolve"
     );
 
-    // A candidate with no thread instrument keeps both facts unobserved.
-    let unobserved = pr(2001);
+    // The REVIEW route through the whole pipeline: M01's candidate #2001 has
+    // an opinionated review bound to its head and every thread resolved, so
+    // classification must report currency rather than claim it unobservable.
+    let m01 = node(&snapshot, "M01")?;
+    assert_eq!(m01.action, "REVIEW");
+    assert!(
+        m01.action_reasons.iter().any(|reason| reason == "review_on_current_head"),
+        "observed currency must reach the classifier: {:?}",
+        m01.action_reasons
+    );
+    assert!(
+        !m01.limitations
+            .iter()
+            .any(|limitation| limitation == "review_head_currency_not_observable"
+                || limitation == "review_threads_not_observable"),
+        "observed facts must not be reported as blockers: {:?}",
+        m01.limitations
+    );
+
+    // A candidate with no review instrument at all keeps both facts unobserved.
+    let unobserved = pr(2003);
     assert!(!unobserved.review_threads.observed);
     assert_eq!(threads_resolved(&unobserved.review_threads), None);
-    assert_eq!(review_on_head(&unobserved.head_oid, &unobserved.latest_reviews), None);
+    assert_eq!(
+        review_on_head(
+            &unobserved.head_oid,
+            &unobserved.latest_reviews,
+            unobserved.review_page_truncated
+        ),
+        None
+    );
     Ok(())
 }
 
@@ -672,7 +791,7 @@ fn corpus_classifies_every_expected_action() -> Result<()> {
         ("CTRL", "STOP", "controller_selected_as_implementation"),
         ("E00A", "REPAIR", "review_changes_requested"),
         ("E00C", "RECONCILE", "multiple_bound_candidates_need_bounded_ownership_decision"),
-        ("M01", "REVIEW", "review_pending"),
+        ("M01", "REVIEW", "review_on_current_head"),
         ("M07A", "RECONCILE", "unique_work_surface:local_branch:wip/10573-context-contract"),
         ("M07B", "RECONCILE", "closed_candidate_unique_work_needs_salvage_decision"),
         ("M07C", "RECONCILE", "binding_agreement_failed_needs_bounded_ownership_decision"),
@@ -959,6 +1078,26 @@ fn gh_queries_are_bound_to_the_checkout_repository() {
         let borrowed: Vec<&str> = args.iter().map(String::as_str).collect();
         assert!(args_read_only("gh", &borrowed), "repo-bound gh shapes stay read-only: {args:?}");
     }
+
+    // The GraphQL read carries the same origin-derived selector, split into
+    // the document's typed owner/name variables rather than a --repo flag. It
+    // must be just as repo-bound: an unqualified query would observe whatever
+    // repository the ambient environment names.
+    let graphql = gh_graphql_review_args(3001, "EffortlessMetrics", "perl-lsp-swarm");
+    assert!(
+        graphql.iter().any(|arg| arg == "owner=EffortlessMetrics"),
+        "graphql query must carry the origin-derived owner: {graphql:?}"
+    );
+    assert!(
+        graphql.iter().any(|arg| arg == "name=perl-lsp-swarm"),
+        "graphql query must carry the origin-derived name: {graphql:?}"
+    );
+    assert!(
+        graphql.iter().any(|arg| arg == "pr=3001"),
+        "graphql query must carry the exact PR number: {graphql:?}"
+    );
+    let borrowed: Vec<&str> = graphql.iter().map(String::as_str).collect();
+    assert!(args_read_only("gh", &borrowed), "the graphql shape stays read-only: {graphql:?}");
 }
 
 #[test]
