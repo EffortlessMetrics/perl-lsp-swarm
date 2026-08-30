@@ -86,6 +86,9 @@ relying on it:
 cargo install perllsp --locked
 ```
 
+The crates.io package `perl-lsp` is a different project; the package for this
+toolchain is `perllsp`.
+
 **macOS and Linux** — use a manual archive from
 [GitHub Releases](https://github.com/EffortlessMetrics/perl-lsp/releases) until
 the release closeout publishes an immutable installer ref and the reviewed
@@ -122,10 +125,13 @@ ARM64 under x64 emulation. It selects the current
 `perllsp-<version>-x86_64-pc-windows-msvc.zip` release asset, installs
 `perllsp.exe`, and verifies the asset against the release `SHA256SUMS` file,
 aborting on a checksum mismatch; if the checksum file cannot be downloaded it
-prints a warning and continues without verification. Run it from PowerShell:
+prints a warning and continues without verification. Download it, inspect it,
+then run it from PowerShell:
 
 ```powershell
-irm https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/install.ps1 | iex
+irm https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/install.ps1 -OutFile install.ps1
+# Review install.ps1, then:
+powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
 Windows 10 ARM64 and unsupported architectures must build from source. On
