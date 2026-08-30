@@ -217,6 +217,17 @@ fn mapped_statement_spans_are_safe_for_range_consumers() -> TestResult {
         .map(|statement| &source2[statement.location.start..statement.location.end])
         .collect();
 
-    assert_eq!(statement_text, vec!["my $x = 1;", "my $y = 2;"]);
+    let fresh = parse_fresh(source2)?;
+    let fresh_statements = match &fresh.kind {
+        NodeKind::Program { statements } => statements,
+        other => return Err(format!("expected Program, got {}", other.kind_name()).into()),
+    };
+    let fresh_statement_text: Vec<&str> = fresh_statements
+        .iter()
+        .map(|statement| &source2[statement.location.start..statement.location.end])
+        .collect();
+
+    assert_eq!(statement_text, fresh_statement_text);
+    assert_eq!(statement_text, vec!["my $x = 1", "my $y = 2"]);
     Ok(())
 }
