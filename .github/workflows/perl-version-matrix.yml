@@ -127,7 +127,9 @@ jobs:
             );
 
             # Perl 5.40 introduced binary logical XOR. Verify the full truth
-            # table so token acceptance alone cannot satisfy this probe.
+            # table so token acceptance alone cannot satisfy this probe, and
+            # include a non-Boolean case so the 0/1 inputs that bitwise xor
+            # also satisfies cannot mask a `^^`-as-`^` confusion.
             check_gate(
               q{logical xor},
               5.040,
@@ -137,6 +139,7 @@ jobs:
                   [0, 1, 1],
                   [1, 0, 1],
                   [1, 1, 0],
+                  [1, 2, 0],
                 );
                 for my $case (@cases) {
                   my ($left, $right, $expected) = @$case;
@@ -148,7 +151,9 @@ jobs:
             );
 
             # Perl 5.42 completed the operator family with assigning logical
-            # XOR. Verify mutation and result rather than parse success alone.
+            # XOR. Verify mutation and result rather than parse success alone;
+            # the non-Boolean case distinguishes logical semantics from a
+            # bitwise `^=` confusion, which would leave $value == 3.
             check_gate(
               q{assigning logical xor},
               5.042,
@@ -158,6 +163,7 @@ jobs:
                   [0, 1, 1],
                   [1, 0, 1],
                   [1, 1, 0],
+                  [1, 2, 0],
                 );
                 for my $case (@cases) {
                   my ($value, $right, $expected) = @$case;
