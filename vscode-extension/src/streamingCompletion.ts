@@ -19,49 +19,6 @@ interface StreamReplacementRange {
   end: { line: number; character: number };
 }
 
-/** LSP `RequestCancelled`, and the server-initiated `ServerCancelled`. */
-const LSP_REQUEST_CANCELLED = -32800;
-const LSP_SERVER_CANCELLED = -32802;
-
-/**
- * Whether a rejected request was cancelled rather than genuinely failing.
- *
- * Ordered by authority, because misclassifying a real failure as a
- * cancellation is not symmetric: cancellation settles quietly, so a backend
- * error mistaken for one leaves its partial ghost text on screen — exactly the
- * outcome this module exists to prevent.
- *
- * 1. The token we handed to `sendRequest`. If it is cancelled, we cancelled
- *    this request, whatever the transport chose to call the rejection.
- * 2. A structured JSON-RPC cancellation code, for a server-initiated cancel
- *    that our token knows nothing about.
- * 3. Message text, only as a last resort for errors carrying no structured
- *    signal at all. The spellings differ by source: `vscode-jsonrpc` reports
- *    "cancelled", VS Code's own `CancellationError` carries "Canceled", and
- *    LSP servers commonly send "canceled" — so this matches a whole word
- *    rather than any substring, which would swallow a genuine failure whose
- *    message merely mentions cancelling something else.
- */
-function isCancellationError(err: unknown, token?: vscode.CancellationToken): boolean {
-  if (token?.isCancellationRequested === true) {
-    return true;
-  }
-  if (typeof err !== 'object' || err === null) {
-    return false;
-  }
-  const code = (err as { code?: unknown }).code;
-  if (code === LSP_REQUEST_CANCELLED || code === LSP_SERVER_CANCELLED) {
-    return true;
-  }
-  if (!(err instanceof Error)) {
-    return false;
-  }
-  if (err.name === 'Canceled' || err.name === 'CancellationError' || err.name === 'AbortError') {
-    return true;
-  }
-  return /\bcancell?ed\b/i.test(err.message);
-}
-
 /** Payload sent by the server via $/progress for streaming inline completions. */
 interface StreamProgressValue {
   kind: string;
@@ -582,7 +539,10 @@ export class StreamingCompletionController implements vscode.Disposable, InlineS
           void vscode.commands.executeCommand('editor.action.inlineSuggest.trigger');
         }
       },
-      (err: unknown) => {
+      // The rejection reason is deliberately unread: every rejection that gets
+      // past the identity guard below is handled the same way, so branching on
+      // it is what produced the misclassification this arm used to suffer from.
+      (_err: unknown) => {
         // A cancelled or superseded generation has already been cleaned up by
         // `cancelActiveStream`, which also discarded its candidate. Reference
         // identity is load-bearing here: two successive requests can carry
@@ -592,16 +552,22 @@ export class StreamingCompletionController implements vscode.Disposable, InlineS
         if (this.activeRequestIdentity !== requestIdentity) {
           return;
         }
-        // Classify before touching state. Cancellation is expected and quiet,
-        // and whoever cancelled owns the cleanup — `cancelActiveStream` has
-        // already discarded the candidate.
-        if (isCancellationError(err, requestToken)) {
-          this.settleActiveStream(requestIdentity);
-          return;
-        }
-        // A backend failure after partial cumulative text must not leave that
-        // text on screen looking like a completed suggestion. Beyond dismissing
-        // it, non-cancellation errors stay quiet; the next invocation retries.
+        // Every rejection that reaches this point revokes, cancellations
+        // included, because reaching this point *means* nothing cleaned up.
+        //
+        // Local cancellation — cursor movement, a document edit, or the
+        // editor's own token — runs through `cancelActiveStream`, which nulls
+        // `activeRequestIdentity` and discards the candidate before it cancels
+        // the token. Such a request therefore returns at the identity guard
+        // above and never arrives here. What does arrive is a rejection while
+        // this generation is still active: a backend failure, or a
+        // server-initiated cancellation (LSP `ServerCancelled`) that no local
+        // cleanup has seen. Both leave a cached partial candidate that is still
+        // servable, and leaving it is exactly the stale-ghost-text outcome this
+        // module exists to prevent.
+        //
+        // Revoking dismisses rather than re-queries, so this costs no backend
+        // generation and an explicit retry is never swallowed.
         this.revokeCandidateFor(requestIdentity);
         this.settleActiveStream(requestIdentity);
       },

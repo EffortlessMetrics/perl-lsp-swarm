@@ -893,9 +893,10 @@ describe('StreamingCompletionController — request identity and cache correctne
     );
   });
 
-  test('a structured JSON-RPC cancellation code settles quietly whatever its message', async () => {
-    // A server-initiated cancel our own token knows nothing about, carrying no
-    // recognisable prose. The structured code is the authority.
+  test('a server-initiated cancellation revokes, because no local cleanup ran', async () => {
+    // LSP `ServerCancelled`. The server dropped the request on its own, so
+    // `cancelActiveStream` never ran and the cached partial is still servable.
+    // Settling quietly here would strand it on screen.
     (mockClient.sendRequest as jest.Mock).mockReturnValue(
       Promise.reject(Object.assign(new Error('request superseded'), { code: -32802 })),
     );
@@ -909,12 +910,53 @@ describe('StreamingCompletionController — request identity and cache correctne
     await Promise.resolve();
     await Promise.resolve();
 
+    expect(
+      provider.provideInlineCompletionItems(
+        doc,
+        pos,
+        {} as vscode.InlineCompletionContext,
+        {} as vscode.CancellationToken,
+      ),
+    ).toBeUndefined();
+    expect(vscode.commands.executeCommand as jest.Mock).toHaveBeenCalledWith(
+      'editor.action.inlineSuggest.hide',
+    );
+  });
+
+  test('a locally cancelled request never reaches the reject arm at all', async () => {
+    // The load-bearing half of the argument for revoking unconditionally above:
+    // cursor movement runs `cancelActiveStream`, which discards the candidate
+    // and nulls the active identity, so the late rejection returns at the
+    // identity guard and cannot dismiss whatever is on screen by then.
+    let rejectRequest: (reason: unknown) => void = () => {};
+    (mockClient.sendRequest as jest.Mock).mockReturnValue(
+      new Promise((_resolve, reject) => {
+        rejectRequest = reject;
+      }),
+    );
+
+    const provider = getStreamAdapter();
+    const doc = makeMockDoc('file:///a.pl', 1);
+    const pos = makeMockPos(5, 10);
+    showGhostText(provider, doc, pos);
+
+    // Cursor movement cancels the stream and discards its candidate.
+    const cursorCb = (vscode.window.onDidChangeTextEditorSelection as jest.Mock).mock
+      .calls[0][0] as () => void;
+    cursorCb();
+    (vscode.commands.executeCommand as jest.Mock).mockClear();
+
+    rejectRequest(Object.assign(new Error('request cancelled'), { code: -32800 }));
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
     expect(vscode.commands.executeCommand as jest.Mock).not.toHaveBeenCalledWith(
       'editor.action.inlineSuggest.hide',
     );
   });
 
-  test('a cancelled request settles quietly and stays retryable', async () => {
+  test('a rejected request stays retryable whatever the rejection is called', async () => {
     (mockClient.sendRequest as jest.Mock).mockReturnValue(Promise.reject(new Error('Canceled')));
 
     const provider = getStreamAdapter();
@@ -931,8 +973,9 @@ describe('StreamingCompletionController — request identity and cache correctne
     await Promise.resolve();
     await Promise.resolve();
 
-    // Cancellation is owned by whoever cancelled; this arm must not also
-    // dismiss or clear state. VS Code spells it "Canceled", not "cancelled".
+    // Revoking dismisses rather than re-queries, so a rejected generation --
+    // however it is spelled, and VS Code spells it "Canceled" -- never
+    // swallows the next explicit invocation.
     provider.provideInlineCompletionItems(
       doc,
       pos,
