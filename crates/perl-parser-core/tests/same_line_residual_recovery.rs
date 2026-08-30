@@ -85,6 +85,27 @@ fn assert_same_line_residual_at(source: &str, token: &str) -> Result<(), String>
     Ok(())
 }
 
+fn assert_no_same_line_residual(source: &str) -> Result<(), String> {
+    let output = Parser::new(source).parse_with_recovery();
+    if output.diagnostics.iter().any(|error| {
+        matches!(
+            error,
+            ParseError::Recovered {
+                site: RecoverySite::Statement,
+                kind: RecoveryKind::UnexpectedSameLineResidue,
+                ..
+            }
+        )
+    }) {
+        return Err(format!(
+            "guarded parser boundary must not be mislabeled as same-line residue:\nsource={source:?}\nast={}\ndiagnostics={:?}",
+            output.ast.to_sexp(),
+            output.diagnostics
+        ));
+    }
+    Ok(())
+}
+
 #[test]
 fn invalid_same_line_residue_is_not_clean() -> Result<(), String> {
     for (source, token) in [
@@ -160,6 +181,41 @@ fn cross_line_or_goto_stays_one_control_flow_expression() -> Result<(), String> 
 }
 
 #[test]
+fn same_line_word_operator_goto_variants_keep_their_control_flow_rhs() -> Result<(), String> {
+    for (operator, target) in [
+        ("or", "fail_or"),
+        ("and", "fail_and"),
+        ("xor", "fail_xor"),
+        ("or", "&fail_sub"),
+        ("or", "$dynamic_target"),
+    ] {
+        let source = format!(
+            "copy($from, $to) {operator} goto {target}; print \"ok\";"
+        );
+        let output = Parser::new(&source).parse_with_recovery();
+        let statements = match &output.ast.kind {
+            NodeKind::Program { statements } => statements,
+            kind => return Err(format!("expected a program, got {}", kind.kind_name())),
+        };
+
+        if output.diagnostics.iter().any(ParseError::blocks_clean_parse) {
+            return Err(format!(
+                "valid same-line {operator} goto {target} became blocking: {:?}\nast={}",
+                output.diagnostics,
+                output.ast.to_sexp()
+            ));
+        }
+        if statements.len() != 2 || !contains_word_operator_with_goto(&statements[0], operator) {
+            return Err(format!(
+                "same-line {operator} goto {target} must keep its Goto RHS and later print statement:\n{}",
+                output.ast.to_sexp()
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn valid_low_precedence_and_directive_continuations_do_not_gain_residual_errors()
 -> Result<(), String> {
     for source in [
@@ -169,6 +225,18 @@ fn valid_low_precedence_and_directive_continuations_do_not_gain_residual_errors(
         "$ok = do_work() if $enabled;",
     ] {
         assert_clean_parse(source);
+    }
+    Ok(())
+}
+
+#[test]
+fn malformed_guard_boundaries_are_not_claimed_as_same_line_residue() -> Result<(), String> {
+    for source in [
+        "use strict qw(",
+        "no warnings qw(",
+        "my $x = <<'END';\nunterminated\n",
+    ] {
+        assert_no_same_line_residual(source)?;
     }
     Ok(())
 }
