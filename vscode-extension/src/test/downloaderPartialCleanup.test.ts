@@ -5,6 +5,7 @@ import * as path from 'path';
 import type * as vscode from 'vscode';
 import { afterEach, beforeEach, describe, expect, jest, test } from '@jest/globals';
 import { BinaryDownloader } from '../downloader';
+import { downloadBoundedFile } from '../boundedFileDownload';
 
 type TestRequest = EventEmitter & {
   destroy: jest.Mock;
@@ -45,7 +46,77 @@ describe('BinaryDownloader partial-file cleanup ordering', () => {
     jest.restoreAllMocks();
   });
 
-  test('rejects only after the partial destination is absent', async () => {
+  function makeResponse(
+    statusCode: number,
+    headers: Record<string, string> = {},
+  ): EventEmitter & {
+    statusCode: number;
+    headers: Record<string, string>;
+    destroy: jest.Mock;
+    resume: jest.Mock;
+  } {
+    const response = new EventEmitter() as EventEmitter & {
+      statusCode: number;
+      headers: Record<string, string>;
+      destroy: jest.Mock;
+      resume: jest.Mock;
+    };
+    response.statusCode = statusCode;
+    response.headers = headers;
+    response.destroy = jest.fn();
+    response.resume = jest.fn();
+    return response;
+  }
+
+  test.each([
+    ['non-2xx response', 404, {}],
+    ['declared oversize response', 200, { 'content-length': '11' }],
+  ])('preserves an existing destination on %s', async (_name, statusCode, headers) => {
+    const destination = path.join(tmpDir, 'existing.bin');
+    fs.writeFileSync(destination, 'existing');
+    const request = new EventEmitter() as TestRequest;
+    request.destroy = jest.fn();
+
+    await expect(
+      downloadBoundedFile({
+        requestFactory: (listener) => {
+          process.nextTick(() => listener(makeResponse(statusCode, headers) as never));
+          return request as never;
+        },
+        dest: destination,
+        timeoutMs: 1000,
+        maxBytes: 10,
+      }),
+    ).rejects.toThrow();
+
+    expect(fs.readFileSync(destination, 'utf8')).toBe('existing');
+  });
+
+  test('replaces an existing destination after a successful validated download', async () => {
+    const destination = path.join(tmpDir, 'existing-success.bin');
+    fs.writeFileSync(destination, 'existing');
+    const request = new EventEmitter() as TestRequest;
+    request.destroy = jest.fn();
+
+    await downloadBoundedFile({
+      requestFactory: (listener) => {
+        process.nextTick(() => {
+          const response = makeResponse(200, { 'content-length': '11' });
+          listener(response as never);
+          response.emit('data', Buffer.from('replacement'));
+          response.emit('end');
+        });
+        return request as never;
+      },
+      dest: destination,
+      timeoutMs: 1000,
+      maxBytes: 11,
+    });
+
+    expect(fs.readFileSync(destination, 'utf8')).toBe('replacement');
+  });
+
+  test('preserves the existing destination after request failure', async () => {
     // Exactly 255 UTF-8 bytes: valid as a single filesystem component while
     // leaving no room for a destination-derived staging suffix.
     const destination = path.join(tmpDir, `${'é'.repeat(125)}a.bin`);
@@ -168,7 +239,7 @@ describe('BinaryDownloader partial-file cleanup ordering', () => {
     await expect(
       downloader.downloadFile('http://localhost/archive', destination, 1000),
     ).rejects.toBe(requestError);
-    expect(fs.existsSync(destination)).toBe(false);
+    expect(fs.readFileSync(destination, 'utf8')).toBe('partial');
   });
 
   test('settles immediately when a stream double closes synchronously', async () => {
@@ -224,6 +295,6 @@ describe('BinaryDownloader partial-file cleanup ordering', () => {
       downloader.downloadFile('http://localhost/archive', destination, 1000),
     ).rejects.toBe(requestError);
     expect(file.destroy).toHaveBeenCalledTimes(1);
-    expect(fs.existsSync(destination)).toBe(false);
+    expect(fs.readFileSync(destination, 'utf8')).toBe('partial');
   });
 });

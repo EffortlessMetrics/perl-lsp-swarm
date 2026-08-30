@@ -32,7 +32,7 @@ function defaultRemovePartialFile(dest: string): void {
  *
  * Oversized `Content-Length` is rejected before any body is written. Chunked
  * or lying responses are destroyed at the streaming ceiling. Oversize, error,
- * timeout, and cancel paths delete the partial dest.
+ * timeout, and cancel paths delete only the UUID-owned staging file.
  */
 export function downloadBoundedFile(options: BoundedFileDownloadOptions): Promise<void> {
   const {
@@ -71,11 +71,6 @@ export function downloadBoundedFile(options: BoundedFileDownloadOptions): Promis
     // caller-owned destination until the stream has completed successfully,
     // so cleanup can never quarantine a replacement that arrived at dest.
     const stagingDest = path.join(path.dirname(dest), `.partial-download-${crypto.randomUUID()}`);
-
-    // Match the previous createWriteStream truncation behavior for an
-    // existing destination, while leaving any later replacement independent
-    // from this generation's staging path.
-    defaultRemovePartialFile(dest);
 
     const cleanup = (): void => {
       cancellation?.dispose();
@@ -226,6 +221,9 @@ export function downloadBoundedFile(options: BoundedFileDownloadOptions): Promis
           if (!settled) {
             file?.close();
             try {
+              // The response and byte ceiling are validated, and the staging
+              // stream is complete, before replacing the caller-owned file.
+              defaultRemovePartialFile(dest);
               promoteFile(stagingDest, dest);
               succeed();
             } catch (error) {
