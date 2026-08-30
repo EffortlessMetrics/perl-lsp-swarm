@@ -28,13 +28,15 @@ fn contains_goto(node: &Node) -> bool {
     matches!(node.kind, NodeKind::Goto { .. }) || node.children().into_iter().any(contains_goto)
 }
 
-fn contains_word_or_with_goto(node: &Node) -> bool {
+fn contains_word_operator_with_goto(node: &Node, expected_op: &str) -> bool {
     if let NodeKind::Binary { op, left, right } = &node.kind {
-        if op == "or" && (contains_goto(left) || contains_goto(right)) {
+        if op == expected_op && (contains_goto(left) || contains_goto(right)) {
             return true;
         }
     }
-    node.children().into_iter().any(contains_word_or_with_goto)
+    node.children()
+        .into_iter()
+        .any(|child| contains_word_operator_with_goto(child, expected_op))
 }
 
 fn assert_non_clean(source: &str) -> Result<(), String> {
@@ -130,25 +132,29 @@ fn valid_same_line_statement_boundaries_remain_clean() -> Result<(), String> {
 
 #[test]
 fn cross_line_or_goto_stays_one_control_flow_expression() -> Result<(), String> {
-    let source = "copy($from, $to)\n    or goto fail_inner;\nprint \"ok\";\n";
-    let output = Parser::new(source).parse_with_recovery();
-    let statements = match &output.ast.kind {
-        NodeKind::Program { statements } => statements,
-        kind => return Err(format!("expected a program, got {}", kind.kind_name())),
-    };
+    for (operator, target) in [("or", "fail_or"), ("and", "fail_and"), ("xor", "fail_xor")] {
+        let source = format!(
+            "copy($from, $to)\n    {operator} goto {target};\nprint \"ok\";\n"
+        );
+        let output = Parser::new(&source).parse_with_recovery();
+        let statements = match &output.ast.kind {
+            NodeKind::Program { statements } => statements,
+            kind => return Err(format!("expected a program, got {}", kind.kind_name())),
+        };
 
-    if output.diagnostics.iter().any(ParseError::blocks_clean_parse) {
-        return Err(format!(
-            "valid continuation became blocking: {:?}\nast={}",
-            output.diagnostics,
-            output.ast.to_sexp()
-        ));
-    }
-    if statements.len() != 2 || !contains_word_or_with_goto(&statements[0]) {
-        return Err(format!(
-            "or/goto must remain one binary control-flow expression with a later print statement:\n{}",
-            output.ast.to_sexp()
-        ));
+        if output.diagnostics.iter().any(ParseError::blocks_clean_parse) {
+            return Err(format!(
+                "valid {operator} continuation became blocking: {:?}\nast={}",
+                output.diagnostics,
+                output.ast.to_sexp()
+            ));
+        }
+        if statements.len() != 2 || !contains_word_operator_with_goto(&statements[0], operator) {
+            return Err(format!(
+                "{operator}/goto must remain one binary control-flow expression with a later print statement:\n{}",
+                output.ast.to_sexp()
+            ));
+        }
     }
     Ok(())
 }
