@@ -1,4 +1,10 @@
-//! Contract for the Windows reparse proof workflow's cache and proof boundary.
+//! Static topology contract for the Windows reparse proof workflow.
+//!
+//! This proves the declared YAML structure, pinned action identities, trigger and
+//! permission shape, cache inputs/order, and non-vacuous command text. It does
+//! not prove runtime cache restore/save provenance, discovery of arbitrary
+//! shell-local writers, or trusted runner `cargo`/`PATH` resolution; those are
+//! NOT_PROVEN here and require runtime or host evidence.
 
 use std::{collections::BTreeSet, fs, path::PathBuf};
 
@@ -242,9 +248,17 @@ fn validate_workflow(source: &str) -> Result<()> {
         );
         let run = step.get("run").and_then(Value::as_str).unwrap_or_default();
         let expected_command = format!("$output = {command} 2>&1");
+        let statements: Vec<_> =
+            run.lines().map(str::trim).filter(|line| !line.is_empty()).collect();
         ensure!(
-            run.lines().map(str::trim).next() == Some(expected_command.as_str()),
+            statements.first().copied() == Some(expected_command.as_str())
+                && statements.get(1).copied() == Some("$exitCode = $LASTEXITCODE")
+                && statements.get(2).copied() == Some("$output | ForEach-Object { $_ }"),
             "proof command must be the first top-level PowerShell statement: {name}"
+        );
+        ensure!(
+            run.contains("if ($exitCode -ne 0) { exit $exitCode }"),
+            "proof command must fail before validating captured output: {name}"
         );
         ensure!(
             run.matches("$output =").count() == 1
@@ -308,6 +322,11 @@ fn validate_workflow(source: &str) -> Result<()> {
     );
     let topology_raw = topology.get("run").and_then(Value::as_str).unwrap_or_default();
     let topology_run = normalized(topology_raw);
+    ensure!(
+        topology_raw.lines().map(str::trim).find(|line| !line.is_empty())
+            == Some("set -euo pipefail"),
+        "topology proof must begin with its fail-closed shell mode"
+    );
     ensure!(
         !topology_raw.contains("continue")
             && !topology_raw.contains("break")
@@ -405,12 +424,12 @@ fn validate_workflow(source: &str) -> Result<()> {
 }
 
 #[test]
-fn corpus_windows_reparse_workflow_matches_production_contract() -> Result<()> {
+fn static_workflow_topology_matches_production_contract() -> Result<()> {
     validate_workflow(&actual_workflow()?)
 }
 
 #[test]
-fn contract_rejects_realistic_cache_and_permission_mutations() -> Result<()> {
+fn static_contract_rejects_structural_cache_and_permission_mutations() -> Result<()> {
     let source = actual_workflow()?;
     for (from, to) in [
         (CACHE_ACTION, "Swatinem/rust-cache@v2"),
@@ -450,7 +469,7 @@ fn contract_rejects_realistic_cache_and_permission_mutations() -> Result<()> {
 }
 
 #[test]
-fn contract_rejects_decoy_commands_and_trigger_mutations() -> Result<()> {
+fn static_contract_rejects_structural_proof_and_trigger_mutations() -> Result<()> {
     let source = actual_workflow()?;
     for (from, to) in [
         (CORPUS_PROOF_ANCHOR, "        run: echo cargo test --locked -p perl-corpus"),
