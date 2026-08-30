@@ -1847,7 +1847,7 @@ impl LspServer {
     /// Critic portion of report identity -- consumes this same value, so a
     /// transport cannot evaluate under one policy while composing identity from
     /// another.
-    fn capture_accepted_critic(&self, subject: &str) -> AcceptedCriticSnapshot {
+    pub(crate) fn capture_accepted_critic(&self, subject: &str) -> AcceptedCriticSnapshot {
         let root_key = self
             .folder_for_doc_uri(subject)
             .and_then(|folder| folder.path.or_else(|| source_path_from_uri(&folder.uri)))

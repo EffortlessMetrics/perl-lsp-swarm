@@ -570,13 +570,13 @@ mod tests {
     use perl_parser_core::position::{Position, Range};
 
     use super::{
-        NativeCriticPolicy, critic_source_identity_for_uri, native_finding_candidates,
-        normalize_with_native_policy,
+        NativeCriticPolicy, critic_policy_retention, critic_source_identity_for_uri,
+        native_finding_candidates, normalize_with_native_policy,
     };
     use crate::tooling::perl_critic::{
         CriticFinding, CriticFindingCandidate, CriticFindingOrigin, CriticFindingShape,
-        CriticObservedIdentity, CriticSourceIdentity, CriticSuppressionMap, Severity,
-        normalize_critic_findings,
+        CriticObservedIdentity, CriticPolicyRetention, CriticSourceIdentity, CriticSuppressionMap,
+        Severity, normalize_critic_findings,
     };
 
     const GENERATION: u64 = 7;
@@ -1331,6 +1331,49 @@ mod tests {
             .is_empty(),
             "excluding one spelling must remove the whole alias set"
         );
+    }
+
+    #[test]
+    fn core_code_exclude_selects_remove_row_with_a_critic_only_control() -> Result<(), String> {
+        let include = Vec::new();
+        let suppressions = CriticSuppressionMap::from_source("");
+
+        let overlap = merged_rows_for_one_system_call();
+        let overlap_row = overlap.first().ok_or_else(|| {
+            "the reviewed core/native overlap fixture must normalize to one row".to_string()
+        })?;
+        let exclude_core = vec!["PL603".to_string()];
+        let overlap_policy = NativeCriticPolicy::new(1, &include, &exclude_core, &suppressions);
+        if critic_policy_retention(overlap_row, &overlap_policy) != CriticPolicyRetention::RemoveRow
+        {
+            return Err(
+                "excluding the independently owned core code must explicitly revoke the whole row"
+                    .to_string(),
+            );
+        }
+
+        let critic_only = normalize_critic_findings(qx_native_candidates());
+        let critic_only_row = critic_only
+            .first()
+            .ok_or_else(|| "the critic-only control must normalize to one row".to_string())?;
+        let exclude_compat = vec!["PL601".to_string()];
+        let critic_only_policy =
+            NativeCriticPolicy::new(1, &include, &exclude_compat, &suppressions);
+        if critic_policy_retention(critic_only_row, &critic_only_policy)
+            != CriticPolicyRetention::StripCritic
+        {
+            return Err(
+                "without a core contributor, an alias exclusion strips Critic rather than claiming core revocation"
+                    .to_string(),
+            );
+        }
+        if !normalize_with_native_policy(qx_native_candidates(), &critic_only_policy).is_empty() {
+            return Err(
+                "the critic-only row must still be removed after its sole contribution is stripped"
+                    .to_string(),
+            );
+        }
+        Ok(())
     }
 
     #[test]

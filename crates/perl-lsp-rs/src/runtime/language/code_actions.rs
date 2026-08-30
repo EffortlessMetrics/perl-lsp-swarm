@@ -29,8 +29,9 @@ struct NativeCriticActionSubject {
     document_instance: std::sync::Arc<std::sync::atomic::AtomicU32>,
     rope: ropey::Rope,
     line_starts: perl_position_tracking::LineStartsCache,
-    accepted_state: perl_lsp_rs_core::config::EffectiveCriticState,
-    root_key: Option<String>,
+    /// One sealed policy/root authority, shared by evaluation and final
+    /// publication currentness.
+    accepted_snapshot: perl_lsp_rs_core::config::AcceptedCriticSnapshot,
     /// Producer-declared core overlap observations (#11918) over this exact
     /// generation — the same set push and pull hand the service.
     overlap_observations: Vec<perl_lsp_rs_core::tooling::perl_critic::BuiltInCriticObservation>,
@@ -679,21 +680,13 @@ impl LspServer {
             // identity governs capture and revalidation, so multi-root
             // workspaces carry distinct critic policy and currentness through
             // the action transport exactly like the pull path.
-            let root_key = self
-                .folder_for_doc_uri(uri)
-                .and_then(|folder| {
-                    folder.path.or_else(|| super::super::types::source_path_from_uri(&folder.uri))
-                })
-                .or_else(|| self.root_path.lock().clone())
-                .map(|path| path.to_string_lossy().into_owned());
-
-            // Read the raw engine decision and derive the complete accepted
-            // critic state (#8253) in ONE lock scope, then release the lock
+            // Resolve URI ownership and accepted policy into one sealed
+            // snapshot (#8253/#13304), then release the lock
             // before any rule evaluation (#9062): the native arm runs through
             // the one protocol-neutral service over that immutable subject, so
             // a torn split (stale engine + fresh policy) can never exist and
             // no consumer composes its own registry/policy pipeline.
-            let accepted_state = { self.config.lock().effective_critic_state(root_key.as_deref()) };
+            let accepted_snapshot = self.capture_accepted_critic(uri);
             // The last live-document read the rest of this branch needs, hoisted
             // so the guard can be released before the native critic run.
             let doc_version = doc.version;
@@ -719,8 +712,7 @@ impl LspServer {
                 document_instance: std::sync::Arc::clone(&doc.generation),
                 rope: doc.rope.clone(),
                 line_starts: doc.line_starts.clone(),
-                accepted_state,
-                root_key,
+                accepted_snapshot,
                 overlap_observations:
                     perl_lsp_rs_core::providers::diagnostics::critic_overlap_observations(
                         &diagnostics,
@@ -1097,7 +1089,12 @@ impl LspServer {
         // barriers, so a cancellation arriving while rules run settles the run
         // Cancelled and nothing publishes.
         let not_cancelled = || cancellation.is_none_or(|token| !token.is_cancelled_relaxed());
-        self.native_critic_code_actions_with_gate(uri, subject, RunGate::new(&not_cancelled))
+        self.native_critic_code_actions_with_gates(
+            uri,
+            subject,
+            RunGate::new(&not_cancelled),
+            RunGate::open(),
+        )
     }
 
     /// Native critic action evaluation under a caller-supplied cancellation
@@ -1109,23 +1106,35 @@ impl LspServer {
     /// second proves this consumer preserves the service's two-barrier
     /// semantics, without a production test hook and without racing a real
     /// token through synchronous analysis.
+    #[cfg(test)]
     fn native_critic_code_actions_with_gate(
         &self,
         uri: &str,
         subject: NativeCriticActionSubject,
         cancellation: perl_lsp_rs_core::tooling::perl_critic::RunGate<'_>,
     ) -> Vec<Value> {
+        use perl_lsp_rs_core::tooling::perl_critic::RunGate;
+
+        self.native_critic_code_actions_with_gates(uri, subject, cancellation, RunGate::open())
+    }
+
+    /// Native critic action evaluation with an explicit final publication
+    /// barrier. The extra gate is test-only authority injection: production
+    /// always passes an open gate, then the real sealed snapshot and document
+    /// identities are revalidated immediately before projection.
+    fn native_critic_code_actions_with_gates(
+        &self,
+        uri: &str,
+        subject: NativeCriticActionSubject,
+        cancellation: perl_lsp_rs_core::tooling::perl_critic::RunGate<'_>,
+        before_publication: perl_lsp_rs_core::tooling::perl_critic::RunGate<'_>,
+    ) -> Vec<Value> {
         use perl_lsp_rs_core::tooling::perl_critic::{
             NativeCriticService, NativeCriticSubject, RunGate,
         };
 
-        let expected_fingerprint = subject.accepted_state.fingerprint();
-        let config = std::sync::Arc::clone(&self.config);
-        let root_key = subject.root_key.clone();
-        let config_is_current = move || {
-            config.lock().effective_critic_state(root_key.as_deref()).fingerprint()
-                == expected_fingerprint
-        };
+        let accepted_snapshot = subject.accepted_snapshot.clone();
+        let snapshot_is_current = || self.capture_accepted_critic(uri) == accepted_snapshot;
         let source_identity =
             perl_lsp_rs_core::tooling::perl_critic::critic_source_identity_for_uri(
                 uri,
@@ -1137,16 +1146,26 @@ impl LspServer {
             source_identity,
             &subject.ast,
             &subject.text,
-            subject.accepted_state.clone(),
+            subject.accepted_snapshot.state().clone(),
             subject.overlap_observations.clone(),
             cancellation,
-            RunGate::new(&config_is_current),
+            RunGate::new(&snapshot_is_current),
         ));
 
         // A superseded run offers no actions this round; the next request
         // re-snapshots current state (#9062). A disabled accepted state
         // contributes none by configuration (#8253).
         if !run.is_publishable() {
+            return Vec::new();
+        }
+
+        // Service settlement is not the irreversible boundary. Policy or URI
+        // ownership may move after the service's last currentness consultation
+        // and before the response leaves this handler, so force one final
+        // boundary and then compare the complete sealed snapshot again.
+        if !before_publication.holds()
+            || self.capture_accepted_critic(uri) != subject.accepted_snapshot
+        {
             return Vec::new();
         }
 
@@ -1164,7 +1183,7 @@ impl LspServer {
                     && doc.current_generation() == subject.generation
             })
         };
-        if !still_current {
+        if !still_current || self.capture_accepted_critic(uri) != subject.accepted_snapshot {
             return Vec::new();
         }
 
@@ -1585,7 +1604,7 @@ print $x;
         let parsed = doc.current_parsed().expect("document must be parsed");
         let ast = parsed.ast().expect("document must have an AST");
         let generation = doc.current_generation();
-        let accepted_state = { server.config.lock().effective_critic_state(None) };
+        let accepted_snapshot = server.capture_accepted_critic(uri);
         NativeCriticActionSubject {
             ast: std::sync::Arc::clone(ast),
             text: std::sync::Arc::clone(&doc.text_arc),
@@ -1599,8 +1618,7 @@ print $x;
             },
             rope: doc.rope.clone(),
             line_starts: doc.line_starts.clone(),
-            accepted_state,
-            root_key: None,
+            accepted_snapshot,
             overlap_observations: Vec::new(),
         }
     }
@@ -1627,6 +1645,85 @@ print $x;
             replaced.is_empty(),
             "analysis captured against a replaced document instance must publish no actions,              even though the numeric generation still matches; got: {replaced:?}"
         );
+    }
+
+    /// Policy can move after the service's settlement recheck but before the
+    /// handler serializes its response. The final publication boundary must
+    /// compare the sealed snapshot again, not trust settlement or a compact
+    /// legacy fingerprint.
+    #[test]
+    fn native_actions_are_withheld_when_policy_moves_at_publication_boundary() -> Result<(), String>
+    {
+        use perl_lsp_rs_core::tooling::perl_critic::RunGate;
+
+        let uri = "file:///action_policy_publication.pl";
+        let server = server_with_document(uri);
+        let current =
+            server.native_critic_code_actions(uri, action_subject(&server, uri, false), None);
+        if current.is_empty() {
+            return Err("the current-policy control must produce a native action".to_string());
+        }
+
+        let consultations = std::sync::atomic::AtomicUsize::new(0);
+        let move_policy = || {
+            consultations.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            server.test_configure_native_critic_filters(
+                Vec::new(),
+                vec!["native.testing.require_use_strict".to_string()],
+            );
+            true
+        };
+        let actions = server.native_critic_code_actions_with_gates(
+            uri,
+            action_subject(&server, uri, false),
+            RunGate::open(),
+            RunGate::new(&move_policy),
+        );
+        if consultations.load(std::sync::atomic::Ordering::SeqCst) != 1 {
+            return Err("the final publication barrier must be consulted exactly once".to_string());
+        }
+        if !actions.is_empty() {
+            return Err(format!(
+                "a policy moved after settlement must publish no native actions; got: {actions:?}"
+            ));
+        }
+        Ok(())
+    }
+
+    /// URI ownership is part of the accepted Critic subject. Rebinding the
+    /// document to a different live workspace root after settlement must
+    /// withhold actions even when the document generation and bytes are still
+    /// identical.
+    #[test]
+    fn native_actions_are_withheld_when_workspace_root_rebinds_at_publication_boundary()
+    -> Result<(), String> {
+        use perl_lsp_rs_core::tooling::perl_critic::RunGate;
+
+        let uri = "file:///workspace-a/action_root_rebind.pl";
+        let server = server_with_document(uri);
+        server.test_set_workspace_folder_uris(&["file:///workspace-a/"]);
+        let current =
+            server.native_critic_code_actions(uri, action_subject(&server, uri, false), None);
+        if current.is_empty() {
+            return Err("the current-root control must produce a native action".to_string());
+        }
+
+        let rebind_root = || {
+            server.test_set_workspace_folder_uris(&["file:///workspace-b/"]);
+            true
+        };
+        let actions = server.native_critic_code_actions_with_gates(
+            uri,
+            action_subject(&server, uri, false),
+            RunGate::open(),
+            RunGate::new(&rebind_root),
+        );
+        if !actions.is_empty() {
+            return Err(format!(
+                "a workspace-root rebind after settlement must publish no native actions; got: {actions:?}"
+            ));
+        }
+        Ok(())
     }
 
     /// Boundary 1: a request already cancelled when it arrives must never reach
