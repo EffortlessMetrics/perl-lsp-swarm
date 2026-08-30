@@ -24,31 +24,14 @@ fn package_declares_external_corpus_root_without_shipping_repository_assets() ->
     let contents = fs::read_to_string(&manifest_path)?;
     let manifest = toml::from_str::<Value>(&contents)?;
 
-    let asset_root = table_value(
-        &manifest,
-        &["package", "metadata", "perl-corpus", "asset-root"],
-    )
-    .and_then(Value::as_str);
-    let authority_env = table_value(
-        &manifest,
-        &[
-            "package",
-            "metadata",
-            "perl-corpus",
-            "authoritative-env",
-        ],
-    )
-    .and_then(Value::as_str);
-    let packaged_assets = table_value(
-        &manifest,
-        &[
-            "package",
-            "metadata",
-            "perl-corpus",
-            "packaged-assets",
-        ],
-    )
-    .and_then(Value::as_array);
+    let asset_root = table_value(&manifest, &["package", "metadata", "perl-corpus", "asset-root"])
+        .and_then(Value::as_str);
+    let authority_env =
+        table_value(&manifest, &["package", "metadata", "perl-corpus", "authoritative-env"])
+            .and_then(Value::as_str);
+    let packaged_assets =
+        table_value(&manifest, &["package", "metadata", "perl-corpus", "packaged-assets"])
+            .and_then(Value::as_array);
     let include = table_value(&manifest, &["package", "include"]).and_then(Value::as_array);
 
     if asset_root != Some("external") || authority_env != Some("PERL_CORPUS_ROOT") {

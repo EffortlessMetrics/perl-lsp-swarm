@@ -28,6 +28,8 @@ review, queue, branch, or orchestration spec/ADR/doc, check that registry. A pat
 as `transitional`, `historical`, or `superseded` does not re-enter the hierarchy merely
 because its own old header says “accepted,” “active doctrine,” “north star,” or
 “current.”
+The registry classifies documentation authority; current source and live GitHub evidence still
+govern the underlying facts and transaction state.
 
 This file is Claude Code's route map. `.claude/skills/` contains the executable
 provider-native procedures. Shared docs define invariants and GitHub surface ownership;

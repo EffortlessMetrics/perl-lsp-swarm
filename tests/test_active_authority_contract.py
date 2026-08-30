@@ -33,6 +33,7 @@ ACTIVE_SKILL_ROOTS = (".agents/skills", ".claude/skills")
 ACTIVE_SKILL_GLOBS = (".agents/skills/**", ".claude/skills/**")
 SHARED_ORCHESTRATION_SURFACES = (
     "docs/agents/DEVELOPMENT_METHOD.md",
+    "docs/agents/REVIEW_CURRENTNESS.md",
     "docs/agents/SKILL_CONTRACT.md",
 )
 CLAUDE_AGENT_ROSTER = ".claude/agents/README.md"
@@ -488,6 +489,12 @@ class CrossSurfaceInvariantTests(unittest.TestCase):
                     retired,
                     lowered,
                     f"{surface} restored retired nested orchestration marker {retired!r}",
+                )
+            for retired in RETIRED_ACTIVE_SKILL_AUTHORITY:
+                self.assertIsNone(
+                    retired.search(lowered),
+                    f"{surface} restored retired claim-orchestration authority "
+                    f"{retired.pattern!r}",
                 )
 
         for skill_root in ACTIVE_SKILL_ROOTS:

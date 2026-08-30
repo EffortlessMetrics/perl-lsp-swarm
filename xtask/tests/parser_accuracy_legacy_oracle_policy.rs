@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use serde::Deserialize;
 
 const MANIFEST_PATH: &str = "crates/perl-corpus/fixtures/parser_accuracy/manifest.json";
-const LEGACY_APPLIED_CASE_COUNT: usize = 46;
+const LEGACY_APPLIED_CASE_COUNT: usize = 47;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -51,14 +51,8 @@ fn legacy_whitespace_population_retains_every_live_manifest_fixture() -> TestRes
     let root = project_root();
     let manifest: Manifest = serde_json::from_str(&fs::read_to_string(root.join(MANIFEST_PATH))?)?;
 
-    assert_eq!(
-        manifest.schema_version, 1,
-        "unexpected parser-accuracy manifest schema"
-    );
-    assert!(
-        !manifest.fixtures.is_empty(),
-        "parser-accuracy manifest must not be empty"
-    );
+    assert_eq!(manifest.schema_version, 1, "unexpected parser-accuracy manifest schema");
+    assert!(!manifest.fixtures.is_empty(), "parser-accuracy manifest must not be empty");
 
     let mut fixture_ids = BTreeSet::new();
     let mut applied_case_ids = BTreeSet::new();
