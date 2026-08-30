@@ -1613,7 +1613,7 @@ impl<'a> PerlLexer<'a> {
         loop {
             let mut saw_whitespace = false;
             while let Some(ch) = self.input.get(offset..).and_then(|suffix| suffix.chars().next()) {
-                if ch.is_whitespace() {
+                if ch.is_ascii_whitespace() {
                     offset += ch.len_utf8();
                     saw_whitespace = true;
                 } else {

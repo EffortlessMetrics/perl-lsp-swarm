@@ -103,9 +103,11 @@ fn unicode_whitespace_does_not_create_a_comment_gap() -> TestResult {
             let mut lexer = PerlLexer::new(&source);
             let token = next_non_trivia(&mut lexer).ok_or("expected token")?;
             assert!(
-                matches!(token.token_type, TokenType::Error(_)),
-                "Unicode whitespace must not admit a comment gap: {source:?}"
+                matches!(&token.token_type, TokenType::Identifier(name) if name.as_ref() == operator),
+                "Unicode whitespace must not dispatch a transliteration: {source:?}"
             );
+            assert_eq!(token.start, 0);
+            assert_eq!(token.end, operator.len());
 
             let source = format!("{operator}{{a}}{whitespace}# comment\n {{b}}; after");
             let mut lexer = PerlLexer::new(&source);
@@ -113,6 +115,11 @@ fn unicode_whitespace_does_not_create_a_comment_gap() -> TestResult {
             assert!(
                 matches!(token.token_type, TokenType::Error(_)),
                 "Unicode whitespace must not admit a second-body comment gap: {source:?}"
+            );
+            assert_eq!(
+                token.end,
+                format!("{operator}{{a}}").len(),
+                "Unicode second-body gap must not swallow following source: {source:?}"
             );
 
             let source = format!(
@@ -125,6 +132,11 @@ fn unicode_whitespace_does_not_create_a_comment_gap() -> TestResult {
             assert!(
                 matches!(token.token_type, TokenType::Error(_)),
                 "mixed ASCII/Unicode whitespace must not admit a second-body comment gap: {source:?}"
+            );
+            assert_eq!(
+                token.end,
+                format!("{operator}{{a}} ").len(),
+                "mixed second-body gap must not swallow following source: {source:?}"
             );
         }
     }
