@@ -1,7 +1,7 @@
 project: product
 component: Developer experience
 kind: Fixed
-body: The references provider-decision receipt now derives its `freshness` field from the tier that actually answered the request and the observed workspace index state, instead of always reporting `fresh`. An empty "no references" result computed over a stale or absent index now reports `unknown`, while answers read from live compiler facts or the live open buffer continue to report `fresh`. Receipt/observability field only; no change to references results.
+body: The references provider-decision receipt now tells the truth about how current its answer is. Its `freshness` field is derived from the tier that answered and the workspace index state actually observed, instead of always reporting `fresh`; and an empty "no references" result now reports the index state it was really computed over instead of always reporting `none`. A complete index that finds no references is reported as a fresh, trustworthy negative, while an empty result over a stale, partial, or absent index reports `unknown`. Receipt/observability fields only; no change to references results.
 time: 2026-08-30T04:15:00Z
 custom:
   PR: "14163"

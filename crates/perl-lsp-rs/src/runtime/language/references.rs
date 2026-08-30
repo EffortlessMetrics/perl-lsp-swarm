@@ -697,6 +697,16 @@ impl LspServer {
         let cap = references_cap();
         let mut source_backed_attempt: Option<SourceBackedReferenceAttempt> = None;
         let mut fallback_receipt = ReferenceTextFallbackReceipt::default();
+        // Function-scoped copy of the index access state observed at the branch
+        // point. The deeper `index_state` binding is not in scope at the terminal
+        // no-result return, which used to hard-code "none" there and so reported a
+        // full index as absent whenever the answer came back empty (#14156).
+        // "none" remains the correct default for a request that never reaches
+        // index routing at all.
+        #[cfg(feature = "workspace")]
+        let mut observed_index_state: &'static str = "none";
+        #[cfg(not(feature = "workspace"))]
+        let observed_index_state: &'static str = "none";
         let fallback_budget = ReferenceTextFallbackBudget {
             max_documents: REFERENCE_TEXT_FALLBACK_MAX_DOCUMENTS,
             max_bytes: REFERENCE_TEXT_FALLBACK_MAX_BYTES,
@@ -814,6 +824,9 @@ impl LspServer {
                             IndexAccessMode::Partial(_) => "partial",
                             IndexAccessMode::None => "none",
                         };
+                        // Carry the observed state out to the terminal no-result
+                        // return, which is below this block's scope.
+                        observed_index_state = index_state;
                         let workspace_symbol_key =
                             symbol_key.as_ref().map(super::to_workspace_symbol_key);
 
@@ -1436,7 +1449,7 @@ impl LspServer {
         Ok((
             Some(json!([])),
             ReferencesAnsweringTier::Empty,
-            "none",
+            observed_index_state,
             0,
             0,
             start.elapsed().as_micros(),
@@ -2819,6 +2832,83 @@ mod tests {
             receipt.get("index_state").and_then(serde_json::Value::as_str),
             Some("none"),
             "stale current-document index must downgrade references index access"
+        );
+
+        Ok(())
+    }
+
+    /// A full index that produces no references must survive to the receipt as
+    /// `full`/`fresh`, not be reported as an absent index (#14156).
+    ///
+    /// The terminal no-result return previously hard-coded `index_state` to
+    /// `"none"`, so an empty answer looked identical whether the workspace index
+    /// was complete or missing. Both requests here run against the same server
+    /// and the same healthy index: one resolves references, one does not, and the
+    /// index state must be `"full"` for both. This is also what makes the
+    /// `Empty`/`"full"` row of the freshness oracle production-reachable rather
+    /// than a rule that no request can exercise.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn handle_references_preserves_full_index_state_through_the_empty_tier()
+    -> Result<(), Box<dyn Error>> {
+        use crate::runtime::LspServer;
+        use parking_lot::Mutex;
+        use std::io::Cursor;
+        use std::sync::Arc;
+
+        let output = Arc::new(Mutex::new(
+            Box::new(Cursor::new(Vec::new())) as Box<dyn std::io::Write + Send>
+        ));
+        let server = LspServer::with_output(output);
+        let uri = "file:///test/full-index-empty.pl";
+        let text = "my $value = 1;\nmy $other = $value;\n";
+
+        server.test_handle_did_open(Some(serde_json::json!({
+            "textDocument": {"uri": uri, "languageId": "perl", "version": 1, "text": text}
+        })))?;
+
+        let receipt_for = |character: u32| -> Result<serde_json::Value, Box<dyn Error>> {
+            server.test_handle_references(Some(serde_json::json!({
+                "textDocument": {"uri": uri, "version": 1},
+                "position": {"line": 0, "character": character},
+                "context": {"includeDeclaration": true}
+            })))?;
+            let explanation = server
+                .handle_execute_command(Some(serde_json::json!({
+                    "command": "perl.explainProviderDecision",
+                    "arguments": [{"provider": "references"}]
+                })))?
+                .ok_or("missing explain-provider-decision response")?;
+            explanation
+                .get("request_receipt")
+                .cloned()
+                .ok_or_else(|| "missing request_receipt".into())
+        };
+
+        // Establishes that this server really does have a full workspace index:
+        // an index-backed tier answers and reports it.
+        let answered = receipt_for(5)?;
+        assert_eq!(
+            answered.get("index_state").and_then(serde_json::Value::as_str),
+            Some("full"),
+            "the fixture server has a full workspace index"
+        );
+        assert_eq!(answered.get("freshness").and_then(serde_json::Value::as_str), Some("fresh"));
+
+        // Same server, same index, a position that resolves nothing. The empty
+        // answer must not claim the index was absent.
+        let empty = receipt_for(0)?;
+        assert_eq!(empty.get("answering_tier").and_then(serde_json::Value::as_str), Some("empty"));
+        assert_eq!(empty.get("result_count").and_then(serde_json::Value::as_u64), Some(0));
+        assert_eq!(
+            empty.get("index_state").and_then(serde_json::Value::as_str),
+            Some("full"),
+            "an empty answer must report the index state actually observed"
+        );
+        assert_eq!(
+            empty.get("freshness").and_then(serde_json::Value::as_str),
+            Some("fresh"),
+            "an empty answer over a complete index is a current, trustworthy negative"
         );
 
         Ok(())
