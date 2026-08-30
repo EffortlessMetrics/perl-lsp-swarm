@@ -412,13 +412,15 @@ mod tests {
     fn independent_identical_subjects_do_not_exchange_payloads() {
         let first = subject("my $x = 1;", ParseGeneration::INITIAL);
         let independent = subject("my $x = 1;", ParseGeneration::INITIAL);
+        assert_ne!(first, independent);
+        assert!(!first.same_instance_as(&independent));
+
         let attachment = SourceGeometryAttachment {
             schema_version: SOURCE_GEOMETRY_ATTACHMENT_SCHEMA_VERSION,
             subject: independent.clone(),
             state: SourceGeometryAttachmentState::Complete { payload: payload(first) },
         };
 
-        assert!(!attachment.subject().same_instance_as(attachment.state_payload_subject()));
         assert_eq!(
             attachment.validate_for(&independent),
             Err(SourceGeometryValidationError::PayloadSubject)
