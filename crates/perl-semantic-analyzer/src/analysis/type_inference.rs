@@ -572,28 +572,24 @@ impl TypeInferenceEngine {
                 let func_name = name.clone();
 
                 // Check built-in functions
-                if let Some(sig) = self.builtins.get(&func_name) {
-                    if let Subroutine { returns, .. } = sig {
-                        if returns.len() == 1 {
-                            return Ok(returns[0].clone());
-                        } else if returns.is_empty() {
-                            return Ok(Void);
-                        } else {
-                            return Ok(Array(Box::new(returns[0].clone())));
-                        }
+                if let Some(Subroutine { returns, .. }) = self.builtins.get(&func_name) {
+                    if returns.len() == 1 {
+                        return Ok(returns[0].clone());
+                    } else if returns.is_empty() {
+                        return Ok(Void);
+                    } else {
+                        return Ok(Array(Box::new(returns[0].clone())));
                     }
                 }
 
                 // Check user-defined functions
-                if let Some(ty) = env.get_subroutine(&func_name) {
-                    if let Subroutine { returns, .. } = ty {
-                        if returns.len() == 1 {
-                            return Ok(returns[0].clone());
-                        } else if returns.is_empty() {
-                            return Ok(Void);
-                        } else {
-                            return Ok(Array(Box::new(returns[0].clone())));
-                        }
+                if let Some(Subroutine { returns, .. }) = env.get_subroutine(&func_name) {
+                    if returns.len() == 1 {
+                        return Ok(returns[0].clone());
+                    } else if returns.is_empty() {
+                        return Ok(Void);
+                    } else {
+                        return Ok(Array(Box::new(returns[0].clone())));
                     }
                 }
 

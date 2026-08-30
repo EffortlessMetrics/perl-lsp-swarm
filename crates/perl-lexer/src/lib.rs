@@ -209,17 +209,30 @@ impl<'a> PerlLexer<'a> {
         line_start: usize,
         label: &str,
         allow_indent: bool,
+        body_indent: Option<&[u8]>,
+        body_has_content: bool,
     ) -> Option<usize> {
         // A delimiter line is not part of the body budget, but probing it must
         // still be bounded. Reuse the body cap as the maximum delimiter-line
-        // inspection window; pathological indentation or trailing whitespace
-        // therefore cannot restore an unbounded scan.
+        // inspection window. `<<~` may indent the label, but the label itself
+        // must be followed immediately by a line ending or EOF.
         let scan_end = line_start.saturating_add(MAX_HEREDOC_BYTES).min(self.input_bytes.len());
         let mut cursor = line_start;
 
         if allow_indent {
             while cursor < scan_end && matches!(self.input_bytes[cursor], b' ' | b'\t') {
                 cursor += 1;
+            }
+
+            // Perl's indented heredoc form permits the terminator to be less
+            // indented than the body, but its indentation must still be a
+            // prefix of every non-blank body line. Without this relationship,
+            // a terminator indented farther than the body would be accepted.
+            let terminator_indent = &self.input_bytes[line_start..cursor];
+            if body_has_content
+                && !body_indent.is_some_and(|indent| indent.starts_with(terminator_indent))
+            {
+                return None;
             }
         }
 
@@ -228,10 +241,6 @@ impl<'a> PerlLexer<'a> {
             return None;
         }
         cursor = label_end;
-
-        while cursor < scan_end && matches!(self.input_bytes[cursor], b' ' | b'\t') {
-            cursor += 1;
-        }
 
         if cursor == self.input_bytes.len()
             || (cursor < self.input_bytes.len()
@@ -286,6 +295,9 @@ impl<'a> PerlLexer<'a> {
                     };
 
                 if body_start > 0 {
+                    let mut body_indent: Option<Vec<u8>> = None;
+                    let mut body_has_content = false;
+
                     // Include exactly the first byte above the accepted body budget.
                     // All physical-line searches use this absolute endpoint, so a
                     // missing newline cannot scan the remainder of a large document.
@@ -312,10 +324,22 @@ impl<'a> PerlLexer<'a> {
                             continue;
                         }
 
-                        let line_start = self.position;
-                        if let Some(line_end) =
-                            self.heredoc_terminator_line_end(line_start, &label, allow_indent)
-                        {
+                        // `skip_whitespace_and_comments` may have consumed
+                        // indentation on the first body line before the
+                        // pending-heredoc loop runs. Restore that physical
+                        // line start so `<<~` can compare the real prefixes.
+                        let line_start = if self.line_start_offset == body_start {
+                            body_start
+                        } else {
+                            self.position
+                        };
+                        if let Some(line_end) = self.heredoc_terminator_line_end(
+                            line_start,
+                            &label,
+                            allow_indent,
+                            body_indent.as_deref(),
+                            body_has_content,
+                        ) {
                             self.pending_heredocs.remove(0);
                             found_terminator = true;
                             self.position = line_end;
@@ -342,6 +366,31 @@ impl<'a> PerlLexer<'a> {
                             Self::find_line_end(&self.input_bytes[..body_scan_end], self.position);
                         if line_end - body_start > MAX_HEREDOC_BYTES {
                             return Some(self.heredoc_budget_recovery(body_start));
+                        }
+
+                        if allow_indent {
+                            let mut content_start = line_start;
+                            while content_start < line_end
+                                && matches!(self.input_bytes[content_start], b' ' | b'\t')
+                            {
+                                content_start += 1;
+                            }
+
+                            if content_start < line_end {
+                                let line_indent = &self.input_bytes[line_start..content_start];
+                                body_has_content = true;
+                                match body_indent.as_mut() {
+                                    Some(common) => {
+                                        let common_len = common
+                                            .iter()
+                                            .zip(line_indent.iter())
+                                            .take_while(|(left, right)| left == right)
+                                            .count();
+                                        common.truncate(common_len);
+                                    }
+                                    None => body_indent = Some(line_indent.to_vec()),
+                                }
+                            }
                         }
 
                         self.position = line_end;

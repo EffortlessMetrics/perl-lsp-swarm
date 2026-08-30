@@ -249,7 +249,7 @@ fn candidate_commit_identity(repo_root: &Path) -> Result<String> {
 /// deliberately not enforced here: the subject manifest's
 /// `upstream_theoretical_prerequisites` are compatibility metadata, and the
 /// maintained host-envelope rows belong to #10966.
-const REQUIRED_VIM_FEATURES: [&str; 3] = ["channel", "job", "timers"];
+pub(crate) const REQUIRED_VIM_FEATURES: [&str; 3] = ["channel", "job", "timers"];
 
 pub fn verify_vim_features(version_output: &str) -> Result<()> {
     for feature in REQUIRED_VIM_FEATURES {

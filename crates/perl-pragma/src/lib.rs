@@ -39,6 +39,12 @@ pub(crate) use version::enable_effective_version_semantics;
 /// Pragma state at a given point in the code
 #[derive(Debug, Clone, PartialEq)]
 pub struct PragmaState {
+    /// The effective Perl version declared in the current lexical scope.
+    ///
+    /// This is retained alongside the derived feature set so semantic consumers
+    /// can distinguish an exact version profile from an equivalent explicit
+    /// feature selection.
+    pub perl_version: Option<PerlVersion>,
     /// Whether strict vars is enabled
     pub strict_vars: bool,
     /// Whether strict subs is enabled
@@ -97,6 +103,7 @@ impl Default for PragmaState {
     /// `use feature` or `no feature` declaration".
     fn default() -> Self {
         Self {
+            perl_version: None,
             strict_vars: false,
             strict_subs: false,
             strict_refs: false,

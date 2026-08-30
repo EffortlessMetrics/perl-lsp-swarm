@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 6116,
-  "reason": "Repairs the grammar regression from #6116's landed change (2a0497a8a): the trailing-comma fix leaves the grammar at 13660 bytes (was recorded 13346 from the broken state) and the vsix baseline reconciles to total 1711981 (1711667 + 314 + total_bytes correction). Size-only delta: no file added, removed, or loosened; out/extension.js unchanged; grammar scope fixes restore #6116's intended anchoring. Composed on top of the accepted #7845/#9842/#11985 baselines.",
-  "base_baseline_file_sha256": "5c173b406230338b16676a0795ad19242ae3817f96b7d390c60d23300f5b96e9",
-  "candidate_baseline_file_sha256": "18c71611c572f227fff586fed8e8a8f85f9cedabd7c9f5febe72464c09e6f7f5",
-  "base_inventory_sha256": "3e26c061c62287bf6bb97092be08fe450d0ed6bd1a347141c3acccd40c806d3f",
-  "candidate_inventory_sha256": "124e8ae60936f4b50e724e0d6341bb662818dc3324c3790cb08e03bac854b655"
+  "owner_issue": 8282,
+  "reason": "Routes VS Code inline completion through one provider owner (#8282). The candidate adds src/inlineCompletionRouting.ts and extends streamingCompletion.ts, growing the bundled out/extension.js from 1591832 to 1605380 bytes. The measured 29-file package remains size-only: no file additions, removals, or permission loosening.",
+  "base_baseline_file_sha256": "d6f01dad2c5a8b18a75dab8bdd0c55a50d168f042b7a3aaa7ed57af7af5d63d2",
+  "candidate_baseline_file_sha256": "c334509714d671bc93c27387a153089cc133eae98f5d516bcac2f4a77ae898fd",
+  "base_inventory_sha256": "af077116d6be5400315a98d2e0f1aa05197c930ac7521fea3f6b72a319d56975",
+  "candidate_inventory_sha256": "b6001a5b7432633f4b24a36899243f507adc4492ff35a6877f6d5b2eb63e1874"
 }

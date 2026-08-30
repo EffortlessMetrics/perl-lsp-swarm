@@ -928,10 +928,10 @@ fn assert_no_trusted_markdown_affordances(value: &Value) -> TestResult {
 
 fn collect_trusted_markdown_affordance_paths(value: &Value, path: &str, paths: &mut Vec<String>) {
     match value {
-        Value::String(text) => {
-            if text.to_ascii_lowercase().contains("command:") || text.contains("$(") {
-                paths.push(path.to_string());
-            }
+        Value::String(text)
+            if text.to_ascii_lowercase().contains("command:") || text.contains("$(") =>
+        {
+            paths.push(path.to_string());
         }
         Value::Object(map) => {
             for (name, child) in map {

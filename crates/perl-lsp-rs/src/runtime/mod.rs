@@ -84,6 +84,8 @@ use perl_parser::{
     Parser,
     ast::{Node, NodeKind},
     declaration::ParentMap,
+};
+use perl_tdd_support::{
     tdd_basic::TestGenerator,
     test_runner::{TestKind, TestRunner},
 };
@@ -449,6 +451,11 @@ pub struct LspServer {
     /// mutation (#11674 falsifiers).
     #[cfg(test)]
     document_symbols_before_commit_hook: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
+    /// Test-only barrier inside the sink boundary: fires after the currency
+    /// precheck passes and before the serialized install, so falsifiers can
+    /// race the exact validation -> mutation window (#11674 review barrier).
+    #[cfg(test)]
+    document_symbols_before_install_hook: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
     /// Optional AI inline-completion backend.
     ///
     /// When `Some`, the `handle_inline_completion` handler will attempt

@@ -16,7 +16,16 @@ on:
   merge_group: {}
   push:
     branches: [ main, master ]
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      base_sha:
+        description: Exact base commit SHA for the dispatched subject
+        required: true
+        type: string
+      head_sha:
+        description: Exact head commit SHA; must equal the GitHub dispatch SHA
+        required: true
+        type: string
 
 # Cancel in-progress runs for PR events on new pushes; let push/merge_group runs complete.
 # The preflight SHA-staleness check provides additional skip logic for superseded SHAs.
@@ -38,6 +47,10 @@ jobs:
     timeout-minutes: 1
     outputs:
       run_ci: ${{ steps.guard.outputs.run_ci }}
+      # #2266: true when the PR diff touches a published facade crate surface
+      # or the committed public-API baseline set. Consumed by the
+      # public-api-pr / semver-pr compatibility rails below.
+      api_scope: ${{ steps.guard.outputs.api_scope }}
     steps:
       - name: Checkout for docs-only detection
         if: github.event_name == 'pull_request' && github.event.pull_request.draft != true
@@ -50,10 +63,21 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" != "pull_request" ]; then
             echo "run_ci=true" >> "$GITHUB_OUTPUT"
+            # Off-PR events skip the API rails by their job-level event gate.
+            echo "api_scope=false" >> "$GITHUB_OUTPUT"
             echo "::notice::Non-PR event detected — running full CI"
           elif [ "${{ github.event.pull_request.draft }}" = "true" ]; then
             echo "run_ci=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::Draft PR detected — skipping CI jobs until ready for review"
+            # Drafts are excluded by run_ci; ready_for_review recomputes scope.
+            echo "api_scope=false" >> "$GITHUB_OUTPUT"
+            {
+              echo "### Draft PR CI posture"
+              echo
+              echo "- \`Rust formatting\` and \`Conflict marker check\` still run against this exact draft head."
+              echo "- Other CI jobs are intentionally deferred while the PR remains draft."
+              echo "- A skipped job is not verification. Mark the PR ready for review to run the full merge-required suite."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::notice::Draft PR detected — running rustfmt and conflict-marker feedback; deferring full CI until ready for review"
           else
             base_sha="${{ github.event.pull_request.base.sha }}"
             pr_number="${{ github.event.pull_request.number }}"
@@ -61,6 +85,10 @@ jobs:
 
             if ! git fetch --no-tags --depth=1 origin "${base_sha}" "pull/${pr_number}/head:${pr_head_ref}"; then
               echo "run_ci=true" >> "$GITHUB_OUTPUT"
+              # Fail open like run_ci: an unknowable diff is treated as
+              # API-affecting so the compatibility rails never report a green
+              # scoped-noop over a surface they could not inspect.
+              echo "api_scope=true" >> "$GITHUB_OUTPUT"
               echo "::warning::Could not fetch PR diff refs; running full CI fail-safe"
               exit 0
             fi
@@ -68,8 +96,123 @@ jobs:
             mapfile -t changed_files < <(git diff --name-only "${base_sha}" "${pr_head_ref}")
             if [ "${#changed_files[@]}" -eq 0 ]; then
               echo "run_ci=true" >> "$GITHUB_OUTPUT"
+              # Empty diffs contain no API surface; scoped-noop is honest here.
+              echo "api_scope=false" >> "$GITHUB_OUTPUT"
               echo "::notice::No changed files detected — running full CI fail-safe"
               exit 0
+            fi
+
+            # #2266: auto-select the public-API/semver compatibility rails from
+            # the pull request's own changed-file set, read through the REST
+            # files endpoint. A two-dot git diff against the base tip silently
+            # inherits facade commits other lanes already merged while this
+            # branch sat open (observed on #12850), and a merge-base three-dot
+            # diff needs history a depth=1 fetch deliberately lacks — so the
+            # exact PR file list is both truthful and cheap here. Scope stays
+            # job-level (ci.yml excludes `labeled`; workflow-level paths
+            # filters leave required contexts unreported), manual label
+            # widening remains on ci-nightly.yml pull_request(labeled).
+            api_scope="$(PR_NUMBER="${pr_number}" REPOSITORY="${GITHUB_REPOSITORY}" \
+            python3 - "${changed_files[@]}" <<'PY'
+          import json
+          import os
+          import re
+          import sys
+          import urllib.request
+
+          repo = os.environ["REPOSITORY"]
+          pr_number = os.environ["PR_NUMBER"]
+
+          # #2266 scope authority: the committed baselines themselves. Any crate whose
+          # public items flow into a facade baseline via re-export (perl-lsp-rs-core,
+          # perl-parser-core, perl-workspace, perl-ast, ...) derives its crates/<dir>/
+          # prefix from the perl_X:: tokens in .ci/public-api-baselines/*.txt, so the
+          # selector tracks the real re-export closure without maintaining a second
+          # hand-written list beside the baselines.
+          STATIC_PREFIXES = (
+              # Facade surfaces checked directly by just public-api-check and the
+              # nightly semver rail (includes crates with no re-export trail).
+              "crates/perl-lsp-rs/",
+              "crates/perl-parser/",
+              "crates/perl-lexer/",
+              "crates/perl-parser-core/",
+              "crates/perl-uri/",
+              "crates/perl-dap/",
+              "crates/perllsp/",
+              ".ci/public-api-baselines/",
+          )
+          TOKEN_RE = re.compile("(?<![A-Za-z0-9_])perl_[a-z0-9_]+(?=::)")
+
+
+          def derive_prefixes():
+              found = set(STATIC_PREFIXES)
+              baseline_dir = os.path.join(".ci", "public-api-baselines")
+              try:
+                  names = os.listdir(baseline_dir)
+              except OSError:
+                  return tuple(sorted(found))
+              for name in names:
+                  path = os.path.join(baseline_dir, name)
+                  try:
+                      content = open(path, encoding="utf-8").read()
+                  except OSError:
+                      continue
+                  for token in TOKEN_RE.findall(content):
+                      crate_dir = "crates/" + token.replace("_", "-") + "/"
+                      found.add(crate_dir)
+              return tuple(sorted(found))
+
+          def emit(value):
+              print(value)
+              raise SystemExit(0)
+
+
+          def matches(path):
+              return any(
+                  path.startswith(prefix) or prefix.rstrip("/") == path for prefix in prefixes
+              )
+
+
+          prefixes = derive_prefixes()
+          page = 1
+          try:
+              while True:
+                  url = (
+                      f"https://api.github.com/repos/{repo}/pulls/{pr_number}/files"
+                      f"?per_page=100&page={page}"
+                  )
+                  request = urllib.request.Request(
+                      url,
+                      headers={"Accept": "application/vnd.github+json"},
+                  )
+                  with urllib.request.urlopen(request, timeout=30) as response:
+                      batch = json.load(response)
+                  if not isinstance(batch, list):
+                      raise ValueError("unexpected files payload")
+                  for entry in batch:
+                      if matches(entry.get("filename") or ""):
+                          emit("true")
+                  if len(batch) < 100:
+                      break
+                  page += 1
+          except Exception as exc:
+              # No-token API probe can be rate limited on shared runner egress. Fall
+              # back to the local two-dot diff scan; that over-approximates scope right
+              # after base-tip movement but never under-reports an affected PR.
+              print(
+                  f"::warning::Could not list PR files ({exc}); using changed-file fallback",
+                  file=sys.stderr,
+              )
+              emit("true" if any(matches(arg) for arg in sys.argv[1:]) else "false")
+
+          emit("false")
+          PY
+            )"
+            echo "api_scope=${api_scope}" >> "$GITHUB_OUTPUT"
+            if [ "${api_scope}" = "true" ]; then
+              echo "::notice::API-surface change detected — public-api-pr / semver-pr rails will run"
+            else
+              echo "::notice::No API-surface change — API rails report green scoped-noop (#2266)"
             fi
 
             docs_only=true
@@ -147,11 +290,12 @@ jobs:
     if: needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true'
     outputs:
       windows_runner: ${{ steps.scope.outputs.windows_runner }}
+      windows_test_crates: ${{ steps.scope.outputs.windows_test_crates }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.ref_name }}
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.sha }}
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
         with:
@@ -166,10 +310,17 @@ jobs:
         id: scope
         shell: bash
         env:
-          SCOPE_BASE: ${{ github.event_name == 'pull_request' && 'origin/main' || github.event.before || 'origin/main' }}
+          SUBJECT_BASE_SHA: ${{ inputs.base_sha || '' }}
+          SUBJECT_HEAD_SHA: ${{ inputs.head_sha || '' }}
         run: |
           set -euo pipefail
-          cargo run -p xtask --locked -- ci-scope --base "$SCOPE_BASE" --format json > "$RUNNER_TEMP/ci-scope.json"
+          cargo run -p xtask --locked -- ci-subject \
+            --base-sha "$SUBJECT_BASE_SHA" \
+            --head-sha "$SUBJECT_HEAD_SHA" \
+            --receipt "$RUNNER_TEMP/ci-subject.json"
+          cargo run -p xtask --locked -- ci-scope \
+            --subject "$RUNNER_TEMP/ci-subject.json" \
+            --format json > "$RUNNER_TEMP/ci-scope.json"
           windows_runner=$(jq -r 'if .platform_overrides.windows_runner == null then true else .platform_overrides.windows_runner end' "$RUNNER_TEMP/ci-scope.json")
           windows_test_crates=$(jq -r '.platform_overrides.windows_test_crates[]? | "-p \(.)"' "$RUNNER_TEMP/ci-scope.json" | paste -sd' ' -)
           case "$windows_runner" in
@@ -189,16 +340,44 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.ref_name }}
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.sha }}
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
         with:
           toolchain: 1.95.0
+      # #2908: this lane builds only the ci-scope-selected crate subset
+      # ($WINDOWS_TEST_CRATES) directly into the cached target tree, so its
+      # cache key must carry the scope-crate-set hash, not Cargo.lock alone —
+      # otherwise a 2-crate seam build and a 5-crate seam build restore and
+      # churn one workspace-wide entry. The hash is derived before rust-cache
+      # runs from the upstream platform-overrides output, canonicalized by
+      # scripts/ci/scope_cache_key.py (sorted deduped crate names, SHA-256):
+      # force-pushes that move neither lockfile nor set keep a byte-identical
+      # key, and unrelated scopes never invalidate each other's entries.
+      # rust-cache's restore prefix keeps the explicit Cargo.lock and scope
+      # hashes together with its runner, Rust, and environment identity. Its
+      # automatic manifest digest is not part of that fallback prefix, so this
+      # does not claim identical Cargo.toml state. PRs restore only; main and
+      # master pushes may save the scoped entry. Ready-tier lanes keep their
+      # workspace-wide keys.
+      - name: Derive scope-aware cache key component
+        id: windows-scope-key
+        shell: bash
+        env:
+          WINDOWS_TEST_CRATES: ${{ needs.platform-overrides.outputs.windows_test_crates }}
+        run: |
+          set -euo pipefail
+          python_bin="$(command -v python3 || command -v python)"
+          scope_hash="$("$python_bin" scripts/ci/scope_cache_key.py --require-non-empty --package-args "$WINDOWS_TEST_CRATES")"
+          echo "scope-hash=$scope_hash" >> "$GITHUB_OUTPUT"
+          echo "windows scope crates: ${WINDOWS_TEST_CRATES:-<none>}"
+          echo "windows scope cache-key hash: $scope_hash"
       - name: Cache cargo dependencies
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
           cache-on-failure: true
           cache-all-crates: true
-          shared-key: ci-windows-platform-${{ hashFiles('Cargo.lock') }}
+          shared-key: ci-windows-platform-${{ hashFiles('Cargo.lock') }}-${{ steps.windows-scope-key.outputs.scope-hash }}
+          save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
       - name: Run Windows portability smoke
         shell: bash
         env:
@@ -221,7 +400,6 @@ jobs:
       needs.draft-pr-check.outputs.run_ci == 'true' &&
       needs.preflight-latest-check.outputs.is_latest == 'true'
     env:
-      CONTRACT_BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
       CONTRACT_HEAD: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -250,11 +428,21 @@ jobs:
           cache-all-crates: true
           shared-key: ci-contract-${{ hashFiles('Cargo.lock') }}
       - name: Run Repository Contract
+        env:
+          SUBJECT_BASE_SHA: ${{ inputs.base_sha || '' }}
+          SUBJECT_HEAD_SHA: ${{ inputs.head_sha || '' }}
         run: |
           set +e
+          cargo run -p xtask --locked -- ci-subject \
+            --base-sha "$SUBJECT_BASE_SHA" \
+            --head-sha "$SUBJECT_HEAD_SHA" \
+            --receipt target/receipts/ci-subject.json
+          subject_status=$?
+          if [ "$subject_status" -ne 0 ]; then
+            exit "$subject_status"
+          fi
           cargo run -p xtask --locked -- ci-contract \
-            --base "$CONTRACT_BASE" \
-            --head "$CONTRACT_HEAD" \
+            --subject target/receipts/ci-subject.json \
             --receipt target/receipts/ci-contract.json \
             --summary target/receipts/ci-contract.md
           status=$?
@@ -275,6 +463,7 @@ jobs:
           path: |
             target/receipts/ci-contract.json
             target/receipts/ci-contract.md
+            target/receipts/ci-subject.json
             target/receipts/repo-hygiene.json
             target/receipts/repo-hygiene.md
             target/ci-contract/changed-files.txt
@@ -286,7 +475,27 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     needs: [draft-pr-check, preflight-latest-check]
-    if: needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true'
+    # `preflight-latest-check` is intentionally skipped for drafts, and GitHub
+    # reports a skipped need's outputs as empty strings. `always()` carries the
+    # evaluation past that skipped need while the disjunction routes each event
+    # class:
+    # - draft PR: run_ci is 'false' and the skipped preflight's is_latest is '',
+    #   so the needs branch is false and only the draft branch fires.
+    # - non-draft PR: run_ci='true' and is_latest='true'; the needs branch fires.
+    # - merge_group and push: the draft branch is false (`pull_request.draft` is
+    #   unset), so the needs branch is the only route; it fires because
+    #   is_latest='true' unless a superseded push SHA is skipped.
+    # Dropping either branch silently removes draft or push/merge_group runs;
+    # xtask/tests/draft_pr_feedback_contract.rs asserts both branches.
+    if: >-
+      always() &&
+      (
+        (github.event_name == 'pull_request' && github.event.pull_request.draft == true) ||
+        (
+          needs.draft-pr-check.outputs.run_ci == 'true' &&
+          needs.preflight-latest-check.outputs.is_latest == 'true'
+        )
+      )
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -303,6 +512,174 @@ jobs:
             exit 1
           fi
           echo "✅ No conflict markers found"
+
+  # ── Public-API compatibility rails (#2266) ───────────────────────────
+  # Auto-run the nightly public-api/semver machinery on PRs that actually
+  # touch a published facade surface or `.ci/public-api-baselines/`, closing
+  # the label-only gating gap (issue #2266): humans forget labels and bot
+  # authors cannot set them. Scope selection happens inside the draft-pr-check
+  # guard via job-level conditions so non-API PRs settle as green scoped-noops
+  # instead of an always-pending context (REQUIRED_STYLE_SELF_FILTERED /
+  # always-or-scoped-noop convention in .ci/policies/required-checks.toml);
+  # ci.yml deliberately excludes the `labeled` event, so manual widening keeps
+  # using the ci-nightly.yml pull_request(labeled) label gates.
+  # Cost: ~1 min of detection-only work when no facade path changes; full
+  # cargo-public-api / cargo-semver-checks runtime only where it matters.
+  public-api-pr:
+    name: Public API Surface (facade PR)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    needs: [draft-pr-check, preflight-latest-check]
+    if: >-
+      github.event_name == 'pull_request' &&
+      needs.draft-pr-check.outputs.run_ci == 'true' &&
+      needs.preflight-latest-check.outputs.is_latest == 'true'
+    permissions:
+      contents: read
+    steps:
+      - name: Scoped no-op summary
+        # A hard-failing ratchet must still settle green on out-of-scope diffs
+        # so a future ruleset promotion resolves cleanly (issue #2266).
+        if: needs.draft-pr-check.outputs.api_scope != 'true'
+        shell: bash
+        run: |
+          {
+            echo "### Public API Surface scope"
+            echo ""
+            echo "- api_scope: \`false\`"
+            echo "- verdict: scoped-noop — no facade crate or .ci/public-api-baselines change"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::notice::public-api scoped-noop: no facade crate or baseline surface changed."
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        if: needs.draft-pr-check.outputs.api_scope == 'true'
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        if: needs.draft-pr-check.outputs.api_scope == 'true'
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
+        with:
+          toolchain: 1.95.0
+
+      # cargo-public-api builds rustdoc JSON and requires a nightly toolchain;
+      # without one the generation fails and (pre-#12861) the recipe silently
+      # diffed the empty surface as phantom API removals. The channel floats
+      # deliberately: the printing semantics live in the pinned cargo-public-api
+      # 0.50.1 (identical output verified across nightly 2026-07-20 and
+      # 2026-08-26), the recipe fails closed on instrument errors, and it now
+      # records rustc +nightly --version as run provenance. A hard pin would
+      # need rustup sysroot symlinks (official names are not linkable), which
+      # is more fragile than the slow drift risk it addresses (#12870 review).
+      - name: Install nightly toolchain (cargo-public-api rustdoc JSON)
+        if: needs.draft-pr-check.outputs.api_scope == 'true'
+        run: rustup toolchain install nightly --profile minimal
+
+      - name: Cache cargo dependencies
+        if: needs.draft-pr-check.outputs.api_scope == 'true'
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+        with:
+          key: public-api-${{ hashFiles('Cargo.lock') }}
+          cache-on-failure: true
+
+      - name: Install cargo-public-api
+        if: needs.draft-pr-check.outputs.api_scope == 'true'
+        run: cargo install cargo-public-api --locked --version 0.50.1
+
+      - name: Install just
+        if: needs.draft-pr-check.outputs.api_scope == 'true'
+        uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc  # v2.86.7
+        with:
+          tool: just
+
+      - name: Check public API surface (perl-lsp-rs, perl-parser, perl-uri, perl-dap, perllsp)
+        if: needs.draft-pr-check.outputs.api_scope == 'true'
+        # Uses cargo public-api --simplified to omit blanket-impl noise; baselines in .ci/public-api-baselines/
+        run: just public-api-check
+
+  semver-pr:
+    name: Semver Compatibility (facade PR)
+    # Advisory per #2266: cargo-semver-checks stays continue-on-error until
+    # baseline noise-confidence is established; promote to a blocking verdict
+    # with the same evidence window that hardens public-api-pr.
+    continue-on-error: true
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    needs: [draft-pr-check, preflight-latest-check]
+    if: >-
+      github.event_name == 'pull_request' &&
+      needs.draft-pr-check.outputs.run_ci == 'true' &&
+      needs.preflight-latest-check.outputs.is_latest == 'true'
+    permissions:
+      contents: read
+    steps:
+      - name: Scoped no-op summary
+        if: needs.draft-pr-check.outputs.api_scope != 'true'
+        shell: bash
+        run: |
+          {
+            echo "### Semver Compatibility scope"
+            echo ""
+            echo "- api_scope: \`false\`"
+            echo "- verdict: scoped-noop — no facade crate or .ci/public-api-baselines change"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::notice::semver scoped-noop: no facade crate or baseline surface changed."
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        if: needs.draft-pr-check.outputs.api_scope == 'true'
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Install Rust
+        if: needs.draft-pr-check.outputs.api_scope == 'true'
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
+        with:
+          toolchain: stable
+
+      - name: Cache cargo dependencies
+        if: needs.draft-pr-check.outputs.api_scope == 'true'
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+        with:
+          key: semver-${{ hashFiles('Cargo.lock') }}
+          cache-on-failure: true
+
+      - name: Install cargo-semver-checks
+        if: needs.draft-pr-check.outputs.api_scope == 'true'
+        run: cargo install cargo-semver-checks --version 0.47.0 --locked
+
+      - name: Fetch release tags from canonical repo
+        if: needs.draft-pr-check.outputs.api_scope == 'true'
+        # Release tags live on EffortlessMetrics/perl-lsp; swarm origin has none
+        # (same wiring as the meta shard).
+        run: |
+          git fetch --force --tags https://github.com/EffortlessMetrics/perl-lsp.git '+refs/tags/v*:refs/tags/v*'
+
+      - name: Determine baseline tag
+        id: baseline
+        if: needs.draft-pr-check.outputs.api_scope == 'true'
+        run: |
+          BASELINE=$(git tag | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1) || true
+          if [ -z "${BASELINE:-}" ]; then
+            echo "::warning::No v*.*.* release tags on this checkout; skipping semver comparison"
+            echo "baseline=none" >> "$GITHUB_OUTPUT"
+          else
+            echo "baseline=${BASELINE}" >> "$GITHUB_OUTPUT"
+            echo "Using baseline: ${BASELINE}"
+          fi
+
+      - name: Check published parser-stack crates against baseline
+        if: needs.draft-pr-check.outputs.api_scope == 'true' && steps.baseline.outputs.baseline != 'none'
+        env:
+          SEMVER_BASELINE: ${{ steps.baseline.outputs.baseline }}
+        run: |
+          for crate in perl-parser perl-lexer perl-parser-core perl-lsp-rs perllsp; do
+            if cargo semver-checks check-release -p "${crate}" \
+              --baseline-rev "${SEMVER_BASELINE}"; then
+              echo "semver: ${crate} compatible"
+            else
+              echo "::warning::Breaking changes detected in ${crate}"
+            fi
+          done
 
   # ── PR Smoke: advisory fast feedback for every PR ────────────────────
   # ADVISORY (continue-on-error): this lane runs the `pr-fast` xtask tier, whose
@@ -325,12 +702,24 @@ jobs:
     continue-on-error: true
     needs: [draft-pr-check, preflight-latest-check]
     if: needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true'
+    # #11943 bound arm: the tier's single CARGO_TARGET_DIR measured 83 GiB on
+    # cold-cache branches (runs 32697324730 / 32697144932) against ~83-84 GiB of
+    # starting headroom, filling /dev/root to 100% mid-link (ENOSPC -> ld
+    # SIGBUS). Full DWARF (dev-profile default debuginfo=2 across every routed
+    # integration-test binary) dominates that footprint; line-tables-only keeps
+    # file/line backtraces while cutting the bulk, matching the repo-blessed
+    # [profile.agent] footprint setting. Scoped to this advisory lane only:
+    # required merge-gate shards keep full debuginfo proof and no unit is
+    # skipped or weakened — identical tests run either way.
+    env:
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      CARGO_PROFILE_TEST_DEBUG: line-tables-only
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.ref_name }}
-          # Fetch full history so ci-scope can diff against the explicit PR-fast base.
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.sha }}
+          # Fetch full history so the immutable subject can validate exact event ancestry.
           fetch-depth: 0
           # release_history --verify-git resolves every release tag locally.
           fetch-tags: true
@@ -347,7 +736,7 @@ jobs:
           components: rustfmt, clippy
 
       - name: Install just
-        uses: taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1  # v2.85.13
+        uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc  # v2.86.7
         with:
           tool: just
 
@@ -376,8 +765,30 @@ jobs:
           echo "PR-fast CARGO_TARGET_DIR=$target_dir"
           df -h . "$target_dir" || true
 
+      # #11943 visible arm (pre-build): refuse to start the tier on a runner
+      # whose free headroom is below the measured worst-case need, naming the
+      # path in an explicit resource-exhaustion diagnostic. A degraded runner
+      # must fail here in seconds instead of dying inside `ld` with SIGBUS
+      # disguised as a compile failure 40 minutes in.
+      - name: Pre-flight disk budget guard
+        shell: bash
+        run: |
+          python3 scripts/ci/pr_smoke_disk_guard.py preflight \
+            --workspace-path . \
+            --target-dir "${CARGO_TARGET_DIR:-target}"
+
       - name: Warm xtask
         run: cargo build -p xtask --locked
+
+      - name: Resolve immutable CI subject
+        env:
+          SUBJECT_BASE_SHA: ${{ inputs.base_sha || '' }}
+          SUBJECT_HEAD_SHA: ${{ inputs.head_sha || '' }}
+        run: |
+          "$CARGO_TARGET_DIR/debug/xtask" ci-subject \
+            --base-sha "$SUBJECT_BASE_SHA" \
+            --head-sha "$SUBJECT_HEAD_SHA" \
+            --receipt target/receipts/ci-subject.json
 
       - name: Determine inline-completion warm-up scope
         id: inline-completion-scope
@@ -390,7 +801,7 @@ jobs:
           scope_json="${RUNNER_TEMP}/pr-smoke-ci-scope-${PR_SMOKE_RUN_ID}-${PR_SMOKE_RUN_ATTEMPT}.json"
           warm_inline_completion=true
 
-          if ! "$CARGO_TARGET_DIR/debug/xtask" ci-scope --base origin/main --format json > "$scope_json"; then
+          if ! "$CARGO_TARGET_DIR/debug/xtask" ci-scope --subject target/receipts/ci-subject.json --format json > "$scope_json"; then
             echo "::warning::ci-scope failed; retaining inline-completion warm-up (fail-closed)"
           elif ! diff_class="$(jq -er '
             if type != "object" or (.diff_class | type) != "string" or
@@ -453,7 +864,7 @@ jobs:
           # The target directory is selected before Warm xtask so gate commands reuse that build.
           # Gate receipts intentionally stay at target/receipts for upload steps.
           echo "PR-fast timeout policy: GitHub job 50m, outer runner watchdog 45m, per-gate timeouts recorded in target/receipts/receipt.json"
-          timeout --signal=TERM --kill-after=60s 2700s "$CARGO_TARGET_DIR/debug/xtask" gates --tier pr-fast --base origin/main --receipt
+          timeout --signal=TERM --kill-after=60s 2700s "$CARGO_TARGET_DIR/debug/xtask" gates --tier pr-fast --subject target/receipts/ci-subject.json --receipt
           status=$?
           case "$status" in
             124)
@@ -485,6 +896,18 @@ jobs:
               _ "${CARGO_TARGET_DIR:-target}" || true
           } >> target/receipts/logs/pr-fast-disk-pressure.log || true
 
+      # #11943 visible arm (post-run): classify gate-log exhaustion signatures
+      # into an explicit annotation naming the filled path family. Advisory
+      # only — the original gate outcome is preserved; this step never exits
+      # non-zero.
+      - name: Classify PR-fast disk exhaustion
+        if: always()
+        shell: bash
+        run: |
+          python3 scripts/ci/pr_smoke_disk_guard.py classify \
+            --logs-dir target/receipts/logs \
+            --target-dir "${CARGO_TARGET_DIR:-target}"
+
       - name: Upload PR-fast receipt
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
@@ -492,6 +915,7 @@ jobs:
           name: pr-fast-receipt-${{ github.sha }}
           path: |
             target/receipts/receipt.json
+            target/receipts/ci-subject.json
             target/receipts/logs/*.log
           if-no-files-found: warn
           retention-days: 7
@@ -596,7 +1020,7 @@ jobs:
           components: rustfmt, clippy
 
       - name: Install just
-        uses: taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1  # v2.85.13
+        uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc  # v2.86.7
         with:
           tool: just
 
@@ -614,6 +1038,10 @@ jobs:
       - name: Verify complete shard runner falsifiers
         if: matrix.name == 'meta'
         run: python3 -m unittest scripts/ci/test_run_gate_shard.py
+
+      - name: Verify scope cache key composition
+        if: matrix.name == 'meta'
+        run: python3 -m unittest scripts/ci/test_scope_cache_key.py
 
       - name: Run merge-gate shard with receipts
         shell: bash
@@ -819,18 +1247,14 @@ jobs:
           SHARD_NAME: ${{ matrix.name }}
 
   # ── CI Gate aggregate: roll up the deterministic shard + guard lanes ──
-  # NOTE ON NAME: this check is NOT a branch-protection required context. The
-  # required contexts are "Perl LSP Rust Small Result", "ripr+ New Gap Gate", and
-  # "Compile All Targets (bit-rot guard)" — the last of which is defined in this
-  # same workflow, below. `.ci/policies/required-checks.toml` is the inventory of
-  # record; keep it and this comment in step with the live ruleset.
-  #
-  # The previous name "CI Gate
-  # (Merge-Blocking)" was a misnomer — it never blocked merge — and it read as a
-  # scary hard-red on green PRs. Renamed to "CI Gate (Advisory Aggregate)" to stop
-  # misleading readers. `pr-smoke` is intentionally NOT in `needs` below: it is an
-  # advisory, flaky, redundant lane (see the pr-smoke job) and must not false-red
-  # this aggregate.
+  # This established context is hardened under #12911 but remains advisory.
+  # Candidate-controlled pull-request workflow results are not trusted required
+  # authority, so do not register this context in ruleset 16664791. The trusted
+  # organization-ruleset workflow is a separate follow-up. Keep the exact
+  # historical name for continuity with existing advisory consumers.
+  # `.ci/policies/required-checks.toml` records this advisory truth.
+  # `pr-smoke` remains intentionally outside `needs`: it is advisory, flaky, and
+  # redundant with the deterministic shard base (see the pr-smoke job).
   merge-gate:
     name: CI Gate (Advisory Aggregate)
     runs-on: ubuntu-24.04
@@ -842,87 +1266,20 @@ jobs:
       - check-all-targets
       - ux-tests
       - merge-gate-shards
-    if: always() && needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true'
-    permissions:
-      statuses: write
+    # A required dependent job must always start: a skipped job is treated as
+    # successful by GitHub protection. The classifier emits explicit scoped
+    # no-ops for draft/superseded routes and fails closed otherwise.
+    if: always()
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
       - name: Gate summary
         shell: bash
         env:
           NEEDS_JSON: ${{ toJson(needs) }}
-        run: |
-          python3 - <<'PY'
-          import json
-          import os
-          from pathlib import Path
-
-          needs = json.loads(os.environ["NEEDS_JSON"])
-          lines = ["### CI Gate aggregate", ""]
-          lines.append("| Dependency | Result |")
-          lines.append("| --- | --- |")
-          failed = []
-          for name, value in sorted(needs.items()):
-              result = value.get("result", "")
-              lines.append(f"| {name} | {result} |")
-              # "cancelled" means a GitHub concurrency-group kill on a superseded SHA —
-              # infra-noise, not a real failure.  "skipped" is an intentional gate bypass.
-              # Only genuine "failure" / "timed_out" / etc. block the merge gate.
-              # The agent-level classifier (green-ci-check, #351) remains the authoritative
-              # routing interpretation for per-PR check states.
-              if result not in ("success", "skipped", "cancelled"):
-                  failed.append(name)
-
-          if failed:
-              lines.extend(["", f"Blocking dependency failure(s): {', '.join(failed)}"])
-          else:
-              lines.extend(["", "All merge-gate dependencies passed."])
-
-          summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
-          if summary_path:
-              Path(summary_path).write_text("\n".join(lines) + "\n", encoding="utf-8")
-
-          if failed:
-              raise SystemExit(1)
-          PY
-
-      - name: Set PR status (check)
-        if: always()
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9
-        env:
-          NEEDS_JSON: ${{ toJson(needs) }}
-        with:
-          script: |
-            const needs = JSON.parse(process.env.NEEDS_JSON || '{}');
-            // Mirror the Gate summary classifier: cancelled (concurrency-group kill on
-            // superseded SHA) and skipped are non-blocking; only failure/timed_out/etc block.
-            const failed = Object.entries(needs)
-              .filter(([name, value]) => !['success', 'skipped', 'cancelled'].includes(value.result))
-              .map(([name]) => name);
-            const status = failed.length === 0 ? 'success' : 'failure';
-            const description = failed.length === 0
-              ? 'All merge-gate dependencies passed'
-              : `Failed dependency: ${failed.join(', ')}`;
-
-            console.log(`Setting PR status to: ${status}`);
-            console.log(`Description: ${description}`);
-
-            try {
-              await github.rest.repos.createCommitStatus({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                sha: context.sha,
-                state: status,
-                context: 'ci/merge-gate',
-                description,
-                target_url: `${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}`
-              });
-            } catch (error) {
-              if (error.status === 403) {
-                core.warning(`Could not create ci/merge-gate commit status from this workflow context: ${error.message}`);
-              } else {
-                throw error;
-              }
-            }
+          EVENT_NAME: ${{ github.event_name }}
+          PULL_REQUEST_DRAFT: ${{ github.event.pull_request.draft }}
+        run: python3 scripts/ci/evaluate_ci_gate.py
 
   # ── UX Tests: first-5-minutes scenario regression suite ──────────────
   ux-tests:
@@ -963,7 +1320,7 @@ jobs:
           toolchain: 1.95.0
 
       - name: Install just
-        uses: taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1  # v2.85.13
+        uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc  # v2.86.7
         with:
           tool: just
 
@@ -1169,7 +1526,7 @@ jobs:
           toolchain: 1.95.0
 
       - name: Install just
-        uses: taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1  # v2.85.13
+        uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc  # v2.86.7
         with:
           tool: just
 
@@ -1183,6 +1540,15 @@ jobs:
 
       - name: Compile all targets (catches integration-test + bench bit-rot)
         run: just check-all-targets
+
+      # The frozen legacy parity authority is a required merge surface. Keep
+      # both integration targets here because compile-all-targets alone cannot
+      # execute their assertions, and the routed pr-fast lane is advisory.
+      - name: Legacy parity library authority (required merge surface)
+        run: cargo test -p perl-kwalitee --test legacy_parity --locked -- --nocapture
+
+      - name: Legacy parity CLI authority (required merge surface)
+        run: cargo test -p xtask --test perl_kwalitee_parity --locked -- --nocapture
 
       # Required merge surface for #7767/#7796: unit_routed_full only executes via
       # advisory pr-smoke, so stale Emacs guidance could otherwise merge while this
@@ -1207,6 +1573,19 @@ jobs:
       # goes back to certifying a version from a ref shape.
       - name: Publish-provenance contract (required merge surface)
         run: cargo test -p xtask --test post_publish_smoke_version_provenance --locked -- --nocapture
+
+      # Same reasoning as the contracts above: the #11382 TDD-facade
+      # recurrence guard otherwise only executes through diff-routed advisory
+      # lanes, so stale facade imports could merge without it ever running.
+      - name: TDD facade consumer contract (required merge surface)
+        run: cargo test -p xtask --test parser_tdd_facade_consumers --locked -- --nocapture
+
+      # #12863/#12693: no gate row or other workflow executed the budget witness
+      # below, so its pins could all fail while every required check stayed
+      # green. It reads exactly the two files this job budgets, so run it next
+      # to the four contracts above on the same required merge surface.
+      - name: Gate-policy budget witness contract (required merge surface)
+        run: cargo test -p xtask --test issue_4657_ci_workflow_contract --locked -- --nocapture
 
   lsp-memory-smoke:
     name: LSP Memory Smoke

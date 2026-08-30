@@ -104,7 +104,9 @@ impl DiagnosticCode {
             | Self::SecurityExecCall
             | Self::SecurityPipeOpen
             | Self::SecurityReadpipe
-            | Self::SecuritySqlInjection => DiagnosticCategory::Security,
+            | Self::SecuritySqlInjection
+            | Self::SecuritySubstitutionEval
+            | Self::SecurityEmbeddedRegexCode => DiagnosticCategory::Security,
 
             Self::UnusedImport | Self::ModuleNotFound | Self::SourceFilterModule => {
                 DiagnosticCategory::Import

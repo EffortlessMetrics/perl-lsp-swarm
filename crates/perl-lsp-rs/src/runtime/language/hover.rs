@@ -1299,7 +1299,11 @@ impl LspServer {
         if let NodeKind::Use { module, .. } = &node.kind
             && !module.is_empty()
         {
-            return Some(module.clone());
+            // The parser retains a version directive in the module field for
+            // `use Foo 1.23`. Hover resolution must use only the module head;
+            // the version remains parser/compiler data, not a filesystem name.
+            let module_head = module.split_ascii_whitespace().next()?;
+            return Self::lookup_safe_module_name(module_head);
         }
 
         // Recurse into container nodes
@@ -1358,10 +1362,8 @@ impl LspServer {
                     }
                 }
             }
-            NodeKind::Package { block, .. } => {
-                if let Some(b) = block {
-                    return Self::find_phase_block_at_offset(b, offset);
-                }
+            NodeKind::Package { block: Some(b), .. } => {
+                return Self::find_phase_block_at_offset(b, offset);
             }
             NodeKind::PhaseBlock { block, .. } => {
                 return Self::find_phase_block_at_offset(block, offset);
@@ -1393,7 +1395,18 @@ impl LspServer {
             return None;
         }
 
-        Some(perl_module::normalize_package_separator(head.token).into_owned())
+        Self::lookup_safe_module_name(head.token)
+    }
+
+    /// Normalize and validate a module name before it can reach resolution or hover building.
+    ///
+    /// Token scanning intentionally accepts the parser's broader Unicode identifier surface,
+    /// while filesystem/module lookup uses the stricter shared `perl_module` authority. Keeping
+    /// this boundary in one helper prevents AST-backed `use` and text-backed `require` paths from
+    /// silently diverging.
+    fn lookup_safe_module_name(module_name: &str) -> Option<String> {
+        let normalized = perl_module::normalize_package_separator(module_name);
+        perl_module::is_lookup_safe_module_name(&normalized).then(|| normalized.into_owned())
     }
 
     fn is_static_require_module(

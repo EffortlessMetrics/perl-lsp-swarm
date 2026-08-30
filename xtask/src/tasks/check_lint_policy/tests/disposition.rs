@@ -7,8 +7,8 @@ const REQUIRED: [&str; 7] = [
     "rust::const_item_interior_mutations",
     "rust::function_casts_as_integer",
     "clippy::same_length_and_capacity",
-    "clippy::disallowed_fields",
     "clippy::manual_checked_ops",
+    "clippy::manual_ilog2",
     "clippy::manual_take",
     "clippy::manual_pop_if",
 ];
@@ -20,7 +20,7 @@ fn required_ledger() -> super::super::model::LintLedger {
         lint_entry(REQUIRED[2], "tracked"),
     ]);
     ledger.planned.push(planned_lint(REQUIRED[3], "1.96"));
-    ledger.planned.push(planned_lint(REQUIRED[4], "1.96"));
+    ledger.lint.push(lint_entry(REQUIRED[4], "active"));
     ledger.deferred_due.push(deferred_lint(REQUIRED[5], "1.95"));
     ledger.deferred_due.push(deferred_lint(REQUIRED[6], "1.95"));
     ledger
@@ -91,7 +91,10 @@ fn active_lints_cannot_leave_cargo_unratcheted() -> Result<()> {
         bail!("active lint without a Cargo.toml activation should fail");
     };
     // The validator names the lint status first (#10135); the assertion must
-    // match the status-first message contract (#12772).
+    // match the status-first message contract (#12772). The branch's earlier
+    // note: the original assertion (#12737) transposed that word order and
+    // could never match; an active ledger row without a Cargo.toml activation
+    // still fails with this exact typed reason.
     assert!(
         error.to_string().contains("active lint clippy::collapsible_if is missing from Cargo.toml")
     );
@@ -149,13 +152,64 @@ fn expired_deferred_lint_fails() -> Result<()> {
 #[test]
 fn required_lint_identity_cannot_be_deleted_from_the_merged_model() -> Result<()> {
     let mut ledger = required_ledger();
-    ledger.planned.retain(|lint| lint.name != REQUIRED[4]);
+    ledger.planned.retain(|lint| lint.name != REQUIRED[3]);
 
     let result = validate_required_dispositions(&ledger);
     let Err(error) = result else {
         bail!("missing required lint identity should fail closed");
     };
-    assert!(error.to_string().contains(REQUIRED[4]));
+    assert!(error.to_string().contains(REQUIRED[3]));
+    assert!(error.to_string().contains("exactly once"));
+    Ok(())
+}
+
+#[test]
+fn disallowed_fields_phase1_does_not_depend_on_required_dispositions() -> Result<()> {
+    let ledger = required_ledger();
+    validate_required_dispositions(&ledger)
+}
+
+#[test]
+fn required_manual_ilog2_cannot_be_demoted_out_of_active_enforcement() -> Result<()> {
+    // Demotion keeps identity count at one and keeps level "deny" (planned rows
+    // carry deny too), so neither the identity nor the level pin can catch it.
+    // Only the pinned active status fails this closed.
+    let mut demoted = required_ledger();
+    demoted.lint.retain(|lint| lint.name != "clippy::manual_ilog2");
+    demoted.planned.push(planned_lint("clippy::manual_ilog2", "1.99"));
+
+    let Err(error) = validate_required_dispositions(&demoted) else {
+        bail!("demoting manual_ilog2 to a planned row should fail closed");
+    };
+    assert!(error.to_string().contains("clippy::manual_ilog2"));
+    assert!(error.to_string().contains("must remain an active ledger entry"));
+    Ok(())
+}
+
+#[test]
+fn required_manual_ilog2_level_and_identity_cannot_be_rolled_back() -> Result<()> {
+    let mut rolled_back = required_ledger();
+    rolled_back
+        .lint
+        .iter_mut()
+        .find(|lint| lint.name == "clippy::manual_ilog2")
+        .ok_or_else(|| color_eyre::eyre::eyre!("manual_ilog2 fixture entry missing"))?
+        .level = "warn".to_owned();
+
+    let result = validate_required_dispositions(&rolled_back);
+    let Err(error) = result else {
+        bail!("synchronized manual_ilog2 rollback to warn should fail closed");
+    };
+    assert!(error.to_string().contains("clippy::manual_ilog2"));
+    assert!(error.to_string().contains("must remain at level deny"));
+
+    let mut partially_removed = required_ledger();
+    partially_removed.lint.retain(|lint| lint.name != "clippy::manual_ilog2");
+    let result = validate_required_dispositions(&partially_removed);
+    let Err(error) = result else {
+        bail!("removing the required manual_ilog2 disposition should fail closed");
+    };
+    assert!(error.to_string().contains("clippy::manual_ilog2"));
     assert!(error.to_string().contains("exactly once"));
     Ok(())
 }

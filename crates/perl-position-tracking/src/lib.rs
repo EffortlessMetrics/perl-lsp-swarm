@@ -31,6 +31,7 @@
 //! ```
 
 #![warn(missing_docs)]
+#![deny(clippy::map_err_ignore)] // Cohort C1 activation (#12598): all production rows exact-excepted; new findings move the crate back to non-C1.
 
 pub use convert::{offset_to_utf16_line_col, utf16_line_col_to_offset};
 pub use line_index::{LineIndex, LineStartsCache};

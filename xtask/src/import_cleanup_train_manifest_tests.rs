@@ -130,6 +130,22 @@ fn import_cleanup_train_manifest_code_action_completion_collapse_is_rejected() -
 }
 
 #[test]
+fn import_cleanup_train_manifest_internal_plan_spine_role_reuse_is_rejected() -> Result<()> {
+    let mut value = real_value()?;
+    // The internal-plan spine stays stage-separated by role: the five active
+    // add_missing internal_plan rows each hold a distinct role. Give DEC8948
+    // the role ADM11169 already holds and the spine collapses to one stage.
+    //
+    // This is the negative control for the `spine_seen.insert` guard (#12910).
+    // The insert is a side effect inside a match guard: a first sighting must
+    // still be recorded and fall through, while a repeat must fail closed.
+    // `import_cleanup_train_manifest_happy_graph_identity_values_hold`
+    // covers the fall-through direction; this covers the bail.
+    set_node_string(&mut value, "DEC8948", "role", "product_admission")?;
+    assert_rejected(&value, "two internal-plan rows share role")
+}
+
+#[test]
 fn import_cleanup_train_manifest_wire_confusion_between_adapters_is_rejected() -> Result<()> {
     let mut value = real_value()?;
     set_node_string(&mut value, "CADP11184", "wire_kind", "workspace_edit")?;

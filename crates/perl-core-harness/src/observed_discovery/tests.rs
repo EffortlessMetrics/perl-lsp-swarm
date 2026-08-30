@@ -1154,3 +1154,51 @@ impl ObservedDiscoveryInput {
         self
     }
 }
+
+#[test]
+fn deserialized_receipt_intake_rejects_noncanonical_artifact_digest_spelling() -> Result<()> {
+    // #7725 review falsifier: receipts arriving by deserialization bypass
+    // construction entirely, so the canonical-spelling law must hold on the
+    // shared receipt-validation path, not only at the constructor.
+    let matrix = matrix()?;
+    let receipt = build(&matrix, &base_input(&matrix, "component_base", b"t/base/if.t\n")?)?;
+    let original = receipt.payload.invocation.runner_artifact.content_sha256.clone();
+
+    let retag_artifact = |spelled: String| -> Result<UpstreamDiscoveryReceiptV1> {
+        let mut value = serde_json::to_value(&receipt)?;
+        value["payload"]["invocation"]["runner_artifact"]["content_sha256"] = json!(spelled);
+        let mut tampered: UpstreamDiscoveryReceiptV1 = serde_json::from_value(value)?;
+        tampered.payload_digest =
+            discovery_payload_digest(&tampered.payload).map_err(|error| eyre!(error))?;
+        Ok(tampered)
+    };
+
+    let uppercased = retag_artifact(original.to_ascii_uppercase())?;
+    assert_rejected_where(
+        "uppercase artifact digest under a recomputed payload digest",
+        validate_receipt_subject_binding(&uppercased),
+    )?;
+    assert!(validate_observed_discovery_receipt(&matrix, &uppercased).is_err());
+
+    // Flip exactly one case-bearing (letter) nibble, never a digit, so the
+    // mutation cannot collapse into the canonical control when the digest
+    // happens to start with a hex digit.
+    let mut mixed = original.clone();
+    let letter_nibble = mixed
+        .bytes()
+        .position(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_digit())
+        .ok_or_else(|| eyre!("fixture artifact digest carries no case-bearing nibble"))?;
+    let flipped = mixed[letter_nibble..=letter_nibble].to_ascii_uppercase();
+    mixed.replace_range(letter_nibble..=letter_nibble, &flipped);
+    assert_ne!(mixed, original, "mixed-case mutation must alter the spelling");
+    let mixed_case = retag_artifact(mixed)?;
+    assert_rejected_where(
+        "single mixed-case nibble under a recomputed payload digest",
+        validate_receipt_subject_binding(&mixed_case),
+    )?;
+
+    // Canonical control: the unchanged spelling keeps validating.
+    ensure(validate_receipt_subject_binding(&receipt))?;
+    ensure(validate_observed_discovery_receipt(&matrix, &receipt))?;
+    Ok(())
+}

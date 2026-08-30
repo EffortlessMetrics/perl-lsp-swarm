@@ -7,9 +7,11 @@ on:
       - "scripts/test/vim-host-driver.vim"
       - "scripts/test/vim-host-diagnostics-driver.vim"
       - "scripts/test/vim-host-freshness-driver.vim"
+      - "scripts/test/vim-host-save-format-driver.vim"
       - "scripts/test/vim-clients/**"
       - ".ci/editor-clients/vim-vim-lsp-*.json"
       - "crates/perl-lsp-rs-core/**"
+      - "crates/perl-lsp-perltidy/**"
       - "crates/perl-lsp-rs/**"
       - "crates/perl-diagnostics/**"
       - "crates/perl-module/**"
@@ -282,6 +284,116 @@ jobs:
             exit 1
           fi
 
+      - name: Run the #11396 save-format journey (canonical)
+        run: >-
+          cargo run --quiet --locked -p xtask --
+          editor-compat vim run
+          --subject pinned_vim_lsp_upstream
+          --journey save-format
+          --fixture-variant canonical
+          --vim "$(command -v vim)"
+          --vim-lsp-dir "${GITHUB_WORKSPACE}/target/vim-lsp-subject"
+          --candidate "${GITHUB_WORKSPACE}/target/debug/perllsp"
+          --out "${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/save-canonical"
+          --timeout-ms 600000
+
+      - name: Bind the seven save cells (fail closed on any non-pass; the failure cell carries its family disposition token)
+        run: |
+          set -euo pipefail
+          receipt="${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/save-canonical/receipt.json"
+          result="$(jq -r '.result' "${receipt}")"
+          echo "save-format result: ${result}"
+          [ "${result}" = "pass" ]
+          for cell in \
+            vim.vim_lsp.save.route \
+            vim.vim_lsp.save.invocation_cardinality \
+            vim.vim_lsp.save.format_applied \
+            vim.vim_lsp.save.format_no_change \
+            vim.vim_lsp.save.disabled_or_refused \
+            vim.vim_lsp.save.failure \
+            vim.vim_lsp.save.stale_result_rejected; do
+            observed="$(jq -r --arg id "${cell}" '.journey[] | select(.id == $id) | .result' "${receipt}")"
+            echo "cell ${cell}: ${observed}"
+            [ "${observed}" = "pass" ]
+          done
+          # The failure cell's #11384 family row never carries pass: the
+          # generic journey cell records the proven honest-record claim, and
+          # its limitation must carry the observed_disposition=fail token.
+          failure_limitation="$(jq -r '.journey[] | select(.id == "vim.vim_lsp.save.failure") | .limitation' "${receipt}")"
+          echo "failure cell limitation: ${failure_limitation}"
+          case "${failure_limitation}" in
+            observed_disposition=fail*) ;;
+            *) echo "the failure cell does not carry the family disposition token" >&2; exit 1 ;;
+          esac
+          [ -s "${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/save-canonical/hermetic/raw/vim-lsp-client.log" ]
+
+      - name: Save-format negative control — manual comparator must fail typed
+        run: |
+          set -euo pipefail
+          # Same law as the earlier controls: exit 0 means the typed
+          # save_trigger_absent failure was observed and validated — the
+          # manual comparator can never be relabeled save-triggered.
+          cargo run --quiet --locked -p xtask -- \
+            editor-compat vim run \
+            --subject pinned_vim_lsp_upstream \
+            --journey save-format \
+            --fixture-variant manual_comparator_only \
+            --vim "$(command -v vim)" \
+            --vim-lsp-dir "${GITHUB_WORKSPACE}/target/vim-lsp-subject" \
+            --candidate "${GITHUB_WORKSPACE}/target/debug/perllsp" \
+            --out "${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/save-manual-comparator" \
+            --timeout-ms 420000
+          receipt="${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/save-manual-comparator/receipt.json"
+          result="$(jq -r '.result' "${receipt}")"
+          echo "manual_comparator_only control result: ${result}"
+          [ "${result}" = "fail" ]
+
+      - name: Save-format negative control — duplicate owner must fail typed
+        run: |
+          set -euo pipefail
+          # Two armed owners make one save issue two formatting invocations;
+          # the cardinality law must refuse it with the typed reason.
+          cargo run --quiet --locked -p xtask -- \
+            editor-compat vim run \
+            --subject pinned_vim_lsp_upstream \
+            --journey save-format \
+            --fixture-variant duplicate_owner \
+            --vim "$(command -v vim)" \
+            --vim-lsp-dir "${GITHUB_WORKSPACE}/target/vim-lsp-subject" \
+            --candidate "${GITHUB_WORKSPACE}/target/debug/perllsp" \
+            --out "${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/save-duplicate-owner" \
+            --timeout-ms 420000
+          receipt="${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/save-duplicate-owner/receipt.json"
+          result="$(jq -r '.result' "${receipt}")"
+          echo "duplicate_owner control result: ${result}"
+          [ "${result}" = "fail" ]
+
+      - name: Save-format negative control — wrong/outer root must fail typed
+        run: |
+          set -euo pipefail
+          cargo run --quiet --locked -p xtask -- \
+            editor-compat vim run \
+            --subject pinned_vim_lsp_upstream \
+            --journey save-format \
+            --fixture-variant wrong_root_decoy \
+            --vim "$(command -v vim)" \
+            --vim-lsp-dir "${GITHUB_WORKSPACE}/target/vim-lsp-subject" \
+            --candidate "${GITHUB_WORKSPACE}/target/debug/perllsp" \
+            --out "${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/save-wrong-root" \
+            --timeout-ms 420000
+          receipt="${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/save-wrong-root/receipt.json"
+          result="$(jq -r '.result' "${receipt}")"
+          echo "wrong_root_decoy control result: ${result}"
+          [ "${result}" = "fail" ]
+
+      - name: Prove no candidate process survives the save-format journeys
+        run: |
+          if pgrep -f '[p]erllsp([[:space:]]|$)' >/dev/null; then
+            echo "a perllsp process survived the save-format host runs" >&2
+            pgrep -af '[p]erllsp([[:space:]]|$)' >&2 || true
+            exit 1
+          fi
+
       - name: Upload the run evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
@@ -307,4 +419,12 @@ jobs:
             target/vim-host-runs/ci/freshness-live-reload-claimed/hermetic/artifacts/
             target/vim-host-runs/ci/freshness-ambient-path/receipt.json
             target/vim-host-runs/ci/freshness-ambient-path/hermetic/artifacts/
+            target/vim-host-runs/ci/save-canonical/receipt.json
+            target/vim-host-runs/ci/save-canonical/hermetic/artifacts/
+            target/vim-host-runs/ci/save-manual-comparator/receipt.json
+            target/vim-host-runs/ci/save-manual-comparator/hermetic/artifacts/
+            target/vim-host-runs/ci/save-duplicate-owner/receipt.json
+            target/vim-host-runs/ci/save-duplicate-owner/hermetic/artifacts/
+            target/vim-host-runs/ci/save-wrong-root/receipt.json
+            target/vim-host-runs/ci/save-wrong-root/hermetic/artifacts/
           if-no-files-found: warn

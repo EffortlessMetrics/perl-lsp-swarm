@@ -1511,3 +1511,42 @@ fn registered_schema_rejects_the_consumer_side_stale_state() -> Result<()> {
         .map_err(|error| eyre!("malformed outcome must match the registered schema: {error}"))?;
     Ok(())
 }
+
+#[test]
+fn trace_receipt_intake_rejects_noncanonical_artifact_digest_spelling() -> Result<()> {
+    // #7725 review falsifier: a deserialized trace receipt can recompute its
+    // own payload digest, so the artifact-digest intake law must be enforced
+    // on the shared validation path and cannot rest on construction alone.
+    let fixture = TraceFixture::new("component_base", "t/base/if.t\n")?;
+    let bytes = fixture.emit_complete(&["t/base/if.t"])?;
+    let receipt = build(&fixture, &bytes)?;
+    let original = receipt.payload.runner_artifact.content_sha256.clone();
+
+    let uppercase = tampered_receipt(
+        &receipt,
+        "/payload/runner_artifact/content_sha256",
+        json!(original.to_ascii_uppercase()),
+    )?;
+    assert!(validate_trace_receipt_subject_binding(&uppercase).is_err());
+    assert!(validate_invocation_trace_receipt(&fixture.parent, &uppercase).is_err());
+
+    // Flip exactly one case-bearing (letter) nibble, never a digit, so the
+    // mutation cannot collapse into the canonical control when the digest
+    // happens to start with a hex digit.
+    let mut mixed = original.clone();
+    let letter_nibble = mixed
+        .bytes()
+        .position(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_digit())
+        .ok_or_else(|| eyre!("fixture artifact digest carries no case-bearing nibble"))?;
+    let flipped = mixed[letter_nibble..=letter_nibble].to_ascii_uppercase();
+    mixed.replace_range(letter_nibble..=letter_nibble, &flipped);
+    assert_ne!(mixed, original, "mixed-case mutation must alter the spelling");
+    let mixed_case =
+        tampered_receipt(&receipt, "/payload/runner_artifact/content_sha256", json!(mixed))?;
+    assert!(validate_trace_receipt_subject_binding(&mixed_case).is_err());
+
+    // Canonical control: the unchanged spelling keeps validating.
+    ensure(validate_trace_receipt_subject_binding(&receipt))?;
+    ensure(validate_invocation_trace_receipt(&fixture.parent, &receipt))?;
+    Ok(())
+}

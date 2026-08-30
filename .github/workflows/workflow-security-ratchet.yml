@@ -15,11 +15,12 @@ on:
   pull_request_target:
     branches: [main, master]
     types: [opened, synchronize, reopened, ready_for_review]
-    # No `paths` filter on this event: scope is enforced inside the job instead,
-    # so a required check run is always reported (always-or-scoped-noop per
+    # No `paths` filter on this event and no job-level `if:` gate either:
+    # applicability is resolved entirely inside the job's first step, so a
+    # required check run is always reported (always-or-scoped-noop per
     # .ci/policies/required-checks.toml) and non-workflow dependency PRs
     # (Cargo.lock / npm manifests) resolve green immediately instead of facing a
-    # never-reported context if this job is ever ruleset-required (#10536).
+    # never-reported context when this job becomes ruleset-required (#10536).
     # The `push` trigger below keeps its paths filter; main-redness channels
     # are unchanged.
   push:
@@ -42,7 +43,15 @@ permissions:
 jobs:
   trusted-base-ratchet:
     name: Trusted-base workflow security ratchet
-    if: github.event_name == 'pull_request_target'
+    # Required-context reachability (#10536): no job-level `if:`. The context
+    # must report on every trigger of this workflow so registering it as
+    # ruleset-required can never produce a never-reported merge block. All
+    # filtering is in-job: non-pull_request_target events (push /
+    # workflow_dispatch) take the scoped-noop exit below and delegate
+    # trusted-base self-validation to the main-selfcheck job of the same run;
+    # pull_request_target runs without control-path deltas take the existing
+    # path-delta scoped-noop exit inside the import step (pr-title-check.yml
+    # idiom: terminal job, in-job applicability handling).
     # Candidate bytes are untrusted even though they are never executed. Keep
     # this trusted-base evaluator off persistent self-hosted capacity.
     runs-on: ubuntu-24.04
@@ -50,7 +59,21 @@ jobs:
     permissions:
       contents: read
     steps:
+      - name: Resolve trusted-base scope
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" != "pull_request_target" ]; then
+            printf 'trusted-base scoped-noop: %s run delegates trusted-base self-validation to main-selfcheck\n' \
+              "$EVENT_NAME" >> "$GITHUB_STEP_SUMMARY"
+            printf 'SCOPED_NOOP=true\n' >> "$GITHUB_ENV"
+            printf '::notice::%s event: trusted-base validation owned by main-selfcheck; reporting scoped-noop\n' \
+              "$EVENT_NAME"
+          fi
+
       - name: Checkout exact trusted base authority
+        if: env.SCOPED_NOOP != 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ github.event.pull_request.base.sha }}
@@ -58,6 +81,7 @@ jobs:
           persist-credentials: false
 
       - name: Import exact PR head as inert Git data
+        if: env.SCOPED_NOOP != 'true'
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
@@ -169,7 +193,12 @@ jobs:
             --report target/receipts/workflow-security-candidate-baseline.json
 
       - name: Upload authoritative ratchet receipts
-        if: always()
+        # Receipts only exist on scan paths, so skip scoped-noop runs without
+        # empty placeholder artifacts. The explicit status function is
+        # load-bearing: a bare non-status condition would get an implicit
+        # `success()` prefix and silently drop receipts on scan failures
+        # (.github/workflows/ci.yml idiom).
+        if: ${{ !cancelled() && env.SCOPED_NOOP != 'true' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: workflow-security-ratchet-${{ github.event.pull_request.head.sha }}

@@ -2014,6 +2014,45 @@ fn coverage_pack_manifest_declares_generate_badges_pack_owns_badges_wrapper() ->
 }
 
 #[test]
+fn coverage_pack_manifest_routes_both_ripr_badge_python_paths() -> Result<()> {
+    let manifest_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .map(PathBuf::from)
+        .ok_or_else(|| anyhow!("xtask manifest path has no parent"))?
+        .join(".ci/coverage-packs.toml");
+    let manifest: toml::Value = toml::from_str(&fs::read_to_string(manifest_path)?)?;
+    let packs = manifest
+        .get("pack")
+        .and_then(toml::Value::as_array)
+        .ok_or_else(|| anyhow!("coverage pack manifest must contain pack array"))?;
+    let pack = packs
+        .iter()
+        .find(|pack| {
+            pack.get("id").and_then(toml::Value::as_str)
+                == Some("patch-coverage-ripr-badge-endpoints")
+        })
+        .ok_or_else(|| anyhow!("missing RIPR badge endpoint coverage pack"))?;
+    let files = pack
+        .get("files")
+        .and_then(toml::Value::as_array)
+        .ok_or_else(|| anyhow!("coverage pack files must be an array"))?;
+    let routed: Vec<_> = files.iter().filter_map(toml::Value::as_str).collect();
+    assert!(routed.contains(&"scripts/generate-badges.py"));
+    assert!(routed.contains(&"scripts/tests/test-generate-badges.py"));
+    let commands = pack
+        .get("commands")
+        .and_then(toml::Value::as_array)
+        .ok_or_else(|| anyhow!("coverage pack commands must be an array"))?;
+    assert!(
+        commands
+            .iter()
+            .filter_map(toml::Value::as_str)
+            .any(|value| { value == "python scripts/tests/test-generate-badges.py" })
+    );
+    Ok(())
+}
+
+#[test]
 fn coverage_pack_manifest_declares_ignored_test_count_pack_owns_count_wrapper() -> Result<()> {
     let manifest_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()

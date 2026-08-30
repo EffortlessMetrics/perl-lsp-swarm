@@ -111,6 +111,21 @@
       "boundedness": "focused"
     },
     {
+      "id": "parser.red_black_tree_access_paths",
+      "package": "perl-parser-core",
+      "target": "red_black_tree_access_paths_tests",
+      "features": [],
+      "no_default_features": false,
+      "cargo_args": [],
+      "test_args": [
+        "--test-threads=4"
+      ],
+      "owner": "#4847",
+      "reason": "Pin red-black-tree rotation and fix-up access paths: container reads, terminal writes, and single ReadModifyWrite places.",
+      "disposition": "execute",
+      "boundedness": "focused"
+    },
+    {
       "id": "parser.semantic.smoke",
       "package": "perl-parser",
       "target": "semantic_smoke_tests",
@@ -248,6 +263,21 @@
       ],
       "owner": "#11787",
       "reason": "Execute the full ripr seam-proof suite for the parser (seams 1-5): class version, builtin ternary, dollar-deref, substitution e-modifier, and related boundaries.",
+      "disposition": "execute",
+      "boundedness": "focused"
+    },
+    {
+      "id": "parser.command_line.oneliners",
+      "package": "perl-parser-core",
+      "target": "command_line_oneliners",
+      "features": [],
+      "no_default_features": false,
+      "cargo_args": [],
+      "test_args": [
+        "--test-threads=4"
+      ],
+      "owner": "#13114",
+      "reason": "Keep representative source bodies used with Perl command-line switches executable as clean parser contracts.",
       "disposition": "execute",
       "boundedness": "focused"
     }

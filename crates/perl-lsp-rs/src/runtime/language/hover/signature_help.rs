@@ -286,10 +286,8 @@ impl LspServer {
                     }
                     depth -= 1;
                 }
-                '[' | '{' => {
-                    if depth > 0 {
-                        depth -= 1;
-                    }
+                '[' | '{' if depth > 0 => {
+                    depth -= 1;
                 }
                 _ => {}
             }
@@ -471,13 +469,11 @@ impl LspServer {
         name: &str,
     ) -> Option<&'a Node> {
         match &node.kind {
-            NodeKind::Subroutine { name: sub_name, .. } => {
-                if let Some(sub_name) = sub_name {
-                    let (_, sub_bare) = perl_parser::qualified_name::split_qualified_name(sub_name);
-                    let (_, name_bare) = perl_parser::qualified_name::split_qualified_name(name);
-                    if sub_bare == name_bare {
-                        return Some(node);
-                    }
+            NodeKind::Subroutine { name: Some(sub_name), .. } => {
+                let (_, sub_bare) = perl_parser::qualified_name::split_qualified_name(sub_name);
+                let (_, name_bare) = perl_parser::qualified_name::split_qualified_name(name);
+                if sub_bare == name_bare {
+                    return Some(node);
                 }
             }
             NodeKind::Method { name: method_name, .. } => {

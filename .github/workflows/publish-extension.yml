@@ -19,13 +19,89 @@ permissions:
   contents: read
 
 jobs:
+  # Dispatch-selected refs used to flow straight into every job of this
+  # workflow, including the ones holding the Marketplace/Open VSX PATs
+  # (#9595/#9597). This gate resolves the two trusted subjects server-side —
+  # the repository default-branch head and the commit behind the declared
+  # version's `v<version>` tag — over an anonymous `git ls-remote`, with no
+  # checkout and no token mounted. A dispatch-selected ref that is neither of
+  # those fails closed here, before any credential-bearing job is scheduled.
+  resolve-trusted-anchor:
+    name: Resolve trusted publish anchor
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: none
+    outputs:
+      approved_sha: ${{ steps.anchor.outputs.approved_sha }}
+    steps:
+      - name: Resolve trusted anchors server-side
+        id: anchor
+        env:
+          REPO_URL: https://github.com/${{ github.repository }}.git
+          SELECTED_SHA: ${{ github.sha }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          VERSION_INPUT_RAW: ${{ github.event.inputs.version }}
+        run: |
+          set -euo pipefail
+
+          if ! [[ "$SELECTED_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Dispatch subject is not a full commit SHA."
+            exit 1
+          fi
+
+          if [ -z "$DEFAULT_BRANCH" ] || ! [[ "$DEFAULT_BRANCH" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]{0,200}$ ]]; then
+            echo "::error::Repository default branch is missing or oddly named; refusing to derive a trusted anchor."
+            exit 1
+          fi
+
+          shas_for() {
+            git ls-remote "$REPO_URL" "$@" | awk '{print $1}' | sort -u
+          }
+
+          DEFAULT_HEAD=$(shas_for "refs/heads/${DEFAULT_BRANCH}" | sed -n '1p')
+          if ! [[ "$DEFAULT_HEAD" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Could not resolve refs/heads/${DEFAULT_BRANCH} server-side; refusing to approve this run."
+            exit 1
+          fi
+
+          APPROVED=""
+          if [ "$SELECTED_SHA" = "$DEFAULT_HEAD" ]; then
+            APPROVED="$SELECTED_SHA"
+            printf 'Approved %s: selected ref matches the current %s head.\n' "$SELECTED_SHA" "$DEFAULT_BRANCH"
+          elif [[ "$VERSION_INPUT_RAW" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
+            # Release orchestration cuts annotated tags (`git tag -a`), whose
+            # `refs/tags/v<X>` object id differs from the tagged commit that
+            # dispatch selects, so the peeled `^{}` commit must be compared too.
+            TAG_SHAS=$(shas_for "refs/tags/v${VERSION_INPUT_RAW}" "refs/tags/v${VERSION_INPUT_RAW}^{}")
+            if grep -qx "$SELECTED_SHA" <<<"$TAG_SHAS"; then
+              APPROVED="$SELECTED_SHA"
+              printf 'Approved %s: selected ref matches tag refs/tags/v%s.\n' "$SELECTED_SHA" "$VERSION_INPUT_RAW"
+            fi
+          fi
+
+          if [ -z "$APPROVED" ]; then
+            {
+              echo "::error::Publishing requires a trusted anchor: dispatch on the repository default branch (${DEFAULT_BRANCH}) or on a ref whose commit equals tag v${VERSION_INPUT_RAW}."
+              echo "::error::Unapproved refs cannot reach a credential-bearing step (#9595/#9597)."
+            } >&2
+            exit 1
+          fi
+
+          printf 'approved_sha=%s\n' "$APPROVED" >> "$GITHUB_OUTPUT"
+
   prepare-vsix:
     name: Prepare VSIX
+    needs: resolve-trusted-anchor
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     outputs:
       artifact_name: ${{ steps.version.outputs.artifact_name }}
-      build_sha: ${{ github.sha }}
+      # Provenance binding (#9597): the published subject is the gate-approved
+      # anchor, which equals the dispatch-selected ref only after the gate has
+      # approved it. Downstream consumers must treat this — not github.sha —
+      # as the built subject.
+      build_sha: ${{ needs.resolve-trusted-anchor.outputs.approved_sha }}
       is_prerelease: ${{ steps.version.outputs.is_prerelease }}
       release_tag: ${{ steps.version.outputs.release_tag }}
       version: ${{ steps.version.outputs.version }}
@@ -36,6 +112,10 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # Build only the gate-approved subject; an operator-selected ref that
+          # is neither the default-branch head nor the version tag never gets
+          # this far (#9595/#9597).
+          ref: ${{ needs.resolve-trusted-anchor.outputs.approved_sha }}
 
       - name: Setup VS Code toolchain
         uses: ./.github/actions/setup-vscode-toolchain
@@ -131,7 +211,9 @@ jobs:
 
   publish-vscode-marketplace:
     name: Publish VS Code Marketplace
-    needs: prepare-vsix
+    needs:
+      - resolve-trusted-anchor
+      - prepare-vsix
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     env:
@@ -143,6 +225,8 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # Credentials mount only next to gate-approved source (#9595/#9597).
+          ref: ${{ needs.resolve-trusted-anchor.outputs.approved_sha }}
 
       - name: Download VSIX artifact
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -184,7 +268,9 @@ jobs:
 
   publish-open-vsx:
     name: Publish Open VSX
-    needs: prepare-vsix
+    needs:
+      - resolve-trusted-anchor
+      - prepare-vsix
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     env:
@@ -196,6 +282,8 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # Credentials mount only next to gate-approved source (#9595/#9597).
+          ref: ${{ needs.resolve-trusted-anchor.outputs.approved_sha }}
 
       - name: Download VSIX artifact
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -338,6 +426,11 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # Residual #12888: this smoke surface holds only `contents: read`
+          # today, so it checked out the dispatch-selected ref by convention.
+          # Pin it to the gate-approved anchor so the invariant survives even
+          # if the job later gains authority.
+          ref: ${{ needs.prepare-vsix.outputs.build_sha }}
 
       - name: Setup VS Code toolchain
         uses: ./.github/actions/setup-vscode-toolchain
@@ -371,6 +464,9 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # Residual #12888: pin the smoke surface to the gate-approved anchor
+          # (see the Marketplace smoke job).
+          ref: ${{ needs.prepare-vsix.outputs.build_sha }}
 
       - name: Setup VS Code toolchain
         uses: ./.github/actions/setup-vscode-toolchain

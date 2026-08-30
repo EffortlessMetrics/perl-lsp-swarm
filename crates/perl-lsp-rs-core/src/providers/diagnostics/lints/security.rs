@@ -17,6 +17,8 @@
 //! | `PL605` | Warning | Pipe-open executes shell commands |
 //! | `PL606` | Warning | `readpipe()` executes shell commands (equivalent to qx//) |
 //! | `PL607` | Warning | Interpolated/concatenated SQL text in `->prepare()` / `->do()` (#5035) |
+//! | `PL608` | Warning | `s/pat/repl/e` evaluates the substitution replacement as Perl code (#9818) |
+//! | `PL609` | Warning | Embedded `(?{ ... })` or `(??{ ... })` code executes inside regex patterns (#9818) |
 
 use std::collections::HashMap;
 
@@ -38,6 +40,9 @@ use perl_diagnostics::codes::DiagnosticSeverity;
 /// - Global signal-handler assignment to `$SIG{__DIE__}` / `$SIG{__WARN__}`
 /// - Interpolated or concatenated SQL text passed to DBI statement-taking
 ///   methods (`prepare`/`prepare_cached`/`do`) (#5035)
+/// - Substitutions evaluating their replacement as Perl code (`s///e`,
+///   `s///ee`) and embedded immediate/deferred code blocks (`(?{ ... })`,
+///   `(??{ ... })`) in regex patterns (`m//`, `qr//`, bare literals) (#9818)
 pub fn check_security(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
     walk_security_node(node, diagnostics, false);
     check_sql_injection(node, diagnostics);
@@ -345,6 +350,35 @@ fn walk_security_node(
             walk_security_node(value, diagnostics, signal_shadowed);
             signal_shadowed
         }
+        NodeKind::Regex { has_embedded_code: true, .. } => {
+            // Code-executing regex family (#9818): the parser computes
+            // `has_embedded_code` for immediate/deferred code blocks, but the flag had
+            // no diagnostic consumer here. A bare regex literal has no bound
+            // expression to traverse.
+            push_embedded_pattern_code_diagnostic(node, diagnostics);
+            signal_shadowed
+        }
+        NodeKind::Match { expr, has_embedded_code, .. } => {
+            if *has_embedded_code {
+                push_embedded_pattern_code_diagnostic(node, diagnostics);
+            }
+            // #9821: the expression bound via =~ receives the same checks it
+            // would get in any other position.
+            walk_security_node(expr, diagnostics, signal_shadowed)
+        }
+        NodeKind::Substitution { expr, modifiers, has_embedded_code, .. } => {
+            // One parser flag conflates both execution causes (#975): when the
+            // /e modifier is present the evaluated replacement names the
+            // finding (PL608); a remaining flag can then only come from an
+            // embedded (?{ ... }) pattern (PL609).
+            if modifiers.contains('e') {
+                push_substitution_eval_diagnostic(node, diagnostics);
+            } else if *has_embedded_code {
+                push_embedded_pattern_code_diagnostic(node, diagnostics);
+            }
+            // #9821: same traversal obligation as Match above.
+            walk_security_node(expr, diagnostics, signal_shadowed)
+        }
         NodeKind::Return { value: None } => signal_shadowed,
         NodeKind::LabeledStatement { statement, .. } => {
             walk_security_node(statement, diagnostics, signal_shadowed);
@@ -365,9 +399,6 @@ fn walk_security_node(
         | NodeKind::Number { .. }
         | NodeKind::String { .. }
         | NodeKind::VString { .. }
-        | NodeKind::Regex { .. }
-        | NodeKind::Match { .. }
-        | NodeKind::Substitution { .. }
         | NodeKind::Transliteration { .. }
         | NodeKind::Identifier { .. }
         | NodeKind::Variable { .. }
@@ -877,6 +908,57 @@ fn push_command_execution_diagnostic(
                 .with_related_information(range, explanation),
         ),
         suggestion: Some(OPEN_LIST_FORM_SUGGESTION.to_string()),
+    });
+}
+
+/// Emit one PL608 diagnostic for a substitution whose replacement is
+/// evaluated as Perl code by the `e`/`ee` modifier (#9818).
+///
+/// No native Perl::Critic alias exists for this construct class, so the
+/// ordinary row carries no overlap observation: the #11918 observation
+/// constructors only admit the reviewed cohorts.
+fn push_substitution_eval_diagnostic(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
+    let range = (node.location.start, node.location.end);
+    diagnostics.push(Diagnostic {
+        range,
+        severity: DiagnosticSeverity::Warning,
+        code: Some(DiagnosticCode::SecuritySubstitutionEval.as_str().to_string()),
+        message: "The /e flag evaluates this substitution's replacement as Perl code.".to_string(),
+        related_information: vec![RelatedInformation {
+            location: range,
+            message: "When the substitution runs, its replacement is evaluated like string eval. Untrusted input reaching the replacement allows code injection.".to_string(),
+        }],
+        tags: Vec::new(),
+        fixable: false,
+        critic_observation: None,
+        suggestion: Some(
+            "Compute the replacement without /e, or keep untrusted input out of the evaluated expression"
+                .to_string(),
+        ),
+    });
+}
+
+/// Emit one PL609 diagnostic for an embedded immediate `(?{ ... })` or
+/// deferred `(??{ ... })` executable code block in a pattern (`m//`, `qr//`,
+/// a bare literal, or a substitution pattern) (#9818).
+///
+/// Same no-native-alias boundary as [`push_substitution_eval_diagnostic`].
+fn push_embedded_pattern_code_diagnostic(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
+    let range = (node.location.start, node.location.end);
+    diagnostics.push(Diagnostic {
+        range,
+        severity: DiagnosticSeverity::Warning,
+        code: Some(DiagnosticCode::SecurityEmbeddedRegexCode.as_str().to_string()),
+        message: "Embedded (?{ ... }) or (??{ ... }) code executes Perl code while this pattern is evaluated."
+            .to_string(),
+        related_information: vec![RelatedInformation {
+            location: range,
+            message: "An embedded code block runs Perl code during pattern matching or deferred-pattern construction; untrusted patterns allow code injection.".to_string(),
+        }],
+        tags: Vec::new(),
+        fixable: false,
+        critic_observation: None,
+        suggestion: Some("Remove the embedded executable code block from the pattern".to_string()),
     });
 }
 
@@ -2083,5 +2165,130 @@ mod tests {
                 "only pre-rebinding sinks fire at {sinks} sinks"
             );
         }
+    }
+
+    // --- embedded regex code (#9818) ---
+
+    fn has_code(diags: &[Diagnostic], expected: &str) -> bool {
+        diags.iter().any(|d| d.code.as_deref() == Some(expected))
+    }
+
+    #[test]
+    fn e_modifier_substitution_is_flagged() {
+        let diags = security_diags(r#"$s =~ s/(\w+)/uc($1)/e;"#);
+        assert!(
+            has_code(&diags, "PL608"),
+            "s///e should publish the stable substitution-eval code PL608: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn ee_modifier_substitution_is_flagged() {
+        let diags = security_diags(r#"$t =~ s/\$(\w+)/$$1/ee;"#);
+        assert!(
+            has_code(&diags, "PL608"),
+            "s///ee should publish the stable substitution-eval code PL608: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn standalone_e_modifier_substitution_is_flagged() {
+        let diags = security_diags(r#"s/version (\d+)/$1 + 1/e;"#);
+        assert!(
+            has_code(&diags, "PL608"),
+            "bare s///e should publish PL608 even without a =~ binding: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn embedded_code_block_in_qr_is_flagged() {
+        let diags = security_diags(r#"my $r = qr/(?{ print "hi" })/;"#);
+        assert!(
+            has_code(&diags, "PL609"),
+            "qr/(?{{...}})/ should publish the stable embedded-code class PL609: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn embedded_code_block_in_explicit_match_is_flagged() {
+        let diags = security_diags(r#"$x =~ m/(?{ print "hi" })/;"#);
+        assert!(
+            has_code(&diags, "PL609"),
+            "m/(?{{...}})/ should publish the stable embedded-code class PL609: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn embedded_code_block_in_bare_match_is_flagged() {
+        let diags = security_diags(r#"$x =~ /(?{ print "hi" })/;"#);
+        assert!(
+            has_code(&diags, "PL609"),
+            "bare /(?{{...}})/ should publish the same embedded-code class PL609: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn embedded_code_block_in_substitution_pattern_is_flagged() {
+        let diags = security_diags(r#"$x =~ s/(?{ print "hi" })/ok/;"#);
+        assert!(
+            has_code(&diags, "PL609"),
+            "(?{{...}}) inside a substitution pattern without /e should publish PL609: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn plain_substitution_is_not_flagged() {
+        let diags = security_diags(r#"$s =~ s/a/b/;"#);
+        assert!(
+            !diags.iter().any(|d| d.code.as_deref().is_some_and(|c| c.starts_with("PL6"))),
+            "plain s/// must not publish a security diagnostic: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn qr_without_embedded_code_is_not_flagged() {
+        let diags = security_diags(r#"my $re = qr/hello/;"#);
+        assert!(
+            !diags.iter().any(|d| d.code.as_deref().is_some_and(|c| c.starts_with("PL6"))),
+            "plain qr// must not publish a security diagnostic: {diags:?}"
+        );
+    }
+
+    // --- bound-expression traversal (#9821) ---
+
+    #[test]
+    fn backtick_bound_to_match_is_still_flagged() {
+        let diags = security_diags("`ls` =~ /x/;");
+        assert!(
+            has_code(&diags, "PL601"),
+            "backtick under Match.expr must publish the same PL601 as elsewhere: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn backtick_bound_to_substitution_is_still_flagged() {
+        let diags = security_diags("`ls` =~ s/a/b/;");
+        assert!(
+            has_code(&diags, "PL601"),
+            "backtick under Substitution.expr must publish the same PL601: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn readpipe_bound_to_match_is_still_flagged() {
+        let diags = security_diags(r#"readpipe("ls") =~ /x/;"#);
+        assert!(
+            has_code(&diags, "PL606"),
+            "readpipe() under Match.expr must keep its own stable code PL606: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn variable_bound_to_match_is_not_flagged() {
+        let diags = security_diags("$s =~ /x/;");
+        assert!(
+            !diags.iter().any(|d| d.code.as_deref().is_some_and(|c| c.starts_with("PL6"))),
+            "ordinary variable binding under =~ must stay silent: {diags:?}"
+        );
     }
 }
