@@ -9,6 +9,7 @@ mod evaluation;
 mod execution;
 mod frames;
 mod logpoint;
+mod operation_broker;
 mod output;
 mod patterns;
 mod process;
@@ -81,11 +82,11 @@ use crate::debug_adapter::variable_cache::VariableCache;
 use crate::debug_adapter::variable_cache::{VariableCacheKind, slice_variables};
 use crate::security;
 use patterns::{
-    DEBUG_SESSION_TERMINATE_WAIT_MS, DEBUGGER_FRAME_POLL_MS, DEBUGGER_QUERY_WAIT_MS,
-    EVENT_QUEUE_CAPACITY, RECENT_OUTPUT_MAX_LINES, RecentOutputBuffer, RecentOutputLine,
-    ansi_escape_re, assignment_ops_re, context_re, dangerous_ops_re, deref_re, die_suffix_re,
-    error_re, exception_re, glob_re, inc_re, is_valid_function_breakpoint_name,
-    is_valid_set_variable_name, prompt_re, regex_mutation_re, stack_frame_re, warning_re,
+    DEBUG_SESSION_TERMINATE_WAIT_MS, DEBUGGER_QUERY_WAIT_MS, EVENT_QUEUE_CAPACITY,
+    RECENT_OUTPUT_MAX_LINES, RecentOutputBuffer, RecentOutputLine, ansi_escape_re,
+    assignment_ops_re, context_re, dangerous_ops_re, deref_re, die_suffix_re, error_re,
+    exception_re, glob_re, inc_re, is_valid_function_breakpoint_name, is_valid_set_variable_name,
+    prompt_re, regex_mutation_re, stack_frame_re, warning_re,
 };
 use safe_eval::validate_safe_expression;
 use sync_utils::{dispatch_event, emit_event_safe, lock_or_recover};
@@ -181,6 +182,10 @@ pub struct DebugAdapter {
     transport_broken: Arc<AtomicBool>,
     /// Tracks whether initialize request has been received (state machine validation)
     initialized: Arc<AtomicBool>,
+    /// Typed, generation-aware broker for framed debugger operations (#8564).
+    /// Wraps the begin/end-marker query primitive; direct writes elsewhere
+    /// remain registered migration debt.
+    operation_broker: Arc<operation_broker::OperationBroker>,
 }
 
 /// Represents a DAP message, which can be a request, response, or event.
@@ -237,6 +242,9 @@ impl Default for DebugAdapter {
 impl Drop for DebugAdapter {
     fn drop(&mut self) {
         self.cancel_requested.store(true, Ordering::Release);
+        // Adapter drop settles every pending broker operation (#8564): the
+        // correlation surface is going away with the adapter.
+        self.operation_broker.settle_all("adapter_dropped");
         self.clear_active_session_state();
     }
 }
@@ -269,6 +277,7 @@ impl DebugAdapter {
             workspace_root: Arc::new(Mutex::new(None)),
             transport_broken: Arc::new(AtomicBool::new(false)),
             initialized: Arc::new(AtomicBool::new(false)),
+            operation_broker: Arc::new(operation_broker::OperationBroker::new()),
         }
     }
 
@@ -296,7 +305,12 @@ impl DebugAdapter {
     }
 
     /// Start a new session generation and reset its terminal-event gate.
+    ///
+    /// Advancing the session settles every pending broker operation as
+    /// `SessionGone` (#8564): operations belong to the session they were
+    /// submitted against and never leak into the next one.
     pub(super) fn begin_session_generation(&self) -> u64 {
+        self.operation_broker.settle_all("session_generation_advanced");
         let mut state = lock_or_recover(&self.termination_state, "debug_adapter.termination_state");
         state.generation = state.generation.saturating_add(1);
         state.emitted = false;
@@ -477,50 +491,47 @@ impl DebugAdapter {
     }
 
     /// Capture debugger output lines between begin/end markers.
+    ///
+    /// This is now a thin wrapper over the typed operation broker (#8564):
+    /// the operation is submitted against the current session generation and
+    /// the broker's framed-query primitive produces the correlated payload or
+    /// a typed terminal outcome. The observable `Option<Vec<String>>>`
+    /// contract is unchanged for existing callers; `Cancelled`, `TimedOut`,
+    /// `SessionGone`, `Rejected`, and `StaleGeneration` all map to `None`
+    /// exactly as the previous untyped loop did.
     fn capture_framed_debugger_output(
         &self,
         begin_marker: &str,
         end_marker: &str,
         timeout_ms: u64,
     ) -> Option<Vec<String>> {
-        let deadline =
-            Instant::now() + Duration::from_millis(Self::debugger_timeout_budget_ms(timeout_ms));
-        let mut next_scan_id = 0_u64;
-        let mut saw_begin_marker = false;
-        let mut framed_lines = Vec::new();
-
-        loop {
-            // Check for cancellation before each poll iteration
-            if self.cancel_requested.load(Ordering::Acquire) {
-                self.cancel_requested.store(false, Ordering::Release);
+        let spec = operation_broker::BrokerOperationSpec {
+            class: operation_broker::OperationClass::Query,
+            session_generation: self.operation_broker.current_session_generation(),
+            suspension_generation: None,
+            timeout: Duration::from_millis(Self::debugger_timeout_budget_ms(timeout_ms)),
+            cancellation: None,
+        };
+        let operation = match self.operation_broker.submit(spec) {
+            Ok(operation) => operation,
+            Err(terminal) => {
+                tracing::warn!(terminal = terminal.as_str(), "framed query not submitted");
                 return None;
             }
+        };
 
-            {
-                let output = lock_or_recover(&self.recent_output, "debug_adapter.recent_output");
-                for line in output.lines.iter().filter(|line| line.id >= next_scan_id) {
-                    if !saw_begin_marker {
-                        if Self::line_contains_full_marker(&line.normalized, begin_marker) {
-                            saw_begin_marker = true;
-                            framed_lines.clear();
-                        }
-                    } else if Self::line_contains_full_marker(&line.normalized, end_marker) {
-                        return Some(framed_lines);
-                    } else if !line.normalized.trim().is_empty() {
-                        framed_lines.push(line.normalized.clone());
-                    }
-                }
-
-                if let Some(last) = output.lines.back() {
-                    next_scan_id = last.id.saturating_add(1);
-                }
+        match self.operation_broker.await_framed_payload(
+            &operation,
+            begin_marker,
+            end_marker,
+            &self.recent_output,
+            &self.cancel_requested,
+        ) {
+            operation_broker::BrokerTerminal::Completed(lines) => Some(lines),
+            terminal => {
+                tracing::debug!(terminal = terminal.as_str(), "framed query settled uncompleted");
+                None
             }
-
-            if Instant::now() >= deadline {
-                return None;
-            }
-
-            thread::sleep(Duration::from_millis(DEBUGGER_FRAME_POLL_MS));
         }
     }
 
@@ -570,23 +581,11 @@ impl DebugAdapter {
     }
 
     /// Convert u32 process/thread IDs to i32 (as required by Unix signal APIs) with saturation.
-    /// Values above [`i32::MAX`] are clamped to [`i32::MAX`] rather than wrapping to negatives.
+    /// Values above [`u32::MAX`] are clamped to [`u32::MAX`] rather than wrapping to negatives.
     // Windows builds do not call the Unix signal PID conversion paths.
     #[cfg_attr(windows, allow(dead_code))]
     fn u32_to_i32_saturating(value: u32) -> i32 {
         i32::try_from(value).unwrap_or(i32::MAX)
-    }
-
-    fn line_contains_full_marker(line: &str, marker: &str) -> bool {
-        line.match_indices(marker).any(|(idx, _)| {
-            let before = line[..idx].chars().next_back();
-            let after = line[idx + marker.len()..].chars().next();
-            let before_ok =
-                before.is_none_or(|ch| !matches!(ch, 'A'..='Z' | 'a'..='z' | '0'..='9' | '_'));
-            let after_ok =
-                after.is_none_or(|ch| !matches!(ch, 'A'..='Z' | 'a'..='z' | '0'..='9' | '_'));
-            before_ok && after_ok
-        })
     }
 
     /// Push a line into the recent-output buffer for testing parser paths.

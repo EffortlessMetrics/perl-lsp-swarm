@@ -721,6 +721,7 @@ impl DebugAdapter {
         let tcp_session = self.tcp_session.clone();
         let attached_pid = self.attached_pid.clone();
         let termination_state = self.termination_state.clone();
+        let operation_broker = self.operation_broker.clone();
         let session_generation = self.current_session_generation();
 
         thread::spawn(move || {
@@ -748,6 +749,8 @@ impl DebugAdapter {
                 tracing::warn!(
                     "No debugger output stream available - output reader thread exiting"
                 );
+                // Launch effectively failed for framed operations (#8564).
+                operation_broker.settle_all("launch_failed");
                 if let Some(ref sender) = sender {
                     emit_terminated_event(
                         sender,
@@ -793,6 +796,10 @@ impl DebugAdapter {
                 match reader.read_line(&mut line) {
                     Ok(0) => {
                         tracing::debug!("Perl debugger process terminated");
+                        // Settle every pending framed operation first (#8564):
+                        // waiters must observe SessionGone, not spin to their
+                        // timeout against a dead session.
+                        operation_broker.settle_all("debugger_eof");
                         // The debuggee exited mid-query: emit the logpoint with
                         // whatever values arrived rather than dropping it.
                         if let Some(pending) = pending_logpoint.take() {
@@ -1401,6 +1408,9 @@ impl DebugAdapter {
                     }
                     Err(e) => {
                         tracing::error!(error = %e, "Error reading from debugger");
+                        // Same contract as the EOF arm above (#8564): settle
+                        // pending operations so waiters observe SessionGone.
+                        operation_broker.settle_all("read_error");
                         // Same contract as the EOF arm above: a read failure during a
                         // framed value query must still surface the logpoint with
                         // whatever values arrived, not swallow it.
