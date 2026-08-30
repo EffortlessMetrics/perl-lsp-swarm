@@ -11,6 +11,7 @@ pub use markup::{HtmxAttributeNameContext, MAX_MARKUP_SCAN_BYTES, htmx_attribute
 
 use crate::providers::completion_item::{CompletionItem, CompletionItemKind, InsertTextFormat};
 use crate::providers::file_completion::FileCompletionContext;
+use catalog::starts_with_ignore_ascii_case;
 use std::borrow::Cow;
 
 /// Complete canonical htmx request and response header names.
@@ -43,10 +44,17 @@ pub fn complete_header_names(context: &FileCompletionContext) -> Option<Vec<Comp
 
 /// Complete canonical htmx attribute names in a proven raw-markup slot.
 ///
+/// `position` is a UTF-8 byte offset into `source`, not an LSP `Position`:
+/// callers holding UTF-16 code-unit positions must convert before calling.
+///
 /// Returns `None` when the cursor is not in an admitted htmx attribute-name
-/// context. Both canonical `hx-*` and standard `data-hx-*` spellings are
-/// supported. Dynamic event handlers are represented by the `hx-on:` family
-/// prefix; event-name completion is a separate grammar.
+/// context, so the caller can delegate to another completion grammar.
+/// `Some(Vec::new())` means the slot is proven but the catalog has no
+/// candidate for the typed prefix — for example an `hx-on:` family prefix
+/// with an event name already typed (`hx-on:click`). Both canonical `hx-*`
+/// and standard `data-hx-*` spellings are supported. Dynamic event handlers
+/// are represented by the `hx-on:` family prefix; event-name completion is a
+/// separate grammar.
 #[must_use]
 pub fn complete_attribute_names(source: &str, position: usize) -> Option<Vec<CompletionItem>> {
     let context = htmx_attribute_name_context(source, position)?;
@@ -101,10 +109,6 @@ fn completion_item(
 fn is_htmx_header_prefix(prefix: &str) -> bool {
     prefix.eq_ignore_ascii_case("HX")
         || prefix.get(..3).is_some_and(|head| head.eq_ignore_ascii_case("HX-"))
-}
-
-fn starts_with_ignore_ascii_case(value: &str, prefix: &str) -> bool {
-    value.get(..prefix.len()).is_some_and(|head| head.eq_ignore_ascii_case(prefix))
 }
 
 #[cfg(test)]
@@ -283,5 +287,22 @@ mod tests {
                         && item.detail.as_deref() == Some("htmx event-handler attribute family")
                 })
         }));
+    }
+
+    #[test]
+    fn typed_hx_on_event_name_keeps_the_proven_slot_with_no_catalog_candidate() {
+        let family = "<div hx-on";
+        assert!(
+            complete_attribute_names(family, family.len())
+                .is_some_and(|items| items.iter().any(|item| item.label == "hx-on:"))
+        );
+
+        // Once the event name is typed the family prefix no longer matches,
+        // but the slot must stay proven (`Some`, empty) so the future
+        // event-name grammar can fall through instead of seeing `None`.
+        let event = "<div hx-on:click";
+        assert!(
+            complete_attribute_names(event, event.len()).is_some_and(|items| items.is_empty())
+        );
     }
 }

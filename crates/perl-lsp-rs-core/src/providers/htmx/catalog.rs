@@ -216,3 +216,8 @@ pub const HTMX_ATTRIBUTES: &[HtmxAttributeSpec] = &[
         "Deprecated expression-based request values; use `hx-vals` instead."
     ),
 ];
+
+/// ASCII-case-insensitive `value.starts_with(prefix)`.
+pub(crate) fn starts_with_ignore_ascii_case(value: &str, prefix: &str) -> bool {
+    value.get(..prefix.len()).is_some_and(|head| head.eq_ignore_ascii_case(prefix))
+}

@@ -1,5 +1,7 @@
 //! Bounded raw-markup context recognition for htmx attribute names.
 
+use super::catalog::starts_with_ignore_ascii_case;
+
 /// Maximum source prefix scanned before a completion position.
 ///
 /// Positions beyond this cap fail closed. Scanning from the document start
@@ -99,40 +101,136 @@ enum MarkupState {
     TemplatePercent,
     TemplateBracket,
     MasonComponent,
+    MasonNamed(MasonBlockKind),
     RawText(RawTextKind),
     InvalidTag { quote: Option<u8> },
+}
+
+/// Mason named blocks (`<%method greet>` ... `</%method>` and friends).
+///
+/// Unlike the inline `<% ... %>` template regions, a named block closes with
+/// `</%name>` instead of `%>`. Recognizing them keeps markup after the block
+/// reachable; without this, the first named block would swallow the rest of
+/// the document and permanently suppress completions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MasonBlockKind {
+    Attr,
+    Class,
+    Cleanup,
+    Doc,
+    Filter,
+    Init,
+    Method,
+    Once,
+    Perl,
+    Shared,
+    Text,
+}
+
+impl MasonBlockKind {
+    const ALL: [Self; 11] = [
+        Self::Attr,
+        Self::Class,
+        Self::Cleanup,
+        Self::Doc,
+        Self::Filter,
+        Self::Init,
+        Self::Method,
+        Self::Once,
+        Self::Perl,
+        Self::Shared,
+        Self::Text,
+    ];
+
+    const fn name(self) -> &'static [u8] {
+        match self {
+            Self::Attr => b"attr",
+            Self::Class => b"class",
+            Self::Cleanup => b"cleanup",
+            Self::Doc => b"doc",
+            Self::Filter => b"filter",
+            Self::Init => b"init",
+            Self::Method => b"method",
+            Self::Once => b"once",
+            Self::Perl => b"perl",
+            Self::Shared => b"shared",
+            Self::Text => b"text",
+        }
+    }
 }
 
 fn open_start_tag_offset(source_prefix: &str) -> Option<usize> {
     let bytes = source_prefix.as_bytes();
     let mut state = MarkupState::Text;
+    let mut line_start = 0usize;
     let mut index = 0usize;
 
     while index < bytes.len() {
-        state = match state {
-            MarkupState::Text => scan_text(bytes, &mut index),
-            MarkupState::Comment => scan_delimited(bytes, &mut index, b"-->", MarkupState::Comment),
-            MarkupState::TemplatePercent => {
-                scan_delimited(bytes, &mut index, b"%>", MarkupState::TemplatePercent)
-            }
-            MarkupState::TemplateBracket => {
-                scan_delimited(bytes, &mut index, b"%]", MarkupState::TemplateBracket)
-            }
-            MarkupState::MasonComponent => {
-                scan_delimited(bytes, &mut index, b"&>", MarkupState::MasonComponent)
-            }
-            MarkupState::StartTag { start, quote } => {
-                scan_start_tag(bytes, &mut index, start, quote)
-            }
-            MarkupState::IgnoredTag { quote } => scan_ignored_tag(bytes, &mut index, quote),
-            MarkupState::RawText(kind) => scan_raw_text(bytes, &mut index, kind),
-            MarkupState::InvalidTag { quote } => scan_invalid_tag(bytes, &mut index, quote),
-        };
+        if bytes[index] == b'\n' {
+            state = scan_markup_segment(bytes, line_start, index, state);
+            line_start = index + 1;
+        }
+        index += 1;
     }
+    state = scan_markup_segment(bytes, line_start, bytes.len(), state);
 
     match state {
         MarkupState::StartTag { start, quote: None } => Some(start),
         _ => None,
+    }
+}
+
+/// Advance markup state across `[start, end)`, which never contains a newline.
+///
+/// Mojolicious- and Mason-style template-code lines whose first
+/// non-whitespace byte is `%` are not markup at all, so their bytes are
+/// excluded from the scan instead of being interpreted as document text.
+/// Earlier `%` lines containing HTML-like strings therefore cannot push the
+/// scanner into a false start-tag or invalid-tag state.
+fn scan_markup_segment(
+    bytes: &[u8],
+    start: usize,
+    end: usize,
+    mut state: MarkupState,
+) -> MarkupState {
+    if template_code_line(bytes, start, end) {
+        return state;
+    }
+
+    let mut index = start;
+    while index < end {
+        state = step_markup_state(bytes, &mut index, state);
+    }
+    state
+}
+
+/// Whether `[start, end)` is a template-code line (leading `%` after blanks).
+fn template_code_line(bytes: &[u8], start: usize, end: usize) -> bool {
+    let mut index = start;
+    while index < end && matches!(bytes[index], b' ' | b'\t') {
+        index += 1;
+    }
+    index < end && bytes[index] == b'%'
+}
+
+fn step_markup_state(bytes: &[u8], index: &mut usize, state: MarkupState) -> MarkupState {
+    match state {
+        MarkupState::Text => scan_text(bytes, index),
+        MarkupState::Comment => scan_delimited(bytes, index, b"-->", MarkupState::Comment),
+        MarkupState::TemplatePercent => {
+            scan_delimited(bytes, index, b"%>", MarkupState::TemplatePercent)
+        }
+        MarkupState::TemplateBracket => {
+            scan_delimited(bytes, index, b"%]", MarkupState::TemplateBracket)
+        }
+        MarkupState::MasonComponent => {
+            scan_delimited(bytes, index, b"&>", MarkupState::MasonComponent)
+        }
+        MarkupState::MasonNamed(kind) => scan_mason_named(bytes, index, kind),
+        MarkupState::StartTag { start, quote } => scan_start_tag(bytes, index, start, quote),
+        MarkupState::IgnoredTag { quote } => scan_ignored_tag(bytes, index, quote),
+        MarkupState::RawText(kind) => scan_raw_text(bytes, index, kind),
+        MarkupState::InvalidTag { quote } => scan_invalid_tag(bytes, index, quote),
     }
 }
 
@@ -141,8 +239,13 @@ fn scan_text(bytes: &[u8], index: &mut usize) -> MarkupState {
         *index += 4;
         MarkupState::Comment
     } else if starts_with(bytes, *index, b"<%") {
-        *index += 2;
-        MarkupState::TemplatePercent
+        if let Some(kind) = mason_named_block_kind(bytes, *index + 2) {
+            *index += 2 + kind.name().len();
+            MarkupState::MasonNamed(kind)
+        } else {
+            *index += 2;
+            MarkupState::TemplatePercent
+        }
     } else if starts_with(bytes, *index, b"[%") {
         *index += 2;
         MarkupState::TemplateBracket
@@ -280,6 +383,66 @@ fn scan_raw_text(bytes: &[u8], index: &mut usize, kind: RawTextKind) -> MarkupSt
     }
 }
 
+fn scan_mason_named(bytes: &[u8], index: &mut usize, kind: MasonBlockKind) -> MarkupState {
+    if let Some(name_end) = mason_named_end_tag_name_end(bytes, *index, kind) {
+        *index = name_end;
+        MarkupState::IgnoredTag { quote: None }
+    } else {
+        *index += 1;
+        MarkupState::MasonNamed(kind)
+    }
+}
+
+/// Recognize a Mason named-block opener at the byte after `<%`.
+///
+/// A named opener is `<%keyword` (with no space between `<%` and the keyword,
+/// unlike a `<% expr %>` substitution) followed only by names, blanks, and
+/// `.`/`-`/`_` characters before the closing `>` of the opener tag. Anything
+/// else — including `<%ident(...)` code — stays an ordinary `%` template
+/// region and fails closed at its `%>` delimiter.
+fn mason_named_block_kind(bytes: &[u8], index: usize) -> Option<MasonBlockKind> {
+    let kind = MasonBlockKind::ALL.into_iter().find(|kind| {
+        bytes
+            .get(index..index + kind.name().len())
+            .is_some_and(|name| bytes_eq_ignore_ascii_case(name, kind.name()))
+    })?;
+
+    let mut cursor = index + kind.name().len();
+    // A longer identifier (`<%methods>`) is not this keyword.
+    if bytes.get(cursor).is_some_and(|byte| is_tag_name_byte(*byte)) {
+        return None;
+    }
+    while let Some(byte) = bytes.get(cursor).copied() {
+        match byte {
+            b'>' => return Some(kind),
+            b' ' | b'\t' => cursor += 1,
+            byte if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.') => {
+                cursor += 1;
+            }
+            _ => return None,
+        }
+    }
+    None
+}
+
+fn mason_named_end_tag_name_end(bytes: &[u8], index: usize, kind: MasonBlockKind) -> Option<usize> {
+    if !starts_with(bytes, index, b"</%") {
+        return None;
+    }
+
+    let name_start = index + 3;
+    let name_end = name_start.checked_add(kind.name().len())?;
+    let name = bytes.get(name_start..name_end)?;
+    if !bytes_eq_ignore_ascii_case(name, kind.name()) {
+        return None;
+    }
+
+    bytes
+        .get(name_end)
+        .is_some_and(|byte| is_html_space(*byte) || *byte == b'>')
+        .then_some(name_end)
+}
+
 fn starts_template_region(bytes: &[u8], index: usize) -> bool {
     starts_with(bytes, index, b"<%")
         || starts_with(bytes, index, b"[%")
@@ -288,10 +451,10 @@ fn starts_template_region(bytes: &[u8], index: usize) -> bool {
 
 fn raw_text_kind_for_start_tag(bytes: &[u8], start: usize, end: usize) -> Option<RawTextKind> {
     let body = bytes.get(start + 1..end)?;
-    if body.iter().rev().copied().find(|byte| !is_html_space(*byte)) == Some(b'/') {
-        return None;
-    }
-
+    // HTML ignores a self-closing solidus on non-void elements, so a raw-text
+    // start tag such as `<script />` still opens raw-text content. Name
+    // extraction already stops at the solidus because it is not a tag-name
+    // byte, so no special handling is needed beyond not rejecting it.
     let name_end = body.iter().position(|byte| !is_tag_name_byte(*byte)).unwrap_or(body.len());
     let name = body.get(..name_end)?;
 
@@ -362,9 +525,7 @@ fn active_attribute_name_start(tag_body: &str) -> Option<usize> {
 
     let mut state = AttributeState::Between;
     while index < bytes.len() {
-        let Some(byte) = bytes.get(index).copied() else {
-            return None;
-        };
+        let byte = bytes.get(index).copied()?;
         state = match state {
             AttributeState::Between => {
                 if is_html_space(byte) {
@@ -442,8 +603,11 @@ fn active_attribute_name_start(tag_body: &str) -> Option<usize> {
     }
 }
 
+/// HTML tag-name bytes: ASCII alphanumerics, `-`, `_`, `:`, and `.` (the
+/// namespaced custom-element separator), plus non-ASCII bytes, which the HTML
+/// specification admits in custom-element names.
 fn is_tag_name_byte(byte: u8) -> bool {
-    byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b':')
+    byte.is_ascii_alphanumeric() || byte >= 0x80 || matches!(byte, b'-' | b'_' | b':' | b'.')
 }
 
 fn is_html_space(byte: u8) -> bool {
@@ -472,10 +636,6 @@ fn is_htmx_attribute_prefix(prefix: &str) -> bool {
 
 fn is_htmx_attribute_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b':')
-}
-
-fn starts_with_ignore_ascii_case(value: &str, prefix: &str) -> bool {
-    value.get(..prefix.len()).is_some_and(|head| head.eq_ignore_ascii_case(prefix))
 }
 
 #[cfg(test)]
@@ -600,5 +760,72 @@ mod tests {
         let source = "<div éhx-";
 
         assert!(htmx_attribute_name_context(source, 6).is_none());
+    }
+
+    #[test]
+    fn self_closing_raw_text_start_tags_still_open_raw_text() {
+        for source in [
+            "<script/><div hx-",
+            "<script />const x = '<div hx-'",
+            "<style />.x { content: '<div hx-' }",
+            "<textarea /><div hx-",
+        ] {
+            assert!(
+                htmx_attribute_name_context(source, source.len()).is_none(),
+                "self-closed raw-text content admitted for {source:?}"
+            );
+        }
+
+        let resumes = "<script />var ready = true;</script><button hx-re";
+        assert!(
+            htmx_attribute_name_context(resumes, resumes.len())
+                .is_some_and(|context| context.prefix == "hx-re")
+        );
+    }
+
+    #[test]
+    fn custom_element_tag_names_are_recognized() {
+        for source in ["<plugin.foo hx-", "<my-élément hx-", "<ns:widget.hx-boost hx-"] {
+            assert!(
+                htmx_attribute_name_context(source, source.len())
+                    .is_some_and(|context| context.prefix == "hx-"),
+                "custom-element tag rejected for {source:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn earlier_template_code_lines_are_not_markup() {
+        for source in [
+            "% my $x = '<div hx-';\n<button hx-",
+            "% my $x = '<div foo=bar>';\n<button hx-",
+            "  % in = ('<script>');\n<button hx-get",
+            "\t% layout 'main', title => '<style>';\n<div hx-",
+        ] {
+            assert!(
+                htmx_attribute_name_context(source, source.len()).is_some(),
+                "earlier template-code line suppressed a valid slot for {source:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn named_mason_blocks_do_not_suppress_later_markup() {
+        let source = "<%method greet>\n<p>hello</p>\n</%method>\n<div hx-";
+        assert!(
+            htmx_attribute_name_context(source, source.len())
+                .is_some_and(|context| context.prefix == "hx-")
+        );
+
+        let with_substitution = "<%attr>\n  id => 'x'\n</%attr>\n<% \"inline\" %>\n<button hx-post";
+        assert!(
+            htmx_attribute_name_context(with_substitution, with_substitution.len())
+                .is_some_and(|context| context.prefix == "hx-post")
+        );
+
+        // Non-keyword `<%ident>` stays an ordinary `%` template region and
+        // fails closed when its `%>` never arrives.
+        let not_a_block = "<%unknown>...\n<div hx-";
+        assert!(htmx_attribute_name_context(not_a_block, not_a_block.len()).is_none());
     }
 }
