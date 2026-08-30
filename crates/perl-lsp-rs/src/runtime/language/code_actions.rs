@@ -22,6 +22,11 @@ struct NativeCriticActionSubject {
     text: std::sync::Arc<str>,
     /// Accepted document generation, revalidated after analysis.
     generation: u32,
+    /// Canonical document-instance token, revalidated together with the
+    /// generation. A numeric generation alone cannot survive close/reopen: a
+    /// replacement document can present the same counter value, so identity
+    /// must be compared by instance as well (#12067 review).
+    document_instance: std::sync::Arc<std::sync::atomic::AtomicU32>,
     rope: ropey::Rope,
     line_starts: perl_position_tracking::LineStartsCache,
     accepted_state: perl_lsp_rs_core::config::EffectiveCriticState,
@@ -587,6 +592,23 @@ impl LspServer {
         &self,
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
+        self.handle_code_action_with_cancellation(params, None)
+    }
+
+    /// Ordinary code-action logic, able to observe the request's cancellation
+    /// authority (#12067 review).
+    ///
+    /// `handle_code_action_cancellable` owns the token but previously consulted
+    /// it only once, before delegating, so native critic analysis ran under an
+    /// open cancellation gate and a cancellation arriving during that work could
+    /// still produce a full response. The token is threaded through here instead
+    /// of registering a second cancellation mechanism. `None` keeps the ordinary
+    /// entry point usable from non-dispatch callers and tests.
+    pub(crate) fn handle_code_action_with_cancellation(
+        &self,
+        params: Option<Value>,
+        cancellation: Option<&PerlLspCancellationToken>,
+    ) -> Result<Option<Value>, JsonRpcError> {
         // Gate unadvertised feature
         if !self.advertised_features.lock().code_action {
             return Err(crate::protocol::method_not_advertised());
@@ -694,6 +716,7 @@ impl LspServer {
                 ast: std::sync::Arc::clone(ast),
                 text: std::sync::Arc::clone(&doc.text_arc),
                 generation: doc.current_generation(),
+                document_instance: std::sync::Arc::clone(&doc.generation),
                 rope: doc.rope.clone(),
                 line_starts: doc.line_starts.clone(),
                 accepted_state,
@@ -904,7 +927,7 @@ impl LspServer {
             // its revalidation all read from it, never from live server state.
             drop(documents);
             if let Some(subject) = native_critic_subject {
-                let native_actions = self.native_critic_code_actions(uri, subject);
+                let native_actions = self.native_critic_code_actions(uri, subject, cancellation);
                 // Clamped: `Vec::splice` panics on an out-of-range range, and no
                 // production path may panic. Nothing between the capture above
                 // and here removes actions today, so the clamp is a no-op that
@@ -1066,10 +1089,16 @@ impl LspServer {
         &self,
         uri: &str,
         subject: NativeCriticActionSubject,
+        cancellation: Option<&PerlLspCancellationToken>,
     ) -> Vec<Value> {
         use perl_lsp_rs_core::tooling::perl_critic::{
             NativeCriticService, NativeCriticSubject, RunGate,
         };
+
+        // The service consults this at its pre-evaluation and settlement
+        // barriers, so a cancellation arriving while rules run settles the run
+        // Cancelled and nothing publishes.
+        let not_cancelled = || cancellation.is_none_or(|token| !token.is_cancelled_relaxed());
 
         let expected_fingerprint = subject.accepted_state.fingerprint();
         let config = std::sync::Arc::clone(&self.config);
@@ -1091,7 +1120,7 @@ impl LspServer {
             &subject.text,
             subject.accepted_state.clone(),
             subject.overlap_observations.clone(),
-            RunGate::open(),
+            RunGate::new(&not_cancelled),
             RunGate::new(&config_is_current),
         ));
 
@@ -1108,8 +1137,13 @@ impl LspServer {
         // applicable edits.
         let still_current = {
             let documents = self.documents_guard();
-            self.get_document(&documents, uri)
-                .is_some_and(|doc| doc.current_generation() == subject.generation)
+            self.get_document(&documents, uri).is_some_and(|doc| {
+                // Instance first: a close/reopen can restore the same numeric
+                // generation on a different document, so the counter alone is
+                // not identity.
+                std::sync::Arc::ptr_eq(&doc.generation, &subject.document_instance)
+                    && doc.current_generation() == subject.generation
+            })
         };
         if !still_current {
             return Vec::new();
@@ -1204,23 +1238,36 @@ impl LspServer {
         let typed_id = request_id.and_then(JsonRpcId::try_from_value);
         let _cleanup_guard = RequestCleanupGuard::from_ref(typed_id.as_ref());
 
-        if let Some(ref tid) = typed_id {
-            let token = GLOBAL_CANCELLATION_REGISTRY.get_token(tid).unwrap_or_else(|| {
-                let token =
-                    PerlLspCancellationToken::new(tid.clone(), "textDocument/codeAction".into());
-                let _ = GLOBAL_CANCELLATION_REGISTRY.register_token(token.clone());
-                token
-            });
-            if token.is_cancelled_relaxed() {
-                return Err(JsonRpcError {
-                    code: REQUEST_CANCELLED,
-                    message: "Request cancelled - code action provider".to_string(),
-                    data: None,
-                });
-            }
+        let Some(ref tid) = typed_id else {
+            return self.handle_code_action(params);
+        };
+
+        let token = GLOBAL_CANCELLATION_REGISTRY.get_token(tid).unwrap_or_else(|| {
+            let token =
+                PerlLspCancellationToken::new(tid.clone(), "textDocument/codeAction".into());
+            let _ = GLOBAL_CANCELLATION_REGISTRY.register_token(token.clone());
+            token
+        });
+        let cancelled = || JsonRpcError {
+            code: REQUEST_CANCELLED,
+            message: "Request cancelled - code action provider".to_string(),
+            data: None,
+        };
+        if token.is_cancelled_relaxed() {
+            return Err(cancelled());
         }
 
-        self.handle_code_action(params)
+        // The token now reaches native critic analysis, so a cancellation
+        // arriving mid-service settles that run Cancelled instead of letting it
+        // publish (#12067 review).
+        let response = self.handle_code_action_with_cancellation(params, Some(&token))?;
+
+        // A cancellation arriving after the work finished but before the
+        // response is returned must not deliver a computed result either.
+        if token.is_cancelled_relaxed() {
+            return Err(cancelled());
+        }
+        Ok(response)
     }
 
     /// Handle textDocument/codeAction request for pragmas
@@ -1485,6 +1532,115 @@ mod tests {
     #![allow(clippy::expect_used)]
 
     use super::*;
+
+    /// Build a server with one open document and the native critic armed.
+    fn server_with_document(uri: &str) -> crate::runtime::LspServer {
+        let server = crate::runtime::LspServer::new();
+        server.test_configure_critic_engine(perl_lsp_rs_core::config::CriticEngine::Native);
+        server.test_configure_native_critic_profile("strict");
+        server
+            .test_handle_did_open(Some(json!({
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "perl",
+                    "version": 1,
+                    "text": "my $x = 1;
+print $x;
+"
+                }
+            })))
+            .expect("did_open must succeed");
+        server
+    }
+
+    /// Capture the accepted action subject exactly as `handle_code_action` does,
+    /// optionally substituting a foreign document-instance token to model a
+    /// close/reopen that restored the same numeric generation.
+    fn action_subject(
+        server: &crate::runtime::LspServer,
+        uri: &str,
+        foreign_instance: bool,
+    ) -> NativeCriticActionSubject {
+        let documents = server.documents_guard();
+        let doc = server.get_document(&documents, uri).expect("document must be open");
+        let parsed = doc.current_parsed().expect("document must be parsed");
+        let ast = parsed.ast().expect("document must have an AST");
+        let generation = doc.current_generation();
+        let accepted_state = { server.config.lock().effective_critic_state(None) };
+        NativeCriticActionSubject {
+            ast: std::sync::Arc::clone(ast),
+            text: std::sync::Arc::clone(&doc.text_arc),
+            generation,
+            document_instance: if foreign_instance {
+                // Same counter value, different instance: exactly what a
+                // close/reopen of the same URI produces.
+                std::sync::Arc::new(std::sync::atomic::AtomicU32::new(generation))
+            } else {
+                std::sync::Arc::clone(&doc.generation)
+            },
+            rope: doc.rope.clone(),
+            line_starts: doc.line_starts.clone(),
+            accepted_state,
+            root_key: None,
+            overlap_observations: Vec::new(),
+        }
+    }
+
+    /// #12067 review: revalidating only the numeric generation cannot detect a
+    /// close/reopen. A replacement document can carry the same counter, so the
+    /// stale analysis would have been published against a different document.
+    #[test]
+    fn native_actions_are_withheld_when_the_document_instance_was_replaced() {
+        let uri = "file:///action_aba.pl";
+        let server = server_with_document(uri);
+
+        // Non-vacuity: the same subject with the live instance does publish.
+        let current =
+            server.native_critic_code_actions(uri, action_subject(&server, uri, false), None);
+        assert!(
+            !current.is_empty(),
+            "the fixture must produce native actions, or the ABA assertion proves nothing"
+        );
+
+        let replaced =
+            server.native_critic_code_actions(uri, action_subject(&server, uri, true), None);
+        assert!(
+            replaced.is_empty(),
+            "analysis captured against a replaced document instance must publish no actions,              even though the numeric generation still matches; got: {replaced:?}"
+        );
+    }
+
+    /// #12067 review: the request cancellation token reached only the wrapper,
+    /// so native analysis ran under `RunGate::open()` and a cancellation during
+    /// that work still produced a full response.
+    #[test]
+    fn cancelled_request_withholds_native_actions_from_the_service() {
+        let uri = "file:///action_cancel.pl";
+        let server = server_with_document(uri);
+
+        // Non-vacuity: without a cancellation authority the actions publish.
+        let uncancelled =
+            server.native_critic_code_actions(uri, action_subject(&server, uri, false), None);
+        assert!(
+            !uncancelled.is_empty(),
+            "the fixture must produce native actions, or the cancellation assertion is vacuous"
+        );
+
+        let token = PerlLspCancellationToken::new(
+            JsonRpcId::from_value(&json!(4242)).expect("numeric request id is valid"),
+            "textDocument/codeAction".into(),
+        );
+        token.cancel();
+        let cancelled = server.native_critic_code_actions(
+            uri,
+            action_subject(&server, uri, false),
+            Some(&token),
+        );
+        assert!(
+            cancelled.is_empty(),
+            "a cancelled request must not publish native actions; got: {cancelled:?}"
+        );
+    }
 
     #[test]
     fn code_action_kind_filter_matches_subkinds() {
