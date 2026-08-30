@@ -320,7 +320,7 @@ pub fn static_mirror_capabilities() -> Value {
         "supportsConditionalBreakpoints": true,
         "supportsFunctionBreakpoints": true,
         "supportsBreakpointLocationsRequest": true,
-        "supportsEvaluateForHovers": false,
+        "supportsEvaluateForHovers": crate::backend::capabilities::MIRROR_ADVERTISES_EVALUATE_FOR_HOVERS,
         "supportsHitConditionalBreakpoints": false,
         "supportsLogPoints": false,
         "supportsDataBreakpoints": false,
@@ -963,11 +963,11 @@ impl MirrorPeerBridge {
     }
 
     fn handle_evaluate(&mut self, request_seq: i64, args: Option<&Value>) -> DapMessage {
-        // #9573: this mode advertises `supportsEvaluateForHovers: false`
-        // (`static_mirror_capabilities`). Refuse hover before reaching the peer
-        // so the advertised floor and the actual behaviour agree, and so hover
-        // text never reaches an external debugger's evaluator.
-        if crate::backend::capabilities::is_hover_evaluate_context(
+        // #9573: refuse hover before reaching the peer, gated on the same value
+        // `static_mirror_capabilities` advertises, so the mirror profile's
+        // advertisement and its admission stay in step.
+        if crate::backend::capabilities::refuse_hover_evaluation(
+            crate::backend::capabilities::MIRROR_ADVERTISES_EVALUATE_FOR_HOVERS,
             args.and_then(|a| a.get("context")).and_then(Value::as_str),
         ) {
             return self.response(

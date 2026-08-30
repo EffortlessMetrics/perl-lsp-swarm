@@ -14,7 +14,9 @@ use std::sync::LazyLock;
 
 static SAFE_EVALUATOR: LazyLock<SafeEvaluator> = LazyLock::new(SafeEvaluator::new);
 
-use crate::backend::capabilities::{HOVER_UNSUPPORTED_MESSAGE, is_hover_evaluate_context};
+use crate::backend::capabilities::{
+    HOVER_UNSUPPORTED_MESSAGE, advertises_evaluate_for_hovers, refuse_hover_evaluation,
+};
 
 impl DebugAdapter {
     /// Handle evaluate request with policy validation and timeout enforcement.
@@ -50,7 +52,9 @@ impl DebugAdapter {
         //
         // This gate is deliberately ahead of the `allowSideEffects` check: that
         // field must not be able to widen hover into REPL authority.
-        if is_hover_evaluate_context(args.context.as_deref()) {
+        // Bound to the same authority `handle_initialize` advertises, so a future
+        // promotion cannot leave the capability true while this still refuses.
+        if refuse_hover_evaluation(advertises_evaluate_for_hovers(), args.context.as_deref()) {
             return DapMessage::Response {
                 seq,
                 request_seq,

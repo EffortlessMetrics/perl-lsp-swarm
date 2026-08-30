@@ -108,6 +108,13 @@ frame and `allowSideEffects` can widen the screened subset, so hover stays
 `false` and every mode refuses `evaluate` with `context: "hover"` up front —
 before screening, frame lookup, reference allocation, or debugger I/O.
 
+Admission is bound to the same authority: every mode refuses hover **exactly
+when it does not advertise hover** (`refuse_hover_evaluation`). So flipping the
+constant promotes advertisement and admission together — it cannot leave the
+capability advertised true while handlers still reject the request. Peer modes
+pass their own advertised value, so promoting the native gate does not silently
+open an external-peer path that has no pure inspection of its own.
+
 If you are about to change one of these back to a catalog flag: don't. Land the
 named issue's re-enable gate first, then flip the one constant.
 

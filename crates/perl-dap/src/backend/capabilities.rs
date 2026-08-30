@@ -220,6 +220,35 @@ pub(crate) fn is_hover_evaluate_context(context: Option<&str>) -> bool {
     context.is_some_and(|value| value.eq_ignore_ascii_case(HOVER_EVALUATE_CONTEXT))
 }
 
+/// Whether a mode must refuse this `evaluate` request as unsupported hover.
+///
+/// The invariant every mode holds: **a mode refuses hover exactly when it does
+/// not advertise hover.** `advertised_hover` is the value that *this* mode puts
+/// on the wire for `supportsEvaluateForHovers`, so admission and advertisement
+/// can never disagree.
+///
+/// This matters at promotion time, not just today. If the refusal ignored the
+/// advertised value, flipping [`PURE_HOVER_INSPECTION_PROVEN`] would advertise
+/// hover while still rejecting every hover request — the same
+/// capability-versus-behaviour contradiction #9573 exists to remove, only
+/// pointing the other way.
+///
+/// Modes stay independent: each passes its own advertised value, so promoting
+/// the native gate does not silently open an external-peer path that has no
+/// pure inspection of its own.
+#[must_use]
+pub(crate) fn refuse_hover_evaluation(advertised_hover: bool, context: Option<&str>) -> bool {
+    !advertised_hover && is_hover_evaluate_context(context)
+}
+
+/// The `supportsEvaluateForHovers` value the static mirror profile advertises.
+///
+/// Mirror mode is conservative by construction and has no pure hover inspection
+/// of its own, so it stays false independently of the native gate (#9573). Both
+/// `static_mirror_capabilities` and the mirror request gate read this, so the
+/// profile cannot advertise one thing and enforce another.
+pub(crate) const MIRROR_ADVERTISES_EVALUATE_FOR_HOVERS: bool = false;
+
 /// The negotiated DAP capability flags: catalog ∩ backend.
 ///
 /// Field names mirror the DAP `capabilities` payload keys the frontend emits in
@@ -394,6 +423,51 @@ mod tests {
         assert!(
             !advertises_evaluate_for_hovers(),
             "the single hover authority must report false until #9573's re-enable gate passes"
+        );
+    }
+
+    /// #9573 promotion safety: refusal follows advertisement in BOTH directions.
+    ///
+    /// The gate constant is `false` today, so testing only the current value
+    /// would leave the promotion path unproven. Passing `advertised_hover`
+    /// explicitly exercises the flipped state without mutating the constant:
+    /// when a mode advertises hover, it must stop refusing it; when it does
+    /// not, it must refuse. Anything else republishes the exact
+    /// capability-versus-behaviour contradiction this issue removes.
+    #[test]
+    fn hover_refusal_tracks_the_advertised_capability_in_both_directions() {
+        // Closed: hover contexts refused, everything else untouched.
+        assert!(refuse_hover_evaluation(false, Some("hover")));
+        assert!(refuse_hover_evaluation(false, Some("Hover")));
+        assert!(!refuse_hover_evaluation(false, Some("watch")));
+        assert!(!refuse_hover_evaluation(false, Some("repl")));
+        assert!(!refuse_hover_evaluation(false, Some("clipboard")));
+        assert!(!refuse_hover_evaluation(false, None));
+
+        // Promoted: hover is admitted, and nothing else changes behaviour.
+        assert!(
+            !refuse_hover_evaluation(true, Some("hover")),
+            "a mode that advertises hover must stop refusing it, or promotion \
+             would advertise a capability the handler still rejects"
+        );
+        assert!(!refuse_hover_evaluation(true, Some("watch")));
+        assert!(!refuse_hover_evaluation(true, None));
+    }
+
+    /// Mirror mode advertises and enforces the same value, independently.
+    #[test]
+    fn mirror_profile_advertisement_and_admission_agree() {
+        // Mirror advertises hover false and must therefore refuse hover. The
+        // advertised value itself is pinned at runtime by
+        // `peer_launch::tests::static_capabilities_match_the_conservative_profile`,
+        // which reads it back out of the emitted JSON.
+        assert!(
+            refuse_hover_evaluation(MIRROR_ADVERTISES_EVALUATE_FOR_HOVERS, Some("hover")),
+            "mirror advertises hover false, so it must refuse hover"
+        );
+        assert!(
+            !refuse_hover_evaluation(MIRROR_ADVERTISES_EVALUATE_FOR_HOVERS, Some("watch")),
+            "the mirror gate must stay scoped to hover"
         );
     }
 

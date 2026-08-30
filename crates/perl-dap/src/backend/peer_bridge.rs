@@ -322,6 +322,15 @@ impl DapPeerBridge {
         self.response(request_seq, command, false, None, Some(e.to_string()))
     }
 
+    /// The `supportsEvaluateForHovers` value this session advertises.
+    ///
+    /// One source for both `capabilities_body` and the hover request gate
+    /// (#9573), so this bridge cannot advertise one thing and enforce another.
+    fn advertised_evaluate_for_hovers(&self) -> bool {
+        intersect_dap_capabilities(&CatalogDapFlags::from_catalog(), &self.backend.capabilities())
+            .supports_evaluate_for_hovers
+    }
+
     fn capabilities_body(&self) -> Value {
         let negotiated = intersect_dap_capabilities(
             &CatalogDapFlags::from_catalog(),
@@ -495,10 +504,12 @@ impl DapPeerBridge {
     }
 
     fn handle_evaluate(&mut self, args: Option<&Value>) -> super::BackendResult<Value> {
-        // #9573: `capabilities_body` advertises `supportsEvaluateForHovers` from
-        // the gated negotiation, which is false. Refuse hover before delegating
-        // to the peer backend so the advertised floor is actually enforced.
-        if crate::backend::capabilities::is_hover_evaluate_context(
+        // #9573: refuse hover before delegating to the peer backend, gated on the
+        // exact value `capabilities_body` advertises for this session so the
+        // advertisement and the admission cannot disagree — today, or after a
+        // future promotion.
+        if crate::backend::capabilities::refuse_hover_evaluation(
+            self.advertised_evaluate_for_hovers(),
             args.and_then(|a| a.get("context")).and_then(Value::as_str),
         ) {
             return Err(super::BackendError::Unsupported(
