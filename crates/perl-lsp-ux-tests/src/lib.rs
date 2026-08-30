@@ -1746,6 +1746,7 @@ mod strict_binary_guard_subprocess_tests {
                 "--exact",
                 "--nocapture",
             ])
+            .env_clear()
             .env_remove("PERL_LSP_BIN")
             .env_remove("CARGO_TARGET_DIR")
             .env_remove("CARGO_MANIFEST_DIR")
