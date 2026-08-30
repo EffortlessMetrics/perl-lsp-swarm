@@ -77,11 +77,8 @@ fn docker_publish_credentials_are_bound_to_trusted_anchors() -> Result<()> {
         &workflow,
         &[
             "DOCKER_PASSWORD@publish-dockerhub",
-            "DOCKER_PASSWORD@publish-dockerhub-perl",
             "DOCKER_USERNAME@publish-dockerhub",
-            "DOCKER_USERNAME@publish-dockerhub-perl",
-            "GITHUB_TOKEN@build",
-            "GITHUB_TOKEN@build-perl-runtime",
+            "GITHUB_TOKEN@publish-ghcr",
         ],
     )?;
 
@@ -150,9 +147,35 @@ fn validate_anchor_contract(workflow: &Value) -> Result<()> {
         assert_job_needs_gate(&name, job)?;
 
         let steps = steps_of(job)?;
-        let checkout_idx = steps.iter().position(step_is_checkout).ok_or_else(|| {
-            anyhow!("credential-bearing job `{name}` has no actions/checkout step")
-        })?;
+        let checkout_idx = steps.iter().position(step_is_checkout);
+        let Some(checkout_idx) = checkout_idx else {
+            ensure!(
+                name == "publish-ghcr" || name == "publish-dockerhub",
+                "credential-bearing job `{name}` has no actions/checkout step"
+            );
+            let secrets_idx = steps
+                .iter()
+                .position(|step| {
+                    let mut hit = String::new();
+                    collect_matches(step, "secrets.", &mut hit);
+                    !hit.is_empty()
+                })
+                .ok_or_else(|| anyhow!("job `{name}` references secrets outside any step"))?;
+            let digest_idx = steps.iter().position(|step| {
+                let mut text = String::new();
+                collect_matches(step, "artifact digest verified before login", &mut text);
+                !text.is_empty()
+            });
+            let digest_idx = digest_idx.ok_or_else(|| {
+                anyhow!("artifact-only credential job `{name}` must verify artifact digests")
+            })?;
+            ensure!(
+                digest_idx < secrets_idx,
+                "artifact-only job `{name}` must verify provenance before its first step \
+                 touches a secret"
+            );
+            continue;
+        };
         let checkout = mapping_value(&steps[checkout_idx], "with")
             .with_context(|| format!("job `{name}` checkout lacks a with block"))?;
         let with_ref = mapping_value(checkout, "ref").with_context(|| {
