@@ -99,17 +99,35 @@ export function downloadBoundedFile(options: BoundedFileDownloadOptions): Promis
       }
 
       let closeHandled = false;
+      let closePoll: NodeJS.Immediate | undefined;
       const rejectAfterClose = (): void => {
         if (closeHandled) {
           return;
         }
         closeHandled = true;
+        if (closePoll) {
+          clearImmediate(closePoll);
+        }
+        file?.removeListener('close', rejectAfterClose);
         removePartialAndReject(error);
       };
 
       file.once('close', rejectAfterClose);
       try {
         file.destroy();
+        // `emitClose: false` is a supported WriteStream option. Such a stream
+        // closes its resource but never emits the event above, so observe the
+        // documented closed state as a fallback. The undefined case is kept
+        // out of this branch for lightweight test doubles without stream
+        // lifecycle state.
+        const pollClosedState = (): void => {
+          if (file?.closed) {
+            rejectAfterClose();
+            return;
+          }
+          closePoll = setImmediate(pollClosedState);
+        };
+        closePoll = setImmediate(pollClosedState);
       } catch {
         file.removeListener('close', rejectAfterClose);
         rejectAfterClose();

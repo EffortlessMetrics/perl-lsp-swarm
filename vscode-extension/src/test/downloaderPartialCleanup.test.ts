@@ -13,6 +13,7 @@ type TestRequest = EventEmitter & {
 type DownloaderSeams = {
   downloadFile(url: string, dest: string, timeoutMs?: number): Promise<void>;
   httpGet(...args: unknown[]): TestRequest;
+  createWriteStream(dest: string): fs.WriteStream;
   removePartialFile(dest: string): void;
 };
 
@@ -83,5 +84,43 @@ describe('BinaryDownloader partial-file cleanup ordering', () => {
     expect(fs.existsSync(destination)).toBe(false);
 
     await new Promise<void>((resolve) => setImmediate(resolve));
+  });
+
+  test('does not wait forever when the production write stream suppresses close', async () => {
+    const destination = path.join(tmpDir, 'partial-emit-close-false.bin');
+    fs.writeFileSync(destination, 'partial');
+
+    const downloader = new BinaryDownloader(
+      makeContext(tmpDir),
+      makeOutputChannel(),
+    ) as unknown as DownloaderSeams;
+    const request = new EventEmitter() as TestRequest;
+    request.destroy = jest.fn();
+    const requestError = new Error('request failed after data');
+    const file = fs.createWriteStream(destination, { emitClose: false });
+    file.write('data');
+    jest.spyOn(downloader, 'createWriteStream').mockReturnValue(file);
+    jest.spyOn(downloader, 'removePartialFile').mockImplementation(() => {});
+    jest.spyOn(downloader, 'httpGet').mockImplementation((_https, _url, _options, callback) => {
+      process.nextTick(() => {
+        const response = new EventEmitter() as EventEmitter & {
+          statusCode: number;
+          headers: Record<string, string>;
+          destroy: jest.Mock;
+        };
+        response.statusCode = 200;
+        response.headers = {};
+        response.destroy = jest.fn();
+        (callback as (response: unknown) => void)(response);
+        response.emit('data', Buffer.from('payload'));
+        response.emit('error', requestError);
+      });
+      return request;
+    });
+
+    await expect(
+      downloader.downloadFile('http://localhost/archive', destination, 1000),
+    ).rejects.toBe(requestError);
+    expect(fs.existsSync(destination)).toBe(false);
   });
 });
