@@ -421,23 +421,31 @@ impl ParsedSnapshot {
     /// generation's, and construction happens at most once whether zero, one,
     /// or many diagnostic evaluations of this generation request it.
     ///
-    /// Returns `None` when there is nothing useful to build: a [`DegradationTier::Minimal`]
-    /// snapshot has no AST, and a snapshot whose parse errors suppress the
-    /// document-analysis / lint stack (see
-    /// `perl_lsp_rs_core::providers::diagnostics::suppresses_document_analysis`)
-    /// would have its analysis discarded unused by every current caller
-    /// anyway -- production diagnostics skip the entire pragma/scope/symbol
-    /// block under that same condition today, so building it here would be
-    /// wasted work that never happens on any other path.
+    /// Returns `None` only for a [`DegradationTier::Minimal`] snapshot, which
+    /// has no AST to derive anything from.
+    ///
+    /// An earlier revision also returned `None` when the snapshot's parse
+    /// errors suppress the lint stack, on the reasoning that production would
+    /// discard the analysis unused. That reasoning held while
+    /// `DiagnosticsProvider` was the only consumer -- it skips the whole
+    /// pragma/scope/symbol block for a blocking parse error -- but it stopped
+    /// being true once native critic composition became a second consumer.
+    /// `NativeCriticRegistry::check_unfiltered` runs under no parse-error
+    /// guard, so on a malformed-but-recoverable document (the ordinary
+    /// mid-edit state) withholding the analysis made the critic rebuild the
+    /// pragma map and scope analysis on *every* evaluation -- precisely the
+    /// cost this cell exists to remove, in the most latency-sensitive case
+    /// there is.
+    ///
+    /// So the analysis is now available whenever there is an AST. The provider
+    /// still skips its block for a blocking parse error, unchanged; the critic
+    /// reuses instead of rebuilding. Building it for such a snapshot is not
+    /// wasted: the critic was already computing exactly these facts from
+    /// exactly this tree and source, just repeatedly.
     pub fn diagnostic_analysis(
         &self,
     ) -> Option<Arc<perl_lsp_rs_core::providers::diagnostics::DocumentDiagnosticAnalysis>> {
         let ast = self.ast.as_ref()?;
-        if perl_lsp_rs_core::providers::diagnostics::suppresses_document_analysis(
-            &self.parse_errors,
-        ) {
-            return None;
-        }
         Some(Arc::clone(self.diagnostic_analysis.get_or_init(|| {
             #[cfg(test)]
             self.diagnostic_analysis_build_count
@@ -1621,25 +1629,43 @@ mod tests {
     /// never uses, since they skip the entire pragma/scope/symbol block
     /// under this exact condition today.
     #[test]
-    fn blocking_parse_error_snapshot_has_no_diagnostic_analysis() {
+    fn blocking_parse_error_snapshot_still_offers_its_analysis() {
+        // Deliberate reversal of an earlier contract. This previously asserted
+        // `None`, on the reasoning that `DiagnosticsProvider` skips the
+        // pragma/scope/symbol block for a blocking parse error and would
+        // discard the analysis unused. That stopped being true once native
+        // critic composition became a second consumer: it runs under no
+        // parse-error guard, so withholding the analysis made it rebuild the
+        // pragma map and scope analysis on every evaluation of a
+        // malformed-but-recoverable document.
         let snapshot = blocking_error_snapshot_for("my $x = 1;", 0);
         assert!(
             snapshot.ast().is_some(),
             "the fixture snapshot must have a real AST despite the blocking error"
         );
         assert!(
-            snapshot.diagnostic_analysis().is_none(),
-            "a blocking-parse-error snapshot must expose no diagnostic analysis"
-        );
-        assert!(
             !snapshot.diagnostic_analysis_initialized(),
-            "a blocking-parse-error snapshot must not materialize the diagnostic-analysis cell"
+            "the cell must still be lazy: nothing is built until someone asks"
+        );
+
+        let analysis = snapshot.diagnostic_analysis();
+        assert!(
+            analysis.is_some(),
+            "an AST-bearing snapshot must offer its analysis even with a blocking parse error, \
+             so the critic stage reuses instead of rebuilding per evaluation"
         );
         assert_eq!(
             snapshot.diagnostic_analysis_build_count(),
-            0,
-            "a blocking-parse-error snapshot must never invoke the construction closure"
+            1,
+            "exactly one construction, as for any other AST-bearing generation"
         );
+
+        // Still exactly-once, not once-per-request.
+        let again = snapshot.diagnostic_analysis();
+        assert_eq!(snapshot.diagnostic_analysis_build_count(), 1);
+        let first = must_some(analysis);
+        let second = must_some(again);
+        assert!(Arc::ptr_eq(&first, &second), "repeat requests must share one analysis");
     }
 }
 

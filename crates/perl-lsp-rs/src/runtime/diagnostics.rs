@@ -3272,6 +3272,84 @@ mod tests {
         Ok(())
     }
 
+    /// #7286, malformed-document case: the generation-owned analysis must reach
+    /// the native critic stage even when the document has a blocking parse
+    /// error.
+    ///
+    /// This is the case an earlier revision got wrong. `DiagnosticsProvider`
+    /// skips its pragma/scope/symbol block for a blocking parse error, so
+    /// `ParsedSnapshot::diagnostic_analysis` used to return `None` for such a
+    /// snapshot as "nothing useful to build". But native critic composition
+    /// runs under no parse-error guard, so that `None` made it rebuild the
+    /// pragma map and scope analysis on every evaluation -- on exactly the
+    /// documents a user is most likely to be looking at, since a file is
+    /// malformed for most of the time it is being typed into.
+    ///
+    /// Asserts zero critic rebuilds across a push and a pull over one such
+    /// generation, with the same instrument-liveness guard used by the
+    /// well-formed case.
+    #[test]
+    fn native_critic_reuses_analysis_for_a_malformed_document()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use perl_lsp_rs_core::tooling::perl_critic::{
+            native_critic_scope_rebuild_count, reset_native_critic_scope_rebuild_count,
+        };
+
+        let (server, buf) = make_server_with_capture();
+        let uri = "file:///malformed_critic_reuse.pl";
+        // Unbalanced brace: recovery still yields an AST, and the parse errors
+        // are blocking, which is the combination that used to withhold the
+        // analysis.
+        server.test_handle_did_open(Some(json!({
+            "textDocument": {
+                "uri": uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": "sub f { my $unused = 1; print $undeclared;\n"
+            }
+        })))?;
+        std::thread::sleep(Duration::from_millis(50));
+        buf.lock().clear();
+
+        reset_native_critic_scope_rebuild_count();
+
+        server.publish_diagnostics(uri);
+        std::thread::sleep(Duration::from_millis(50));
+        server.test_handle_document_diagnostic(Some(json!({
+            "textDocument": {"uri": uri}
+        })))?;
+
+        let rebuilds = native_critic_scope_rebuild_count();
+        assert_eq!(
+            rebuilds, 0,
+            "a malformed document's critic evaluations must consume the generation-owned \
+             analysis; a non-zero count means the blocking-parse-error path is withholding it \
+             again and the critic is re-walking the AST per evaluation (got {rebuilds})"
+        );
+
+        // Instrument liveness, as in the well-formed case: a thread-local zero
+        // is also what a dead counter reads.
+        {
+            use perl_lsp_rs_core::tooling::perl_critic::{
+                CriticConfig, CriticContext, NativeCriticProfile, NativeCriticRegistry,
+            };
+            let source = "sub g { my $x = 1; }\n";
+            let mut parser = perl_parser::Parser::new(source);
+            let ast = parser.parse().map_err(|e| format!("liveness fixture must parse: {e:?}"))?;
+            let config = CriticConfig::default();
+            let registry =
+                NativeCriticRegistry::for_profile_with_config(NativeCriticProfile::Strict, &config);
+            let _ = registry.check_unfiltered(&CriticContext::new(source, &ast, &config));
+            assert_eq!(
+                native_critic_scope_rebuild_count(),
+                1,
+                "instrument liveness: the counter must register a real rebuild on this thread"
+            );
+        }
+
+        Ok(())
+    }
+
     /// #7286 negative control: push and pull must agree on the same
     /// document-local diagnostic facts for one exact input. Sharing the
     /// analysis between the two transports must not change *which*
