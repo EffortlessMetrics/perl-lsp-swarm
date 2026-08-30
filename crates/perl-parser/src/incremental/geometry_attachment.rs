@@ -1,3 +1,5 @@
+use std::fmt;
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use perl_source_identity::ContentDigest;
@@ -8,9 +10,48 @@ use super::snapshot::{ParseGeneration, ParseSnapshotStrategy, ParseTerminalDispo
 /// Schema identity for the snapshot-bound source-geometry attachment.
 pub const SOURCE_GEOMETRY_ATTACHMENT_SCHEMA_VERSION: &str = "source_geometry_attachment.v1";
 
+/// Process-local identity of one parser-state lifetime.
+///
+/// The marker is intentionally opaque and pointer-compared. Cloning an
+/// `IncrementalState` or committing its next generation retains the marker;
+/// constructing an independent or reopened state allocates another marker.
+/// Durable cross-process acceptance/currentness belongs to the accepted parser
+/// ticket and document-instance authorities above this parser-local layer.
+#[derive(Clone)]
+struct SourceGeometryInstanceIdentity(Arc<SourceGeometryInstanceMarker>);
+
+struct SourceGeometryInstanceMarker;
+
+impl SourceGeometryInstanceIdentity {
+    fn new() -> Self {
+        Self(Arc::new(SourceGeometryInstanceMarker))
+    }
+}
+
+impl fmt::Debug for SourceGeometryInstanceIdentity {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("SourceGeometryInstanceIdentity(..)")
+    }
+}
+
+impl PartialEq for SourceGeometryInstanceIdentity {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for SourceGeometryInstanceIdentity {}
+
+impl Hash for SourceGeometryInstanceIdentity {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        std::ptr::hash(Arc::as_ptr(&self.0), state);
+    }
+}
+
 /// Exact parser-snapshot subject to which source geometry belongs.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SourceGeometrySubject {
+    instance_identity: SourceGeometryInstanceIdentity,
     generation: ParseGeneration,
     content_digest: ContentDigest,
     source_len: usize,
@@ -26,7 +67,38 @@ impl SourceGeometrySubject {
         disposition: ParseTerminalDisposition,
         strategy: ParseSnapshotStrategy,
     ) -> Self {
-        Self { generation, content_digest, source_len, disposition, strategy }
+        Self {
+            instance_identity: SourceGeometryInstanceIdentity::new(),
+            generation,
+            content_digest,
+            source_len,
+            disposition,
+            strategy,
+        }
+    }
+
+    pub(super) fn next_for_same_instance(
+        previous: &Self,
+        generation: ParseGeneration,
+        content_digest: ContentDigest,
+        source_len: usize,
+        disposition: ParseTerminalDisposition,
+        strategy: ParseSnapshotStrategy,
+    ) -> Self {
+        Self {
+            instance_identity: previous.instance_identity.clone(),
+            generation,
+            content_digest,
+            source_len,
+            disposition,
+            strategy,
+        }
+    }
+
+    /// Whether both subjects belong to generations of the same parser-state lifetime.
+    #[must_use]
+    pub fn same_instance_as(&self, other: &Self) -> bool {
+        self.instance_identity == other.instance_identity
     }
 
     /// Monotonic parser generation represented by this subject.
@@ -309,9 +381,13 @@ mod tests {
     #[test]
     fn generation_and_content_are_load_bearing_payload_identity() {
         let first = subject("my $x = 1;", ParseGeneration::INITIAL);
-        let later = subject(
-            "my $x = 1;",
+        let later = SourceGeometrySubject::next_for_same_instance(
+            &first,
             ParseGeneration::INITIAL.checked_next().unwrap_or(ParseGeneration::INITIAL),
+            ContentDigest::of_bytes(b"my $x = 1;"),
+            "my $x = 1;".len(),
+            ParseTerminalDisposition::Clean,
+            ParseSnapshotStrategy::Fresh,
         );
         let different_same_length = subject("my $y = 1;", ParseGeneration::INITIAL);
         let attachment = SourceGeometryAttachment {
@@ -320,6 +396,7 @@ mod tests {
             state: SourceGeometryAttachmentState::Complete { payload: payload(first) },
         };
 
+        assert!(attachment.subject().same_instance_as(&later));
         assert_eq!(
             attachment.validate_for(&later),
             Err(SourceGeometryValidationError::PayloadSubject)
@@ -328,6 +405,23 @@ mod tests {
             SourceGeometryAttachment::unavailable(later.clone())
                 .validate_for(&different_same_length),
             Err(SourceGeometryValidationError::AttachmentSubject)
+        );
+    }
+
+    #[test]
+    fn independent_identical_subjects_do_not_exchange_payloads() {
+        let first = subject("my $x = 1;", ParseGeneration::INITIAL);
+        let independent = subject("my $x = 1;", ParseGeneration::INITIAL);
+        let attachment = SourceGeometryAttachment {
+            schema_version: SOURCE_GEOMETRY_ATTACHMENT_SCHEMA_VERSION,
+            subject: independent.clone(),
+            state: SourceGeometryAttachmentState::Complete { payload: payload(first) },
+        };
+
+        assert!(!attachment.subject().same_instance_as(attachment.state_payload_subject()));
+        assert_eq!(
+            attachment.validate_for(&independent),
+            Err(SourceGeometryValidationError::PayloadSubject)
         );
     }
 
