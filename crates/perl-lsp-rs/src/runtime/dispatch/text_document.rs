@@ -458,9 +458,13 @@ impl LspServer {
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
         // Test-only fast path (#4628): compiled out of production builds and
-        // incapable of satisfying production acceptance (#13981).
+        // incapable of satisfying production acceptance (#13981). Unadvertised
+        // folding must still refuse; the fallback must not become a second
+        // success path around the handler gate.
         #[cfg(any(test, feature = "test-fallbacks"))]
-        if std::env::var("LSP_TEST_FALLBACKS").is_ok() {
+        if std::env::var("LSP_TEST_FALLBACKS").is_ok()
+            && self.advertised_features.lock().folding_range
+        {
             return match self.on_folding_range(params.clone().unwrap_or(json!({}))) {
                 Ok(res) => Ok(Some(res)),
                 Err(_) => self.handle_folding_range(params),
@@ -648,6 +652,10 @@ mod tests {
         assert!(
             method_body.contains("std::env::var(\"LSP_TEST_FALLBACKS\")"),
             "test-only foldingRange fallback must remain behind LSP_TEST_FALLBACKS"
+        );
+        assert!(
+            method_body.contains("advertised_features.lock().folding_range"),
+            "test-only foldingRange fallback must not run when the feature is unadvertised (#13981)"
         );
         let handler_source = include_str!("../language/symbols.rs");
         let handler_production =
