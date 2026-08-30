@@ -293,6 +293,35 @@ pub enum AstGeometryDrift {
         /// Shape that was registered.
         shape: AstGeometryShape,
     },
+    /// A registered payload field claims the caller-owned boundary rule.
+    ///
+    /// [`AstGeometryMapping::CallerOwnedBoundary`] is reserved for anchoring
+    /// decisions that are not payload fields at all. A payload row claiming it
+    /// would let a mapping consumer legitimately skip a real span.
+    CallerOwnedMappingOnPayloadRow {
+        /// Owning `NodeKind`.
+        kind_name: String,
+        /// Field identity.
+        field: String,
+    },
+    /// A registered geometry row has no owning invariant-policy row.
+    MissingPolicyRow {
+        /// Owning `NodeKind`.
+        kind_name: String,
+        /// Field identity.
+        field: String,
+    },
+    /// A row's disposition disagrees with its owning variant's classification.
+    DispositionMismatch {
+        /// Owning `NodeKind`.
+        kind_name: String,
+        /// Field identity.
+        field: String,
+        /// Disposition the row registers.
+        registered: AstGeometryDisposition,
+        /// Disposition the owning classification requires.
+        required: AstGeometryDisposition,
+    },
 }
 
 impl std::fmt::Display for AstGeometryDrift {
@@ -330,6 +359,25 @@ impl std::fmt::Display for AstGeometryDrift {
                 "{kind_name}.{field} is registered as {} but claims the token width-preserving \
                  mapping rule",
                 shape.token()
+            ),
+            Self::CallerOwnedMappingOnPayloadRow { kind_name, field } => write!(
+                f,
+                "{kind_name}.{field} is a payload geometry field but registers mapping {}; that \
+                 rule is reserved for anchoring decisions the AST does not own, and a payload row \
+                 claiming it would let a remap skip a real span",
+                AstGeometryMapping::CallerOwnedBoundary.token()
+            ),
+            Self::MissingPolicyRow { kind_name, field } => write!(
+                f,
+                "{kind_name}.{field} registers geometry but {kind_name} has no invariant-policy \
+                 row, so its disposition cannot be derived"
+            ),
+            Self::DispositionMismatch { kind_name, field, registered, required } => write!(
+                f,
+                "{kind_name}.{field} registers disposition {} but its variant classification \
+                 requires {}",
+                registered.token(),
+                required.token()
             ),
         }
     }
@@ -423,7 +471,13 @@ pub fn reconcile_geometry_rows(
                     shape,
                 });
             }
-            _ => {}
+            (_, AstGeometryMapping::CallerOwnedBoundary) => {
+                return Err(AstGeometryDrift::CallerOwnedMappingOnPayloadRow {
+                    kind_name: kind_name.to_string(),
+                    field: row.field.to_string(),
+                });
+            }
+            (_, AstGeometryMapping::MapRange) => {}
         }
     }
 
@@ -456,6 +510,49 @@ pub fn reconcile_geometry_rows(
                 });
             }
         }
+    }
+
+    Ok(())
+}
+
+/// Validate the canonical registry as a whole.
+///
+/// [`reconcile_geometry_rows`] answers "does this node agree with its rows".
+/// It deliberately cannot answer "is the row itself coherent with the variant
+/// that owns it", because it takes a bare `kind_name` and no policy authority.
+/// This entry point closes that: it is the production check that every row has
+/// an owning [`crate::AstNodePolicy`] and carries the disposition that
+/// classification requires, and that every variant's fully populated sample
+/// reconciles.
+///
+/// Consumers should call this once before trusting the registry rather than
+/// relying on a test to have run.
+///
+/// # Errors
+///
+/// Returns the first [`AstGeometryDrift`] found.
+pub fn validate_geometry_registry() -> Result<(), AstGeometryDrift> {
+    for row in AST_NODE_GEOMETRY_FIELDS {
+        let Some(policy) = crate::ast_node_policy(row.kind_name) else {
+            return Err(AstGeometryDrift::MissingPolicyRow {
+                kind_name: row.kind_name.to_string(),
+                field: row.field.to_string(),
+            });
+        };
+
+        let required = geometry_disposition_for_classification(policy.classification);
+        if row.disposition != required {
+            return Err(AstGeometryDrift::DispositionMismatch {
+                kind_name: row.kind_name.to_string(),
+                field: row.field.to_string(),
+                registered: row.disposition,
+                required,
+            });
+        }
+    }
+
+    for fixture in crate::node_kind_fixtures() {
+        reconcile_node_geometry(&fixture.sample)?;
     }
 
     Ok(())

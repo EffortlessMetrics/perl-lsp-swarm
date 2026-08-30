@@ -9,10 +9,21 @@
 //!    registry, so a stale row or an unregistered field is red here.
 //! 2. **Nothing can go missing later.** The reconciliation function is fed
 //!    deliberately mutated inputs, proving it actually discriminates rather
-//!    than returning `Ok` for everything. The complementary half — that a new
-//!    geometry field cannot be added without being classified — is structural:
-//!    `observe_geometry_fields` destructures every field of every variant with
-//!    no `..` arm, so the addition fails to compile until an author handles it.
+//!    than returning `Ok` for everything.
+//!
+//! The second half needs care, because the obvious argument for it is wrong.
+//! Exhaustive destructuring in `observe_geometry_fields` proves only that every
+//! field *name* appears in a pattern. A new `Option<SourceLocation>` bound as
+//! `field: _` satisfies the compiler, is never emitted by the observer, and so
+//! reconciles clean; filing it under `untracked_fields` finishes hiding it, and
+//! the no-`..` scan passes throughout. That escape was demonstrated, not
+//! theorised, on this branch.
+//!
+//! `the_registry_covers_every_geometry_bearing_field_declared_in_the_enum` is
+//! therefore the load-bearing guard: it reads the *declared field types* out of
+//! `ast.rs`, so a field is geometry-bearing because of what it is, not because
+//! an author remembered to say so. The pattern-exhaustiveness and rest-pattern
+//! guards remain as earlier, cheaper tripwires.
 
 use perl_ast::ast::{Token, TokenKind};
 use perl_ast::{
@@ -187,6 +198,164 @@ fn shape_coverage_is_an_explicit_denominator() {
         !in_use.contains(AstGeometryShape::Repeated.token()),
         "AstGeometryShape::Repeated is documented as reserved vocabulary with no current row"
     );
+}
+
+/// Derive the geometry denominator from the enum's *declared field types*.
+///
+/// A field is geometry-bearing because of its type, not because someone
+/// classified it. Reading `ast.rs` directly is what makes this independent of
+/// the observer: a new span bound as `field: _` is invisible to every other
+/// guard here, but not to this one.
+fn declared_geometry_fields() -> Vec<(String, String)> {
+    const AST_SOURCE: &str = include_str!("../src/ast.rs");
+
+    // Isolate `pub enum NodeKind { .. }` by brace balance.
+    let start = AST_SOURCE.find("pub enum NodeKind {").unwrap_or(0);
+    let body_start = AST_SOURCE[start..].find('{').map_or(start, |i| start + i + 1);
+    let mut depth = 1usize;
+    let mut end = body_start;
+    for (offset, ch) in AST_SOURCE[body_start..].char_indices() {
+        match ch {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    end = body_start + offset;
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let body = &AST_SOURCE[body_start..end];
+
+    // Strip comments and attributes so doc prose cannot be read as a field.
+    let cleaned: String = body
+        .lines()
+        .map(|line| line.split("//").next().unwrap_or(line).trim())
+        .filter(|line| !line.starts_with('#'))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let mut declared = Vec::new();
+    let chars: Vec<char> = cleaned.chars().collect();
+    let mut index = 0usize;
+
+    while index < chars.len() {
+        while index < chars.len() && chars[index].is_whitespace() {
+            index += 1;
+        }
+
+        let mut name = String::new();
+        while index < chars.len() && (chars[index].is_alphanumeric() || chars[index] == '_') {
+            name.push(chars[index]);
+            index += 1;
+        }
+        if name.is_empty() {
+            index += 1;
+            continue;
+        }
+
+        while index < chars.len() && chars[index].is_whitespace() {
+            index += 1;
+        }
+        if index >= chars.len() || chars[index] != '{' {
+            continue; // unit variant, or not a variant head
+        }
+
+        index += 1;
+        let field_start = index;
+        let mut variant_depth = 1usize;
+        while index < chars.len() && variant_depth > 0 {
+            match chars[index] {
+                '{' => variant_depth += 1,
+                '}' => variant_depth -= 1,
+                _ => {}
+            }
+            index += 1;
+        }
+        let variant_body: String = chars[field_start..index.saturating_sub(1)].iter().collect();
+
+        // Split fields on commas outside any generic/tuple nesting.
+        let mut nesting = 0i32;
+        let mut current = String::new();
+        let mut chunks = Vec::new();
+        for ch in variant_body.chars() {
+            match ch {
+                '<' | '(' | '[' | '{' => nesting += 1,
+                '>' | ')' | ']' | '}' => nesting -= 1,
+                ',' if nesting == 0 => {
+                    chunks.push(std::mem::take(&mut current));
+                    continue;
+                }
+                _ => {}
+            }
+            current.push(ch);
+        }
+        chunks.push(current);
+
+        for chunk in chunks {
+            let Some((field, ty)) = chunk.split_once(':') else { continue };
+            let field = field.trim();
+            if field.is_empty() {
+                continue;
+            }
+            // `Token` carries a span; `TokenKind` is a bare discriminant.
+            let carries_span = ty.contains("SourceLocation")
+                || ty.split(|c: char| !c.is_alphanumeric() && c != '_').any(|word| word == "Token");
+            if carries_span {
+                declared.push((name.clone(), field.to_string()));
+            }
+        }
+    }
+
+    declared
+}
+
+#[test]
+fn the_registry_covers_every_geometry_bearing_field_declared_in_the_enum() {
+    let declared = declared_geometry_fields();
+
+    assert!(
+        declared.len() >= 9,
+        "the enum scan found only {} geometry-bearing fields; that means this scanner broke, not \
+         that the enum shrank, and a broken scanner would silently stop guarding anything",
+        declared.len()
+    );
+
+    // Registry identities are dotted for nested records (`catch_blocks.variable`);
+    // compare against the declared field they live in.
+    let registered: BTreeSet<(String, String)> = AST_NODE_GEOMETRY_FIELDS
+        .iter()
+        .map(|row| {
+            let base = row.field.split('.').next().unwrap_or(row.field);
+            (row.kind_name.to_string(), base.to_string())
+        })
+        .collect();
+
+    let declared_set: BTreeSet<(String, String)> = declared.into_iter().collect();
+
+    let unregistered: Vec<&(String, String)> = declared_set.difference(&registered).collect();
+    assert!(
+        unregistered.is_empty(),
+        "these NodeKind fields are declared with span-bearing types but have no row in \
+         AST_NODE_GEOMETRY_FIELDS: {unregistered:?}\nA coordinate remap would leave them at stale \
+         offsets. Binding such a field as `_` in observe_geometry_fields does not exempt it."
+    );
+
+    let phantom: Vec<&(String, String)> = registered.difference(&declared_set).collect();
+    assert!(
+        phantom.is_empty(),
+        "these geometry rows name fields the enum no longer declares with a span-bearing type: \
+         {phantom:?}"
+    );
+}
+
+/// Registry coherence is checked by production code, not only by this suite.
+#[test]
+fn the_canonical_registry_validates() -> Result<(), Box<dyn std::error::Error>> {
+    perl_ast::validate_geometry_registry()?;
+    Ok(())
 }
 
 /// The compile-time guard must not be silenceable with a rest pattern.
@@ -424,6 +593,69 @@ fn a_non_token_claiming_width_preservation_is_rejected() -> Result<(), Box<dyn s
         }
     );
     Ok(())
+}
+
+/// A payload row may not claim the caller-owned boundary rule.
+///
+/// `CallerOwnedBoundary` is reserved for anchoring decisions the AST does not
+/// own. A payload span claiming it would let a mapped-clone consumer legitimately
+/// skip a real span while the coherence gate still returned `Ok`.
+#[test]
+fn a_payload_row_claiming_caller_owned_boundary_is_rejected()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mutated = [AstGeometryField {
+        kind_name: "Package",
+        field: "name_span",
+        shape: AstGeometryShape::Direct,
+        mapping: AstGeometryMapping::CallerOwnedBoundary,
+        disposition: AstGeometryDisposition::SourceExact,
+    }];
+
+    let observed = vec![ObservedGeometryField {
+        field: "name_span",
+        shape: AstGeometryShape::Direct,
+        occurrences: 1,
+    }];
+
+    let Err(drift) = reconcile_geometry_rows("Package", &mutated, &observed) else {
+        return Err("a payload row must not claim the caller-owned boundary mapping".into());
+    };
+
+    assert_eq!(
+        drift,
+        AstGeometryDrift::CallerOwnedMappingOnPayloadRow {
+            kind_name: "Package".to_string(),
+            field: "name_span".to_string(),
+        }
+    );
+    Ok(())
+}
+
+/// A row whose disposition contradicts its owning variant must be rejected by
+/// production code, not merely noticed by a test that reads both tables.
+#[test]
+fn a_wrong_disposition_is_rejected_by_the_registry_validator() {
+    // Error is Recovery-classified, so recovery is the only coherent disposition.
+    let policy = ast_node_policy("Error");
+    assert!(policy.is_some(), "Error must have a policy row");
+
+    let required = geometry_disposition_for_classification(AstNodeClassification::Recovery);
+    assert_eq!(
+        required,
+        AstGeometryDisposition::Recovery,
+        "a recovery variant's geometry must be recovery-dispositioned"
+    );
+    assert_ne!(
+        required,
+        AstGeometryDisposition::SourceExact,
+        "source-exact must not satisfy a recovery variant, or the derivation proves nothing"
+    );
+
+    // A source-boundary variant must not be satisfied by the source-exact default.
+    assert_eq!(
+        geometry_disposition_for_classification(AstNodeClassification::SourceBoundary),
+        AstGeometryDisposition::SourceBoundary
+    );
 }
 
 /// Two rows for the same field would give a consumer two mapping rules.
