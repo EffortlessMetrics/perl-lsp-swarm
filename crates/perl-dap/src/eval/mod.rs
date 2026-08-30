@@ -42,6 +42,7 @@ mod patterns;
 mod trust;
 mod validator;
 
+pub(crate) use trust::retarget_side_effect_hint;
 pub use trust::{EvaluateAdmission, ReplTrustPolicy, admit};
 pub use validator::{SafeEvaluator, ValidationError, ValidationResult};
 

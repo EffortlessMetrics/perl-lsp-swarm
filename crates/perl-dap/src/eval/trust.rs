@@ -111,6 +111,35 @@ pub fn admit(
     }
 }
 
+/// The recovery hint the safe-evaluation validators append to their refusals.
+const SIDE_EFFECT_FLAG_HINT: &str = "(use allowSideEffects: true)";
+
+/// The hint that is actually reachable from a read-oriented context.
+const SIDE_EFFECT_CONSOLE_HINT: &str =
+    "(side-effectful expressions must be run from the debug console)";
+
+/// Retarget a screening refusal's recovery hint to advice the caller can act on.
+///
+/// The safe-evaluation validators are pure and context-free: they always append
+/// "(use allowSideEffects: true)". Since #9385 that advice is only reachable
+/// from the `repl` context — from watch, hover, variables, an unknown label, or
+/// an absent context the flag is refused, so telling the caller to set it sends
+/// them into a guaranteed second refusal.
+///
+/// This runs at the adapter seam, which is the first place that knows the
+/// context, so the validators stay context-free and independently testable.
+/// A message that carries no hint is returned unchanged.
+#[must_use]
+pub(crate) fn retarget_side_effect_hint(
+    message: String,
+    context: Option<&EvaluateContext>,
+) -> String {
+    if matches!(context, Some(EvaluateContext::Repl)) {
+        return message;
+    }
+    message.replace(SIDE_EFFECT_FLAG_HINT, SIDE_EFFECT_CONSOLE_HINT)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -205,5 +234,67 @@ mod tests {
     #[test]
     fn default_policy_preserves_interactive_repl_execution() {
         assert_eq!(ReplTrustPolicy::default(), ReplTrustPolicy::TrustedReplEnabled);
+    }
+
+    /// The REPL is the one context where setting the flag actually works, so it
+    /// is the one context whose advice must survive untouched.
+    #[test]
+    fn repl_refusals_keep_the_actionable_flag_hint() {
+        let message =
+            "Safe evaluation mode: assignment operator '=' not allowed (use allowSideEffects: true)"
+                .to_string();
+        let retargeted = retarget_side_effect_hint(message.clone(), Some(&EvaluateContext::Repl));
+        assert_eq!(
+            retargeted, message,
+            "a REPL caller can act on the flag hint, so it must not be rewritten"
+        );
+    }
+
+    /// The defect this guards: before #9385 the flag worked from any context, so
+    /// this advice was always actionable. It no longer is, and an error that
+    /// prescribes a guaranteed second refusal is worse than one that says
+    /// nothing.
+    #[test]
+    fn read_oriented_refusals_do_not_prescribe_a_refused_retry() {
+        for context in non_repl_contexts() {
+            let retargeted = retarget_side_effect_hint(
+                "Safe evaluation mode: assignment operator '=' not allowed \
+                 (use allowSideEffects: true)"
+                    .to_string(),
+                context.as_ref(),
+            );
+            assert!(
+                !retargeted.contains("allowSideEffects"),
+                "context {context:?} cannot set the flag, so the refusal must not name it: \
+                 {retargeted}"
+            );
+            assert!(
+                retargeted.contains("debug console"),
+                "context {context:?} must be told where side effects are actually available: \
+                 {retargeted}"
+            );
+        }
+    }
+
+    /// Retargeting must not invent a hint on a message that never carried one,
+    /// nor disturb the reason the expression was refused.
+    #[test]
+    fn messages_without_the_hint_are_untouched_and_reasons_survive() {
+        let unrelated = "No debugger session".to_string();
+        assert_eq!(
+            retarget_side_effect_hint(unrelated.clone(), Some(&EvaluateContext::Watch)),
+            unrelated
+        );
+
+        let retargeted = retarget_side_effect_hint(
+            "Safe evaluation mode: backticks (shell execution) not allowed \
+             (use allowSideEffects: true)"
+                .to_string(),
+            Some(&EvaluateContext::Hover),
+        );
+        assert!(
+            retargeted.contains("backticks (shell execution) not allowed"),
+            "the refusal reason must survive retargeting: {retargeted}"
+        );
     }
 }

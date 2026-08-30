@@ -425,6 +425,55 @@ fn screening_still_blocks_dangerous_expressions_without_the_flag() -> TestResult
 }
 
 #[test]
+fn inspection_refusals_do_not_prescribe_a_retry_that_is_always_refused() -> TestResult {
+    // Regression control for a defect this boundary introduced. The safe-eval
+    // validators append "(use allowSideEffects: true)" to every refusal. Before
+    // #9385 that was actionable from any context; now the flag is refused
+    // outside `repl`, so a watch or hover caller who follows the advice hits a
+    // second, different refusal. An error that prescribes a guaranteed failure
+    // is worse than one that stays silent.
+    let mut adapter = DebugAdapter::new();
+
+    for context in ["watch", "hover", "variables", "clipboard", "totally-unknown"] {
+        let response = adapter.handle_request(
+            1,
+            "evaluate",
+            Some(json!({ "expression": "$x = 42", "context": context })),
+        );
+
+        let message = refusal_message(response);
+        assert!(
+            !message.contains("allowSideEffects"),
+            "context {context:?} cannot set the flag, so its refusal must not prescribe it: \
+             {message}"
+        );
+        assert!(
+            message.contains("debug console"),
+            "context {context:?} must be told where side effects are actually available: \
+             {message}"
+        );
+        assert!(
+            message.contains("assignment operator"),
+            "retargeting the hint must not erase why the expression was refused: {message}"
+        );
+    }
+
+    // The console keeps the advice it can actually act on.
+    let response = adapter.handle_request(
+        1,
+        "evaluate",
+        Some(json!({ "expression": "$x = 42", "context": "repl" })),
+    );
+    let message = refusal_message(response);
+    assert!(
+        message.contains("allowSideEffects"),
+        "the REPL caller can set the flag, so the actionable hint must survive: {message}"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn repl_side_effects_are_refused_when_trusted_repl_is_disabled() -> TestResult {
     // Product policy can withdraw the REPL execution surface entirely, and the
     // refusal happens before any debugger command is constructed.

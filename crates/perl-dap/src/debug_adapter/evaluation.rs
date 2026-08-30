@@ -8,7 +8,7 @@ use super::{
     module_path_to_name, parse_dap_arguments, validate_safe_expression,
 };
 use crate::backend::EvaluateContext;
-use crate::eval::{EvaluateAdmission, admit};
+use crate::eval::{EvaluateAdmission, admit, retarget_side_effect_hint};
 use crate::parse_origin::{DebuggerOutputOrigin, ParseIdentity};
 use crate::value::PerlValue;
 use crate::value_format::ValueFormatPolicy;
@@ -106,7 +106,7 @@ impl DebugAdapter {
                         success: false,
                         command: "evaluate".to_string(),
                         body: None,
-                        message: Some(error),
+                        message: Some(retarget_side_effect_hint(error, context.as_ref())),
                     };
                 }
 
@@ -119,7 +119,10 @@ impl DebugAdapter {
                         success: false,
                         command: "evaluate".to_string(),
                         body: None,
-                        message: Some(error.to_string()),
+                        message: Some(retarget_side_effect_hint(
+                            error.to_string(),
+                            context.as_ref(),
+                        )),
                     };
                 }
             }
