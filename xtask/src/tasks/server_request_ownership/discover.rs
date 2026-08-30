@@ -83,8 +83,13 @@ fn plain_identifier(arg: &str) -> Option<&str> {
     }
 }
 
-/// Remove `#[cfg(test)] mod name { .. }` blocks so test-only sends are never
-/// reported as production emission.
+/// Remove test-only modules so their sends are never reported as production
+/// emission.
+///
+/// Both `#[cfg(test)] mod name { .. }` and the brace-less `#[cfg(test)] mod
+/// name;` form are handled. The brace-less form is the common one here — the
+/// scan root carries 18 of them — and jumping to the next `{` anywhere later
+/// in the file would delete unrelated production code along with it.
 fn strip_test_modules(source: &str) -> String {
     let mut out = String::with_capacity(source.len());
     let mut rest = source;
@@ -92,7 +97,20 @@ fn strip_test_modules(source: &str) -> String {
     while let Some(offset) = rest.find("#[cfg(test)]") {
         out.push_str(&rest[..offset]);
         let tail = &rest[offset..];
-        let Some(brace) = tail.find('{') else {
+        let brace = tail.find('{');
+        let semicolon = tail.find(';');
+
+        // `mod name;` — drop only the declaration itself.
+        if let Some(semicolon) = semicolon
+            && brace.is_none_or(|brace| semicolon < brace)
+        {
+            rest = &tail[semicolon + 1..];
+            continue;
+        }
+
+        let Some(brace) = brace else {
+            // Neither form: keep the remainder rather than discarding it.
+            out.push_str(tail);
             return out;
         };
         let mut depth = 0i32;
@@ -112,7 +130,11 @@ fn strip_test_modules(source: &str) -> String {
         }
         match end {
             Some(end) => rest = &tail[end..],
-            None => return out,
+            None => {
+                // Unbalanced: keep the remainder rather than silently losing it.
+                out.push_str(tail);
+                return out;
+            }
         }
     }
     out.push_str(rest);

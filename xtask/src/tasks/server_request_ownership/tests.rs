@@ -582,6 +582,54 @@ impl Server {
     Ok(())
 }
 
+/// A brace-less `#[cfg(test)] mod name;` must drop only that declaration.
+/// Jumping to the next `{` anywhere later in the file deleted unrelated
+/// production code, so a real emitter could read as "not emitted".
+#[test]
+fn a_braceless_test_module_declaration_keeps_later_production_code()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (emitted, findings) = scan_synthetic(
+        r#"
+#[cfg(test)]
+mod tests;
+
+impl Server {
+    pub fn emit_after_the_declaration(&self) {
+        self.send_request("workspace/codeLens/refresh", json!(null));
+    }
+}
+"#,
+    )?;
+
+    assert_eq!(
+        emitted.get("workspace/codeLens/refresh").map(Vec::as_slice),
+        Some(["src/runtime/synthetic.rs#emit_after_the_declaration".to_string()].as_slice()),
+        "production code following a brace-less test-module declaration must survive stripping"
+    );
+    assert!(findings.is_empty(), "{findings:?}");
+    Ok(())
+}
+
+/// The block form still strips, so a test-only send stays out of production
+/// emission. This is the control that the fix above did not over-correct.
+#[test]
+fn a_block_test_module_is_still_stripped() -> Result<(), Box<dyn std::error::Error>> {
+    let (emitted, findings) = scan_synthetic(
+        r#"
+#[cfg(test)]
+mod tests {
+    fn only_a_test() {
+        server.send_request("workspace/codeLens/refresh", json!(null));
+    }
+}
+"#,
+    )?;
+
+    assert!(emitted.is_empty(), "a test-only send must not count as production: {emitted:?}");
+    assert!(findings.is_empty(), "{findings:?}");
+    Ok(())
+}
+
 /// The forwarding exemption is closed: it applies only to a function whose own
 /// signature takes `method: &str`, not to any call passing bare identifiers.
 #[test]
@@ -643,6 +691,22 @@ direction="server_to_client"
         "a real server row must survive different spacing and quoting"
     );
     Ok(())
+}
+
+/// The 3.18 boundary anchors on the spec's leading version token, so prose
+/// mentioning another version cannot decide a baseline.
+#[test]
+fn the_318_boundary_anchors_on_the_leading_version_token() {
+    use super::check::{declared_version, declares_selected_318};
+
+    assert_eq!(declared_version("LSP 3.16 (superseded by 3.18)"), Some("3.16"));
+    assert!(
+        !declares_selected_318("LSP 3.16 (superseded by 3.18)"),
+        "a trailing mention of 3.18 must not make a 3.16 surface 3.18-selected"
+    );
+    assert!(declares_selected_318("LSP 3.18"));
+    assert!(declares_selected_318("@proposed"));
+    assert!(!declares_selected_318("LSP 3.17"));
 }
 
 // ── Determinism ─────────────────────────────────────────────────────────

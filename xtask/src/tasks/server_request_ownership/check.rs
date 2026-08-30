@@ -22,6 +22,27 @@ fn missing(cell: &str) -> bool {
     RequestRow::is_missing(cell)
 }
 
+/// The version a spec string declares: its first `<major>.<minor>` token.
+///
+/// Anchoring on the leading token keeps prose from deciding a baseline. A spec
+/// reading `LSP 3.16 (superseded by 3.18)` declares 3.16, not 3.18.
+pub(super) fn declared_version(spec: &str) -> Option<&str> {
+    spec.split(|c: char| !(c.is_ascii_digit() || c == '.')).find(|token| {
+        token.contains('.')
+            && token
+                .split('.')
+                .all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit()))
+    })
+}
+
+/// Whether a spec names the selected 3.18 surface.
+pub(super) fn declares_selected_318(spec: &str) -> bool {
+    if spec.trim_start().starts_with("@proposed") {
+        return true;
+    }
+    declared_version(spec) == Some("3.18")
+}
+
 /// Apply every composition rule and return the findings in a deterministic order.
 pub(super) fn check(
     repo_root: &Path,
@@ -326,8 +347,7 @@ fn check_row(
     // matrix side cannot demote a 3.18 surface.
     let authoritative_spec =
         catalog_spec.filter(|spec| !spec.is_empty()).unwrap_or(&row.spec).clone();
-    let spec_is_318 =
-        authoritative_spec.contains("3.18") || authoritative_spec.contains("@proposed");
+    let spec_is_318 = declares_selected_318(&authoritative_spec);
     if spec_is_318 && row.protocol_baseline != "selected_3_18" {
         violations.push(Violation::new(
             "baseline-understated",
