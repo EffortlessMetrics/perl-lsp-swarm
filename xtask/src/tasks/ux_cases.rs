@@ -346,6 +346,23 @@ fn write_and_sync(path: &Path, body: &str) -> Result<()> {
     Ok(())
 }
 
+/// Retire the in-progress tombstone for a failed discovery, preserving the cause.
+///
+/// The tombstone write is best effort. If it fails, the discovery failure is
+/// still the error worth returning — it is the reason the run ended — and the
+/// write failure is attached as secondary context rather than replacing it.
+/// Returning the write error instead would hide the actual cause behind an I/O
+/// message and leave the caller unable to say why discovery stopped.
+fn retire_with(out: &Path, tier: UxCiTier, failure: &UxDiscoveryFailure) -> color_eyre::Report {
+    match write_tombstone(out, &UxCaseInventoryInvalid::failed(tier, failure)) {
+        Ok(()) => eyre!("{failure}"),
+        Err(write_error) => eyre!(
+            "{failure} (the failure tombstone could not be written, so `{}` may still hold an in-progress marker: {write_error})",
+            out.display()
+        ),
+    }
+}
+
 /// Publish `inventory` to `out`, retiring the in-progress tombstone on failure.
 ///
 /// Split out so the publication path is directly testable: a rename or render
@@ -364,8 +381,13 @@ fn publish_or_retire(out: &Path, tier: UxCiTier, inventory: &UxCaseInventory) ->
                 tier,
                 &UxDiscoveryFailure::InstrumentFailure { reason: error.to_string() },
             );
-            let _ = write_tombstone(out, &tombstone);
-            Err(error)
+            match write_tombstone(out, &tombstone) {
+                Ok(()) => Err(error),
+                Err(write_error) => Err(eyre!(
+                    "{error} (the failure tombstone could not be written, so `{}` may still hold an in-progress marker: {write_error})",
+                    out.display()
+                )),
+            }
         }
     }
 }
@@ -398,10 +420,7 @@ pub fn discover_to_path(
         .and_then(|inventory| inventory.verify_digest().map(|()| inventory))
     {
         Ok(inventory) => inventory,
-        Err(failure) => {
-            write_tombstone(out, &UxCaseInventoryInvalid::failed(tier, &failure))?;
-            return Err(eyre!("{failure}"));
-        }
+        Err(failure) => return Err(retire_with(out, tier, &failure)),
     };
 
     // Rendering and publication are both fallible, and a failure in either must
@@ -633,6 +652,36 @@ mod tests {
             .expect_err("renaming onto a directory must fail");
         assert!(!out.is_file(), "a failed publication must not leave a document claiming success");
         assert!(!error.to_string().is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn a_failed_tombstone_write_does_not_mask_the_discovery_failure() -> TestResult {
+        // Both the discovery failure and the tombstone write fail. The cause of
+        // the run ending is the discovery failure; returning the I/O error
+        // instead would leave the caller unable to say why discovery stopped.
+        let dir = tempfile::tempdir()?;
+        let out = dir.path().join("occupied");
+        fs::create_dir(&out)?;
+
+        let failure = UxDiscoveryFailure::NoTestArtifacts { package: "perl-lsp-ux-tests".into() };
+        let report = retire_with(&out, UxCiTier::Pr, &failure);
+        let rendered = report.to_string();
+
+        assert!(
+            rendered.contains("no test artifacts"),
+            "the discovery failure must survive as the primary cause: {rendered}"
+        );
+        assert!(
+            rendered.contains("in-progress marker"),
+            "the tombstone write failure must be attached as context: {rendered}"
+        );
+
+        // The happy path returns the discovery failure unadorned.
+        let writable = dir.path().join("ux-case-inventory.json");
+        let clean = retire_with(&writable, UxCiTier::Pr, &failure).to_string();
+        assert!(clean.contains("no test artifacts"));
+        assert!(!clean.contains("in-progress marker"));
         Ok(())
     }
 
