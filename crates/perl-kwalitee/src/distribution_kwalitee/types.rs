@@ -256,8 +256,6 @@ pub struct CatalogMetric {
     pub unverified_semantics: String,
     /// Metrics this row depends on.
     pub depends_on: Vec<String>,
-    /// Metrics allowed to fail when this row fails.
-    pub permitted_cascades: Vec<String>,
     /// Who owns remediation text.
     pub remediation_owner: String,
     /// Implementation-owner issue.

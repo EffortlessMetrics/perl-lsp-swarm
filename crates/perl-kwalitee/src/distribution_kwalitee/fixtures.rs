@@ -7,7 +7,7 @@ use super::error::FixtureError;
 use super::types::{
     CATALOG_KIND, CATALOG_VERSION, ContentStatus, DistributionKwaliteeCatalog,
     DistributionKwaliteeFixture, DistributionKwaliteeFixtureContract, ExpectationRule,
-    FIXTURE_KIND, FIXTURE_SCHEMA_VERSION, FixtureKind,
+    FIXTURE_KIND, FIXTURE_SCHEMA_VERSION, FixtureKind, MetricClass,
 };
 
 const FIXTURE_TOML: &str = include_str!("../../distribution_kwalitee_fixtures.v1.toml");
@@ -52,6 +52,12 @@ pub fn validate_fixture_contract(
     if contract.catalog_kind != CATALOG_KIND || contract.catalog_version != CATALOG_VERSION {
         return Err(FixtureError::Metadata(format!(
             "fixture contract must bind `{CATALOG_KIND}` `{CATALOG_VERSION}`"
+        )));
+    }
+    if contract.status != "frozen_identities" {
+        return Err(FixtureError::Metadata(format!(
+            "status: expected `frozen_identities`, observed `{}`",
+            contract.status
         )));
     }
     if contract.oracle_policy != "committed_expected_facts_only" {
@@ -169,6 +175,13 @@ pub fn validate_catalog_fixture_binding(
     let fixtures: BTreeMap<&str, &DistributionKwaliteeFixture> =
         contract.fixture.iter().map(|fixture| (fixture.id.as_str(), fixture)).collect();
     let metrics: BTreeSet<&str> = catalog.metric.iter().map(|metric| metric.id.as_str()).collect();
+    let metric_classes: BTreeMap<&str, MetricClass> =
+        catalog.metric.iter().map(|metric| (metric.id.as_str(), metric.class)).collect();
+    let metric_dependencies: BTreeMap<&str, Vec<&str>> = catalog
+        .metric
+        .iter()
+        .map(|metric| (metric.id.as_str(), metric.depends_on.iter().map(String::as_str).collect()))
+        .collect();
 
     for metric in &catalog.metric {
         if metric.fixture_ids.is_empty() {
@@ -213,11 +226,55 @@ pub fn validate_catalog_fixture_binding(
                 )));
             }
         }
+        if fixture.kind == FixtureKind::SingleDefect
+            && let Some(primary) = fixture.primary_fail.first()
+        {
+            for cascade in &fixture.permitted_cascades {
+                if !metric_reaches_primary(cascade, primary, &metric_dependencies) {
+                    return Err(FixtureError::Binding(format!(
+                        "fixture `{}` cascade `{cascade}` must be a dependent of primary failure `{primary}`",
+                        fixture.id
+                    )));
+                }
+            }
+        }
+        if fixture.kind == FixtureKind::SingleDefect
+            && fixture.content_status == ContentStatus::Committed
+            && fixture.primary_fail.iter().any(|metric_id| {
+                metric_classes.get(metric_id.as_str()) == Some(&MetricClass::UnsupportedOrDeferred)
+            })
+        {
+            return Err(FixtureError::Binding(format!(
+                "fixture `{}` cannot commit bytes for an unsupported_or_deferred metric",
+                fixture.id
+            )));
+        }
         if fixture.content_status == ContentStatus::Committed {
             validate_committed_tree(fixture, fixture_root)?;
         }
     }
     Ok(())
+}
+
+fn metric_reaches_primary(
+    start: &str,
+    primary: &str,
+    dependencies: &BTreeMap<&str, Vec<&str>>,
+) -> bool {
+    let mut pending = vec![start];
+    let mut visited = BTreeSet::new();
+    while let Some(metric) = pending.pop() {
+        if metric == primary {
+            return true;
+        }
+        if !visited.insert(metric) {
+            continue;
+        }
+        if let Some(dependencies) = dependencies.get(metric) {
+            pending.extend(dependencies.iter().copied());
+        }
+    }
+    false
 }
 
 fn validate_committed_tree(
@@ -251,7 +308,9 @@ fn walk_relative_files(root: &Path) -> Result<BTreeSet<String>, String> {
     while let Some(dir) = stack.pop() {
         let entries = std::fs::read_dir(&dir)
             .map_err(|error| format!("cannot read `{}`: {error}", dir.display()))?;
+        let mut has_entries = false;
         for entry in entries {
+            has_entries = true;
             let entry = entry.map_err(|error| format!("cannot read entry: {error}"))?;
             let path = entry.path();
             let file_type = entry
@@ -274,6 +333,12 @@ fn walk_relative_files(root: &Path) -> Result<BTreeSet<String>, String> {
                 format!("path `{}` escaped fixture root: {error}", path.display())
             })?;
             files.insert(rel.to_string_lossy().replace('\\', "/"));
+        }
+        if !has_entries {
+            return Err(format!(
+                "committed fixture contains an empty directory: {}",
+                dir.display()
+            ));
         }
     }
     Ok(files)
@@ -323,12 +388,42 @@ committed_files = []
         let contract = load_distribution_kwalitee_fixture_contract().expect("fixtures");
         validate_catalog_fixture_binding(&catalog, &contract, &committed_fixture_root())
             .expect("binding");
-        assert!(contract.fixture.iter().any(|fixture| fixture.id == "minimal_valid"));
+        assert!(contract.fixture.iter().any(|fixture| fixture.id == "Acme-CatalogFreeze"));
         assert!(contract.fixture.iter().any(|fixture| fixture.id == "archive_security_failure"));
         let minimal =
-            contract.fixture.iter().find(|fixture| fixture.id == "minimal_valid").unwrap();
+            contract.fixture.iter().find(|fixture| fixture.id == "Acme-CatalogFreeze").unwrap();
         assert_eq!(minimal.content_status, ContentStatus::Committed);
         assert_eq!(minimal.expectation_rule, ExpectationRule::AllApplicableOfflineCorePass);
+    }
+
+    #[test]
+    fn committed_fixture_metadata_matches_identity() {
+        let contract = load_distribution_kwalitee_fixture_contract().expect("fixtures");
+        let fixture =
+            contract.fixture.iter().find(|fixture| fixture.id == "Acme-CatalogFreeze").unwrap();
+        let root = committed_fixture_root().join(&fixture.id);
+        let metadata: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(root.join("META.json")).unwrap())
+                .unwrap();
+        let json_name = metadata.get("name").and_then(serde_json::Value::as_str).unwrap();
+        let yaml = std::fs::read_to_string(root.join("META.yml")).unwrap();
+        let yaml_name = yaml.lines().find_map(|line| line.strip_prefix("name: ")).unwrap();
+        assert_eq!(fixture.id, root.file_name().unwrap().to_str().unwrap());
+        assert_eq!(json_name, fixture.id);
+        assert_eq!(yaml_name, fixture.id);
+    }
+
+    #[test]
+    fn non_frozen_status_fails() {
+        let toml = format!(
+            "{}{}",
+            envelope().replace("status = \"frozen_identities\"", "status = \"draft\""),
+            reserved_pass("status")
+        );
+        assert!(matches!(
+            parse_fixture_contract(&toml),
+            Err(FixtureError::Metadata(message)) if message.contains("frozen_identities")
+        ));
     }
 
     #[test]
@@ -356,7 +451,7 @@ committed_files = []
         let catalog = load_distribution_kwalitee_catalog().expect("catalog");
         let mut contract = load_distribution_kwalitee_fixture_contract().expect("fixtures");
         let minimal =
-            contract.fixture.iter_mut().find(|fixture| fixture.id == "minimal_valid").unwrap();
+            contract.fixture.iter_mut().find(|fixture| fixture.id == "Acme-CatalogFreeze").unwrap();
         minimal.committed_files.push("not-really-there.txt".into());
         let error =
             validate_catalog_fixture_binding(&catalog, &contract, &committed_fixture_root())
@@ -369,12 +464,21 @@ committed_files = []
         let catalog = load_distribution_kwalitee_catalog().expect("catalog");
         let mut contract = load_distribution_kwalitee_fixture_contract().expect("fixtures");
         let minimal =
-            contract.fixture.iter_mut().find(|fixture| fixture.id == "minimal_valid").unwrap();
+            contract.fixture.iter_mut().find(|fixture| fixture.id == "Acme-CatalogFreeze").unwrap();
         minimal.committed_files.retain(|path| path != "README");
         let error =
             validate_catalog_fixture_binding(&catalog, &contract, &committed_fixture_root())
                 .expect_err("undeclared file");
         assert!(matches!(error, FixtureError::InvalidFixture { .. }));
+    }
+
+    #[test]
+    fn empty_committed_directory_fails_binding() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("Acme-CatalogFreeze");
+        std::fs::create_dir_all(root.join("empty")).unwrap();
+        let error = walk_relative_files(&root).expect_err("empty directory");
+        assert!(error.contains("committed fixture contains an empty directory"));
     }
 
     #[test]
@@ -391,12 +495,32 @@ committed_files = []
     #[test]
     fn catalog_row_without_defect_fixture_fails_binding() {
         let mut catalog = load_distribution_kwalitee_catalog().expect("catalog");
-        catalog.metric[0].fixture_ids = vec!["minimal_valid".into()];
+        catalog.metric[0].fixture_ids = vec!["Acme-CatalogFreeze".into()];
         let contract = load_distribution_kwalitee_fixture_contract().expect("fixtures");
         let error =
             validate_catalog_fixture_binding(&catalog, &contract, &committed_fixture_root())
                 .expect_err("missing defect");
         assert!(matches!(error, FixtureError::Binding(_)));
+    }
+
+    #[test]
+    fn committed_deferred_defect_fails_binding() {
+        let catalog = load_distribution_kwalitee_catalog().expect("catalog");
+        let mut contract = load_distribution_kwalitee_fixture_contract().expect("fixtures");
+        let deferred = contract
+            .fixture
+            .iter_mut()
+            .find(|fixture| fixture.id == "defect_no_unauthorized_packages")
+            .unwrap();
+        deferred.content_status = ContentStatus::Committed;
+        let error =
+            validate_catalog_fixture_binding(&catalog, &contract, &committed_fixture_root())
+                .expect_err("committed deferred defect");
+        assert!(matches!(
+            error,
+            FixtureError::Binding(message)
+                if message.contains("defect_no_unauthorized_packages")
+        ));
     }
 
     #[test]
@@ -413,6 +537,28 @@ committed_files = []
             validate_catalog_fixture_binding(&catalog, &contract, &committed_fixture_root())
                 .expect_err("unknown metric");
         assert!(matches!(error, FixtureError::Binding(_)));
+    }
+
+    #[test]
+    fn prerequisite_cascade_fails_binding() {
+        let catalog = load_distribution_kwalitee_catalog().expect("catalog");
+        let mut contract = load_distribution_kwalitee_fixture_contract().expect("fixtures");
+        let defect = contract
+            .fixture
+            .iter_mut()
+            .find(|fixture| fixture.id == "defect_manifest_matches_dist")
+            .unwrap();
+        defect.permitted_cascades = vec!["cpants.has_manifest".into()];
+        let error =
+            validate_catalog_fixture_binding(&catalog, &contract, &committed_fixture_root())
+                .expect_err("prerequisite cascade");
+        assert!(matches!(
+            error,
+            FixtureError::Binding(message)
+                if message.contains("defect_manifest_matches_dist")
+                    && message.contains("cpants.has_manifest")
+                    && message.contains("dependent")
+        ));
     }
 
     #[test]

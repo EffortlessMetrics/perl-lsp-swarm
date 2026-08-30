@@ -30,11 +30,11 @@ pub fn load_distribution_kwalitee_catalog() -> Result<DistributionKwaliteeCatalo
     parse_catalog(CATALOG_TOML)
 }
 
-/// Order-independent identity over the metric-id set.
+/// Unambiguous, order-independent identity over the metric-id set.
 pub fn catalog_fingerprint(catalog: &DistributionKwaliteeCatalog) -> String {
     let mut ids = catalog.metric.iter().map(|metric| metric.id.as_str()).collect::<Vec<_>>();
     ids.sort_unstable();
-    let ids = ids.join(",");
+    let ids = ids.into_iter().map(|id| format!("{}:{id}", id.len())).collect::<String>();
     format!("{}:{}:{}:{}", catalog.kind, catalog.catalog_version, catalog.metric.len(), ids)
 }
 
@@ -93,7 +93,7 @@ pub fn validate_catalog(catalog: &DistributionKwaliteeCatalog) -> Result<(), Cat
     }
 
     for metric in &catalog.metric {
-        for referenced in metric.depends_on.iter().chain(metric.permitted_cascades.iter()) {
+        for referenced in &metric.depends_on {
             if !by_id.contains_key(referenced.as_str()) {
                 return Err(CatalogError::UnknownReference {
                     id: metric.id.clone(),
@@ -103,7 +103,7 @@ pub fn validate_catalog(catalog: &DistributionKwaliteeCatalog) -> Result<(), Cat
             if referenced == &metric.id {
                 return Err(CatalogError::InvalidMetric {
                     id: metric.id.clone(),
-                    reason: "depends_on/permitted_cascades must not include the row itself".into(),
+                    reason: "depends_on must not include the row itself".into(),
                 });
             }
         }
@@ -208,10 +208,9 @@ fail_semantics = "fail"
 not_applicable_semantics = "na"
 unverified_semantics = "Required facts were not produced; this row stays in the compatible-core denominator and is reported as unverified."
 depends_on = []
-permitted_cascades = []
 remediation_owner = "distribution_author"
 implementation_owner = 7170
-fixture_ids = ["minimal_valid"]
+fixture_ids = ["Acme-CatalogFreeze"]
 known_differences = []
 limitations = []
 "#
@@ -237,6 +236,19 @@ limitations = []
         let mut reordered = catalog.clone();
         reordered.metric.reverse();
         assert_eq!(catalog_fingerprint(&reordered), expected);
+    }
+
+    #[test]
+    fn catalog_fingerprint_distinguishes_delimiter_collisions() {
+        let catalog = load_distribution_kwalitee_catalog().expect("catalog");
+        let mut comma_left = catalog.clone();
+        comma_left.metric = vec![catalog.metric[0].clone(), catalog.metric[1].clone()];
+        comma_left.metric[0].id = "a,b".into();
+        comma_left.metric[1].id = "c".into();
+        let mut comma_right = comma_left.clone();
+        comma_right.metric[0].id = "a".into();
+        comma_right.metric[1].id = "b,c".into();
+        assert_ne!(catalog_fingerprint(&comma_left), catalog_fingerprint(&comma_right));
     }
 
     #[test]
@@ -294,6 +306,18 @@ limitations = []
         metric = metric.replace("depends_on = []", r#"depends_on = ["cpants.missing"]"#);
         let toml = format!("{}{metric}", envelope());
         assert!(matches!(parse_catalog(&toml), Err(CatalogError::UnknownReference { .. })));
+    }
+
+    #[test]
+    fn self_dependency_fails() {
+        let mut metric = one_core_metric("has_readme");
+        metric = metric.replace("depends_on = []", r#"depends_on = ["cpants.has_readme"]"#);
+        let toml = format!("{}{metric}", envelope());
+        assert!(matches!(
+            parse_catalog(&toml),
+            Err(CatalogError::InvalidMetric { reason, .. })
+                if reason == "depends_on must not include the row itself"
+        ));
     }
 
     #[test]

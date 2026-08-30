@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use super::error::CatalogError;
 use super::types::{
     CatalogMetric, CompatibleCoreScore, DistributionKwaliteeCatalog, InputRole, MetricClass,
-    MetricObservation, ObservationStatus,
+    MetricObservation, ObservationStatus, ScoringRule,
 };
 
 /// Derive the catalog v1 compatible-core score from independently authored observations.
@@ -14,13 +14,8 @@ pub fn derive_compatible_core_score(
     input_role: InputRole,
     observations: &[MetricObservation],
 ) -> Result<CompatibleCoreScore, CatalogError> {
-    if input_role == InputRole::AuthoringTree {
-        return Ok(CompatibleCoreScore::InvalidInput {
-            reason: "authoring trees are not a staged distribution input".to_string(),
-        });
-    }
-
     let mut seen = BTreeMap::new();
+    let mut invalid_input_metric = None;
     for observation in observations {
         if catalog.metric.iter().all(|metric| metric.id != observation.id) {
             return Err(CatalogError::Observation(format!("unknown metric `{}`", observation.id)));
@@ -31,40 +26,53 @@ pub fn derive_compatible_core_score(
                 observation.id
             )));
         }
-        if observation.status == ObservationStatus::InvalidInput {
-            return Ok(CompatibleCoreScore::InvalidInput {
-                reason: format!("metric `{}` observed invalid input", observation.id),
-            });
+        if observation.status == ObservationStatus::InvalidInput && invalid_input_metric.is_none() {
+            invalid_input_metric = Some(observation.id.as_str());
         }
     }
 
-    let mut passed = 0u32;
-    let mut applicable = 0u32;
-    let mut unverified = 0u32;
-
-    for metric in catalog.metric.iter().filter(|metric| {
-        metric.class == MetricClass::CpantsOfflineCore && metric.participates_in_core_score
-    }) {
-        match core_row_status(metric, input_role, seen.get(metric.id.as_str()).copied()) {
-            CoreRow::NotApplicable => {}
-            CoreRow::Pass => {
-                applicable = applicable.saturating_add(1);
-                passed = passed.saturating_add(1);
-            }
-            CoreRow::Fail => {
-                applicable = applicable.saturating_add(1);
-            }
-            CoreRow::Unverified => {
-                applicable = applicable.saturating_add(1);
-                unverified = unverified.saturating_add(1);
-            }
-        }
+    if input_role == InputRole::AuthoringTree {
+        return Ok(CompatibleCoreScore::InvalidInput {
+            reason: "authoring trees are not a staged distribution input".to_string(),
+        });
+    }
+    if let Some(metric_id) = invalid_input_metric {
+        return Ok(CompatibleCoreScore::InvalidInput {
+            reason: format!("metric `{metric_id}` observed invalid input"),
+        });
     }
 
-    if unverified > 0 {
-        Ok(CompatibleCoreScore::Incomplete { passed, applicable, unverified })
-    } else {
-        Ok(CompatibleCoreScore::Complete { passed, applicable })
+    match catalog.scoring_rule {
+        ScoringRule::UnweightedApplicableOfflineCore => {
+            let mut passed = 0u32;
+            let mut applicable = 0u32;
+            let mut unverified = 0u32;
+
+            for metric in catalog.metric.iter().filter(|metric| {
+                metric.class == MetricClass::CpantsOfflineCore && metric.participates_in_core_score
+            }) {
+                match core_row_status(metric, input_role, seen.get(metric.id.as_str()).copied()) {
+                    CoreRow::NotApplicable => {}
+                    CoreRow::Pass => {
+                        applicable = applicable.saturating_add(1);
+                        passed = passed.saturating_add(1);
+                    }
+                    CoreRow::Fail => {
+                        applicable = applicable.saturating_add(1);
+                    }
+                    CoreRow::Unverified => {
+                        applicable = applicable.saturating_add(1);
+                        unverified = unverified.saturating_add(1);
+                    }
+                }
+            }
+
+            if unverified > 0 {
+                Ok(CompatibleCoreScore::Incomplete { passed, applicable, unverified })
+            } else {
+                Ok(CompatibleCoreScore::Complete { passed, applicable })
+            }
+        }
     }
 }
 
@@ -220,6 +228,36 @@ mod tests {
         assert!(matches!(score, CompatibleCoreScore::InvalidInput { .. }));
         assert_eq!(score.ratio(), None);
         assert!(!score.strict_complete());
+    }
+
+    #[test]
+    fn invalid_input_does_not_hide_unknown_observations() {
+        let catalog = catalog();
+        let observations = vec![
+            MetricObservation::new("cpants.extractable", ObservationStatus::InvalidInput),
+            MetricObservation::new("cpants.not_a_metric", ObservationStatus::Pass),
+        ];
+        let error = derive_compatible_core_score(&catalog, InputRole::Archive, &observations)
+            .expect_err("unknown observation");
+        assert!(matches!(
+            error,
+            CatalogError::Observation(message) if message.contains("cpants.not_a_metric")
+        ));
+    }
+
+    #[test]
+    fn invalid_input_does_not_hide_duplicate_observations() {
+        let catalog = catalog();
+        let observations = vec![
+            MetricObservation::new("cpants.extractable", ObservationStatus::InvalidInput),
+            MetricObservation::new("cpants.extractable", ObservationStatus::Pass),
+        ];
+        let error = derive_compatible_core_score(&catalog, InputRole::Archive, &observations)
+            .expect_err("duplicate observation");
+        assert!(matches!(
+            error,
+            CatalogError::Observation(message) if message.contains("cpants.extractable")
+        ));
     }
 
     #[test]
