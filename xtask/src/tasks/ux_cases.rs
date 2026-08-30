@@ -175,6 +175,23 @@ fn file_digest(path: &Path) -> Option<String> {
     Some(format!("sha256:{hex}"))
 }
 
+/// Deterministic description of any configured compiler wrapper.
+///
+/// `RUSTC_WRAPPER` and `RUSTC_WORKSPACE_WRAPPER` sit between Cargo and the
+/// compiler; two otherwise identical toolchains with different wrappers are
+/// different build environments and must not share a subject digest.
+fn compiler_wrappers() -> Option<String> {
+    let mut declared: Vec<String> = Vec::new();
+    for key in ["RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER"] {
+        if let Ok(value) = std::env::var(key)
+            && !value.trim().is_empty()
+        {
+            declared.push(format!("{key}: {}", value.trim()));
+        }
+    }
+    (!declared.is_empty()).then(|| declared.join(" | "))
+}
+
 /// Collapse `rustc -vV` into one deterministic identity string.
 ///
 /// Line endings and trailing whitespace are normalized; every field is kept, so
@@ -263,10 +280,16 @@ fn build_request(root: &Path, tier: UxCiTier, include_local_execution: bool) -> 
     // would record a compiler that never touched these executables.
     let compiler = std::env::var("RUSTC").unwrap_or_else(|_| "rustc".to_string());
     let verbose = probe(root, &compiler, &["-vV"]).unwrap_or_default();
+    // A wrapper sits between Cargo and rustc and can change what is built, so
+    // it belongs in the subject even though `rustc -vV` cannot see it.
+    let wrappers = compiler_wrappers();
     // The whole `rustc -vV` block, not just `release`: two builds of the same
     // release with different commit hashes are different discovery
     // environments and must not share one subject digest.
-    request.rust_toolchain = normalize_rustc_identity(&verbose);
+    request.rust_toolchain = match wrappers {
+        Some(wrappers) => format!("{} | {wrappers}", normalize_rustc_identity(&verbose)),
+        None => normalize_rustc_identity(&verbose),
+    };
     request.host_target = rustc_field(&verbose, "host").unwrap_or_else(|| "unknown".to_string());
     // Cargo builds test executables under the `test` profile.
     request.cargo_profile = "test".to_string();
@@ -346,6 +369,49 @@ fn write_and_sync(path: &Path, body: &str) -> Result<()> {
     Ok(())
 }
 
+/// Invalidate the canonical path before discovery starts.
+///
+/// The tombstone is the preferred outcome because it distinguishes "a refresh
+/// is running" from "nothing ever ran". When it cannot be written the previous
+/// document must still stop being consumable, so the stale file is removed as a
+/// last resort — `unlink` needs no free space, so this recovers the realistic
+/// disk-full case where the write failed but the old inventory is still sitting
+/// there looking current. That specific branch is not unit-tested: simulating a
+/// full filesystem is not available here, and running as root defeats
+/// permission-based simulation. The branch where removal also fails *is*
+/// covered, and both branches report which happened.
+///
+/// Note the boundary this does *not* cross: it protects against a refresh that
+/// started and failed, not against one that was never invoked. No file
+/// operation can express "the command never ran"; that is what the subject
+/// digest and repository SHA are for.
+///
+/// # Errors
+///
+/// Returns the tombstone-write failure, noting whether the stale document was
+/// removed or is still present.
+fn invalidate_before_discovery(out: &Path, tier: UxCiTier) -> Result<()> {
+    let Err(write_error) = write_tombstone(out, &UxCaseInventoryInvalid::in_progress(tier)) else {
+        return Ok(());
+    };
+    if !out.exists() {
+        return Err(eyre!(
+            "could not write the in-progress tombstone to `{}`: {write_error}",
+            out.display()
+        ));
+    }
+    match fs::remove_file(out) {
+        Ok(()) => Err(eyre!(
+            "could not write the in-progress tombstone to `{}` ({write_error}); the previous inventory was removed so it cannot be read as current",
+            out.display()
+        )),
+        Err(remove_error) => Err(eyre!(
+            "could not write the in-progress tombstone to `{}` ({write_error}) and the previous inventory could not be removed ({remove_error}); it may still be readable as current",
+            out.display()
+        )),
+    }
+}
+
 /// Retire the in-progress tombstone for a failed discovery, preserving the cause.
 ///
 /// The tombstone write is best effort. If it fails, the discovery failure is
@@ -414,7 +480,7 @@ pub fn discover_to_path(
     tier: UxCiTier,
     out: &Path,
 ) -> Result<UxCaseInventory> {
-    write_tombstone(out, &UxCaseInventoryInvalid::in_progress(tier))?;
+    invalidate_before_discovery(out, tier)?;
 
     let inventory = match case_inventory::discover_cases(commands, request)
         .and_then(|inventory| inventory.verify_digest().map(|()| inventory))
@@ -682,6 +748,35 @@ mod tests {
         let clean = retire_with(&writable, UxCiTier::Pr, &failure).to_string();
         assert!(clean.contains("no test artifacts"));
         assert!(!clean.contains("in-progress marker"));
+        Ok(())
+    }
+
+    #[test]
+    fn a_failed_initial_invalidation_reports_whether_the_stale_document_survived() -> TestResult {
+        // A directory sitting at the output path makes the tombstone rename fail
+        // and also makes the fallback removal fail, which is the branch where the
+        // previous document can still be read. The error must say so rather than
+        // implying a clean invalidation.
+        let dir = tempfile::tempdir()?;
+        let occupied = dir.path().join("ux-case-inventory.json");
+        fs::create_dir(&occupied)?;
+        fs::write(occupied.join("keep"), "non-empty")?;
+
+        let error = invalidate_before_discovery(&occupied, UxCiTier::Pr)
+            .expect_err("an unwritable destination must fail closed");
+        let rendered = error.to_string();
+        assert!(
+            rendered.contains("may still be readable as current"),
+            "the error must admit the stale document survived: {rendered}"
+        );
+
+        // The ordinary path leaves a tombstone, not the previous inventory.
+        let out = dir.path().join("fresh.json");
+        fs::write(&out, r#"{"schema":"ux_case_inventory.v1","totals":{"case_count":349}}"#)?;
+        invalidate_before_discovery(&out, UxCiTier::Pr)?;
+        let after: serde_json::Value = serde_json::from_str(&fs::read_to_string(&out)?)?;
+        assert_eq!(after["schema"], UX_CASE_INVENTORY_INVALID_SCHEMA);
+        assert!(!fs::read_to_string(&out)?.contains("349"));
         Ok(())
     }
 
