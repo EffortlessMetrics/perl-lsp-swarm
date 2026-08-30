@@ -99,7 +99,18 @@ impl<'a> Parser<'a> {
             && self
                 .tokens
                 .peek_second()
-                .map(|token| token.kind() != TokenKind::FatArrow)
+                .map(|token| {
+                    !matches!(
+                        token.kind(),
+                        TokenKind::FatArrow
+                            | TokenKind::Semicolon
+                            | TokenKind::Comma
+                            | TokenKind::RightParen
+                            | TokenKind::RightBrace
+                            | TokenKind::RightBracket
+                            | TokenKind::Eof
+                    )
+                })
                 .unwrap_or(true)
     }
 
@@ -109,7 +120,11 @@ impl<'a> Parser<'a> {
             if s.peek_kind() == Some(TokenKind::WordNot) {
                 let op_token = s.tokens.next()?;
                 let start = op_token.start();
-                let operand = s.parse_word_not_expr()?;
+                let operand = if s.goto_starts_control_flow() {
+                    s.parse_goto()?
+                } else {
+                    s.parse_word_not_expr()?
+                };
                 let end = operand.location.end;
 
                 return Ok(Node::new(
