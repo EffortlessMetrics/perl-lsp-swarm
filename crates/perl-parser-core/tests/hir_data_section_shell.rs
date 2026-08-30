@@ -10,7 +10,7 @@
 use perl_parser_core::hir::{
     DataSectionDecl, DataSectionMarker, HirFile, HirItem, HirKind, lower_ast,
 };
-use perl_parser_core::{Parser, SourceLocation};
+use perl_parser_core::{Node, NodeKind, Parser, SourceLocation};
 
 fn lower(source: &str) -> HirFile {
     let mut parser = Parser::new(source);
@@ -189,5 +189,80 @@ fn crlf_and_non_ascii_payload_bytes_are_preserved_and_ranges_are_byte_exact() {
         payload,
         "payload bytes (CRLF line endings and multi-byte UTF-8 characters) must be preserved \
          exactly, byte for byte"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Fallback paths.
+//
+// The lowering arm refuses to emit an item when the marker text is not one of
+// the two real Perl markers, or when no exact marker span is available.  The
+// parser never produces either shape, so these cases are unreachable through
+// an ordinary parse and are exercised by lowering a hand-built AST instead.
+// Without this, both branches are live production code that nothing covers.
+// ---------------------------------------------------------------------------
+
+/// Lower a hand-built program containing exactly one `DataSection` node.
+fn lower_data_section_node(kind: NodeKind) -> HirFile {
+    let span = SourceLocation { start: 0, end: 8 };
+    let program = Node::new(NodeKind::Program { statements: vec![Node::new(kind, span)] }, span);
+    lower_ast(&program)
+}
+
+#[test]
+fn unrecognized_marker_text_emits_no_item_instead_of_guessing() {
+    let file = lower_data_section_node(NodeKind::DataSection {
+        marker: "__NOT_A_MARKER__".to_string(),
+        marker_span: Some(SourceLocation { start: 0, end: 16 }),
+        body: Some("payload\n".to_string()),
+        body_span: Some(SourceLocation { start: 17, end: 25 }),
+    });
+    assert!(
+        !file.items.iter().any(|item| matches!(&item.kind, HirKind::DataSectionDecl(_))),
+        "marker text that is neither __DATA__ nor __END__ must not be forced into one of \
+         the two typed variants"
+    );
+}
+
+#[test]
+fn missing_marker_span_emits_no_item_instead_of_fabricating_a_range() {
+    let file = lower_data_section_node(NodeKind::DataSection {
+        marker: "__DATA__".to_string(),
+        marker_span: None,
+        body: Some("payload\n".to_string()),
+        body_span: Some(SourceLocation { start: 9, end: 17 }),
+    });
+    assert!(
+        !file.items.iter().any(|item| matches!(&item.kind, HirKind::DataSectionDecl(_))),
+        "without an exact marker span the shell must be withheld, never emitted with a \
+         substituted or whole-node range"
+    );
+}
+
+/// The separator between the two ranges is deliberately covered by neither, so
+/// pin that gap rather than leaving it as an accident someone later "fixes".
+#[test]
+fn marker_and_payload_ranges_are_exact_and_the_separator_belongs_to_neither() {
+    let source = "1;\n__DATA__   \nfoo\n";
+    let file = lower(source);
+    let item = data_section_item(&file);
+    let decl = match &item.kind {
+        HirKind::DataSectionDecl(decl) => decl,
+        other => panic!("expected DataSectionDecl, got {other:?}"),
+    };
+    let payload_range = decl.payload_range.expect("payload_range must be present");
+
+    // Trailing spaces plus the newline sit between the two ranges.
+    let separator = &source[decl.marker_range.end..payload_range.start];
+    assert_eq!(separator, "   \n", "the separator must be marker-line layout only");
+    assert!(
+        separator.chars().all(|c| c.is_whitespace()),
+        "nothing but layout may fall outside both ranges"
+    );
+
+    // The enclosing item range still covers the whole construct.
+    assert!(
+        item.range.start <= decl.marker_range.start && item.range.end >= payload_range.end,
+        "HirItem::range must remain the full-coverage span for the construct"
     );
 }
