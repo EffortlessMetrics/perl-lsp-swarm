@@ -36,9 +36,10 @@ class ParserFacadeAuthorityTests(unittest.TestCase):
     }
 
     def dependency_section(self, context: str) -> str:
-        if context.startswith("target:"):
-            table = self.DEPENDENCY_TABLES[context.removeprefix("target:")]
-            return f"target.'cfg(unix)'.{table}"
+        if context.startswith("target("):
+            specification, _, kind = context.rpartition(":")
+            specification = specification.removeprefix("target(").removesuffix(")")
+            return f"target.'{specification}'.{self.DEPENDENCY_TABLES[kind]}"
         return self.DEPENDENCY_TABLES[context]
 
     def write_feature_gates(self, names: list[str], test_names: list[str] | None = None) -> None:
@@ -88,7 +89,12 @@ class ParserFacadeAuthorityTests(unittest.TestCase):
         self.gated_features: list[str] = []
         self.test_gated_features: list[str] = []
         for row in self.ledger["features"]:
-            isolation = row["isolation"]
+            name, isolation = row["name"], row["isolation"]
+            if name == "default":
+                # `default` is an aggregate: its class comes from the transitive
+                # closure of the features it enables, not from its own entries.
+                features.append(f'{json.dumps(name)} = {json.dumps(self.ledger["default_features"])}')
+                continue
             if isolation == "feature_aggregate":
                 value = list(self.ledger["default_features"])
             elif isolation in ("dependencies_and_source", "dependencies_only"):
@@ -96,10 +102,10 @@ class ParserFacadeAuthorityTests(unittest.TestCase):
             else:
                 value = []
             if isolation in ("dependencies_and_source", "source_only"):
-                self.gated_features.append(row["name"])
+                self.gated_features.append(name)
             elif isolation == "test_source_only":
-                self.test_gated_features.append(row["name"])
-            features.append(f'{json.dumps(row["name"])} = {json.dumps(value)}')
+                self.test_gated_features.append(name)
+            features.append(f'{json.dumps(name)} = {json.dumps(value)}')
         sections: dict[str, list[str]] = {}
         for row in self.ledger["dependencies"]:
             value = '{ version = "1", optional = true }' if row["optional"] else '"1"'
@@ -282,6 +288,10 @@ class ParserFacadeAuthorityTests(unittest.TestCase):
     def dependency_row(self, name: str) -> dict:
         return next(row for row in self.ledger["dependencies"] if row["name"] == name)
 
+    def ledger_row_contexts(self, name: str, contexts: list[str]) -> None:
+        self.dependency_row(name)["contexts"] = contexts
+        self.write_ledger(self.ledger)
+
     def feature_row(self, name: str) -> dict:
         return next(row for row in self.ledger["features"] if row["name"] == name)
 
@@ -306,6 +316,46 @@ class ParserFacadeAuthorityTests(unittest.TestCase):
         self.add_dependency("target.'cfg(windows)'.dependencies", 'surprise = "1"')
         with self.assertRaisesRegex(ValueError, "unclassified=surprise"):
             check(self.root, self.ledger_path)
+
+    def test_moving_a_dependency_between_target_platforms_fails(self) -> None:
+        """cfg(unix) and cfg(windows) are different denominator rows, not one."""
+        row = next(
+            row for row in self.ledger["dependencies"]
+            if row["contexts"] == ["normal"] and not row["optional"]
+        )
+        self.move_dependency(row["name"], "dependencies", "target.'cfg(unix)'.dependencies")
+        self.ledger_row_contexts(row["name"], ["target(cfg(unix)):normal"])
+        check(self.root, self.ledger_path)
+        self.manifest_path.write_text(
+            self.manifest_path.read_text().replace("cfg(unix)", "cfg(windows)")
+        )
+        with self.assertRaisesRegex(ValueError, f'dependency {row["name"]} claims contexts'):
+            check(self.root, self.ledger_path)
+
+    def test_mixed_optionality_is_rejected_rather_than_collapsed(self) -> None:
+        row = next(
+            row for row in self.ledger["dependencies"]
+            if row["contexts"] == ["normal"] and row["optional"]
+        )
+        self.add_dependency("dev-dependencies", f'{row["name"]} = "1"')
+        with self.assertRaisesRegex(
+            ValueError, f'dependency {row["name"]} has mixed optionality'
+        ):
+            check(self.root, self.ledger_path)
+
+    def test_unparseable_consumer_manifest_is_not_silently_dropped(self) -> None:
+        self.write("crates/broken/Cargo.toml", "[package\nname = broken\n")
+        with self.assertRaisesRegex(ValueError, "cannot read"):
+            check(self.root, self.ledger_path)
+
+    def test_build_output_manifests_are_not_workspace_consumers(self) -> None:
+        """`cargo package` writes target/package/<crate>/Cargo.toml."""
+        self.write(
+            "target/package/staged/Cargo.toml",
+            '[package]\nname="staged"\nversion="0.1.0"\n[dependencies]\nperl-parser="1"\n',
+        )
+        self.write("target/debug/broken/Cargo.toml", "[package\nname = broken\n")
+        check(self.root, self.ledger_path)
 
     def test_dependency_context_drift_fails(self) -> None:
         """A production dependency silently demoted to dev must not stay production."""

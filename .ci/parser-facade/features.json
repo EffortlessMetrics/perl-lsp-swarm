@@ -7,7 +7,7 @@
       "disposition": "review",
       "owner": "#7058",
       "target_owner": "#7063",
-      "isolation": "feature_aggregate",
+      "isolation": "dependencies_and_source",
       "default": false,
       "exit_condition": "Replace the broad default bundle with the reviewed staged facade defaults.",
       "pending": {
