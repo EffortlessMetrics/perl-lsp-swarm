@@ -1430,11 +1430,15 @@ impl RunAxesReport {
                             && rail.files_total == Some(denominator)
                             && rail.files_passed == rail.files_total
                     }
-                    _ => matches!(
-                        rail.availability,
-                        CompatibilityRailAvailability::Available
-                            | CompatibilityRailAvailability::Partial
-                    ),
+                    // Even a partial claim needs one demonstrated success: a rail
+                    // that ran and passed nothing has shown no support at all.
+                    _ => {
+                        matches!(
+                            rail.availability,
+                            CompatibilityRailAvailability::Available
+                                | CompatibilityRailAvailability::Partial
+                        ) && rail.files_passed.unwrap_or(0) > 0
+                    }
                 }
             });
             if !backed {
@@ -3190,6 +3194,36 @@ mod tests {
                 mechanism: CorrectnessMechanism::EirExecution,
             }),
             "a stale rail backs no current support claim"
+        );
+
+        // A partial claim still needs one success to point at.
+        let mut no_successes = valid_report()?;
+        no_successes.axes = ResultAxes::new(
+            EvidenceValidity::Valid,
+            ObservedOutcome::Clean,
+            CompatibilityAdmission::Implemented,
+            SemanticSupport::Partial,
+            CorrectnessMechanism::EirExecution,
+        )?;
+        no_successes.admission.by_support = distribution(&[("partial", 4)]);
+        no_successes.correctness_rails.insert(
+            "eir".to_string(),
+            CorrectnessRailSummary {
+                mechanism: CorrectnessMechanism::EirExecution,
+                availability: CompatibilityRailAvailability::Partial,
+                reason: "ran but passed nothing".to_string(),
+                evidence_refs: vec!["bundle-1".to_string()],
+                files_total: Some(4),
+                files_passed: Some(0),
+            },
+        );
+        assert_eq!(
+            no_successes.validate(),
+            Err(ResultReportViolation::AggregateSupportWithoutRail {
+                support: SemanticSupport::Partial,
+                mechanism: CorrectnessMechanism::EirExecution,
+            }),
+            "a rail that passed nothing demonstrates no support"
         );
 
         // A rail that covered one file of four cannot underwrite all four.
