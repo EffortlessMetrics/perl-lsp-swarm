@@ -483,6 +483,23 @@ fn an_unparsed_namespace_response_cannot_underwrite_a_missing_verdict() -> Resul
 }
 
 #[test]
+fn a_versions_endpoint_denying_every_row_cannot_be_silently_ignored() -> Result<()> {
+    // Found by independent review, and missed by the first repair of this same
+    // area: guarding only the Present-with-unparsed-rows case left a flat 404
+    // from the versions endpoint falling through to available_exact with no
+    // blocker at all, beside a listing and record that both resolve.
+    let receipt = receipt_with(AVAILABLE_EXACT, |document| {
+        let rows = &mut document["cells"]["version_rows"];
+        rows["transport"]["status"] = json!(404);
+        rows["transport"]["response_bytes"] = json!(64);
+        rows["versions"] = Value::Null;
+    })?;
+    expect_state(&receipt, PublicState::ProviderNotProven, "versions endpoint denies all rows")?;
+    expect_blocker(&receipt, "contradictory_registry_evidence")?;
+    Ok(())
+}
+
+#[test]
 fn unparsed_version_rows_cannot_reach_available_exact() -> Result<()> {
     let receipt = receipt_with(AVAILABLE_EXACT, |document| {
         document["cells"]["version_rows"]["versions"] = Value::Null;

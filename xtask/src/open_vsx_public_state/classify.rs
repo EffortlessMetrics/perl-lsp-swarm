@@ -481,6 +481,18 @@ fn classify_state(
             return (PublicState::AvailableIdentityNotProven, blockers, limitations);
         }
 
+        // A versions endpoint that flatly denies any published rows, beside a
+        // listing and a metadata record that both resolve, is definite but
+        // mutually inconsistent. Falling through here would let that denial
+        // pass unrecorded straight into the strongest claim.
+        if version_rows == CellObservation::ProvenAbsent {
+            blockers.push(Blocker::new(
+                "contradictory_registry_evidence",
+                "the listing and extension record resolve while the versions endpoint reports \
+                 none; no single availability conclusion is supported",
+            ));
+            return (PublicState::ProviderNotProven, blockers, limitations);
+        }
         if version_rows == CellObservation::Present {
             // Symmetric with the identity_matches requirement above: on the path
             // to the strongest claim, a surface that answered but whose answer

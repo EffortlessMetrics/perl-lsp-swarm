@@ -5,7 +5,10 @@
 //! links, and the atomic publish — so each receipt emitter states its subject
 //! and inherits identical behavior instead of restating the guard.
 //!
-//! Extracted unchanged from `crate::publication_drift`, which remains a caller.
+//! Lifted from `crate::publication_drift`, which remains a caller. The logic
+//! and its resulting diagnostics are identical for that call site; the
+//! signatures gained a `subject` label and a protected-source slice so a
+//! second emitter could share them.
 
 use color_eyre::eyre::{Result, WrapErr, bail, eyre};
 use serde::Serialize;

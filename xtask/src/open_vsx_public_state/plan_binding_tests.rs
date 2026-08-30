@@ -203,6 +203,25 @@ fn the_marker_tripwire_still_bites_for_an_unvetted_name() -> Result<()> {
 }
 
 #[test]
+fn the_closure_walk_catches_members_declared_outside_properties() -> Result<()> {
+    // The walk keyed only on `properties`, so a node using `patternProperties`
+    // slipped past it entirely. This pins the widened rule against a shape the
+    // contract does not currently use.
+    for keyword in ["patternProperties", "propertyNames", "unevaluatedProperties"] {
+        let schema: Value = serde_json::from_str(&format!(
+            r#"{{"type":"object","additionalProperties":false,
+                 "{keyword}":{{"^x$":{{"type":"string"}}}}}}"#
+        ))?;
+        let mut open = Vec::new();
+        collect_open_objects(&schema, "#", &mut open);
+        if open.is_empty() {
+            bail!("a schema declaring members via {keyword} was not flagged as open");
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn the_observation_contract_is_closed_at_every_level() -> Result<()> {
     let schema: Value = serde_json::from_str(OBSERVATION_SCHEMA)?;
     let mut open = Vec::new();
@@ -250,11 +269,24 @@ fn collect_property_names(node: &Value, found: &mut Vec<String>) {
 /// contract drifts.
 const APPLICATOR_KEYWORDS: &[&str] = &["if", "then", "else", "not"];
 
+/// Keywords that declare object members without going through `properties`.
+///
+/// The closure walk keyed only on `properties`, so a node using one of these
+/// instead was invisible to it — neither flagged as open nor harvested for
+/// name vetting. Nothing in the shipped contract uses them; treating their
+/// presence as "open" keeps that true for future edits instead of relying on it.
+const UNVETTABLE_MEMBER_KEYWORDS: &[&str] =
+    &["patternProperties", "propertyNames", "unevaluatedProperties"];
+
 /// Collect the pointer of every object schema that does not close itself.
 fn collect_open_objects(node: &Value, pointer: &str, found: &mut Vec<String>) {
     if let Value::Object(map) = node {
-        if map.contains_key("properties")
-            && map.get("additionalProperties") != Some(&Value::Bool(false))
+        let declares_members = map.contains_key("properties")
+            || UNVETTABLE_MEMBER_KEYWORDS.iter().any(|keyword| map.contains_key(*keyword));
+        let opens_by_keyword =
+            UNVETTABLE_MEMBER_KEYWORDS.iter().any(|keyword| map.contains_key(*keyword));
+        if declares_members
+            && (opens_by_keyword || map.get("additionalProperties") != Some(&Value::Bool(false)))
             && !pointer.split('/').any(|segment| APPLICATOR_KEYWORDS.contains(&segment))
         {
             found.push(pointer.to_owned());
