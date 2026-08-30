@@ -336,7 +336,9 @@ fn a_file_declared_only_under_cfg_test_is_excluded() {
             .to_string(),
         ),
         (
-            "crates/perl-lsp-rs/src/helpers.rs".to_string(),
+            // `entry.rs` declaring `mod helpers;` owns `entry/helpers.rs`, not
+            // a sibling `src/helpers.rs`.
+            "crates/perl-lsp-rs/src/entry/helpers.rs".to_string(),
             r#"
             pub fn spawn_for_tests() {
                 let _ = std::process::Command::new("perl").output();
@@ -348,8 +350,88 @@ fn a_file_declared_only_under_cfg_test_is_excluded() {
     let census = Census::from_sources(&sources);
 
     assert!(
-        census.resolve("crates/perl-lsp-rs/src/helpers.rs", "spawn_for_tests").is_none(),
+        census.resolve("crates/perl-lsp-rs/src/entry/helpers.rs", "spawn_for_tests").is_none(),
         "a file declared only under #[cfg(test)] must not enter the production census"
+    );
+}
+
+#[test]
+fn a_method_call_does_not_resolve_to_a_free_function() {
+    // Method syntax can only reach a method. Falling back to a free function of
+    // the same name would let `x.probe()` inherit unrelated blocking work.
+    let sources = vec![(
+        SYNTHETIC_ROOT_FILE.to_string(),
+        r#"
+        impl Server {
+            pub fn handle_initialize(&self, other: &Other) {
+                other.probe();
+            }
+        }
+        pub fn probe() { let _ = std::process::Command::new("perl").output(); }
+        "#
+        .to_string(),
+    )];
+    let census = Census::from_sources(&sources);
+    let root =
+        census.resolve(SYNTHETIC_ROOT_FILE, "handle_initialize").expect("synthetic root resolves");
+
+    assert!(
+        census.transitive_exposures(root, census::MAX_DEPTH).is_empty(),
+        "a method call must not resolve to a free function of the same name"
+    );
+}
+
+#[test]
+fn a_cfg_test_method_inside_an_ordinary_impl_is_excluded() {
+    let sources = vec![(
+        SYNTHETIC_ROOT_FILE.to_string(),
+        r#"
+        impl Server {
+            pub fn handle_initialize(&self) {}
+
+            #[cfg(test)]
+            fn test_only_spawn(&self) {
+                let _ = std::process::Command::new("perl").output();
+            }
+        }
+        "#
+        .to_string(),
+    )];
+    let census = Census::from_sources(&sources);
+
+    assert!(
+        census.resolve(SYNTHETIC_ROOT_FILE, "test_only_spawn").is_none(),
+        "a #[cfg(test)] method must not enter the production census"
+    );
+}
+
+#[test]
+fn a_test_module_declaration_excludes_only_its_own_file() {
+    // Resolving `#[cfg(test)] mod tests;` to a bare name would exclude every
+    // `tests.rs` in every scanned crate and silently drop production code.
+    let sources = vec![
+        ("crates/perl-lsp-rs/src/owner.rs".to_string(), "#[cfg(test)]\nmod tests;\n".to_string()),
+        (
+            "crates/perl-lsp-rs/src/owner/tests.rs".to_string(),
+            "pub fn helper_in_test_module() {}".to_string(),
+        ),
+        (
+            // Same basename, different owner: must survive.
+            "crates/perl-dap/src/unrelated/tests.rs".to_string(),
+            "pub fn unrelated_production_fn() {}".to_string(),
+        ),
+    ];
+    let census = Census::from_sources(&sources);
+
+    assert!(
+        census.resolve("crates/perl-lsp-rs/src/owner/tests.rs", "helper_in_test_module").is_none(),
+        "the declared test module must be excluded"
+    );
+    assert!(
+        census
+            .resolve("crates/perl-dap/src/unrelated/tests.rs", "unrelated_production_fn")
+            .is_some(),
+        "an unrelated file sharing the basename must not be excluded"
     );
 }
 

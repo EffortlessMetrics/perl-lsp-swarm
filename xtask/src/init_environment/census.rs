@@ -192,7 +192,7 @@ impl Census {
                     continue;
                 }
             };
-            collect_test_only_modules(&parsed, &mut test_only_modules);
+            collect_test_only_modules(path, &parsed, &mut test_only_modules);
             let mut collector = FnCollector { file: path.clone(), found: Vec::new() };
             collector.visit_file(&parsed);
             funcs.extend(collector.found);
@@ -385,7 +385,16 @@ impl Census {
                 self.funcs.get(*index).is_some_and(|record| record.is_method == wants_method)
             })
             .collect();
-        if !by_kind.is_empty() {
+        if by_kind.is_empty() {
+            // Method syntax can only reach a method. Keeping wrong-kind
+            // candidates here would let `x.foo()` inherit an unrelated free
+            // function's blocking work.
+            if kind == CallKind::Method {
+                return None;
+            }
+            // A path call may legitimately name a method through UFCS
+            // (`Type::method(receiver)`), so the candidate set is kept.
+        } else {
             candidates = by_kind;
         }
 
@@ -604,6 +613,9 @@ impl<'ast> Visit<'ast> for FnCollector {
     }
 
     fn visit_impl_item_fn(&mut self, node: &'ast syn::ImplItemFn) {
+        if is_cfg_test(&node.attrs) {
+            return;
+        }
         let is_method = node.sig.receiver().is_some();
         self.found.push(summarize(&self.file, node.sig.ident.to_string(), is_method, &node.block));
         syn::visit::visit_impl_item_fn(self, node);
@@ -821,28 +833,44 @@ pub fn looks_like_protocol_method(value: &str) -> bool {
     segment_ok(head) && segment_ok(tail)
 }
 
-/// Collect names declared as `#[cfg(test)] mod name;` without a body.
-fn collect_test_only_modules(file: &syn::File, out: &mut BTreeSet<String>) {
+/// Collect the exact files declared as `#[cfg(test)] mod name;` without a body.
+///
+/// Resolved to full paths rather than bare module names: one `mod tests;`
+/// anywhere would otherwise exclude every `tests.rs` in every scanned crate and
+/// silently drop unrelated production definitions.
+fn collect_test_only_modules(declaring_file: &str, file: &syn::File, out: &mut BTreeSet<String>) {
+    let Some(dir) = module_dir_of(declaring_file) else {
+        return;
+    };
     for item in &file.items {
         if let syn::Item::Mod(item_mod) = item
             && item_mod.content.is_none()
             && is_cfg_test(&item_mod.attrs)
         {
-            out.insert(item_mod.ident.to_string());
+            let name = item_mod.ident.to_string();
+            out.insert(format!("{dir}/{name}.rs"));
+            out.insert(format!("{dir}/{name}/mod.rs"));
         }
+    }
+}
+
+/// The directory a file's child modules resolve against.
+///
+/// `foo/mod.rs`, `lib.rs` and `main.rs` own their containing directory; any
+/// other `foo.rs` owns the sibling `foo/` directory.
+fn module_dir_of(file: &str) -> Option<String> {
+    let (dir, name) = file.rsplit_once('/')?;
+    let stem = name.strip_suffix(".rs")?;
+    if matches!(stem, "mod" | "lib" | "main") {
+        Some(dir.to_string())
+    } else {
+        Some(format!("{dir}/{stem}"))
     }
 }
 
 /// Whether a file is reached only through a `#[cfg(test)] mod name;` declaration.
 fn is_test_only_file(file: &str, test_only_modules: &BTreeSet<String>) -> bool {
-    let Some(stem) = file.rsplit('/').next().and_then(|name| name.strip_suffix(".rs")) else {
-        return false;
-    };
-    if stem == "mod" {
-        // `foo/mod.rs` is named by its parent directory.
-        return file.rsplit('/').nth(1).is_some_and(|parent| test_only_modules.contains(parent));
-    }
-    test_only_modules.contains(stem)
+    test_only_modules.contains(file)
 }
 
 /// The first string-literal argument at a call site, if any.

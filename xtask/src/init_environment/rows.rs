@@ -389,9 +389,10 @@ pub fn ledger_rows() -> Vec<InitOperationRow> {
             proposition: "workspace-wide Perl file discovery and symbol indexing begin as \
                           background work after the response",
             side_effects: &["spawns background indexing workers", "publishes progress tokens"],
-            // The env read arrives through the readiness summary
-            // (`readiness::log` -> `summary_json`), not from indexing itself.
-            declared_exposure: &[Exposure::Filesystem, Exposure::ProcessSpawn, Exposure::EnvRead],
+            // No env read: the chain that appeared to reach one ran through a
+            // mis-resolved method edge, refused once method calls were required
+            // to match call syntax and stay in the calling file.
+            declared_exposure: &[Exposure::Filesystem, Exposure::ProcessSpawn],
             triggers: &[Trigger::Initialized, Trigger::AutoInitializeCompat],
             exactly_once: false,
             current_point: ExecutionPoint::AfterResponse,
