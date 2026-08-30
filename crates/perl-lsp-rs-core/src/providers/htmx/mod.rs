@@ -301,8 +301,6 @@ mod tests {
         // but the slot must stay proven (`Some`, empty) so the future
         // event-name grammar can fall through instead of seeing `None`.
         let event = "<div hx-on:click";
-        assert!(
-            complete_attribute_names(event, event.len()).is_some_and(|items| items.is_empty())
-        );
+        assert!(complete_attribute_names(event, event.len()).is_some_and(|items| items.is_empty()));
     }
 }
