@@ -31,20 +31,24 @@
 # permits that disposition at all. A text search could not establish it, because
 # a manifest can declare a dependency that no `use` line ever names.
 #
-# Discovery boundary: rows are derived from `pub fn` / `pub struct` / `pub enum`
-# declarations and inherent `pub fn` methods. Trait implementations are public
+# Discovery boundary: rows are derived from `fn` / `struct` / `enum` declarations
+# carrying `pub` or a restricted visibility, and their inherent methods. Trait
+# implementations are public
 # behaviour but are not separate rows, because a trait impl has no declaration
 # of its own to disposition. The crate has two — `Display` and
 # `std::error::Error` on `TreeError` — and they are recorded on that type's row
 # so the migration owner still sees them.
 #
-# On #8880's "public/internal symbol": the internal population is empty, not
-# skipped. The crate declares no `pub(crate)`, `pub(super)`, or `pub(in ...)`
-# item in any of its four modules, so there is no crate-internal-but-shared
-# surface to disposition. What remains below `pub` is module-private, which by
-# construction cannot be consumed from outside the crate and therefore cannot
-# require migration — it is deleted with the crate under #8890. If a
-# restricted-visibility item is ever added, it will need a row and a rule here.
+# On #8880's "public/internal symbol": the internal population is empty, and that
+# emptiness is checked rather than claimed. Discovery records `pub(crate)`,
+# `pub(super)`, and `pub(in ...)` items alongside public ones and tags each row
+# with its `visibility`; a discovered internal symbol with no row fails the task
+# exactly as a public one does. The crate declares none today, so every row below
+# omits `visibility` and takes the `public` default. What remains below `pub` is
+# module-private, which by construction cannot be consumed from outside the crate
+# and therefore cannot require migration — it is deleted with the crate under
+# #8890, and carries no row. A symbol whose visibility changes also fails the
+# task: its disposition was audited against the old reachability.
 #
 # A row's disposition is about the BEHAVIOUR, not only the symbol. A symbol may
 # be obsolete as an authority while the behaviour it produces is still required

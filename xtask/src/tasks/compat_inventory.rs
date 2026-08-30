@@ -83,6 +83,10 @@ pub struct SymbolRow {
     pub name: String,
     pub module: String,
     pub kind: SymbolKind,
+    /// Defaults to `public`, which is what every current row is. An internal row
+    /// must say so, so the two populations cannot be confused for one another.
+    #[serde(default)]
+    pub visibility: Visibility,
     pub disposition: Disposition,
     #[serde(default)]
     pub canonical_owner: Option<String>,
@@ -149,6 +153,32 @@ impl Disposition {
     /// honest and the issue that carries it across.
     fn requires_fixture_and_migration_dependency(self) -> bool {
         matches!(self, Self::UniqueAndRequired)
+    }
+}
+
+/// How far a declared item can be consumed from.
+///
+/// #8880 asks for a disposition per *public or internal* symbol. Both are
+/// discovered and both need a row: dropping restricted-visibility items on the
+/// floor would let the inventory report a complete surface while its denominator
+/// quietly shrank — the same failure mode as an unbalanced brace.
+#[derive(Debug, Default, Deserialize, Serialize, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum Visibility {
+    /// `pub` — consumable from outside the crate.
+    #[default]
+    Public,
+    /// `pub(crate)`, `pub(super)`, or `pub(in ...)` — reachable only in-crate, so
+    /// it is deleted with the crate rather than migrated.
+    Internal,
+}
+
+impl Visibility {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Public => "public",
+            Self::Internal => "internal",
+        }
     }
 }
 
@@ -221,7 +251,9 @@ pub struct Export {
     pub module: String,
     pub name: String,
     pub kind: SymbolKind,
-    /// Whether `lib.rs` re-exports it at the crate root.
+    pub visibility: Visibility,
+    /// Whether `lib.rs` re-exports it at the crate root. Always false for an
+    /// internal item, which cannot be re-exported publicly.
     pub reexported_at_root: bool,
 }
 
@@ -335,9 +367,17 @@ pub fn discover(root: &Path) -> Result<Discovered> {
         let module_path = root.join(CRATE_DIR).join(format!("src/{module}.rs"));
         let source = fs::read_to_string(&module_path)
             .wrap_err_with(|| format!("failed to read {}", module_path.display()))?;
-        for (name, kind) in parse_public_items(&source) {
-            let reexported_at_root = root_reexports.iter().any(|(m, n)| m == module && n == &name);
-            exports.push(Export { module: module.clone(), name, kind, reexported_at_root });
+        for (name, kind, visibility) in parse_declared_items(&source) {
+            // Only a public item can be re-exported at the crate root.
+            let reexported_at_root = visibility == Visibility::Public
+                && root_reexports.iter().any(|(m, n)| m == module && n == &name);
+            exports.push(Export {
+                module: module.clone(),
+                name,
+                kind,
+                visibility,
+                reexported_at_root,
+            });
         }
     }
 
@@ -434,7 +474,14 @@ fn unresolved_reexports(
 ) -> Vec<(String, String)> {
     reexports
         .iter()
-        .filter(|(module, name)| !exports.iter().any(|e| &e.module == module && &e.name == name))
+        .filter(|(module, name)| {
+            // An internal item of the right name does not satisfy a public
+            // `pub use`; treating it as a match would hide a real disagreement
+            // between `lib.rs` and the module files.
+            !exports.iter().any(|e| {
+                &e.module == module && &e.name == name && e.visibility == Visibility::Public
+            })
+        })
         .cloned()
         .collect()
 }
@@ -615,13 +662,16 @@ pub fn parse_root_reexports(lib_rs: &str) -> Vec<(String, String)> {
     out
 }
 
-/// Public items declared in one module file.
+/// Every `pub` or restricted-visibility item declared in one module file.
 ///
 /// Brace depth is tracked so an inherent `pub fn` inside `impl TsNode` is
 /// recorded as the method `TsNode::child_count` rather than as a free function
 /// the module does not have. Getting that wrong would send #8889 looking for a
 /// module-level symbol that does not exist.
-pub fn parse_public_items(source: &str) -> Vec<(String, SymbolKind)> {
+///
+/// Internal items are returned alongside public ones rather than skipped, so the
+/// ledger has to account for them too.
+pub fn parse_declared_items(source: &str) -> Vec<(String, SymbolKind, Visibility)> {
     let mut out = Vec::new();
     let mut depth: i32 = 0;
     let mut impl_type: Option<String> = None;
@@ -631,15 +681,14 @@ pub fn parse_public_items(source: &str) -> Vec<(String, SymbolKind)> {
 
         if depth == 0 && (trimmed.starts_with("impl ") || trimmed.starts_with("impl<")) {
             impl_type = inherent_impl_type(trimmed);
-        } else if let Some(item) = parse_item(trimmed) {
-            let (name, kind) = item;
+        } else if let Some((name, kind, visibility)) = parse_item(trimmed) {
             if depth == 0 {
-                out.push((name, kind));
+                out.push((name, kind, visibility));
             } else if depth == 1
                 && kind == SymbolKind::Function
                 && let Some(ty) = &impl_type
             {
-                out.push((format!("{ty}::{name}"), SymbolKind::Method));
+                out.push((format!("{ty}::{name}"), SymbolKind::Method, visibility));
             }
         }
 
@@ -702,12 +751,15 @@ fn strip_fn_qualifiers(mut rest: &str) -> &str {
     }
 }
 
-fn parse_item(trimmed: &str) -> Option<(String, SymbolKind)> {
-    let rest = trimmed.strip_prefix("pub ")?;
-    // `pub(crate)` and friends are not part of the crate's public surface.
-    if rest.starts_with('(') {
-        return None;
-    }
+fn parse_item(trimmed: &str) -> Option<(String, SymbolKind, Visibility)> {
+    // `pub(crate) fn` has no space after `pub`, so the two spellings are split
+    // before the shared item parsing.
+    let (rest, visibility) = match trimmed.strip_prefix("pub(") {
+        // `pub(crate)`, `pub(super)`, `pub(in path::to)` — restricted, but still
+        // a declared symbol the ledger must account for.
+        Some(after) => (after.split_once(')')?.1, Visibility::Internal),
+        None => (trimmed.strip_prefix("pub ")?, Visibility::Public),
+    };
     let rest = strip_fn_qualifiers(rest);
     let (kind, rest) = if let Some(r) = rest.strip_prefix("fn ") {
         (SymbolKind::Function, r)
@@ -719,7 +771,7 @@ fn parse_item(trimmed: &str) -> Option<(String, SymbolKind)> {
         return None;
     };
     let name: String = rest.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
-    if name.is_empty() { None } else { Some((name, kind)) }
+    if name.is_empty() { None } else { Some((name, kind, visibility)) }
 }
 
 fn brace_delta(line: &str) -> i32 {
@@ -962,15 +1014,19 @@ fn validate_symbols(ledger: &Ledger, discovered: &Discovered) -> Result<()> {
         }
     }
 
-    let discovered_kinds: BTreeMap<(String, String), SymbolKind> =
-        discovered.exports.iter().map(|e| ((e.module.clone(), e.name.clone()), e.kind)).collect();
+    let discovered_kinds: BTreeMap<(String, String), (SymbolKind, Visibility)> = discovered
+        .exports
+        .iter()
+        .map(|e| ((e.module.clone(), e.name.clone()), (e.kind, e.visibility)))
+        .collect();
 
     for export in &discovered.exports {
         let key = (export.module.clone(), export.name.clone());
         if !seen.contains(&key) {
             bail!(
-                "{PACKAGE} exposes `{}::{}` but {LEDGER_PATH} has no row for it; every public \
-                 symbol needs exactly one disposition",
+                "{PACKAGE} declares {} symbol `{}::{}` but {LEDGER_PATH} has no row for it; every \
+                 public and internal symbol needs exactly one disposition",
+                export.visibility.as_str(),
                 export.module,
                 export.name
             );
@@ -986,12 +1042,20 @@ fn validate_symbols(ledger: &Ledger, discovered: &Discovered) -> Result<()> {
                 row.module,
                 row.name
             ),
-            Some(kind) if *kind != row.kind => bail!(
+            Some((kind, _)) if *kind != row.kind => bail!(
                 "{LEDGER_PATH} records `{}::{}` as `{}` but the source declares `{}`",
                 row.module,
                 row.name,
                 row.kind.as_str(),
                 kind.as_str()
+            ),
+            Some((_, visibility)) if *visibility != row.visibility => bail!(
+                "{LEDGER_PATH} records `{}::{}` as `{}` but the source declares it `{}`; a symbol \
+                 that changed visibility needs its disposition re-audited",
+                row.module,
+                row.name,
+                row.visibility.as_str(),
+                visibility.as_str()
             ),
             Some(_) => {}
         }
@@ -1299,11 +1363,19 @@ pub fn render_markdown(ledger: &Ledger, discovered: &Discovered) -> String {
     }
     out.push('\n');
 
-    out.push_str("## Public symbols\n\n");
-    out.push_str(
-        "| Symbol | Kind | Root re-export | Disposition | Canonical owner | Fixture | Migration | Removal condition | Note |\n",
+    out.push_str("## Symbols\n\n");
+    let internal = symbols.iter().filter(|r| r.visibility == Visibility::Internal).count();
+    let _ = writeln!(
+        out,
+        "Every `pub` and restricted-visibility item the crate's modules declare. Internal symbols\n\
+         ({internal} here) are reachable only in-crate, so they retire with the crate rather than\n\
+         migrating; they are recorded rather than skipped so the surface has no unexamined\n\
+         remainder.\n"
     );
-    out.push_str("| --- | --- | --- | --- | --- | --- | --- | --- | --- |\n");
+    out.push_str(
+        "| Symbol | Kind | Visibility | Root re-export | Disposition | Canonical owner | Fixture | Migration | Removal condition | Note |\n",
+    );
+    out.push_str("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n");
     for row in &symbols {
         let reexported = discovered
             .exports
@@ -1312,10 +1384,11 @@ pub fn render_markdown(ledger: &Ledger, discovered: &Discovered) -> String {
             .is_some_and(|e| e.reexported_at_root);
         let _ = writeln!(
             out,
-            "| `{}::{}` | `{}` | {} | `{}` | {} | {} | {} | {} | {} |",
+            "| `{}::{}` | `{}` | `{}` | {} | `{}` | {} | {} | {} | {} | {} |",
             row.module,
             row.name,
             row.kind.as_str(),
+            row.visibility.as_str(),
             if reexported { "yes" } else { "no" },
             row.disposition.as_str(),
             opt(&row.canonical_owner),
@@ -1381,11 +1454,23 @@ mod tests {
 
     type TestResult<T = ()> = Result<T>;
 
+    /// Public declarations only, as `(name, kind)`. Most parser tests are about
+    /// item shape rather than visibility, so they assert against this narrower
+    /// projection of `parse_declared_items`.
+    fn parse_public_items(source: &str) -> Vec<(String, SymbolKind)> {
+        parse_declared_items(source)
+            .into_iter()
+            .filter(|(_, _, visibility)| *visibility == Visibility::Public)
+            .map(|(name, kind, _)| (name, kind))
+            .collect()
+    }
+
     fn symbol(name: &str, disposition: Disposition) -> SymbolRow {
         SymbolRow {
             name: name.to_string(),
             module: "convert".to_string(),
             kind: SymbolKind::Function,
+            visibility: Visibility::Public,
             disposition,
             canonical_owner: Some("#8803".to_string()),
             fixture: Some("crates/perl-tree-sitter-compat/tests/adapter.rs::t".to_string()),
@@ -1463,6 +1548,7 @@ mod tests {
             module: "convert".to_string(),
             name: name.to_string(),
             kind: SymbolKind::Function,
+            visibility: Visibility::Public,
             reexported_at_root: true,
         }
     }
@@ -1815,6 +1901,7 @@ mod tests {
                 module: "convert".to_string(),
                 name: "TreeError".to_string(),
                 kind: SymbolKind::Enum,
+                visibility: Visibility::Public,
                 reexported_at_root: true,
             }],
             vec![],
@@ -1849,12 +1936,14 @@ mod tests {
                 module: "convert".to_string(),
                 name: "aaa".to_string(),
                 kind: SymbolKind::Function,
+                visibility: Visibility::Public,
                 reexported_at_root: true,
             },
             Export {
                 module: "sexp".to_string(),
                 name: "zzz".to_string(),
                 kind: SymbolKind::Function,
+                visibility: Visibility::Public,
                 reexported_at_root: true,
             },
         ];
@@ -1919,23 +2008,87 @@ pub use sexp::to_sexp;
         Ok(())
     }
 
+    /// #8880 asks for a disposition per public *or internal* symbol. A restricted
+    /// item must therefore be discovered and tagged, not dropped: dropping it
+    /// would let the ledger claim a complete surface while the denominator
+    /// silently shrank. A module-private item stays out — it is not consumable
+    /// from anywhere, so it carries no disposition.
     #[test]
-    fn public_items_are_parsed_and_restricted_visibility_is_excluded() -> TestResult {
+    fn declared_items_are_parsed_and_tagged_by_visibility() -> TestResult {
         let source = "\
 pub fn parse_to_tree(source: &str) -> Result<TsNode, TreeError> {}
 pub struct TsNode {}
 pub enum TreeError {}
-pub(crate) fn helper() {}
+pub(crate) fn crate_helper() {}
+pub(super) struct SuperHelper {}
+pub(in crate::node) enum ScopedHelper {}
 fn private() {}
 ";
         assert_eq!(
-            parse_public_items(source),
+            parse_declared_items(source),
             vec![
-                ("TreeError".to_string(), SymbolKind::Enum),
-                ("TsNode".to_string(), SymbolKind::Struct),
-                ("parse_to_tree".to_string(), SymbolKind::Function),
-            ]
+                ("ScopedHelper".to_string(), SymbolKind::Enum, Visibility::Internal),
+                ("SuperHelper".to_string(), SymbolKind::Struct, Visibility::Internal),
+                ("TreeError".to_string(), SymbolKind::Enum, Visibility::Public),
+                ("TsNode".to_string(), SymbolKind::Struct, Visibility::Public),
+                ("crate_helper".to_string(), SymbolKind::Function, Visibility::Internal),
+                ("parse_to_tree".to_string(), SymbolKind::Function, Visibility::Public),
+            ],
+            "all three restricted spellings are internal; a private item is not a symbol"
         );
+        Ok(())
+    }
+
+    /// The population the ledger's header claims is empty must be *checked*
+    /// empty, not asserted. An internal symbol with no row fails the run, and the
+    /// error says which visibility it has so the repair is obvious.
+    #[test]
+    fn an_internal_symbol_without_a_row_fails_closed() -> TestResult {
+        let l = ledger(vec![], vec![]);
+        let mut internal = export("crate_helper");
+        internal.visibility = Visibility::Internal;
+        internal.reexported_at_root = false;
+        let d = discovered(vec![internal], vec![]);
+
+        let err = validate(&l, &d).unwrap_err().to_string();
+        assert!(
+            err.contains("declares internal symbol `convert::crate_helper`"),
+            "unexpected error: {err}"
+        );
+        Ok(())
+    }
+
+    /// The control for the rule above: an internal symbol that *is* recorded
+    /// reconciles. Without this, a rule that simply banned internal symbols would
+    /// pass the failure test while making the population unrecordable.
+    #[test]
+    fn a_recorded_internal_symbol_reconciles() -> TestResult {
+        let mut row = symbol("crate_helper", Disposition::Unused);
+        row.visibility = Visibility::Internal;
+        row.canonical_owner = None;
+        row.fixture = None;
+        row.migration_dependency = None;
+        row.removal_condition = None;
+
+        let mut internal = export("crate_helper");
+        internal.visibility = Visibility::Internal;
+        internal.reexported_at_root = false;
+
+        validate(&ledger(vec![row], vec![]), &discovered(vec![internal], vec![]))
+    }
+
+    /// A symbol that changes visibility keeps its name, so nothing else in the
+    /// reconciliation would notice. Its disposition was audited against the old
+    /// reachability and has to be re-examined.
+    #[test]
+    fn a_visibility_that_disagrees_with_the_source_fails_closed() -> TestResult {
+        let l = ledger(vec![symbol("parse_to_tree", Disposition::UniqueAndRequired)], vec![]);
+        let mut moved = export("parse_to_tree");
+        moved.visibility = Visibility::Internal;
+        let d = discovered(vec![moved], vec![]);
+
+        let err = validate(&l, &d).unwrap_err().to_string();
+        assert!(err.contains("but the source declares it `internal`"), "unexpected error: {err}");
         Ok(())
     }
 
