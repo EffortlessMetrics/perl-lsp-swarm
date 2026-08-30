@@ -301,22 +301,25 @@ pub fn verify_receipt(
         }
     }
 
-    // Unreached steps must form a suffix: the lane stops at its first failure,
-    // so an `ok` step after a `not_run` one describes a run that cannot have
-    // happened.
-    if let Some(first_not_run) =
-        receipt.steps.iter().position(|step| step.outcome == StepOutcome::NotRun)
-        && let Some(later) = receipt
+    // The lane stops at its first failure, so that failure must be the only
+    // executed one and everything after it must be `not_run`. Checking only
+    // for execution after a `not_run` entry was too weak: it accepted
+    // `ok, failure, ok, not_run…`, a run that resumed after stopping.
+    if let Some(first_failure) =
+        receipt.steps.iter().position(|step| step.outcome != StepOutcome::Ok)
+        && let Some((offset, later)) = receipt
             .steps
             .iter()
-            .skip(first_not_run)
-            .find(|step| step.outcome != StepOutcome::NotRun)
+            .enumerate()
+            .skip(first_failure + 1)
+            .find(|(_, step)| step.outcome != StepOutcome::NotRun)
     {
         bail!(
-            "receipt records step '{}' as {:?} after an earlier not_run step: unreached steps \
-             must form a suffix",
+            "receipt records step '{}' as {:?} at position {offset}, after step '{}' already \
+             stopped the lane: every later step must be not_run",
             later.name,
-            later.outcome
+            later.outcome,
+            receipt.steps[first_failure].name
         );
     }
 
@@ -511,7 +514,7 @@ fn capture_stdout(program: &str, args: &[&str]) -> Result<String> {
 /// verification time to byte-compare, which is a design change rather than a
 /// tightening of this function. Until then, treat capture correctness as an
 /// assumption of the claim, not something the receipt proves.
-fn capture_subject() -> Result<ProofSubject> {
+fn capture_subject(receipt_path: &Path) -> Result<ProofSubject> {
     let scorecard_profile = flag_value(SCORECARD_RUN_ARGS, "--profile").ok_or_else(|| {
         eyre!("scorecard argv lost its --profile pin; receipt cannot bind a profile")
     })?;
@@ -520,7 +523,7 @@ fn capture_subject() -> Result<ProofSubject> {
     })?;
     Ok(ProofSubject {
         git_sha: capture_stdout("git", &["rev-parse", "HEAD"])?,
-        worktree_delta: capture_worktree_delta()?,
+        worktree_delta: capture_worktree_delta(receipt_path)?,
         rustc_version: capture_stdout("rustc", &["--version"])?,
         cargo_version: capture_stdout("cargo", &["--version"])?,
         scorecard_profile,
@@ -535,17 +538,91 @@ fn capture_subject() -> Result<ProofSubject> {
 /// `git diff HEAD` pins the exact tracked *content*. Hashing both means two
 /// different edits to the same file produce different subjects. A clean CI
 /// checkout digests to `None`, so hosted lanes are unaffected.
-fn capture_worktree_delta() -> Result<Option<String>> {
-    let status = capture_stdout("git", &["status", "--porcelain"])?;
-    if status.is_empty() {
+fn capture_worktree_delta(receipt_path: &Path) -> Result<Option<String>> {
+    let ignored = receipt_exclusions(receipt_path);
+    let is_excluded = |path: &str| ignored.iter().any(|skip| skip == path);
+
+    // Status lines are `XY <path>`; drop the receipt's own entries so writing
+    // the artifact cannot change the subject it certifies.
+    let status_raw = capture_stdout("git", &["status", "--porcelain"])?;
+    let mut status: Vec<&str> = status_raw
+        .lines()
+        .filter(|line| !is_excluded(line.get(3..).unwrap_or("").trim()))
+        .collect();
+    status.sort_unstable();
+
+    let mut untracked: Vec<String> =
+        capture_stdout("git", &["ls-files", "--others", "--exclude-standard"])?
+            .lines()
+            .map(str::to_string)
+            .filter(|path| !is_excluded(path))
+            .collect();
+    untracked.sort();
+
+    if status.is_empty() && untracked.is_empty() {
         return Ok(None);
     }
-    let tracked_diff = capture_stdout("git", &["diff", "HEAD"])?;
+
     let mut hasher = Sha256::new();
-    hasher.update(status.as_bytes());
+    for line in &status {
+        hasher.update(line.as_bytes());
+        hasher.update([0u8]);
+    }
+
+    // `--binary` so a binary edit contributes its literal delta rather than
+    // the placeholder "Binary files differ", which would make distinct
+    // changes hash identically.
+    hasher.update(capture_stdout("git", &["diff", "HEAD", "--binary"])?.as_bytes());
     hasher.update([0u8]);
-    hasher.update(tracked_diff.as_bytes());
+
+    // Status only names an untracked path; two different contents at one path
+    // would otherwise share a subject. Hash the bytes, in sorted order.
+    for path in &untracked {
+        hasher.update(path.as_bytes());
+        hasher.update([0u8]);
+        match fs::read(path) {
+            Ok(bytes) => {
+                hasher.update((bytes.len() as u64).to_le_bytes());
+                hasher.update(&bytes);
+            }
+            // A path that cannot be read still differentiates the tree, and
+            // conflating it with an empty file would hide that.
+            Err(error) => {
+                hasher.update(b"<unreadable>");
+                hasher.update(error.kind().to_string().as_bytes());
+            }
+        }
+        hasher.update([0u8]);
+    }
+
     Ok(Some(hasher.finalize().iter().map(|byte| format!("{byte:02x}")).collect()))
+}
+
+/// Repository-relative paths the receipt itself occupies, which must never
+/// count as working-tree drift: the artifact is this command's output, not an
+/// input to the proof. Without this, a `--receipt` destination inside the
+/// repository and not gitignored would change the tree after subject capture,
+/// and the command's own verifier would reject the receipt it just wrote.
+fn receipt_exclusions(receipt_path: &Path) -> Vec<String> {
+    let mut paths = Vec::new();
+    let Ok(root) = std::env::current_dir() else {
+        return paths;
+    };
+    for candidate in [receipt_path.to_path_buf(), staging_path(receipt_path)] {
+        let absolute = if candidate.is_absolute() { candidate } else { root.join(&candidate) };
+        if let Ok(relative) = absolute.strip_prefix(&root) {
+            paths.push(relative.to_string_lossy().replace('\\', "/"));
+        }
+    }
+    paths
+}
+
+/// Staging sibling for the write-then-rename publish. The process id keeps
+/// concurrent runs that share a destination from truncating each other's
+/// staging file; the rename itself still makes the destination single-writer.
+fn staging_path(receipt_path: &Path) -> PathBuf {
+    let suffix = format!("json.{}.partial", std::process::id());
+    receipt_path.with_extension(suffix)
 }
 
 /// Remove a receipt left by an earlier run. A receipt that cannot be destroyed
@@ -574,7 +651,7 @@ fn write_receipt(path: &Path, receipt: &RustSmallProofReceipt) -> Result<()> {
     // receipt where artifact collection would pick it up as this run's
     // evidence. The temporary sits beside the destination so the rename stays
     // within one filesystem and is atomic.
-    let staging = path.with_extension("json.partial");
+    let staging = staging_path(path);
     fs::write(&staging, json)
         .wrap_err_with(|| format!("writing receipt staging file {}", staging.display()))?;
     fs::rename(&staging, path).wrap_err_with(|| {
@@ -591,7 +668,7 @@ fn run_verify(path: &Path) -> Result<()> {
     let receipt: RustSmallProofReceipt = serde_json::from_str(&text).wrap_err_with(|| {
         format!("malformed receipt {}: not a valid receipt document", path.display())
     })?;
-    verify_receipt(&receipt, Some(&capture_subject()?))?;
+    verify_receipt(&receipt, Some(&capture_subject(path)?))?;
     println!(
         "[rust-small-proof] receipt {} verified: {} steps, census {:?}, result {:?}",
         path.display(),
@@ -656,7 +733,7 @@ fn run_proof(receipt_path: &Path) -> Result<()> {
 
     // Bind the subject next: a candidate/toolchain identity problem should
     // fail in seconds, not after the lane has burned its full runtime.
-    let subject = capture_subject()?;
+    let subject = capture_subject(receipt_path)?;
 
     let total = CARGO_STEPS.len() + 3;
     let mut done = 0usize;
@@ -1275,9 +1352,9 @@ tests::gamma: test
 
     #[test]
     fn a_swallowed_nonzero_exit_cannot_be_reported_as_success() {
-        let mut receipt = success_receipt();
-        receipt.steps[2].outcome = StepOutcome::ProductFailure;
-        receipt.steps[2].exit_code = Some(101);
+        let mut receipt =
+            failure_receipt(2, StepOutcome::ProductFailure, ProofResult::ProductFailure);
+        receipt.result = ProofResult::Success;
         let text = rejection(&receipt, None);
         assert!(text.contains("swallowed failure"), "{text}");
     }
@@ -1435,14 +1512,14 @@ tests::gamma: test
 
     #[test]
     fn a_misplaced_not_run_step_is_refused() {
-        // `not_run` must be a suffix: an ok step after an unreached one
-        // describes a lane that resumed after stopping.
+        // An ok step after an unreached one describes a lane that resumed
+        // after stopping.
         let mut receipt =
             failure_receipt(4, StepOutcome::ProductFailure, ProofResult::ProductFailure);
         receipt.steps[6].outcome = StepOutcome::Ok;
         receipt.steps[6].exit_code = Some(0);
         let text = rejection(&receipt, None);
-        assert!(text.contains("must form a suffix"), "{text}");
+        assert!(text.contains("every later step must be not_run"), "{text}");
     }
 
     #[test]
@@ -1583,18 +1660,20 @@ tests::gamma: test
     fn the_worktree_delta_reflects_this_checkout() {
         // Exercises the real capture against the repository the tests run in:
         // whatever it reports must round-trip through a receipt subject.
-        let Ok(delta) = capture_worktree_delta() else {
+        let receipt = PathBuf::from(DEFAULT_RECEIPT_PATH);
+        let Ok(delta) = capture_worktree_delta(&receipt) else {
             panic!("worktree delta capture must succeed in a git checkout");
         };
         if let Some(digest) = &delta {
             assert_eq!(digest.len(), 64, "a sha256 digest is 64 hex chars: {digest}");
             assert!(digest.chars().all(|c| c.is_ascii_hexdigit()), "{digest}");
         }
-        // Stable across calls when nothing changes in between.
-        let Ok(again) = capture_worktree_delta() else {
-            panic!("worktree delta capture must succeed on a second call");
-        };
-        assert_eq!(delta, again, "the delta must be deterministic for one tree state");
+        // Deliberately no cross-call equality assertion: the working tree is
+        // shared mutable state that a sibling test legitimately writes to, so
+        // comparing two live captures would test filesystem quiescence rather
+        // than this function. Content-sensitivity is proved instead by
+        // `untracked_contents_change_the_subject_even_at_one_path`, which
+        // controls both states it compares.
     }
 
     #[test]
@@ -1671,6 +1750,90 @@ tests::gamma: test
     }
 
     #[test]
+    fn a_lane_cannot_resume_after_the_step_that_stopped_it() {
+        // The suffix rule was too weak: it only rejected execution after a
+        // `not_run` entry, so `ok, failure, ok, not_run…` verified.
+        let mut resumed =
+            failure_receipt(2, StepOutcome::ProductFailure, ProofResult::ProductFailure);
+        resumed.steps[3].outcome = StepOutcome::Ok;
+        resumed.steps[3].exit_code = Some(0);
+        let text = rejection(&resumed, None);
+        assert!(text.contains("every later step must be not_run"), "{text}");
+
+        // A second executed failure is equally impossible.
+        let mut twice =
+            failure_receipt(2, StepOutcome::ProductFailure, ProofResult::ProductFailure);
+        twice.steps[4].outcome = StepOutcome::ProductFailure;
+        twice.steps[4].exit_code = Some(101);
+        let text = rejection(&twice, None);
+        assert!(text.contains("every later step must be not_run"), "{text}");
+    }
+
+    #[test]
+    fn untracked_contents_change_the_subject_even_at_one_path() {
+        // Status only names an untracked path, so hashing status alone gave
+        // two different trees the same subject.
+        let dir = scratch_dir("untracked");
+        let receipt = dir.join("receipt.json");
+        let Ok(root) = std::env::current_dir() else { panic!("cwd must be readable") };
+        let scratch = root.join("target").join("rsp-untracked-probe");
+        let Ok(()) = fs::create_dir_all(&scratch) else { panic!("probe dir") };
+        let probe = scratch.join("probe.txt");
+
+        let _ = probe;
+        let _ = fs::remove_dir_all(&scratch);
+
+        // A genuinely untracked path — not gitignored — so git reports it as
+        // `??` and only its *name* would reach the digest without the
+        // content hashing under test.
+        let visible = root.join(format!("rsp-untracked-probe-{}.txt", std::process::id()));
+        let Ok(()) = fs::write(&visible, b"first") else { panic!("probe write") };
+        let first = capture_worktree_delta(&receipt);
+        let Ok(()) = fs::write(&visible, b"second") else { panic!("probe rewrite") };
+        let second = capture_worktree_delta(&receipt);
+        let _ = fs::remove_file(&visible);
+
+        let (Ok(Some(first)), Ok(Some(second))) = (first, second) else {
+            panic!("an untracked file must produce a delta digest");
+        };
+        assert_ne!(
+            first, second,
+            "two different contents at one untracked path must not share a subject"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_receipt_destination_is_not_working_tree_drift() {
+        // A `--receipt` path inside the repository and not gitignored would
+        // otherwise change the tree after capture, so the command's own
+        // verifier would reject the receipt it had just written.
+        let excluded = receipt_exclusions(Path::new("evidence/rust-small.json"));
+        assert!(
+            excluded.iter().any(|path| path == "evidence/rust-small.json"),
+            "the receipt path must be excluded: {excluded:?}"
+        );
+        assert!(
+            excluded
+                .iter()
+                .any(|path| path.starts_with("evidence/rust-small.json.")
+                    && path.ends_with(".partial")),
+            "the staging sibling must be excluded too: {excluded:?}"
+        );
+    }
+
+    #[test]
+    fn concurrent_runs_do_not_share_one_staging_file() {
+        // The rename keeps the destination single-writer; a per-process
+        // staging name keeps two runs from truncating each other before it.
+        let staging = staging_path(Path::new("target/receipts/rust-small-proof.json"));
+        let rendered = staging.to_string_lossy().to_string();
+        assert!(rendered.contains(&std::process::id().to_string()), "{rendered}");
+        assert!(rendered.ends_with(".partial"), "{rendered}");
+    }
+
+    #[test]
     fn a_positive_census_survives_a_later_step_failure() {
         // Negative control for the census rules: once the census has counted,
         // a replay or diff-hygiene failure must not invalidate the count.
@@ -1695,10 +1858,7 @@ tests::gamma: test
             panic!("write must succeed");
         };
         assert!(path.exists());
-        assert!(
-            !path.with_extension("json.partial").exists(),
-            "no staging file may survive a completed write"
-        );
+        assert!(!staging_path(&path).exists(), "no staging file may survive a completed write");
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -1802,9 +1962,9 @@ tests::gamma: test
         for index in 0..count {
             let name = || receipt_step_name(index);
 
-            let mut swallowed = success_receipt();
-            swallowed.steps[index].outcome = StepOutcome::ProductFailure;
-            swallowed.steps[index].exit_code = Some(101);
+            let mut swallowed =
+                failure_receipt(index, StepOutcome::ProductFailure, ProofResult::ProductFailure);
+            swallowed.result = ProofResult::Success;
             assert!(
                 rejection(&swallowed, None).contains("swallowed failure"),
                 "a swallowed failure at step {index} ({}) was accepted",
@@ -1878,7 +2038,7 @@ tests::gamma: test
                 resumed.steps[index + 2].outcome = StepOutcome::Ok;
                 resumed.steps[index + 2].exit_code = Some(0);
                 assert!(
-                    rejection(&resumed, None).contains("must form a suffix"),
+                    rejection(&resumed, None).contains("every later step must be not_run"),
                     "a resumed lane after step {index} was accepted"
                 );
             }

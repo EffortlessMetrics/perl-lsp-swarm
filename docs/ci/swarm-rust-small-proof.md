@@ -43,12 +43,27 @@ verifying — an artifact describing a run that did not happen. Receipts are
 published by write-then-rename, so a cancelled lane cannot leave a truncated
 one behind.
 
+A missing receipt does not distinguish its cause: preflight failed, or emission
+itself failed after the proof ran. `fail_closed` reports a publication problem
+on stderr but deliberately returns the original proof failure rather than
+replacing it, so the lane's exit reflects the proof and the absent receipt must
+be read as "no evidence", not as a particular failure mode.
+
 The subject binds the working tree, not just `HEAD`. `git diff --check` only
 rejects whitespace and conflict-marker errors, so a well-formatted uncommitted
 edit passes the lane; binding the commit alone would certify `HEAD` while the
 cargo steps proved different source. A dirty tree contributes a
 `worktree_delta` digest, so such a receipt cannot verify against the clean
 commit. A clean CI checkout has no delta, so hosted lanes are unaffected.
+
+The digest covers tracked content (`git diff HEAD --binary`, so binary edits
+contribute their literal delta rather than a "Binary files differ" placeholder)
+and the bytes of every untracked, non-ignored file — status alone names an
+untracked path but not its contents, which would let two different trees share
+one subject. The receipt's own destination and staging file are excluded, so
+writing the artifact cannot change the subject it certifies; without that, a
+`--receipt` path inside the repository and not gitignored would make the
+command's own verifier reject the receipt it had just written.
 
 `--verify-receipt <path>` re-reads a receipt against the current checkout and
 runs no proof steps, so it is the cheap consumer seam for asking whether an
