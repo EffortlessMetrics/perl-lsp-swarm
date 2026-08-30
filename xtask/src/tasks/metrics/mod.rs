@@ -4,10 +4,10 @@
 
 pub mod diagnostics_stats;
 pub mod hir_coverage;
-#[path = "lsp_stats_guarded.rs"]
-mod lsp_stats_guarded;
 #[path = "lsp_stats_timing_guard.rs"]
 pub mod lsp_stats;
+#[path = "lsp_stats_guarded.rs"]
+mod lsp_stats_guarded;
 #[path = "lsp_stats.rs"]
 mod lsp_stats_impl;
 pub mod memory;

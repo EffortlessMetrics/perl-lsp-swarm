@@ -69,7 +69,10 @@ fn validate_timing_semantics(receipt: &UxScenarioRunReceipt, path: &Path) -> Res
     validate_measurement("duration_ms", receipt.duration_ms, receipt.duration_ms, receipt, path)?;
 
     let mut operations = BTreeSet::new();
-    let mut first_completed = None;
+    // First operation row that carries a TTFR measurement; Started and
+    // MissingRequestStart rows have none and are walked past until a
+    // Completed row supplies the value.
+    let mut first_completed_measurement = None;
     for timing in &receipt.operation_timings {
         if timing.operation.trim().is_empty() {
             bail!(
@@ -90,8 +93,8 @@ fn validate_timing_semantics(receipt: &UxScenarioRunReceipt, path: &Path) -> Res
         }
 
         validate_operation_timing(timing, receipt, path)?;
-        if first_completed.is_none() {
-            first_completed = timing.time_to_first_useful_result_ms;
+        if first_completed_measurement.is_none() {
+            first_completed_measurement = timing.time_to_first_useful_result_ms;
         }
     }
 
@@ -105,8 +108,11 @@ fn validate_timing_semantics(receipt: &UxScenarioRunReceipt, path: &Path) -> Res
         )?;
     }
 
+    // Load-bearing admission boundary: legacy receipts carry only the
+    // top-level TTFR with no operation rows, so the match below must be
+    // skipped when no rows are present.
     if !receipt.operation_timings.is_empty() {
-        match (first_completed, receipt.time_to_first_useful_result_ms) {
+        match (first_completed_measurement, receipt.time_to_first_useful_result_ms) {
             (Some(first), Some(top_level)) if first != top_level => {
                 bail!(
                     "invalid UX timing receipt {} workflow `{}` test `{}`: top-level TTFR {top_level} ms disagrees with first completed operation {first} ms",
@@ -256,7 +262,6 @@ mod tests {
         )?;
 
         validate_timing_semantics(&receipt, Path::new("valid.json"))?;
-        validate_timing_semantics(&receipt, Path::new("valid.json"))?;
         Ok(())
     }
 
@@ -387,7 +392,8 @@ mod tests {
     }
 
     #[test]
-    fn checked_schema_rejects_measured_missing_start_but_accepts_null_missing_start() -> Result<()> {
+    fn checked_schema_rejects_measured_missing_start_but_accepts_null_missing_start() -> Result<()>
+    {
         let schema_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("..")
             .join(".ci/schemas/ux-scenario-run.schema.json");
@@ -412,9 +418,9 @@ mod tests {
             "time_to_first_useful_result_ms": null,
             "timing_status": "missing_request_start"
         }]);
-        validator
-            .validate(&valid)
-            .map_err(|error| color_eyre::eyre::eyre!("valid missing-start receipt rejected: {error}"))?;
+        validator.validate(&valid).map_err(|error| {
+            color_eyre::eyre::eyre!("valid missing-start receipt rejected: {error}")
+        })?;
         Ok(())
     }
 }
