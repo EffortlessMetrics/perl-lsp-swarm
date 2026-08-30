@@ -2115,8 +2115,6 @@ fn incremental_config_custom() -> Result<(), Box<dyn std::error::Error>> {
 #[test]
 fn symbol_priority_equality() -> Result<(), Box<dyn std::error::Error>> {
     use perl_incremental_parsing::incremental::incremental_document::SymbolPriority;
-    assert_eq!(SymbolPriority::Low, SymbolPriority::Low.clone());
-    assert_eq!(SymbolPriority::Critical, SymbolPriority::Critical.clone());
     assert_ne!(SymbolPriority::Low, SymbolPriority::High);
     Ok(())
 }

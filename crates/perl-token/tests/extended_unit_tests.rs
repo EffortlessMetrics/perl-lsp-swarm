@@ -310,7 +310,7 @@ fn token_eq_transitivity() {
 }
 
 #[test]
-fn token_eq_reflexive_for_all_kinds() {
+fn token_eq_same_kind_independent_construction() {
     let kinds = [
         TokenKind::My,
         TokenKind::Assign,
@@ -324,8 +324,9 @@ fn token_eq_reflexive_for_all_kinds() {
         TokenKind::Try,
     ];
     for kind in &kinds {
-        let tok = Token::new_checked(*kind, "x", 0, 1).expect("valid token");
-        assert_eq!(tok, tok.clone());
+        let left = Token::new_checked(*kind, "x", 0, 1).expect("valid token");
+        let right = Token::new_checked(*kind, "x", 0, 1).expect("valid token");
+        assert_eq!(left, right);
     }
 }
 

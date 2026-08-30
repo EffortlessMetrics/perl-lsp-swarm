@@ -37,15 +37,6 @@ fn reuse_type_debug_format() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
-fn reuse_type_partial_eq_same_variant() -> Result<(), Box<dyn std::error::Error>> {
-    assert_eq!(ReuseType::Direct, ReuseType::Direct.clone());
-    assert_eq!(ReuseType::PositionShift, ReuseType::PositionShift.clone());
-    assert_eq!(ReuseType::ContentUpdate, ReuseType::ContentUpdate.clone());
-    assert_eq!(ReuseType::StructuralEquivalent, ReuseType::StructuralEquivalent.clone());
-    Ok(())
-}
-
-#[test]
 fn reuse_type_partial_eq_different_variants() -> Result<(), Box<dyn std::error::Error>> {
     assert_ne!(ReuseType::Direct, ReuseType::PositionShift);
     assert_ne!(ReuseType::ContentUpdate, ReuseType::StructuralEquivalent);

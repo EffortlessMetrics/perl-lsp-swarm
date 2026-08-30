@@ -1500,12 +1500,8 @@ mod tests {
             let _ = format!("{k:?}");
             let _ = k.clone();
         }
-        // PartialEq distinguishes sites and kinds; clone preserves equality.
-        let site = RecoverySite::ArgList;
-        assert_eq!(site, site.clone());
+        // PartialEq distinguishes sites and kinds.
         assert_ne!(RecoverySite::ArgList, RecoverySite::PostfixChain);
-        let kind = RecoveryKind::InsertedCloser;
-        assert_eq!(kind, kind.clone());
         assert_ne!(RecoveryKind::InsertedCloser, RecoveryKind::MissingOperand);
     }
 

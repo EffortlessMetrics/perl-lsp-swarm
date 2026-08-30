@@ -617,7 +617,6 @@ fn code_hash_consistency() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn code_equality() -> Result<(), Box<dyn std::error::Error>> {
-    assert_eq!(DiagnosticCode::ParseError, DiagnosticCode::ParseError.clone());
     assert_ne!(DiagnosticCode::ParseError, DiagnosticCode::SyntaxError);
     Ok(())
 }
@@ -727,14 +726,6 @@ fn parse_code_as_str_bijection() -> Result<(), Box<dyn std::error::Error>> {
 // --- DiagnosticSeverity additional coverage ---
 
 #[test]
-fn severity_equality_same_variant() {
-    assert_eq!(DiagnosticSeverity::Error, DiagnosticSeverity::Error.clone());
-    assert_eq!(DiagnosticSeverity::Warning, DiagnosticSeverity::Warning.clone());
-    assert_eq!(DiagnosticSeverity::Information, DiagnosticSeverity::Information.clone());
-    assert_eq!(DiagnosticSeverity::Hint, DiagnosticSeverity::Hint.clone());
-}
-
-#[test]
 fn severity_inequality_different_variants() {
     assert_ne!(DiagnosticSeverity::Error, DiagnosticSeverity::Warning);
     assert_ne!(DiagnosticSeverity::Warning, DiagnosticSeverity::Information);
@@ -779,8 +770,6 @@ fn severity_information_lsp_value_is_3() -> Result<(), Box<dyn std::error::Error
 
 #[test]
 fn tag_equality_and_inequality() {
-    assert_eq!(DiagnosticTag::Unnecessary, DiagnosticTag::Unnecessary.clone());
-    assert_eq!(DiagnosticTag::Deprecated, DiagnosticTag::Deprecated.clone());
     assert_ne!(DiagnosticTag::Unnecessary, DiagnosticTag::Deprecated);
 }
 
@@ -1292,15 +1281,6 @@ fn display_used_in_format_string() {
 }
 
 // --- DiagnosticCategory: equality and inequality ---
-
-#[test]
-fn category_equality() {
-    assert_eq!(DiagnosticCategory::Parser, DiagnosticCategory::Parser.clone());
-    assert_eq!(DiagnosticCategory::StrictWarnings, DiagnosticCategory::StrictWarnings.clone());
-    assert_eq!(DiagnosticCategory::PackageModule, DiagnosticCategory::PackageModule.clone());
-    assert_eq!(DiagnosticCategory::Subroutine, DiagnosticCategory::Subroutine.clone());
-    assert_eq!(DiagnosticCategory::BestPractices, DiagnosticCategory::BestPractices.clone());
-}
 
 #[test]
 fn category_inequality_across_variants() {

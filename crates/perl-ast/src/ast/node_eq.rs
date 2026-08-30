@@ -395,7 +395,6 @@ mod tests {
         );
         assert_ne!(none, some);
         assert_ne!(some, none);
-        assert_eq!(none.clone(), none);
     }
 
     #[test]
@@ -566,7 +565,6 @@ mod tests {
             loc(0, 20),
         );
         assert_ne!(left, right);
-        assert_eq!(left.clone(), left);
     }
 
     #[test]

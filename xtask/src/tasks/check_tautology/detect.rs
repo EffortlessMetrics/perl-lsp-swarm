@@ -308,6 +308,13 @@ mod tests {
         assert_eq!(rule_of("value.is_some()"), None);
         assert_eq!(rule_of("ready && !ready"), None);
         assert_eq!(eq_rule("left", "right"), None);
+        assert_eq!(eq_rule("kind", "other"), None);
+    }
+
+    #[test]
+    fn clone_method_assert_eq_is_a_false_negative_not_a_repair() {
+        // `.clone()` is a method call, so the checker conservatively skips it.
+        // That is an accepted false negative, not a blessed repair recipe.
         assert_eq!(eq_rule("site", "site.clone()"), None);
         assert_eq!(eq_rule("SyncPoint::Semicolon", "SyncPoint::Semicolon.clone()"), None);
         assert_eq!(
@@ -317,6 +324,5 @@ mod tests {
             ),
             None
         );
-        assert_eq!(eq_rule("kind", "other"), None);
     }
 }

@@ -166,9 +166,10 @@ mod tests {
     }
 
     #[test]
-    fn repaired_clone_and_independent_idents_stay_green() {
+    fn clone_method_oracles_are_false_negatives_independent_idents_stay_green() {
         let source = r#"
             fn probe(value: Flag, ready: bool) {
+                // Method `.clone()` is a false-negative allowance, not a repair recipe.
                 assert_eq!(value, value.clone());
                 assert_eq!(Flag::On, Flag::On.clone());
                 assert_eq!(Mode::Socket { port: 1 }, Mode::Socket { port: 1 }.clone());
