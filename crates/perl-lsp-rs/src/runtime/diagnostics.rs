@@ -14,6 +14,7 @@ use super::{
         PushDiagnosticsDisposition,
     },
     json, source_path_from_uri,
+    types::best_workspace_folder_for_doc,
 };
 use crate::features::diagnostics::report_identity::{
     DiagnosticProjectionFragment, PullPositionEncoding, PullReportResultId, compose_report_identity,
@@ -206,8 +207,19 @@ impl PullDiagnosticsOrchestrator {
         let accepted_state_currentness = {
             let accepted_snapshot = accepted_critic_snapshot.clone();
             let config = std::sync::Arc::clone(&server.config);
+            let workspace_folders = std::sync::Arc::clone(&server.workspace_folders);
+            let root_path = std::sync::Arc::clone(&server.root_path);
+            let currentness_uri = uri.to_string();
             PullAcceptedStateCurrentness::new(std::sync::Arc::new(move || {
-                accepted_snapshot.is_current(&config.lock())
+                let live_root = {
+                    let folders = workspace_folders.lock();
+                    best_workspace_folder_for_doc(&folders, &currentness_uri).cloned()
+                }
+                .and_then(|folder| folder.path.or_else(|| source_path_from_uri(&folder.uri)))
+                .or_else(|| root_path.lock().clone())
+                .map(|path| path.to_string_lossy().into_owned());
+                live_root.as_deref() == accepted_snapshot.owning_root()
+                    && accepted_snapshot.is_current(&config.lock())
             }))
         };
 
@@ -1549,13 +1561,13 @@ impl LspServer {
                 let identity_context =
                     PullDiagnosticsOrchestrator::new().build_context(self, uri_str);
                 let critic_source_identity = critic_source_identity_for(uri_str, *gen_at_snapshot);
-                let accepted_critic = identity_context.accepted_critic_snapshot.clone();
-                let pending_critic = self.evaluate_native_critic(
+                let pending_critic = self.begin_workspace_critic_transaction(
                     ast,
                     &doc.text,
                     uri_str,
                     critic_source_identity,
-                    accepted_critic.clone(),
+                    identity_context,
+                    Some(u64::from(doc.current_generation())),
                     &diagnostics,
                 );
 
@@ -1597,25 +1609,17 @@ impl LspServer {
                 // Publication boundary for this document: commit or withhold
                 // the pending contribution against its own subject, and let the
                 // same answer decide Critic result-ID reuse.
-                let critic_subject_current =
-                    self.finalize_pending_critic(&mut diagnostics, pending_critic);
-
-                let result_id = compose_report_identity(
-                    uri_str,
-                    &doc.text,
-                    Some(u64::from(doc.current_generation())),
-                    &identity_context,
-                    critic_subject_current,
-                );
-                let result_id_json =
-                    result_id.as_ref().map(|id| Value::String(id.as_str().to_string()));
+                let critic_identity =
+                    self.finalize_workspace_critic_transaction(&mut diagnostics, pending_critic);
+                let result_id_json = critic_identity
+                    .result_id
+                    .as_ref()
+                    .map(|id| Value::String(id.as_str().to_string()));
 
                 // `Unchanged` requires a prior ID that parses under the current
                 // schema and equals the complete current subject (#7480).
-                let prev_matches = prev_id.as_deref().is_some_and(|prior| {
-                    PullReportResultId::from_wire(prior)
-                        .is_some_and(|prior| result_id.as_ref() == Some(&prior))
-                }) && identity_context.accepted_state_currentness.holds();
+                let prev_matches =
+                    prev_id.as_deref().is_some_and(|prior| critic_identity.matches_previous(prior));
 
                 // Check if unchanged
                 let mut report = if let Some(prev) = prev_id {
@@ -1857,6 +1861,61 @@ impl LspServer {
         AcceptedCriticSnapshot::capture(&config, root_key.as_deref())
     }
 
+    /// Begin one workspace pull transaction from a single sealed context.
+    ///
+    /// The caller cannot pass a second accepted snapshot: evaluation derives
+    /// it from the same owned context that finalization later consumes for
+    /// result identity.
+    fn begin_workspace_critic_transaction(
+        &self,
+        ast: &std::sync::Arc<perl_parser::ast::Node>,
+        doc_text: &str,
+        subject: &str,
+        source_identity: perl_lsp_rs_core::tooling::perl_critic::CriticSourceIdentity,
+        identity_context: PullDiagnosticsContext,
+        document_generation: Option<u64>,
+        diagnostics: &[InternalDiagnostic],
+    ) -> PendingWorkspaceCriticTransaction {
+        let candidate_result_id = compose_report_identity(
+            subject,
+            doc_text,
+            document_generation,
+            &identity_context,
+            true,
+        );
+        let contribution = self.evaluate_native_critic(
+            ast,
+            doc_text,
+            subject,
+            source_identity,
+            identity_context.accepted_critic_snapshot.clone(),
+            diagnostics,
+        );
+        PendingWorkspaceCriticTransaction {
+            candidate_result_id,
+            accepted_state_currentness: identity_context.accepted_state_currentness.clone(),
+            contribution,
+        }
+    }
+
+    /// Commit or withhold, then compose identity from the same owned context.
+    fn finalize_workspace_critic_transaction(
+        &self,
+        diagnostics: &mut Vec<InternalDiagnostic>,
+        transaction: PendingWorkspaceCriticTransaction,
+    ) -> FinalizedWorkspaceCriticIdentity {
+        let PendingWorkspaceCriticTransaction {
+            candidate_result_id,
+            accepted_state_currentness,
+            contribution,
+        } = transaction;
+        let critic_subject_current = self.finalize_pending_critic(diagnostics, contribution);
+        FinalizedWorkspaceCriticIdentity {
+            result_id: critic_subject_current.then_some(candidate_result_id).flatten(),
+            accepted_state_currentness,
+        }
+    }
+
     /// Evaluate native critic rules over one accepted subject, committing
     /// nothing.
     ///
@@ -1884,9 +1943,22 @@ impl LspServer {
         // row intact, so carriers are surrendered only at finalization.
         let overlap_observations = critic_overlap_observations(diagnostics);
 
+        let workspace_folders = std::sync::Arc::clone(&self.workspace_folders);
+        let root_path = std::sync::Arc::clone(&self.root_path);
         let config = std::sync::Arc::clone(&self.config);
+        let gate_subject = subject.to_string();
         let gate_snapshot = snapshot.clone();
-        let snapshot_is_current = move || gate_snapshot.is_current(&config.lock());
+        let snapshot_is_current = move || {
+            let live_root = {
+                let folders = workspace_folders.lock();
+                best_workspace_folder_for_doc(&folders, &gate_subject).cloned()
+            }
+            .and_then(|folder| folder.path.or_else(|| source_path_from_uri(&folder.uri)))
+            .or_else(|| root_path.lock().clone())
+            .map(|path| path.to_string_lossy().into_owned());
+            live_root.as_deref() == gate_snapshot.owning_root()
+                && gate_snapshot.is_current(&config.lock())
+        };
 
         let run = NativeCriticService::analyze(NativeCriticSubject::accepted(
             subject,
@@ -1899,7 +1971,7 @@ impl LspServer {
             RunGate::new(&snapshot_is_current),
         ));
 
-        PendingCriticContribution { snapshot, run }
+        PendingCriticContribution { subject: subject.to_string(), snapshot, run }
     }
 
     /// Commit or withhold a pending Critic contribution at the publication
@@ -1919,8 +1991,8 @@ impl LspServer {
     ) -> bool {
         use perl_lsp_rs_core::providers::diagnostics::take_critic_overlap_observations;
 
-        let PendingCriticContribution { snapshot, run } = pending;
-        if !snapshot.is_current(&self.config.lock()) {
+        let PendingCriticContribution { subject, snapshot, run } = pending;
+        if self.capture_accepted_critic(&subject) != snapshot {
             // The subject moved after evaluation. Core rows stay exactly as
             // their emitters produced them, no native row enters the report,
             // and the report cannot be cached as current for this policy.
@@ -2060,8 +2132,30 @@ fn push_diagnostic_source(code: Option<&str>) -> &'static str {
 /// richer truth (completeness, carrier supersession, work receipt), and the
 /// snapshot carries the identity, so a second encoding could only disagree.
 struct PendingCriticContribution {
+    subject: String,
     snapshot: AcceptedCriticSnapshot,
     run: perl_lsp_rs_core::tooling::perl_critic::NativeCriticRun,
+}
+
+/// One live workspace pull transaction before its report boundary.
+struct PendingWorkspaceCriticTransaction {
+    candidate_result_id: Option<PullReportResultId>,
+    accepted_state_currentness: PullAcceptedStateCurrentness,
+    contribution: PendingCriticContribution,
+}
+
+/// Result identity and its still-live currentness authority after commit.
+struct FinalizedWorkspaceCriticIdentity {
+    result_id: Option<PullReportResultId>,
+    accepted_state_currentness: PullAcceptedStateCurrentness,
+}
+
+impl FinalizedWorkspaceCriticIdentity {
+    fn matches_previous(&self, previous: &str) -> bool {
+        PullReportResultId::from_wire(previous)
+            .is_some_and(|previous| self.result_id.as_ref() == Some(&previous))
+            && self.accepted_state_currentness.holds()
+    }
 }
 
 fn normalized_critic_finding_to_diagnostic(
@@ -3494,6 +3588,46 @@ system($path);
             Some(workspace.as_path()),
             "workspace_root must fall back to root_path when no folder contains the document"
         );
+        Ok(())
+    }
+
+    /// A workspace-folder ownership rebind is accepted-subject movement even
+    /// when the global Critic configuration itself is byte-identical.
+    #[test]
+    fn pull_context_currentness_rejects_workspace_folder_rebind()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let fallback = temp.path().join("fallback");
+        let original_owner = temp.path().join("owner");
+        let script = original_owner.join("script.pl");
+        std::fs::create_dir_all(&fallback)?;
+        std::fs::create_dir_all(&original_owner)?;
+        std::fs::write(&script, "use strict;\n")?;
+
+        let doc_uri =
+            url::Url::from_file_path(&script).map_err(|_| "bad document uri")?.to_string();
+        let owner_uri = url::Url::from_directory_path(&original_owner)
+            .map_err(|_| "bad owner uri")?
+            .to_string();
+        let (server, _buf) = make_server_with_capture();
+        *server.root_path.lock() = Some(fallback);
+        server.workspace_folders.lock().push(
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(owner_uri)
+                .with_path(original_owner),
+        );
+
+        let context = PullDiagnosticsOrchestrator::new().build_context(&server, &doc_uri);
+        if !context.accepted_state_currentness.holds() {
+            return Err("newly captured document ownership must initially be current".into());
+        }
+
+        server.workspace_folders.lock().clear();
+        if context.accepted_state_currentness.holds() {
+            return Err(
+                "moving the document from its folder owner to fallback root must stale the snapshot"
+                    .into(),
+            );
+        }
         Ok(())
     }
 

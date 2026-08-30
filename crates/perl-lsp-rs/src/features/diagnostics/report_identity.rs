@@ -34,7 +34,7 @@ use super::PullDiagnosticsContext;
 /// Schema/domain version of this composer. Bump whenever the set of
 /// load-bearing fragments changes so prior client-held IDs stop parsing and
 /// every report degrades honestly to `full`.
-pub const PULL_REPORT_IDENTITY_SCHEMA_VERSION: u16 = 2;
+pub const PULL_REPORT_IDENTITY_SCHEMA_VERSION: u16 = 3;
 
 /// Wire prefix of a composed pull-report result ID.
 const PULL_REPORT_IDENTITY_PREFIX: &str = "diagnostic-pull-report.v";
@@ -196,7 +196,11 @@ pub fn pull_report_subject(
     Ok(PullReportSubject {
         content_digest: ContentDigest::of_bytes(content.as_bytes()),
         critic_root_id,
-        accepted_critic_fingerprint: context.accepted_critic_snapshot.fingerprint(),
+        accepted_critic_fingerprint: context
+            .accepted_critic_snapshot
+            .result_identity_fingerprint()
+            .as_wire()
+            .to_string(),
         resolver_roots: context.include_paths.iter().cloned().collect(),
         root_id,
         relative_path,
@@ -274,7 +278,7 @@ impl PullReportSubject {
         .compose();
 
         let mut canonical = String::new();
-        push_str(&mut canonical, "identity_schema", PULL_REPORT_IDENTITY_V2_TAG);
+        push_str(&mut canonical, "identity_schema", PULL_REPORT_IDENTITY_V3_TAG);
         push_str(&mut canonical, "substrate", inner.as_str());
         push_str(&mut canonical, "position_encoding", self.projection.position_encoding.as_token());
         push_u64(&mut canonical, "markup_messages", u64::from(self.projection.markup_messages));
@@ -290,7 +294,7 @@ impl PullReportSubject {
 
 /// Domain tag for the outer composition, kept distinct from the substrate's
 /// own schema field so the two layers cannot be confused.
-const PULL_REPORT_IDENTITY_V2_TAG: &str = "perl-lsp:pull-report-identity:v2";
+const PULL_REPORT_IDENTITY_V3_TAG: &str = "perl-lsp:pull-report-identity:v3";
 
 /// Reduce a document URI to a stable logical path spelling.
 ///
@@ -406,10 +410,31 @@ mod tests {
     }
 
     #[test]
-    fn old_v1_result_ids_fail_closed() -> Result<(), Box<dyn std::error::Error>> {
-        let legacy = "diagnostic-pull-report.v1-sha256:0000000000000000000000000000000000000000000000000000000000000000";
-        if PullReportResultId::from_wire(legacy).is_some() {
-            return Err("old v1 result IDs must fail closed to Full".into());
+    fn old_result_ids_fail_closed() -> Result<(), Box<dyn std::error::Error>> {
+        for legacy in [
+            "diagnostic-pull-report.v1-sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            "diagnostic-pull-report.v2-sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        ] {
+            if PullReportResultId::from_wire(legacy).is_some() {
+                return Err(format!("old result ID must fail closed to Full: {legacy}").into());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn accepted_state_identity_uses_the_snapshot_sha256_fingerprint()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let context = context_with(Some("/tmp/ws-a"));
+        let subject = subject_for(&context, URI_A, CONTENT);
+        let expected = context.accepted_critic_snapshot.result_identity_fingerprint();
+        if subject.accepted_critic_fingerprint != expected.as_wire() {
+            return Err("pull identity must consume the snapshot's SHA-256 fingerprint".into());
+        }
+        if subject.accepted_critic_fingerprint == context.accepted_critic_snapshot.fingerprint() {
+            return Err(
+                "the legacy 64-bit observation token must not authorize result reuse".into()
+            );
         }
         Ok(())
     }

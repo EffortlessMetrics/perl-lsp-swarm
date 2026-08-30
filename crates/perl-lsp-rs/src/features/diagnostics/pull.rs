@@ -3178,4 +3178,99 @@ system($path);
 
         Ok(())
     }
+
+    /// Full and partial workspace reports obey the same report-boundary
+    /// commit-or-withhold law when accepted policy moves after service
+    /// settlement.
+    #[test]
+    fn workspace_full_and_partial_withhold_the_same_stale_contribution()
+    -> Result<(), Box<dyn std::error::Error>> {
+        const URI: &str = "file:///workspace_transaction_parity.pl";
+        const SOURCE: &str = "my $path = 'f.txt';\nsystem($path);\n";
+
+        fn moving_context() -> PullDiagnosticsContext {
+            let observations = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let seen = std::sync::Arc::clone(&observations);
+            let mut context = strict_native_context();
+            context.accepted_state_currentness =
+                AcceptedStateCurrentness::new(std::sync::Arc::new(move || {
+                    seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst) < 2
+                }));
+            context
+        }
+
+        fn current_document() -> Result<DocumentState, Box<dyn std::error::Error>> {
+            let mut parser = Parser::new(SOURCE);
+            let ast = parser.parse().map_err(|error| error.to_string())?;
+            let errors = parser.errors().to_vec();
+            let mut document = DocumentState::new(SOURCE, 1);
+            let generation = document.current_generation();
+            let snapshot = crate::state::ParsedSnapshot::from_parse_result(
+                generation,
+                SOURCE,
+                Some(std::sync::Arc::new(ast)),
+                errors,
+            );
+            if !document.publish_parsed_if_current(generation, std::sync::Arc::new(snapshot)) {
+                return Err("current parse snapshot must publish".into());
+            }
+            Ok(document)
+        }
+
+        fn verify_withheld(
+            report: &WorkspaceFullDocumentDiagnosticReport,
+        ) -> Result<Vec<LspDiagnostic>, Box<dyn std::error::Error>> {
+            let full = &report.full_document_diagnostic_report;
+            if full.result_id.is_some() {
+                return Err("stale workspace Critic subject must not carry a result ID".into());
+            }
+            if has_native_critic_row(&full.items) {
+                return Err(
+                    "stale workspace Critic contribution must not publish native rows".into()
+                );
+            }
+            if !full.items.iter().any(|diagnostic| {
+                matches!(&diagnostic.code, Some(NumberOrString::String(code)) if code == "PL603")
+            }) {
+                return Err("withholding must retain the PL603 overlap carrier".into());
+            }
+            Ok(full.items.clone())
+        }
+
+        let provider = PullDiagnosticsProvider::new();
+        let mut documents = HashMap::new();
+        documents.insert(URI.to_string(), current_document()?);
+        let full = provider.get_workspace_diagnostics_with_context(
+            &documents,
+            Vec::new(),
+            &moving_context(),
+        );
+        let [full_item] = full.items.as_slice() else {
+            return Err("expected one full-workspace item".into());
+        };
+        let WorkspaceDocumentDiagnosticReport::Full(full_report) = full_item else {
+            return Err("expected full-workspace Full report".into());
+        };
+        let full_items = verify_withheld(full_report)?;
+
+        let partial = provider.get_workspace_diagnostics_partial_with_context(
+            &[(URI.to_string(), SOURCE.to_string())],
+            8,
+            &moving_context(),
+        );
+        let [chunk] = partial.as_slice() else {
+            return Err("expected one partial-workspace chunk".into());
+        };
+        let [partial_item] = chunk.items.as_slice() else {
+            return Err("expected one partial-workspace item".into());
+        };
+        let WorkspaceDocumentDiagnosticReport::Full(partial_report) = partial_item else {
+            return Err("expected partial-workspace Full report".into());
+        };
+        let partial_items = verify_withheld(partial_report)?;
+        if full_items != partial_items {
+            return Err("full and partial workspace transactions must withhold identically".into());
+        }
+        Ok(())
+    }
 }

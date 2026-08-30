@@ -177,7 +177,12 @@ fn workspace_identity_uses_the_evaluation_snapshot() -> TestResult<()> {
     let workspace = source_between(
         &source,
         "pub(super) fn handle_workspace_diagnostic(",
-        "fn finalize_pending_critic(",
+        "fn capture_accepted_critic(",
+    )?;
+    let transaction = source_between(
+        &source,
+        "fn begin_workspace_critic_transaction(",
+        "fn finalize_workspace_critic_transaction(",
     )?;
 
     require_contains(
@@ -186,9 +191,24 @@ fn workspace_identity_uses_the_evaluation_snapshot() -> TestResult<()> {
         "workspace diagnostics must capture one pull context per document",
     )?;
     require_contains(
-        workspace,
+        transaction,
         "identity_context.accepted_critic_snapshot.clone()",
-        "workspace evaluation must use the context's sealed accepted snapshot",
+        "workspace transaction must evaluate from its owned context's sealed snapshot",
+    )?;
+    require_contains(
+        transaction,
+        "compose_report_identity(",
+        "workspace transaction must compose its candidate identity from the same owned context",
+    )?;
+    require_contains(
+        workspace,
+        "self.begin_workspace_critic_transaction(",
+        "workspace handler must begin one sealed per-document transaction",
+    )?;
+    require_contains(
+        workspace,
+        "self.finalize_workspace_critic_transaction(",
+        "workspace handler must finalize through the sealed transaction",
     )?;
     require_absent(
         workspace,
@@ -202,7 +222,7 @@ fn workspace_identity_uses_the_evaluation_snapshot() -> TestResult<()> {
     )?;
     require_contains(
         workspace,
-        "}) && identity_context.accepted_state_currentness.holds();",
+        "critic_identity.matches_previous(prior)",
         "live workspace Unchanged must revalidate the final accepted snapshot",
     )
 }

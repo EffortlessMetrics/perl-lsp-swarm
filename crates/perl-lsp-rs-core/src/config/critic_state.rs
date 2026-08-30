@@ -27,6 +27,7 @@ use super::{
 };
 use crate::hashing::fnv1a64_hex;
 use crate::tooling::perl_critic::NativeCriticProfile;
+use perl_source_identity::ContentDigest;
 
 /// Separator used when serializing accepted-state content into its fingerprint
 /// input. Chosen so ordinary setting values cannot collide across fields.
@@ -34,6 +35,10 @@ const FINGERPRINT_FIELD_SEPARATOR: &str = "\u{1f}";
 
 /// Version tag binding the fingerprint recipe to this accepted-state shape.
 const FINGERPRINT_RECIPE_VERSION: &str = "critic-state-v1";
+
+/// Domain/version for the collision-resistant accepted-state identity used by
+/// reusable diagnostic result IDs.
+const RESULT_IDENTITY_FINGERPRINT_VERSION: &str = "critic-state-result-identity-v1";
 
 /// One accepted critic runtime state (#8253).
 ///
@@ -51,8 +56,9 @@ pub enum EffectiveCriticState {
 impl EffectiveCriticState {
     /// Deterministic identity of this accepted state.
     ///
-    /// Two states with equal fingerprints carry equal accepted policy;
-    /// restart reconstruction from the same inputs reproduces the same value.
+    /// This compact FNV observation token predates reusable result identities.
+    /// It is deterministic, but it is not a collision-resistant authority and
+    /// must not decide whether a client-held diagnostic result ID is reusable.
     #[must_use]
     pub fn fingerprint(&self) -> String {
         match self {
@@ -179,6 +185,39 @@ impl AcceptedCriticSnapshot {
         self.state.fingerprint()
     }
 
+    /// Collision-resistant canonical fingerprint for reusable result identity.
+    ///
+    /// Unlike the compact legacy [`Self::fingerprint`] observation token, this
+    /// digest length-prefixes every accepted-state fragment and then applies
+    /// domain-separated SHA-256. Distinct field boundaries therefore remain
+    /// distinct before hashing, and the 64-bit FNV token is never trusted as a
+    /// cache-reuse authority.
+    #[must_use]
+    pub fn result_identity_fingerprint(&self) -> ContentDigest {
+        let mut canonical = Vec::new();
+        push_identity_fragment(&mut canonical, RESULT_IDENTITY_FINGERPRINT_VERSION.as_bytes());
+        match &self.state {
+            EffectiveCriticState::Disabled => {
+                push_identity_fragment(&mut canonical, b"disabled");
+            }
+            EffectiveCriticState::Native(native) => {
+                push_identity_fragment(&mut canonical, b"native");
+                push_identity_fragment(&mut canonical, native.profile.as_str().as_bytes());
+                push_identity_fragment(&mut canonical, &[native.severity_threshold]);
+                push_identity_sequence(&mut canonical, &native.include);
+                push_identity_sequence(&mut canonical, &native.exclude);
+                match native.owning_root.as_deref() {
+                    Some(root) => {
+                        push_identity_fragment(&mut canonical, b"root:some");
+                        push_identity_fragment(&mut canonical, root.as_bytes());
+                    }
+                    None => push_identity_fragment(&mut canonical, b"root:none"),
+                }
+            }
+        }
+        ContentDigest::of_bytes(&canonical)
+    }
+
     /// Whether live configuration still accepts this exact subject.
     ///
     /// Compared against the same owning root the snapshot was captured for, so
@@ -188,6 +227,18 @@ impl AcceptedCriticSnapshot {
     pub fn is_current(&self, config: &ServerConfig) -> bool {
         config.effective_critic_state(self.owning_root.as_deref()) == self.state
     }
+}
+
+fn push_identity_sequence(output: &mut Vec<u8>, values: &[String]) {
+    push_identity_fragment(output, &(values.len() as u64).to_be_bytes());
+    for value in values {
+        push_identity_fragment(output, value.as_bytes());
+    }
+}
+
+fn push_identity_fragment(output: &mut Vec<u8>, value: &[u8]) {
+    output.extend_from_slice(&(value.len() as u64).to_be_bytes());
+    output.extend_from_slice(value);
 }
 
 impl ServerConfig {
@@ -690,6 +741,42 @@ mod tests {
             ..native_config(Some("root-a"))
         };
         assert_ne!(a.fingerprint(), EffectiveCriticState::Native(other_profile).fingerprint());
+    }
+
+    /// The legacy separator-joined FNV token can alias distinct accepted
+    /// filters. Reusable result identity must discriminate the same pair with
+    /// the canonical SHA-256 fingerprint.
+    #[test]
+    fn result_identity_fingerprint_discriminates_legacy_aliases()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let joined = EffectiveCriticState::Native(EffectiveNativeCriticConfig {
+            include: vec![format!("a{FINGERPRINT_FIELD_SEPARATOR}b")],
+            ..native_config(Some("root-a"))
+        });
+        let split = EffectiveCriticState::Native(EffectiveNativeCriticConfig {
+            include: vec!["a".to_string(), "b".to_string()],
+            ..native_config(Some("root-a"))
+        });
+
+        if joined.fingerprint() != split.fingerprint() {
+            return Err("fixture must alias under the legacy separator-joined token".into());
+        }
+
+        let joined_snapshot =
+            AcceptedCriticSnapshot { state: joined, owning_root: Some("root-a".to_string()) };
+        let split_snapshot =
+            AcceptedCriticSnapshot { state: split, owning_root: Some("root-a".to_string()) };
+        let joined_identity = joined_snapshot.result_identity_fingerprint();
+        let split_identity = split_snapshot.result_identity_fingerprint();
+        if joined_identity == split_identity {
+            return Err("canonical result identity must distinguish field boundaries".into());
+        }
+        if !joined_identity.as_wire().starts_with("sha256:")
+            || joined_identity.as_wire().len() != "sha256:".len() + 64
+        {
+            return Err("accepted-state result identity must be a SHA-256 digest".into());
+        }
+        Ok(())
     }
 
     #[test]
