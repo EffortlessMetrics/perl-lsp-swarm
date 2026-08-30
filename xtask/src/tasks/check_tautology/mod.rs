@@ -106,11 +106,15 @@ fn scan_root(root: &Path, policy: Option<&Path>, as_of: NaiveDate) -> Result<Sca
 fn load_ledger(root: &Path, policy: Option<&Path>, as_of: NaiveDate) -> Result<DispositionLedger> {
     let default_path = root.join("policy/tautology-dispositions.toml");
     let path = match policy {
-        Some(path) => path.to_path_buf(),
+        Some(path) => resolve_policy_path(root, path),
         None if default_path.is_file() => default_path,
         None => return Ok(DispositionLedger::empty()),
     };
     DispositionLedger::load(&path, as_of)
+}
+
+fn resolve_policy_path(root: &Path, policy: &Path) -> PathBuf {
+    if policy.is_absolute() { policy.to_path_buf() } else { root.join(policy) }
 }
 
 fn read_governed_source(path: &Path) -> Result<String, String> {
@@ -332,6 +336,38 @@ expires = "2026-01-02"
             .expect_err("expired ledger");
         let display = format!("{error:#}");
         assert!(display.contains("expired"), "{display}");
+    }
+
+    #[test]
+    fn relative_policy_path_resolves_against_scan_root() {
+        let tmp = TempDir::new().expect("tempdir");
+        write_rs(
+            tmp.path(),
+            "crates/demo/src/lib.rs",
+            "fn probe(value: Option<u8>) { assert!(value.is_some() || value.is_none()); }\n",
+        );
+        fs::create_dir_all(tmp.path().join("policy")).expect("policy dir");
+        fs::write(
+            tmp.path().join("policy/rel.toml"),
+            r##"
+schema_version = 1
+policy = "tautology-dispositions"
+[[disposition]]
+id = "tautology-demo"
+rule = "option-is-some-or-none"
+path = "crates/demo/src/lib.rs"
+owner = "parser-core"
+issue = "#14061"
+reason = "relative policy path probe"
+created = "2026-08-30"
+expires = "2026-11-30"
+"##,
+        )
+        .expect("ledger");
+        let report =
+            scan_root(tmp.path(), Some(Path::new("policy/rel.toml")), as_of()).expect("scan");
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        assert!(report.findings.is_empty(), "{:?}", report.findings);
     }
 
     #[test]
