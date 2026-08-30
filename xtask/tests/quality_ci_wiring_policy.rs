@@ -444,6 +444,12 @@ fn coverage_workflow_is_manual_or_nightly_only_and_requires_receipts() {
         .is_err(),
         "coverage documentation contract must reject a connector starting the wrapped line"
     );
+    let wrapped_required_route = "Coverage is advisory,\nbut required for pull requests.";
+    assert!(
+        coverage_reference_rows_contract(wrapped_required_route, "wrapped required reference")
+            .is_err(),
+        "coverage documentation contract must reject a wrapped required route"
+    );
     let wrapped_connector_sentence_boundary = "Coverage is advisory.\nbut runs on pull requests.";
     assert!(
         coverage_reference_rows_contract(
@@ -1485,7 +1491,7 @@ fn has_positive_stale_route_claim_across_wrap(lines: &[&str]) -> bool {
             continue;
         }
         for run_index in coverage_index + 1..tokens.len() {
-            if !matches!(tokens[run_index], "run" | "runs") {
+            if !matches!(tokens[run_index], "run" | "runs" | "required") {
                 continue;
             }
             if tokens[coverage_index + 1..run_index]
