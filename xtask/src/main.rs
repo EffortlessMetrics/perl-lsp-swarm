@@ -36,14 +36,14 @@ use tasks::{
     active_goal_manifest, agent_capability_policy, agent_flow, agent_implementation_packet,
     agent_lease, agent_receipt, agent_review_packet, aggregate_receipts, badges, bench, benchmarks,
     build, build_timing, bump_version, change_set, check, check_agent_context, check_lint_policy,
-    check_test_wiring, check_toolchain, check_version_sync, ci, ci_audit_workflows, ci_contract,
-    ci_doctor, ci_explain, ci_hygiene, ci_measure, ci_metrics, ci_policy, ci_pr_summary, ci_route,
-    ci_scope, clean, clippy_cost_measure, command_evidence, compare, compiler_lexical_cutline,
-    corpus_audit, count_ratchet, cpan_corpus, dead_code, debt_report, dependency_hygiene, dev,
-    devex_docs, devex_doctor, devex_plan, doc, doc_claims, e2e_validate, edge_cases,
-    emacs_train_context, emacs_train_specs, features, finalize_check, fix_forward, fmt,
-    forbid_fatal_constructs, forensics, gate_receipts, gates, generated_files, github,
-    github_preflight, github_review, goals, hardening, hook_checks, ignored_tests,
+    check_tautology, check_test_wiring, check_toolchain, check_version_sync, ci,
+    ci_audit_workflows, ci_contract, ci_doctor, ci_explain, ci_hygiene, ci_measure, ci_metrics,
+    ci_policy, ci_pr_summary, ci_route, ci_scope, clean, clippy_cost_measure, command_evidence,
+    compare, compiler_lexical_cutline, corpus_audit, count_ratchet, cpan_corpus, dead_code,
+    debt_report, dependency_hygiene, dev, devex_docs, devex_doctor, devex_plan, doc, doc_claims,
+    e2e_validate, edge_cases, emacs_train_context, emacs_train_specs, features, finalize_check,
+    fix_forward, fmt, forbid_fatal_constructs, forensics, gate_receipts, gates, generated_files,
+    github, github_preflight, github_review, goals, hardening, hook_checks, ignored_tests,
     incremental_proof, inject_sha_assets, inline_completion_quality, inline_completion_smoke,
     install_surface_check, integration_proof, intent_diff_gate, issue_plan, layer_check,
     lsp_318_claims, lsp_318_matrix, lsp_ux_smoke, memory_trends, merge_ready, methodology_gate,
@@ -1434,6 +1434,22 @@ enum Commands {
 
     /// Check for disallowed direct `ExitStatus::from_raw()` usage.
     CheckFromRaw,
+
+    /// Reject provably tautological Rust assertions in governed source.
+    CheckTautology {
+        /// Fail when findings exist (CI mode). Instrument failures always fail.
+        #[arg(long)]
+        check: bool,
+        /// Repository root to scan (defaults to the workspace root).
+        #[arg(long)]
+        root: Option<PathBuf>,
+        /// Optional disposition ledger. Defaults to `policy/tautology-dispositions.toml` when present.
+        #[arg(long)]
+        policy: Option<PathBuf>,
+        /// Optional JSON receipt path.
+        #[arg(long)]
+        receipt: Option<PathBuf>,
+    },
 
     /// Enforce retained-state lifecycle and memory receipt invariants.
     CheckMemoryLifecyclePolicy,
@@ -5665,6 +5681,14 @@ fn run_cli(cli: Cli) -> Result<()> {
         }
         Commands::SyncReleaseDocs { write } => sync_release_docs::run(write),
         Commands::CheckFromRaw => ci_policy::check_from_raw(),
+        Commands::CheckTautology { check, root, policy, receipt } => {
+            check_tautology::run(check_tautology::CheckTautologyArgs {
+                check,
+                root,
+                policy,
+                receipt,
+            })
+        }
         Commands::CheckMemoryLifecyclePolicy => ci_policy::check_memory_lifecycle(),
         Commands::CheckMemoryRetainedOwnerDrift { base, report_only } => {
             ci_policy::check_memory_retained_owner_drift(ci_policy::RetainedOwnerDriftConfig {
