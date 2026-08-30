@@ -49,6 +49,10 @@ pub struct MigrationState {
     /// also has no embedded source but is consumed through nothing at all, so
     /// inferring the requirement would make that state unsatisfiable.
     pub requires_immutable_consumption: bool,
+    /// Whether a package may still be routed here. Declared for the same reason
+    /// as the flag above: a retired repository is not a destination, and deriving
+    /// that from the other two flags would be an implicit rule nobody can read.
+    pub accepts_future_packages: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -425,7 +429,19 @@ pub fn validate(
         match package.placement {
             Placement::Accepted => {
                 match package.future_owner.as_deref() {
-                    Some(owner) if repository_ids.contains(owner) => {}
+                    Some(owner) if repository_ids.contains(owner) => {
+                        // A repository nothing consumes any more is not a destination.
+                        if let Some(destination) =
+                            topology.repositories.iter().find(|repo| repo.repository_id == owner)
+                            && let Some(state) = states.get(destination.migration_state.as_str())
+                            && !state.accepts_future_packages
+                        {
+                            errors.push(format!(
+                                "{subject}: future_owner {owner:?} is in state {:?}, which accepts no packages",
+                                destination.migration_state
+                            ));
+                        }
+                    }
                     Some(owner) => {
                         errors.push(format!("{subject}: unknown future_owner {owner:?}"))
                     }
@@ -868,6 +884,7 @@ description = "Source lives here."
 legal_integration_modes = ["workspace_path"]
 allows_embedded_workspace_source = true
 requires_immutable_consumption = false
+accepts_future_packages = true
 
 [[migration_states]]
 state = "external"
@@ -875,6 +892,7 @@ description = "Owned elsewhere."
 legal_integration_modes = ["released_registry"]
 allows_embedded_workspace_source = false
 requires_immutable_consumption = true
+accepts_future_packages = true
 
 [[repositories]]
 repository_id = "product"
@@ -1302,6 +1320,19 @@ metadata_authority = "workspace_inherited"
             fixture()
         );
         assert!(parse(&source).is_err(), "an unrecognised excluded-tree kind must be rejected");
+    }
+
+    /// A repository nothing consumes any more cannot be where a package is headed.
+    #[test]
+    fn rejects_a_future_owner_that_accepts_no_packages() -> TestResult {
+        // `library` is `alpha`'s accepted destination and sits in the first
+        // declared state, so flipping that state's flag makes it a non-destination.
+        let source = fixture().replacen(
+            "accepts_future_packages = true",
+            "accepts_future_packages = false",
+            1,
+        );
+        expect_rejected(&source, "which accepts no packages")
     }
 
     #[test]

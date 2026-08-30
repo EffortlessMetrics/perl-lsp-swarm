@@ -60,7 +60,11 @@ kind = "status_page"
 generated_by = "cargo xtask repo-topology"
 regenerate = "cargo xtask repo-topology"
 owner = "release/ci"
-reason = "Repository/package ownership and migration state projected from policy/repository-topology.toml (#7675)."
-covered_by = ["cargo xtask check-generated", "cargo xtask repo-topology --check"]
+reason = "Repository/package ownership and migration state projected from policy/repository-topology.toml (#7675). Freshness is established by the binding unit test, which runs in the ordinary xtask unit cohort; `check-generated` only proves the file is a declared generated artifact, and CI routing for the standalone --check is #7695."
+covered_by = [
+  "cargo test -p xtask --bin xtask repository_topology",
+  "cargo xtask repo-topology --check",
+  "cargo xtask check-generated",
+]
 created = "2026-08-29"
 review_after = "2026-11-27"

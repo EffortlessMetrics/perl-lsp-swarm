@@ -43,6 +43,7 @@ description = "Source lives in this repository and no extraction work has starte
 legal_integration_modes = ["workspace_path"]
 allows_embedded_workspace_source = true
 requires_immutable_consumption = false
+accepts_future_packages = true
 
 [[migration_states]]
 state = "preparing"
@@ -50,6 +51,7 @@ description = "Extraction is being prepared. Source remains a workspace member a
 legal_integration_modes = ["workspace_path"]
 allows_embedded_workspace_source = true
 requires_immutable_consumption = false
+accepts_future_packages = true
 
 [[migration_states]]
 state = "extracting"
@@ -57,6 +59,7 @@ description = "History and source are being transferred. A temporary exact Git b
 legal_integration_modes = ["workspace_path", "exact_git_bridge"]
 allows_embedded_workspace_source = true
 requires_immutable_consumption = false
+accepts_future_packages = true
 
 [[migration_states]]
 state = "externalizing"
@@ -64,6 +67,7 @@ description = "Source ownership has moved out. Consumption is an immutable exact
 legal_integration_modes = ["exact_git_bridge", "released_registry"]
 allows_embedded_workspace_source = false
 requires_immutable_consumption = true
+accepts_future_packages = true
 
 [[migration_states]]
 state = "external"
@@ -71,6 +75,7 @@ description = "The repository owns its source independently and is consumed as a
 legal_integration_modes = ["released_registry", "exact_git_bridge"]
 allows_embedded_workspace_source = false
 requires_immutable_consumption = true
+accepts_future_packages = true
 
 [[migration_states]]
 state = "retired"
@@ -78,6 +83,7 @@ description = "No longer consumed by this repository."
 legal_integration_modes = ["none", "repository_local_only"]
 allows_embedded_workspace_source = false
 requires_immutable_consumption = false
+accepts_future_packages = false
 
 # ---------------------------------------------------------------------------
 # Repositories.
