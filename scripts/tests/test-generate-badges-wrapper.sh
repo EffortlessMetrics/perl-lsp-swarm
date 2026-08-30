@@ -210,25 +210,24 @@ class FakeWindowsJob:
 
 
 class DirectRiprContainmentProof(unittest.TestCase):
-    def run_terminal(self, stdout: bytes, stderr: bytes = b"", returncode: int = 0):
-        process = TerminalProcess(io.BytesIO(stdout), io.BytesIO(stderr), returncode)
-        terminate = mock.Mock(return_value=[])
-        with mock.patch.object(
-            generator.subprocess, "Popen", return_value=process
-        ), mock.patch.object(
-            generator, "terminate_process_tree", terminate
-        ):
-            generator.run_ripr(root, timeout_seconds=1)
-        return terminate
-
     def assert_process_tree_terminated(self, terminate) -> None:
         terminate.assert_called_once()
         _, kwargs = terminate.call_args
         self.assertIsNone(kwargs.get("windows_job"))
 
     def test_prompt_exit_oversized_stdout_is_rejected_at_the_cap(self):
-        with self.assertRaises(generator.RiprOutputLimitExceeded) as raised:
-            terminate = self.run_terminal(b"o" * (generator.PRODUCER_STDOUT_LIMIT + 1))
+        process = TerminalProcess(
+            io.BytesIO(b"o" * (generator.PRODUCER_STDOUT_LIMIT + 1)),
+            io.BytesIO(),
+        )
+        terminate = mock.Mock(return_value=[])
+        with mock.patch.object(
+            generator.subprocess, "Popen", return_value=process
+        ), mock.patch.object(
+            generator, "terminate_process_tree", terminate
+        ):
+            with self.assertRaises(generator.RiprOutputLimitExceeded) as raised:
+                generator.run_ripr(root, timeout_seconds=1)
         self.assertEqual(raised.exception.stream_name, "stdout")
         self.assertEqual(
             raised.exception.retained_stdout_bytes,
@@ -238,11 +237,18 @@ class DirectRiprContainmentProof(unittest.TestCase):
 
     def test_prompt_exit_oversized_stderr_is_rejected_at_the_cap(self):
         payload = json.dumps({"counts": COUNTS}).encode() + b"\n"
-        with self.assertRaises(generator.RiprOutputLimitExceeded) as raised:
-            terminate = self.run_terminal(
-                payload,
-                b"e" * (generator.PRODUCER_STDERR_LIMIT + 1),
-            )
+        process = TerminalProcess(
+            io.BytesIO(payload),
+            io.BytesIO(b"e" * (generator.PRODUCER_STDERR_LIMIT + 1)),
+        )
+        terminate = mock.Mock(return_value=[])
+        with mock.patch.object(
+            generator.subprocess, "Popen", return_value=process
+        ), mock.patch.object(
+            generator, "terminate_process_tree", terminate
+        ):
+            with self.assertRaises(generator.RiprOutputLimitExceeded) as raised:
+                generator.run_ripr(root, timeout_seconds=1)
         self.assertEqual(raised.exception.stream_name, "stderr")
         self.assertEqual(
             raised.exception.retained_stderr_bytes,
@@ -289,7 +295,13 @@ class DirectRiprContainmentProof(unittest.TestCase):
 
     def test_failed_windows_launch_closes_the_job(self):
         job = FakeWindowsJob()
+        # Resolve the launcher path before flipping os.name: a POSIX host
+        # cannot instantiate WindowsPath, and run_ripr builds the Windows
+        # launcher command from Path(__file__).
+        launcher = Path(__file__).resolve()
         with mock.patch.object(generator.os, "name", "nt"), mock.patch.object(
+            generator, "Path", mock.Mock(return_value=launcher)
+        ), mock.patch.object(
             generator, "WindowsJob", mock.Mock(return_value=job)
         ), mock.patch.object(
             generator.subprocess,
@@ -300,6 +312,22 @@ class DirectRiprContainmentProof(unittest.TestCase):
                 RuntimeError,
                 "could not launch ripr badge producer: launch refused",
             ):
+                generator.run_ripr(root, timeout_seconds=1)
+        self.assertTrue(job.closed)
+
+    def test_windows_launch_interrupt_propagates_and_still_closes_the_job(self):
+        job = FakeWindowsJob()
+        launcher = Path(__file__).resolve()
+        with mock.patch.object(generator.os, "name", "nt"), mock.patch.object(
+            generator, "Path", mock.Mock(return_value=launcher)
+        ), mock.patch.object(
+            generator, "WindowsJob", mock.Mock(return_value=job)
+        ), mock.patch.object(
+            generator.subprocess,
+            "Popen",
+            side_effect=KeyboardInterrupt,
+        ):
+            with self.assertRaises(KeyboardInterrupt):
                 generator.run_ripr(root, timeout_seconds=1)
         self.assertTrue(job.closed)
 

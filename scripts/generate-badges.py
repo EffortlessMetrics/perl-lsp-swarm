@@ -343,10 +343,18 @@ def run_ripr(root: Path, timeout_seconds: float = RIPR_TIMEOUT_SECONDS) -> str:
         if windows_job is None:
             raise
         cleanup = windows_job.close()
-        suffix = f"; cleanup incomplete: {'; '.join(cleanup)}" if cleanup else ""
-        raise RuntimeError(
-            f"could not launch ripr badge producer: {error}{suffix}"
-        ) from error
+        if isinstance(error, Exception):
+            suffix = f"; cleanup incomplete: {'; '.join(cleanup)}" if cleanup else ""
+            raise RuntimeError(
+                f"could not launch ripr badge producer: {error}{suffix}"
+            ) from error
+        if cleanup:
+            print(
+                "ripr launch cleanup incomplete after interrupt: "
+                + "; ".join(cleanup),
+                file=sys.stderr,
+            )
+        raise
     if windows_job is not None:
         try:
             windows_job.assign(process)
