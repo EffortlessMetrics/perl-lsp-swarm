@@ -1766,8 +1766,38 @@ impl LspServer {
         }
     }
 
-    /// Discovery admission policy for a filesystem path (#14186).
+    /// Evict every indexed URI whose filesystem path is a descendant of
+    /// `uri`'s path (#14186 review).
     ///
+    /// The catch-all watcher/file-operation contract (#13308) delivers
+    /// directory delete and rename events; the exact-URI eviction cannot
+    /// reach indexed descendants under the old prefix, so they would stay
+    /// searchable after the directory moved or vanished. Component-wise
+    /// prefix matching keeps sibling names like `dir2` safe.
+    #[cfg(feature = "workspace")]
+    pub(crate) fn evict_index_descendants(&self, uri: &str) {
+        let Some(deleted_path) = uri_to_fs_path(uri) else {
+            return;
+        };
+        let Some(coordinator) = self.coordinator() else {
+            return;
+        };
+        for document in coordinator.index().document_store().all_documents() {
+            let Some(document_path) = uri_to_fs_path(&document.uri) else {
+                continue;
+            };
+            if document_path != deleted_path && document_path.starts_with(&deleted_path) {
+                coordinator.index().clear_file(&document.uri);
+                tracing::debug!(
+                    uri = %document.uri,
+                    parent = %uri,
+                    "Evicted indexed descendant of deleted or renamed directory"
+                );
+            }
+        }
+    }
+
+    /// Discovery admission policy for a filesystem path (#14186).    ///
     /// The containing workspace folder's configured extras (normalized by
     /// [`super::file_discovery::DiscoveryConfig::new`]) layered over the
     /// built-in admission set, resolved against the most specific containing
@@ -2171,6 +2201,10 @@ impl LspServer {
                     // Remove old file from index so old/new identities never
                     // coexist as current workspace facts.
                     coordinator.index().remove_file(&old_uri);
+                    // A renamed directory URI must carry its indexed
+                    // descendants away with it (#14186 review); per-file
+                    // didRename events re-index them at their new paths.
+                    self.evict_index_descendants(&old_uri);
 
                     // Index new file if it's a Perl file. When a document is
                     // open at the new URI, its buffer — not disk bytes — is
@@ -2754,6 +2788,51 @@ impl LspServer {
                     }
                 } else {
                     indexing_receipt.record_index_error();
+                }
+            }
+
+            // Cross-scan declassification reconciliation (#14186 review):
+            // discovery cannot re-return an extensionless path whose shebang
+            // is already gone, so a script declassified between scans never
+            // reaches the final seam and its earlier facts would survive.
+            // Re-audit indexed extensionless URIs under the scanned roots and
+            // evict exactly those the admission authority rejects on current
+            // disk bytes — the same evidence a watcher CHANGED event applies.
+            // Only a scan that ran to completion reconciles: a budget-limited
+            // scan proves nothing about absence.
+            if early_exit.is_none() {
+                for indexed in coordinator.index().document_store().all_documents() {
+                    let uri = indexed.uri.clone();
+                    let Some(path) = uri_to_fs_path(&uri) else {
+                        continue;
+                    };
+                    if path.extension().is_some() {
+                        // Extension-bearing paths re-enter discovery by path
+                        // alone; only extensionless scripts declassify without
+                        // discovery noticing.
+                        continue;
+                    }
+                    if !admission_roots.iter().any(|(root, _)| path.starts_with(root)) {
+                        continue;
+                    }
+                    let _transition = indexing_transition_lock.lock();
+                    if open_documents.is_open(&uri) {
+                        continue;
+                    }
+                    let admission = most_specific_admission(&admission_roots, &path);
+                    // Unreadable objects are transient; keep facts until a
+                    // later event confirms disk content.
+                    let admitted = std::fs::read(&path)
+                        .map(|bytes| indexing_seam_admits_perl_source(&path, &bytes, &admission))
+                        .unwrap_or(true);
+                    if !admitted {
+                        coordinator.index().clear_file(&uri);
+                        tracing::debug!(
+                            uri,
+                            "Rescan reconciliation cleared declassified extensionless \
+                             script facts"
+                        );
+                    }
                 }
             }
 
@@ -4919,6 +4998,87 @@ mod tests {
         }
         if coordinator.index().find_definition("Control::control_symbol").is_none() {
             return Err("startup scan lost the closed control file's symbols".into());
+        }
+        Ok(())
+    }
+
+    /// #14186 review regression (cross-scan declassification): discovery
+    /// cannot re-return an extensionless script whose shebang is already
+    /// gone, so the final seam never sees it. A completed rescan must
+    /// reconcile such stale entries away instead of keeping them searchable
+    /// until a watcher event happens to arrive.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn rescan_clears_symbols_for_script_declassified_between_scans()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let control_path = dir.path().join("aaa_control.pl");
+        let script_path = dir.path().join("deploy_hook");
+        std::fs::write(&control_path, "package Control;\nsub control_symbol { 1 }\n1;\n")?;
+        std::fs::write(
+            &script_path,
+            "#!/usr/bin/env perl\npackage Hook;\nsub hook_symbol { 1 }\n1;\n",
+        )?;
+        let server = gated_scan_server(&dir)?;
+        server.start_workspace_indexing();
+        wait_for_indexing_completion(&server)?;
+
+        {
+            let coordinator = server.coordinator().ok_or("missing workspace coordinator")?;
+            if coordinator.index().find_definition("Hook::hook_symbol").is_none() {
+                return Err("fixture: first scan must index the shebang script".into());
+            }
+        }
+
+        // The shebang is lost BEFORE the rescan starts, so discovery never
+        // returns the path and the final seam cannot reclassify it.
+        std::fs::write(&script_path, "#!/bin/sh\npackage Hook;\nsub hook_symbol { 1 }\n1;\n")?;
+        server.start_workspace_indexing();
+        wait_for_indexing_completion(&server)?;
+
+        let coordinator = server.coordinator().ok_or("missing workspace coordinator")?;
+        if coordinator.index().find_definition("Hook::hook_symbol").is_some() {
+            return Err(
+                "stale symbols from a script declassified between scans survived a rescan".into()
+            );
+        }
+        if coordinator.index().find_definition("Control::control_symbol").is_none() {
+            return Err("rescan lost the control file's symbols".into());
+        }
+        Ok(())
+    }
+
+    /// #14186 review regression (directory events): deleting a directory URI
+    /// must evict every indexed descendant, not just the exact URI.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn directory_delete_evicts_descendant_symbols() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let nested = dir.path().join("pkg");
+        std::fs::create_dir_all(&nested)?;
+        std::fs::write(nested.join("a.pm"), "package PkgA;\nsub pkg_a_symbol { 1 }\n1;\n")?;
+        std::fs::write(nested.join("b.pm"), "package PkgB;\nsub pkg_b_symbol { 1 }\n1;\n")?;
+        std::fs::write(
+            dir.path().join("sibling.pm"),
+            "package Sibling;\nsub sibling_symbol { 1 }\n1;\n",
+        )?;
+        let server = gated_scan_server(&dir)?;
+        server.start_workspace_indexing();
+        wait_for_indexing_completion(&server)?;
+
+        let nested_uri = url::Url::from_directory_path(&nested)
+            .map_err(|_| "invalid nested directory uri")?
+            .to_string();
+        server.handle_did_delete_files(Some(json!({ "files": [{ "uri": nested_uri }] })))?;
+
+        let coordinator = server.coordinator().ok_or("missing workspace coordinator")?;
+        if coordinator.index().find_definition("PkgA::pkg_a_symbol").is_some()
+            || coordinator.index().find_definition("PkgB::pkg_b_symbol").is_some()
+        {
+            return Err("directory delete left indexed descendant symbols searchable".into());
+        }
+        if coordinator.index().find_definition("Sibling::sibling_symbol").is_none() {
+            return Err("directory delete evicted files outside the deleted directory".into());
         }
         Ok(())
     }

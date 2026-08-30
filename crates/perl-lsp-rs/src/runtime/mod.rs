@@ -978,6 +978,10 @@ impl LspServer {
             for key in &uri_keys {
                 coordinator.index().remove_file(key);
             }
+            // Catch-all watcher/file-operation contract (#13308, #14186
+            // review): a deleted directory URI must also evict every indexed
+            // descendant; the exact-URI eviction above cannot reach them.
+            self.evict_index_descendants(uri);
         }
 
         if self.document_is_open(uri) {
