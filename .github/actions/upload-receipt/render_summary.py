@@ -9,14 +9,29 @@ only reports it. Two consequences shape this module:
   A status this renderer does not recognise is not a pass — it means the
   renderer and the receipt disagree about the contract, which is exactly the
   condition under which a summary must not claim success.
-* **`fail`, `timeout` and `error` all block**, matching
+* **`fail`, `timeout` and `error` all count as failing**, matching
   `is_blocking_gate_status` in `gates.rs`. A gate that timed out is not a gate
-  that passed.
+  that passed. Whether a run is *merge*-blocking further depends on each gate's
+  `required` flag, and that verdict stays with the receipt's own
+  `summary.overall_status` — this renderer reports statuses, not merge
+  decisions.
 
 The counts must reconcile: every gate carries one recognised status, so
 ``passed + failed + skipped + timeout + error == len(gates)``. When they do
-not, or when the gate set is absent, malformed or empty, the summary reports
-``NOT_PROVEN`` rather than a status it cannot support.
+not, or when the gate set is absent, malformed or empty, or when a gate is
+missing the fields the contract requires of one, the summary reports
+``NOT_PROVEN`` rather than a status it cannot support. The headline also
+accounts for every gate: skips are reported alongside failures rather than
+dropped.
+
+**How deep the checking goes**, deliberately: presence for structure (the
+`required` lists in the schema), the contract enum for `status` — the one field
+the verdict rests on — and visible degradation for everything else, so an
+unusable `duration_ms` renders as a missing cell rather than a wrong number.
+Type-level validation would reimplement `jsonschema` (unavailable on the
+runner) by hand, with its own risk of drifting from the schema — the very
+failure this module exists to prevent. Enforcing full receipt shape belongs to
+a validator that consumes `.ci/receipt.schema.json` directly.
 
 Caller-supplied receipt content reaches a Markdown table that GitHub renders,
 so every interpolated value is escaped (`summary_text` / `summary_code`).
