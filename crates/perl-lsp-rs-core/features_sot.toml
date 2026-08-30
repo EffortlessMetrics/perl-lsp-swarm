@@ -417,18 +417,23 @@ policy_class = "request_response"
 maturity = "not_proven"
 advertised = true
 direction = "client_to_server"
-capability_gate = "missing"
+capability_gate = "codeActionProvider"
 registration = "static_capabilities"
-implementation_owner = "missing"
-state_owner = "missing"
+implementation_owner = "crates/perl-lsp-rs-core/src/providers/code_actions/refactors.rs"
+state_owner = "document_store"
 tests = [
-  "crates/perl-parser/tests/modernize_perl_tests.rs",
+  "crates/perl-lsp-rs-core/src/protocol/capabilities.rs",
+  "crates/perl-lsp-rs/tests/lsp_code_actions_snap.rs",
 ]
-evidence = []
+evidence = [
+  { class = "integration_test", id = "crates/perl-lsp-rs/tests/lsp_code_actions_snap.rs" },
+]
 limitations = [
-  "No qualifying behavior-evidence citation identified at reclassification; advertisement and implementation unchanged (#7029).",
+  "Covers only the advertised refactor, refactor.extract, and refactor.rewrite code-action kinds; the filesystem-mutating engine and its workspace-wide atomic rename with backup/rollback claim were retired (#5231).",
+  "refactor.inline is not advertised and not implemented; workspace-wide atomic rename with rollback has no live owner.",
 ]
-description = "Perl-specific refactoring engine (264 tests) providing workspace-wide atomic symbol rename with rollback, import optimization (analyze and rewrite use/require statements), code modernization (bareword filehandles, two-arg open, missing pragmas), extract-module, move-subroutine, inline-variable, and inline-subroutine — all via the RefactoringEngine with backup/rollback support"
+claim_boundary = "Refactor code actions return advisory action entries through textDocument/codeAction; no live provider performs backups, rollback, or multi-file transactions."
+description = "Perl refactor code actions (extract, rewrite) served through textDocument/codeAction by the perl-lsp-rs-core code-action refactors provider; the legacy engine-only test count no longer supports any broader claim, and reusable live planning is owned by #8281"
 
 [[feature]]
 id = "lsp.document_link"

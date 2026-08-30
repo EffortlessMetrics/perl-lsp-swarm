@@ -47,7 +47,6 @@ pub use crate::qualified_name;
 pub use crate::refactor::import_optimizer;
 pub use crate::refactor::modernize;
 pub use crate::refactor::modernize_refactored;
-pub use crate::refactor::refactoring;
 pub use crate::source_file;
 pub use crate::tdd::tdd_basic;
 #[cfg(test)]
