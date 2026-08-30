@@ -2233,4 +2233,38 @@ mod tests {
             ),
         }
     }
+
+    #[test]
+    fn adoption_retires_matching_legacy_read_failure_only() {
+        let requested = FactClasses::FILES | FactClasses::SYMBOLS;
+        let mut model = ProjectModel::empty("proj", requested);
+        model.limitations.extend([
+            ModelLimitation {
+                id: "read-failed:lib/A.pm".to_string(),
+                kind: "read_failure".to_string(),
+                message: "transient read failure".to_string(),
+                paths: Vec::new(),
+            },
+            ModelLimitation {
+                id: "read-failed:lib/Other.pm".to_string(),
+                kind: "read_failure".to_string(),
+                message: "unrelated read failure".to_string(),
+                paths: Vec::new(),
+            },
+        ]);
+        model.unread_discovered.insert("lib/A.pm".to_string());
+
+        let mut shard =
+            ProjectFactShard::empty(file("lib/A.pm", "aaa"), 1, "test-producer", requested);
+        shard.populated |= FactClasses::SYMBOLS;
+        shard.source_len_bytes = 3;
+        model.insert_or_replace(shard).unwrap();
+
+        assert_eq!(
+            model.limitations.iter().map(|limitation| limitation.id.as_str()).collect::<Vec<_>>(),
+            ["read-failed:lib/Other.pm"]
+        );
+        let view = SemanticQueryView::build(&model).unwrap();
+        assert!(matches!(view.source_by_path("lib/A.pm"), IndexAnswer::Complete(_)));
+    }
 }
