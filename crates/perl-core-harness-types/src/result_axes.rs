@@ -971,6 +971,8 @@ pub enum ResultReportViolation {
         /// The unrecognized category.
         category: String,
     },
+    /// A complete measurement claimed valid evidence while observing nothing.
+    CompleteMeasurementObservedNothing,
     /// Evidence that is not valid cannot serve as current authority.
     EvidenceNotValidForCurrentAuthority {
         /// The evidence axis that disqualifies the report.
@@ -1071,6 +1073,10 @@ impl fmt::Display for ResultReportViolation {
                 f,
                 "the {axis} distribution uses category '{category}', which is not part of that \
                  axis vocabulary"
+            ),
+            Self::CompleteMeasurementObservedNothing => f.write_str(
+                "a complete measurement with valid evidence recorded no observation; \
+                 a run that assessed nothing is not a complete run",
             ),
             Self::EvidenceNotValidForCurrentAuthority { evidence } => write!(
                 f,
@@ -1228,12 +1234,18 @@ impl RunAxesReport {
             require_non_blank("correctness_rails", rail)?;
             summary.validate(rail)?;
         }
-        if self.axes.evidence() == EvidenceValidity::Valid
-            && self.completion != MeasurementCompletion::Complete
-        {
-            return Err(ResultReportViolation::ValidEvidenceFromIncompleteMeasurement {
-                completion: self.completion,
-            });
+        if self.axes.evidence() == EvidenceValidity::Valid {
+            if self.completion != MeasurementCompletion::Complete {
+                return Err(ResultReportViolation::ValidEvidenceFromIncompleteMeasurement {
+                    completion: self.completion,
+                });
+            }
+            // A finished run that observed nothing is a contradiction: it would
+            // otherwise present itself as complete, valid, and authoritative
+            // while every axis says nothing was assessed.
+            if !self.axes.observation().is_domain_outcome() {
+                return Err(ResultReportViolation::CompleteMeasurementObservedNothing);
+            }
         }
         if self.origin == EvidenceOrigin::LegacyAdapted {
             if self.current_versus_accepted.transition != CompatibilityTransition::Historical {
@@ -2380,6 +2392,18 @@ mod tests {
             SchemaAgreement::Same,
         ));
 
+        let mut vacuous = valid_report()?;
+        vacuous.axes = ResultAxes::not_assessed(EvidenceValidity::Valid);
+        vacuous.parse.axes = vacuous.axes;
+        vacuous.admission.by_admission = distribution(&[("not_assessed", 4)]);
+        vacuous.admission.by_support = distribution(&[("not_assessed", 4)]);
+        fixtures.push((
+            "complete run with valid evidence that assessed nothing",
+            serde_json::to_value(vacuous)?,
+            false,
+            SchemaAgreement::RustStricter,
+        ));
+
         let mut blank_boundary = valid_report()?;
         blank_boundary.claim_boundary = "   ".to_string();
         fixtures.push((
@@ -2502,6 +2526,51 @@ mod tests {
             );
         }
         assert_eq!(SUPPORT_CATEGORIES.len(), supports.len());
+    }
+
+    /// `not_assessed` builds a value without going through `new`, so the two
+    /// must be proven to agree or the constructor guarantee is only a comment.
+    #[test]
+    fn not_assessed_agrees_with_the_constructor() {
+        for evidence in [
+            EvidenceValidity::Valid,
+            EvidenceValidity::NotProven,
+            EvidenceValidity::Invalid,
+            EvidenceValidity::Stale,
+            EvidenceValidity::Cancelled,
+        ] {
+            let built = ResultAxes::not_assessed(evidence);
+            let constructed = ResultAxes::new(
+                built.evidence(),
+                built.observation(),
+                built.admission(),
+                built.support(),
+                built.mechanism(),
+            );
+            assert_eq!(
+                constructed,
+                Ok(built),
+                "not_assessed({evidence}) built a value the constructor would reject"
+            );
+        }
+    }
+
+    #[test]
+    fn a_complete_run_that_assessed_nothing_is_not_authoritative()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut candidate = report(ResultAxes::not_assessed(EvidenceValidity::Valid), no_change());
+        candidate.completion = MeasurementCompletion::Complete;
+        candidate.admission.by_admission = distribution(&[("not_assessed", 4)]);
+        candidate.admission.by_support = distribution(&[("not_assessed", 4)]);
+        candidate.parse.axes = ResultAxes::not_assessed(EvidenceValidity::Valid);
+
+        assert_eq!(
+            candidate.validate(),
+            Err(ResultReportViolation::CompleteMeasurementObservedNothing),
+            "a complete, valid, authoritative report cannot have assessed nothing"
+        );
+        assert!(candidate.admissible_as_current_authority().is_err());
+        Ok(())
     }
 
     #[test]
