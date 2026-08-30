@@ -16,3 +16,6 @@ pub mod dbix_class;
 
 /// Mojo::Base framework adapter (#9681).
 pub mod mojo_base;
+
+/// Mojolicious application/controller identity adapter (#9688).
+pub mod mojolicious;
