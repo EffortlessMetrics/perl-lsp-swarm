@@ -35,9 +35,7 @@ use std::hint::black_box;
 use std::path::PathBuf;
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use perf_subjects::{
-    BENCH_GROUP, SubjectSpec, bench_rows, identity_row_with_counters, toolchain_tag,
-};
+use perf_subjects::{BENCH_GROUP, bench_rows, identity_row_with_counters, toolchain_tag};
 use perl_lsp_perltidy::native::{
     FormatConfig, FormatContext, NativeFormatter, NativePipelineCounters,
 };
@@ -67,11 +65,10 @@ fn write_subject_identities(rows: &[serde_json::Value]) {
         eprintln!("native pipeline bench: cannot serialize {}: {error}", output.display());
         std::process::exit(2);
     });
-    std::fs::write(&output, serialized)
-        .unwrap_or_else(|error| {
-            eprintln!("native pipeline bench: cannot write {}: {error}", output.display());
-            std::process::exit(2);
-        });
+    std::fs::write(&output, serialized).unwrap_or_else(|error| {
+        eprintln!("native pipeline bench: cannot write {}: {error}", output.display());
+        std::process::exit(2);
+    });
 }
 
 fn build_subject_identities() -> Vec<serde_json::Value> {
