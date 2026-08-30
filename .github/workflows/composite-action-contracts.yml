@@ -44,3 +44,6 @@ jobs:
 
       - name: Exercise receipt path validation contracts
         run: python3 .github/actions/upload-receipt/test_validate_paths.py
+
+      - name: Exercise receipt summary rendering contracts
+        run: python3 .github/actions/upload-receipt/test_render_summary.py
