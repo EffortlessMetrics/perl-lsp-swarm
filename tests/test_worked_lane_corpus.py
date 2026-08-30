@@ -177,6 +177,18 @@ def parse_ledger(text: str | None = None) -> list[tuple[str, dict[str, str]]]:
         field = FIELD_LINE.match(line)
         if field and current is not None:
             field_name = field.group(1).strip()
+            if field_name not in REQUIRED_FIELDS:
+                # The field vocabulary is closed for the same reason the status
+                # vocabulary is. An unrecognized label parses, renders, and is
+                # read by nobody -- a row could carry "Coverage note: actually
+                # this category IS covered" beside its own `Status: ABSENT` and
+                # every check would still pass.
+                raise AssertionError(
+                    f"{LEDGER.relative_to(ROOT)}:{offset}: category "
+                    f"{current!r} declares the unknown field {field_name!r}; "
+                    f"a row states {list(REQUIRED_FIELDS)} and nothing else, "
+                    f"or it carries a claim no check reads"
+                )
             if field_name in fields:
                 # Last-write-wins would let a row state a claim twice and have
                 # only the second one checked, while Markdown shows a reader
@@ -521,6 +533,31 @@ class WorkedLaneLedgerTests(unittest.TestCase):
             [category for category, _ in parsed],
             ["example"],
             "a row that states each field once must still parse",
+        )
+
+    def test_an_unknown_field_label_is_rejected(self) -> None:
+        """The field vocabulary is closed, like the status vocabulary.
+
+        An unrecognized label parses and renders but is read by no check, so a
+        row could carry a note contradicting its own `Status` and stay green.
+        That is the same shape as the dropped continuation and the overwritten
+        duplicate: a claim shown to a reader that the oracle never sees.
+        """
+        def row(*extra: str) -> str:
+            lines = [
+                f"- **{name}:** a sufficiently long placeholder value"
+                for name in REQUIRED_FIELDS
+            ]
+            return "\n".join([LEDGER_SECTION, "", "### example", "", *extra, *lines, ""])
+
+        with self.assertRaises(AssertionError) as caught:
+            parse_ledger(
+                row("- **Coverage note:** actually this category IS covered")
+            )
+        self.assertIn(
+            "Coverage note",
+            str(caught.exception),
+            "the failure must name the unknown field",
         )
 
     def test_lane_paths_cannot_escape_the_corpus(self) -> None:
