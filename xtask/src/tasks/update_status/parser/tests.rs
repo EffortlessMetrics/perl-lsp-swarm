@@ -218,6 +218,10 @@ fn test_parser_nodekind_row_is_named_and_bounded_as_project_corpus_reachability(
         "note must identify the numerator as unique observed variants, got: {row}"
     );
     assert!(
+        row.contains("across successfully parsed files"),
+        "note must exclude failed, timed-out, and panicked files from the numerator, got: {row}"
+    );
+    assert!(
         row.contains("broad project-corpus audit this row reports"),
         "note must name the population without asserting freshness, got: {row}"
     );
@@ -304,6 +308,10 @@ fn test_parser_nodekind_row_unverified_states_scope_without_a_ratio() -> Result<
     assert!(
         row.contains("extraction skips files that do not decode as UTF-8"),
         "unverified row must name the same extraction boundary, got: {row}"
+    );
+    assert!(
+        row.contains("across successfully parsed files"),
+        "unverified row must name the same successful-parse boundary, got: {row}"
     );
     assert!(
         row.contains("not parser-accuracy gold and not an occurrence count"),

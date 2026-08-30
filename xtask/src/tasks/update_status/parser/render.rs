@@ -42,7 +42,7 @@ const NODEKIND_ROW_LABEL: &str = "Project-corpus NodeKind reachability";
 /// numerator while the file is present in the population. Reconciling the two
 /// read paths would move the metric's value and belongs to #7044's evidence
 /// model; naming the boundary keeps this row honest in the meantime.
-const NODEKIND_SCOPE_NOTE: &str = "unique canonical NodeKind variants observed at least once in the broad project-corpus audit this row reports; extraction skips files that do not decode as UTF-8; not parser-accuracy gold and not an occurrence count";
+const NODEKIND_SCOPE_NOTE: &str = "unique canonical NodeKind variants observed at least once across successfully parsed files in the broad project-corpus audit this row reports; extraction skips files that do not decode as UTF-8; not parser-accuracy gold and not an occurrence count";
 
 pub(super) fn generate_parser_status(metrics: &ParserMetrics, original: &str) -> Result<String> {
     let system_row = metrics.system_receipt.as_ref().map_or_else(
