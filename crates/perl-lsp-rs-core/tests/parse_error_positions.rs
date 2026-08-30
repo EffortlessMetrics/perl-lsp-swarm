@@ -75,8 +75,7 @@ fn recovered_missing_operand_reports_its_stored_location() -> Result<(), Box<dyn
 }
 
 #[test]
-fn same_line_residue_maps_to_the_residual_token_range() -> Result<(), Box<dyn std::error::Error>>
-{
+fn same_line_residue_maps_to_the_residual_token_range() -> Result<(), Box<dyn std::error::Error>> {
     let source = "my $x = 1 print \"hi\";\n";
     let output = Parser::new(source).parse_with_recovery();
     let location = output

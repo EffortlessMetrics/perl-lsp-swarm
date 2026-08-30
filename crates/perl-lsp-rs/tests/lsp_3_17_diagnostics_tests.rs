@@ -63,9 +63,11 @@ fn same_line_residue_reaches_lsp_pull_and_push_reports() -> TestResult {
         .ok_or("pull diagnostics response must include items")?;
     let pull_diagnostic = items
         .iter()
-        .find(|item| item.get("message").and_then(|message| message.as_str()).is_some_and(
-            |message| message.contains("Unexpected same-line residue"),
-        ))
+        .find(|item| {
+            item.get("message")
+                .and_then(|message| message.as_str())
+                .is_some_and(|message| message.contains("Unexpected same-line residue"))
+        })
         .ok_or("pull report did not contain the parser recovery diagnostic")?;
     assert_eq!(pull_diagnostic["range"]["start"]["line"], 0);
     assert_eq!(pull_diagnostic["range"]["start"]["character"], expected_start);
@@ -75,14 +77,19 @@ fn same_line_residue_reaches_lsp_pull_and_push_reports() -> TestResult {
     let mut push_harness = LspHarness::new();
     push_harness.initialize(None)?;
     push_harness.open(uri, source)?;
-    let notifications = push_harness.drain_notifications(Some("textDocument/publishDiagnostics"), 800);
+    let notifications =
+        push_harness.drain_notifications(Some("textDocument/publishDiagnostics"), 800);
     let push_diagnostic = notifications
         .iter()
         .filter(|notification| notification["params"]["uri"].as_str() == Some(uri))
-        .flat_map(|notification| notification["params"]["diagnostics"].as_array().into_iter().flatten())
-        .find(|item| item.get("message").and_then(|message| message.as_str()).is_some_and(
-            |message| message.contains("Unexpected same-line residue"),
-        ))
+        .flat_map(|notification| {
+            notification["params"]["diagnostics"].as_array().into_iter().flatten()
+        })
+        .find(|item| {
+            item.get("message")
+                .and_then(|message| message.as_str())
+                .is_some_and(|message| message.contains("Unexpected same-line residue"))
+        })
         .ok_or("push report did not contain the parser recovery diagnostic")?;
     assert_eq!(push_diagnostic["range"]["start"]["line"], 0);
     assert_eq!(push_diagnostic["range"]["start"]["character"], expected_start);
