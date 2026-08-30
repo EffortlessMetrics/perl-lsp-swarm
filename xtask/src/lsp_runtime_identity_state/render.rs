@@ -63,26 +63,16 @@ pub(super) fn render_index(vocabulary: &Vocabulary) -> Result<String> {
     writeln!(
         &mut output,
         "- **Authority:** #{} under #{}; checked train #{}",
-        vocabulary.authority.issue,
-        vocabulary.authority.architecture,
-        vocabulary.authority.train
+        vocabulary.authority.issue, vocabulary.authority.architecture, vocabulary.authority.train
     )?;
     write_ids(&mut output, "Axes", vocabulary.axes.iter().map(|row| row.id.as_str()))?;
-    write_ids(
-        &mut output,
-        "Identities",
-        vocabulary.identities.iter().map(|row| row.id.as_str()),
-    )?;
+    write_ids(&mut output, "Identities", vocabulary.identities.iter().map(|row| row.id.as_str()))?;
     write_ids(
         &mut output,
         "Boundary terms",
         vocabulary.boundary_terms.iter().map(|row| row.id.as_str()),
     )?;
-    write_ids(
-        &mut output,
-        "States",
-        vocabulary.states.iter().map(|row| row.id.as_str()),
-    )?;
+    write_ids(&mut output, "States", vocabulary.states.iter().map(|row| row.id.as_str()))?;
     write_ids(
         &mut output,
         "Relationships",
@@ -93,11 +83,7 @@ pub(super) fn render_index(vocabulary: &Vocabulary) -> Result<String> {
         "Ambiguous terms",
         vocabulary.ambiguous_terms.iter().map(|row| row.term.as_str()),
     )?;
-    write_ids(
-        &mut output,
-        "Journeys",
-        vocabulary.journeys.iter().map(|row| row.id.as_str()),
-    )?;
+    write_ids(&mut output, "Journeys", vocabulary.journeys.iter().map(|row| row.id.as_str()))?;
     writeln!(&mut output, "<!-- END CHECKED LSP RUNTIME VOCABULARY INDEX -->")?;
     Ok(output)
 }

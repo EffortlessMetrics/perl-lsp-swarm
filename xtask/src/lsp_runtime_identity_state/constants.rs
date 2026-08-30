@@ -38,12 +38,8 @@ pub(super) const REQUIRED_IDENTITIES: &[&str] = &[
     "work_id",
 ];
 
-pub(super) const REQUIRED_BOUNDARY_TERMS: &[&str] = &[
-    "application_completion",
-    "delivery_fate",
-    "terminal_decision",
-    "terminal_signal",
-];
+pub(super) const REQUIRED_BOUNDARY_TERMS: &[&str] =
+    &["application_completion", "delivery_fate", "terminal_decision", "terminal_signal"];
 
 pub(super) const REQUIRED_STATES: &[&str] = &[
     "application_completed",

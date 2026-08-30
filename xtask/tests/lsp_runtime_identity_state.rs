@@ -1,8 +1,8 @@
 use color_eyre::eyre::{Result, eyre};
 use serde_json::{Map, Value};
 use xtask::lsp_runtime_identity_state::{
-    concept_ids, embedded_bundle_json, embedded_document, render_index_str,
-    semantic_digest_str, validate_embedded, validate_str,
+    concept_ids, embedded_bundle_json, embedded_document, render_index_str, semantic_digest_str,
+    validate_embedded, validate_str,
 };
 
 fn value() -> Result<Value> {
@@ -42,12 +42,10 @@ fn row_mut<'a>(
 
 fn reject(value: &Value, needle: &str) -> Result<()> {
     let raw = encode(value)?;
-    let error = validate_str(&raw).expect_err("mutated identity/state vocabulary must fail closed");
+    let error = validate_str(&raw)
+        .expect_err("mutated identity/state vocabulary must fail closed");
     let rendered = format!("{error:#}");
-    assert!(
-        rendered.contains(needle),
-        "expected error containing {needle:?}; got {rendered}"
-    );
+    assert!(rendered.contains(needle), "expected error containing {needle:?}; got {rendered}");
     Ok(())
 }
 
@@ -104,10 +102,7 @@ fn semantic_change_moves_digest() -> Result<()> {
     row_mut(&mut changed, "states", "id", "application_completed")?
         .insert("proposition".into(), Value::String("different proposition".into()));
     let raw = encode(&changed)?;
-    assert_ne!(
-        semantic_digest_str(&raw)?,
-        semantic_digest_str(&embedded_bundle_json()?)?
-    );
+    assert_ne!(semantic_digest_str(&raw)?, semantic_digest_str(&embedded_bundle_json()?)?);
     Ok(())
 }
 
@@ -118,8 +113,7 @@ fn unknown_schema_version_and_field_fail_closed() -> Result<()> {
     reject(&version, "unknown vocabulary schema/version")?;
 
     let mut field = value()?;
-    object_mut(&mut field, "/authority")?
-        .insert("current_sha".into(), Value::String("abc".into()));
+    object_mut(&mut field, "/authority")?.insert("current_sha".into(), Value::String("abc".into()));
     reject(&field, "unknown field")?;
     Ok(())
 }
@@ -160,10 +154,12 @@ fn request_progress_and_reverse_domains_remain_independent() -> Result<()> {
         .get_mut("relations")
         .and_then(Value::as_array_mut)
         .ok_or_else(|| eyre!("missing relations"))?;
-    relations.retain(|row| {
-        row.get("id").and_then(Value::as_str) != Some("request_independent_reverse")
-    });
-    reject(&changed, "request_key|independent_of|reverse_request_key")
+    relations
+        .retain(|row| row.get("id").and_then(Value::as_str) != Some("request_independent_reverse"));
+    reject(
+        &changed,
+        "request_key|independent_of|reverse_request_key",
+    )
 }
 
 #[test]

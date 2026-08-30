@@ -17,12 +17,10 @@ use constants::*;
 use model::*;
 
 /// Normative contract root. It names the checked data fragments below.
-pub const MANIFEST_RELATIVE_PATH: &str =
-    ".spec/11045-lsp-runtime-vocabulary/contract.v1.json";
+pub const MANIFEST_RELATIVE_PATH: &str = ".spec/11045-lsp-runtime-vocabulary/contract.v1.json";
 
 /// Human reference containing the checked generated index.
-pub const DOCUMENT_RELATIVE_PATH: &str =
-    "docs/architecture/lsp-runtime/identity-and-state.md";
+pub const DOCUMENT_RELATIVE_PATH: &str = "docs/architecture/lsp-runtime/identity-and-state.md";
 
 /// Closed schema identity.
 pub const SCHEMA_NAME: &str = "lsp_runtime_identity_state.v1";

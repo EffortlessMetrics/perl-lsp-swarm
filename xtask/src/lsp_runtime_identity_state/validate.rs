@@ -8,11 +8,7 @@ use super::*;
 impl Vocabulary {
     pub(super) fn validate(&self) -> Result<()> {
         if self.schema != SCHEMA_NAME || self.version != SCHEMA_VERSION {
-            bail!(
-                "unknown vocabulary schema/version: {:?}/{}",
-                self.schema,
-                self.version
-            );
+            bail!("unknown vocabulary schema/version: {:?}/{}", self.schema, self.version);
         }
         if (self.authority.issue, self.authority.architecture, self.authority.train)
             != (11045, 7384, 10360)
@@ -52,16 +48,15 @@ impl Vocabulary {
 
         let one = &self.generic_boundary.one_authority;
         if one.single_object || one.single_actor || one.global_lock || one.single_store {
-            bail!("one authority must not require one object, actor, global lock, or mutable store");
+            bail!(
+                "one authority must not require one object, actor, global lock, or mutable store"
+            );
         }
         nonempty("generic_boundary.one_authority.law", &one.law)?;
         if self.generic_boundary.client_consumption_claimable {
             bail!("client consumption is outside reusable-runtime claim authority");
         }
-        nonempty(
-            "generic_boundary.currentness_law",
-            &self.generic_boundary.currentness_law,
-        )?;
+        nonempty("generic_boundary.currentness_law", &self.generic_boundary.currentness_law)?;
         exact_strings(
             "generic_boundary.forbidden_terms",
             self.generic_boundary.forbidden_terms.iter().map(String::as_str),
@@ -70,9 +65,7 @@ impl Vocabulary {
 
         validate_named_rows("axes", &self.axes, |row| (&row.id, row.source))?;
         validate_named_rows("identities", &self.identities, |row| (&row.id, row.source))?;
-        validate_named_rows("boundary_terms", &self.boundary_terms, |row| {
-            (&row.id, row.source)
-        })?;
+        validate_named_rows("boundary_terms", &self.boundary_terms, |row| (&row.id, row.source))?;
         validate_named_rows("states", &self.states, |row| (&row.id, row.source))?;
         validate_named_rows("relations", &self.relations, |row| (&row.id, row.source))?;
         validate_named_rows("journeys", &self.journeys, |row| (&row.id, row.source))?;
@@ -88,11 +81,7 @@ impl Vocabulary {
             self.boundary_terms.iter().map(|row| row.id.as_str()),
             REQUIRED_BOUNDARY_TERMS,
         )?;
-        exact_strings(
-            "states",
-            self.states.iter().map(|row| row.id.as_str()),
-            REQUIRED_STATES,
-        )?;
+        exact_strings("states", self.states.iter().map(|row| row.id.as_str()), REQUIRED_STATES)?;
         exact_strings(
             "ambiguous_terms",
             self.ambiguous_terms.iter().map(|row| row.term.as_str()),
@@ -169,12 +158,7 @@ impl Vocabulary {
                 );
             }
             nonempty("relationship.reason", &relation.reason)?;
-            let key = format!(
-                "{}|{}|{}",
-                relation.from_id,
-                relation.kind.as_str(),
-                relation.to
-            );
+            let key = format!("{}|{}|{}", relation.from_id, relation.kind.as_str(), relation.to);
             if !relation_keys.insert(key) {
                 bail!("duplicate relationship semantic in {}", relation.id);
             }
@@ -199,9 +183,14 @@ impl Vocabulary {
         for journey in &self.journeys {
             nonempty("journey.title", &journey.title)?;
             nonempty("journey.proposition", &journey.proposition)?;
-            if journey.facts.is_empty() || journey.relations.is_empty() || journey.rejected.is_empty()
+            if journey.facts.is_empty()
+                || journey.relations.is_empty()
+                || journey.rejected.is_empty()
             {
-                bail!("journey {} must carry facts, legal relations, and rejected inferences", journey.id);
+                bail!(
+                    "journey {} must carry facts, legal relations, and rejected inferences",
+                    journey.id
+                );
             }
             known_refs(&format!("journey {} facts", journey.id), &journey.facts, &concepts)?;
             known_refs(
@@ -280,11 +269,7 @@ fn identity<'a>(vocabulary: &'a Vocabulary, id: &str) -> Result<&'a Identity> {
 }
 
 fn state<'a>(vocabulary: &'a Vocabulary, id: &str) -> Result<&'a StateTerm> {
-    vocabulary
-        .states
-        .iter()
-        .find(|row| row.id == id)
-        .ok_or_else(|| eyre!("missing state {id}"))
+    vocabulary.states.iter().find(|row| row.id == id).ok_or_else(|| eyre!("missing state {id}"))
 }
 
 fn known_refs(label: &str, refs: &[String], known: &BTreeSet<&str>) -> Result<()> {
