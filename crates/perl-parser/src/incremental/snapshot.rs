@@ -77,11 +77,12 @@ pub enum ParseSnapshotStrategy {
 
 /// One generation-bound parser result.
 ///
-/// This is the sole owned authority binding exact source identity, generation,
-/// terminal disposition, production strategy, native parser output, and the
-/// source-geometry availability attachment. Construct it through
-/// [`ParseSnapshot::from_output`]; fields are private so no consumer can assemble
-/// an inconsistent `{source, generation, output, geometry}` combination directly.
+/// This is the sole owned authority binding exact source identity, parser-state
+/// lifetime, generation, terminal disposition, production strategy, native
+/// parser output, and the source-geometry availability attachment. Construct it
+/// through [`ParseSnapshot::from_output`]; fields are private so no consumer can
+/// assemble an inconsistent `{source, instance, generation, output, geometry}`
+/// combination directly.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct ParseSnapshot {
@@ -95,7 +96,7 @@ pub struct ParseSnapshot {
 }
 
 impl ParseSnapshot {
-    /// Build a snapshot from the native parser output and exact source bytes.
+    /// Build a snapshot for a new independent parser-state lifetime.
     ///
     /// The source identity is the canonical `source_identity.v1`
     /// [`ContentDigest`] (SHA-256, domain-separated), so a collision cannot
@@ -109,16 +110,52 @@ impl ParseSnapshot {
         strategy: ParseSnapshotStrategy,
         parse_output: ParseOutput,
     ) -> Self {
+        Self::from_output_with_subject(source, generation, strategy, parse_output, None)
+    }
+
+    pub(super) fn from_output_for_existing_instance(
+        source: &str,
+        generation: ParseGeneration,
+        strategy: ParseSnapshotStrategy,
+        parse_output: ParseOutput,
+        previous_subject: &SourceGeometrySubject,
+    ) -> Self {
+        Self::from_output_with_subject(
+            source,
+            generation,
+            strategy,
+            parse_output,
+            Some(previous_subject),
+        )
+    }
+
+    fn from_output_with_subject(
+        source: &str,
+        generation: ParseGeneration,
+        strategy: ParseSnapshotStrategy,
+        parse_output: ParseOutput,
+        previous_subject: Option<&SourceGeometrySubject>,
+    ) -> Self {
         let disposition = classify_output(&parse_output);
         let content_digest = ContentDigest::of_bytes(source.as_bytes());
         let source_len = source.len();
-        let geometry_subject = SourceGeometrySubject::new(
-            generation,
-            content_digest.clone(),
-            source_len,
-            disposition,
-            strategy,
-        );
+        let geometry_subject = match previous_subject {
+            Some(previous) => SourceGeometrySubject::next_for_same_instance(
+                previous,
+                generation,
+                content_digest.clone(),
+                source_len,
+                disposition,
+                strategy,
+            ),
+            None => SourceGeometrySubject::new(
+                generation,
+                content_digest.clone(),
+                source_len,
+                disposition,
+                strategy,
+            ),
+        };
         let source_geometry = SourceGeometryAttachment::unavailable(geometry_subject);
         Self {
             generation,
@@ -175,7 +212,7 @@ impl ParseSnapshot {
 
     /// Validate that the snapshot still belongs to `source`, that its terminal
     /// disposition agrees with the native parser output, and that its geometry
-    /// attachment belongs to this exact snapshot subject.
+    /// attachment belongs to this exact parser-state lifetime and generation.
     pub fn validate_against(&self, source: &str) -> Result<(), ParseSnapshotValidationError> {
         if self.source_len != source.len() {
             return Err(ParseSnapshotValidationError::SourceLength {
@@ -200,7 +237,8 @@ impl ParseSnapshot {
             });
         }
 
-        let expected_geometry_subject = SourceGeometrySubject::new(
+        let expected_geometry_subject = SourceGeometrySubject::next_for_same_instance(
+            self.source_geometry.subject(),
             self.generation,
             self.content_digest.clone(),
             self.source_len,
@@ -296,6 +334,29 @@ mod tests {
             snapshot.content_digest()
         );
         assert_eq!(snapshot.source_geometry().subject().source_len(), source.len());
+    }
+
+    #[test]
+    fn independent_snapshots_with_identical_bytes_have_distinct_instances() {
+        let source = "my $x = 1;";
+        let first = ParseSnapshot::from_output(
+            source,
+            ParseGeneration::INITIAL,
+            ParseSnapshotStrategy::Fresh,
+            parse(source),
+        );
+        let second = ParseSnapshot::from_output(
+            source,
+            ParseGeneration::INITIAL,
+            ParseSnapshotStrategy::Fresh,
+            parse(source),
+        );
+
+        assert!(!first
+            .source_geometry()
+            .subject()
+            .same_instance_as(second.source_geometry().subject()));
+        assert_ne!(first.source_geometry().subject(), second.source_geometry().subject());
     }
 
     #[test]
