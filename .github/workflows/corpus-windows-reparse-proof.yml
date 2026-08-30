@@ -75,7 +75,7 @@ jobs:
           # typed privilege skip on an unprivileged runner (#12567).
           PLSW_REQUIRE_SYMLINK_PRIVILEGE: "1"
         run: |
-          $output = cargo test --locked -p xtask --lib dangling_protected_source_rejects_before_publication_write -- --exact --nocapture 2>&1
+          $output = cargo test --locked -p xtask --lib publication_drift::output_tests::dangling_protected_source_rejects_before_publication_write -- --exact --nocapture 2>&1
           $exitCode = $LASTEXITCODE
           $output | ForEach-Object { $_ }
           if ($exitCode -ne 0) { exit $exitCode }

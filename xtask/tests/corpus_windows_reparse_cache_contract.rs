@@ -21,9 +21,9 @@ const SHARED_KEY: &str = "corpus-windows-reparse-proof-${{ hashFiles('Cargo.lock
 const TRUSTED_SAVE_IF: &str =
     "${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}";
 const CORPUS_PROOF: &str = "cargo test --locked -p perl-corpus --test strict_sectioned_loading public_plain_loader_rejects_windows_reparse_point -- --exact --nocapture";
-const XTASK_PROOF: &str = "cargo test --locked -p xtask --lib dangling_protected_source_rejects_before_publication_write -- --exact --nocapture";
+const XTASK_PROOF: &str = "cargo test --locked -p xtask --lib publication_drift::output_tests::dangling_protected_source_rejects_before_publication_write -- --exact --nocapture";
 const CORPUS_PROOF_ANCHOR: &str = "          $output = cargo test --locked -p perl-corpus --test strict_sectioned_loading public_plain_loader_rejects_windows_reparse_point -- --exact --nocapture 2>&1\n";
-const XTASK_PROOF_ANCHOR: &str = "          $output = cargo test --locked -p xtask --lib dangling_protected_source_rejects_before_publication_write -- --exact --nocapture 2>&1\n";
+const XTASK_PROOF_ANCHOR: &str = "          $output = cargo test --locked -p xtask --lib publication_drift::output_tests::dangling_protected_source_rejects_before_publication_write -- --exact --nocapture 2>&1\n";
 const CORPUS_OUTPUT_REPLAY_ANCHOR: &str = "          $output = cargo test --locked -p perl-corpus --test strict_sectioned_loading public_plain_loader_rejects_windows_reparse_point -- --exact --nocapture 2>&1\n          $exitCode = $LASTEXITCODE\n          $output | ForEach-Object { $_ }\n";
 const TOPOLOGY_EXECUTION_ANCHOR: &str = "for test_name in \"${selected_tests[@]}\"; do\n  test_output=\"$(mktemp)\"\n  if ! cargo test --locked -p perl-corpus --lib \"$test_name\" \\\n    -- --exact --nocapture \\\n    2>&1 | sed 's/\\r$//' | tee \"$test_output\"; then";
 const TOPOLOGY_EXECUTION_SOURCE_ANCHOR: &str = "          for test_name in \"${selected_tests[@]}\"; do\n            test_output=\"$(mktemp)\"";
