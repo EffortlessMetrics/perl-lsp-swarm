@@ -187,9 +187,15 @@ class ReadFailureStream(io.BytesIO):
         raise OSError(self.detail)
 
 
+class NonOSErrorReadFailureStream(io.BytesIO):
+    def read1(self, size=-1):
+        raise ValueError("simulated non-os read crash")
+
+
 class FakeWindowsJob:
     def __init__(self):
         self.terminated = False
+        self.closed = False
 
     def assign(self, process):
         return None
@@ -199,32 +205,41 @@ class FakeWindowsJob:
         return []
 
     def close(self):
+        self.closed = True
         return []
 
 
 class DirectRiprContainmentProof(unittest.TestCase):
     def run_terminal(self, stdout: bytes, stderr: bytes = b"", returncode: int = 0):
         process = TerminalProcess(io.BytesIO(stdout), io.BytesIO(stderr), returncode)
+        terminate = mock.Mock(return_value=[])
         with mock.patch.object(
             generator.subprocess, "Popen", return_value=process
         ), mock.patch.object(
-            generator, "terminate_process_tree", return_value=[]
+            generator, "terminate_process_tree", terminate
         ):
-            return generator.run_ripr(root, timeout_seconds=1)
+            generator.run_ripr(root, timeout_seconds=1)
+        return terminate
+
+    def assert_process_tree_terminated(self, terminate) -> None:
+        terminate.assert_called_once()
+        _, kwargs = terminate.call_args
+        self.assertIsNone(kwargs.get("windows_job"))
 
     def test_prompt_exit_oversized_stdout_is_rejected_at_the_cap(self):
         with self.assertRaises(generator.RiprOutputLimitExceeded) as raised:
-            self.run_terminal(b"o" * (generator.PRODUCER_STDOUT_LIMIT + 1))
+            terminate = self.run_terminal(b"o" * (generator.PRODUCER_STDOUT_LIMIT + 1))
         self.assertEqual(raised.exception.stream_name, "stdout")
         self.assertEqual(
             raised.exception.retained_stdout_bytes,
             generator.PRODUCER_STDOUT_LIMIT,
         )
+        self.assert_process_tree_terminated(terminate)
 
     def test_prompt_exit_oversized_stderr_is_rejected_at_the_cap(self):
         payload = json.dumps({"counts": COUNTS}).encode() + b"\n"
         with self.assertRaises(generator.RiprOutputLimitExceeded) as raised:
-            self.run_terminal(
+            terminate = self.run_terminal(
                 payload,
                 b"e" * (generator.PRODUCER_STDERR_LIMIT + 1),
             )
@@ -233,6 +248,7 @@ class DirectRiprContainmentProof(unittest.TestCase):
             raised.exception.retained_stderr_bytes,
             generator.PRODUCER_STDERR_LIMIT,
         )
+        self.assert_process_tree_terminated(terminate)
 
     def test_pipe_read_failure_rejects_otherwise_valid_output(self):
         payload = json.dumps({"counts": COUNTS}).encode() + b"\n"
@@ -240,16 +256,52 @@ class DirectRiprContainmentProof(unittest.TestCase):
             ReadFailureStream(payload, "simulated stdout read failure"),
             io.BytesIO(),
         )
+        terminate = mock.Mock(return_value=[])
         with mock.patch.object(
             generator.subprocess, "Popen", return_value=process
         ), mock.patch.object(
-            generator, "terminate_process_tree", return_value=[]
+            generator, "terminate_process_tree", terminate
         ):
             with self.assertRaisesRegex(
                 RuntimeError,
                 "stdout read failed: simulated stdout read failure",
             ):
                 generator.run_ripr(root, timeout_seconds=1)
+        self.assert_process_tree_terminated(terminate)
+
+    def test_non_oserror_reader_failure_still_fails_closed(self):
+        process = TerminalProcess(
+            NonOSErrorReadFailureStream(),
+            io.BytesIO(),
+        )
+        terminate = mock.Mock(return_value=[])
+        with mock.patch.object(
+            generator.subprocess, "Popen", return_value=process
+        ), mock.patch.object(
+            generator, "terminate_process_tree", terminate
+        ):
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "stdout read failed: simulated non-os read crash",
+            ):
+                generator.run_ripr(root, timeout_seconds=1)
+        self.assert_process_tree_terminated(terminate)
+
+    def test_failed_windows_launch_closes_the_job(self):
+        job = FakeWindowsJob()
+        with mock.patch.object(generator.os, "name", "nt"), mock.patch.object(
+            generator, "WindowsJob", mock.Mock(return_value=job)
+        ), mock.patch.object(
+            generator.subprocess,
+            "Popen",
+            side_effect=OSError("launch refused"),
+        ):
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "could not launch ripr badge producer: launch refused",
+            ):
+                generator.run_ripr(root, timeout_seconds=1)
+        self.assertTrue(job.closed)
 
     def test_exact_receipt_mode_never_launches_direct_ripr(self):
         source_sha = "a" * 40

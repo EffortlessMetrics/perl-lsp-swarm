@@ -287,14 +287,16 @@ def read_bounded_stream(
     limit: int,
     stream_name: str,
     overflow: queue.Queue[tuple[str, int]],
-    failures: queue.Queue[tuple[str, OSError]],
+    failures: queue.Queue[tuple[str, BaseException]],
 ) -> None:
     """Read at most ``limit`` bytes and signal before retaining any excess."""
     while True:
         read1 = getattr(stream, "read1", stream.read)
         try:
             chunk = read1(STREAM_READ_CHUNK_SIZE)
-        except OSError as error:
+        except BaseException as error:
+            # Fail closed on any reader failure: a dead reader thread must
+            # never be mistaken for a completed stream.
             failures.put((stream_name, error))
             return
         if not chunk:
@@ -329,13 +331,22 @@ def run_ripr(root: Path, timeout_seconds: float = RIPR_TIMEOUT_SECONDS) -> str:
     else:
         platform_options = {"start_new_session": True}
         launched_command = command
-    process = subprocess.Popen(
-        launched_command,
-        cwd=root,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        **platform_options,
-    )
+    try:
+        process = subprocess.Popen(
+            launched_command,
+            cwd=root,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            **platform_options,
+        )
+    except BaseException as error:
+        if windows_job is None:
+            raise
+        cleanup = windows_job.close()
+        suffix = f"; cleanup incomplete: {'; '.join(cleanup)}" if cleanup else ""
+        raise RuntimeError(
+            f"could not launch ripr badge producer: {error}{suffix}"
+        ) from error
     if windows_job is not None:
         try:
             windows_job.assign(process)
@@ -362,7 +373,7 @@ def run_ripr(root: Path, timeout_seconds: float = RIPR_TIMEOUT_SECONDS) -> str:
     stdout_bytes = bytearray()
     stderr_bytes = bytearray()
     overflow: queue.Queue[tuple[str, int]] = queue.Queue()
-    reader_failures: queue.Queue[tuple[str, OSError]] = queue.Queue()
+    reader_failures: queue.Queue[tuple[str, BaseException]] = queue.Queue()
     readers = [
         threading.Thread(
             target=read_bounded_stream,
@@ -517,7 +528,13 @@ def run_ripr(root: Path, timeout_seconds: float = RIPR_TIMEOUT_SECONDS) -> str:
                 if isinstance(error, RiprOutputLimitExceeded):
                     error.record_cleanup_failure(detail)
                 else:
-                    error.add_note(f"ripr emergency cleanup: {detail}")
+                    # BaseException.add_note requires Python 3.11; keep the
+                    # cleanup diagnostic visible on older interpreters.
+                    add_note = getattr(error, "add_note", None)
+                    if add_note is not None:
+                        add_note(f"ripr emergency cleanup: {detail}")
+                    else:
+                        print(f"ripr emergency cleanup: {detail}", file=sys.stderr)
         raise
 
 
