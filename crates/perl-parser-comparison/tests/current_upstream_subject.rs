@@ -35,12 +35,12 @@ fn exact_subject_manifest_is_one_complete_authority() {
     );
     assert_eq!(subject.upstream_tag(), "v1.2.1");
     assert_eq!(subject.upstream_commit(), "c3e17b31179bf8f658c9f37c7a3ea6a202212d5a");
-    assert_eq!(subject.tree_sitter_runtime_version(), "0.26.12");
+    assert_eq!(subject.tree_sitter_runtime_version(), "0.26.13");
     assert_eq!(subject.tree_sitter_language_version(), "0.1.7");
     assert_eq!(subject.upstream_rust_version(), "1.77");
     assert_eq!(
         subject.semantic_digest(),
-        "sha256:750bf42fd1190088c649e5c0ab50995b8895a8002ac15d6bbe560721a97134b2"
+        "sha256:809132919eab858792ea53269de326e54d1ddf62cb8ed1fbe2d4d2388dcab248"
     );
     assert_eq!(
         subject.semantic_identity(),
