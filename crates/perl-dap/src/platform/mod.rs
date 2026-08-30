@@ -286,16 +286,12 @@ pub fn normalize_path(path: &std::path::Path) -> PathBuf {
             && let Some(after_mnt) = path_str.strip_prefix("/mnt/")
             && let Some(drive) = after_mnt.chars().next()
             && drive.is_ascii_alphabetic()
+            && let Some(rest) = after_mnt.strip_prefix(drive)
+            && rest.starts_with('/')
         {
-            let rest = &after_mnt[drive.len_utf8()..];
-            // A bare mount point like `/mnt/c` has an empty `rest`; it is a
-            // drive mount directory, not a Windows absolute path. Leave it
-            // untranslated so callers receive the original path unchanged (#13028).
-            if !rest.is_empty() {
-                let windows_path =
-                    format!("{}:{}", drive.to_ascii_uppercase(), rest.replace('/', "\\"));
-                return PathBuf::from(windows_path);
-            }
+            let windows_path =
+                format!("{}:{}", drive.to_ascii_uppercase(), rest.replace('/', "\\"));
+            return PathBuf::from(windows_path);
         }
     }
 

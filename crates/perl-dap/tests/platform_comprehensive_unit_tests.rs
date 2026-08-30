@@ -93,13 +93,30 @@ fn normalize_path_does_not_convert_non_wsl_mnt_path() -> Result<(), anyhow::Erro
 #[cfg(target_os = "linux")]
 #[test]
 fn normalize_path_wsl_short_mnt_path_no_conversion() -> Result<(), anyhow::Error> {
-    // "/mnt/" is only 5 chars, plus 1 for drive letter = 6; path_str.len() > 6 check
-    // means "/mnt/c" (len 6) should NOT trigger conversion
-    let input = PathBuf::from("/mnt/c");
+    // A mount name is complete only when a separator follows its ASCII drive
+    // letter. Keep adjacent and invalid drive forms untranslated as well.
+    for value in ["/mnt/c", "/mnt/Z", "/mnt/cx", "/mnt/é", "/mnt/1"] {
+        let input = PathBuf::from(value);
+        let normalized = normalize_path(&input);
+        anyhow::ensure!(
+            normalized == input,
+            "incomplete or invalid WSL mount should remain untranslated: {value} -> {}",
+            normalized.display()
+        );
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn normalize_path_wsl_mount_root_translates_to_windows_root() -> Result<(), anyhow::Error> {
+    let input = PathBuf::from("/mnt/c/");
     let normalized = normalize_path(&input);
-    let s = normalized.to_string_lossy().to_string();
-    // The path is exactly 6 chars, so the > 6 check means it won't convert
-    assert!(!s.contains(':'), "path of exactly 6 chars should not be converted, got: {s}");
+    anyhow::ensure!(
+        normalized == PathBuf::from("C:\\"),
+        "complete WSL mount root should translate exactly, got: {}",
+        normalized.display()
+    );
     Ok(())
 }
 
