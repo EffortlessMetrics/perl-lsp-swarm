@@ -67,15 +67,13 @@ fn has_pl701(diags: &[serde_json::Value]) -> bool {
     })
 }
 
-fn hover_is_not_resolved(hover: &Option<serde_json::Value>) -> bool {
-    let Some(hover) = hover else {
-        return true;
-    };
-
+/// Flatten any LSP hover `contents` shape (string, MarkedString object, or
+/// array) into plain text so identity assertions can run on it.
+fn hover_text(hover: &serde_json::Value) -> String {
     let Some(contents) = hover.get("contents") else {
-        return false;
+        return String::new();
     };
-    let text = match contents {
+    match contents {
         serde_json::Value::String(value) => value.clone(),
         serde_json::Value::Object(map) => {
             map.get("value").and_then(|value| value.as_str()).unwrap_or("").to_string()
@@ -90,9 +88,28 @@ fn hover_is_not_resolved(hover: &Option<serde_json::Value>) -> bool {
             .collect::<Vec<_>>()
             .join("\n"),
         _ => String::new(),
+    }
+}
+
+fn hover_is_not_resolved(hover: &Option<serde_json::Value>) -> bool {
+    let Some(hover) = hover else {
+        return true;
     };
 
+    if hover.get("contents").is_none() {
+        return false;
+    };
+    let text = hover_text(hover);
+
     text.contains("Not found in workspace") && !text.contains("[Go to module]")
+}
+
+/// A hover only "admits" the module when the response resolves the symbol AND
+/// actually identifies it: generic or empty contents that merely lack the
+/// refusal phrase must not count as admission (#14152 review).
+fn hover_admits_module(hover: &Option<serde_json::Value>, module: &str) -> bool {
+    hover.as_ref().is_some_and(|h| h.get("contents").is_some() && hover_text(h).contains(module))
+        && !hover_is_not_resolved(hover)
 }
 
 /// Configure the server to use `includePaths` via workspace/didChangeConfiguration.
@@ -760,19 +777,28 @@ const FINDBIN_INVOCATION_PROFILE: &str = "bounded: $FindBin::Bin proxies the ana
 /// consistently refuse it. A consumer that admits it has substituted an
 /// include authority (or an invoked-script guess) stronger than the
 /// declared contract (#13329 falsifiers 3 and 4).
-const FINDBIN_ESCAPE_SOURCE: &str = "\
-use FindBin;\n\
-use lib \"$FindBin::Bin/../findbin-outside\";\n\
-use OutsideProbe;\n\
-1;\n\
-";
+/// The escape fixtures reference the outside probe directory by name, so the
+/// directory must be chosen per run (see the boundary probe below) and the
+/// sources are built around it instead of a shared fixed sibling.
+fn findbin_escape_source(outside_dir_name: &str) -> String {
+    format!(
+        "use FindBin;\n\
+         use lib \"$FindBin::Bin/../{outside_dir_name}\";\n\
+         use OutsideProbe;\n\
+         1;\n\
+         "
+    )
+}
 
 /// Completion prefix fixture for the escaped-root boundary probe.
-const FINDBIN_ESCAPE_COMPLETION_SOURCE: &str = "\
-use FindBin;\n\
-use lib \"$FindBin::Bin/../findbin-outside\";\n\
-use Outsi\n\
-";
+fn findbin_escape_completion_source(outside_dir_name: &str) -> String {
+    format!(
+        "use FindBin;\n\
+         use lib \"$FindBin::Bin/../{outside_dir_name}\";\n\
+         use Outsi\n\
+         "
+    )
+}
 
 const FINDBIN_OUTSIDE_MODULE: &str = "\
 package OutsideProbe;\n\
@@ -803,20 +829,31 @@ fn scenario_14_findbin_relative() -> Result<(), String> {
     harness.open_file("fixture.pl", FINDBIN_SOURCE).expect("didOpen should succeed");
     std::thread::sleep(Duration::from_millis(500));
 
-    let diags = wait_diagnostics(&harness, "fixture.pl");
+    // Publication silence (deadline with no publishDiagnostics at all) must
+    // not be scored as "PL701 absent": require an observed diagnostics
+    // publication before treating absence as a positive cell (#14152 review).
+    let diags = harness
+        .wait_for_diagnostics_after_count("fixture.pl", 0, Duration::from_secs(5))
+        .ok_or_else(|| {
+        "No diagnostics publication observed for fixture.pl within 5s; publication silence \
+             cannot prove PL701 absence (findbin_relative)"
+            .to_string()
+    })?;
     let pl701_absent = !has_pl701(&diags);
 
     // `use FindBinModule` at line 4, col 4.
     let defs = harness.definition("fixture.pl", 4, 4).expect("definition must not error");
     let def_target = defs.iter().find_map(|d| d.get("uri").and_then(|u| u.as_str()));
-    // Positive navigation must carry exact module identity: the target is
-    // the admitted FindBin module file, not merely a non-empty response.
-    let def_resolves_exact = def_target.is_some_and(|uri| uri.ends_with("/lib/FindBinModule.pm"));
+    // Positive navigation must carry exact module identity: the target URI is
+    // compared in full against this workspace's admitted module file, so a
+    // wrong root that happens to contain lib/FindBinModule.pm cannot pass
+    // (#14152 review).
+    let expected_def_uri = harness.workspace.uri("lib/FindBinModule.pm");
+    let def_resolves_exact = def_target
+        .is_some_and(|uri| uri.trim_end_matches('/') == expected_def_uri.trim_end_matches('/'));
 
     let hover_result = harness.hover("fixture.pl", 4, 4).expect("hover must not error");
-    let hover_contents_present =
-        hover_result.as_ref().is_some_and(|hover| hover.get("contents").is_some());
-    let hover_admits = hover_contents_present && !hover_is_not_resolved(&hover_result);
+    let hover_admits = hover_admits_module(&hover_result, "FindBinModule");
 
     // Completion check: switch to prefix fixture (includes FindBin pragmas for context).
     harness
@@ -879,18 +916,37 @@ fn scenario_14_findbin_relative() -> Result<(), String> {
     // its bytes are on disk next to the workspace.
     // ------------------------------------------------------------------
     let workspace_root_path = harness.workspace.path("");
-    let outside_dir = workspace_root_path
-        .parent()
-        .expect("workspace tempdir must have a parent")
-        .join("findbin-outside");
-    std::fs::create_dir_all(&outside_dir).expect("create outside probe directory");
+    // The outside probe must live outside the workspace TempDir, but a fixed
+    // shared sibling is never cleaned and would leak stale probe state across
+    // harnesses and concurrent runs. Own it with a uniquely named TempDir
+    // guard so the probe directory is isolated per run and always removed
+    // (#14152 review).
+    let outside_temp = tempfile::TempDir::new_in(
+        workspace_root_path.parent().expect("workspace tempdir must have a parent"),
+    )
+    .expect("create unique outside probe directory");
+    let outside_dir = outside_temp.path().to_path_buf();
+    let outside_dir_name = outside_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .expect("outside probe directory must have a name")
+        .to_string();
     std::fs::write(outside_dir.join("OutsideProbe.pm"), FINDBIN_OUTSIDE_MODULE)
         .expect("write outside probe module");
 
-    harness.open_file("escape.pl", FINDBIN_ESCAPE_SOURCE).expect("didOpen should succeed");
+    let escape_source = findbin_escape_source(&outside_dir_name);
+    harness.open_file("escape.pl", &escape_source).expect("didOpen should succeed");
     std::thread::sleep(Duration::from_millis(500));
 
-    let escape_diags = wait_diagnostics(&harness, "escape.pl");
+    // Same fail-closed rule as the positive cell: boundary refusals need an
+    // observed publication, not deadline silence (#14152 review).
+    let escape_diags = harness
+        .wait_for_diagnostics_after_count("escape.pl", 0, Duration::from_secs(5))
+        .ok_or_else(|| {
+            "No diagnostics publication observed for escape.pl within 5s; publication silence \
+             cannot drive the boundary refusal cell (findbin_relative)"
+                .to_string()
+        })?;
     let escape_pl701_fires = has_pl701(&escape_diags);
 
     // `use OutsideProbe` at line 2, col 4.
@@ -898,10 +954,10 @@ fn scenario_14_findbin_relative() -> Result<(), String> {
     let escape_def_empty = escape_defs.is_empty();
 
     let escape_hover = harness.hover("escape.pl", 2, 4).expect("hover must not error");
-    let escape_hover_refuses = escape_hover.is_none() || hover_is_not_resolved(&escape_hover);
+    let escape_hover_refuses = !hover_admits_module(&escape_hover, "OutsideProbe");
 
     harness
-        .change_file_full("escape.pl", FINDBIN_ESCAPE_COMPLETION_SOURCE)
+        .change_file_full("escape.pl", &findbin_escape_completion_source(&outside_dir_name))
         .expect("didChange to escape completion fixture should succeed");
     std::thread::sleep(Duration::from_millis(500));
     let escape_completions =
