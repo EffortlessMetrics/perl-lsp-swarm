@@ -81,7 +81,7 @@ fn assert_dispatch_loop_behavior(
         &stub_gh,
         "#!/usr/bin/env bash\n\
          printf '%s|%s|%s|%s|%s\\n' \"$1\" \"$2\" \"$3\" \"$4\" \"$5\" >> \"$GH_LOG\"\n\
-         if [ \"$#\" -ne 5 ]; then exit 2; fi\n\
+         if [ \"$#\" -ne 5 ] && [ \"$#\" -ne 7 ]; then exit 2; fi\n\
          if [ \"${FAIL_WORKFLOW:-}\" = \"$3\" ]; then exit 1; fi\n",
     )?;
     use std::os::unix::fs::PermissionsExt;
