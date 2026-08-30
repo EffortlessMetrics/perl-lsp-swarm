@@ -62,7 +62,12 @@ describe('BinaryDownloader partial-file cleanup ordering', () => {
       return {} as NodeJS.Immediate;
     });
 
-    const removePartialFile = jest.spyOn(downloader, 'removePartialFile');
+    const removePartialFile = jest
+      .spyOn(downloader, 'removePartialFile')
+      .mockImplementation((stagingPath) => {
+        fs.writeFileSync(stagingPath, 'partial-generation');
+        BinaryDownloader.prototype['removePartialFile'].call(downloader, stagingPath);
+      });
     jest.spyOn(downloader, 'httpGet').mockImplementation(() => {
       process.nextTick(() => request.emit('error', requestError));
       return request;
@@ -73,12 +78,52 @@ describe('BinaryDownloader partial-file cleanup ordering', () => {
     ).rejects.toBe(requestError);
 
     expect(removePartialFile).toHaveBeenCalledTimes(1);
-    expect(removePartialFile).toHaveBeenCalledWith(destination);
+    const stagingDestination = removePartialFile.mock.calls[0]?.[0];
+    expect(stagingDestination).toContain(`${destination}.partial-download-`);
     fs.writeFileSync(destination, 'replacement');
 
     expect(delayedCleanup).toHaveLength(1);
     delayedCleanup[0]?.();
     expect(fs.readFileSync(destination, 'utf8')).toBe('replacement');
+  });
+
+  test('does not quarantine a replacement installed before the failed generation is renamed', async () => {
+    const destination = path.join(tmpDir, 'partial-before-rename.bin');
+    fs.writeFileSync(destination, 'partial');
+
+    const downloader = new BinaryDownloader(
+      makeContext(tmpDir),
+      makeOutputChannel(),
+    ) as unknown as DownloaderSeams;
+    const request = new EventEmitter() as TestRequest;
+    request.destroy = jest.fn();
+    const requestError = new Error('request failed before quarantine');
+    const delayedCleanup: Array<() => void> = [];
+    jest.spyOn(global, 'setImmediate').mockImplementation((callback: () => void) => {
+      delayedCleanup.push(callback);
+      return {} as NodeJS.Immediate;
+    });
+
+    const originalRemove = BinaryDownloader.prototype['removePartialFile'].bind(downloader);
+    jest.spyOn(downloader, 'removePartialFile').mockImplementation((stagingPath) => {
+      // This is the adversarial scheduling point: a new owner wins dest just
+      // before cleanup claims the failed generation.
+      fs.writeFileSync(stagingPath, 'partial-generation');
+      fs.writeFileSync(destination, 'replacement-before-rename');
+      originalRemove(stagingPath);
+    });
+    jest.spyOn(downloader, 'httpGet').mockImplementation(() => {
+      process.nextTick(() => request.emit('error', requestError));
+      return request;
+    });
+
+    await expect(
+      downloader.downloadFile('http://localhost/archive', destination, 1000),
+    ).rejects.toBe(requestError);
+
+    expect(delayedCleanup).toHaveLength(1);
+    delayedCleanup[0]?.();
+    expect(fs.readFileSync(destination, 'utf8')).toBe('replacement-before-rename');
   });
 
   test('does not wait forever when the production write stream suppresses close', async () => {
@@ -92,9 +137,12 @@ describe('BinaryDownloader partial-file cleanup ordering', () => {
     const request = new EventEmitter() as TestRequest;
     request.destroy = jest.fn();
     const requestError = new Error('request failed after data');
-    const file = fs.createWriteStream(destination, { emitClose: false });
-    file.write('data');
-    jest.spyOn(downloader, 'createWriteStream').mockReturnValue(file);
+    let file: fs.WriteStream | undefined;
+    jest.spyOn(downloader, 'createWriteStream').mockImplementation((stagingPath) => {
+      file = fs.createWriteStream(stagingPath, { emitClose: false });
+      file.write('data');
+      return file;
+    });
     jest.spyOn(downloader, 'removePartialFile').mockImplementation(() => {});
     jest.spyOn(downloader, 'httpGet').mockImplementation((_https, _url, _options, callback) => {
       process.nextTick(() => {
@@ -142,7 +190,10 @@ describe('BinaryDownloader partial-file cleanup ordering', () => {
     });
     file.write = jest.fn(() => true);
     file.end = jest.fn();
-    jest.spyOn(downloader, 'createWriteStream').mockReturnValue(file as unknown as fs.WriteStream);
+    jest.spyOn(downloader, 'createWriteStream').mockImplementation((stagingPath) => {
+      fs.writeFileSync(stagingPath, 'partial');
+      return file as unknown as fs.WriteStream;
+    });
     jest.spyOn(downloader, 'removePartialFile').mockImplementation(() => {});
     jest.spyOn(downloader, 'httpGet').mockImplementation((_https, _url, _options, callback) => {
       process.nextTick(() => {

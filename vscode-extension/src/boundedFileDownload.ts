@@ -1,4 +1,5 @@
 import * as fs from 'fs';
+import * as crypto from 'crypto';
 import type * as http from 'http';
 import type { CancellationTokenLike, DisposableLike } from './boundedHttpJson';
 
@@ -13,6 +14,7 @@ export interface BoundedFileDownloadOptions {
   followRedirect?: (location: string, remainingRedirects: number) => Promise<void>;
   createWriteStream?: (dest: string) => fs.WriteStream;
   removePartialFile?: (dest: string) => void;
+  promoteFile?: (source: string, dest: string) => void;
 }
 
 function defaultRemovePartialFile(dest: string): void {
@@ -43,6 +45,7 @@ export function downloadBoundedFile(options: BoundedFileDownloadOptions): Promis
     followRedirect,
     createWriteStream = (path) => fs.createWriteStream(path),
     removePartialFile = defaultRemovePartialFile,
+    promoteFile = (source, target) => fs.renameSync(source, target),
   } = options;
 
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
@@ -63,6 +66,15 @@ export function downloadBoundedFile(options: BoundedFileDownloadOptions): Promis
     let timeoutId: NodeJS.Timeout | undefined;
     let settled = false;
     let receivedBytes = 0;
+    // The generation owns this unique staging path. It does not claim the
+    // caller-owned destination until the stream has completed successfully,
+    // so cleanup can never quarantine a replacement that arrived at dest.
+    const stagingDest = `${dest}.partial-download-${crypto.randomUUID()}`;
+
+    // Match the previous createWriteStream truncation behavior for an
+    // existing destination, while leaving any later replacement independent
+    // from this generation's staging path.
+    defaultRemovePartialFile(dest);
 
     const cleanup = (): void => {
       cancellation?.dispose();
@@ -73,16 +85,14 @@ export function downloadBoundedFile(options: BoundedFileDownloadOptions): Promis
 
     const removePartialAndReject = (error: Error): void => {
       try {
-        removePartialFile(dest);
+        removePartialFile(stagingDest);
       } catch {
         // Best effort: an injected remover must not replace the download error.
       }
       // Callers may inject a callback-based removal seam that returns before
       // deletion. Keep that seam observable, then enforce this helper's own
       // post-rejection cleanup contract before settling the promise.
-      if (fs.existsSync(dest)) {
-        defaultRemovePartialFile(dest);
-      }
+      defaultRemovePartialFile(stagingDest);
       reject(error);
     };
 
@@ -207,14 +217,19 @@ export function downloadBoundedFile(options: BoundedFileDownloadOptions): Promis
           return;
         }
 
-        file = createWriteStream(dest);
+        file = createWriteStream(stagingDest);
         file.once('error', (err: NodeJS.ErrnoException) => {
           abort(err);
         });
         file.once('finish', () => {
           if (!settled) {
             file?.close();
-            succeed();
+            try {
+              promoteFile(stagingDest, dest);
+              succeed();
+            } catch (error) {
+              fail(error instanceof Error ? error : new Error(String(error)));
+            }
           }
         });
 
