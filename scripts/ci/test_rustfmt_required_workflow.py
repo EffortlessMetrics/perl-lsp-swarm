@@ -467,6 +467,12 @@ class GovernedContextSourceMutationTests(unittest.TestCase):
             set(triggers), {"pull_request", "merge_group", "push", "workflow_dispatch"}
         )
 
+    # The next four tests are a deliberate 2x2: {paths, paths-ignore} x
+    # {block, flow}. A diagonal of two would cover the contract today, because
+    # the axes are resolved in different functions — representation in
+    # load_triggers, key in validate_contract. The full matrix is what detects
+    # that separation breaking, and it costs four assertions. If you prune
+    # these, prune to a diagonal deliberately; do not drop an axis.
     def test_docs_only_path_filter_fails_closed(self) -> None:
         # Regression: trigger bodies parsed as empty dicts, so validate_contract's
         # docs-only guard was unreachable on real source no matter what it said.
