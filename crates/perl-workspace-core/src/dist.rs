@@ -174,8 +174,14 @@ pub fn parse_cpanfile(file_id: FileId, content: &str) -> DistMetadataFacts {
                 buf.push(ch);
             }
             ';' => {
-                if let Some(block_phase) = active_cpanfile_phase(&block_stack) {
-                    handle_cpanfile_statement(&buf, block_phase, &mut prereqs);
+                match active_cpanfile_scope(&block_stack) {
+                    CpanfileScope::TopLevel => {
+                        handle_cpanfile_statement(&buf, None, &mut prereqs);
+                    }
+                    CpanfileScope::Phase(phase) => {
+                        handle_cpanfile_statement(&buf, Some(phase), &mut prereqs);
+                    }
+                    CpanfileScope::Unsupported => {}
                 }
                 buf.clear();
             }
@@ -191,8 +197,14 @@ pub fn parse_cpanfile(file_id: FileId, content: &str) -> DistMetadataFacts {
                 buf.clear();
             }
             '}' => {
-                if let Some(block_phase) = active_cpanfile_phase(&block_stack) {
-                    handle_cpanfile_statement(&buf, block_phase, &mut prereqs);
+                match active_cpanfile_scope(&block_stack) {
+                    CpanfileScope::TopLevel => {
+                        handle_cpanfile_statement(&buf, None, &mut prereqs);
+                    }
+                    CpanfileScope::Phase(phase) => {
+                        handle_cpanfile_statement(&buf, Some(phase), &mut prereqs);
+                    }
+                    CpanfileScope::Unsupported => {}
                 }
                 buf.clear();
                 block_stack.pop();
@@ -200,8 +212,10 @@ pub fn parse_cpanfile(file_id: FileId, content: &str) -> DistMetadataFacts {
             _ => buf.push(ch),
         }
     }
-    if let Some(block_phase) = active_cpanfile_phase(&block_stack) {
-        handle_cpanfile_statement(&buf, block_phase, &mut prereqs);
+    match active_cpanfile_scope(&block_stack) {
+        CpanfileScope::TopLevel => handle_cpanfile_statement(&buf, None, &mut prereqs),
+        CpanfileScope::Phase(phase) => handle_cpanfile_statement(&buf, Some(phase), &mut prereqs),
+        CpanfileScope::Unsupported => {}
     }
 
     prereqs.sort_by(|a, b| {
@@ -218,11 +232,17 @@ pub fn parse_cpanfile(file_id: FileId, content: &str) -> DistMetadataFacts {
     }
 }
 
-fn active_cpanfile_phase(block_stack: &[CpanfileBlock]) -> Option<Option<&str>> {
+enum CpanfileScope<'a> {
+    TopLevel,
+    Phase(&'a str),
+    Unsupported,
+}
+
+fn active_cpanfile_scope(block_stack: &[CpanfileBlock]) -> CpanfileScope<'_> {
     match block_stack.last() {
-        None => Some(None),
-        Some(CpanfileBlock::Phase(phase)) => Some(Some(phase.as_str())),
-        Some(CpanfileBlock::Unsupported) => None,
+        None => CpanfileScope::TopLevel,
+        Some(CpanfileBlock::Phase(phase)) => CpanfileScope::Phase(phase.as_str()),
+        Some(CpanfileBlock::Unsupported) => CpanfileScope::Unsupported,
     }
 }
 
@@ -233,7 +253,7 @@ fn active_cpanfile_phase(block_stack: &[CpanfileBlock]) -> Option<Option<&str>> 
 /// enclosing `on 'phase'` block's phase, defaulting to `runtime`.
 fn handle_cpanfile_statement(buf: &str, block_phase: Option<&str>, out: &mut Vec<Prereq>) {
     let statement = buf.trim();
-    // Longest keyword first so `configure_requires` isn't matched by `requires`.
+    // The keyword boundary check prevents prefix collisions.
     let Some((_kw, relation, kw_phase)) =
         CPANFILE_KEYWORDS.iter().find(|(kw, _, _)| starts_with_cpanfile_keyword(statement, kw))
     else {
@@ -266,6 +286,7 @@ fn parse_on_phase(buf: &str) -> Option<String> {
         return None;
     }
     // Prefer a quoted phase (`on 'test'`); fall back to a bareword (`on test`).
+    // A quoted candidate takes precedence, so a non-canonical first quoted string does not consult the bareword fallback.
     let phase = quoted_strings(buf)
         .into_iter()
         .next()
@@ -551,13 +572,12 @@ mod tests {
     }
 
     #[test]
-    fn cpanfile_quoted_delimiters_do_not_change_block_state() {
+    fn cpanfile_quoted_delimiters_are_statement_text() {
         let content = r#"
             my $open = '{';
             my $close = "}";
             my $separator = ";";
             requires 'Path::Tiny';
-            on('test') => sub { requires 'Test::More'; };
         "#;
         let facts = parse_cpanfile(FileId::new("cpanfile", &Digest::of("x")), content);
 
@@ -566,10 +586,39 @@ mod tests {
             "quoted braces and semicolons must remain statement text: {:?}",
             facts.prereqs
         );
+    }
+
+    #[test]
+    fn cpanfile_parenthesized_on_phase_is_recognized() {
+        let content = "on('test') => sub { requires 'Test::More'; };";
+        let facts = parse_cpanfile(FileId::new("cpanfile", &Digest::of("x")), content);
+
         assert!(
             facts.prereqs.iter().any(|p| p.module == "Test::More" && p.phase == "test"),
             "parenthesized on blocks retain their canonical phase: {:?}",
             facts.prereqs
+        );
+    }
+
+    #[test]
+    fn cpanfile_nested_on_blocks_use_innermost_phase() {
+        let content = "on 'test' => sub { on 'build' => sub { requires 'Nested::Build'; }; };";
+        let facts = parse_cpanfile(FileId::new("cpanfile", &Digest::of("x")), content);
+
+        let nested_build: Vec<_> =
+            facts.prereqs.iter().filter(|p| p.module == "Nested::Build").collect();
+        assert_eq!(nested_build.len(), 1);
+        assert_eq!(nested_build[0].phase, "build");
+    }
+
+    #[test]
+    fn cpanfile_canonical_on_phases_emit_declared_phase() {
+        let content = "on 'runtime' => sub { requires 'Runtime::Dep'; }; on 'configure' => sub { requires 'Configure::Dep'; };";
+        let facts = parse_cpanfile(FileId::new("cpanfile", &Digest::of("x")), content);
+
+        assert!(facts.prereqs.iter().any(|p| p.module == "Runtime::Dep" && p.phase == "runtime"));
+        assert!(
+            facts.prereqs.iter().any(|p| p.module == "Configure::Dep" && p.phase == "configure")
         );
     }
 
