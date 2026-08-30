@@ -929,12 +929,26 @@ fn workspace_dependency_aliases(root: &Path) -> Result<BTreeSet<String>> {
     };
     Ok(entries
         .iter()
-        .filter(|(key, entry)| {
-            key.as_str() == PACKAGE
-                || entry.get("package").and_then(toml::Value::as_str) == Some(PACKAGE)
-        })
+        .filter(|(key, entry)| workspace_alias_resolves(key, entry))
         .map(|(key, _)| key.clone())
         .collect())
+}
+
+/// Whether one `[workspace.dependencies]` entry identifies the package.
+///
+/// Three spellings, matching the three a member manifest can use, because a
+/// member that inherits this alias names the package nowhere itself. The path
+/// form names it nowhere *here* either — Cargo takes the identity from the
+/// manifest the path points at — and missing it would drop every inheriting
+/// member from the Cargo plane, which is the plane that gates `unused`.
+/// Paths in the root manifest resolve from the workspace root.
+fn workspace_alias_resolves(key: &str, entry: &toml::Value) -> bool {
+    key == PACKAGE
+        || entry.get("package").and_then(toml::Value::as_str) == Some(PACKAGE)
+        || entry
+            .get("path")
+            .and_then(toml::Value::as_str)
+            .is_some_and(|relative| path_targets_package("Cargo.toml", relative))
 }
 
 /// Record every dependency table in `value` that resolves to the package.
@@ -2447,6 +2461,51 @@ impl fmt::Display
             vec![("TsNode::kept".to_string(), SymbolKind::Method)],
             "the trait impl adds nothing and does not resurrect the earlier type"
         );
+        Ok(())
+    }
+
+    /// A workspace alias can identify the package by path alone, naming it
+    /// nowhere. Missing it drops every member that inherits the alias from the
+    /// Cargo plane — the plane that gates `unused` — so a real link-time
+    /// consumer could sit behind a false `unused` disposition.
+    ///
+    /// This closes an asymmetry in the earlier path fix: `collect_dependents`
+    /// learned to resolve a path in a *member* manifest, but the root alias
+    /// table was still matched by name only.
+    #[test]
+    fn a_workspace_alias_identified_only_by_path_resolves() -> TestResult {
+        let entry: toml::Value =
+            toml::from_str::<toml::Table>(r#"path = "crates/perl-tree-sitter-compat""#)?.into();
+        assert!(
+            workspace_alias_resolves("tsc", &entry),
+            "a path-only alias identifies the package"
+        );
+        Ok(())
+    }
+
+    /// The controls. A path to a different crate must not resolve — including
+    /// the prefix case, which a `starts_with` implementation would admit — and
+    /// an alias carrying no identifying evidence at all must not either.
+    #[test]
+    fn an_unrelated_workspace_alias_does_not_resolve() -> TestResult {
+        for spelling in [
+            r#"path = "crates/perl-parser""#,
+            r#"path = "crates/perl-tree-sitter-compat-extras""#,
+            r#"version = "1.0""#,
+        ] {
+            let entry: toml::Value = toml::from_str::<toml::Table>(spelling)?.into();
+            assert!(
+                !workspace_alias_resolves("other", &entry),
+                "`{spelling}` must not identify the package"
+            );
+        }
+        // The two name-based spellings still resolve, so the added clause did
+        // not narrow what was already working.
+        let named: toml::Value =
+            toml::from_str::<toml::Table>(r#"package = "perl-tree-sitter-compat""#)?.into();
+        assert!(workspace_alias_resolves("tsc", &named));
+        let bare: toml::Value = toml::from_str::<toml::Table>(r#"version = "0.17""#)?.into();
+        assert!(workspace_alias_resolves(PACKAGE, &bare));
         Ok(())
     }
 
