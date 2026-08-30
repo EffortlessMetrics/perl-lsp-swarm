@@ -36,10 +36,9 @@
 //! compatibility adapter, never spawns processes, never reads a clock, and
 //! never applies expected bytes through production edit application.
 //!
-//! The cargo-fuzz target `fuzz/fuzz_targets/perl_tidy_formatter.rs` includes
-//! this file verbatim via `#[path]` and drives the same checker from
-//! structured byte mutations. The committed replay-control vectors are
-//! predetermined decoder controls, not crash-derived corpus evidence.
+//! The property-tier replay controls drive this file's decoder and checker from
+//! structured bytes. The committed replay-control vectors are predetermined
+//! decoder controls, not crash-derived corpus evidence.
 
 use std::collections::BTreeSet;
 
@@ -756,17 +755,18 @@ pub fn generate_invalidation_case(seed: u64, index: usize) -> GeneratedCase {
     }
 }
 
-/// Decode a cargo-fuzz input into exactly the case the fuzz target would run:
-/// the first eight little-endian bytes select the seed, the ninth byte selects
-/// the case index (low six bits) and the invalidation path (bit 7). Any bytes
-/// after the selector are folded into the seed with an FNV-1a-style update so
+/// Decode any structured input into exactly one replayable generated case: the
+/// first eight little-endian bytes select the seed, the ninth byte selects the
+/// case index (low six bits) and the invalidation path (bit 7). Any bytes after
+/// the selector are folded into the seed with an FNV-1a-style update so
 /// mutations past byte nine can reach distinct cases; this is mutation reach,
 /// not cryptographic mixing.
 ///
-/// Both the fuzz target and the predetermined replay-control vectors in
-/// `fuzz_target_and_regression_pipeline_are_wired` call this one decoder, so
-/// each full `(seed, selector)` pair exercises the same valid or invalidation
-/// path, including an index >= 16 (FPH-010).
+/// The predetermined replay-control vectors in
+/// `replay_controls_and_decoder_pipeline_are_wired` call this decoder, so each
+/// full `(seed, selector)` pair exercises the same valid or invalidation path,
+/// including an index >= 16 (FPH-010). A future real fuzz input would use this
+/// same contract.
 pub fn case_from_fuzz_input(data: &[u8]) -> Option<GeneratedCase> {
     if data.len() < 9 {
         return None;

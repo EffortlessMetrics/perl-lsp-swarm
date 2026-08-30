@@ -2,15 +2,15 @@
 //!
 //! Rows FPH-001..FPH-010 from `.spec/10301-formatter-property-fuzz-harness/`.
 //! The shared invariant core lives in
-//! `tests/support/formatter_property_harness/` and is consumed verbatim by the
-//! cargo-fuzz target `fuzz/fuzz_targets/perl_tidy_formatter.rs`. The checker
-//! binds only canonical production APIs (`format_*_typed`) and its independent
-//! strict byte-edit applicator; it never reuses production edit application,
-//! never spawns a process, and never reads a clock. #10301 remains open; this
-//! branch lands a bounded subset. The four committed replay controls are
-//! predetermined decoder vectors covering valid, invalidation, and index >= 16
-//! paths through `case_from_fuzz_input`; no runtime fuzzing campaign has run,
-//! so crash-derived corpus evidence is not proven.
+//! `tests/support/formatter_property_harness/` and is consumed by the
+//! property-tier decoder/replay controls. The checker binds only canonical
+//! production APIs (`format_*_typed`) and its independent strict byte-edit
+//! applicator; it never reuses production edit application, never spawns a
+//! process, and never reads a clock. #10301 remains open; this branch lands a
+//! bounded subset. The four committed replay controls are predetermined
+//! decoder vectors covering valid, invalidation, and index >= 16 paths through
+//! `case_from_fuzz_input`; no runtime fuzzing campaign has run, so crash-derived
+//! corpus evidence is not claimed.
 //!
 //! Determinism: every case is a pure function of `(seed, index)`; receipts are
 //! normalized and digested without wall-clock input. Boundedness is asserted
@@ -43,6 +43,13 @@ const REGRESSION_FILE: &str = concat!(
 );
 
 const MANIFEST_DIR: &str = env!("CARGO_MANIFEST_DIR");
+
+const PINNED_REPLAY_CONTROLS: [(u64, u8); 4] = [
+    (0x0000_0000_0000_0042, 0x2a),
+    (0x0102_0304_0506_0708, 0xa5),
+    (0xdead_beef_cafe_babe, 0x80),
+    (0x0123_4567_89ab_cdef, 0x3f),
+];
 
 /// Independent FPH-001 catalog, maintained in this test surface only. The
 /// harness module's registry, variant table, and `Family::ALL` are all
@@ -126,15 +133,12 @@ fn arb_invalidation_case() -> impl Strategy<Value = GeneratedCase> {
         .prop_map(|(seed, index)| generate_invalidation_case(seed, index))
 }
 
-/// FPH-009 source pin: the harness module and the fuzz target must never
-/// reference the subprocess adapter, process spawning, or a wall clock.
+/// FPH-009 source pin: the harness module must never reference the subprocess
+/// adapter, process spawning, or a wall clock.
 #[test]
 fn harness_module_does_not_reference_external_oracle() -> TestResult {
     let harness_source = fs::read_to_string(format!(
         "{MANIFEST_DIR}/tests/support/formatter_property_harness/mod.rs"
-    ))?;
-    let fuzz_source = fs::read_to_string(format!(
-        "{MANIFEST_DIR}/../../fuzz/fuzz_targets/perl_tidy_formatter.rs"
     ))?;
 
     for token in EXTERNAL_ORACLE_BANNED_TOKENS {
@@ -142,10 +146,6 @@ fn harness_module_does_not_reference_external_oracle() -> TestResult {
             !harness_source.contains(token),
             "harness module must not reference {token} (FPH-009)"
         );
-    }
-
-    for token in EXTERNAL_ORACLE_BANNED_TOKENS {
-        assert!(!fuzz_source.contains(token), "fuzz target must not reference {token} (FPH-009)");
     }
     Ok(())
 }
@@ -296,9 +296,6 @@ fn fph_policy_pins() -> TestResult {
 
     let harness_path = support_root.join("mod.rs");
     let harness_source = fs::read_to_string(&harness_path)?;
-    let fuzz_source = fs::read_to_string(
-        Path::new(MANIFEST_DIR).join("../../fuzz/fuzz_targets/perl_tidy_formatter.rs"),
-    )?;
     for token in HARNESS_FORBIDDEN_TOKENS {
         assert!(
             !source_contains_token(&harness_source, token),
@@ -319,17 +316,6 @@ fn fph_policy_pins() -> TestResult {
             "harness panic must remain inside its const alignment block"
         );
     }
-    for token in HARNESS_FORBIDDEN_TOKENS {
-        assert!(
-            !source_contains_token(&fuzz_source, token),
-            "fuzz target contains forbidden token {token}"
-        );
-    }
-    assert_eq!(
-        fuzz_source.matches("panic!").count(),
-        1,
-        "fuzz target may contain only its intentional libFuzzer panic signal"
-    );
     Ok(())
 }
 
@@ -765,6 +751,23 @@ fn body_separator_comparison_rejects_interior_crlf_flip() {
 }
 
 #[test]
+fn convention_predicate_rejects_wrong_or_missing_separator_evidence() {
+    assert!(!convention_present_in_bytes(LineEndingKind::Crlf, "one\ntwo\n"));
+    assert!(!convention_present_in_bytes(LineEndingKind::Lf, "one\r\ntwo\r\n"));
+    assert!(!convention_present_in_bytes(LineEndingKind::BareCr, "one\r\ntwo"));
+    assert!(!convention_present_in_bytes(LineEndingKind::BareCr, "one\ntwo"));
+    assert!(!convention_present_in_bytes(LineEndingKind::Mixed, "one\r\ntwo\r\n"));
+    assert!(!convention_present_in_bytes(LineEndingKind::Mixed, "one\ntwo\n"));
+    assert!(!convention_present_in_bytes(LineEndingKind::Mixed, "one\r\ntwo\rthree"));
+    assert!(!convention_present_in_bytes(LineEndingKind::Lf, "onetwo"));
+
+    assert!(convention_present_in_bytes(LineEndingKind::Lf, "one\ntwo\n"));
+    assert!(convention_present_in_bytes(LineEndingKind::Crlf, "one\r\ntwo\r\n"));
+    assert!(convention_present_in_bytes(LineEndingKind::BareCr, "one\rtwo"));
+    assert!(convention_present_in_bytes(LineEndingKind::Mixed, "one\r\ntwo\n"));
+}
+
+#[test]
 fn fuzz_decoder_consumes_bytes_past_the_selector() -> TestResult {
     let seed = 0x0123_4567_89ab_cdef_u64;
     let selector = 0x2a_u8;
@@ -833,39 +836,12 @@ fn dormant_invariants_report_not_proven_until_dependencies_land() -> TestResult 
     Ok(())
 }
 
-/// FPH-010: the cargo-fuzz target drives the same invariant core from
-/// structured byte mutations, is declared in the fuzz manifest with the
-/// missing perltidy dependency, and predetermined replay-control vectors are
-/// replayed deterministically through the same decoder. No runtime fuzzing
-/// campaign has been executed, so crash-derived corpus evidence is not proven.
+/// FPH-010: predetermined replay-control vectors are replayed deterministically
+/// through the property-tier decoder, covering valid and invalidation paths
+/// across the generated index space. No runtime fuzzing campaign has been
+/// executed, so crash-derived corpus evidence is not claimed.
 #[test]
-fn fuzz_target_and_regression_pipeline_are_wired() -> TestResult {
-    let fuzz_manifest = fs::read_to_string(format!("{MANIFEST_DIR}/../../fuzz/Cargo.toml"))?;
-    assert!(
-        fuzz_manifest.contains("perl-lsp-perltidy"),
-        "fuzz manifest must depend on perl-lsp-perltidy (FPH-010)"
-    );
-    assert!(
-        fuzz_manifest.contains("name = \"perl_tidy_formatter\""),
-        "fuzz manifest must declare the perl_tidy_formatter target (FPH-010)"
-    );
-
-    let fuzz_source = fs::read_to_string(format!(
-        "{MANIFEST_DIR}/../../fuzz/fuzz_targets/perl_tidy_formatter.rs"
-    ))?;
-    assert!(
-        fuzz_source.contains("formatter_property_harness"),
-        "fuzz target must include the shared invariant core (FPH-010)"
-    );
-    assert!(
-        fuzz_source.contains("fuzz_target!"),
-        "fuzz target must be a libfuzzer target (FPH-010)"
-    );
-    assert!(
-        fuzz_source.contains("run_case"),
-        "fuzz target must drive the shared checker (FPH-010)"
-    );
-
+fn replay_controls_and_decoder_pipeline_are_wired() -> TestResult {
     let regression_file = fs::read_to_string(REGRESSION_FILE)?;
     let mut committed_seeds: Vec<u64> = Vec::new();
     let mut seen_cc_entries: Vec<&str> = Vec::new();
@@ -894,17 +870,27 @@ fn fuzz_target_and_regression_pipeline_are_wired() -> TestResult {
             )?);
         }
         // Predetermined replay controls: `seed` is the little-endian seed
-        // the cargo-fuzz input carries in its first eight bytes, `selector`
-        // is the ninth byte naming the case index (low six bits) and the
-        // invalidation path (bit 7). Both fields are replayed through the same
-        // decoder the fuzz target uses, covering valid, invalidation, and
-        // index >= 16 paths without claiming runtime fuzzing evidence.
+        // carried in the first eight bytes, `selector` is the ninth byte
+        // naming the case index (low six bits) and the invalidation path
+        // (bit 7). Both fields are replayed through the shared property-tier
+        // decoder, covering valid, invalidation, and index >= 16 paths without
+        // claiming runtime fuzzing evidence.
         if let Some(rest) = line.strip_prefix("# replay-control seed=") {
             let (seed_hex, selector_part) = rest
                 .split_once(" selector=")
                 .ok_or("replay-control entry must carry seed and selector (FPH-010)")?;
             assert_eq!(seed_hex.len(), 16, "replay-control seed must be 16 hex chars");
             assert_eq!(selector_part.len(), 2, "replay-control selector must be 2 hex chars");
+            assert!(
+                seed_hex.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
+                "replay-control seed {seed_hex:?} must contain only lowercase ASCII hex"
+            );
+            assert!(
+                selector_part
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
+                "replay-control selector {selector_part:?} must contain only lowercase ASCII hex"
+            );
             replay_controls
                 .push((u64::from_str_radix(seed_hex, 16)?, u8::from_str_radix(selector_part, 16)?));
         }
@@ -917,12 +903,13 @@ fn fuzz_target_and_regression_pipeline_are_wired() -> TestResult {
         }
     }
 
+    assert_eq!(
+        replay_controls.as_slice(),
+        PINNED_REPLAY_CONTROLS.as_slice(),
+        "replay-control entries must equal the pinned ordered control set"
+    );
     // Full-fidelity replay of every predetermined control through the
     // shared `(seed, selector)` decoder.
-    assert!(
-        replay_controls.len() >= 3,
-        "replay-control entries must cover the valid path, the invalidation path, and an index >= 16"
-    );
     let mut replayed_invalidation = false;
     let mut replayed_high_index = false;
     for (replay_seed, selector) in replay_controls {

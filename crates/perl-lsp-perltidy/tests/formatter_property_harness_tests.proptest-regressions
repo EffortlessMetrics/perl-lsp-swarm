@@ -19,11 +19,11 @@ cc 2c8116db5ba7e0e9a9a43fdc66aa3303c255f2bf4548b12d75ec376a45bf71a7 # shrinks to
 cc 0cdfd8423b2a264de4e0cf30144b752e491c499aa2df6bc5e829c9013647e1ea # shrinks to case = GeneratedCase { seed: 16003302313137172560, schema_version: 1, family: ConditionalBlock, disposition: "generator.conditional_block", subject: Subject { text: "  unless($ok){next;} # note", clean_parse_by_construction: true }, target: Document, profile: Profile { keyword_spacing: Compact, brace_placement: NextLine, final_newline: Preserve, line_ending: Mixed }, expects_refusal: false }
 cc 74361d6550ab9eae145dc487c04061c6f3dd867b0b90947b549c64ee653c7e65 # shrinks to seed = 3525089012754461813, index = 31
 cc 3fab19d6ccd9d14cd8f6dfdcacbef001e7b9cce5e4ad8b8af30025946b529f90 # shrinks to seed = 11561439700946367915, index = 46
-# Predetermined decoder/replay controls, replayed with full (seed, selector)
+# Property-tier decoder/replay controls, replayed with full (seed, selector)
 # fidelity through the shared `case_from_fuzz_input` decoder. They exercise
-# the valid path, the invalidation path, and an index >= 16. No runtime
-# fuzzing campaign has been executed, so crash-derived corpus evidence is not
-# proven.
+# the valid path, the invalidation path, and low and high index bands. No
+# completed cargo fuzz run has produced a crash artifact for this claim, so
+# runtime fuzz execution remains NOT_PROVEN.
 # replay-control seed=0000000000000042 selector=2a
 # replay-control seed=0102030405060708 selector=a5
 # replay-control seed=deadbeefcafebabe selector=80
