@@ -27,7 +27,8 @@
     },
     "observed_at": {
       "type": "string",
-      "minLength": 1
+      "minLength": 1,
+      "description": "RFC 3339 instant, with an explicit offset, at which the probe ran. This contract sets no maximum age: how stale a receipt may be before it stops counting as current is a consumer policy, not a property of the observation."
     },
     "registry": {
       "const": "open_vsx"
@@ -236,8 +237,7 @@
       "additionalProperties": false,
       "required": [
         "versions",
-        "publication_refs",
-        "authority"
+        "publication_refs"
       ],
       "properties": {
         "versions": {
@@ -273,19 +273,8 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 200,
-            "description": "Bounded free-text reference retained verbatim in the durable receipt. Values are additionally validated by the classifier: control characters, filesystem paths, credential userinfo, and non-https schemes are refused."
+            "description": "Bounded free-text reference retained verbatim in the durable receipt. Values are additionally validated by the classifier: control characters, filesystem paths, credential userinfo, and non-https schemes are refused and redacted."
           }
-        },
-        "authority": {
-          "description": "Carried through from the observation. Null means the expected identity was unbound; available_exact is then unreachable.",
-          "oneOf": [
-            {
-              "type": "null"
-            },
-            {
-              "$ref": "#/$defs/expected_authority"
-            }
-          ]
         }
       }
     },
@@ -305,7 +294,7 @@
       }
     },
     "state": {
-      "description": "The classified public state. Provider, transport, instrument, and schema failures resolve to provider_not_proven and can never become extension_missing. Contradictory definite answers are also provider_not_proven: no single availability conclusion is supported.",
+      "description": "The classified public state. Provider, transport, instrument, and schema failures resolve to provider_not_proven and can never become extension_missing; contradictory definite answers are also provider_not_proven. available_exact is defined for consumers that hold a resolved candidate authority (#9138) and is NOT reachable from an observation alone: an observation cannot bind its own expected digest, so the ceiling here is available_identity_not_proven.",
       "enum": [
         "available_exact",
         "available_identity_not_proven",
@@ -456,25 +445,6 @@
         "owner": {
           "type": "string",
           "minLength": 1
-        }
-      }
-    },
-    "expected_authority": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "source",
-        "sha256"
-      ],
-      "properties": {
-        "source": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 200,
-          "description": "Repository-relative path or release reference naming the authority document."
-        },
-        "sha256": {
-          "$ref": "#/$defs/sha256"
         }
       }
     }

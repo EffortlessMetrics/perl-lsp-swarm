@@ -101,7 +101,24 @@ pub fn write_receipt<T: Serialize>(subject: &str, path: &Path, receipt: &T) -> R
     temporary.persist(path).map_err(|error| {
         eyre!("atomically persisting {subject} receipt {}: {}", path.display(), error.error)
     })?;
+    sync_directory(parent);
     Ok(())
+}
+
+/// Flush the rename itself, not just the bytes it points at.
+///
+/// `sync_all` on the temporary file durably stores its *contents*; the directory
+/// entry created by the rename is a separate write. Without this, power loss can
+/// leave a receipt whose data survived but whose name did not.
+///
+/// Best-effort by design: some filesystems refuse `open`/`fsync` on a directory,
+/// and failing the whole publication over an unavailable durability upgrade
+/// would be worse than the exposure it closes. The receipt is already renamed
+/// into place when this runs.
+fn sync_directory(parent: &Path) {
+    if let Ok(handle) = fs::File::open(parent) {
+        let _ = handle.sync_all();
+    }
 }
 
 fn parent_or_current(path: &Path) -> &Path {

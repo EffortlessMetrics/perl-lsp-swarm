@@ -8,9 +8,9 @@
 
 use super::model::{CellObservation, PublicState};
 use super::test_support::{
-    AVAILABLE_EXACT, DIGEST_MISMATCH, INCIDENT, INSTRUMENT_INCOMPLETE, LISTING_MISSING,
-    NAMESPACE_ABSENT, RATE_LIMITED, UNPLANNED_URL, expect_blocker, expect_state, receipt,
-    receipt_with,
+    ALL_FIXTURES, AVAILABLE_EXACT, DIGEST_MISMATCH, INCIDENT, INSTRUMENT_INCOMPLETE,
+    LISTING_MISSING, NAMESPACE_ABSENT, RATE_LIMITED, UNPLANNED_URL, expect_blocker, expect_state,
+    receipt, receipt_with,
 };
 use color_eyre::eyre::{Result, bail};
 use serde_json::{Value, json};
@@ -20,17 +20,39 @@ use serde_json::{Value, json};
 // ---------------------------------------------------------------------------
 
 #[test]
-fn an_intact_identity_with_matching_public_bytes_is_available_exact() -> Result<()> {
+fn an_intact_identity_records_its_bytes_but_stops_short_of_claiming_approval() -> Result<()> {
+    // Everything resolves and the digests match, yet both digests came from this
+    // one document. Review demonstrated the previous `authority` field did not
+    // change that: an authority naming a file that does not exist still produced
+    // `available_exact`. Observed identity is the honest ceiling here.
     let receipt = receipt(AVAILABLE_EXACT)?;
-    expect_state(&receipt, PublicState::AvailableExact, "intact identity")?;
-    if !receipt.blockers.is_empty() {
-        bail!("available_exact must carry no blockers: {:?}", receipt.blockers);
-    }
+    expect_state(&receipt, PublicState::AvailableIdentityNotProven, "intact identity")?;
+    expect_blocker(&receipt, "exact_approval_requires_verified_authority")?;
     let Some(bytes) = &receipt.public_bytes else {
-        bail!("available_exact must record the exact public bytes it proved");
+        bail!("the exact public bytes that were retrieved must still be recorded");
     };
     if bytes.version != "0.17.0" {
         bail!("public bytes recorded the wrong version: {}", bytes.version);
+    }
+    Ok(())
+}
+
+#[test]
+fn no_observation_can_reach_available_exact() -> Result<()> {
+    // The state stays in the vocabulary for #9138, which holds a resolved
+    // candidate authority. Nothing this tool can be handed should produce it.
+    for fixture in ALL_FIXTURES {
+        let receipt = receipt(fixture)?;
+        if receipt.state == PublicState::AvailableExact {
+            bail!("an observation reached available_exact without any verified authority");
+        }
+    }
+    let fabricated = receipt_with(AVAILABLE_EXACT, |document| {
+        document["expected"]["versions"][0]["vsix_sha256"] =
+            document["cells"]["versioned_file"]["sha256"].clone();
+    })?;
+    if fabricated.state == PublicState::AvailableExact {
+        bail!("copying the retrieved digest into `expected` manufactured available_exact");
     }
     Ok(())
 }
@@ -539,7 +561,7 @@ fn an_instant_that_cannot_be_placed_on_a_timeline_is_invalid() -> Result<()> {
     let offset = receipt_with(AVAILABLE_EXACT, |document| {
         document["observed_at"] = json!("2026-08-14T09:12:00+02:00");
     })?;
-    expect_state(&offset, PublicState::AvailableExact, "explicit offset")?;
+    expect_state(&offset, PublicState::AvailableIdentityNotProven, "explicit offset")?;
     Ok(())
 }
 
@@ -548,15 +570,20 @@ fn an_instant_that_cannot_be_placed_on_a_timeline_is_invalid() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn an_unbound_expected_digest_cannot_manufacture_available_exact() -> Result<()> {
-    // Raised in review: the observed digest and the expected digest arrive
-    // through the same input. A producer that simply copied the retrieved digest
-    // into `expected` would otherwise mint the strongest claim from nothing.
-    let receipt = receipt_with(AVAILABLE_EXACT, |document| {
-        document["expected"]["authority"] = Value::Null;
-    })?;
-    expect_state(&receipt, PublicState::AvailableIdentityNotProven, "unbound expected digest")?;
-    expect_blocker(&receipt, "expected_identity_unbound")?;
+fn an_extension_record_that_omits_the_subject_version_is_not_ignored() -> Result<()> {
+    // Only the versions endpoint was being checked, so an extension record
+    // publishing a conflicting inventory passed unexamined.
+    for listed in [json!([]), json!(["0.16.0"])] {
+        let receipt = receipt_with(AVAILABLE_EXACT, |document| {
+            document["cells"]["extension_metadata"]["versions"] = listed.clone();
+        })?;
+        expect_state(
+            &receipt,
+            PublicState::AvailableIdentityNotProven,
+            "extension record omits the subject",
+        )?;
+        expect_blocker(&receipt, "subject_version_absent_from_extension_record")?;
+    }
     Ok(())
 }
 
@@ -627,7 +654,7 @@ fn path_and_credential_shaped_references_cannot_cross_the_publication_boundary()
             "Publish VSCode Extension / Publish Open VSX (2026-06-28) reported success",
         ]);
     })?;
-    expect_state(&benign, PublicState::AvailableExact, "benign references")?;
+    expect_state(&benign, PublicState::AvailableIdentityNotProven, "benign references")?;
     Ok(())
 }
 

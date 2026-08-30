@@ -96,8 +96,7 @@
       "additionalProperties": false,
       "required": [
         "versions",
-        "publication_refs",
-        "authority"
+        "publication_refs"
       ],
       "properties": {
         "versions": {
@@ -115,19 +114,8 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 200,
-            "description": "Bounded free-text reference retained verbatim in the durable receipt. Values are additionally validated by the classifier: control characters, filesystem paths, credential userinfo, and non-https schemes are refused."
+            "description": "Bounded free-text reference retained verbatim in the durable receipt. Values are additionally validated by the classifier: control characters, filesystem paths, credential userinfo, and non-https schemes are refused and redacted."
           }
-        },
-        "authority": {
-          "description": "Where the expected byte identity came from. Null means the expected digest is unbound, in which case matching it cannot establish that the public bytes are the approved ones and available_exact is unreachable.",
-          "oneOf": [
-            {
-              "type": "null"
-            },
-            {
-              "$ref": "#/$defs/expected_authority"
-            }
-          ]
         }
       }
     },
@@ -332,7 +320,7 @@
           "$ref": "#/$defs/transport"
         },
         "matched_identity": {
-          "description": "Whether the search result set contained this exact namespace and name. Discoverability is reported but never raises the classified state on its own.",
+          "description": "Whether the first page of search results contained this exact namespace and name. The planned query reads one bounded page, so false means 'not on that page', never 'globally undiscoverable'. Discoverability is reported and never raises the classified state.",
           "type": [
             "boolean",
             "null"
@@ -463,25 +451,6 @@
               "minimum": 0
             }
           ]
-        }
-      }
-    },
-    "expected_authority": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "source",
-        "sha256"
-      ],
-      "properties": {
-        "source": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 200,
-          "description": "Repository-relative path or release reference naming the authority document."
-        },
-        "sha256": {
-          "$ref": "#/$defs/sha256"
         }
       }
     }

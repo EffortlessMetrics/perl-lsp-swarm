@@ -47,6 +47,9 @@ use std::path::{Path, PathBuf};
 /// Label used in receipt-output diagnostics for this probe.
 const SUBJECT: &str = "open vsx public state";
 
+/// How far ahead of this machine's clock an observation may be dated.
+const CLOCK_SKEW_ALLOWANCE_MINUTES: i64 = 5;
+
 #[derive(Debug, Parser)]
 #[command(about = "Classify a read-only Open VSX public-state observation")]
 struct Args {
@@ -126,6 +129,24 @@ fn load_observation(path: &Path) -> Result<Observation> {
         );
     }
 
-    serde_json::from_value(document)
-        .wrap_err_with(|| format!("parsing Open VSX observation {}", path.display()))
+    let observation: Observation = serde_json::from_value(document)
+        .wrap_err_with(|| format!("parsing Open VSX observation {}", path.display()))?;
+
+    // Temporal plausibility lives here, not in `classify`: reading a clock would
+    // make classification non-deterministic, and determinism is a property the
+    // receipt contract depends on. An instant in the future cannot describe a
+    // probe that already ran.
+    if let Ok(observed) = chrono::DateTime::parse_from_rfc3339(&observation.observed_at) {
+        let skew = chrono::Utc::now() + chrono::Duration::minutes(CLOCK_SKEW_ALLOWANCE_MINUTES);
+        if observed.with_timezone(&chrono::Utc) > skew {
+            bail!(
+                "Open VSX observation {} is dated {}, beyond the {CLOCK_SKEW_ALLOWANCE_MINUTES}-minute \
+                 clock-skew allowance; it cannot describe a completed probe",
+                path.display(),
+                observation.observed_at
+            );
+        }
+    }
+
+    Ok(observation)
 }

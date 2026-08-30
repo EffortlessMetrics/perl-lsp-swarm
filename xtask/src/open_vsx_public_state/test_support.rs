@@ -20,6 +20,18 @@ pub(super) const UNPLANNED_URL: &str =
 pub(super) const INSTRUMENT_INCOMPLETE: &str =
     include_str!("../../../fixtures/open_vsx_public_state/synthetic_instrument_incomplete.json");
 
+/// Every observation fixture, for invariants that must hold across all of them.
+pub(super) const ALL_FIXTURES: &[&str] = &[
+    INCIDENT,
+    AVAILABLE_EXACT,
+    LISTING_MISSING,
+    RATE_LIMITED,
+    NAMESPACE_ABSENT,
+    DIGEST_MISMATCH,
+    UNPLANNED_URL,
+    INSTRUMENT_INCOMPLETE,
+];
+
 pub(super) fn observation(raw: &str) -> Result<Observation> {
     serde_json::from_str(raw).wrap_err("parsing an Open VSX observation fixture")
 }

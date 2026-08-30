@@ -56,25 +56,6 @@ pub(crate) struct Instrument {
 pub(crate) struct Expected {
     pub(crate) versions: Vec<ExpectedVersion>,
     pub(crate) publication_refs: Vec<String>,
-    /// Where the expected byte identity came from.
-    ///
-    /// Raised in review: without this, `available_exact` is self-attestable —
-    /// the observed digest and the "approved" digest arrive through the same
-    /// unbound input, so a producer could copy the retrieved digest into
-    /// `expected` and manufacture the strongest claim. The plan digest binds the
-    /// request set, not the expected identity. Absent, the strongest reachable
-    /// claim is `available_identity_not_proven`.
-    pub(crate) authority: Option<ExpectedAuthority>,
-}
-
-/// An independently identified source for the expected byte identity.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct ExpectedAuthority {
-    /// Repository-relative path or release reference naming the authority.
-    pub(crate) source: String,
-    /// Digest over that authority document, so the binding is checkable.
-    pub(crate) sha256: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -202,6 +183,9 @@ pub(crate) struct VersionedFileCell {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum PublicState {
+    /// Not reachable from an observation alone: proving the public bytes are
+    /// the *approved* bytes needs a resolved candidate authority this tool
+    /// does not have. Retained in the vocabulary for #9138, which does.
     AvailableExact,
     AvailableIdentityNotProven,
     ListingMissingVersionRetrievable,

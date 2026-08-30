@@ -204,21 +204,6 @@ fn structural_findings(
             ));
         }
     }
-    if let Some(authority) = &observation.expected.authority {
-        if let Some(reason) = unsafe_reference(&authority.source) {
-            findings.push(Blocker::new(
-                "unsafe_reference_value",
-                format!("the expected-identity authority source {reason}"),
-            ));
-        }
-        if !is_sha256(&authority.sha256) {
-            findings.push(Blocker::new(
-                "malformed_authority_digest",
-                "the expected-identity authority digest is not lower-case SHA-256",
-            ));
-        }
-    }
-
     let mut seen: Vec<&str> = Vec::new();
     for expected in &observation.expected.versions {
         // Every entry, not just the subject: `expected` is copied verbatim into
@@ -493,6 +478,24 @@ fn classify_state(
             ));
             return (PublicState::ProviderNotProven, blockers, limitations);
         }
+        // The extension record publishes versions too. Review showed only the
+        // versions endpoint was being checked, so an extension record listing a
+        // conflicting inventory passed unexamined.
+        if let Some(subject) = subject_version
+            && extension_metadata == CellObservation::Present
+            && let Some(listed) = &observation.cells.extension_metadata.versions
+            && !listed.iter().any(|row| row == subject)
+        {
+            blockers.push(Blocker::new(
+                "subject_version_absent_from_extension_record",
+                format!(
+                    "the extension record does not list the subject version {subject:?} among \
+                     its published versions"
+                ),
+            ));
+            return (PublicState::AvailableIdentityNotProven, blockers, limitations);
+        }
+
         if version_rows == CellObservation::Present {
             // Symmetric with the identity_matches requirement above: on the path
             // to the strongest claim, a surface that answered but whose answer
@@ -562,20 +565,27 @@ fn classify_state(
                 (PublicState::AvailableIdentityNotProven, blockers, limitations)
             }
             Some(expected) if expected == bytes.sha256 => {
-                // Raised in review: the observed digest and the expected digest
-                // arrive through the same input, so digest equality alone is
-                // self-attestable. The strongest claim requires the expected
-                // identity to be bound to something outside this document.
-                if observation.expected.authority.is_none() {
-                    blockers.push(Blocker::new(
-                        "expected_identity_unbound",
-                        "the expected package digest is not bound to any independently \
-                         identified authority, so matching it cannot establish that these are \
-                         the approved bytes",
-                    ));
-                    return (PublicState::AvailableIdentityNotProven, blockers, limitations);
-                }
-                (PublicState::AvailableExact, blockers, limitations)
+                // The observed digest and the expected digest arrive through the
+                // same unbound document, so their equality is self-attestable: a
+                // producer that can write one can write the other. An earlier
+                // revision tried to close this with a declared `authority`
+                // reference, but a declared-and-unverified reference is the same
+                // hole under a new name — review demonstrated `available_exact`
+                // from an authority naming a file that does not exist.
+                //
+                // Establishing that public bytes are the *approved* bytes needs a
+                // resolved candidate authority, which this tool does not have and
+                // must not pretend to. So the honest ceiling for a purely
+                // observational input is that the identity was observed, not that
+                // it was approved. `available_exact` stays in the vocabulary for
+                // #9138, which owns candidate identity; it is not reachable here.
+                blockers.push(Blocker::new(
+                    "exact_approval_requires_verified_authority",
+                    "the public digest matches the expected one, but both arrive through this \
+                     observation and nothing here verifies the expected digest against a \
+                     resolved candidate authority; observed identity is not proven approval",
+                ));
+                (PublicState::AvailableIdentityNotProven, blockers, limitations)
             }
             Some(expected) => {
                 blockers.push(Blocker::new(
@@ -750,11 +760,6 @@ fn publishable_expected(mut expected: Expected) -> Expected {
         if unsafe_reference(reference).is_some() {
             *reference = REDACTED.to_owned();
         }
-    }
-    if let Some(authority) = expected.authority.as_mut()
-        && unsafe_reference(&authority.source).is_some()
-    {
-        authority.source = REDACTED.to_owned();
     }
     expected
 }
