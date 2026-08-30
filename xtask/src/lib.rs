@@ -19,6 +19,7 @@ pub mod durable_publish;
 pub mod editor_client_compat;
 pub mod editor_host;
 pub mod emacs_host_run;
+pub mod emacs_stock_discovery;
 pub mod emacs_subject_fan_in;
 pub mod emacs_subject_manifest;
 pub mod file_identity;
