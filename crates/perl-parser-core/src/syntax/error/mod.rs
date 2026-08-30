@@ -701,6 +701,14 @@ impl ParseStopCause {
     /// | `NestingTooDeep { depth, max_depth }` | `NestingOrDepthBudgetExhausted { limit: max_depth, usage: depth }` |
     /// | `HeredocBudgetExhausted { limit, usage, .. }` | `HeredocBudgetExhausted { limit, usage }` |
     /// | Any other variant | `CatastrophicTermination` |
+    ///
+    /// The heredoc row drops `location` deliberately: a stop cause answers *why the
+    /// operation ended*, which is a property of the operation, not of one position in
+    /// the source. The anchor lives on the [`ParseError`] diagnostic instead, reachable
+    /// through [`ParseError::location`] and [`ParseError::diagnostic_anchor`]. A
+    /// consumer holding only the cause therefore has quantities but no offset, and
+    /// should read the diagnostic vector when it needs to point at the refused
+    /// declaration.
     #[must_use]
     pub fn from_parse_error(error: &ParseError) -> Self {
         match error {
