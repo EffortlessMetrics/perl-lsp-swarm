@@ -198,11 +198,32 @@ fn antip_eval_keyword_is_not_matched_as_an_identifier_suffix() {
         "multi-line custom eval-like call"
     );
 
-    // The real keyword still reports, including as a statement-initial token.
+    // `\b` alone still admits a package-qualified call, because `:` is not a
+    // word character. Those are calls to some other function of that name.
+    assert!(!has_eval_string("Foo::eval 'print <<EOF;';\n"), "package-qualified eval");
+    assert!(!has_eval_string("Foo::Bar::eval 'print <<EOF;';\n"), "deeply qualified eval");
+    assert!(
+        !has_eval_string("Foo::eval 'print <<\"E\";\nbody\nE\n';\n"),
+        "multi-line package-qualified eval"
+    );
+
+    // The real keyword still reports, including under its explicit spellings.
     assert!(has_eval_string("eval 'print <<EOF;';\n"), "bare eval must still be reported");
     assert!(
         has_eval_string("my $r = eval 'print <<EOF;';\n"),
         "eval after an assignment must still be reported"
+    );
+    assert!(
+        has_eval_string("sub f { eval 'print <<EOF;'; }\n"),
+        "eval inside a block must still be reported"
+    );
+    assert!(
+        has_eval_string("CORE::eval 'print <<EOF;';\n"),
+        "CORE::eval is the builtin and must still be reported"
+    );
+    assert!(
+        has_eval_string("CORE::GLOBAL::eval 'print <<EOF;';\n"),
+        "CORE::GLOBAL::eval is the builtin and must still be reported"
     );
 }
 

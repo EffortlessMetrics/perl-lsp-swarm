@@ -407,6 +407,34 @@ static EVAL_HEREDOC_PATTERN: LazyLock<Regex> =
         Err(_) => unreachable!("EVAL_HEREDOC_PATTERN regex failed to compile"),
     });
 
+/// Whether the `eval` matched at `start` is the builtin rather than a lookalike.
+///
+/// `scan_code` is the masked view, which substitutes byte-for-byte, so `start`
+/// indexes it and the raw source identically. Two lookalikes are rejected:
+///
+/// * a match seeded inside a comment or string literal — masking blanks those,
+///   so the keyword no longer reads as `eval` at this offset;
+/// * a package-qualified call such as `Foo::eval`, which the pattern's leading
+///   `\b` admits because `:` is not a word character. `CORE::eval` and
+///   `CORE::GLOBAL::eval` are the builtin under its explicit spellings and stay.
+fn eval_match_is_builtin(scan_code: &str, start: usize) -> bool {
+    if scan_code.get(start..start + EVAL_KEYWORD.len()) != Some(EVAL_KEYWORD) {
+        return false;
+    }
+
+    let prefix = &scan_code[..start];
+    let path_start = prefix
+        .char_indices()
+        .rev()
+        .find(|(_, ch)| !(ch.is_alphanumeric() || *ch == '_' || *ch == ':'))
+        .map_or(0, |(idx, ch)| idx + ch.len_utf8());
+
+    match prefix[path_start..].strip_suffix("::") {
+        None => true,
+        Some(qualifier) => qualifier == "CORE" || qualifier == "CORE::GLOBAL",
+    }
+}
+
 impl PatternDetector for EvalHeredocDetector {
     fn detect(
         &self,
@@ -425,7 +453,7 @@ impl PatternDetector for EvalHeredocDetector {
         for cap in EVAL_HEREDOC_PATTERN.captures_iter(code) {
             if let Some(match_pos) = cap.get(0) {
                 let start = match_pos.start();
-                if scan_code.get(start..start + EVAL_KEYWORD.len()) != Some(EVAL_KEYWORD) {
+                if !eval_match_is_builtin(&scan_code, start) {
                     continue;
                 }
 
