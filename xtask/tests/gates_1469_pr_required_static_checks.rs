@@ -298,8 +298,8 @@ fn ci_workflow_runs_unit_routed_full_in_pr_smoke() -> Result<(), Box<dyn std::er
 
     // Verify that pr-smoke job runs --tier pr-fast
     // which includes all pr_fast gates (including unit_routed_full)
-    let has_pr_fast_tier = workflow.contains("gates --tier pr-fast");
-    let has_immutable_subject = workflow.contains("--subject target/receipts/ci-subject.json");
+    let has_pr_fast_tier = pr_smoke_job.contains("gates --tier pr-fast");
+    let has_immutable_subject = pr_smoke_job.contains("--subject target/receipts/ci-subject.json");
 
     assert!(
         has_pr_fast_tier && has_immutable_subject,
@@ -311,7 +311,7 @@ fn ci_workflow_runs_unit_routed_full_in_pr_smoke() -> Result<(), Box<dyn std::er
         "pr-smoke job timeout must leave room for the inner watchdog and always-run receipt steps"
     );
     assert!(
-        workflow.contains("PR-fast timeout policy: GitHub job 75m, outer runner watchdog 45m"),
+        pr_smoke_job.contains("PR-fast timeout policy: GitHub job 75m, outer runner watchdog 45m"),
         "pr-smoke log message must document the active watchdog policy"
     );
     // The watchdog invocation is asserted by its durable parts rather than as one

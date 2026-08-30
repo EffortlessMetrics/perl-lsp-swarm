@@ -236,6 +236,7 @@ fn gap_class(source: &str, previous_end: usize, current_start: usize) -> Option<
 fn adjacency_sensitive_pair(previous_text: &str, current_text: &str) -> bool {
     current_text == "++"
         || current_text == "--"
+        || (previous_text == "x" && current_text == "=")
         || previous_text.contains('$')
         || current_text.contains('$')
 }
@@ -482,6 +483,16 @@ mod tests {
     fn rejects_structural_replacement_even_when_surrounded_by_whitespace() {
         let edits = edit_set([edit(6, 7, 8)]);
         assert!(WhitespaceEditMap::try_new("my $x = 42;", "my $x += 42;", &edits).is_none());
+    }
+
+    #[test]
+    fn rejects_whitespace_that_splits_x_assignment() -> TestResult {
+        let old = "my $value x= 3;";
+        let insertion = old.find("x=").ok_or("expected x assignment")? + 1;
+        let new = "my $value x = 3;";
+        let edits = edit_set([edit(insertion, insertion, insertion + 1)]);
+        assert!(WhitespaceEditMap::try_new(old, new, &edits).is_none());
+        Ok(())
     }
 
     #[test]
