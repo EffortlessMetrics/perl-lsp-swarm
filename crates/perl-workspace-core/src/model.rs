@@ -248,11 +248,16 @@ impl ProjectModel {
             })
             .collect();
         // A readable shard adopted for this path supersedes the walk-time
-        // discovered-but-unread marker — and the read-failure limitation
-        // recorded with it no longer describes the current generation.
+        // discovered-but-unread marker. Remove only the adopted path from
+        // structural read-failure limitations; other unread paths remain
+        // bounded by the same limitation.
         if self.unread_discovered.remove(relative_path.as_str()) {
-            self.limitations.retain(|limitation| {
-                !(limitation.kind == "read_failure" && limitation.paths.contains(&relative_path))
+            self.limitations.retain_mut(|limitation| {
+                if limitation.kind != "read_failure" || limitation.paths.is_empty() {
+                    return true;
+                }
+                limitation.paths.retain(|path| path != &relative_path);
+                !limitation.paths.is_empty()
             });
         }
         self.files.push(shard.file);

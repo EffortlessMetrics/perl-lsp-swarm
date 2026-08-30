@@ -50,7 +50,11 @@ pub struct ModelLimitation {
     /// Relative paths this limitation bounds, carried structurally so path
     /// scoping never has to be reconstructed from the id text. Empty means
     /// the association is only recoverable from the `<kind>:<path>` id
-    /// convention (legacy producers).
+    /// convention (legacy producers). A producer that emits non-suffixed
+    /// limitation ids relying solely on structural paths changes what older
+    /// consumers can scope and must accompany that change with a
+    /// `SCHEMA_VERSION` bump; within this crate the builder emits suffixed
+    /// `read-failed:<path>` ids so legacy suffix scoping is preserved.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub paths: Vec<String>,
 }
