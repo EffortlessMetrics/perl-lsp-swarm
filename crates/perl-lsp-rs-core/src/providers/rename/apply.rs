@@ -2,6 +2,7 @@
 //!
 //! This module provides methods for applying rename edits.
 
+use perl_module::is_module_identifier_char;
 use perl_parser_core::SourceLocation;
 use perl_parser_core::syntax::source_context::{
     RangeClassification, SourceRegionIndex, SourceRegionKind,
@@ -79,11 +80,16 @@ pub fn find_occurrences_in_text(
         );
 
         if (is_comment && options.rename_in_comments) || (is_string && options.rename_in_strings) {
-            // Make sure it's a whole word using byte-level checks (not
-            // char::nth which is O(n) per call).
-            let bytes = source.as_bytes();
-            let before_ok = absolute_pos == 0 || !bytes[absolute_pos - 1].is_ascii_alphanumeric();
-            let after_ok = match_end >= source.len() || !bytes[match_end].is_ascii_alphanumeric();
+            // Make sure it's a whole identifier using the canonical Perl
+            // identifier class. Inspecting adjacent bytes is incorrect for
+            // UTF-8: a continuation byte can make a Unicode identifier look
+            // like it has a boundary immediately before or after the match.
+            let before_ok = source[..absolute_pos]
+                .chars()
+                .next_back()
+                .is_none_or(|ch| !is_module_identifier_char(ch));
+            let after_ok =
+                source[match_end..].chars().next().is_none_or(|ch| !is_module_identifier_char(ch));
 
             if before_ok && after_ok {
                 let start = if let Some(sigil) = kind.sigil() {
@@ -185,6 +191,29 @@ mod tests {
             source,
         );
         assert_eq!(edits.len(), 2, "only standalone $x should match");
+        Ok(())
+    }
+
+    #[test]
+    fn find_occurrences_rejects_unicode_identifier_neighbors() -> Result<(), Box<dyn Error>> {
+        let source = "# 語$x 語\n\"語$x 語\"\n";
+        let options = RenameOptions {
+            rename_in_comments: true,
+            rename_in_strings: true,
+            validate_new_name: true,
+        };
+
+        let edits = find_occurrences_in_text(
+            "x",
+            "renamed",
+            SymbolKind::Variable(VarKind::Scalar),
+            &options,
+            source,
+        );
+        assert!(
+            edits.is_empty(),
+            "Unicode identifier neighbors are not word boundaries: {edits:?}"
+        );
         Ok(())
     }
 
