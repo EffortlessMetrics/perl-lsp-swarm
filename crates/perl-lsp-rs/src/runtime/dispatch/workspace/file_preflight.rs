@@ -44,6 +44,22 @@ impl LspServer {
                 };
 
                 tracing::debug!(old_uri, new_uri, "Planning file rename preflight");
+                // One admission authority (#14186): the catch-all
+                // file-operation filter routes arbitrary renames here, but
+                // module rewrite planning only has meaning for Perl subjects.
+                // Classify the renamed source through the same discovery
+                // admission policy as the startup and watcher seams before
+                // deriving any module identity, so an unrelated non-Perl
+                // rename can never rewrite Perl dependents.
+                if !rename_subject_admits_perl(self, old_uri) {
+                    tracing::debug!(
+                        old_uri,
+                        new_uri,
+                        "Rename subject is not admitted Perl source; \
+                         skipping module rewrite planning"
+                    );
+                    continue;
+                }
                 let old_module = path_to_module_name(old_uri);
                 let new_module = path_to_module_name(new_uri);
                 if old_module.is_empty() || new_module.is_empty() {
@@ -101,6 +117,25 @@ impl LspServer {
 
 fn empty_workspace_edit() -> Value {
     json!({ "changes": {} })
+}
+
+/// Returns `true` when the renamed subject at `uri` is admitted Perl source
+/// under the runtime's single admission authority (#14186).
+///
+/// Classification reads the authoritative source text — the open editor
+/// buffer when one exists, otherwise the bytes on disk — and hands it to the
+/// containing folder's `DiscoveryConfig`. Unreadable or non-filesystem
+/// subjects fail closed: a preflight that cannot prove the subject is Perl
+/// plans no edits rather than guessing a module identity.
+#[cfg(feature = "workspace")]
+fn rename_subject_admits_perl(server: &LspServer, uri: &str) -> bool {
+    let Some(path) = perl_uri::uri_to_fs_path(uri) else {
+        return false;
+    };
+    let Some(text) = read_workspace_text(server, uri) else {
+        return false;
+    };
+    server.discovery_admission_config(&path).admits_bytes(&path, text.as_bytes())
 }
 
 #[cfg(feature = "workspace")]
@@ -444,6 +479,38 @@ mod tests {
         assert!(
             changes.get(&server.normalize_uri_key(&old_uri)).is_some_and(Value::is_array),
             "rename preflight should still return the package edit under the normalized URI key"
+        );
+        Ok(())
+    }
+
+    /// #14186 regression: the catch-all file-operation filter routes
+    /// arbitrary renames into `willRenameFiles`. Renaming an extensionless
+    /// non-Perl note that merely contains `use Foo;` must return no edits:
+    /// module rewrite planning requires an admitted Perl subject, classified
+    /// through the same discovery admission authority as the startup and
+    /// watcher seams.
+    #[test]
+    fn non_perl_rename_subjects_plan_no_module_edits() -> TestResult {
+        let server = LspServer::new();
+        let directory = tempfile::tempdir()?;
+        let note_path = directory.path().join("Foo");
+        let new_path = directory.path().join("Bar");
+        std::fs::write(&note_path, "release notes\nuse Foo;\n")?;
+        let old_uri = Url::from_file_path(&note_path).map_err(|_| "invalid old path")?.to_string();
+        let new_uri = Url::from_file_path(&new_path).map_err(|_| "invalid new path")?.to_string();
+
+        let outcome = server.handle_will_rename_files_dispatch(Some(json!({
+            "files": [{ "oldUri": old_uri.clone(), "newUri": new_uri.clone() }]
+        })));
+        let edit = outcome.map_err(|error| format!("non-Perl rename preflight failed: {error}"))?;
+        let changes = edit
+            .as_ref()
+            .and_then(|value| value.get("changes"))
+            .and_then(Value::as_object)
+            .ok_or("non-Perl rename preflight must return a WorkspaceEdit changes map")?;
+        assert!(
+            changes.is_empty(),
+            "non-Perl rename subjects must plan no module rewrites, got {changes:?}"
         );
         Ok(())
     }

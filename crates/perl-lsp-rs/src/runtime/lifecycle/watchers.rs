@@ -15,11 +15,13 @@ use lsp_types::{
 /// scripts (#13185) have no extension glob, so clients honoring only the
 /// extension patterns never deliver their create/change/rename/delete events
 /// and the shebang-aware handlers cannot run for them. The classification
-/// authority stays handler-side: every watcher and file-operation seam
-/// reclassifies from the actual disk bytes before any indexing, so non-Perl
-/// events delivered because of the catch-all stay inert. Do not narrow this
-/// back to extension globs without re-opening the extensionless discovery
-/// contract (#13185/#13308).
+/// authority stays handler-side and is one shared admission authority
+/// (#14186): every watcher and file-operation seam reclassifies from the
+/// actual disk bytes under the containing folder's `DiscoveryConfig`, so
+/// discovery-only formats (`.xs`, `.i`, configured extras) keep their facts,
+/// and non-Perl events delivered because of the catch-all stay inert. Do not
+/// narrow this back to extension globs without re-opening the extensionless
+/// discovery contract (#13185/#13308).
 pub(super) const PERL_WATCH_PATTERNS: &[&str] = &["**/*"];
 
 fn perl_watch_kind() -> WatchKind {
