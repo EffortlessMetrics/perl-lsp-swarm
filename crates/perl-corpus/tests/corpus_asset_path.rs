@@ -18,6 +18,39 @@ fn fixed_portable_vector_round_trips_transparently_through_serde()
 }
 
 #[test]
+fn every_component_constructed_value_round_trips_through_transparent_serde()
+-> Result<(), Box<dyn std::error::Error>> {
+    let paths = [
+        CorpusAssetPath::try_from_components(["test_corpus", "nested", "case.pl"])? ,
+        CorpusAssetPath::try_from_components(["test_corpus", r"a\b.pl"])? ,
+        CorpusAssetPath::try_from_components([r"\literal", "case.pl"])? ,
+    ];
+
+    for path in paths {
+        let encoded = serde_json::to_string(&path)?;
+        assert_eq!(serde_json::from_str::<CorpusAssetPath>(&encoded)?, path);
+    }
+
+    assert_eq!(
+        CorpusAssetPath::try_from_components(["C:case.pl"]),
+        Err(CorpusAssetPathError::AbsoluteOrPrefixed)
+    );
+    assert_eq!(
+        CorpusAssetPath::try_from_components([r"\\server", "share", "case.pl"]),
+        Err(CorpusAssetPathError::AbsoluteOrPrefixed)
+    );
+    assert_eq!(
+        CorpusAssetPath::from_host_path(Path::new("C:case.pl")),
+        Err(CorpusAssetPathError::AbsoluteOrPrefixed)
+    );
+    assert_eq!(
+        CorpusAssetPath::from_host_path(Path::new(r"\\server\share\case.pl")),
+        Err(CorpusAssetPathError::AbsoluteOrPrefixed)
+    );
+    Ok(())
+}
+
+#[test]
 fn portable_parser_treats_backslash_as_data_not_a_separator()
 -> Result<(), Box<dyn std::error::Error>> {
     let literal = CorpusAssetPath::parse(r"test_corpus/a\b.pl")?;
