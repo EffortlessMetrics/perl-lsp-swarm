@@ -170,9 +170,10 @@ impl SourceRegionIndex {
 
     /// Compatibility-only region-kind view for one offset.
     ///
-    /// Invalid and out-of-bounds offsets return [`SourceRegionKind::Code`] to
-    /// preserve the historical API. This fallback is not proof that the byte is
-    /// code. New precision- or edit-authorizing callers must use
+    /// Non-`Proven` offsets (invalid UTF-8 interior bytes, EOF, or past-EOF
+    /// offsets) return [`SourceRegionKind::Code`] to preserve the historical
+    /// API. This fallback is not proof that the byte is code. New precision- or
+    /// edit-authorizing callers must use
     /// [`classify_offset`](Self::classify_offset).
     #[must_use]
     pub fn kind_at_offset(&self, offset: usize) -> SourceRegionKind {

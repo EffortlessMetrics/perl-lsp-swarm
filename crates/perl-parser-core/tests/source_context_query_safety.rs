@@ -1,5 +1,6 @@
 use perl_parser_core::syntax::source_context::{
-    OffsetClassification, SourceRangeClassification, SourceRegionIndex, SourceRegionKind,
+    OffsetClassification, RangeClassification, SourceRangeClassification, SourceRegionIndex,
+    SourceRegionKind,
 };
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -60,6 +61,38 @@ fn empty_ranges_report_both_sides_of_the_boundary() -> TestResult {
     assert!(
         !index.range_fully_within(comment_start, comment_start, &[SourceRegionKind::LineComment]),
         "an empty boundary owns no bytes and cannot satisfy a full-range policy"
+    );
+    Ok(())
+}
+
+#[test]
+fn compat_classify_range_keeps_right_side_fallback_for_empty_positions() -> TestResult {
+    let source = "my $x = 1; # note\n";
+    let index = SourceRegionIndex::build(source);
+    let comment_start = source.find('#').ok_or("fixture must contain a comment")?;
+
+    assert_eq!(
+        index.classify_range(comment_start, comment_start),
+        RangeClassification::Proven { kind: SourceRegionKind::LineComment },
+        "the compat API keeps the prior right-side kind at an empty boundary"
+    );
+    assert_eq!(
+        index.classify_range(source.len(), source.len()),
+        RangeClassification::Proven { kind: SourceRegionKind::Code },
+        "EOF has no right side and the compat API keeps the historical Code fallback"
+    );
+    Ok(())
+}
+
+#[test]
+fn range_fully_within_accepts_a_non_empty_range_inside_one_region() -> TestResult {
+    let source = "my $x = 1; # note\n";
+    let index = SourceRegionIndex::build(source);
+    let comment_start = source.find('#').ok_or("fixture must contain a comment")?;
+
+    assert!(
+        index.range_fully_within(comment_start, source.len(), &[SourceRegionKind::LineComment]),
+        "a non-empty range covered by one comment region satisfies the full-range policy"
     );
     Ok(())
 }
