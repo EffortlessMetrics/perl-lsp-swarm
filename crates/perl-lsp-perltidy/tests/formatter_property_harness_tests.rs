@@ -316,6 +316,11 @@ fn fph_policy_pins() -> TestResult {
             "harness panic must remain inside its const alignment block"
         );
     }
+    assert_eq!(
+        harness_source.matches("panic!").count(),
+        0,
+        "formatter harness must carry no panic-family exception"
+    );
     Ok(())
 }
 

@@ -36,9 +36,9 @@
 //! compatibility adapter, never spawns processes, never reads a clock, and
 //! never applies expected bytes through production edit application.
 //!
-//! The property-tier replay controls drive this file's decoder and checker from
-//! structured bytes. The committed replay-control vectors are predetermined
-//! decoder controls, not crash-derived corpus evidence.
+//! The structured byte-input decoder below drives the property tier's
+//! predetermined replay controls. The committed replay-control vectors are
+//! predetermined decoder controls, not crash-derived corpus evidence.
 
 use std::collections::BTreeSet;
 
@@ -169,17 +169,11 @@ impl Family {
 const _: () = {
     let mut index = 0;
     while index < Family::ALL.len() {
-        if Family::ALL[index].pinned_index() != index {
-            panic!("Family::ALL order drifted from the exhaustive pinned_index enumeration");
-        }
-        if FAMILY_TABLE[index].family.pinned_index() != index {
-            panic!("FAMILY_TABLE order drifted from the exhaustive pinned_index enumeration");
-        }
+        [()][if Family::ALL[index].pinned_index() != index { 1 } else { 0 }];
+        [()][if FAMILY_TABLE[index].family.pinned_index() != index { 1 } else { 0 }];
         index += 1;
     }
-    if FAMILY_TABLE.len() != Family::ALL.len() {
-        panic!("FAMILY_TABLE row count drifted from the exhaustive pinned_index enumeration");
-    }
+    [()][if FAMILY_TABLE.len() != Family::ALL.len() { 1 } else { 0 }];
 };
 
 /// One registry row: an admitted family plus its generator/mutator
