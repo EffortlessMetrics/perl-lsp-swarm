@@ -751,16 +751,6 @@ fn mutation_rows() -> Vec<SurfaceRow> {
         },
         // Initialize-result envelope assembly (outside serverCapabilities but
         // part of the final surface emitted by handle_initialize).
-        SurfaceRow {
-            additional_owned_pointers: &["envelope.serverInfo.name", "envelope.serverInfo.version"],
-            client_capability_inputs: NO_CLIENT,
-            ..mut_row(
-                "mut.handle_initialize.envelopeAssembly",
-                "envelope.protocolVersion=3.18",
-                NO_CLIENT,
-                "LSP_PROTOCOL_VERSION const + serverInfo name/version in the initialize result envelope; json!() assembly kept per in-source rationale comment",
-            )
-        },
     ]
 }
 

@@ -2306,26 +2306,6 @@
       "build_flag_effect": null
     },
     {
-      "surface_id": "mut.handle_initialize.envelopeAssembly",
-      "kind": "mutation",
-      "protocol_field": "envelope.protocolVersion=3.18",
-      "builder_mutator_path": "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
-      "client_capability_inputs": [],
-      "build_profile_config_tool_inputs": [],
-      "disposition": "static",
-      "runtime_route_owner": "n/a (initialize response assembly)",
-      "evidence_owner": "LSP_PROTOCOL_VERSION const + serverInfo name/version in the initialize result envelope; json!() assembly kept per in-source rationale comment",
-      "competing_paths": [],
-      "target_issue": "#9665",
-      "compatibility": null,
-      "additional_owned_pointers": [
-        "envelope.serverInfo.name",
-        "envelope.serverInfo.version"
-      ],
-      "rewrites_surface_pointer": null,
-      "build_flag_effect": null
-    },
-    {
       "surface_id": "mut.handle_initialize.experimentalPerlInlineCompletionStreamMerge",
       "kind": "mutation",
       "protocol_field": "experimental.perlInlineCompletionStream",
