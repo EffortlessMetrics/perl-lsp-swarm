@@ -132,6 +132,8 @@ pub enum Disposition {
 }
 
 impl Disposition {
+    /// The stable wire spelling recorded in the ledger and both projections.
+    /// Changing one is a schema change, not a rename.
     fn as_str(self) -> &'static str {
         match self {
             Self::AlreadyEquivalent => "already_equivalent",
@@ -174,6 +176,7 @@ pub enum Visibility {
 }
 
 impl Visibility {
+    /// The stable wire spelling recorded in the ledger and both projections.
     fn as_str(self) -> &'static str {
         match self {
             Self::Public => "public",
@@ -194,6 +197,7 @@ pub enum SymbolKind {
 }
 
 impl SymbolKind {
+    /// The stable wire spelling recorded in the ledger and both projections.
     fn as_str(self) -> &'static str {
         match self {
             Self::Function => "function",
@@ -227,6 +231,7 @@ pub enum ReferenceKind {
 }
 
 impl ReferenceKind {
+    /// The stable wire spelling recorded in the ledger and both projections.
     fn as_str(self) -> &'static str {
         match self {
             Self::CargoDependency => "cargo_dependency",
@@ -333,6 +338,8 @@ pub fn run(check: bool) -> Result<()> {
     Ok(())
 }
 
+/// Write a generated projection, creating its parent directory. `label` names
+/// the artifact in the error so a failure says which projection was lost.
 fn write_file(path: &Path, contents: &str, label: &str) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
@@ -341,6 +348,7 @@ fn write_file(path: &Path, contents: &str, label: &str) -> Result<()> {
     fs::write(path, contents).wrap_err_with(|| format!("failed to write {label}"))
 }
 
+/// Read the authored ledger from the repository root.
 fn load(root: &Path) -> Result<Ledger> {
     let path = root.join(LEDGER_PATH);
     let text =
@@ -354,6 +362,8 @@ pub fn parse(text: &str) -> Result<Ledger> {
     toml::from_str(text).wrap_err_with(|| format!("failed to parse {LEDGER_PATH}"))
 }
 
+/// Compare generated against checked-in content by logical line, so a CRLF
+/// checkout does not report drift the author cannot repair.
 fn normalize_newlines(text: &str) -> String {
     text.replace("\r\n", "\n")
 }
@@ -503,6 +513,10 @@ fn unresolved_reexports(
         .collect()
 }
 
+/// Every path git tracks, which is the search space for the reference plane.
+///
+/// Tracked files, not a directory walk: build output and untracked scratch are
+/// not repository evidence and must not create consumer rows.
 fn tracked_files(root: &Path) -> Result<Vec<String>> {
     let output = Command::new("git")
         .arg("ls-files")
@@ -829,6 +843,11 @@ fn strip_fn_qualifiers(mut rest: &str) -> &str {
     }
 }
 
+/// Parse one declaration line into its name, kind, and *declared* visibility.
+///
+/// The declared visibility is not the recorded one: a `pub` item in a private
+/// module is only reachable if `lib.rs` re-exports it, so [`discover`] narrows
+/// this to `Internal` where the module says so.
 fn parse_item(trimmed: &str) -> Option<(String, SymbolKind, Visibility)> {
     // `pub(crate) fn` has no space after `pub`, so the two spellings are split
     // before the shared item parsing.
@@ -852,6 +871,9 @@ fn parse_item(trimmed: &str) -> Option<(String, SymbolKind, Visibility)> {
     if name.is_empty() { None } else { Some((name, kind, visibility)) }
 }
 
+/// Net brace depth contributed by one line. Callers must pass a line with
+/// literals and comments already stripped, or a brace inside a string shifts
+/// the depth permanently.
 fn brace_delta(line: &str) -> i32 {
     let opens = line.matches('{').count() as i32;
     let closes = line.matches('}').count() as i32;
@@ -1135,6 +1157,14 @@ pub fn validate(ledger: &Ledger, discovered: &Discovered) -> Result<()> {
     Ok(())
 }
 
+/// Reconcile the symbol rows against the crate's real declared surface.
+///
+/// Refuses a duplicate identity, a discovered symbol with no row, a row naming
+/// a symbol the source no longer declares, and a row whose `kind` or
+/// `visibility` disagrees with the source. Visibility is checked because a
+/// disposition was audited against a symbol's reachability: a symbol that
+/// became public, or stopped being public, has not been audited in its current
+/// form.
 fn validate_symbols(ledger: &Ledger, discovered: &Discovered) -> Result<()> {
     let mut seen: BTreeSet<(String, String)> = BTreeSet::new();
     for row in &ledger.symbols {
@@ -1193,6 +1223,11 @@ fn validate_symbols(ledger: &Ledger, discovered: &Discovered) -> Result<()> {
     Ok(())
 }
 
+/// Reconcile the consumer rows against the discovered reference population.
+///
+/// Refuses a duplicate path, a tracked reference with no row (the
+/// unexplained-reference rule), a row for a path that no longer references the
+/// crate, and a Cargo dependent not recorded as one.
 fn validate_consumers(ledger: &Ledger, discovered: &Discovered) -> Result<()> {
     let mut seen: BTreeSet<&str> = BTreeSet::new();
     for row in &ledger.consumers {
@@ -1243,6 +1278,13 @@ fn validate_consumers(ledger: &Ledger, discovered: &Discovered) -> Result<()> {
     Ok(())
 }
 
+/// Enforce the per-disposition field obligations #8880 attaches to each row.
+///
+/// A disposition that survives migration must name where the behavior goes
+/// (`canonical_owner`) and when it may be deleted (`removal_condition`); a
+/// required one must additionally name the fixture pinning it and the issue it
+/// waits on. Issue references must be numeric, and every row must carry a note,
+/// so a row cannot be satisfied by well-formed placeholders alone.
 fn validate_row_requirements(ledger: &Ledger) -> Result<()> {
     for row in &ledger.symbols {
         let label = format!("symbol `{}::{}`", row.module, row.name);
@@ -1287,6 +1329,9 @@ fn validate_row_requirements(ledger: &Ledger) -> Result<()> {
     Ok(())
 }
 
+/// Demand a field a disposition makes mandatory, treating whitespace as absent
+/// so an empty string cannot satisfy an obligation. The error names the row,
+/// the field, and the disposition that requires it.
 fn require(
     value: &Option<String>,
     field: &str,
@@ -1358,6 +1403,11 @@ fn validate_unused_needs_cargo_evidence(ledger: &Ledger, discovered: &Discovered
     Ok(())
 }
 
+/// Fail while any row is still `unknown_blocking`.
+///
+/// `unknown_blocking` is a real disposition an auditor may record mid-audit; it
+/// is not a resting state. Listing every such row lets one run enumerate the
+/// remaining work rather than surfacing it one row at a time.
 fn validate_no_unknown_rows(ledger: &Ledger) -> Result<()> {
     let mut unknown = Vec::new();
     for row in &ledger.symbols {
@@ -1380,6 +1430,8 @@ fn validate_no_unknown_rows(ledger: &Ledger) -> Result<()> {
     Ok(())
 }
 
+/// Whether a field is a `#1234` issue reference. Owners and migration
+/// dependencies must be resolvable issues, not prose like "the parser crate".
 fn is_issue_ref(value: &str) -> bool {
     match value.strip_prefix('#') {
         Some(digits) => !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()),
@@ -1399,12 +1451,16 @@ fn sorted_symbols(ledger: &Ledger) -> Vec<SymbolRow> {
     rows
 }
 
+/// Canonical consumer order, so the projection cannot depend on ledger
+/// insertion order.
 fn sorted_consumers(ledger: &Ledger) -> Vec<ConsumerRow> {
     let mut rows = ledger.consumers.clone();
     rows.sort_by(|a, b| a.path.cmp(&b.path));
     rows
 }
 
+/// Tally rows per disposition for the projection summary. A [`BTreeMap`] keyed
+/// by the stable disposition string keeps the summary order deterministic.
 fn counts(rows: impl Iterator<Item = Disposition>) -> BTreeMap<&'static str, usize> {
     let mut out = BTreeMap::new();
     for disposition in rows {
@@ -1418,6 +1474,8 @@ fn cell(value: &str) -> String {
     value.replace('|', "\\|").replace('\n', " ")
 }
 
+/// Render an optional field for a Markdown cell, treating whitespace as absent
+/// so a blank field reads as "—" rather than as an empty column.
 fn opt(value: &Option<String>) -> String {
     match value {
         Some(v) if !v.trim().is_empty() => v.clone(),
