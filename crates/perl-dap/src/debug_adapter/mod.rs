@@ -283,7 +283,7 @@ impl DebugAdapter {
 
     /// The trusted-REPL execution policy in force for this adapter.
     #[must_use]
-    pub fn repl_trust(&self) -> ReplTrustPolicy {
+    pub(crate) fn repl_trust(&self) -> ReplTrustPolicy {
         self.repl_trust
     }
 

@@ -39,7 +39,7 @@
 //! - **Mutation**: Assignment operators, ++/--, regex mutation (s///)
 
 mod patterns;
-pub mod trust;
+mod trust;
 mod validator;
 
 pub use trust::{EvaluateAdmission, ReplTrustPolicy, admit};

@@ -554,6 +554,7 @@ pub perl_dap::backend::EvaluateContext::Other(alloc::string::String)
 pub perl_dap::backend::EvaluateContext::Repl
 pub perl_dap::backend::EvaluateContext::Variables
 pub perl_dap::backend::EvaluateContext::Watch
+pub fn perl_dap::backend::EvaluateContext::from_dap_label(label: &str) -> Self
 pub fn perl_dap::backend::EvaluateContext::clone(&self) -> perl_dap::backend::EvaluateContext
 pub fn perl_dap::backend::EvaluateContext::eq(&self, other: &perl_dap::backend::EvaluateContext) -> bool
 pub fn perl_dap::backend::EvaluateContext::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -993,9 +994,26 @@ pub fn perl_dap::debug_adapter::DebugAdapter::handle_variables(&self, seq: i64, 
 pub fn perl_dap::debug_adapter::DebugAdapter::new() -> Self
 pub fn perl_dap::debug_adapter::DebugAdapter::set_event_sender(&mut self, sender: std::sync::mpsc::SyncSender<perl_dap::debug_adapter::DapMessage>)
 pub fn perl_dap::debug_adapter::DebugAdapter::set_workspace_root(&self, root: std::path::PathBuf)
+pub fn perl_dap::debug_adapter::DebugAdapter::with_repl_trust(self, policy: perl_dap::eval::ReplTrustPolicy) -> Self
 pub fn perl_dap::debug_adapter::DebugAdapter::default() -> Self
 pub fn perl_dap::debug_adapter::DebugAdapter::drop(&mut self)
 pub mod perl_dap::eval
+pub enum perl_dap::eval::EvaluateAdmission
+pub perl_dap::eval::EvaluateAdmission::RefusedOutsideRepl
+pub perl_dap::eval::EvaluateAdmission::RefusedReplDisabled
+pub perl_dap::eval::EvaluateAdmission::Screened
+pub perl_dap::eval::EvaluateAdmission::TrustedReplExecution
+pub fn perl_dap::eval::EvaluateAdmission::refusal_message(self) -> core::option::Option<alloc::string::String>
+pub fn perl_dap::eval::EvaluateAdmission::clone(&self) -> perl_dap::eval::EvaluateAdmission
+pub fn perl_dap::eval::EvaluateAdmission::eq(&self, other: &perl_dap::eval::EvaluateAdmission) -> bool
+pub fn perl_dap::eval::EvaluateAdmission::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_dap::eval::ReplTrustPolicy
+pub perl_dap::eval::ReplTrustPolicy::ReplDisabled
+pub perl_dap::eval::ReplTrustPolicy::TrustedReplEnabled
+pub fn perl_dap::eval::ReplTrustPolicy::clone(&self) -> perl_dap::eval::ReplTrustPolicy
+pub fn perl_dap::eval::ReplTrustPolicy::eq(&self, other: &perl_dap::eval::ReplTrustPolicy) -> bool
+pub fn perl_dap::eval::ReplTrustPolicy::default() -> perl_dap::eval::ReplTrustPolicy
+pub fn perl_dap::eval::ReplTrustPolicy::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum perl_dap::eval::ValidationError
 pub perl_dap::eval::ValidationError::AssignmentOperator(alloc::string::String)
 pub perl_dap::eval::ValidationError::Backticks
@@ -1014,6 +1032,7 @@ pub fn perl_dap::api::SafeEvaluator::clone(&self) -> perl_dap::api::SafeEvaluato
 pub fn perl_dap::api::SafeEvaluator::default() -> perl_dap::api::SafeEvaluator
 pub fn perl_dap::api::SafeEvaluator::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub const perl_dap::eval::DANGEROUS_OPERATIONS: &[&str]
+pub fn perl_dap::eval::admit(context: core::option::Option<&perl_dap::backend::EvaluateContext>, allow_side_effects: bool, policy: perl_dap::eval::ReplTrustPolicy) -> perl_dap::eval::EvaluateAdmission
 pub type perl_dap::eval::ValidationResult = core::result::Result<(), perl_dap::api::ValidationError>
 pub mod perl_dap::feature_catalog
 pub mod perl_dap::feature_catalog::catalog
@@ -3808,6 +3827,7 @@ pub fn perl_dap::debug_adapter::DebugAdapter::handle_variables(&self, seq: i64, 
 pub fn perl_dap::debug_adapter::DebugAdapter::new() -> Self
 pub fn perl_dap::debug_adapter::DebugAdapter::set_event_sender(&mut self, sender: std::sync::mpsc::SyncSender<perl_dap::debug_adapter::DapMessage>)
 pub fn perl_dap::debug_adapter::DebugAdapter::set_workspace_root(&self, root: std::path::PathBuf)
+pub fn perl_dap::debug_adapter::DebugAdapter::with_repl_trust(self, policy: perl_dap::eval::ReplTrustPolicy) -> Self
 pub fn perl_dap::debug_adapter::DebugAdapter::default() -> Self
 pub fn perl_dap::debug_adapter::DebugAdapter::drop(&mut self)
 pub struct perl_dap::DisconnectArguments
