@@ -39,12 +39,13 @@ use tasks::{
     check_tautology, check_test_wiring, check_toolchain, check_version_sync, ci,
     ci_audit_workflows, ci_contract, ci_doctor, ci_explain, ci_hygiene, ci_measure, ci_metrics,
     ci_policy, ci_pr_summary, ci_route, ci_scope, clean, clippy_cost_measure, command_evidence,
-    compare, compiler_lexical_cutline, corpus_audit, count_ratchet, cpan_corpus, dead_code,
-    debt_report, dependency_hygiene, dev, devex_docs, devex_doctor, devex_plan, doc, doc_claims,
-    e2e_validate, edge_cases, emacs_train_context, emacs_train_specs, features, finalize_check,
-    fix_forward, fmt, forbid_fatal_constructs, forensics, gate_receipts, gates, generated_files,
-    github, github_preflight, github_review, goals, hardening, hook_checks, ignored_tests,
-    incremental_proof, init_environment, inject_sha_assets, inline_completion_quality,
+    compare, compat_inventory, compiler_lexical_cutline, corpus_audit, count_ratchet, cpan_corpus,
+    dead_code, debt_report, dependency_hygiene, dev, devex_docs, devex_doctor, devex_plan, doc,
+    doc_claims, e2e_validate, edge_cases, emacs_train_context, emacs_train_specs, features,
+    finalize_check, fix_forward, fmt, forbid_fatal_constructs, forensics, gate_receipts, gates,
+    generated_files, github, github_preflight, github_review, goals, hardening, hook_checks,
+    ignored_tests, incremental_proof, init_environment, inject_sha_assets,
+    inline_completion_quality,
     inline_completion_smoke, install_surface_check, integration_proof, intent_diff_gate,
     issue_plan, layer_check, lsp_318_claims, lsp_318_matrix, lsp_ux_smoke, memory_trends,
     merge_ready, methodology_gate, metrics, module_train, module_train_live, native_critic,
@@ -295,6 +296,15 @@ enum Commands {
     /// Validate `policy/repository-topology.toml` and project it to a human table.
     #[command(name = "repo-topology")]
     RepoTopology {
+        /// Validate only, and require the checked-in projection to be current.
+        #[arg(long)]
+        check: bool,
+    },
+
+    /// Reconcile `policy/tree-sitter-compat-inventory.toml` against the real
+    /// `perl-tree-sitter-compat` surface and project the inventory (#8880).
+    #[command(name = "compat-inventory")]
+    CompatInventory {
         /// Validate only, and require the checked-in projection to be current.
         #[arg(long)]
         check: bool,
@@ -5148,6 +5158,7 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::CheckLsp318Claims => lsp_318_claims::run(),
         Commands::GenerateLsp318Matrix { check } => lsp_318_matrix::run(check),
         Commands::RepoTopology { check } => repository_topology::run(check),
+        Commands::CompatInventory { check } => compat_inventory::run(check),
         Commands::GenerateProtocolTypeSubstrateMatrix { check } => {
             protocol_type_substrate_matrix::run(check)
         }

@@ -6,18 +6,18 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12505 |
-| Rust-family files | 3873 |
-| Non-Rust files | 8632 |
-| Allowlisted | 6395 |
+| Total tracked files | 12508 |
+| Rust-family files | 3874 |
+| Non-Rust files | 8634 |
+| Allowlisted | 6397 |
 | Unclassified | 2237 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 496 |
-| documentation | 2815 |
+| config | 497 |
+| documentation | 2816 |
 | generated | 2 |
 | production | 348 |
 | test | 2067 |
@@ -4515,6 +4515,7 @@
 | `docs/architecture/perl-oracle-subprocess-contract.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/architecture/perl-subprocess-seams.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/architecture/repository-topology.md` | documentation | `non-rust-docs-tree` | docs |
+| `docs/architecture/tree-sitter-compat-inventory.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/archive/DAP_0_9_SHIM_DESIGN.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/articles/AGGREGATOR_ABSORPTION_PATTERN.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/articles/AI_NATIVE_OPERATIONS.md` | documentation | `non-rust-docs-tree` | docs |
@@ -6405,6 +6406,7 @@
 | `policy/semantic-token-classes.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/skill-provider-parity.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/standalone-archive-safety.v1.toml` | config | `non-rust-policy-ledgers` | release/ci |
+| `policy/tree-sitter-compat-inventory.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/trust-lanes.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/ub-review.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/workflow-contracts.toml` | config | `non-rust-policy-ledgers` | release/ci |
