@@ -33,7 +33,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::fs;
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
 /// Hand-authored disposition ledger. Humans own this file.
@@ -245,7 +245,16 @@ impl ReferenceKind {
 // Discovered model
 // ---------------------------------------------------------------------------
 
-/// One public item found in the crate's own source.
+/// An out-of-line module declared in `lib.rs`.
+#[derive(Debug, Serialize, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Module {
+    pub name: String,
+    /// `pub mod` rather than `mod`. A `pub` item in a private module is not
+    /// crate-public unless `lib.rs` re-exports it.
+    pub public: bool,
+}
+
+/// One declared symbol owned by the crate.
 #[derive(Debug, Serialize, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Export {
     pub module: String,
@@ -364,15 +373,23 @@ pub fn discover(root: &Path) -> Result<Discovered> {
 
     let mut exports = Vec::new();
     for module in &modules {
-        let module_path = root.join(CRATE_DIR).join(format!("src/{module}.rs"));
+        let module_name = &module.name;
+        let module_path = root.join(CRATE_DIR).join(format!("src/{module_name}.rs"));
         let source = fs::read_to_string(&module_path)
             .wrap_err_with(|| format!("failed to read {}", module_path.display()))?;
-        for (name, kind, visibility) in parse_declared_items(&source) {
-            // Only a public item can be re-exported at the crate root.
-            let reexported_at_root = visibility == Visibility::Public
-                && root_reexports.iter().any(|(m, n)| m == module && n == &name);
+        for (name, kind, declared) in parse_declared_items(&source) {
+            let reexported = root_reexports.iter().any(|(m, n)| m == module_name && n == &name);
+            // Rust reachability, not the declaration keyword: a `pub` item in a
+            // private module leaves the crate only through a root `pub use`.
+            // Anything else stays internal and retires with the crate.
+            let visibility = if declared == Visibility::Public && (module.public || reexported) {
+                Visibility::Public
+            } else {
+                Visibility::Internal
+            };
+            let reexported_at_root = visibility == Visibility::Public && reexported;
             exports.push(Export {
-                module: module.clone(),
+                module: module_name.clone(),
                 name,
                 kind,
                 visibility,
@@ -612,16 +629,24 @@ fn code_lines(source: &str) -> Vec<String> {
 }
 
 /// `pub mod <name>;` declarations in `lib.rs`.
-pub fn parse_modules(lib_rs: &str) -> Vec<String> {
+pub fn parse_modules(lib_rs: &str) -> Vec<Module> {
     let mut modules = Vec::new();
     for line in code_lines(lib_rs) {
         let line = line.trim();
-        if let Some(rest) = line.strip_prefix("pub mod ")
-            && let Some(name) = rest.strip_suffix(';')
-        {
+        // A private `mod` is scanned too: it cannot expose public surface, but it
+        // can hold `pub(crate)` items, and it can be the body of a `pub use`
+        // facade. Skipping it would leave internal symbols uninventoried.
+        let (rest, public) = match line.strip_prefix("pub mod ") {
+            Some(rest) => (rest, true),
+            None => match line.strip_prefix("mod ") {
+                Some(rest) => (rest, false),
+                None => continue,
+            },
+        };
+        if let Some(name) = rest.strip_suffix(';') {
             let name = name.trim();
             if !name.is_empty() {
-                modules.push(name.to_string());
+                modules.push(Module { name: name.to_string(), public });
             }
         }
     }
@@ -805,10 +830,12 @@ fn discover_cargo_dependents(root: &Path, tracked: &[String]) -> Result<Vec<Carg
             Ok(table) => toml::Value::Table(table),
             // A manifest that names the package but will not parse could be
             // declaring the dependency, and skipping it would let a false
-            // `unused` through. One that never names the package cannot
-            // declare it under any spelling — a renamed entry still writes
-            // `package = "perl-tree-sitter-compat"` — so an unrelated
-            // malformed fixture manifest is safe to pass over.
+            // `unused` through. One that never mentions the string cannot
+            // declare it under any spelling: a renamed entry writes
+            // `package = "perl-tree-sitter-compat"`, a workspace-inherited
+            // alias is resolved from the root manifest, and a path entry must
+            // end in the crate's directory name, which is the package name. So
+            // an unrelated malformed fixture manifest is safe to pass over.
             Err(error) if text.contains(PACKAGE) => {
                 bail!(
                     "failed to parse {path}, which names {PACKAGE}; the Cargo dependent \
@@ -883,6 +910,13 @@ fn collect_dependents(
                 || entry.get("package").and_then(toml::Value::as_str) == Some(PACKAGE)
                 || (entry.get("workspace").and_then(toml::Value::as_bool) == Some(true)
                     && aliases.contains(key.as_str()))
+                // `compat = { path = "../perl-tree-sitter-compat" }` names the
+                // package nowhere: Cargo takes the identity from the manifest
+                // the path points at.
+                || entry
+                    .get("path")
+                    .and_then(toml::Value::as_str)
+                    .is_some_and(|relative| path_targets_package(manifest, relative))
         });
         if declared {
             let kind = match cfg {
@@ -892,6 +926,35 @@ fn collect_dependents(
             out.push(CargoDependent { manifest: manifest.to_string(), kind });
         }
     }
+}
+
+/// Whether a `path = "…"` dependency in `manifest` points at the package.
+///
+/// Resolution is lexical on repository-relative paths, so it needs no
+/// filesystem access and cannot fail on a manifest outside the workspace. A
+/// path dependency that resolves to the crate's directory links the crate
+/// whatever the entry is keyed as, because Cargo reads the identity out of the
+/// manifest at that path.
+fn path_targets_package(manifest: &str, relative: &str) -> bool {
+    let Some(dir) = Path::new(manifest).parent() else {
+        return false;
+    };
+    normalize_lexically(&dir.join(relative)) == Path::new(CRATE_DIR)
+}
+
+/// Resolve `.` and `..` without touching the filesystem.
+fn normalize_lexically(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other),
+        }
+    }
+    out
 }
 
 /// Tracked files mentioning the package name or its Rust module path.
@@ -1991,11 +2054,21 @@ mod tests {
         let lib = "\
 pub mod convert;
 pub mod sexp;
+mod hidden;
 
 pub use convert::{TreeError, parse_to_tree, to_ts_node};
 pub use sexp::to_sexp;
 ";
-        assert_eq!(parse_modules(lib), vec!["convert", "sexp"]);
+        // A private `mod` is discovered too, flagged as non-public: it cannot
+        // expose public surface but can still hold internal symbols.
+        assert_eq!(
+            parse_modules(lib),
+            vec![
+                Module { name: "convert".to_string(), public: true },
+                Module { name: "hidden".to_string(), public: false },
+                Module { name: "sexp".to_string(), public: true },
+            ]
+        );
         assert_eq!(
             parse_root_reexports(lib),
             vec![
@@ -2075,6 +2148,81 @@ fn private() {}
         internal.reexported_at_root = false;
 
         validate(&ledger(vec![row], vec![]), &discovered(vec![internal], vec![]))
+    }
+
+    /// A private `mod` can hold `pub(crate)` items. Matching only `pub mod`
+    /// would skip the file entirely, so the inventory would certify complete
+    /// internal coverage having never opened it.
+    #[test]
+    fn a_private_module_is_discovered_so_its_internal_symbols_are_not_skipped() -> TestResult {
+        let modules = parse_modules("pub mod convert;\nmod hidden;\n");
+        assert!(
+            modules.contains(&Module { name: "hidden".to_string(), public: false }),
+            "a private module must be scanned: {modules:?}"
+        );
+        Ok(())
+    }
+
+    /// Visibility is Rust reachability, not the declaration keyword. A `pub` item
+    /// in a private module leaves the crate only through a root `pub use`;
+    /// recording it as public would tell #8889 to migrate something no consumer
+    /// can name.
+    #[test]
+    fn a_pub_item_in_a_private_module_is_public_only_when_reexported() -> TestResult {
+        let exported = Export {
+            module: "hidden".to_string(),
+            name: "Reachable".to_string(),
+            kind: SymbolKind::Struct,
+            visibility: Visibility::Public,
+            reexported_at_root: true,
+        };
+        let sealed = Export {
+            module: "hidden".to_string(),
+            name: "Sealed".to_string(),
+            kind: SymbolKind::Struct,
+            visibility: Visibility::Internal,
+            reexported_at_root: false,
+        };
+        // `unresolved_reexports` must accept the re-exported one and still
+        // reject a name only an internal item carries.
+        let reexports = vec![
+            ("hidden".to_string(), "Reachable".to_string()),
+            ("hidden".to_string(), "Sealed".to_string()),
+        ];
+        assert_eq!(
+            unresolved_reexports(&[exported, sealed], &reexports),
+            vec![("hidden".to_string(), "Sealed".to_string())],
+            "an internal item does not satisfy a public re-export"
+        );
+        Ok(())
+    }
+
+    /// The fourth dependency spelling: `compat = { path = "..." }` names the
+    /// package nowhere, because Cargo reads the identity from the manifest the
+    /// path points at.
+    #[test]
+    fn a_path_dependency_is_discovered() -> TestResult {
+        assert!(
+            path_targets_package("crates/perl-lsp-rs/Cargo.toml", "../perl-tree-sitter-compat"),
+            "a sibling path dependency links the crate"
+        );
+        assert!(
+            path_targets_package("tools/thing/Cargo.toml", "../../crates/perl-tree-sitter-compat"),
+            "a deeper relative path resolves the same way"
+        );
+        Ok(())
+    }
+
+    /// The control. Without it, a matcher that admitted every `path` entry would
+    /// pass the test above and report the whole workspace as a dependent.
+    #[test]
+    fn an_unrelated_path_dependency_is_not_discovered() -> TestResult {
+        assert!(!path_targets_package("crates/perl-lsp-rs/Cargo.toml", "../perl-parser"));
+        assert!(!path_targets_package(
+            "crates/perl-lsp-rs/Cargo.toml",
+            "../perl-tree-sitter-compat-extras"
+        ));
+        Ok(())
     }
 
     /// A symbol that changes visibility keeps its name, so nothing else in the
