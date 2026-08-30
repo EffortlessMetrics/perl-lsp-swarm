@@ -282,17 +282,14 @@
       },
       "allOf": [
         {
-          "$comment": "A candidate transition is not accepted state; it must require acceptance.",
+          "$comment": "Acceptance means adoption into the ratchet, matching classify_compatibility_transition in perl-core-harness: an improvement or contract correction awaits acceptance, a regression does not — it is a blocking signal, not something adopted.",
           "if": {
             "properties": {
               "transition": {
-                "enum": [
-                  "improvement_candidate",
-                  "regression",
-                  "contract_correction_candidate"
-                ]
+                "enum": ["improvement_candidate", "contract_correction_candidate"]
               }
-            }
+            },
+            "required": ["transition"]
           },
           "then": {"properties": {"requires_acceptance": {"const": true}}},
           "else": {"properties": {"requires_acceptance": {"const": false}}}

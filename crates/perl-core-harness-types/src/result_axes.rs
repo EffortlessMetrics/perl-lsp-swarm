@@ -860,18 +860,22 @@ impl CurrentVersusAccepted {
         if let Some(digest) = &self.accepted_baseline_digest {
             require_non_blank("accepted_baseline_digest", digest)?;
         }
-        let is_candidate = matches!(
+        // `requires_acceptance` means "a reviewer must accept this before it moves
+        // the ratchet", which is the sense `classify_compatibility_transition` in
+        // perl-core-harness emits: an improvement or a contract correction can be
+        // accepted into state, a regression cannot — it is a blocking signal, not
+        // something to adopt.
+        let awaits_acceptance = matches!(
             self.transition,
             CompatibilityTransition::ImprovementCandidate
-                | CompatibilityTransition::Regression
                 | CompatibilityTransition::ContractCorrectionCandidate
         );
-        if is_candidate && !self.requires_acceptance {
+        if awaits_acceptance && !self.requires_acceptance {
             return Err(ResultReportViolation::CandidateTreatedAsAccepted {
                 transition: self.transition,
             });
         }
-        if !is_candidate && self.requires_acceptance {
+        if !awaits_acceptance && self.requires_acceptance {
             return Err(ResultReportViolation::SettledTransitionRequiresAcceptance {
                 transition: self.transition,
             });
@@ -973,6 +977,8 @@ pub enum ResultReportViolation {
     },
     /// A complete measurement claimed valid evidence while observing nothing.
     CompleteMeasurementObservedNothing,
+    /// A clean aggregate contradicted a detail record that observed failures.
+    CleanAggregateOverFailingDetail,
     /// An aggregate claimed support that no rail in the report backs.
     AggregateSupportWithoutRail {
         /// The positive support claim.
@@ -1080,6 +1086,10 @@ impl fmt::Display for ResultReportViolation {
                 f,
                 "the {axis} distribution uses category '{category}', which is not part of that \
                  axis vocabulary"
+            ),
+            Self::CleanAggregateOverFailingDetail => f.write_str(
+                "the aggregate observation is 'clean' while a file or invocation record \
+                 observed failures",
             ),
             Self::AggregateSupportWithoutRail { support, mechanism } => write!(
                 f,
@@ -1267,15 +1277,37 @@ impl RunAxesReport {
             // some rail must actually have run with that mechanism. Otherwise the
             // aggregate asserts evidence no rail in the report carries.
             let mechanism = self.axes.mechanism();
-            let backed = self
-                .correctness_rails
-                .values()
-                .any(|rail| rail.ran() && rail.mechanism == mechanism);
+            // General support needs a rail whose evidence is usable now. A partial
+            // rail covers only a declared subset and a stale one has outlived its
+            // freshness contract, so neither can carry a general claim across the
+            // whole denominator.
+            let backed = self.correctness_rails.values().any(|rail| {
+                rail.mechanism == mechanism
+                    && match self.axes.support() {
+                        SemanticSupport::General => {
+                            rail.availability == CompatibilityRailAvailability::Available
+                        }
+                        _ => rail.ran(),
+                    }
+            });
             if !backed {
                 return Err(ResultReportViolation::AggregateSupportWithoutRail {
                     support: self.axes.support(),
                     mechanism,
                 });
+            }
+        }
+        if self.axes.observation() == ObservedOutcome::Clean {
+            let failing_detail = self
+                .files
+                .iter()
+                .any(|file| file.axes.observation() == ObservedOutcome::FailuresObserved)
+                || self
+                    .invocations
+                    .iter()
+                    .any(|run| run.axes.observation() == ObservedOutcome::FailuresObserved);
+            if failing_detail {
+                return Err(ResultReportViolation::CleanAggregateOverFailingDetail);
             }
         }
         if self.origin == EvidenceOrigin::LegacyAdapted {
@@ -1375,37 +1407,63 @@ impl LegacyAdaptation {
 /// A v1 `pass` records that the runner did not fail. It says nothing about
 /// admission, semantic support, or which mechanism ran, so those axes stay
 /// unassessed and the adaptation is never sufficient for current authority.
+///
+/// A v1 `fail` is **not** promoted to a product failure. `RunnerStatus::Fail`
+/// is also written for a test that was discovered but produced no runner record
+/// at all — a harness failure, recorded under the `harness_prepare` bucket —
+/// so the bare status cannot distinguish a product regression from an
+/// instrument problem. Reading it as `failures_observed` would commit exactly
+/// the conflation this module exists to prevent, so it adapts to unproven
+/// evidence with no product outcome established.
 #[must_use]
 pub fn adapt_legacy_runner_status(
     status: RunnerStatus,
     source_schema_version: impl Into<String>,
 ) -> LegacyAdaptation {
-    let observation = match status {
-        RunnerStatus::Pass => ObservedOutcome::Clean,
-        RunnerStatus::Fail => ObservedOutcome::FailuresObserved,
-    };
-    legacy_adaptation(observation, source_schema_version)
+    match status {
+        RunnerStatus::Pass => legacy_clean(source_schema_version),
+        RunnerStatus::Fail => legacy_indeterminate_failure(source_schema_version),
+    }
 }
 
 /// Translate a v1 [`SmokeStatus`] forward without inventing facts.
+///
+/// `SmokeStatus::Fail` is derived purely from structural failures — a missing
+/// report, a profile mismatch, an unbucketed or unknown-bucket failure, or a
+/// semantic boundary — so it never asserts on its own that the product failed.
+/// It adapts to unproven evidence rather than a product outcome.
 #[must_use]
 pub fn adapt_legacy_smoke_status(
     status: SmokeStatus,
     source_schema_version: impl Into<String>,
 ) -> LegacyAdaptation {
-    let observation = match status {
-        SmokeStatus::Pass => ObservedOutcome::Clean,
-        SmokeStatus::Fail => ObservedOutcome::FailuresObserved,
-    };
-    legacy_adaptation(observation, source_schema_version)
+    match status {
+        SmokeStatus::Pass => legacy_clean(source_schema_version),
+        SmokeStatus::Fail => legacy_indeterminate_failure(source_schema_version),
+    }
+}
+
+/// A v1 record that reported no failure of any kind.
+fn legacy_clean(source_schema_version: impl Into<String>) -> LegacyAdaptation {
+    legacy_adaptation(EvidenceValidity::Valid, ObservedOutcome::Clean, source_schema_version)
+}
+
+/// A v1 failure whose kind the historical record cannot establish.
+fn legacy_indeterminate_failure(source_schema_version: impl Into<String>) -> LegacyAdaptation {
+    legacy_adaptation(
+        EvidenceValidity::NotProven,
+        ObservedOutcome::ProcessOrProtocolFailed,
+        source_schema_version,
+    )
 }
 
 fn legacy_adaptation(
+    evidence: EvidenceValidity,
     observation: ObservedOutcome,
     source_schema_version: impl Into<String>,
 ) -> LegacyAdaptation {
     let axes = ResultAxes {
-        evidence: EvidenceValidity::Valid,
+        evidence,
         observation,
         admission: CompatibilityAdmission::NotAssessed,
         support: SemanticSupport::NotAssessed,
@@ -1739,15 +1797,27 @@ mod tests {
 
     // ---- Fixture class 12: observation weaker than the accepted ratchet ------
 
+    /// Shaped exactly as `classify_compatibility_transition` in perl-core-harness
+    /// emits a regression: `requires_acceptance` is false, because a regression is
+    /// a blocking signal rather than something a reviewer adopts into the ratchet.
     #[test]
     fn regression_requires_a_baseline_to_regress_from() -> Result<(), ResultReportViolation> {
         let regression = CurrentVersusAccepted {
             transition: CompatibilityTransition::Regression,
-            requires_acceptance: true,
+            requires_acceptance: false,
             accepted_baseline_digest: Some("sha256:2".to_string()),
             reason: "fewer files admitted than the accepted ratchet".to_string(),
         };
         regression.validate()?;
+
+        let adopted = CurrentVersusAccepted { requires_acceptance: true, ..regression.clone() };
+        assert_eq!(
+            adopted.validate(),
+            Err(ResultReportViolation::SettledTransitionRequiresAcceptance {
+                transition: CompatibilityTransition::Regression,
+            }),
+            "a regression is not accepted into state"
+        );
 
         let baseless = CurrentVersusAccepted { accepted_baseline_digest: None, ..regression };
         assert_eq!(
@@ -1820,12 +1890,24 @@ mod tests {
         Ok(())
     }
 
+    /// A bare v1 `fail` cannot tell a product regression from a harness
+    /// failure: `SmokeStatus::Fail` is derived only from structural failures,
+    /// and `RunnerStatus::Fail` is also written for a discovered test that
+    /// produced no runner record. Neither may be promoted to a product outcome.
     #[test]
-    fn legacy_v1_fail_remains_a_product_failure() {
-        let adapted = adapt_legacy_smoke_status(SmokeStatus::Fail, "perl_core_harness.smoke.v1");
-        assert_eq!(adapted.axes.observation(), ObservedOutcome::FailuresObserved);
-        assert_eq!(adapted.axes.evidence(), EvidenceValidity::Valid);
-        assert!(!adapted.sufficient_for_current_authority());
+    fn an_ambiguous_v1_failure_does_not_become_a_product_failure() {
+        for adapted in [
+            adapt_legacy_smoke_status(SmokeStatus::Fail, "perl_core_harness.smoke.v1"),
+            adapt_legacy_runner_status(RunnerStatus::Fail, "perl_core_harness.report.v1"),
+        ] {
+            assert_eq!(
+                adapted.axes.observation(),
+                ObservedOutcome::ProcessOrProtocolFailed,
+                "a v1 failure of unknown kind must not read as an observed product failure"
+            );
+            assert_eq!(adapted.axes.evidence(), EvidenceValidity::NotProven);
+            assert!(!adapted.sufficient_for_current_authority());
+        }
     }
 
     #[test]
@@ -2528,6 +2610,39 @@ mod tests {
             SchemaAgreement::RustStricter,
         ));
 
+        let mut weak_rail = valid_report()?;
+        weak_rail.correctness_rails.insert(
+            "eir".to_string(),
+            CorrectnessRailSummary {
+                mechanism: CorrectnessMechanism::EirExecution,
+                availability: CompatibilityRailAvailability::Stale,
+                reason: "freshness expired".to_string(),
+                evidence_refs: vec!["bundle-1".to_string()],
+                files_total: Some(4),
+                files_passed: Some(4),
+            },
+        );
+        fixtures.push((
+            "general support resting on a stale rail",
+            serde_json::to_value(weak_rail)?,
+            false,
+            SchemaAgreement::RustStricter,
+        ));
+
+        let mut adopted_regression = valid_report()?;
+        adopted_regression.current_versus_accepted = CurrentVersusAccepted {
+            transition: CompatibilityTransition::Regression,
+            requires_acceptance: true,
+            accepted_baseline_digest: Some("sha256:9".to_string()),
+            reason: "regression presented as adoptable".to_string(),
+        };
+        fixtures.push((
+            "regression presented as awaiting acceptance",
+            serde_json::to_value(adopted_regression)?,
+            false,
+            SchemaAgreement::Same,
+        ));
+
         let mut blank_boundary = valid_report()?;
         blank_boundary.claim_boundary = "   ".to_string();
         fixtures.push((
@@ -2694,6 +2809,58 @@ mod tests {
             "a complete, valid, authoritative report cannot have assessed nothing"
         );
         assert!(candidate.admissible_as_current_authority().is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn general_support_cannot_rest_on_a_partial_or_stale_rail()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for weak in [CompatibilityRailAvailability::Partial, CompatibilityRailAvailability::Stale] {
+            let mut candidate = valid_report()?;
+            candidate.correctness_rails.insert(
+                "eir".to_string(),
+                CorrectnessRailSummary {
+                    mechanism: CorrectnessMechanism::EirExecution,
+                    availability: weak,
+                    reason: "subset only".to_string(),
+                    evidence_refs: vec!["bundle-1".to_string()],
+                    files_total: Some(1),
+                    files_passed: Some(1),
+                },
+            );
+            assert_eq!(
+                candidate.validate(),
+                Err(ResultReportViolation::AggregateSupportWithoutRail {
+                    support: SemanticSupport::General,
+                    mechanism: CorrectnessMechanism::EirExecution,
+                }),
+                "a {weak:?} rail cannot carry a general claim across the whole denominator"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_clean_aggregate_cannot_sit_over_a_failing_detail() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let mut candidate = valid_report()?;
+        let failing = ResultAxes::new(
+            EvidenceValidity::Valid,
+            ObservedOutcome::FailuresObserved,
+            CompatibilityAdmission::Implemented,
+            SemanticSupport::Partial,
+            CorrectnessMechanism::EirExecution,
+        )?;
+        candidate.files.push(FileModeAxesResult {
+            path: "base/broken.t".to_string(),
+            mode: HarnessMode::Compile,
+            axes: failing,
+            bucket: Some("compile_effect".to_string()),
+        });
+        assert_eq!(
+            candidate.validate(),
+            Err(ResultReportViolation::CleanAggregateOverFailingDetail)
+        );
         Ok(())
     }
 
