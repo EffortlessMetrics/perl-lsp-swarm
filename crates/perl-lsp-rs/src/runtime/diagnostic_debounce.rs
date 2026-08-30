@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::thread;
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 enum DebounceMsg {
@@ -21,6 +21,13 @@ pub(crate) struct DiagnosticDebouncer {
     tx: std::sync::mpsc::Sender<DebounceMsg>,
     #[allow(dead_code)] // Read by test/debug runtime pressure snapshots.
     pending_count: Arc<AtomicUsize>,
+    /// Retained worker handle, mirroring `FileWatcherDebouncer::assemble`'s
+    /// shape (#10024) so a later shutdown-settlement consumer can join it.
+    /// Not joined today -- this PR's scope is surfacing the spawn outcome
+    /// through [`Self::is_operational`], not changing teardown timing.
+    #[allow(dead_code)]
+    worker: Option<JoinHandle<()>>,
+    operational: bool,
 }
 
 impl DiagnosticDebouncer {
@@ -31,13 +38,36 @@ impl DiagnosticDebouncer {
         let (tx, rx) = std::sync::mpsc::channel();
         let pending_count = Arc::new(AtomicUsize::new(0));
         let worker_pending_count = Arc::clone(&pending_count);
-        if let Err(e) = thread::Builder::new()
+        let spawn_result = thread::Builder::new()
             .name("diag-debounce".into())
-            .spawn(move || worker_loop(rx, interval, publish_fn, worker_pending_count))
-        {
+            .spawn(move || worker_loop(rx, interval, publish_fn, worker_pending_count));
+        let operational = spawn_result.is_ok();
+        if let Err(ref e) = spawn_result {
             tracing::error!(error = %e, "diagnostic debounce thread spawn failed");
         }
-        Self { tx, pending_count }
+        Self { tx, pending_count, worker: spawn_result.ok(), operational }
+    }
+
+    /// Whether the debounce worker thread spawned. `false` means every
+    /// [`Self::schedule`] call below sends into a channel with no receiver:
+    /// the message is silently dropped (logged at `debug`) and nothing ever
+    /// publishes. Surfaced so `RuntimeServices` can retain the instrument
+    /// failure instead of losing it behind the construction-time log line
+    /// (#10024).
+    pub(crate) fn is_operational(&self) -> bool {
+        self.operational
+    }
+
+    /// Ask the worker loop to stop, the same way [`Drop`] does. Idempotent:
+    /// a second call (or the `Drop` that follows) finds the channel closed
+    /// and logs at `debug` rather than failing. Mirrors
+    /// `FileWatcherDebouncer::shutdown_now` so `RuntimeServices` has one
+    /// cooperative-cancellation shape across every application worker
+    /// (#10024).
+    pub(crate) fn shutdown_now(&self) {
+        if let Err(e) = self.tx.send(DebounceMsg::Shutdown) {
+            tracing::debug!(error = %e, "diagnostic debounce: channel closed on shutdown");
+        }
     }
 
     pub(crate) fn schedule(&self, uri: &str) {
@@ -255,5 +285,11 @@ mod tests {
         drop(debouncer);
         thread::sleep(Duration::from_millis(50));
         assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn is_operational_reports_true_after_a_normal_spawn() {
+        let debouncer = DiagnosticDebouncer::with_interval(Duration::from_secs(5), |_| {});
+        assert!(debouncer.is_operational());
     }
 }

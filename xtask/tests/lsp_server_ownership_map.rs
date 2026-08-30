@@ -311,31 +311,13 @@ const OWNERSHIP: &[OwnershipRow] = &[
         "#8388"
     ),
     row!(
-        "diagnostic_debouncer",
+        "runtime_services",
         RuntimeServices,
-        "Mutex<Option>",
+        "owned service",
         "application shutdown",
-        "runtime + document generation",
+        "runtime + document/root generation",
         true,
-        "#9508"
-    ),
-    row!(
-        "parse_worker_handle",
-        RuntimeServices,
-        "Mutex<Option<Arc>>",
-        "application shutdown",
-        "runtime + document generation",
-        true,
-        "#9508"
-    ),
-    row!(
-        "file_watcher_debouncer",
-        RuntimeServices,
-        "Mutex<Option>",
-        "application shutdown",
-        "runtime + root generation",
-        true,
-        "#9508"
+        "#10024"
     ),
     row!(
         "notebook_store",
@@ -994,6 +976,101 @@ pub struct PullDiagnosticsOrchestrator {
         orchestrator_body.contains("HashSet"),
         "fixture must carry the renamed store for the assertion below"
     );
+
+    Ok(())
+}
+
+/// `LspServer` fields that legitimately declare a task-handle-shaped type
+/// under their own decided ownership row. `runtime_services` is the #10024
+/// governed owner of application worker execution-handle state.
+/// `outbound_writer_handle` is the one accepted pre-existing exception: it
+/// is `ClientTransport`-owned connection-shutdown state under the
+/// independently decided #9507 row, not application worker state, and
+/// predates the #10024 ownership move.
+const TASK_HANDLE_STATE_FIELDS: &[&str] = &["runtime_services", "outbound_writer_handle"];
+
+/// True when a declaration's type is task-handle-shaped -- a raw
+/// `JoinHandle`/`AbortHandle`, or a bare application worker type such as
+/// `ParseWorker` or a `*Debouncer`. Name-independent: a renamed
+/// `stray_worker: Mutex<Option<Arc<ParseWorker>>>` is still task-handle
+/// state (#10024).
+fn is_task_handle_shaped(declaration: &str) -> bool {
+    declaration_type(declaration).is_some_and(|ty| {
+        ty.contains("JoinHandle")
+            || ty.contains("AbortHandle")
+            || ty.contains("ParseWorker")
+            || ty.contains("Debouncer")
+    })
+}
+
+/// #10024 architecture negative control: a NEW `LspServer` field whose
+/// declared type is task-handle-shaped must not land outside the single
+/// governed `RuntimeServices` field, whatever it is named.
+#[test]
+fn application_worker_handles_stay_inside_runtime_services() -> Result<()> {
+    let source = fs::read_to_string(repo_root()?.join("crates/perl-lsp-rs/src/runtime/mod.rs"))?;
+    let body = lsp_server_body(&source)?;
+    let declarations = split_declarations(&body)?;
+
+    for declaration in &declarations {
+        if !is_task_handle_shaped(declaration) {
+            continue;
+        }
+        let name = declaration_field_name(declaration)?;
+        ensure!(
+            TASK_HANDLE_STATE_FIELDS.contains(&name.as_str()),
+            "LspServer must not declare application worker execution-handle state outside \
+             the governed #10024 RuntimeServices field: {declaration}"
+        );
+    }
+
+    ensure!(
+        declarations
+            .iter()
+            .any(|declaration| declaration
+                .starts_with("runtime_services: runtime_services::RuntimeServices")),
+        "the governed #10024 RuntimeServices field must remain declared"
+    );
+
+    Ok(())
+}
+
+/// Regression fixture for the #10024 structural scan: a renamed task-handle
+/// field evades name-based checks but not the structural type scan, and the
+/// governed allowlist keeps passing the same scan.
+#[test]
+fn renamed_task_handle_state_cannot_escape_the_scan() -> Result<()> {
+    let renamed = r#"
+pub struct LspServer {
+    documents: Arc<Mutex<HashMap<String, DocumentState>>>,
+    stray_parse_worker: Mutex<Option<Arc<ParseWorker>>>,
+}
+"#;
+    let declarations = split_declarations(&lsp_server_body(renamed)?)?;
+    let flagged: Vec<String> = declarations
+        .iter()
+        .filter(|declaration| {
+            is_task_handle_shaped(declaration)
+                && !TASK_HANDLE_STATE_FIELDS
+                    .contains(&declaration_field_name(declaration).unwrap_or_default().as_str())
+        })
+        .cloned()
+        .collect();
+    assert_eq!(flagged.len(), 1, "the renamed task-handle field must be flagged");
+    assert!(flagged[0].contains("stray_parse_worker"));
+
+    let governed = r#"
+pub struct LspServer {
+    runtime_services: Mutex<Option<ParseWorker>>,
+    outbound_writer_handle: Option<std::thread::JoinHandle<()>>,
+}
+"#;
+    let governed_declarations = split_declarations(&lsp_server_body(governed)?)?;
+    assert!(governed_declarations.iter().all(|declaration| {
+        !is_task_handle_shaped(declaration)
+            || TASK_HANDLE_STATE_FIELDS
+                .contains(&declaration_field_name(declaration).unwrap_or_default().as_str())
+    }));
 
     Ok(())
 }

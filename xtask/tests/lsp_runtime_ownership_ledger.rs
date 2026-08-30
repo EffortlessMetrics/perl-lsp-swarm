@@ -231,6 +231,20 @@ const MODULES: &[ModuleRow] = &[
         "#9503"
     ),
     module_row!(
+        "runtime_services",
+        PerlApplication,
+        "perl-lsp-rs RuntimeServices",
+        "retain as the application worker execution lifecycle/settlement owner",
+        "#10024"
+    ),
+    module_row!(
+        "runtime_services_tests",
+        PerlApplication,
+        "perl-lsp-rs",
+        "retain as cfg(test) falsifiers of application worker settlement beside its subject",
+        "#10024"
+    ),
+    module_row!(
         "scheduler",
         GenericCoherenceRuntime,
         "effortless-lsp",

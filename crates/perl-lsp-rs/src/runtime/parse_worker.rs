@@ -982,6 +982,15 @@ impl ParseWorker {
         handles.iter().any(|h| !h.is_finished())
     }
 
+    /// Ask every worker thread to stop after its current job, without
+    /// joining. Joining stays in [`Drop`], which owns the ordering hazards
+    /// (self-join, test-barrier release); this is the cooperative-stop half
+    /// that `RuntimeServices::request_cancel` forwards to so an application
+    /// shutdown can signal the pool before it waits on settlement (#10024).
+    pub(crate) fn request_shutdown(&self) {
+        self.coordinator.request_shutdown();
+    }
+
     /// Enqueue (or coalesce-replace) a parse job for `normalized_uri`.
     ///
     /// Returns `true` if this call established a NEW pending-parse lifecycle
