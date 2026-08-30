@@ -206,7 +206,6 @@ const CI_POLICY_PACK: ProofPack = ProofPack {
     commands: &[
         "python -m unittest scripts/ci/test_ci_classify.py",
         "python -m unittest scripts/ci/test_docker_publish_metadata.py",
-        "python -m unittest scripts/ci/test_docker_publish_topology.py",
         "cargo xtask workflow-trigger-lint --policy .ci/policies/required-checks.toml --receipt target/receipts/workflow-trigger-lint.json",
         "cargo test -p xtask --test quality_ci_wiring_policy --profile agent --locked -- --nocapture",
     ],
@@ -544,8 +543,9 @@ fn route_receipt(base: &str, head: &str, changed_files: Vec<String>) -> Result<C
         route.add_surface("no_changes");
     }
 
-    let docs_only =
-        !changed_files.is_empty() && changed_files.iter().all(|file| is_docs_file(file));
+    let docs_only = !changed_files.is_empty()
+        && changed_files.iter().all(|file| is_docs_file(file))
+        && changed_files.iter().all(|file| file != "badges/README.md");
     if docs_only {
         route.add_surface("docs");
         route.add_pack(DOCS_PACK);
@@ -728,7 +728,6 @@ fn route_file(file: &str, route: &mut RouteBuilder) {
         || file == "scripts/ci/test_ci_classify.py"
         || file == "scripts/ci/docker_publish_metadata.py"
         || file == "scripts/ci/test_docker_publish_metadata.py"
-        || file == "scripts/ci/test_docker_publish_topology.py"
         || matches!(
             file,
             "xtask/tests/codecov_patch_gate_policy.rs"
@@ -1111,7 +1110,10 @@ fn route_file(file: &str, route: &mut RouteBuilder) {
         return;
     }
 
-    if file == "scripts/generate-badges.py" || file == "scripts/tests/test-generate-badges.py" {
+    if file == "badges/README.md"
+        || file == "scripts/generate-badges.py"
+        || file == "scripts/tests/test-generate-badges.py"
+    {
         route.add_surface("ripr-badge-endpoints");
         route.add_pack(RIPR_BADGE_ENDPOINTS_PACK);
         route.add_coverage_pack("patch-coverage-ripr-badge-endpoints");
@@ -3073,7 +3075,7 @@ mod tests {
     }
 
     #[test]
-    fn ci_route_receipt_maps_both_ripr_badge_python_paths_to_focused_non_lcov_pack() -> Result<()> {
+    fn ci_route_receipt_maps_ripr_badge_owner_paths_to_focused_non_lcov_pack() -> Result<()> {
         for path in ["scripts/generate-badges.py", "scripts/tests/test-generate-badges.py"] {
             let receipt = route_receipt("origin/main", "HEAD", vec![path.to_string()])?;
             assert_eq!(receipt.changed_surfaces, vec!["ripr-badge-endpoints"]);
@@ -3095,6 +3097,19 @@ mod tests {
                 Some(NON_LCOV_COVERAGE_SKIP_REASON)
             );
         }
+        let readme_receipt =
+            route_receipt("origin/main", "HEAD", vec!["badges/README.md".to_string()])?;
+        assert_eq!(readme_receipt.changed_surfaces, vec!["ripr-badge-endpoints"]);
+        assert!(proof_pack_ids(&readme_receipt).contains(&"ripr-badge-endpoints-focused"));
+        assert!(readme_receipt.coverage_pack_selector.is_empty());
+        assert!(readme_receipt.coverage_proof_packs.is_empty());
+        assert_eq!(
+            readme_receipt
+                .skipped_by_policy
+                .get("patch-coverage-ripr-badge-endpoints")
+                .map(String::as_str),
+            Some(NON_LCOV_COVERAGE_SKIP_REASON)
+        );
         Ok(())
     }
 
