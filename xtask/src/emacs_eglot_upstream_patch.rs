@@ -143,7 +143,16 @@ impl EglotPatchPacket {
         Ok(())
     }
 
-    pub fn apply_to_source(&self, source: &str) -> Result<String> {
+    /// Apply the packet replacement to `source` without verifying its bytes.
+    ///
+    /// Offline proof helper for synthetic fixtures only: it enforces packet
+    /// identity and anchor uniqueness but deliberately does not check the
+    /// declared upstream blob, so it can exercise replacement mechanics on
+    /// line-faithful fixtures. Real upstream source must go through
+    /// [`EglotPatchPacket::apply_to_verified_source`], the fail-closed
+    /// application path.
+    #[doc(hidden)]
+    pub fn apply_to_unverified_source(&self, source: &str) -> Result<String> {
         self.validate()?;
         ensure!(
             source.matches(self.before_anchor.as_str()).count() == 1,
@@ -183,10 +192,11 @@ impl EglotPatchPacket {
     /// Verify the exact declared source blob, then apply the patch.
     ///
     /// This is the fail-closed application path: only the byte-exact audited
-    /// `eglot.el` blob can be patched through it.
+    /// `eglot.el` blob can be patched through it. It is the only public
+    /// application entry point intended for real upstream source.
     pub fn apply_to_verified_source(&self, source: &str) -> Result<String> {
         self.verify_source_blob(source)?;
-        self.apply_to_source(source)
+        self.apply_to_unverified_source(source)
     }
 }
 

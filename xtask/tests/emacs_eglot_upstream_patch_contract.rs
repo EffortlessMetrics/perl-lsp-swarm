@@ -135,7 +135,7 @@ fn checked_packet_is_exact_content_addressed_and_deterministic() {
 fn exact_anchor_applies_once_and_preserves_surrounding_source() {
     let packet = checked_packet().expect("checked packet");
     let source = source_fixture();
-    let patched = packet.apply_to_source(&source).expect("exact patch applies");
+    let patched = packet.apply_to_unverified_source(&source).expect("exact patch applies");
 
     assert_eq!(patched.matches(AFTER_ANCHOR).count(), 1);
     assert!(!patched.contains(BEFORE_ANCHOR));
@@ -148,13 +148,14 @@ fn exact_anchor_applies_once_and_preserves_surrounding_source() {
 fn stale_or_duplicate_anchor_fails_closed() {
     let packet = checked_packet().expect("checked packet");
     let stale = source_fixture().replace("cperl-mode", "cperl-ts-mode");
-    let error =
-        packet.apply_to_source(&stale).expect_err("moved upstream contact must block application");
+    let error = packet
+        .apply_to_unverified_source(&stale)
+        .expect_err("moved upstream contact must block application");
     assert!(error.to_string().contains("appear once"));
 
     let duplicate = format!("{}{}", source_fixture(), source_fixture());
     let error = packet
-        .apply_to_source(&duplicate)
+        .apply_to_unverified_source(&duplicate)
         .expect_err("ambiguous duplicate anchor must block application");
     assert!(error.to_string().contains("appear once"));
 }
@@ -251,9 +252,9 @@ fn content_or_claim_mutation_invalidates_packet_identity() {
 #[test]
 fn applying_the_same_packet_twice_is_not_success() {
     let packet = checked_packet().expect("checked packet");
-    let patched = packet.apply_to_source(&source_fixture()).expect("first application");
+    let patched = packet.apply_to_unverified_source(&source_fixture()).expect("first application");
     let error = packet
-        .apply_to_source(&patched)
+        .apply_to_unverified_source(&patched)
         .expect_err("already-patched source must not count as a fresh apply");
     assert!(error.to_string().contains("appear once"));
 }
