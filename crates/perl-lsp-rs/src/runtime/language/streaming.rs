@@ -326,6 +326,15 @@ impl LspServer {
                     return perl_lsp_rs_core::providers::inline_completion::StreamControl::Continue;
                 }
 
+                // Re-check immediately before sending. Settling now happens
+                // after the send, so the guard at the top of this callback no
+                // longer excludes a cancellation that lands while the candidate
+                // is being evaluated; without this the stream could put a frame
+                // for an already-superseded session on the wire.
+                if session.is_cancelled() || session.is_settled() {
+                    return perl_lsp_rs_core::providers::inline_completion::StreamControl::Stop;
+                }
+
                 // Read, do not consume. The outbound channel is bounded, so this
                 // send can fail transiently under backpressure; a value consumed
                 // for a frame the client never received would be a permanent gap.
@@ -452,7 +461,10 @@ impl LspServer {
                 }
             };
 
-            if !session.is_settled() {
+            // Re-check after selecting the terminal content: choosing it can run
+            // the deterministic provider, and a cancellation landing during that
+            // work must still stop the frame.
+            if !session.is_settled() && !session.is_cancelled() {
                 let progress = stream_progress_payload(
                     &token_clone,
                     &session_id,
