@@ -174,10 +174,18 @@ pub(crate) fn owning_package<'a>(
 /// existed: `git add` recorded a `120000 -> 100644` type *and* content change
 /// inside the author's own commit.
 ///
-/// `index_mode` is the staged mode from `git ls-files --stage`, absent when the
-/// path has no index entry. Only the two regular blob modes are rewritable:
-/// `120000` (symlink) and `160000` (gitlink/submodule) are refused, as is any
-/// mode git may add later — the rule fails closed on anything unrecognised.
+/// `index_mode` is the staged mode from `git ls-files --stage`. Only the two
+/// regular blob modes are rewritable: `120000` (symlink) and `160000`
+/// (gitlink/submodule) are refused, as is any mode git may add later — the
+/// rule fails closed on anything unrecognised.
+///
+/// `None` means "the index says nothing that contradicts the worktree", not
+/// "safe to rewrite". It is a fallback, never a permission: the worktree check
+/// still has to pass on its own, so an absent entry cannot admit a symlink.
+/// [`run_staged`] never reaches it — it takes staged paths from
+/// [`classify_staged_paths`] and modes from [`staged_index_modes`], both read
+/// off the same index, so every path it passes here has an entry. The case
+/// exists for a future caller that derives `index_mode` some other way.
 pub(crate) fn is_rewritable_staged_file(
     worktree_is_regular: bool,
     index_mode: Option<&str>,
