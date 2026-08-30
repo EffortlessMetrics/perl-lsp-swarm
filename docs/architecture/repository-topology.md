@@ -107,7 +107,7 @@ _No package currently lives here._
 
 ### `perl-parser`
 
-Future native parser/compiler-front-end workspace. Preparation only: the physical split waits on the facade, incremental, position, and fact-authority gates. Package membership is frozen by #7400. Its first slice (#14259) accepted the nine front-end packages whose normal in-workspace dependency closure is already free of product-owned crates; the remaining parser-side rows stay placement-pending behind the exits in authority_refs.
+Future native parser/compiler-front-end workspace. Preparation only: the physical split waits on the facade, incremental, position, and fact-authority gates. Package membership is frozen by #7400. Its first slice (#14259) accepted the nine front-end packages whose normal in-workspace dependency closure is already free of product-owned crates. The remaining parser-side rows stay placement-pending, each behind its own exit owned by #7400, not behind a single repository-level gate: this row's blocking_prerequisites and authority_refs carry only the repository-level ones, so read the pending package rows for the rest.
 
 _No package currently lives here._
 
