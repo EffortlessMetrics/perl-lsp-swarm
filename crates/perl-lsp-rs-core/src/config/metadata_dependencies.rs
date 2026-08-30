@@ -224,7 +224,8 @@ pub fn extract_meta_json_requirements(source: &str) -> Vec<DeclaredDependency> {
 #[must_use]
 pub fn extract_meta_yml_requirements(source: &str) -> Vec<DeclaredDependency> {
     let mut dependencies = Vec::new();
-    let mut active_key: Option<(usize, String)> = None;
+    let mut open_keys: Vec<(usize, String)> = Vec::new();
+    let mut active_kind: Option<(usize, String)> = None;
 
     for raw_line in source.lines() {
         let without_comment = raw_line.split_once('#').map_or(raw_line, |(before, _)| before);
@@ -234,21 +235,25 @@ pub fn extract_meta_yml_requirements(source: &str) -> Vec<DeclaredDependency> {
             continue;
         }
 
-        if let Some((active_indent, _)) = active_key.as_ref()
+        if let Some((active_indent, _)) = active_kind.as_ref()
             && indent <= *active_indent
         {
-            active_key = None;
+            active_kind = None;
         }
 
         if line.ends_with(':') {
+            while open_keys.last().is_some_and(|(key_indent, _)| indent <= *key_indent) {
+                open_keys.pop();
+            }
             let key = line.trim_end_matches(':').trim().trim_matches(['"', '\'']);
             if META_RELATION_KEYS.contains(&key) {
-                active_key = Some((indent, key.to_string()));
+                active_kind = Some((indent, meta_yml_kind(&open_keys, key)));
             }
+            open_keys.push((indent, key.to_string()));
             continue;
         }
 
-        let Some((_, kind)) = active_key.as_ref() else {
+        let Some((_, kind)) = active_kind.as_ref() else {
             continue;
         };
 
@@ -283,6 +288,20 @@ fn collect_from_file(
     for dependency in extractor(&source) {
         push_candidate(into, dependency);
     }
+}
+
+/// Qualify a META.yml relation key with its phase path under `prereqs`,
+/// mirroring META.json kinds such as `runtime.requires`.
+fn meta_yml_kind(open_keys: &[(usize, String)], key: &str) -> String {
+    let Some(position) = open_keys.iter().position(|(_, open)| open == "prereqs") else {
+        return key.to_string();
+    };
+    let phases: Vec<&str> =
+        open_keys[position + 1..].iter().map(|(_, open)| open.as_str()).collect();
+    if phases.is_empty() {
+        return key.to_string();
+    }
+    format!("{}.{key}", phases.join("."))
 }
 
 fn push_candidate(into: &mut Vec<DeclaredDependency>, dependency: DeclaredDependency) {
