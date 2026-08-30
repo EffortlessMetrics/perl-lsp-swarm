@@ -6,7 +6,7 @@ The native parser contract remains directly available while compatibility and pr
 
 ## Current boundary
 
-- Authority digest: `4c0e97d882be013bc79d8de8823011dde175e5b6a05eaffd652e4db51387392d`
+- Authority digest: `de44647bcb609b90dce2c631d6e3b86075e6d148a07136155e1a41a764f7f4e0`
 - Digest input: `full_normalized_ledger`
 - Public modules: 14
 - Public re-exports: 139

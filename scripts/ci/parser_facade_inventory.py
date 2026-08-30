@@ -28,14 +28,6 @@ CFG_TEST_MODULE_PATTERN = re.compile(
     r"#\[cfg\(test\)\]\s*(?:pub\s+(?:\([^)]*\)\s*)?)?mod\s+[A-Za-z_][A-Za-z0-9_]*\s*\{"
 )
 
-# `#[cfg(<predicate>)] mod y;` — capture the predicate and the module name. Whether
-# the module *requires* a feature is decided by `requires_feature`, not by this match.
-CONDITIONAL_MODULE_PATTERN = re.compile(
-    r"#\[cfg\((?P<predicate>[^\]]*)\)\]\s*"
-    r"(?:///[^\n]*\n\s*|//[^\n]*\n\s*)*"
-    r"(?:pub\s+(?:\([^)]*\)\s*)?)?mod\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*;"
-)
-
 
 @dataclass(frozen=True)
 class CargoTarget:
@@ -239,105 +231,21 @@ def strip_cfg_test_modules(source: str) -> str:
         index = cursor
 
 
-def split_predicate_terms(value: str) -> list[str]:
-    """Split a cfg argument list on top-level commas."""
-    terms: list[str] = []
-    depth = 0
-    start = 0
-    for index, character in enumerate(value):
-        if character == "(":
-            depth += 1
-        elif character == ")":
-            depth -= 1
-        elif character == "," and depth == 0:
-            terms.append(value[start:index])
-            start = index + 1
-    terms.append(value[start:])
-    return [term.strip() for term in terms if term.strip()]
-
-
-def requires_feature(predicate: str) -> bool:
-    """Whether a cfg predicate proves the item requires some positive feature.
-
-    Evaluated over the predicate tree rather than by substring:
-
-    - `feature = "x"` requires a feature;
-    - `all(..)` requires one when **any** child does, since every child must hold;
-    - `any(..)` requires one only when **every** child does, since one branch is
-      enough for the item to exist;
-    - `not(..)` never proves a positive requirement;
-    - anything else (`unix`, `test`, unrecognised) does not.
-
-    A predicate that does not *prove* a requirement is treated as unguarded, so
-    ambiguity over-counts isolation rather than hiding a real source gate.
-    """
-    predicate = predicate.strip()
-    for operator, combine in (("all", any), ("any", all)):
-        prefix = f"{operator}("
-        if predicate.startswith(prefix) and predicate.endswith(")"):
-            terms = split_predicate_terms(predicate[len(prefix) : -1])
-            return bool(terms) and combine(requires_feature(term) for term in terms)
-    if predicate.startswith("not(") and predicate.endswith(")"):
-        return False
-    return bool(re.fullmatch(r"feature\s*=\s*\"[^\"]+\"", predicate))
-
-
-def module_search_base(declaring: Path) -> Path:
-    """Where Rust resolves `mod x;` declared in `declaring`.
-
-    A crate or directory owner (`lib.rs`, `main.rs`, `mod.rs`) resolves children
-    beside itself; any other file owns a directory named after its own stem.
-    `#[path]` overrides this and is not modelled.
-    """
-    if declaring.name in ("lib.rs", "main.rs", "mod.rs"):
-        return declaring.parent
-    return declaring.parent / declaring.stem
-
-
-def conditional_module_roots(crate_root: Path) -> set[Path]:
-    """Directories and files whose module is declared behind a required feature.
-
-    A gate inside such a module is conditional on that module existing, so it
-    cannot establish that its feature gates unconditional production source. The
-    declaring `#[cfg(feature = ...)] mod x;` line is itself an unconditional gate
-    and is still counted where it appears.
-
-    Every `.rs` file under `src/` is scanned rather than walked as a module tree,
-    so private modules, `name.rs` and `name/mod.rs` layouts, and nested
-    declarations are all covered without modelling reachability.
-    """
-    roots: set[Path] = set()
-    source_root = crate_root / "src"
-    if not source_root.is_dir():
-        return roots
-    for path in sorted(source_root.rglob("*.rs")):
-        source = path.read_text(encoding="utf-8", errors="replace")
-        for match in CONDITIONAL_MODULE_PATTERN.finditer(source):
-            if not requires_feature(match.group("predicate")):
-                continue
-            base = module_search_base(path)
-            name = match.group("name")
-            roots.add(base / name)
-            roots.add(base / f"{name}.rs")
-    return roots
-
-
 def feature_source_gates(
-    crate_root: Path,
-    directories: Iterable[str],
-    skip_test_modules: bool = False,
-    skip_conditional_modules: bool = False,
+    crate_root: Path, directories: Iterable[str], skip_test_modules: bool = False
 ) -> set[str]:
-    """Collect every feature name reached by a `feature = "..."` cfg predicate."""
-    excluded = conditional_module_roots(crate_root) if skip_conditional_modules else set()
+    """Collect every feature name reached by a `feature = "..."` cfg predicate.
+
+    Attribution is file-wise across the given directories. A gate inside a module
+    that is itself feature-gated still counts for its own feature, which
+    over-states isolation rather than hiding a gate.
+    """
     gates: set[str] = set()
     for directory in directories:
         base = crate_root / directory
         if not base.is_dir():
             continue
         for path in sorted(base.rglob("*.rs")):
-            if any(path == root or root in path.parents for root in excluded):
-                continue
             source = path.read_text(encoding="utf-8", errors="replace")
             if skip_test_modules:
                 source = strip_cfg_test_modules(source)
@@ -389,19 +297,11 @@ def feature_isolation(manifest: dict[str, Any], crate_root: Path) -> dict[str, s
     # when a dependency is renamed, so both forms must resolve.
     packages = set(dependency_universe(manifest)) | dependency_aliases(manifest)
     gated = feature_source_gates(
-        crate_root,
-        FEATURE_PRODUCTION_DIRECTORIES,
-        skip_test_modules=True,
-        skip_conditional_modules=True,
+        crate_root, FEATURE_PRODUCTION_DIRECTORIES, skip_test_modules=True
     )
-    # Gates inside a `#[cfg(test)]` module of a reachable module are test profiles.
-    # Gates inside a conditionally-compiled module are neither production nor test:
-    # they are conditional on that module existing, so they establish nothing here.
-    reachable_including_tests = feature_source_gates(
-        crate_root, FEATURE_PRODUCTION_DIRECTORIES, skip_conditional_modules=True
-    )
+    # A gate reachable only inside a `#[cfg(test)]` module is a test profile.
     test_gated = feature_source_gates(crate_root, FEATURE_TEST_DIRECTORIES)
-    test_gated |= reachable_including_tests - gated
+    test_gated |= feature_source_gates(crate_root, FEATURE_PRODUCTION_DIRECTORIES) - gated
     target_gated = target_required_features(manifest, PRODUCTION_TARGET_KINDS)
     test_gated |= target_required_features(
         manifest, {target.kind for target in cargo_targets(manifest)} - PRODUCTION_TARGET_KINDS
