@@ -101,7 +101,10 @@ pub enum RecoveryConfidence {
 ///
 /// Increment when the body arena layout changes in a backward-incompatible way.
 /// v3 adds the [`HirExpr::Subscript`] element-place variant to the body arena.
-pub const HIR_BODY_MODEL_VERSION: u32 = 3;
+/// v4 adds canonical binding identity to the body arena: `HirVariable::binding`
+/// and `HirStmt::Let::binding` carry the `HirBindingId` an occurrence or
+/// declaration resolves to (#14166).
+pub const HIR_BODY_MODEL_VERSION: u32 = 4;
 
 /// HIR for one parsed file.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]

@@ -309,11 +309,86 @@ fn package_top_level_declarations_are_not_visible_to_program_root_occurrences() 
     assert_eq!(read.kind, VariableKind::Lexical);
 }
 
+/// A declaration must name the binding it *introduces*, which plain visibility
+/// resolution cannot do: both declarations below are visible from the same
+/// scope, and the scope walk takes the last one.
+///
+/// Declarations are therefore matched on the declaration token's own span. Reads
+/// remain visibility-resolved, so the read *between* the two declarations still
+/// resolves to the later binding — that residual position-insensitivity is the
+/// documented boundary tracked by #14173.
+#[test]
+fn same_scope_redeclarations_get_distinct_declaration_identities() {
+    let source = "sub f { my $x = 1; print $x; my $x = 2; print $x; }\n";
+    let file = lower(source);
+
+    let decl_ids: Vec<HirBindingId> =
+        declarations(&file).iter().filter_map(|d| d.binding).collect();
+    assert_eq!(decl_ids.len(), 2, "expected two `my $x` declarations");
+    assert_ne!(
+        decl_ids[0], decl_ids[1],
+        "each same-scope declaration must name the binding it introduces, not the last one"
+    );
+
+    // Each declaration's identity matches the binding recorded at its own span.
+    for decl in declarations(&file) {
+        let binding = file
+            .scope_graph
+            .bindings
+            .iter()
+            .find(|b| b.range.start == decl.start)
+            .expect("a binding recorded at the declaration span");
+        assert_eq!(
+            decl.binding,
+            Some(binding.id),
+            "declaration at {} must carry the binding declared there",
+            decl.start
+        );
+    }
+}
+
+/// Known boundary, not a claim of correctness: in `my $x = $x;` the initializer
+/// must read the *outer* `$x`, because a new lexical's scope begins only after
+/// its own declaration statement. Occurrence resolution is position-insensitive
+/// within a scope, so the initializer instead reads the binding being declared.
+///
+/// The fix is position-sensitive occurrence resolution, which is deliberately
+/// out of scope here: it would also change `use-before-declare` (`print $x;
+/// my $x = 1;`) from `Lexical` with a binding to `Package` with none — a
+/// consumer-visible `VariableKind` change this slice explicitly does not make.
+/// Tracked by #14173.
+#[test]
+fn self_referential_initializer_reads_the_shadowing_binding() {
+    let source = "my $x = 1; if (1) { my $x = $x; }\n";
+    let file = lower(source);
+
+    let decl_ids: Vec<HirBindingId> =
+        declarations(&file).iter().filter_map(|d| d.binding).collect();
+    assert_eq!(decl_ids.len(), 2, "expected an outer and an inner `my $x`");
+    let (outer, inner) = (decl_ids[0], decl_ids[1]);
+    assert_ne!(outer, inner, "the two declarations are distinct bindings");
+
+    // The initializer read sits after the inner declaration token.
+    let rhs = occurrences(&file)
+        .into_iter()
+        .filter(|o| o.name == "x" && o.access == AccessMode::Read)
+        .next_back()
+        .expect("initializer read of `$x`");
+    assert_eq!(
+        rhs.binding,
+        Some(inner),
+        "known boundary: `my $x = $x` reads the binding it declares; Perl would read the outer one"
+    );
+}
+
 /// Known boundary, not a claim of correctness: a `foreach my $i` iterator is
 /// recorded in the *enclosing* scope rather than a loop-private one, so it does
-/// not shadow an outer `my $i` the way Perl does. Combined with same-scope
-/// position-insensitivity, the outer declaration and the post-loop read both
-/// resolve to the loop's binding.
+/// not shadow an outer `my $i` the way Perl does.
+///
+/// Declarations still separate correctly (each names the binding at its own
+/// span), but reads are visibility-resolved and so collapse onto the loop's
+/// binding — including the read *after* the loop, which Perl would bind to the
+/// outer `my $i`.
 ///
 /// This is a scope-graph modelling gap in pass 1, which this slice does not
 /// touch — threading identity only makes it observable. Pinned so the boundary
@@ -331,17 +406,18 @@ fn foreach_iterator_shares_the_enclosing_scope_and_does_not_shadow() {
         "the foreach iterator currently shares the enclosing scope rather than opening its own"
     );
 
-    // Every `$i` occurrence therefore collapses onto the later (loop) binding.
-    let ids: std::collections::BTreeSet<HirBindingId> = occurrences(&file)
+    // Reads collapse onto the loop binding, because they are visibility-resolved
+    // and the iterator never left the enclosing scope.
+    let read_ids: std::collections::BTreeSet<HirBindingId> = occurrences(&file)
         .into_iter()
-        .filter(|o| o.name == "i")
+        .filter(|o| o.name == "i" && o.access == AccessMode::Read)
         .filter_map(|o| o.binding)
         .collect();
     assert_eq!(
-        ids.len(),
+        read_ids.len(),
         1,
-        "known boundary: same-scope `$i` bindings are position-insensitive, so all occurrences \
-         resolve to one binding; found {ids:?}"
+        "known boundary: the post-loop read should bind to the outer `my $i` but does not; \
+         found {read_ids:?}"
     );
 }
 
@@ -379,6 +455,46 @@ fn unresolved_package_global_carries_no_fabricated_identity() {
         "an unresolved package global must carry no binding identity, not a fabricated one"
     );
     assert_eq!(occ.kind, VariableKind::Package, "package global keeps its existing classification");
+}
+
+/// A *declared* qualified global (`our $Foo::x`) does have a recorded binding,
+/// and must carry it. Qualified names are still classified `Package`, so the
+/// coarse kind is unchanged — only identity is recovered.
+#[test]
+fn declared_qualified_global_carries_canonical_identity() {
+    let source = "our $Foo::x = 1;\nprint $Foo::x;\n";
+    let file = lower(source);
+
+    let declared = file
+        .scope_graph
+        .bindings
+        .iter()
+        .find(|b| b.name == "Foo::x")
+        .expect("scope graph records a binding for `our $Foo::x`");
+    assert_eq!(declared.storage, StorageClass::PackageOur);
+
+    let decl = declarations(&file)
+        .into_iter()
+        .find(|d| d.name == "Foo::x")
+        .expect("`our $Foo::x` declaration");
+    assert_eq!(
+        decl.binding,
+        Some(declared.id),
+        "a declared qualified global must carry its recorded binding"
+    );
+
+    for occ in occurrences(&file).iter().filter(|o| o.name == "Foo::x") {
+        assert_eq!(
+            occ.binding,
+            Some(declared.id),
+            "qualified occurrence {occ:?} must join the declared binding"
+        );
+        assert_eq!(
+            occ.kind,
+            VariableKind::Package,
+            "qualified names stay Package regardless of the binding behind them"
+        );
+    }
 }
 
 /// An undeclared bare variable is also unresolved — `None`, never a stand-in.
