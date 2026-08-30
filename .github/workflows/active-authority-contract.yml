@@ -61,7 +61,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Check current maintainer entrypoints
-        run: >-
-          python3 -m unittest
-          tests/test_active_authority_contract.py
-          tests/test_writer_authority_transfer_contract.py
+        # Kept on one line: test_workflow_runs_only_its_own_surface asserts the
+        # contiguous source substring "python3 -m unittest tests/test_active_authority_contract.py",
+        # which folded (>-) YAML would break.
+        run: python3 -m unittest tests/test_active_authority_contract.py tests/test_writer_authority_transfer_contract.py
