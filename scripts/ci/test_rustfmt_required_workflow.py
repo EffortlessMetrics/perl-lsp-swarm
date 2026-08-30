@@ -50,14 +50,25 @@ CARGO_FMT_RE = re.compile(r"cargo\s+fmt\b")
 
 
 def load_triggers(source: str) -> dict[str, dict[str, Any]]:
-    """Read the `on:` block with a real YAML parser.
+    """Read the workflow's `on:` triggers with a real YAML parser.
 
     A line-based reader only sees block style, so a flow mapping such as
     `pull_request: { paths-ignore: ['**.md'] }` hid its own body and the
     docs-only guard passed on a workflow GitHub would skip for Markdown-only
     PRs. ci.yml already uses flow style (`merge_group: {}`), so this is a real
-    spelling, not a hypothetical one. Parsing the block as YAML accepts every
-    equivalent representation instead of one shape at a time.
+    spelling, not a hypothetical one. Parsing as YAML accepts every equivalent
+    representation instead of one shape at a time.
+
+    Scope, deliberately: this parses the WHOLE file, not the `on:` block alone.
+    Trigger validation therefore depends on all of ci.yml being loadable by
+    `safe_load`, and any construct anywhere in the file that PyYAML rejects
+    reds this contract with "not valid YAML" even when the `on:` block itself
+    is fine — stricter than the rest of the contract, which reads only the
+    formatter job. The alternative, slicing the `on:` block out before parsing,
+    needs a hand-rolled column-0 scan to find where the block ends, which is
+    the exact class of reader this function replaced; letting YAML find the
+    boundary is the point. If you add a YAML feature to ci.yml that PyYAML
+    cannot load, expect it to surface here first.
 
     YAML 1.1 resolves the bare key `on` to boolean True, so both spellings are
     accepted.
