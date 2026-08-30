@@ -43,7 +43,9 @@ fn test_diagnostic_pull_3_17() -> TestResult {
 #[test]
 fn same_line_residue_reaches_lsp_pull_and_push_reports() -> TestResult {
     let uri = "file:///same-line-residue.pl";
-    let source = "my $x = 1 print \"hi\";\n";
+    // The multibyte identifier makes the parser byte offset (11) differ from
+    // the LSP UTF-16 character position (10) at the residual `print` token.
+    let source = "my $π = 1 print \"hi\";\n";
     let expected_start = 10_u64;
 
     let mut pull_harness = LspHarness::new();
