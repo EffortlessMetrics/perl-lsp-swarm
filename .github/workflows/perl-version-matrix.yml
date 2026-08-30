@@ -190,6 +190,8 @@ jobs:
         with:
           cache-on-failure: true
           cache-all-crates: true
+          # rust-cache adds runner/toolchain compatibility to its internal key.
+          # Keep this stable and variant-only so Cargo.lock changes can restore by prefix.
           shared-key: perl-matrix-smoke-${{ matrix.perl }}
           save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
 
