@@ -5,8 +5,9 @@ entry, or eviction may change execution cost, but it must not change the product
 test verdict for the same exact source subject.
 
 Candidate runs may restore reusable state. They may not publish shared state. Cache
-**save** authority is restricted to an explicitly trusted repository event/ref context
-that is statically unreachable from `pull_request` and `merge_group` candidates.
+**save** authority is restricted to an explicitly trusted event/ref and data-authority
+context. The proof must exclude candidate execution or candidate-controlled cache
+content; a branch-looking ref is not sufficient by itself.
 
 > Companion: [cost-and-verification-policy.md](cost-and-verification-policy.md).
 
@@ -15,7 +16,8 @@ that is statically unreachable from `pull_request` and `merge_group` candidates.
 ## Writer-authority rule
 
 For every `Swatinem/rust-cache` invocation in a candidate-capable workflow job, keep
-restore available and declare save authority explicitly:
+restore available and declare save authority explicitly. In workflows whose only
+candidate events are `pull_request` and `merge_group`, the current canonical pattern is:
 
 ```yaml
 - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
@@ -26,7 +28,7 @@ restore available and declare save authority explicitly:
     save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
 ```
 
-For the canonical pattern above:
+For that event set:
 
 - **Pull requests:** restore, run, do not save (`github.ref` is a pull-request ref).
 - **Merge groups:** restore, run, do not save (the integration ref is not `main` or
@@ -35,10 +37,22 @@ For the canonical pattern above:
   is `main` or `master` may save when that workflow/job is designed to seed the cache.
 - **Feature branches and tags:** may restore but do not satisfy the save condition.
 
+`pull_request_target` is different: its ref names the base branch, so the expression
+above can evaluate true for a PR-originated run. A workflow reachable through
+`pull_request_target` must either exclude that event explicitly from save authority or
+carry a dedicated reviewed proof that no candidate checkout, payload field, fetched
+artifact, generated key, or candidate-influenced output can enter the cached path.
+Never infer safety there from `github.ref` alone.
+
+The same caution applies to any indirect event whose ref identifies trusted repository
+state while its inputs or downloaded artifacts may still be candidate-controlled.
+Event semantics, executed subject, cache key authority, and cached-byte authority must
+agree.
+
 A workflow or job name is not authority. In particular, a workflow called `nightly`
 remains in scope when it also subscribes to candidate events. Conversely, a job that is
-statically unreachable from `pull_request` and `merge_group` does not need a textual
-candidate guard merely for uniformity.
+statically unreachable from candidate execution or candidate-controlled content does
+not need a textual candidate guard merely for uniformity.
 
 The example uses a stable `shared-key` without `${{ hashFiles('Cargo.lock') }}` because
 `Swatinem/rust-cache` already incorporates the lockfile hash into its internal keying;
@@ -67,8 +81,9 @@ guard. Content readiness is necessary but is not writer authority by itself:
 
 The accepted condition depends on the reviewed lane. A scheduled default-branch writer,
 for example, may use a different explicit event guard. The invariant is that a candidate
-PR, merge group, feature branch, tag, label, candidate-provided input, or candidate step
-output cannot become the fact that authorizes publication.
+PR, merge group, `pull_request_target` payload, feature branch, tag, label,
+candidate-provided input, downloaded candidate artifact, or candidate step output cannot
+become the fact that authorizes publication or supplies unreviewed cached bytes.
 
 A successful install, build, test, or corpus sweep may prove that bytes are eligible to
 be cached. It does not prove that the current run is trusted to publish them.
@@ -90,9 +105,12 @@ be cached. It does not prove that the current run is trusted to publish them.
 ## Scope and reachability
 
 This policy applies to every active cache consumer that can write from a workflow/job
-reachable on `pull_request` or `merge_group`, including hybrid schedule/dispatch/PR
-workflows. Reachability is determined from the workflow trigger and the containing
-job/step conditions, not from the file name or intended cadence.
+reachable through `pull_request`, `merge_group`, `pull_request_target`, or an indirect
+event carrying candidate-controlled inputs or artifacts. Hybrid
+schedule/dispatch/candidate workflows remain in scope. Reachability and authority are
+determined from the workflow trigger, containing job/step conditions, executed checkout
+subject, expression inputs, artifact provenance, and cached path—not from the file name
+or intended cadence.
 
 The exhaustive active denominator is owned by the cache inventory rather than copied
 into this document. Dormant composite actions and templates are not active behavior.
@@ -107,11 +125,16 @@ The repository-owned workflow policy and active-cache inventory must reject:
 - a direct cache-save step guarded only by content success;
 - a save condition that accepts pull-request refs, merge-group refs, feature branches,
   tags, labels, or candidate-controlled values;
-- an inventory row whose action, key, output path, reachability, or writer disposition
-  has drifted from workflow source.
+- a ref-only `main`/`master` condition in a `pull_request_target`-reachable job without a
+  dedicated base-only data-authority proof;
+- an indirect writer that can cache candidate-provided or candidate-derived artifacts
+  under an apparently trusted ref;
+- an inventory row whose action, key, output path, reachability, executed subject,
+  artifact provenance, or writer disposition has drifted from workflow source.
 
-The same proof must accept intentional schedule/manual/default-branch writers and jobs
-that are statically excluded from candidate events. No separate required status context
+The same proof must accept intentional schedule/manual/default-branch writers, reviewed
+base-only `pull_request_target` jobs whose cached bytes cannot be candidate-influenced,
+and jobs statically excluded from candidate events. No separate required status context
 is needed; the rule belongs in the existing workflow-policy/result plane.
 
 Expected effect after the active writer repairs land:
