@@ -4,9 +4,13 @@
 //! The shared invariant core lives in
 //! `tests/support/formatter_property_harness/` and is consumed verbatim by the
 //! cargo-fuzz target `fuzz/fuzz_targets/perl_tidy_formatter.rs`. The checker
-//! binds only canonical production APIs (`format_*_typed`) and the independent
-//! byte-edit oracle (`apply_edits_exact`); it never reuses production edit
-//! application, never spawns a process, and never reads a clock.
+//! binds only canonical production APIs (`format_*_typed`) and its independent
+//! strict byte-edit applicator; it never reuses production edit application,
+//! never spawns a process, and never reads a clock. #10301 remains open; this
+//! branch lands a bounded subset. The four committed replay controls are
+//! predetermined decoder vectors covering valid, invalidation, and index >= 16
+//! paths through `case_from_fuzz_input`; no runtime fuzzing campaign has run,
+//! so crash-derived corpus evidence is not proven.
 //!
 //! Determinism: every case is a pure function of `(seed, index)`; receipts are
 //! normalized and digested without wall-clock input. Boundedness is asserted
@@ -14,6 +18,7 @@
 #![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use std::fs;
+use std::path::{Path, PathBuf};
 
 use proptest::prelude::*;
 use proptest::test_runner::{Config as ProptestConfig, FileFailurePersistence};
@@ -22,12 +27,12 @@ use proptest::test_runner::{Config as ProptestConfig, FileFailurePersistence};
 mod formatter_property_harness;
 
 use formatter_property_harness::{
-    DormantStatus, Family, GeneratedCase, HARNESS_SCHEMA_VERSION, LineEndingKind, MAX_PLAN_EDITS,
-    MAX_SUBJECT_BYTES, MAX_SUBJECT_LINES, case_from_fuzz_input, dormant_registry, family_registry,
-    generate_case, generate_case_neutral_control, generate_invalidation_case, record_for, run_case,
-    variants_for,
+    DormantStatus, FUZZ_INDEX_SPACE, Family, GeneratedCase, HARNESS_SCHEMA_VERSION, LineEndingKind,
+    MAX_PLAN_EDITS, MAX_SUBJECT_BYTES, MAX_SUBJECT_LINES, apply_plan_strict, case_from_fuzz_input,
+    convention_present_in_bytes, dormant_registry, family_registry, generate_case,
+    generate_case_neutral_control, generate_invalidation_case, record_for, run_case, variants_for,
 };
-use perl_lsp_perltidy::native::FinalNewline;
+use perl_lsp_perltidy::native::{FinalNewline, TextEdit, TextPosition, TextRange};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -59,6 +64,35 @@ const PINNED_FAMILY_NAMES: [&str; PINNED_FAMILY_COUNT] = [
 /// 3 + 2 + 2 + 2 + 2 + 3 + 2 + 2 + 2 + 2 registered dispositions.
 const PINNED_DISPOSITION_TOTAL: usize = 22;
 
+const EXTERNAL_ORACLE_BANNED_TOKENS: [&str; 14] = [
+    "PerlTidyFormatter",
+    "with_os_runtime",
+    "run_command",
+    "std::process",
+    "process::Command",
+    "Command::new",
+    "std::thread",
+    "thread::spawn",
+    "Instant",
+    "SystemTime",
+    "apply_edits_exact",
+    "EditSpec",
+    "PositionEncoding",
+    "edit_application",
+];
+
+const HARNESS_FORBIDDEN_TOKENS: [&str; 9] = [
+    ".unwrap()",
+    ".expect(",
+    "todo!",
+    "unimplemented!",
+    "unreachable!",
+    "dbg!",
+    "unsafe",
+    "assert!",
+    "assert_eq!",
+];
+
 /// Reason classes that legitimately carry no plan (every stable reason except
 /// the two success classes).
 const REFUSAL_REASON_CLASSES: [&str; 9] = [
@@ -82,11 +116,11 @@ fn harness_proptest_config() -> ProptestConfig {
 }
 
 fn arb_valid_case() -> impl Strategy<Value = GeneratedCase> {
-    (any::<u64>(), 0usize..48usize).prop_map(|(seed, index)| generate_case(seed, index))
+    (any::<u64>(), 0usize..FUZZ_INDEX_SPACE).prop_map(|(seed, index)| generate_case(seed, index))
 }
 
 fn arb_invalidation_case() -> impl Strategy<Value = GeneratedCase> {
-    (any::<u64>(), 0usize..16usize)
+    (any::<u64>(), 0usize..FUZZ_INDEX_SPACE)
         .prop_map(|(seed, index)| generate_invalidation_case(seed, index))
 }
 
@@ -101,40 +135,199 @@ fn harness_module_does_not_reference_external_oracle() -> TestResult {
         "{MANIFEST_DIR}/../../fuzz/fuzz_targets/perl_tidy_formatter.rs"
     ))?;
 
-    let banned_in_harness = [
-        "PerlTidyFormatter",
-        "with_os_runtime",
-        "run_command",
-        "std::process",
-        "process::Command",
-        "Command::new",
-        "std::thread",
-        "thread::spawn",
-        "Instant",
-        "SystemTime",
-    ];
-    for token in banned_in_harness {
+    for token in EXTERNAL_ORACLE_BANNED_TOKENS {
         assert!(
             !harness_source.contains(token),
             "harness module must not reference {token} (FPH-009)"
         );
     }
 
-    let banned_in_fuzz = [
-        "PerlTidyFormatter",
-        "with_os_runtime",
-        "run_command",
-        "std::process",
-        "process::Command",
-        "Command::new",
-        "std::thread",
-        "thread::spawn",
-        "Instant",
-        "SystemTime",
-    ];
-    for token in banned_in_fuzz {
+    for token in EXTERNAL_ORACLE_BANNED_TOKENS {
         assert!(!fuzz_source.contains(token), "fuzz target must not reference {token} (FPH-009)");
     }
+    Ok(())
+}
+
+/// The byte-column interpretation must not accidentally pass as UTF-16.
+#[test]
+fn strict_applicator_rejects_byte_offset_interpretation() -> TestResult {
+    let mut selected: Option<(String, u32, u32, u32)> = None;
+    'cases: for seed in 0..8_u64 {
+        for index in 0..FUZZ_INDEX_SPACE {
+            let subject = generate_case(seed, index).subject.text;
+            let mut line = 0_u32;
+            let mut byte_column = 0_u32;
+            let mut utf16_column = 0_u32;
+            let mut chars = subject.chars().peekable();
+            while let Some(ch) = chars.next() {
+                if ch == '\r' {
+                    if chars.peek() == Some(&'\n') {
+                        let _ = chars.next();
+                    }
+                    line += 1;
+                    byte_column = 0;
+                    utf16_column = 0;
+                } else if ch == '\n' {
+                    line += 1;
+                    byte_column = 0;
+                    utf16_column = 0;
+                } else if !ch.is_ascii() {
+                    selected = Some((
+                        subject,
+                        line,
+                        byte_column + ch.len_utf8() as u32,
+                        utf16_column + ch.len_utf16() as u32,
+                    ));
+                    break 'cases;
+                } else {
+                    byte_column += ch.len_utf8() as u32;
+                    utf16_column += ch.len_utf16() as u32;
+                }
+            }
+        }
+    }
+    let (subject, line, byte_column, utf16_column) =
+        selected.ok_or("generated subjects did not contain a non-ASCII character")?;
+    assert_ne!(
+        byte_column, utf16_column,
+        "negative-control precondition requires distinct byte and UTF-16 columns"
+    );
+
+    let byte_edit = TextEdit::new(
+        TextRange::new(TextPosition::new(line, byte_column), TextPosition::new(line, byte_column)),
+        "X",
+    );
+    let utf16_edit = TextEdit::new(
+        TextRange::new(
+            TextPosition::new(line, utf16_column),
+            TextPosition::new(line, utf16_column),
+        ),
+        "X",
+    );
+    let utf16_result = apply_plan_strict(&subject, &[utf16_edit])?;
+    assert_ne!(utf16_result, subject, "UTF-16 control edit must change the subject");
+    match apply_plan_strict(&subject, &[byte_edit]) {
+        Err(_) => {}
+        Ok(byte_result) => assert_ne!(
+            byte_result, utf16_result,
+            "byte-column interpretation must differ from UTF-16 application"
+        ),
+    }
+    Ok(())
+}
+
+fn collect_files(root: &Path, files: &mut Vec<PathBuf>) -> TestResult {
+    for entry in fs::read_dir(root)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_files(&path, files)?;
+        } else if path.is_file() {
+            files.push(path);
+        } else {
+            return Err(format!("unsupported filesystem entry under {}", root.display()).into());
+        }
+    }
+    Ok(())
+}
+
+fn source_contains_token(source: &str, token: &str) -> bool {
+    let identifier = token.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_');
+    source.match_indices(token).any(|(start, _)| {
+        if !identifier {
+            return true;
+        }
+        let before_is_identifier = source[..start]
+            .chars()
+            .next_back()
+            .is_some_and(|ch| ch.is_ascii_alphanumeric() || ch == '_');
+        let end = start + token.len();
+        let after_is_identifier =
+            source[end..].chars().next().is_some_and(|ch| ch.is_ascii_alphanumeric() || ch == '_');
+        !before_is_identifier && !after_is_identifier
+    })
+}
+
+/// FPH-009 policy pins: the support surface has an allowlisted inventory,
+/// exactly one owner marker and checker entry point, and no forbidden
+/// constructs. Unchecked indexing is not mechanically scanned: remaining
+/// indexing sites are total by construction through const-asserted table
+/// alignment and modulo-bounded picks. No token-level scan enforces that
+/// construction guarantee, so FPH-009's index-safety clause remains partially
+/// unproven.
+#[test]
+fn fph_policy_pins() -> TestResult {
+    let support_root = Path::new(MANIFEST_DIR).join("tests/support/formatter_property_harness");
+    let allowed =
+        ["mod.rs", "generator.rs", "checker.rs", "strict_apply.rs", "profile.rs", "receipt.rs"];
+    let mut support_files = Vec::new();
+    collect_files(&support_root, &mut support_files)?;
+    for path in support_files {
+        let relative = path.strip_prefix(&support_root)?;
+        let name = relative.to_string_lossy();
+        assert!(
+            allowed.contains(&name.as_ref()),
+            "unsupported formatter harness support file {name}"
+        );
+    }
+
+    let mut rust_files = Vec::new();
+    collect_files(&Path::new(MANIFEST_DIR).join("src"), &mut rust_files)?;
+    collect_files(&Path::new(MANIFEST_DIR).join("tests"), &mut rust_files)?;
+    let mut marker_files = 0;
+    let mut run_case_files = 0;
+    let run_case_marker = format!("pub fn {}(", "run_case");
+    for path in &rust_files {
+        if path.extension().and_then(|extension| extension.to_str()) != Some("rs") {
+            continue;
+        }
+        let source = fs::read_to_string(path)?;
+        if source.contains(formatter_property_harness::FPH_OWNERSHIP_MARKER) {
+            marker_files += 1;
+        }
+        if source.contains(&run_case_marker) {
+            run_case_files += 1;
+        }
+    }
+    assert_eq!(marker_files, 1, "FPH ownership marker must occur in exactly one Rust file");
+    assert_eq!(run_case_files, 1, "run_case must occur in exactly one Rust file");
+
+    let harness_path = support_root.join("mod.rs");
+    let harness_source = fs::read_to_string(&harness_path)?;
+    let fuzz_source = fs::read_to_string(
+        Path::new(MANIFEST_DIR).join("../../fuzz/fuzz_targets/perl_tidy_formatter.rs"),
+    )?;
+    for token in HARNESS_FORBIDDEN_TOKENS {
+        assert!(
+            !source_contains_token(&harness_source, token),
+            "harness source contains forbidden token {token}"
+        );
+    }
+    let panic_regions: Vec<(usize, usize)> = harness_source
+        .match_indices("const _: () = {")
+        .filter_map(|(start, _)| {
+            harness_source[start..].find("};").map(|end| (start, start + end + 2))
+        })
+        .collect();
+    assert_eq!(panic_regions.len(), 1, "harness must have one const alignment block");
+    for (panic_start, _) in harness_source.match_indices("panic!") {
+        assert!(
+            panic_regions.iter().any(|(region_start, region_end)| *region_start <= panic_start
+                && panic_start < *region_end),
+            "harness panic must remain inside its const alignment block"
+        );
+    }
+    for token in HARNESS_FORBIDDEN_TOKENS {
+        assert!(
+            !source_contains_token(&fuzz_source, token),
+            "fuzz target contains forbidden token {token}"
+        );
+    }
+    assert_eq!(
+        fuzz_source.matches("panic!").count(),
+        1,
+        "fuzz target may contain only its intentional libFuzzer panic signal"
+    );
     Ok(())
 }
 
@@ -157,6 +350,7 @@ fn harness_module_does_not_reference_external_oracle() -> TestResult {
 fn every_admitted_family_has_a_registered_disposition() -> TestResult {
     let registry = family_registry();
     assert!(!registry.is_empty(), "family registry must not be empty");
+    assert_eq!(FUZZ_INDEX_SPACE, 64, "property index space must match six fuzz selector bits");
     assert_eq!(
         Family::ALL.len(),
         PINNED_FAMILY_COUNT,
@@ -232,7 +426,7 @@ fn every_admitted_family_has_a_registered_disposition() -> TestResult {
     let mut covered_families: Vec<&'static str> = Vec::new();
     let mut covered_dispositions: Vec<&str> = Vec::new();
     for seed in 0..8_u64 {
-        for index in 0..48_usize {
+        for index in 0..FUZZ_INDEX_SPACE {
             let case = generate_case(seed, index);
             assert_eq!(case.schema_version, HARNESS_SCHEMA_VERSION);
             // The generated bytes must carry the selected line-ending
@@ -347,20 +541,6 @@ fn generator_and_mutator_dispositions_are_observable() -> TestResult {
     Ok(())
 }
 
-/// Whether the emitted subject bytes actually contain the selected
-/// line-ending convention (bare CR and mixed separators exist only between
-/// lines, so the generator forces multi-line subjects for those variants).
-fn convention_present_in_bytes(kind: LineEndingKind, text: &str) -> bool {
-    match kind {
-        LineEndingKind::Lf => text.contains('\n'),
-        LineEndingKind::Crlf => text.contains("\r\n"),
-        LineEndingKind::BareCr => text.contains('\r') && !text.contains('\n'),
-        LineEndingKind::Mixed => {
-            text.contains("\r\n") && text.contains('\n') && !text.replace("\r\n", "").contains('\r')
-        }
-    }
-}
-
 /// FPH-002: two runs of the same seed/case through fresh formatter contexts
 /// produce identical typed outcomes, change summaries, and edit plans.
 #[test]
@@ -386,7 +566,7 @@ proptest! {
     /// FPH-002/FPH-007 over the drawn case space: identical inputs produce
     /// identical generated cases and identical normalized receipts.
     #[test]
-    fn generated_cases_are_reproducible(seed in any::<u64>(), index in 0usize..48usize) {
+    fn generated_cases_are_reproducible(seed in any::<u64>(), index in 0usize..FUZZ_INDEX_SPACE) {
         let case_a = generate_case(seed, index);
         let case_b = generate_case(seed, index);
         prop_assert_eq!(&case_a, &case_b);
@@ -500,7 +680,7 @@ proptest! {
     /// disposition, target, and line-ending identity and are identical for
     /// identical inputs.
     #[test]
-    fn generated_case_receipt_is_deterministic_and_bounded(seed in any::<u64>(), index in 0usize..48usize) {
+    fn generated_case_receipt_is_deterministic_and_bounded(seed in any::<u64>(), index in 0usize..FUZZ_INDEX_SPACE) {
         let case = generate_case(seed, index);
         prop_assert!(case.subject.text.len() <= MAX_SUBJECT_BYTES);
         prop_assert!(case.subject.text.lines().count() <= MAX_SUBJECT_LINES);
@@ -553,8 +733,8 @@ fn dormant_invariants_report_not_proven_until_dependencies_land() -> TestResult 
             "dormant slot {expected} is missing from the registry"
         );
     }
-    // The rendered-block dormancy's conversion owner must outlive the claim
-    // this PR closes (#10301): it points at the explicit follow-up issue.
+    // #10301 remains open; this branch lands only a bounded subset, and the
+    // rendered-block dormancy points at the explicit conversion follow-up.
     let rendered_block = dormant
         .iter()
         .find(|entry| entry.id == "strict_second_pass_typed_idempotence_for_rendered_blocks")
@@ -565,8 +745,9 @@ fn dormant_invariants_report_not_proven_until_dependencies_land() -> TestResult 
 
 /// FPH-010: the cargo-fuzz target drives the same invariant core from
 /// structured byte mutations, is declared in the fuzz manifest with the
-/// missing perltidy dependency, and one minimized committed regression entry
-/// is replayed deterministically through the same core.
+/// missing perltidy dependency, and predetermined replay-control vectors are
+/// replayed deterministically through the same decoder. No runtime fuzzing
+/// campaign has been executed, so crash-derived corpus evidence is not proven.
 #[test]
 fn fuzz_target_and_regression_pipeline_are_wired() -> TestResult {
     let fuzz_manifest = fs::read_to_string(format!("{MANIFEST_DIR}/../../fuzz/Cargo.toml"))?;
@@ -596,48 +777,61 @@ fn fuzz_target_and_regression_pipeline_are_wired() -> TestResult {
     );
 
     let regression_file = fs::read_to_string(REGRESSION_FILE)?;
-    let mut committed_seed: Option<u64> = None;
-    let mut fuzz_replays: Vec<(u64, u8)> = Vec::new();
+    let mut committed_seeds: Vec<u64> = Vec::new();
+    let mut replay_controls: Vec<(u64, u8)> = Vec::new();
     for line in regression_file.lines() {
-        if let Some(rest) = line.strip_prefix("cc ") {
-            let hex = rest.split_whitespace().next().unwrap_or("");
+        if line.starts_with("cc") {
+            let rest = line
+                .strip_prefix("cc ")
+                .ok_or("every regression line beginning with cc must begin with exactly `cc `")?;
+            let hex = rest
+                .split_whitespace()
+                .next()
+                .ok_or("cc regression entry must contain a 64-character seed")?;
             assert_eq!(hex.len(), 64, "committed regression seed must be 64 hex chars");
+            if !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                return Err("committed regression seed must contain only ASCII hex digits".into());
+            }
             // The harness consumes the low 128 bits' leading word; the full
             // 256-bit entry stays wire-compatible with the lexer convention.
-            committed_seed = Some(u64::from_str_radix(&hex[..16], 16)?);
+            committed_seeds.push(u64::from_str_radix(
+                hex.get(..16).ok_or("committed regression seed is truncated")?,
+                16,
+            )?);
         }
-        // Committed fuzz crash artifacts: `seed` is the little-endian seed
+        // Predetermined replay controls: `seed` is the little-endian seed
         // the cargo-fuzz input carries in its first eight bytes, `selector`
         // is the ninth byte naming the case index (low six bits) and the
-        // invalidation path (bit 7). Both fields are replayed through the
-        // same decoder the fuzz target uses, so an invalidation-path or
-        // index >= 16 crash is reconstructible — not just seeds 0..16 of the
-        // valid path.
-        if let Some(rest) = line.strip_prefix("# fuzz-replay seed=") {
+        // invalidation path (bit 7). Both fields are replayed through the same
+        // decoder the fuzz target uses, covering valid, invalidation, and
+        // index >= 16 paths without claiming runtime fuzzing evidence.
+        if let Some(rest) = line.strip_prefix("# replay-control seed=") {
             let (seed_hex, selector_part) = rest
                 .split_once(" selector=")
-                .ok_or("fuzz-replay entry must carry seed and selector (FPH-010)")?;
-            assert_eq!(seed_hex.len(), 16, "fuzz-replay seed must be 16 hex chars");
-            assert_eq!(selector_part.len(), 2, "fuzz-replay selector must be 2 hex chars");
-            fuzz_replays
+                .ok_or("replay-control entry must carry seed and selector (FPH-010)")?;
+            assert_eq!(seed_hex.len(), 16, "replay-control seed must be 16 hex chars");
+            assert_eq!(selector_part.len(), 2, "replay-control selector must be 2 hex chars");
+            replay_controls
                 .push((u64::from_str_radix(seed_hex, 16)?, u8::from_str_radix(selector_part, 16)?));
         }
     }
-    let seed = committed_seed.ok_or("committed regression file must carry one cc seed entry")?;
+    assert!(!committed_seeds.is_empty(), "committed regression file must carry a cc seed entry");
 
-    for index in 0..16_usize {
-        run_case(&generate_case(seed, index))?;
+    for seed in committed_seeds {
+        for index in 0..16_usize {
+            run_case(&generate_case(seed, index))?;
+        }
     }
 
-    // Full-fidelity replay of every committed fuzz artifact through the
+    // Full-fidelity replay of every predetermined control through the
     // shared `(seed, selector)` decoder.
     assert!(
-        fuzz_replays.len() >= 3,
-        "committed fuzz-replay entries must cover the valid path, the invalidation path, and an index >= 16"
+        replay_controls.len() >= 3,
+        "replay-control entries must cover the valid path, the invalidation path, and an index >= 16"
     );
     let mut replayed_invalidation = false;
     let mut replayed_high_index = false;
-    for (replay_seed, selector) in fuzz_replays {
+    for (replay_seed, selector) in replay_controls {
         let index = usize::from(selector & 0x3f);
         if selector & 0x80 != 0 {
             replayed_invalidation = true;
@@ -649,17 +843,14 @@ fn fuzz_target_and_regression_pipeline_are_wired() -> TestResult {
         data.extend_from_slice(&replay_seed.to_le_bytes());
         data.push(selector);
         let case = case_from_fuzz_input(&data)
-            .ok_or("committed fuzz-replay input must decode to a generated case")?;
+            .ok_or("replay-control input must decode to a generated case")?;
         assert_eq!(case.seed, replay_seed);
         run_case(&case)?;
     }
     assert!(
         replayed_invalidation,
-        "committed fuzz-replay entries must cover the invalidation path (FPH-010)"
+        "replay-control entries must cover the invalidation path (FPH-010)"
     );
-    assert!(
-        replayed_high_index,
-        "committed fuzz-replay entries must cover an index >= 16 (FPH-010)"
-    );
+    assert!(replayed_high_index, "replay-control entries must cover an index >= 16 (FPH-010)");
     Ok(())
 }

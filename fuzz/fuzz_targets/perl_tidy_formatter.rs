@@ -7,9 +7,12 @@
 //! package properties
 //! (`crates/perl-lsp-perltidy/tests/support/formatter_property_harness/`),
 //! included here verbatim via `#[path]` so the fuzz and property tiers cannot
-//! drift apart. Any violated invariant is a crash; minimized crashes shrink
-//! to a `(seed, index)` pair that is committed as a focused regression entry
-//! in the crate's `.proptest-regressions` convention.
+//! drift apart. #10301 remains open; this branch lands a bounded subset.
+//! Predetermined replay-control vectors exercise the valid path, invalidation
+//! path, and an index >= 16 through the same decoder. No runtime fuzzing
+//! campaign has been executed, so crash-derived corpus evidence is not proven.
+//! The sole panic invocation below is the intentional libFuzzer crash signal
+//! and is exempted from the FPH-009 forbidden-construct scan for that reason.
 #![no_main]
 // The shared harness module is included verbatim; the fuzz entry point only
 // exercises its generation-and-checker surface.
@@ -22,8 +25,8 @@ use formatter_property_harness::{case_from_fuzz_input, run_case};
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {
-    // The decode lives in the shared harness core so the committed focused
-    // regressions replay the exact same `(seed, selector)` mapping.
+    // The decode lives in the shared harness core so replay controls exercise
+    // the exact same `(seed, selector)` mapping.
     let Some(case) = case_from_fuzz_input(data) else { return };
 
     if let Err(violation) = run_case(&case) {

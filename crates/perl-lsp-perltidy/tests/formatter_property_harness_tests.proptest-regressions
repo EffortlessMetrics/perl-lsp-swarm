@@ -5,12 +5,9 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 #
-# Issue #10301: the entries below are the genuine minimized counterexample
-# seeds captured from the red-first skeleton run of this suite (every row
-# FPH-001..FPH-010 failing for its honest not-yet-implemented reason). They
-# stay committed so every future run replays them through the same shared
-# invariant checker that the cargo-fuzz target `perl_tidy_formatter` drives,
-# demonstrating the crash-to-focused-regression pipeline end to end.
+# Issue #10301 remains open; this branch records a bounded subset. The `cc`
+# entries below are ordinary proptest persistence seeds. The replay controls
+# are predetermined decoder vectors, not crash-derived corpus evidence.
 cc 3e3edc91b77add66e7cf868c4f1f70d9fdf9259ad2271e416a8ef99708203785 # shrinks to case = GeneratedCase { seed: 0, schema_version: 1, family: LexicalDeclaration, disposition: "generator.skeleton", subject: Subject { text: "", clean_parse_by_construction: false }, target: Document, profile: Profile { keyword_spacing: Space, brace_placement: SameLine, final_newline: Preserve, line_ending: Lf }, expects_refusal: true }
 cc ea1827d72aee9ec17051ffa0e9e509628c79aae566b8875fab66f1910acf5e80 # shrinks to seed = 0, index = 0
 cc a027de85ef60642ed6ba2e56b049a76459367c8b57ccb1e66996b46c2babacaa # shrinks to case = GeneratedCase { seed: 0, schema_version: 1, family: LexicalDeclaration, disposition: "generator.skeleton", subject: Subject { text: "", clean_parse_by_construction: true }, target: Document, profile: Profile { keyword_spacing: Space, brace_placement: SameLine, final_newline: Preserve, line_ending: Lf }, expects_refusal: false }
@@ -22,12 +19,12 @@ cc 2c8116db5ba7e0e9a9a43fdc66aa3303c255f2bf4548b12d75ec376a45bf71a7 # shrinks to
 cc 0cdfd8423b2a264de4e0cf30144b752e491c499aa2df6bc5e829c9013647e1ea # shrinks to case = GeneratedCase { seed: 16003302313137172560, schema_version: 1, family: ConditionalBlock, disposition: "generator.conditional_block", subject: Subject { text: "  unless($ok){next;} # note", clean_parse_by_construction: true }, target: Document, profile: Profile { keyword_spacing: Compact, brace_placement: NextLine, final_newline: Preserve, line_ending: Mixed }, expects_refusal: false }
 cc 74361d6550ab9eae145dc487c04061c6f3dd867b0b90947b549c64ee653c7e65 # shrinks to seed = 3525089012754461813, index = 31
 cc 3fab19d6ccd9d14cd8f6dfdcacbef001e7b9cce5e4ad8b8af30025946b529f90 # shrinks to seed = 11561439700946367915, index = 46
-# Committed cargo-fuzz crash artifacts, replayed with full (seed, selector)
-# fidelity by `fuzz_target_and_regression_pipeline_are_wired` through the
-# shared decoder `case_from_fuzz_input`. The entries below cover the three
-# axes the fuzz target selects: a high index on the valid path, the
-# invalidation path, and the boundary index 0 of each path.
-# fuzz-replay seed=0000000000000042 selector=2a
-# fuzz-replay seed=0102030405060708 selector=a5
-# fuzz-replay seed=deadbeefcafebabe selector=80
-# fuzz-replay seed=0123456789abcdef selector=3f
+# Predetermined decoder/replay controls, replayed with full (seed, selector)
+# fidelity through the shared `case_from_fuzz_input` decoder. They exercise
+# the valid path, the invalidation path, and an index >= 16. No runtime
+# fuzzing campaign has been executed, so crash-derived corpus evidence is not
+# proven.
+# replay-control seed=0000000000000042 selector=2a
+# replay-control seed=0102030405060708 selector=a5
+# replay-control seed=deadbeefcafebabe selector=80
+# replay-control seed=0123456789abcdef selector=3f
