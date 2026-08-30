@@ -1,0 +1,138 @@
+[
+  {
+    "name": "valid_bounded_limitation",
+    "updates": {
+      "status": "bounded_limitation",
+      "claim_effect.preserves": ["example.product"],
+      "claim_effect.narrows": ["example.installed"],
+      "claim_effect.limitations": ["Installed behavior is limited to the explicitly proven host matrix."]
+    }
+  },
+  {
+    "name": "valid_blocked",
+    "updates": {
+      "status": "blocked",
+      "proof.observations.0.status": "failed",
+      "proof.passed": ["product.behavior"]
+    }
+  },
+  {
+    "name": "valid_not_proven",
+    "updates": {
+      "status": "not_proven",
+      "proof.observations.0.status": "not_proven",
+      "proof.passed": ["product.behavior"],
+      "proof.not_proven": ["installed.behavior"]
+    }
+  },
+  {
+    "name": "reject_unreachable_merged_sha",
+    "ancestor_result": false,
+    "error": "not reachable"
+  },
+  {
+    "name": "reject_stale_review_for_resolved",
+    "updates": {"review.status": "stale"},
+    "error": "resolved requires current review"
+  },
+  {
+    "name": "reject_superseded_review_head",
+    "updates": {"review.reviewed_head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+    "error": "superseded candidate head"
+  },
+  {
+    "name": "reject_missing_required_proof",
+    "updates": {"proof.required": ["installed.behavior", "missing.behavior", "product.behavior"]},
+    "error": "exactly match"
+  },
+  {
+    "name": "reject_stale_proof_for_resolved",
+    "updates": {"proof.observations.0.status": "stale", "proof.passed": ["product.behavior"], "proof.not_proven": ["installed.behavior"]},
+    "error": "resolved requires every required proof"
+  },
+  {
+    "name": "reject_skipped_proof_for_resolved",
+    "updates": {"proof.observations.0.status": "skipped", "proof.passed": ["product.behavior"], "proof.not_proven": ["installed.behavior"]},
+    "error": "resolved requires every required proof"
+  },
+  {
+    "name": "reject_cancelled_proof_for_resolved",
+    "updates": {"proof.observations.0.status": "cancelled", "proof.passed": ["product.behavior"], "proof.not_proven": ["installed.behavior"]},
+    "error": "resolved requires every required proof"
+  },
+  {
+    "name": "reject_timed_out_proof_for_resolved",
+    "updates": {"proof.observations.0.status": "timed_out", "proof.passed": ["product.behavior"], "proof.not_proven": ["installed.behavior"]},
+    "error": "resolved requires every required proof"
+  },
+  {
+    "name": "reject_instrument_failed_proof_for_resolved",
+    "updates": {"proof.observations.0.status": "instrument_failed", "proof.passed": ["product.behavior"], "proof.not_proven": ["installed.behavior"]},
+    "error": "resolved requires every required proof"
+  },
+  {
+    "name": "reject_malformed_proof_for_resolved",
+    "updates": {"proof.observations.0.status": "malformed", "proof.passed": ["product.behavior"], "proof.not_proven": ["installed.behavior"]},
+    "error": "resolved requires every required proof"
+  },
+  {
+    "name": "reject_not_proven_collapsed_to_failed",
+    "updates": {"proof.observations.0.status": "not_proven", "proof.passed": ["product.behavior"], "proof.not_proven": []},
+    "error": "proof.not_proven contradicts"
+  },
+  {
+    "name": "reject_mechanism_as_product_behavior",
+    "updates": {"proof.observations.0.proof_class": "mechanism"},
+    "error": "cannot represent mechanism or fixture evidence as product behavior"
+  },
+  {
+    "name": "reject_fixture_as_installed_behavior",
+    "updates": {"proof.observations.0.proof_class": "fixture"},
+    "error": "cannot represent mechanism or fixture evidence as product behavior"
+  },
+  {
+    "name": "reject_unresolved_material_findings",
+    "updates": {
+      "review.unresolved_material_findings": 1,
+      "review.finding_refs": [{"kind": "github_issue_comment", "ref": "https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/90001#issuecomment-2", "digest": "sha256:6666666666666666666666666666666666666666666666666666666666666666"}]
+    },
+    "error": "resolved cannot retain unresolved material findings"
+  },
+  {
+    "name": "reject_limitation_without_claim_effect",
+    "updates": {"status": "bounded_limitation", "claim_effect.limitations": ["Unbound limitation."]},
+    "error": "requires exact narrowed claims"
+  },
+  {
+    "name": "reject_contradictory_controller_identity",
+    "updates": {"controller_issue": 90009},
+    "error": "contradicts semantic_controller"
+  },
+  {
+    "name": "reject_contradictory_implementation_identity",
+    "updates": {"implementation_prs": [90009]},
+    "error": "implementation_prs contradict"
+  },
+  {
+    "name": "reject_cross_subject_pass",
+    "updates": {"proof.observations.0.subject_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+    "error": "passed proof is cross-subject"
+  },
+  {
+    "name": "reject_double_counted_implementation",
+    "append_from": {"implementation_contributions": "implementation_contributions.0"},
+    "error": "cannot be double-counted"
+  },
+  {
+    "name": "reject_contradictory_evidence_digest",
+    "updates": {
+      "review.finding_refs": [{"kind": "github_pull", "ref": "https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/90002", "digest": "sha256:7777777777777777777777777777777777777777777777777777777777777777"}]
+    },
+    "error": "contradictory digest"
+  },
+  {
+    "name": "reject_private_worktree_reference",
+    "updates": {"review.current_head_synthesis.ref": "repo:C:/Users/agent/.codex/worktrees/private/review.json@0d70248e3ec1ef90c6059f864b9a26fecad07db4"},
+    "error": "private or worktree path"
+  }
+]
