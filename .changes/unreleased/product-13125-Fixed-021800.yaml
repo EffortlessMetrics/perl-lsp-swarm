@@ -1,0 +1,12 @@
+project: product
+component: Parser and lexer
+kind: Fixed
+body: >-
+  Parse scalar-filehandle print calls whose first message term is numeric through
+  the established indirect-call AST path in statement and expression contexts,
+  while leaving comma-form calls and scalar subscripts on their existing paths.
+time: 2026-08-28T02:18:00Z
+custom:
+  PR: "13125"
+  Slug: parser-numeric-scalar-filehandle
+  Breaking: "no"

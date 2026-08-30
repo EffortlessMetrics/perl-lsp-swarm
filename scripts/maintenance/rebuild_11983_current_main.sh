@@ -36,6 +36,12 @@ git config user.email git@effortlesssteven.com
 git fetch --no-tags origin main "+refs/pull/11983/head:refs/remotes/origin/pr-11983-source"
 git merge --no-edit origin/main
 
+# The merge may have raised the workspace floor: re-run the guard against the
+# merged tree so every later cargo invocation is validated by the toolchain
+# contract actually being built (#12593). Sourcing after the merge validates
+# against the merged tree's own guard contract.
+. "$(dirname -- "${BASH_SOURCE[0]}")/../lib/cargo-toolchain-guard.sh" && cargo_toolchain_guard
+
 git cat-file -e "${first_commit}^{commit}"
 git cat-file -e "${second_commit}^{commit}"
 

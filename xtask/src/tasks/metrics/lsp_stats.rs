@@ -39,7 +39,7 @@ use perl_lsp_ux_tests::taxonomy::{MetricState, UxScenarioResult};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 // ---------------------------------------------------------------------------
 // Output schema for .ci/metrics/editor_ux.json
@@ -171,8 +171,14 @@ impl ObservedUxRates {
 /// When `receipt_dir` is provided, the command reads `ux_scenario_run` receipts
 /// from that directory and writes the measured `.ci/metrics/editor_ux.json`
 /// scorecard when `json` is true. Without `receipt_dir`, the command preserves
-/// the legacy fixture-inventory output.
-pub fn run_with_receipt_dir(json: bool, receipt_dir: Option<&Path>) -> Result<()> {
+/// the legacy fixture-inventory output. `output` overrides where the JSON
+/// receipt is written (reads of historical metrics stay on the default path),
+/// keeping callers such as tests off the tracked artifact.
+pub fn run_with_receipt_dir(
+    json: bool,
+    receipt_dir: Option<&Path>,
+    output: Option<&Path>,
+) -> Result<()> {
     let root = project_root()?;
 
     if let Some(receipts_dir) = receipt_dir {
@@ -181,7 +187,7 @@ pub fn run_with_receipt_dir(json: bool, receipt_dir: Option<&Path>) -> Result<()
             .join("perl-lsp-ux-tests")
             .join("fixtures")
             .join("editor_ux_fixture_matrix.json");
-        let output_path = root.join(".ci").join("metrics").join("editor_ux.json");
+        let output_path = json_output_path(&root, output);
         let scorecard = aggregate_from_receipts(receipts_dir, &fixture_matrix, None)?;
 
         print_measured_scorecard_summary(&scorecard, receipts_dir);
@@ -224,6 +230,7 @@ pub fn run_with_receipt_dir(json: bool, receipt_dir: Option<&Path>) -> Result<()
 
     if json {
         let metrics = build_metrics(observed_rates.as_ref());
+        let output_path = json_output_path(&root, output);
         let output = EditorUxMetrics {
             schema_version: 1,
             measured_at: Utc::now().to_rfc3339(),
@@ -231,12 +238,20 @@ pub fn run_with_receipt_dir(json: bool, receipt_dir: Option<&Path>) -> Result<()
             last_run: last_run.clone(),
             metrics,
         };
-        write_json_receipt(&receipt_path, &output)
-            .with_context(|| format!("writing receipt to {}", receipt_path.display()))?;
-        println!("\nWrote receipt: {}", receipt_path.display());
+        write_json_receipt(&output_path, &output)
+            .with_context(|| format!("writing receipt to {}", output_path.display()))?;
+        println!("\nWrote receipt: {}", output_path.display());
     }
 
     Ok(())
+}
+
+/// Resolve the JSON receipt destination: an explicit `--output` override or
+/// the tracked default `.ci/metrics/editor_ux.json`.
+fn json_output_path(root: &Path, output: Option<&Path>) -> PathBuf {
+    output
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| root.join(".ci").join("metrics").join("editor_ux.json"))
 }
 
 // ---------------------------------------------------------------------------
