@@ -9,8 +9,7 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - ".github/workflows/corpus-windows-reparse-proof.yml"
-  repository_dispatch:
-    types: [corpus-windows-reparse-proof]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -51,7 +50,7 @@ jobs:
         with:
           cache-on-failure: true
           shared-key: corpus-windows-reparse-proof-${{ hashFiles('Cargo.lock') }}
-          save-if: ${{ github.event_name == 'repository_dispatch' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main') }}
+          save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
 
       - name: Run non-skipping Windows reparse proof
         env:
