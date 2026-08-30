@@ -41,13 +41,13 @@ pub fn run(command: StandaloneDiagnosticsSubcommand) -> Result<()> {
             );
         }
         StandaloneDiagnosticsSubcommand::Explain { reason_id } => {
-            let manifest = diagnostics::load_manifest(&root).map_err(|error| eyre!("{error}"))?;
+            let manifest = validated_manifest(&root)?;
             let explained = diagnostics::explain_reason(&manifest, &reason_id)
                 .ok_or_else(|| eyre!("unknown reason id `{reason_id}`"))?;
             println!("{explained}");
         }
         StandaloneDiagnosticsSubcommand::Project { packet } => {
-            let manifest = diagnostics::load_manifest(&root).map_err(|error| eyre!("{error}"))?;
+            let manifest = validated_manifest(&root)?;
             let bytes = std::fs::read(&packet)
                 .map_err(|error| eyre!("cannot read packet `{packet}`: {error}"))?;
             let value: serde_json::Value = serde_json::from_slice(&bytes)
@@ -58,4 +58,17 @@ pub fn run(command: StandaloneDiagnosticsSubcommand) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Load the registry only after it validates.
+///
+/// `explain` and `project` previously read the manifest directly, so a locally
+/// drifted registry — one `check` would reject — could still produce confident
+/// reason text and projections. The validating read costs a few milliseconds
+/// and keeps `check` the single admission gate for every command.
+fn validated_manifest(root: &std::path::Path) -> Result<serde_json::Value> {
+    diagnostics::validate_manifest_file(root).map_err(|error| {
+        eyre!("registry is not valid, so it cannot be explained or projected: {error}")
+    })?;
+    diagnostics::load_manifest(root).map_err(|error| eyre!("{error}"))
 }
