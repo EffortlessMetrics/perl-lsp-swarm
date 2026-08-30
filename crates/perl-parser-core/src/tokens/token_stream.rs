@@ -459,6 +459,9 @@ impl<'a> TokenStream<'a> {
                 reason: self.buffered_fallback_reason(),
             };
         }
+        if let Err(reason) = self.restore_live_lookahead_boundary() {
+            return ContextualOpResult::FallbackRequired { reason };
+        }
         if let TokenStreamInner::Lexer(ref mut lexer) = self.inner {
             // Reset lexer to expect a term (start of new statement). Only the
             // mode is written; every other prefix-established lexer state is
@@ -532,6 +535,9 @@ impl<'a> TokenStream<'a> {
                 reason: self.buffered_fallback_reason(),
             };
         }
+        if let Err(reason) = self.restore_live_lookahead_boundary() {
+            return ContextualOpResult::FallbackRequired { reason };
+        }
         if let TokenStreamInner::Lexer(ref mut lexer) = self.inner {
             lexer.enter_format_mode();
         }
@@ -571,6 +577,24 @@ impl<'a> TokenStream<'a> {
     /// Whether any lookahead slot currently holds a token.
     fn lookahead_cached(&self) -> bool {
         self.peeked.is_some() || self.peeked_second.is_some() || self.peeked_third.is_some()
+    }
+
+    /// Restore the complete lexer state captured before the head lookahead.
+    ///
+    /// Contextual operations clear cached tokens, so a live lexer must rewind
+    /// to the captured boundary first or the discarded window would be skipped.
+    fn restore_live_lookahead_boundary(&mut self) -> Result<(), ContextualFallbackReason> {
+        let Some(boundary) = self.peek_boundary.clone() else {
+            return Ok(());
+        };
+        let TokenStreamInner::Lexer(lexer) = &mut self.inner else {
+            return Ok(());
+        };
+        if !lexer.can_restore(&boundary) {
+            return Err(ContextualFallbackReason::NoCheckpointAuthority);
+        }
+        lexer.restore(&boundary);
+        Ok(())
     }
 
     /// Clear every lookahead slot and its captured boundary atomically.

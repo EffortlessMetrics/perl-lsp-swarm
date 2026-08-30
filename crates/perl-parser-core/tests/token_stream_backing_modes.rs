@@ -172,6 +172,7 @@ fn live_statement_boundary_reset_applies() {
     let source = "my $x = 1;\nmy $y = 2;";
     let mut stream = TokenStream::new(source);
     advance_until_kind(&mut stream, TokenKind::Semicolon);
+    stream.next().expect("consume statement terminator");
 
     // Prime lookahead across the boundary so the reset has a window to clear.
     let _ = stream.peek_second().expect("second lookahead");
@@ -181,13 +182,24 @@ fn live_statement_boundary_reset_applies() {
         ContextualOpResult::AppliedLive
     );
 
-    let mut drained = 0;
+    let mut drained = Vec::new();
     while !stream.is_eof() {
-        stream.next().expect("drain after reset");
-        drained += 1;
-        assert!(drained <= 20, "statement reset must not stall the stream");
+        drained.push(stream.next().expect("drain after reset"));
+        assert!(drained.len() <= 20, "statement reset must not stall the stream");
     }
-    assert!(drained > 0, "remaining tokens must survive the reset");
+    assert_eq!(
+        drained.iter().map(Token::kind).collect::<Vec<_>>(),
+        vec![
+            TokenKind::My,
+            TokenKind::Identifier,
+            TokenKind::Assign,
+            TokenKind::Number,
+            TokenKind::Semicolon,
+        ],
+        "reset must re-derive every prefetched token instead of skipping it"
+    );
+    assert_eq!(drained[0].start(), source.find("my $y").expect("second statement"));
+    assert_eq!(drained[0].text.as_ref(), "my");
 }
 
 /// Format-body entry applies on the live backing: the next token produced is
@@ -199,6 +211,7 @@ fn live_enter_format_body_applies_and_reclassifies_next_token() {
     // Consume `format`, `STD`, `=`.
     advance_until_kind(&mut stream, TokenKind::Assign);
     stream.next().expect("consume assign");
+    assert_eq!(stream.peek().expect("prefetch format body").kind(), TokenKind::Number);
 
     assert_eq!(
         stream.apply_contextual(ContextualTokenOp::EnterFormatBody),
@@ -251,7 +264,7 @@ fn reclassify_into_body_context_is_unsupported() {
     );
 
     let mut buffered = TokenStream::from_vec(vec![
-        Token::new_checked(TokenKind::My, "my", 0, 2).expect("valid token"),
+        Token::new_checked(TokenKind::My, "my", 0, 2).expect("valid token")
     ]);
     assert_eq!(
         buffered.apply_contextual(ContextualTokenOp::ReclassifyFromBoundary {
