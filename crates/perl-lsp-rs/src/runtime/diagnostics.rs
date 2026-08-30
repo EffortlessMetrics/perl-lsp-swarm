@@ -3358,7 +3358,7 @@ mod tests {
             "didOpen alone must resolve the single-file project fallback"
         );
         server.publish_diagnostics(&uri);
-        let output = String::from_utf8(buffer.lock().clone())?;
+        let output = capture_until(&buffer, |output| output.contains("PL900"));
         assert!(
             output.contains("PL900"),
             "push publication must emit the discovered fallback PL900: {output}"
@@ -3378,7 +3378,6 @@ mod tests {
         let ws = temp.path().join("ws");
         let sub = ws.join("sub");
         std::fs::create_dir_all(&sub)?;
-        std::fs::write(ws.join(".perl-lsp.toml"), "[perl]\nversion = \"5.20\"\n")?;
         let doc = sub.join("main.pl");
         let uri = url::Url::from_file_path(&doc)
             .map_err(|()| "failed to build document URI")?
@@ -3396,12 +3395,13 @@ mod tests {
                 "text": "use builtin 'inf'; builtin::inf();\n"
             }
         })))?;
-        let before = String::from_utf8(buffer.lock().clone())?;
+        let before = capture_until(&buffer, |output| output.contains("publishDiagnostics"));
         assert!(
             !before.contains("requires Perl"),
             "pre-folder publish must not carry a project-version PL900: {before}"
         );
 
+        std::fs::write(ws.join(".perl-lsp.toml"), "[perl]\nversion = \"5.20\"\n")?;
         server.handle_did_change_workspace_folders(Some(json!({
             "event": {
                 "added": [{ "uri": folder_uri, "name": "ws" }],
@@ -3452,7 +3452,7 @@ mod tests {
             "single-file discovery must apply before the folder change"
         );
         server.publish_diagnostics(&uri);
-        let before = String::from_utf8(buffer.lock().clone())?;
+        let before = capture_until(&buffer, |output| output.contains("PL900"));
         assert!(
             before.contains("PL900"),
             "single-file fallback must reach publication before the folder change: {before}"

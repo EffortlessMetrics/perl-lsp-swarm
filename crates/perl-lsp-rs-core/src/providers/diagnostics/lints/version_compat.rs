@@ -533,9 +533,9 @@ pub fn check_version_compat_with_project_version(
             diagnostic.message.push_str(" (target from project [perl].version)");
             if let Some(suggestion) = diagnostic.suggestion.as_mut() {
                 suggestion.push_str(&format!(
-                    ". This file declares no `use VERSION`; the target came from the project \
-                     `[perl].version`, so add an explicit `use v{}.{}` to this file or raise \
-                     `[perl].version`",
+                    ". This file declares no `use VERSION`, so the PL900 target v{}.{} came from \
+                     the project `[perl].version`; add an explicit `use VERSION` to this file or \
+                     raise `[perl].version`",
                     declared_version.major, declared_version.minor
                 ));
             }
@@ -1047,7 +1047,8 @@ mod tests {
             .as_deref()
             .expect("project fallback diagnostic must have a suggestion");
         assert!(project_suggestion.contains("This file declares no `use VERSION`"));
-        assert!(project_suggestion.contains("use v5.36"));
+        assert!(project_suggestion.contains("PL900 target v5.20"));
+        assert!(project_suggestion.contains("add an explicit `use VERSION`"));
         assert!(project_suggestion.contains("raise `[perl].version`"));
 
         let source_diags = version_compat_diags_with_project_version(
