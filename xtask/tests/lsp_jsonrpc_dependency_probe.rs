@@ -71,8 +71,8 @@ fn output_text(output: &Output) -> String {
 }
 
 #[test]
-fn jsonrpc_model_is_dependency_closed_and_rejects_indirect_perl_taxonomy(
-) -> Result<(), Box<dyn Error>> {
+fn jsonrpc_model_is_dependency_closed_and_rejects_indirect_perl_taxonomy()
+-> Result<(), Box<dyn Error>> {
     let model = repo_root().join(JSONRPC_MODEL_PATH);
     if !model.is_file() {
         return Err(io::Error::new(
