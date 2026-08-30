@@ -11,6 +11,29 @@
 //! The spelling family, the exact raw source text, the exact byte range, and
 //! whether that reading is exact or recovered. Nothing else.
 //!
+//! # Source fidelity is structural
+//!
+//! A value is built from the source text and a range, and the spelling is
+//! *derived* by slicing — [`DeclarationVersionSyntax::from_source`] is the
+//! only constructor, and it takes no caller-supplied string. A caller
+//! therefore cannot pair a reconstructed, normalized, or simply wrong
+//! spelling with a real source range: there is no API that accepts one.
+//! Slicing a range the caller already computed is not a source rescan; the
+//! producer does no searching, matching, or re-lexing.
+//!
+//! # Exactness is checked, not asserted
+//!
+//! An exact form only admits its own closed spelling grammar:
+//! [`DeclarationVersionForm::Decimal`] cannot carry `v1.2.3`, and
+//! [`DeclarationVersionForm::VString`] cannot carry arbitrary text. A spelling
+//! the parser could not read as the form it expected belongs to
+//! [`DeclarationVersionForm::RecoveredOrUnknown`], which is the only form that
+//! admits anything. Without that check the exact/recovered distinction would
+//! be a caller's assertion rather than a property of the value.
+//!
+//! This is spelling shape only. It decides nothing about what a version
+//! *means*, orders nothing, and compares nothing.
+//!
 //! # What this contract does not own
 //!
 //! No normalized value, ordering, comparison, equivalence, feature
@@ -35,6 +58,7 @@ use std::fmt;
 /// forms and remain distinguishable even if a later semantic layer decides
 /// they denote the same version.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum DeclarationVersionForm {
     /// Decimal spelling, such as `1.23` or `0.001`.
     Decimal,
@@ -73,10 +97,62 @@ impl DeclarationVersionForm {
             Self::RecoveredOrUnknown => DeclarationVersionDisposition::Recovered,
         }
     }
+
+    /// Whether `spelling` matches this form's closed source grammar.
+    ///
+    /// An exact form only admits its own spelling: a decimal tag cannot carry
+    /// a v-string, and neither can carry arbitrary text.
+    /// [`Self::RecoveredOrUnknown`] admits anything and is the only escape —
+    /// that is what makes "exact" mean something.
+    #[must_use]
+    pub fn accepts(self, spelling: &str) -> bool {
+        match self {
+            Self::Decimal => is_decimal_spelling(spelling),
+            Self::VString => is_vstring_spelling(spelling),
+            Self::RecoveredOrUnknown => true,
+        }
+    }
+}
+
+/// One run of version digits, with Perl's `_` numeric separator allowed after
+/// the leading digit (`1`, `036`, `23_45`).
+fn is_digit_run(component: &str) -> bool {
+    component.starts_with(|c: char| c.is_ascii_digit())
+        && component.bytes().all(|b| b.is_ascii_digit() || b == b'_')
+}
+
+/// A decimal declaration VERSION: one integer part and at most one fractional
+/// part (`1`, `1.23`, `0.001`, `5.036`, `1.23_45`). A second dot makes it a
+/// v-string, not a decimal.
+fn is_decimal_spelling(spelling: &str) -> bool {
+    let mut parts = spelling.splitn(2, '.');
+    let Some(integer) = parts.next() else {
+        return false;
+    };
+    if !is_digit_run(integer) {
+        return false;
+    }
+    match parts.next() {
+        None => true,
+        // `splitn(2, ..)` leaves any further dots in the remainder, so a
+        // three-part spelling fails the digit-run check here.
+        Some(fraction) => is_digit_run(fraction),
+    }
+}
+
+/// A v-string declaration VERSION: either `v`-prefixed with one or more
+/// components (`v5`, `v1.2.3`), or the bare three-or-more-component form Perl
+/// also reads as a v-string (`1.2.3`).
+fn is_vstring_spelling(spelling: &str) -> bool {
+    if let Some(rest) = spelling.strip_prefix('v') {
+        return rest.split('.').all(is_digit_run);
+    }
+    spelling.split('.').count() >= 3 && spelling.split('.').all(is_digit_run)
 }
 
 /// Whether a recorded declaration VERSION is an exact reading of the source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum DeclarationVersionDisposition {
     /// The spelling was read completely and matched a known source form.
     Exact,
@@ -86,8 +162,9 @@ pub enum DeclarationVersionDisposition {
 
 /// The owner-neutral source syntax of one declaration VERSION.
 ///
-/// Construct through [`DeclarationVersionSyntax::new`], which rejects states
-/// where the retained spelling and the retained range contradict each other.
+/// Construct through [`DeclarationVersionSyntax::from_source`], the only
+/// constructor. It derives the spelling from the source, so the retained
+/// spelling and the retained range cannot disagree.
 ///
 /// # Example
 ///
@@ -95,11 +172,11 @@ pub enum DeclarationVersionDisposition {
 /// use perl_ast::ast::{DeclarationVersionForm, DeclarationVersionSyntax};
 /// use perl_ast::SourceLocation;
 ///
-/// // package Demo 1.23;
-/// //              ^^^^  bytes 13..17
-/// let version = DeclarationVersionSyntax::new(
+/// let source = "package Demo 1.23;";
+/// //                         ^^^^  bytes 13..17
+/// let version = DeclarationVersionSyntax::from_source(
 ///     DeclarationVersionForm::Decimal,
-///     "1.23",
+///     source,
 ///     SourceLocation { start: 13, end: 17 },
 /// )?;
 ///
@@ -116,24 +193,24 @@ pub struct DeclarationVersionSyntax {
 }
 
 impl DeclarationVersionSyntax {
-    /// Records one declaration VERSION spelling at its exact source range.
+    /// Records the declaration VERSION that `range` covers in `source`.
     ///
-    /// `raw` must be the source text the range covers: the check is
-    /// `raw.len() == range.end - range.start`. That is what keeps this type a
-    /// *source* record — a caller cannot store a reconstructed or normalized
-    /// string against a real source range.
+    /// The spelling is taken from `source[range]`, never from the caller, so
+    /// the value is a source record by construction rather than by promise.
     ///
     /// # Errors
     ///
     /// - [`DeclarationVersionSyntaxError::InvertedRange`] when `start > end`.
-    /// - [`DeclarationVersionSyntaxError::RangeLengthMismatch`] when the
-    ///   spelling is not the exact byte extent of the range.
+    /// - [`DeclarationVersionSyntaxError::RangeOutOfBounds`] when the range
+    ///   runs past the end of `source`.
+    /// - [`DeclarationVersionSyntaxError::RangeNotOnCharBoundary`] when the
+    ///   range splits a multi-byte character.
     /// - [`DeclarationVersionSyntaxError::EmptyExactSpelling`] when an exact
-    ///   form carries no spelling at all. A zero-width reading is only
-    ///   representable as [`DeclarationVersionForm::RecoveredOrUnknown`].
-    pub fn new(
+    ///   form covers no bytes. A zero-width reading is only representable as
+    ///   [`DeclarationVersionForm::RecoveredOrUnknown`].
+    pub fn from_source(
         form: DeclarationVersionForm,
-        raw: impl Into<String>,
+        source: &str,
         range: SourceLocation,
     ) -> Result<Self, DeclarationVersionSyntaxError> {
         if range.start > range.end {
@@ -143,20 +220,34 @@ impl DeclarationVersionSyntax {
             });
         }
 
-        let raw = raw.into();
-        let range_len = range.end - range.start;
-        if raw.len() != range_len {
-            return Err(DeclarationVersionSyntaxError::RangeLengthMismatch {
-                raw_len: raw.len(),
-                range_len,
+        if range.end > source.len() {
+            return Err(DeclarationVersionSyntaxError::RangeOutOfBounds {
+                start: range.start,
+                end: range.end,
+                source_len: source.len(),
             });
         }
 
-        if raw.is_empty() && form.disposition() == DeclarationVersionDisposition::Exact {
+        let Some(slice) = source.get(range.start..range.end) else {
+            return Err(DeclarationVersionSyntaxError::RangeNotOnCharBoundary {
+                start: range.start,
+                end: range.end,
+            });
+        };
+
+        if slice.is_empty() && form.disposition() == DeclarationVersionDisposition::Exact {
             return Err(DeclarationVersionSyntaxError::EmptyExactSpelling { form });
         }
 
-        Ok(Self { form, raw, range })
+        if !form.accepts(slice) {
+            return Err(DeclarationVersionSyntaxError::SpellingDoesNotMatchForm {
+                form,
+                start: range.start,
+                end: range.end,
+            });
+        }
+
+        Ok(Self { form, raw: slice.to_string(), range })
     }
 
     /// The source spelling family of this version.
@@ -204,8 +295,9 @@ impl fmt::Display for DeclarationVersionSyntax {
     }
 }
 
-/// Why a declaration VERSION spelling could not be recorded.
+/// Why a declaration VERSION reading could not be recorded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum DeclarationVersionSyntaxError {
     /// The supplied range ends before it starts.
     InvertedRange {
@@ -214,17 +306,40 @@ pub enum DeclarationVersionSyntaxError {
         /// End byte offset as supplied.
         end: usize,
     },
-    /// The spelling is not the exact byte extent of the supplied range.
-    RangeLengthMismatch {
-        /// Byte length of the supplied spelling.
-        raw_len: usize,
-        /// Byte length of the supplied range.
-        range_len: usize,
+    /// The supplied range runs past the end of the source.
+    RangeOutOfBounds {
+        /// Start byte offset as supplied.
+        start: usize,
+        /// End byte offset as supplied.
+        end: usize,
+        /// Byte length of the source the range was read against.
+        source_len: usize,
     },
-    /// An exact form was supplied with no spelling.
+    /// The supplied range splits a multi-byte character.
+    RangeNotOnCharBoundary {
+        /// Start byte offset as supplied.
+        start: usize,
+        /// End byte offset as supplied.
+        end: usize,
+    },
+    /// An exact form covers no bytes of source.
     EmptyExactSpelling {
         /// The exact form that was supplied.
         form: DeclarationVersionForm,
+    },
+    /// The covered spelling does not match the closed grammar of the exact
+    /// form it was recorded under.
+    ///
+    /// A spelling the parser cannot read as the form it expected belongs to
+    /// [`DeclarationVersionForm::RecoveredOrUnknown`], which is the only form
+    /// that admits arbitrary text.
+    SpellingDoesNotMatchForm {
+        /// The exact form that was supplied.
+        form: DeclarationVersionForm,
+        /// Start byte offset of the offending spelling.
+        start: usize,
+        /// End byte offset of the offending spelling.
+        end: usize,
     },
 }
 
@@ -234,13 +349,21 @@ impl fmt::Display for DeclarationVersionSyntaxError {
             Self::InvertedRange { start, end } => {
                 write!(f, "declaration VERSION range {start}..{end} ends before it starts")
             }
-            Self::RangeLengthMismatch { raw_len, range_len } => write!(
+            Self::RangeOutOfBounds { start, end, source_len } => write!(
                 f,
-                "declaration VERSION spelling is {raw_len} bytes but its range covers {range_len}"
+                "declaration VERSION range {start}..{end} runs past the {source_len}-byte source"
             ),
+            Self::RangeNotOnCharBoundary { start, end } => {
+                write!(f, "declaration VERSION range {start}..{end} splits a multi-byte character")
+            }
             Self::EmptyExactSpelling { form } => write!(
                 f,
                 "declaration VERSION form `{}` requires a spelling; a zero-width reading is only representable as `recovered`",
+                form.tag()
+            ),
+            Self::SpellingDoesNotMatchForm { form, start, end } => write!(
+                f,
+                "declaration VERSION at {start}..{end} is not a `{}` spelling; record an unreadable version as `recovered`",
                 form.tag()
             ),
         }

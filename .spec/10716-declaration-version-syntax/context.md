@@ -11,10 +11,10 @@ version in the declaration header. Today both parse it and throw it away, on
 two separate code paths:
 
 - `crates/perl-parser-core/src/engine/parser/declarations.rs` `parse_package`
-  builds a `version` string from a `Number`/`VString` token (or an
-  identifier-plus-`.N` v-string) and ends with `let _ = version;` — parsed,
-  never attached. The concatenation into the package name was removed by
-  #5265 because it polluted PL201 messages and package-to-file mapping.
+  builds a `version` string from a `Number`/`VString` token and ends with
+  `let _ = version;` — parsed, never attached. The concatenation into the
+  package name was removed by #5265 because it polluted PL201 messages and
+  package-to-file mapping.
 - the same file's `parse_class` consumes the same token shapes with
   `self.tokens.next()?; // consume and discard version token`, keeping
   nothing at all.
@@ -23,6 +23,25 @@ So the raw spelling, the byte range, and whether the reading was exact are all
 lost, twice, with two independently written recognizers. Without one shared
 lower value the later parser cutovers (#11089) and the package/class
 structural rails (#10753, #10762) would each re-derive a VERSION taxonomy.
+
+### One correction about those two paths
+
+Both recognizers also carry an identifier-plus-trailing-`.N` fallback branch
+for v-strings. **That branch is unreachable for `package` and `class` today.**
+`crates/perl-lexer/src/lib.rs:465` gates `try_vstring()` only on
+`!self.after_sub`, and `after_sub` is set true exclusively by the `sub` and
+`method` keywords (`lib.rs:1981`) — never after `class` or `package`. So both
+declaration forms always receive one contiguous `VString` token whose text is
+the exact source slice. The comment at `lib.rs:3892` records the companion
+fact: under `after_sub` the `.` is lexed as a separate `Operator`, so the
+fallback's `num_token.text.starts_with('.')` guard cannot hold even where the
+branch is reachable.
+
+This matters for #11089, not for this claim: a producer that lifts the
+existing fallback logic verbatim would reconstruct `"v5" + "2" + "3"` and try
+to record it against a 6-byte `v1.2.3` span. Under this contract that cannot
+silently succeed — the spelling is derived from the source, so a reconstructed
+string has nowhere to go.
 
 ## Scope ruling
 
@@ -53,10 +72,13 @@ consumers this type exists for; rewiring them is #11089's claim, not this one.
   `RecoveredOrUnknown`), its **exact raw spelling**, and its **exact byte
   range**. Decimal and v-string stay different forms regardless of whether a
   later semantic layer would call them equal.
-- The retained spelling is the source slice of the retained range:
-  `raw.len() == range.end - range.start` is enforced at construction. A caller
-  therefore cannot store a reconstructed or normalized string against a real
-  source range.
+- **Source fidelity is structural, not promised.**
+  `DeclarationVersionSyntax::from_source(form, source, range)` is the only
+  constructor and takes no caller-supplied spelling: the text is sliced out of
+  the source. A caller therefore cannot pair a reconstructed, normalized, or
+  simply wrong spelling with a real source range, because no API accepts one.
+  Slicing a range the caller already computed is not a source rescan — the
+  producer does no searching, matching, or re-lexing.
 - **Disposition is derived from the form**, not stored beside it. An "exact
   recovered" value is unrepresentable rather than merely rejected.
 - **Absence is owner-level `Option::None`.** A version that was present but
@@ -65,21 +87,26 @@ consumers this type exists for; rewiring them is #11089's claim, not this one.
 - **No normalized value.** There is no numeric accessor, comparison, ordering,
   equivalence, activation, import, or directive semantics on this type, and no
   second "compatibility string" field beside the raw spelling.
-- Checked construction rejects an inverted range, a range that does not cover
-  the spelling, and a zero-width *exact* form. Rejection is a typed `Result`;
-  no constructor panics.
+- Checked construction rejects an inverted range, a range past the end of the
+  source, a range that splits a multi-byte character, and a zero-width *exact*
+  form. Rejection is a typed `Result`; no constructor panics or indexes.
 - `Display` is one deterministic form-tagged projection
   (`<form>:<raw>@<start>..<end>`). It is a diagnostic/receipt rendering, not
   machine identity, and never renders a normalized interpretation.
+- The three public enums are `#[non_exhaustive]`, matching this crate's
+  convention for public enums (`GotoTargetForm` at `ast.rs:155`,
+  `AstInvariantCode` at `invariants.rs:13`, and 12 further occurrences).
+  Adding it now is free; after #10753/#10762/#11089 start matching it would be
+  a breaking change.
 
 ## Deliberate omissions
 
 - **No serde.** `perl-ast` carries no serde dependency today; "deterministic
-  serialization" is satisfied by derived `Debug`/`PartialEq` and the
+  serialization" is satisfied by derived `Debug`/`PartialEq`/`Hash` and the
   deterministic `Display` above. Adding a dependency for an unbuilt consumer
   would be scope this claim does not own.
-- **No convenience constructors** per form. One checked `new` keeps a single
-  construction authority.
+- **One constructor.** No per-form convenience wrappers; a single construction
+  authority is also what makes the fidelity guarantee total.
 
 ## Consumers this unblocks
 
@@ -90,5 +117,5 @@ consumers this type exists for; rewiring them is #11089's claim, not this one.
 
 ## Proof
 
-`crates/perl-ast/tests/declaration_version_syntax.rs`, rows DVS-001..DVS-012 in
+`crates/perl-ast/tests/declaration_version_syntax.rs`, rows DVS-001..DVS-013 in
 `acceptance.md`.

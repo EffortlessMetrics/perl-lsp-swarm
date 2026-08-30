@@ -95,15 +95,12 @@ pub use ast::GotoTargetForm;
 /// Primary AST node -- the building block of every syntax tree.
 pub use ast::{
     AstReadExact, AstReadInstrumentCause, AstReadLimits, AstReadPath, AstReadPathStep,
-    AstReadResult, AstReadTruncation, AstReadWork, DeepestContainingMatch, FieldId,
-    NATIVE_DEBUG_SEXP_DEPTH_LIMIT_MARKER, NATIVE_DEBUG_SEXP_GRAMMAR,
-    NativeDebugSexpInstrumentCause, NativeDebugSexpLimits, NativeDebugSexpOmitted,
-    NativeDebugSexpResult, NativeDebugSexpTruncation, NativeDebugSexpWork, Node, NodeKind,
-};
-/// Shared owner-neutral source syntax for a declaration VERSION (`package`/`class` headers).
-pub use ast::{
-    DeclarationVersionDisposition, DeclarationVersionForm, DeclarationVersionSyntax,
-    DeclarationVersionSyntaxError,
+    AstReadResult, AstReadTruncation, AstReadWork, DeclarationVersionDisposition,
+    DeclarationVersionForm, DeclarationVersionSyntax, DeclarationVersionSyntaxError,
+    DeepestContainingMatch, FieldId, NATIVE_DEBUG_SEXP_DEPTH_LIMIT_MARKER,
+    NATIVE_DEBUG_SEXP_GRAMMAR, NativeDebugSexpInstrumentCause, NativeDebugSexpLimits,
+    NativeDebugSexpOmitted, NativeDebugSexpResult, NativeDebugSexpTruncation, NativeDebugSexpWork,
+    Node, NodeKind,
 };
 /// Exhaustive AST invariant policy types and registry.
 pub use invariant_policy::{
