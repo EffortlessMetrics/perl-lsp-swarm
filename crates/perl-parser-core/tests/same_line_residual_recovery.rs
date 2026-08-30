@@ -297,6 +297,26 @@ fn bare_and_unary_word_goto_forms_match_perl_boundaries() -> Result<(), String> 
 }
 
 #[test]
+fn unary_goto_postfix_arrow_forms_match_perl_boundaries() -> Result<(), String> {
+    for source in
+        ["foo or +goto->foo;", "foo or !goto->foo;", "foo or not goto->foo;", "foo or -goto->foo;"]
+    {
+        if !perl_compile_accepts(source)? {
+            return Err(format!("real Perl rejected valid postfix-arrow form: {source:?}"));
+        }
+        let output = Parser::new(source).parse_with_recovery();
+        if output.diagnostics.iter().any(ParseError::blocks_clean_parse) {
+            return Err(format!(
+                "postfix-arrow goto form became blocking: source={source:?}, diagnostics={:?}\nast={}",
+                output.diagnostics,
+                output.ast.to_sexp()
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn unary_word_goto_forms_do_not_hide_trailing_residue() -> Result<(), String> {
     for (source, token) in [
         ("foo or not goto fail; 1 2;", "2"),

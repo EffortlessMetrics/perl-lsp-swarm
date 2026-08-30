@@ -103,6 +103,7 @@ impl<'a> Parser<'a> {
                     !matches!(
                         token.kind(),
                         TokenKind::FatArrow
+                            | TokenKind::Arrow
                             | TokenKind::Semicolon
                             | TokenKind::Comma
                             | TokenKind::RightParen
