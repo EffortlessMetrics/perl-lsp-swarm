@@ -25,6 +25,7 @@ const F_TOOLS: &str = "crates/perl-lsp-rs/src/runtime/lifecycle/tools.rs";
 const F_RUNTIME: &str = "crates/perl-lsp-rs/src/runtime/mod.rs";
 const F_RUNTIME_WORKSPACE: &str = "crates/perl-lsp-rs/src/runtime/workspace.rs";
 const F_TIMING: &str = "crates/perl-lsp-rs/src/runtime/timing.rs";
+const F_CORE_CAPABILITIES: &str = "crates/perl-lsp-rs-core/src/protocol/capabilities.rs";
 
 // ---------------------------------------------------------------------------
 // Authorities joined rather than duplicated
@@ -81,6 +82,7 @@ pub fn ledger_rows() -> Vec<InitOperationRow> {
             target_owner: OWNER_SURFACE,
             proof_family: "initialize_capability_normalization",
             memoization: "guarded by initialize_requested compare_exchange",
+            call_site_argument: "",
             owns_exposure: false,
         },
         InitOperationRow {
@@ -111,6 +113,7 @@ pub fn ledger_rows() -> Vec<InitOperationRow> {
             target_owner: OWNER_ORDERING,
             proof_family: "initialize_deferred_bootstrap",
             memoization: "guarded by an initialized compare_exchange",
+            call_site_argument: "",
             owns_exposure: false,
         },
         InitOperationRow {
@@ -135,6 +138,7 @@ pub fn ledger_rows() -> Vec<InitOperationRow> {
             target_owner: OWNER_ORDERING,
             proof_family: "initialize_compat_trigger",
             memoization: "shares complete_initialization's guard",
+            call_site_argument: "",
             owns_exposure: false,
         },
         InitOperationRow {
@@ -159,12 +163,42 @@ pub fn ledger_rows() -> Vec<InitOperationRow> {
             target_owner: OWNER_ORDERING,
             proof_family: "initialize_compat_trigger",
             memoization: "",
+            call_site_argument: "",
             owns_exposure: false,
         },
         // -------------------------------------------------------------------
         // Operations. These account for coverage and must be pairwise
         // non-nested.
         // -------------------------------------------------------------------
+        InitOperationRow {
+            operation_id: "init.response.static_capability_construction",
+            file: F_CORE_CAPABILITIES,
+            function: "capabilities_json",
+            proposition: "the static server capability surface is constructed from build flags \
+                          alone, with no ambient process, tool or interpreter state as input",
+            side_effects: &[],
+            declared_exposure: &[],
+            triggers: &[Trigger::Initialize],
+            exactly_once: true,
+            current_point: ExecutionPoint::BeforeResponse,
+            phase: PhaseDisposition::ProtocolRequiredBeforeResponse,
+            migration_wave: MigrationWave::None,
+            // The one row that genuinely shapes the static InitializeResult. It
+            // exercises the ambient-state rule positively: the join is admitted
+            // only because this operation reaches no PATH, process or network
+            // work, which is exactly #9662's purity requirement.
+            affects_static_initialize_result: true,
+            static_surface_join: "#9662 SurfaceInputs (BuildFlags census profile)",
+            affects_dynamic_registration_plan: false,
+            affects_negotiation: true,
+            affects_initial_native_semantics: false,
+            current_owner: OWNER_SURFACE,
+            target_owner: OWNER_SURFACE,
+            proof_family: "initialize_static_surface_is_pure",
+            memoization: "",
+            call_site_argument: "",
+            owns_exposure: false,
+        },
         InitOperationRow {
             operation_id: "init.config.perltidyrc_profile_import",
             file: F_LIFECYCLE_WORKSPACE,
@@ -195,6 +229,7 @@ pub fn ledger_rows() -> Vec<InitOperationRow> {
             target_owner: OWNER_PERLTIDY_CONFIG,
             proof_family: "initialize_perltidyrc_native_import",
             memoization: "",
+            call_site_argument: "",
             owns_exposure: true,
         },
         InitOperationRow {
@@ -223,6 +258,7 @@ pub fn ledger_rows() -> Vec<InitOperationRow> {
             target_owner: OWNER_CONFIG,
             proof_family: "initialize_project_config_precedence",
             memoization: "",
+            call_site_argument: "",
             owns_exposure: true,
         },
         InitOperationRow {
@@ -254,6 +290,7 @@ pub fn ledger_rows() -> Vec<InitOperationRow> {
             memoization: "calls the uncached find_perl_interpreter even though a cached variant \
                           exists; the not-found warning is gated by a module-static Once, so it \
                           fires once per process, not once per session as its doc comment says",
+            call_site_argument: "",
             owns_exposure: true,
         },
         // The two `detect_tool` call sites at capabilities.rs:746-747 share one
@@ -288,6 +325,7 @@ pub fn ledger_rows() -> Vec<InitOperationRow> {
             target_owner: OWNER_TOOL_ROLES,
             proof_family: "initialize_tool_detection_is_not_capability_authority",
             memoization: "result is discarded; recomputed on every initialize",
+            call_site_argument: "perltidy",
             owns_exposure: true,
         },
         InitOperationRow {
@@ -316,6 +354,7 @@ pub fn ledger_rows() -> Vec<InitOperationRow> {
             memoization: "result is discarded; recomputed on every initialize",
             // The sibling perltidy row already accounts for this shared
             // mechanism's closure; both owning it would be redundant.
+            call_site_argument: "",
             owns_exposure: false,
         },
         InitOperationRow {
@@ -340,6 +379,7 @@ pub fn ledger_rows() -> Vec<InitOperationRow> {
             target_owner: OWNER_TASKS,
             proof_family: "initialize_optional_backend_is_runtime_readiness",
             memoization: "",
+            call_site_argument: "",
             owns_exposure: true,
         },
         InitOperationRow {
@@ -366,6 +406,7 @@ pub fn ledger_rows() -> Vec<InitOperationRow> {
             target_owner: OWNER_TASKS,
             proof_family: "initialize_workspace_indexing_is_background_work",
             memoization: "git discovery results are cached per root",
+            call_site_argument: "",
             owns_exposure: true,
         },
         InitOperationRow {
@@ -390,6 +431,7 @@ pub fn ledger_rows() -> Vec<InitOperationRow> {
             proof_family: "initialize_instrumentation_has_no_semantic_effect",
             memoization: "resolved once into a static",
             // Shared leaf utility, as above.
+            call_site_argument: "",
             owns_exposure: false,
         },
     ]

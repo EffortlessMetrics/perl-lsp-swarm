@@ -78,6 +78,7 @@ fn baseline_row() -> InitOperationRow {
         target_owner: "synthetic owner",
         proof_family: "synthetic",
         memoization: "",
+        call_site_argument: "",
         owns_exposure: true,
     }
 }
@@ -349,6 +350,103 @@ fn a_file_declared_only_under_cfg_test_is_excluded() {
     assert!(
         census.resolve("crates/perl-lsp-rs/src/helpers.rs", "spawn_for_tests").is_none(),
         "a file declared only under #[cfg(test)] must not enter the production census"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Call-site identity
+// ---------------------------------------------------------------------------
+
+/// Two rows citing one shared helper, distinguished only by call-site argument.
+fn shared_helper_sources() -> Vec<(String, String)> {
+    vec![
+        (
+            SYNTHETIC_ROOT_FILE.to_string(),
+            r#"
+            impl Server {
+                pub fn handle_initialize(&self) {
+                    self.detect_tool("perltidy");
+                    self.detect_tool("perlcritic");
+                }
+            }
+            "#
+            .to_string(),
+        ),
+        (
+            SYNTHETIC_HELPER_FILE.to_string(),
+            r#"
+            impl Server {
+                pub fn detect_tool(&self, name: &str) -> bool {
+                    which::which(name).is_ok()
+                }
+            }
+            "#
+            .to_string(),
+        ),
+    ]
+}
+
+#[test]
+fn a_row_naming_a_call_site_that_does_not_exist_is_rejected() {
+    let census = Census::from_sources(&shared_helper_sources());
+    let row = InitOperationRow {
+        operation_id: "synthetic.tool",
+        file: SYNTHETIC_HELPER_FILE,
+        function: "detect_tool",
+        declared_exposure: &[Exposure::PathLookup],
+        // No source calls detect_tool("pls").
+        call_site_argument: "pls",
+        ..baseline_row()
+    };
+
+    let errors = ledger_errors_with_roots(&[row], &census, &synthetic_roots());
+    assert_reports(&errors, "no initialize-reachable source makes that call");
+}
+
+#[test]
+fn rows_sharing_a_helper_are_independently_falsifiable() {
+    // Both rows cite `detect_tool`. Each must stand on its own call site, so
+    // removing one operation retires exactly one row.
+    let census = Census::from_sources(&shared_helper_sources());
+    let perltidy = InitOperationRow {
+        operation_id: "synthetic.tool.perltidy",
+        file: SYNTHETIC_HELPER_FILE,
+        function: "detect_tool",
+        declared_exposure: &[Exposure::PathLookup],
+        call_site_argument: "perltidy",
+        ..baseline_row()
+    };
+    let perlcritic = InitOperationRow {
+        operation_id: "synthetic.tool.perlcritic",
+        file: SYNTHETIC_HELPER_FILE,
+        function: "detect_tool",
+        declared_exposure: &[Exposure::PathLookup],
+        call_site_argument: "perlcritic",
+        owns_exposure: false,
+        ..baseline_row()
+    };
+
+    let errors = ledger_errors_with_roots(
+        &[perltidy.clone(), perlcritic.clone()],
+        &census,
+        &synthetic_roots(),
+    );
+    assert!(
+        !errors.iter().any(|error| error.contains("makes that call")),
+        "both call sites exist, so neither row is stale: {errors:#?}"
+    );
+
+    // Now delete only the perlcritic call.
+    let mut reduced = shared_helper_sources();
+    reduced[0].1 = reduced[0].1.replace("self.detect_tool(\"perlcritic\");", "");
+    let reduced_census = Census::from_sources(&reduced);
+
+    let errors =
+        ledger_errors_with_roots(&[perltidy, perlcritic], &reduced_census, &synthetic_roots());
+    assert_reports(&errors, "synthetic.tool.perlcritic");
+    assert!(
+        !errors.iter().any(|error| error.contains("synthetic.tool.perltidy")),
+        "the surviving operation's row must not be reported: {errors:#?}"
     );
 }
 

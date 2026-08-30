@@ -100,6 +100,13 @@ pub struct FunctionRecord {
     pub path_calls: BTreeSet<String>,
     /// Exposures detected directly in the body, not through callees.
     pub exposures: BTreeSet<Exposure>,
+    /// `(callee, first string-literal argument)` pairs seen at call sites.
+    ///
+    /// Two ledger rows can legitimately cite one shared helper —
+    /// `detect_tool("perltidy")` and `detect_tool("perlcritic")` — and without a
+    /// call-site discriminator neither row goes stale when its own call is
+    /// deleted.
+    pub call_arguments: BTreeSet<(String, String)>,
 }
 
 impl FunctionRecord {
@@ -290,6 +297,21 @@ impl Census {
                     .count()
             })
             .unwrap_or(0)
+    }
+
+    /// Whether any function in `within` calls `callee` with `argument` as its
+    /// first string literal.
+    pub fn calls_with_argument(
+        &self,
+        within: &BTreeSet<usize>,
+        callee: &str,
+        argument: &str,
+    ) -> bool {
+        let wanted = (callee.to_string(), argument.to_string());
+        within
+            .iter()
+            .filter_map(|index| self.funcs.get(*index))
+            .any(|record| record.call_arguments.contains(&wanted))
     }
 
     /// Sources the census could not parse, as `(path, parse error)`.
@@ -592,6 +614,7 @@ fn summarize(file: &str, name: String, is_method: bool, block: &syn::Block) -> F
     let mut body = BodyVisitor {
         method_calls: BTreeSet::new(),
         path_calls: BTreeSet::new(),
+        call_arguments: BTreeSet::new(),
         exposures: BTreeSet::new(),
         saw_command_type: false,
         deferred_process_methods: false,
@@ -613,12 +636,14 @@ fn summarize(file: &str, name: String, is_method: bool, block: &syn::Block) -> F
         method_calls: body.method_calls,
         path_calls: body.path_calls,
         exposures,
+        call_arguments: body.call_arguments,
     }
 }
 
 struct BodyVisitor {
     method_calls: BTreeSet<String>,
     path_calls: BTreeSet<String>,
+    call_arguments: BTreeSet<(String, String)>,
     exposures: BTreeSet<Exposure>,
     saw_command_type: bool,
     deferred_process_methods: bool,
@@ -654,6 +679,9 @@ impl<'ast> Visit<'ast> for BodyVisitor {
         if PROCESS_METHODS.contains(&method.as_str()) {
             self.deferred_process_methods = true;
         }
+        if let Some(literal) = first_string_literal(&node.args) {
+            self.call_arguments.insert((method.clone(), literal));
+        }
         self.method_calls.insert(method);
         self.record_function_reference_args(&node.args);
         syn::visit::visit_expr_method_call(self, node);
@@ -665,6 +693,9 @@ impl<'ast> Visit<'ast> for BodyVisitor {
                 path.path.segments.iter().map(|seg| seg.ident.to_string()).collect();
             self.classify_path(&segments, node);
             if let Some(last) = segments.last() {
+                if let Some(literal) = first_string_literal(&node.args) {
+                    self.call_arguments.insert((last.clone(), literal));
+                }
                 self.path_calls.insert(last.clone());
             }
         }
@@ -811,4 +842,14 @@ fn is_test_only_file(file: &str, test_only_modules: &BTreeSet<String>) -> bool {
         return file.rsplit('/').nth(1).is_some_and(|parent| test_only_modules.contains(parent));
     }
     test_only_modules.contains(stem)
+}
+
+/// The first string-literal argument at a call site, if any.
+fn first_string_literal(
+    args: &syn::punctuated::Punctuated<syn::Expr, syn::Token![,]>,
+) -> Option<String> {
+    args.iter().find_map(|arg| match arg {
+        syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Str(text), .. }) => Some(text.value()),
+        _ => None,
+    })
 }

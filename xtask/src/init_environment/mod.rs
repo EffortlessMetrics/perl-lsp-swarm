@@ -241,6 +241,13 @@ pub struct InitOperationRow {
     pub proof_family: &'static str,
     /// Memoization note, or empty when the operation recomputes each time.
     pub memoization: &'static str,
+    /// A first string-literal argument distinguishing this row's call site.
+    ///
+    /// Two rows may cite one shared helper: `detect_tool("perltidy")` and
+    /// `detect_tool("perlcritic")` are different operations with different
+    /// target dispositions. Without this, deleting one call leaves both rows
+    /// validating. Empty when the citation is already unique.
+    pub call_site_argument: &'static str,
     /// Whether this row's transitive closure accounts for reachable blocking
     /// work during coverage checking.
     ///
@@ -299,6 +306,7 @@ pub fn ledger_errors_with_roots(
     errors.extend(phase_errors(rows, census));
     errors.extend(static_surface_errors(rows, census));
     errors.extend(coverage_errors(rows, census, roots));
+    errors.extend(call_site_errors(rows, census, roots));
 
     errors.sort();
     errors.dedup();
@@ -648,6 +656,7 @@ pub fn render_json(rows: &[InitOperationRow]) -> String {
                 "proof_family": row.proof_family,
                 "memoization": row.memoization,
                 "owns_exposure": row.owns_exposure,
+                "call_site_argument": row.call_site_argument,
             })
         })
         .collect();
@@ -684,4 +693,39 @@ pub fn by_wave(rows: &[InitOperationRow]) -> BTreeMap<&'static str, Vec<&'static
         ids.sort_unstable();
     }
     grouped
+}
+
+/// Fail when a row's distinguishing call site no longer exists.
+///
+/// A row citing a shared helper is only as current as the call that makes it a
+/// distinct operation. Deleting `detect_tool("perlcritic")` must retire that
+/// row rather than leaving it validated by its sibling's call.
+fn call_site_errors(
+    rows: &[InitOperationRow],
+    census: &Census,
+    roots: &[(&str, &str)],
+) -> Vec<String> {
+    let mut reachable: BTreeSet<usize> = BTreeSet::new();
+    for (file, function) in roots {
+        let Some(root) = census.resolve(file, function) else {
+            continue;
+        };
+        reachable.insert(root);
+        reachable.extend(census.reachable_from(root, census::MAX_DEPTH).into_keys());
+    }
+
+    let mut errors = Vec::new();
+    for row in rows {
+        if row.call_site_argument.is_empty() {
+            continue;
+        }
+        if !census.calls_with_argument(&reachable, row.function, row.call_site_argument) {
+            errors.push(format!(
+                "row {} names call site `{}(\"{}\")`, but no initialize-reachable source makes \
+                 that call",
+                row.operation_id, row.function, row.call_site_argument
+            ));
+        }
+    }
+    errors
 }
