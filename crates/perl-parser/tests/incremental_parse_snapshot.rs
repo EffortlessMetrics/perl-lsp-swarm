@@ -58,7 +58,7 @@ fn committed_edits_advance_one_generation_and_bind_exact_source() -> anyhow::Res
         result.parse_output().diagnostics.len()
     );
     assert!(initial_subject.same_instance_as(state.snapshot().source_geometry().subject()));
-    assert_ne!(initial_subject, *state.snapshot().source_geometry().subject());
+    assert_ne!(&initial_subject, state.snapshot().source_geometry().subject());
     state.snapshot().validate_against(state.source())?;
     assert_geometry_unavailable_for_current_snapshot(&state);
     Ok(())
