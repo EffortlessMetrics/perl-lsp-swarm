@@ -1474,7 +1474,7 @@ impl<'a> Parser<'a> {
     /// by `}` or `,`, otherwise returns `None` to fall through to general
     /// expression parsing.
     fn try_parse_keyword_bareword_key(&mut self) -> ParseResult<Option<Node>> {
-        if !self.peek_is_keyword_bareword_key() {
+        if !self.peek_is_keyword_bareword_key(true) {
             return Ok(None);
         }
 
@@ -1492,7 +1492,9 @@ impl<'a> Parser<'a> {
                 break;
             }
 
-            if self.peek_is_keyword_bareword_key() {
+            // Terminal controls are static keys only when they are the sole
+            // subscript expression. After a comma, Perl keeps them executable.
+            if self.peek_is_keyword_bareword_key(false) {
                 elements.push(self.consume_as_bareword_identifier()?);
             } else {
                 elements.push(self.parse_assignment()?);
@@ -1503,17 +1505,15 @@ impl<'a> Parser<'a> {
         Ok(Some(Node::new(NodeKind::ArrayLiteral { elements }, SourceLocation { start, end })))
     }
 
-    fn peek_is_keyword_bareword_key(&mut self) -> bool {
+    fn peek_is_keyword_bareword_key(&mut self, allow_terminal_control_key: bool) -> bool {
         let Ok(first) = self.tokens.peek() else {
             return false;
         };
 
         let kind = first.kind();
-        let is_terminal_control_key = matches!(
-            kind,
-            TokenKind::Return | TokenKind::Next | TokenKind::Last | TokenKind::Redo
-        );
-        let is_keyword_key = is_terminal_control_key
+        let is_terminal_control_key =
+            matches!(kind, TokenKind::Return | TokenKind::Next | TokenKind::Last | TokenKind::Redo);
+        let is_keyword_key = (allow_terminal_control_key && is_terminal_control_key)
             || matches!(
                 kind,
                 TokenKind::WordNot
@@ -1542,7 +1542,6 @@ impl<'a> Parser<'a> {
             matches!(second.kind(), TokenKind::RightBrace | TokenKind::Comma)
         }
     }
-
 
     fn consume_as_bareword_identifier(&mut self) -> ParseResult<Node> {
         let token = self.tokens.next()?;

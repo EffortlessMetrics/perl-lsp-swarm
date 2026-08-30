@@ -83,18 +83,9 @@ fn terminal_control_words_are_static_direct_hash_keys() -> TestResult {
 #[test]
 fn comma_followed_control_words_remain_executable_expressions() -> TestResult {
     for (op, source) in [
-        (
-            "next",
-            "sub f { my %hash; my $value; while (1) { my $x = $hash{next, $value}; } }",
-        ),
-        (
-            "last",
-            "sub f { my %hash; my $value; while (1) { my $x = $hash{last, $value}; } }",
-        ),
-        (
-            "redo",
-            "sub f { my %hash; my $value; while (1) { my $x = $hash{redo, $value}; } }",
-        ),
+        ("next", "sub f { my %hash; my $value; while (1) { my $x = $hash{next, $value}; } }"),
+        ("last", "sub f { my %hash; my $value; while (1) { my $x = $hash{last, $value}; } }"),
+        ("redo", "sub f { my %hash; my $value; while (1) { my $x = $hash{redo, $value}; } }"),
     ] {
         let ast = parse_clean(source)?;
         if !contains_loop_control(&ast, op, None) {
@@ -110,6 +101,80 @@ fn comma_followed_control_words_remain_executable_expressions() -> TestResult {
     if count_returns(&ast) != 2 {
         return Err(format!(
             "comma-followed return stopped being a distinct executable return: {}",
+            ast.to_sexp()
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn comma_preceded_control_words_remain_executable_expressions() -> TestResult {
+    for (op, source) in [
+        ("next", "sub f { my %hash; while (1) { my @x = @hash{defer, next}; } }"),
+        ("last", "sub f { my %hash; while (1) { my @x = @hash{defer, last}; } }"),
+        ("redo", "sub f { my %hash; while (1) { my @x = @hash{defer, redo}; } }"),
+        ("next", "sub f { my %hash; while (1) { my $x = $hash{defer, next}; } }"),
+        ("last", "sub f { my %hash; while (1) { my $x = $hash{defer, last}; } }"),
+        ("redo", "sub f { my %hash; while (1) { my $x = $hash{defer, redo}; } }"),
+        ("next", "sub f { my $hash; while (1) { my $x = $hash->{defer, next}; } }"),
+        ("last", "sub f { my $hash; while (1) { my $x = $hash->{defer, last}; } }"),
+        ("redo", "sub f { my $hash; while (1) { my $x = $hash->{defer, redo}; } }"),
+    ] {
+        let ast = parse_clean(source)?;
+        if !contains_loop_control(&ast, op, None) {
+            return Err(format!(
+                "comma-preceded {op:?} stopped being executable loop control: {}",
+                ast.to_sexp()
+            ));
+        }
+    }
+
+    for source in [
+        "sub f { my %hash; my @x = @hash{defer, return}; return 99; }",
+        "sub f { my %hash; my $x = $hash{defer, return}; return 99; }",
+        "sub f { my $hash; my $x = $hash->{defer, return}; return 99; }",
+    ] {
+        let ast = parse_clean(source)?;
+        if count_returns(&ast) != 2 {
+            return Err(format!(
+                "comma-preceded return stopped being a distinct executable return: {}",
+                ast.to_sexp()
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn comma_surrounded_control_words_remain_executable_expressions() -> TestResult {
+    for (op, source) in [
+        (
+            "next",
+            "sub f { my %hash; my $value; while (1) { my @x = @hash{defer, next, $value}; } }",
+        ),
+        (
+            "last",
+            "sub f { my %hash; my $value; while (1) { my @x = @hash{defer, last, $value}; } }",
+        ),
+        (
+            "redo",
+            "sub f { my %hash; my $value; while (1) { my @x = @hash{defer, redo, $value}; } }",
+        ),
+    ] {
+        let ast = parse_clean(source)?;
+        if !contains_loop_control(&ast, op, None) {
+            return Err(format!(
+                "comma-surrounded {op:?} stopped being executable loop control: {}",
+                ast.to_sexp()
+            ));
+        }
+    }
+
+    let source = "sub f { my %hash; my $value; my @x = @hash{defer, return, $value}; return 99; }";
+    let ast = parse_clean(source)?;
+    if count_returns(&ast) != 2 {
+        return Err(format!(
+            "comma-surrounded return stopped being a distinct executable return: {}",
             ast.to_sexp()
         ));
     }
