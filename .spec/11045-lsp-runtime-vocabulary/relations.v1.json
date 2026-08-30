@@ -1,0 +1,468 @@
+{
+  "relations": [
+    {
+      "id": "admitted_requires_prepared",
+      "from": "output_admitted",
+      "kind": "requires",
+      "to": "output_prepared",
+      "reason": "Writer admission consumes one prepared output obligation.",
+      "source": 9647
+    },
+    {
+      "id": "application_completed_forbids_publication",
+      "from": "application_completed",
+      "kind": "forbids_inference",
+      "to": "publication_committed",
+      "reason": "Handler return does not commit a causal publication.",
+      "source": 9507
+    },
+    {
+      "id": "application_completed_forbids_terminal",
+      "from": "application_completed",
+      "kind": "forbids_inference",
+      "to": "terminal_selected",
+      "reason": "Handler return does not choose terminal authority.",
+      "source": 9506
+    },
+    {
+      "id": "application_completion_forbids_publication",
+      "from": "application_completion",
+      "kind": "forbids_inference",
+      "to": "publication_committed",
+      "reason": "Completion is not a current causal publication.",
+      "source": 9507
+    },
+    {
+      "id": "application_completion_forbids_terminal",
+      "from": "application_completion",
+      "kind": "forbids_inference",
+      "to": "terminal_decision",
+      "reason": "Application completion cannot choose the exactly-once terminal cause.",
+      "source": 9506
+    },
+    {
+      "id": "cancel_permits_terminal",
+      "from": "cancellation_requested",
+      "kind": "permits",
+      "to": "terminal_selected",
+      "reason": "A cancellation request may win terminal selection but does not itself win.",
+      "source": 9506
+    },
+    {
+      "id": "cleanup_permits_request_reuse",
+      "from": "owner_cleaned",
+      "kind": "permits",
+      "to": "request_key",
+      "reason": "Only exact cleanup permits reuse of the raw request id in the same scope.",
+      "source": 11053
+    },
+    {
+      "id": "cleanup_requires_delivery_fate",
+      "from": "owner_cleaned",
+      "kind": "requires",
+      "to": "delivery_fate_known",
+      "reason": "Owned output obligations need known writer fate before cleanup.",
+      "source": 11053
+    },
+    {
+      "id": "cleanup_requires_task_settlement",
+      "from": "owner_cleaned",
+      "kind": "requires",
+      "to": "task_group_settled",
+      "reason": "Owned tasks must be settled before exact cleanup.",
+      "source": 11053
+    },
+    {
+      "id": "cleanup_requires_terminal",
+      "from": "owner_cleaned",
+      "kind": "requires",
+      "to": "terminal_selected",
+      "reason": "A registered request cannot be clean before terminal selection.",
+      "source": 11053
+    },
+    {
+      "id": "connection_closed_forbids_cleanup",
+      "from": "connection_closed",
+      "kind": "forbids_inference",
+      "to": "owner_cleaned",
+      "reason": "Connection closure does not prove request and output cleanup.",
+      "source": 11053
+    },
+    {
+      "id": "connection_closed_forbids_delivery_fate",
+      "from": "connection_closed",
+      "kind": "forbids_inference",
+      "to": "delivery_fate_known",
+      "reason": "Connection closure does not settle every output obligation by implication.",
+      "source": 9647
+    },
+    {
+      "id": "connection_closed_forbids_protocol_exit",
+      "from": "connection_closed",
+      "kind": "forbids_inference",
+      "to": "protocol_exited",
+      "reason": "Transport closure does not manufacture a protocol exit transition.",
+      "source": 9640
+    },
+    {
+      "id": "connection_closed_forbids_task_settlement",
+      "from": "connection_closed",
+      "kind": "forbids_inference",
+      "to": "task_group_settled",
+      "reason": "Connection closure does not prove task settlement.",
+      "source": 9648
+    },
+    {
+      "id": "delivery_forbids_client_consumption",
+      "from": "delivery_fate",
+      "kind": "forbids_inference",
+      "to": "client_consumed",
+      "reason": "Writer fate never proves external client consumption.",
+      "source": 9647
+    },
+    {
+      "id": "delivery_forbids_terminal",
+      "from": "delivery_fate",
+      "kind": "forbids_inference",
+      "to": "terminal_decision",
+      "reason": "Writer success or failure cannot rewrite the terminal cause.",
+      "source": 9647
+    },
+    {
+      "id": "enqueue_requires_admission",
+      "from": "enqueued",
+      "kind": "requires",
+      "to": "execution_admitted",
+      "reason": "Queue membership follows execution admission.",
+      "source": 7389
+    },
+    {
+      "id": "execution_requires_registered",
+      "from": "execution_admitted",
+      "kind": "requires",
+      "to": "request_registered",
+      "reason": "Only a registered request can enter execution.",
+      "source": 10483
+    },
+    {
+      "id": "failure_permits_fate",
+      "from": "output_failed",
+      "kind": "permits",
+      "to": "delivery_fate_known",
+      "reason": "Typed writer failure establishes failed delivery fate.",
+      "source": 9647
+    },
+    {
+      "id": "failure_requires_admitted",
+      "from": "output_failed",
+      "kind": "requires",
+      "to": "output_admitted",
+      "reason": "A delivery failure settles one admitted output obligation.",
+      "source": 9647
+    },
+    {
+      "id": "flush_forbids_client_consumption",
+      "from": "output_flush_committed",
+      "kind": "forbids_inference",
+      "to": "client_consumed",
+      "reason": "Flush commitment is not client consumption.",
+      "source": 9647
+    },
+    {
+      "id": "flush_permits_fate",
+      "from": "output_flush_committed",
+      "kind": "permits",
+      "to": "delivery_fate_known",
+      "reason": "Successful required flush establishes successful delivery fate.",
+      "source": 9647
+    },
+    {
+      "id": "flush_requires_write",
+      "from": "output_flush_committed",
+      "kind": "requires",
+      "to": "output_write_committed",
+      "reason": "Flush commitment follows successful writer commitment.",
+      "source": 9647
+    },
+    {
+      "id": "observed_precedes_valid",
+      "from": "message_observed",
+      "kind": "precedes",
+      "to": "protocol_valid",
+      "reason": "Observation exists before protocol validation can decide.",
+      "source": 9636
+    },
+    {
+      "id": "output_admission_forbids_client_consumption",
+      "from": "output_admitted",
+      "kind": "forbids_inference",
+      "to": "client_consumed",
+      "reason": "Channel or writer admission is not client consumption.",
+      "source": 9647
+    },
+    {
+      "id": "output_failure_independent_terminal",
+      "from": "output_failed",
+      "kind": "independent_of",
+      "to": "terminal_selected",
+      "reason": "Delivery failure does not rewrite selected terminal cause.",
+      "source": 9647
+    },
+    {
+      "id": "prepared_requires_publication",
+      "from": "output_prepared",
+      "kind": "requires",
+      "to": "publication_committed",
+      "reason": "An output obligation projects one committed publication.",
+      "source": 9647
+    },
+    {
+      "id": "protocol_exit_forbids_cleanup",
+      "from": "protocol_exited",
+      "kind": "forbids_inference",
+      "to": "owner_cleaned",
+      "reason": "Protocol exit does not prove owned resources are clean.",
+      "source": 11053
+    },
+    {
+      "id": "protocol_exit_forbids_connection_closed",
+      "from": "protocol_exited",
+      "kind": "forbids_inference",
+      "to": "connection_closed",
+      "reason": "Protocol exit and transport closure are distinct commitments.",
+      "source": 9640
+    },
+    {
+      "id": "protocol_initialized_independent_readiness",
+      "from": "protocol_initialized",
+      "kind": "independent_of",
+      "to": "application_ready",
+      "reason": "Protocol lifecycle and application service readiness are separate axes.",
+      "source": 10483
+    },
+    {
+      "id": "publication_forbids_client_consumption",
+      "from": "publication_committed",
+      "kind": "forbids_inference",
+      "to": "client_consumed",
+      "reason": "Publication commitment does not prove external client consumption.",
+      "source": 9647
+    },
+    {
+      "id": "publication_forbids_flush",
+      "from": "publication_committed",
+      "kind": "forbids_inference",
+      "to": "output_flush_committed",
+      "reason": "Publication commitment does not prove flush commitment.",
+      "source": 9647
+    },
+    {
+      "id": "publication_forbids_output_admission",
+      "from": "publication_committed",
+      "kind": "forbids_inference",
+      "to": "output_admitted",
+      "reason": "Publication and writer admission are separate authorities.",
+      "source": 9647
+    },
+    {
+      "id": "publication_forbids_write",
+      "from": "publication_committed",
+      "kind": "forbids_inference",
+      "to": "output_write_committed",
+      "reason": "Publication commitment does not prove writer commitment.",
+      "source": 9647
+    },
+    {
+      "id": "publication_requires_terminal",
+      "from": "publication_committed",
+      "kind": "requires",
+      "to": "terminal_selected",
+      "reason": "Only the selected terminal decision may be published.",
+      "source": 9507
+    },
+    {
+      "id": "registered_requires_reserved",
+      "from": "request_registered",
+      "kind": "requires",
+      "to": "request_tracking_reserved",
+      "reason": "A request entry cannot exist without owned tracking capacity.",
+      "source": 11053
+    },
+    {
+      "id": "rejection_requires_registered",
+      "from": "execution_rejected",
+      "kind": "requires",
+      "to": "request_registered",
+      "reason": "Execution rejection after registration still owns a terminal obligation.",
+      "source": 10483
+    },
+    {
+      "id": "request_independent_progress",
+      "from": "request_key",
+      "kind": "independent_of",
+      "to": "progress_key",
+      "reason": "Request and progress identity domains never compare by raw representation.",
+      "source": 11053
+    },
+    {
+      "id": "request_independent_reverse",
+      "from": "request_key",
+      "kind": "independent_of",
+      "to": "reverse_request_key",
+      "reason": "Client and server-originated request domains are distinct.",
+      "source": 9644
+    },
+    {
+      "id": "request_requires_connection",
+      "from": "request_key",
+      "kind": "requires",
+      "to": "connection_id",
+      "reason": "A raw JSON-RPC id is not a request identity without connection scope.",
+      "source": 11053
+    },
+    {
+      "id": "request_requires_session",
+      "from": "request_key",
+      "kind": "requires",
+      "to": "session_id",
+      "reason": "A raw JSON-RPC id is not a request identity without session scope.",
+      "source": 11053
+    },
+    {
+      "id": "reverse_independent_progress",
+      "from": "reverse_request_key",
+      "kind": "independent_of",
+      "to": "progress_key",
+      "reason": "Reverse request and progress domains are distinct.",
+      "source": 9644
+    },
+    {
+      "id": "running_requires_enqueue",
+      "from": "running",
+      "kind": "requires",
+      "to": "enqueued",
+      "reason": "Running work names the exact admitted work occurrence.",
+      "source": 7389
+    },
+    {
+      "id": "session_requires_connection",
+      "from": "session_id",
+      "kind": "requires",
+      "to": "connection_id",
+      "reason": "A session exists only on one explicit connection scope.",
+      "source": 9640
+    },
+    {
+      "id": "signal_forbids_decision",
+      "from": "terminal_signal",
+      "kind": "forbids_inference",
+      "to": "terminal_decision",
+      "reason": "A candidate signal does not prove that terminal authority selected it.",
+      "source": 9506
+    },
+    {
+      "id": "stale_rejection_forbids_publication",
+      "from": "stale_publication_rejected",
+      "kind": "forbids_inference",
+      "to": "publication_committed",
+      "reason": "A rejected stale result is not a committed publication.",
+      "source": 9507
+    },
+    {
+      "id": "stale_rejection_requires_completion",
+      "from": "stale_publication_rejected",
+      "kind": "requires",
+      "to": "application_completed",
+      "reason": "A stale publication rejection preserves the completed application result as evidence.",
+      "source": 9507
+    },
+    {
+      "id": "terminal_forbids_delivery_fate",
+      "from": "terminal_decision",
+      "kind": "forbids_inference",
+      "to": "delivery_fate",
+      "reason": "Terminal selection does not establish writer or transport fate.",
+      "source": 9647
+    },
+    {
+      "id": "terminal_forbids_flush",
+      "from": "terminal_selected",
+      "kind": "forbids_inference",
+      "to": "output_flush_committed",
+      "reason": "Selecting terminal cause does not commit flush.",
+      "source": 9647
+    },
+    {
+      "id": "terminal_forbids_output_admission",
+      "from": "terminal_selected",
+      "kind": "forbids_inference",
+      "to": "output_admitted",
+      "reason": "Selecting terminal cause does not admit output.",
+      "source": 9647
+    },
+    {
+      "id": "terminal_forbids_write",
+      "from": "terminal_selected",
+      "kind": "forbids_inference",
+      "to": "output_write_committed",
+      "reason": "Selecting terminal cause does not commit writer bytes.",
+      "source": 9647
+    },
+    {
+      "id": "terminal_independent_delivery",
+      "from": "terminal_decision",
+      "kind": "independent_of",
+      "to": "delivery_fate",
+      "reason": "Terminal cause and writer or transport fate are separate axes.",
+      "source": 9647
+    },
+    {
+      "id": "terminal_requires_registered",
+      "from": "terminal_selected",
+      "kind": "requires",
+      "to": "request_registered",
+      "reason": "Every registered request must settle through its canonical terminal authority.",
+      "source": 9506
+    },
+    {
+      "id": "valid_forbids_execution",
+      "from": "protocol_valid",
+      "kind": "forbids_inference",
+      "to": "execution_admitted",
+      "reason": "Protocol validity does not admit application work.",
+      "source": 10483
+    },
+    {
+      "id": "valid_forbids_registered",
+      "from": "protocol_valid",
+      "kind": "forbids_inference",
+      "to": "request_registered",
+      "reason": "Protocol validity does not create a canonical request entry.",
+      "source": 11053
+    },
+    {
+      "id": "valid_forbids_reserved",
+      "from": "protocol_valid",
+      "kind": "forbids_inference",
+      "to": "request_tracking_reserved",
+      "reason": "Protocol validity does not reserve resources.",
+      "source": 11051
+    },
+    {
+      "id": "write_forbids_client_consumption",
+      "from": "output_write_committed",
+      "kind": "forbids_inference",
+      "to": "client_consumed",
+      "reason": "Writer commitment is not client consumption.",
+      "source": 9647
+    },
+    {
+      "id": "write_requires_admitted",
+      "from": "output_write_committed",
+      "kind": "requires",
+      "to": "output_admitted",
+      "reason": "Writer commitment follows exact output admission.",
+      "source": 9647
+    }
+  ]
+}

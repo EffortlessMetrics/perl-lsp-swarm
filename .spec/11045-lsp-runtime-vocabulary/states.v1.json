@@ -1,0 +1,260 @@
+{
+  "states": [
+    {
+      "id": "application_completed",
+      "name": "application completed",
+      "axis": "execution",
+      "proposition": "The application boundary established ApplicationCompletion for one operation.",
+      "runtime_claimable": true,
+      "source": 10483
+    },
+    {
+      "id": "application_ready",
+      "name": "application ready",
+      "axis": "application_readiness",
+      "proposition": "The application service accepts new execution work.",
+      "runtime_claimable": true,
+      "source": 10483
+    },
+    {
+      "id": "application_unavailable",
+      "name": "application unavailable",
+      "axis": "application_readiness",
+      "proposition": "The application service cannot accept new execution work.",
+      "runtime_claimable": true,
+      "source": 10483
+    },
+    {
+      "id": "cancellation_requested",
+      "name": "cancellation requested",
+      "axis": "control",
+      "proposition": "A valid cancellation control signal targets the exact active RequestKey or WorkId.",
+      "runtime_claimable": true,
+      "source": 7389
+    },
+    {
+      "id": "client_consumed",
+      "name": "client consumed output",
+      "axis": "output_delivery",
+      "proposition": "An external client consumed, displayed, or acted on an output.",
+      "runtime_claimable": false,
+      "source": 9647
+    },
+    {
+      "id": "connection_closed",
+      "name": "connection closed",
+      "axis": "connection",
+      "proposition": "The transport connection no longer accepts protocol I/O.",
+      "runtime_claimable": true,
+      "source": 9636
+    },
+    {
+      "id": "connection_closing",
+      "name": "connection closing",
+      "axis": "connection",
+      "proposition": "Connection authority is settling reads, writes, and owned output before closure.",
+      "runtime_claimable": true,
+      "source": 9636
+    },
+    {
+      "id": "connection_open",
+      "name": "connection open",
+      "axis": "connection",
+      "proposition": "The transport connection accepts reads and writes.",
+      "runtime_claimable": true,
+      "source": 9636
+    },
+    {
+      "id": "deadline_expired",
+      "name": "deadline expired",
+      "axis": "control",
+      "proposition": "The exact DeadlineId reached its bound before settlement.",
+      "runtime_claimable": true,
+      "source": 7389
+    },
+    {
+      "id": "delivery_fate_known",
+      "name": "delivery fate known",
+      "axis": "output_delivery",
+      "proposition": "DeliveryFate is established as writer success or typed writer or transport failure.",
+      "runtime_claimable": true,
+      "source": 9647
+    },
+    {
+      "id": "enqueued",
+      "name": "enqueued",
+      "axis": "execution",
+      "proposition": "One WorkId is present in an admitted scheduler queue.",
+      "runtime_claimable": true,
+      "source": 7389
+    },
+    {
+      "id": "execution_admitted",
+      "name": "execution admitted",
+      "axis": "execution",
+      "proposition": "Application work is permitted to enter scheduler ownership.",
+      "runtime_claimable": true,
+      "source": 10483
+    },
+    {
+      "id": "execution_rejected",
+      "name": "execution rejected",
+      "axis": "execution",
+      "proposition": "Application execution was refused after request registration.",
+      "runtime_claimable": true,
+      "source": 10483
+    },
+    {
+      "id": "message_observed",
+      "name": "message observed",
+      "axis": "protocol_admission",
+      "proposition": "One exact message occurrence has been delimited for protocol evaluation.",
+      "runtime_claimable": true,
+      "source": 9636
+    },
+    {
+      "id": "output_admitted",
+      "name": "output admitted",
+      "axis": "output_delivery",
+      "proposition": "Writer authority accepts one OutputId into its causally ordered output stream.",
+      "runtime_claimable": true,
+      "source": 9647
+    },
+    {
+      "id": "output_failed",
+      "name": "output failed",
+      "axis": "output_delivery",
+      "proposition": "The writer or transport cannot complete one admitted OutputId.",
+      "runtime_claimable": true,
+      "source": 9647
+    },
+    {
+      "id": "output_flush_committed",
+      "name": "output flush committed",
+      "axis": "output_delivery",
+      "proposition": "The writer confirms required buffered bytes were flushed for one OutputId.",
+      "runtime_claimable": true,
+      "source": 9647
+    },
+    {
+      "id": "output_prepared",
+      "name": "output prepared",
+      "axis": "output_delivery",
+      "proposition": "A committed publication has been projected into one OutputId before writer admission.",
+      "runtime_claimable": true,
+      "source": 9647
+    },
+    {
+      "id": "output_write_committed",
+      "name": "output write committed",
+      "axis": "output_delivery",
+      "proposition": "All bytes for one OutputId were committed by the writer boundary.",
+      "runtime_claimable": true,
+      "source": 9647
+    },
+    {
+      "id": "owner_cleaned",
+      "name": "owner cleaned",
+      "axis": "cleanup",
+      "proposition": "Every request-owned reservation, registration, work, publication, output, deadline, progress, and task obligation has reached known settlement or release.",
+      "runtime_claimable": true,
+      "source": 11053
+    },
+    {
+      "id": "protocol_exited",
+      "name": "protocol exited",
+      "axis": "protocol_lifecycle",
+      "proposition": "The protocol lifecycle reached its terminal exit state.",
+      "runtime_claimable": true,
+      "source": 9640
+    },
+    {
+      "id": "protocol_initialized",
+      "name": "protocol initialized",
+      "axis": "protocol_lifecycle",
+      "proposition": "The protocol initialize transition committed for the session.",
+      "runtime_claimable": true,
+      "source": 9640
+    },
+    {
+      "id": "protocol_shutdown_requested",
+      "name": "protocol shutdown requested",
+      "axis": "protocol_lifecycle",
+      "proposition": "A valid protocol shutdown request committed at lifecycle authority.",
+      "runtime_claimable": true,
+      "source": 9640
+    },
+    {
+      "id": "protocol_uninitialized",
+      "name": "protocol uninitialized",
+      "axis": "protocol_lifecycle",
+      "proposition": "The session has not completed the protocol initialize transition.",
+      "runtime_claimable": true,
+      "source": 9640
+    },
+    {
+      "id": "protocol_valid",
+      "name": "protocol valid",
+      "axis": "protocol_admission",
+      "proposition": "The observed message satisfies the supported JSON-RPC envelope and message-shape contract.",
+      "runtime_claimable": true,
+      "source": 9636
+    },
+    {
+      "id": "publication_committed",
+      "name": "causal publication committed",
+      "axis": "publication",
+      "proposition": "A current terminal decision is committed to publication order and owns one PublicationId.",
+      "runtime_claimable": true,
+      "source": 9507
+    },
+    {
+      "id": "request_registered",
+      "name": "request registered",
+      "axis": "tracking_registration",
+      "proposition": "One canonical request entry and terminal obligation exist for the exact RequestKey.",
+      "runtime_claimable": true,
+      "source": 11053
+    },
+    {
+      "id": "request_tracking_reserved",
+      "name": "request tracking reserved",
+      "axis": "tracking_registration",
+      "proposition": "Capacity and duplicate-key protection are reserved for the exact RequestKey.",
+      "runtime_claimable": true,
+      "source": 11051
+    },
+    {
+      "id": "running",
+      "name": "running",
+      "axis": "execution",
+      "proposition": "One WorkId is actively executing application work.",
+      "runtime_claimable": true,
+      "source": 7389
+    },
+    {
+      "id": "stale_publication_rejected",
+      "name": "stale publication rejected",
+      "axis": "publication",
+      "proposition": "An application result exists but currentness authority rejects its publication attempt.",
+      "runtime_claimable": true,
+      "source": 9507
+    },
+    {
+      "id": "task_group_settled",
+      "name": "task group settled",
+      "axis": "task_settlement",
+      "proposition": "Every task owned by the relevant request or session is joined, cancelled, or failed with known fate.",
+      "runtime_claimable": true,
+      "source": 9648
+    },
+    {
+      "id": "terminal_selected",
+      "name": "terminal selected",
+      "axis": "terminal",
+      "proposition": "TerminalDecision has selected one exactly-once request cause.",
+      "runtime_claimable": true,
+      "source": 9506
+    }
+  ]
+}
