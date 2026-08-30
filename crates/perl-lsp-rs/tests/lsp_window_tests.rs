@@ -20,25 +20,32 @@ impl OutputCapture {
         Self { buffer: Arc::new(Mutex::new(Vec::new())) }
     }
 
+    /// Parse the captured stream as LSP frames, honoring each
+    /// `Content-Length` header. Splitting on blank lines instead would glue a
+    /// frame's body to the next frame's header (frames are written
+    /// back-to-back with no separator) and silently drop every message except
+    /// the last one in a batch.
     fn get_messages(&self) -> Vec<Value> {
         let buffer = self.buffer.lock();
-        let content = String::from_utf8_lossy(&buffer);
-
         let mut messages = Vec::new();
-        for chunk in content.split("\r\n\r\n") {
-            if chunk.trim().is_empty() {
-                continue;
-            }
-            // Skip Content-Length header
-            if let Some(json_str) = chunk.lines().nth(1) {
-                if let Ok(msg) = serde_json::from_str::<Value>(json_str) {
-                    messages.push(msg);
-                }
-            } else if !chunk.starts_with("Content-Length")
-                && let Ok(msg) = serde_json::from_str::<Value>(chunk)
-            {
+        let mut rest: &[u8] = &buffer;
+        while let Some(header_end) = rest.windows(4).position(|w| w == b"\r\n\r\n") {
+            let header = String::from_utf8_lossy(&rest[..header_end]);
+            let Some(len) = header
+                .lines()
+                .find_map(|line| line.strip_prefix("Content-Length:"))
+                .and_then(|value| value.trim().parse::<usize>().ok())
+            else {
+                break;
+            };
+            let body_start = header_end + 4;
+            let Some(body) = rest.get(body_start..body_start + len) else {
+                break;
+            };
+            if let Ok(msg) = serde_json::from_slice::<Value>(body) {
                 messages.push(msg);
             }
+            rest = &rest[body_start + len..];
         }
         messages
     }
@@ -63,13 +70,62 @@ fn wait_for_messages(output: &OutputCapture, minimum_count: usize) -> Vec<Value>
 }
 
 fn wait_for_method(output: &OutputCapture, method: &str) -> Option<Value> {
-    let deadline = Instant::now() + Duration::from_millis(250);
+    // Returns as soon as the method arrives; the long deadline only bounds the
+    // failure path so outbound writer scheduling under parallel test load
+    // (#13492) cannot flake an otherwise-delivered message.
+    let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         let messages = output.get_messages();
         if let Some(message) =
             messages.into_iter().find(|message| message["method"].as_str() == Some(method))
         {
             return Some(message);
+        }
+        if Instant::now() >= deadline {
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// Wait for a `$/progress` notification for a specific token and kind. The
+/// server emits its own `$/progress` traffic (e.g. indexing progress after
+/// initialization), so matching on method alone can select a server-owned
+/// progress notification instead of the one the test drives.
+fn wait_for_progress(output: &OutputCapture, token: &str, kind: &str) -> Option<Value> {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let messages = output.get_messages();
+        if let Some(found) = messages.into_iter().find(|m| {
+            m["method"].as_str() == Some("$/progress")
+                && m["params"]["token"].as_str() == Some(token)
+                && m["params"]["value"]["kind"].as_str() == Some(kind)
+        }) {
+            return Some(found);
+        }
+        if Instant::now() >= deadline {
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// Wait for a specific notification, discriminated by `params.message`. The
+/// server emits its own `window/logMessage` traffic during initialization, so
+/// matching on method alone can select a server log instead of the one the
+/// test just sent.
+fn wait_for_notification_message(
+    output: &OutputCapture,
+    method: &str,
+    message: &str,
+) -> Option<Value> {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let messages = output.get_messages();
+        if let Some(found) = messages.into_iter().find(|m| {
+            m["method"].as_str() == Some(method) && m["params"]["message"].as_str() == Some(message)
+        }) {
+            return Some(found);
         }
         if Instant::now() >= deadline {
             return None;
@@ -111,10 +167,10 @@ fn initialize_for_window_test(server: &LspServer, init_params: Value) {
         method: "initialize".to_string(),
         params: Some(init_params),
     });
-    match response {
-        Some(response) if response.error.is_none() => {}
-        other => panic!("initialize request must succeed: {other:?}"),
-    }
+    assert!(
+        matches!(&response, Some(response) if response.error.is_none()),
+        "initialize request must succeed: {response:?}"
+    );
     complete_initialization(server);
 }
 
@@ -282,12 +338,10 @@ fn lsp_window_progress_lifecycle() {
     let result = server.report_progress_begin(token, "Indexing", Some("Starting..."));
     assert!(result.is_ok());
 
-    let begin_message = wait_for_method(&output, "$/progress");
+    let begin_message = wait_for_progress(&output, token, "begin");
     assert!(begin_message.is_some(), "Expected begin $/progress notification");
     let begin_message = begin_message.unwrap_or_else(|| unreachable!());
-    assert_eq!(begin_message["method"], "$/progress");
     assert_eq!(begin_message["params"]["token"], token);
-    assert_eq!(begin_message["params"]["value"]["kind"], "begin");
     assert_eq!(begin_message["params"]["value"]["title"], "Indexing");
     assert_eq!(begin_message["params"]["value"]["message"], "Starting...");
 
@@ -297,11 +351,9 @@ fn lsp_window_progress_lifecycle() {
     let result = server.report_progress_report(token, Some("50% complete"), Some(50));
     assert!(result.is_ok());
 
-    let report_message = wait_for_method(&output, "$/progress");
+    let report_message = wait_for_progress(&output, token, "report");
     assert!(report_message.is_some(), "Expected report $/progress notification");
     let report_message = report_message.unwrap_or_else(|| unreachable!());
-    assert_eq!(report_message["method"], "$/progress");
-    assert_eq!(report_message["params"]["value"]["kind"], "report");
     assert_eq!(report_message["params"]["value"]["percentage"], 50);
 
     output.clear();
@@ -310,11 +362,9 @@ fn lsp_window_progress_lifecycle() {
     let result = server.report_progress_end(token, Some("Complete"));
     assert!(result.is_ok());
 
-    let end_message = wait_for_method(&output, "$/progress");
+    let end_message = wait_for_progress(&output, token, "end");
     assert!(end_message.is_some(), "Expected end $/progress notification");
     let end_message = end_message.unwrap_or_else(|| unreachable!());
-    assert_eq!(end_message["method"], "$/progress");
-    assert_eq!(end_message["params"]["value"]["kind"], "end");
     assert_eq!(end_message["params"]["value"]["message"], "Complete");
 }
 
@@ -489,7 +539,8 @@ fn lsp_window_message_types() {
     for (msg_type, expected_value) in types {
         output.clear();
 
-        let _ = server.show_message_request(msg_type, "Test message", vec![]);
+        let sent = server.show_message_request(msg_type, "Test message", vec![]);
+        assert!(sent.is_ok(), "show_message_request({msg_type:?}) must send: {sent:?}");
 
         let message = wait_for_method(&output, "window/showMessageRequest");
         assert!(message.is_some(), "Expected window/showMessageRequest");
@@ -509,7 +560,7 @@ fn lsp_window_debug_message_type_serializes_to_five() -> Result<(), Box<dyn std:
     initialize_for_window_test(&server, json!({ "capabilities": {} }));
 
     server.log_message(MessageType::Debug, "debug log")?;
-    let log_message = wait_for_method(&output, "window/logMessage")
+    let log_message = wait_for_notification_message(&output, "window/logMessage", "debug log")
         .ok_or("Expected window/logMessage debug notification")?;
     assert_eq!(log_message["params"]["type"], 5);
     assert_eq!(log_message["params"]["message"], "debug log");
