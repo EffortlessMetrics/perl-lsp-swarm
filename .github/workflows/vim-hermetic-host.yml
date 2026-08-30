@@ -19,6 +19,8 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - ".github/workflows/vim-hermetic-host.yml"
+      - "policy/lsp-client-support.toml"
+      - "docs/receipts/lsp-clients/**"
   workflow_dispatch:
 
 permissions:

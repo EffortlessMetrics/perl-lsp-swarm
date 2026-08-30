@@ -32,5 +32,10 @@
       "passed": true,
       "evidence": "docs/receipts/lsp-clients/actual/vim-host-lifecycle-transcript.jsonl#clean_shutdown"
     }
-  ]
+  ],
+  "artifact": {
+    "path": "docs/receipts/lsp-clients/actual/vim-host-initialize-capability-snapshot.json",
+    "sha256": "8c2fd329ac5aaabe184abb457b15192df14cf45425a087cbe954e50eac150ab2",
+    "size_bytes": 2635
+  }
 }
