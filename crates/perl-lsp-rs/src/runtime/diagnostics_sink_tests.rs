@@ -52,6 +52,35 @@ mod tests {
         }
         false
     }
+
+    #[test]
+    fn unavailable_diagnostic_debouncer_falls_back_to_immediate_publish() {
+        let (server, buf) = make_server_with_capture();
+        let uri = "file:///diagnostic-debounce-fallback.pl";
+        server
+            .test_handle_did_open(Some(json!({
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "perl",
+                    "version": 1,
+                    "text": "my $value = 1;\n"
+                }
+            })))
+            .expect("didOpen should succeed");
+        assert!(wait_for_frames(&buf, 1), "initial open should publish diagnostics");
+        buf.lock().clear();
+
+        server.install_diagnostic_debouncer(
+            super::super::diagnostic_debounce::DiagnosticDebouncer::unavailable_for_test(),
+        );
+        server.publish_diagnostics_debounced(uri);
+
+        assert!(
+            wait_for_frames(&buf, 1),
+            "an unavailable diagnostic debouncer must fall back to immediate publication"
+        );
+    }
+
     /// didClose + didOpen of the SAME URI installs a brand-new document
     /// instance whose numeric generation can equal the removed one. Performed
     /// directly on the documents map so no handler reentrancy is needed.
