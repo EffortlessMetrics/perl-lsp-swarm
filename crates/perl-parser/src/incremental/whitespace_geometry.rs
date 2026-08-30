@@ -1,11 +1,10 @@
+use super::MAX_INCREMENTAL_EDIT_BATCH;
 use perl_lexer::{PerlLexer, TokenType};
 use perl_parser_core::{
     ast::{Node, SourceLocation},
     edit::EditSet,
 };
 use std::sync::Arc;
-
-const MAX_WHITESPACE_FAST_PATH_EDITS: usize = 10;
 
 #[derive(Debug, Clone, Copy)]
 struct NormalizedEdit {
@@ -32,7 +31,7 @@ impl WhitespaceEditMap {
     /// bytes such as `$` and `=`. Reconstructing the unchanged segments keeps
     /// malformed edit authority out of the reuse path.
     pub(super) fn try_new(old_source: &str, new_source: &str, edits: &EditSet) -> Option<Self> {
-        if edits.is_empty() || edits.len() > MAX_WHITESPACE_FAST_PATH_EDITS {
+        if edits.is_empty() || edits.len() > MAX_INCREMENTAL_EDIT_BATCH {
             return None;
         }
 

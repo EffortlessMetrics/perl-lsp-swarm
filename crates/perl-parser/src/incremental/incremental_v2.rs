@@ -60,6 +60,7 @@ fn isize_to_usize_clamped(v: isize) -> usize {
 }
 
 use super::{
+    MAX_INCREMENTAL_EDIT_BATCH,
     incremental_advanced_reuse::{
         AdvancedReuseAnalyzer, ReuseAnalysisResult, ReuseConfig, ReuseStrategy, ReuseType,
     },
@@ -322,7 +323,7 @@ impl IncrementalParserV2 {
             // Check if this was a fallback due to too many edits, invalid conditions, or empty source
             // In such cases, we should report 0 reused nodes as it's truly a full reparse
             let should_skip_reuse = source.is_empty()
-                || self.pending_edits.len() > 10
+                || self.pending_edits.len() > MAX_INCREMENTAL_EDIT_BATCH
                 || self.last_tree.as_ref().is_none_or(|tree| !self.is_simple_value_edit(tree));
 
             if should_skip_reuse {
@@ -531,7 +532,7 @@ impl IncrementalParserV2 {
 
     fn is_simple_value_edit(&self, tree: &IncrementalTree) -> bool {
         // Don't attempt incremental parsing for too many edits at once
-        if self.pending_edits.len() > 10 {
+        if self.pending_edits.len() > MAX_INCREMENTAL_EDIT_BATCH {
             return false;
         }
 

@@ -122,6 +122,38 @@ fn recovery_token_span_matches_a_fresh_parse() -> TestResult {
 }
 
 #[test]
+fn program_root_stays_anchored_with_leading_whitespace() -> TestResult {
+    let source = "\n  my $x = 1;\n";
+    let fresh = parse_fresh(source)?;
+    let fresh_start = match &fresh.kind {
+        NodeKind::Program { .. } => fresh.location.start,
+        other => return Err(format!("expected Program, got {}", other.kind_name()).into()),
+    };
+    assert_eq!(fresh_start, 0);
+
+    let shifted = format!(" {source}");
+    let shifted_fresh = parse_fresh(&shifted)?;
+    let shifted_fresh_start = match &shifted_fresh.kind {
+        NodeKind::Program { .. } => shifted_fresh.location.start,
+        other => return Err(format!("expected Program, got {}", other.kind_name()).into()),
+    };
+
+    let mut parser = IncrementalParserV2::new();
+    parser.parse(source)?;
+    parser.edit(edit(0, 0, 1));
+    let incremental = parser.parse(&shifted)?;
+    let incremental_start = match &incremental.kind {
+        NodeKind::Program { .. } => incremental.location.start,
+        other => return Err(format!("expected Program, got {}", other.kind_name()).into()),
+    };
+
+    assert!(parser.used_incremental_path());
+    assert_eq!(shifted_fresh_start, 0);
+    assert_eq!(incremental_start, shifted_fresh_start);
+    Ok(())
+}
+
+#[test]
 fn token_body_whitespace_never_uses_the_basic_fast_path() -> TestResult {
     let cases = [
         ("my $s = \"a b\";", "my $s = \"a  b\";", "b\";"),

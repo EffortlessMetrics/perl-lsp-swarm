@@ -28,6 +28,9 @@ pub use snapshot::{
 pub use state::IncrementalState;
 pub use strategy::MAX_EDIT_SIZE;
 
+/// Small edit batches keep fast-path validation linear and cheap; larger batches fall back to a full parse.
+pub(crate) const MAX_INCREMENTAL_EDIT_BATCH: usize = 10;
+
 // Keep the raw engine private; the public facade normalizes complete-tree accounting.
 /// Canonical advanced-reuse analyzer and public accounting types.
 #[path = "incremental_advanced_reuse_facade.rs"]
