@@ -116,8 +116,16 @@ fn the_receipt_contract_enforces_the_invariants_the_classifier_guarantees() -> R
     // subject version with no plan digest. A consumer reading only the contract
     // had no way to know those shapes were impossible.
     let validator = validator(RECEIPT_SCHEMA)?;
-    let baseline = serde_json::to_value(receipt(AVAILABLE_EXACT)?)?;
-    validate(&validator, &baseline, "baseline")?;
+    let emitted = serde_json::to_value(receipt(AVAILABLE_EXACT)?)?;
+    validate(&validator, &emitted, "emitted")?;
+
+    // No observation can produce `available_exact` any more, so the shape is
+    // built here rather than emitted. The contract still has to describe it for
+    // #9138, which holds the resolved candidate authority this tool does not.
+    let mut baseline = emitted;
+    baseline["state"] = Value::String("available_exact".to_owned());
+    baseline["blockers"] = serde_json::json!([]);
+    validate(&validator, &baseline, "constructed available_exact")?;
 
     let mut exact_with_blockers = baseline.clone();
     exact_with_blockers["blockers"] = serde_json::json!([{
@@ -135,7 +143,6 @@ fn the_receipt_contract_enforces_the_invariants_the_classifier_guarantees() -> R
 
     let mut unblocked_failure = baseline.clone();
     unblocked_failure["state"] = Value::String("extension_missing".to_owned());
-    unblocked_failure["blockers"] = serde_json::json!([]);
     if validator.is_valid(&unblocked_failure) {
         bail!("a non-exact state with no blocker passed validation");
     }
@@ -194,26 +201,26 @@ fn the_contracts_declare_the_versions_the_code_emits() -> Result<()> {
         bail!("observation contract declares {observation_version:?}");
     }
 
-    // Every state the classifier can produce must be nameable in the contract.
+    // The published vocabulary is exactly what this classifier can emit, plus
+    // `available_exact` — which the contract defines for consumers holding a
+    // resolved candidate authority and which this classifier cannot produce.
+    // Asserting the relationship rather than mere containment catches a state
+    // added to either side, and catches this classifier gaining the ability to
+    // claim exact approval without that being a deliberate decision.
     let Some(states) = receipt_schema["properties"]["state"]["enum"].as_array() else {
         bail!("receipt contract does not enumerate the state vocabulary");
     };
-    let declared: Vec<&str> = states.iter().filter_map(Value::as_str).collect();
-    for expected in [
-        "available_exact",
-        "available_identity_not_proven",
-        "listing_missing_version_retrievable",
-        "extension_missing",
-        "namespace_or_publisher_problem",
-        "provider_not_proven",
-        "invalid",
-    ] {
-        if !declared.contains(&expected) {
-            bail!("receipt contract omits the {expected} state");
-        }
-    }
-    if declared.len() != 7 {
-        bail!("receipt contract declares an unexpected state vocabulary: {declared:?}");
+    let mut declared: Vec<&str> = states.iter().filter_map(Value::as_str).collect();
+    let mut known: Vec<&str> =
+        super::model::PublicState::ALL.into_iter().map(super::model::PublicState::key).collect();
+    known.push("available_exact");
+    declared.sort_unstable();
+    known.sort_unstable();
+    if declared != known {
+        bail!(
+            "contract states {declared:?} do not match the classifier's {known:?} plus \
+             available_exact"
+        );
     }
     Ok(())
 }

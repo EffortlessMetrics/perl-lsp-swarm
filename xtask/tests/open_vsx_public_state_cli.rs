@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::Output;
 
 #[test]
-fn an_intact_identity_exits_zero_with_an_exact_receipt() -> Result<()> {
+fn an_intact_identity_exits_zero_with_an_observed_identity_receipt() -> Result<()> {
     let root = repo_root()?;
     let temp = tempfile::TempDir::new()?;
     let receipt_path = temp.path().join("available.json");
@@ -20,18 +20,18 @@ fn an_intact_identity_exits_zero_with_an_exact_receipt() -> Result<()> {
 
     assert!(
         output.status.success(),
-        "intact identity should exit zero; stderr={}",
+        "a trustworthy classification should exit zero; stderr={}",
         String::from_utf8_lossy(&output.stderr)
     );
     let receipt: Value = serde_json::from_slice(&fs::read(&receipt_path)?)?;
-    assert_eq!(receipt["state"].as_str(), Some("available_exact"));
+    assert_eq!(receipt["state"].as_str(), Some("available_identity_not_proven"));
     assert_eq!(receipt["schema_version"].as_str(), Some("open_vsx_public_state.v1"));
     assert_eq!(receipt["identity"]["extension_id"].as_str(), Some("EffortlessMetrics.perl-lsp-rs"));
     Ok(())
 }
 
 #[test]
-fn a_blocking_state_still_persists_its_receipt() -> Result<()> {
+fn a_missing_extension_is_a_real_answer_not_a_process_failure() -> Result<()> {
     let root = repo_root()?;
     let temp = tempfile::TempDir::new()?;
     let receipt_path = temp.path().join("incident.json");
@@ -41,8 +41,14 @@ fn a_blocking_state_still_persists_its_receipt() -> Result<()> {
         &receipt_path,
     )?;
 
-    assert!(!output.status.success(), "a missing extension must not exit zero");
-    assert!(receipt_path.is_file(), "the receipt must survive a blocking state");
+    // Exit status reports whether a classification could be trusted, not whether
+    // the operator will like it. `extension_missing` is a real answer.
+    assert!(
+        output.status.success(),
+        "a trustworthy classification should exit zero; stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(receipt_path.is_file(), "the receipt must be persisted");
     let receipt: Value = serde_json::from_slice(&fs::read(&receipt_path)?)?;
     assert_eq!(receipt["state"].as_str(), Some("extension_missing"));
     Ok(())
@@ -59,7 +65,11 @@ fn a_provider_failure_is_never_reported_as_a_missing_extension() -> Result<()> {
         &receipt_path,
     )?;
 
-    assert!(!output.status.success(), "an unproven state must not exit zero");
+    assert!(
+        output.status.success(),
+        "provider_not_proven is a classification, not an instrument failure; stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let receipt: Value = serde_json::from_slice(&fs::read(&receipt_path)?)?;
     assert_eq!(receipt["state"].as_str(), Some("provider_not_proven"));
     Ok(())
@@ -122,7 +132,28 @@ fn the_cargo_xtask_surface_classifies_identically() -> Result<()> {
         String::from_utf8_lossy(&output.stderr)
     );
     let receipt: Value = serde_json::from_slice(&fs::read(&receipt_path)?)?;
-    assert_eq!(receipt["state"].as_str(), Some("available_exact"));
+    assert_eq!(receipt["state"].as_str(), Some("available_identity_not_proven"));
+    Ok(())
+}
+
+#[test]
+fn an_untrustworthy_observation_exits_non_zero_and_still_leaves_its_receipt() -> Result<()> {
+    // `invalid` is the one state that is a process failure: the observation
+    // could not be trusted, so there is no classification to act on. The durable
+    // artifact is still written, because an operator needs to see why.
+    let root = repo_root()?;
+    let temp = tempfile::TempDir::new()?;
+    let receipt_path = temp.path().join("invalid.json");
+
+    let output = run_probe(
+        &root.join("fixtures/open_vsx_public_state/synthetic_unplanned_request_url.json"),
+        &receipt_path,
+    )?;
+
+    assert!(!output.status.success(), "an untrustworthy observation must not exit zero");
+    assert!(receipt_path.is_file(), "the receipt must survive an invalid classification");
+    let receipt: Value = serde_json::from_slice(&fs::read(&receipt_path)?)?;
+    assert_eq!(receipt["state"].as_str(), Some("invalid"));
     Ok(())
 }
 

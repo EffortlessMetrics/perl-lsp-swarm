@@ -79,24 +79,30 @@ pub fn run_with_paths(input: PathBuf, out: PathBuf) -> Result<()> {
     // a green summary and no evidence.
     write_receipt(SUBJECT, &out, &receipt)?;
 
+    // Exit status answers "did this tool produce a trustworthy classification?",
+    // not "is the extension healthy?" — the receipt is the domain truth, and
+    // #9138 asks for the two to stay separate. Only `invalid` is a process
+    // failure: there the observation itself could not be trusted, so there is no
+    // classification to act on. Every other state is a real answer about the
+    // registry, including the ones an operator will not enjoy reading.
     let identity = &receipt.identity.extension_id;
-    match receipt.state {
-        PublicState::AvailableExact => {
-            let stdout = std::io::stdout();
-            let mut handle = stdout.lock();
-            writeln!(
-                handle,
-                "open-vsx-public-state: {identity} is available with exact public bytes at version {}",
-                receipt.subject_version.as_deref().unwrap_or("not-proven")
-            )?;
-            Ok(())
-        }
-        state => bail!(
-            "open-vsx-public-state: {identity} classified {}; see {}",
-            state.key(),
+    let stdout = std::io::stdout();
+    let mut handle = stdout.lock();
+    writeln!(
+        handle,
+        "open-vsx-public-state: {identity} classified {} ({} blocker(s)); see {}",
+        receipt.state.key(),
+        receipt.blockers.len(),
+        out.display()
+    )?;
+
+    if receipt.state == PublicState::Invalid {
+        bail!(
+            "open-vsx-public-state: the observation for {identity} could not be trusted; see {}",
             out.display()
-        ),
+        );
     }
+    Ok(())
 }
 
 /// The published input contract, applied to the document before classification.

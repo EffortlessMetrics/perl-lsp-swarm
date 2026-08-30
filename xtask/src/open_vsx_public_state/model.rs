@@ -175,7 +175,13 @@ pub(crate) struct VersionedFileCell {
 // Receipt (output)
 // ---------------------------------------------------------------------------
 
-/// The classified public state.
+/// A state this classifier can actually emit.
+///
+/// Deliberately one variant smaller than the published contract: the contract
+/// also defines `available_exact` for consumers holding a resolved candidate
+/// authority (#9138), and this classifier has none, so it cannot produce that
+/// state. Modelling it here would let the type claim a capability the code does
+/// not have — `schema_tests` pins the exact relationship between the two sets.
 ///
 /// `ProviderNotProven` absorbs every transport, budget, rate-limit, schema-drift
 /// and contradictory-evidence outcome. Nothing but three independent affirmative
@@ -183,10 +189,6 @@ pub(crate) struct VersionedFileCell {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum PublicState {
-    /// Not reachable from an observation alone: proving the public bytes are
-    /// the *approved* bytes needs a resolved candidate authority this tool
-    /// does not have. Retained in the vocabulary for #9138, which does.
-    AvailableExact,
     AvailableIdentityNotProven,
     ListingMissingVersionRetrievable,
     ExtensionMissing,
@@ -196,9 +198,20 @@ pub(crate) enum PublicState {
 }
 
 impl PublicState {
+    /// Every state this classifier can emit, so one test can prove the code and
+    /// the published contract have not drifted apart.
+    #[cfg(test)]
+    pub(crate) const ALL: [Self; 6] = [
+        Self::AvailableIdentityNotProven,
+        Self::ListingMissingVersionRetrievable,
+        Self::ExtensionMissing,
+        Self::NamespaceOrPublisherProblem,
+        Self::ProviderNotProven,
+        Self::Invalid,
+    ];
+
     pub(crate) fn key(self) -> &'static str {
         match self {
-            Self::AvailableExact => "available_exact",
             Self::AvailableIdentityNotProven => "available_identity_not_proven",
             Self::ListingMissingVersionRetrievable => "listing_missing_version_retrievable",
             Self::ExtensionMissing => "extension_missing",

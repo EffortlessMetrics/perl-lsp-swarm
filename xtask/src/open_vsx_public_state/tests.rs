@@ -38,22 +38,27 @@ fn an_intact_identity_records_its_bytes_but_stops_short_of_claiming_approval() -
 }
 
 #[test]
-fn no_observation_can_reach_available_exact() -> Result<()> {
-    // The state stays in the vocabulary for #9138, which holds a resolved
-    // candidate authority. Nothing this tool can be handed should produce it.
+fn no_observation_can_claim_exact_approval() -> Result<()> {
+    // `PublicState` no longer models `available_exact` at all, so the compiler
+    // now enforces most of this. What the type cannot say is that copying the
+    // retrieved digest into `expected` — the precise self-attestation review
+    // demonstrated — buys nothing, so that stays pinned here.
     for fixture in ALL_FIXTURES {
         let receipt = receipt(fixture)?;
-        if receipt.state == PublicState::AvailableExact {
-            bail!("an observation reached available_exact without any verified authority");
+        if receipt.state.key() == "available_exact" {
+            bail!("an observation claimed exact approval without any verified authority");
         }
     }
     let fabricated = receipt_with(AVAILABLE_EXACT, |document| {
         document["expected"]["versions"][0]["vsix_sha256"] =
             document["cells"]["versioned_file"]["sha256"].clone();
     })?;
-    if fabricated.state == PublicState::AvailableExact {
-        bail!("copying the retrieved digest into `expected` manufactured available_exact");
-    }
+    expect_state(
+        &fabricated,
+        PublicState::AvailableIdentityNotProven,
+        "digest copied from the retrieved package",
+    )?;
+    expect_blocker(&fabricated, "exact_approval_requires_verified_authority")?;
     Ok(())
 }
 
@@ -718,9 +723,9 @@ fn blockers_are_present_exactly_when_the_state_is_not_exact() -> Result<()> {
     ];
     for fixture in cases {
         let receipt = receipt(fixture)?;
-        let exact = receipt.state == PublicState::AvailableExact;
-        if exact != receipt.blockers.is_empty() {
-            bail!("state {} and blocker set disagree: {:?}", receipt.state.key(), receipt.blockers);
+        // Every state this classifier can emit is one it must justify.
+        if receipt.blockers.is_empty() {
+            bail!("state {} carries no blocker explaining it", receipt.state.key());
         }
     }
     Ok(())
