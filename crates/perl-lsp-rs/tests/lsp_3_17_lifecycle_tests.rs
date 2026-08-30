@@ -426,6 +426,80 @@ fn test_position_encoding_session_contract_advertises_utf16() -> TestResult {
     Ok(())
 }
 
+// ==================== POST-REJECTION FAIL-CLOSED (review 5059982819, Finding 1) ====================
+//
+// A typed -32602 initialize rejection must stay rejected at the lifecycle
+// layer: neither a follow-up `initialized` notification nor the preflight
+// compat auto-initialize path may complete initialization afterwards, and
+// follow-up requests must be refused with -32002 ServerNotInitialized.
+
+#[test]
+fn initialize_rejection_then_initialized_notification_does_not_activate_server() -> TestResult {
+    // Sequence A: rejected initialize → client sends `initialized` anyway →
+    // the server must stay uninitialized and refuse the next request.
+    let mut harness = LspHarness::new();
+    let failure = harness
+        .initialize(Some(json!({
+            "general": { "positionEncodings": ["utf-32", "utf-7"] }
+        })))
+        .err()
+        .ok_or("no-common offer must fail initialize over the wire")?;
+    assert!(
+        failure.contains("-32602"),
+        "initialize must be rejected with typed InvalidParams: {failure}"
+    );
+
+    harness.notify("initialized", json!({}));
+
+    let served = harness.request(
+        "textDocument/hover",
+        json!({
+            "textDocument": { "uri": "file:///test.pl" },
+            "position": { "line": 0, "character": 0 }
+        }),
+    );
+    let error =
+        served.err().ok_or("rejected initialize + `initialized` must not activate the server")?;
+    assert!(
+        error.contains("-32002"),
+        "post-rejection request must be ServerNotInitialized: {error}"
+    );
+    Ok(())
+}
+
+#[test]
+fn initialize_rejection_then_plain_request_does_not_auto_initialize() -> TestResult {
+    // Sequence B: rejected initialize → plain request with no `initialized`
+    // notification → the compat auto-initialize path must not fire; the
+    // request must be refused with -32002.
+    let mut harness = LspHarness::new();
+    let failure = harness
+        .initialize(Some(json!({
+            "general": { "positionEncodings": ["utf-8"] }
+        })))
+        .err()
+        .ok_or("utf-8-only offer must fail initialize over the wire")?;
+    assert!(
+        failure.contains("-32602"),
+        "initialize must be rejected with typed InvalidParams: {failure}"
+    );
+
+    let served = harness.request(
+        "textDocument/hover",
+        json!({
+            "textDocument": { "uri": "file:///test.pl" },
+            "position": { "line": 0, "character": 0 }
+        }),
+    );
+    let error =
+        served.err().ok_or("rejected initialize must not auto-initialize on a plain request")?;
+    assert!(
+        error.contains("-32002"),
+        "post-rejection request must be ServerNotInitialized: {error}"
+    );
+    Ok(())
+}
+
 #[test]
 fn test_initialized_notification() -> TestResult {
     let mut harness = LspHarness::new();

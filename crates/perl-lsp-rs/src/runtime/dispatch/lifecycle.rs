@@ -19,6 +19,22 @@ impl LspServer {
     }
 
     fn complete_initialization(&self) {
+        // Fail-closed lifecycle backstop (review 5059982819, Finding 1):
+        // completion requires an ACCEPTED text-sync session contract, never
+        // merely a requested initialize. This guards the narrow window where
+        // the one-shot guard was consumed but acceptance did not complete
+        // (e.g. a typed response/contract verification failure): registering
+        // watchers, starting indexing, and the ready log must never run on a
+        // connection without an accepted contract. Every completion path —
+        // the `initialized` notification and the compat auto-initialize —
+        // funnels through here, so this single gate closes them all.
+        if self.accepted_text_sync_session().is_none() {
+            tracing::warn!(
+                "Refusing to complete initialization without an accepted text-sync session contract"
+            );
+            return;
+        }
+
         if self
             .initialized
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -80,6 +96,9 @@ impl LspServer {
                 method,
                 "Client skipped initialized notification; auto-initializing for compatibility"
             );
+            // `complete_initialization` gates on the accepted text-sync
+            // session, so a consumed guard without an accepted contract
+            // (rejected or failed initialize) cannot activate the server here.
             self.complete_initialization();
         }
     }
@@ -263,6 +282,44 @@ mod tests {
 
         // Then
         assert!(!server.is_initialized(), "compat mode must no-op before initialize request");
+    }
+
+    #[test]
+    fn given_requested_but_unaccepted_initialize_when_completion_paths_run_then_server_stays_uninitialized()
+    -> TestResult {
+        // Review 5059982819, Finding 1 backstop: a consumed one-shot guard
+        // WITHOUT an accepted text-sync session — reachable when acceptance
+        // fails after the lifecycle CAS (e.g. a typed response/contract
+        // verification failure) — must never reach a serving state through
+        // either completion path. The state is constructed directly because
+        // the live initialize path now classifies before the CAS.
+        let server = LspServer::new();
+        server.initialize_requested.store(true, Ordering::Release);
+
+        // When — compat auto-initialize (preflight compat path)
+        server.auto_initialize_for_compat("textDocument/hover");
+
+        // Then
+        assert!(
+            !server.is_initialized(),
+            "compat completion must refuse without an accepted text-sync contract"
+        );
+
+        // When — explicit `initialized` notification
+        server.handle_initialized_dispatch().map_err(|e| {
+            format!("the -32002/-32600 guards hold; completion is what is gated: {e}")
+        })?;
+
+        // Then
+        assert!(
+            !server.is_initialized(),
+            "initialized notification must not complete without an accepted contract"
+        );
+        assert!(
+            server.accepted_text_sync_session().is_none(),
+            "no session may appear without an accepted initialize"
+        );
+        Ok(())
     }
 
     #[test]

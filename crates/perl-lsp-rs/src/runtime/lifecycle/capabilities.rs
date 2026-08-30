@@ -212,7 +212,25 @@ impl LspServer {
         &self,
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
-        // Atomically check and set initialize_requested
+        // Classify the client's position-encoding offer BEFORE the one-shot
+        // lifecycle guard (review 5059982819, Finding 1). Classification is
+        // pure with respect to server state, so a rejected offer fails
+        // initialize with a typed error while `initialize_requested` stays
+        // false: the existing ServerNotInitialized (-32002) arms then hold
+        // the fail-closed boundary for any follow-up `initialized`
+        // notification or plain request. If the guard were consumed first, a
+        // rejected initialize would leave `initialize_requested == true` with
+        // no accepted session, and the lifecycle completion paths would
+        // activate the server afterwards.
+        let session_contract = super::session_contract::TextSyncSessionContract::accept(
+            params.as_ref(),
+            super::session_contract::next_session_id(),
+        )
+        .map_err(|rejection| rejection.to_jsonrpc_error())?;
+
+        // Atomically check and set initialize_requested. The guard is
+        // consumed only after classification succeeded, so a consumed guard
+        // always belongs to an initialize that went on to accept a contract.
         if self
             .initialize_requested
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -224,19 +242,6 @@ impl LspServer {
                 data: None,
             });
         }
-
-        // Classify the client's position-encoding offer and construct the
-        // complete text-sync session contract candidate BEFORE any capability,
-        // workspace, or configuration mutation (#9378). A rejection here
-        // fails initialize with a typed error and publishes no state: no
-        // accepted contract, no partial client capabilities, no workspace
-        // side effects. The one-shot guard above records the attempted
-        // request; it never makes a rejected initialize look accepted.
-        let session_contract = super::session_contract::TextSyncSessionContract::accept(
-            params.as_ref(),
-            super::session_contract::next_session_id(),
-        )
-        .map_err(|rejection| rejection.to_jsonrpc_error())?;
 
         // Parse client capabilities
         if let Some(params) = &params {
