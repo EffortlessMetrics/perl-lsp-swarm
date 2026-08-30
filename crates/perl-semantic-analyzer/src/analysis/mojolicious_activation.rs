@@ -105,7 +105,30 @@ fn has_explicit_empty_import(source: &str, span_start: u32, span_end: u32) -> bo
         return false;
     };
     let rest = &statement[module_at + MOJOLICIOUS_LITE_MODULE.len()..];
-    rest.trim_start().starts_with("()")
+    skip_version_token(rest.trim_start()).trim_start().starts_with("()")
+}
+
+/// Skip a leading `VERSION` requirement token, in either the numeric or
+/// v-string spelling, so `use Mojolicious::Lite 9.34 ();` is recognised as a
+/// suppressed import rather than an ordinary versioned one.
+fn skip_version_token(rest: &str) -> &str {
+    let body = rest.strip_prefix('v').unwrap_or(rest);
+    let taken = body.chars().take_while(|c| c.is_ascii_digit() || *c == '.' || *c == '_').count();
+    if taken == 0 {
+        return rest;
+    }
+    let consumed = (rest.len() - body.len()) + taken;
+    &rest[consumed..]
+}
+
+/// The version requirement a `use Mojolicious::Lite ...;` module string
+/// carries, when the parser folded a numeric one into the module name.
+fn module_version_requirement(module: &str) -> Option<&str> {
+    module
+        .strip_prefix(MOJOLICIOUS_LITE_MODULE)?
+        .strip_prefix(' ')
+        .map(str::trim)
+        .filter(|rest| !rest.is_empty())
 }
 
 fn walk_activation_sites(
@@ -132,6 +155,7 @@ fn walk_activation_sites(
                 evidence: mojolicious_lite_import_evidence(
                     args,
                     has_explicit_empty_import(source, span_start, span_end),
+                    module_version_requirement(module),
                 ),
             });
         }
@@ -340,6 +364,36 @@ mod tests {
             found[0].evidence.selection,
             MojoliciousLiteImportSelection::Dynamic { .. }
         ));
+    }
+
+    #[test]
+    fn a_versioned_empty_import_is_still_suppressed() {
+        // `use Mojolicious::Lite 9.34 ();` — the version must not hide the
+        // explicit empty import list.
+        for code in ["use Mojolicious::Lite 9.34 ();\n", "use Mojolicious::Lite v9.34 ();\n"] {
+            let found = sites(code);
+            assert_eq!(found.len(), 1, "{code}");
+            assert_eq!(
+                found[0].evidence.selection,
+                MojoliciousLiteImportSelection::ImportSuppressed,
+                "{code} suppresses import"
+            );
+        }
+    }
+
+    #[test]
+    fn a_versioned_import_records_its_source_requirement() {
+        // Numeric requirements are folded into the module name; v-strings
+        // arrive in the argument list. Both must be captured.
+        assert_eq!(
+            sites("use Mojolicious::Lite 9.34;\n")[0].evidence.source_version_requirement,
+            Some("9.34".to_string())
+        );
+        assert_eq!(
+            sites("use Mojolicious::Lite v9.34;\n")[0].evidence.source_version_requirement,
+            Some("9.34".to_string())
+        );
+        assert_eq!(sites("use Mojolicious::Lite;\n")[0].evidence.source_version_requirement, None);
     }
 
     #[test]

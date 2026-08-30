@@ -314,6 +314,14 @@ pub struct MojoliciousLiteImportEvidence {
     /// Import options this profile does not review; the activation carries an
     /// explicit unsupported-profile state for them.
     pub unmodeled_options: Vec<String>,
+    /// Version required by the import itself (`use Mojolicious::Lite 9.34;`),
+    /// normalized without any `v` prefix.
+    ///
+    /// Perl calls `Mojolicious::Lite->VERSION(REQUIRED)` for this form, which
+    /// dies unless the installed version satisfies it, so an import whose
+    /// requirement the environment does not meet never activates at runtime
+    /// and must not own a role here either.
+    pub source_version_requirement: Option<String>,
 }
 
 /// Parse `use Mojolicious::Lite` import arguments (parser token strings) into
@@ -326,7 +334,7 @@ pub struct MojoliciousLiteImportEvidence {
 /// normalized into a profile.
 #[must_use]
 pub fn parse_mojolicious_lite_import_args(args: &[String]) -> MojoliciousLiteImportEvidence {
-    mojolicious_lite_import_evidence(args, false)
+    mojolicious_lite_import_evidence(args, false, None)
 }
 
 /// Build Lite import evidence from parser argument tokens plus the source-level
@@ -347,17 +355,29 @@ pub fn parse_mojolicious_lite_import_args(args: &[String]) -> MojoliciousLiteImp
 pub fn mojolicious_lite_import_evidence(
     args: &[String],
     explicit_empty_import: bool,
+    module_version_requirement: Option<&str>,
 ) -> MojoliciousLiteImportEvidence {
-    let mut evidence = MojoliciousLiteImportEvidence::default();
-    let tokens = normalize_import_tokens(args);
-    if tokens.is_empty() && explicit_empty_import {
+    let mut evidence = MojoliciousLiteImportEvidence {
+        source_version_requirement: module_version_requirement.map(normalize_version_requirement),
+        ..MojoliciousLiteImportEvidence::default()
+    };
+    let mut tokens = normalize_import_tokens(args);
+    // A v-string requirement reaches the argument list rather than the module
+    // name; consume it before the import-option scan.
+    if let Some(first) = tokens.first()
+        && is_version_requirement(first)
+    {
+        evidence.source_version_requirement = Some(normalize_version_requirement(first));
+        tokens.remove(0);
+    }
+    // `use Mojolicious::Lite VERSION ();` reaches here as the parenthesis
+    // tokens; the source-level check is authoritative either way.
+    let only_parens = !tokens.is_empty() && tokens.iter().all(|token| token == "(" || token == ")");
+    if (tokens.is_empty() || only_parens) && explicit_empty_import {
         evidence.selection = MojoliciousLiteImportSelection::ImportSuppressed;
         return evidence;
     }
-    for (index, token) in tokens.into_iter().enumerate() {
-        if index == 0 && is_version_requirement(&token) {
-            continue;
-        }
+    for token in tokens {
         if token == "-signatures" {
             evidence.signatures = true;
             if evidence.selection == MojoliciousLiteImportSelection::Default {
@@ -382,13 +402,15 @@ pub fn mojolicious_lite_import_evidence(
     evidence
 }
 
-/// Split parser argument tokens on whitespace so a single argument string
-/// carrying several tokens is classified per token.
+/// Drop empty argument slots, preserving each parser token whole.
+///
+/// The parser already separates distinct import tokens — a bare sigil arrives
+/// as its own `%` token — and it keeps a quoted literal containing spaces in
+/// one token. Splitting further would fragment `'foo bar'` into `'foo` and
+/// `bar'`, which would then read as an unterminated quote and misreport a
+/// well-formed unreviewed option as recovered source.
 fn normalize_import_tokens(args: &[String]) -> Vec<String> {
-    args.iter()
-        .flat_map(|arg| arg.split_whitespace().map(ToString::to_string))
-        .filter(|token| !token.is_empty())
-        .collect()
+    args.iter().filter(|arg| !arg.trim().is_empty()).map(|arg| arg.trim().to_string()).collect()
 }
 
 /// Recovered spellings the parser could not terminate.
@@ -411,6 +433,11 @@ fn dynamic_token_reason(token: &str) -> Option<String> {
         return Some(format!("computed import argument `{token}` is a dynamic boundary"));
     }
     None
+}
+
+/// Strip a `v` prefix so numeric and v-string requirements compare alike.
+fn normalize_version_requirement(required: &str) -> String {
+    required.strip_prefix('v').unwrap_or(required).to_string()
 }
 
 /// Whether one leading import token is a v-string version requirement.
@@ -646,7 +673,21 @@ pub fn mojolicious_lite_activation_facts(
         return facts;
     }
 
-    // 2. Module availability and identity.
+    // 2. The site anchor must describe a real statement interval. An empty or
+    // reversed range is not an extracted import, so it cannot anchor a role
+    // however current its generation is.
+    if anchor.span_end_byte <= anchor.span_start_byte {
+        facts.outcome = MojoliciousActivationOutcome::StaleOrIncompleteInput {
+            reason: format!(
+                "site interval [{}, {}) is empty or reversed; an exact role requires a \
+                 located import statement",
+                anchor.span_start_byte, anchor.span_end_byte
+            ),
+        };
+        return facts;
+    }
+
+    // 3. Module availability and identity.
     match &detection.outcome {
         DetectionOutcome::Unavailable { reason } => {
             facts.outcome = MojoliciousActivationOutcome::MissingOrUnavailableModule {
@@ -663,7 +704,7 @@ pub fn mojolicious_lite_activation_facts(
         _ => {}
     }
 
-    // 3. Source-level classification of the import site.
+    // 4. Source-level classification of the import site.
     match &evidence.selection {
         MojoliciousLiteImportSelection::Malformed { reason } => {
             facts.outcome =
@@ -686,7 +727,7 @@ pub fn mojolicious_lite_activation_facts(
         _ => {}
     }
 
-    // 4. Detection-level version/profile support.
+    // 5. Detection-level version/profile support.
     match &detection.outcome {
         DetectionOutcome::Unsupported { reason } => {
             facts.outcome = MojoliciousActivationOutcome::UnsupportedVersionOrProfile {
@@ -702,6 +743,14 @@ pub fn mojolicious_lite_activation_facts(
                     "observed version does not satisfy the reviewed constraint \
                      `{MOJOLICIOUS_VERSION_CONSTRAINT}`"
                 ),
+            };
+            return facts;
+        }
+        DetectionOutcome::Absent { reason: DetectionAbsenceReason::RequiredModulesMissing } => {
+            // The module is absent from the environment. That is a missing
+            // dependency, not complete evidence that the package owns no role.
+            facts.outcome = MojoliciousActivationOutcome::MissingOrUnavailableModule {
+                reason: format!("{:?}", DetectionAbsenceReason::RequiredModulesMissing),
             };
             return facts;
         }
@@ -727,7 +776,7 @@ pub fn mojolicious_lite_activation_facts(
     let reported_confidence = *confidence;
     let reported_version = framework_version.clone().unwrap_or_default();
 
-    // 5. Evidence completeness: a raw or deserialized `Detected` result does
+    // 6. Evidence completeness: a raw or deserialized `Detected` result does
     // not become exact activation without its contributing module identity,
     // version evidence, and a current input identity that reconciles with
     // this detection.
@@ -744,7 +793,7 @@ pub fn mojolicious_lite_activation_facts(
         return facts;
     }
 
-    // 6. Generation staleness: site, module, and version evidence must all be
+    // 7. Generation staleness: site, module, and version evidence must all be
     // known and current for the detection generation.
     if let Some(reason) = staleness_reason(detection, anchor) {
         facts.outcome = MojoliciousActivationOutcome::StaleOrIncompleteInput { reason };
@@ -752,7 +801,7 @@ pub fn mojolicious_lite_activation_facts(
     }
     facts.source_generation = anchor.source_generation.clone();
 
-    // 7. A reported confidence below High is never exact activation: an
+    // 8. A reported confidence below High is never exact activation: an
     // exact fact that carries Low confidence contradicts itself.
     if reported_confidence != Confidence::High {
         facts.outcome = MojoliciousActivationOutcome::StaleOrIncompleteInput {
@@ -764,7 +813,7 @@ pub fn mojolicious_lite_activation_facts(
         return facts;
     }
 
-    // 8. The reviewed profile must cover every import option.
+    // 9. The reviewed profile must cover every import option.
     if !evidence.unmodeled_options.is_empty() {
         facts.outcome = MojoliciousActivationOutcome::UnsupportedVersionOrProfile {
             reason: format!(
@@ -775,7 +824,26 @@ pub fn mojolicious_lite_activation_facts(
         return facts;
     }
 
-    // 9. Exact Lite activation under the reviewed profile. Only here, with
+    // 10. The import's own version requirement must be satisfied by the
+    // observed version. `use Mojolicious::Lite VERSION;` dies at compile time
+    // when it is not, so such an import never activates in real Perl.
+    if let Some(required) = &evidence.source_version_requirement {
+        let satisfied = crate::framework::version_constraint_matches(
+            &format!(">={required}"),
+            &reported_version,
+        );
+        if satisfied != Some(true) {
+            facts.outcome = MojoliciousActivationOutcome::UnsupportedVersionOrProfile {
+                reason: format!(
+                    "import requires version `{required}` but the observed version is \
+                     `{reported_version}`"
+                ),
+            };
+            return facts;
+        }
+    }
+
+    // 11. Exact Lite activation under the reviewed profile. Only here, with
     // every generation current and the evidence reconciled, do the observed
     // confidence and framework version become published facts.
     facts.confidence = reported_confidence;
@@ -1942,6 +2010,125 @@ mod tests {
         ));
     }
 
+    // -----------------------------------------------------------------
+    // Second review round on the repaired head
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn an_unsatisfied_source_version_requirement_refuses_the_role() {
+        // `use Mojolicious::Lite 99.0;` dies at compile time against an
+        // installed 9.34, so it must never own a role.
+        let mut evidence = parse(&[]);
+        evidence.source_version_requirement = Some("99.0".to_string());
+        let facts = mojolicious_lite_activation_facts(
+            &detect_mojolicious_lite(&lite_input("gen-1")),
+            &lite_anchor("main", "gen-1"),
+            &evidence,
+        );
+        assert_eq!(facts.role(), None);
+        assert!(matches!(
+            facts.outcome,
+            MojoliciousActivationOutcome::UnsupportedVersionOrProfile { .. }
+        ));
+    }
+
+    #[test]
+    fn a_satisfied_source_version_requirement_keeps_the_role() {
+        // Positive control: equal and lower requirements both activate.
+        for required in ["9.34", "8.0"] {
+            let mut evidence = parse(&[]);
+            evidence.source_version_requirement = Some(required.to_string());
+            let facts = mojolicious_lite_activation_facts(
+                &detect_mojolicious_lite(&lite_input("gen-1")),
+                &lite_anchor("main", "gen-1"),
+                &evidence,
+            );
+            assert_eq!(
+                facts.role(),
+                Some(MojoliciousRole::LiteApplication),
+                "requirement {required} is satisfied by 9.34"
+            );
+        }
+    }
+
+    #[test]
+    fn a_vstring_requirement_is_captured_not_discarded() {
+        assert_eq!(parse(&["v9.34"]).source_version_requirement, Some("9.34".to_string()));
+        assert_eq!(
+            mojolicious_lite_import_evidence(&[], false, Some("9.34")).source_version_requirement,
+            Some("9.34".to_string())
+        );
+    }
+
+    #[test]
+    fn an_empty_or_reversed_site_interval_refuses_the_role() {
+        // A fabricated anchor is not an extracted import, however current its
+        // generation is.
+        for (start, end) in [(0u32, 0u32), (40u32, 10u32)] {
+            let anchor = MojoliciousSiteAnchor::new(
+                Some("main".to_string()),
+                start,
+                end,
+                SourceGeneration::known("gen-1"),
+            );
+            let facts = mojolicious_lite_activation_facts(
+                &detect_mojolicious_lite(&lite_input("gen-1")),
+                &anchor,
+                &parse(&[]),
+            );
+            assert_eq!(facts.role(), None, "interval [{start}, {end}) must not anchor a role");
+            assert!(matches!(
+                facts.outcome,
+                MojoliciousActivationOutcome::StaleOrIncompleteInput { .. }
+            ));
+        }
+    }
+
+    #[test]
+    fn a_missing_module_is_not_complete_evidence_of_absence() {
+        // A dependency that is not installed is unavailable, not proof that
+        // the package owns no role.
+        let input = AdapterDetectionInput::new(
+            mojolicious_lite_descriptor(),
+            receipt(
+                "gen-1",
+                vec![ModuleSelectorEvaluation::new(
+                    MOJOLICIOUS_LITE_MODULE,
+                    ModuleSelectorOutcome::Absent,
+                )],
+            ),
+            None,
+            AdapterCancellation::active(),
+        );
+        let facts = mojolicious_lite_activation_facts(
+            &detect_mojolicious_lite(&input),
+            &lite_anchor("main", "gen-1"),
+            &parse(&[]),
+        );
+        assert_eq!(facts.role(), None);
+        assert!(
+            matches!(
+                facts.outcome,
+                MojoliciousActivationOutcome::MissingOrUnavailableModule { .. }
+            ),
+            "expected a missing-module state, got {:?}",
+            facts.outcome
+        );
+    }
+
+    #[test]
+    fn a_quoted_option_containing_spaces_stays_one_unreviewed_option() {
+        // The parser keeps `'foo bar'` whole. Fragmenting it would make a
+        // well-formed unreviewed option read as unterminated recovered source.
+        let evidence = parse(&["'foo bar'"]);
+        assert_eq!(evidence.unmodeled_options, vec!["'foo bar'".to_string()]);
+        assert_eq!(
+            evidence.selection,
+            MojoliciousLiteImportSelection::Default,
+            "a quoted literal is not malformed source"
+        );
+    }
+
     #[test]
     fn an_exact_role_always_carries_high_confidence() {
         // The invariant behind the gate above: exactness and confidence can
@@ -1963,7 +2150,7 @@ mod tests {
     fn an_explicit_empty_import_list_suppresses_the_role() {
         // `use Mojolicious::Lite ();` loads the module but calls no `import`,
         // so the Lite DSL is never installed.
-        let evidence = mojolicious_lite_import_evidence(&[], true);
+        let evidence = mojolicious_lite_import_evidence(&[], true, None);
         assert_eq!(evidence.selection, MojoliciousLiteImportSelection::ImportSuppressed);
         let facts = mojolicious_lite_activation_facts(
             &detect_mojolicious_lite(&lite_input("gen-1")),
@@ -1982,7 +2169,7 @@ mod tests {
         // Negative control for the suppression fix: the ordinary import must
         // keep its role.
         assert_eq!(
-            mojolicious_lite_import_evidence(&[], false).selection,
+            mojolicious_lite_import_evidence(&[], false, None).selection,
             MojoliciousLiteImportSelection::Default
         );
     }

@@ -339,6 +339,36 @@ fn a_computed_import_argument_owns_no_role() {
 }
 
 #[test]
+fn an_unsatisfiable_version_requirement_owns_no_role_end_to_end() {
+    // The fixture environment resolves Mojolicious 9.34; an import demanding
+    // 99.0 would die at compile time in real Perl.
+    let facts = lite_facts("use Mojolicious::Lite 99.0;\n", GENERATION);
+    assert_eq!(roles(&facts), vec![None]);
+    assert!(matches!(
+        facts[0].outcome,
+        MojoliciousActivationOutcome::UnsupportedVersionOrProfile { .. }
+    ));
+}
+
+#[test]
+fn a_satisfiable_version_requirement_owns_the_lite_role_end_to_end() {
+    for code in ["use Mojolicious::Lite 9.34;\n", "use Mojolicious::Lite v8.0;\n"] {
+        let facts = lite_facts(code, GENERATION);
+        assert_eq!(roles(&facts), vec![Some(MojoliciousRole::LiteApplication)], "{code}");
+    }
+}
+
+#[test]
+fn a_versioned_suppressed_import_owns_no_role_end_to_end() {
+    let facts = lite_facts("use Mojolicious::Lite 9.34 ();\n", GENERATION);
+    assert_eq!(roles(&facts), vec![None]);
+    assert!(matches!(
+        facts[0].outcome,
+        MojoliciousActivationOutcome::AbsentWithCompleteEvidence { .. }
+    ));
+}
+
+#[test]
 fn the_two_profiles_never_answer_for_each_others_source() {
     // Containment: the Lite extractor sees no Mojo::Base site, and the
     // Mojo::Base extractor sees no Lite site.
