@@ -6,6 +6,8 @@ use anyhow::{Result, anyhow, ensure};
 use serde_yaml_ng::Value;
 
 const CACHE_ACTION: &str = "Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6";
+const CHECKOUT_ACTION: &str = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1";
+const TOOLCHAIN_ACTION: &str = "dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772";
 const SHARED_KEY: &str = "corpus-windows-reparse-proof-${{ hashFiles('Cargo.lock') }}";
 const TRUSTED_SAVE_IF: &str =
     "${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}";
@@ -80,6 +82,10 @@ fn validate_workflow(source: &str) -> Result<()> {
         "workflow must expose only pull_request and workflow_dispatch"
     );
     ensure!(
+        events.get("workflow_dispatch") == Some(&Value::Null),
+        "workflow_dispatch must not declare inputs or payload"
+    );
+    ensure!(
         trigger.len() == 2 && trigger.get("types").is_none(),
         "pull_request must not add extra activity types"
     );
@@ -116,6 +122,10 @@ fn validate_workflow(source: &str) -> Result<()> {
         .get("jobs")
         .and_then(Value::as_mapping)
         .ok_or_else(|| anyhow!("the workflow must declare jobs"))?;
+    ensure!(
+        jobs.len() == 1 && jobs.contains_key("windows-reparse-proof"),
+        "workflow must not hide additional jobs"
+    );
     let job = jobs
         .get("windows-reparse-proof")
         .and_then(Value::as_mapping)
@@ -140,11 +150,10 @@ fn validate_workflow(source: &str) -> Result<()> {
     ensure!(
         all_steps.iter().all(|step| {
             step.get("uses").and_then(Value::as_str).is_none_or(|uses| {
-                !uses.starts_with("actions/cache")
-                    && (!uses.starts_with("Swatinem/rust-cache@") || uses == CACHE_ACTION)
+                [CHECKOUT_ACTION, TOOLCHAIN_ACTION, CACHE_ACTION].contains(&uses)
             })
         }),
-        "alternate cache writers are not allowed"
+        "actions must use the approved immutable refs; alternate or local writers are not allowed"
     );
     ensure!(
         jobs.values()
@@ -167,7 +176,7 @@ fn validate_workflow(source: &str) -> Result<()> {
         .ok_or_else(|| anyhow!("the rust-cache step must declare inputs"))?;
     ensure!(
         cache_with.get("save-if").and_then(Value::as_str) == Some(TRUSTED_SAVE_IF),
-        "rust-cache must save only from default-branch repository_dispatch"
+        "rust-cache must save only for canonical default-branch refs"
     );
     ensure!(
         cache_with.get("cache-on-failure") == Some(&Value::Bool(true)),
@@ -317,6 +326,9 @@ fn contract_rejects_realistic_cache_and_permission_mutations() -> Result<()> {
     let source = actual_workflow()?;
     for (from, to) in [
         (CACHE_ACTION, "Swatinem/rust-cache@v2"),
+        (CHECKOUT_ACTION, "actions/checkout@v7"),
+        (TOOLCHAIN_ACTION, "dtolnay/rust-toolchain@master"),
+        (CHECKOUT_ACTION, "./.github/actions/cache-writer"),
         (
             "save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}",
             "save-if: true",
@@ -335,6 +347,7 @@ fn contract_rejects_realistic_cache_and_permission_mutations() -> Result<()> {
             "  windows-reparse-proof:\n    name:",
             "  windows-reparse-proof:\n    permissions:\n      id-token: write\n    name:",
         ),
+        ("jobs:\n", "jobs:\n  hidden-cache-writer:\n    runs-on: ubuntu-latest\n    steps: []\n"),
     ] {
         ensure!(
             validate_workflow(&replace_once(&source, from, to)?).is_err(),
@@ -355,6 +368,10 @@ fn contract_rejects_decoy_commands_and_trigger_mutations() -> Result<()> {
         ("    branches: [main, master]\n", "    branches: [main, master]\n    types: [opened]\n"),
         ("  workflow_dispatch:\n", "  workflow_dispatch:\n  push:\n"),
         ("  workflow_dispatch:\n", "  workflow_dispatch:\n  schedule:\n    - cron: '0 0 * * *'\n"),
+        (
+            "  workflow_dispatch:\n",
+            "  workflow_dispatch:\n    inputs:\n      reason:\n        required: false\n",
+        ),
         (
             "            api::topology::tests::binding_rejects_intermediate_runtime_root_symlink\n",
             "",
