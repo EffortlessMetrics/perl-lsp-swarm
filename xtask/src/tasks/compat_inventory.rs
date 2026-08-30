@@ -343,13 +343,11 @@ pub fn discover(root: &Path) -> Result<Discovered> {
 
     // A root re-export that no module actually defines means `lib.rs` and the
     // module files disagree; the inventory must not paper over that.
-    for (module, name) in &root_reexports {
-        if !exports.iter().any(|e| &e.module == module && &e.name == name) {
-            bail!(
-                "{CRATE_DIR}/src/lib.rs re-exports `{module}::{name}` but no public item of that \
-                 name was found in {CRATE_DIR}/src/{module}.rs"
-            );
-        }
+    if let Some((module, name)) = unresolved_reexports(&exports, &root_reexports).first() {
+        bail!(
+            "{CRATE_DIR}/src/lib.rs re-exports `{module}::{name}` but no public item of that \
+             name was found in {CRATE_DIR}/src/{module}.rs"
+        );
     }
     exports.sort();
 
@@ -405,6 +403,21 @@ fn discover_fixtures(root: &Path, tracked: &[String]) -> Result<BTreeSet<String>
         }
     }
     Ok(out)
+}
+
+/// Root re-exports that no module actually defines.
+///
+/// Non-empty means `lib.rs` and the module files disagree about what the crate
+/// exposes, so neither can be trusted as the surface the ledger accounts for.
+fn unresolved_reexports(
+    exports: &[Export],
+    reexports: &[(String, String)],
+) -> Vec<(String, String)> {
+    reexports
+        .iter()
+        .filter(|(module, name)| !exports.iter().any(|e| &e.module == module && &e.name == name))
+        .cloned()
+        .collect()
 }
 
 fn tracked_files(root: &Path) -> Result<Vec<String>> {
@@ -811,9 +824,24 @@ fn discover_references(root: &Path, tracked: &[String]) -> Result<Vec<String>> {
             continue;
         }
         let full = root.join(path);
-        let Ok(text) = fs::read_to_string(&full) else {
-            // Binary or unreadable files cannot carry a Rust reference.
+        // `git ls-files` reports submodule gitlinks, which are directories on
+        // disk and carry no content of their own.
+        if full.is_dir() {
             continue;
+        }
+        let text = match fs::read_to_string(&full) {
+            Ok(text) => text,
+            // A non-UTF-8 file cannot carry a Rust reference, so skipping it is
+            // sound. Any other failure — a permission error, a broken symlink —
+            // means this file's contents are unknown, and silently dropping it
+            // would let a real reference escape the ledger.
+            Err(error) if error.kind() == std::io::ErrorKind::InvalidData => continue,
+            Err(error) => {
+                bail!(
+                    "failed to read tracked file {path}; the reference population must be \
+                     complete: {error}"
+                );
+            }
         };
         if text.contains(PACKAGE) || text.contains(MODULE_PATH) {
             out.insert(path.clone());
@@ -1518,6 +1546,30 @@ mod tests {
             "winapi = \"0.3\"\n",
         ));
         assert!(found.is_empty(), "unrelated dependencies must not count: {found:?}");
+        Ok(())
+    }
+
+    /// `lib.rs` and the module files must agree about the crate's surface.
+    /// Without this control, weakening either parser could remove the guard
+    /// silently.
+    #[test]
+    fn a_reexport_no_module_defines_is_detected() -> TestResult {
+        let exports = vec![export("parse_to_tree")];
+        let agreeing = vec![("convert".to_string(), "parse_to_tree".to_string())];
+        assert!(
+            unresolved_reexports(&exports, &agreeing).is_empty(),
+            "a re-export the module defines must resolve"
+        );
+
+        let disagreeing = vec![
+            ("convert".to_string(), "parse_to_tree".to_string()),
+            ("convert".to_string(), "vanished".to_string()),
+        ];
+        assert_eq!(
+            unresolved_reexports(&exports, &disagreeing),
+            vec![("convert".to_string(), "vanished".to_string())],
+            "a re-export no module defines must be reported"
+        );
         Ok(())
     }
 
