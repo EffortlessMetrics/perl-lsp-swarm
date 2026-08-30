@@ -25,6 +25,10 @@ use perl_lsp_rs_core::providers::navigation::definition_shadow::{
     DefinitionCutoverResult, goto_definition_live_exact_or_imported,
 };
 #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
+use perl_lsp_rs_core::providers::semantic_port::{
+    SemanticQueriesResolveSource, accepted_generation_basis, resolve_at_position,
+};
+#[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
 use perl_workspace::semantic::queries::QueryContext;
 
 #[cfg(feature = "workspace")]
@@ -2228,6 +2232,50 @@ impl LspServer {
         Some((symbol, byte_offset))
     }
 
+    /// Record how the shared cursor identity (#8977) compares with the live
+    /// name-keyed definition lookup for this request.
+    ///
+    /// Trace only. The definition response is produced by the live path exactly
+    /// as before; this records what the shared layer resolved so a disagreement
+    /// between "the entity under the cursor" and "the entity this spelling
+    /// selected" is observable instead of silent.
+    #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
+    fn record_definition_resolve_at_trace(
+        &self,
+        uri: &str,
+        resolved: &perl_lsp_rs_core::providers::semantic_port::ResolveAtOutcome,
+        live_entity_id: Option<perl_semantic_facts::EntityId>,
+    ) {
+        let resolved_entity_id = resolved.bound_entity_id();
+        let generation = resolved.generation();
+        let receipt = json!({
+            "provider": "definition",
+            "provider_action": "resolve_at_position",
+            "resolve_stage": resolved.stage(),
+            "resolve_reason": resolved.reason(),
+            "occurrence_published": resolved.occurrence_was_published(),
+            "resolved_entity_id": resolved_entity_id.map(|entity| entity.0),
+            "live_lookup_entity_id": live_entity_id.map(|entity| entity.0),
+            // Absent on either side means "not comparable", which is reported
+            // as no agreement rather than as agreement.
+            "agrees_with_live_lookup": match (resolved_entity_id, live_entity_id) {
+                (Some(resolved), Some(live)) => Some(resolved == live),
+                _ => None,
+            },
+            "document_generation": generation
+                .map(|basis| format!("{:?}", basis.document_generation)),
+            "workspace_generation": generation
+                .map(|basis| format!("{:?}", basis.workspace_generation)),
+            "generation_known": generation.map(|basis| basis.is_known()),
+            "uri": uri,
+            "trace_only_no_live_behavior_change": true,
+            "claim_boundary":
+                "records the shared cursor identity alongside the existing live definition result; \
+                 no definition cutover",
+        });
+        self.record_provider_decision_trace("definition", &receipt);
+    }
+
     #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
     fn live_exact_definition_location(
         &self,
@@ -2240,14 +2288,47 @@ impl LspServer {
             return None;
         }
         let workspace_index = self.workspace_index()?;
-        let outcome = workspace_index.with_semantic_queries_for_uri(uri, |file_id, queries| {
-            let ctx = QueryContext::new(file_id, None, Some(byte_offset));
-            goto_definition_live_exact_or_imported(workspace_index.as_ref(), &queries, symbol, &ctx)
-        })?;
+
+        // One shared basis for this request (#8977), built from the accepted
+        // view before any query so the cursor and its targets are resolved
+        // against the same generations. References builds it the same way, from
+        // the same constructor, so the two providers cannot drift apart.
+        let resolve_generation = accepted_generation_basis(workspace_index.as_ref(), uri);
+
+        // Capture the shared cursor identity and the live name-keyed lookup
+        // under ONE view open. Two opens would be a second snapshot of the same
+        // request and could straddle an index write.
+        let (resolved_at_cursor, outcome) =
+            workspace_index.with_semantic_queries_for_uri(uri, |file_id, queries| {
+                let resolve_source = SemanticQueriesResolveSource::new(&queries);
+                let resolved_at_cursor = resolve_at_position(
+                    &resolve_source,
+                    file_id,
+                    byte_offset,
+                    &resolve_generation,
+                    false,
+                );
+                let ctx = QueryContext::new(file_id, None, Some(byte_offset));
+                let outcome = goto_definition_live_exact_or_imported(
+                    workspace_index.as_ref(),
+                    &queries,
+                    symbol,
+                    &ctx,
+                );
+                (resolved_at_cursor, outcome)
+            })?;
 
         if self.workspace_index_stale_for_any_open_document() {
             return None;
         }
+
+        let live_entity_id = match &outcome.result {
+            DefinitionCutoverResult::Exact(candidate) => Some(candidate.entity_id),
+            DefinitionCutoverResult::Ambiguous(_) | DefinitionCutoverResult::LegacyFallback(_) => {
+                None
+            }
+        };
+        self.record_definition_resolve_at_trace(uri, &resolved_at_cursor, live_entity_id);
 
         let DefinitionCutoverResult::Exact(candidate) = outcome.result else {
             return None;
