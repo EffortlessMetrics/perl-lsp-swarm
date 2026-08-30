@@ -11,7 +11,8 @@ fn expression_statement(ast: &Node) -> &Node {
     };
     match &statement.kind {
         NodeKind::ExpressionStatement { expression } => expression,
-        _ => statement,
+        NodeKind::Binary { .. } => statement,
+        other => panic!("expected ExpressionStatement or Binary, got {:?}", other),
     }
 }
 
