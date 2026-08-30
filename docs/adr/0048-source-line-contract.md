@@ -152,15 +152,27 @@ above; documentation alone gives no recurrence gate.
 
 ## Consequences
 
-Positive:
+True today, in the canonical `LineRecordTable` this ADR ratifies:
 
-- one ruling covers parser, LSP, Tree-sitter, and DAP without rewriting source;
-- Unicode separators inside strings and comments can no longer shift editor,
-  debugger, parser, and Tree-sitter rows differently;
+- one ruling now covers parser, LSP, Tree-sitter, and DAP without rewriting
+  source, so a consumer built on this table has an unambiguous contract to hold;
 - unusual but valid bytes stay inspectable content rather than being rejected or
   normalized away;
-- CRLF gains exact content/separator ownership, which strict protocol mapping and
+- CRLF has exact content/separator ownership, which strict protocol mapping and
   byte ranges both require.
+
+True only once the migrations below land — **not** yet:
+
+- Unicode separators inside strings and comments will stop shifting editor,
+  debugger, parser, and Tree-sitter rows differently. **Today they still do** on
+  the Rope-backed surfaces: a `U+2028` in an ordinary Perl string still moves a
+  row for `PositionMapper` and `LineStartsCache::new_rope`, which
+  `legacy_ropey_only_separator_divergence_is_pinned` asserts as current fact.
+
+That distinction is deliberate. This ADR accepts a ruling and pins the gap
+between it and the shipped legacy surfaces; it does not close that gap, and a
+downstream consumer reading only the ruling would otherwise mis-predict current
+row behavior on any Rope-backed path.
 
 Costs and follow-up obligations:
 
