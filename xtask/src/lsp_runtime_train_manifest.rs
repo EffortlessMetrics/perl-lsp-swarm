@@ -58,8 +58,14 @@ pub const PINNED_CANONICAL_DIGEST: &str =
 /// authority, so a manifest that calls itself complete fails closed here.
 const REQUIRED_POPULATION_STATUS: &str = "schema_fixture_subset";
 
-/// Roles whose nodes are never selected as work.
-const NON_SELECTABLE_PROPOSITION_PREFIX: &str = "none";
+/// A non-selectable node states no proposition. Matched exactly, or as the
+/// `none:` prefix that introduces the reason — a bare `starts_with("none")`
+/// would read "nonsense implementation" as absent and reject a legitimate
+/// proposition beginning "nonetheless".
+fn states_no_proposition(proposition: &str) -> bool {
+    let trimmed = proposition.trim();
+    trimmed == "none" || trimmed.starts_with("none:")
+}
 
 // ---------------------------------------------------------------------------
 // Code-owned v1 vocabularies. A cardinality check lets a repinned manifest
@@ -1008,10 +1014,7 @@ fn validate_nodes(
 
         if role.selectable {
             if node.one_pr_proposition.trim().is_empty()
-                || node
-                    .one_pr_proposition
-                    .trim_start()
-                    .starts_with(NON_SELECTABLE_PROPOSITION_PREFIX)
+                || states_no_proposition(&node.one_pr_proposition)
             {
                 bail!(
                     "node {id} is selectable but states no one-PR proposition; a selectable node \
@@ -1031,8 +1034,7 @@ fn validate_nodes(
                 bail!("node {id} omits its stop boundary");
             }
         } else {
-            if !node.one_pr_proposition.trim_start().starts_with(NON_SELECTABLE_PROPOSITION_PREFIX)
-            {
+            if !states_no_proposition(&node.one_pr_proposition) {
                 bail!(
                     "node {id} has non-selectable role '{}' but states a one-PR proposition; \
                      a controller, decision, external action, or historical node is never an \

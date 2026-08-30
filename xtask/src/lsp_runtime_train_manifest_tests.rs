@@ -623,6 +623,31 @@ fn lsp_runtime_train_extra_edge_kind_is_rejected() -> Result<()> {
 }
 
 #[test]
+fn lsp_runtime_train_proposition_prefix_is_matched_exactly() -> Result<()> {
+    // "nonsense ..." begins with "none" but is a real proposition; a prefix
+    // match would misclassify this controller as correctly stating none.
+    let mut value = real_value()?;
+    set_node_field(
+        &mut value,
+        "CTRL10360",
+        "one_pr_proposition",
+        Value::String("nonsense implementation of the control plane".into()),
+    )?;
+    assert_rejected(&value, "never an implementation leaf")?;
+
+    // The mirror: a selectable node whose proposition merely starts with
+    // "nonetheless" must not be read as stating none.
+    let mut value = real_value()?;
+    set_node_field(
+        &mut value,
+        "GRAPH11037",
+        "one_pr_proposition",
+        Value::String("nonetheless populate every current node under the contract".into()),
+    )?;
+    validate(&value)
+}
+
+#[test]
 fn lsp_runtime_train_self_supersession_is_rejected() -> Result<()> {
     // Self-reference satisfies reciprocity trivially, so it must fail earlier.
     let mut value = real_value()?;
