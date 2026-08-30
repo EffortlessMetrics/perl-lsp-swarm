@@ -48,6 +48,13 @@ STRAY_MATCH_ARM_RE = re.compile(r'"(?P<name>[^"\n]*)"\s*(?:if\b[^=\n]*?)?=>')
 REQUEST_CLASSES = {"standard", "extension"}
 
 MACRO_DEFINITION_RE = re.compile(r"\bmacro_rules\s*!\s*dap_request_table\b")
+ANY_MACRO_DEFINITION_RE = re.compile(r"\bmacro_rules\s*!\s*(?P<name>[A-Za-z_][A-Za-z0-9_]*)")
+# Only these macros may be defined in the dispatch source. A new generator
+# macro here could expand into routing the named-function checks never see,
+# so the set is closed and a new one has to be reviewed in deliberately.
+PERMITTED_MACRO_DEFINITIONS = frozenset(
+    {"dap_request_class", "dap_dispatch_call", "dap_request_table"}
+)
 DISPATCH_FN_RE = re.compile(r"\bfn\s+dispatch_request\b")
 # Constructs that could introduce a route inside the generated dispatch body.
 # The body is a fixed, tiny shape, so this is an allow-list check rather than
@@ -80,6 +87,10 @@ def _normalise_tokens(text: str) -> str:
 
 
 STRING_CONTENT_MASK = "\x01"
+# A Rust character literal, including escapes (`'\''`, `'\u{1F600}'`). A
+# lifetime (`'static`, `'a`) has no closing quote and must not match, or the
+# scanner would treat the rest of the file as literal content.
+CHAR_LITERAL_RE = re.compile(r"'(?:\\.[^']*|[^'\\])'")
 
 
 def _raw_string_end(text: str, index: int) -> tuple[int, int] | None:
@@ -141,6 +152,21 @@ def scan_rust_source(text: str) -> tuple[str, str]:
             emit(text[close:terminator_end])
             index = terminator_end
             continue
+
+        if char == "'":
+            literal = CHAR_LITERAL_RE.match(text, index)
+            if literal is not None:
+                # `'"'` would otherwise open a string and swallow the rest of
+                # the file; a lifetime falls through and is emitted as-is.
+                body_start, body_end = index + 1, literal.end() - 1
+                emit(text[index:body_start])
+                emit(
+                    text[body_start:body_end],
+                    STRING_CONTENT_MASK * (body_end - body_start),
+                )
+                emit(text[body_end : literal.end()])
+                index = literal.end()
+                continue
 
         if char == '"':
             emit(char)
@@ -233,6 +259,17 @@ def validate_generated_dispatch(text: str, masked: str) -> None:
     definition, and its body must contain nothing capable of routing beyond
     the row repetition and the unknown-command fallback.
     """
+    defined_macros = {
+        match.group("name") for match in ANY_MACRO_DEFINITION_RE.finditer(masked)
+    }
+    unexpected = sorted(defined_macros - PERMITTED_MACRO_DEFINITIONS)
+    if unexpected:
+        raise AuthorityError(
+            f"unexpected macro definitions in the dispatch source: {unexpected}; "
+            "a generator macro here could expand into routing this gate does "
+            "not analyse, so new ones must be reviewed in explicitly"
+        )
+
     definitions = list(MACRO_DEFINITION_RE.finditer(masked))
     if len(definitions) != 1:
         raise AuthorityError(

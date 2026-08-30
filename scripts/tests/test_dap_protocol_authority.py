@@ -910,6 +910,61 @@ class DapProtocolAuthorityTests(unittest.TestCase):
             "ghost", [row["command"] for row in self._production_rows()["request_rows"]]
         )
 
+    def test_char_literal_does_not_desync_the_scanner(self) -> None:
+        # `'"'` opens a string to a naive scanner and swallows the rest of
+        # the file; a lifetime must still pass through untouched.
+        # The literal is placed *before* the table: a desynced scanner masks
+        # everything after it, so the table itself disappears.
+        source = "const QUOTE: char = '\"';\n"
+        source += "fn lifetimes<'a>(x: &'a str) -> &'static str { x }\n"
+        source += self._render_table(("initialize", "inlineValues"))
+        self._write_production(dispatch_source=source)
+        self.assertEqual(
+            ["initialize", "inlineValues"],
+            [row["command"] for row in self._production_rows()["request_rows"]],
+        )
+
+    def test_byte_string_decoys_do_not_enter_the_inventory(self) -> None:
+        source = self._render_table(("initialize", "inlineValues"))
+        source += 'const B: &[u8] = b"standard \\"ghost\\" => handle_ghost(arguments),";\n'
+        source += 'const R: &[u8] = br#"  "ghost" => self.handle_ghost(x),  "#;\n'
+        self._write_production(dispatch_source=source)
+        self.assertNotIn(
+            "ghost", [row["command"] for row in self._production_rows()["request_rows"]]
+        )
+
+    def test_formatted_macro_decoy_does_not_enter_the_inventory(self) -> None:
+        source = self._render_table(("initialize", "inlineValues"))
+        source += 'fn describe(n: &str) -> String { format!("{} => handle_{}", n, n) }\n'
+        self._write_production(dispatch_source=source)
+        self.assertEqual(
+            ["initialize", "inlineValues"],
+            [row["command"] for row in self._production_rows()["request_rows"]],
+        )
+
+    def test_a_second_generator_macro_fails_closed(self) -> None:
+        # A new macro in this file could expand into routing the named
+        # dispatch checks never see, so the defined set is closed.
+        source = self._render_table(("initialize", "inlineValues"))
+        source += (
+            "macro_rules! vendor_routes {\n"
+            "    () => { impl DebugAdapter { fn vendor(&self) {} } };\n"
+            "}\n"
+        )
+        self._write_production(dispatch_source=source)
+        self.assertAuthorityError(self._production_rows)
+
+    def test_cfg_gated_row_fails_closed(self) -> None:
+        # A conditionally-compiled route is not representable as a row today;
+        # it must fail closed rather than silently drop out of the inventory.
+        source = self._render_table(
+            ("initialize", "inlineValues"),
+            extra_body='    #[cfg(feature = "vendor")]\n'
+            '    standard "vendorPing" => handle_vendor_ping(arguments),\n',
+        )
+        self._write_production(dispatch_source=source)
+        self.assertAuthorityError(self._production_rows)
+
     def test_raw_string_containing_comment_marker_is_not_code(self) -> None:
         source = self._render_table(("initialize", "inlineValues"))
         source += 'const DECOY: &str = r"// not a comment";\n'
