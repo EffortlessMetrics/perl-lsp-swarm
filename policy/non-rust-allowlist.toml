@@ -1859,6 +1859,48 @@ created = "2026-08-16"
 review_after = "2026-11-16"
 
 [[allow]]
+id = "non-rust-open-vsx-public-state-fixtures"
+glob = "fixtures/open_vsx_public_state/*.json"
+kind = "test_fixture"
+language = "json"
+surface = "release"
+classification = "test"
+owner = "release/ci"
+reason = "Synthetic Open VSX probe observations pinning classifier behaviour for #9923 — in particular that provider failure, instrument gaps and contradictory answers never collapse into proven absence. Uniformly shaped inputs to one closed schema, conformance-validated by the module's own suite, so per-fixture rows would add no review value while blocking every PR that adds a case. None is a recorded observation of the live registry; see the directory README."
+covered_by = [
+  "cargo test -p xtask --lib open_vsx_public_state --locked",
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-30"
+review_after = "2026-11-30"
+
+[[allow]]
+id = "non-rust-open-vsx-public-state-schema"
+path = "schemas/open_vsx_public_state.v1.schema.json"
+kind = "release_contract"
+language = "json"
+surface = "release"
+classification = "config"
+owner = "release/ci"
+reason = "Closed JSON Schema for the durable read-only Open VSX public-state receipt (#9923, incident #9129). Defines the state vocabulary #9132 and #9138 consume instead of each declaring another Open VSX availability taxonomy."
+covered_by = ["cargo test -p xtask --lib open_vsx_public_state --locked"]
+created = "2026-08-30"
+review_after = "2026-11-30"
+
+[[allow]]
+id = "non-rust-open-vsx-public-state-observation-schema"
+path = "schemas/open_vsx_public_state_observation.v1.schema.json"
+kind = "release_contract"
+language = "json"
+surface = "release"
+classification = "config"
+owner = "release/ci"
+reason = "Closed JSON Schema for the bounded read-only Open VSX probe observation (#9923). Its closed property vocabulary is the independent evidence path proving a conforming observation cannot carry a response body, request header, credential, or maintainer-local path."
+covered_by = ["cargo test -p xtask --lib open_vsx_public_state --locked"]
+created = "2026-08-30"
+review_after = "2026-11-30"
+
+[[allow]]
 id = "non-rust-native-neovim-train-schema"
 path = "schemas/native_neovim_train.v1.schema.json"
 kind = "release_metadata"

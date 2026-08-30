@@ -1408,6 +1408,18 @@ enum Commands {
     /// Run version-sync checks from `perl-ci-hygiene`.
     CheckVersionSync,
 
+    /// Classify a read-only Open VSX public-state observation (#9923).
+    #[command(name = "open-vsx-public-state")]
+    OpenVsxPublicState {
+        /// Bounded read-only observation JSON.
+        #[arg(long)]
+        input: PathBuf,
+
+        /// Receipt JSON retained for every classified state.
+        #[arg(long, default_value = "target/receipts/open-vsx-public-state.json")]
+        out: PathBuf,
+    },
+
     /// Classify an exact-SHA publication-drift observation.
     #[command(name = "publication-drift")]
     PublicationDrift {
@@ -5659,6 +5671,9 @@ fn run_cli(cli: Cli) -> Result<()> {
             }
         }
         Commands::CheckVersionSync => check_version_sync::run(),
+        Commands::OpenVsxPublicState { input, out } => {
+            xtask::open_vsx_public_state::run_with_paths(input, out)
+        }
         Commands::PublicationDrift { input, repo_root, out } => {
             xtask::publication_drift::run_with_paths(input, repo_root, out)
         }

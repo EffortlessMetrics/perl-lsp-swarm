@@ -1,0 +1,104 @@
+//! Read-only Open VSX public-state probe and receipt (`#9923`, incident `#9129`).
+//!
+//! This tool answers one question and refuses to answer any other: what is the
+//! *current* public state of one exact Open VSX extension identity? It consumes
+//! a bounded observation of six independent registry surfaces and emits a
+//! durable `open_vsx_public_state.v1` receipt classifying that identity.
+//!
+//! Two properties are deliberate.
+//!
+//! **Nothing here can mutate a registry.** The sanctioned request set lives in
+//! [`plan`]: `GET`-only, single-origin, credential-free. Classification refuses
+//! any observation addressing a URL the plan did not derive, so the receipt and
+//! the probe describe the same requests. No publisher credential is read,
+//! accepted, or representable.
+//!
+//! **A failure to observe is never proof of absence.** Transport errors, budget
+//! overruns, rate limits, schema drift and contradictory answers all resolve to
+//! `provider_not_proven`. Reaching `extension_missing` requires three
+//! independent affirmative `404`s while the namespace still resolves.
+//!
+//! The receipt is the domain truth. The process exit status is an operational
+//! convenience for callers that want a non-zero signal when the identity is not
+//! provably intact; it is not the classification.
+
+mod classify;
+mod model;
+mod plan;
+
+#[cfg(test)]
+mod plan_binding_tests;
+#[cfg(test)]
+mod schema_tests;
+#[cfg(test)]
+mod test_support;
+#[cfg(test)]
+mod tests;
+
+use crate::receipt_output::{ensure_safe_output, prepare_output_parent, write_receipt};
+use clap::Parser;
+use classify::classify;
+use color_eyre::eyre::{Result, WrapErr, bail};
+use model::{Observation, PublicState};
+use std::fs;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+
+/// Label used in receipt-output diagnostics for this probe.
+const SUBJECT: &str = "open vsx public state";
+
+#[derive(Debug, Parser)]
+#[command(about = "Classify a read-only Open VSX public-state observation")]
+struct Args {
+    /// Bounded read-only observation JSON.
+    #[arg(long)]
+    input: PathBuf,
+
+    /// Receipt JSON, written for every classified state including blocking ones.
+    #[arg(long, default_value = "target/receipts/open-vsx-public-state.json")]
+    out: PathBuf,
+}
+
+pub fn run_from_env() -> Result<()> {
+    color_eyre::install()?;
+    let args = Args::parse();
+    run_with_paths(args.input, args.out)
+}
+
+pub fn run_with_paths(input: PathBuf, out: PathBuf) -> Result<()> {
+    let observation = load_observation(&input)?;
+    prepare_output_parent(SUBJECT, &out)?;
+    ensure_safe_output(SUBJECT, &out, &[input.as_path()])?;
+
+    let receipt = classify(observation);
+    // The receipt is persisted before any exit decision: a durable artifact must
+    // exist for every state, and a write failure must never leave a caller with
+    // a green summary and no evidence.
+    write_receipt(SUBJECT, &out, &receipt)?;
+
+    let identity = &receipt.identity.extension_id;
+    match receipt.state {
+        PublicState::AvailableExact => {
+            let stdout = std::io::stdout();
+            let mut handle = stdout.lock();
+            writeln!(
+                handle,
+                "open-vsx-public-state: {identity} is available with exact public bytes at version {}",
+                receipt.subject_version.as_deref().unwrap_or("not-proven")
+            )?;
+            Ok(())
+        }
+        state => bail!(
+            "open-vsx-public-state: {identity} classified {}; see {}",
+            state.key(),
+            out.display()
+        ),
+    }
+}
+
+fn load_observation(path: &Path) -> Result<Observation> {
+    let raw = fs::read_to_string(path)
+        .wrap_err_with(|| format!("reading Open VSX observation {}", path.display()))?;
+    serde_json::from_str(&raw)
+        .wrap_err_with(|| format!("parsing Open VSX observation {}", path.display()))
+}

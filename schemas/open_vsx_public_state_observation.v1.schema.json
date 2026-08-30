@@ -1,0 +1,378 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/EffortlessMetrics/perl-lsp-swarm/schemas/open_vsx_public_state_observation.v1.schema.json",
+  "title": "open_vsx_public_state_observation.v1",
+  "description": "Read-only observation of one Open VSX extension identity, recorded by the bounded probe defined in xtask::open_vsx_public_state. Six registry surfaces are observed independently and never collapsed into one another. The document carries transport facts and parsed identity facts only: it has no field able to carry a response body, a request header, a credential, or a maintainer-local path, so a conforming observation cannot leak one.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "observed_at",
+    "registry",
+    "identity",
+    "instrument",
+    "expected",
+    "cells"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "open_vsx_public_state_observation.v1"
+    },
+    "observed_at": {
+      "description": "RFC 3339 instant at which the probe ran. Historical publication evidence is never a substitute for this.",
+      "type": "string",
+      "minLength": 1
+    },
+    "registry": {
+      "const": "open_vsx"
+    },
+    "identity": {
+      "$ref": "#/$defs/identity"
+    },
+    "instrument": {
+      "$ref": "#/$defs/instrument"
+    },
+    "expected": {
+      "$ref": "#/$defs/expected"
+    },
+    "cells": {
+      "$ref": "#/$defs/cells"
+    }
+  },
+  "$defs": {
+    "identity": {
+      "description": "The exact registry identity under observation. A different namespace or name is a different subject and can never satisfy this one.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["namespace", "extension"],
+      "properties": {
+        "namespace": {
+          "$ref": "#/$defs/registry_segment"
+        },
+        "extension": {
+          "$ref": "#/$defs/registry_segment"
+        }
+      }
+    },
+    "registry_segment": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+    },
+    "instrument": {
+      "description": "Exact identity of the probe implementation that produced this observation. Incomplete instrument evidence is a not-proven input, never proof of absence.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version", "source_ref"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source_ref": {
+          "description": "Repository ref or commit identifying the probe source.",
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "expected": {
+      "description": "Historical publication references and the version/digest identity a restoration is expected to preserve. These are inputs to comparison only: no entry here can raise the classified state on its own.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["versions", "publication_refs"],
+      "properties": {
+        "versions": {
+          "description": "Expected published versions, most significant first. The first entry is the subject version for the versioned-file cell.",
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/expected_version"
+          }
+        },
+        "publication_refs": {
+          "description": "Historical workflow, run, or job references. Retained as historical evidence and never read by classification.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "expected_version": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "vsix_sha256"],
+      "properties": {
+        "version": {
+          "$ref": "#/$defs/version_string"
+        },
+        "vsix_sha256": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/sha256"
+            }
+          ]
+        }
+      }
+    },
+    "version_string": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[0-9A-Za-z][0-9A-Za-z.+-]*$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "cells": {
+      "description": "Every registry surface is observed separately. A missing gallery listing and an unretrievable package file are different facts and must stay distinguishable.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "listing",
+        "search",
+        "namespace_metadata",
+        "extension_metadata",
+        "version_rows",
+        "versioned_file"
+      ],
+      "properties": {
+        "listing": {
+          "$ref": "#/$defs/listing_cell"
+        },
+        "search": {
+          "$ref": "#/$defs/search_cell"
+        },
+        "namespace_metadata": {
+          "$ref": "#/$defs/namespace_metadata_cell"
+        },
+        "extension_metadata": {
+          "$ref": "#/$defs/extension_metadata_cell"
+        },
+        "version_rows": {
+          "$ref": "#/$defs/version_rows_cell"
+        },
+        "versioned_file": {
+          "$ref": "#/$defs/versioned_file_cell"
+        }
+      }
+    },
+    "transport": {
+      "description": "Bounded transport facts for one request. The probe declares a byte budget, a redirect budget, and a timeout; exceeding any of them is an instrument outcome, never proof about the extension.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "url",
+        "method",
+        "outcome",
+        "status",
+        "redirects",
+        "response_bytes",
+        "truncated",
+        "error_kind"
+      ],
+      "properties": {
+        "url": {
+          "description": "Absolute request URL. It must equal the URL the probe plan derives for this cell, so an observation cannot be pointed at another host or carry query or userinfo material of its own.",
+          "type": "string",
+          "minLength": 1
+        },
+        "method": {
+          "const": "GET"
+        },
+        "outcome": {
+          "enum": ["http_response", "transport_error", "not_attempted"]
+        },
+        "status": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "integer",
+              "minimum": 100,
+              "maximum": 599
+            }
+          ]
+        },
+        "redirects": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "response_bytes": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "integer",
+              "minimum": 0
+            }
+          ]
+        },
+        "truncated": {
+          "description": "True when the response exceeded the declared byte budget. A truncated response can never prove byte identity.",
+          "type": "boolean"
+        },
+        "error_kind": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "enum": [
+                "timeout",
+                "dns",
+                "tls",
+                "connect",
+                "body_limit_exceeded",
+                "redirect_limit_exceeded",
+                "rate_limited",
+                "schema_drift",
+                "parse_error"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "listing_cell": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["transport"],
+      "properties": {
+        "transport": {
+          "$ref": "#/$defs/transport"
+        }
+      }
+    },
+    "search_cell": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["transport", "matched_identity"],
+      "properties": {
+        "transport": {
+          "$ref": "#/$defs/transport"
+        },
+        "matched_identity": {
+          "description": "Whether the search result set contained this exact namespace and name. Discoverability is reported but never raises the classified state on its own.",
+          "type": ["boolean", "null"]
+        }
+      }
+    },
+    "namespace_metadata_cell": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["transport", "namespace_present"],
+      "properties": {
+        "transport": {
+          "$ref": "#/$defs/transport"
+        },
+        "namespace_present": {
+          "type": ["boolean", "null"]
+        }
+      }
+    },
+    "extension_metadata_cell": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["transport", "identity_matches", "versions"],
+      "properties": {
+        "transport": {
+          "$ref": "#/$defs/transport"
+        },
+        "identity_matches": {
+          "description": "Whether the returned record names this exact namespace and extension.",
+          "type": ["boolean", "null"]
+        },
+        "versions": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/version_string"
+              }
+            }
+          ]
+        }
+      }
+    },
+    "version_rows_cell": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["transport", "versions"],
+      "properties": {
+        "transport": {
+          "$ref": "#/$defs/transport"
+        },
+        "versions": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/version_string"
+              }
+            }
+          ]
+        }
+      }
+    },
+    "versioned_file_cell": {
+      "description": "The versioned package endpoint, observed independently of the gallery listing. Public bytes are recorded only when the exact file was retrieved in full.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["transport", "version", "sha256", "byte_length"],
+      "properties": {
+        "transport": {
+          "$ref": "#/$defs/transport"
+        },
+        "version": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/version_string"
+            }
+          ]
+        },
+        "sha256": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/sha256"
+            }
+          ]
+        },
+        "byte_length": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "integer",
+              "minimum": 0
+            }
+          ]
+        }
+      }
+    }
+  }
+}

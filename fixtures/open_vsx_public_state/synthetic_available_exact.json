@@ -1,0 +1,112 @@
+{
+  "schema_version": "open_vsx_public_state_observation.v1",
+  "observed_at": "2026-08-14T09:12:00Z",
+  "registry": "open_vsx",
+  "identity": {
+    "namespace": "EffortlessMetrics",
+    "extension": "perl-lsp-rs"
+  },
+  "instrument": {
+    "name": "open-vsx-public-state-fixture",
+    "version": "1",
+    "source_ref": "#9923"
+  },
+  "expected": {
+    "versions": [
+      {
+        "version": "0.17.0",
+        "vsix_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1"
+      }
+    ],
+    "publication_refs": [
+      "https://github.com/EffortlessMetrics/perl-lsp-swarm/actions/runs/0000000000",
+      "Publish VSCode Extension / Publish Open VSX (2026-06-28) reported success"
+    ]
+  },
+  "cells": {
+    "listing": {
+      "transport": {
+        "url": "https://open-vsx.org/extension/EffortlessMetrics/perl-lsp-rs",
+        "method": "GET",
+        "outcome": "http_response",
+        "status": 200,
+        "redirects": 0,
+        "response_bytes": 8192,
+        "truncated": false,
+        "error_kind": null
+      }
+    },
+    "search": {
+      "transport": {
+        "url": "https://open-vsx.org/api/-/search?query=perl-lsp-rs&size=50",
+        "method": "GET",
+        "outcome": "http_response",
+        "status": 200,
+        "redirects": 0,
+        "response_bytes": 2048,
+        "truncated": false,
+        "error_kind": null
+      },
+      "matched_identity": true
+    },
+    "namespace_metadata": {
+      "transport": {
+        "url": "https://open-vsx.org/api/EffortlessMetrics",
+        "method": "GET",
+        "outcome": "http_response",
+        "status": 200,
+        "redirects": 0,
+        "response_bytes": 512,
+        "truncated": false,
+        "error_kind": null
+      },
+      "namespace_present": true
+    },
+    "extension_metadata": {
+      "transport": {
+        "url": "https://open-vsx.org/api/EffortlessMetrics/perl-lsp-rs",
+        "method": "GET",
+        "outcome": "http_response",
+        "status": 200,
+        "redirects": 0,
+        "response_bytes": 4096,
+        "truncated": false,
+        "error_kind": null
+      },
+      "identity_matches": true,
+      "versions": [
+        "0.17.0"
+      ]
+    },
+    "version_rows": {
+      "transport": {
+        "url": "https://open-vsx.org/api/EffortlessMetrics/perl-lsp-rs/versions",
+        "method": "GET",
+        "outcome": "http_response",
+        "status": 200,
+        "redirects": 0,
+        "response_bytes": 1024,
+        "truncated": false,
+        "error_kind": null
+      },
+      "versions": [
+        "0.17.0"
+      ]
+    },
+    "versioned_file": {
+      "transport": {
+        "url": "https://open-vsx.org/api/EffortlessMetrics/perl-lsp-rs/0.17.0/file/EffortlessMetrics.perl-lsp-rs-0.17.0.vsix",
+        "method": "GET",
+        "outcome": "http_response",
+        "status": 200,
+        "redirects": 0,
+        "response_bytes": 9000000,
+        "truncated": false,
+        "error_kind": null
+      },
+      "version": "0.17.0",
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1",
+      "byte_length": 9000000
+    }
+  }
+}
