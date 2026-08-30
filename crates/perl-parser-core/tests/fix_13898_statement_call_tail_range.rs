@@ -69,6 +69,59 @@ fn assert_variable(node: &Node, name: &str, context: &str) {
     );
 }
 
+fn assert_bareword_call_route(source: &str, args_len: usize) {
+    assert_clean_parse(source);
+    let ast = parse(source);
+    let expression = expression_statement(&ast);
+    let NodeKind::Binary { op, left, right } = &expression.kind else {
+        panic!("expected outer range for `{source}`, got {:?}", expression.kind);
+    };
+    assert_eq!(op, "..", "expected range outer for `{source}`:\n{}", ast.to_sexp());
+    assert_variable(right, "c", source);
+
+    let NodeKind::Binary { op, left: call, right: rhs } = &left.kind else {
+        panic!("expected nested || for `{source}`, got {:?}", left.kind);
+    };
+    assert_eq!(op, "||", "unexpected nested operator for `{source}`:\n{}", ast.to_sexp());
+    assert_variable(rhs, "b", source);
+    if args_len == 0 {
+        assert!(
+            matches!(&call.kind, NodeKind::Identifier { name } if name == "foo"),
+            "expected `foo` bareword for {source}, got {:?}",
+            call.kind
+        );
+    } else {
+        assert_function_call(call, "foo", args_len, source);
+    }
+}
+
+fn assert_list_operator_route() {
+    let source = "print $x || $b .. $c;";
+    assert_clean_parse(source);
+    let ast = parse(source);
+    let expression = expression_statement(&ast);
+    let NodeKind::FunctionCall { name, args } = &expression.kind else {
+        panic!("expected print call for `{source}`, got {:?}", expression.kind);
+    };
+    assert_eq!(name, "print", "unexpected callee for `{source}`:\n{}", ast.to_sexp());
+    let [argument] = args.as_slice() else {
+        panic!("expected one print argument for `{source}`, got {:?}", args);
+    };
+
+    let NodeKind::Binary { op, left, right } = &argument.kind else {
+        panic!("expected outer range for `{source}`, got {:?}", argument.kind);
+    };
+    assert_eq!(op, "..", "expected range outer for `{source}`:\n{}", ast.to_sexp());
+    assert_variable(right, "c", source);
+
+    let NodeKind::Binary { op, left: nested_left, right: rhs } = &left.kind else {
+        panic!("expected nested || for `{source}`, got {:?}", left.kind);
+    };
+    assert_eq!(op, "||", "unexpected nested operator for `{source}`:\n{}", ast.to_sexp());
+    assert_variable(nested_left, "x", source);
+    assert_variable(rhs, "b", source);
+}
+
 fn assert_indirect_call_route() {
     let source = "close FH || $b .. $c;";
     assert_clean_parse(source);
@@ -130,6 +183,17 @@ fn statement_call_tail_range_reaches_each_call_site() {
     assert_range_with_nested_symbolic("ref $x .. $b && $c;", ("ref", 1), "right", "&&");
     assert_range_with_nested_symbolic("lc $x | $b .. $c;", ("lc", 1), "left", "|");
     assert_indirect_call_route();
+}
+
+/// The unknown-lowercase-bareword and list-operator statement forms reach the same
+/// dispatch but do not depend on the range rung's position: each shape below parses
+/// identically when `parse_range_with` is moved back after equality, so these are
+/// controls on neighboring routes rather than proof of the reorder.
+#[test]
+fn statement_call_tail_range_neighboring_routes_are_unchanged() {
+    assert_bareword_call_route("foo $x || $b .. $c;", 1);
+    assert_bareword_call_route("foo || $b .. $c;", 0);
+    assert_list_operator_route();
 }
 
 #[test]
