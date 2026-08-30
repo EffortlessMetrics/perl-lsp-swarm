@@ -1,5 +1,6 @@
 use super::MAX_INCREMENTAL_EDIT_BATCH;
 use perl_lexer::{PerlLexer, TokenType};
+use perl_parser_core::syntax::source_context::SourceRangeClassification;
 use perl_parser_core::{
     SourceRegionIndex, SourceRegionKind,
     ast::{Node, SourceLocation},
@@ -88,8 +89,8 @@ impl WhitespaceEditMap {
                 return None;
             }
 
-            if !old_regions.range_fully_within(old_start, old_end, &[SourceRegionKind::Code])
-                || !new_regions.range_fully_within(new_start, new_end, &[SourceRegionKind::Code])
+            if !code_range_or_boundary(&old_regions, old_start, old_end)
+                || !code_range_or_boundary(&new_regions, new_start, new_end)
             {
                 return None;
             }
@@ -161,6 +162,19 @@ impl WhitespaceEditMap {
         }
 
         shifted_position(position, cumulative_shift)
+    }
+}
+
+fn code_range_or_boundary(index: &SourceRegionIndex, start: usize, end: usize) -> bool {
+    match index.classify_range_checked(start, end) {
+        SourceRangeClassification::Proven { kind } => kind == SourceRegionKind::Code,
+        SourceRangeClassification::EmptyBoundary { left, right } => {
+            left.is_none_or(|kind| kind == SourceRegionKind::Code)
+                && right.is_none_or(|kind| kind == SourceRegionKind::Code)
+        }
+        SourceRangeClassification::Ambiguous
+        | SourceRangeClassification::InvalidUtf8Boundary
+        | SourceRangeClassification::OutOfBounds => false,
     }
 }
 
@@ -317,95 +331,11 @@ mod tests {
 
     #[test]
     fn maps_mid_file_insertion_selectively() -> TestResult {
-        let edits = edit_set([edit(2, 2, 3)]);
-        let map = WhitespaceEditMap::try_new("a b", "a  b", &edits)
+        let edits = edit_set([edit(3, 3, 4)]);
+        let map = WhitespaceEditMap::try_new("my $a", "my  $a", &edits)
             .ok_or("exact whitespace insertion should be admitted")?;
         let root = Node::new(
-            NodeKind::Program { statements: vec![leaf("a", 0, 1), leaf("b", 2, 3)] },
-            loc(0, 3),
-        );
-
-        let mapped = map.clone_tree(&root).ok_or("location mapping unexpectedly failed")?;
-        let statements = match &mapped.kind {
-            NodeKind::Program { statements } => statements,
-            other => return Err(format!("expected Program, got {}", other.kind_name()).into()),
-        };
-        assert_eq!(mapped.location, loc(0, 4));
-        assert_eq!(statements[0].location, loc(0, 1));
-        assert_eq!(statements[1].location, loc(3, 4));
-        Ok(())
-    }
-
-    #[test]
-    fn maps_whitespace_deletion_selectively() -> TestResult {
-        let edits = edit_set([edit(2, 3, 2)]);
-        let map = WhitespaceEditMap::try_new("a  b", "a b", &edits)
-            .ok_or("exact whitespace deletion should be admitted")?;
-        let root = Node::new(
-            NodeKind::Program { statements: vec![leaf("a", 0, 1), leaf("b", 3, 4)] },
-            loc(0, 4),
-        );
-
-        let mapped = map.clone_tree(&root).ok_or("location mapping unexpectedly failed")?;
-        let statements = match &mapped.kind {
-            NodeKind::Program { statements } => statements,
-            other => return Err(format!("expected Program, got {}", other.kind_name()).into()),
-        };
-        assert_eq!(mapped.location, loc(0, 3));
-        assert_eq!(statements[0].location, loc(0, 1));
-        assert_eq!(statements[1].location, loc(2, 3));
-        Ok(())
-    }
-
-    #[test]
-    fn maps_progressive_multi_edit_coordinates() -> TestResult {
-        let edits = edit_set([edit(0, 0, 1), edit(3, 3, 4), edit(5, 5, 6)]);
-        let map = WhitespaceEditMap::try_new("a b", " a  b ", &edits)
-            .ok_or("coherent progressive whitespace edits should be admitted")?;
-        let root = Node::new(
-            NodeKind::Program { statements: vec![leaf("a", 0, 1), leaf("b", 2, 3)] },
-            loc(0, 3),
-        );
-
-        let mapped = map.clone_tree(&root).ok_or("location mapping unexpectedly failed")?;
-        let statements = match &mapped.kind {
-            NodeKind::Program { statements } => statements,
-            other => return Err(format!("expected Program, got {}", other.kind_name()).into()),
-        };
-        assert_eq!(mapped.location, loc(0, 5));
-        assert_eq!(statements[0].location, loc(1, 2));
-        assert_eq!(statements[1].location, loc(4, 5));
-        Ok(())
-    }
-
-    #[test]
-    fn accumulates_adjacent_insertions_at_one_boundary() -> TestResult {
-        let edits = edit_set([edit(2, 2, 3), edit(3, 3, 4)]);
-        let map = WhitespaceEditMap::try_new("a b", "a   b", &edits)
-            .ok_or("adjacent progressive insertions should be admitted")?;
-        let root = Node::new(
-            NodeKind::Program { statements: vec![leaf("a", 0, 1), leaf("b", 2, 3)] },
-            loc(0, 3),
-        );
-
-        let mapped = map.clone_tree(&root).ok_or("location mapping unexpectedly failed")?;
-        let statements = match &mapped.kind {
-            NodeKind::Program { statements } => statements,
-            other => return Err(format!("expected Program, got {}", other.kind_name()).into()),
-        };
-        assert_eq!(mapped.location, loc(0, 5));
-        assert_eq!(statements[0].location, loc(0, 1));
-        assert_eq!(statements[1].location, loc(4, 5));
-        Ok(())
-    }
-
-    #[test]
-    fn admits_adjacent_progressive_deletions() -> TestResult {
-        let edits = edit_set([edit(1, 2, 1), edit(1, 2, 1)]);
-        let map = WhitespaceEditMap::try_new("a   b", "a b", &edits)
-            .ok_or("adjacent progressive deletions should be admitted")?;
-        let root = Node::new(
-            NodeKind::Program { statements: vec![leaf("a", 0, 1), leaf("b", 4, 5)] },
+            NodeKind::Program { statements: vec![leaf("my", 0, 2), leaf("$a", 3, 5)] },
             loc(0, 5),
         );
 
@@ -414,9 +344,93 @@ mod tests {
             NodeKind::Program { statements } => statements,
             other => return Err(format!("expected Program, got {}", other.kind_name()).into()),
         };
-        assert_eq!(mapped.location, loc(0, 3));
-        assert_eq!(statements[0].location, loc(0, 1));
-        assert_eq!(statements[1].location, loc(2, 3));
+        assert_eq!(mapped.location, loc(0, 6));
+        assert_eq!(statements[0].location, loc(0, 2));
+        assert_eq!(statements[1].location, loc(4, 6));
+        Ok(())
+    }
+
+    #[test]
+    fn maps_whitespace_deletion_selectively() -> TestResult {
+        let edits = edit_set([edit(3, 4, 3)]);
+        let map = WhitespaceEditMap::try_new("my  $a", "my $a", &edits)
+            .ok_or("exact whitespace deletion should be admitted")?;
+        let root = Node::new(
+            NodeKind::Program { statements: vec![leaf("my", 0, 2), leaf("$a", 4, 6)] },
+            loc(0, 6),
+        );
+
+        let mapped = map.clone_tree(&root).ok_or("location mapping unexpectedly failed")?;
+        let statements = match &mapped.kind {
+            NodeKind::Program { statements } => statements,
+            other => return Err(format!("expected Program, got {}", other.kind_name()).into()),
+        };
+        assert_eq!(mapped.location, loc(0, 5));
+        assert_eq!(statements[0].location, loc(0, 2));
+        assert_eq!(statements[1].location, loc(3, 5));
+        Ok(())
+    }
+
+    #[test]
+    fn maps_progressive_multi_edit_coordinates() -> TestResult {
+        let edits = edit_set([edit(0, 0, 1), edit(3, 3, 4), edit(7, 7, 8)]);
+        let map = WhitespaceEditMap::try_new("my $a", " my  $a ", &edits)
+            .ok_or("coherent progressive whitespace edits should be admitted")?;
+        let root = Node::new(
+            NodeKind::Program { statements: vec![leaf("my", 0, 2), leaf("$a", 3, 5)] },
+            loc(0, 5),
+        );
+
+        let mapped = map.clone_tree(&root).ok_or("location mapping unexpectedly failed")?;
+        let statements = match &mapped.kind {
+            NodeKind::Program { statements } => statements,
+            other => return Err(format!("expected Program, got {}", other.kind_name()).into()),
+        };
+        assert_eq!(mapped.location, loc(0, 7));
+        assert_eq!(statements[0].location, loc(1, 3));
+        assert_eq!(statements[1].location, loc(5, 7));
+        Ok(())
+    }
+
+    #[test]
+    fn accumulates_adjacent_insertions_at_one_boundary() -> TestResult {
+        let edits = edit_set([edit(3, 3, 4), edit(4, 4, 5)]);
+        let map = WhitespaceEditMap::try_new("my $a", "my   $a", &edits)
+            .ok_or("adjacent progressive insertions should be admitted")?;
+        let root = Node::new(
+            NodeKind::Program { statements: vec![leaf("my", 0, 2), leaf("$a", 3, 5)] },
+            loc(0, 5),
+        );
+
+        let mapped = map.clone_tree(&root).ok_or("location mapping unexpectedly failed")?;
+        let statements = match &mapped.kind {
+            NodeKind::Program { statements } => statements,
+            other => return Err(format!("expected Program, got {}", other.kind_name()).into()),
+        };
+        assert_eq!(mapped.location, loc(0, 7));
+        assert_eq!(statements[0].location, loc(0, 2));
+        assert_eq!(statements[1].location, loc(5, 7));
+        Ok(())
+    }
+
+    #[test]
+    fn admits_adjacent_progressive_deletions() -> TestResult {
+        let edits = edit_set([edit(3, 4, 3), edit(3, 4, 3)]);
+        let map = WhitespaceEditMap::try_new("my   $a", "my $a", &edits)
+            .ok_or("adjacent progressive deletions should be admitted")?;
+        let root = Node::new(
+            NodeKind::Program { statements: vec![leaf("my", 0, 2), leaf("$a", 5, 7)] },
+            loc(0, 7),
+        );
+
+        let mapped = map.clone_tree(&root).ok_or("location mapping unexpectedly failed")?;
+        let statements = match &mapped.kind {
+            NodeKind::Program { statements } => statements,
+            other => return Err(format!("expected Program, got {}", other.kind_name()).into()),
+        };
+        assert_eq!(mapped.location, loc(0, 5));
+        assert_eq!(statements[0].location, loc(0, 2));
+        assert_eq!(statements[1].location, loc(3, 5));
         Ok(())
     }
 
