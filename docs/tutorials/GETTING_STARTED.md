@@ -445,8 +445,11 @@ The editor must be able to find and launch the `perllsp` binary. Symptoms includ
    With either command, verify that the response is framed with
    `Content-Length: ...`, contains valid JSON-RPC, and has `"id":1`. The
    response length and capabilities are version-dependent, so do not expect a
-   fixed byte count. If the server returns no valid framed response, the binary
-   itself may have a problem -- try reinstalling.
+   fixed byte count. The server also writes its startup banner and log lines to
+   standard error; those lines are not the response, and only the framed
+   JSON-RPC frame on standard output counts. If standard output carries no
+   valid framed response, the binary itself may have a problem -- try
+   reinstalling.
 
 4. **VS Code specific**: ensure the extension is installed and enabled:
    ```bash
