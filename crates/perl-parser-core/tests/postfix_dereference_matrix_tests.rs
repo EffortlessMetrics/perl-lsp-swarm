@@ -360,24 +360,43 @@ fn postfix_dereference_matrix_has_explicit_canonical_hir_dispositions() -> TestR
 
     for case in MATRIX {
         let ast_node = matrix_node(&ast, MATRIX_SOURCE, *case)?;
-        let hir = body
+        // Star rows intentionally collide with their receiver's HIR range
+        // because of the #13891 AST span defect; select by variant only first.
+        let hir_candidates = body
             .source_map
             .expr_ranges
             .iter()
             .enumerate()
             .filter(|(_, range)| **range == ast_node.location)
             .filter_map(|(index, _)| body.expr(HirExprId(index as u32)))
-            .find(|hir| match case.shape {
-                ExpectedShape::Unary { op, .. } => {
-                    matches!(hir, HirExpr::Unary { op: actual_op, .. } if actual_op == op)
+            .filter(|hir| match case.shape {
+                ExpectedShape::Unary { .. } => matches!(hir, HirExpr::Unary { .. }),
+                ExpectedShape::Binary { .. } => {
+                    matches!(hir, HirExpr::Binary { op: BinaryOp::Other(_), .. })
                 }
-                ExpectedShape::Binary { op, .. } => matches!(
-                    hir,
-                    HirExpr::Binary { op: BinaryOp::Other(actual_op), .. } if actual_op == op
-                ),
                 ExpectedShape::HashSlice { .. } => matches!(hir, HirExpr::Call { .. }),
             })
-            .ok_or_else(|| format!("{} has no canonical HIR expression", case.text))?;
+            .enumerate()
+            .collect::<Vec<_>>();
+        if hir_candidates.len() != 1 {
+            return Err(format!(
+                "{} has {} HIR variant candidates for AST range {:?}, expected exactly 1\nAST: {}",
+                case.text,
+                hir_candidates.len(),
+                ast_node.location,
+                ast_node.to_sexp()
+            ));
+        }
+        let hir = match hir_candidates.into_iter().next() {
+            Some((_, hir)) => hir,
+            None => {
+                return Err(format!(
+                    "{} HIR variant candidate was not retained\nAST: {}",
+                    case.text,
+                    ast_node.to_sexp()
+                ));
+            }
+        };
 
         let matches_disposition = match (case.shape, hir) {
             (ExpectedShape::Unary { op, .. }, HirExpr::Unary { op: actual_op, .. }) => {
@@ -592,6 +611,8 @@ fn postfix_classifier_reports_matrix_rows_and_rejects_prefix_control() -> TestRe
     let ast = parse(MATRIX_SOURCE);
     let mut postfix_rows = Vec::new();
     collect_postfix_rows(&ast, MATRIX_SOURCE, &mut postfix_rows)?;
+    // Expected strings are the rows' current pinned spans, including #13891
+    // operand-only star spans, not their intended operator-inclusive text.
     let expected = MATRIX
         .iter()
         .map(|case| match case.span {
@@ -661,7 +682,13 @@ enum RecoveryOutcome<'a> {
     /// Current behavior: the trailing operator is consumed with no
     /// diagnostic at all, leaving `retained` as the whole program text.
     /// Confirmed defect, tracked in #14174; this pin must flip when fixed.
-    SilentlyDropsOperator { retained: &'a str },
+    SilentlyDropsOperator { retained: RetainedShape<'a> },
+}
+
+#[derive(Clone, Copy)]
+enum RetainedShape<'a> {
+    ScalarVariable { text: &'a str, span: SourceLocation },
+    MethodCall { text: &'a str, span: SourceLocation, object: &'a str },
 }
 
 #[derive(Clone, Copy)]
@@ -674,30 +701,61 @@ const RECOVERY_ROWS: &[RecoveryCase<'static>] = &[
     RecoveryCase { source: "$ref->", outcome: RecoveryOutcome::Diagnosed },
     RecoveryCase {
         source: "$ref->$",
-        outcome: RecoveryOutcome::SilentlyDropsOperator { retained: "$ref" },
+        outcome: RecoveryOutcome::SilentlyDropsOperator {
+            retained: RetainedShape::ScalarVariable {
+                text: "$ref",
+                span: SourceLocation { start: 0, end: 4 },
+            },
+        },
     },
     RecoveryCase {
         source: "$ref->$#",
-        outcome: RecoveryOutcome::SilentlyDropsOperator { retained: "$ref->$#" },
+        outcome: RecoveryOutcome::SilentlyDropsOperator {
+            retained: RetainedShape::MethodCall {
+                text: "$ref->$#",
+                span: SourceLocation { start: 0, end: 8 },
+                object: "$ref",
+            },
+        },
     },
     RecoveryCase {
         source: "$ref->@",
-        outcome: RecoveryOutcome::SilentlyDropsOperator { retained: "$ref" },
+        outcome: RecoveryOutcome::SilentlyDropsOperator {
+            retained: RetainedShape::ScalarVariable {
+                text: "$ref",
+                span: SourceLocation { start: 0, end: 4 },
+            },
+        },
     },
     RecoveryCase { source: "$ref->@[0, 2", outcome: RecoveryOutcome::Diagnosed },
     RecoveryCase { source: "$ref->@{'alpha'", outcome: RecoveryOutcome::Diagnosed },
     RecoveryCase {
         source: "$ref->%",
-        outcome: RecoveryOutcome::SilentlyDropsOperator { retained: "$ref" },
+        outcome: RecoveryOutcome::SilentlyDropsOperator {
+            retained: RetainedShape::ScalarVariable {
+                text: "$ref",
+                span: SourceLocation { start: 0, end: 4 },
+            },
+        },
     },
     RecoveryCase { source: "$ref->%{'alpha'", outcome: RecoveryOutcome::Diagnosed },
     RecoveryCase {
         source: "$ref->&",
-        outcome: RecoveryOutcome::SilentlyDropsOperator { retained: "$ref" },
+        outcome: RecoveryOutcome::SilentlyDropsOperator {
+            retained: RetainedShape::ScalarVariable {
+                text: "$ref",
+                span: SourceLocation { start: 0, end: 4 },
+            },
+        },
     },
     RecoveryCase {
         source: "$ref->*",
-        outcome: RecoveryOutcome::SilentlyDropsOperator { retained: "$ref" },
+        outcome: RecoveryOutcome::SilentlyDropsOperator {
+            retained: RetainedShape::ScalarVariable {
+                text: "$ref",
+                span: SourceLocation { start: 0, end: 4 },
+            },
+        },
     },
     // External Perl 5.34 oracle:
     // perl -Mstrict -e "use feature 'postderef'; my \$href={}; my @x = \$href->@{};"
@@ -708,36 +766,42 @@ const RECOVERY_ROWS: &[RecoveryCase<'static>] = &[
     RecoveryCase { source: "$aref->@[]", outcome: RecoveryOutcome::Diagnosed },
 ];
 
-fn assert_retained_ast_text(source: &str, ast: &Node, retained: &str) -> TestResult {
-    if retained == "$ref" {
-        let retained_node = unique_node_where(ast, |node| {
-            source_text(source, node).ok() == Some(retained)
-                && matches!(
-                    &node.kind,
-                    NodeKind::Variable { sigil, name } if sigil == "$" && name == "ref"
-                )
-        })?;
-        if retained_node.location != (SourceLocation { start: 0, end: 4 }) {
-            return Err(format!(
-                "silent recovery retained {retained:?} at unexpected span {:?}\n{}",
-                retained_node.location,
-                ast.to_sexp()
-            ));
+fn assert_retained_ast_shape(source: &str, ast: &Node, retained: RetainedShape<'_>) -> TestResult {
+    match retained {
+        RetainedShape::ScalarVariable { text, span } => {
+            let retained_node = unique_node_where(ast, |node| {
+                source_text(source, node).ok() == Some(text)
+                    && node.location == span
+                    && matches!(
+                        &node.kind,
+                        NodeKind::Variable { sigil, name } if sigil == "$" && name == "ref"
+                    )
+            })?;
+            if source_text(source, retained_node)? != text {
+                return Err(format!(
+                    "silent recovery retained unexpected scalar text {:?}\n{}",
+                    source_text(source, retained_node)?,
+                    ast.to_sexp()
+                ));
+            }
         }
-    } else if retained == "$ref->$#" {
-        let retained_node = unique_node_where(ast, |node| {
-            source_text(source, node).ok() == Some(retained)
-                && matches!(&node.kind, NodeKind::MethodCall { .. })
-        })?;
-        if !matches!(&retained_node.kind, NodeKind::MethodCall { object, .. }
-            if matches!(&object.kind, NodeKind::Variable { sigil, name }
-                if sigil == "$" && name == "ref"))
-        {
-            return Err(format!(
-                "silent recovery retained {retained:?} without MethodCall($ref, $#, ...): {}\n{}",
-                retained_node.kind.kind_name(),
-                ast.to_sexp()
-            ));
+        RetainedShape::MethodCall { text, span, object } => {
+            let retained_node = unique_node_where(ast, |node| {
+                if source_text(source, node).ok() != Some(text) || node.location != span {
+                    return false;
+                }
+                let NodeKind::MethodCall { object: actual_object, .. } = &node.kind else {
+                    return false;
+                };
+                source_text(source, actual_object).ok() == Some(object)
+            })?;
+            if source_text(source, retained_node)? != text {
+                return Err(format!(
+                    "silent recovery retained unexpected method-call text {:?}\n{}",
+                    source_text(source, retained_node)?,
+                    ast.to_sexp()
+                ));
+            }
         }
     }
     Ok(())
@@ -800,7 +864,7 @@ fn malformed_postfix_dereference_rows_pin_recovery_outcomes() -> TestResult {
                         output.ast.to_sexp()
                     ));
                 }
-                assert_retained_ast_text(case.source, &output.ast, retained)?;
+                assert_retained_ast_shape(case.source, &output.ast, retained)?;
             }
         }
     }
