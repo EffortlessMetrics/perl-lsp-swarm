@@ -32,6 +32,10 @@ pub struct OracleSubject {
 impl OracleSubject {
     /// Build a subject from redacted/content identities, rejecting private paths
     /// and missing identity components before they can reach a cache or receipt.
+    // The oracle subject is an identity bag: all ten strings are distinct
+    // pinned identities, so a parameter object would only relocate the
+    // enumeration without adding meaning.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         perl_identity: impl Into<String>,
         critic_identity: impl Into<String>,
