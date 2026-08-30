@@ -1,3 +1,5 @@
+#![deny(clippy::map_err_ignore)]
+
 //! Frozen parity authority for the historical `perl_kwalitee.v1` evaluator.
 //!
 //! The expected side is committed data, not values derived from the live catalog.
