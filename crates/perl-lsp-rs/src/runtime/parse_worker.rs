@@ -763,6 +763,31 @@ impl ParseWorker {
     /// callers are this module's own unit tests; production code
     /// (`LspServer::install_default_parse_worker`) calls
     /// `spawn_with_pending_count_hooks` directly to wire the real hooks.
+    /// A pool with no live worker threads, standing in for the
+    /// resource-exhaustion case where every `thread::Builder::spawn` returned
+    /// `Err`. Mirrors `FileWatcherDebouncer::unavailable_for_test` so callers
+    /// outside this module can exercise the not-operational install path
+    /// (#10024).
+    ///
+    /// Shutdown is signalled before the handles are dropped so the real
+    /// threads exit on their own -- nothing is enqueued, so this is immediate
+    /// -- rather than leaking live OS threads that nothing ever joins.
+    /// A freshly spawned pool over an empty document store, for callers
+    /// outside this module that only need an operational worker to occupy a
+    /// slot (#10024).
+    #[cfg(test)]
+    pub(crate) fn operational_for_test() -> Self {
+        Self::spawn(Arc::new(Mutex::new(HashMap::new())), Arc::new(|_: PublishedParseTicket| {}))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn non_operational_for_test() -> Self {
+        let worker = Self::operational_for_test();
+        worker.coordinator.request_shutdown();
+        worker.handles.lock().clear();
+        worker
+    }
+
     #[cfg(test)]
     pub(crate) fn spawn(
         documents: Arc<Mutex<HashMap<String, DocumentState>>>,

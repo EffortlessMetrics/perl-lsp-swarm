@@ -384,6 +384,36 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_parse_replacement_retires_the_previous_worker() {
+        // Leaving the old worker installed while the new lifetime retains
+        // `InstrumentFailed` would be a settlement lie: `parse_worker()` would
+        // keep handing out a live worker for a class recorded as never
+        // instrumented, so callers would take the async path for a class the
+        // snapshot says never started.
+        use super::super::parse_worker::ParseWorker;
+
+        let services = RuntimeServices::new();
+        assert!(services.install_parse_worker(ParseWorker::operational_for_test()));
+        assert!(services.parse_worker().is_some(), "operational worker occupies the slot");
+
+        assert!(!services.install_parse_worker(ParseWorker::non_operational_for_test()));
+
+        assert!(
+            services.parse_worker().is_none(),
+            "a failed replacement must retire the previous worker so the synchronous fallback runs"
+        );
+        assert_eq!(
+            services.settlement_snapshot().settled,
+            vec![(
+                ApplicationTaskClass::ParseWorker,
+                TaskTerminal::InstrumentFailed {
+                    reason: "parse worker pool failed to spawn any threads".to_string()
+                }
+            )]
+        );
+    }
+
+    #[test]
     fn forwarded_accessors_preserve_none_fallback_behavior() {
         let server = LspServer::new();
         assert!(

@@ -493,6 +493,13 @@ impl RuntimeServices {
         if operational {
             *self.parse_worker_handle.lock() = Some(Arc::new(worker));
         } else {
+            // Retire whatever occupied the slot. Leaving a previous worker
+            // installed while this lifetime retains `InstrumentFailed` would
+            // be a settlement lie: `parse_worker()` would keep handing out a
+            // live worker for a class recorded as never instrumented. Clearing
+            // it puts the synchronous fallback back in charge, which is what
+            // the retained terminal claims.
+            self.parse_worker_handle.lock().take();
             let _ = self.record_terminal(
                 ApplicationTaskClass::ParseWorker,
                 TaskTerminal::InstrumentFailed {
