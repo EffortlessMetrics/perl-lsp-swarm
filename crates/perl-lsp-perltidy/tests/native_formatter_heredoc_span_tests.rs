@@ -405,7 +405,7 @@ fn lexer_spans_are_exact_for_queued_empty_and_partial_heredocs()
 }
 
 #[test]
-fn range_formatting_refuses_bare_cr_heredoc_body_and_terminator() {
+fn range_formatting_bare_cr_uses_shared_range_validity() {
     let formatter = NativeFormatter::new();
     let source = "print <<'EOF';\rraw { text }\rEOF\rmy$x=1;\r";
 
@@ -414,11 +414,17 @@ fn range_formatting_refuses_bare_cr_heredoc_body_and_terminator() {
         TextRange::new(TextPosition::new(2, 0), TextPosition::new(3, 0)),
     ] {
         let result = formatter.format_range(source, range, &FormatConfig::default());
+        let typed = formatter.format_range_typed(
+            source,
+            range,
+            &FormatConfig::default(),
+            &FormatContext::default(),
+        );
+
         assert!(!result.changed);
         assert!(result.edits.is_empty());
-        assert!(result.diagnostics.first().is_some_and(|diagnostic| {
-            diagnostic.code == "native.format.literal_preserve_region"
-        }));
+        assert!(result.diagnostics.is_empty());
+        assert_eq!(typed.outcome.reason, FormatReasonCode::UnsafeRange);
     }
 }
 

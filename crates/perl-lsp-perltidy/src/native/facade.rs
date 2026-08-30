@@ -142,9 +142,7 @@ impl PerlFormatter for NativeFormatter {
             );
         }
         let lines = source_line_ranges(source);
-        if valid_range(source, range)
-            && range_overlaps_completed_heredoc(source, range, &lines)
-        {
+        if valid_range(source, range) && range_overlaps_completed_heredoc(source, range, &lines) {
             return heredoc_range_refusal(source);
         }
 
