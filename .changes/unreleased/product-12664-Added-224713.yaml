@@ -1,0 +1,5 @@
+component: "Developer experience"
+kind: Added
+body: "`perllsp --dev-environment` doctor arm detects Windows dev prerequisites — symlink privilege, per-shell cargo identity vs the workspace pin, bash flavor reachability, and perl identity divergence — with copyable fixes (#12595)."
+time: 
+22:47:13
