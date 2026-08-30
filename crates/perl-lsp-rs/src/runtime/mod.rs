@@ -195,8 +195,10 @@ pub struct LspServer {
     ///
     /// `Drop` swaps `outbound` with a closed sender, drops the live sender to
     /// close the channel, then joins this thread so buffered bytes are flushed
-    /// before the server is deallocated.
-    outbound_writer_handle: Option<std::thread::JoinHandle<()>>,
+    /// before the server is deallocated. The join resolves to the writer's
+    /// terminal outcome; Drop records it as structured settlement evidence
+    /// (#8402).
+    outbound_writer_handle: Option<std::thread::JoinHandle<outbound::WriterTerminalOutcome>>,
     /// Client capabilities (behind mutex for interior mutability — written once during initialize)
     client_capabilities: Mutex<ClientCapabilities>,
     /// Cancelled request IDs

@@ -469,7 +469,12 @@ impl Drop for LspServer {
         drop(outbound);
 
         if let Some(handle) = self.outbound_writer_handle.take() {
-            let _ = handle.join();
+            match handle.join() {
+                Ok(outcome) => outcome.report_settlement(),
+                Err(_) => {
+                    tracing::error!("outbound writer thread panicked before terminal settlement")
+                }
+            }
         }
     }
 }
@@ -524,5 +529,41 @@ mod tests {
         let text = String::from_utf8(bytes).unwrap();
         assert!(text.contains("window/logMessage"));
         assert!(text.contains("flush me"));
+    }
+
+    /// #8402: dropping a server whose outbound writer already failed on its
+    /// sink must settle promptly through the typed terminal outcome rather
+    /// than deadlocking while reporting the first cause.
+    #[test]
+    fn drop_with_failed_outbound_writer_does_not_deadlock() {
+        struct FailingWriter;
+
+        impl Write for FailingWriter {
+            fn write(&mut self, _buf: &[u8]) -> io::Result<usize> {
+                Err(io::Error::new(
+                    io::ErrorKind::ConnectionAborted,
+                    "controlled write failure (#8402)",
+                ))
+            }
+
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let server =
+            LspServer::with_io(Box::new(Cursor::new(Vec::<u8>::new())), Box::new(FailingWriter));
+        let _ = server.notify("window/logMessage", json!({"type": 4, "message": "settle"}));
+
+        let dropper = thread::spawn(move || drop(server));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !dropper.is_finished() {
+            assert!(
+                Instant::now() < deadline,
+                "server drop must not deadlock on a failed outbound writer"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(dropper.join().is_ok(), "drop thread must not panic");
     }
 }
