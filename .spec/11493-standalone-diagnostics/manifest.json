@@ -921,7 +921,7 @@
     },
     {
       "action_ids": [
-        "run_explicit_repair",
+        "retry_same_exact_subject",
         "inspect_exact_receipt"
       ],
       "claim_consequence": "product_change_not_proven",
@@ -943,7 +943,7 @@
         ]
       },
       "side_effect_disposition": "no_side_effect",
-      "summary_template_id": "t_startup_failed",
+      "summary_template_id": "t_candidate_verified_startup_failed",
       "terminality": "nonterminal_actionable"
     },
     {
@@ -971,7 +971,7 @@
     },
     {
       "action_ids": [
-        "run_explicit_repair",
+        "retry_same_exact_subject",
         "inspect_exact_receipt"
       ],
       "claim_consequence": "product_change_not_proven",
@@ -993,7 +993,7 @@
         ]
       },
       "side_effect_disposition": "candidate_published_not_current",
-      "summary_template_id": "t_startup_failed",
+      "summary_template_id": "t_candidate_published_startup_failed",
       "terminality": "nonterminal_actionable"
     },
     {
@@ -1240,6 +1240,14 @@
     {
       "template_id": "t_candidate_awaiting_selection",
       "text": "A published candidate exists but is not the current selection."
+    },
+    {
+      "template_id": "t_candidate_verified_startup_failed",
+      "text": "A verified candidate exists, but starting it from a fresh process failed. Nothing was installed or selected by this attempt."
+    },
+    {
+      "template_id": "t_candidate_published_startup_failed",
+      "text": "A published candidate exists, but starting it from a fresh process failed. It is not the current selection, and nothing was installed by this attempt."
     },
     {
       "template_id": "t_failed_current_preserved",

@@ -496,6 +496,20 @@ fn compare_enum(
         violations.push(format!("`{INPUT_SCHEMA_PATH}` does not declare an enum for `{label}`"));
         return;
     };
+    // A JSON Schema enum may hold any JSON value, and a non-string member
+    // genuinely widens the admitted packet domain. Filtering to strings would
+    // discard it before the comparison, leaving the string sets equal and the
+    // drift silent — the exact failure this check exists to catch.
+    let ill_shaped: Vec<String> = actual
+        .iter()
+        .filter(|member| !member.is_string())
+        .map(|member| member.to_string())
+        .collect();
+    if !ill_shaped.is_empty() {
+        violations.push(format!(
+            "`{label}` in `{INPUT_SCHEMA_PATH}` declares non-string enum member(s) {ill_shaped:?}; the registry maps string outcomes only, so this widens the admitted domain beyond what any reason can select"
+        ));
+    }
     // Domain agreement is about which values are admitted, not the order they
     // are listed in. Reordering an unchanged enum leaves the accepted packet
     // domain identical, so it must not read as drift.
