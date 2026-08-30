@@ -2301,20 +2301,6 @@ mod tests {
         (server, buf)
     }
 
-    fn capture_until(
-        buffer: &StdArc<parking_lot::Mutex<Vec<u8>>>,
-        predicate: impl Fn(&str) -> bool,
-    ) -> String {
-        let deadline = Instant::now() + Duration::from_secs(2);
-        loop {
-            let output = String::from_utf8_lossy(&buffer.lock()).into_owned();
-            if predicate(&output) || Instant::now() >= deadline {
-                return output;
-            }
-            std::thread::yield_now();
-        }
-    }
-
     /// Positive case: when no concurrent change arrives during diagnostic computation,
     /// `publish_diagnostics` MUST send a `textDocument/publishDiagnostics` notification.
     #[test]
