@@ -5,5 +5,5 @@ body: "The VS Code Marketplace listing's keywords were trimmed from 12 (exceedin
 time: 2026-07-28T12:57:25Z
 custom:
   PR: "5158"
-  Slug: marketplace-first-run-ux
+  Slug: marketplace-listing-readme-and-issue-template
   Breaking: "no"
