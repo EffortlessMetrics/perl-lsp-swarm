@@ -315,6 +315,129 @@ fn declared_geometry_fields() -> DeclaredFields {
     scan_declared_fields(include_str!("../src/ast.rs"))
 }
 
+/// Remove Rust comments, leaving code and whitespace positions intact.
+///
+/// Handles line comments, **nested** block comments (Rust permits nesting), and
+/// string literals — including raw strings — so that a `"/*"` inside a literal
+/// cannot open a comment and swallow the enum.
+///
+/// Raised in review after the line-comment fix: stripping only `//` left `/* */`
+/// braces counting toward the enum's brace balance. That is worse than the
+/// line-comment case it replaced, because a block comment placed *after* the
+/// ninth geometry field truncates the scan somewhere the `>= 9` floor cannot
+/// see — the floor counts fields found, and nine were already found.
+///
+/// Char literals are deliberately not tracked: `'` is ambiguous with a lifetime
+/// in type position, and guessing wrong would corrupt the scan rather than
+/// protect it. This is safe because the only text whose brace balance matters is
+/// the enum body, which contains field declarations and comments and no
+/// character literals. This is a scanner sized for that job, not a Rust lexer.
+fn strip_comments(source: &str) -> String {
+    let chars: Vec<char> = source.chars().collect();
+    let mut out = String::with_capacity(source.len());
+    let mut index = 0usize;
+    let mut block_depth = 0usize;
+
+    while index < chars.len() {
+        let ch = chars[index];
+        let next = chars.get(index + 1).copied();
+
+        if block_depth > 0 {
+            if ch == '*' && next == Some('/') {
+                block_depth -= 1;
+                index += 2;
+                continue;
+            }
+            if ch == '/' && next == Some('*') {
+                block_depth += 1;
+                index += 2;
+                continue;
+            }
+            // Keep newlines so line-oriented filtering below stays aligned.
+            if ch == '\n' {
+                out.push('\n');
+            }
+            index += 1;
+            continue;
+        }
+
+        if ch == '/' && next == Some('/') {
+            while index < chars.len() && chars[index] != '\n' {
+                index += 1;
+            }
+            continue;
+        }
+
+        if ch == '/' && next == Some('*') {
+            block_depth = 1;
+            index += 2;
+            continue;
+        }
+
+        // Raw string: r"..." or r#"..."#, any number of hashes.
+        if ch == 'r' {
+            let mut hashes = 0usize;
+            let mut probe = index + 1;
+            while chars.get(probe) == Some(&'#') {
+                hashes += 1;
+                probe += 1;
+            }
+            if chars.get(probe) == Some(&'"') {
+                out.push_str(&chars[index..=probe].iter().collect::<String>());
+                index = probe + 1;
+                loop {
+                    match chars.get(index) {
+                        None => break,
+                        Some('"') => {
+                            let closing = (1..=hashes).all(|n| chars.get(index + n) == Some(&'#'));
+                            out.push('"');
+                            index += 1;
+                            if closing {
+                                for _ in 0..hashes {
+                                    out.push('#');
+                                    index += 1;
+                                }
+                                break;
+                            }
+                        }
+                        Some(&other) => {
+                            out.push(other);
+                            index += 1;
+                        }
+                    }
+                }
+                continue;
+            }
+        }
+
+        if ch == '"' {
+            out.push('"');
+            index += 1;
+            while index < chars.len() {
+                let inner = chars[index];
+                out.push(inner);
+                index += 1;
+                if inner == '\\' {
+                    if let Some(&escaped) = chars.get(index) {
+                        out.push(escaped);
+                        index += 1;
+                    }
+                    continue;
+                }
+                if inner == '"' {
+                    break;
+                }
+            }
+            continue;
+        }
+
+        out.push(ch);
+        index += 1;
+    }
+
+    out
+}
+
 /// The scan itself, over arbitrary source.
 ///
 /// Taking the source as a parameter is what lets the nested-escape control below
@@ -335,10 +458,12 @@ fn scan_declared_fields(ast_source: &str) -> DeclaredFields {
     //
     // Stripping first makes the brace balance see only code. The `>= 9` floor
     // below is the backstop for truncation, but it cannot catch over-extension,
-    // which is why ordering matters rather than just the floor.
-    let source: String = ast_source
+    // nor truncation that happens *after* the ninth field — which is why the
+    // stripping has to be right rather than merely backstopped.
+    let stripped = strip_comments(ast_source);
+    let source: String = stripped
         .lines()
-        .map(|line| line.split("//").next().unwrap_or(line).trim())
+        .map(str::trim)
         .filter(|line| !line.starts_with('#'))
         .collect::<Vec<_>>()
         .join("\n");
@@ -530,6 +655,44 @@ fn compare_declared_against_registry(
          for: {miscounted:?} (as (variant, field), declared members, registered rows)\nA nested \
          field that gains a second span needs a second dotted row; without one it reaches a \
          coordinate remap unregistered while the outer field still looks covered."
+    );
+}
+
+/// A block comment must not truncate the scan behind the `>= 9` floor.
+///
+/// Raised in review as the sharper form of the doc-brace problem, and the
+/// framing was the useful part: the floor counts fields *found*, so a truncation
+/// occurring after the ninth field is invisible to it. This models exactly that
+/// — nine geometry fields, then a block comment carrying an unbalanced `}`, then
+/// a tenth field that must still be seen.
+///
+/// Block comments also nest in Rust, so the stripper tracks depth rather than
+/// scanning for the first `*/`.
+#[test]
+fn a_block_comment_cannot_truncate_the_scan_after_the_ninth_field() {
+    let mut synthetic = String::from("pub enum NodeKind {\n");
+    for n in 0..9 {
+        synthetic.push_str(&format!("    Variant{n} {{ span{n}: SourceLocation }},\n"));
+    }
+    synthetic.push_str(
+        "    /** Prose with an unbalanced close brace } and a nested /* inner } */ part */\n",
+    );
+    synthetic.push_str("    Tenth { late_span: SourceLocation },\n");
+    synthetic.push_str("}\n");
+
+    let scan = scan_declared_fields(&synthetic);
+    assert!(scan.unknown.is_empty(), "synthetic source must classify cleanly: {:?}", scan.unknown);
+
+    let names: BTreeSet<String> = scan.geometry.iter().map(|(v, _, _)| v.clone()).collect();
+    assert!(
+        names.contains("Tenth"),
+        "a block comment must not truncate the scan; the field after it was lost. Found: {names:?}"
+    );
+    assert_eq!(
+        scan.geometry.len(),
+        10,
+        "all ten declared geometry fields must survive comment stripping, found {:?}",
+        scan.geometry
     );
 }
 
