@@ -241,7 +241,8 @@ impl DapPeerBridge {
                 Err(e) => out.push(self.error(request_seq, command, e)),
             },
             "threads" => {
-                // Perl's stock debugger is single-threaded; report one thread.
+                // One synthetic main execution context; runtime context
+                // discovery across the peer bridge is not proven (#8294).
                 let body = json!({ "threads": [{ "id": 1, "name": "main" }] });
                 out.push(self.response(request_seq, command, true, Some(body), None));
             }

@@ -39,18 +39,18 @@ use crate::feature_catalog::has_feature as catalog_has_feature;
 use crate::inline_values::{collect_inline_values_with_runtime, extract_variable_names};
 use crate::protocol::{
     BreakpointLocation, BreakpointLocationsArguments, BreakpointLocationsResponseBody,
-    CompletionItem, CompletionsArguments, CompletionsResponseBody, ContinueArguments,
-    ContinueResponseBody, DataBreakpointInfoArguments, DataBreakpointInfoResponseBody,
-    DisconnectArguments, EvaluateArguments, EvaluateResponseBody, ExceptionDetails,
-    ExceptionInfoArguments, ExceptionInfoResponseBody, GotoArguments, GotoTarget,
-    GotoTargetsArguments, GotoTargetsResponseBody, InlineValuesArguments, InlineValuesResponseBody,
-    LoadedSourcesResponseBody, Module, ModulesArguments, ModulesResponseBody, NextArguments,
-    PauseArguments, RestartArguments, Scope, ScopesArguments, ScopesResponseBody,
-    SetDataBreakpointsArguments, SetDataBreakpointsResponseBody, SetExceptionBreakpointsArguments,
-    SetExpressionArguments, SetExpressionResponseBody, SetFunctionBreakpointsArguments,
-    SetVariableArguments, SetVariableResponseBody, SourceArguments, SourceResponseBody,
-    StackTraceArguments, StepInArguments, StepInTarget, StepInTargetsArguments,
-    StepInTargetsResponseBody, StepOutArguments, TerminateArguments, VariablesArguments,
+    CompletionItem, CompletionsArguments, CompletionsResponseBody, ContinueResponseBody,
+    DataBreakpointInfoArguments, DataBreakpointInfoResponseBody, DisconnectArguments,
+    EvaluateArguments, EvaluateResponseBody, ExceptionDetails, ExceptionInfoArguments,
+    ExceptionInfoResponseBody, GotoArguments, GotoTarget, GotoTargetsArguments,
+    GotoTargetsResponseBody, InlineValuesArguments, InlineValuesResponseBody,
+    LoadedSourcesResponseBody, Module, ModulesArguments, ModulesResponseBody, RestartArguments,
+    Scope, ScopesArguments, ScopesResponseBody, SetDataBreakpointsArguments,
+    SetDataBreakpointsResponseBody, SetExceptionBreakpointsArguments, SetExpressionArguments,
+    SetExpressionResponseBody, SetFunctionBreakpointsArguments, SetVariableArguments,
+    SetVariableResponseBody, SourceArguments, SourceResponseBody, StackTraceArguments,
+    StepInTarget, StepInTargetsArguments, StepInTargetsResponseBody, TerminateArguments,
+    VariablesArguments,
 };
 use crate::stack::{PerlStackParser, is_internal_frame_name_and_path};
 use crate::tcp_attach::{DapEvent, TcpAttachConfig, TcpAttachSession};
@@ -2143,7 +2143,7 @@ print "result: $final\n";
         );
 
         // Call the handler (this should clear stack_frames)
-        let _response = adapter.handle_continue(1, 1, None);
+        let _response = adapter.handle_continue(1, 1, Some(json!({"threadId": 1})));
 
         // Assert: frames are now cleared (FAILS if fix not implemented)
         assert_eq!(
@@ -2161,7 +2161,7 @@ print "result: $final\n";
         adapter.inject_stack_frames_for_test(vec![make_test_frame(1), make_test_frame(2)]);
 
         assert_eq!(adapter.stack_frames_snapshot_for_test().len(), 2);
-        let _response = adapter.handle_next(1, 1, None);
+        let _response = adapter.handle_next(1, 1, Some(json!({"threadId": 1})));
         assert_eq!(
             adapter.stack_frames_snapshot_for_test().len(),
             0,
@@ -2177,7 +2177,7 @@ print "result: $final\n";
         adapter.inject_stack_frames_for_test(vec![make_test_frame(1), make_test_frame(2)]);
 
         assert_eq!(adapter.stack_frames_snapshot_for_test().len(), 2);
-        let _response = adapter.handle_step_in(1, 1, None);
+        let _response = adapter.handle_step_in(1, 1, Some(json!({"threadId": 1})));
         assert_eq!(
             adapter.stack_frames_snapshot_for_test().len(),
             0,
@@ -2193,7 +2193,7 @@ print "result: $final\n";
         adapter.inject_stack_frames_for_test(vec![make_test_frame(1), make_test_frame(2)]);
 
         assert_eq!(adapter.stack_frames_snapshot_for_test().len(), 2);
-        let _response = adapter.handle_step_out(1, 1, None);
+        let _response = adapter.handle_step_out(1, 1, Some(json!({"threadId": 1})));
         assert_eq!(
             adapter.stack_frames_snapshot_for_test().len(),
             0,
@@ -2209,7 +2209,7 @@ print "result: $final\n";
         adapter.inject_stack_frames_for_test(vec![make_test_frame(1), make_test_frame(2)]);
 
         assert_eq!(adapter.stack_frames_snapshot_for_test().len(), 2);
-        let _response = adapter.handle_pause(1, 1, None);
+        let _response = adapter.handle_pause(1, 1, Some(json!({"threadId": 1})));
         assert_eq!(
             adapter.stack_frames_snapshot_for_test().len(),
             0,

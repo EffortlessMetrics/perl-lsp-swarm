@@ -121,6 +121,10 @@ impl DebugAdapter {
             "supportsLoadedSourcesRequest": supports_loaded_sources,
             "supportsLogPoints": supports_log_points,
             "supportsTerminateThreadsRequest": supports_terminate_threads,
+            // #8294: exactly one synthetic main execution context is exposed;
+            // single-thread execution requests are not a distinct capability
+            // and stay unadvertised.
+            "supportsSingleThreadExecutionRequests": false,
             "supportsSetExpression": supports_core,
             "supportsTerminateRequest": supports_core,
             "supportsDataBreakpoints": supports_watchpoints,
@@ -2165,7 +2169,10 @@ impl DebugAdapter {
                 "name": format!("Attached Process ({pid})")
             })]
         } else if lock_or_recover(&self.tcp_session, "debug_adapter.tcp_session").is_some() {
-            vec![json!({ "id": 1, "name": "TCP Attached Thread" })]
+            vec![json!({
+                "id": Self::TCP_ATTACH_SYNTHETIC_THREAD_ID,
+                "name": "TCP Attached Thread"
+            })]
         } else {
             vec![]
         };
