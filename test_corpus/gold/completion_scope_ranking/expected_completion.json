@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "fixture": "completion_scope_ranking",
+  "assertions": [
+    {
+      "kind": "completion_non_empty",
+      "line": 6,
+      "character": 19,
+      "rationale": "the shared $scope_ prefix must produce both visible lexical candidates"
+    },
+    {
+      "kind": "completion_top1",
+      "line": 6,
+      "character": 19,
+      "expected_label": "$scope_z_local",
+      "rationale": "the immediate-scope lexical must outrank the alphabetically earlier file-scope ancestor"
+    },
+    {
+      "kind": "completion_top5",
+      "line": 6,
+      "character": 19,
+      "expected_label": "$scope_a_ancestor",
+      "rationale": "the visible ancestor lexical must remain useful while ranking below the immediate-scope candidate"
+    },
+    {
+      "kind": "completion_noise_absent",
+      "line": 6,
+      "character": 19,
+      "forbidden_label": "$scope_0_sibling",
+      "rationale": "a same-prefix lexical from an ended sibling block must not enter the result at any rank"
+    },
+    {
+      "kind": "completion_noise_absent",
+      "line": 6,
+      "character": 19,
+      "forbidden_label": "$scope_1_future",
+      "rationale": "a later lexical declaration in the current block must not be visible before its declaration point"
+    }
+  ]
+}
