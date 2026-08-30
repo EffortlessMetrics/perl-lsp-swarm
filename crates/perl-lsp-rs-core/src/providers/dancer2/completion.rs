@@ -4,9 +4,11 @@
 //! [`Dancer2KeywordImportFact`]s under exact activation:
 //!
 //! - `!keyword` exclusions are honored: an excluded keyword is never offered;
-//! - route-handler-only keywords (the reviewed `is_global => 0` vocabulary)
-//!   are offered only inside an exact inline route handler, decided by the
-//!   canonical #8921 handler-context facts;
+//! - request-scoped keywords (the reviewed `is_global => 0` vocabulary) are
+//!   offered only where the canonical handler-context facts establish request
+//!   context: inside an exact inline route handler (#8921) or inside an
+//!   admitted inline hook handler (#13604). One query answers both, so this
+//!   cell keeps no syntax heuristic of its own;
 //! - keywords never swamp ordinary lexical completion: every keyword item
 //!   carries [`KEYWORD_RANK_PENALTY`] so the runtime sorts local
 //!   variables/subroutines ahead of framework keywords, and keywords whose
@@ -66,14 +68,16 @@ pub fn keyword_completion_candidates(
         } => framework_version.clone(),
         _ => return Vec::new(),
     };
-    let inside_handler = facts.inside_handler_context(offset);
+    // One canonical context query: route handlers and admitted hook handlers
+    // both establish request context, and nothing else does (#13604).
+    let inside_request_context = facts.inside_request_context(offset);
     let mut candidates = Vec::new();
     for keyword in &activation.facts.keywords {
         if keyword.state != Dancer2KeywordState::Imported {
             // `!keyword` at the activating import: never offered.
             continue;
         }
-        if keyword.scope == DslKeywordScope::RouteHandlerOnly && !inside_handler {
+        if keyword.scope == DslKeywordScope::RouteHandlerOnly && !inside_request_context {
             continue;
         }
         if locally_declared_subnames(&keyword.keyword) {
@@ -114,6 +118,7 @@ mod tests {
     use crate::providers::dancer2::activation::file_activations;
     use crate::providers::dancer2::facts::canonical_file_facts;
     use perl_semantic_analyzer::Parser;
+    use perl_semantic_facts::route::HandlerContextKind;
     use perl_semantic_facts::{FileId, SourceGeneration};
 
     fn setup(source: &'static str) -> (Dancer2FileActivations, CanonicalDancer2FileFacts) {
@@ -167,6 +172,106 @@ mod tests {
         let labels: Vec<&str> = candidates.iter().map(|c| c.label.as_str()).collect();
         assert!(labels.contains(&"params"), "handler-only keyword offered inside handler");
         assert!(labels.contains(&"splat"), "splat offered inside handler");
+    }
+
+    #[test]
+    fn inside_an_admitted_hook_handler_offers_request_scoped_keywords() {
+        // The claim of #13604: an inline `hook before` body is a request
+        // context, so the editor must offer the same request helpers it
+        // offers inside a route handler.
+        let source = "use Dancer2;\nhook before => sub { my $r = request; };\n";
+        let (activations, facts) = setup(source);
+        let inside = source.find("request").expect("hook body offset");
+        let candidates =
+            keyword_completion_candidates(&activations, &facts, "main", inside, &none_declared);
+        let labels: Vec<&str> = candidates.iter().map(|c| c.label.as_str()).collect();
+        for expected in ["request", "params", "redirect", "cookie", "session"] {
+            assert!(
+                labels.contains(&expected),
+                "`{expected}` must be offered inside an admitted hook handler: {labels:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn nested_blocks_inside_a_hook_handler_stay_in_request_context() {
+        let source = "use Dancer2;\nhook before => sub { if (1) { my $r = request; } };\n";
+        let (activations, facts) = setup(source);
+        let inside = source.find("request").expect("nested body offset");
+        let candidates =
+            keyword_completion_candidates(&activations, &facts, "main", inside, &none_declared);
+        let labels: Vec<&str> = candidates.iter().map(|c| c.label.as_str()).collect();
+        assert!(labels.contains(&"request"), "nested block keeps the context: {labels:?}");
+    }
+
+    #[test]
+    fn a_hook_position_without_established_request_context_offers_nothing_extra() {
+        // `before_template_render` is a reviewed canonical position, but the
+        // reviewed contract does not establish request context there, so
+        // availability must not be claimed.
+        let source = "use Dancer2;\nhook before_template_render => sub { my $r = request; };\n";
+        let (activations, facts) = setup(source);
+        let inside = source.find("my $r").expect("hook body offset");
+        // Guard against a vacuous pass: the interval must really exist and
+        // really be unadmitted, not be missing because the hook never minted.
+        let context = facts.request_context_at(inside).expect("hook handler interval exists");
+        assert_eq!(context.handler_kind, HandlerContextKind::Hook);
+        assert!(!context.establishes_request_context());
+        let candidates =
+            keyword_completion_candidates(&activations, &facts, "main", inside, &none_declared);
+        let labels: Vec<&str> = candidates.iter().map(|c| c.label.as_str()).collect();
+        assert!(
+            !labels.contains(&"request"),
+            "unadmitted hook position must not offer request helpers: {labels:?}"
+        );
+        // Global keywords remain available: this is not a dead zone.
+        assert!(labels.contains(&"get"), "global keywords stay offered: {labels:?}");
+    }
+
+    #[test]
+    fn hook_spelling_alone_never_creates_a_request_context() {
+        // No Dancer2 activation: `hook` is an ordinary bareword and nothing
+        // about its shape may mint availability.
+        let source = "hook before => sub { my $r = request; };\n";
+        let mut parser = Parser::new(source);
+        let ast = parser.parse().expect("fixture must parse");
+        let activations = file_activations(&ast, FileId(1), None, &SourceGeneration::known("g1"));
+        let facts = canonical_file_facts(&ast, FileId(1), &activations);
+        let inside = source.find("request").expect("body offset");
+        assert!(
+            keyword_completion_candidates(&activations, &facts, "main", inside, &none_declared)
+                .is_empty(),
+            "hook-like spelling without activation offers nothing"
+        );
+    }
+
+    #[test]
+    fn an_exclusion_still_wins_inside_an_admitted_hook_handler() {
+        let source = "use Dancer2 '!request';\nhook before => sub { my $r = request; };\n";
+        let (activations, facts) = setup(source);
+        let inside = source.find("my $r").expect("hook body offset");
+        let candidates =
+            keyword_completion_candidates(&activations, &facts, "main", inside, &none_declared);
+        let labels: Vec<&str> = candidates.iter().map(|c| c.label.as_str()).collect();
+        assert!(
+            !labels.contains(&"request"),
+            "`!request` exclusion outranks hook request context: {labels:?}"
+        );
+        assert!(labels.contains(&"params"), "other helpers stay available: {labels:?}");
+    }
+
+    #[test]
+    fn an_adjacent_ordinary_sub_is_not_a_request_context() {
+        let source = "use Dancer2;\nhook before => sub { 1 };\nsub helper { my $r = request; }\n";
+        let (activations, facts) = setup(source);
+        let inside = source.find("my $r").expect("adjacent sub offset");
+        let candidates =
+            keyword_completion_candidates(&activations, &facts, "main", inside, &none_declared);
+        let labels: Vec<&str> = candidates.iter().map(|c| c.label.as_str()).collect();
+        assert!(
+            !labels.contains(&"request"),
+            "an adjacent sub is outside the handler interval: {labels:?}"
+        );
     }
 
     #[test]

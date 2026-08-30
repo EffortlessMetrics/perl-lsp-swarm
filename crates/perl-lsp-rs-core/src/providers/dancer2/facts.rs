@@ -13,7 +13,7 @@ use perl_semantic_analyzer::analysis::dancer2_hooks::extract_dancer2_hook_declar
 use perl_semantic_analyzer::analysis::dancer2_routes::extract_dancer2_route_contexts;
 use perl_semantic_facts::FileId;
 use perl_semantic_facts::framework_adapters::dancer2_hooks::{
-    Dancer2HookDeclaration, dancer2_hook_facts,
+    Dancer2HookDeclaration, dancer2_hook_facts, dancer2_hook_handler_context_facts,
 };
 use perl_semantic_facts::framework_adapters::dancer2_routes::{
     Dancer2RouteFacts, dancer2_route_family_facts,
@@ -95,14 +95,43 @@ impl CanonicalDancer2FileFacts {
         })
     }
 
+    /// The canonical handler-context fact whose interval contains `offset`.
+    ///
+    /// This is the one context query for the Dancer2 cell: route handlers and
+    /// admitted hook handlers are both minted into `handler_contexts`, so no
+    /// consumer needs its own span heuristic for either. The returned fact
+    /// carries `handler_kind` (route vs hook) and `request_context` (whether
+    /// the reviewed contract establishes request-scoped keyword availability
+    /// inside the interval).
+    ///
+    /// A `Some(..)` answer means "an exact handler body owns this offset". It
+    /// does **not** by itself mean request-scoped keywords are available —
+    /// gate that on [`RouteHandlerContextFact::establishes_request_context`],
+    /// or use [`Self::inside_request_context`].
+    #[must_use]
+    pub fn request_context_at(&self, offset: usize) -> Option<&RouteHandlerContextFact> {
+        self.handler_contexts.iter().find(|context| span_contains(&context.envelope.anchor, offset))
+    }
+
+    /// Whether the reviewed contract establishes request context at `offset`.
+    ///
+    /// True inside an exact route handler and inside an admitted hook
+    /// handler; false inside a hook position whose request context the
+    /// reviewed contract does not establish, and false outside every handler.
+    #[must_use]
+    pub fn inside_request_context(&self, offset: usize) -> bool {
+        self.request_context_at(offset)
+            .is_some_and(RouteHandlerContextFact::establishes_request_context)
+    }
+
     /// Whether `offset` lies inside one of the minted inline handler spans.
+    ///
+    /// Retained as the containment predicate; prefer
+    /// [`Self::inside_request_context`] when deciding keyword availability,
+    /// because an exact handler interval alone does not establish it.
     #[must_use]
     pub fn inside_handler_context(&self, offset: usize) -> bool {
-        self.handler_contexts.iter().any(|context| {
-            let anchor = &context.envelope.anchor;
-            usize::try_from(anchor.start_byte).ok() <= Some(offset)
-                && offset < usize::try_from(anchor.end_byte).unwrap_or(0)
-        })
+        self.request_context_at(offset).is_some()
     }
 }
 
@@ -155,6 +184,14 @@ pub fn canonical_file_facts(
         facts.parameters.extend(family.parameters);
         facts.handler_contexts.extend(family.handler_contexts);
         facts.hooks.extend(dancer2_hook_facts(
+            detection,
+            &activation.facts,
+            package,
+            &hook_declarations,
+        ));
+        // Hook handler bodies join the same handler-context family as route
+        // handlers, so one query answers both (#13604).
+        facts.handler_contexts.extend(dancer2_hook_handler_context_facts(
             detection,
             &activation.facts,
             package,

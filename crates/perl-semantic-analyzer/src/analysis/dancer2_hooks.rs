@@ -237,6 +237,21 @@ fn hook_from_expression(
 
 fn name_from_node(node: &Node, file_id: FileId) -> HookNameSelection {
     let name_anchor = anchor(node.location.start, node.location.end, file_id);
+    // `hook before => sub { ... }` is the canonical Dancer2 spelling. Perl's
+    // fat comma auto-quotes the bareword immediately before it, so this
+    // operand is a *literal* hook name, not a computed one — the parser
+    // surfaces it as a bare `Identifier`. A genuinely computed operand stays
+    // dynamic: a variable is `Variable` and a call is `FunctionCall`, and
+    // neither reaches this arm. (`hook before, sub {...}` — no fat comma, so
+    // no auto-quoting — does not parse as a `hook` call at all, so it cannot
+    // arrive here either.)
+    if let NodeKind::Identifier { name } = &node.kind {
+        return HookNameSelection::Literal(HookName {
+            normalization: normalize_dancer2_hook_name(name),
+            literal: name.clone(),
+            anchor: name_anchor,
+        });
+    }
     let NodeKind::String { value, interpolated } = &node.kind else {
         return HookNameSelection::Dynamic {
             reason: "computed hook name operand".to_string(),

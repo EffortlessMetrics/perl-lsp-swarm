@@ -266,6 +266,51 @@ fn computed_and_plugin_names_stay_boundaries() {
     assert_eq!(plugin.status(), SemanticFactStatus::Degraded);
 }
 
+// A bareword before the fat comma is auto-quoted by Perl, so it is a literal
+// hook name, not a computed one. `hook before => sub {...}` is the canonical
+// Dancer2 spelling and must reach the same identity as the quoted form.
+#[test]
+fn fat_comma_barewords_are_literal_hook_names() {
+    let code = "package App;\nuse Dancer2;\nhook before => sub { 1 };\nhook 'before' => sub { 2 };\nhook before_request => sub { 3 };";
+    let facts = canonical_facts(code, "gen-1");
+    assert_eq!(facts.len(), 3);
+    for fact in &facts {
+        assert_eq!(canonical_name(fact), "core.app.before_request");
+        assert_eq!(fact.status(), SemanticFactStatus::Exact);
+    }
+    // The bareword and the quoted spelling agree on the literal too.
+    assert_eq!(literal_name(&facts[0]).literal, "before");
+    assert_eq!(literal_name(&facts[1]).literal, "before");
+    assert_eq!(literal_name(&facts[2]).literal, "before_request");
+}
+
+// The auto-quoting rule is bounded: only a bareword is a literal. A variable
+// or a call is still a computed operand, and an unreviewed bareword stays an
+// unresolved boundary rather than becoming a guessed canonical name.
+#[test]
+fn only_barewords_are_promoted_and_unreviewed_ones_stay_boundaries() {
+    let code = "package App;\nuse Dancer2;\nhook $name => sub { 1 };\nhook pick_name() => sub { 2 };\nhook some_plugin_position => sub { 3 };";
+    let facts = canonical_facts(code, "gen-1");
+    assert_eq!(facts.len(), 3);
+    assert!(
+        matches!(&facts[0].hook.name, HookNameSelection::Dynamic { .. }),
+        "a variable operand is computed"
+    );
+    assert!(
+        matches!(&facts[1].hook.name, HookNameSelection::Dynamic { .. }),
+        "a call operand is computed"
+    );
+    // A bareword outside the reviewed contract is a literal name, but its
+    // ownership is still unproven: no canonical identity is invented.
+    assert_eq!(literal_name(&facts[2]).literal, "some_plugin_position");
+    assert!(literal_name(&facts[2]).canonical().is_none());
+    assert!(matches!(
+        literal_name(&facts[2]).normalization,
+        HookNameNormalization::Unresolved { .. }
+    ));
+    assert_eq!(facts[2].status(), SemanticFactStatus::Degraded);
+}
+
 // Falsifier 7: malformed/incomplete hook calls mint nothing.
 #[test]
 fn malformed_hook_calls_mint_nothing() {
