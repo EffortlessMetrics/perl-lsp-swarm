@@ -67,7 +67,7 @@ fn missing_stdio_is_rejected() {
     let mut packet = checked_packet().expect("checked packet");
     packet.after_anchor = packet.after_anchor.replace("--stdio", "--socket");
     let error = packet.validate().expect_err("perllsp must use the stdio transport");
-    assert!(error.to_string().contains("reviewed selector"));
+    assert!(error.to_string().contains("perllsp --stdio alternative is missing"));
 }
 
 #[test]
@@ -76,7 +76,7 @@ fn legacy_fallback_cannot_be_removed() {
     packet.after_anchor =
         packet.after_anchor.replace("Perl::LanguageServer::run", "removed_legacy_fallback");
     let error = packet.validate().expect_err("legacy fallback removal must fail");
-    assert!(error.to_string().contains("reviewed selector"));
+    assert!(error.to_string().contains("legacy Perl::LanguageServer fallback is missing"));
 }
 
 #[test]
@@ -92,7 +92,7 @@ fn perllsp_cannot_follow_the_ubiquitous_perl_fallback() {
     )
     .to_string();
     let error = packet.validate().expect_err("reversed alternative order must fail");
-    assert!(error.to_string().contains("reviewed selector"));
+    assert!(error.to_string().contains("perllsp must precede the ubiquitous perl fallback"));
 }
 
 #[test]
@@ -102,7 +102,7 @@ fn both_builtin_modes_must_use_language_id_perl() {
         .after_anchor
         .replace("(cperl-mode :language-id \"perl\")", "(cperl-mode :language-id \"cperl\")");
     let error = packet.validate().expect_err("cperl must not become the protocol language id");
-    assert!(error.to_string().contains("reviewed selector"));
+    assert!(error.to_string().contains("cperl-mode must explicitly negotiate language ID perl"));
 }
 
 #[test]
@@ -117,7 +117,9 @@ fn third_party_perl_mode_cannot_enter_the_core_patch() {
     );
     let error =
         packet.validate().expect_err("third-party mode must remain a separate support subject");
-    assert!(error.to_string().contains("reviewed selector"));
+    assert!(
+        error.to_string().contains("third-party perl-ts-mode is outside the core upstream patch")
+    );
 }
 
 #[test]

@@ -92,6 +92,10 @@ impl EglotPatchPacket {
             self.before_anchor == BEFORE_ANCHOR,
             "patch must replace the exact current Perl contact"
         );
+        // Semantic selector validation runs BEFORE the exact-anchor comparison,
+        // so each selector rule is observable independently instead of being
+        // shadowed by the equality gate.
+        validate_after_anchor(&self.after_anchor)?;
         ensure!(
             self.after_anchor == AFTER_ANCHOR,
             "patched contact must preserve the reviewed selector and alternative order"
@@ -100,7 +104,6 @@ impl EglotPatchPacket {
             self.unified_diff == UNIFIED_DIFF,
             "unified diff must match the reviewed exact-anchor replacement"
         );
-        validate_after_anchor(&self.after_anchor)?;
         ensure!(
             strings_equal(&self.upstream_checks, &[LOAD_CHECK, EGLOT_TEST_CHECK]),
             "upstream checks must remain explicit and bounded"
