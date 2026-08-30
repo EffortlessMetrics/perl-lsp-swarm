@@ -26,6 +26,29 @@ if [ "$GIT_USER_NAME" = "Codex Release Validation" ] || \
     exit 1
 fi
 
+# Format the staged Rust diff before the gate inspects it.
+#
+# `rustfmt_staged` in the commit gate below blocks a commit whose staged Rust
+# would be reformatted. Formatting the diff first turns that block into a
+# self-heal: the common case (a few unformatted lines in the files you are
+# already committing) is fixed and re-staged instead of bouncing you out to
+# run a workspace-wide `cargo xtask fmt` by hand.
+#
+# Only fully staged files are rewritten. A file that is staged *and*
+# separately modified in the worktree is reported and left alone, so this can
+# never sweep unstaged work into the commit.
+#
+# Non-fatal on its own: if rustfmt is unavailable the gate below still blocks,
+# so a missing formatter cannot turn into a silently unformatted commit.
+#
+# A failed run leaves nothing half-done. Files are formatted in memory first,
+# and any write or re-stage failure restores the original bytes, so the
+# worktree and the index stay in step and the gate below judges the same tree
+# you started with. The one exception — a rollback that itself fails — is
+# reported by name in the command's own output above this warning.
+echo "Formatting staged Rust diff: cargo xtask fmt --staged"
+cargo xtask fmt --staged || echo "⚠️  staged formatting did not run; the commit gate below still applies"
+
 # Refresh the committed inventory in the same commit as any staged tracked-file
 # additions, removals, or renames. The snapshot includes aggregate counts for
 # Rust-family files too, so filtering to non-Rust extensions would leave the
@@ -44,7 +67,7 @@ while IFS= read -r -d '' staged_path; do
             STAGED_INVENTORY_PATHS+=("$staged_path")
             ;;
     esac
-done < <(git diff --cached --name-only -z --diff-filter=ADR)
+done < <(git diff --cached --name-only -z --diff-filter=ADRM)
 
 if [ "$STAGED_INVENTORY_CHANGE" -eq 1 ]; then
     if ! git diff --quiet -- policy/non-rust-allowlist.toml; then
@@ -75,7 +98,8 @@ cargo xtask precommit
         println!("✅ Installed pre-commit and pre-push hooks");
         println!(
             "   The pre-commit hook blocks placeholder identities, formats the staged Rust diff \
-            (inventory refresh), then runs 'cargo xtask precommit'"
+            ('cargo xtask fmt --staged' and inventory refresh), then runs \
+             'cargo xtask precommit'"
         );
         println!("   The pre-push hook runs 'nix develop -c just pr-fast' before each push");
         println!("   Skip with: git commit --no-verify / git push --no-verify");
@@ -517,6 +541,7 @@ mod tests {
             .find("cargo xtask precommit")
             .ok_or_else(|| color_eyre::eyre::eyre!("staged gate missing"))?;
         assert!(guard < gate);
+        assert!(hook.contains("cargo xtask fmt --staged"));
         assert!(!hook.contains("cargo clippy"));
         assert!(!hook.contains("cargo test"));
         assert!(!hook.contains("ripr"));
@@ -524,10 +549,27 @@ mod tests {
     }
 
     #[test]
+    fn pre_commit_formats_staged_diff_before_the_gate() -> Result<()> {
+        let hook = pre_commit_hook_script();
+        let guard = hook
+            .find("Refusing commit with placeholder git identity")
+            .ok_or_else(|| color_eyre::eyre::eyre!("placeholder identity guard missing"))?;
+        let format = hook
+            .find("cargo xtask fmt --staged")
+            .ok_or_else(|| color_eyre::eyre::eyre!("staged formatting step missing"))?;
+        let gate = hook
+            .find("cargo xtask precommit")
+            .ok_or_else(|| color_eyre::eyre::eyre!("staged gate missing"))?;
+        assert!(guard < format);
+        assert!(format < gate);
+        Ok(())
+    }
+
+    #[test]
     fn pre_commit_refreshes_inventory_after_staged_tracked_changes() -> Result<()> {
         let hook = pre_commit_hook_script();
         let refresh = hook
-            .find("git diff --cached --name-only -z --diff-filter=ADR")
+            .find("git diff --cached --name-only -z --diff-filter=ADRM")
             .ok_or_else(|| color_eyre::eyre::eyre!("staged inventory change scan missing"))?;
         let write = hook
             .find("cargo xtask non-rust inventory --write")
@@ -545,6 +587,7 @@ mod tests {
         assert!(hook.contains("policy/non-rust-allowlist.toml has unstaged edits"));
         assert!(hook.contains("read -r -d ''"));
         assert!(hook.contains("printf '   %q\\n'"));
+        assert!(hook.contains("cargo xtask fmt --staged"));
         Ok(())
     }
 
@@ -665,23 +708,89 @@ mod tests {
             "docs/policy/NON_RUST_INVENTORY.md"
         );
 
-        fs::write(repo.join("policy/non-rust-allowlist.toml"), "# unstaged allowlist edit\n")?;
-        fs::write(repo.join("second.json"), "{}\n")?;
-        run_git(&repo, &["add", "--", "second.json"])?;
+        Ok(())
+    }
+
+    #[test]
+    fn pre_commit_executes_inventory_refresh_for_staged_allowlist_modification() -> Result<()> {
+        use color_eyre::eyre::ensure;
+
+        let repo = temp_repo()?;
+        run_git(&repo, &["config", "user.email", "test@example.com"])?;
+        run_git(&repo, &["config", "user.name", "hook test"])?;
+        fs::create_dir_all(repo.join("docs/policy"))?;
+        fs::create_dir_all(repo.join("policy"))?;
+        fs::write(repo.join("docs/policy/NON_RUST_INVENTORY.md"), "# baseline\n")?;
+        fs::write(repo.join("policy/non-rust-allowlist.toml"), "# baseline\n")?;
+        run_git(&repo, &["add", "."])?;
+        run_git(&repo, &["commit", "-qm", "baseline"])?;
+
+        let bin = repo.join("fake-bin");
+        fs::create_dir_all(&bin)?;
+        let log = repo.join("cargo.log");
+        fs::write(
+            bin.join("cargo"),
+            "#!/usr/bin/env bash\n\
+             printf '%s\\n' \"$*\" >> \"$FAKE_CARGO_LOG\"\n\
+             if [ \"$2\" = non-rust ]; then\n\
+               printf '# refreshed\\n' > docs/policy/NON_RUST_INVENTORY.md\n\
+             fi\n",
+        )?;
+        #[cfg(unix)]
+        fs::set_permissions(&bin.join("cargo"), fs::Permissions::from_mode(0o755))?;
+        let hook = repo.join("pre-commit");
+        fs::write(&hook, pre_commit_hook_script())?;
+        #[cfg(unix)]
+        fs::set_permissions(&hook, fs::Permissions::from_mode(0o755))?;
+
+        fs::write(repo.join("policy/non-rust-allowlist.toml"), "# staged change\n")?;
+        run_git(&repo, &["add", "--", "policy/non-rust-allowlist.toml"])?;
+        let bash = [
+            PathBuf::from("bash"),
+            PathBuf::from(r"C:\Program Files\Git\bin\bash.exe"),
+            PathBuf::from(r"C:\Program Files\Git\usr\bin\bash.exe"),
+        ]
+        .into_iter()
+        .find(|candidate| Command::new(candidate).arg("--version").output().is_ok())
+        .ok_or_else(|| {
+            color_eyre::eyre::eyre!("bash is required for staged hook semantics test")
+        })?;
+        let path_var = if cfg!(windows) {
+            format!("{};{}", bin.display(), std::env::var("PATH")?)
+        } else {
+            format!("{}:{}", bin.display(), std::env::var("PATH")?)
+        };
+        let output = Command::new(&bash)
+            .arg(&hook)
+            .current_dir(&repo)
+            .env("PATH", &path_var)
+            .env("FAKE_CARGO_LOG", &log)
+            .output()?;
+        ensure!(
+            output.status.success(),
+            "staged allowlist hook failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(fs::read_to_string(&log)?.contains("xtask non-rust inventory --write"));
+
+        fs::write(repo.join("policy/non-rust-allowlist.toml"), "# unstaged edit\n")?;
+        fs::write(repo.join("trigger.json"), "{}\n")?;
+        run_git(&repo, &["add", "--", "trigger.json"])?;
         let rejected = Command::new(&bash)
             .arg(&hook)
             .current_dir(&repo)
             .env("PATH", &path_var)
             .env("FAKE_CARGO_LOG", &log)
             .output()?;
-        ensure!(!rejected.status.success(), "unstaged allowlist edit must block inventory refresh");
-        let rejection = format!(
-            "{}{}",
-            String::from_utf8_lossy(&rejected.stdout),
-            String::from_utf8_lossy(&rejected.stderr)
+        ensure!(!rejected.status.success(), "unstaged allowlist edit must block refresh");
+        assert!(
+            format!(
+                "{}{}",
+                String::from_utf8_lossy(&rejected.stdout),
+                String::from_utf8_lossy(&rejected.stderr)
+            )
+            .contains("policy/non-rust-allowlist.toml has unstaged edits")
         );
-        assert!(rejection.contains("policy/non-rust-allowlist.toml has unstaged edits"));
-
         Ok(())
     }
 }
