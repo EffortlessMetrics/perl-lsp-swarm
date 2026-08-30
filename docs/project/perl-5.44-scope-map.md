@@ -1,14 +1,28 @@
-# Perl 5.44 Support — Scope Map
+# Perl 5.44 Support — Historical Scope Map
 
-*Campaign tracking artifact. Synthesized from 6 layer ground-truth reports + adversarial verification passes. Where a verifier overturned a reader, the verifier's evidence is authoritative and is marked ⚠️ OVERTURNED.*
+> **Historical discovery snapshot — not current execution authority.** This document records the six-layer investigation that preceded the current Perl 5.44 campaign graph. For current ownership, dependencies, and completion state, start with the [integrated closeout #13315](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/13315) and its linked campaign graph. Do not use this file to select branches, infer current implementation state, or assign work.
+
+*Historical campaign-tracking artifact. Synthesized from six layer ground-truth reports and adversarial verification passes. Where a verifier overturned a reader, the verifier's evidence is authoritative for this snapshot and is marked ⚠️ OVERTURNED.*
+
+## Current authority
+
+The current campaign supersedes the ownership and sequencing described below:
+
+- Perl 5.44's stable feature bundle has the same membership as 5.42; it is not a strict superset.
+- `enhanced_xx` is explicit opt-in, not a 5.44 bundle member. Its body semantics are owned by [#13310](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/13310), with modifier/profile substrate under [#6998](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/6998).
+- Multi-variable `foreach` reference aliases are owned by [#13311](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/13311); Unicode/XID enforcement by [#13312](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/13312); inward `goto` legality by [#13313](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/13313).
+- Exact version/profile authority is owned by [#8237](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/8237), [#8698](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/8698), and [#8721](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/8721), with immediate containment in [#8430](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/8430) and [#13113](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/13113).
+- Source-facing diagnostic ownership is tracked by [#13332](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/13332), [#13333](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/13333), [#13334](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/13334), and [#13335](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/13335).
+
+The historical analysis below remains useful as evidence and rationale, but its recommendations are not current work instructions.
 
 ---
 
 ## 1. Executive Summary
 
-The codebase is **substantially closer to 5.44 parse-acceptance than to 5.44 semantic support**, and two adversarial passes materially improved the picture. The tree-sitter grammar already models named parameters with `:`-prefix and `=`/`||=`/`//=` defaults (`grammar.js:275-294`), is deliberately order-permissive, and the vendored C snapshot is *already in sync* for these rules — so the grammar layer is at or ahead of plan assumptions. **Most importantly, the AST layer is further along than its own report claimed:** the verifier overturned two reports (AST/HIR and LSP) by showing `NodeKind::NamedParameter` on the working branch already carries `{ variable, external_name, default_operator, default_value, required }` (`crates/perl-ast/src/ast.rs:2121-2134`, populated at `variables.rs:1049-1055`, tested in `named_parameter_ast.rs`). That work is **done but uncommitted** on `claude/perl-5-44-support-sjewod-named-param-ast` — the single biggest de-risking of the campaign, and it dissolves the alleged "L-effort AST blocker" the LSP report built its sequencing on.
+The snapshot found that the codebase was **substantially closer to 5.44 parse-acceptance than to 5.44 semantic support** at investigation time, and that two adversarial passes materially changed the earlier report. The tree-sitter grammar already modeled named parameters with `:`-prefix and `=`/`||=`/`//=` defaults (`grammar.js:275-294`), was deliberately order-permissive, and the vendored C snapshot was in sync for those rules. The AST/LSP report's claim that named-parameter fields were absent was overturned during that investigation; that working-branch observation is retained here as historical evidence, not as current branch or ownership state.
 
-**True P0 blockers** (nothing works end-to-end until these land):
+**Historical P0 blockers** (the status at the time of this investigation):
 1. **No 5.44 version bundle** — `use v5.44` silently resolves to `BUNDLE_5_42_FEATURES` (`perl-pragma/src/version.rs:70-71`). Every feature-gate/diagnostic depends on this. *(S, leaf crate.)*
 2. **Providers flatten every parameter kind** to bare `sigil+name` (`signature_help.rs:487-502`) — hover/signature-help/completion cannot surface the named/optional/slurpy data the AST now carries. *(S, provider-only — no longer AST-blocked.)*
 3. **`Foreach` still holds a single scalar `variable`** (`ast.rs:1994-2003`, untouched) — multi-var / ref-alias foreach is unrepresentable; the fix is compile-breaking across ~30 match sites. *(L — sequence late.)*
@@ -37,7 +51,7 @@ Semantic 5.44 rules (named-param ordering, slurpy-hash modeling, goto-into-block
 - **Opaque regex bodies** — structural `/xx` char-class modeling is **explicitly OUT of scope** for parse-acceptance. **Effort L if pursued.**
 
 ### Layer 2 — AST/HIR (`perl-ast` NodeKind + `perl-parser-core` HIR lowering) ⚠️ REPORT OVERTURNED
-**State:** NamedParameter is **already fully enriched** on the working branch; the report described committed HEAD, which has since diverged. Foreach is genuinely untouched and remains the real AST gap. Verification: **overturned=true, high confidence.**
+**Historical state:** NamedParameter was **already fully enriched** on the investigation branch; the report described an older committed HEAD. Foreach remained the real AST gap at that time. Verification: **overturned=true, high confidence.**
 
 | Claim | Report verdict | Verifier |
 |---|---|---|
@@ -55,7 +69,7 @@ Semantic 5.44 rules (named-param ordering, slurpy-hash modeling, goto-into-block
 - **HIR named-param signal split** — `record_signature_parameter` (`hir/lower.rs:1042-1058`) gives no required/external-name signal. Contained to `perl-parser-core/src/hir`. **Effort S.**
 
 ### Layer 3 — Semantic Analyzer (`perl-semantic-analyzer`, `perl-pragma`, `perl-diagnostics`, lint providers)
-**State:** Implements **none** of the seven target 5.44 semantic rules. AST substrate (Goto, LabeledStatement, 4 param kinds) parses; two adjacent foundations exist — version-compat PL900 lint and flat file-scoped PL409/PL410 label lints. Verification: **not overturned, high confidence** (only coordinate corrections).
+**Historical state:** Implemented **none** of the seven target 5.44 semantic rules at investigation time. AST substrate (Goto, LabeledStatement, 4 param kinds) parsed; two adjacent foundations existed — version-compat PL900 lint and flat file-scoped PL409/PL410 label lints. Verification: **not overturned, high confidence** (only coordinate corrections).
 
 | Claim | Verdict |
 |---|---|
@@ -72,7 +86,7 @@ Semantic 5.44 rules (named-param ordering, slurpy-hash modeling, goto-into-block
 **Gaps:** goto-into-block lexical-nesting pass (`goto_label/mod.rs`+`labels.rs`, new DiagnosticCode) **M** · named-param ordering diagnostic (`scope_constructs.rs:115-229` + new IssueKind) **M** · 5.44 bundle (see Layer 6) **S** · refaliasing/declared_refs gating (needs AST detectors) **M** · slurpy-hash + call-site named-key (needs new call-arg infra) **L** · XID/group-name validation (new codes ripple 55-code tables) **L**.
 
 ### Layer 4 — LSP feature layer (signature help / completion / hover / rename) ⚠️ REPORT OVERTURNED
-**State:** Two signature-help impls (`runtime/language/hover/signature_help.rs` = live; `lsp_compat/signature_help.rs` = legacy), both **flatten** every param kind to `sigil+name` and select active param by comma-count. No named-arg key completion. The report's claim that the AST is the blocker is false. Verification: **overturned=true, high confidence.**
+**Historical state:** Two signature-help implementations (`runtime/language/hover/signature_help.rs` = live; `lsp_compat/signature_help.rs` = legacy) both **flattened** every param kind to bare `sigil+name` and selected the active parameter by comma-count. No named-argument key completion existed in that snapshot. The report's claim that the AST was the blocker was false. Verification: **overturned=true, high confidence.**
 
 | Claim | Report | Verifier |
 |---|---|---|
@@ -106,7 +120,7 @@ Semantic 5.44 rules (named-param ordering, slurpy-hash modeling, goto-into-block
 **Gaps:** char-class content parser (new `syntax/char_class.rs`, refactor 3 skip-loops) **L** · structured modifier / `ExtendedMode {Off,Extended,Enhanced}` enum — *fix lives in `hover.rs` not `modifiers.rs`* (verifier), breaks `behavior_spec_tests.rs:146-160` **M** · `/x`-aware body tokenizer (thread modifiers through `validate()`) **M** · multi-finding diagnostic path (`validator/mod.rs`, `error.rs`) **M**.
 
 ### Layer 6 — Vendored snapshot + version/feature model
-**State:** Vendored C snapshot pinned to tree-sitter CLI v0.25.9 with a documented refresh procedure; upstream grammar commit **unrecorded** (self-flagged provenance gap). Snapshot is **already in sync** for `named_parameter`/`_for_initializer` and is **benchmark-only** (only `perl-parser-comparison` depends on it) — **not a blocker**. Version model caps at 5.42. Verification: **not overturned, no corrections.**
+**Historical state:** Vendored C snapshot was pinned to tree-sitter CLI v0.25.9 with a documented refresh procedure; its upstream grammar commit was **unrecorded** (self-flagged provenance gap). The snapshot was in sync for `named_parameter`/`_for_initializer` and was **benchmark-only** (only `perl-parser-comparison` depended on it) — **not a blocker**. The version model capped at 5.42. Verification: **not overturned, no corrections.**
 
 | Claim | Verdict |
 |---|---|
@@ -145,9 +159,9 @@ Semantic 5.44 rules (named-param ordering, slurpy-hash modeling, goto-into-block
 - `crates/perl-pragma/src/version.rs:67-93` — add `version >= PerlVersion::new(5,44) => BUNDLE_5_44_FEATURES` branch above the 5.42 arm in `features_enabled_by_version`.
 - `crates/perl-pragma/src/features.rs:10-77` — add any 5.44-introduced feature tokens + aliases to `known_feature_name` / `ALL_KNOWN_FEATURES` (guards the `apply_feature_state` silent-drop hazard at `features.rs:122-188`).
 
-**Test to add (one crate):** in `crates/perl-pragma/tests/comprehensive_unit_tests.rs` (mirroring the existing 5.42 assertion at `:2095`), assert `features_enabled_by_version(PerlVersion::new(5,44))` returns the full 5.44 set and is a **strict superset** of the 5.42 bundle; add a `prop_pragma_invariants.rs`-style case at `:445` for the 5.44 ceiling.
+**Test to add (one crate):** in `crates/perl-pragma/tests/comprehensive_unit_tests.rs` (mirroring the existing 5.42 assertion at `:2095`), assert the reviewed 5.44 profile has the same stable bundle membership as 5.42; add a `prop_pragma_invariants.rs`-style case at `:445` for the 5.44 ceiling. `enhanced_xx` remains an explicit opt-in rather than a bundle member.
 
-**Acceptance criterion:** `use v5.44;` resolves to a distinct, verified-against-`perldoc.perl.org/feature` feature set (not silently `BUNDLE_5_42_FEATURES`); `cargo test -p perl-pragma` green; no consumer asserting a 5.42 ceiling regresses.
+**Acceptance criterion:** `use v5.44;` resolves to the reviewed 5.44 profile without silently changing stable bundle membership from 5.42; `enhanced_xx` remains explicit opt-in; `cargo test -p perl-pragma` green; no consumer asserting the 5.42 ceiling regresses.
 
 **Why it beats the alternatives:**
 - **Genuinely isolated:** `enable_effective_version_semantics` (`version.rs:247`) replaces `state.features` wholesale, so the new bundle is picked up automatically — **zero downstream serializer / match-site churn**, unlike the Foreach `Vec` change (~30 exhaustive arms) or any NodeKind edit.
@@ -169,7 +183,7 @@ Replace the HashSet dedup in `crates/perl-regex/src/analyzer/hover.rs:24` (⚠�
 
 1. **Foreach `variable → Vec` is the campaign's one compile-breaking wide edit.** Unlike NamedParameter (whose additive field enrichment already landed uncommitted, using `{ variable, .. }` tolerant arms), Foreach destructures name `variable` **without `..`** at ~30 production sites, so a `Vec` change fails to compile workspace-wide until every arm is touched — including the `ast.rs:548/1033/1293` serializer/visitor triplet (must iterate the Vec) and HIR `declares_iterator` (`hir/lower.rs:803`, becomes per-binder). **Mitigation:** run a preparatory behavior-preserving PR that appends `, ..` to every Foreach arm first (the exact pattern already applied to NamedParameter per `git diff --stat`), so the semantic `Vec` change then touches only `perl-ast` + 3 construction sites. **Sequence Foreach LATE** — after A/C/E slices.
 
-2. **NamedParameter is a solved-but-uncommitted landmine.** The enrichment (5 fields, 18 `, ..` arms, `named_parameter_ast.rs`) exists only in the working tree on `claude/perl-5-44-support-sjewod-named-param-ast`. **Risk:** any new agent re-nominating "add fields to NamedParameter" duplicates done work and may conflict. **Action:** commit/land this branch (with the HIR named-param-signal split as a clean follow-up) *before* opening provider slices — and update the AST-layer and LSP-layer reports' first-slice recommendations, which are now moot/inverted.
+2. **NamedParameter was a solved-but-uncommitted observation in this snapshot.** The enrichment (5 fields, 18 `, ..` arms, `named_parameter_ast.rs`) was observed on `claude/perl-5-44-support-sjewod-named-param-ast`. This branch reference is historical and must not be treated as a current candidate or action item; current named-parameter work follows [#8279](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/8279) and its active successors.
 
 3. **The provider sequencing dependency asserted by the LSP report is false.** ⚠️ Named active-param mapping and `name =>` completion do **not** need to wait on an AST slice — `external_name` already exists (`ast.rs:2126`, populated `variables.rs:1051`). These can proceed in parallel with the version-bundle work.
 

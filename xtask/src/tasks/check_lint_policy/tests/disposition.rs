@@ -3,11 +3,10 @@ use super::{deferred_lint, empty_cargo, ledger_with, lint_entry, planned_lint, t
 use color_eyre::eyre::{Result, bail};
 use toml::Value;
 
-const REQUIRED: [&str; 8] = [
+const REQUIRED: [&str; 7] = [
     "rust::const_item_interior_mutations",
     "rust::function_casts_as_integer",
     "clippy::same_length_and_capacity",
-    "clippy::disallowed_fields",
     "clippy::manual_checked_ops",
     "clippy::manual_ilog2",
     "clippy::manual_take",
@@ -21,10 +20,9 @@ fn required_ledger() -> super::super::model::LintLedger {
         lint_entry(REQUIRED[2], "tracked"),
     ]);
     ledger.planned.push(planned_lint(REQUIRED[3], "1.96"));
-    ledger.planned.push(planned_lint(REQUIRED[4], "1.96"));
-    ledger.lint.push(lint_entry(REQUIRED[5], "active"));
+    ledger.lint.push(lint_entry(REQUIRED[4], "active"));
+    ledger.deferred_due.push(deferred_lint(REQUIRED[5], "1.95"));
     ledger.deferred_due.push(deferred_lint(REQUIRED[6], "1.95"));
-    ledger.deferred_due.push(deferred_lint(REQUIRED[7], "1.95"));
     ledger
 }
 
@@ -154,15 +152,21 @@ fn expired_deferred_lint_fails() -> Result<()> {
 #[test]
 fn required_lint_identity_cannot_be_deleted_from_the_merged_model() -> Result<()> {
     let mut ledger = required_ledger();
-    ledger.planned.retain(|lint| lint.name != REQUIRED[4]);
+    ledger.planned.retain(|lint| lint.name != REQUIRED[3]);
 
     let result = validate_required_dispositions(&ledger);
     let Err(error) = result else {
         bail!("missing required lint identity should fail closed");
     };
-    assert!(error.to_string().contains(REQUIRED[4]));
+    assert!(error.to_string().contains(REQUIRED[3]));
     assert!(error.to_string().contains("exactly once"));
     Ok(())
+}
+
+#[test]
+fn disallowed_fields_phase1_does_not_depend_on_required_dispositions() -> Result<()> {
+    let ledger = required_ledger();
+    validate_required_dispositions(&ledger)
 }
 
 #[test]
