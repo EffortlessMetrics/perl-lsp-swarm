@@ -5199,15 +5199,16 @@ profile = "recommended"
         let sentinel = temp.path().join("not-killed.txt");
         // The child writes the sentinel only if it is still alive after its
         // sleep; a kill at the deadline means the file can never appear. The
-        // 1 s sleep keeps the child alive well past the 250 ms budget, and the
-        // `q{...}` quoting keeps Windows backslash paths literal.
+        // 1 s sleep keeps the child alive well past the 250 ms budget. The
+        // sentinel path travels through the environment, never through
+        // generated Perl source: a temp directory containing `}` (or any
+        // other quote metacharacter) would terminate or unbalance a `q{...}`
+        // literal and false-fail this control with a child syntax error.
         let mut command = Command::new(perl_path);
+        command.env("PERL_LSP_KILL_PROOF_SENTINEL", &sentinel);
         command.args([
             "-e",
-            &format!(
-                "sleep 1; open my $fh, '>', q{{{}}}; print $fh 'not killed'",
-                sentinel.display()
-            ),
+            "sleep 1; open my $fh, '>', $ENV{PERL_LSP_KILL_PROOF_SENTINEL}; print $fh 'not killed'",
         ]);
 
         let start = Instant::now();
@@ -5234,11 +5235,12 @@ profile = "recommended"
         );
 
         // Deterministic kill proof: if the kill regressed, the child finishes
-        // its sleep roughly 1 s after spawn and writes the sentinel. The
-        // observation window stays well past that write moment (interpreter
-        // boot is tens of milliseconds even on slow hosts), so any appearance
-        // is the regression; absence after the window is the proof.
-        let kill_proof_window = Duration::from_secs(4);
+        // its sleep roughly 1 s after spawn and writes the sentinel. The kill
+        // itself fires at ~250 ms — after interpreter boot, so the write can
+        // only land near t≈1.05 s — and the 2 s window keeps ~1 s of margin
+        // past that moment while halving the happy-path wait; absence after
+        // the window is the proof.
+        let kill_proof_window = Duration::from_secs(2);
         let proof_start = Instant::now();
         while proof_start.elapsed() < kill_proof_window {
             if sentinel.exists() {
@@ -5301,6 +5303,19 @@ profile = "recommended"
         assert!(paths.is_empty(), "expected empty @INC on timeout, got {paths:?}");
         // The probe must actually reach its deadline, not short-circuit
         // before it (#13200).
+        // Latency-ceiling ratchet: the stall bounds in this control derive
+        // from `SYSTEM_INC_PROBE_TIMEOUT` itself, so silent growth of the
+        // production constant (1 s → 8 s, say) would pass every relative
+        // bound while module resolution blocks for the whole deadline. This
+        // pin turns any deadline change into a deliberate, reviewed edit;
+        // 1000 ms is the documented intent (long enough for healthy probes,
+        // short enough not to block the LSP request thread).
+        assert_eq!(
+            SYSTEM_INC_PROBE_TIMEOUT,
+            Duration::from_secs(1),
+            "the startup @INC probe deadline is a documented 1 s latency ceiling; \
+             move this pin deliberately if the product contract changes"
+        );
         assert!(
             elapsed >= SYSTEM_INC_PROBE_TIMEOUT,
             "probe returned before SYSTEM_INC_PROBE_TIMEOUT, took {elapsed:?}",
@@ -5380,16 +5395,16 @@ profile = "recommended"
         })
     }
 
-    /// `perl_args` supplied by the caller must reach the probe command: an
-    /// `-I dir` argument must surface in the probed startup `@INC` so
-    /// downstream module resolution can consume it. This is the live-probe
-    /// half of the trimmed `append_system_inc_paths` coverage in
+    /// `perl_args` supplied by the caller must reach the probe command: at
+    /// least one supplied `-I dir` variant must surface in the probed startup
+    /// `@INC` so downstream module resolution can consume it. This is the
+    /// live-probe half of the trimmed `append_system_inc_paths` coverage in
     /// `perl-lsp-rs` (#13201); the probe budget is widened through the
     /// `PerlOracleEnv` seam so a cold interpreter start under parallel load
     /// cannot race the 1 s default deadline.
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
-    fn get_system_inc_probe_returns_perl_arg_include_paths() -> TestResult {
+    fn get_system_inc_probe_surfaces_perl_arg_include_path() -> TestResult {
         PerlOracleEnv::with_startup_inc_probe_timeout(Duration::from_secs(30), || {
             let perl_path = match resolve_perl_path_with_toolchain() {
                 Ok(path) => path,
@@ -5400,9 +5415,12 @@ profile = "recommended"
             std::fs::create_dir_all(&inc_path)?;
 
             // The duplicated `-I` (with and without the native separator)
-            // mirrors the normalized-variant shape a real interpreter yields;
-            // the strict dot-skip and dedupe semantics for these variants are
-            // owned by the synthetic `append_system_inc_paths_from` test in
+            // mirrors the normalized-variant shape a real interpreter yields.
+            // This control pins only that a caller-supplied `-I` variant
+            // reaches the live probe (`any`): per-variant propagation counts
+            // depend on platform interpreter normalization, and the strict
+            // dot-skip and dedupe semantics for these variants are owned by
+            // the synthetic `append_system_inc_paths_from` test in
             // `perl-lsp-rs`.
             let mut config = WorkspaceConfig {
                 use_system_inc: true,
@@ -5420,7 +5438,7 @@ profile = "recommended"
                 SystemIncProbeOutcome::Paths(paths) => {
                     assert!(
                         paths.iter().any(|path| path == &inc_path),
-                        "probed @INC must contain the -I interpreter arg path, got {paths:?}"
+                        "probed @INC must surface the -I interpreter arg path, got {paths:?}"
                     );
                 }
                 outcome => {
