@@ -1578,7 +1578,7 @@ impl LspServer {
                 // #5411 fixed for goto-definition -- a position the naive
                 // quote-counter classifies as both comment and string would
                 // wrongly skip this guard.
-                if perl_lsp_rs_core::providers::rename::is_in_comment(offset, &doc.text) {
+                if super::navigation::is_in_comment_naive(offset, &doc.text) {
                     break 'completion_response None;
                 }
 
@@ -1932,8 +1932,7 @@ impl LspServer {
                 // #5411 fixed for goto-definition -- a position the naive
                 // quote-counter classifies as both comment and string would
                 // wrongly skip this guard.
-                let in_comment =
-                    perl_lsp_rs_core::providers::rename::is_in_comment(offset, &doc.text);
+                let in_comment = super::navigation::is_in_comment_naive(offset, &doc.text);
 
                 // Test-only rendezvous: gives a regression test a
                 // deterministic window to land a cancellation here instead

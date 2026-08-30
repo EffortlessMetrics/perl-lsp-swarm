@@ -105,30 +105,6 @@ pub fn find_occurrences_in_text(
     edits
 }
 
-/// Check if position is in a comment
-pub fn is_in_comment(position: usize, source: &str) -> bool {
-    let line_start =
-        if position == 0 { 0 } else { source[..position].rfind('\n').map_or(0, |p| p + 1) };
-    let line = &source[line_start..];
-
-    if let Some(comment_pos) = line.find('#') {
-        let comment_absolute = line_start + comment_pos;
-        position >= comment_absolute
-    } else {
-        false
-    }
-}
-
-/// Check if position is in a string
-pub fn is_in_string(position: usize, source: &str) -> bool {
-    // Simple heuristic - count quotes before position
-    let before = &source[..position];
-    let single_quotes = before.matches('\'').count();
-    let double_quotes = before.matches('"').count();
-
-    single_quotes % 2 == 1 || double_quotes % 2 == 1
-}
-
 /// Apply rename edits to source text
 #[allow(dead_code)]
 pub fn apply_rename_edits(source: &str, edits: &[TextEdit]) -> String {
@@ -156,7 +132,7 @@ mod tests {
 
     use super::{
         RenameOptions, TextEdit, adjust_location_for_sigil, apply_rename_edits,
-        find_occurrences_in_text, is_in_comment, is_in_string,
+        find_occurrences_in_text,
     };
 
     #[test]
@@ -165,21 +141,6 @@ mod tests {
         let adjusted = adjust_location_for_sigil(location, SymbolKind::Variable(VarKind::Scalar));
         assert_eq!(adjusted.start, 11);
         assert_eq!(adjusted.end, 14);
-        Ok(())
-    }
-
-    #[test]
-    fn comment_and_string_detection_respects_line_and_quote_boundaries()
-    -> Result<(), Box<dyn Error>> {
-        let source = "my $x = 1;\n# comment with $x\nmy $s = \"$x\";\n";
-        let declaration_pos = source.find("$x =").ok_or("missing declaration")?;
-        let comment_pos = source.find("# comment with $x").ok_or("missing comment")? + 15;
-        let string_pos = source.rfind("$x\"").ok_or("missing string use")?;
-
-        assert!(!is_in_comment(declaration_pos, source));
-        assert!(is_in_comment(comment_pos, source));
-        assert!(!is_in_string(declaration_pos, source));
-        assert!(is_in_string(string_pos, source));
         Ok(())
     }
 
@@ -270,44 +231,6 @@ mod tests {
         let location = SourceLocation { start: 10, end: 20 };
         let adjusted = adjust_location_for_sigil(location, SymbolKind::Subroutine);
         assert_eq!(adjusted.start, 10);
-        Ok(())
-    }
-
-    #[test]
-    fn is_in_comment_empty_source() -> Result<(), Box<dyn Error>> {
-        assert!(!is_in_comment(0, ""));
-        Ok(())
-    }
-
-    #[test]
-    fn is_in_comment_single_hash() -> Result<(), Box<dyn Error>> {
-        assert!(is_in_comment(0, "#"));
-        Ok(())
-    }
-
-    #[test]
-    fn is_in_comment_multiline_no_hash_on_second_line() -> Result<(), Box<dyn Error>> {
-        let source = "my $var\n$value";
-        let pos = source.find("\n").ok_or("newline not found")? + 1;
-        assert!(!is_in_comment(pos, source));
-        Ok(())
-    }
-
-    #[test]
-    fn is_in_string_empty_source() -> Result<(), Box<dyn Error>> {
-        assert!(!is_in_string(0, ""));
-        Ok(())
-    }
-
-    #[test]
-    fn is_in_string_before_open_quote() -> Result<(), Box<dyn Error>> {
-        assert!(!is_in_string(0, "'string'"));
-        Ok(())
-    }
-
-    #[test]
-    fn is_in_string_inside_quotes() -> Result<(), Box<dyn Error>> {
-        assert!(is_in_string(1, "'string'"));
         Ok(())
     }
 

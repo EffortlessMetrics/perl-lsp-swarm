@@ -25,8 +25,9 @@ use perl_lexer::is_rename_keyword;
 use perl_lsp_rs_core::providers::navigation::rename_shadow::{
     RenamePackagePilotIneligibleReason, RenamePackagePilotResult, rename_package_pilot_proof,
 };
-use perl_lsp_rs_core::providers::rename::{
-    RenameOptions, RenameProvider, TextEdit as RenameEdit, is_in_comment, is_in_string,
+use perl_lsp_rs_core::providers::rename::{RenameOptions, RenameProvider, TextEdit as RenameEdit};
+use perl_parser_core::syntax::source_context::{
+    RangeClassification, SourceRegionIndex, SourceRegionKind,
 };
 #[cfg(feature = "workspace")]
 use perl_semantic_facts::{EntityId, FileId, PlannedEdit};
@@ -190,22 +191,46 @@ fn add_qualified_document_rename_edits<F>(
 ) where
     F: Fn(usize) -> (u32, u32),
 {
+    // Generation-bound lexical evidence built from the same immutable source
+    // string this scan reads (#5003/#4964): classification and text can never
+    // come from different generations, for live, indexed, and disk documents
+    // alike.
+    let region_index = SourceRegionIndex::build(source);
+    let bytes = source.as_bytes();
+
+    let mut skipped_unproven_region = 0_usize;
+    let mut skipped_boundary = 0_usize;
+
     for (match_start, _) in source.match_indices(qualified_name) {
-        let before_ok = source
-            .get(..match_start)
-            .and_then(|prefix| prefix.chars().next_back())
-            .is_none_or(|ch| !ch.is_alphanumeric() && ch != '_' && ch != ':' && ch != '\'');
         let name_start = match_start + package_len + "::".len();
         let name_end = name_start + symbol_len;
-        let after_ok = source
-            .get(name_end..)
-            .and_then(|suffix| suffix.chars().next())
-            .is_none_or(|ch| !ch.is_alphanumeric() && ch != '_' && ch != ':' && ch != '\'');
-        if !before_ok
-            || !after_ok
-            || is_in_comment(name_start, source)
-            || is_in_string(name_start, source)
-        {
+        if name_end > source.len() {
+            continue;
+        }
+
+        // Whole candidate range — package, separator, and symbol — must be
+        // proven `Code`. Ambiguous spans, recovery input, comments, POD,
+        // literals, quote-likes, regex bodies, heredocs, and `__DATA__` all
+        // fail closed: a textual `Pkg::name` shape is not evidence that it
+        // refers to the renamed entity (#4964).
+        if !matches!(
+            region_index.classify_range(match_start, name_end),
+            RangeClassification::Proven { kind: SourceRegionKind::Code }
+        ) {
+            skipped_unproven_region += 1;
+            continue;
+        }
+
+        // Byte-coordinate boundary validation: Perl package names are ASCII,
+        // so only ASCII name bytes (and the legacy apostrophe separator)
+        // reject a candidate. UTF-8 continuation bytes and non-ASCII
+        // neighbors are not name bytes and must not suppress a real edit.
+        let before_ok =
+            match_start == 0 || !is_perl_qualified_name_boundary_byte(bytes[match_start - 1]);
+        let after_ok =
+            name_end >= bytes.len() || !is_perl_qualified_name_boundary_byte(bytes[name_end]);
+        if !before_ok || !after_ok {
+            skipped_boundary += 1;
             continue;
         }
 
@@ -224,6 +249,27 @@ fn add_qualified_document_rename_edits<F>(
             "newText": new_name_bare
         }));
     }
+
+    if skipped_unproven_region > 0 {
+        tracing::debug!(
+            uri = %edit_uri,
+            skipped_unproven_region,
+            "qualified rename fallback skipped candidates whose region is not proven code (#4964)"
+        );
+    }
+    if skipped_boundary > 0 {
+        tracing::debug!(
+            uri = %edit_uri,
+            skipped_boundary,
+            "qualified rename fallback skipped candidates failing byte boundary validation (#4964)"
+        );
+    }
+}
+
+/// A byte that would extend a Perl qualified name left or right: ASCII name
+/// characters, package separators, or the legacy apostrophe separator.
+fn is_perl_qualified_name_boundary_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_' || byte == b':' || byte == b'\''
 }
 
 impl LspServer {
@@ -311,14 +357,20 @@ impl LspServer {
         let mut live_document_keys = BTreeSet::new();
         let mut indexed_document_keys = BTreeSet::new();
 
+        // Lexical evidence for the request document, derived from the same
+        // text generation this scan reads (#4964).
+        let request_region_index = SourceRegionIndex::build(&request_doc.text);
+
         let mut line_start = 0_usize;
         for line in request_doc.text.split_inclusive('\n') {
             if let Some((name_start, name_end)) =
                 range_starts_with_sub_declaration_name(line, line_start, key.name.as_ref())
                 && crate::declaration::current_package_at(request_ast, name_start)
                     == key.pkg.as_ref()
-                && !is_in_comment(name_start, &request_doc.text)
-                && !is_in_string(name_start, &request_doc.text)
+                && matches!(
+                    request_region_index.classify_range(name_start, name_end),
+                    RangeClassification::Proven { kind: SourceRegionKind::Code }
+                )
             {
                 let (start_line, start_char) = self.offset_to_pos16(request_doc, name_start);
                 let (end_line, end_char) = self.offset_to_pos16(request_doc, name_end);
