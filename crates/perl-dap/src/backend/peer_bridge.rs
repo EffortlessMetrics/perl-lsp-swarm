@@ -1104,6 +1104,48 @@ mod tests {
         Ok(())
     }
 
+    /// #9573: the external-peer bridge refuses hover before delegating.
+    ///
+    /// Discriminating because the backend here IS connected: without the gate a
+    /// hover request would succeed with a `=$x` result, exactly as the `watch`
+    /// case above does. The `watch` control in this same test proves the gate
+    /// did not simply break all evaluation.
+    #[test]
+    fn hover_context_is_refused_before_delegating_to_the_peer() -> Result<(), String> {
+        let mut b = bridge();
+
+        for context in ["hover", "Hover", "HOVER"] {
+            let out =
+                b.dispatch(7, "evaluate", Some(json!({ "expression": "$x", "context": context })));
+            let (cmd, ok, body) = as_response(&out[0])?;
+            assert_eq!(cmd, "evaluate");
+            assert!(!ok, "hover-context evaluate must be refused ({context})");
+            assert!(body.is_none(), "a refused hover must not carry a result body ({context})");
+            if let DapMessage::Response { message, .. } = &out[0] {
+                let message = message.as_deref().unwrap_or("");
+                assert!(
+                    message.contains("supportsEvaluateForHovers"),
+                    "{context}: expected the #9573 hover refusal, got {message:?}"
+                );
+            }
+        }
+
+        // Negative control: watch still evaluates against the same live backend.
+        let ok = b.dispatch(8, "evaluate", Some(json!({ "expression": "$x", "context": "watch" })));
+        assert_eq!(must_some(as_response(&ok[0])?.2)["result"], "=$x");
+        Ok(())
+    }
+
+    /// #9573: the advertised capability agrees with the enforced behaviour.
+    #[test]
+    fn peer_bridge_never_advertises_hover() -> Result<(), String> {
+        let mut b = bridge();
+        let out = b.dispatch(1, "initialize", Some(json!({ "adapterID": "perl" })));
+        let caps = must_some(as_response(&out[0])?.2);
+        assert_eq!(caps["supportsEvaluateForHovers"], false);
+        Ok(())
+    }
+
     #[test]
     fn breakpoint_locations_reports_breakable_lines_from_ast() -> Result<(), String> {
         use std::io::Write;

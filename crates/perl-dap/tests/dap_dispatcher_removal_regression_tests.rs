@@ -102,8 +102,11 @@ fn initialize_reports_configuration_done_and_evaluate_for_hovers() {
 
     let configuration_done =
         body.get("supportsConfigurationDoneRequest").and_then(|v| v.as_bool()).unwrap_or(false);
+    // `unwrap_or(true)` so an *omitted* key fails the inverted assertion below.
+    // With `unwrap_or(false)` a regression that dropped the key entirely would
+    // default to false and pass, which would silently weaken this regression.
     let evaluate_for_hovers =
-        body.get("supportsEvaluateForHovers").and_then(|v| v.as_bool()).unwrap_or(false);
+        body.get("supportsEvaluateForHovers").and_then(|v| v.as_bool()).unwrap_or(true);
 
     assert!(configuration_done, "supportsConfigurationDoneRequest must be true");
     // #9573: hover is deliberately advertised false. There is no pure

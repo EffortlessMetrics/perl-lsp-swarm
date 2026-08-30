@@ -19,6 +19,22 @@
 //!   session and frame inspection;
 //! * non-hover contexts must *not* produce the hover refusal, proving the gate
 //!   is scoped and that watch/repl/clipboard evaluation is untouched.
+//!
+//! # What this file does NOT prove
+//!
+//! Every test here drives an adapter that was never launched or attached, so
+//! there is no live perl5db process to observe. That bounds three claims:
+//!
+//! * "no debugger command was written" is established by *which refusal fires*
+//!   and by source ordering, not by instrumenting a real debugger's input;
+//! * `frameId` values are varied, but there is no live stack, so "current vs
+//!   stale vs other frame" identity is not exercised — only frame-ID values;
+//! * "no reference or cache state was allocated" is proven through the absent
+//!   response body, not by inspecting the variable cache directly.
+//!
+//! A same-session receipt against the real `--stdio` binary with a stopped
+//! session is the stronger proof and is owned by #1743/#7567, which this claim
+//! deliberately does not implement.
 
 #![cfg(feature = "dap-phase2")]
 
