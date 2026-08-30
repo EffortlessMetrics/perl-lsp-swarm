@@ -1,6 +1,5 @@
 use serde_json::json;
 use std::io::Write;
-use std::time::Duration;
 
 mod common;
 #[allow(unused_imports)]
@@ -12,6 +11,10 @@ use common::{
 // Comprehensive protocol violation tests
 // Tests all possible ways the LSP protocol can be violated
 // Run with: cargo test -p perl-lsp-rs --features strict-jsonrpc
+//
+// Flaky-census wave 1: 13 settle-sleeps that asserted nothing were deleted
+// (teardown is handled by LspServer's Drop; nothing here observes elapsed time).
+// https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/11869#issuecomment-5461166201
 
 fn require_error_response(
     response: &serde_json::Value,
@@ -84,7 +87,6 @@ fn test_notification_with_id() {
     );
 
     // Server should handle gracefully
-    std::thread::sleep(Duration::from_millis(100));
 }
 
 #[test]
@@ -104,7 +106,6 @@ fn test_request_without_id() {
         }),
     );
 
-    std::thread::sleep(Duration::from_millis(100));
     // Server should treat as notification
 }
 
@@ -158,7 +159,6 @@ fn test_invalid_content_length_header() -> Result<(), Box<dyn std::error::Error>
         .write_all(b"Content-Length: not-a-number\r\n\r\n{\"jsonrpc\":\"2.0\"}")?;
     server.stdin_writer().flush()?;
 
-    std::thread::sleep(Duration::from_millis(100));
     // Server should recover
     Ok(())
 }
@@ -176,7 +176,6 @@ fn test_mismatched_content_length() -> Result<(), Box<dyn std::error::Error>> {
         .write_all(format!("Content-Length: {}\r\n\r\n{}", wrong_length, content).as_bytes())?;
     server.stdin_writer().flush()?;
 
-    std::thread::sleep(Duration::from_millis(100));
     // Server should handle gracefully
     Ok(())
 }
@@ -191,7 +190,6 @@ fn test_missing_content_length_header() -> Result<(), Box<dyn std::error::Error>
         .write_all(b"\r\n{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}")?;
     server.stdin_writer().flush()?;
 
-    std::thread::sleep(Duration::from_millis(100));
     // Server should reject
     Ok(())
 }
@@ -234,7 +232,6 @@ fn test_invalid_utf8_in_message() -> Result<(), Box<dyn std::error::Error>> {
     server.stdin_writer().write_all(&invalid_content)?;
     server.stdin_writer().flush()?;
 
-    std::thread::sleep(Duration::from_millis(100));
     // Server should handle invalid UTF-8
     Ok(())
 }
@@ -398,7 +395,6 @@ fn test_circular_json_reference() -> Result<(), Box<dyn std::error::Error>> {
     send_request(&server, serde_json::from_str(circular_json)?);
 
     // Should handle without stack overflow
-    std::thread::sleep(Duration::from_millis(100));
     Ok(())
 }
 
@@ -576,7 +572,6 @@ fn test_invalid_uri_schemes() {
         );
 
         // Should handle invalid URIs gracefully
-        std::thread::sleep(Duration::from_millis(50));
     }
 }
 
@@ -596,7 +591,6 @@ fn test_response_without_request() {
     );
 
     // Server should ignore or handle gracefully
-    std::thread::sleep(Duration::from_millis(100));
 }
 
 #[cfg(feature = "strict-jsonrpc")]
@@ -607,8 +601,6 @@ fn test_batch_request_violations() -> Result<(), Box<dyn std::error::Error>> {
     // Empty batch
     server.stdin_writer().write_all(b"Content-Length: 2\r\n\r\n[]")?;
     server.stdin_writer().flush()?;
-
-    std::thread::sleep(Duration::from_millis(100));
 
     // Batch with mixed valid/invalid
     let batch = json!([
@@ -624,7 +616,6 @@ fn test_batch_request_violations() -> Result<(), Box<dyn std::error::Error>> {
     server.stdin_writer().flush()?;
 
     // Should process valid ones and error on invalid
-    std::thread::sleep(Duration::from_millis(200));
     Ok(())
 }
 
@@ -640,8 +631,9 @@ fn test_incomplete_message() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     server.stdin_writer().flush()?;
 
-    // Server should timeout or error
-    std::thread::sleep(Duration::from_millis(500));
+    // Smoke test: the server must not panic on a truncated frame. No
+    // response is observed yet; a deadline-based reader assertion is
+    // tracked as follow-up wave work (see PR #13643 review).
     Ok(())
 }
 
@@ -682,5 +674,4 @@ fn test_method_result_and_error() {
     );
 
     // Server should handle this protocol violation
-    std::thread::sleep(Duration::from_millis(100));
 }
