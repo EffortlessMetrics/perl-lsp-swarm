@@ -420,9 +420,12 @@ fn validate_workflow(source: &str) -> Result<()> {
                 || line.starts_with("selected_tests+=")
                 || line.starts_with("selected_tests[") && line.contains("]=")
                 || line == "unset selected_tests"
+                || line.starts_with("unset selected_tests[")
                 || line.starts_with("unset 'selected_tests[")
                 || line.starts_with("unset \"selected_tests[")
+                || line.starts_with("declare selected_tests")
                 || line.starts_with("declare -a selected_tests")
+                || line.starts_with("typeset selected_tests")
                 || line.starts_with("typeset -a selected_tests")
                 || (line.contains("mapfile") || line.contains("readarray"))
                     && line.contains("selected_tests")
@@ -625,6 +628,22 @@ fn static_contract_rejects_structural_proof_and_trigger_mutations() -> Result<()
         (
             "          )\n\n          test_list=\"$(mktemp)\"",
             "          )\n          unset \"selected_tests[0]\"\n\n          test_list=\"$(mktemp)\"",
+        ),
+        (
+            "          )\n\n          test_list=\"$(mktemp)\"",
+            "          )\n          unset selected_tests[0]\n\n          test_list=\"$(mktemp)\"",
+        ),
+        (
+            "          )\n\n          test_list=\"$(mktemp)\"",
+            "          )\n          declare selected_tests=(api::topology::tests::symlinked_entries_fail_closed)\n\n          test_list=\"$(mktemp)\"",
+        ),
+        (
+            "          )\n\n          test_list=\"$(mktemp)\"",
+            "          )\n          typeset selected_tests=(api::topology::tests::symlinked_entries_fail_closed)\n\n          test_list=\"$(mktemp)\"",
+        ),
+        (
+            "          )\n\n          test_list=\"$(mktemp)\"",
+            "          )\n          readarray -t selected_tests < \"$test_list\"\n\n          test_list=\"$(mktemp)\"",
         ),
         (TOPOLOGY_EXECUTION_SOURCE_ANCHOR, ""),
     ] {
