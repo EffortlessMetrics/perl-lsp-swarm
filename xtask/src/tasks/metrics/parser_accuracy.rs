@@ -43,6 +43,7 @@ use perl_workspace::workspace::workspace_index::{FileFactShard, WorkspaceIndex};
 use serde::{Deserialize, Serialize};
 
 use crate::allocation_tracker::{get_current_memory_usage, measure_allocations};
+use crate::tasks::metrics::parser_accuracy_metamorphic_registry;
 use crate::tasks::metrics::ratchet::MetricReceipt;
 use crate::utils::project_root;
 
@@ -1077,6 +1078,23 @@ fn build_status_artifact(
     cadence: Cadence,
 ) -> Result<(ParserAccuracyManifest, ParserAccuracyArtifact)> {
     let start = Instant::now();
+    // #13659: consult the authored metamorphic safe-point/region registry
+    // before scoring. A drifted registry (stale pinned digests, unresolvable
+    // anchors, or admitted propositions that no longer validate) fails the run
+    // closed instead of scoring against unresolvable propositions.
+    let registry_inconsistencies =
+        parser_accuracy_metamorphic_registry::authored_registry_inconsistencies();
+    if !registry_inconsistencies.is_empty() {
+        let details = registry_inconsistencies
+            .iter()
+            .map(|inconsistency| format!("{}: {}", inconsistency.case_id, inconsistency.detail))
+            .collect::<Vec<_>>()
+            .join("; ");
+        bail!(
+            "registered metamorphic safe-point/region registry is inconsistent ({} findings): {details}",
+            registry_inconsistencies.len()
+        );
+    }
     let manifest = read_manifest(root, manifest_path)?;
     let rss_before = get_current_memory_usage().ok();
     let (artifact, allocation_measurement) =

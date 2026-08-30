@@ -10,6 +10,13 @@ pub mod lsp_stats;
 mod lsp_stats_impl;
 pub mod memory;
 pub mod parser_accuracy;
+// The safe-point/region registry is consumed in production by the
+// parser-accuracy integrity consult today; its full typed surface (admission
+// decisions, outcome accessors, per-fixture evaluation) becomes bin-reachable
+// as the typed plane comparator (#13662) and single-run control plane (#13664)
+// land. The applicability suites exercise the complete surface.
+#[allow(dead_code)]
+pub mod parser_accuracy_metamorphic_registry;
 pub mod parser_accuracy_metamorphic_transform;
 pub mod parser_stats;
 pub mod ratchet;
