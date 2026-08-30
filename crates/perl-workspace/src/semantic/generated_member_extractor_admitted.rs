@@ -4,7 +4,8 @@
 //! based on raw source spelling. DBIx::Class is registered as a shadow adapter
 //! with no provider surfaces, so those compatibility facts are not publication
 //! authority. This wrapper preserves the legacy implementation as a comparison
-//! oracle while removing only its DBIx::Class rows from the canonical path.
+//! oracle while removing only facts anchored inside its active DBIx::Class DSL
+//! calls from the canonical path.
 //!
 //! Remove this quarantine only through #13979 after #9736/#9739/#9741 publish
 //! the equivalent admitted facts and the matching provider surfaces prove
@@ -14,7 +15,6 @@ use super::legacy_generated_member_extractor;
 pub(crate) use super::legacy_generated_member_extractor::GeneratedMemberFact;
 use crate::{Node, NodeKind};
 use perl_semantic_facts::FileId;
-use std::collections::BTreeSet;
 
 #[derive(Debug, Clone, Default)]
 struct WalkCtx {
@@ -22,18 +22,16 @@ struct WalkCtx {
     dbix_class_active: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct NameCandidate {
-    name: String,
-    span_start: usize,
-    span_end: usize,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct QuarantinedRange {
+    start: usize,
+    end: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-struct QuarantinedMember {
-    canonical_name: String,
-    span_start_byte: u32,
-    span_end_byte: u32,
+impl QuarantinedRange {
+    fn contains(self, start: u32, end: u32) -> bool {
+        self.start <= start as usize && end as usize <= self.end
+    }
 }
 
 /// Extract generated-member facts admitted to the canonical workspace shard.
@@ -42,28 +40,26 @@ pub(crate) fn extract_generated_member_facts(
     file_id: FileId,
 ) -> Vec<GeneratedMemberFact> {
     let mut facts = legacy_generated_member_extractor::extract_generated_member_facts(ast, file_id);
-    let mut quarantined = BTreeSet::new();
-    collect_quarantined_dbix_members(ast, &mut WalkCtx::default(), &mut quarantined);
+    let mut quarantined = Vec::new();
+    collect_quarantined_dbix_ranges(ast, &mut WalkCtx::default(), &mut quarantined);
 
     facts.retain(|fact| {
-        !quarantined.contains(&QuarantinedMember {
-            canonical_name: fact.entity.canonical_name.clone(),
-            span_start_byte: fact.anchor.span_start_byte,
-            span_end_byte: fact.anchor.span_end_byte,
+        !quarantined.iter().any(|range| {
+            range.contains(fact.anchor.span_start_byte, fact.anchor.span_end_byte)
         })
     });
     facts
 }
 
-fn collect_quarantined_dbix_members(
+fn collect_quarantined_dbix_ranges(
     node: &Node,
     ctx: &mut WalkCtx,
-    out: &mut BTreeSet<QuarantinedMember>,
+    out: &mut Vec<QuarantinedRange>,
 ) {
     match &node.kind {
         NodeKind::Program { statements } | NodeKind::Block { statements } => {
             for statement in statements {
-                collect_quarantined_dbix_members(statement, ctx, out);
+                collect_quarantined_dbix_ranges(statement, ctx, out);
             }
         }
         NodeKind::Package { name, block, .. } => {
@@ -71,7 +67,7 @@ fn collect_quarantined_dbix_members(
                 let saved = ctx.clone();
                 ctx.current_package = Some(name.clone());
                 ctx.dbix_class_active = false;
-                collect_quarantined_dbix_members(block, ctx, out);
+                collect_quarantined_dbix_ranges(block, ctx, out);
                 *ctx = saved;
             } else {
                 ctx.current_package = Some(name.clone());
@@ -90,178 +86,41 @@ fn collect_quarantined_dbix_members(
             ctx.dbix_class_active = false;
         }
         NodeKind::ExpressionStatement { expression } if ctx.dbix_class_active => {
-            collect_dbix_class_call(expression, ctx, out);
+            if is_current_package_method_call(expression, ctx) {
+                out.push(QuarantinedRange {
+                    start: expression.location.start,
+                    end: expression.location.end,
+                });
+            }
         }
         NodeKind::Subroutine { .. } | NodeKind::Method { .. } => {}
         _ => {
             for child in node.children() {
-                collect_quarantined_dbix_members(child, ctx, out);
+                collect_quarantined_dbix_ranges(child, ctx, out);
             }
         }
     }
 }
 
-fn collect_dbix_class_call(
-    expression: &Node,
-    ctx: &WalkCtx,
-    out: &mut BTreeSet<QuarantinedMember>,
-) {
-    let NodeKind::MethodCall { object, method, args } = &expression.kind else {
-        return;
+fn is_current_package_method_call(expression: &Node, ctx: &WalkCtx) -> bool {
+    let NodeKind::MethodCall { object, .. } = &expression.kind else {
+        return false;
     };
-    if !package_target_matches_current_package(object, ctx) {
-        return;
-    }
-
-    let package = ctx.current_package.as_deref().unwrap_or("main");
-    match method.as_str() {
-        "add_columns" => {
-            let mut arg_idx = 0;
-            while arg_idx < args.len() {
-                if let (Some(key), Some(value)) = (args.get(arg_idx), args.get(arg_idx + 1))
-                    && dbix_column_pair_shape(key, value)
-                {
-                    if let Some(candidate) = dbix_column_accessor_candidate_from_pair(key, value) {
-                        push_quarantined_member(package, &candidate, out);
-                    }
-                    arg_idx += 2;
-                } else {
-                    for candidate in collect_dbix_column_accessor_candidates(&args[arg_idx]) {
-                        push_quarantined_member(package, &candidate, out);
-                    }
-                    arg_idx += 1;
-                }
-            }
-        }
-        "has_many" | "belongs_to" | "has_one" | "might_have" => {
-            if let Some(first_arg) = args.first() {
-                for candidate in collect_name_candidates(first_arg) {
-                    if is_dbix_relationship_name(&candidate.name) {
-                        push_quarantined_member(package, &candidate, out);
-                    }
-                }
-            }
-        }
-        _ => {}
-    }
-}
-
-fn push_quarantined_member(
-    package: &str,
-    candidate: &NameCandidate,
-    out: &mut BTreeSet<QuarantinedMember>,
-) {
-    if candidate.name.is_empty() {
-        return;
-    }
-    out.insert(QuarantinedMember {
-        canonical_name: format!("{package}::{}", candidate.name),
-        span_start_byte: candidate.span_start.min(u32::MAX as usize) as u32,
-        span_end_byte: candidate.span_end.min(u32::MAX as usize) as u32,
-    });
-}
-
-fn collect_name_candidates(node: &Node) -> Vec<NameCandidate> {
-    match &node.kind {
-        NodeKind::String { value, .. } | NodeKind::Identifier { name: value } => {
-            expand_symbol_list(value)
-                .into_iter()
-                .map(|name| NameCandidate {
-                    name,
-                    span_start: node.location.start,
-                    span_end: node.location.end,
-                })
-                .collect()
-        }
-        NodeKind::ArrayLiteral { elements } => {
-            elements.iter().flat_map(collect_name_candidates).collect()
-        }
-        NodeKind::Binary { op, left, right } if op == "," => {
-            let mut names = collect_name_candidates(left);
-            names.extend(collect_name_candidates(right));
-            names
-        }
-        _ => Vec::new(),
-    }
-}
-
-fn collect_dbix_column_accessor_candidates(node: &Node) -> Vec<NameCandidate> {
-    match &node.kind {
-        NodeKind::HashLiteral { pairs } => pairs
-            .iter()
-            .filter_map(|(key, value)| dbix_column_accessor_candidate_from_pair(key, value))
-            .collect(),
-        NodeKind::Binary { op, left, right } if op == "=>" => {
-            dbix_column_accessor_candidate_from_pair(left, right)
-                .into_iter()
-                .collect()
-        }
-        NodeKind::Binary { op, left, right } if op == "," => {
-            let mut names = collect_dbix_column_accessor_candidates(left);
-            names.extend(collect_dbix_column_accessor_candidates(right));
-            names
-        }
-        _ => collect_name_candidates(node),
-    }
-}
-
-fn dbix_column_accessor_candidate_from_pair(key: &Node, value: &Node) -> Option<NameCandidate> {
-    let key_candidate = collect_name_candidates(key).into_iter().next()?;
-    let column_name = normalize_attribute_name(&key_candidate.name)?;
-    let accessor = match &value.kind {
-        NodeKind::HashLiteral { pairs } => option_value(pairs, "accessor"),
-        _ => None,
-    };
-    Some(NameCandidate {
-        name: accessor.unwrap_or(column_name),
-        span_start: key_candidate.span_start,
-        span_end: key_candidate.span_end,
-    })
-}
-
-fn option_value(pairs: &[(Node, Node)], wanted: &str) -> Option<String> {
-    let mut found = None;
-    for (key, value) in pairs {
-        let Some(key) = collect_name_candidates(key).into_iter().next() else {
-            continue;
-        };
-        if key.name == wanted {
-            found = Some(value_summary(value));
-        }
-    }
-    found
-}
-
-fn value_summary(node: &Node) -> String {
-    match &node.kind {
+    let current_package = ctx.current_package.as_deref().unwrap_or("main");
+    match &object.kind {
+        NodeKind::Identifier { name } => name == "__PACKAGE__" || name == current_package,
         NodeKind::String { value, .. } => {
-            normalize_symbol_name(value).unwrap_or_else(|| value.clone())
+            normalize_symbol_name(value).is_some_and(|name| name == current_package)
         }
-        NodeKind::Identifier { name } => name.clone(),
-        NodeKind::Number { value } => value.clone(),
-        _ => "expr".to_string(),
+        NodeKind::Variable { sigil, name } if sigil == "$" => name == current_package,
+        _ => false,
     }
-}
-
-fn dbix_column_pair_shape(key: &Node, value: &Node) -> bool {
-    matches!(key.kind, NodeKind::String { .. } | NodeKind::Identifier { .. })
-        && matches!(value.kind, NodeKind::HashLiteral { .. })
 }
 
 fn use_args_include_dbix_class(args: &[String]) -> bool {
     args.iter()
         .flat_map(|arg| expand_symbol_list(arg.trim()))
         .any(|name| is_dbix_class_module(&name))
-}
-
-fn normalize_symbol_name(raw: &str) -> Option<String> {
-    let trimmed = raw.trim().trim_matches('\'').trim_matches('"').trim();
-    (!trimmed.is_empty()).then(|| trimmed.to_string())
-}
-
-fn normalize_attribute_name(raw: &str) -> Option<String> {
-    let trimmed = raw.trim();
-    normalize_symbol_name(trimmed.strip_prefix('+').unwrap_or(trimmed))
 }
 
 fn expand_symbol_list(raw: &str) -> Vec<String> {
@@ -298,29 +157,17 @@ fn expand_symbol_list(raw: &str) -> Vec<String> {
     normalize_symbol_name(raw).into_iter().collect()
 }
 
+fn normalize_symbol_name(raw: &str) -> Option<String> {
+    let trimmed = raw.trim().trim_matches('\'').trim_matches('"').trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
 fn is_dbix_class_module(module: &str) -> bool {
     matches!(module, "DBIx::Class" | "DBIx::Class::Core")
-}
-
-fn is_dbix_relationship_name(name: &str) -> bool {
-    let mut chars = name.chars();
-    let Some(first) = chars.next() else {
-        return false;
-    };
-    (first.is_ascii_alphabetic() || first == '_')
-        && chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
-}
-
-fn package_target_matches_current_package(object: &Node, ctx: &WalkCtx) -> bool {
-    let current_package = ctx.current_package.as_deref().unwrap_or("main");
-    match &object.kind {
-        NodeKind::Identifier { name } => name == "__PACKAGE__" || name == current_package,
-        NodeKind::String { value, .. } => {
-            normalize_symbol_name(value).is_some_and(|name| name == current_package)
-        }
-        NodeKind::Variable { sigil, name } if sigil == "$" => name == current_package,
-        _ => false,
-    }
 }
 
 #[cfg(test)]
