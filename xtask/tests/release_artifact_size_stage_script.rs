@@ -176,6 +176,14 @@ fn staging_fails_closed_when_a_binary_was_not_built() -> Result<()> {
 
 #[test]
 fn staging_fails_closed_when_a_binary_cannot_be_stripped() -> Result<()> {
+    // Without a working `strip` the script would fail with "command not found"
+    // whatever the file contained, and this test would pass for the wrong
+    // reason. The contract is that an unstripped binary is never packaged, so
+    // establish that `strip` is present before claiming to have exercised it.
+    let has_strip =
+        Command::new("strip").arg("--version").output().is_ok_and(|output| output.status.success());
+    ensure!(has_strip, "this contract needs a working `strip` on the test host");
+
     let root = staged_root()?;
     // Unlike release.yml, which tolerates a failed strip, the measurement lane
     // must not compare an unstripped binary against a stripped one.
@@ -188,6 +196,10 @@ fn staging_fails_closed_when_a_binary_cannot_be_stripped() -> Result<()> {
     ensure!(
         !output.status.success(),
         "a binary that could not be stripped must fail the staging step"
+    );
+    ensure!(
+        String::from_utf8_lossy(&output.stderr).contains("refusing to package unstripped"),
+        "the failure must be the packaging refusal, not an unrelated shell error"
     );
     Ok(())
 }

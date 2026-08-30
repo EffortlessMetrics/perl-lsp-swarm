@@ -22,11 +22,14 @@ on:
         options:
           - aarch64-apple-darwin
           - x86_64-apple-darwin
-      repeat_confirmed:
-        description: 'A confirming repeat measurement of a borderline win (0.5%-1.0%) has already been run'
-        required: false
-        type: boolean
-        default: false
+  # There is deliberately no `repeat_confirmed` input. `--repeat-confirmed` is
+  # promotion authority: it lets the instrument treat a borderline 0.5%-1.0%
+  # reduction as confirmed. A dispatcher checkbox is not evidence that a second
+  # measurement happened, and one run cannot testify that it ran twice. This
+  # lane therefore never passes the flag, and a borderline win resolves to
+  # `not_proven` naming the unmet repeat requirement — which is the truth about
+  # a single run. Confirming a borderline win is a separate, deliberate act
+  # performed with two receipts actually in hand.
 
 concurrency:
   group: release-artifact-size-shadow-${{ github.ref }}-${{ inputs.target }}
@@ -206,7 +209,6 @@ jobs:
           TARGET: ${{ inputs.target }}
           VERSION: ${{ steps.subject.outputs.version }}
           SOURCE_SHA: ${{ steps.subject.outputs.source_sha }}
-          REPEAT_CONFIRMED: ${{ inputs.repeat_confirmed }}
         run: |
           set -euo pipefail
           PKG="perllsp-${VERSION}-${TARGET}"
@@ -232,9 +234,6 @@ jobs:
             --json "target/shadow/receipts/release-artifact-size-${TARGET}.json"
             --markdown "target/shadow/receipts/release-artifact-size-${TARGET}.md"
           )
-          if [ "$REPEAT_CONFIRMED" = "true" ]; then
-            ARGS+=(--repeat-confirmed)
-          fi
           cargo run --locked -p xtask --example release_artifact_size -- "${ARGS[@]}"
 
       - name: Summarize the measurement

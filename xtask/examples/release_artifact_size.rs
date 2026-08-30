@@ -113,10 +113,7 @@ struct Args {
     baseline_rustflags: String,
 
     /// Declared candidate linker flags. Must equal the safe-ICF policy.
-    #[arg(
-        long,
-        default_value = "-C linker=rust-lld -C linker-flavor=ld64.lld -C link-arg=--icf=safe"
-    )]
+    #[arg(long, default_value = SAFE_ICF_RUSTFLAGS)]
     candidate_rustflags: String,
 
     /// JSON receipt output path.

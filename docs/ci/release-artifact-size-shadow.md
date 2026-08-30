@@ -39,11 +39,14 @@ Dispatch `Release Artifact Size Shadow` from the Actions tab, once per target:
 | `aarch64-apple-darwin` | `macos-14` |
 | `x86_64-apple-darwin` | `macos-15-intel` |
 
-Set `repeat_confirmed` only when a previous run of the *same* target and SHA
-already produced a borderline win and you are running the confirming repeat.
-Issue #5432 requires one repeat before adopting a combined reduction between
-0.5% and 1.0%; declaring the repeat without having run it is the one input that
-can turn an unconfirmed borderline result into `adopt`.
+The target is the only input. In particular there is no "repeat confirmed"
+checkbox: `--repeat-confirmed` is promotion authority — it lets the instrument
+treat a borderline 0.5%–1.0% reduction as confirmed — and a dispatcher ticking
+a box is not evidence that a second measurement happened. A single run cannot
+testify that it ran twice, so this lane never passes the flag and a borderline
+win resolves to `not_proven` naming the unmet repeat requirement. Confirming
+such a result is a separate, deliberate act performed with two receipts
+actually in hand.
 
 The receipts are uploaded as the `release-artifact-size-<target>` artifact and
 the Markdown summary is written to the job summary.

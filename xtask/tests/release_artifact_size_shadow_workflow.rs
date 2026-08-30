@@ -350,6 +350,35 @@ fn shadow_lane_compares_per_variant_smoke_receipts() -> Result<()> {
 }
 
 #[test]
+fn shadow_lane_cannot_promote_a_borderline_win_from_a_dispatcher_input() -> Result<()> {
+    let (_, workflow) = workflow()?;
+
+    // `--repeat-confirmed` is promotion authority: with it, the instrument
+    // treats a 0.5%-1.0% reduction as confirmed. A dispatcher checkbox is not
+    // a second measurement, and a single run cannot testify that it ran twice.
+    for step in steps(&workflow)? {
+        ensure!(
+            !run_body(step).contains("--repeat-confirmed"),
+            "one run must not claim the confirming repeat it did not perform"
+        );
+    }
+
+    let on = workflow_on(&workflow).ok_or_else(|| anyhow!("workflow declares no triggers"))?;
+    let inputs = get(get(on, "workflow_dispatch")?, "inputs")?;
+    let names: BTreeSet<&str> = inputs
+        .as_mapping()
+        .map(|map| map.keys().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    ensure!(
+        names == BTreeSet::from(["target"]),
+        "the lane takes only the measured target; every other input is an unproven assertion, \
+         found {names:?}"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn shadow_lane_shell_survives_the_runner_bash() -> Result<()> {
     let (content, workflow) = workflow()?;
 

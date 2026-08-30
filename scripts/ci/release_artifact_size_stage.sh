@@ -67,7 +67,10 @@ for binary in "${BINARIES[@]}"; do
   # Unlike release.yml this does not swallow a strip failure. The whole claim is
   # a post-strip size comparison, so an unstripped binary is a measurement
   # error, not a packaging inconvenience.
-  strip "${PKG_DIR}/${binary}"
+  if ! strip "${PKG_DIR}/${binary}"; then
+    printf 'refusing to package unstripped %s: strip failed\n' "$binary" >&2
+    exit 1
+  fi
 done
 
 # Mirror the release package layout so the measured archive is release-shaped.
