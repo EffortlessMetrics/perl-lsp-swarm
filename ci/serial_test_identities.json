@@ -226,6 +226,20 @@
       "state": "active"
     },
     {
+      "path": "crates/perl-tdd-support/src/tdd/test_runner.rs",
+      "test_function": "hermetic_perl_command_strips_perl5lib",
+      "signals": "env_remove,env_set",
+      "accepted_reason": "Serialized in-file by a static Mutex guard (ENV_MUTEX) held for the whole test body, equivalent to #[serial] within this binary.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-tdd-support/src/tdd/test_runner.rs",
+      "test_function": "hermetic_perl_command_strips_perl5opt",
+      "signals": "env_remove,env_set",
+      "accepted_reason": "Serialized in-file by a static Mutex guard (ENV_MUTEX) held for the whole test body, equivalent to #[serial] within this binary.",
+      "state": "active"
+    },
+    {
       "path": "xtask/src/test_support.rs",
       "test_function": "restore_env_removes_vars_that_were_absent",
       "signals": "env_set",

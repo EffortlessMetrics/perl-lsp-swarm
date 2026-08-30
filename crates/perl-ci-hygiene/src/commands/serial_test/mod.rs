@@ -6,8 +6,9 @@
 //! A test function is *parallel-unsafe* when its own body mutates process-global
 //! state:
 //!
-//! - process environment: `env::set_var` / `env::remove_var` (including the
-//!   `std::env::` path and bare calls via `use std::env;`);
+//! - process environment: `std::env::set_var` / `std::env::remove_var`, plus
+//!   calls through direct, renamed, grouped, glob, or module imports from
+//!   `std::env`;
 //! - process working directory: `env::set_current_dir`.
 //!
 //! Such a function must carry a serialization guard from the `serial_test`
@@ -21,81 +22,28 @@
 //! registered site (annotating it) turns the gate red until the row is retired,
 //! so the accepted set only shrinks.
 //!
-//! Deliberately out of scope (documented for #1269): TCP port binds (current
-//! main binds are ephemeral port 0 by construction) and `static` counter
-//! mutation (line-local detection cannot separate a shared global from a
-//! test-local object). Attribute-on-same-line-as-fn forms are not scanned
-//! because the enforced `cargo fmt` gate normalizes attributes onto their own
-//! lines. Bare free-function signal names remain a conservative heuristic: the
-//! source-only scan cannot distinguish an imported `std::env` function from an
-//! unrelated function with the same name. Method calls are excluded.
+//! Every Rust source under `crates/` and `xtask/` is parsed independently, so
+//! custom Cargo roots, external modules, and owned test-support crates do not
+//! depend on a reconstructed module graph. The source-only analysis does not
+//! expand macros; macro-generated tests and process-global calls inside macro
+//! invocations remain unsupported. It deliberately ignores helper-mediated
+//! mutation outside the test's direct body, TCP port binds (current main binds
+//! are ephemeral port 0), and `static` counter mutation.
 
 use color_eyre::eyre::{Result, eyre};
-use regex::Regex;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::sync::LazyLock;
+
+use syn::ext::IdentExt;
+use syn::visit::{self, Visit};
+use syn::{Attribute, Block, Expr, ExprCall, Item, ItemUse, Pat, Stmt, UseTree};
 
 use perl_ci_hygiene::walk_rs_files;
 
-use crate::{NC, RED, YELLOW, first_cfg_test_line_number, read_lines};
-
-static SIGNAL_RE: LazyLock<Result<Regex, regex::Error>> =
-    LazyLock::new(|| Regex::new(r"\b(set_var|remove_var|set_current_dir)\s*\("));
-static TEST_ATTR_RE: LazyLock<Result<Regex, regex::Error>> =
-    LazyLock::new(|| Regex::new(r"^#\[\s*(test|tokio::test|rstest)\b"));
-static SERIAL_ATTR_RE: LazyLock<Result<Regex, regex::Error>> =
-    LazyLock::new(|| Regex::new(r"^#\[\s*(serial|serial_test::(serial|file_serial))\b"));
-static FN_RE: LazyLock<Result<Regex, regex::Error>> =
-    LazyLock::new(|| Regex::new(r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn\s+(\w+)"));
-static EXTERNAL_TEST_MOD_RE: LazyLock<Result<Regex, regex::Error>> =
-    LazyLock::new(|| Regex::new(r"^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+(\w+)\s*;"));
-static PATH_ATTR_RE: LazyLock<Result<Regex, regex::Error>> =
-    LazyLock::new(|| Regex::new(r#"^\s*#\[\s*path\s*=\s*\"([^\"]+)\"\s*\]"#));
-
-/// Test-support crates excluded from the scan, mirroring `panic_test`.
-const CI_REPORT_CRATES_EXCLUDE: [&str; 5] = [
-    "tree-sitter-perl-c",
-    "perl-parser-pest",
-    "perl-tdd-support",
-    "perl-test-must",
-    "perl-ci-hygiene",
-];
+use crate::{NC, RED, YELLOW};
 
 const DEFAULT_REGISTRY: &str = "ci/serial_test_identities.json";
 const SIGNAL_VOCABULARY: [&str; 3] = ["cwd", "env_remove", "env_set"];
-
-fn regex_from_static(
-    regex: &'static LazyLock<Result<Regex, regex::Error>>,
-    label: &str,
-) -> Result<&'static Regex> {
-    regex.as_ref().map_err(|err| eyre!("{label} regex failed to compile: {err}"))
-}
-
-fn is_integration_test_file(path: &Path) -> bool {
-    path.components().any(|component| component.as_os_str() == std::ffi::OsStr::new("tests"))
-}
-
-fn is_complete_test_source_file(path: &Path) -> bool {
-    is_integration_test_file(path)
-        || path.file_name().and_then(|name| name.to_str()).is_some_and(|name| {
-            ["_test.rs", "_tests.rs", "tests.rs"].iter().any(|suffix| name.ends_with(suffix))
-        })
-}
-
-fn is_excluded_test_path(path: &Path) -> bool {
-    if path.components().any(|component| {
-        let value = component.as_os_str();
-        value == "benches" || value == "examples" || value == "bin" || value == "target"
-    }) {
-        return true;
-    }
-    path.components().any(|component| {
-        CI_REPORT_CRATES_EXCLUDE
-            .iter()
-            .any(|item| component.as_os_str() == std::ffi::OsStr::new(item))
-    })
-}
 
 fn walk_workspace_rust_files(repo_root: &Path) -> Vec<PathBuf> {
     let mut files = BTreeSet::new();
@@ -105,243 +53,17 @@ fn walk_workspace_rust_files(repo_root: &Path) -> Vec<PathBuf> {
     files.into_iter().collect()
 }
 
-fn implicit_submodule_directory(path: &Path) -> PathBuf {
-    let is_module_root = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .is_some_and(|name| matches!(name, "lib.rs" | "main.rs" | "mod.rs"));
-    if is_module_root {
-        path.parent().unwrap_or_else(|| Path::new("")).to_path_buf()
-    } else {
-        path.with_extension("")
-    }
-}
-
-fn external_test_module_files(path: &Path, lines: &[String]) -> Result<Vec<PathBuf>> {
-    let Some(start_line) = first_cfg_test_line_number(path).ok().filter(|line| *line != usize::MAX)
-    else {
-        return Ok(Vec::new());
-    };
-
-    let mod_re = regex_from_static(&EXTERNAL_TEST_MOD_RE, "external test mod")?;
-    let path_re = regex_from_static(&PATH_ATTR_RE, "path attribute")?;
-    let code_lines = code_only_lines(lines)?;
-    let mut files = Vec::new();
-    let mut explicit_path = None;
-    for (line, code_line) in lines.iter().zip(&code_lines).skip(start_line.saturating_sub(1)) {
-        if code_line.trim_start().starts_with("#[")
-            && let Some(value) = path_re
-                .captures(line)
-                .and_then(|captures| captures.get(1))
-                .map(|value| value.as_str().to_owned())
-        {
-            explicit_path = Some(value);
-            continue;
-        }
-        let Some(name) = mod_re
-            .captures(code_line)
-            .and_then(|caps| caps.get(1))
-            .map(|name| name.as_str().to_owned())
-        else {
-            if !code_line.trim().is_empty() && !code_line.trim_start().starts_with("#[") {
-                explicit_path = None;
-            }
-            continue;
-        };
-        if let Some(custom) = explicit_path.take() {
-            let custom = path.parent().unwrap_or_else(|| Path::new("")).join(custom);
-            if custom.is_file() {
-                files.push(custom);
-            }
-            continue;
-        }
-        let module_directory = implicit_submodule_directory(path);
-        let sibling = module_directory.join(format!("{name}.rs"));
-        let nested = module_directory.join(name).join("mod.rs");
-        if sibling.is_file() {
-            files.push(sibling);
-        }
-        if nested.is_file() {
-            files.push(nested);
-        }
-    }
-    Ok(files)
-}
-
-/// Replace Rust comments and literal contents with spaces while preserving
-/// byte offsets and line boundaries. The policy remains source based, but the
-/// structural and signal scans consume only code bytes.
-fn code_only_lines(lines: &[String]) -> Result<Vec<String>> {
-    let source = lines.join("\n");
-    let bytes = source.as_bytes();
-    let mut masked = bytes.to_vec();
-    let mut index = 0usize;
-    let mut block_depth = 0usize;
-
-    while index < bytes.len() {
-        if block_depth > 0 {
-            if bytes.get(index..index + 2) == Some(b"/*") {
-                mask_non_newlines(&mut masked, index, index + 2)?;
-                block_depth += 1;
-                index += 2;
-            } else if bytes.get(index..index + 2) == Some(b"*/") {
-                mask_non_newlines(&mut masked, index, index + 2)?;
-                block_depth -= 1;
-                index += 2;
-            } else {
-                if bytes.get(index) != Some(&b'\n') {
-                    mask_non_newlines(&mut masked, index, index + 1)?;
-                }
-                index += 1;
-            }
-            continue;
-        }
-
-        if bytes.get(index..index + 2) == Some(b"//") {
-            while index < bytes.len() && bytes.get(index) != Some(&b'\n') {
-                mask_non_newlines(&mut masked, index, index + 1)?;
-                index += 1;
-            }
-            continue;
-        }
-        if bytes.get(index..index + 2) == Some(b"/*") {
-            mask_non_newlines(&mut masked, index, index + 2)?;
-            block_depth = 1;
-            index += 2;
-            continue;
-        }
-
-        let literal_end = raw_string_end(bytes, index)
-            .or_else(|| quoted_string_end(bytes, index))
-            .or_else(|| char_literal_end(bytes, index));
-        if let Some(end) = literal_end {
-            mask_non_newlines(&mut masked, index, end)?;
-            index = end;
-            continue;
-        }
-        index += 1;
-    }
-
-    let code = String::from_utf8(masked)
-        .map_err(|err| eyre!("lexically masked Rust source was not UTF-8: {err}"))?;
-    Ok(code.split('\n').map(str::to_owned).collect())
-}
-
-fn mask_non_newlines(bytes: &mut [u8], start: usize, end: usize) -> Result<()> {
-    let range = bytes
-        .get_mut(start..end)
-        .ok_or_else(|| eyre!("invalid Rust lexical mask range {start}..{end}"))?;
-    for byte in range {
-        if *byte != b'\n' {
-            *byte = b' ';
-        }
-    }
-    Ok(())
-}
-
-fn raw_string_end(bytes: &[u8], start: usize) -> Option<usize> {
-    let prefix_len = if bytes.get(start) == Some(&b'r') {
-        1
-    } else if bytes.get(start..start + 2) == Some(b"br")
-        || bytes.get(start..start + 2) == Some(b"cr")
-    {
-        2
-    } else {
-        return None;
-    };
-    let hash_start = start + prefix_len;
-    let mut quote = hash_start;
-    while bytes.get(quote) == Some(&b'#') {
-        quote += 1;
-    }
-    if bytes.get(quote) != Some(&b'"') {
-        return None;
-    }
-    let hash_count = quote - hash_start;
-    let mut cursor = quote + 1;
-    while cursor < bytes.len() {
-        if bytes.get(cursor) == Some(&b'"')
-            && (0..hash_count).all(|offset| bytes.get(cursor + 1 + offset) == Some(&b'#'))
-        {
-            return Some(cursor + 1 + hash_count);
-        }
-        cursor += 1;
-    }
-    None
-}
-
-fn quoted_string_end(bytes: &[u8], start: usize) -> Option<usize> {
-    let quote = if bytes.get(start) == Some(&b'"') {
-        start
-    } else if bytes.get(start..start + 2) == Some(b"b\"")
-        || bytes.get(start..start + 2) == Some(b"c\"")
-    {
-        start + 1
-    } else {
-        return None;
-    };
-    let mut cursor = quote + 1;
-    let mut escaped = false;
-    while cursor < bytes.len() {
-        let current = *bytes.get(cursor)?;
-        cursor += 1;
-        if escaped {
-            escaped = false;
-        } else if current == b'\\' {
-            escaped = true;
-        } else if current == b'"' {
-            return Some(cursor);
-        }
-    }
-    Some(bytes.len())
-}
-
-fn char_literal_end(bytes: &[u8], start: usize) -> Option<usize> {
-    let quote = if bytes.get(start) == Some(&b'\'') {
-        start
-    } else if bytes.get(start..start + 2) == Some(b"b'") {
-        start + 1
-    } else {
-        return None;
-    };
-    let content = quote + 1;
-    let content_end = match bytes.get(content)? {
-        b'\\' => escaped_char_end(bytes, content)?,
-        b'\n' | b'\r' | b'\'' => return None,
-        first => content + utf8_char_width(*first)?,
-    };
-    (bytes.get(content_end) == Some(&b'\'')).then_some(content_end + 1)
-}
-
-fn escaped_char_end(bytes: &[u8], slash: usize) -> Option<usize> {
-    match bytes.get(slash + 1)? {
-        b'x' => Some(slash + 4).filter(|end| *end <= bytes.len()),
-        b'u' if bytes.get(slash + 2) == Some(&b'{') => bytes
-            .get(slash + 3..)?
-            .iter()
-            .position(|byte| *byte == b'}')
-            .map(|offset| slash + 4 + offset),
-        _ => Some(slash + 2),
-    }
-}
-
-fn utf8_char_width(first: u8) -> Option<usize> {
-    match first {
-        0x00..=0x7f => Some(1),
-        0xc2..=0xdf => Some(2),
-        0xe0..=0xef => Some(3),
-        0xf0..=0xf4 => Some(4),
+fn signal_category(function: &str) -> Option<&'static str> {
+    match function {
+        "set_var" => Some("env_set"),
+        "remove_var" => Some("env_remove"),
+        "set_current_dir" => Some("cwd"),
         _ => None,
     }
 }
 
-/// Signal category for a matched global-state call.
-fn signal_category(matched: &str) -> &'static str {
-    match matched {
-        "set_var" => "env_set",
-        "remove_var" => "env_remove",
-        _ => "cwd",
-    }
+fn ident_name(ident: &syn::Ident) -> String {
+    ident.unraw().to_string()
 }
 
 /// A test function that mutates process-global state without a serialization
@@ -360,172 +82,413 @@ impl SerialSiteIdentity {
     }
 }
 
-/// True when the text immediately before a bare signal-call match is a method
-/// call receiver dot. `env::set_var(` keeps `:` before the match (the
-/// path-qualified form) and stays included.
-fn is_method_call(prefix: &str) -> bool {
-    prefix.ends_with('.')
+#[derive(Clone, Debug, Default)]
+struct EnvBindings {
+    module_aliases: BTreeSet<String>,
+    direct_aliases: BTreeMap<String, &'static str>,
 }
 
-/// Collect attribute lines attached to the function starting at `line_index`.
-///
-/// Walks upward over contiguous attribute, blank, and comment lines, stopping
-/// at the first other code line (typically the previous item's closing brace).
-fn attached_attributes(lines: &[String], line_index: usize) -> Vec<String> {
-    let mut attrs = Vec::new();
-    let mut cursor = line_index;
-    while cursor > 0 {
-        while cursor > 0 && lines[cursor - 1].trim().is_empty() {
-            cursor -= 1;
-        }
-        if cursor == 0 {
-            break;
-        }
-        let end = cursor;
-        let mut bracket_depth = 0isize;
-        let mut found_start = None;
-        while cursor > 0 {
-            cursor -= 1;
-            let line = lines[cursor].trim();
-            bracket_depth += line.bytes().filter(|byte| *byte == b']').count() as isize;
-            bracket_depth -= line.bytes().filter(|byte| *byte == b'[').count() as isize;
-            if line.starts_with("#[") && bracket_depth == 0 {
-                found_start = Some(cursor);
-                break;
+impl EnvBindings {
+    fn install_env_glob(&mut self, item_use: &ItemUse) {
+        let mut paths = Vec::new();
+        flatten_use_tree(&item_use.tree, &mut Vec::new(), &mut paths);
+        for (path, _, glob) in paths {
+            if glob && path == ["std", "env"] {
+                for function in ["set_var", "remove_var", "set_current_dir"] {
+                    if let Some(signal) = signal_category(function) {
+                        self.direct_aliases.insert(function.to_owned(), signal);
+                    }
+                }
             }
-            if bracket_depth <= 0 {
-                break;
-            }
-        }
-        let Some(start) = found_start else { break };
-        attrs.push(lines[start..end].join(" "));
-        cursor = start;
-    }
-    attrs
-}
-
-/// Detects a serialization guard anywhere in the attached attribute block or
-/// on the function line itself.
-fn has_serial_guard(attrs: &[String], fn_line: &str) -> Result<bool> {
-    let serial_re = regex_from_static(&SERIAL_ATTR_RE, "serial attribute")?;
-    Ok(attrs.iter().any(|attr| serial_re.is_match(attr))
-        || serial_re.is_match(fn_line.trim_start()))
-}
-
-/// Brace-matched body extent `[start, end]` for the function starting at
-/// `line_index`. Callers provide lexically masked code-only lines.
-fn body_extent(lines: &[String], line_index: usize) -> usize {
-    let mut depth = 0usize;
-    let mut started = false;
-    let mut end = line_index;
-    for (offset, line) in lines.iter().enumerate().skip(line_index) {
-        for ch in line.chars() {
-            if ch == '{' {
-                depth += 1;
-                started = true;
-            } else if ch == '}' && depth > 0 {
-                depth -= 1;
-            }
-        }
-        end = offset;
-        if started && depth == 0 {
-            break;
         }
     }
-    end
-}
 
-fn detect_signals(lines: &[String], start: usize, end: usize) -> Result<Vec<&'static str>> {
-    let signal_re = regex_from_static(&SIGNAL_RE, "global-state signal")?;
-    let mut signals = BTreeSet::new();
-    for line in lines.iter().take(end + 1).skip(start) {
-        for hit in signal_re.captures_iter(line) {
-            let Some(full) = hit.get(0) else { continue };
-            if is_method_call(&line[..full.start()]) {
+    fn install_explicit_env_use(&mut self, item_use: &ItemUse) {
+        let mut paths = Vec::new();
+        flatten_use_tree(&item_use.tree, &mut Vec::new(), &mut paths);
+        for (path, alias, glob) in paths {
+            if glob {
                 continue;
             }
-            if let Some(name) = hit.get(1) {
-                signals.insert(signal_category(name.as_str()));
+            if path == ["std", "env"] {
+                self.module_aliases.insert(alias.unwrap_or_else(|| "env".to_owned()));
+                continue;
+            }
+            if path.len() == 3 && path[0] == "std" && path[1] == "env" {
+                let function = path[2].as_str();
+                if let Some(signal) = signal_category(function) {
+                    self.direct_aliases
+                        .insert(alias.unwrap_or_else(|| function.to_owned()), signal);
+                }
             }
         }
     }
-    Ok(signals.into_iter().collect())
+
+    fn shadow_value(&mut self, name: &str) {
+        self.direct_aliases.remove(name);
+    }
+
+    fn shadow_module(&mut self, name: &str) {
+        self.module_aliases.remove(name);
+    }
+
+    fn shadow_both(&mut self, name: &str) {
+        self.shadow_value(name);
+        self.shadow_module(name);
+    }
+
+    fn shadow_item(&mut self, item: &Item) {
+        match item {
+            Item::Use(item_use) => {
+                for name in bound_use_names(item_use) {
+                    self.shadow_both(&name);
+                }
+            }
+            Item::Fn(item) => self.shadow_value(&ident_name(&item.sig.ident)),
+            Item::Const(item) => self.shadow_value(&ident_name(&item.ident)),
+            Item::Static(item) => self.shadow_value(&ident_name(&item.ident)),
+            Item::Struct(item) => self.shadow_both(&ident_name(&item.ident)),
+            Item::Mod(item) => self.shadow_module(&ident_name(&item.ident)),
+            Item::Type(item) => self.shadow_module(&ident_name(&item.ident)),
+            Item::Enum(item) => self.shadow_module(&ident_name(&item.ident)),
+            Item::Trait(item) => self.shadow_module(&ident_name(&item.ident)),
+            Item::TraitAlias(item) => self.shadow_module(&ident_name(&item.ident)),
+            Item::Union(item) => self.shadow_module(&ident_name(&item.ident)),
+            _ => {}
+        }
+    }
+}
+
+fn flatten_use_tree(
+    tree: &UseTree,
+    prefix: &mut Vec<String>,
+    paths: &mut Vec<(Vec<String>, Option<String>, bool)>,
+) {
+    match tree {
+        UseTree::Path(path) => {
+            prefix.push(ident_name(&path.ident));
+            flatten_use_tree(&path.tree, prefix, paths);
+            prefix.pop();
+        }
+        UseTree::Name(name) => {
+            let ident = ident_name(&name.ident);
+            if ident == "self" {
+                paths.push((prefix.clone(), prefix.last().cloned(), false));
+            } else {
+                let mut path = prefix.clone();
+                path.push(ident);
+                paths.push((path, None, false));
+            }
+        }
+        UseTree::Rename(rename) => {
+            let ident = ident_name(&rename.ident);
+            let alias = ident_name(&rename.rename);
+            if ident == "self" {
+                paths.push((prefix.clone(), Some(alias), false));
+            } else {
+                let mut path = prefix.clone();
+                path.push(ident);
+                paths.push((path, Some(alias), false));
+            }
+        }
+        UseTree::Glob(_) => paths.push((prefix.clone(), None, true)),
+        UseTree::Group(group) => {
+            for item in &group.items {
+                flatten_use_tree(item, prefix, paths);
+            }
+        }
+    }
+}
+
+fn bound_use_names(item_use: &ItemUse) -> BTreeSet<String> {
+    let mut paths = Vec::new();
+    flatten_use_tree(&item_use.tree, &mut Vec::new(), &mut paths);
+    paths
+        .into_iter()
+        .filter_map(
+            |(path, alias, glob)| {
+                if glob { None } else { alias.or_else(|| path.last().cloned()) }
+            },
+        )
+        .collect()
+}
+
+fn attributes_match(attrs: &[Attribute], expected: &[&[&str]]) -> bool {
+    attrs.iter().any(|attr| {
+        let segments = attr
+            .path()
+            .segments
+            .iter()
+            .map(|segment| segment.ident.to_string())
+            .collect::<Vec<_>>();
+        !segments.iter().any(|segment| segment.starts_with("r#"))
+            && expected.iter().any(|path| {
+                segments.len() == path.len()
+                    && segments.iter().zip(path.iter()).all(|(actual, expected)| actual == expected)
+            })
+    })
+}
+
+fn is_test_function(attrs: &[Attribute]) -> bool {
+    attributes_match(attrs, &[&["test"], &["tokio", "test"], &["rstest"]])
+}
+
+fn has_serial_guard(attrs: &[Attribute]) -> bool {
+    attributes_match(
+        attrs,
+        &[&["serial"], &["serial_test", "serial"], &["serial_test", "file_serial"]],
+    )
+}
+
+#[derive(Default)]
+struct PatternNames {
+    names: BTreeSet<String>,
+}
+
+impl<'ast> Visit<'ast> for PatternNames {
+    fn visit_pat_ident(&mut self, pattern: &'ast syn::PatIdent) {
+        self.names.insert(ident_name(&pattern.ident));
+        visit::visit_pat_ident(self, pattern);
+    }
+}
+
+fn pattern_names(pattern: &Pat) -> BTreeSet<String> {
+    let mut names = PatternNames::default();
+    names.visit_pat(pattern);
+    names.names
+}
+
+struct SignalVisitor {
+    bindings: EnvBindings,
+    signals: BTreeSet<&'static str>,
+}
+
+impl SignalVisitor {
+    fn new(bindings: EnvBindings) -> Self {
+        Self { bindings, signals: BTreeSet::new() }
+    }
+
+    fn resolve_call(&self, call: &ExprCall) -> Option<&'static str> {
+        let Expr::Path(function) = call.func.as_ref() else { return None };
+        if function.qself.is_some() {
+            return None;
+        }
+        let segments = function
+            .path
+            .segments
+            .iter()
+            .map(|segment| ident_name(&segment.ident))
+            .collect::<Vec<_>>();
+        match segments.as_slice() {
+            [std, env, function] if std == "std" && env == "env" => signal_category(function),
+            [module, function] if self.bindings.module_aliases.contains(module) => {
+                signal_category(function)
+            }
+            [function] => self.bindings.direct_aliases.get(function).copied(),
+            _ => None,
+        }
+    }
+
+    fn scan_block(&mut self, block: &Block) {
+        for statement in &block.stmts {
+            if let Stmt::Item(Item::Use(item_use)) = statement {
+                self.bindings.install_env_glob(item_use);
+            }
+        }
+        for statement in &block.stmts {
+            if let Stmt::Item(item) = statement {
+                self.bindings.shadow_item(item);
+            }
+        }
+        for statement in &block.stmts {
+            if let Stmt::Item(Item::Use(item_use)) = statement {
+                self.bindings.install_explicit_env_use(item_use);
+            }
+        }
+        for statement in &block.stmts {
+            match statement {
+                Stmt::Local(local) => {
+                    if let Some(initializer) = &local.init {
+                        self.visit_expr(&initializer.expr);
+                        if let Some((_, diverge)) = &initializer.diverge {
+                            self.visit_expr(diverge);
+                        }
+                    }
+                    for name in pattern_names(&local.pat) {
+                        self.bindings.shadow_value(&name);
+                    }
+                }
+                Stmt::Item(_) | Stmt::Macro(_) => {}
+                Stmt::Expr(expression, _) => self.visit_expr(expression),
+            }
+        }
+    }
+
+    fn scan_condition(&mut self, condition: &Expr) {
+        match condition {
+            Expr::Let(let_expression) => {
+                self.visit_expr(&let_expression.expr);
+                for name in pattern_names(&let_expression.pat) {
+                    self.bindings.shadow_value(&name);
+                }
+            }
+            Expr::Binary(binary) if matches!(binary.op, syn::BinOp::And(_)) => {
+                self.scan_condition(&binary.left);
+                self.scan_condition(&binary.right);
+            }
+            Expr::Group(group) => self.scan_condition(&group.expr),
+            Expr::Paren(paren) => self.scan_condition(&paren.expr),
+            _ => self.visit_expr(condition),
+        }
+    }
+}
+
+impl<'ast> Visit<'ast> for SignalVisitor {
+    fn visit_expr_call(&mut self, call: &'ast ExprCall) {
+        if let Some(signal) = self.resolve_call(call) {
+            self.signals.insert(signal);
+        }
+        visit::visit_expr_call(self, call);
+    }
+
+    fn visit_block(&mut self, block: &'ast Block) {
+        let mut child = Self::new(self.bindings.clone());
+        child.scan_block(block);
+        self.signals.extend(child.signals);
+    }
+
+    fn visit_expr_closure(&mut self, closure: &'ast syn::ExprClosure) {
+        let mut child = Self::new(self.bindings.clone());
+        for input in &closure.inputs {
+            for name in pattern_names(input) {
+                child.bindings.shadow_value(&name);
+            }
+        }
+        child.visit_expr(&closure.body);
+        self.signals.extend(child.signals);
+    }
+
+    fn visit_expr_for_loop(&mut self, expression: &'ast syn::ExprForLoop) {
+        self.visit_expr(&expression.expr);
+        let mut body = Self::new(self.bindings.clone());
+        for name in pattern_names(&expression.pat) {
+            body.bindings.shadow_value(&name);
+        }
+        body.visit_block(&expression.body);
+        self.signals.extend(body.signals);
+    }
+
+    fn visit_expr_if(&mut self, expression: &'ast syn::ExprIf) {
+        let mut then_branch = Self::new(self.bindings.clone());
+        then_branch.scan_condition(&expression.cond);
+        then_branch.visit_block(&expression.then_branch);
+        self.signals.extend(then_branch.signals);
+
+        if let Some((_, else_branch)) = &expression.else_branch {
+            let mut child = Self::new(self.bindings.clone());
+            child.visit_expr(else_branch);
+            self.signals.extend(child.signals);
+        }
+    }
+
+    fn visit_expr_match(&mut self, expression: &'ast syn::ExprMatch) {
+        self.visit_expr(&expression.expr);
+        for arm in &expression.arms {
+            let mut child = Self::new(self.bindings.clone());
+            for name in pattern_names(&arm.pat) {
+                child.bindings.shadow_value(&name);
+            }
+            if let Some((_, guard)) = &arm.guard {
+                child.visit_expr(guard);
+            }
+            child.visit_expr(&arm.body);
+            self.signals.extend(child.signals);
+        }
+    }
+
+    fn visit_expr_while(&mut self, expression: &'ast syn::ExprWhile) {
+        let mut body = Self::new(self.bindings.clone());
+        body.scan_condition(&expression.cond);
+        body.visit_block(&expression.body);
+        self.signals.extend(body.signals);
+    }
+
+    fn visit_item_fn(&mut self, _function: &'ast syn::ItemFn) {}
+}
+
+fn module_bindings(items: &[Item]) -> EnvBindings {
+    let mut bindings = EnvBindings::default();
+    for item in items {
+        if let Item::Use(item_use) = item {
+            bindings.install_env_glob(item_use);
+        }
+    }
+    for item in items {
+        bindings.shadow_item(item);
+    }
+    for item in items {
+        if let Item::Use(item_use) = item {
+            bindings.install_explicit_env_use(item_use);
+        }
+    }
+    bindings
+}
+
+fn collect_module_sites(path: &str, items: &[Item], sites: &mut Vec<SerialSiteIdentity>) {
+    let bindings = module_bindings(items);
+    for item in items {
+        match item {
+            Item::Fn(function) if is_test_function(&function.attrs) => {
+                if has_serial_guard(&function.attrs) {
+                    continue;
+                }
+                let mut visitor = SignalVisitor::new(bindings.clone());
+                for input in &function.sig.inputs {
+                    if let syn::FnArg::Typed(argument) = input {
+                        for name in pattern_names(&argument.pat) {
+                            visitor.bindings.shadow_value(&name);
+                        }
+                    }
+                }
+                visitor.visit_block(&function.block);
+                if !visitor.signals.is_empty() {
+                    sites.push(SerialSiteIdentity {
+                        path: path.to_owned(),
+                        test_function: function.sig.ident.to_string(),
+                        signals: visitor.signals.into_iter().collect(),
+                        line: function.sig.fn_token.span.start().line,
+                    });
+                }
+            }
+            Item::Mod(module) => {
+                if let Some((_, child_items)) = &module.content {
+                    collect_module_sites(path, child_items, sites);
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 fn scan_file_for_unserialized_sites(
     repo_root: &Path,
     path: &Path,
 ) -> Result<Vec<SerialSiteIdentity>> {
-    let fn_re = regex_from_static(&FN_RE, "function")?;
-    let test_attr_re = regex_from_static(&TEST_ATTR_RE, "test attribute")?;
-    let lines = read_lines(path)?;
-    let code_lines = code_only_lines(&lines)?;
+    let source = std::fs::read_to_string(path)
+        .map_err(|err| eyre!("reading Rust source {:?}: {err}", path))?;
+    let syntax =
+        syn::parse_file(&source).map_err(|err| eyre!("parsing Rust source {:?}: {err}", path))?;
     let relative =
         path.strip_prefix(repo_root).unwrap_or(path).display().to_string().replace('\\', "/");
     let mut sites = Vec::new();
-    let mut index = 0usize;
-    while index < lines.len() {
-        let Some(function_name) = fn_re
-            .captures(&code_lines[index])
-            .and_then(|caps| caps.get(1))
-            .map(|name| name.as_str().to_owned())
-        else {
-            index += 1;
-            continue;
-        };
-        let attrs = attached_attributes(&code_lines, index);
-        if !attrs.iter().any(|attr| test_attr_re.is_match(attr)) {
-            index += 1;
-            continue;
-        }
-        let end = body_extent(&code_lines, index);
-        let signals = detect_signals(&code_lines, index, end)?;
-        if !signals.is_empty() && !has_serial_guard(&attrs, &code_lines[index])? {
-            sites.push(SerialSiteIdentity {
-                path: relative.clone(),
-                test_function: function_name,
-                signals,
-                line: index + 1,
-            });
-        }
-        index = end + 1;
-    }
+    collect_module_sites(&relative, &syntax.items, &mut sites);
     Ok(sites)
 }
 
 fn complete_serial_site_inventory(repo_root: &Path) -> Result<Vec<SerialSiteIdentity>> {
-    let workspace_files = walk_workspace_rust_files(repo_root);
-    let complete_file_set: BTreeSet<PathBuf> = workspace_files
-        .iter()
-        .filter(|path| is_complete_test_source_file(path) && !is_excluded_test_path(path))
-        .cloned()
-        .collect();
-
-    let mut files: BTreeMap<PathBuf, usize> =
-        complete_file_set.iter().map(|path| (path.clone(), 1)).collect();
-    for path in &workspace_files {
-        if complete_file_set.contains(path) || is_excluded_test_path(path) {
-            continue;
-        }
-        let inline_test_start = first_cfg_test_line_number(path).unwrap_or(usize::MAX);
-        if inline_test_start != usize::MAX {
-            let lines = read_lines(path)?;
-            files.insert(path.clone(), inline_test_start);
-            for module in external_test_module_files(path, &lines)? {
-                if !is_excluded_test_path(&module) {
-                    files.insert(module, 1);
-                }
-            }
-        }
-    }
-
     let mut sites = Vec::new();
-    for (path, start_line) in files {
-        let mut file_sites = scan_file_for_unserialized_sites(repo_root, &path)?;
-        // Production files only contribute sites at or below their
-        // `#[cfg(test)]` boundary; complete test files scan from the top.
-        file_sites.retain(|site| site.line >= start_line);
-        sites.extend(file_sites);
+    for path in walk_workspace_rust_files(repo_root) {
+        sites.extend(scan_file_for_unserialized_sites(repo_root, &path)?);
     }
     sites.sort();
     Ok(sites)
@@ -889,6 +852,278 @@ mod tests {
     }
 
     #[test]
+    fn std_env_import_forms_and_turbofish_are_resolved() -> Result<()> {
+        let repo = TempRepo::new("import-forms")?;
+        repo.write_test(
+            r#"
+mod direct {
+    use std::env::set_var;
+    #[test]
+    fn direct_import() { unsafe { set_var("A", "1"); } }
+}
+mod renamed {
+    use std::env::set_var as change_env;
+    #[test]
+    fn renamed_turbofish() { unsafe { change_env::<_, _>("A", "1"); } }
+}
+mod grouped {
+    use std::env::{remove_var as clear_env, set_current_dir};
+    #[test]
+    fn grouped_imports() { unsafe { clear_env("A"); } set_current_dir("/tmp"); }
+}
+mod module_self {
+    use std::env::{self as process_env};
+    #[test]
+    fn module_alias() { unsafe { process_env::set_var("A", "1"); } }
+}
+mod globbed {
+    use std::env::*;
+    #[test]
+    fn glob_import() { unsafe { remove_var("A"); } }
+}
+mod raw_renamed {
+    use std::env::set_var as r#change_env;
+    #[test]
+    fn raw_alias() { unsafe { r#change_env("A", "1"); } }
+}
+"#,
+        )?;
+        let sites = complete_serial_site_inventory(&repo.path)?;
+        let actual = sites
+            .iter()
+            .map(|site| (site.test_function.as_str(), site.signals.as_slice()))
+            .collect::<BTreeMap<_, _>>();
+        let expected = BTreeMap::from([
+            ("direct_import", ["env_set"].as_slice()),
+            ("glob_import", ["env_remove"].as_slice()),
+            ("grouped_imports", ["cwd", "env_remove"].as_slice()),
+            ("module_alias", ["env_set"].as_slice()),
+            ("raw_alias", ["env_set"].as_slice()),
+            ("renamed_turbofish", ["env_set"].as_slice()),
+        ]);
+        assert_eq!(actual, expected);
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_scope_names_beat_environment_glob_imports() -> Result<()> {
+        let repo = TempRepo::new("glob-priority")?;
+        repo.write_test(
+            r#"
+mod named_item {
+    use std::env::*;
+    fn set_var(_key: &str, _value: &str) {}
+
+    #[test]
+    fn local_function_wins() { set_var("A", "1"); }
+}
+
+mod unrelated {
+    pub fn remove_var(_key: &str) {}
+}
+
+#[test]
+fn explicit_block_import_wins() {
+    use std::env::*;
+    use self::unrelated::remove_var;
+    remove_var("A");
+}
+
+mod positive {
+    use std::env::*;
+
+    #[test]
+    fn glob_only_environment_call() { unsafe { set_var("A", "1"); } }
+}
+"#,
+        )?;
+        let sites = complete_serial_site_inventory(&repo.path)?;
+        assert_eq!(sites.len(), 1);
+        assert_eq!(sites[0].path, "crates/demo/tests/demo.rs");
+        assert_eq!(sites[0].test_function, "glob_only_environment_call");
+        assert_eq!(sites[0].signals, vec!["env_set"]);
+        Ok(())
+    }
+
+    #[test]
+    fn import_aliases_are_lexically_scoped_to_their_module() -> Result<()> {
+        let repo = TempRepo::new("scoped-alias")?;
+        repo.write_test(
+            r#"
+mod importing_sibling {
+    use std::env::set_var as change_env;
+    #[test]
+    fn imported_call() { change_env("A", "1"); }
+}
+mod unrelated_sibling {
+    fn change_env(_key: &str, _value: &str) {}
+    #[test]
+    fn unrelated_call() { change_env("A", "1"); }
+}
+"#,
+        )?;
+        let sites = complete_serial_site_inventory(&repo.path)?;
+        assert_eq!(sites.len(), 1);
+        assert_eq!(sites[0].test_function, "imported_call");
+        assert_eq!(sites[0].signals, vec!["env_set"]);
+        Ok(())
+    }
+
+    #[test]
+    fn unrelated_paths_bare_calls_and_raw_identifiers_are_ignored() -> Result<()> {
+        let repo = TempRepo::new("unrelated-calls")?;
+        repo.write_test(
+            r#"
+mod env { pub fn set_var(_key: &str, _value: &str) {} }
+struct Harness;
+impl Harness { fn set_var(_key: &str, _value: &str) {} }
+fn set_var(_key: &str, _value: &str) {}
+fn r#remove_var(_key: &str) {}
+#[test]
+fn unrelated_calls() {
+    env::set_var("A", "1");
+    Harness::set_var("A", "1");
+    set_var("A", "1");
+    r#remove_var("A");
+}
+"#,
+        )?;
+        let sites = complete_serial_site_inventory(&repo.path)?;
+        assert!(sites.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn block_imports_and_value_shadowing_obey_lexical_scope() -> Result<()> {
+        let repo = TempRepo::new("block-scope")?;
+        repo.write_test(
+            r#"
+#[test]
+fn block_import_is_detected() {
+    { use std::env::set_var as change_env; change_env("A", "1"); }
+}
+#[test]
+fn sibling_block_does_not_inherit_alias() {
+    { use std::env::set_var as change_env; }
+    {
+        fn change_env(_key: &str, _value: &str) {}
+        change_env("A", "1");
+    }
+}
+mod shadowed {
+    use std::env::set_var as change_env;
+    #[test]
+    fn local_value_shadows_import() {
+        let change_env = |_key: &str, _value: &str| {};
+        change_env("A", "1");
+    }
+}
+"#,
+        )?;
+        let sites = complete_serial_site_inventory(&repo.path)?;
+        assert_eq!(sites.len(), 1);
+        assert_eq!(sites[0].test_function, "block_import_is_detected");
+        assert_eq!(sites[0].signals, vec!["env_set"]);
+        Ok(())
+    }
+
+    #[test]
+    fn block_items_and_unrelated_imports_shadow_inherited_env_aliases() -> Result<()> {
+        let repo = TempRepo::new("item-shadow")?;
+        repo.write_test(
+            r#"
+mod inherited_aliases {
+    use std::env::{self as process_env, set_var as change_env};
+
+    fn unrelated_call(_key: &str, _value: &str) {}
+
+    #[test]
+    fn local_items_are_not_environment_calls() {
+        {
+            fn change_env(_key: &str, _value: &str) {}
+            change_env("A", "1");
+        }
+        {
+            use self::unrelated_call as change_env;
+            change_env("A", "1");
+        }
+        {
+            mod process_env {
+                pub fn set_var(_key: &str, _value: &str) {}
+            }
+            process_env::set_var("A", "1");
+        }
+    }
+
+    #[test]
+    fn inherited_aliases_return_after_inner_block() {
+        {
+            fn change_env(_key: &str, _value: &str) {}
+            change_env("A", "1");
+        }
+        unsafe {
+            change_env("B", "2");
+            process_env::set_var("C", "3");
+        }
+    }
+}
+"#,
+        )?;
+        let sites = complete_serial_site_inventory(&repo.path)?;
+        assert_eq!(sites.len(), 1);
+        assert_eq!(sites[0].path, "crates/demo/tests/demo.rs");
+        assert_eq!(sites[0].test_function, "inherited_aliases_return_after_inner_block");
+        assert_eq!(sites[0].signals, vec!["env_set"]);
+        Ok(())
+    }
+
+    #[test]
+    fn pattern_bindings_shadow_imports_only_in_their_lexical_scope() -> Result<()> {
+        let repo = TempRepo::new("pattern-scope")?;
+        repo.write_test(
+            r#"
+use std::env::set_var as change_env;
+
+#[test]
+fn pattern_shadows() {
+    if let Some(change_env) = Some(|_key: &str, _value: &str| {})
+        && { change_env("A", "1"); true }
+    {}
+
+    let mut callbacks = [|_key: &str, _value: &str| {}].into_iter();
+    while let Some(change_env) = callbacks.next() {
+        change_env("A", "1");
+    }
+
+    match Some(|_key: &str, _value: &str| {}) {
+        Some(change_env) if { change_env("A", "1"); true } => {}
+        Some(_) => {}
+        None => {}
+    }
+
+    for change_env in [|_key: &str, _value: &str| {}] {
+        change_env("A", "1");
+    }
+}
+
+#[test]
+fn imported_alias_remains_visible_after_pattern_scopes() {
+    if let Some(change_env) = Some(|_key: &str, _value: &str| {}) {
+        change_env("A", "1");
+    }
+    unsafe { change_env("B", "2"); }
+}
+"#,
+        )?;
+        let sites = complete_serial_site_inventory(&repo.path)?;
+        assert_eq!(sites.len(), 1);
+        assert_eq!(sites[0].path, "crates/demo/tests/demo.rs");
+        assert_eq!(sites[0].test_function, "imported_alias_remains_visible_after_pattern_scopes");
+        assert_eq!(sites[0].signals, vec!["env_set"]);
+        Ok(())
+    }
+
+    #[test]
     fn literal_and_comment_signal_tokens_are_ignored() -> Result<()> {
         let repo = TempRepo::new("literal-false-positive")?;
         repo.write_test(
@@ -945,10 +1180,11 @@ fn mutates_after_every_lexical_class() {
     fn multiline_test_attribute_is_detected_without_a_guard() -> Result<()> {
         let repo = TempRepo::new("multiline-test-attribute")?;
         repo.write_test(
-            "#[\n    test\n]\n/* policy explanation */\nfn unguarded() {\n    std::env::set_var(\"A\", \"1\");\n}\n",
+            "#[test]\n#[allow(\n    dead_code\n)]\n/* policy explanation */\nfn unguarded() {\n    std::env::set_var(\"A\", \"1\");\n}\n",
         )?;
         let sites = complete_serial_site_inventory(&repo.path)?;
         assert_eq!(sites.len(), 1);
+        assert_eq!(sites[0].path, "crates/demo/tests/demo.rs");
         assert_eq!(sites[0].test_function, "unguarded");
         assert_eq!(sites[0].signals, vec!["env_set"]);
         Ok(())
@@ -1080,45 +1316,16 @@ fn mutates_after_every_lexical_class() {
     }
 
     #[test]
-    fn explicit_path_test_module_is_scanned() -> Result<()> {
-        let repo = TempRepo::new("path-module")?;
-        fs::create_dir_all(repo.path.join("crates/demo/src/test_support"))?;
+    fn every_rust_source_is_scanned_without_module_graph_reconstruction() -> Result<()> {
+        let repo = TempRepo::new("all-rust-files")?;
+        fs::create_dir_all(repo.path.join("crates/demo/custom-target/deep"))?;
         fs::write(
-            repo.path.join("crates/demo/src/lib.rs"),
-            "#[cfg(test)]\n#[path = \"test_support/custom.rs\"]\nmod custom_tests;\n",
+            repo.path.join("crates/demo/custom-target/deep/policy_fixture.rs"),
+            UNANNOTATED_ENV_TEST,
         )?;
-        fs::write(repo.path.join("crates/demo/src/test_support/custom.rs"), UNANNOTATED_ENV_TEST)?;
-        let path = repo.empty_registry()?;
-        assert_eq!(repo.check(&path)?, 1);
-        Ok(())
-    }
-
-    #[test]
-    fn crate_root_external_test_module_is_scanned() -> Result<()> {
-        let repo = TempRepo::new("crate-root-module")?;
-        fs::write(repo.path.join("crates/demo/src/lib.rs"), "#[cfg(test)]\nmod policy_fixture;\n")?;
-        fs::write(repo.path.join("crates/demo/src/policy_fixture.rs"), UNANNOTATED_ENV_TEST)?;
         let sites = complete_serial_site_inventory(&repo.path)?;
         assert_eq!(sites.len(), 1);
-        assert_eq!(sites[0].path, "crates/demo/src/policy_fixture.rs");
-        assert_eq!(sites[0].test_function, "flips_toolchain_env");
-        assert_eq!(sites[0].signals, vec!["env_set"]);
-        Ok(())
-    }
-
-    #[test]
-    fn non_root_external_test_module_uses_named_module_directory() -> Result<()> {
-        let repo = TempRepo::new("non-root-module")?;
-        fs::create_dir_all(repo.path.join("crates/demo/src/outer"))?;
-        fs::write(repo.path.join("crates/demo/src/lib.rs"), "mod outer;\n")?;
-        fs::write(
-            repo.path.join("crates/demo/src/outer.rs"),
-            "#[cfg(test)]\nmod policy_fixture;\n",
-        )?;
-        fs::write(repo.path.join("crates/demo/src/outer/policy_fixture.rs"), UNANNOTATED_ENV_TEST)?;
-        let sites = complete_serial_site_inventory(&repo.path)?;
-        assert_eq!(sites.len(), 1);
-        assert_eq!(sites[0].path, "crates/demo/src/outer/policy_fixture.rs");
+        assert_eq!(sites[0].path, "crates/demo/custom-target/deep/policy_fixture.rs");
         assert_eq!(sites[0].test_function, "flips_toolchain_env");
         assert_eq!(sites[0].signals, vec!["env_set"]);
         Ok(())
@@ -1137,12 +1344,14 @@ fn mutates_after_every_lexical_class() {
     }
 
     #[test]
-    fn excluded_crate_surface_is_skipped() -> Result<()> {
-        let repo = TempRepo::new("excluded")?;
+    fn formerly_excluded_owned_test_surface_is_scanned() -> Result<()> {
+        let repo = TempRepo::new("owned-support")?;
         fs::create_dir_all(repo.path.join("crates/perl-tdd-support/tests"))?;
         fs::write(repo.path.join("crates/perl-tdd-support/tests/runner.rs"), UNANNOTATED_ENV_TEST)?;
-        let path = repo.empty_registry()?;
-        assert_eq!(repo.check(&path)?, 0);
+        let sites = complete_serial_site_inventory(&repo.path)?;
+        assert_eq!(sites.len(), 1);
+        assert_eq!(sites[0].path, "crates/perl-tdd-support/tests/runner.rs");
+        assert_eq!(sites[0].test_function, "flips_toolchain_env");
         Ok(())
     }
 
