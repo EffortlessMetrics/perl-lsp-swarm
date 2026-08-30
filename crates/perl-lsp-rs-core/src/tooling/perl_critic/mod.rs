@@ -33,7 +33,7 @@ pub use native::{
     UndefComparisonRule, UnreachableCodeRule, UnusedLexicalVariableRule, UnusedParameterRule,
 };
 pub use normalized::{
-    CriticFindingCandidate, CriticFindingContributor, CriticSourceIdentity,
+    CriticFindingCandidate, CriticFindingContributor, CriticPolicyRetention, CriticSourceIdentity,
     NormalizedCriticFinding, OwnedCriticObservedIdentity, normalize_critic_findings,
 };
 pub use quick_fix::{QuickFix, TextEdit};
