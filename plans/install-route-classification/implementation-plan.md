@@ -220,9 +220,11 @@ catalog rows conforming to #10333's contract.
 
 C202's `VS_Code_extension` projection is the registry-unspecified family row;
 C1202's marketplace and Open VSX projections and C1208's Open VSX projection are
-registry-specific rows and must bind to catalog route IDs distinct from it. When
-a request supplies `target_registry`, only the matching registry-specific
-projection is eligible and the family row is not returned; when
+registry-specific rows and must bind to catalog route IDs distinct from it,
+distinguished by registry and projection context. Registry-specific children may
+share a registry when their projection contexts differ. When a request supplies
+`target_registry`, only the matching registry-specific projection is eligible and
+the family row is not returned; when
 `target_registry` is unspecified, the family row is eligible and the
 registry-specific rows are returned only as diagnostics. No single request may
 receive both the family row and one of its registry-specific rows. The
@@ -467,7 +469,7 @@ ROUTE_FAMILY_CHILDREN = {
 ROUTE_FAMILY_REGISTRY_ROLES = {
     "fixture-route-VS_Code_extension": None,
     "fixture-route-C1202-marketplace": "fixture_marketplace",
-    "fixture-route-C1202-open-vsx": "fixture_open_vsx",
+    "fixture-route-C1202-open-vsx": "open_vsx",
     "r_4f8c2a": "open_vsx",
 }
 FINDING_DISPOSITION_RULES = {
@@ -589,15 +591,22 @@ def require_route_family_registries(
         or parent_route["target_registry"] is not None
     ):
         raise ValueError("route family parent must be registry-unspecified")
-    child_registries = []
+    child_pairs = set()
     for child_route_id in child_route_ids:
         child_route = resolve_catalog_route(catalog_rows, child_route_id)
         child_registry = child_route.get("target_registry")
         if not isinstance(child_registry, str) or not child_registry:
             raise ValueError("route family child must have a concrete registry")
-        if child_registry in child_registries:
-            raise ValueError("route family children must use distinct registries")
-        child_registries.append(child_registry)
+        projection_contexts = child_route.get("projection_contexts")
+        if not isinstance(projection_contexts, (tuple, list)) or not projection_contexts:
+            raise ValueError("route family child must have projection context(s)")
+        for projection_context in projection_contexts:
+            child_pair = (child_registry, projection_context)
+            if child_pair in child_pairs:
+                raise ValueError(
+                    "route family children must use distinct registry/context pairs"
+                )
+            child_pairs.add(child_pair)
 
 def require_open_vsx_route(catalog_rows, route_id, projection_context):
     route = require_catalog_projection(catalog_rows, route_id, projection_context)
@@ -774,6 +783,13 @@ def assert_route_family_rejected(catalog_rows, route_family_children):
         return True
     raise AssertionError("invalid route family declaration was accepted")
 
+def assert_route_family_accepted(catalog_rows, route_family_children):
+    try:
+        require_route_family_bindings(catalog_rows, route_family_children)
+    except ValueError:
+        raise AssertionError("valid route family declaration was rejected")
+    return True
+
 def assert_inventory_rejected(inventory_rows):
     try:
         validate_closure(inventory_rows, fixture_ledger(), FIXTURE_CATALOG)
@@ -878,19 +894,24 @@ require_true(
     ),
     "registry-unspecified family child was accepted",
 )
-SHARED_CHILD_REGISTRY_CATALOG = tuple(
+COLLIDING_FAMILY_CHILD_CATALOG = tuple(
     {
         **row,
-        "target_registry": "fixture_open_vsx",
+        "target_registry": "open_vsx",
+        "projection_contexts": ("fixture-context-C1202-open-vsx",),
     } if row["route_id"] == "fixture-route-C1202-marketplace" else row
     for row in FIXTURE_CATALOG
 )
 require_true(
     assert_route_family_rejected(
-        SHARED_CHILD_REGISTRY_CATALOG,
+        COLLIDING_FAMILY_CHILD_CATALOG,
         ROUTE_FAMILY_CHILDREN,
     ),
-    "family children sharing a registry were accepted",
+    "family children sharing a registry and context were accepted",
+)
+require_true(
+    assert_route_family_accepted(FIXTURE_CATALOG, ROUTE_FAMILY_CHILDREN),
+    "family children sharing open_vsx with distinct contexts were rejected",
 )
 require_true(assert_rejected(
     WRONG_REGISTRY_CATALOG,
@@ -982,6 +1003,10 @@ require_true(
     "finding-specific disposition tamper was accepted",
 )
 ```
+
+For family validation, each child row contributes one
+`(target_registry, projection_context)` pair per existing projection context;
+multiple contexts are valid when none of those pairs overlap another child.
 
 This closure fixture is executed manually against this document and is not wired
 to a repository check in this planning PR. Binding it to an owning package's
