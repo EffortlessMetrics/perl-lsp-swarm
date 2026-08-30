@@ -255,13 +255,7 @@ fn validate_module_sidecar(
                 let _ = (expected_suffix, use_line, use_col);
                 (module, consumers, rationale)
             }
-            ModuleAssertion::NotResolved {
-                module,
-                use_line,
-                use_col,
-                consumers,
-                rationale,
-            } => {
+            ModuleAssertion::NotResolved { module, use_line, use_col, consumers, rationale } => {
                 let _ = (use_line, use_col);
                 (module, consumers, rationale)
             }
@@ -659,17 +653,34 @@ mod tests {
         validate_named_sidecar(&sidecar, "fixture")?;
 
         for invalid in [
-            envelope(r#"{"kind":"rename_succeeds","line":4,"character":4,"new_name":"sum_values","expected_edits":null}"#),
-            envelope(r#"{"kind":"rename_succeeds","line":4,"character":4,"new_name":"sum_values","expected_edits":[]}"#),
-            envelope(r#"{"kind":"rename_null","line":4,"character":4,"new_name":"sum_values","expected_edits":[]}"#),
-            envelope(r#"{"kind":"rename_succeeds","line":4,"character":4,"new_name":"sum_values","min":1}"#),
-            envelope(r#"{"kind":"rename_edit_count_at_least","min":0,"line":4,"character":4,"new_name":"sum_values"}"#),
-            envelope(r#"{"kind":"rename_succeeds","line":4,"character":4,"new_name":"sum_values","expected_editz":[]}"#),
-            envelope(r#"{"kind":"rename_succeeds","line":4,"character":4,"new_name":"sum_values","expected_edits":[{"line":4,"character":4,"end_line":4,"end_character":19,"new_text":"sum_values","new_texxt":"sum_values"}]}"#),
+            envelope(
+                r#"{"kind":"rename_succeeds","line":4,"character":4,"new_name":"sum_values","expected_edits":null}"#,
+            ),
+            envelope(
+                r#"{"kind":"rename_succeeds","line":4,"character":4,"new_name":"sum_values","expected_edits":[]}"#,
+            ),
+            envelope(
+                r#"{"kind":"rename_null","line":4,"character":4,"new_name":"sum_values","expected_edits":[]}"#,
+            ),
+            envelope(
+                r#"{"kind":"rename_succeeds","line":4,"character":4,"new_name":"sum_values","min":1}"#,
+            ),
+            envelope(
+                r#"{"kind":"rename_edit_count_at_least","min":0,"line":4,"character":4,"new_name":"sum_values"}"#,
+            ),
+            envelope(
+                r#"{"kind":"rename_succeeds","line":4,"character":4,"new_name":"sum_values","expected_editz":[]}"#,
+            ),
+            envelope(
+                r#"{"kind":"rename_succeeds","line":4,"character":4,"new_name":"sum_values","expected_edits":[{"line":4,"character":4,"end_line":4,"end_character":19,"new_text":"sum_values","new_texxt":"sum_values"}]}"#,
+            ),
         ] {
             write_fixture_file(&sidecar, &invalid)?;
             if validate_named_sidecar(&sidecar, "fixture").is_ok() {
-                return Err(contract_error(format!("invalid rename assertion was accepted: {invalid}")).into());
+                return Err(contract_error(format!(
+                    "invalid rename assertion was accepted: {invalid}"
+                ))
+                .into());
             }
         }
 

@@ -540,6 +540,9 @@ fn rename_total_edit_count(resp: &Value) -> usize {
 }
 
 fn rename_has_structured_error(resp: &Value) -> bool {
+    if resp.get("result").is_some() {
+        return false;
+    }
     let Some(error) = resp.get("error").and_then(Value::as_object) else {
         return false;
     };
@@ -649,7 +652,8 @@ fn rename_edit_count_at_least_passes(
 fn rename_assertion_passes(assertion: &RenameAssertion, resp: &Value, uri: &str) -> bool {
     let expected_edits_ok =
         rename_expected_edits_match(resp, uri, assertion.expected_edits.as_deref());
-    let response_edits_are_well_formed = rename_is_null(resp) || observed_rename_edits(resp).is_some();
+    let response_edits_are_well_formed =
+        rename_is_null(resp) || observed_rename_edits(resp).is_some();
 
     match &assertion.kind {
         RenameAssertionKind::RenameSucceeds => {
@@ -661,12 +665,9 @@ fn rename_assertion_passes(assertion: &RenameAssertion, resp: &Value, uri: &str)
         RenameAssertionKind::RenameNull => {
             rename_is_null(resp) && assertion.expected_edits.is_none()
         }
-        RenameAssertionKind::RenameEditCountAtLeast { min } => rename_edit_count_at_least_passes(
-            resp,
-            uri,
-            *min,
-            assertion.expected_edits.as_deref(),
-        ),
+        RenameAssertionKind::RenameEditCountAtLeast { min } => {
+            rename_edit_count_at_least_passes(resp, uri, *min, assertion.expected_edits.as_deref())
+        }
     }
 }
 
@@ -1043,9 +1044,15 @@ mod rename_oracle_tests {
             json!({"error": {}}),
             json!({"error": {"code": -32602}}),
             json!({"error": {"message": "not renamable"}}),
+            json!({
+                "result": null,
+                "error": {"code": -32602, "message": "not renamable"}
+            }),
         ] {
             if rename_assertion_passes(&assertion, &malformed, uri) {
-                return Err(format!("malformed rename response passed RenameNull: {malformed}").into());
+                return Err(
+                    format!("malformed rename response passed RenameNull: {malformed}").into()
+                );
             }
         }
 
