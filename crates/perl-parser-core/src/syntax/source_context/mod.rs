@@ -10,7 +10,8 @@ mod kind;
 mod region;
 
 pub use index::{
-    OffsetClassification, RangeClassification, SourceRegionIndex, hash_source_content,
+    OffsetClassification, RangeClassification, SourceRangeClassification, SourceRegionIndex,
+    hash_source_content,
 };
 pub use kind::SourceRegionKind;
 pub use region::SourceRegion;
