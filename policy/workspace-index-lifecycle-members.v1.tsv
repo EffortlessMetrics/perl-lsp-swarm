@@ -1,0 +1,95 @@
+# schema: workspace_index_lifecycle_members.v1
+# Member-level denominator for the OVERLAPPING index lifecycle vocabularies (#10433).
+# The type ledger (workspace-index-lifecycle-propositions.v1.tsv) selects one owner
+# per proposition family. This file dispositions every variant, variant field and
+# struct field of the types whose names collide across those vocabularies, so a
+# variant or field change cannot pass while the type declaration stays present.
+#
+# type_row must name a row in the type ledger. Members are extracted from source,
+# so an added, removed or renamed variant or field fails the ratchet.
+#
+# columns: id|type_row|module|type|member|member_kind|disposition|successor_issue
+WSIM-DEGRAD-001|WSI-DEG-001|monitoring|DegradationReason|Cancelled|variant|canonical_member|#10799
+WSIM-DEGRAD-002|WSI-DEG-001|monitoring|DegradationReason|ParseStorm|variant|canonical_member|#10799
+WSIM-DEGRAD-003|WSI-DEG-001|monitoring|DegradationReason|ParseStorm.pending_parses|variant_field|canonical_member|#10799
+WSIM-DEGRAD-004|WSI-DEG-001|monitoring|DegradationReason|IoError|variant|canonical_member|#10799
+WSIM-DEGRAD-005|WSI-DEG-001|monitoring|DegradationReason|IoError.message|variant_field|canonical_member|#10799
+WSIM-DEGRAD-006|WSI-DEG-001|monitoring|DegradationReason|ScanTimeout|variant|canonical_member|#10799
+WSIM-DEGRAD-007|WSI-DEG-001|monitoring|DegradationReason|ScanTimeout.elapsed_ms|variant_field|canonical_member|#10799
+WSIM-DEGRAD-008|WSI-DEG-001|monitoring|DegradationReason|ResourceLimit|variant|canonical_member|#10799
+WSIM-DEGRAD-009|WSI-DEG-001|monitoring|DegradationReason|ResourceLimit.kind|variant_field|canonical_member|#10799
+WSIM-INDEXP-001|WSI-PHASE-001|monitoring|IndexPhase|Idle|variant|telemetry_member|#10791
+WSIM-INDEXP-002|WSI-PHASE-001|monitoring|IndexPhase|Scanning|variant|telemetry_member|#10791
+WSIM-INDEXP-003|WSI-PHASE-001|monitoring|IndexPhase|Indexing|variant|telemetry_member|#10791
+WSIM-INDEXS-001|WSI-KIND-001|monitoring|IndexStateKind|Building|variant|telemetry_member|#10791
+WSIM-INDEXS-002|WSI-KIND-001|monitoring|IndexStateKind|Ready|variant|telemetry_member|#10791
+WSIM-INDEXS-003|WSI-KIND-001|monitoring|IndexStateKind|Degraded|variant|telemetry_member|#10791
+WSIM-INDEXS-004|WSI-TRANS-001|monitoring|IndexStateTransition|from|struct_field|telemetry_member|#10791
+WSIM-INDEXS-005|WSI-TRANS-001|monitoring|IndexStateTransition|to|struct_field|telemetry_member|#10791
+WSIM-RESOUR-001|WSI-RES-002|monitoring|ResourceKind|MaxFiles|variant|canonical_member|#10799
+WSIM-RESOUR-002|WSI-RES-002|monitoring|ResourceKind|MaxSymbols|variant|canonical_member|#10799
+WSIM-RESOUR-003|WSI-RES-002|monitoring|ResourceKind|MaxCacheBytes|variant|canonical_member|#10799
+WSIM-BUILDP-001|WSI-STATE-004|state_machine|BuildPhase|Idle|variant|duplicate_of_canonical_member|#10828
+WSIM-BUILDP-002|WSI-STATE-004|state_machine|BuildPhase|Scanning|variant|duplicate_of_canonical_member|#10828
+WSIM-BUILDP-003|WSI-STATE-004|state_machine|BuildPhase|Indexing|variant|duplicate_of_canonical_member|#10828
+WSIM-DEGRAD-010|WSI-DEG-002|state_machine|DegradationReason|ParseStorm|variant|duplicate_of_canonical_member|#10828
+WSIM-DEGRAD-011|WSI-DEG-002|state_machine|DegradationReason|ParseStorm.pending_parses|variant_field|duplicate_of_canonical_member|#10828
+WSIM-DEGRAD-012|WSI-DEG-002|state_machine|DegradationReason|IoError|variant|duplicate_of_canonical_member|#10828
+WSIM-DEGRAD-013|WSI-DEG-002|state_machine|DegradationReason|IoError.message|variant_field|duplicate_of_canonical_member|#10828
+WSIM-DEGRAD-014|WSI-DEG-002|state_machine|DegradationReason|ScanTimeout|variant|duplicate_of_canonical_member|#10828
+WSIM-DEGRAD-015|WSI-DEG-002|state_machine|DegradationReason|ScanTimeout.elapsed_ms|variant_field|duplicate_of_canonical_member|#10828
+WSIM-DEGRAD-016|WSI-DEG-002|state_machine|DegradationReason|ResourceLimit|variant|duplicate_of_canonical_member|#10828
+WSIM-DEGRAD-017|WSI-DEG-002|state_machine|DegradationReason|ResourceLimit.kind|variant_field|duplicate_of_canonical_member|#10828
+WSIM-INDEXS-006|WSI-STATE-002|state_machine|IndexState|Idle|variant|absent_from_canonical|#10828
+WSIM-INDEXS-007|WSI-STATE-002|state_machine|IndexState|Idle.since|variant_field|absent_from_canonical|#10828
+WSIM-INDEXS-008|WSI-STATE-002|state_machine|IndexState|Initializing|variant|absent_from_canonical|#10828
+WSIM-INDEXS-009|WSI-STATE-002|state_machine|IndexState|Initializing.progress|variant_field|absent_from_canonical|#10828
+WSIM-INDEXS-010|WSI-STATE-002|state_machine|IndexState|Initializing.started_at|variant_field|absent_from_canonical|#10828
+WSIM-INDEXS-011|WSI-STATE-002|state_machine|IndexState|Building|variant|duplicate_of_canonical_member|#10828
+WSIM-INDEXS-012|WSI-STATE-002|state_machine|IndexState|Building.phase|variant_field|duplicate_of_canonical_member|#10828
+WSIM-INDEXS-013|WSI-STATE-002|state_machine|IndexState|Building.indexed_count|variant_field|duplicate_of_canonical_member|#10828
+WSIM-INDEXS-014|WSI-STATE-002|state_machine|IndexState|Building.total_count|variant_field|duplicate_of_canonical_member|#10828
+WSIM-INDEXS-015|WSI-STATE-002|state_machine|IndexState|Building.started_at|variant_field|duplicate_of_canonical_member|#10828
+WSIM-INDEXS-016|WSI-STATE-002|state_machine|IndexState|Updating|variant|absent_from_canonical|#10828
+WSIM-INDEXS-017|WSI-STATE-002|state_machine|IndexState|Updating.updating_count|variant_field|absent_from_canonical|#10828
+WSIM-INDEXS-018|WSI-STATE-002|state_machine|IndexState|Updating.started_at|variant_field|absent_from_canonical|#10828
+WSIM-INDEXS-019|WSI-STATE-002|state_machine|IndexState|Invalidating|variant|absent_from_canonical|#10828
+WSIM-INDEXS-020|WSI-STATE-002|state_machine|IndexState|Invalidating.reason|variant_field|absent_from_canonical|#10828
+WSIM-INDEXS-021|WSI-STATE-002|state_machine|IndexState|Invalidating.started_at|variant_field|absent_from_canonical|#10828
+WSIM-INDEXS-022|WSI-STATE-002|state_machine|IndexState|Ready|variant|duplicate_of_canonical_member|#10828
+WSIM-INDEXS-023|WSI-STATE-002|state_machine|IndexState|Ready.symbol_count|variant_field|duplicate_of_canonical_member|#10828
+WSIM-INDEXS-024|WSI-STATE-002|state_machine|IndexState|Ready.file_count|variant_field|duplicate_of_canonical_member|#10828
+WSIM-INDEXS-025|WSI-STATE-002|state_machine|IndexState|Ready.completed_at|variant_field|duplicate_of_canonical_member|#10828
+WSIM-INDEXS-026|WSI-STATE-002|state_machine|IndexState|Degraded|variant|duplicate_of_canonical_member|#10828
+WSIM-INDEXS-027|WSI-STATE-002|state_machine|IndexState|Degraded.reason|variant_field|duplicate_of_canonical_member|#10828
+WSIM-INDEXS-028|WSI-STATE-002|state_machine|IndexState|Degraded.available_symbols|variant_field|duplicate_of_canonical_member|#10828
+WSIM-INDEXS-029|WSI-STATE-002|state_machine|IndexState|Degraded.since|variant_field|duplicate_of_canonical_member|#10828
+WSIM-INDEXS-030|WSI-STATE-002|state_machine|IndexState|Error|variant|absent_from_canonical|#10828
+WSIM-INDEXS-031|WSI-STATE-002|state_machine|IndexState|Error.message|variant_field|absent_from_canonical|#10828
+WSIM-INDEXS-032|WSI-STATE-002|state_machine|IndexState|Error.since|variant_field|absent_from_canonical|#10828
+WSIM-INDEXS-033|WSI-KIND-002|state_machine|IndexStateKind|Idle|variant|absent_from_canonical|#10828
+WSIM-INDEXS-034|WSI-KIND-002|state_machine|IndexStateKind|Initializing|variant|absent_from_canonical|#10828
+WSIM-INDEXS-035|WSI-KIND-002|state_machine|IndexStateKind|Building|variant|duplicate_of_canonical_member|#10828
+WSIM-INDEXS-036|WSI-KIND-002|state_machine|IndexStateKind|Updating|variant|absent_from_canonical|#10828
+WSIM-INDEXS-037|WSI-KIND-002|state_machine|IndexStateKind|Invalidating|variant|absent_from_canonical|#10828
+WSIM-INDEXS-038|WSI-KIND-002|state_machine|IndexStateKind|Ready|variant|duplicate_of_canonical_member|#10828
+WSIM-INDEXS-039|WSI-KIND-002|state_machine|IndexStateKind|Degraded|variant|duplicate_of_canonical_member|#10828
+WSIM-INDEXS-040|WSI-KIND-002|state_machine|IndexStateKind|Error|variant|absent_from_canonical|#10828
+WSIM-INDEXS-041|WSI-TRANS-002|state_machine|IndexStateTransition|from|struct_field|duplicate_of_canonical_member|#10828
+WSIM-INDEXS-042|WSI-TRANS-002|state_machine|IndexStateTransition|to|struct_field|duplicate_of_canonical_member|#10828
+WSIM-RESOUR-004|WSI-RES-003|state_machine|ResourceKind|MaxFiles|variant|duplicate_of_canonical_member|#10828
+WSIM-RESOUR-005|WSI-RES-003|state_machine|ResourceKind|MaxSymbols|variant|duplicate_of_canonical_member|#10828
+WSIM-RESOUR-006|WSI-RES-003|state_machine|ResourceKind|MaxCacheBytes|variant|duplicate_of_canonical_member|#10828
+WSIM-INDEXS-043|WSI-STATE-001|workspace_index|IndexState|Building|variant|canonical_member|#10799
+WSIM-INDEXS-044|WSI-STATE-001|workspace_index|IndexState|Building.phase|variant_field|canonical_member|#10799
+WSIM-INDEXS-045|WSI-STATE-001|workspace_index|IndexState|Building.indexed_count|variant_field|canonical_member_identity_gap|#10799
+WSIM-INDEXS-046|WSI-STATE-001|workspace_index|IndexState|Building.total_count|variant_field|canonical_member_identity_gap|#10799
+WSIM-INDEXS-047|WSI-STATE-001|workspace_index|IndexState|Building.started_at|variant_field|canonical_member_identity_gap|#10799
+WSIM-INDEXS-048|WSI-STATE-001|workspace_index|IndexState|Ready|variant|canonical_member|#10799
+WSIM-INDEXS-049|WSI-STATE-001|workspace_index|IndexState|Ready.symbol_count|variant_field|canonical_member_identity_gap|#10799
+WSIM-INDEXS-050|WSI-STATE-001|workspace_index|IndexState|Ready.file_count|variant_field|canonical_member_identity_gap|#10799
+WSIM-INDEXS-051|WSI-STATE-001|workspace_index|IndexState|Ready.completed_at|variant_field|canonical_member_identity_gap|#10799
+WSIM-INDEXS-052|WSI-STATE-001|workspace_index|IndexState|Degraded|variant|canonical_member|#10799
+WSIM-INDEXS-053|WSI-STATE-001|workspace_index|IndexState|Degraded.reason|variant_field|canonical_member|#10799
+WSIM-INDEXS-054|WSI-STATE-001|workspace_index|IndexState|Degraded.available_symbols|variant_field|canonical_member_identity_gap|#10799
+WSIM-INDEXS-055|WSI-STATE-001|workspace_index|IndexState|Degraded.since|variant_field|canonical_member_identity_gap|#10799

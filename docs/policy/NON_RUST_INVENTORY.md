@@ -6,17 +6,17 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12427 |
+| Total tracked files | 12428 |
 | Rust-family files | 3825 |
-| Non-Rust files | 8602 |
-| Allowlisted | 6365 |
+| Non-Rust files | 8603 |
+| Allowlisted | 6366 |
 | Unclassified | 2237 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 491 |
+| config | 492 |
 | documentation | 2804 |
 | generated | 2 |
 | production | 348 |
@@ -6381,6 +6381,7 @@
 | `policy/trust-lanes.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/ub-review.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/workflow-contracts.toml` | config | `non-rust-policy-ledgers` | release/ci |
+| `policy/workspace-index-lifecycle-members.v1.tsv` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/workspace-index-lifecycle-propositions.v1.tsv` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/workspace-runtime-ownership.v1.tsv` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/workspace-symbol-classes.toml` | config | `non-rust-policy-ledgers` | release/ci |

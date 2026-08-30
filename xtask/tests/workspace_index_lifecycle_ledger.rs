@@ -47,6 +47,36 @@ const LIFECYCLE_SCOPED_MODULES: &[&str] = &[
 const MIXED_MODULE: &str = "crates/perl-workspace/src/workspace/workspace_index.rs";
 const MIXED_MODULE_LIFECYCLE_TYPES: &[&str] = &["IndexState", "IndexCoordinator"];
 
+const MEMBER_LEDGER_PATH: &str = "policy/workspace-index-lifecycle-members.v1.tsv";
+const MEMBER_COLUMN_COUNT: usize = 8;
+
+const ALLOWED_MEMBER_DISPOSITIONS: &[&str] = &[
+    "canonical_member",
+    "canonical_member_identity_gap",
+    "telemetry_member",
+    "duplicate_of_canonical_member",
+    "absent_from_canonical",
+];
+
+/// The vocabularies whose type names collide across the three modules. #10433
+/// requires a disposition for every overlapping type, variant, field and
+/// transition record, so these types are inventoried at member granularity: a
+/// variant or field change must not pass while the declaration stays present.
+const OVERLAPPING_TYPES: &[(&str, &str)] = &[
+    ("workspace_index", "IndexState"),
+    ("state_machine", "IndexState"),
+    ("monitoring", "IndexStateKind"),
+    ("state_machine", "IndexStateKind"),
+    ("monitoring", "DegradationReason"),
+    ("state_machine", "DegradationReason"),
+    ("monitoring", "ResourceKind"),
+    ("state_machine", "ResourceKind"),
+    ("monitoring", "IndexStateTransition"),
+    ("state_machine", "IndexStateTransition"),
+    ("monitoring", "IndexPhase"),
+    ("state_machine", "BuildPhase"),
+];
+
 const ALLOWED_STATES: &[&str] = &["live", "absent_on_main", "doctrine_only"];
 
 const ALLOWED_FAMILIES: &[&str] = &[
@@ -713,13 +743,40 @@ fn generated_reviewer_projection_is_current() -> Result<()> {
 }
 
 #[test]
-fn generated_projection_is_order_independent() -> Result<()> {
+fn generated_projection_is_stable_under_input_order() -> Result<()> {
     let rows = load_rows()?;
-    let forward = render_markdown(&rows)?;
-    let mut reversed = rows;
-    reversed.reverse();
-    let backward = render_markdown(&reversed)?;
-    ensure!(forward == backward, "generated projection depends on ledger input order");
+
+    // Reversing alone is a weak shuffle. Rotate and reverse so no row keeps its
+    // original index, then require byte equality with the canonical rendering.
+    let mut shuffled = rows.clone();
+    shuffled.rotate_left(7);
+    shuffled.reverse();
+    ensure!(
+        shuffled.iter().map(|row| row.id.as_str()).ne(rows.iter().map(|row| row.id.as_str())),
+        "the shuffle did not reorder the ledger; this control would be vacuous"
+    );
+    ensure!(
+        render_markdown(&rows)? == render_markdown(&shuffled)?,
+        "generated projection depends on ledger input order"
+    );
+
+    // Assert the canonical ordering directly, so removing the sort fails with a
+    // named cause rather than only through byte inequality above. This control
+    // cannot catch nondeterminism introduced *after* the sort (for example a
+    // hash-ordered section); cross-process stability of the committed artifact
+    // is covered by `generated_reviewer_projection_is_current`.
+    let rendered = render_markdown(&rows)?;
+    let mut seen: Vec<&str> = Vec::new();
+    for line in rendered.lines() {
+        if let Some(id) = line.strip_prefix("| WSI-").and_then(|rest| rest.split(' ').next()) {
+            seen.push(id);
+        }
+    }
+    ensure!(!seen.is_empty(), "no rendered rows found; the ordering control would be vacuous");
+    ensure!(
+        seen.windows(2).all(|pair| pair[0] <= pair[1]),
+        "rendered rows are not in canonical ascending order: {seen:?}"
+    );
     Ok(())
 }
 
@@ -911,4 +968,325 @@ fn unknown_runtime_ownership_row_is_rejected() -> Result<()> {
     victim.runtime_ownership_row = "WRT-DOES-NOT-EXIST".to_string();
     assert_rejected_because(validate_runtime_ownership_join(&rows), "is not present in")?;
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Member-level denominator for the overlapping vocabularies.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MemberRow {
+    id: String,
+    type_row: String,
+    module: String,
+    type_name: String,
+    member: String,
+    member_kind: String,
+    disposition: String,
+    successor_issue: String,
+}
+
+fn module_path(module: &str) -> Option<&'static str> {
+    match module {
+        "monitoring" => Some("crates/perl-workspace/src/monitoring/mod.rs"),
+        "state_machine" => Some("crates/perl-workspace/src/state_machine/mod.rs"),
+        "workspace_index" => Some("crates/perl-workspace/src/workspace/workspace_index.rs"),
+        _ => None,
+    }
+}
+
+fn load_member_rows() -> Result<Vec<MemberRow>> {
+    let root = repo_root()?;
+    let source = fs::read_to_string(root.join(MEMBER_LEDGER_PATH))
+        .with_context(|| format!("read {MEMBER_LEDGER_PATH}"))?;
+    let mut rows = Vec::new();
+    for (index, line) in source.lines().enumerate() {
+        if line.trim().is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let columns: Vec<&str> = line.split('|').collect();
+        ensure!(
+            columns.len() == MEMBER_COLUMN_COUNT,
+            "{MEMBER_LEDGER_PATH}:{}: expected {MEMBER_COLUMN_COUNT} columns, found {}",
+            index + 1,
+            columns.len()
+        );
+        rows.push(MemberRow {
+            id: columns[0].to_string(),
+            type_row: columns[1].to_string(),
+            module: columns[2].to_string(),
+            type_name: columns[3].to_string(),
+            member: columns[4].to_string(),
+            member_kind: columns[5].to_string(),
+            disposition: columns[6].to_string(),
+            successor_issue: columns[7].to_string(),
+        });
+    }
+    ensure!(!rows.is_empty(), "{MEMBER_LEDGER_PATH} contains no member rows");
+    Ok(rows)
+}
+
+fn leading_ident(rest: &str) -> String {
+    rest.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect()
+}
+
+fn variant_name(line: &str) -> Option<String> {
+    let rest = line.strip_prefix("    ")?;
+    if rest.starts_with(' ') || !rest.chars().next()?.is_ascii_uppercase() {
+        return None;
+    }
+    let name = leading_ident(rest);
+    (!name.is_empty()).then_some(name)
+}
+
+fn field_name(line: &str, indent: &str, prefix: Option<&str>) -> Option<String> {
+    let rest = line.strip_prefix(indent)?;
+    let rest = match prefix {
+        Some(prefix) => rest.strip_prefix(prefix)?,
+        None => {
+            if rest.starts_with(' ') {
+                return None;
+            }
+            rest
+        }
+    };
+    let first = rest.chars().next()?;
+    if !(first.is_ascii_lowercase() || first == '_') {
+        return None;
+    }
+    let name = leading_ident(rest);
+    (rest[name.len()..].starts_with(':')).then_some(name)
+}
+
+/// Extract the declared variants, variant fields and struct fields of one type
+/// from current source. This is the member denominator: it is read from the
+/// tree, never from the ledger, so the ledger cannot certify its own coverage.
+fn declared_members(module: &str, type_name: &str) -> Result<Vec<(String, String)>> {
+    let root = repo_root()?;
+    let path = module_path(module).with_context(|| format!("unknown lifecycle module {module}"))?;
+    let source = fs::read_to_string(root.join(path)).with_context(|| format!("read {path}"))?;
+
+    let mut start = None;
+    let mut is_enum = false;
+    for (index, line) in source.lines().enumerate() {
+        let line_is_enum = if line.starts_with("pub enum ") {
+            true
+        } else if line.starts_with("pub struct ") {
+            false
+        } else {
+            continue;
+        };
+        if declared_type_name(line).as_deref() == Some(type_name) {
+            start = Some(index);
+            is_enum = line_is_enum;
+            break;
+        }
+    }
+    let start =
+        start.with_context(|| format!("{module}::{type_name} is not declared in {path}"))?;
+
+    let mut members = Vec::new();
+    let mut depth: i32 = 0;
+    let mut opened = false;
+    let mut current_variant: Option<String> = None;
+
+    for line in source.lines().skip(start) {
+        depth += line.matches('{').count() as i32;
+        depth -= line.matches('}').count() as i32;
+        if line.contains('{') {
+            opened = true;
+        }
+        if opened && depth == 0 {
+            break;
+        }
+        if is_enum {
+            if let Some(name) = variant_name(line) {
+                current_variant = Some(name.clone());
+                members.push((name, "variant".to_string()));
+            } else if let Some(field) = field_name(line, "        ", None) {
+                if let Some(variant) = current_variant.as_ref() {
+                    members.push((format!("{variant}.{field}"), "variant_field".to_string()));
+                }
+            }
+        } else if let Some(field) = field_name(line, "    ", Some("pub ")) {
+            members.push((field, "struct_field".to_string()));
+        }
+    }
+    Ok(members)
+}
+
+fn validate_member_rows(rows: &[MemberRow], type_rows: &[PropositionRow]) -> Result<()> {
+    let known_type_rows: BTreeSet<&str> = type_rows.iter().map(|row| row.id.as_str()).collect();
+    let mut ids = BTreeSet::new();
+
+    for row in rows {
+        ensure!(row.id.starts_with("WSIM-"), "{}: invalid stable member row ID", row.id);
+        ensure!(ids.insert(row.id.as_str()), "duplicate member row {}", row.id);
+        ensure!(
+            ALLOWED_MEMBER_DISPOSITIONS.contains(&row.disposition.as_str()),
+            "{}: unknown member disposition {:?}",
+            row.id,
+            row.disposition
+        );
+        ensure!(
+            ALLOWED_SUCCESSORS.contains(&row.successor_issue.as_str()),
+            "{}: successor {:?} is not a live implementation owner",
+            row.id,
+            row.successor_issue
+        );
+        ensure!(
+            known_type_rows.contains(row.type_row.as_str()),
+            "{}: type_row {} does not exist in the type ledger",
+            row.id,
+            row.type_row
+        );
+        ensure!(
+            OVERLAPPING_TYPES.contains(&(row.module.as_str(), row.type_name.as_str())),
+            "{}: {}::{} is not an overlapping vocabulary",
+            row.id,
+            row.module,
+            row.type_name
+        );
+    }
+    Ok(())
+}
+
+/// Every declared variant, variant field and struct field of an overlapping type
+/// carries exactly one disposition, and no row survives a member that source no
+/// longer declares. Changing `Ready`, adding a variant, or removing a field must
+/// fail even though the enum declaration itself is untouched.
+fn validate_member_coverage(rows: &[MemberRow]) -> Result<()> {
+    for (module, type_name) in OVERLAPPING_TYPES {
+        let declared = declared_members(module, type_name)?;
+        ensure!(
+            !declared.is_empty(),
+            "no members extracted for {module}::{type_name}; the member ratchet would be vacuous"
+        );
+
+        let mapped: BTreeMap<&str, &MemberRow> = rows
+            .iter()
+            .filter(|row| row.module == *module && row.type_name == *type_name)
+            .map(|row| (row.member.as_str(), row))
+            .collect();
+
+        for (member, kind) in &declared {
+            let row = mapped.get(member.as_str()).with_context(|| {
+                format!(
+                    "{module}::{type_name} member {member} has no disposition in {MEMBER_LEDGER_PATH}"
+                )
+            })?;
+            ensure!(
+                row.member_kind == *kind,
+                "{}: member {member} is a {kind} in source but recorded as {}",
+                row.id,
+                row.member_kind
+            );
+        }
+
+        let declared_names: BTreeSet<&str> =
+            declared.iter().map(|(name, _)| name.as_str()).collect();
+        for member in mapped.keys() {
+            ensure!(
+                declared_names.contains(member),
+                "{module}::{type_name} member {member} is dispositioned but source no longer declares it"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn member_rows_are_well_formed_and_joined_to_the_type_ledger() -> Result<()> {
+    let type_rows = load_rows()?;
+    let rows = load_member_rows()?;
+    validate_member_rows(&rows, &type_rows)
+}
+
+#[test]
+fn every_overlapping_member_is_dispositioned() -> Result<()> {
+    let rows = load_member_rows()?;
+    validate_member_coverage(&rows)
+}
+
+#[test]
+fn member_extraction_finds_the_known_live_index_state_shape() -> Result<()> {
+    // Guards the extractor itself: a silently-empty or shape-blind parser would
+    // make the member ratchet vacuous no matter how many rows the ledger holds.
+    let members = declared_members("workspace_index", "IndexState")?;
+    let names: Vec<&str> = members.iter().map(|(name, _)| name.as_str()).collect();
+    for expected in [
+        "Building",
+        "Building.phase",
+        "Building.indexed_count",
+        "Building.total_count",
+        "Building.started_at",
+        "Ready",
+        "Ready.symbol_count",
+        "Ready.file_count",
+        "Ready.completed_at",
+        "Degraded",
+        "Degraded.reason",
+        "Degraded.available_symbols",
+        "Degraded.since",
+    ] {
+        ensure!(names.contains(&expected), "member extraction missed {expected}: {names:?}");
+    }
+    ensure!(names.len() == 13, "unexpected live IndexState member shape: {names:?}");
+    Ok(())
+}
+
+#[test]
+fn cancelled_is_recorded_only_on_the_live_degradation_vocabulary() -> Result<()> {
+    // The two DegradationReason enums differ by exactly this variant. The map
+    // must carry that as a checked member fact, not prose.
+    let live = declared_members("monitoring", "DegradationReason")?;
+    let duplicate = declared_members("state_machine", "DegradationReason")?;
+    let live_names: BTreeSet<&str> = live.iter().map(|(name, _)| name.as_str()).collect();
+    let duplicate_names: BTreeSet<&str> = duplicate.iter().map(|(name, _)| name.as_str()).collect();
+    ensure!(live_names.contains("Cancelled"), "live DegradationReason lost Cancelled");
+    ensure!(
+        !duplicate_names.contains("Cancelled"),
+        "the duplicate DegradationReason gained Cancelled; the vocabularies converged"
+    );
+    Ok(())
+}
+
+#[test]
+fn added_member_without_a_disposition_is_rejected() -> Result<()> {
+    let mut rows = load_member_rows()?;
+    // Dropping a row is equivalent to source gaining a member the ledger has
+    // not dispositioned — the reviewer's `Ready`-field case.
+    let dropped = rows
+        .iter()
+        .position(|row| row.member == "Ready.completed_at" && row.module == "workspace_index")
+        .context("expected a row for the live Ready.completed_at field")?;
+    rows.remove(dropped);
+    assert_rejected_because(validate_member_coverage(&rows), "has no disposition in")
+}
+
+#[test]
+fn removed_member_leaves_no_orphan_disposition() -> Result<()> {
+    let mut rows = load_member_rows()?;
+    let template = rows.first().cloned().context("member ledger unexpectedly empty")?;
+    rows.push(MemberRow {
+        id: "WSIM-PHANTOM-001".to_string(),
+        member: "VariantThatSourceDoesNotDeclare".to_string(),
+        ..template
+    });
+    assert_rejected_because(
+        validate_member_coverage(&rows),
+        "is dispositioned but source no longer declares it",
+    )
+}
+
+#[test]
+fn member_row_cannot_reference_a_missing_type_row() -> Result<()> {
+    let type_rows = load_rows()?;
+    let mut rows = load_member_rows()?;
+    let victim = rows.first_mut().context("member ledger unexpectedly empty")?;
+    victim.type_row = "WSI-DOES-NOT-EXIST".to_string();
+    assert_rejected_because(
+        validate_member_rows(&rows, &type_rows),
+        "does not exist in the type ledger",
+    )
 }
