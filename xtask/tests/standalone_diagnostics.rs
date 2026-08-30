@@ -116,7 +116,7 @@ fn committed_registry_validates() -> TestResult {
     let stats = diagnostics::validate_manifest_file(&repo_root())?;
     assert_eq!(stats.actions, 11);
     assert_eq!(stats.summary_templates, 18);
-    assert_eq!(stats.primary_reasons, 29);
+    assert_eq!(stats.primary_reasons, 30);
     assert_eq!(stats.additional_reasons, 4);
     assert_eq!(stats.deferred_reason_domains, 7);
     // The closed cross-product of the typed transition contract.
@@ -147,7 +147,7 @@ fn every_typed_combination_projects() -> TestResult {
 fn list_and_explain_cover_the_registry() -> TestResult {
     let manifest = diagnostics::load_manifest(&repo_root())?;
     let ids = diagnostics::list_reason_ids(&manifest);
-    assert_eq!(ids.len(), 33);
+    assert_eq!(ids.len(), 34);
     assert!(ids.iter().any(|id| id == "sel_committed_path_persisted_new_session_required"));
     let explained = diagnostics::explain_reason(&manifest, "cleanup_incomplete_residue_retained")
         .ok_or("missing reason from explain")?;
@@ -1037,4 +1037,166 @@ fn rejects_an_invariant_shadowed_by_an_ordinary_reason() -> TestResult {
         &manifest,
         "a self-contradictory packet would be reported as a product outcome",
     )
+}
+
+// ---------------------------------------------------------------------------
+// Second independent review pass (#13800)
+// ---------------------------------------------------------------------------
+
+/// `xtask/examples/standalone_candidate_selection.rs` requires a committed
+/// rollback to carry the rollback operation: "rollback_committed requires a
+/// rollback operation with a committed selection change". A forward operation
+/// reporting a committed rollback is therefore a contradiction, not a
+/// restoration to celebrate.
+#[test]
+fn a_forward_operation_cannot_report_a_committed_rollback() -> TestResult {
+    let manifest = diagnostics::load_manifest(&repo_root())?;
+    for operation in ["install", "repair", "update"] {
+        let subject = combination(
+            operation,
+            "rollback_committed",
+            "rolled_back",
+            "completed",
+            "verified",
+            "persisted",
+        );
+        let projection = diagnostics::project_combination(&manifest, &subject, None)?;
+        assert_eq!(
+            projection.get("primary_reason").and_then(Value::as_str),
+            Some("inv_rollback_committed_requires_rollback_operation"),
+            "`{operation}` reporting a committed rollback must be an instrument failure"
+        );
+        assert_eq!(
+            projection.get("claim_ceiling").and_then(Value::as_str),
+            Some("support_claim_withheld")
+        );
+    }
+
+    // Positive control: the rollback operation itself still restores normally.
+    let honest = combination(
+        "rollback",
+        "rollback_committed",
+        "rolled_back",
+        "completed",
+        "verified",
+        "persisted",
+    );
+    let projection = diagnostics::project_combination(&manifest, &honest, None)?;
+    assert_eq!(
+        projection.get("primary_reason").and_then(Value::as_str),
+        Some("rollback_committed_current_restored_startup_verified")
+    );
+    Ok(())
+}
+
+#[test]
+fn rejects_a_packet_with_an_unknown_outcome_dimension() -> TestResult {
+    let mut subject = valid_packet();
+    subject["outcome_dimensions"]["disk_pressure"] = json!("high");
+    let error = admission_error(&subject);
+    assert!(
+        error.contains("`outcome_dimensions` has unknown field `disk_pressure`"),
+        "got: {error}"
+    );
+    Ok(())
+}
+
+#[test]
+fn the_public_projection_entry_point_bounds_its_route_mode() -> TestResult {
+    let manifest = diagnostics::load_manifest(&repo_root())?;
+    let subject = combination(
+        "install",
+        "selection_committed",
+        "installed",
+        "completed",
+        "verified",
+        "persisted",
+    );
+    // `project_packet` admits first, but `project_combination` is public and
+    // must not become a way around the closed route set.
+    let error = match diagnostics::project_combination(&manifest, &subject, Some("anything at all"))
+    {
+        Ok(_) => "projection unexpectedly succeeded".to_string(),
+        Err(error) => error.to_string(),
+    };
+    assert!(error.contains("outside the typed domain"), "got: {error}");
+    diagnostics::project_combination(&manifest, &subject, Some("first_party_powershell"))?;
+    diagnostics::project_combination(&manifest, &subject, None)?;
+    Ok(())
+}
+
+#[test]
+fn a_multibyte_reason_within_the_character_limit_is_admitted() -> TestResult {
+    // The input schema bounds `bounded_reason` at 512 *characters*. Measuring
+    // UTF-8 bytes would reject a legitimate non-ASCII reason well inside it.
+    let reason: String = "é".repeat(400);
+    assert!(reason.len() > 512, "fixture must exceed 512 bytes to be discriminating");
+    assert!(reason.chars().count() <= 512);
+    let subject = packet(
+        "selection_committed",
+        json!({
+            "product_units": "installed",
+            "cleanup": "completed",
+            "process_startup": "verified",
+            "path_persistence": "persisted"
+        }),
+        &reason,
+    );
+    diagnostics::read_packet(&subject)?;
+
+    // Still bounded: past the character limit it is rejected.
+    let overlong: String = "é".repeat(513);
+    let subject = packet(
+        "selection_committed",
+        json!({
+            "product_units": "installed",
+            "cleanup": "completed",
+            "process_startup": "verified",
+            "path_persistence": "persisted"
+        }),
+        &overlong,
+    );
+    let error = admission_error(&subject);
+    assert!(error.contains("1 to 512 characters"), "got: {error}");
+    Ok(())
+}
+
+#[test]
+fn a_failed_fresh_process_is_not_reported_as_awaiting_a_new_session() -> TestResult {
+    let manifest = diagnostics::load_manifest(&repo_root())?;
+    for path_persistence in ["persisted", "unchanged"] {
+        let subject = combination(
+            "install",
+            "selection_committed",
+            "installed",
+            "completed",
+            "failed",
+            path_persistence,
+        );
+        let projection = diagnostics::project_combination(&manifest, &subject, None)?;
+        let consequence =
+            projection.pointer("/consequences/path").and_then(Value::as_str).unwrap_or_default();
+        assert!(
+            consequence.ends_with("startup_failed"),
+            "`{path_persistence}` with a failed fresh process must not name a new session as the \
+             remaining step, got `{consequence}`"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn a_registry_gap_reports_its_true_size_not_the_example_cap() -> TestResult {
+    let mut manifest = canonical_manifest()?;
+    // Removing this reason uncovers far more than the five retained examples.
+    let index = position_of(&manifest, "primary_reasons", "rollback_committed_current_restored")
+        .ok_or("missing reason")?;
+    reasons_mut(&mut manifest, "primary_reasons").ok_or("missing primary reasons")?.remove(index);
+    let error = validation_error(diagnostics::validate_manifest_value(&manifest));
+    assert!(error.contains("registry gap"), "got: {error}");
+    assert!(
+        !error.contains("matches 5 typed combination(s)"),
+        "the gap total must not be the capped example count, got: {error}"
+    );
+    Ok(())
 }

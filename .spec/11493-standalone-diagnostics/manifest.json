@@ -433,6 +433,35 @@
       "claim_consequence": "support_claim_withheld",
       "classification": "instrument",
       "owner": "#10243",
+      "reason_id": "inv_rollback_committed_requires_rollback_operation",
+      "redaction_policy": "bounded_typed_fields_only",
+      "required_limitations": [
+        "packet_self_contradictory",
+        "product_effect_unproven"
+      ],
+      "retryability": "retry_forbidden_requires_replan",
+      "selector": {
+        "disposition": [
+          "rollback_committed"
+        ],
+        "operation": [
+          "install",
+          "repair",
+          "update"
+        ]
+      },
+      "side_effect_disposition": "current_preserved_but_unproven",
+      "summary_template_id": "t_packet_inconsistent",
+      "terminality": "nonterminal_actionable"
+    },
+    {
+      "action_ids": [
+        "report_instrument_failure",
+        "inspect_exact_receipt"
+      ],
+      "claim_consequence": "support_claim_withheld",
+      "classification": "instrument",
+      "owner": "#10243",
       "reason_id": "inv_selection_committed_without_product_effect",
       "redaction_policy": "bounded_typed_fields_only",
       "required_limitations": [

@@ -526,6 +526,15 @@ fn validate_registry_schema_agreement(root: &Path, violations: &mut Vec<String>)
     Ok(())
 }
 
+/// Validate the registry's *semantics* for an already-parsed manifest.
+///
+/// This is the narrower of the two entry points and is deliberately not the
+/// advertised gate. `validate_manifest_file` is the authority `cargo xtask
+/// standalone-diagnostics check` runs: it additionally applies the JSON Schema,
+/// the canonical-bytes check, and the input-contract agreement check, none of
+/// which can be evaluated from a `Value` alone because they need the committed
+/// bytes and the sibling schema files. Callers holding only an in-memory
+/// manifest therefore get the semantic layer, not the structural one.
 pub fn validate_manifest_value(manifest: &Value) -> Res<ValidationStats> {
     let mut violations = Vec::new();
     let Some(root) = as_object(manifest, "manifest", &mut violations) else {
@@ -1061,6 +1070,7 @@ fn validate_totality_and_reachability(root: &Map<String, Value>, violations: &mu
     }
 
     let mut gaps: Vec<String> = Vec::new();
+    let mut gap_total: usize = 0;
     for combination in all_combinations() {
         match primary_reason_for(&manifest, &combination) {
             Some(reason) => {
@@ -1069,6 +1079,7 @@ fn validate_totality_and_reachability(root: &Map<String, Value>, violations: &mu
                 }
             }
             None => {
+                gap_total += 1;
                 if gaps.len() < 5 {
                     gaps.push(format!(
                         "{}/{}/{}/{}/{}/{}",
@@ -1092,7 +1103,7 @@ fn validate_totality_and_reachability(root: &Map<String, Value>, violations: &mu
     if !gaps.is_empty() {
         violations.push(format!(
             "registry gap: no primary reason matches {} typed combination(s), for example {}",
-            gaps.len(),
+            gap_total,
             gaps.join(", ")
         ));
     }
@@ -1239,7 +1250,7 @@ pub fn read_packet(packet: &Value) -> Res<TransitionPacket> {
     // these arms speak only to a key that is present and ill-shaped.
     match object.get("bounded_reason") {
         None => {}
-        Some(Value::String(text)) if !text.is_empty() && text.len() <= 512 => {}
+        Some(Value::String(text)) if !text.is_empty() && text.chars().count() <= 512 => {}
         Some(_) => {
             violations.push("`bounded_reason` must be a string of 1 to 512 characters".to_string());
         }
@@ -1271,6 +1282,14 @@ pub fn read_packet(packet: &Value) -> Res<TransitionPacket> {
             &empty
         }
     };
+    // `outcome_dimensions` is closed by the input schema; an undeclared member
+    // means the emitter and this registry disagree about the contract.
+    let declared: BTreeSet<&str> =
+        ["product_units", "cleanup", "process_startup", "path_persistence"].into_iter().collect();
+    for unknown in dimensions.keys().map(String::as_str).filter(|key| !declared.contains(key)) {
+        violations.push(format!("`outcome_dimensions` has unknown field `{unknown}`"));
+    }
+
     let product_units = typed_field(dimensions, "product_units", &mut violations);
     let cleanup = typed_field(dimensions, "cleanup", &mut violations);
     let process_startup = typed_field(dimensions, "process_startup", &mut violations);
@@ -1356,8 +1375,12 @@ fn path_consequence(path_persistence: &str, process_startup: &str) -> &'static s
         ("failed", _) => "not_persisted",
         ("not_applicable", _) => "not_applicable",
         ("persisted", "verified") => "persisted_and_visible",
+        // A fresh process that was observed and failed is not waiting on a new
+        // session; saying so would name the wrong remaining step.
+        ("persisted", "failed") => "persisted_but_startup_failed",
         ("persisted", _) => "persisted_new_session_required",
         ("unchanged", "verified") => "already_visible",
+        ("unchanged", "failed") => "unchanged_but_startup_failed",
         ("unchanged", _) => "unchanged_visibility_unproven",
         _ => "not_applicable",
     }
@@ -1376,6 +1399,13 @@ pub fn project_combination(
     combination: &Combination,
     route_mode: Option<&str>,
 ) -> Res<Value> {
+    if let Some(route_mode) = route_mode
+        && !ROUTE_MODES.contains(&route_mode)
+    {
+        return Err(StandaloneDiagnosticsError::new(format!(
+            "`route_mode` value `{route_mode}` is outside the typed domain; a rendered parameter may not carry arbitrary text"
+        )));
+    }
     let primary = primary_reason_for(manifest, combination).ok_or_else(|| {
         StandaloneDiagnosticsError::new(format!(
             "registry gap: no reason covers {}/{}/{}/{}/{}/{}",
