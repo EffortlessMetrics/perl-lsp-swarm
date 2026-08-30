@@ -298,4 +298,47 @@ mod tests {
         assert_eq!(counters.peak_depth, 8);
         assert_eq!(counters.elapsed, Duration::from_nanos(9));
     }
+
+    #[test]
+    fn scope_merge_saturates_additive_counter_fields() {
+        let scope = PipelineCollectorScope::install();
+        record_with(|recorded| {
+            recorded.pipeline_invocations = 1;
+            recorded.parse_gate_invocations = 1;
+            recorded.source_parse_gate_invocations = 1;
+            recorded.formatted_output_parse_gate_invocations = 1;
+            recorded.gate_nodes_observed = 1;
+            recorded.lines_processed = 1;
+            recorded.delimited_groups_fitted = 1;
+            recorded.edits_derived = 1;
+            recorded.replacement_bytes = 1;
+            recorded.elapsed = Duration::from_nanos(1);
+        });
+
+        let mut counters = NativePipelineCounters {
+            pipeline_invocations: u64::MAX,
+            parse_gate_invocations: u64::MAX,
+            source_parse_gate_invocations: u64::MAX,
+            formatted_output_parse_gate_invocations: u64::MAX,
+            gate_nodes_observed: u64::MAX,
+            lines_processed: u64::MAX,
+            delimited_groups_fitted: u64::MAX,
+            edits_derived: u64::MAX,
+            replacement_bytes: u64::MAX,
+            peak_depth: 0,
+            elapsed: Duration::MAX,
+        };
+        scope.merge_into(&mut counters);
+
+        assert_eq!(counters.pipeline_invocations, u64::MAX);
+        assert_eq!(counters.parse_gate_invocations, u64::MAX);
+        assert_eq!(counters.source_parse_gate_invocations, u64::MAX);
+        assert_eq!(counters.formatted_output_parse_gate_invocations, u64::MAX);
+        assert_eq!(counters.gate_nodes_observed, u64::MAX);
+        assert_eq!(counters.lines_processed, u64::MAX);
+        assert_eq!(counters.delimited_groups_fitted, u64::MAX);
+        assert_eq!(counters.edits_derived, u64::MAX);
+        assert_eq!(counters.replacement_bytes, u64::MAX);
+        assert_eq!(counters.elapsed, Duration::MAX);
+    }
 }

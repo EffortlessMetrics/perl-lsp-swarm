@@ -136,6 +136,9 @@ def validate(path: Path, expected_run_id: str, expected_ids: list[str]) -> None:
         bench_id = row.get("bench_id")
         if not isinstance(bench_id, str) or not bench_id:
             raise ValueError("every sidecar row must carry a non-empty bench_id")
+        toolchain = row.get("toolchain")
+        if not isinstance(toolchain, str) or not toolchain:
+            raise ValueError("every sidecar row must carry a non-empty toolchain")
         actual.append(bench_id)
 
     if len(set(actual)) != len(actual):

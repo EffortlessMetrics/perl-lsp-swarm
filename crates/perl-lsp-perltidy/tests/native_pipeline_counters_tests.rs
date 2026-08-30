@@ -687,6 +687,26 @@ fn receipt_identity_rows_include_production_counter_snapshot() {
     assert_eq!(row["counters"]["formatted_output_parse_gate_invocations"], 1);
 }
 
+#[test]
+fn repeated_document_requests_accumulate_pipeline_and_line_counters() {
+    let spec = SubjectSpec { family: "statement", line_ending: "lf", indent: "tabs", units: 4 };
+    let source = spec.source();
+    let per_call_lines = source.split_inclusive('\n').count() as u64;
+    let mut counters = NativePipelineCounters::default();
+
+    for _ in 0..3 {
+        let _typed = NativeFormatter::new().format_document_typed_with_counters(
+            &source,
+            &FormatConfig::default(),
+            &FormatContext::default(),
+            &mut counters,
+        );
+    }
+
+    assert_eq!(counters.pipeline_invocations, 3);
+    assert_eq!(counters.lines_processed, per_call_lines * 3);
+}
+
 // ---------------------------------------------------------------------------
 // NPC-007 — nightly enrollment of the new bench target
 // ---------------------------------------------------------------------------

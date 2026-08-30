@@ -230,6 +230,7 @@ class NativePipelineSidecarGuardTests(unittest.TestCase):
             "schema": schema,
             "run_id": run_id or self.RUN_ID,
             "bench_id": bench_id,
+            "toolchain": "rustc-test-toolchain",
             "counters": {
                 "schema": "native-pipeline-counters-v1",
                 "pipeline_invocations": 1,
@@ -279,6 +280,24 @@ class NativePipelineSidecarGuardTests(unittest.TestCase):
             proc = self._run(path)
             self.assertNotEqual(proc.returncode, 0)
             self.assertIn("clock_tag", proc.stderr)
+
+    def test_row_without_toolchain_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            rows = [self._row(bench_id) for bench_id in self.EXPECTED]
+            rows[0].pop("toolchain")
+            path = self._write(Path(tmp), rows)
+            proc = self._run(path)
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("toolchain", proc.stderr)
+
+    def test_row_with_blank_toolchain_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            rows = [self._row(bench_id) for bench_id in self.EXPECTED]
+            rows[0]["toolchain"] = ""
+            path = self._write(Path(tmp), rows)
+            proc = self._run(path)
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("toolchain", proc.stderr)
 
     def test_counter_snapshot_with_wrong_clock_tag_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

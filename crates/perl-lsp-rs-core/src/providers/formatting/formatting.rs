@@ -18,8 +18,8 @@ pub use crate::providers::formatting_types::{
 use crate::tooling::perltidy::native::{
     FormatChangeSummary, FormatContext, FormatDisposition, FormatEngine, FormatEvidenceState,
     FormatIdentity, FormatLineEndingDisposition, FormatOutcome, FormatReasonCode,
-    FormatRequestTarget, FormatSafetyEvidence, TypedFormatResult, inferred_line_ending,
-    NativePipelineCounters,
+    FormatRequestTarget, FormatSafetyEvidence, NativePipelineCounters, TypedFormatResult,
+    inferred_line_ending,
 };
 use crate::tooling::perltidy::{
     BracePlacement, ElsePlacement, FinalNewline, FormatConfig, FormatterMode, KeywordSpacing,
