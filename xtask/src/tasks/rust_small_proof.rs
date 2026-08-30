@@ -320,10 +320,11 @@ pub fn verify_receipt(
         );
     }
 
-    // Outcome/exit-code coherence. A `product_failure` may legitimately carry
-    // exit code 0: the zero-census failure is exactly the product failure a
-    // process exit code cannot express, and the receipt records it truthfully.
-    for step in &receipt.steps {
+    // Outcome/exit-code coherence. Exit code 0 alongside a `product_failure`
+    // is truthful in exactly one place — the census, where the process exits 0
+    // while listing nothing — so the exception is scoped to that step rather
+    // than allowed lane-wide.
+    for (index, step) in receipt.steps.iter().enumerate() {
         match step.outcome {
             StepOutcome::NotRun | StepOutcome::NotCompleted | StepOutcome::InstrumentFailure => {
                 if step.exit_code.is_some() {
@@ -349,7 +350,22 @@ pub fn verify_receipt(
                     );
                 }
             }
-            StepOutcome::ProductFailure => {}
+            StepOutcome::ProductFailure => match step.exit_code {
+                // Terminating without a code is `not_completed`, never a
+                // product failure.
+                None => bail!(
+                    "receipt step '{}' recorded product_failure with no exit code: termination \
+                     without a code is not_completed",
+                    step.name
+                ),
+                // Only the census can fail while exiting 0.
+                Some(0) if index != CARGO_STEPS.len() => bail!(
+                    "receipt step '{}' recorded product_failure with exit code 0: outside the \
+                     references scorecard census, a failing process reports a nonzero code",
+                    step.name
+                ),
+                Some(_) => {}
+            },
         }
     }
 
@@ -1616,6 +1632,42 @@ tests::gamma: test
         wrong_zero.steps[census_at].exit_code = Some(0);
         wrong_zero.scorecard_census = Some(5);
         assert!(rejection(&wrong_zero, None).contains("must report a census of 0"));
+    }
+
+    #[test]
+    fn a_product_failure_exit_code_must_be_one_the_producer_could_emit() {
+        // A failing process reports a nonzero code, and only the census can
+        // fail while exiting 0. Neither shape below is emittable by this lane.
+        for at in [1usize, CARGO_STEPS.len() + 1, CARGO_STEPS.len() + 2] {
+            let mut zero_exit =
+                failure_receipt(at, StepOutcome::ProductFailure, ProofResult::ProductFailure);
+            zero_exit.steps[at].exit_code = Some(0);
+            let text = rejection(&zero_exit, None);
+            assert!(
+                text.contains("product_failure with exit code 0"),
+                "step {at} accepted a zero-exit product failure: {text}"
+            );
+
+            let mut no_exit =
+                failure_receipt(at, StepOutcome::ProductFailure, ProofResult::ProductFailure);
+            no_exit.steps[at].exit_code = None;
+            let text = rejection(&no_exit, None);
+            assert!(
+                text.contains("product_failure with no exit code"),
+                "step {at} accepted a codeless product failure: {text}"
+            );
+        }
+
+        // The census keeps its exception, and only it.
+        let census_at = CARGO_STEPS.len();
+        let mut census_zero =
+            failure_receipt(census_at, StepOutcome::ProductFailure, ProofResult::ProductFailure);
+        census_zero.steps[census_at].exit_code = Some(0);
+        census_zero.scorecard_census = Some(0);
+        assert!(
+            verify_receipt(&census_zero, Some(&sample_subject())).is_ok(),
+            "the census zero-exit gate failure must remain valid"
+        );
     }
 
     #[test]
