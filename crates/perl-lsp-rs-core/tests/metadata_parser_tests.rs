@@ -941,3 +941,28 @@ fn cpanfile_decimal_concatenations_stay_dynamic() {
         )],
     );
 }
+
+#[test]
+fn cpanfile_multiline_string_payloads_stay_opaque() {
+    // A valid multiline string containing declaration-shaped text must stay
+    // one opaque operand: only the real top-level dependency is emitted.
+    let cpanfile = concat!(
+        "my $doc = 'usage:\n",
+        "requires \"Fake::Dep\";\n",
+        "recommends \"Fake::Two\";\n",
+        "';\n",
+        "requires 'Real::One';",
+    );
+
+    let deps = extract_cpanfile_requirements(cpanfile);
+
+    assert_eq!(
+        deps,
+        vec![DeclaredDependency::new(
+            "Real::One",
+            None,
+            "requires",
+            DeclaredDependencySource::Cpanfile,
+        )],
+    );
+}

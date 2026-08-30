@@ -1059,9 +1059,8 @@ fn parse_quoted_string(source: &str, start: usize) -> Option<(String, usize)> {
         if ch as u8 == quote {
             return Some((value, idx - start));
         }
-        if ch == '\n' {
-            return None;
-        }
+        // Multiline strings are valid Perl: keep scanning so the whole
+        // operand stays opaque to statement and block tracking.
         value.push(ch);
     }
 
