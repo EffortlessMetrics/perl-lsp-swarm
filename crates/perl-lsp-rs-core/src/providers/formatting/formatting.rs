@@ -345,11 +345,8 @@ fn project_native_document(
 ) -> Result<FormattingDecision, FormattingError> {
     let TypedFormatResult { result, outcome } = typed;
     match outcome.disposition {
-        FormatDisposition::Refused => {
-            return Ok(FormattingDecision { document: unchanged_document(content), outcome });
-        }
-        FormatDisposition::FailedOrNotProven => {
-            return Ok(FormattingDecision { document: unchanged_document(content), outcome });
+        FormatDisposition::Refused | FormatDisposition::FailedOrNotProven => {
+            return Ok(withheld_decision(outcome, content));
         }
         FormatDisposition::Applied | FormatDisposition::NoChange => {}
     }
@@ -377,11 +374,8 @@ fn project_native_range(
 ) -> Result<FormattingDecision, FormattingError> {
     let TypedFormatResult { result, outcome } = typed;
     match outcome.disposition {
-        FormatDisposition::Refused => {
-            return Ok(FormattingDecision { document: unchanged_document(content), outcome });
-        }
-        FormatDisposition::FailedOrNotProven => {
-            return Ok(FormattingDecision { document: unchanged_document(content), outcome });
+        FormatDisposition::Refused | FormatDisposition::FailedOrNotProven => {
+            return Ok(withheld_decision(outcome, content));
         }
         FormatDisposition::Applied => {
             let span = match admitted.allowed_edit_span(content, geometry) {
@@ -451,6 +445,17 @@ fn unproven_range_projection(content: &str, mut outcome: FormatOutcome) -> Forma
     outcome.reason = FormatReasonCode::InstrumentFailure;
     outcome.next_action =
         Some("retain the unchanged source and report the formatter evidence".to_string());
+    withheld_decision(outcome, content)
+}
+
+/// Retain the source and strip any intermediate change evidence.
+///
+/// A refused, failed, or not-proven decision returns no edits, so it carries no
+/// applied-change summary. The engine's intermediate summary describes a
+/// rendered result that was never admitted, and must not survive into a
+/// withheld outcome (#7585).
+fn withheld_decision(mut outcome: FormatOutcome, content: &str) -> FormattingDecision {
+    outcome.change = change_summary(content, content, &[]);
     FormattingDecision { document: unchanged_document(content), outcome }
 }
 

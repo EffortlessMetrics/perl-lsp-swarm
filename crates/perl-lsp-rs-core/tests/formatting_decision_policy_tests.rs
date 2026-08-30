@@ -232,6 +232,13 @@ fn native_partial_range_that_widens_is_downgraded_without_edits()
     assert_eq!(decision.outcome.reason, FormatReasonCode::InstrumentFailure);
     assert!(decision.document.edits.is_empty());
     assert_eq!(decision.document.text, source);
+    // The engine rendered a change that containment then rejected. Because no
+    // edit is admitted, the withheld decision carries no applied-change
+    // summary — the intermediate evidence must not survive (#7585).
+    assert_eq!(decision.outcome.change.edit_count, 0);
+    assert_eq!(decision.outcome.change.source_bytes_changed, 0);
+    assert_eq!(decision.outcome.change.rendered_bytes_changed, 0);
+    assert_eq!(decision.outcome.change.changed_lines, 0);
     Ok(())
 }
 
@@ -588,6 +595,21 @@ fn every_terminal_decision_keeps_a_consistent_change_envelope()
             provider.format_range_decision("# trailing   \n", &range, &trimming, &context())?;
         assert_envelope_is_consistent("# trailing   \n", &decision);
     }
+
+    // A partial-line range whose line needs formatting: the engine emits a
+    // full-line edit, containment rejects it, and the decision is downgraded to
+    // not-proven with no edits. Without this case the withheld arm of the
+    // predicate below is never exercised.
+    let containment_rejection =
+        FormatRange::new(FormatPosition::new(0, 2), FormatPosition::new(0, 3));
+    let decision = provider.format_range_decision(
+        "my$x=1;\n",
+        &containment_rejection,
+        &options(),
+        &context(),
+    )?;
+    assert_eq!(decision.outcome.disposition, FormatDisposition::FailedOrNotProven);
+    assert_envelope_is_consistent("my$x=1;\n", &decision);
     Ok(())
 }
 
