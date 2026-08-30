@@ -376,7 +376,7 @@ fn classify(
     }
 }
 
-fn valid_range(source: &str, range: TextRange) -> bool {
+pub(super) fn valid_range(source: &str, range: TextRange) -> bool {
     if (range.start.line, range.start.character) > (range.end.line, range.end.character) {
         return false;
     }

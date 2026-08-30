@@ -25,7 +25,7 @@ use super::implementation::{
 };
 use super::outcome::{
     FormatContext, FormatIdentity, FormatReasonCode, FormatRequestTarget, TypedFormatResult,
-    classify_format_result,
+    classify_format_result, valid_range,
 };
 use perl_parser_core::{SourceRegionIndex, SourceRegionKind};
 
@@ -142,7 +142,7 @@ impl PerlFormatter for NativeFormatter {
             );
         }
         let lines = source_line_ranges(source);
-        if valid_range(source, range, &lines)
+        if valid_range(source, range)
             && range_overlaps_completed_heredoc(source, range, &lines)
         {
             return heredoc_range_refusal(source);
@@ -348,20 +348,6 @@ fn byte_span_for_line_range(
     (byte_start, byte_end)
 }
 
-fn valid_range(source: &str, range: TextRange, lines: &[(usize, usize)]) -> bool {
-    if (range.start.line, range.start.character) > (range.end.line, range.end.character) {
-        return false;
-    }
-    let position_is_valid = |position: implementation::TextPosition| {
-        lines
-            .get(position.line as usize)
-            .and_then(|(start, end)| source.get(*start..*end))
-            .map(strip_line_ending)
-            .is_some_and(|line| line.encode_utf16().count() >= position.character as usize)
-    };
-    position_is_valid(range.start) && position_is_valid(range.end)
-}
-
 fn source_line_ranges(source: &str) -> Vec<(usize, usize)> {
     let bytes = source.as_bytes();
     let mut ranges = Vec::new();
@@ -387,13 +373,6 @@ fn source_line_ranges(source: &str) -> Vec<(usize, usize)> {
         ranges.push((start, source.len()));
     }
     ranges
-}
-
-fn strip_line_ending(line: &str) -> &str {
-    line.strip_suffix("\r\n")
-        .or_else(|| line.strip_suffix('\n'))
-        .or_else(|| line.strip_suffix('\r'))
-        .unwrap_or(line)
 }
 
 #[cfg(test)]

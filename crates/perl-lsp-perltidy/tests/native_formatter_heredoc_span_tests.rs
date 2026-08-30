@@ -73,6 +73,49 @@ fn typed_range_formatting_reports_heredoc_literal_preservation() {
 }
 
 #[test]
+fn compat_and_typed_ranges_gate_the_same_requests() {
+    let formatter = NativeFormatter::new();
+    let cases = [
+        (
+            "print <<'EOF';\nraw { text }\nEOF\nmy$x=1;\n",
+            [
+                TextRange::new(TextPosition::new(1, 0), TextPosition::new(2, 0)),
+                TextRange::new(TextPosition::new(2, 0), TextPosition::new(3, 0)),
+                TextRange::new(TextPosition::new(3, 0), TextPosition::new(4, 0)),
+            ],
+        ),
+        (
+            "print <<'EOF';\rraw { text }\rEOF\rmy$x=1;\r",
+            [
+                TextRange::new(TextPosition::new(1, 0), TextPosition::new(2, 0)),
+                TextRange::new(TextPosition::new(2, 0), TextPosition::new(3, 0)),
+                TextRange::new(TextPosition::new(3, 0), TextPosition::new(4, 0)),
+            ],
+        ),
+    ];
+
+    for (source, ranges) in cases {
+        for range in ranges {
+            let compat = formatter.format_range(source, range, &FormatConfig::default());
+            let typed = formatter.format_range_typed(
+                source,
+                range,
+                &FormatConfig::default(),
+                &FormatContext::default(),
+            );
+            let compat_gated = compat
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "native.format.literal_preserve_region");
+            let typed_gated =
+                typed.outcome.reason == FormatReasonCode::LiteralPreservationUnsupported;
+
+            assert_eq!(compat_gated, typed_gated, "range {range:?} in {source:?}");
+        }
+    }
+}
+
+#[test]
 fn range_formatting_refuses_heredoc_terminator_line() {
     let formatter = NativeFormatter::new();
     let source = "print <<'EOF';\nbody\nEOF\nmy$y=2;\n";
