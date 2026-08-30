@@ -85,6 +85,8 @@ const OVERLAPPING_TYPES: &[(&str, &str)] = &[
     ("state_machine", "IndexStateTransition"),
     ("monitoring", "IndexPhase"),
     ("state_machine", "BuildPhase"),
+    ("monitoring", "IndexPhaseTransition"),
+    ("state_machine", "BuildPhaseTransition"),
 ];
 
 const ALLOWED_STATES: &[&str] = &["live", "absent_on_main", "doctrine_only"];
@@ -516,18 +518,35 @@ fn validate_family_target_identities(rows: &[PropositionRow]) -> Result<()> {
     Ok(())
 }
 
+/// True when `rest` does not continue the identifier that just ended.
+///
+/// Without this, `pub struct IndexInstrumentation` binds to the declaration of
+/// `IndexInstrumentationSnapshot`, so deleting the former would leave its row
+/// green — the exact stale-proposition failure these markers exist to catch.
+fn ends_at_identifier_boundary(rest: &str) -> bool {
+    !rest.chars().next().is_some_and(|c| c.is_alphanumeric() || c == '_')
+}
+
 /// Decide whether a marker binds to its source.
 ///
 /// A declaration-shaped marker must match an actual declaration line, not a
 /// passing mention in a comment or doc block. Identifier and prose markers (LSP
-/// field names, constants, markdown status lines) keep substring matching, which
-/// is the right granularity for them; that stays a weaker binding, which is
-/// exactly why declarations are anchored.
+/// field names, constants, markdown status lines) match anywhere in the file,
+/// because they name symbols used mid-line. Both shapes require an identifier
+/// boundary, so a longer name never satisfies a shorter marker.
 fn marker_binds(source: &str, marker: &str) -> bool {
     if marker.starts_with("pub ") {
-        source.lines().any(|line| line.trim_start().starts_with(marker))
+        source.lines().any(|line| {
+            line.trim_start().strip_prefix(marker).is_some_and(ends_at_identifier_boundary)
+        })
     } else {
-        source.contains(marker)
+        source.match_indices(marker).any(|(index, _)| {
+            let before_is_identifier = source[..index]
+                .chars()
+                .next_back()
+                .is_some_and(|c| c.is_alphanumeric() || c == '_');
+            !before_is_identifier && ends_at_identifier_boundary(&source[index + marker.len()..])
+        })
     }
 }
 
@@ -1188,6 +1207,26 @@ fn validate_member_rows(rows: &[MemberRow], type_rows: &[PropositionRow]) -> Res
             type_row.source_path,
             expected_path
         );
+        // A member cannot claim an authority its type does not hold. Relabelling a
+        // member of a retired duplicate as canonical would create exactly the
+        // competing authority this map exists to prevent.
+        let allowed: &[&str] = if type_row.disposition == "retire_duplicate_or_dead" {
+            &["duplicate_of_canonical_member", "absent_from_canonical"]
+        } else if type_row.authority_kind == "telemetry" {
+            &["telemetry_member"]
+        } else {
+            &["canonical_member", "canonical_member_identity_gap"]
+        };
+        ensure!(
+            allowed.contains(&row.disposition.as_str()),
+            "{}: disposition {} is not allowed under type row {} ({}, {}); allowed: {allowed:?}",
+            row.id,
+            row.disposition,
+            row.type_row,
+            type_row.disposition,
+            type_row.authority_kind
+        );
+
         // A member and the type it belongs to must reach the same cutover owner.
         // Two contradictory handoffs for one declaration would let #10791 and
         // #10799 each believe the other owns the member.
@@ -1566,6 +1605,47 @@ struct Unrelated;
     ensure!(
         marker_binds("let x = indexing_in_progress.clone();", "indexing_in_progress"),
         "identifier markers must keep substring binding"
+    );
+    Ok(())
+}
+
+#[test]
+fn duplicate_member_cannot_be_relabelled_canonical() -> Result<()> {
+    let type_rows = load_rows()?;
+    let mut rows = load_member_rows()?;
+    let victim = rows
+        .iter_mut()
+        .find(|row| row.disposition == "duplicate_of_canonical_member")
+        .context("expected a duplicate member row")?;
+    victim.disposition = "canonical_member".to_string();
+    assert_rejected_because(
+        validate_member_rows(&rows, &type_rows),
+        "is not allowed under type row",
+    )
+}
+
+#[test]
+fn a_longer_declaration_name_does_not_satisfy_a_shorter_marker() -> Result<()> {
+    // Both types are real and live in the same file, so a prefix binding would
+    // keep `IndexInstrumentation`'s row green after the type was deleted.
+    let only_the_longer = "pub struct IndexInstrumentationSnapshot {\n    pub field: u64,\n}\n";
+    ensure!(
+        !marker_binds(only_the_longer, "pub struct IndexInstrumentation"),
+        "a shorter declaration marker must not bind to a longer declaration name"
+    );
+    ensure!(
+        marker_binds(only_the_longer, "pub struct IndexInstrumentationSnapshot"),
+        "the declaration's own marker must still bind"
+    );
+
+    // The same boundary rule protects identifier markers.
+    ensure!(
+        !marker_binds("let x = indexing_in_progress_v2;", "indexing_in_progress"),
+        "a longer identifier must not satisfy a shorter identifier marker"
+    );
+    ensure!(
+        marker_binds("let x = indexing_in_progress.clone();", "indexing_in_progress"),
+        "the identifier itself must still bind"
     );
     Ok(())
 }
