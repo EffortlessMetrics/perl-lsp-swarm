@@ -645,6 +645,26 @@ mod compiler_operating_profile_oracle_adapter {
     }
 
     #[test]
+    fn a_comparison_reason_names_the_fact_it_ranges_over() -> Result<()> {
+        // A receipt carries one comparison per named fact, so once several are
+        // aggregated the reason text is the only handle a consumer has on which
+        // fact produced the verdict.
+        let limited = adapt(&agreeing_with(|receipt| {
+            receipt["comparisons"][1]["promotion_effect"] = json!("known_limitation");
+        }))?;
+
+        let LimitationDisposition::AcceptedDebt { reason, .. } = &limited.limitation else {
+            bail!("a known limitation is accepted debt: {:?}", limited.limitation);
+        };
+        assert!(
+            reason.contains("fact-isa-2"),
+            "the limitation must name its fact, not just its class: {reason}"
+        );
+        assert!(!reason.contains("fact-isa-1"), "and only the fact that caused it: {reason}");
+        Ok(())
+    }
+
+    #[test]
     fn falsifier_10_promotion_effects_stay_distinct() -> Result<()> {
         let blocks = adapt(&agreeing_with(|receipt| {
             receipt["comparisons"][0]["promotion_effect"] = json!("blocks_promotion");

@@ -70,6 +70,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
+use std::sync::OnceLock;
 
 /// The production `oracle_receipt.v1` schema document, embedded so the adapter
 /// carries its structural authority without depending on a repository root.
@@ -603,41 +604,71 @@ fn schema_value() -> Result<Value> {
     serde_json::from_str(SCHEMA_TEXT).context("embedded oracle_receipt.v1 schema must parse")
 }
 
+/// The schema document, its compiled validator, and the vocabulary-drift
+/// verdict are all constant for a given build: the schema is embedded at
+/// compile time and the adapter's vocabularies are closed enums. Parsing,
+/// compiling, and re-deriving them per receipt would put that constant work on
+/// the hot path of `adapt_receipts` and the E07 evidence-set lane, so each is
+/// computed once. Errors are stored as text because neither `anyhow::Error`
+/// nor a compiled validator is cloneable.
+fn schema_authority() -> &'static Result<jsonschema::Validator, String> {
+    static AUTHORITY: OnceLock<Result<jsonschema::Validator, String>> = OnceLock::new();
+    AUTHORITY.get_or_init(|| {
+        let schema = schema_value().map_err(|error| format!("{error:#}"))?;
+        verify_vocabulary(&schema).map_err(|error| format!("{error:#}"))?;
+        jsonschema::validator_for(&schema)
+            .map_err(|error| format!("oracle_receipt.v1 schema is invalid: {error}"))
+    })
+}
+
+fn receipt_validator() -> Result<&'static jsonschema::Validator> {
+    match schema_authority() {
+        Ok(validator) => Ok(validator),
+        Err(error) => bail!("{error}"),
+    }
+}
+
 /// Assert that this adapter's closed vocabularies still equal the production
 /// schema's `$defs` enums.  A schema that gains, loses, or renames a member
 /// fails closed here rather than being silently read through an older adapter
 /// vocabulary.
 pub fn ensure_vocabulary_current() -> Result<()> {
-    let schema = schema_value()?;
-    ensure_enum_matches(&schema, ComparisonClass::SCHEMA_DEF, ComparisonClass::schema_tags())?;
-    ensure_enum_matches(&schema, ResultClass::SCHEMA_DEF, ResultClass::schema_tags())?;
-    ensure_enum_matches(&schema, PromotionEffect::SCHEMA_DEF, PromotionEffect::schema_tags())?;
-    ensure_enum_matches(&schema, FactProvenance::SCHEMA_DEF, FactProvenance::schema_tags())?;
-    ensure_enum_matches(&schema, Confidence::SCHEMA_DEF, Confidence::schema_tags())?;
-    ensure_enum_matches(&schema, Freshness::SCHEMA_DEF, Freshness::schema_tags())?;
-    ensure_enum_matches(&schema, FallbackState::SCHEMA_DEF, FallbackState::schema_tags())?;
+    match schema_authority() {
+        Ok(_) => Ok(()),
+        Err(error) => bail!("{error}"),
+    }
+}
+
+fn verify_vocabulary(schema: &Value) -> Result<()> {
+    ensure_enum_matches(schema, ComparisonClass::SCHEMA_DEF, ComparisonClass::schema_tags())?;
+    ensure_enum_matches(schema, ResultClass::SCHEMA_DEF, ResultClass::schema_tags())?;
+    ensure_enum_matches(schema, PromotionEffect::SCHEMA_DEF, PromotionEffect::schema_tags())?;
+    ensure_enum_matches(schema, FactProvenance::SCHEMA_DEF, FactProvenance::schema_tags())?;
+    ensure_enum_matches(schema, Confidence::SCHEMA_DEF, Confidence::schema_tags())?;
+    ensure_enum_matches(schema, Freshness::SCHEMA_DEF, Freshness::schema_tags())?;
+    ensure_enum_matches(schema, FallbackState::SCHEMA_DEF, FallbackState::schema_tags())?;
     ensure_nested_enum_matches(
-        &schema,
+        schema,
         &["$defs", "perl_oracle", "properties", "interpreter", "enum"],
         ["declared_fixture_perl", "system_perl", "unknown"],
     )?;
     ensure_nested_enum_matches(
-        &schema,
+        schema,
         &["$defs", "perl_oracle", "properties", "invocation_mode", "enum"],
         ["declared_fixture_command", "shadow_test_command", "unknown"],
     )?;
     ensure_nested_enum_matches(
-        &schema,
+        schema,
         &["$defs", "module_path_authority", "properties", "authority", "enum"],
         ["declared_fixture_root", "declared_module_roots", "ambient_reported"],
     )?;
     ensure_nested_enum_matches(
-        &schema,
+        schema,
         &["$defs", "source_range", "properties", "path_class", "enum"],
         ["public_test_fixture", "redacted_private_fixture"],
     )?;
     ensure_nested_enum_matches(
-        &schema,
+        schema,
         &["$defs", "environment", "properties", "denied", "items", "enum"],
         ["PERL5LIB", "PERL5OPT", "local::lib"],
     )?;
@@ -703,11 +734,8 @@ pub fn validate_receipt_value(value: &Value) -> Result<OracleReceiptV1> {
         None => bail!("oracle receipt is missing the required schema_version tag"),
     }
 
-    let schema = schema_value()?;
-    let validator = jsonschema::validator_for(&schema)
-        .map_err(|error| anyhow::anyhow!("oracle_receipt.v1 schema is invalid: {error}"))?;
     let violations: Vec<String> =
-        validator.iter_errors(value).map(|error| error.to_string()).collect();
+        receipt_validator()?.iter_errors(value).map(|error| error.to_string()).collect();
     if !violations.is_empty() {
         bail!(
             "oracle receipt fails the production oracle_receipt.v1 schema with {} violation(s): {}",
@@ -1204,16 +1232,23 @@ fn collect_findings(receipt: &OracleReceiptV1) -> Findings {
             findings.unproven.push(detail.clone());
             findings.incomplete.push(detail);
         }
+        // A receipt carries one comparison per named fact, so an aggregated
+        // reason string is the only handle a consumer has on which fact caused
+        // the verdict. Every reason names its fact.
+        let subject = format!(
+            "the comparison over fact {:?} in class {}",
+            comparison.fact_id,
+            comparison.result_class.tag()
+        );
         match comparison.promotion_effect {
-            PromotionEffect::BlocksPromotion => findings.blocking.push(format!(
-                "a comparison in class {} blocks promotion",
-                comparison.result_class.tag()
-            )),
-            PromotionEffect::Unknown => findings
-                .unproven
-                .push("a comparison carries an unknown promotion effect".to_owned()),
+            PromotionEffect::BlocksPromotion => {
+                findings.blocking.push(format!("{subject} blocks promotion"))
+            }
+            PromotionEffect::Unknown => {
+                findings.unproven.push(format!("{subject} carries an unknown promotion effect"))
+            }
             PromotionEffect::KnownLimitation => {
-                findings.limitations.push("a comparison carries a known limitation".to_owned())
+                findings.limitations.push(format!("{subject} carries a known limitation"))
             }
             PromotionEffect::SupportsPromotion => {}
         }
@@ -1223,15 +1258,15 @@ fn collect_findings(receipt: &OracleReceiptV1) -> Findings {
             | ResultClass::CompilerExtra
             | ResultClass::RangeMismatch
             | ResultClass::ProvenanceMismatch
-            | ResultClass::ConfidenceOrFreshnessMismatch => findings
-                .blocking
-                .push(format!("comparison result {}", comparison.result_class.tag())),
+            | ResultClass::ConfidenceOrFreshnessMismatch => {
+                findings.blocking.push(format!("{subject} contradicts the compiler facts"))
+            }
             ResultClass::DynamicOrUnsupported
             | ResultClass::OracleAmbientUnbounded
             | ResultClass::StaleOrPartial
-            | ResultClass::Unknown => findings
-                .unproven
-                .push(format!("comparison result {}", comparison.result_class.tag())),
+            | ResultClass::Unknown => {
+                findings.unproven.push(format!("{subject} reaches no exact result"))
+            }
         }
     }
 
