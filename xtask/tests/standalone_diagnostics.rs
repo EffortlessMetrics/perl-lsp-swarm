@@ -1758,9 +1758,16 @@ fn actions_are_offered_in_selection_order_not_registry_order() -> TestResult {
 }
 
 #[test]
-fn every_offered_action_row_matches_its_selected_id() -> TestResult {
-    // Reordering must not drop or duplicate a row: the emitted rows and the
-    // selected ids stay the same multiset, in the same order, everywhere.
+fn every_combination_leads_with_its_primary_reasons_first_action() -> TestResult {
+    // Sweeps the ordering property, not merely the presence of rows. For each
+    // of the 17,920 combinations the first offered action must be the first
+    // action the *matched primary reason* declares — read back out of the
+    // manifest, so the expectation comes from the registry rather than from the
+    // projection that is under test.
+    //
+    // An earlier version of this sweep asserted only that rows existed and
+    // carried ids, which the registry-order implementation also satisfied. It
+    // proved nothing about order, which was the whole subject.
     let manifest = diagnostics::load_manifest(&repo_root())?;
     for combination in diagnostics::all_combinations() {
         let projection = diagnostics::project_combination(&manifest, &combination, None)?;
@@ -1769,6 +1776,38 @@ fn every_offered_action_row_matches_its_selected_id() -> TestResult {
             .and_then(Value::as_array)
             .ok_or("missing allowed actions")?;
         assert!(!rows.is_empty(), "no action offered for {combination:?}");
+
+        let primary_id = projection
+            .get("primary_reason")
+            .and_then(Value::as_str)
+            .ok_or("missing primary reason")?;
+        let declared = manifest["primary_reasons"]
+            .as_array()
+            .ok_or("missing primary reasons")?
+            .iter()
+            .find(|reason| reason.get("reason_id").and_then(Value::as_str) == Some(primary_id))
+            .and_then(|reason| reason.get("action_ids"))
+            .and_then(Value::as_array)
+            .and_then(|ids| ids.first())
+            .and_then(Value::as_str)
+            .ok_or("primary reason declares no action")?;
+
+        let offered = rows
+            .first()
+            .and_then(|row| row.get("action_id"))
+            .and_then(Value::as_str)
+            .ok_or("action row without an id")?;
+
+        // `no_action_required` is dropped when other actions join it, so it is
+        // the one declared-first value that legitimately does not lead.
+        if declared != "no_action_required" {
+            assert_eq!(
+                offered, declared,
+                "`{primary_id}` declares `{declared}` first but the projection led with \
+                 `{offered}` for {combination:?}"
+            );
+        }
+
         for row in rows {
             assert!(
                 row.get("action_id").and_then(Value::as_str).is_some(),
@@ -1776,5 +1815,37 @@ fn every_offered_action_row_matches_its_selected_id() -> TestResult {
             );
         }
     }
+    Ok(())
+}
+
+#[test]
+fn a_present_but_non_object_outcome_dimensions_is_not_reported_as_missing() -> TestResult {
+    let mut subject = valid_packet();
+    subject["outcome_dimensions"] = json!(null);
+    let error = admission_error(&subject);
+    assert!(
+        error.contains("`outcome_dimensions` must be an object"),
+        "expected an ill-shaped-container diagnostic, got:\n{error}"
+    );
+    assert!(
+        !error.contains("missing `outcome_dimensions`"),
+        "a present field must not be reported as missing, got:\n{error}"
+    );
+    Ok(())
+}
+
+#[test]
+fn an_absent_outcome_dimensions_is_still_reported_as_missing() -> TestResult {
+    let mut subject = valid_packet();
+    subject
+        .as_object_mut()
+        .ok_or("packet must be an object")?
+        .remove("outcome_dimensions")
+        .ok_or("packet must carry outcome_dimensions")?;
+    let error = admission_error(&subject);
+    assert!(
+        error.contains("transition packet is missing `outcome_dimensions`"),
+        "expected a missing-key diagnostic, got:\n{error}"
+    );
     Ok(())
 }
