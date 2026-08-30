@@ -1,9 +1,14 @@
-//! Gold-corpus denominator controls for the editor-intelligence scorecard.
+//! Temporary gold-corpus routing bridge for completion scope evidence.
 //!
 //! The executable scorecard discovers fixtures under `test_corpus/gold/` at
-//! runtime. Keep the scope-sensitive completion controls named here so a
-//! review cannot accidentally add malformed or undiscoverable sidecars while
-//! still claiming a larger scorecard denominator.
+//! runtime, but current typed CI scope does not project fixture-only changes
+//! onto the `perl-lsp-rs` test crate. Keep these exact controls named here so
+//! PR #13145 both selects the current package lane and proves the new sidecars
+//! are discoverable with their load-bearing assertions.
+//!
+//! This is not another corpus registry or denominator authority. Issue #13168
+//! owns durable external-input routing; issue #13454 owns generated assertion-
+//! mode witness coverage. Retire or absorb this bridge when those owners land.
 
 use perl_corpus::gold::{
     CompletionAssertionKind, CompletionGoldFixture, load_completion_gold_fixtures,
