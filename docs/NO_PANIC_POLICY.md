@@ -53,10 +53,12 @@ Current guardrails include:
   `unwrap_used`, `expect_used`, `panic`, `todo`, `unimplemented`, and
   `dbg_macro`;
 - the governed lint ledger in
-  [`policy/clippy-lints.toml`](../policy/clippy-lints.toml);
+  [`policy/clippy-lints.toml`](../policy/clippy-lints.toml) together with the
+  active catalog fragments in `policy/clippy-lints.d/*.toml`;
 - shared Clippy configuration in [`clippy.toml`](../clippy.toml), which has no
   `allow-unwrap-in-tests` exception;
-- the current lint policy in [`docs/CLIPPY_POLICY.md`](CLIPPY_POLICY.md) and
+- the current lint policy in [`docs/CLIPPY_POLICY.md`](CLIPPY_POLICY.md), and
+  the governed source-exception and baseline ledger for suppressions in
   [`policy/allow.toml`](../policy/allow.toml);
 - the error-handling contract in
   [`docs/adr/0012-error-handling-strategy.md`](adr/0012-error-handling-strategy.md).
@@ -119,8 +121,10 @@ explicit contract in **Runtime containment**.
 
 ## Exact production admission
 
-The production fatal-construct admission owned by #13688 is exact and counted.
-Each retained identity contains:
+This section states the target contract, not current behavior. The production
+fatal-construct admission owned by #13688 must be exact and counted; current
+scanning is neither, which is why that issue is open. Each retained identity
+must contain:
 
 ```text
 path
@@ -134,7 +138,7 @@ reason
 review or retirement condition
 ```
 
-Matching is consumptive:
+Matching must be consumptive:
 
 1. exact temporary allowlist count slots are consumed first;
 2. exact historical baseline count slots are consumed second when the selected
@@ -144,7 +148,8 @@ Matching is consumptive:
 
 Message-only, directory-wide, family-only, wildcard-snippet, and count-free
 exceptions are invalid. Copying an approved error message to another file must
-not inherit authority.
+not inherit authority. The message-shaped production exemptions still present in
+`perl-ci-hygiene` are debt owned by #13688, not precedent.
 
 A baseline refresh may drop disappeared entries. It must not absorb an unmatched
 finding without an explicit reviewed reset operation. The baseline is evidence
@@ -158,7 +163,8 @@ verdict.
 ## Panic-equivalent production work
 
 Explicit macro and method bans do not cover every fatal or unbounded operation.
-The production inventory under #13693 includes at least:
+No complete production denominator exists yet; building it is the work owned by
+#13693. That inventory must cover at least:
 
 - byte, character, token, vector, and range indexing;
 - UTF-8, UTF-16, line, column, and byte-coordinate transitions;
