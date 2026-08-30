@@ -1,6 +1,6 @@
 # Install-Route Classification Implementation Plan
 
-Status: durable tracked plan, refreshed 2026-08-28 — a provisional design that
+Status: durable tracked plan, refreshed 2026-08-30 — a provisional design that
 is non-operative for selection while H1–H7 are human-pending and is not an
 executable input contract until the validated route schema from issue #10333
 and the catalog composition from issue #10334 exist (#10333 explicitly
@@ -59,11 +59,15 @@ must stop at `provisional(human-pending)` for the selection surface.
 - **Dependency state: OPEN-UNRESOLVED.** #12858 — the only PR ever opened for
   #11548's v2 route catalog — was closed unmerged as superseded on
   2026-08-27 with an explicit do-not-pin/do-not-fixture disposition, and
-  **no successor PR exists** (re-verified 2026-08-28 via PR search). The
-  #11548 v2-catalog input this plan consumes is therefore not in flight
-  anywhere. **Wake event:** the opening of a successor #11548 v2-catalog PR,
-  or #10334 publishing the composed catalog under #10333's schema/validation
-  boundary, re-bases this plan — §2.1's
+  a scoped successor is now in flight: PR #13362
+  (`feat/11548-inventory-derivative`, open as of 2026-08-30) rebuilds the
+  #12858 candidate as an explicitly **non-authoritative** #11575 inventory
+  derivative — its rows carry no route IDs and no projection contexts, it claims
+  no #10333/#10334 route-contract authority, and it does not close #11548 or
+  #11549. It therefore does **not** satisfy the authoritative v2-catalog input
+  this plan consumes, and the wake event below is unchanged: the authoritative
+  #11548 v2-catalog route rows, or #10334 publishing the composed catalog under
+  #10333's schema/validation boundary, re-bases this plan — §2.1's
   route families, the §2.1.1 closure denominators, and the §4 fixtures are
   then re-derived and rebound to exact catalog rows before any implementation
   lane starts. Until that event, every route join, projection context, and
@@ -212,6 +216,17 @@ context; the four rows may not be collapsed, inferred across editor families, or
 ordered from the prose claim. The catalog contract owns the eventual opaque IDs, so
 these semantic route roles and contexts are requirements only until #10334 publishes
 catalog rows conforming to #10333's contract.
+
+C202's `VS_Code_extension` projection is the registry-unspecified family row;
+C1202's marketplace and Open VSX projections and C1208's Open VSX projection are
+registry-specific rows and must bind to catalog route IDs distinct from it. When
+a request supplies `target_registry`, only the matching registry-specific
+projection is eligible and the family row is not returned; when
+`target_registry` is unspecified, the family row is eligible and the
+registry-specific rows are returned only as diagnostics. No single request may
+receive both the family row and one of its registry-specific rows. The
+family/child relation is a required property of the future #10334 catalog under
+#10333's contract, declared in the ledger rather than inferred from route names.
 
 The compatibility contract is per ID, not merely a count or a closed vocabulary:
 every route-relevant claim is required to be a `project` disposition with its own
@@ -441,6 +456,13 @@ for item_id, route_names in MULTI_ROUTE_PROJECTIONS.items():
         "exact_catalog_route_id": f"fixture-route-{item_id}-{route_name}",
         "exact_projection_context": f"fixture-context-{item_id}-{route_name}",
     } for route_name in route_names)
+ROUTE_FAMILY_CHILDREN = {
+    "fixture-route-VS_Code_extension": (
+        "fixture-route-C1202-marketplace",
+        "fixture-route-C1202-open-vsx",
+        "r_4f8c2a",
+    ),
+}
 FINDING_DISPOSITION_RULES = {
     finding_id: {
         "kind": "project",
@@ -522,6 +544,22 @@ def require_catalog_projection(catalog_rows, route_id, projection_context):
     if projection_context not in route["projection_contexts"]:
         raise ValueError("route is incompatible with its catalog context")
     return route
+
+def require_route_family_bindings(catalog_rows):
+    catalog_route_ids = {row["route_id"] for row in catalog_rows}
+    for parent_route_id, child_route_ids in ROUTE_FAMILY_CHILDREN.items():
+        family_route_ids = (parent_route_id, *child_route_ids)
+        if len(set(family_route_ids)) != len(family_route_ids):
+            raise ValueError("route family parent and children must be distinct")
+        missing_route_ids = [
+            route_id for route_id in family_route_ids
+            if route_id not in catalog_route_ids
+        ]
+        if missing_route_ids:
+            raise ValueError(
+                "route family references unknown catalog route ID(s): "
+                + ", ".join(missing_route_ids)
+            )
 
 def require_open_vsx_route(catalog_rows, route_id, projection_context):
     route = require_catalog_projection(catalog_rows, route_id, projection_context)
@@ -610,6 +648,7 @@ def validate_closure(inventory_rows, ledger_rows, catalog_rows):
     expected = set(EXPECTED_CLAIMS + EXPECTED_FINDINGS)
     inventory_ids = [row["id"] for row in inventory_rows]
     ledger_ids = [row["id"] for row in ledger_rows]
+    require_route_family_bindings(catalog_rows)
     if len(EXPECTED_CLAIMS) != 70 or len(set(EXPECTED_CLAIMS)) != 70:
         raise ValueError("invalid 70-claim manifest")
     if len(EXPECTED_FINDINGS) != 12 or len(set(EXPECTED_FINDINGS)) != 12:
@@ -730,6 +769,14 @@ UNREFERENCED_CATALOG = FIXTURE_CATALOG + ({
     "projection_contexts": ("fixture-context-unreferenced",),
 },)
 require_true(assert_closure_rejected(UNREFERENCED_CATALOG), "unreferenced catalog row was accepted")
+MISSING_FAMILY_PARENT_CATALOG = tuple(
+    row for row in FIXTURE_CATALOG
+    if row["route_id"] != "fixture-route-VS_Code_extension"
+)
+require_true(
+    assert_closure_rejected(MISSING_FAMILY_PARENT_CATALOG),
+    "route family with a missing parent was accepted",
+)
 require_true(assert_rejected(
     WRONG_REGISTRY_CATALOG,
     "r_4f8c2a",
@@ -773,6 +820,21 @@ SWAPPED_CLAIM_BINDINGS = [
 require_true(
     assert_ledger_rejected(SWAPPED_CLAIM_BINDINGS),
     "swapped claim route/context bindings were accepted",
+)
+
+COLLAPSED_ROUTE_FAMILY = [
+    {
+        **row,
+        "exact_catalog_route_id": "fixture-route-VS_Code_extension",
+    }
+    if row["id"] == "C1202"
+    and row["exact_catalog_route_id"] == "fixture-route-C1202-marketplace"
+    else row
+    for row in fixture_ledger()
+]
+require_true(
+    assert_ledger_rejected(COLLAPSED_ROUTE_FAMILY),
+    "registry-specific child route was collapsed onto the family route ID",
 )
 
 ROUTE_CLAIM_EXCLUDED = [
@@ -1152,13 +1214,20 @@ assuming the former prose-row denominator.
    of applicable projections; this order is deterministic serialization/source order
    only, and does not define route-selection precedence or a preferred route while
    H1–H7 remain human-pending.
-9. **Determinism.** The eventual catalog-owner regeneration check must produce
+9. **Managed-client registry-family isolation.** A VS Code managed-client
+   request that supplies `target_registry` must return exactly the matching
+   registry-specific route and never the registry-unspecified family row. The
+   same request with `target_registry` unspecified must return the family row,
+   with the registry-specific rows present only as diagnostics. A result that
+   returns both a family row and one of its registry-specific rows, or that
+   treats the family row as registry-specific, fails.
+10. **Determinism.** The eventual catalog-owner regeneration check must produce
    byte-identical classification output across repeated runs and supported
    environments. The output contains no timestamps or other ambient state, and
    catalog ordering is normalized rather than observed; any run-to-run diff
    fails. The concrete command and owning package remain deferred until the
    validated catalog contract selects them.
-10. **Denominator and inventory closure.** Every exact route row and projection
+11. **Denominator and inventory closure.** Every exact route row and projection
    context in the validated catalog is classified exactly once, and every one of
    the literal claim IDs C101, C102, C103, C104, C105, C106, C107, C108, C201,
    C202, C203, C204, C205, C206, C207, C208, C209, C210, C211, C212, C213,
@@ -1176,43 +1245,43 @@ assuming the former prose-row denominator.
    derivation under §0's OPEN-UNRESOLVED dependency state, not an accepted
    v2 input contract; it is re-derived at the §0 wake event and rebound to
    the validated catalog rows before any implementation lane starts.
-11. **Cross-channel inference block (C201/C703).** A claim's receipt on channel
+12. **Cross-channel inference block (C201/C703).** A claim's receipt on channel
    X must never satisfy another route's receipt requirement (e.g., GitHub
    Releases v0.17.0 receipt must not make `homebrew-tap` `proven_current`).
    An implementation with a global "release exists" fact fails.
-12. **Independent checksum/provenance binding.** A route with matching
+13. **Independent checksum/provenance binding.** A route with matching
     `SHA256SUMS` text but no independently bound artifact and release identity
     must remain `unproven`; a checksum string copied from a different channel
     must not satisfy the integrity/provenance axis.
-13. **Candidate versus installed state.** A candidate artifact that has been
+14. **Candidate versus installed state.** A candidate artifact that has been
     built or uploaded but has no installed, verified product-unit observation
     must not satisfy installation or first-use cells. Conversely, an installed
     local build must not be emitted as a public publication receipt.
-14. **PATH/session/execution isolation.** A route that resolves only through
+15. **PATH/session/execution isolation.** A route that resolves only through
     the current shell's PATH, an inherited session, or an ambient working
     directory must remain unproven for a fresh-process route. A fresh lookup,
     transport, cleanup, and settled process must each be present; one cannot
     stand in for the others.
-15. **Lifecycle closure.** A route with install and first-use evidence but no
+16. **Lifecycle closure.** A route with install and first-use evidence but no
     repair, upgrade, rollback, or removal cell remains incomplete. A lifecycle
     cell from another product unit or channel must not close this route.
-16. **Publication and verification separation.** A private/candidate upload or
+17. **Publication and verification separation.** A private/candidate upload or
     an unverified public listing must not become `proven_current`; publication,
     checksum/provenance verification, and currentness are separate predicates.
-17. **No-route and ambiguity closure.** If every route fails a hard dimension,
+18. **No-route and ambiguity closure.** If every route fails a hard dimension,
     output must be an explicit no-route result with reasons. If two exact rows
     or contexts are ambiguous, selection must refuse rather than choose by
     input order, prose frequency, or a fallback command.
-18. **Context and fallback isolation.** An editor route must not satisfy a CI,
+19. **Context and fallback isolation.** An editor route must not satisfy a CI,
     server-only, or manual context without an explicit catalog projection.
     Missing preferred policy or a failed hard filter must not silently fall back
     to `latest`, an unpinned command, or another context's route.
-19. **Composite simultaneous failures.** A fixture with integrity contradiction
+20. **Composite simultaneous failures.** A fixture with integrity contradiction
     and incomplete lifecycle must retain both dimension verdicts in the fixed
     vector and produce the same `overall=contradicted` summary regardless of
     catalog or claim input order. A scalar-only result, or a result that drops
     the lifecycle failure, fails.
-20. **Selection-context and risk isolation.** Identical requests differing only
+21. **Selection-context and risk isolation.** Identical requests differing only
     in editor family, target registry, target/libc, observed Windows emulation
     capability, or `strict` versus `permissive` must produce the corresponding
     observable result: strict selects only one proven-current projection (or
@@ -1239,14 +1308,22 @@ be emitted.
 | # | Decision | Options | Unanswered state | Consequence of getting it wrong |
 | --- | --- | --- | --- | --- |
 | H1 | Global ordering principle: convenience-first (C202 teaches extension → archive → …) vs integrity-first (identity-bound verify > ease) | (a) convenience-first per C202; (b) integrity-first reorder | `human-pending`; no ordering | Classifier formalizes guidance that contradicts maintainer intent across every context |
-| H2 | Windows x86_64 policy while published PowerShell installer is broken (#5461/#4348) | (a) manual-archive first, powershell shown as `pending_gate`; (b) omit powershell entirely; (c) lead with scoop/choco/winget verify-first | `human-pending`; no route recommendation | Users routed to a 404 installer, or gate visibility lost (FND-9's four-site spread re-grows) |
+| H2 | Windows x86_64 policy while published PowerShell installer is broken (#5461/#4348) | (a) manual-archive first, powershell shown as `pending_gate`; (b) omit powershell entirely; (c) surface scoop/choco/winget as verify-first diagnostics, never selectable | `human-pending`; no route recommendation | Users routed to a 404 installer, or gate visibility lost (FND-9's four-site spread re-grows) |
 | H3 | Windows ARM64 until an ARM64 release ships (FND-4 — routed to #11549 by name) | (a) recommend x64-fallback + build-from-source labeled receipt-bound; (b) refuse with "no receipt-backed route"; (c) follow prose (contradicts receipts) | `human-pending`; no route recommendation | Either false "supported" claim or an unnecessarily barren answer; FND-4 disposition must be defensible |
 | H4 | macOS server-only ranking: homebrew-tap vs cargo-registry (both `current`; tap freshness unproven per C1304/C1305 caveats) | (a) tap first (native UX); (b) cargo-registry first (version receipts); (c) context-split (editor=tap, headless=cargo) | `human-pending`; no ordering | A preferred route whose freshness caveat the docs themselves flag |
-| H5 | Unpinned mutability policy: `cargo-git` (FND-6) and `latest` endorsements (FND-3) | (a) classify `not_recommended`, never selected; (b) retain as a diagnostic with warning, never selectable; (c) leave unclassified | `human-pending`; no selection | Classifier endorses what FND-3 calls a moving target the receipt does not cover |
+| H5 | Unpinned mutability policy: `cargo-git` (FND-6) and `latest` endorsements (FND-3) | (a) classify `not_recommended`, never selected; (b) retain as a diagnostic with warning, never selectable; (c) keep the mechanical §2.2 freshness verdict only and add no policy label | `human-pending`; no selection | Classifier endorses what FND-3 calls a moving target the receipt does not cover |
 | H6 | perl-dap (adapter) acquisition policy for non-VS Code users | (a) archive pair route; (b) separate `cargo install --locked perl-dap` (C702); (c) defer — server-only answer, adapter on request | `human-pending`; no ordering | Users get a server without a debugger, or build-from-source surprises (C208) |
 | H7 | Unproven channels (`unproven-channels`: scoop/choco/winget C212, Docker) in selection output | (a) never selected, visible in a "unproven" appendix; (b) fully omitted; (c) visible with a verify-first instruction but never selectable | `human-pending`; no selection | Either dead output weight or an implied endorsement the receipts don't back |
 
+H2 and H7 are not independent for unproven Windows channels: H2(c) is
+reachable only under an H7(c) ruling, and no H2 ruling may place an unproven
+channel in a selectable slot.
+
 *(Count: 7 EXPLICIT-HUMAN rows.)*
+
+No H5 ruling may make a route without a literal pin selectable: §2.2 maps
+`mutable_pin` to `unproven`, and §3 excludes every unproven route from both
+candidate sets; H5 rules only the diagnostic and labeling treatment.
 
 When issue #11549 explicitly rules H7(c), the approved registry action is exactly
 `verify-first`: the registry may list the deferred channel with its opaque catalog
