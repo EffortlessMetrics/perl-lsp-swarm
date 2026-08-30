@@ -232,7 +232,21 @@ class DapProtocolAuthorityTests(unittest.TestCase):
 
     # The macro definition the gate structurally validates. Fixtures carry it
     # verbatim so a test exercises the same exclusivity proof production does.
-    MACRO_DEFINITION = """macro_rules! dap_request_table {
+    MACRO_DEFINITION = """macro_rules! dap_request_class {
+    (standard) => { DapRequestClass::Standard };
+    (extension) => { DapRequestClass::Extension };
+}
+
+macro_rules! dap_dispatch_call {
+    ($adapter:expr, $handler:ident, $seq:expr, $request_seq:expr, $arguments:expr, (arguments)) => {
+        $adapter.$handler($seq, $request_seq, $arguments)
+    };
+    ($adapter:expr, $handler:ident, $seq:expr, $request_seq:expr, $arguments:expr, ()) => {
+        $adapter.$handler($seq, $request_seq)
+    };
+}
+
+macro_rules! dap_request_table {
     ( $( $class:ident $command:literal => $handler:ident $arity:tt ),* $(,)? ) => {
         impl DebugAdapter {
             pub(super) fn dispatch_request(
@@ -950,6 +964,43 @@ class DapProtocolAuthorityTests(unittest.TestCase):
             "macro_rules! vendor_routes {\n"
             "    () => { impl DebugAdapter { fn vendor(&self) {} } };\n"
             "}\n"
+        )
+        self._write_production(dispatch_source=source)
+        self.assertAuthorityError(self._production_rows)
+
+    def test_shadowing_a_permitted_macro_fails_closed(self) -> None:
+        # Rust lets a later `macro_rules!` shadow an earlier one of the same
+        # name. Redefining the call helper before the table invocation keeps
+        # an approved name while changing every generated route, so
+        # membership alone is not enough — multiplicity has to be checked.
+        shadow = (
+            "macro_rules! dap_dispatch_call {\n"
+            "    ($a:expr, $h:ident, $s:expr, $r:expr, $g:expr, $any:tt) => {\n"
+            "        $a.vendor_route($s, $r)\n"
+            "    };\n"
+            "}\n"
+        )
+        source = self._render_table(
+            ("initialize", "inlineValues"),
+            macro_definition=self.MACRO_DEFINITION + shadow,
+        )
+        self._write_production(dispatch_source=source)
+        self.assertAuthorityError(self._production_rows)
+
+    def test_a_missing_generator_macro_fails_closed(self) -> None:
+        # Opposite-direction control: all three reviewed macros must be
+        # present, so the call helper cannot be supplied from somewhere the
+        # gate never inspects.
+        # Delete the helper outright rather than renaming it: a rename would
+        # trip the unapproved-name rule instead of the absence rule.
+        start = self.MACRO_DEFINITION.index("macro_rules! dap_dispatch_call {")
+        end = self.MACRO_DEFINITION.index("macro_rules! dap_request_table {")
+        definition = self.MACRO_DEFINITION[:start] + self.MACRO_DEFINITION[end:]
+        # The table still *invokes* the helper; only its definition is gone.
+        self.assertNotIn("macro_rules! dap_dispatch_call", definition)
+        self.assertIn("dap_dispatch_call!", definition)
+        source = self._render_table(
+            ("initialize", "inlineValues"), macro_definition=definition
         )
         self._write_production(dispatch_source=source)
         self.assertAuthorityError(self._production_rows)
