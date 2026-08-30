@@ -66,27 +66,51 @@ fn completion_scope_controls_are_in_the_scorecard_denominator() -> TestResult {
     let ranking = fixture_named(&fixtures, "completion_scope_ranking")?;
     assert!(
         ranking.completion_assertions.iter().any(|assertion| {
-            assertion.line == 3
-                && assertion.character == 18
+            assertion.line == 6
+                && assertion.character == 19
                 && matches!(
                     &assertion.kind,
                     CompletionAssertionKind::CompletionTop1 { expected_label }
-                        if expected_label == "$scope_inner"
+                        if expected_label == "$scope_z_local"
                 )
         }),
         "scope-ranking fixture must require the immediate lexical at Top-1"
     );
     assert!(
         ranking.completion_assertions.iter().any(|assertion| {
-            assertion.line == 3
-                && assertion.character == 18
+            assertion.line == 6
+                && assertion.character == 19
                 && matches!(
                     &assertion.kind,
                     CompletionAssertionKind::CompletionTop5 { expected_label }
-                        if expected_label == "$scope_outer"
+                        if expected_label == "$scope_a_ancestor"
                 )
         }),
         "scope-ranking fixture must keep the visible ancestor in Top-5"
+    );
+    assert!(
+        ranking.completion_assertions.iter().any(|assertion| {
+            assertion.line == 6
+                && assertion.character == 19
+                && matches!(
+                    &assertion.kind,
+                    CompletionAssertionKind::CompletionNoiseAbsent { forbidden_label }
+                        if forbidden_label == "$scope_0_sibling"
+                )
+        }),
+        "scope-ranking fixture must reject the ended sibling lexical"
+    );
+    assert!(
+        ranking.completion_assertions.iter().any(|assertion| {
+            assertion.line == 6
+                && assertion.character == 19
+                && matches!(
+                    &assertion.kind,
+                    CompletionAssertionKind::CompletionNoiseAbsent { forbidden_label }
+                        if forbidden_label == "$scope_1_future"
+                )
+        }),
+        "scope-ranking fixture must reject the later declaration before its program point"
     );
 
     Ok(())
