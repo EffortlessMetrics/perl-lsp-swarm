@@ -8,17 +8,59 @@ use super::collector;
 use super::kind::SourceRegionKind;
 use super::region::{SourceRegion, last_char_start};
 
+/// Result of classifying one source byte.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OffsetClassification {
+    /// The offset names a valid source byte with one compatibility region kind.
+    Proven {
+        /// The region kind at the source byte.
+        kind: SourceRegionKind,
+    },
+    /// The offset lies inside a UTF-8 scalar rather than at a character boundary.
+    InvalidUtf8Boundary,
+    /// The offset does not name a source byte.
+    ///
+    /// An offset equal to `source.len()` is a valid position boundary, but it is
+    /// not a byte. Use [`SourceRegionIndex::classify_range`] with an empty range
+    /// to classify that boundary.
+    OutOfBounds,
+}
+
+impl OffsetClassification {
+    /// Return the classified kind only when the offset names a valid source byte.
+    #[must_use]
+    pub const fn proven_kind(self) -> Option<SourceRegionKind> {
+        match self {
+            Self::Proven { kind } => Some(kind),
+            Self::InvalidUtf8Boundary | Self::OutOfBounds => None,
+        }
+    }
+}
+
 /// Result of classifying a byte range against stored regions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RangeClassification {
-    /// The entire range lies inside one proven non-code region.
+    /// The entire non-empty range resolves to one compatibility region kind.
+    ///
+    /// `Code` is still complement-derived in the current index. It becomes
+    /// positive code evidence only after the complete-partition cutover tracked
+    /// by #13991.
     Proven {
         /// The covering region kind.
         kind: SourceRegionKind,
     },
+    /// A valid empty range describes a boundary between source bytes.
+    EmptyBoundary {
+        /// Kind of the character immediately before the boundary, if any.
+        left: Option<SourceRegionKind>,
+        /// Kind of the character beginning at the boundary, if any.
+        right: Option<SourceRegionKind>,
+    },
     /// The range straddles multiple kinds or lies on a boundary mismatch.
     Ambiguous,
-    /// Range endpoints are out of bounds or not on char boundaries.
+    /// At least one endpoint lies inside a UTF-8 scalar.
+    InvalidUtf8Boundary,
+    /// Range endpoints are reversed or outside the source.
     OutOfBounds,
 }
 
@@ -97,17 +139,27 @@ impl SourceRegionIndex {
         }
     }
 
-    /// Innermost non-code region kind at `offset`, or [`SourceRegionKind::Code`].
+    /// Classify one valid source byte without converting invalid input to `Code`.
+    #[must_use]
+    pub fn classify_offset(&self, offset: usize) -> OffsetClassification {
+        if offset >= self.source.len() {
+            return OffsetClassification::OutOfBounds;
+        }
+        if !self.source.is_char_boundary(offset) {
+            return OffsetClassification::InvalidUtf8Boundary;
+        }
+        OffsetClassification::Proven { kind: self.kind_at_valid_offset(offset) }
+    }
+
+    /// Compatibility-only region-kind view for one offset.
+    ///
+    /// Invalid and out-of-bounds offsets return [`SourceRegionKind::Code`] to
+    /// preserve the historical API. This fallback is not proof that the byte is
+    /// code. New precision- or edit-authorizing callers must use
+    /// [`classify_offset`](Self::classify_offset).
     #[must_use]
     pub fn kind_at_offset(&self, offset: usize) -> SourceRegionKind {
-        if !is_valid_char_offset(&self.source, offset) {
-            return SourceRegionKind::Code;
-        }
-        self.regions
-            .iter()
-            .rev()
-            .find(|region| region.contains_offset(offset))
-            .map_or(SourceRegionKind::Code, |region| region.kind)
+        self.classify_offset(offset).proven_kind().unwrap_or(SourceRegionKind::Code)
     }
 
     /// Classify `[start, end)` against stored regions.
@@ -116,20 +168,30 @@ impl SourceRegionIndex {
         if start > end || end > self.source.len() {
             return RangeClassification::OutOfBounds;
         }
-        if !is_valid_char_offset(&self.source, start) || !is_valid_char_offset(&self.source, end) {
-            return RangeClassification::OutOfBounds;
+        if !self.source.is_char_boundary(start) || !self.source.is_char_boundary(end) {
+            return RangeClassification::InvalidUtf8Boundary;
         }
         if start == end {
-            return RangeClassification::Proven { kind: self.kind_at_offset(start) };
+            let left = if start == 0 {
+                None
+            } else {
+                Some(self.kind_at_valid_offset(last_char_start(&self.source, start)))
+            };
+            let right = if start == self.source.len() {
+                None
+            } else {
+                Some(self.kind_at_valid_offset(start))
+            };
+            return RangeClassification::EmptyBoundary { left, right };
         }
 
         // Probe the start of the last *character* in the range: `end - 1` lands
         // on a UTF-8 continuation byte when the range ends with multibyte text,
-        // making `kind_at_offset` fall back to `Code` and downgrading a
-        // genuinely proven range to `Ambiguous`.
-        let start_kind = self.kind_at_offset(start);
+        // making a byte classifier reject the offset and downgrading a
+        // genuinely uniform range to `Ambiguous`.
+        let start_kind = self.kind_at_valid_offset(start);
         let last_inclusive = last_char_start(&self.source, end);
-        let end_kind = self.kind_at_offset(last_inclusive);
+        let end_kind = self.kind_at_valid_offset(last_inclusive);
         if start_kind != end_kind {
             return RangeClassification::Ambiguous;
         }
@@ -141,7 +203,7 @@ impl SourceRegionIndex {
         RangeClassification::Proven { kind: start_kind }
     }
 
-    /// Whether `[start, end)` lies entirely inside one of `allowed` kinds.
+    /// Whether a non-empty `[start, end)` range lies entirely inside one of `allowed` kinds.
     #[must_use]
     pub fn range_fully_within(
         &self,
@@ -151,8 +213,19 @@ impl SourceRegionIndex {
     ) -> bool {
         match self.classify_range(start, end) {
             RangeClassification::Proven { kind } => allowed.contains(&kind),
-            RangeClassification::Ambiguous | RangeClassification::OutOfBounds => false,
+            RangeClassification::EmptyBoundary { .. }
+            | RangeClassification::Ambiguous
+            | RangeClassification::InvalidUtf8Boundary
+            | RangeClassification::OutOfBounds => false,
         }
+    }
+
+    fn kind_at_valid_offset(&self, offset: usize) -> SourceRegionKind {
+        self.regions
+            .iter()
+            .rev()
+            .find(|region| region.contains_offset(offset))
+            .map_or(SourceRegionKind::Code, |region| region.kind)
     }
 }
 
@@ -162,10 +235,6 @@ pub fn hash_source_content(content: &str) -> u64 {
     let mut hasher = DefaultHasher::new();
     content.hash(&mut hasher);
     hasher.finish()
-}
-
-fn is_valid_char_offset(source: &str, offset: usize) -> bool {
-    offset <= source.len() && source.is_char_boundary(offset)
 }
 
 /// Enforce the stored-region invariant: sorted, non-overlapping, in bounds, and
