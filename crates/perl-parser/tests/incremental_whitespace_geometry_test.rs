@@ -96,7 +96,8 @@ fn utf8_before_the_edit_preserves_byte_geometry() -> TestResult {
 
     assert_eq!(incremental, parse_fresh(source2)?);
     assert!(parser.used_incremental_path());
-    assert!(parser.used_advanced_reuse());
+    assert!(!parser.used_advanced_reuse());
+    assert_eq!(parser.reparsed_nodes, 0);
     Ok(())
 }
 

@@ -219,11 +219,18 @@ fn gap_class(source: &str, previous_end: usize, current_start: usize) -> Option<
     Some((gap.is_empty(), gap.contains('\n')))
 }
 
+fn adjacency_sensitive_pair(previous_text: &str, current_text: &str) -> bool {
+    current_text == "++"
+        || current_text == "--"
+        || previous_text.contains('$')
+        || current_text.contains('$')
+}
+
 fn structural_tokens_match(old_source: &str, new_source: &str) -> bool {
     let mut old_lexer = PerlLexer::new(old_source);
     let mut new_lexer = PerlLexer::new(new_source);
-    let mut old_previous_end = None;
-    let mut new_previous_end = None;
+    let mut old_previous: Option<(usize, Arc<str>)> = None;
+    let mut new_previous_end: Option<usize> = None;
 
     loop {
         match (next_structural_token(&mut old_lexer), next_structural_token(&mut new_lexer)) {
@@ -242,10 +249,23 @@ fn structural_tokens_match(old_source: &str, new_source: &str) -> bool {
                     end: new_end,
                 },
             ) if old_kind == new_kind && old_text == new_text => {
-                let gaps_match = match (old_previous_end, new_previous_end) {
-                    (Some(old_end), Some(new_end)) => {
-                        gap_class(old_source, old_end, old_start)
-                            == gap_class(new_source, new_end, new_start)
+                let gaps_match = match (&old_previous, new_previous_end) {
+                    (Some((old_end, old_previous_text)), Some(new_end)) => {
+                        let Some((old_empty, old_newline)) =
+                            gap_class(old_source, *old_end, old_start)
+                        else {
+                            return false;
+                        };
+                        let Some((new_empty, new_newline)) =
+                            gap_class(new_source, new_end, new_start)
+                        else {
+                            return false;
+                        };
+                        // Empty-gap changes matter for postfix incdec block-list and $$ dereference
+                        // predicates.
+                        old_newline == new_newline
+                            && (!adjacency_sensitive_pair(old_previous_text, old_text.as_ref())
+                                || old_empty == new_empty)
                     }
                     (None, None) => true,
                     _ => false,
@@ -253,7 +273,7 @@ fn structural_tokens_match(old_source: &str, new_source: &str) -> bool {
                 if !gaps_match {
                     return false;
                 }
-                old_previous_end = Some(old_end);
+                old_previous = Some((old_end, old_text));
                 new_previous_end = Some(new_end);
             }
             _ => return false,
@@ -401,12 +421,12 @@ mod tests {
     }
 
     #[test]
-    fn rejects_utf8_insertion_that_changes_adjacency() {
+    fn admits_utf8_source_when_edit_offsets_are_boundaries() {
         let old = "print 'é';my $x = 1;";
         let insertion = old.find("my $x").unwrap_or(old.len());
         let new = "print 'é'; my $x = 1;";
         let edits = edit_set([edit(insertion, insertion, insertion + 1)]);
-        assert!(WhitespaceEditMap::try_new(old, new, &edits).is_none());
+        assert!(WhitespaceEditMap::try_new(old, new, &edits).is_some());
     }
 
     #[test]
