@@ -14,7 +14,18 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     let population = load_legacy_whitespace_population(&root)?;
-    let arguments = env::args().skip(1).collect::<Vec<_>>();
+    // `env::args` panics on non-UTF-8 arguments; collect `OsString`s and fail
+    // closed instead, so a hostile argument is rejected, never a crash.
+    let arguments = env::args_os()
+        .skip(1)
+        .map(|argument| {
+            argument.into_string().map_err(|invalid| {
+                io::Error::other(format!(
+                    "non-UTF-8 argument {invalid:?}; expected --cases or --summary"
+                ))
+            })
+        })
+        .collect::<Result<Vec<String>, _>>()?;
     let output = match arguments.as_slice() {
         [] => population.canonical_ndjson()?,
         [argument] if argument == "--cases" => population.canonical_ndjson()?,
