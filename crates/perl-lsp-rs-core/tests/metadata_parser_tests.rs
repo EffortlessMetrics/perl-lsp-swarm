@@ -921,3 +921,23 @@ fn cpanfile_bare_numeric_version_forms_stay_unconditional() {
         ],
     );
 }
+
+#[test]
+fn cpanfile_decimal_concatenations_stay_dynamic() {
+    // A decimal point after a string or around whitespace is concatenation,
+    // not a leading-dot version: the advisory must stay suppressed.
+    let cpanfile =
+        concat!("requires 'Foo' .5;\n", "requires 'Bar', 1 . 5;\n", "requires 'Real::One';",);
+
+    let deps = extract_cpanfile_requirements(cpanfile);
+
+    assert_eq!(
+        deps,
+        vec![DeclaredDependency::new(
+            "Real::One",
+            None,
+            "requires",
+            DeclaredDependencySource::Cpanfile,
+        )],
+    );
+}

@@ -326,10 +326,26 @@ fn cpanfile_statement_args(source: &str, start: usize) -> (Vec<String>, bool) {
             c if c.is_ascii_whitespace() || c == b',' || c == b'(' || c == b')' => idx += 1,
             b'=' if bytes.get(idx + 1) == Some(&b'>') => idx += 2,
             // Bare numeric version literals stay literal in every Perl form:
-            // digits, a decimal point (leading or embedded), `_` separators,
-            // and exponent notation with an optional sign.
+            // digits, a decimal point (leading after an argument separator or
+            // embedded in digits), `_` separators, and exponent notation with
+            // an optional sign. A decimal point elsewhere is expression
+            // syntax (concatenation).
             c if c.is_ascii_digit() => idx += 1,
-            b'.' if bytes.get(idx + 1).is_some_and(|b| b.is_ascii_digit()) => idx += 1,
+            b'.' if bytes.get(idx + 1).is_some_and(|b| b.is_ascii_digit())
+                && (idx > 0 && bytes[idx - 1].is_ascii_digit() || {
+                    // A leading-dot version is its own argument: the last
+                    // non-whitespace byte before it must be an argument
+                    // separator, never an operand (so `1 . 5` stays a
+                    // dynamic concatenation while `, .5` stays literal).
+                    let mut prev = idx;
+                    while prev > 0 && bytes[prev - 1].is_ascii_whitespace() {
+                        prev -= 1;
+                    }
+                    prev == 0 || matches!(bytes[prev - 1], b',' | b'(' | b'>')
+                }) =>
+            {
+                idx += 1
+            }
             b'_' if bytes.get(idx + 1).is_some_and(|b| b.is_ascii_digit())
                 || (idx > 0 && bytes[idx - 1].is_ascii_digit()) =>
             {
