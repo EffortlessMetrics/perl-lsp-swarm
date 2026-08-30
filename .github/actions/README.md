@@ -116,6 +116,14 @@ Runs standard Rust format, lint, and test checks.
 
 Uploads gate receipts with GitHub step summary generation.
 
+The step summary is rendered by `upload-receipt/render_summary.py`, which reads
+the receipt contract in `.ci/receipt.schema.json` (produced by
+`xtask/src/tasks/gates.rs`): gate statuses are `pass` / `fail` / `skip` /
+`timeout` / `error`, and `fail` / `timeout` / `error` all block. An absent,
+malformed or empty gate set — or any status outside that vocabulary — renders
+as `NOT_PROVEN`, never as success. `upload-receipt/test_render_summary.py`
+holds that contract and runs in the `Composite Action Contracts` workflow.
+
 **Usage:**
 ```yaml
 - uses: ./.github/actions/upload-receipt
