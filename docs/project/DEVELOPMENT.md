@@ -96,23 +96,15 @@ Production code must not introduce `unwrap`, `expect`, `panic!`, `todo!`,
 
 ## Where changes go
 
-Read the nearest package-local `CLAUDE.md` or `AGENTS.md` before modifying an owning
-crate. [ARCHITECTURE.md](../reference/ARCHITECTURE.md) owns the full seam map; the
-entrypoints contributors reach for most often are:
+[ARCHITECTURE.md](../reference/ARCHITECTURE.md) owns the seam map and says which crate to
+start in for a given kind of change; [CONTRIBUTING.md](../../CONTRIBUTING.md) lists the
+main contributor entrypoints. This page deliberately does not restate either, because a
+third hand-maintained crate inventory is exactly what drifts.
 
-| Change | Crate |
-| --- | --- |
-| Lexing and tokens | `crates/perl-lexer/`, `crates/perl-token/` |
-| Parsing, positions, trivia, recovery boundaries | `crates/perl-parser-core/` |
-| Public parser facade | `crates/perl-parser/` |
-| AST node types | `crates/perl-ast/` |
-| Semantic analysis and compiler facts | `crates/perl-semantic-analyzer/`, `crates/perl-semantic-facts/` |
-| LSP protocol, runtime, providers | `crates/perl-lsp-rs-core/` |
-| Server integration facade | `crates/perl-lsp-rs/` |
-| Published language-server binary | `crates/perllsp/` |
-| Debug Adapter Protocol | `crates/perl-dap/` |
-| Gates, generators, policy, proof routing | `xtask/`, `scripts/`, `.ci/` |
-| Installed editor experience | `vscode-extension/` |
+Read the nearest package-local `CLAUDE.md` or `AGENTS.md` before modifying an owning
+crate — those files, not this one, carry each crate's claim limits and proof routes.
+Exact workspace membership lives in
+[Cargo.toml](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/Cargo.toml).
 
 ---
 
