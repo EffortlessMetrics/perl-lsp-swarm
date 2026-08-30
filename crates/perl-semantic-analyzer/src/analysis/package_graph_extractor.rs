@@ -259,10 +259,12 @@ impl ExtractorState {
                 .collect();
         }
         // Other qw variants: qw{...}, qw[...], qw/.../ etc.
-        if arg.starts_with("qw") && arg.len() > 3 {
+        if arg.starts_with("qw")
+            && arg.len() > 3
+            && let Some(open) = arg.chars().nth(2)
+        {
             // Character-based delimiter detection: qw delimiters may be
             // multi-byte UTF-8 (byte indexing would misdetect and panic).
-            let open = arg.chars().nth(2).unwrap_or(' ');
             let close = match open {
                 '(' => ')',
                 '{' => '}',

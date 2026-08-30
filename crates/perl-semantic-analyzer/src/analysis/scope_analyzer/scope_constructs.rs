@@ -435,3 +435,77 @@ pub(super) fn handle_package<'a>(
         *context.current_package.borrow_mut() = name.to_string();
     }
 }
+
+// ============================================================================
+// Inline lib tests for the unused-parameter seam in `process_callable_scope`.
+// The integration suite covers this behavior from outside the crate, which
+// leaves the seam without a statically traceable test path; these cases
+// discriminate each term of the collapsed condition in-crate.
+// ============================================================================
+#[cfg(test)]
+mod tests_unused_parameter_seam {
+    use super::{IssueKind, ScopeAnalyzer, ScopeIssue};
+    use crate::Parser;
+    use crate::pragma_tracker::PragmaTracker;
+    use perl_tdd_support::must;
+
+    fn analyze(code: &str) -> Vec<ScopeIssue> {
+        let mut parser = Parser::new(code);
+        let ast = must(parser.parse());
+        let pragma_map = PragmaTracker::build(&ast);
+        ScopeAnalyzer::new().analyze(&ast, code, &pragma_map)
+    }
+
+    fn unused_parameters(issues: &[ScopeIssue]) -> Vec<String> {
+        issues
+            .iter()
+            .filter(|issue| issue.kind == IssueKind::UnusedParameter)
+            .map(|issue| issue.variable_name.trim_start_matches(['$', '@', '%']).to_string())
+            .collect()
+    }
+
+    /// Control: a signature parameter that the body never reads is reported,
+    /// exactly once (the seam marks the variable used to avoid double reporting).
+    #[test]
+    fn unused_signature_parameter_is_reported_once() {
+        let issues = analyze("sub process($input) {\n    return 42;\n}\n");
+        assert_eq!(
+            unused_parameters(&issues),
+            vec!["input".to_string()],
+            "unused signature parameter must be reported exactly once; got: {issues:?}"
+        );
+    }
+
+    /// Discriminates the `!*var.is_used.borrow()` term: a parameter read in the
+    /// body must not be reported.
+    #[test]
+    fn used_signature_parameter_is_not_reported() {
+        let issues = analyze("sub process($input) {\n    return $input;\n}\n");
+        assert!(
+            unused_parameters(&issues).is_empty(),
+            "a parameter read in the body must not be reported; got: {issues:?}"
+        );
+    }
+
+    /// Discriminates the underscore skip that precedes the collapsed condition.
+    #[test]
+    fn underscore_prefixed_parameter_is_skipped() {
+        let issues = analyze("sub callback($_event) {\n    return 1;\n}\n");
+        assert!(
+            unused_parameters(&issues).is_empty(),
+            "underscore-prefixed parameters are intentionally unused; got: {issues:?}"
+        );
+    }
+
+    /// Discriminates the per-parameter scope lookup: only the unused one of a
+    /// pair is reported.
+    #[test]
+    fn only_the_unused_parameter_of_a_pair_is_reported() {
+        let issues = analyze("sub pair($used, $spare) {\n    return $used;\n}\n");
+        assert_eq!(
+            unused_parameters(&issues),
+            vec!["spare".to_string()],
+            "only the unused parameter must be reported; got: {issues:?}"
+        );
+    }
+}
