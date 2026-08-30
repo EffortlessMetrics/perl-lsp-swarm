@@ -126,9 +126,9 @@ const CASES: &[ModifierCase] = &[
 ];
 
 fn lower_output(output: ParseOutput) -> Result<HirFile, ProofAdmissionError> {
-    // Recovered syntax is diagnostic-bearing input, not an admissible HIR
-    // candidate. Return the typed diagnostics before calling `lower_ast`, so
-    // partial postfix HIR cannot enter this proof path.
+    // Recovered syntax is diagnostic-bearing input, not an admissible proof
+    // candidate. This helper is the typed admission boundary: it rejects the
+    // output before this exact-proof path invokes `lower_ast`.
     if !output.diagnostics.is_empty() {
         return Err(ProofAdmissionError { diagnostics: output.diagnostics });
     }
@@ -441,7 +441,7 @@ fn prefix_control_flow_does_not_mint_postfix_modifier_proof() -> TestResult {
 }
 
 #[test]
-fn malformed_and_chained_modifiers_are_rejected_before_hir_proof_admission() -> TestResult {
+fn typed_recovery_admission_rejects_malformed_and_chained_modifiers() -> TestResult {
     for (source, subject) in [
         ("$result = $value if;\n", "missing modifier condition"),
         ("$result = $value if $enabled while $ready;\n", "chained statement modifiers"),
@@ -458,8 +458,10 @@ fn malformed_and_chained_modifiers_are_rejected_before_hir_proof_admission() -> 
             "{subject} must produce a typed syntax/recovery diagnostic: {source:?}; diagnostics: {:?}",
             output.diagnostics
         );
-        // The error branch contains diagnostics but no HirFile, which is the
-        // no-partial-HIR admission contract for recovered syntax.
+        // This test proves only the typed admission boundary. It deliberately
+        // does not claim what production `lower_ast` may materialize from a
+        // diagnostic-bearing AST; that behavior is outside this helper's
+        // admission contract.
         let rejection = match lower_output(output) {
             Ok(_) => return Err(format!("{subject} was admitted as HIR: {source:?}").into()),
             Err(error) => error,
