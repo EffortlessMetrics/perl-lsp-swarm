@@ -1197,6 +1197,129 @@ describe('StreamingCompletionController — request identity and cache correctne
     expect(range.end.character).toBe(10);
   });
 
+  test.each([
+    ['a negative line', { start: { line: -1, character: 0 }, end: { line: 5, character: 10 } }],
+    [
+      'a negative character',
+      { start: { line: 5, character: -3 }, end: { line: 5, character: 10 } },
+    ],
+    [
+      'a fractional coordinate',
+      { start: { line: 5, character: 0 }, end: { line: 5.5, character: 10 } },
+    ],
+    ['NaN', { start: { line: 5, character: 0 }, end: { line: Number.NaN, character: 10 } }],
+    [
+      'Infinity',
+      { start: { line: 5, character: 0 }, end: { line: Number.POSITIVE_INFINITY, character: 10 } },
+    ],
+    [
+      'an end before its start',
+      { start: { line: 6, character: 0 }, end: { line: 5, character: 10 } },
+    ],
+    [
+      'an end character before its start on one line',
+      { start: { line: 5, character: 8 }, end: { line: 5, character: 2 } },
+    ],
+  ])(
+    'a replacement range with %s is rejected and falls back to a zero-length range',
+    (_label, badRange) => {
+      // `typeof x === 'number'` admits every one of these, and `vscode.Position`
+      // throws on a negative coordinate -- inside the provider. Malformed
+      // progress must fail closed here rather than surface as an exception or
+      // an edit the server never described.
+      const provider = getStreamAdapter();
+      const doc = makeMockDoc('file:///a.pl', 1);
+      const pos = makeMockPos(5, 10);
+
+      provider.provideInlineCompletionItems(
+        doc,
+        pos,
+        {} as vscode.InlineCompletionContext,
+        {} as vscode.CancellationToken,
+      );
+      getLastProgressHandler()(makeProgress('sess-1', 1, 'insert text', { range: badRange }));
+
+      const items = provider.provideInlineCompletionItems(
+        doc,
+        pos,
+        {} as vscode.InlineCompletionContext,
+        {} as vscode.CancellationToken,
+      );
+      expect(items).toBeDefined();
+      const range = (items![0] as { range: { start: vscode.Position; end: vscode.Position } })
+        .range;
+      // Collapsed to the request cursor: the malformed range is not honoured.
+      expect(range.start.line).toBe(5);
+      expect(range.start.character).toBe(10);
+      expect(range.end.line).toBe(5);
+      expect(range.end.character).toBe(10);
+    },
+  );
+
+  test.each([
+    ['NaN', Number.NaN],
+    ['a negative value', -1],
+    ['a fractional value', 1.5],
+    ['Infinity', Number.POSITIVE_INFINITY],
+  ])('a frame whose sequence is %s is ignored entirely', (_label, badSequence) => {
+    // `sequence` carries the ordering contract and the stale-frame guard
+    // compares it numerically, so NaN in particular would lose every
+    // comparison rather than be rejected.
+    const provider = getStreamAdapter();
+    const doc = makeMockDoc('file:///a.pl', 1);
+    const pos = makeMockPos(5, 10);
+
+    provider.provideInlineCompletionItems(
+      doc,
+      pos,
+      {} as vscode.InlineCompletionContext,
+      {} as vscode.CancellationToken,
+    );
+    getLastProgressHandler()(makeProgress('sess-1', badSequence, 'should never be served'));
+
+    expect(
+      provider.provideInlineCompletionItems(
+        doc,
+        pos,
+        {} as vscode.InlineCompletionContext,
+        {} as vscode.CancellationToken,
+      ),
+    ).toBeUndefined();
+  });
+
+  test('a well-formed range at the document origin is still accepted', () => {
+    // Guards the fix against over-rejection: 0 is a valid coordinate and an
+    // empty range at one position is a legitimate insertion point.
+    const provider = getStreamAdapter();
+    const doc = makeMockDoc('file:///a.pl', 1);
+    const pos = makeMockPos(5, 10);
+
+    provider.provideInlineCompletionItems(
+      doc,
+      pos,
+      {} as vscode.InlineCompletionContext,
+      {} as vscode.CancellationToken,
+    );
+    getLastProgressHandler()(
+      makeProgress('sess-1', 0, 'insert text', {
+        range: { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } },
+      }),
+    );
+
+    const items = provider.provideInlineCompletionItems(
+      doc,
+      pos,
+      {} as vscode.InlineCompletionContext,
+      {} as vscode.CancellationToken,
+    );
+    expect(items).toBeDefined();
+    const range = (items![0] as { range: { start: vscode.Position; end: vscode.Position } }).range;
+    expect(range.start.line).toBe(0);
+    expect(range.start.character).toBe(0);
+    expect(range.end.line).toBe(0);
+    expect(range.end.character).toBe(0);
+  });
+
   test('cancelActiveStream clears both cached candidate and request identity', () => {
     const provider = getStreamAdapter();
     const doc = makeMockDoc('file:///a.pl', 1);

@@ -136,9 +136,35 @@ export class StreamingCompletionController implements vscode.Disposable, InlineS
     return (
       obj.kind === 'perlInlineCompletionStream' &&
       typeof obj.sessionId === 'string' &&
-      typeof obj.sequence === 'number' &&
+      // `sequence` carries the ordering contract, and the stale-frame guard
+      // compares it numerically. `NaN` loses every comparison, so an
+      // unvalidated value would defeat that guard rather than be rejected.
+      this.isDocumentCoordinate(obj.sequence) &&
       typeof obj.isFinal === 'boolean' &&
       Array.isArray(obj.items)
+    );
+  }
+
+  /**
+   * A document coordinate this client is willing to hand to `vscode.Position`.
+   *
+   * `typeof x === 'number'` is not enough: it admits `NaN`, `Infinity`, `-1`,
+   * and `1.5`. `vscode.Position` rejects negative values by throwing, and this
+   * runs inside `provideInlineCompletionItems`, so an unvalidated coordinate
+   * from a malformed frame would surface as an exception in the provider
+   * rather than as a frame that is quietly ignored.
+   */
+  private isDocumentCoordinate(value: unknown): value is number {
+    return typeof value === 'number' && Number.isInteger(value) && value >= 0;
+  }
+
+  private isStreamPosition(value: unknown): value is { line: number; character: number } {
+    if (typeof value !== 'object' || value === null) {
+      return false;
+    }
+    const position = value as Record<string, unknown>;
+    return (
+      this.isDocumentCoordinate(position.line) && this.isDocumentCoordinate(position.character)
     );
   }
 
@@ -147,19 +173,15 @@ export class StreamingCompletionController implements vscode.Disposable, InlineS
       return false;
     }
     const range = value as Record<string, unknown>;
-    const start = range.start;
-    const end = range.end;
-    if (typeof start !== 'object' || start === null || typeof end !== 'object' || end === null) {
+    if (!this.isStreamPosition(range.start) || !this.isStreamPosition(range.end)) {
       return false;
     }
-    const startPosition = start as Record<string, unknown>;
-    const endPosition = end as Record<string, unknown>;
-    return (
-      typeof startPosition.line === 'number' &&
-      typeof startPosition.character === 'number' &&
-      typeof endPosition.line === 'number' &&
-      typeof endPosition.character === 'number'
-    );
+    // A range whose end precedes its start is not a range. VS Code would
+    // silently reorder the two, so an inverted frame would apply an edit the
+    // server never described.
+    const start = range.start;
+    const end = range.end;
+    return start.line < end.line || (start.line === end.line && start.character <= end.character);
   }
 
   /**
