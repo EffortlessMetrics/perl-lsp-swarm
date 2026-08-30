@@ -5,6 +5,7 @@
 pub mod diagnostics_stats;
 pub mod hir_coverage;
 pub mod lsp_stats;
+mod lsp_stats_guarded;
 mod lsp_stats_impl;
 pub mod memory;
 pub mod parser_accuracy;
