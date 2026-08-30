@@ -25,10 +25,10 @@ use anyhow::{Result, bail, ensure};
 use xtask::editor_client_compat::EvidenceStage;
 use xtask::emacs_host_journeys::{
     self, DepthClass, DiagnosticCohort, EvidenceKind, ExpectationRef, HostSurface, JourneyCell,
-    ROOT_ROLE_TOKENS, RootReference,
+    PLATFORM_APPLICABILITY_TOKENS, ROOT_ROLE_TOKENS, RootReference,
 };
 
-fn compiled() -> Vec<JourneyCell> {
+fn compiled() -> Result<Vec<JourneyCell>> {
     emacs_host_journeys::registry()
 }
 
@@ -64,7 +64,7 @@ fn every_fixture_owner_resolves_to_the_landed_subject_authority() -> Result<()> 
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .ok_or_else(|| anyhow::anyhow!("xtask must live below the repository root"))?;
-    for cell in compiled() {
+    for cell in &compiled()? {
         for fixture in &cell.fixture_owners {
             let path = root.join(".ci/editor-clients").join(format!("{fixture}.json"));
             ensure!(
@@ -80,7 +80,7 @@ fn every_fixture_owner_resolves_to_the_landed_subject_authority() -> Result<()> 
 
 #[test]
 fn pull_protocol_surfaces_reject_push_and_lsp_mode_cohorts() -> Result<()> {
-    let mut cells = compiled();
+    let mut cells = compiled()?;
     let poll_cell_id = "emacs.diagnostics_pull_protocol.poll_request_full_result_id";
     let position = cells
         .iter()
@@ -101,7 +101,7 @@ fn pull_protocol_surfaces_reject_push_and_lsp_mode_cohorts() -> Result<()> {
 
 #[test]
 fn protocol_membership_can_never_present_host_visible_semantics() -> Result<()> {
-    let mut cells = compiled();
+    let mut cells = compiled()?;
     let poll_cell_id = "emacs.diagnostics_pull_protocol.final_clear";
     let position = cells
         .iter()
@@ -121,7 +121,7 @@ fn protocol_membership_can_never_present_host_visible_semantics() -> Result<()> 
     // the pull-cohort law passes) so the rejection can only come from the
     // host-visible surface law at `validate_cell`, never from a
     // baseline-coverage law triggered by removing rows.
-    let mut cells = compiled();
+    let mut cells = compiled()?;
     let host_visible = "emacs.eldoc_hover_observation.hover_rendered";
     let position = cells
         .iter()
@@ -142,7 +142,7 @@ fn protocol_membership_can_never_present_host_visible_semantics() -> Result<()> 
 
 #[test]
 fn protocol_membership_rejects_host_visible_surface() -> Result<()> {
-    let mut cells = compiled();
+    let mut cells = compiled()?;
     let poll_cell_id = "emacs.diagnostics_pull_protocol.final_clear";
     let position = cells
         .iter()
@@ -161,8 +161,33 @@ fn protocol_membership_rejects_host_visible_surface() -> Result<()> {
 }
 
 #[test]
+fn platform_applicability_uses_a_closed_vocabulary() -> Result<()> {
+    ensure!(
+        PLATFORM_APPLICABILITY_TOKENS == ["all"],
+        "platform applicability vocabulary changed unexpectedly"
+    );
+
+    let mut cells = compiled()?;
+    cells[0].platform_applicability = "x86_64-unknown-linux-gnu".to_string();
+    let error = match emacs_host_journeys::validate_registry(&cells) {
+        Err(error) => error.to_string(),
+        Ok(_) => bail!("an unregistered platform applicability token passed validation"),
+    };
+    ensure!(
+        error.contains("unregistered platform applicability")
+            && error.contains("x86_64-unknown-linux-gnu"),
+        "unexpected rejection for an unregistered platform applicability: {error}"
+    );
+
+    let mut cells = compiled()?;
+    cells[0].platform_applicability = "all".to_string();
+    emacs_host_journeys::validate_registry(&cells)?;
+    Ok(())
+}
+
+#[test]
 fn claim_ceiling_must_match_registered_depth_and_evidence_kind() -> Result<()> {
-    let cells = compiled();
+    let cells = compiled()?;
     let core_position = cells
         .iter()
         .position(|cell| cell.depth == DepthClass::Core)
@@ -185,7 +210,7 @@ fn claim_ceiling_must_match_registered_depth_and_evidence_kind() -> Result<()> {
         "unexpected rejection for an unregistered claim ceiling: {error}"
     );
 
-    let mut cells = compiled();
+    let mut cells = compiled()?;
     let core_position = cells
         .iter()
         .position(|cell| cell.depth == DepthClass::Core)
@@ -204,7 +229,7 @@ fn claim_ceiling_must_match_registered_depth_and_evidence_kind() -> Result<()> {
 
 #[test]
 fn public_artifact_evidence_is_not_admitted() -> Result<()> {
-    let mut cells = compiled();
+    let mut cells = compiled()?;
     cells[0].max_stage = EvidenceStage::PublicArtifact;
     let error = match emacs_host_journeys::validate_registry(&cells) {
         Err(error) => error.to_string(),
@@ -219,7 +244,7 @@ fn public_artifact_evidence_is_not_admitted() -> Result<()> {
 
 #[test]
 fn root_roles_are_closed_and_registered_roles_are_accepted() -> Result<()> {
-    let mut cells = compiled();
+    let mut cells = compiled()?;
     let position = cells
         .iter()
         .position(|cell| cell.root_reference.is_some())
@@ -237,7 +262,7 @@ fn root_roles_are_closed_and_registered_roles_are_accepted() -> Result<()> {
 
     ensure!(ROOT_ROLE_TOKENS.len() == 2, "root role vocabulary changed unexpectedly");
     for role in ROOT_ROLE_TOKENS {
-        let mut cells = compiled();
+        let mut cells = compiled()?;
         let position = cells
             .iter()
             .position(|cell| cell.root_reference.is_some())
@@ -251,9 +276,10 @@ fn root_roles_are_closed_and_registered_roles_are_accepted() -> Result<()> {
 
 #[test]
 fn missing_canonical_truth_blocks_the_cell() -> Result<()> {
-    let mut cells = compiled();
+    let mut cells = compiled()?;
     cells[0].expectation_owner = ExpectationRef {
         set_id: "perl-agent-client-v1".to_string(),
+        set_digest: cells[0].expectation_owner.set_digest.clone(),
         ids: vec!["invented.emacs_local_answer".to_string()],
     };
     let error = match emacs_host_journeys::validate_registry(&cells) {
@@ -265,7 +291,7 @@ fn missing_canonical_truth_blocks_the_cell() -> Result<()> {
         "unexpected rejection for invented expectation: {error}"
     );
 
-    let mut cells = compiled();
+    let mut cells = compiled()?;
     cells[0].expectation_owner.set_id = "emacs-local-oracle-v9".to_string();
     ensure!(
         emacs_host_journeys::validate_registry(&cells).is_err(),
@@ -275,22 +301,38 @@ fn missing_canonical_truth_blocks_the_cell() -> Result<()> {
 }
 
 #[test]
+fn stale_expectation_digest_blocks_the_cell() -> Result<()> {
+    let mut cells = compiled()?;
+    cells[0].expectation_owner.set_digest =
+        "sha256:0000000000000000000000000000000000000000000000000000000000000000".to_string();
+    let error = match emacs_host_journeys::validate_registry(&cells) {
+        Err(error) => error.to_string(),
+        Ok(_) => bail!("a stale expectation-set digest passed validation"),
+    };
+    ensure!(
+        error.contains("stale or foreign canonical expectation-set digest"),
+        "unexpected rejection for a stale expectation-set digest: {error}"
+    );
+    Ok(())
+}
+
+#[test]
 fn unregistered_free_form_cells_are_unrepresentable() -> Result<()> {
-    let mut cells = compiled();
+    let mut cells = compiled()?;
     cells[0].cell_id = "emacs.not_a_registered_class.free_form_leaf".to_string();
     ensure!(
         emacs_host_journeys::validate_registry(&cells).is_err(),
         "an unregistered journey class entered the manifest"
     );
 
-    let mut cells = compiled();
+    let mut cells = compiled()?;
     cells[0].journey_class = "workspace_readiness".to_string();
     ensure!(
         emacs_host_journeys::validate_registry(&cells).is_err(),
         "a row whose id segment disagrees with its declared class validated"
     );
 
-    let mut cells = compiled();
+    let mut cells = compiled()?;
     cells[0].producer_mapping = "local.mapping.not_11361".to_string();
     ensure!(
         emacs_host_journeys::validate_registry(&cells).is_err(),
@@ -301,7 +343,7 @@ fn unregistered_free_form_cells_are_unrepresentable() -> Result<()> {
 
 #[test]
 fn optional_feature_depth_cannot_silently_become_core_required() -> Result<()> {
-    let mut cells = compiled();
+    let mut cells = compiled()?;
     let opt_id = "emacs.opt_native_formatting.format_document_depth";
     let position = cells
         .iter()
@@ -317,8 +359,33 @@ fn optional_feature_depth_cannot_silently_become_core_required() -> Result<()> {
 }
 
 #[test]
+fn optional_classes_cannot_disappear_when_optional_depth_is_present() -> Result<()> {
+    let cells = compiled()?;
+    let optional_class = cells
+        .iter()
+        .find(|cell| cell.depth == DepthClass::Optional)
+        .map(|cell| cell.journey_class.clone())
+        .ok_or_else(|| anyhow::anyhow!("optional cell vanished from the registry"))?;
+    let mut incomplete = cells.clone();
+    incomplete.retain(|cell| cell.journey_class != optional_class);
+    let error = match emacs_host_journeys::validate_registry(&incomplete) {
+        Err(error) => error.to_string(),
+        Ok(_) => bail!("optional class {optional_class} disappeared without rejection"),
+    };
+    ensure!(
+        error.contains(&format!("optional class {optional_class}")),
+        "unexpected rejection for an uncovered optional class: {error}"
+    );
+
+    let core_only: Vec<_> =
+        cells.into_iter().filter(|cell| cell.depth == DepthClass::Core).collect();
+    emacs_host_journeys::validate_registry(&core_only)?;
+    Ok(())
+}
+
+#[test]
 fn root_references_stay_role_tokens_owned_by_11366() -> Result<()> {
-    let mut cells = compiled();
+    let mut cells = compiled()?;
     cells[0].root_reference =
         Some(RootReference { role_token: "../../fixtures/stock-project/root.toml".to_string() });
     ensure!(
@@ -326,7 +393,7 @@ fn root_references_stay_role_tokens_owned_by_11366() -> Result<()> {
         "root fixture material leaked into the manifest as a path"
     );
 
-    let mut cells = compiled();
+    let mut cells = compiled()?;
     cells[0].root_reference = Some(RootReference { role_token: "manual_root".to_string() });
     ensure!(
         emacs_host_journeys::validate_registry(&cells).is_err(),
@@ -334,7 +401,7 @@ fn root_references_stay_role_tokens_owned_by_11366() -> Result<()> {
     );
 
     // Every registered root-sensitive row stays inside the #11366 namespace.
-    for cell in compiled() {
+    for cell in &compiled()? {
         if let Some(root) = &cell.root_reference {
             ensure!(
                 root.role_token.starts_with("root_11366."),
@@ -349,28 +416,28 @@ fn root_references_stay_role_tokens_owned_by_11366() -> Result<()> {
 
 #[test]
 fn wrong_subject_state_vocabulary_fails_closed() -> Result<()> {
-    let mut cells = compiled();
+    let mut cells = compiled()?;
     cells[0].false_subject_controls.push("totally_unknown_control".to_string());
     ensure!(
         emacs_host_journeys::validate_registry(&cells).is_err(),
         "an unknown false-subject control entered a cell"
     );
 
-    let mut cells = compiled();
+    let mut cells = compiled()?;
     cells[0].dimensions.push("document.invented_dimension".to_string());
     ensure!(
         emacs_host_journeys::validate_registry(&cells).is_err(),
         "an unknown generation dimension entered a cell"
     );
 
-    let mut cells = compiled();
+    let mut cells = compiled()?;
     cells[0].allowed_limitations.push("synthetic_success".to_string());
     ensure!(
         emacs_host_journeys::validate_registry(&cells).is_err(),
         "a synthetic-success limitation escaped the bounded vocabulary"
     );
 
-    let mut cells = compiled();
+    let mut cells = compiled()?;
     cells[0].false_subject_controls.clear();
     ensure!(
         emacs_host_journeys::validate_registry(&cells).is_err(),
@@ -381,7 +448,7 @@ fn wrong_subject_state_vocabulary_fails_closed() -> Result<()> {
 
 #[test]
 fn stale_generation_and_partial_edit_controls_are_registered_on_their_classes() -> Result<()> {
-    for cell in compiled() {
+    for cell in &compiled()? {
         if cell.journey_class == "stale_generation_rejection" {
             ensure!(
                 cell.false_subject_controls
@@ -423,7 +490,7 @@ fn stale_generation_and_partial_edit_controls_are_registered_on_their_classes() 
         "emacs.diagnostics_pull_protocol.final_clear",
     ];
     for id in pull_ids {
-        let cells = compiled();
+        let cells = compiled()?;
         let cell = find(&cells, id)?;
         ensure!(
             cell.evidence_kind == EvidenceKind::ProtocolMembershipOnly,
@@ -435,7 +502,7 @@ fn stale_generation_and_partial_edit_controls_are_registered_on_their_classes() 
 
 #[test]
 fn digests_cover_bindings_and_survive_row_ordering_only_changes() -> Result<()> {
-    let cells = compiled();
+    let cells = compiled()?;
     let baseline = emacs_host_journeys::registry_digest(&cells)?;
 
     // Reordering list fields inside one row is not a semantic change...
@@ -466,8 +533,22 @@ fn digests_cover_bindings_and_survive_row_ordering_only_changes() -> Result<()> 
 }
 
 #[test]
+fn registry_digest_covers_expectation_set_digest() -> Result<()> {
+    let cells = compiled()?;
+    let baseline = emacs_host_journeys::registry_digest(&cells)?;
+    let mut edited = cells;
+    edited[0].expectation_owner.set_digest =
+        "sha256:1111111111111111111111111111111111111111111111111111111111111111".to_string();
+    ensure!(
+        emacs_host_journeys::registry_digest(&edited)? != baseline,
+        "registry digest ignored an expectation-set digest edit"
+    );
+    Ok(())
+}
+
+#[test]
 fn lookup_resolves_cells_classes_and_rejects_unknown_subjects() -> Result<()> {
-    let cells = compiled();
+    let cells = compiled()?;
     let (class, matched) =
         emacs_host_journeys::lookup(&cells, "emacs.mode_attachment.perl_mode_language_id")?;
     ensure!(class.as_deref() == Some("mode_attachment"));
@@ -486,7 +567,7 @@ fn lookup_resolves_cells_classes_and_rejects_unknown_subjects() -> Result<()> {
 
 #[test]
 fn root_sensitive_cells_fail_closed_without_a_root_reference() -> Result<()> {
-    let mut cells = compiled();
+    let mut cells = compiled()?;
     let stock_root = "emacs.workspace_readiness.stock_root_ready";
     let position = cells
         .iter()
@@ -508,7 +589,7 @@ fn root_sensitive_cells_fail_closed_without_a_root_reference() -> Result<()> {
 
 #[test]
 fn unknown_producer_mappings_fail_closed() -> Result<()> {
-    let mut cells = compiled();
+    let mut cells = compiled()?;
     let hover = "emacs.eldoc_hover_observation.hover_rendered";
     let position = cells
         .iter()

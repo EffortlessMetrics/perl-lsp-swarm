@@ -5638,7 +5638,12 @@ fn run_cli(cli: Cli) -> Result<()> {
                         Ok(())
                     }
                     EmacsJourneysCommand::Explain { subject } => {
-                        let cells = xtask::emacs_host_journeys::registry();
+                        // Explain validates registry laws only; on-disk subject authority remains
+                        // the responsibility of Check.
+                        let cells = xtask::emacs_host_journeys::registry()
+                            .map_err(|error| eyre!("{error:#}"))?;
+                        xtask::emacs_host_journeys::validate_registry(&cells)
+                            .map_err(|error| eyre!("{error:#}"))?;
                         let (class, matched) = xtask::emacs_host_journeys::lookup(&cells, &subject)
                             .map_err(|error| eyre!("{error:#}"))?;
                         let mut explained = serde_json::json!({

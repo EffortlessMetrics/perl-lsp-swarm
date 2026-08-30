@@ -58,7 +58,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::path::Path;
 
-use crate::client_compat_fixture::{CANONICAL_EXPECTATION_IDS, CANONICAL_EXPECTATION_SET_ID};
+use crate::client_compat_fixture::{
+    CANONICAL_EXPECTATION_IDS, CANONICAL_EXPECTATION_SET_ID, canonical_expectation_set_digest,
+};
 use crate::editor_client_compat::EvidenceStage;
 
 /// Identity of this registration model.
@@ -160,6 +162,13 @@ pub const PRODUCER_MAPPING_PREFIX: &str = "11361.";
 /// can consume.
 pub const PRODUCER_MAPPINGS: &[&str] = &["11361.observation_to_receipt.v1"];
 
+/// Platform applicability tokens `emacs_host_journeys.v1` admits. Exactly
+/// one value is meaningful today: every registered cell applies to every
+/// governed subject. A narrower scope must arrive with the authority that
+/// defines the platform grammar — inventing OS triples here would duplicate
+/// subject authority this manifest only consumes.
+pub const PLATFORM_APPLICABILITY_TOKENS: &[&str] = &["all"];
+
 // ---------------------------------------------------------------------------
 // Model
 // ---------------------------------------------------------------------------
@@ -247,6 +256,7 @@ pub enum DepthClass {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExpectationRef {
     pub set_id: String,
+    pub set_digest: String,
     pub ids: Vec<String>,
 }
 
@@ -292,7 +302,7 @@ pub struct JourneyCell {
     /// Coordinate applicability ([`COORDINATE_DOMAINS`]): newline domains and
     /// Unicode position discriminators exercised.
     pub coordinate_domains: Vec<String>,
-    /// Platform applicability; `"all"` or specific OS triples.
+    /// Platform applicability; a token from [`PLATFORM_APPLICABILITY_TOKENS`].
     pub platform_applicability: String,
     /// Allowed terminal limitations ([`LIMITATION_VOCABULARY`]).
     pub allowed_limitations: Vec<String>,
@@ -335,11 +345,12 @@ pub fn is_optional_class(class: &str) -> bool {
     OPTIONAL_CLASSES.contains(&class)
 }
 
-fn expect_ref(ids: &[&str]) -> ExpectationRef {
-    ExpectationRef {
+fn expect_ref(ids: &[&str]) -> Result<ExpectationRef> {
+    Ok(ExpectationRef {
         set_id: CANONICAL_EXPECTATION_SET_ID.to_string(),
+        set_digest: canonical_expectation_set_digest()?,
         ids: ids.iter().map(|id| (*id).to_string()).collect(),
-    }
+    })
 }
 
 fn root_ref(role: &str) -> Option<RootReference> {
@@ -402,20 +413,20 @@ impl<'a> CellSpec<'a> {
     /// [`validate_registry`] also accepts registries this constructor did not
     /// build; the first row that needs a second value must become a `CellSpec`
     /// field rather than a second constant here.
-    fn build(self) -> JourneyCell {
+    fn build(self) -> Result<JourneyCell> {
         let limitations: &[&str] = match self.evidence_kind {
             EvidenceKind::ProtocolMembershipOnly => &["protocol_membership_not_host_visible"],
             EvidenceKind::HostVisibleObservation => &["capability_not_advertised"],
         };
         let ceiling = claim_ceiling_for(self.depth, self.evidence_kind);
-        JourneyCell {
+        Ok(JourneyCell {
             cell_id: self.cell_id.to_string(),
             cell_version: 1,
             journey_class: self.class.to_string(),
             depth: self.depth,
             cohorts: self.cohorts.to_vec(),
             fixture_owners: SUBJECT_FIXTURE_SUBSTRATE.iter().map(|f| (*f).to_string()).collect(),
-            expectation_owner: expect_ref(self.expectations),
+            expectation_owner: expect_ref(self.expectations)?,
             root_reference: self.root_role.and_then(root_ref),
             dimensions: self.dimensions.iter().map(|d| (*d).to_string()).collect(),
             host_surfaces: self.surfaces.to_vec(),
@@ -428,18 +439,18 @@ impl<'a> CellSpec<'a> {
             max_stage: self.max_stage,
             claim_ceiling: ceiling.to_string(),
             producer_mapping: "11361.observation_to_receipt.v1".to_string(),
-        }
+        })
     }
 }
 
 /// The compiled registry current main governs. Rows live directly in this
 /// function (one PR-level registry), ordered by class in published order;
 /// every change to membership or controls is a visible digest change.
-pub fn registry() -> Vec<JourneyCell> {
+pub fn registry() -> Result<Vec<JourneyCell>> {
     use EvidenceKind::{HostVisibleObservation as HostVisible, ProtocolMembershipOnly};
     use HostSurface::*;
 
-    vec![
+    Ok(vec![
         // -- registration ---------------------------------------------------
         CellSpec {
             cell_id: "emacs.registration_subject_selection.exact_selected_perllsp",
@@ -461,7 +472,7 @@ pub fn registry() -> Vec<JourneyCell> {
             coordinates: &["lf"],
             max_stage: EvidenceStage::ReleaseCandidate,
         }
-        .build(),
+        .build()?,
         // -- major-mode + language-id attachment ----------------------------
         CellSpec {
             cell_id: "emacs.mode_attachment.perl_mode_language_id",
@@ -479,7 +490,7 @@ pub fn registry() -> Vec<JourneyCell> {
             coordinates: &["lf"],
             max_stage: EvidenceStage::ReleaseCandidate,
         }
-        .build(),
+        .build()?,
         CellSpec {
             cell_id: "emacs.mode_attachment.cperl_mode_language_id",
             class: "mode_attachment",
@@ -496,7 +507,7 @@ pub fn registry() -> Vec<JourneyCell> {
             coordinates: &["lf"],
             max_stage: EvidenceStage::ReleaseCandidate,
         }
-        .build(),
+        .build()?,
         // -- workspace readiness --------------------------------------------
         CellSpec {
             cell_id: "emacs.workspace_readiness.stock_root_ready",
@@ -517,7 +528,7 @@ pub fn registry() -> Vec<JourneyCell> {
             coordinates: &["lf"],
             max_stage: EvidenceStage::ReleaseCandidate,
         }
-        .build(),
+        .build()?,
         // -- host-visible diagnostics ---------------------------------------
         CellSpec {
             cell_id: "emacs.diagnostics_host_visibility.arrival_update_clear",
@@ -539,7 +550,7 @@ pub fn registry() -> Vec<JourneyCell> {
             coordinates: &["lf", "crlf"],
             max_stage: EvidenceStage::ReleaseCandidate,
         }
-        .build(),
+        .build()?,
         CellSpec {
             cell_id: "emacs.diagnostics_host_visibility.pull_flymake_state",
             class: "diagnostics_host_visibility",
@@ -556,7 +567,7 @@ pub fn registry() -> Vec<JourneyCell> {
             coordinates: &["lf"],
             max_stage: EvidenceStage::ReleaseCandidate,
         }
-        .build(),
+        .build()?,
         // -- pull-protocol membership cells (#11768 pull contract) ----------
         CellSpec {
             cell_id: "emacs.diagnostics_pull_protocol.poll_request_full_result_id",
@@ -574,7 +585,7 @@ pub fn registry() -> Vec<JourneyCell> {
             coordinates: &["lf"],
             max_stage: EvidenceStage::ReleaseCandidate,
         }
-        .build(),
+        .build()?,
         CellSpec {
             cell_id: "emacs.diagnostics_pull_protocol.previous_result_id_roundtrip",
             class: "diagnostics_pull_protocol",
@@ -591,7 +602,7 @@ pub fn registry() -> Vec<JourneyCell> {
             coordinates: &["lf"],
             max_stage: EvidenceStage::ReleaseCandidate,
         }
-        .build(),
+        .build()?,
         CellSpec {
             cell_id: "emacs.diagnostics_pull_protocol.unchanged_result_reported",
             class: "diagnostics_pull_protocol",
@@ -607,7 +618,7 @@ pub fn registry() -> Vec<JourneyCell> {
             coordinates: &["lf"],
             max_stage: EvidenceStage::ReleaseCandidate,
         }
-        .build(),
+        .build()?,
         CellSpec {
             cell_id: "emacs.diagnostics_pull_protocol.edit_invalidation_new_identity",
             class: "diagnostics_pull_protocol",
@@ -624,7 +635,7 @@ pub fn registry() -> Vec<JourneyCell> {
             coordinates: &["lf"],
             max_stage: EvidenceStage::ReleaseCandidate,
         }
-        .build(),
+        .build()?,
         CellSpec {
             cell_id: "emacs.diagnostics_pull_protocol.final_clear",
             class: "diagnostics_pull_protocol",
@@ -640,7 +651,7 @@ pub fn registry() -> Vec<JourneyCell> {
             coordinates: &["lf"],
             max_stage: EvidenceStage::ReleaseCandidate,
         }
-        .build(),
+        .build()?,
         // -- completion + CAPF -----------------------------------------------
         CellSpec {
             cell_id: "emacs.completion_capf_buffer_state.capf_selection_applied",
@@ -662,7 +673,7 @@ pub fn registry() -> Vec<JourneyCell> {
             coordinates: &["lf"],
             max_stage: EvidenceStage::ReleaseCandidate,
         }
-        .build(),
+        .build()?,
         // -- ElDoc/hover ------------------------------------------------------
         CellSpec {
             cell_id: "emacs.eldoc_hover_observation.hover_rendered",
@@ -682,7 +693,7 @@ pub fn registry() -> Vec<JourneyCell> {
             coordinates: &["lf"],
             max_stage: EvidenceStage::ReleaseCandidate,
         }
-        .build(),
+        .build()?,
         // -- Xref --------------------------------------------------------------
         CellSpec {
             cell_id: "emacs.xref_navigation.definition_and_references",
@@ -703,7 +714,7 @@ pub fn registry() -> Vec<JourneyCell> {
             coordinates: &["lf"],
             max_stage: EvidenceStage::ReleaseCandidate,
         }
-        .build(),
+        .build()?,
         // -- multi-file rename/workspace-edit ---------------------------------
         CellSpec {
             cell_id: "emacs.multi_file_rename_workspace_edit.exact_application",
@@ -725,7 +736,7 @@ pub fn registry() -> Vec<JourneyCell> {
             coordinates: &["lf"],
             max_stage: EvidenceStage::ReleaseCandidate,
         }
-        .build(),
+        .build()?,
         // -- stale rejection -----------------------------------------------------
         CellSpec {
             cell_id: "emacs.stale_generation_rejection.prior_generation_rejected",
@@ -747,7 +758,7 @@ pub fn registry() -> Vec<JourneyCell> {
             coordinates: &["lf"],
             max_stage: EvidenceStage::ReleaseCandidate,
         }
-        .build(),
+        .build()?,
         // -- configuration --------------------------------------------------------
         CellSpec {
             cell_id: "emacs.configuration_behavior.config_effect_observed",
@@ -767,7 +778,7 @@ pub fn registry() -> Vec<JourneyCell> {
             coordinates: &["lf"],
             max_stage: EvidenceStage::ReleaseCandidate,
         }
-        .build(),
+        .build()?,
         // -- clean shutdown ---------------------------------------------------------
         CellSpec {
             cell_id: "emacs.clean_shutdown_cleanup.process_clean_after_exit",
@@ -788,7 +799,7 @@ pub fn registry() -> Vec<JourneyCell> {
             coordinates: &["lf"],
             max_stage: EvidenceStage::ReleaseCandidate,
         }
-        .build(),
+        .build()?,
         // -- coordinate discriminators ------------------------------------------------
         CellSpec {
             cell_id: "emacs.coordinate_discriminators.unicode_non_bmp_positions",
@@ -806,7 +817,7 @@ pub fn registry() -> Vec<JourneyCell> {
             coordinates: &["unicode_non_bmp", "lf"],
             max_stage: EvidenceStage::ReleaseCandidate,
         }
-        .build(),
+        .build()?,
         CellSpec {
             cell_id: "emacs.coordinate_discriminators.lf_crlf_newlines",
             class: "coordinate_discriminators",
@@ -823,7 +834,7 @@ pub fn registry() -> Vec<JourneyCell> {
             coordinates: &["lf", "crlf"],
             max_stage: EvidenceStage::ReleaseCandidate,
         }
-        .build(),
+        .build()?,
         // -- wrong competing selection --------------------------------------------------
         CellSpec {
             cell_id: "emacs.wrong_competing_selection.competing_server_rejected",
@@ -846,7 +857,7 @@ pub fn registry() -> Vec<JourneyCell> {
             coordinates: &["lf"],
             max_stage: EvidenceStage::ReleaseCandidate,
         }
-        .build(),
+        .build()?,
         // -- #9413 optional documented-feature depth (additive only) --------------------
         CellSpec {
             cell_id: "emacs.opt_native_formatting.format_document_depth",
@@ -863,7 +874,7 @@ pub fn registry() -> Vec<JourneyCell> {
             coordinates: &["lf"],
             max_stage: EvidenceStage::ReleaseCandidate,
         }
-        .build(),
+        .build()?,
         CellSpec {
             cell_id: "emacs.opt_code_action_application.apply_or_refuse_depth",
             class: "opt_code_action_application",
@@ -879,7 +890,7 @@ pub fn registry() -> Vec<JourneyCell> {
             coordinates: &["lf"],
             max_stage: EvidenceStage::ReleaseCandidate,
         }
-        .build(),
+        .build()?,
         CellSpec {
             cell_id: "emacs.opt_inlay_hints.request_render_refresh_depth",
             class: "opt_inlay_hints",
@@ -898,8 +909,8 @@ pub fn registry() -> Vec<JourneyCell> {
             coordinates: &["lf"],
             max_stage: EvidenceStage::ReleaseCandidate,
         }
-        .build(),
-    ]
+        .build()?,
+    ])
 }
 
 // ---------------------------------------------------------------------------
@@ -908,7 +919,7 @@ pub fn registry() -> Vec<JourneyCell> {
 
 /// Validate the compiled registry of current main: shared cell laws, then the
 /// registry-level coverage laws (baseline classes covered by core cells only,
-/// optional cells confined to optional classes).
+/// and, when optional depth is present, every optional class covered).
 ///
 /// The advertised fail-closed command resolves the landed subject authority
 /// from disk and certifies the exact governed client denominator before
@@ -940,11 +951,12 @@ pub fn validate_compiled_registry_against(repo_root: &Path) -> Result<RegistrySu
             path.display()
         );
     }
-    validate_registry(&registry())
+    validate_registry(&registry()?)
 }
 
 /// Validate a whole registry: every cell against the shared laws, then the
-/// registry-level laws (unique ids, baseline coverage, depth containment).
+/// registry-level laws (unique ids, baseline coverage, conditional optional
+/// coverage, depth containment).
 pub fn validate_registry(cells: &[JourneyCell]) -> Result<RegistrySummary> {
     ensure!(!cells.is_empty(), "a journey registry requires at least one cell");
     let classes = registered_classes();
@@ -961,17 +973,25 @@ pub fn validate_registry(cells: &[JourneyCell]) -> Result<RegistrySummary> {
             cell.journey_class
         );
     }
-    for cell in cells {
-        validate_cell(cell, &classes)?;
-        ensure!(seen_ids.insert(cell.cell_id.as_str()), "duplicate cell id: {}", cell.cell_id);
-    }
-
     // Baseline coverage: every baseline class owns at least one core cell,
     // and none arrives from an optional class.
     for class in BASELINE_CLASSES {
         let covered =
             cells.iter().any(|cell| cell.journey_class == *class && cell.depth == DepthClass::Core);
         ensure!(covered, "baseline class {class} is not covered by any core cell");
+    }
+    if cells.iter().any(|cell| cell.depth == DepthClass::Optional) {
+        for class in OPTIONAL_CLASSES {
+            let covered = cells
+                .iter()
+                .any(|cell| cell.journey_class == *class && cell.depth == DepthClass::Optional);
+            ensure!(covered, "optional class {class} is not covered by any optional-depth cell");
+        }
+    }
+
+    for cell in cells {
+        validate_cell(cell, &classes)?;
+        ensure!(seen_ids.insert(cell.cell_id.as_str()), "duplicate cell id: {}", cell.cell_id);
     }
 
     // Cohort independence made explicit: publish per-cohort membership counts
@@ -1122,6 +1142,12 @@ fn validate_cell(cell: &JourneyCell, classes: &[&str]) -> Result<()> {
         cell.expectation_owner.set_id
     );
     ensure!(
+        cell.expectation_owner.set_digest == canonical_expectation_set_digest()?,
+        "cell {} binds a stale or foreign canonical expectation-set digest {}",
+        cell.cell_id,
+        cell.expectation_owner.set_digest
+    );
+    ensure!(
         !cell.expectation_owner.ids.is_empty(),
         "cell {} must reference at least one canonical expectation id",
         cell.cell_id
@@ -1247,9 +1273,10 @@ fn validate_cell(cell: &JourneyCell, classes: &[&str]) -> Result<()> {
     }
 
     ensure!(
-        !cell.platform_applicability.trim().is_empty(),
-        "cell {} must declare platform applicability",
-        cell.cell_id
+        PLATFORM_APPLICABILITY_TOKENS.contains(&cell.platform_applicability.as_str()),
+        "cell {} declares unregistered platform applicability {}",
+        cell.cell_id,
+        cell.platform_applicability
     );
 
     // Discriminator, ceiling, producer mapping, stage.
@@ -1324,6 +1351,7 @@ pub fn cell_digest(cell: &JourneyCell) -> Result<String> {
         cohorts: sorted_wire(&cell.cohorts)?,
         fixture_owners: sorted(cell.fixture_owners.clone()),
         expectation_set: cell.expectation_owner.set_id.clone(),
+        expectation_set_digest: cell.expectation_owner.set_digest.clone(),
         expectation_ids: sorted(cell.expectation_owner.ids.clone()),
         root_reference: cell.root_reference.as_ref().map(|r| r.role_token.clone()),
         dimensions: sorted(cell.dimensions.clone()),
@@ -1404,6 +1432,7 @@ struct CellDigestView {
     cohorts: Vec<String>,
     fixture_owners: Vec<String>,
     expectation_set: String,
+    expectation_set_digest: String,
     expectation_ids: Vec<String>,
     root_reference: Option<String>,
     dimensions: Vec<String>,
@@ -1439,8 +1468,8 @@ mod tests {
 
     #[test]
     fn compiled_registry_digest_is_order_insensitive() -> Result<()> {
-        let forward = registry_digest(&registry())?;
-        let mut reversed = registry();
+        let forward = registry_digest(&registry()?)?;
+        let mut reversed = registry()?;
         reversed.reverse();
         ensure!(forward == registry_digest(&reversed)?, "registry digest depends on row order");
         Ok(())
@@ -1448,7 +1477,7 @@ mod tests {
 
     #[test]
     fn cohort_summary_publishes_every_registered_cohort() -> Result<()> {
-        let summary = validate_registry(&registry())?;
+        let summary = validate_registry(&registry()?)?;
         ensure!(
             summary.cohort_membership.len() == DiagnosticCohort::ALL.len(),
             "cohort summary omitted a registered cohort"
