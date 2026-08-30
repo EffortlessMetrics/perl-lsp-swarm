@@ -96,8 +96,8 @@ Run the policy check before changing Cargo lint levels, Clippy configuration, de
 cargo xtask check-lint-policy
 ```
 
-The command prints deterministic active, debt, tracked, future-planned, and due-deferred populations. Unknown fields, malformed versions, duplicate identities, stale deferrals, reintroduced test carveouts, or missing policy inputs are non-success.
+The command prints deterministic active, debt, tracked, configuration-empty-by-design, future-planned, and due-deferred populations. Unknown fields, malformed versions, duplicate identities, stale deferrals, reintroduced test carveouts, or missing policy inputs are non-success.
 
 ## Protected fields
 
-`clippy::disallowed_fields` is active at deny, while `clippy.toml` deliberately carries an empty `disallowed-fields` set. This proves the mechanism is live; it does not claim any parser, LSP, DAP, or workspace field is protected yet. [`CLIPPY_PROTECTED_FIELDS.md`](CLIPPY_PROTECTED_FIELDS.md) owns the reviewed field-selection programme.
+`clippy::disallowed_fields` is active at deny, while `clippy.toml` deliberately carries an empty `disallowed-fields` set. The active ledger row therefore carries `configuration_state = "empty-by-design"`; `check-lint-policy` rejects a missing hook, an unmarked empty set, a stale empty marker, and any populated production selector before the separately governed selector contract lands. This proves the mechanism is live with a configured selector denominator of zero and a protected-seam denominator of zero. It does not claim that any parser, LSP, DAP, or workspace field is protected. [`CLIPPY_PROTECTED_FIELDS.md`](CLIPPY_PROTECTED_FIELDS.md) owns the reviewed field-selection programme.
