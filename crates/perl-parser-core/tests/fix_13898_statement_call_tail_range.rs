@@ -13,6 +13,9 @@ fn expression_statement(ast: &Node) -> &Node {
     };
     match &statement.kind {
         NodeKind::ExpressionStatement { expression } => expression,
+        // `close FH || $b .. $c;` takes the indirect-call route, which returns the operator
+        // tail unwrapped, so the top-level node already IS the expression. `close FH;` alone
+        // yields `IndirectCall` and every other route here yields `ExpressionStatement`.
         NodeKind::Binary { .. } => statement,
         other => panic!("expected ExpressionStatement or Binary, got {:?}", other),
     }
