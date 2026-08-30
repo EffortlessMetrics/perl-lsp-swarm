@@ -15,6 +15,8 @@ mod edit_application;
 mod facade;
 #[path = "native/implementation.rs"]
 mod implementation;
+#[path = "native/line_ending.rs"]
+mod line_ending;
 #[path = "native/outcome.rs"]
 mod outcome;
 #[path = "native/terminal_sequence.rs"]
@@ -27,6 +29,7 @@ pub use implementation::{
     FormatDiagnosticSeverity, FormatDoc, FormatResult, FormatterMode, KeywordSpacing,
     PerlFormatter, TextEdit, TextPosition, TextRange, TrailingComma,
 };
+pub use line_ending::inferred_line_ending;
 pub use outcome::*;
 pub use terminal_sequence::{
     FinalNewlinePolicy, PolicyOutcome, TerminalChange, TerminalNewlineEvidence, TerminalRun,

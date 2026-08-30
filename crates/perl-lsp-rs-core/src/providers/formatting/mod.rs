@@ -7,7 +7,12 @@
 #[allow(clippy::module_inception)]
 mod formatting;
 
+pub mod range_admission;
+
 pub use formatting::{
     FormatPosition, FormatRange, FormatTextEdit, FormattedDocument, FormattingDecision,
     FormattingError, FormattingOptions, FormattingProvider, PerlTidyConfig,
+};
+pub use range_admission::{
+    AdmittedFormatRange, RangeAdmissionError, RangePositionError, SourceGeometry,
 };

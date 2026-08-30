@@ -5,6 +5,7 @@
 extern crate self as xtask;
 
 pub mod actual_host_receipt;
+pub mod branch_deletion_admission;
 pub mod ci_route_plan;
 pub mod client_compat_fixture;
 pub mod clippy_repair_corpus;
@@ -16,12 +17,15 @@ pub mod compiler_profile_observation;
 pub mod contributor_topology;
 pub mod editor_client_compat;
 pub mod editor_host;
+pub mod emacs_eglot_upstream_patch;
 pub mod emacs_host_run;
+pub mod emacs_stock_discovery;
 pub mod emacs_subject_fan_in;
 pub mod emacs_subject_manifest;
 pub mod file_identity;
 pub mod git_ancestry;
 pub mod import_cleanup_train_manifest;
+pub mod lsp_runtime_train_manifest;
 pub mod native_helix_actions;
 pub mod native_neovim_actions;
 pub mod publication_drift;
@@ -35,3 +39,4 @@ pub mod vim_lsp_cell_catalog;
 pub mod vim_lsp_specialized_driver;
 pub mod vim_lsp_subject_refresh;
 pub mod worktree_cleanup;
+pub mod worktree_forensic_recovery;

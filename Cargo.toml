@@ -348,6 +348,7 @@ tree-sitter = "0.26.9"
 ropey = "1.6.1"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
+sha1 = "0.11"
 sha2 = "0.11.0"
 strum = { version = "0.28", features = ["derive"] }
 regex = "1.12.2"
@@ -429,7 +430,9 @@ collapsible_match = "deny"
 decimal_bitwise_operands = "warn"
 duration_suboptimal_units = "warn"
 needless_type_cast = "warn"
-manual_ilog2 = "warn"
+# manual_ilog2: promoted to deny by #9896 after a zero-site confirmation on a
+# complete workspace --all-targets measurement (force-warn pierces allows).
+manual_ilog2 = "deny"
 manual_take = "deny"
 unnecessary_trailing_comma = "warn"
 # wildcard_imports: Phase 1 (warn) — measures violations before crate-by-crate fix (#2333).
