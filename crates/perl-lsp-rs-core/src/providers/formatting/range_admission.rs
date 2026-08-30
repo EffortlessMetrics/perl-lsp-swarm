@@ -306,9 +306,9 @@ pub fn admit_wire_endpoints(
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::expect_used)]
     use super::*;
     use crate::providers::formatting_types::FormatPosition;
+    use perl_test_must::{must_err_with, must_with};
 
     fn position(line: u32, character: u32) -> FormatPosition {
         FormatPosition::new(line, character)
@@ -320,13 +320,15 @@ mod tests {
 
     fn admitted(source: &str, requested: FormatRange) -> AdmittedFormatRange {
         let geometry = SourceGeometry::new(source);
-        admit_format_range(&geometry, source, &requested).expect("test range must admit")
+        must_with(admit_format_range(&geometry, source, &requested), "test range must admit")
     }
 
     fn rejection(source: &str, requested: FormatRange) -> RangeAdmissionError {
         let geometry = SourceGeometry::new(source);
-        admit_format_range(&geometry, source, &requested)
-            .expect_err("test range must refuse deterministically")
+        must_err_with(
+            admit_format_range(&geometry, source, &requested),
+            "test range must refuse deterministically",
+        )
     }
 
     #[test]
@@ -358,9 +360,10 @@ mod tests {
         ] {
             let eof = FormatRange::whole_document(source).end;
             let geometry = SourceGeometry::new(source);
-            let mapped = geometry
-                .byte_offset(source, eof.line, eof.character)
-                .expect("whole-document EOF must always map");
+            let mapped = must_with(
+                geometry.byte_offset(source, eof.line, eof.character),
+                "whole-document EOF must always map",
+            );
             assert_eq!(mapped, source.len(), "EOF of {source:?} must map to true EOF");
         }
     }
@@ -369,20 +372,20 @@ mod tests {
     fn crlf_bare_cr_and_astral_positions_map_exactly() {
         let source = "a🦀b\r\nnext\r\n";
         let geometry = SourceGeometry::new(source);
-        assert_eq!(geometry.byte_offset(source, 0, 1).expect("start of crab"), 1);
-        assert_eq!(geometry.byte_offset(source, 0, 3).expect("after crab"), 5);
-        assert_eq!(geometry.byte_offset(source, 0, 4).expect("one past line body"), 6);
-        assert_eq!(geometry.byte_offset(source, 1, 4).expect("next line body end"), 12);
+        assert_eq!(must_with(geometry.byte_offset(source, 0, 1), "start of crab"), 1);
+        assert_eq!(must_with(geometry.byte_offset(source, 0, 3), "after crab"), 5);
+        assert_eq!(must_with(geometry.byte_offset(source, 0, 4), "one past line body"), 6);
+        assert_eq!(must_with(geometry.byte_offset(source, 1, 4), "next line body end"), 12);
     }
 
     #[test]
     fn surrogate_splits_and_past_end_characters_refuse() {
         let source = "a🦀b\n";
         let geometry = SourceGeometry::new(source);
-        let split = geometry.byte_offset(source, 0, 2).expect_err("mid-surrogate must refuse");
+        let split = must_err_with(geometry.byte_offset(source, 0, 2), "mid-surrogate must refuse");
         assert_eq!(split, RangePositionError::SurrogateSplit { line: 0, character: 2 });
         assert!(split.message().contains("splits a surrogate pair"));
-        let past = geometry.byte_offset(source, 0, 99).expect_err("past end must refuse");
+        let past = must_err_with(geometry.byte_offset(source, 0, 99), "past end must refuse");
         assert_eq!(past, RangePositionError::PastLineEnd { line: 0, character: 99, length: 4 });
         assert!(past.message().contains("outside line 0"));
     }
@@ -430,22 +433,25 @@ mod tests {
         let geometry = SourceGeometry::new(source);
 
         let exact_point = admitted(source, range(0, 3, 0, 3));
-        assert_eq!(exact_point.allowed_edit_span(source, &geometry).expect("span"), (3, 3));
+        assert_eq!(must_with(exact_point.allowed_edit_span(source, &geometry), "span"), (3, 3));
 
         let same_line = admitted(source, range(0, 1, 0, 2));
-        assert_eq!(same_line.allowed_edit_span(source, &geometry).expect("span"), (1, 2));
+        assert_eq!(must_with(same_line.allowed_edit_span(source, &geometry), "span"), (1, 2));
 
         let end_at_next_line_zero = admitted(source, range(0, 1, 1, 0));
         assert_eq!(
-            end_at_next_line_zero.allowed_edit_span(source, &geometry).expect("span"),
+            must_with(end_at_next_line_zero.allowed_edit_span(source, &geometry), "span"),
             (1, 4),
             "end-at-next-line-character-zero keeps the requested start exact"
         );
 
         let multiline = admitted(source, range(0, 1, 2, 2));
-        assert_eq!(multiline.allowed_edit_span(source, &geometry).expect("span"), (1, 10));
+        assert_eq!(must_with(multiline.allowed_edit_span(source, &geometry), "span"), (1, 10));
 
         let unterminated_tail = admitted(source, range(1, 0, 2, 3));
-        assert_eq!(unterminated_tail.allowed_edit_span(source, &geometry).expect("span"), (4, 11));
+        assert_eq!(
+            must_with(unterminated_tail.allowed_edit_span(source, &geometry), "span"),
+            (4, 11)
+        );
     }
 }
