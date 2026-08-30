@@ -542,10 +542,8 @@ fn find_workspace_root_from(start: &Path) -> Result<PathBuf, CorpusRootError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::api::CWD_TEST_LOCK;
     use std::error::Error;
-    use std::sync::Mutex;
-
-    static CWD_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     struct CurrentDirGuard {
         original: PathBuf,

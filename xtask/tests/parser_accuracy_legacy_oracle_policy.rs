@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use serde::Deserialize;
 
 const MANIFEST_PATH: &str = "crates/perl-corpus/fixtures/parser_accuracy/manifest.json";
-const LEGACY_APPLIED_CASE_COUNT: usize = 46;
+const LEGACY_APPLIED_CASE_COUNT: usize = 47;
 
 type TestResult = Result<(), Box<dyn Error>>;
 

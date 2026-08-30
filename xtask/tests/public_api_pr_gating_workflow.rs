@@ -667,10 +667,22 @@ fn nightly_public_api_label_is_governed_and_provisioned() -> Result<(), Box<dyn 
         .ok_or_else(|| format!("{label} must have a canonical description"))?;
 
     let provisioning = read(&root, "scripts/gh/ensure-labels.sh")?;
-    let expected = format!("ensure_reconciled \"{label}\" \"{color}\" \"{description}\"");
     assert!(
-        provisioning.lines().any(|line| line.trim() == expected),
-        "the provisioning metadata must join the canonical ci-config value"
+        provisioning.contains("public_api_metadata()")
+            && provisioning.contains(
+                "CI_CONFIG_PATH=\"${CI_CONFIG_PATH:-${REPO_ROOT}/.github/ci-config.yml}\"",
+            ),
+        "provisioning must read the canonical ci-config metadata"
+    );
+    assert!(
+        provisioning
+            .lines()
+            .any(|line| line.trim() == format!("ensure_reconciled \"{label}\" \"${{PUBLIC_API_COLOR}}\" \"${{PUBLIC_API_DESCRIPTION}}\"")),
+        "provisioning must pass catalog-derived metadata to reconciliation"
+    );
+    assert!(
+        !provisioning.contains(&format!("\"{color}\" \"{description}\"")),
+        "provisioning must not duplicate the catalog metadata literals"
     );
     assert!(
         provisioning.contains("gh label edit \"$name\""),
