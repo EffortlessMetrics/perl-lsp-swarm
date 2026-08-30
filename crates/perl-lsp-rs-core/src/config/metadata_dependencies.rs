@@ -4,12 +4,13 @@
 //! executing Perl project files.
 
 use serde_json::Value;
+use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 
 /// A dependency declared by project metadata.
 #[non_exhaustive]
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct DeclaredDependency {
     /// Perl module name, for example `JSON::PP`.
     pub module: String,
@@ -117,7 +118,7 @@ pub fn detect_declared_dependencies(workspace_root: &Path) -> Vec<DeclaredDepend
         extract_meta_yml_requirements,
     );
 
-    dependencies
+    dedupe_dependencies(dependencies)
 }
 
 /// Extract literal dependencies from a `cpanfile`.
@@ -137,7 +138,7 @@ pub fn extract_cpanfile_requirements(source: &str) -> Vec<DeclaredDependency> {
                 continue;
             };
             let version = args.get(1).and_then(|value| normalize_version(value));
-            push_unique(
+            push_candidate(
                 &mut dependencies,
                 DeclaredDependency::new(
                     module,
@@ -149,7 +150,7 @@ pub fn extract_cpanfile_requirements(source: &str) -> Vec<DeclaredDependency> {
         }
     }
 
-    dependencies
+    dedupe_dependencies(dependencies)
 }
 
 /// Extract literal dependencies from `Makefile.PL`.
@@ -193,7 +194,7 @@ pub fn extract_dist_ini_requirements(source: &str) -> Vec<DeclaredDependency> {
         let Some(module) = normalize_module_name(module) else {
             continue;
         };
-        push_unique(
+        push_candidate(
             &mut dependencies,
             DeclaredDependency::new(
                 module,
@@ -204,7 +205,7 @@ pub fn extract_dist_ini_requirements(source: &str) -> Vec<DeclaredDependency> {
         );
     }
 
-    dependencies
+    dedupe_dependencies(dependencies)
 }
 
 /// Extract dependencies from CPAN `META.json` prerequisite maps.
@@ -216,7 +217,7 @@ pub fn extract_meta_json_requirements(source: &str) -> Vec<DeclaredDependency> {
 
     let mut dependencies = Vec::new();
     collect_meta_json_requirements(&value, &mut dependencies);
-    dependencies
+    dedupe_dependencies(dependencies)
 }
 
 /// Extract dependencies from simple CPAN `META.yml` prerequisite maps.
@@ -257,7 +258,7 @@ pub fn extract_meta_yml_requirements(source: &str) -> Vec<DeclaredDependency> {
         let Some(module) = normalize_module_name(module) else {
             continue;
         };
-        push_unique(
+        push_candidate(
             &mut dependencies,
             DeclaredDependency::new(
                 module,
@@ -268,7 +269,7 @@ pub fn extract_meta_yml_requirements(source: &str) -> Vec<DeclaredDependency> {
         );
     }
 
-    dependencies
+    dedupe_dependencies(dependencies)
 }
 
 fn collect_from_file(
@@ -280,15 +281,17 @@ fn collect_from_file(
         return;
     };
     for dependency in extractor(&source) {
-        push_unique(into, dependency);
+        push_candidate(into, dependency);
     }
 }
 
-fn push_unique(into: &mut Vec<DeclaredDependency>, dependency: DeclaredDependency) {
-    if into.iter().any(|existing| existing.module == dependency.module) {
-        return;
-    }
+fn push_candidate(into: &mut Vec<DeclaredDependency>, dependency: DeclaredDependency) {
     into.push(dependency);
+}
+
+fn dedupe_dependencies(dependencies: Vec<DeclaredDependency>) -> Vec<DeclaredDependency> {
+    let mut seen = HashSet::with_capacity(dependencies.len());
+    dependencies.into_iter().filter(|dependency| seen.insert(dependency.clone())).collect()
 }
 
 fn extract_hash_requirements(
@@ -323,7 +326,7 @@ fn extract_hash_requirements(
         }
     }
 
-    dependencies
+    dedupe_dependencies(dependencies)
 }
 
 fn parse_hash_dependency_pairs(
@@ -356,7 +359,7 @@ fn parse_hash_dependency_pairs(
             None
         };
 
-        push_unique(
+        push_candidate(
             dependencies,
             DeclaredDependency::new(module, version.as_deref(), kind, dependency_source),
         );
@@ -377,7 +380,7 @@ fn collect_meta_json_requirements(value: &Value, dependencies: &mut Vec<Declared
                     let Some(module) = normalize_module_name(module) else {
                         continue;
                     };
-                    push_unique(
+                    push_candidate(
                         dependencies,
                         DeclaredDependency::new(
                             module,
@@ -400,7 +403,7 @@ fn collect_meta_json_requirements(value: &Value, dependencies: &mut Vec<Declared
             let Some(module) = normalize_module_name(module) else {
                 continue;
             };
-            push_unique(
+            push_candidate(
                 dependencies,
                 DeclaredDependency::new(
                     module,
@@ -732,6 +735,43 @@ mod tests {
 
     fn missing(message: &'static str) -> std::io::Error {
         std::io::Error::other(message)
+    }
+
+    #[test]
+    fn dedupe_dependencies_uses_complete_fact_identity() {
+        let runtime = DeclaredDependency::new(
+            "Shared::Module",
+            Some("1.0"),
+            "runtime.requires",
+            DeclaredDependencySource::MetaJson,
+        );
+        let test = DeclaredDependency::new(
+            "Shared::Module",
+            Some("1.0"),
+            "test.requires",
+            DeclaredDependencySource::MetaJson,
+        );
+        let newer = DeclaredDependency::new(
+            "Shared::Module",
+            Some("2.0"),
+            "runtime.requires",
+            DeclaredDependencySource::MetaJson,
+        );
+        let cpanfile = DeclaredDependency::new(
+            "Shared::Module",
+            Some("1.0"),
+            "requires",
+            DeclaredDependencySource::Cpanfile,
+        );
+
+        let mut dependencies = Vec::new();
+        push_candidate(&mut dependencies, runtime.clone());
+        push_candidate(&mut dependencies, runtime.clone());
+        push_candidate(&mut dependencies, test.clone());
+        push_candidate(&mut dependencies, newer.clone());
+        push_candidate(&mut dependencies, cpanfile.clone());
+
+        assert_eq!(dedupe_dependencies(dependencies), vec![runtime, test, newer, cpanfile]);
     }
 
     #[test]
