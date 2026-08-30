@@ -334,33 +334,20 @@ fn test_initialize_contract_3_17() -> TestResult {
 }
 
 #[test]
-fn test_position_encoding_advertised_is_clamped_to_utf16_pending_phase_2() -> TestResult {
-    // Phase 1 parses and stores the client's `general.positionEncodings`
-    // preference (see the `initialize_prefers_first_supported_position_encoding`
-    // family of unit tests in `runtime/lifecycle/capabilities.rs` for coverage
-    // of that internal negotiation). But `text_sync` and every feature
-    // provider (hover, definition, diagnostics, ...) still compute positions
-    // in UTF-16 code units — threading the negotiated encoding through those
-    // call sites is deferred to phase 2.
-    //
-    // Per the LSP 3.17 spec, client and server MUST agree on one encoding or
-    // offsets are misinterpreted. So regardless of what the client prefers,
-    // the *advertised* `capabilities.positionEncoding` MUST stay pinned to
-    // "utf-16" (the spec's mandatory default) until phase 2 lands — anything
-    // else would silently corrupt document sync and every position-bearing
-    // response for non-ASCII content on a client that prefers a different
-    // encoding.
+fn test_position_encoding_session_contract_advertises_utf16() -> TestResult {
+    // The accepted initialize session carries one immutable text-sync
+    // contract: FULL sync + UTF-16 wire encoding (#9378, #8129 branch
+    // `full_document_utf16`). The advertised `capabilities.positionEncoding`
+    // and `capabilities.textDocumentSync.change` are derived from that
+    // accepted value, and a client whose `general.positionEncodings` offer
+    // excludes UTF-16 fails initialize with a typed error before any state
+    // is published.
 
     // Scenario 1: client prefers UTF-8 first, then UTF-16 -- must still get utf-16.
     let mut harness = LspHarness::new();
     let result = harness.initialize(Some(json!({
-        "processId": 1234,
-        "clientInfo": { "name": "test-client" },
-        "rootUri": "file:///workspace",
-        "capabilities": {
-            "general": {
-                "positionEncodings": ["utf-8", "utf-16"]
-            }
+        "general": {
+            "positionEncodings": ["utf-8", "utf-16"]
         }
     })))?;
 
@@ -379,13 +366,8 @@ fn test_position_encoding_advertised_is_clamped_to_utf16_pending_phase_2() -> Te
     // Scenario 2: client prefers UTF-16 first, then UTF-8 -- utf-16 either way.
     let mut harness = LspHarness::new();
     let result = harness.initialize(Some(json!({
-        "processId": 1234,
-        "clientInfo": { "name": "test-client" },
-        "rootUri": "file:///workspace",
-        "capabilities": {
-            "general": {
-                "positionEncodings": ["utf-16", "utf-8"]
-            }
+        "general": {
+            "positionEncodings": ["utf-16", "utf-8"]
         }
     })))?;
 
@@ -399,12 +381,7 @@ fn test_position_encoding_advertised_is_clamped_to_utf16_pending_phase_2() -> Te
 
     // Scenario 3: client doesn't specify positionEncodings - default to utf-16.
     let mut harness = LspHarness::new();
-    let result = harness.initialize(Some(json!({
-        "processId": 1234,
-        "clientInfo": { "name": "test-client" },
-        "rootUri": "file:///workspace",
-        "capabilities": {}
-    })))?;
+    let result = harness.initialize(Some(json!({})))?;
 
     let capabilities = &result["capabilities"];
     let encoding = capabilities
@@ -415,6 +392,35 @@ fn test_position_encoding_advertised_is_clamped_to_utf16_pending_phase_2() -> Te
     assert_eq!(
         encoding, "utf-16",
         "server should default to utf-16 when client doesn't specify positionEncodings"
+    );
+
+    // The advertised sync kind is FULL (1) — derived from the same accepted
+    // session contract as the encoding.
+    let change = capabilities
+        .pointer("/textDocumentSync/change")
+        .and_then(|v| v.as_i64())
+        .ok_or("textDocumentSync.change not found or not numeric")?;
+    assert_eq!(change, 1, "textDocumentSync.change must advertise FULL sync");
+
+    // Scenario 4: a present nonempty offer without utf-16 fails typed
+    // (-32602 InvalidParams) before initialization completes. The harness
+    // surfaces the JSON-RPC error envelope as its Err payload.
+    let mut harness = LspHarness::new();
+    let failure = harness
+        .initialize(Some(json!({
+            "general": {
+                "positionEncodings": ["utf-32", "utf-7"]
+            }
+        })))
+        .err()
+        .ok_or("no-common offer must fail initialize over the wire")?;
+    assert!(
+        failure.contains("-32602"),
+        "no-common offer must fail with typed InvalidParams: {failure}"
+    );
+    assert!(
+        failure.contains("no-common-encoding"),
+        "error payload must carry the typed rejection reason: {failure}"
     );
 
     Ok(())

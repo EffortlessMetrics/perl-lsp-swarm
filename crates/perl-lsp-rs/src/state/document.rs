@@ -1560,12 +1560,6 @@ pub struct ClientCapabilities {
     /// When true, completion responses may describe how supported item defaults
     /// combine with per-item fields.
     pub completion_list_apply_kind_support: bool,
-    /// Negotiated position encoding per LSP 3.17 spec.
-    ///
-    /// Parsed from `capabilities.general.positionEncodings` - the server picks
-    /// the first encoding from the client's list that it supports, or defaults
-    /// to UTF-16 if the list is empty or missing.
-    pub position_encoding: crate::textdoc::PosEnc,
     /// Preferred default behavior for PrepareRename responses (LSP 3.16+).
     ///
     /// Parsed from `capabilities.textDocument.rename.prepareSupportDefaultBehavior`.
@@ -1617,7 +1611,6 @@ impl Default for ClientCapabilities {
             label_details_support: false,
             completion_list_item_defaults_data_support: false,
             completion_list_apply_kind_support: false,
-            position_encoding: crate::textdoc::PosEnc::default(),
             prepare_support_default_behavior: 0,
             // Markdown support defaults to true: most LSP clients support
             // markdown, and the LSP spec treats it as the default (#1724).
