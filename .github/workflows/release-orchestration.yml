@@ -214,80 +214,16 @@ jobs:
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "All checks passed! Proceeding with release." >> "$GITHUB_STEP_SUMMARY"
 
-  create-tag:
-    name: Create Release Tag
-    needs: validate
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    permissions:
-      contents: write
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-
-      - name: Create and push tag
-        env:
-          GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ needs.validate.outputs.version }}
-          TAG: ${{ needs.validate.outputs.tag }}
-        run: |
-          # Git authentication is introduced here, in the only step that writes
-          # repository contents — not persisted by checkout for the whole job.
-          gh auth setup-git
-
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-          # Extract changelog section for this version
-          CHANGELOG_SECTION="$(mktemp)"
-          awk -v ver="$VERSION" '
-            $0 ~ "^## \\[" ver "\\]" { in_section=1; next }
-            in_section && /^## \[/ { exit }
-            in_section { print }
-          ' CHANGELOG.md > "$CHANGELOG_SECTION"
-
-          TAG_MESSAGE="$(mktemp)"
-          {
-            echo "Release ${TAG}"
-            echo
-            if [ -s "$CHANGELOG_SECTION" ]; then
-              cat "$CHANGELOG_SECTION"
-            else
-              echo "Automated release from workspace changelog."
-            fi
-          } > "$TAG_MESSAGE"
-
-          # Create annotated tag with changelog
-          git tag -a "$TAG" -F "$TAG_MESSAGE"
-          rm -f "$CHANGELOG_SECTION" "$TAG_MESSAGE"
-
-          git push origin "$TAG"
-
-          echo "Created tag: $TAG"
-
-      - name: Summary
-        env:
-          TAG: ${{ needs.validate.outputs.tag }}
-        run: |
-          echo "## Tag Created :bookmark:" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Tag**: $TAG" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Pushed**: Yes" >> "$GITHUB_STEP_SUMMARY"
-
   trigger-release:
-    name: Trigger Release Workflows
-    needs: [create-tag, validate]
+    name: Trigger Fail-Closed Release Transaction
+    needs: validate
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       actions: write
 
     steps:
-      - name: Dispatch release workflows
+      - name: Dispatch release transaction
         env:
           GH_TOKEN: ${{ github.token }}
           INPUT_PRERELEASE: ${{ github.event.inputs.prerelease }}
@@ -296,8 +232,7 @@ jobs:
           INPUT_SKIP_DOCKER: ${{ github.event.inputs.skip_docker }}
         run: |
           TAG="${{ needs.validate.outputs.tag }}"
-          VERSION="${{ needs.validate.outputs.version }}"
-          REF="${TAG}"
+          REF="${{ github.event.repository.default_branch }}"
           PRERELEASE="$INPUT_PRERELEASE"
 
           echo "Dispatching release workflow for ${TAG}"
@@ -306,42 +241,12 @@ jobs:
             /repos/${{ github.repository }}/actions/workflows/release.yml/dispatches \
             -f ref="${REF}" \
             -F inputs[tag]="${TAG}" \
-            -F inputs[prerelease]="${PRERELEASE}"
+            -F inputs[prerelease]="${PRERELEASE}" \
+            -F inputs[skip_crates]="$INPUT_SKIP_CRATES" \
+            -F inputs[skip_extension]="$INPUT_SKIP_EXTENSION" \
+            -F inputs[skip_docker]="$INPUT_SKIP_DOCKER"
 
-          if [ "$INPUT_SKIP_CRATES" != "true" ]; then
-            echo "Dispatching crates publish workflow for ${VERSION}"
-            gh api \
-              -X POST \
-              /repos/${{ github.repository }}/actions/workflows/publish-crates.yml/dispatches \
-              -f ref="${REF}" \
-              -F inputs[version]="${VERSION}" \
-              -F inputs[dry_run]="false"
-          else
-            echo "Skipping crates publish workflow due to skip_crates=true"
-          fi
-
-          if [ "$INPUT_SKIP_EXTENSION" != "true" ]; then
-            echo "Dispatching VSCode extension publish workflow for ${VERSION}"
-            gh api \
-              -X POST \
-              /repos/${{ github.repository }}/actions/workflows/publish-extension.yml/dispatches \
-              -f ref="${REF}" \
-              -F inputs[version]="${VERSION}"
-          else
-            echo "Skipping VSCode publish via orchestration due to skip_extension=true"
-          fi
-
-          if [ "$INPUT_SKIP_DOCKER" != "true" ]; then
-            echo "Dispatching Docker publish workflow for ${VERSION}"
-            gh api \
-              -X POST \
-              /repos/${{ github.repository }}/actions/workflows/docker-publish.yml/dispatches \
-              -f ref="${REF}" \
-              -F inputs[version]="${VERSION}" \
-              -F inputs[push]="true"
-          else
-            echo "Skipping Docker publish via orchestration due to skip_docker=true"
-          fi
+          echo "Candidate construction now precedes every tag and publisher mutation."
 
       - name: Summary
         env:
@@ -352,12 +257,12 @@ jobs:
         run: |
           echo "## Release Triggered :rocket:" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "The following workflows have been triggered:" >> "$GITHUB_STEP_SUMMARY"
+          echo "Only the release transaction has been dispatched." >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "### Build & Release" >> "$GITHUB_STEP_SUMMARY"
-          echo "- [Release](https://github.com/$REPOSITORY/actions/workflows/release.yml) - Build binaries and create GitHub release" >> "$GITHUB_STEP_SUMMARY"
+          echo "- [Release](https://github.com/$REPOSITORY/actions/workflows/release.yml) - build, validate, attest, then publish" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "### Publishing" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Downstream eligibility after candidate success" >> "$GITHUB_STEP_SUMMARY"
           if [ "$SKIP_CRATES" != "true" ]; then
             echo "- [Publish to crates.io](https://github.com/$REPOSITORY/actions/workflows/publish-crates.yml)" >> "$GITHUB_STEP_SUMMARY"
           else
@@ -374,8 +279,4 @@ jobs:
             echo "- ~~Publish Docker Images~~ (skipped)" >> "$GITHUB_STEP_SUMMARY"
           fi
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "### Package Manager Updates" >> "$GITHUB_STEP_SUMMARY"
-          echo "- [Homebrew Bump](https://github.com/$REPOSITORY/actions/workflows/brew-bump.yml)" >> "$GITHUB_STEP_SUMMARY"
-          echo "- [Scoop Bump](https://github.com/$REPOSITORY/actions/workflows/scoop-bump.yml)" >> "$GITHUB_STEP_SUMMARY"
-          echo "- [Chocolatey Bump](https://github.com/$REPOSITORY/actions/workflows/chocolatey-bump.yml)" >> "$GITHUB_STEP_SUMMARY"
-          echo "- [Winget Manifest Refresh](https://github.com/$REPOSITORY/actions/workflows/winget-bump.yml)" >> "$GITHUB_STEP_SUMMARY"
+          echo "No downstream publisher is dispatched until release.yml's terminal candidate succeeds." >> "$GITHUB_STEP_SUMMARY"

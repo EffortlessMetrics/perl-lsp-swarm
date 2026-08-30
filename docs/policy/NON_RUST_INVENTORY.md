@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12493 |
-| Rust-family files | 3862 |
-| Non-Rust files | 8631 |
-| Allowlisted | 6394 |
+| Total tracked files | 12496 |
+| Rust-family files | 3863 |
+| Non-Rust files | 8633 |
+| Allowlisted | 6396 |
 | Unclassified | 2237 |
 
 ## Non-Rust files by category
@@ -21,7 +21,7 @@
 | generated | 2 |
 | production | 348 |
 | test | 2067 |
-| tooling | 667 |
+| tooling | 669 |
 | unclassified | 2237 |
 
 ## Unclassified files
@@ -6757,6 +6757,7 @@
 | `scripts/release/publication_runtime_identity.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/release/test_publication_runtime_identity.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/release_build_identity.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/release_terminal_manifest.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/render-docs.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/render-linux-packages.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/repro_lsp_storm.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -6800,6 +6801,7 @@
 | `scripts/test_generate_release_topology.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test_iterative_parser.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test_release_build_identity.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/test_release_terminal_manifest.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test_verify_binary_identity.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test_verify_staged_binaries.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/fixtures/pr_overlap/complementary.json` | tooling | `non-rust-ci-scripts-tree` | release/ci |
