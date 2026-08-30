@@ -38,3 +38,4 @@ pub mod vim_lsp_specialized_driver;
 pub mod vim_lsp_subject_refresh;
 pub mod worktree_cleanup;
 pub mod worktree_forensic_recovery;
+pub mod writer_preflight;
