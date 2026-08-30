@@ -562,6 +562,129 @@ mod compiler_operating_profile_oracle_adapter {
         Ok(())
     }
 
+    #[test]
+    fn falsifier_09c_agreement_over_disagreeing_facts_is_not_agreement() -> Result<()> {
+        // Both sides name `fact-isa-1`, so the row is two-sided — but the two
+        // observations differ in a field that has its own mismatch class, so
+        // `oracle_agrees` is mislabelled rather than agreed.
+        let cases: [(&str, fn(&mut Value)); 5] = [
+            ("name", |r| r["normalized_facts"]["oracle"][0]["name"] = json!("Child::OTHER")),
+            ("source range", |r| {
+                r["normalized_facts"]["oracle"][0]["source_range"]["start_line"] = json!(99)
+            }),
+            ("provenance", |r| {
+                r["normalized_facts"]["oracle"][0]["provenance"] = json!("SourceBackedGenerated")
+            }),
+            ("confidence", |r| r["normalized_facts"]["oracle"][0]["confidence"] = json!("medium")),
+            ("freshness", |r| {
+                r["normalized_facts"]["oracle"][0]["freshness"] = json!("not_applicable")
+            }),
+        ];
+
+        for (field, mutate) in cases {
+            let observation = adapt(&agreeing_with(mutate))?;
+            assert_eq!(
+                observation.disposition,
+                ObservationDisposition::NotProven,
+                "differing {field} under one identity is not agreement"
+            );
+            assert_eq!(observation.ceiling.claim_ceiling(), ClaimCeiling::ObservedEvidence);
+        }
+
+        // `fallback` is deliberately not part of agreement — it records what a
+        // side fell back to while observing, not what it observed — so it stays
+        // a limitation rather than an incoherence.
+        let fallback = adapt(&agreeing_with(|r| {
+            r["normalized_facts"]["oracle"][0]["fallback"] = json!("legacy_provider")
+        }))?;
+        assert_eq!(fallback.disposition, ObservationDisposition::Pass);
+        assert!(matches!(fallback.limitation, LimitationDisposition::AcceptedDebt { .. }));
+        Ok(())
+    }
+
+    #[test]
+    fn an_identifier_the_envelope_cannot_carry_fails_closed_by_name() -> Result<()> {
+        // The schema accepts any non-empty identifier, but #12188's
+        // private-safety contract governs the envelope text these reach and
+        // cannot be weakened. The refusal must name the offending source field
+        // rather than surfacing from inside a subject dimension.
+        assert_rejected(
+            &agreeing_with(|r| r["normalized_facts"]["rust"][0]["fact_id"] = json!("workflow-1")),
+            "normalized fact id",
+        )?;
+        assert_rejected(
+            &agreeing_with(|r| r["comparisons"][0]["fact_id"] = json!("run.log")),
+            "comparison fact id",
+        )?;
+        assert_rejected(
+            &agreeing_with(|r| r["fixture_id"] = json!("github-fixture")),
+            "fixture_id",
+        )?;
+
+        // A redacted private fixture never has its source named, so an
+        // unrepresentable one there is not a refusal.
+        adapt(&agreeing_with(|r| {
+            r["source_snapshot"]["path_class"] = json!("redacted_private_fixture");
+            r["source_snapshot"]["fixture_source"] = json!("/home/runner/private.pl");
+        }))?;
+        Ok(())
+    }
+
+    #[test]
+    fn falsifier_07_a_source_claim_without_a_source_range_is_not_source_backed() -> Result<()> {
+        // `ExplicitSource` / `SourceBackedGenerated` assert a source anchor. A
+        // null range carries none, so the claim stays in the denominator.
+        let generated = adapt(&agreeing_with(|receipt| {
+            receipt["generated_inputs"] = json!([{
+                "framework": "Moo",
+                "provenance": "SourceBackedGenerated",
+                "source_range": null
+            }]);
+        }))?;
+        let fact_without_range = adapt(&agreeing_with(|receipt| {
+            receipt["normalized_facts"]["rust"][0]["source_range"] = json!(null);
+            receipt["normalized_facts"]["oracle"][0]["source_range"] = json!(null);
+        }))?;
+
+        for observation in [&generated, &fact_without_range] {
+            assert!(
+                matches!(observation.completeness, CompletenessDisposition::Partial { .. }),
+                "an unanchored source claim is not complete evidence: {:?}",
+                observation.completeness
+            );
+            assert_eq!(observation.ceiling.claim_ceiling(), ClaimCeiling::ObservedEvidence);
+        }
+
+        // A generated input that does anchor its source stays eligible.
+        let anchored = adapt(&agreeing_with(|receipt| {
+            receipt["generated_inputs"] = json!([{
+                "framework": "Moo",
+                "provenance": "SourceBackedGenerated",
+                "source_range": {
+                    "path_class": "public_test_fixture",
+                    "start_line": 1, "start_character": 0,
+                    "end_line": 1, "end_character": 8
+                }
+            }]);
+        }))?;
+        assert_eq!(anchored.completeness, CompletenessDisposition::Complete);
+        Ok(())
+    }
+
+    #[test]
+    fn a_stale_declaration_over_an_unobserved_fact_does_not_close() -> Result<()> {
+        let observation = adapt(&agreeing_with(|receipt| {
+            receipt["stale_facts"] = json!([{ "fact_id": "fact-absent", "freshness": "stale" }]);
+        }))?;
+
+        assert!(
+            matches!(observation.completeness, CompletenessDisposition::Partial { .. }),
+            "a staleness claim over a fact no side names cannot be checked: {:?}",
+            observation.completeness
+        );
+        Ok(())
+    }
+
     // ---------------------------------------------------------------------------
     // Falsifier 06b — silence about a closed startup input reads as hermetic
     //
@@ -947,7 +1070,11 @@ mod compiler_operating_profile_oracle_adapter {
             receipt["source_snapshot"]["fixture_source"] = json!("/home/runner/fixtures/isa.pl");
         });
 
-        assert_rejected(&receipt, "private")
+        // The refusal names the source field and the actual problem, rather
+        // than surfacing from inside the subject dimension it would have been
+        // formatted into.
+        assert_rejected(&receipt, "source_snapshot.fixture_source")?;
+        assert_rejected(&receipt, "host-specific absolute path")
     }
 
     // ---------------------------------------------------------------------------
@@ -965,7 +1092,6 @@ mod compiler_operating_profile_oracle_adapter {
                 { "framework": "Moo", "provenance": "SourceBackedGenerated", "source_range": null },
                 { "framework": "Moose", "provenance": "SourceBackedGenerated", "source_range": null }
             ]);
-            receipt["module_path_authority"]["declared_roots"] = json!(["a/lib", "b/lib"]);
             receipt["environment"]["declared"] = json!(["PATH", "TMPDIR"]);
             receipt["environment"]["denied"] = json!(["PERL5LIB", "PERL5OPT", "local::lib"]);
         });
@@ -978,7 +1104,6 @@ mod compiler_operating_profile_oracle_adapter {
                 { "framework": "Moose", "provenance": "SourceBackedGenerated", "source_range": null },
                 { "framework": "Moo", "provenance": "SourceBackedGenerated", "source_range": null }
             ]);
-            receipt["module_path_authority"]["declared_roots"] = json!(["b/lib", "a/lib"]);
             receipt["environment"]["declared"] = json!(["TMPDIR", "PATH"]);
             receipt["environment"]["denied"] = json!(["local::lib", "PERL5OPT", "PERL5LIB"]);
             receipt["normalized_facts"]["rust"] =
@@ -992,6 +1117,35 @@ mod compiler_operating_profile_oracle_adapter {
         assert_ne!(ordered, shuffled, "the two documents really do differ byte for byte");
         assert_eq!(digest(&ordered)?, digest(&shuffled)?);
         assert_eq!(identity(&ordered)?, identity(&shuffled)?);
+        Ok(())
+    }
+
+    #[test]
+    fn falsifier_18_module_root_precedence_is_semantic_and_must_not_be_sorted() -> Result<()> {
+        // Declared module roots are the one ordered collection in the receipt:
+        // Perl resolves an include path by first match, so the same roots in
+        // another precedence are another execution and must not collapse into
+        // one subject. The schema agrees — it marks `environment.denied` and
+        // `environment.declared` `uniqueItems` and deliberately does not mark
+        // these. An earlier revision sorted them, and this suite asserted the
+        // collapse.
+        let first = agreeing_with(|receipt| {
+            receipt["module_path_authority"]["declared_roots"] = json!(["a/lib", "b/lib"]);
+        });
+        let reversed = agreeing_with(|receipt| {
+            receipt["module_path_authority"]["declared_roots"] = json!(["b/lib", "a/lib"]);
+        });
+
+        assert_ne!(
+            digest(&first)?,
+            digest(&reversed)?,
+            "reordering include-path precedence is a different execution"
+        );
+        assert_ne!(identity(&first)?, identity(&reversed)?);
+        assert_ne!(
+            dimension(&adapt(&first)?, SubjectDimensionKind::CompilerPolicy),
+            dimension(&adapt(&reversed)?, SubjectDimensionKind::CompilerPolicy)
+        );
         Ok(())
     }
 

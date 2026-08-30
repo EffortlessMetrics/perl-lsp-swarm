@@ -62,7 +62,7 @@ use crate::compiler_profile_observation::{
     LimitationDisposition, ObservationAdapterDescriptor, ObservationAdapterRegistry,
     ObservationClass, ObservationDigest, ObservationDisposition, ObservedClaimCeiling,
     ProducerAndSchemaIdentity, ReceiptFamily, ReceiptId, SchemaVersion, SubjectDimension,
-    SubjectDimensionKind, TerminalState, WorkDisposition,
+    SubjectDimensionKind, TerminalState, WorkDisposition, ensure_private_safe_text,
 };
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
@@ -779,6 +779,28 @@ pub fn ensure_adapter_invariants(receipt: &OracleReceiptV1) -> Result<()> {
     // identity would silently collapse two distinct observations into one.
     ensure_unique_fact_ids("rust", &receipt.normalized_facts.rust)?;
     ensure_unique_fact_ids("oracle", &receipt.normalized_facts.oracle)?;
+
+    // Identifiers reach envelope free text — subject dimensions and
+    // disposition reasons — where #12188's private-safety contract applies and
+    // cannot be weakened. The schema accepts any non-empty string, so a
+    // receipt can name a fact in a way the envelope is unable to carry. That
+    // is a real boundary, and it belongs here with the offending field named,
+    // rather than surfacing later as an opaque failure from inside a subject
+    // dimension.
+    ensure_private_safe_text("receipt_id", &receipt.receipt_id)?;
+    ensure_private_safe_text("fixture_id", &receipt.fixture_id)?;
+    if receipt.source_snapshot.path_class == PathClass::PublicTestFixture {
+        ensure_private_safe_text(
+            "source_snapshot.fixture_source",
+            &receipt.source_snapshot.fixture_source,
+        )?;
+    }
+    for fact in receipt.normalized_facts.rust.iter().chain(&receipt.normalized_facts.oracle) {
+        ensure_private_safe_text("normalized fact id", &fact.fact_id)?;
+    }
+    for comparison in &receipt.comparisons {
+        ensure_private_safe_text("comparison fact id", &comparison.fact_id)?;
+    }
     Ok(())
 }
 
@@ -884,8 +906,12 @@ pub fn canonical_receipt_text(receipt: &OracleReceiptV1) -> String {
         receipt.perl_oracle.version,
         receipt.perl_oracle.invocation_mode.tag()
     );
-    let mut roots = receipt.module_path_authority.declared_roots.clone();
-    roots.sort();
+    // Declared module roots are ordered, not a set: Perl resolves an include
+    // path by first match, so the same roots in another precedence are another
+    // execution. The schema agrees — it marks `environment.denied` and
+    // `environment.declared` `uniqueItems`, and deliberately does not mark
+    // these. Sorting them here would collapse two different subjects.
+    let roots = &receipt.module_path_authority.declared_roots;
     let _ = writeln!(
         out,
         "module_path_authority authority={} ambient_roots_reported={} roots={roots:?}",
@@ -1087,8 +1113,43 @@ fn count_by<T, F: Fn(&T) -> bool>(items: &[T], predicate: F) -> usize {
 
 /// The distinct fact identities one side observed.  Identity uniqueness inside
 /// a side is an adapter invariant, so this set is never lossy.
-fn side_fact_ids(facts: &[NormalizedFact]) -> BTreeSet<&str> {
-    facts.iter().map(|fact| fact.fact_id.as_str()).collect()
+fn side_fact_ids(facts: &[NormalizedFact]) -> BTreeMap<&str, &NormalizedFact> {
+    facts.iter().map(|fact| (fact.fact_id.as_str(), fact)).collect()
+}
+
+/// Whether two facts the receipt calls agreed actually agree.
+///
+/// Every field named here has its own mismatch class in the source
+/// vocabulary — `range_mismatch`, `provenance_mismatch`,
+/// `confidence_or_freshness_mismatch` — so a receipt reporting `oracle_agrees`
+/// over two facts that differ in one of them contradicts its own vocabulary.
+/// `name` is included because two observations filed under one identity but
+/// under different names are not one agreed fact.
+///
+/// `fallback` is deliberately excluded: it records what each side fell back to
+/// while producing its observation, not what either side observed, so the two
+/// sides may legitimately differ. It is already surfaced on the limitation
+/// axis whenever any fact carries one.
+fn agreed_fact_disagreement(
+    rust: &NormalizedFact,
+    oracle: &NormalizedFact,
+) -> Option<&'static str> {
+    if rust.name != oracle.name {
+        return Some("names two differently named facts under one identity");
+    }
+    if rust.source_range != oracle.source_range {
+        return Some("agrees over two facts with different source ranges");
+    }
+    if rust.provenance != oracle.provenance {
+        return Some("agrees over two facts with different provenance");
+    }
+    if rust.confidence != oracle.confidence {
+        return Some("agrees over two facts with different confidence");
+    }
+    if rust.freshness != oracle.freshness {
+        return Some("agrees over two facts with different freshness");
+    }
+    None
 }
 
 /// Which side each result class needs evidence from, and why a receipt that
@@ -1101,12 +1162,22 @@ fn side_fact_ids(facts: &[NormalizedFact]) -> BTreeSet<&str> {
 /// the three mismatch classes compare two observations that must both exist.
 fn evidence_incoherence(
     result_class: ResultClass,
-    in_rust: bool,
-    in_oracle: bool,
+    rust: Option<&NormalizedFact>,
+    oracle: Option<&NormalizedFact>,
 ) -> Option<&'static str> {
+    let (in_rust, in_oracle) = (rust.is_some(), oracle.is_some());
     match result_class {
-        ResultClass::OracleAgrees
-        | ResultClass::RangeMismatch
+        ResultClass::OracleAgrees => match (rust, oracle) {
+            // Agreement is the one class whose content the receipt's own
+            // vocabulary lets us check: every field compared here has a
+            // dedicated mismatch class, so a disagreement means the row is
+            // mislabelled rather than agreed.
+            (Some(rust), Some(oracle)) => agreed_fact_disagreement(rust, oracle),
+            (None, Some(_)) => Some("names no Rust fact to compare"),
+            (Some(_), None) => Some("names no oracle fact to compare"),
+            (None, None) => Some("names neither a Rust nor an oracle fact"),
+        },
+        ResultClass::RangeMismatch
         | ResultClass::ProvenanceMismatch
         | ResultClass::ConfidenceOrFreshnessMismatch => match (in_rust, in_oracle) {
             (true, true) => None,
@@ -1131,6 +1202,18 @@ fn evidence_incoherence(
         | ResultClass::StaleOrPartial
         | ResultClass::Unknown => None,
     }
+}
+
+/// A provenance that claims a source anchor is only source-backed if it names
+/// one. `ExplicitSource` or `SourceBackedGenerated` with a null range asserts
+/// backing it does not carry, so it stays in the denominator like any other
+/// unanchored fact.
+fn unanchored_source_claim(provenance: FactProvenance, range: Option<&SourceRange>) -> bool {
+    range.is_none()
+        && matches!(
+            provenance,
+            FactProvenance::ExplicitSource | FactProvenance::SourceBackedGenerated
+        )
 }
 
 fn boundary_provenance(provenance: FactProvenance) -> bool {
@@ -1161,19 +1244,6 @@ fn collect_findings(receipt: &OracleReceiptV1) -> Findings {
         findings.instrument.push("the environment declaration is not value-redacted".to_owned());
     }
     let denied: BTreeSet<&str> = receipt.environment.denied.iter().map(|key| key.tag()).collect();
-    let leaked: Vec<&str> = receipt
-        .environment
-        .declared
-        .iter()
-        .map(String::as_str)
-        .filter(|key| denied.contains(key))
-        .collect();
-    if !leaked.is_empty() {
-        findings
-            .instrument
-            .push(format!("{} denied environment key(s) are declared present", leaked.len()));
-    }
-
     // Each closed startup input must be positively accounted for. Silence is
     // not hermeticity: a receipt that neither denies nor declares `PERL5LIB`
     // has said nothing about it, and an absent entry can never read as
@@ -1219,8 +1289,8 @@ fn collect_findings(receipt: &OracleReceiptV1) -> Findings {
     for comparison in &receipt.comparisons {
         if let Some(incoherence) = evidence_incoherence(
             comparison.result_class,
-            rust_ids.contains(comparison.fact_id.as_str()),
-            oracle_ids.contains(comparison.fact_id.as_str()),
+            rust_ids.get(comparison.fact_id.as_str()).copied(),
+            oracle_ids.get(comparison.fact_id.as_str()).copied(),
         ) {
             let detail = format!("a {} comparison {incoherence}", comparison.result_class.tag());
             // Both axes, deliberately. On the product axis an incoherent row
@@ -1356,7 +1426,7 @@ fn collect_findings(receipt: &OracleReceiptV1) -> Findings {
         findings.incomplete.push(unsupported.clone());
         findings.limitations.push(unsupported);
     }
-    let named: BTreeSet<&str> = rust_ids.union(&oracle_ids).copied().collect();
+    let named: BTreeSet<&str> = rust_ids.keys().chain(oracle_ids.keys()).copied().collect();
     let compared: BTreeSet<&str> =
         receipt.comparisons.iter().map(|comparison| comparison.fact_id.as_str()).collect();
     let uncovered = compared.difference(&named).count();
@@ -1367,14 +1437,30 @@ fn collect_findings(receipt: &OracleReceiptV1) -> Findings {
     if uncompared > 0 {
         findings.incomplete.push(format!("{uncompared} named fact(s) are not compared"));
     }
-    let generated_boundaries =
-        count_by(&receipt.generated_inputs, |input| boundary_provenance(input.provenance));
+    // A staleness declaration over a fact no side names cannot be checked
+    // against anything, so it does not close either.
+    let unnamed_stale =
+        count_by(&receipt.stale_facts, |fact| !named.contains(fact.fact_id.as_str()));
+    if unnamed_stale > 0 {
+        findings
+            .incomplete
+            .push(format!("{unnamed_stale} stale declaration(s) name no observed fact"));
+    }
+    let generated_boundaries = count_by(&receipt.generated_inputs, |input| {
+        boundary_provenance(input.provenance)
+            || unanchored_source_claim(input.provenance, input.source_range.as_ref())
+    });
     if generated_boundaries > 0 {
         findings.incomplete.push(format!(
             "{generated_boundaries} generated input(s) have no explicit source provenance"
         ));
     }
-    let fact_boundaries = facts().filter(|fact| boundary_provenance(fact.provenance)).count();
+    let fact_boundaries = facts()
+        .filter(|fact| {
+            boundary_provenance(fact.provenance)
+                || unanchored_source_claim(fact.provenance, fact.source_range.as_ref())
+        })
+        .count();
     if fact_boundaries > 0 {
         findings.incomplete.push(format!(
             "{fact_boundaries} normalized fact(s) have no explicit source provenance"
@@ -1563,8 +1649,10 @@ fn subject_identity(receipt: &OracleReceiptV1) -> Result<CandidateSubjectIdentit
     // a hint rather than the exact, non-transferable identity this dimension
     // claims, and truncation buys no privacy a full digest does not already
     // give.
-    let mut roots = receipt.module_path_authority.declared_roots.clone();
-    roots.sort();
+    // Order is preserved for the same reason it is in the canonical receipt
+    // text: include-path precedence is semantic, so the digest must separate
+    // two orderings of the same roots.
+    let roots = &receipt.module_path_authority.declared_roots;
     let roots_digest = sha256_hex(roots.join("\u{1f}").as_bytes());
     subject.bind(
         SubjectDimensionKind::CompilerPolicy,
