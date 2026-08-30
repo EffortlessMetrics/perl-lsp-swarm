@@ -101,6 +101,14 @@ describe('gherkin step definition support', () => {
     ).toBe('defined');
   });
 
+  test.each(['x', 'g'])('fails closed on unsupported regex flag %s', (flag) => {
+    const step = parseGherkinStepLine('Given status: pass', 0);
+
+    expect(
+      classifyStepDefinitionStatus(step!, [`Given qr/^status: pass$/${flag}, sub { return; };`]),
+    ).toBe('ambiguous');
+  });
+
   test('treats potentially expensive step regexes as ambiguous', () => {
     const step = parseGherkinStepLine('Then aaaaaaaaaaaaaaaaaaaa!', 1);
     expect(step).not.toBeNull();

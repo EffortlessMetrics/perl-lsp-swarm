@@ -2,7 +2,9 @@
 // contains a quantifier, a backreference, a lookaround, or a quantified group
 // containing alternation. A single character class followed by one quantifier
 // is linear-time and safe — flagging it produced false negatives or ambiguous
-// classifications for ordinary step definitions (see #859).
+// classifications for ordinary step definitions (see #859). Quantified
+// wildcards remain intentionally unsupported because their accepted language
+// overlaps every following atom and makes matching cost difficult to bound.
 const POTENTIALLY_EXPENSIVE_REGEX_RE =
   /(?:\([^)]*(?:[+*]|\{[0-9]+(?:,[0-9]*)?\})[^)]*\))[+*{]|\\[1-9]|\\k<|\(\?<[=!]|(\(\?[!=])/;
 
@@ -174,15 +176,63 @@ function hasUnboundedWildcard(source: string): boolean {
 }
 
 function hasAdjacentVariableRepetition(source: string): boolean {
-  return /(?:\\.|\\[[^\]]*\]|[^\\()[\]|^$])(?:\+|\*)(?:\\.|\\[[^\]]*\]|[^\\()[\]|^$])(?:\+|\*)/.test(
-    source,
-  );
+  const adjacentRepetition =
+    /(\\.|\[(?:\\.|[^\]\\])*\]|[^\\()[\]|^$])(?:\+|\*)(\\.|\[(?:\\.|[^\]\\])*\]|[^\\()[\]|^$])(?:\+|\*)/g;
+
+  return Array.from(source.matchAll(adjacentRepetition)).some((match) => {
+    const left = match[1];
+    const right = match[2];
+    return left !== undefined && right !== undefined && atomsMayOverlap(left, right);
+  });
 }
 
-export function normalizeGherkinRegexFlags(flags: string): string {
+function atomsMayOverlap(left: string, right: string): boolean {
+  if (left === right) {
+    return true;
+  }
+
+  if (!hasBoundedAtomShape(left) || !hasBoundedAtomShape(right)) {
+    // Complemented, Unicode, or otherwise unknown atoms stay fail-closed. Only
+    // a pair whose supported character domains are proven disjoint may pass.
+    return true;
+  }
+
+  try {
+    const leftAtom = new RegExp(`^(?:${left})$`);
+    const rightAtom = new RegExp(`^(?:${right})$`);
+    for (let code = 0; code <= 0x7f; code += 1) {
+      const witness = String.fromCharCode(code);
+      if (leftAtom.test(witness) && rightAtom.test(witness)) {
+        return true;
+      }
+    }
+    return false;
+  } catch {
+    return true;
+  }
+}
+
+function hasBoundedAtomShape(atom: string): boolean {
+  if (atom.startsWith('[') && atom.endsWith(']')) {
+    const content = atom.slice(1, -1);
+    return (
+      !content.startsWith('^') &&
+      /^[\x00-\x7f]*$/.test(content) &&
+      /^(?:\\[dws]|\\[^A-Za-z0-9]|[^\\])*$/.test(content)
+    );
+  }
+  return /^[\x00-\x7f]$/.test(atom) || /^\\(?:[dws]|[^A-Za-z0-9])$/.test(atom);
+}
+
+export function normalizeGherkinRegexFlags(flags: string): string | null {
   let normalized = '';
   for (const flag of flags.toLowerCase()) {
-    if ((flag === 'i' || flag === 'm' || flag === 's') && !normalized.includes(flag)) {
+    if (flag !== 'i' && flag !== 'm' && flag !== 's') {
+      // Perl flags such as x have no equivalent in this JavaScript matching
+      // path. Silently dropping them can turn a non-match into a false match.
+      return null;
+    }
+    if (!normalized.includes(flag)) {
       normalized += flag;
     }
   }

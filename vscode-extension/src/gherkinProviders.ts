@@ -367,6 +367,9 @@ function findMatchingStepDefinitions(
   const matches: ParsedStepDefinition[] = [];
 
   for (const definition of parseStepDefinitions(document)) {
+    // Every parsed definition consumes the shared population budget. Moving
+    // this below filtering would let incompatible or unsafe definitions make
+    // the operation's cost depend on which consumer reached them.
     if (!budget.tryConsume()) {
       return null;
     }
@@ -579,7 +582,8 @@ function stepTextMatches(stepText: string, matcher: StepMatcher): boolean {
   }
 
   try {
-    return new RegExp(matcher.source, normalizeGherkinRegexFlags(matcher.flags)).test(stepText);
+    const flags = normalizeGherkinRegexFlags(matcher.flags);
+    return flags === null ? false : new RegExp(matcher.source, flags).test(stepText);
   } catch {
     return false;
   }

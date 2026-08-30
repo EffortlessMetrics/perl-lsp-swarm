@@ -44,6 +44,10 @@ describe('gherkin ReDoS guard (#6154)', () => {
     ['fixed repetition', '^code [0-9]{4}$', 'code 1234'],
     ['escaping', '^path\\/to\\/file$', 'path/to/file'],
     ['supported flags', '^status: pass$', 'STATUS: PASS'],
+    ['disjoint literal repetition', '^a+b*$', 'aaabbb'],
+    ['separated numeric repetition', '^\\d+\\.\\d+$', '12.34'],
+    ['disjoint character-class repetition', '^[a-z]+[0-9]+$', 'abc123'],
+    ['escaped disjoint class member', '^[a\\-]+[0-9]+$', 'a-1'],
   ])('accepts %s through the shared match policy', (_name, source, stepText) => {
     expect(isSafeGherkinStepMatch(source, stepText)).toBe(true);
   });
@@ -56,8 +60,12 @@ describe('gherkin ReDoS guard (#6154)', () => {
     ['backreference', '^(a)\\1$', 'aa'],
     ['named backreference', '^(?<value>a)\\k<value>$', 'a'],
     ['lookahead', '^(?=a)a$', 'a'],
-    ['quantified wildcard', '^.*$', 'anything'],
-    ['adjacent variable repetition', '^a*a*$', 'aaaa'],
+    ['quantified wildcard policy', '^.*$', 'anything'],
+    ['identical adjacent repetition', '^a*a*$', 'aaaa'],
+    ['overlapping adjacent classes', '^[a-z]+[m-z]+$', 'am'],
+    ['equivalent adjacent digit classes', '^\\d+[0-9]+$', '12'],
+    ['complemented adjacent classes fail closed', '^[^a]+[^b]+$', 'xy'],
+    ['Unicode adjacent atoms fail closed', '^é+[é]+$', 'éé'],
   ])('rejects %s through the shared match policy', (_name, source, stepText) => {
     expect(isSafeGherkinStepMatch(source, stepText)).toBe(false);
   });

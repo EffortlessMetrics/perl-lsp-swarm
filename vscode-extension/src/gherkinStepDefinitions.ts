@@ -251,6 +251,8 @@ export function classifyStepDefinitionStatus(
     ambiguous = ambiguous || scan.ambiguous;
 
     for (const definition of scan.definitions) {
+      // Count the full parsed population before filtering or matching so both
+      // Gherkin consumers enforce the same deterministic attempt envelope.
       if (!budget.tryConsume()) {
         // The population was never fully tested, so "undefined" would be a
         // claim this scan cannot support. Report the uncertainty instead; the
@@ -537,9 +539,8 @@ function testExtractedDefinition(
   }
 
   try {
-    return new RegExp(definition.pattern, normalizeGherkinRegexFlags(definition.flags)).test(
-      stepText,
-    );
+    const flags = normalizeGherkinRegexFlags(definition.flags);
+    return flags === null ? null : new RegExp(definition.pattern, flags).test(stepText);
   } catch {
     return null;
   }
