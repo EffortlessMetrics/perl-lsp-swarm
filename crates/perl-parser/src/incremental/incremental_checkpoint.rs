@@ -1070,6 +1070,30 @@ mod tests {
     }
 
     #[test]
+    fn checkpoint_incremental_recovery_token_keeps_shifted_geometry() {
+        let source = format!("{} /{};\n", "my $x = 1;\n".repeat(40), "a".repeat(70_000));
+        let mut parser = CheckpointedIncrementalParser::new();
+        must(parser.parse(source));
+
+        let edit = SimpleEdit { start: 8, end: 9, new_text: "22".to_owned() };
+        let new_tree = must(parser.apply_edit(&edit));
+        let recovery = parser
+            .token_cache
+            .segments
+            .iter()
+            .flat_map(|segment| segment.tokens.iter())
+            .find(|token| token.kind() == TokenKind::UnknownRest)
+            .expect("checkpoint cache should retain budget recovery");
+
+        assert!(recovery.is_geometry_only());
+        assert_eq!(recovery.end(), parser.source.len());
+        assert_eq!(recovery.text.len(), 0);
+
+        let mut full = CheckpointedIncrementalParser::new();
+        assert_eq!(new_tree, must(full.parse(parser.source.clone())));
+    }
+
+    #[test]
     fn test_invalidate_range_non_overlapping_preserves_all_segments() {
         // A range that doesn't touch any segment must leave the cache intact.
         let mut cache = TokenCache::new();

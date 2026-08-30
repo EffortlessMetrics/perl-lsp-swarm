@@ -468,7 +468,7 @@ mod tests {
     use super::*;
     use crate::token_stream::TokenKind;
     use perl_tdd_support::{must, must_some};
-    use std::panic::{AssertUnwindSafe, catch_unwind};
+    use std::panic::{catch_unwind, AssertUnwindSafe};
 
     fn assert_incremental_matches_fresh(
         source: &str,
@@ -696,5 +696,26 @@ mod tests {
         assert_eq!(state.metrics().fallback, Some(FallbackReason::EditTooLarge));
         assert!(state.metrics().full_parse);
         assert!(state.metrics().tokens_relexed > 0);
+    }
+
+    #[test]
+    fn incremental_replay_preserves_shifted_budget_recovery_geometry() {
+        let source = format!("{} /{};\n", "my $x = 1;\n".repeat(40), "a".repeat(70_000));
+        let edit_start = must_some(source.find("= 1")) + 2;
+        let new_source = source.replacen("= 1", "= 22", 1);
+        let edit = IncrementalEdit::new(edit_start, edit_start + 1, "22");
+
+        let mut state = IncrementalState::new(&source);
+        let _ = must(state.reparse(&new_source, &edit));
+
+        let recovery = state
+            .tokens
+            .iter()
+            .find(|token| token.kind() == TokenKind::UnknownRest)
+            .expect("incremental cache should retain budget recovery");
+        assert!(recovery.is_geometry_only());
+        assert_eq!(recovery.end(), new_source.len());
+        assert_eq!(recovery.start(), new_source.find('/').expect("regex delimiter"));
+        assert_eq!(recovery.text.len(), 0);
     }
 }

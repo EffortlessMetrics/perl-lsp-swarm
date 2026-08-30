@@ -8,11 +8,13 @@ use crate::{TokenKind, TokenSpan, TokenSpanError};
 /// Unlike [`Token`], this type borrows source text and does not allocate.
 /// Convert to [`Token`] explicitly with [`TokenRef::to_owned_token`] or `From`.
 ///
-/// Geometry fields are private. `text` remains a public field because replacing
-/// it cannot create a reversed or illegally empty span. `kind` is a read
-/// accessor: assignment on an empty EOF would otherwise bypass empty-span
-/// policy. Use [`TokenRef::new_checked`] / [`TokenRef::with_kind`] to change
-/// kind.
+/// Geometry fields are private. `text` remains a public field for compatibility;
+/// replacing it cannot create reversed geometry, and [`TokenRef::to_owned_token`]
+/// validates the replacement before creating an owned token. A replacement with
+/// the wrong width is canonicalized to a safe recovery token instead of being
+/// allowed to create an invalid [`Token`]. `kind` is a read accessor: assignment
+/// on an empty EOF would otherwise bypass empty-span policy. Use
+/// [`TokenRef::new_checked`] / [`TokenRef::with_kind`] to change kind.
 ///
 /// This struct is `#[non_exhaustive]`: additional fields may be added later.
 /// Downstream crates cannot use struct literals. That marker is the #2898
@@ -122,12 +124,25 @@ impl<'src> TokenRef<'src> {
     }
 
     /// Convert this borrowed token view into an owned [`Token`].
+    ///
+    /// The public `text` field can be changed after construction, so this
+    /// conversion revalidates its width. A mismatched non-empty span becomes a
+    /// payload-free `UnknownRest`; a mismatched empty span becomes EOF. This
+    /// preserves the infallible, compatibility-oriented API without allowing a
+    /// malformed `Token` to escape.
     pub fn to_owned_token(self) -> Token {
-        if self.is_geometry_only() {
-            Token::from_valid_parts(TokenKind::UnknownRest, Arc::from(""), self.start, self.end)
-        } else {
-            Token::from_valid_parts(self.kind, Arc::from(self.text), self.start, self.end)
+        if self.text.len() == self.len() {
+            return Token::from_valid_parts(self.kind, Arc::from(self.text), self.start, self.end);
         }
+
+        if self.start < self.end {
+            return match Token::unknown_rest_at(self.start, self.end) {
+                Ok(token) => token,
+                Err(_) => Token::eof_at(self.start),
+            };
+        }
+
+        Token::eof_at(self.start)
     }
 
     /// Return whether this is a payload-free `UnknownRest` recovery token.

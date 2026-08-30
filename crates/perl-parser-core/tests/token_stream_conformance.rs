@@ -209,7 +209,10 @@ fn live_budget_recovery_keeps_geometry_only_unknown_rest() {
 fn buffered_budget_recovery_keeps_geometry_without_source_copy() {
     let source = format!("/{};\n", "a".repeat(70_000));
     let mut lexer = PerlLexer::new(&source);
-    let raw: Vec<_> = lexer.by_ref().collect();
+    let mut raw = Vec::new();
+    while let Some(token) = lexer.next_token() {
+        raw.push(token);
+    }
     let recovery = raw
         .iter()
         .find(|token| matches!(token.token_type, TokenType::UnknownRest))

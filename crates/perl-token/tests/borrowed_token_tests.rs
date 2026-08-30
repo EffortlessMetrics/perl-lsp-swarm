@@ -37,6 +37,20 @@ fn token_ref_to_owned_token_is_explicit() -> TestResult {
 }
 
 #[test]
+fn externally_mutated_token_ref_text_cannot_create_invalid_owned_token() -> TestResult {
+    let mut borrowed = TokenRef::new_checked(TokenKind::UnknownRest, "", 40, 96)?;
+    borrowed.text = "mutated payload";
+
+    let owned = borrowed.to_owned_token();
+
+    assert_eq!(owned.kind(), TokenKind::UnknownRest);
+    assert_eq!(owned.span(), ordered_span(40, 96));
+    assert!(owned.text.is_empty());
+    assert!(owned.is_geometry_only());
+    Ok(())
+}
+
+#[test]
 fn token_from_token_ref_matches_constructor() -> TestResult {
     let borrowed = TokenRef::new_checked(TokenKind::Number, "42", 20, 22)?;
     let from_impl: Token = borrowed.into();
