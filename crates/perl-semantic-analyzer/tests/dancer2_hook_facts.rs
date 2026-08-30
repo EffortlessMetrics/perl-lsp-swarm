@@ -74,7 +74,7 @@ fn canonical_facts_with_input(
     let mut parser = Parser::new(code);
     let ast = must(parser.parse());
     let sites = extract_dancer2_activation_sites(&ast, FileId(1));
-    let declarations = extract_dancer2_hook_declarations(&ast, FileId(1));
+    let declarations = extract_dancer2_hook_declarations(&ast, FileId(1), code);
     let detection = detect_dancer2(detection_input);
     let mut facts = Vec::new();
     for site in &sites {
@@ -282,6 +282,46 @@ fn fat_comma_barewords_are_literal_hook_names() {
     assert_eq!(literal_name(&facts[0]).literal, "before");
     assert_eq!(literal_name(&facts[1]).literal, "before");
     assert_eq!(literal_name(&facts[2]).literal, "before_request");
+}
+
+// The separator, not the node shape, decides. `hook(before, sub {...})` calls
+// `before()` and passes its result — no auto-quoting happens — so it must stay
+// computed even though the operand is the same bareword token as the promoted
+// form. Accepting the AST node kind alone would wrongly make this a literal
+// and hand the handler body a request-context admission it has not earned.
+#[test]
+fn a_comma_separated_bareword_operand_is_never_promoted() {
+    let promoted = "package App;\nuse Dancer2;\nhook before => sub { 1 };";
+    let called = "package App;\nuse Dancer2;\nhook(before, sub { 1 });";
+
+    let promoted = canonical_facts(promoted, "gen-1");
+    assert_eq!(promoted.len(), 1);
+    assert_eq!(canonical_name(&promoted[0]), "core.app.before_request");
+    assert_eq!(promoted[0].status(), SemanticFactStatus::Exact);
+
+    let called = canonical_facts(called, "gen-1");
+    assert_eq!(called.len(), 1);
+    assert!(
+        matches!(&called[0].hook.name, HookNameSelection::Dynamic { .. }),
+        "a comma-separated bareword calls a sub; it is not an auto-quoted name"
+    );
+    assert_eq!(called[0].status(), SemanticFactStatus::Degraded);
+}
+
+// The fat comma may be separated by whitespace or a newline, and the parser
+// already auto-quotes it inside a parenthesised call. Both spellings must
+// reach the same literal as the paren-less form.
+#[test]
+fn fat_comma_promotion_is_independent_of_spacing_and_parentheses() {
+    for code in [
+        "package App;\nuse Dancer2;\nhook before=>sub { 1 };",
+        "package App;\nuse Dancer2;\nhook before\n    => sub { 1 };",
+        "package App;\nuse Dancer2;\nhook(before => sub { 1 });",
+    ] {
+        let facts = canonical_facts(code, "gen-1");
+        assert_eq!(facts.len(), 1, "{code}");
+        assert_eq!(canonical_name(&facts[0]), "core.app.before_request", "{code}");
+    }
 }
 
 // The auto-quoting rule is bounded: only a bareword is a literal. A variable

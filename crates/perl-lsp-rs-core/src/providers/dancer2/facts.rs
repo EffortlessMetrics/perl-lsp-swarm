@@ -108,9 +108,19 @@ impl CanonicalDancer2FileFacts {
     /// does **not** by itself mean request-scoped keywords are available —
     /// gate that on [`RouteHandlerContextFact::establishes_request_context`],
     /// or use [`Self::inside_request_context`].
+    /// When intervals overlap the innermost one wins, so the answer does not
+    /// depend on minting order. The extractors do not currently descend into
+    /// a handler body, so overlap cannot arise today; selecting the narrowest
+    /// containing interval keeps this query correct without depending on that
+    /// invariant holding forever.
     #[must_use]
     pub fn request_context_at(&self, offset: usize) -> Option<&RouteHandlerContextFact> {
-        self.handler_contexts.iter().find(|context| span_contains(&context.envelope.anchor, offset))
+        self.handler_contexts
+            .iter()
+            .filter(|context| span_contains(&context.envelope.anchor, offset))
+            .min_by_key(|context| {
+                context.envelope.anchor.end_byte.saturating_sub(context.envelope.anchor.start_byte)
+            })
     }
 
     /// Whether the reviewed contract establishes request context at `offset`.
@@ -143,6 +153,9 @@ fn span_contains(anchor: &perl_semantic_facts::SourceAnchor, offset: usize) -> b
 
 /// Mint the canonical Dancer2 fact family for one document.
 ///
+/// `source` is the exact text the AST was parsed from; the hook extractor
+/// needs it to tell an auto-quoted bareword operand from a computed one.
+///
 /// Uses only the canonical producers; when no package is exactly activated
 /// the result is empty (zero facts of any kind). The generation embedded in
 /// each activation's exact state (from [`super::activation::file_activations`])
@@ -151,6 +164,7 @@ fn span_contains(anchor: &perl_semantic_facts::SourceAnchor, offset: usize) -> b
 pub fn canonical_file_facts(
     ast: &Node,
     file_id: FileId,
+    source: &str,
     activations: &Dancer2FileActivations,
 ) -> CanonicalDancer2FileFacts {
     let mut facts = CanonicalDancer2FileFacts::default();
@@ -160,7 +174,7 @@ pub fn canonical_file_facts(
 
     let route_contexts = extract_dancer2_route_contexts(ast, file_id);
     let hook_declarations: Vec<Dancer2HookDeclaration> =
-        extract_dancer2_hook_declarations(ast, file_id);
+        extract_dancer2_hook_declarations(ast, file_id, source);
 
     for activation in &activations.packages {
         if !activation.facts.is_exact() {

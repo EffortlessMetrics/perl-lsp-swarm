@@ -732,15 +732,44 @@ mod tests {
             DANCER2_REQUEST_CONTEXT_HOOKS,
             ["core.app.before_request", "core.app.after_request", "core.app.route_exception"]
         );
-        for canonical in DANCER2_CANONICAL_HOOK_NAMES {
-            assert_eq!(
-                dancer2_hook_establishes_request_context(canonical),
-                DANCER2_REQUEST_CONTEXT_HOOKS.contains(canonical),
-                "`{canonical}` admission must come from the reviewed table alone"
+        // Spelled out rather than derived from the same constant the function
+        // reads: comparing the predicate to `DANCER2_REQUEST_CONTEXT_HOOKS`
+        // would compare the implementation to itself and pass against any
+        // wrong table.
+        for admitted in
+            ["core.app.before_request", "core.app.after_request", "core.app.route_exception"]
+        {
+            assert!(
+                dancer2_hook_establishes_request_context(admitted),
+                "`{admitted}` is a reviewed request-context position"
             );
         }
-        // A name outside the reviewed canonical set never establishes it.
-        assert!(!dancer2_hook_establishes_request_context("core.app.not_a_hook"));
+        for unadmitted in [
+            "core.app.before_file_render",
+            "core.app.after_file_render",
+            "core.error.before",
+            "core.error.after",
+            "core.error.init",
+            "engine.template.before_render",
+            "engine.template.after_render",
+            "engine.template.before_layout_render",
+            "engine.template.after_layout_render",
+            "engine.serializer.before",
+            "engine.serializer.after",
+            "handler.file.before_render",
+            "handler.file.after_render",
+            // Not a reviewed canonical name at all.
+            "core.app.not_a_hook",
+        ] {
+            assert!(
+                !dancer2_hook_establishes_request_context(unadmitted),
+                "`{unadmitted}` must not claim request context"
+            );
+        }
+        // The two lists above must together account for every reviewed
+        // canonical position, so a newly added position cannot slip in
+        // unclassified.
+        assert_eq!(DANCER2_CANONICAL_HOOK_NAMES.len(), 3 + 13);
     }
 
     #[test]

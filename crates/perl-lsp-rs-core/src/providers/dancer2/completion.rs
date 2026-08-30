@@ -127,7 +127,7 @@ mod tests {
         let module = RuntimeDancer2Module::new("lib/Dancer2.pm", "1.1.1");
         let activations =
             file_activations(&ast, FileId(1), Some(&module), &SourceGeneration::known("g1"));
-        let facts = canonical_file_facts(&ast, FileId(1), &activations);
+        let facts = canonical_file_facts(&ast, FileId(1), source, &activations);
         (activations, facts)
     }
 
@@ -236,12 +236,35 @@ mod tests {
         let mut parser = Parser::new(source);
         let ast = parser.parse().expect("fixture must parse");
         let activations = file_activations(&ast, FileId(1), None, &SourceGeneration::known("g1"));
-        let facts = canonical_file_facts(&ast, FileId(1), &activations);
+        let facts = canonical_file_facts(&ast, FileId(1), source, &activations);
         let inside = source.find("request").expect("body offset");
         assert!(
             keyword_completion_candidates(&activations, &facts, "main", inside, &none_declared)
                 .is_empty(),
             "hook-like spelling without activation offers nothing"
+        );
+    }
+
+    #[test]
+    fn a_comma_separated_bareword_hook_operand_establishes_no_request_context() {
+        // `hook(before, sub {...})` calls `before()`; no fat comma, so no
+        // auto-quoting and no proven hook identity. The body must not inherit
+        // the admitted position's request context.
+        let source = "use Dancer2;\nhook(before, sub { my $r = request; });\n";
+        let (activations, facts) = setup(source);
+        let inside = source.find("my $r").expect("hook body offset");
+        let context =
+            facts.request_context_at(inside).expect("an inline body still owns an interval");
+        assert!(
+            !context.establishes_request_context(),
+            "an unproven hook name must not establish request context"
+        );
+        let candidates =
+            keyword_completion_candidates(&activations, &facts, "main", inside, &none_declared);
+        let labels: Vec<&str> = candidates.iter().map(|c| c.label.as_str()).collect();
+        assert!(
+            !labels.contains(&"request"),
+            "request helpers must not be offered here: {labels:?}"
         );
     }
 
@@ -306,7 +329,7 @@ mod tests {
         let mut parser = Parser::new(source);
         let ast = parser.parse().expect("fixture must parse");
         let activations = file_activations(&ast, FileId(1), None, &SourceGeneration::known("g1"));
-        let facts = canonical_file_facts(&ast, FileId(1), &activations);
+        let facts = canonical_file_facts(&ast, FileId(1), source, &activations);
         assert!(
             keyword_completion_candidates(&activations, &facts, "main", 30, &none_declared)
                 .is_empty(),

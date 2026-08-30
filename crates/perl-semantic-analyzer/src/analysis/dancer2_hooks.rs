@@ -44,10 +44,14 @@ use perl_semantic_facts::{AnchorId, FileId, SourceAnchor};
 /// Extract every supported Dancer2 hook declaration from `ast`, in source
 /// order, with per-declaration package/file identity and a source-order
 /// declaration index.
+/// `source` is the exact document text the AST was parsed from; it is the
+/// only evidence that distinguishes an auto-quoted bareword operand from a
+/// computed one (see [`promote_fat_comma_barewords`]).
 #[must_use]
 pub fn extract_dancer2_hook_declarations(
     ast: &Node,
     file_id: FileId,
+    source: &str,
 ) -> Vec<Dancer2HookDeclaration> {
     let targets = SubroutineTargetIndex::build(ast, file_id);
     let mut declarations = Vec::new();
@@ -62,7 +66,72 @@ pub fn extract_dancer2_hook_declarations(
         &targets,
         false,
     );
+    for declaration in &mut declarations {
+        promote_fat_comma_barewords(&mut declaration.hook.name, source);
+    }
     declarations
+}
+
+/// Promote a bareword hook-name operand that Perl's fat comma auto-quotes.
+///
+/// `hook before => sub { ... }` is the canonical Dancer2 spelling: `=>`
+/// auto-quotes the bareword immediately before it, so the operand is a
+/// *literal* hook name. The parser already performs that quoting inside a
+/// parenthesised call (`hook(before => sub {...})` yields a string), but the
+/// paren-less list-operator form leaves a bare `Identifier`, which is
+/// indistinguishable at the AST level from a genuine call:
+///
+/// ```text
+/// hook before => sub {...}   auto-quoted literal   -> promote
+/// hook(before, sub {...})    calls before()        -> stays computed
+/// ```
+///
+/// The separator is the only thing that tells them apart, so the exact source
+/// text is the authority. Promotion requires both a plain bareword at the
+/// operand's own span and a `=>` immediately following it; anything else —
+/// a comma, a qualified or sigil-bearing name, a comment before the arrow,
+/// an interpolation — fails closed and stays a computed boundary.
+fn promote_fat_comma_barewords(name: &mut HookNameSelection, source: &str) {
+    let HookNameSelection::Dynamic { anchor, .. } = name else {
+        return;
+    };
+    let (Ok(start), Ok(end)) =
+        (usize::try_from(anchor.start_byte), usize::try_from(anchor.end_byte))
+    else {
+        return;
+    };
+    if start >= end || end > source.len() {
+        return;
+    }
+    let Some(literal) = source.get(start..end) else {
+        return;
+    };
+    if !is_plain_bareword(literal) {
+        return;
+    }
+    let Some(rest) = source.get(end..) else {
+        return;
+    };
+    if !rest.trim_start().starts_with("=>") {
+        return;
+    }
+    *name = HookNameSelection::Literal(HookName {
+        normalization: normalize_dancer2_hook_name(literal),
+        literal: literal.to_string(),
+        anchor: *anchor,
+    });
+}
+
+/// Whether `value` is a plain Perl bareword: the only shape `=>` auto-quotes
+/// into a simple string. A `::`-qualified name, a sigil, or anything else is
+/// rejected rather than guessed.
+fn is_plain_bareword(value: &str) -> bool {
+    let mut chars = value.chars();
+    match chars.next() {
+        Some(first) if first.is_ascii_alphabetic() || first == '_' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 /// Whether a node makes its subtree's execution conditional: control flow
@@ -237,21 +306,6 @@ fn hook_from_expression(
 
 fn name_from_node(node: &Node, file_id: FileId) -> HookNameSelection {
     let name_anchor = anchor(node.location.start, node.location.end, file_id);
-    // `hook before => sub { ... }` is the canonical Dancer2 spelling. Perl's
-    // fat comma auto-quotes the bareword immediately before it, so this
-    // operand is a *literal* hook name, not a computed one — the parser
-    // surfaces it as a bare `Identifier`. A genuinely computed operand stays
-    // dynamic: a variable is `Variable` and a call is `FunctionCall`, and
-    // neither reaches this arm. (`hook before, sub {...}` — no fat comma, so
-    // no auto-quoting — does not parse as a `hook` call at all, so it cannot
-    // arrive here either.)
-    if let NodeKind::Identifier { name } = &node.kind {
-        return HookNameSelection::Literal(HookName {
-            normalization: normalize_dancer2_hook_name(name),
-            literal: name.clone(),
-            anchor: name_anchor,
-        });
-    }
     let NodeKind::String { value, interpolated } = &node.kind else {
         return HookNameSelection::Dynamic {
             reason: "computed hook name operand".to_string(),
@@ -306,7 +360,7 @@ mod tests {
     fn declarations(code: &str) -> Vec<Dancer2HookDeclaration> {
         let mut parser = Parser::new(code);
         let ast = must(parser.parse());
-        extract_dancer2_hook_declarations(&ast, FileId(1))
+        extract_dancer2_hook_declarations(&ast, FileId(1), code)
     }
 
     fn literal_name(declaration: &Dancer2HookDeclaration) -> &HookName {

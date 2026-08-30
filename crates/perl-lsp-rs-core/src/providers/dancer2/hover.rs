@@ -361,7 +361,7 @@ mod tests {
         let module = RuntimeDancer2Module::new("lib/Dancer2.pm", "1.1.1");
         let activations =
             file_activations(&ast, FileId(1), Some(&module), &SourceGeneration::known("g1"));
-        let facts = canonical_file_facts(&ast, FileId(1), &activations);
+        let facts = canonical_file_facts(&ast, FileId(1), source, &activations);
         Setup { activations, facts, ast }
     }
 
@@ -435,7 +435,7 @@ mod tests {
         let mut parser = Parser::new(source);
         let ast = must_with(parser.parse(), "fixture must parse");
         let activations = file_activations(&ast, FileId(1), None, &SourceGeneration::known("g1"));
-        let facts = canonical_file_facts(&ast, FileId(1), &activations);
+        let facts = canonical_file_facts(&ast, FileId(1), source, &activations);
         assert!(hover_projection_at(&activations, &facts, &ast, "main", 5).is_none());
     }
 
@@ -475,6 +475,24 @@ mod tests {
         );
         // The route declaration itself still owns its own keyword token.
         assert!(matches!(projection, RouteHoverProjection::Route { .. }), "{projection:?}");
+    }
+
+    #[test]
+    fn a_hook_name_operand_colliding_with_a_keyword_still_hovers_as_the_hook() {
+        // `redirect` is both a real imported DSL keyword and, here, the hook's
+        // own name operand. The declaration owns that token: hover must answer
+        // the hook, not report a keyword usage at a position that is not one.
+        let source = "use Dancer2;\nhook redirect => sub { 1 };";
+        let setup = setup(source);
+        let operand = must_some_with(source.find("redirect"), "hook name operand offset");
+        let projection = must_some_with(
+            hover_projection_at(&setup.activations, &setup.facts, &setup.ast, "main", operand),
+            "hover at the hook name operand",
+        );
+        assert!(
+            matches!(projection, RouteHoverProjection::Hook { .. }),
+            "the hook declaration owns its name operand: {projection:?}"
+        );
     }
 
     #[test]
