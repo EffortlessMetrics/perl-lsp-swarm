@@ -63,10 +63,10 @@ fn require(condition: bool, message: impl Into<String>) -> Result<(), String> {
     }
 }
 
-fn require_single_core_authority_row(
-    rows: &[NormalizedCriticFinding],
+fn require_single_core_authority_row<'a>(
+    rows: &'a [NormalizedCriticFinding],
     policy_case: &str,
-) -> Result<(), String> {
+) -> Result<&'a NormalizedCriticFinding, String> {
     require(
         rows.len() == 1,
         format!(
@@ -74,19 +74,14 @@ fn require_single_core_authority_row(
             rows.len()
         ),
     )?;
-    let row = &rows[0];
+    let row = rows
+        .first()
+        .ok_or_else(|| format!("{policy_case}: the surviving logical row must be present"))?;
     require(
         row.public_code() == "PL603",
         format!(
             "{policy_case}: built-in presentation authority must remain PL603; got {}",
             row.public_code()
-        ),
-    )?;
-    require(
-        row.contributors().len() == 2,
-        format!(
-            "{policy_case}: overlap must remain one row with both contributors; got {:?}",
-            row.contributors()
         ),
     )?;
     require(
@@ -96,6 +91,49 @@ fn require_single_core_authority_row(
         format!(
             "{policy_case}: survival authority must come from retained contributor provenance"
         ),
+    )?;
+    Ok(row)
+}
+
+fn require_open_overlap_row(
+    rows: &[NormalizedCriticFinding],
+    policy_case: &str,
+) -> Result<(), String> {
+    let row = require_single_core_authority_row(rows, policy_case)?;
+    require(
+        row.contributors().len() == 2,
+        format!(
+            "{policy_case}: open Critic policy must retain both overlap contributors; got {:?}",
+            row.contributors()
+        ),
+    )?;
+    require(
+        row.contributors().iter().any(|contributor| {
+            contributor.identity().origin() == CriticFindingOrigin::NativeCritic
+        }),
+        format!("{policy_case}: open policy must retain the native Critic contribution"),
+    )
+}
+
+fn require_filtered_core_only_row(
+    rows: &[NormalizedCriticFinding],
+    policy_case: &str,
+) -> Result<(), String> {
+    let row = require_single_core_authority_row(rows, policy_case)?;
+    require(
+        row.contributors().len() == 1,
+        format!(
+            "{policy_case}: filtered Critic contribution must leave one core contributor; got {:?}",
+            row.contributors()
+        ),
+    )?;
+    require(
+        !row.contributors().iter().any(|contributor| {
+            contributor.identity().origin() == CriticFindingOrigin::NativeCritic
+        }),
+        format!(
+            "{policy_case}: Critic policy may not keep an active native contribution after filtering it"
+        ),
     )
 }
 
@@ -103,11 +141,14 @@ fn require_single_core_authority_row(
 fn core_security_authority_survives_critic_severity_thresholds() -> Result<(), String> {
     let include = Vec::new();
     let exclude = Vec::new();
-    for threshold in [1, 3, 5] {
+
+    for threshold in [1, 3] {
         let rows = apply_policy(true, threshold, &include, &exclude);
-        require_single_core_authority_row(&rows, &format!("severity threshold {threshold}"))?;
+        require_open_overlap_row(&rows, &format!("severity threshold {threshold}"))?;
     }
-    Ok(())
+
+    let rows = apply_policy(true, 5, &include, &exclude);
+    require_filtered_core_only_row(&rows, "severity threshold 5")
 }
 
 #[test]
@@ -115,7 +156,7 @@ fn core_security_authority_survives_critic_exclude() -> Result<(), String> {
     let include = Vec::new();
     let exclude = vec!["native.security.system_exec".to_string()];
     let rows = apply_policy(true, 1, &include, &exclude);
-    require_single_core_authority_row(&rows, "native alias excluded")
+    require_filtered_core_only_row(&rows, "native alias excluded")
 }
 
 #[test]
@@ -123,7 +164,7 @@ fn core_security_authority_survives_nonmatching_critic_include() -> Result<(), S
     let include = vec!["native.testing.require_use_strict".to_string()];
     let exclude = Vec::new();
     let rows = apply_policy(true, 1, &include, &exclude);
-    require_single_core_authority_row(&rows, "nonmatching include filter")
+    require_filtered_core_only_row(&rows, "nonmatching include filter")
 }
 
 #[test]
@@ -151,5 +192,5 @@ fn critic_only_row_still_obeys_critic_policy() -> Result<(), String> {
 fn open_policy_keeps_exactly_one_overlap_row() -> Result<(), String> {
     let empty = Vec::new();
     let rows = apply_policy(true, 1, &empty, &empty);
-    require_single_core_authority_row(&rows, "open policy")
+    require_open_overlap_row(&rows, "open policy")
 }
