@@ -319,7 +319,7 @@
           "$comment": "Improvement, regression and no-change are all claims relative to an actual accepted baseline; only a historical or unproven record has nothing to compare against.",
           "if": {
             "properties": {
-              "transition": {"enum": ["improvement_candidate", "regression", "no_change"]}
+              "transition": {"enum": ["improvement_candidate", "regression", "no_change", "contract_correction_candidate"]}
             },
             "required": ["transition"]
           },

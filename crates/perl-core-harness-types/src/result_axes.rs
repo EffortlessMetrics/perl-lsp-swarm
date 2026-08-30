@@ -905,6 +905,7 @@ impl CurrentVersusAccepted {
             CompatibilityTransition::ImprovementCandidate
                 | CompatibilityTransition::Regression
                 | CompatibilityTransition::NoChange
+                | CompatibilityTransition::ContractCorrectionCandidate
         ) && self.accepted_baseline_digest.is_none()
         {
             return Err(ResultReportViolation::ComparisonWithoutBaseline {
@@ -1382,18 +1383,28 @@ impl RunAxesReport {
             // some rail must actually have run with that mechanism. Otherwise the
             // aggregate asserts evidence no rail in the report carries.
             let mechanism = self.axes.mechanism();
-            // General support needs a rail whose evidence is usable now. A partial
-            // rail covers only a declared subset and a stale one has outlived its
-            // freshness contract, so neither can carry a general claim across the
-            // whole denominator.
+            // The rail must carry evidence strong enough for the claim being made.
+            // A stale rail has outlived its freshness contract, so it backs nothing
+            // current; a general claim additionally needs the rail to have covered
+            // the whole denominator and accepted all of it, since a rail that saw
+            // one file of four cannot underwrite a claim about all four.
+            let denominator = self.subject.denominator;
             let backed = self.correctness_rails.values().any(|rail| {
-                rail.mechanism == mechanism
-                    && match self.axes.support() {
-                        SemanticSupport::General => {
-                            rail.availability == CompatibilityRailAvailability::Available
-                        }
-                        _ => rail.ran(),
+                if rail.mechanism != mechanism {
+                    return false;
+                }
+                match self.axes.support() {
+                    SemanticSupport::General => {
+                        rail.availability == CompatibilityRailAvailability::Available
+                            && rail.files_total == Some(denominator)
+                            && rail.files_passed == rail.files_total
                     }
+                    _ => matches!(
+                        rail.availability,
+                        CompatibilityRailAvailability::Available
+                            | CompatibilityRailAvailability::Partial
+                    ),
+                }
             });
             if !backed {
                 return Err(ResultReportViolation::AggregateSupportWithoutRail {
@@ -3115,6 +3126,90 @@ mod tests {
             "an instrument failure must not vanish under a clean rollup"
         );
         Ok(())
+    }
+
+    #[test]
+    fn a_weak_or_undersized_rail_cannot_authorize_support() -> Result<(), Box<dyn std::error::Error>>
+    {
+        // Stale evidence backs nothing current, even a merely partial claim.
+        let mut partial = valid_report()?;
+        partial.axes = ResultAxes::new(
+            EvidenceValidity::Valid,
+            ObservedOutcome::Clean,
+            CompatibilityAdmission::Implemented,
+            SemanticSupport::Partial,
+            CorrectnessMechanism::EirExecution,
+        )?;
+        partial.admission.by_support = distribution(&[("partial", 4)]);
+        partial.correctness_rails.insert(
+            "eir".to_string(),
+            CorrectnessRailSummary {
+                mechanism: CorrectnessMechanism::EirExecution,
+                availability: CompatibilityRailAvailability::Stale,
+                reason: "freshness expired".to_string(),
+                evidence_refs: vec!["bundle-1".to_string()],
+                files_total: Some(4),
+                files_passed: Some(4),
+            },
+        );
+        assert_eq!(
+            partial.validate(),
+            Err(ResultReportViolation::AggregateSupportWithoutRail {
+                support: SemanticSupport::Partial,
+                mechanism: CorrectnessMechanism::EirExecution,
+            }),
+            "a stale rail backs no current support claim"
+        );
+
+        // A rail that covered one file of four cannot underwrite all four.
+        let mut undersized = valid_report()?;
+        undersized.correctness_rails.insert(
+            "eir".to_string(),
+            CorrectnessRailSummary {
+                mechanism: CorrectnessMechanism::EirExecution,
+                availability: CompatibilityRailAvailability::Available,
+                reason: "one file only".to_string(),
+                evidence_refs: vec!["bundle-1".to_string()],
+                files_total: Some(1),
+                files_passed: Some(1),
+            },
+        );
+        assert!(
+            undersized.validate().is_err(),
+            "a rail covering 1 of 4 cannot back general support for 4"
+        );
+
+        // Nor can one that covered everything but did not pass it.
+        let mut failing = valid_report()?;
+        failing.correctness_rails.insert(
+            "eir".to_string(),
+            CorrectnessRailSummary {
+                mechanism: CorrectnessMechanism::EirExecution,
+                availability: CompatibilityRailAvailability::Available,
+                reason: "some failed".to_string(),
+                evidence_refs: vec!["bundle-1".to_string()],
+                files_total: Some(4),
+                files_passed: Some(3),
+            },
+        );
+        assert!(failing.validate().is_err(), "a rail that failed subjects backs no general claim");
+        Ok(())
+    }
+
+    #[test]
+    fn a_contract_correction_needs_the_contract_it_corrects() {
+        let baseless = CurrentVersusAccepted {
+            transition: CompatibilityTransition::ContractCorrectionCandidate,
+            requires_acceptance: true,
+            accepted_baseline_digest: None,
+            reason: "boundary evidence changed against nothing".to_string(),
+        };
+        assert_eq!(
+            baseless.validate(),
+            Err(ResultReportViolation::ComparisonWithoutBaseline {
+                transition: CompatibilityTransition::ContractCorrectionCandidate,
+            })
+        );
     }
 
     #[test]
