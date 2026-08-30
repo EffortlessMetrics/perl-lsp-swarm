@@ -5,7 +5,7 @@ LSP, DAP, workspace, release, and policy tooling must represent invalid external
 state as a typed error, a bounded degraded result, or an explicitly contained
 operation failure. A production panic is not an error-reporting strategy.
 
-This policy distinguishes three different jobs that must not be collapsed into
+This policy distinguishes three job families that must not be collapsed into
 one count:
 
 - banning explicit fatal constructs in production;
@@ -14,21 +14,28 @@ one count:
 
 ## Authority split
 
+The table below expands those families into their owning authorities. The first
+row is the convergence umbrella rather than a fourth family, and
+`Panic-equivalent operations` is the inventory axis inside the first family. A
+row whose authority is closed states a settled invariant; new work belongs to
+the open authority for that surface.
+
 | Surface | Authority | Job |
 |---|---|---|
-| Production convergence | [#13686](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/13686) | Own the complete production denominator, child migrations, containment proof, and final blocking posture. |
-| Exact fatal-construct admission | [#13688](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/13688) | Replace message- or path-shaped exemptions with exact governed identities and receipts. |
-| Panic-equivalent operations | [#13693](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/13693) | Inventory indexing, arithmetic, recursion, allocation, subprocess, concurrency, FFI, generated, and platform failure surfaces. |
-| Test-side panic debt | [#13423](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/13423) | Own test targets, test helpers, test-only suppressions, and conversion cohorts. |
-| Parser arbitrary-input proof | [#1820](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/1820) and [#7112](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/7112) | Own corpus, fuzz, depth, work-budget, and cancellation evidence for parser inputs. |
+| Production convergence | [#13686](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/13686) (open) | Own the complete production denominator, child migrations, containment proof, and final blocking posture. |
+| Exact fatal-construct admission | [#13688](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/13688) (open) | Replace message- or path-shaped exemptions with exact governed identities and receipts. |
+| Panic-equivalent operations | [#13693](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/13693) (open) | Inventory indexing, arithmetic, recursion, allocation, subprocess, concurrency, FFI, generated, and platform failure surfaces. |
+| Test-side panic debt | [#13423](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/13423) (open) | Own test targets, test helpers, test-only suppressions, and conversion cohorts. |
+| Parser never-panic invariant | [#1820](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/1820) (closed) | Settled corpus and fuzz invariant that the parser does not panic on arbitrary input; it grants no new work. |
+| Parser budget and cancellation proof | [#7112](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/7112) (open) | Own remaining depth, work-budget, and cancellation evidence for adversarial parser inputs. |
 
 Current explicit production migrations remain separate because their degraded
 semantics are different:
 
-- POD directive classification: [#13575](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/13575);
-- optional LSP global-assignment action detection: [#13689](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/13689);
-- Test2 rename/prefix/postfix import resolution: [#13690](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/13690);
-- heredoc anti-pattern detector initialization: [#13692](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/13692).
+- POD directive classification: [#13575](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/13575) (open);
+- optional LSP global-assignment action detection: [#13689](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/13689) (closed; the fatal static initializer is gone);
+- Test2 rename/prefix/postfix import resolution: [#13690](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/13690) (open);
+- heredoc anti-pattern detector initialization: [#13692](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/13692) (open).
 
 A child may consume another authority's evidence, but it must not silently take
 over that authority. In particular, production convergence does not create a
@@ -36,9 +43,9 @@ second parser fuzzer or a second test-debt programme.
 
 ## Current guardrails
 
-The Rust 1.95 rollout established active panic-family lint bans and removed the
-shared test unwrap carveout. Current source and policy files are authoritative
-for current-state claims; historical rollout records are not permissions.
+Current source and policy files establish the active panic-family lint bans, the
+removal of the shared test unwrap carveout, and the governed path toward exact
+counted no-new-debt enforcement. Historical rollout records are not permissions.
 
 Current guardrails include:
 
@@ -49,6 +56,8 @@ Current guardrails include:
   [`policy/clippy-lints.toml`](../policy/clippy-lints.toml);
 - shared Clippy configuration in [`clippy.toml`](../clippy.toml), which has no
   `allow-unwrap-in-tests` exception;
+- the current lint policy in [`docs/CLIPPY_POLICY.md`](CLIPPY_POLICY.md) and
+  [`policy/allow.toml`](../policy/allow.toml);
 - the error-handling contract in
   [`docs/adr/0012-error-handling-strategy.md`](adr/0012-error-handling-strategy.md).
 
@@ -97,7 +106,16 @@ own exception.
 A command-line entry point may translate a terminal error into a non-zero process
 exit. Reusable parser, LSP, DAP, workspace, and tooling libraries must return the
 error instead. CLI exit semantics must not leak inward as `panic!`,
-`process::exit`, or an unjoined worker failure.
+`process::exit`, or an unobserved worker failure.
+
+An unobserved worker failure is a spawned unit of work whose terminal outcome is
+never inspected by the owning operation. The rule applies to at least
+`std::thread::JoinHandle` results that are dropped instead of joined,
+`tokio::task::JoinHandle` values that are neither awaited nor deliberately
+detached under a named contract, and `std::process::Child` handles whose
+`wait`/`try_wait` status is never read. A dropped handle whose worker panicked
+or exited non-zero is a silent failure, not containment; containment requires the
+explicit contract in **Runtime containment**.
 
 ## Exact production admission
 
@@ -189,9 +207,12 @@ use the helpers owned by `perl-test-must`, such as:
 use perl_test_must::{must, must_err, must_some};
 ```
 
-Existing `perl_tdd_support::must*` imports are compatibility and workspace
-migration state governed by #8605 and #8436. New code should not depend on the
-broader `perl-tdd-support` package solely to obtain these helpers.
+The rule is binary for the `must*` symbols: new code must import them from
+`perl-test-must`. Existing `perl_tdd_support::must*` imports are compatibility
+and workspace migration state governed by #8605 and #8436. Depending on
+`perl-tdd-support` for helpers it still genuinely owns remains allowed and is
+governed by those same issues; adding that dependency solely to obtain `must*`
+is not.
 
 Intentional assertion panics and explicit panic-injection tests require narrow,
 reviewed exceptions at the actual panic owner. They do not make accidental panic
