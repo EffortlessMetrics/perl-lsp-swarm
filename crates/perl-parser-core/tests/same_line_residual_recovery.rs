@@ -141,6 +141,12 @@ fn command_line_ne_wrapper_is_not_same_line_residue() -> Result<(), String> {
 }
 
 #[test]
+fn command_line_ne_wrapper_does_not_hide_following_residue() -> Result<(), String> {
+    let source = "-ne print 1 2;";
+    assert_same_line_residual_at(source, "2")
+}
+
+#[test]
 fn spaced_repetition_tokens_are_not_rewritten_to_x_assign() -> Result<(), String> {
     let source = "$value x = 3;";
     let output = Parser::new(source).parse_with_recovery();
