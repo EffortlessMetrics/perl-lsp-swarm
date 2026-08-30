@@ -734,10 +734,12 @@ fn write_pr_evidence(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
         &base_sha,
         &head_sha,
         &suppressions,
-        changed_file_count,
-        Some(&head_extents),
-        attribution_scope.as_ref(),
-        production_surface.as_ref(),
+        PrEvidenceContext {
+            changed_file_count,
+            head_extents: Some(&head_extents),
+            attribution_scope: attribution_scope.as_ref(),
+            production_surface: production_surface.as_ref(),
+        },
     );
     validate_pr_evidence_packet(&packet, options, changed_file_count, true, &base_sha, &head_sha)?;
     write_text(&repo.join(PR_EVIDENCE_JSON), &format_json(&packet)?)?;
@@ -1534,7 +1536,7 @@ fn repo_relative_surface_path(surface: &ProductionSurface, raw_path: &str) -> Op
     // tools must not defeat the root-prefix match against cargo's plain
     // `F:/...` workspace root.
     let normalized = normalized.strip_prefix("//?/").unwrap_or(&normalized);
-    let normalized = normalized.strip_prefix("./").unwrap_or(&normalized);
+    let normalized = normalized.strip_prefix("./").unwrap_or(normalized);
     let absolute = normalized.starts_with('/') || normalized.as_bytes().get(1) == Some(&b':');
     if !absolute {
         return Some(normalized.to_string());
@@ -1754,10 +1756,10 @@ fn lexically_join(dir: &str, relative: &str) -> Option<String> {
     for component in dir.split('/').chain(relative.split('/')) {
         match component {
             "." | "" => {}
+            // `..` above the root has nothing to pop: propagate the refusal
+            // through the `Option` this function already returns.
             ".." => {
-                if components.pop().is_none() {
-                    return None;
-                }
+                components.pop()?;
             }
             other => components.push(other),
         }
@@ -1803,10 +1805,12 @@ fn pr_evidence_packet(
         base_sha,
         head_sha,
         suppressions,
-        changed_files.len(),
-        None,
-        None,
-        None,
+        PrEvidenceContext {
+            changed_file_count: changed_files.len(),
+            head_extents: None,
+            attribution_scope: None,
+            production_surface: None,
+        },
     )
 }
 
@@ -1826,11 +1830,35 @@ fn pr_evidence_packet_on_surface(
         base_sha,
         head_sha,
         suppressions,
-        changed_files.len(),
-        None,
-        None,
-        production_surface,
+        PrEvidenceContext {
+            changed_file_count: changed_files.len(),
+            head_extents: None,
+            attribution_scope: None,
+            production_surface,
+        },
     )
+}
+
+/// The measurement context for one PR evidence packet: which diff was
+/// measured, and which bases the new-gap filters were applied on.
+///
+/// These four facts travel together — every caller that supplies one supplies
+/// all of them — while the options, exact base/head identity, check payload,
+/// and suppression policy stay explicit arguments. Grouping them keeps
+/// [`pr_evidence_packet_with_count`] inside the configured argument budget
+/// without weakening any call site: the struct deliberately has no `Default`,
+/// so a caller that omits a field fails to compile rather than silently
+/// measuring against an empty basis (#13809).
+#[derive(Clone, Copy)]
+struct PrEvidenceContext<'a> {
+    /// Number of files in the committed diff under evaluation.
+    changed_file_count: usize,
+    /// Head-revision line extents; `None` keeps every finding in scope.
+    head_extents: Option<&'a HeadLineExtents>,
+    /// Dependency-attribution basis; `None` keeps every finding counted.
+    attribution_scope: Option<&'a AttributionScope>,
+    /// Compiled-production surface; `None` keeps every finding counted.
+    production_surface: Option<&'a ProductionSurface>,
 }
 
 fn pr_evidence_packet_with_count(
@@ -1839,11 +1867,14 @@ fn pr_evidence_packet_with_count(
     base_sha: &str,
     head_sha: &str,
     suppressions: &RiprSuppressionRules,
-    changed_file_count: usize,
-    head_extents: Option<&HeadLineExtents>,
-    attribution_scope: Option<&AttributionScope>,
-    production_surface: Option<&ProductionSurface>,
+    context: PrEvidenceContext<'_>,
 ) -> Value {
+    let PrEvidenceContext {
+        changed_file_count,
+        head_extents,
+        attribution_scope,
+        production_surface,
+    } = context;
     let check_summary = check_value.get("summary").and_then(Value::as_object);
     let summary = ripr_pr_summary_counts(
         check_value,
@@ -3627,6 +3658,83 @@ fn bullet_list(values: &[String]) -> String {
 mod tests {
     use super::*;
 
+    // ---------------------------------------------------------------------
+    // #13809 falsifiers: the two path helpers whose Clippy repairs are only
+    // mechanical if their refusal semantics are exact. `main` carried no
+    // focused coverage for either, so the "semantics preserved" claim rested
+    // on reading alone.
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn lexically_join_resolves_dot_and_parent_segments() {
+        assert_eq!(
+            lexically_join("crates/a/src", "lib.rs").as_deref(),
+            Some("crates/a/src/lib.rs")
+        );
+        assert_eq!(
+            lexically_join("crates/a/src", "./lib.rs").as_deref(),
+            Some("crates/a/src/lib.rs")
+        );
+        // `..` pops the directory it follows rather than being retained.
+        assert_eq!(lexically_join("crates/a/src", "../lib.rs").as_deref(), Some("crates/a/lib.rs"));
+        assert_eq!(
+            lexically_join("crates/a/src", "../../lib.rs").as_deref(),
+            Some("crates/lib.rs")
+        );
+        // Backslashes normalize before joining, so Windows-shaped includes
+        // resolve identically.
+        assert_eq!(
+            lexically_join("crates/a/src", r"..\lib.rs").as_deref(),
+            Some("crates/a/lib.rs")
+        );
+    }
+
+    #[test]
+    fn lexically_join_refuses_paths_that_escape_the_root() {
+        // The issue falsifier: a repair that defaults an exhausted pop to the
+        // root would return Some(..) here. Every over-deep `..` must stay None.
+        assert_eq!(lexically_join("crates/a", "../../../etc/passwd"), None);
+        assert_eq!(lexically_join("", ".."), None);
+        assert_eq!(lexically_join("a", "../.."), None);
+        // Popping exactly to empty is refusal too, not an empty join.
+        assert_eq!(lexically_join("a", ".."), None);
+    }
+
+    #[test]
+    fn repo_relative_surface_path_normalizes_and_fails_closed() {
+        let surface = ProductionSurface::from_parts("/work/repo", &[]);
+
+        // Relative paths pass through, including the `./` form whose borrow
+        // this leaf simplified.
+        assert_eq!(
+            repo_relative_surface_path(&surface, "crates/a/src/lib.rs").as_deref(),
+            Some("crates/a/src/lib.rs")
+        );
+        assert_eq!(
+            repo_relative_surface_path(&surface, "./crates/a/src/lib.rs").as_deref(),
+            Some("crates/a/src/lib.rs")
+        );
+
+        // Absolute paths inside the root strip it; backslash and Windows
+        // verbatim (`//?/`) shapes normalize to the same repo-relative result.
+        let windows = ProductionSurface::from_parts("F:/work/repo", &[]);
+        assert_eq!(
+            repo_relative_surface_path(&windows, r"F:\work\repo\crates\a\src\lib.rs").as_deref(),
+            Some("crates/a/src/lib.rs")
+        );
+        assert_eq!(
+            repo_relative_surface_path(&windows, r"\\?\F:\work\repo\crates\a\src\lib.rs")
+                .as_deref(),
+            Some("crates/a/src/lib.rs")
+        );
+
+        // Absolute but outside the root is None — fail closed, never a
+        // silently mis-anchored relative path.
+        assert_eq!(repo_relative_surface_path(&surface, "/other/repo/src/lib.rs"), None);
+        // A sibling root sharing a prefix must not match on the prefix alone.
+        assert_eq!(repo_relative_surface_path(&surface, "/work/repo-two/src/lib.rs"), None);
+    }
+
     #[test]
     fn command_root_arg_allows_repo_relative_root() -> Result<()> {
         let temp = tempfile::tempdir()?;
@@ -4604,10 +4712,12 @@ paths = ["archive/["]
             "base-sha",
             "head-sha",
             suppressions,
-            1,
-            Some(extents),
-            None,
-            None,
+            PrEvidenceContext {
+                changed_file_count: 1,
+                head_extents: Some(extents),
+                attribution_scope: None,
+                production_surface: None,
+            },
         )
     }
 
@@ -6050,10 +6160,12 @@ paths = ["archive/["]
             "base-sha",
             "head-sha",
             &suppressions,
-            5,
-            None,
-            Some(&scope),
-            Some(&surface),
+            PrEvidenceContext {
+                changed_file_count: 5,
+                head_extents: None,
+                attribution_scope: Some(&scope),
+                production_surface: Some(&surface),
+            },
         );
 
         assert_eq!(packet.pointer("/summary/reachable_unrevealed"), Some(&json!(2)));
@@ -6078,10 +6190,12 @@ paths = ["archive/["]
             "base-sha",
             "head-sha",
             &suppressions,
-            5,
-            None,
-            None,
-            Some(&surface),
+            PrEvidenceContext {
+                changed_file_count: 5,
+                head_extents: None,
+                attribution_scope: None,
+                production_surface: Some(&surface),
+            },
         );
         assert_eq!(unfiltered.pointer("/summary/severe_gaps"), Some(&json!(3)));
         assert_eq!(unfiltered.pointer("/summary/non_production_excluded"), Some(&json!(1)));
@@ -6109,10 +6223,12 @@ paths = ["archive/["]
             "base-sha",
             "head-sha",
             &suppressions,
-            1,
-            None,
-            None,
-            None,
+            PrEvidenceContext {
+                changed_file_count: 1,
+                head_extents: None,
+                attribution_scope: None,
+                production_surface: None,
+            },
         );
         let Some(packet_object) = packet.as_object_mut() else {
             bail!("packet must be a JSON object");
