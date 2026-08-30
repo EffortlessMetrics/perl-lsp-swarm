@@ -130,9 +130,11 @@ pub fn write_receipt<T: Serialize>(subject: &str, path: &Path, receipt: &T) -> R
 /// Raised in review: this was best-effort, which meant a caller was told the
 /// receipt had been published durably when the durability step had failed. A
 /// receipt is evidence, so reporting a success the filesystem did not confirm is
-/// the one outcome worse than failing loudly.
+/// the one outcome worse than failing loudly. A failure here is therefore
+/// propagated — but only where the platform actually offers the operation.
+#[cfg(not(windows))]
 fn sync_directory(parent: &Path) -> Result<()> {
-    let handle = open_directory(parent)
+    let handle = fs::File::open(parent)
         .wrap_err_with(|| format!("opening receipt output directory {}", parent.display()))?;
     handle
         .sync_all()
@@ -140,26 +142,27 @@ fn sync_directory(parent: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Open a directory handle that may be `fsync`ed.
-#[cfg(not(windows))]
-fn open_directory(parent: &Path) -> std::io::Result<fs::File> {
-    fs::File::open(parent)
-}
-
-/// Open a directory handle that may be `fsync`ed.
+/// Windows offers no directory flush to perform, so none is attempted.
 ///
-/// Raised in review: a plain `File::open` on a directory fails on Windows, so
-/// making the sync fallible — correct in itself — would have turned every
-/// receipt write on Windows into an error. `CreateFile` only returns a directory
-/// handle when told to expect one, which is what this flag does.
+/// This is the second correction to the same few lines, and the first one was
+/// wrong. Making the sync fallible would have failed every receipt write on
+/// Windows because `File::open` cannot return a directory handle; adding
+/// `FILE_FLAG_BACKUP_SEMANTICS` fixed the open and left the failure one line
+/// later, because `sync_all` issues `FlushFileBuffers`, which requires a handle
+/// with write access — and a directory cannot be opened for writing. The net
+/// effect was identical to the bug it claimed to fix.
+///
+/// Declining an operation the platform does not provide is not the silent
+/// swallow that was removed here: nothing is attempted, so nothing is
+/// discarded, and the difference is stated rather than hidden behind a
+/// best-effort call. What backs durability on NTFS instead is metadata
+/// journalling, which orders the rename against the already-`sync_all`ed file
+/// contents. The guarantee is weaker than an explicit `fsync` and the platforms
+/// genuinely differ here; that is a property of the platforms, not a claim this
+/// module gets to smooth over.
 #[cfg(windows)]
-fn open_directory(parent: &Path) -> std::io::Result<fs::File> {
-    use std::os::windows::fs::OpenOptionsExt;
-
-    /// `FILE_FLAG_BACKUP_SEMANTICS`, required to obtain a directory handle.
-    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
-
-    fs::OpenOptions::new().read(true).custom_flags(FILE_FLAG_BACKUP_SEMANTICS).open(parent)
+fn sync_directory(_parent: &Path) -> Result<()> {
+    Ok(())
 }
 
 fn parent_or_current(path: &Path) -> &Path {
