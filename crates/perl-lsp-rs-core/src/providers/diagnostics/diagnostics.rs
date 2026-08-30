@@ -35,7 +35,7 @@ use super::lints::unreachable_code::check_unreachable_code;
 use super::lints::unused_imports::check_unused_imports;
 use super::lints::version_compat::check_version_compat_with_pragma_map;
 use super::parse_errors::{parse_error_code, parse_error_severity};
-use super::scope::scope_issues_to_diagnostics_with_semantics;
+use super::scope::scope_issues_to_diagnostics_with_semantics_ref;
 
 // ── NullSemanticQueries ──
 
@@ -514,11 +514,13 @@ impl DiagnosticsProvider {
             };
 
             // Scope-analysis issues detected for undeclared/unused/shadowing
-            // variables. `scope_issues_to_diagnostics_with_semantics` takes the
-            // issue list by value, so clone out of the shared analysis rather
-            // than re-running the (much more expensive) scope analyzer.
-            diagnostics.extend(scope_issues_to_diagnostics_with_semantics(
-                analysis.scope_issues().to_vec(),
+            // variables. Read straight out of the shared analysis: the
+            // borrowing form exists precisely so a generation-owned issue list
+            // is not deep-cloned (two `String`s per issue) on every
+            // evaluation, which is the cost sharing the analysis is meant to
+            // remove rather than relocate.
+            diagnostics.extend(scope_issues_to_diagnostics_with_semantics_ref(
+                analysis.scope_issues(),
                 file_id,
                 semantic_queries,
             ));

@@ -23,6 +23,7 @@ use super::{
     UnusedLexicalVariableRule, UnusedParameterRule,
 };
 
+#[cfg(any(test, feature = "test-instrumentation"))]
 thread_local! {
     /// Counts how many times [`NativeCriticRegistry::check_unfiltered`] has had to
     /// rebuild the pragma map and scope analysis for itself because its caller did
@@ -61,14 +62,24 @@ thread_local! {
 /// Current value of the calling thread's native-critic scope/pragma rebuild
 /// counter.
 ///
-/// See [`SCOPE_REBUILD_COUNT`]. Intended for proof, not for behavior: nothing
-/// in production reads it.
+/// See [`SCOPE_REBUILD_COUNT`]. Instrumentation, not behavior: nothing in
+/// production reads it, so it is compiled only for this crate's own tests and
+/// for a downstream crate that opts in with the `test-instrumentation`
+/// feature (`perl-lsp-rs` does so through its dev-dependencies). A production
+/// build carries neither these functions nor the counter, so proof-only
+/// observability never becomes supported public API -- the same gating the
+/// workspace already uses for `perl-dap`'s `test-helpers` and `perl-lsp-rs`'s
+/// `test-fallbacks`.
+#[cfg(any(test, feature = "test-instrumentation"))]
 #[must_use]
 pub fn native_critic_scope_rebuild_count() -> usize {
     SCOPE_REBUILD_COUNT.with(std::cell::Cell::get)
 }
 
 /// Reset the calling thread's native-critic scope/pragma rebuild counter.
+///
+/// Gated exactly as [`native_critic_scope_rebuild_count`].
+#[cfg(any(test, feature = "test-instrumentation"))]
 pub fn reset_native_critic_scope_rebuild_count() {
     SCOPE_REBUILD_COUNT.with(|c| c.set(0));
 }
@@ -462,6 +473,7 @@ impl NativeCriticRegistry {
             // Caller already pre-computed; reuse.
             (ctx.scope_issues, ctx.pragma_map)
         } else {
+            #[cfg(any(test, feature = "test-instrumentation"))]
             SCOPE_REBUILD_COUNT.with(|c| c.set(c.get().saturating_add(1)));
             pragma_map_owned = perl_pragma::PragmaTracker::build(ctx.ast);
             scope_issues_owned = perl_semantic_analyzer::scope_analyzer::ScopeAnalyzer::new()

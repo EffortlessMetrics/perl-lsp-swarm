@@ -23,9 +23,13 @@ pub use native_contract::{
     CriticCategory, CriticContext, CriticFinding, CriticFix, CriticRelatedInformation, CriticRule,
     CriticTextEdit, FixSafety,
 };
+pub use native_registry::{NativeCriticProfile, NativeCriticRegistry};
+/// Proof-only rebuild instrumentation; see `native_registry`. Compiled for
+/// this crate's tests and for downstream crates that opt in with the
+/// `test-instrumentation` feature, never in a production build.
+#[cfg(any(test, feature = "test-instrumentation"))]
 pub use native_registry::{
-    NativeCriticProfile, NativeCriticRegistry, native_critic_scope_rebuild_count,
-    reset_native_critic_scope_rebuild_count,
+    native_critic_scope_rebuild_count, reset_native_critic_scope_rebuild_count,
 };
 pub use native_suppressions::{CriticSuppression, CriticSuppressionMap, CriticSuppressionScope};
 
