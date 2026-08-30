@@ -320,6 +320,44 @@ fn field_call_nested_in_a_block_inside_a_class_is_not_a_field_declaration() -> T
 }
 
 #[test]
+fn fields_do_not_leak_between_sibling_classes() -> TestResult {
+    // A field belongs to its own class. A method of a second class in the same
+    // file must not resolve a name declared only in the first class: the
+    // reference is undeclared there, so it stays a package read.
+    //
+    // Isolation here comes from the class body `Block` earning its own scope
+    // frame, so a sibling class body is not an ancestor scope. There is still
+    // no dedicated `Class` scope frame (#13844).
+    let file = lower_source(
+        "use feature 'class';\nclass A {\n    field $secret;\n}\nclass B {\n    method peek { $secret }\n}\n",
+    );
+    let body = method_body(&file, "peek")?;
+    assert_eq!(
+        variable_kind(body, "secret")?,
+        VariableKind::Package,
+        "a field of class A must not resolve as a field inside class B"
+    );
+    Ok(())
+}
+
+#[test]
+fn same_named_field_in_a_sibling_class_does_not_satisfy_a_forward_reference() -> TestResult {
+    // Both classes declare `$x`, and B's own declaration comes after its
+    // method. Neither A's field (wrong class) nor B's later field (not yet
+    // declared) may satisfy the reference.
+    let file = lower_source(
+        "use feature 'class';\nclass A {\n    field $x;\n}\nclass B {\n    method m { $x }\n    field $x;\n}\n",
+    );
+    let body = method_body(&file, "m")?;
+    assert_eq!(
+        variable_kind(body, "x")?,
+        VariableKind::Package,
+        "neither a sibling class's field nor a later field may resolve this reference"
+    );
+    Ok(())
+}
+
+#[test]
 fn field_in_a_nested_class_body_still_earns_class_field_storage() -> TestResult {
     // Class-body depth must be restored correctly after leaving a class, so a
     // later class in the same file is still recognized.
