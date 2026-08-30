@@ -567,7 +567,26 @@ describe('StreamingCompletionController — request identity and cache correctne
     ).toBeUndefined();
   });
 
-  test('revoking ghost text does not start another backend generation', () => {
+  test('revocation dismisses the suggestion instead of re-querying', () => {
+    const provider = getStreamAdapter();
+    const doc = makeMockDoc('file:///a.pl', 1);
+    const pos = makeMockPos(5, 10);
+    const handler = showGhostText(provider, doc, pos);
+    (vscode.commands.executeCommand as jest.Mock).mockClear();
+
+    handler(makeEmptyFinal('sess-terminal', 1));
+
+    const commands = (vscode.commands.executeCommand as jest.Mock).mock.calls.map(
+      (call) => call[0] as string,
+    );
+    // `trigger` would re-enter this provider at the cursor the server just
+    // answered "nothing" for, dispatching another generation that revokes again
+    // and loops. `hide` clears the text without a re-query.
+    expect(commands).toContain('editor.action.inlineSuggest.hide');
+    expect(commands).not.toContain('editor.action.inlineSuggest.trigger');
+  });
+
+  test('revoking ghost text starts no further backend generation', () => {
     const provider = getStreamAdapter();
     const doc = makeMockDoc('file:///a.pl', 1);
     const pos = makeMockPos(5, 10);
@@ -576,80 +595,23 @@ describe('StreamingCompletionController — request identity and cache correctne
 
     handler(makeEmptyFinal('sess-terminal', 1));
 
-    // Revocation must retrigger the widget so the stale text disappears, and
-    // that retrigger re-enters the provider at the same cursor. Dispatching a
-    // fresh stream here would revoke again and loop.
+    expect(controller.snapshotStreamCounters().streamGenerationsStarted).toBe(1);
+  });
+
+  test('an explicit re-invocation after a revocation still retries', () => {
+    const provider = getStreamAdapter();
+    const doc = makeMockDoc('file:///a.pl', 1);
+    const pos = makeMockPos(5, 10);
+    const handler = showGhostText(provider, doc, pos);
+
+    handler(makeEmptyFinal('sess-terminal', 1));
+
+    // The user asks again at the same cursor. An AI backend is not
+    // deterministic, so a deliberate retry is a real request, not a duplicate:
+    // it must reach the backend rather than being swallowed.
     provider.provideInlineCompletionItems(
       doc,
       pos,
-      {} as vscode.InlineCompletionContext,
-      {} as vscode.CancellationToken,
-    );
-    expect(controller.snapshotStreamCounters().streamGenerationsStarted).toBe(1);
-  });
-
-  test('every re-query after a revocation is suppressed, not just the first', () => {
-    const provider = getStreamAdapter();
-    const doc = makeMockDoc('file:///a.pl', 1);
-    const pos = makeMockPos(5, 10);
-    const handler = showGhostText(provider, doc, pos);
-    expect(controller.snapshotStreamCounters().streamGenerationsStarted).toBe(1);
-
-    handler(makeEmptyFinal('sess-terminal', 1));
-
-    // A stream that showed an intermediate chunk and then terminated empty has
-    // queued two retriggers — one per `handleProgress` call — and the server's
-    // final frame bypasses the pacing gate, so they can land back to back. A
-    // marker consumed by the first re-query would let the second start a fresh
-    // generation, which would revoke again and loop.
-    for (let requery = 0; requery < 5; requery += 1) {
-      expect(
-        provider.provideInlineCompletionItems(
-          doc,
-          pos,
-          {} as vscode.InlineCompletionContext,
-          {} as vscode.CancellationToken,
-        ),
-      ).toBeUndefined();
-    }
-    expect(controller.snapshotStreamCounters().streamGenerationsStarted).toBe(1);
-  });
-
-  test('a revoked identity is released once the cursor moves', () => {
-    const provider = getStreamAdapter();
-    const doc = makeMockDoc('file:///a.pl', 1);
-    const pos = makeMockPos(5, 10);
-    const handler = showGhostText(provider, doc, pos);
-
-    handler(makeEmptyFinal('sess-terminal', 1));
-
-    // Suppression is a negative cache on the exact request identity, not a
-    // permanent block: moving the cursor changes the answer and clears it.
-    controller.dispose();
-    controller = new StreamingCompletionController(mockClient);
-
-    getStreamAdapter().provideInlineCompletionItems(
-      doc,
-      makeMockPos(6, 0),
-      {} as vscode.InlineCompletionContext,
-      {} as vscode.CancellationToken,
-    );
-    expect(controller.snapshotStreamCounters().streamGenerationsStarted).toBe(1);
-  });
-
-  test('suppression is keyed to the cursor, not just the document', () => {
-    const provider = getStreamAdapter();
-    const doc = makeMockDoc('file:///a.pl', 1);
-    const pos = makeMockPos(5, 10);
-    const handler = showGhostText(provider, doc, pos);
-
-    handler(makeEmptyFinal('sess-terminal', 1));
-
-    // A different cursor in the same document and version was never answered,
-    // so it must still dispatch.
-    provider.provideInlineCompletionItems(
-      doc,
-      makeMockPos(9, 2),
       {} as vscode.InlineCompletionContext,
       {} as vscode.CancellationToken,
     );
@@ -864,9 +826,10 @@ describe('StreamingCompletionController — request identity and cache correctne
         {} as vscode.CancellationToken,
       ),
     ).toBeUndefined();
-    // The revocation must also suppress the re-query it triggers, or it would
-    // dispatch a fresh generation at the cursor it just cleared.
-    expect(controller.snapshotStreamCounters().streamGenerationsStarted).toBe(1);
+    // The stale text is dismissed, not merely dropped from the cache.
+    expect(vscode.commands.executeCommand as jest.Mock).toHaveBeenCalledWith(
+      'editor.action.inlineSuggest.hide',
+    );
   });
 
   test('a backend failure after partial text revokes it', async () => {
@@ -893,15 +856,15 @@ describe('StreamingCompletionController — request identity and cache correctne
         {} as vscode.CancellationToken,
       ),
     ).toBeUndefined();
-    // A failing backend must not be re-dispatched by the revocation's own
-    // re-query: that is the loop this suppression exists to prevent.
-    expect(controller.snapshotStreamCounters().streamGenerationsStarted).toBe(1);
+    // The partial text is dismissed on screen, not merely dropped from the
+    // cache; and dismissing costs no further backend generation.
+    expect(vscode.commands.executeCommand as jest.Mock).toHaveBeenCalledWith(
+      'editor.action.inlineSuggest.hide',
+    );
   });
 
-  test('a cancelled request settles quietly without arming suppression', async () => {
-    (mockClient.sendRequest as jest.Mock).mockReturnValue(
-      Promise.reject(new Error('Canceled')),
-    );
+  test('a cancelled request settles quietly and stays retryable', async () => {
+    (mockClient.sendRequest as jest.Mock).mockReturnValue(Promise.reject(new Error('Canceled')));
 
     const provider = getStreamAdapter();
     const doc = makeMockDoc('file:///a.pl', 1);
@@ -917,9 +880,8 @@ describe('StreamingCompletionController — request identity and cache correctne
     await Promise.resolve();
     await Promise.resolve();
 
-    // Cancellation is owned by whoever cancelled. Revoking here would arm the
-    // negative cache without ever retriggering, so the cursor would be stuck
-    // answering nothing. VS Code spells this "Canceled", not "cancelled".
+    // Cancellation is owned by whoever cancelled; this arm must not also
+    // dismiss or clear state. VS Code spells it "Canceled", not "cancelled".
     provider.provideInlineCompletionItems(
       doc,
       pos,

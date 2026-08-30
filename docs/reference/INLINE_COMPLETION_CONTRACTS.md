@@ -338,13 +338,25 @@ are reclaimed by the didChange/didClose sweeps, which do compare URI variants.
 
 **Client side.** `vscode-extension/src/streamingCompletion.ts` treats an empty
 terminal value as an authoritative **revocation**, not an ignorable frame: it
-clears the cached candidate for that request identity, releases the progress
-registration and cancellation resources, and retriggers the suggest widget so
-visible ghost text disappears. A request that resolves without a terminal value,
-and a backend failure after partial text, revoke the same way. Because the
-revocation retrigger re-enters the provider at the cursor the server just
-answered "nothing" for, that one re-query is absorbed and the suppression is
-then spent, so an explicit re-invocation can still retry.
+clears the cached candidate for that request identity and releases the progress
+registration and cancellation resources. A request that resolves without a
+terminal value, and a backend failure after partial text, revoke the same way.
+
+Revocation dismisses the on-screen suggestion with
+`editor.action.inlineSuggest.hide`, never with `…inlineSuggest.trigger`.
+Clearing the cache alone would leave the rendered suggestion visible, but
+`trigger` re-enters the provider at the exact cursor the server just answered
+"nothing" for, which would dispatch another backend generation that revokes
+again — a loop. `hide` dismisses without re-querying, so revocation costs no
+generation, needs no suppression state, and leaves a deliberate re-invocation at
+the same cursor free to retry. That matters because an AI backend is not
+deterministic: a user asking again is a real request, not a duplicate.
+
+Only an *accepted* terminal candidate retriggers the widget. One bounded race
+remains: a retrigger queued for an earlier non-final chunk can be serviced after
+the stream has already settled and revoked, which starts one further generation.
+That is bounded, not a loop, because the second stream's own revocation hides
+rather than retriggers.
 
 Terminal outcomes owned elsewhere: the document-lifecycle transitions of #8657 /
 #8666 / #10254 are not yet consumed here; stream revocation still follows raw
@@ -392,10 +404,9 @@ Session identity and eviction —
 Client revocation —
 `vscode-extension/src/test/streamingCompletion.test.ts`:
 `an empty terminal value revokes ghost text it previously showed`,
-`revoking ghost text does not start another backend generation`,
-`every re-query after a revocation is suppressed, not just the first`,
-`a revoked identity is released once the cursor moves`,
-`suppression is keyed to the cursor, not just the document`,
+`revocation dismisses the suggestion instead of re-querying`,
+`revoking ghost text starts no further backend generation`,
+`an explicit re-invocation after a revocation still retries`,
 `a non-empty terminal value keeps its candidate servable`,
 `the request resolving after a successful final does not revoke it`,
 `an empty intermediate frame is skipped, not treated as a revocation`,
@@ -404,7 +415,7 @@ Client revocation —
 `a request resolving without a terminal value revokes its partial text`,
 `a backend failure after partial text revokes it`,
 `a late rejection from a superseded stream cannot revoke its successor`,
-`a cancelled request settles quietly without arming suppression`.
+`a cancelled request settles quietly and stays retryable`.
 
 ### Invariant
 
