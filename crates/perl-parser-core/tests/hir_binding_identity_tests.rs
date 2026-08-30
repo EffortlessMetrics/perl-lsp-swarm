@@ -26,6 +26,7 @@ use perl_parser_core::hir::{
     VariableKind, lower_ast,
 };
 
+/// Parse `source` and run the canonical two-pass HIR lowering.
 fn lower(source: &str) -> HirFile {
     let mut parser = Parser::new(source);
     let output = parser.parse_with_recovery();
@@ -51,6 +52,7 @@ struct Declaration {
     start: usize,
 }
 
+/// Flatten every `HirExpr::Variable` across all bodies, ordered by source span.
 fn occurrences(file: &HirFile) -> Vec<Occurrence> {
     let mut found = Vec::new();
     for body in &file.bodies {
@@ -73,6 +75,7 @@ fn occurrences(file: &HirFile) -> Vec<Occurrence> {
     found
 }
 
+/// Flatten every `HirStmt::Let` across all bodies, ordered by declaration span.
 fn declarations(file: &HirFile) -> Vec<Declaration> {
     let mut found = Vec::new();
     for body in &file.bodies {
@@ -132,6 +135,7 @@ const NESTED: &str = r#"sub outer {
 }
 "#;
 
+/// Canonical identities of the outer and inner `my $x` in [`NESTED`], in that order.
 fn nested_binding_ids(file: &HirFile) -> (HirBindingId, HirBindingId) {
     let decls = declarations(file);
     let outer = decls
@@ -148,6 +152,8 @@ fn nested_binding_ids(file: &HirFile) -> (HirBindingId, HirBindingId) {
     )
 }
 
+/// The load-bearing property: one body, one spelling, two nested scopes, two
+/// distinct canonical bindings.
 #[test]
 fn nested_same_spelling_lexicals_receive_distinct_binding_identities() {
     let file = lower(NESTED);
@@ -162,6 +168,8 @@ fn nested_same_spelling_lexicals_receive_distinct_binding_identities() {
     );
 }
 
+/// Every `$x` occurrence resolves to the binding in scope at its own position:
+/// inner-block occurrences to the inner binding, the rest to the outer one.
 #[test]
 fn each_nested_occurrence_attaches_to_its_own_binding() {
     let file = lower(NESTED);
@@ -186,6 +194,8 @@ fn each_nested_occurrence_attaches_to_its_own_binding() {
     }
 }
 
+/// All three access modes are present and each carries canonical identity —
+/// the PIR extractor historically discarded read-modify-write entirely.
 #[test]
 fn read_write_and_rmw_occurrences_all_carry_identity() {
     let file = lower(NESTED);
@@ -225,6 +235,8 @@ fn name_keyed_identity_would_collapse_and_must_not() {
     );
 }
 
+/// `my` and `state` of one spelling stay distinct, and their storage classes
+/// remain separable behind those identities.
 #[test]
 fn my_and_state_of_the_same_spelling_remain_distinct_bindings() {
     let source = "sub f {\n  my $c = 1;\n  if ($t) { state $c = 2; print $c; }\n  print $c;\n}\n";
@@ -244,6 +256,8 @@ fn my_and_state_of_the_same_spelling_remain_distinct_bindings() {
     );
 }
 
+/// `our` and `my` of one spelling stay distinct, and the read after the inner
+/// block resolves back to the `our` binding.
 #[test]
 fn our_and_my_of_the_same_spelling_remain_distinct_bindings() {
     let source = "package P;\nsub f { our $v = 1; if ($t) { my $v = 2; print $v; } print $v; }\n";
@@ -421,6 +435,7 @@ fn foreach_iterator_shares_the_enclosing_scope_and_does_not_shadow() {
     );
 }
 
+/// Signature parameters resolve to their `StorageClass::Parameter` bindings.
 #[test]
 fn signature_parameter_occurrences_resolve_to_parameter_bindings() {
     let source = "use feature 'signatures';\nsub g($a, $b) { return $a + $b; }\n";
@@ -444,6 +459,8 @@ fn signature_parameter_occurrences_resolve_to_parameter_bindings() {
     }
 }
 
+/// An *undeclared* qualified global has no recorded binding, so it carries
+/// `None` rather than a fabricated stand-in.
 #[test]
 fn unresolved_package_global_carries_no_fabricated_identity() {
     let file = lower("print $Foo::bar;\n");
