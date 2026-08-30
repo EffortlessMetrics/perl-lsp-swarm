@@ -27,7 +27,7 @@ use perl_semantic_facts::framework_adapters::mojolicious::{
     MojoliciousRole, detect_mojolicious_lite, mojolicious_lite_activation_facts,
     mojolicious_lite_descriptor, mojolicious_role_facts_from_mojo_base,
 };
-use perl_semantic_facts::{FileId, SourceGeneration};
+use perl_semantic_facts::{Confidence, FileId, SourceGeneration};
 use perl_tdd_support::must;
 
 const GENERATION: &str = "gen-1";
@@ -396,6 +396,81 @@ fn a_contiguous_multipart_version_requirement_owns_the_lite_role_end_to_end() {
     // argument at all. Only the spelling separates the two outcomes.
     let facts = lite_facts("use Mojolicious::Lite 9.34.0;\n", GENERATION);
     assert_eq!(roles(&facts), vec![Some(MojoliciousRole::LiteApplication)]);
+}
+
+#[test]
+fn a_commented_empty_import_suppresses_the_role() {
+    // Perl allows layout — whitespace, newlines, and comments — anywhere in
+    // an empty import list, and every spelling of it calls no `import`, so
+    // the Lite DSL is never installed and the package owns no role.
+    for code in [
+        "use Mojolicious::Lite ( # no DSL wanted\n);\n",
+        "use Mojolicious::Lite (\n  # no DSL wanted\n);\n",
+        "use Mojolicious::Lite 9.34 ( # no DSL wanted\n);\n",
+        "use Mojolicious::Lite # no DSL wanted\n();\n",
+    ] {
+        let facts = lite_facts(code, GENERATION);
+        assert_eq!(roles(&facts), vec![None], "{code}");
+        assert!(
+            matches!(
+                facts[0].outcome,
+                MojoliciousActivationOutcome::AbsentWithCompleteEvidence { .. }
+            ),
+            "{code}"
+        );
+    }
+}
+
+#[test]
+fn a_commented_populated_import_is_not_read_as_empty() {
+    // Containment for the comment skip: layout is skipped, arguments are
+    // not. A list carrying both a comment and real content must not read as
+    // a suppressed import — the outcome has to be the unreviewed-option
+    // refusal, not the "no `import` was called" one, because the two mean
+    // opposite things about what Perl did.
+    //
+    // (This form owns no role either way: the parser emits `(-signatures)`
+    // as the separate tokens `-` and `signatures` rather than one option, so
+    // the parenthesized spelling is unreviewed here. That is pre-existing
+    // and fail-closed, and it is another instance of #14277.)
+    let facts = lite_facts("use Mojolicious::Lite ( # why\n  -signatures\n);\n", GENERATION);
+    assert_eq!(roles(&facts), vec![None]);
+    assert!(
+        matches!(
+            facts[0].outcome,
+            MojoliciousActivationOutcome::UnsupportedVersionOrProfile { .. }
+        ),
+        "a populated list must not be read as a suppressed import: {:?}",
+        facts[0].outcome
+    );
+}
+
+#[test]
+fn a_refused_derived_role_publishes_no_version_or_confidence() {
+    // A derived refusal must not look version-backed. The Lite builder
+    // publishes confidence and framework version only at an exact
+    // activation; the consumption seam has to hold the same line, or an
+    // absent role would carry the upstream `High` and version as if this
+    // profile had proven something about the package.
+    for code in [
+        "package MyApp::Model::Row;\nuse Mojo::Base -base;\n",
+        "package MyApp::Controller::Users;\nuse Mojo::Base 'MyApp::Controller::Base';\n",
+    ] {
+        let facts = derived_facts(code, GENERATION);
+        assert_eq!(roles(&facts), vec![None], "{code}");
+        assert!(facts[0].framework_version.is_empty(), "refused role published a version: {code}");
+        assert_ne!(facts[0].confidence, Confidence::High, "refused role kept High: {code}");
+    }
+}
+
+#[test]
+fn an_exact_derived_role_still_carries_its_version_and_confidence() {
+    // Negative control for the gate above: the exact roles must keep the
+    // upstream evidence they are entitled to.
+    let facts = derived_facts("package MyApp;\nuse Mojo::Base 'Mojolicious';\n", GENERATION);
+    assert_eq!(roles(&facts), vec![Some(MojoliciousRole::Application)]);
+    assert_eq!(facts[0].framework_version, DIST_VERSION);
+    assert_eq!(facts[0].confidence, Confidence::High);
 }
 
 #[test]

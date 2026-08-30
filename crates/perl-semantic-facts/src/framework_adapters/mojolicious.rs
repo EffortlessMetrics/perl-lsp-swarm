@@ -1014,6 +1014,14 @@ pub fn mojolicious_role_facts_from_mojo_base(
         }
     };
 
+    // Confidence and the reported framework version become published facts
+    // only at an exact activation, exactly as the Lite builder's last step
+    // does. A refused derived role that kept the upstream `High` confidence
+    // and version would read as a version-backed absence — a claim this
+    // adapter has not made. The upstream facts are unchanged and still say
+    // what Mojo::Base proved; this is about what *this* profile publishes.
+    let exact = matches!(outcome, MojoliciousActivationOutcome::ExactActivation { .. });
+
     MojoliciousActivationFacts {
         outcome,
         profile_version: MOJOLICIOUS_PROFILE_VERSION,
@@ -1023,8 +1031,8 @@ pub fn mojolicious_role_facts_from_mojo_base(
         scope_identity: mojo_base.scope_identity.clone(),
         environment_identity: mojo_base.environment_identity.clone(),
         resolved_module: mojo_base.resolved_module.clone(),
-        framework_version: mojo_base.framework_version.clone(),
-        confidence: mojo_base.confidence,
+        framework_version: if exact { mojo_base.framework_version.clone() } else { String::new() },
+        confidence: if exact { mojo_base.confidence } else { Confidence::Low },
         source_generation: mojo_base.source_generation.clone(),
         signatures: mojo_base.signatures,
         unmodeled_options: mojo_base.unmodeled_options.clone(),

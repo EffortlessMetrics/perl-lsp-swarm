@@ -105,16 +105,38 @@ fn has_explicit_empty_import(source: &str, span_start: u32, span_end: u32) -> bo
     let Some(module_at) = statement.find(MOJOLICIOUS_LITE_MODULE) else {
         return false;
     };
-    let rest =
-        skip_version_token(statement[module_at + MOJOLICIOUS_LITE_MODULE.len()..].trim_start())
-            .trim_start();
-    // Perl's explicit empty import list may carry whitespace or newlines
-    // between the parentheses; `( )` and a multiline `(\n)` suppress `import`
-    // exactly as `()` does.
+    let rest = skip_layout(skip_version_token(skip_layout(
+        &statement[module_at + MOJOLICIOUS_LITE_MODULE.len()..],
+    )));
+    // Perl's explicit empty import list may carry whitespace, newlines, or
+    // comments between the parentheses; `( )`, a multiline `(\n)`, and
+    // `( # why\n)` all suppress `import` exactly as `()` does.
     let Some(after_open) = rest.strip_prefix('(') else {
         return false;
     };
-    after_open.trim_start().starts_with(')')
+    skip_layout(after_open).starts_with(')')
+}
+
+/// Skip Perl layout — whitespace and line comments — which may appear
+/// anywhere an empty import list is spelled out.
+///
+/// Only layout is skipped. A `#` that opens a comment is indistinguishable
+/// here from one inside a quoted argument, but a quoted argument is not an
+/// empty list: the scan then fails to find the closing parenthesis and
+/// reports no suppression, which is the fail-closed direction.
+fn skip_layout(rest: &str) -> &str {
+    let mut rest = rest;
+    loop {
+        rest = rest.trim_start();
+        let Some(after_hash) = rest.strip_prefix('#') else {
+            return rest;
+        };
+        // A comment running to the end of the statement encloses no `)`.
+        rest = match after_hash.find('\n') {
+            Some(newline) => &after_hash[newline + 1..],
+            None => "",
+        };
+    }
 }
 
 /// Skip a leading `VERSION` requirement token, in either the numeric or
