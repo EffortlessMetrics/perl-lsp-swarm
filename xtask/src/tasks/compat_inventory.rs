@@ -1046,6 +1046,15 @@ fn normalize_lexically(path: &Path) -> PathBuf {
     out
 }
 
+/// Whether `haystack` contains `needle` as a raw byte subsequence.
+///
+/// Both needles are ASCII, so this finds them in any file whose encoding is
+/// ASCII-compatible, including one that is not valid UTF-8 as a whole.
+fn contains_bytes(haystack: &[u8], needle: &str) -> bool {
+    let needle = needle.as_bytes();
+    haystack.windows(needle.len()).any(|window| window == needle)
+}
+
 /// Tracked files mentioning the package name or its Rust module path.
 fn discover_references(root: &Path, tracked: &[String]) -> Result<Vec<String>> {
     let mut out = BTreeSet::new();
@@ -1059,21 +1068,16 @@ fn discover_references(root: &Path, tracked: &[String]) -> Result<Vec<String>> {
         if full.is_dir() {
             continue;
         }
-        let text = match fs::read_to_string(&full) {
-            Ok(text) => text,
-            // A non-UTF-8 file cannot carry a Rust reference, so skipping it is
-            // sound. Any other failure — a permission error, a broken symlink —
-            // means this file's contents are unknown, and silently dropping it
-            // would let a real reference escape the ledger.
-            Err(error) if error.kind() == std::io::ErrorKind::InvalidData => continue,
-            Err(error) => {
-                bail!(
-                    "failed to read tracked file {path}; the reference population must be \
-                     complete: {error}"
-                );
-            }
-        };
-        if text.contains(PACKAGE) || text.contains(MODULE_PATH) {
+        // Bytes, not text. Both needles are ASCII, and a tracked file that is
+        // not valid UTF-8 — an archive fixture, a legacy-encoded script — can
+        // still spell the package name. Decoding first would silently drop
+        // those files, and a reference escaping the population is exactly the
+        // failure this ledger exists to prevent. Every read error is therefore
+        // fatal: unknown contents cannot be assumed empty.
+        let bytes = fs::read(&full).wrap_err_with(|| {
+            format!("failed to read tracked file {path}; the reference population must be complete")
+        })?;
+        if contains_bytes(&bytes, PACKAGE) || contains_bytes(&bytes, MODULE_PATH) {
             out.insert(path.clone());
         }
     }
@@ -1223,11 +1227,29 @@ fn validate_symbols(ledger: &Ledger, discovered: &Discovered) -> Result<()> {
     Ok(())
 }
 
+/// The reference kind a path must carry, where the path alone settles it.
+///
+/// Only the mechanically decidable kinds are returned. `OwnCrate` and
+/// `Lockfile` are facts about the path; the remaining kinds — `Documentation`,
+/// `Policy`, `Tooling`, `RustImport` — are an auditor's reading of what a file
+/// *does* with the reference, which a path prefix cannot settle, so this
+/// returns `None` and leaves those rows to review.
+fn required_reference_kind(path: &str) -> Option<ReferenceKind> {
+    if path == "Cargo.lock" {
+        return Some(ReferenceKind::Lockfile);
+    }
+    if path == CRATE_DIR || path.starts_with(&format!("{CRATE_DIR}/")) {
+        return Some(ReferenceKind::OwnCrate);
+    }
+    None
+}
+
 /// Reconcile the consumer rows against the discovered reference population.
 ///
 /// Refuses a duplicate path, a tracked reference with no row (the
 /// unexplained-reference rule), a row for a path that no longer references the
-/// crate, and a Cargo dependent not recorded as one.
+/// crate, a Cargo dependent not recorded as one, and a row whose
+/// `reference_kind` contradicts what its path decides.
 fn validate_consumers(ledger: &Ledger, discovered: &Discovered) -> Result<()> {
     let mut seen: BTreeSet<&str> = BTreeSet::new();
     for row in &ledger.consumers {
@@ -1273,6 +1295,21 @@ fn validate_consumers(ledger: &Ledger, discovered: &Discovered) -> Result<()> {
                 row.reference_kind.as_str()
             ),
             Some(_) => {}
+        }
+    }
+
+    // Kinds the path itself decides are checked against the path, so a row
+    // cannot describe the crate's own source or the lockfile as something else.
+    for row in &ledger.consumers {
+        if let Some(required) = required_reference_kind(&row.path)
+            && row.reference_kind != required
+        {
+            bail!(
+                "consumer `{}` must be recorded as `{}` but {LEDGER_PATH} records it as `{}`",
+                row.path,
+                required.as_str(),
+                row.reference_kind.as_str()
+            );
         }
     }
     Ok(())
@@ -1988,6 +2025,76 @@ mod tests {
 
         let err = validate(&l, &d).unwrap_err().to_string();
         assert!(err.contains("does not explain it"), "unexpected error: {err}");
+        Ok(())
+    }
+
+    #[test]
+    fn a_non_utf8_file_still_yields_its_reference() -> TestResult {
+        // A tracked file may be an archive or a legacy-encoded script and still
+        // spell the package name in ASCII. Decoding to UTF-8 first drops it,
+        // and a dropped reference demands no row — so this runs the real
+        // discovery over a real file, not just the byte helper.
+        let dir = tempfile::tempdir()?;
+        let mut bytes = b"prefix ".to_vec();
+        bytes.push(0xFF); // invalid UTF-8 anywhere in the file
+        bytes.extend_from_slice(PACKAGE.as_bytes());
+        assert!(String::from_utf8(bytes.clone()).is_err(), "fixture must not be valid UTF-8");
+        fs::write(dir.path().join("archive.bin"), &bytes)?;
+
+        let found = discover_references(dir.path(), &["archive.bin".to_string()])?;
+        assert_eq!(found, vec!["archive.bin".to_string()]);
+        Ok(())
+    }
+
+    #[test]
+    fn a_non_utf8_file_without_the_needle_is_not_a_reference() -> TestResult {
+        // The control: invalid UTF-8 alone must not manufacture a reference.
+        let dir = tempfile::tempdir()?;
+        fs::write(dir.path().join("archive.bin"), [0xFF, 0xFE, b'h', b'i'])?;
+
+        let found = discover_references(dir.path(), &["archive.bin".to_string()])?;
+        assert!(found.is_empty(), "unexpected references: {found:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn an_unreadable_tracked_file_fails_closed() -> TestResult {
+        // Unknown contents cannot be assumed empty: a file git tracks but that
+        // cannot be read must stop the audit, not silently leave the population.
+        let dir = tempfile::tempdir()?;
+        let err = discover_references(dir.path(), &["missing.bin".to_string()]).unwrap_err();
+        let err = err.to_string();
+        assert!(err.contains("must be complete"), "unexpected error: {err}");
+        Ok(())
+    }
+
+    #[test]
+    fn a_path_decided_reference_kind_that_disagrees_fails_closed() -> TestResult {
+        let path = format!("{CRATE_DIR}/src/lib.rs");
+        let l = ledger(vec![], vec![consumer(&path, ReferenceKind::Documentation)]);
+        let d = discovered(vec![], vec![&path]);
+
+        let err = validate(&l, &d).unwrap_err().to_string();
+        assert!(err.contains("must be recorded as `own_crate`"), "unexpected error: {err}");
+        Ok(())
+    }
+
+    #[test]
+    fn a_path_decided_reference_kind_that_agrees_reconciles() -> TestResult {
+        // The control, and the reason the rule is narrow: a path the rule does
+        // not decide keeps whatever kind the auditor recorded.
+        let own = format!("{CRATE_DIR}/src/lib.rs");
+        let l = ledger(
+            vec![],
+            vec![
+                consumer(&own, ReferenceKind::OwnCrate),
+                consumer("Cargo.lock", ReferenceKind::Lockfile),
+                consumer("docs/anything.md", ReferenceKind::Documentation),
+            ],
+        );
+        let d = discovered(vec![], vec![&own, "Cargo.lock", "docs/anything.md"]);
+
+        validate(&l, &d)?;
         Ok(())
     }
 
