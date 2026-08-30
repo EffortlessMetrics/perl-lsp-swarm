@@ -22,8 +22,10 @@ release, package registry, editor marketplace, or other public channel. Installa
 release links may therefore point to `perl-lsp` intentionally.
 
 The current relationship is defined by
-[product identity](docs/reference/product-identity.md) and checked by the landed
-contributor-topology projection:
+[product identity](docs/reference/product-identity.md). The landed contributor-topology
+projection derives it from local authorities, but the bare command intentionally leaves live
+stage and channel status `NOT_PROVEN`; a captured `--observation` is required to project
+observed status:
 
 ```bash
 cargo run --locked -p xtask --bin contributor-topology

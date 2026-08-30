@@ -14,9 +14,11 @@ here.
 `perl-lsp-swarm/main` is development state; it does not establish that a change is in a
 release, package registry, editor marketplace, or other public channel.
 
-The repository roles are machine-checked by the landed contributor-topology projection.
-Public installation and release links may therefore point to `perl-lsp` intentionally;
-source-work instructions should point here.
+The repository roles are defined by local product, sync, and release authorities and derived
+by the landed contributor-topology projection. Its bare command intentionally leaves live
+stage and channel status `NOT_PROVEN`; a captured `--observation` is required to project
+observed status. Public installation and release links may therefore point to `perl-lsp`
+intentionally; source-work instructions should point here.
 
 ## 1. Clone and branch
 
@@ -82,8 +84,8 @@ Start from an existing issue when one owns the work. Keep one pull request cente
 Browse the development backlog explicitly in this repository:
 
 ```bash
-# The whole open backlog
-gh issue list --repo EffortlessMetrics/perl-lsp-swarm --state open
+# A bounded view of the open backlog
+gh issue list --repo EffortlessMetrics/perl-lsp-swarm --state open --limit 10
 
 # Beginner-friendly slices; either list can legitimately be empty
 gh issue list --repo EffortlessMetrics/perl-lsp-swarm --state open --label "good first issue"
@@ -91,8 +93,8 @@ gh issue list --repo EffortlessMetrics/perl-lsp-swarm --state open --label size/
 ```
 
 The live label names are `good first issue` and `size/XS` through `size/XL`; the filtered
-lists are a convenience, not a queue guarantee. When both come back empty, read a few
-issues from the unfiltered list and pick one with a bounded acceptance section. Do not
+lists are a convenience, not a queue guarantee. When both come back empty, read the bounded
+unfiltered list and pick one with a clear, reviewable acceptance section. Do not
 select release-operation or swarm-orchestration work for a first contribution merely
 because the file change looks small.
 

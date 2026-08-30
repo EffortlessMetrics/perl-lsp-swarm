@@ -21,8 +21,10 @@ This docs tree is checked in with the active development repository,
 The current distinction is defined by
 [product identity](reference/product-identity.md) and the
 [publication sync protocol](swarm/sync-protocol.md). The landed
-contributor-topology projection checks the mutable repository, branch, and
-publication relationships without requiring network access:
+contributor-topology projection derives the repository, branch, and publication
+relationships from local authorities without requiring network access. The bare
+command intentionally leaves live stage and channel status `NOT_PROVEN`; a captured
+`--observation` is required to project observed status:
 
 ```bash
 cargo run --locked -p xtask --bin contributor-topology

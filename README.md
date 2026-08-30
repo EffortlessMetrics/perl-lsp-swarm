@@ -193,8 +193,9 @@ A merge to `perl-lsp-swarm/main` is development state, not public availability. 
 install and release links above remain on `perl-lsp`; swarm changes reach those surfaces
 only through the reviewed publication transaction.
 
-The landed contributor-topology projection derives this relationship from current product,
-sync, and release authorities:
+The landed contributor-topology projection derives this relationship from local product,
+sync, and release authorities. The bare command intentionally leaves live stage and channel
+status `NOT_PROVEN`; a captured `--observation` is required to project observed status:
 
 ```bash
 cargo run --locked -p xtask --bin contributor-topology
