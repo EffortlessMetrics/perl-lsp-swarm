@@ -20,6 +20,14 @@ pub(super) const MAX_REDIRECTS: u32 = 3;
 /// Per-request wall-clock budget in milliseconds.
 pub(super) const TIMEOUT_MS: u64 = 20_000;
 
+/// Result-page size of the single planned search request.
+///
+/// The plan reads one page and does not paginate, so this surface can only ever
+/// say whether the subject appeared within this many results for its query. The
+/// receipt states that bound as a limitation, sourced from here so the claimed
+/// scope and the request that produced it cannot drift apart.
+pub(super) const SEARCH_PAGE_SIZE: u32 = 50;
+
 /// Byte budget for the JSON and HTML surfaces.
 const METADATA_BYTE_BUDGET: u64 = 4 * 1024 * 1024;
 
@@ -146,7 +154,7 @@ pub(super) fn probe_plan(namespace: &str, extension: &str, version: &str) -> Opt
         ),
         planned(
             Cell::Search,
-            format!("{REGISTRY_ORIGIN}/api/-/search?query={extension}&size=50"),
+            format!("{REGISTRY_ORIGIN}/api/-/search?query={extension}&size={SEARCH_PAGE_SIZE}"),
             METADATA_BYTE_BUDGET,
         ),
         planned(

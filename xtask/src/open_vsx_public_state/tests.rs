@@ -228,6 +228,43 @@ fn search_discoverability_alone_cannot_establish_availability() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn a_published_search_result_declares_the_page_it_was_drawn_from() -> Result<()> {
+    // Raised in review: the receipt publishes the search surface's identity
+    // match, and one bounded page of results cannot distinguish "not on this
+    // page" from "not in the registry". The classifier never consumes the value
+    // — the control above pins that — but a consumer reading the receipt has
+    // only what the receipt says, so the bound has to travel with it.
+    for (label, matched) in [("no match", json!(false)), ("a match", json!(true))] {
+        let receipt = receipt_with(AVAILABLE_EXACT, |document| {
+            document["cells"]["search"]["matched_identity"] = matched.clone();
+        })?;
+        let bounded = receipt
+            .limitations
+            .iter()
+            .any(|entry| entry.contains("bounded result page") && entry.contains("50"));
+        if !bounded {
+            bail!("{label}: the receipt published a search verdict without its page bound");
+        }
+    }
+
+    // A search that never returned a page must not claim the bound instead: the
+    // honest statement there is that discoverability was not established at all.
+    let unattempted = receipt_with(AVAILABLE_EXACT, |document| {
+        document["cells"]["search"]["transport"]["outcome"] = json!("not_attempted");
+        document["cells"]["search"]["transport"]["status"] = Value::Null;
+        document["cells"]["search"]["transport"]["response_bytes"] = Value::Null;
+        document["cells"]["search"]["matched_identity"] = Value::Null;
+    })?;
+    if unattempted.limitations.iter().any(|entry| entry.contains("bounded result page")) {
+        bail!("a search that never ran claimed a bounded page it never read");
+    }
+    if !unattempted.limitations.iter().any(|entry| entry.contains("was not established")) {
+        bail!("a search that never ran did not say discoverability was unestablished");
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Negative controls: identity is exact
 // ---------------------------------------------------------------------------

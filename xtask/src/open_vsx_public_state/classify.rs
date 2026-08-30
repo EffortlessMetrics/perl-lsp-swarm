@@ -3,8 +3,10 @@
 //! The whole point of this module is that provider failure, instrument gaps and
 //! contradictory answers stay distinguishable from proven absence. Only three
 //! independent affirmative `404`s — gallery listing, extension metadata and the
-//! versioned package file — can reach `extension_missing`, and only an exact
-//! public digest match can reach `available_exact`.
+//! versioned package file — can reach `extension_missing`, and nothing here can
+//! reach `available_exact`: an exact digest match between two fields of the same
+//! unbound observation is observed identity, not approval, so the ceiling is
+//! `available_identity_not_proven`.
 //!
 //! Historical publication evidence is carried through to the receipt but is
 //! never read here: `expected.publication_refs` has no path into the state.
@@ -14,7 +16,9 @@ use super::model::{
     OBSERVATION_SCHEMA_VERSION, Observation, PublicBytes, PublicState, RECEIPT_SCHEMA_VERSION,
     REGISTRY, Receipt, ReceiptIdentity, Transport, TransportOutcome,
 };
-use super::plan::{Cell, ProbePlan, probe_plan, valid_registry_segment, valid_version};
+use super::plan::{
+    Cell, ProbePlan, SEARCH_PAGE_SIZE, probe_plan, valid_registry_segment, valid_version,
+};
 use chrono::DateTime;
 
 /// One decisive surface, reduced to the facts classification may use.
@@ -412,6 +416,17 @@ fn classify_state(
     if search == CellObservation::ProviderFailed || search == CellObservation::NotAttempted {
         limitations
             .push("Search discoverability was not established for this observation.".to_owned());
+    } else if search == CellObservation::Present {
+        // Raised in review: the planned query reads one bounded result page, so
+        // a `false` identity match on this surface says the subject was not on
+        // that page — not that the registry cannot discover it. The classifier
+        // never consumes this value, but the receipt publishes it, and a
+        // consumer reading it as global discoverability would be over-reading.
+        limitations.push(format!(
+            "Search discoverability was assessed against a single bounded result page of at most \
+             {SEARCH_PAGE_SIZE} results, so this surface cannot establish global discoverability \
+             or its absence."
+        ));
     }
 
     // A namespace that is gone or renamed is the narrower diagnosis; reporting
