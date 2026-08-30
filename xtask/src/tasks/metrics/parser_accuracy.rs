@@ -45,6 +45,9 @@ use serde::{Deserialize, Serialize};
 use crate::allocation_tracker::{get_current_memory_usage, measure_allocations};
 use crate::tasks::metrics::ratchet::MetricReceipt;
 use crate::utils::project_root;
+use xtask::parser_accuracy_legacy_population::{
+    LegacyFixtureInput, build_legacy_whitespace_population,
+};
 
 mod failure_packet;
 
@@ -61,6 +64,13 @@ const FAILURE_WORKLIST_STATUS_RECEIPT: &str =
 const NEXT_POINTER_STATUS_RECEIPT: &str = "docs/project/status/parser_accuracy_next.md";
 const SAFETY_FLOOR_METRICS: &[(&str, f64)] =
     &[("dynamic_false_precision_count", 0.0), ("fast_path_wrong_result_count", 0.0)];
+
+/// Aggregate metric name bound to the retained legacy whitespace population.
+const LEGACY_WHITESPACE_AGGREGATE_METRIC: &str = "whitespace_invariance_rate";
+/// Transformation profile for the quarantined legacy EOF-comment observation.
+const LEGACY_COMMENT_PROFILE: &str = "eof_comment.legacy.v1";
+/// Transformation profile for the quarantined legacy LF-to-CRLF observation.
+const LEGACY_NEWLINE_STYLE_PROFILE: &str = "newline_style.legacy.v1";
 const DEFERRED_PRECISION_RECALL_CANDIDATES: &[&str] = &[
     "line_construct_precision",
     "line_construct_recall",
@@ -478,9 +488,57 @@ pub struct ParserAccuracyArtifact {
     denominator: Denominator,
     families: Vec<FamilySummary>,
     metrics: Vec<MetricRow>,
+    legacy_population: LegacyPopulationEvidence,
     failure_packets: Vec<FailurePacket>,
     gold_drift: GoldDrift,
     metric_runtime: MetricRuntime,
+}
+
+/// Retained identity of the quarantied legacy metamorphic population (#13654).
+///
+/// The artifact carries the exact population identity derived from the
+/// production-owned canonical rows so every consumer can bind the invariance
+/// observations to that population instead of inferring trust from metric
+/// names, score values, or denominators.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct LegacyPopulationEvidence {
+    transformation_profile: String,
+    population_identity: String,
+    aggregate_metric: String,
+    population_total_count: u64,
+    population_applied_count: u64,
+    population_unclassified_count: u64,
+    manifest_schema_version: u32,
+}
+
+/// Evidence class for rows retained as investigation data only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum EvidenceClass {
+    InvestigationOnly,
+}
+
+/// Terminal disposition vocabulary for investigation rows (parser-accuracy
+/// local; aligned with the generic evidence-gap taxonomy when #8177 lands).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum TerminalDisposition {
+    NotProven,
+}
+
+/// Why an investigation row's observation is not trusted measured accuracy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum InvestigationReason {
+    /// A raw projection hash cannot establish semantic invariance.
+    LegacyHashOracleUntrusted,
+}
+
+/// Packet emission policy typed onto every investigation row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum PacketPolicy {
+    None,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -561,14 +619,25 @@ enum MetricRow {
         sample_count: u64,
         confidence: Confidence,
     },
+    InvestigationOnly {
+        metric: String,
+        value: f64,
+        sample_count: u64,
+        transformation_profile: String,
+        evidence_class: EvidenceClass,
+        terminal_disposition: TerminalDisposition,
+        reason: InvestigationReason,
+        packet_policy: PacketPolicy,
+        floor_eligible: bool,
+    },
 }
 
 impl MetricRow {
     fn name(&self) -> &str {
         match self {
-            MetricRow::Measured { metric, .. } | MetricRow::InsufficientData { metric, .. } => {
-                metric
-            }
+            MetricRow::Measured { metric, .. }
+            | MetricRow::InsufficientData { metric, .. }
+            | MetricRow::InvestigationOnly { metric, .. } => metric,
         }
     }
 }
@@ -1176,6 +1245,7 @@ fn build_artifact(
     let scale_cost_score = score_manifest_scale_cost(root, manifest, &mut source_cache)?;
     let determinism_score = score_manifest_determinism(root, manifest, &mut source_cache)?;
     let gold_drift = audit_gold_drift(root, manifest, &mut source_cache)?;
+    let legacy_population = project_legacy_population(manifest, &mut source_cache, root)?;
     let mut metrics = vec![measured_value(
         "denominator_fixture_count",
         fixture_count,
@@ -1206,7 +1276,7 @@ fn build_artifact(
         cadence,
     ));
     metrics.extend(cache_reuse_metrics(&incremental_score, cadence));
-    metrics.extend(determinism_metrics(&determinism_score, cadence));
+    metrics.extend(determinism_metrics(&determinism_score, &legacy_population, cadence));
     metrics.extend(gold_drift_metrics(&gold_drift, denominator.fixture_count, cadence));
     apply_safety_floor_metadata(&mut metrics);
 
@@ -1219,6 +1289,7 @@ fn build_artifact(
         denominator,
         families,
         metrics,
+        legacy_population,
         failure_packets: failure_packet::collect_failure_packets(root, manifest)?,
         gold_drift,
         metric_runtime: MetricRuntime {
@@ -1226,6 +1297,44 @@ fn build_artifact(
             cache_sample_count: source_cache.sample_count(),
             ..MetricRuntime::default()
         },
+    })
+}
+
+/// Derive the retained legacy population evidence from the exact manifest and
+/// source bytes this run already scored (#13654's production-owned projector).
+///
+/// The generator must not recompute the identity from aggregate metrics, and it
+/// must fail closed when the projection rejects the current population.
+fn project_legacy_population(
+    manifest: &ParserAccuracyManifest,
+    source_cache: &mut MetricSourceCache,
+    root: &Path,
+) -> Result<LegacyPopulationEvidence> {
+    let mut fixtures = Vec::with_capacity(manifest.fixtures.len());
+    for fixture in &manifest.fixtures {
+        let source_path = root.join(&fixture.source_path);
+        let source = source_cache.read(&source_path, "legacy population fixture source")?;
+        fixtures.push(LegacyFixtureInput::new(
+            fixture.id.clone(),
+            fixture.source_path.clone(),
+            source.as_bytes().to_vec(),
+        ));
+    }
+
+    let population = build_legacy_whitespace_population(manifest.schema_version, fixtures)
+        .map_err(|error| eyre!("legacy parser-accuracy population projection failed: {error}"))?;
+    let summary = population
+        .summary()
+        .map_err(|error| eyre!("legacy parser-accuracy population summary failed: {error}"))?;
+
+    Ok(LegacyPopulationEvidence {
+        transformation_profile: summary.transformation_profile,
+        population_identity: summary.population_identity,
+        aggregate_metric: LEGACY_WHITESPACE_AGGREGATE_METRIC.to_string(),
+        population_total_count: summary.total_case_count as u64,
+        population_applied_count: summary.applied_case_count as u64,
+        population_unclassified_count: summary.unclassified_case_count as u64,
+        manifest_schema_version: summary.manifest_schema_version,
     })
 }
 
@@ -5676,7 +5785,11 @@ fn cache_reuse_metrics(score: &IncrementalScore, cadence: Cadence) -> Vec<Metric
     ]
 }
 
-fn determinism_metrics(score: &DeterminismScore, cadence: Cadence) -> Vec<MetricRow> {
+fn determinism_metrics(
+    score: &DeterminismScore,
+    legacy_population: &LegacyPopulationEvidence,
+    cadence: Cadence,
+) -> Vec<MetricRow> {
     if score.fixture_count == 0 {
         return vec![insufficient(
             "parse_hash_stability_rate",
@@ -5721,32 +5834,32 @@ fn determinism_metrics(score: &DeterminismScore, cadence: Cadence) -> Vec<Metric
             score.fixture_count,
             cadence,
         ),
-        optional_measured_rate(
+        investigation_rate(
             "whitespace_invariance_rate",
             ratio(
                 score.whitespace_invariance_stable_count,
                 score.whitespace_invariance_sample_count,
             ),
             score.whitespace_invariance_sample_count,
+            &legacy_population.transformation_profile,
             "no eligible whitespace invariance samples are available",
-            cadence,
         ),
-        optional_measured_rate(
+        investigation_rate(
             "comment_invariance_rate",
             ratio(score.comment_invariance_stable_count, score.comment_invariance_sample_count),
             score.comment_invariance_sample_count,
+            LEGACY_COMMENT_PROFILE,
             "metamorphic comment fixtures are not wired yet",
-            cadence,
         ),
-        optional_measured_rate(
+        investigation_rate(
             "newline_style_invariance_rate",
             ratio(
                 score.newline_style_invariance_stable_count,
                 score.newline_style_invariance_sample_count,
             ),
             score.newline_style_invariance_sample_count,
+            LEGACY_NEWLINE_STYLE_PROFILE,
             "no eligible newline-style invariance samples are available",
-            cadence,
         ),
     ]
 }
@@ -6004,6 +6117,34 @@ fn optional_measured_rate(
     }
 }
 
+/// Emit a legacy metamorphic observation as typed investigation evidence.
+///
+/// The observed value and denominator are retained as investigation data, but
+/// the row can never count as trusted measured accuracy: the disposition is
+/// attached at construction, not inferred from the metric name downstream.
+fn investigation_rate(
+    metric: &str,
+    value: Option<f64>,
+    sample_count: u64,
+    transformation_profile: &str,
+    insufficient_reason: &str,
+) -> MetricRow {
+    match value {
+        Some(value) if sample_count > 0 => MetricRow::InvestigationOnly {
+            metric: metric.to_string(),
+            value,
+            sample_count,
+            transformation_profile: transformation_profile.to_string(),
+            evidence_class: EvidenceClass::InvestigationOnly,
+            terminal_disposition: TerminalDisposition::NotProven,
+            reason: InvestigationReason::LegacyHashOracleUntrusted,
+            packet_policy: PacketPolicy::None,
+            floor_eligible: false,
+        },
+        _ => insufficient(metric, insufficient_reason),
+    }
+}
+
 fn ratio(numerator: u64, denominator: u64) -> Option<f64> {
     if denominator == 0 { None } else { Some(numerator as f64 / denominator as f64) }
 }
@@ -6091,8 +6232,137 @@ fn validate_artifact_contract(artifact: &ParserAccuracyArtifact) -> Result<()> {
                 bail!("measured parser accuracy metric has zero sample_count")
             }
             MetricRow::Measured { .. } | MetricRow::InsufficientData { .. } => {}
+            MetricRow::InvestigationOnly { sample_count, .. } if *sample_count == 0 => {
+                bail!("investigation parser accuracy metric has zero sample_count")
+            }
+            MetricRow::InvestigationOnly { .. } => {}
         }
     }
+    validate_legacy_population_evidence(artifact)?;
+    Ok(())
+}
+
+/// Enforce the typed trust and disposition contract (#13656).
+///
+/// Every check here rejects one negative control from the claim: legacy
+/// evidence serialized as trusted measured accuracy, aggregate counts drifting
+/// from the retained population, identity movement, contradictory shapes, and
+/// floor or packet admission for investigation rows.
+fn validate_legacy_population_evidence(artifact: &ParserAccuracyArtifact) -> Result<()> {
+    let population = &artifact.legacy_population;
+
+    let digest = population
+        .population_identity
+        .strip_prefix("sha256:")
+        .ok_or_else(|| eyre!("legacy population identity must be sha256-tagged"))?;
+    if digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        bail!("legacy population identity digest must be 64 hexadecimal characters");
+    }
+    if population.transformation_profile.is_empty() {
+        bail!("legacy population transformation_profile must not be empty");
+    }
+    if population.aggregate_metric.is_empty() {
+        bail!("legacy population aggregate_metric must not be empty");
+    }
+    if population.manifest_schema_version == 0 {
+        bail!("legacy population manifest_schema_version must be positive");
+    }
+    if population.population_total_count == 0 {
+        bail!("legacy population must retain at least one fixture row");
+    }
+    if population.population_applied_count + population.population_unclassified_count
+        != population.population_total_count
+    {
+        bail!(
+            "legacy population counts do not close: applied ({}) plus unclassified ({}) must equal total ({})",
+            population.population_applied_count,
+            population.population_unclassified_count,
+            population.population_total_count
+        );
+    }
+
+    let mut aggregate_row: Option<&MetricRow> = None;
+    for row in &artifact.metrics {
+        match row {
+            MetricRow::InvestigationOnly {
+                metric,
+                transformation_profile,
+                floor_eligible,
+                packet_policy,
+                ..
+            } => {
+                if *floor_eligible {
+                    bail!("investigation metric {metric} must not be floor eligible");
+                }
+                if *packet_policy != PacketPolicy::None {
+                    bail!("investigation metric {metric} must not emit parser-defect packets");
+                }
+                if metric == &population.aggregate_metric {
+                    if transformation_profile != &population.transformation_profile {
+                        bail!(
+                            "aggregate metric {} was observed under profile {} but the retained population is {}",
+                            metric,
+                            transformation_profile,
+                            population.transformation_profile
+                        );
+                    }
+                    aggregate_row = Some(row);
+                }
+            }
+            MetricRow::Measured { metric, .. } | MetricRow::InsufficientData { metric, .. }
+                if metric == &population.aggregate_metric =>
+            {
+                bail!(
+                    "legacy aggregate {metric} is serialized as trusted evidence; the retained population requires typed investigation rows"
+                );
+            }
+            MetricRow::Measured { .. } | MetricRow::InsufficientData { .. } => {}
+        }
+    }
+
+    let Some(MetricRow::InvestigationOnly { sample_count, .. }) = aggregate_row else {
+        bail!(
+            "retained legacy population declares aggregate {} but no matching investigation row exists",
+            population.aggregate_metric
+        );
+    };
+    if *sample_count != population.population_applied_count {
+        bail!(
+            "aggregate sample count {} does not equal the exact applied-row count {} for the retained population",
+            sample_count,
+            population.population_applied_count
+        );
+    }
+
+    for (floor_metric, _) in SAFETY_FLOOR_METRICS {
+        if artifact.metrics.iter().any(|row| {
+            matches!(row, MetricRow::InvestigationOnly { metric, .. } if metric == floor_metric)
+        }) {
+            bail!("floor metric {floor_metric} must never be admitted from investigation evidence");
+        }
+    }
+    for candidate in DEFERRED_PRECISION_RECALL_CANDIDATES {
+        if artifact.metrics.iter().any(
+            |row| matches!(row, MetricRow::InvestigationOnly { metric, .. } if metric == candidate),
+        ) {
+            bail!(
+                "ratchet candidate {candidate} must never be admitted from investigation evidence"
+            );
+        }
+    }
+
+    for packet in &artifact.failure_packets {
+        if let Some(metric) = &packet.metric
+            && artifact.metrics.iter().any(|row| {
+                matches!(row, MetricRow::InvestigationOnly { metric: candidate, .. } if candidate == metric)
+            })
+        {
+            bail!(
+                "failure packet references investigation metric {metric}; legacy evidence emits no parser-defect packets"
+            );
+        }
+    }
+
     Ok(())
 }
 
@@ -6457,6 +6727,7 @@ fn next_measurement_gap_rows(artifact: &ParserAccuracyArtifact) -> Vec<Measureme
                 })
             }
             MetricRow::Measured { .. } | MetricRow::InsufficientData { .. } => None,
+            MetricRow::InvestigationOnly { .. } => None,
         })
         .collect();
 
@@ -6662,6 +6933,18 @@ mod tests {
 
     fn tags(values: &[LineTag]) -> BTreeSet<LineTag> {
         values.iter().copied().collect()
+    }
+
+    fn test_legacy_population() -> LegacyPopulationEvidence {
+        LegacyPopulationEvidence {
+            transformation_profile: "trailing_horizontal_whitespace.legacy.v1".to_string(),
+            population_identity: format!("sha256:{}", "0".repeat(64)),
+            aggregate_metric: LEGACY_WHITESPACE_AGGREGATE_METRIC.to_string(),
+            population_total_count: 4,
+            population_applied_count: 2,
+            population_unclassified_count: 2,
+            manifest_schema_version: 1,
+        }
     }
 
     fn write_fixture_sources(root: &Path) -> Result<()> {
@@ -8788,6 +9071,7 @@ sub dynamic_boundary_case {
                 measured_value("line_construct_f1", 0.875, 8, Cadence::Pr),
                 measured_value("symbol_decl_precision", 0.9, 10, Cadence::Pr),
             ],
+            legacy_population: test_legacy_population(),
             failure_packets: Vec::new(),
             gold_drift: GoldDrift::default(),
             metric_runtime: MetricRuntime::default(),
@@ -8818,6 +9102,7 @@ sub dynamic_boundary_case {
             denominator: compute_denominator(&manifest),
             families: summarize_families(&manifest),
             metrics: vec![measured_count("dynamic_false_precision_count", 0, 1, Cadence::Pr)],
+            legacy_population: test_legacy_population(),
             failure_packets: vec![FailurePacket {
                 failure_kind: "missing_symbol_reference".to_string(),
                 likely_layer: "semantic_fact_extraction".to_string(),
@@ -8886,6 +9171,7 @@ sub dynamic_boundary_case {
                     "provider gold fixtures are not wired yet",
                 ),
             ],
+            legacy_population: test_legacy_population(),
             failure_packets: Vec::new(),
             gold_drift: GoldDrift::default(),
             metric_runtime: MetricRuntime::default(),
@@ -8922,6 +9208,7 @@ sub dynamic_boundary_case {
             denominator: compute_denominator(&manifest),
             families: summarize_families(&manifest),
             metrics: vec![measured_count("line_construct_f1", 1, 1, Cadence::Pr)],
+            legacy_population: test_legacy_population(),
             failure_packets: Vec::new(),
             gold_drift: GoldDrift::default(),
             metric_runtime: MetricRuntime::default(),
@@ -9460,7 +9747,7 @@ sub dynamic_boundary_case {
             newline_style_invariance_sample_count: 2,
         };
 
-        let metrics = determinism_metrics(&score, Cadence::Pr);
+        let metrics = determinism_metrics(&score, &test_legacy_population(), Cadence::Pr);
 
         assert!(metrics.iter().any(|metric| {
             matches!(
@@ -9473,27 +9760,78 @@ sub dynamic_boundary_case {
         assert!(metrics.iter().any(|metric| {
             matches!(
                 metric,
-                MetricRow::Measured { metric, value, sample_count: 2, .. }
-                    if metric == "whitespace_invariance_rate"
-                        && (*value - 0.5).abs() < f64::EPSILON
+                MetricRow::InvestigationOnly {
+                    metric,
+                    value,
+                    sample_count: 2,
+                    transformation_profile,
+                    evidence_class: EvidenceClass::InvestigationOnly,
+                    terminal_disposition: TerminalDisposition::NotProven,
+                    reason: InvestigationReason::LegacyHashOracleUntrusted,
+                    packet_policy: PacketPolicy::None,
+                    floor_eligible: false,
+                } if metric == "whitespace_invariance_rate"
+                    && (*value - 0.5).abs() < f64::EPSILON
+                    && transformation_profile == "trailing_horizontal_whitespace.legacy.v1"
             )
         }));
         assert!(metrics.iter().any(|metric| {
             matches!(
                 metric,
-                MetricRow::Measured { metric, value, sample_count: 2, .. }
-                    if metric == "comment_invariance_rate"
-                        && (*value - 0.5).abs() < f64::EPSILON
+                MetricRow::InvestigationOnly {
+                    metric,
+                    value,
+                    sample_count: 2,
+                    transformation_profile,
+                    ..
+                } if metric == "comment_invariance_rate"
+                    && (*value - 0.5).abs() < f64::EPSILON
+                    && transformation_profile == "eof_comment.legacy.v1"
             )
         }));
         assert!(metrics.iter().any(|metric| {
             matches!(
                 metric,
-                MetricRow::Measured { metric, value, sample_count: 2, .. }
-                    if metric == "newline_style_invariance_rate"
-                        && (*value - 0.5).abs() < f64::EPSILON
+                MetricRow::InvestigationOnly {
+                    metric,
+                    value,
+                    sample_count: 2,
+                    transformation_profile,
+                    ..
+                } if metric == "newline_style_invariance_rate"
+                    && (*value - 0.5).abs() < f64::EPSILON
+                    && transformation_profile == "newline_style.legacy.v1"
             )
         }));
+        assert!(
+            !metrics.iter().any(|metric| {
+                matches!(
+                    metric,
+                    MetricRow::Measured { metric, .. }
+                        if metric == "whitespace_invariance_rate"
+                            || metric == "comment_invariance_rate"
+                            || metric == "newline_style_invariance_rate"
+                )
+            }),
+            "legacy metamorphic observations must never serialize as trusted measured rows"
+        );
+    }
+
+    #[test]
+    fn zero_sample_invariance_metrics_stay_insufficient_data() {
+        let score = DeterminismScore { fixture_count: 2, ..DeterminismScore::default() };
+        let metrics = determinism_metrics(&score, &test_legacy_population(), Cadence::Pr);
+
+        for metric in [
+            "whitespace_invariance_rate",
+            "comment_invariance_rate",
+            "newline_style_invariance_rate",
+        ] {
+            assert!(metrics.iter().any(|row| matches!(
+                row,
+                MetricRow::InsufficientData { metric: name, .. } if name == metric
+            )));
+        }
     }
 
     #[test]
@@ -9530,6 +9868,7 @@ sub dynamic_boundary_case {
             denominator: Denominator::default(),
             families: Vec::new(),
             metrics: Vec::new(),
+            legacy_population: test_legacy_population(),
             failure_packets: Vec::new(),
             gold_drift: GoldDrift::default(),
             metric_runtime: MetricRuntime {
@@ -9584,6 +9923,7 @@ sub dynamic_boundary_case {
                 insufficient("allocated_bytes", "allocation telemetry is not wired yet"),
                 insufficient("allocation_count", "allocation telemetry is not wired yet"),
             ],
+            legacy_population: test_legacy_population(),
             failure_packets: Vec::new(),
             gold_drift: GoldDrift::default(),
             metric_runtime: MetricRuntime {

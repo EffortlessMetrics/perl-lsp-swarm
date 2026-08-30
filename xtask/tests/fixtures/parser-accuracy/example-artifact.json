@@ -221,6 +221,18 @@
       "cadence": "pr"
     },
     {
+      "state": "investigation_only",
+      "metric": "whitespace_invariance_rate",
+      "value": 0.4,
+      "sample_count": 2,
+      "transformation_profile": "trailing_horizontal_whitespace.legacy.v1",
+      "evidence_class": "investigation_only",
+      "terminal_disposition": "not_proven",
+      "reason": "legacy_hash_oracle_untrusted",
+      "packet_policy": "none",
+      "floor_eligible": false
+    },
+    {
       "state": "insufficient_data",
       "metric": "line_unsupported_detection_rate",
       "reason": "no expected unsupported-construct line labels are available",
@@ -1638,5 +1650,14 @@
     "ci_runner_failure_count": 0,
     "orphan_process_count": 0,
     "cache_hit_rate": null
+  },
+  "legacy_population": {
+    "transformation_profile": "trailing_horizontal_whitespace.legacy.v1",
+    "population_identity": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "aggregate_metric": "whitespace_invariance_rate",
+    "population_total_count": 3,
+    "population_applied_count": 2,
+    "population_unclassified_count": 1,
+    "manifest_schema_version": 1
   }
 }

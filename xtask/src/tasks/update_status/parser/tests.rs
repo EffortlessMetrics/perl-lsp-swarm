@@ -1,7 +1,7 @@
 use super::super::token;
 use super::accuracy::{
     ParserAccuracyArtifactSummary, ParserAccuracyDenominator, ParserAccuracyFamilySummary,
-    ParserAccuracyMetricSummary,
+    ParserAccuracyLegacyPopulation, ParserAccuracyMetricSummary,
 };
 use super::failure::{
     FailureCluster, build_failure_bucket_details, build_failure_worklist, classify_failure_bucket,
@@ -326,12 +326,27 @@ fn test_parser_accuracy_artifact_renders_denominator_and_metric_rows() -> Result
                     value: 1.0,
                     sample_count: 6,
                 },
-                ParserAccuracyMetricSummary::Measured {
+                ParserAccuracyMetricSummary::InvestigationOnly {
                     metric: "whitespace_invariance_rate".to_string(),
                     value: 0.32,
                     sample_count: 44,
+                    transformation_profile: "trailing_horizontal_whitespace.legacy.v1".to_string(),
+                    evidence_class: "investigation_only".to_string(),
+                    terminal_disposition: "not_proven".to_string(),
+                    reason: "legacy_hash_oracle_untrusted".to_string(),
+                    packet_policy: "none".to_string(),
+                    floor_eligible: false,
                 },
             ],
+            legacy_population: ParserAccuracyLegacyPopulation {
+                transformation_profile: "trailing_horizontal_whitespace.legacy.v1".to_string(),
+                population_identity: format!("sha256:{}", "b".repeat(64)),
+                aggregate_metric: "whitespace_invariance_rate".to_string(),
+                population_total_count: 44,
+                population_applied_count: 44,
+                population_unclassified_count: 0,
+                manifest_schema_version: 1,
+            },
             failure_packets: vec![],
         }),
         token_metrics: token::token_metrics_fixture(),
@@ -355,9 +370,9 @@ fn test_parser_accuracy_artifact_renders_denominator_and_metric_rows() -> Result
     );
     assert!(
         result.contains(
-            "whitespace_invariance_rate: investigation_only (legacy_oracle_untrusted; trailing whitespace; observed=0.3; n=44)"
+            "whitespace_invariance_rate: investigation_only (not_proven; legacy_hash_oracle_untrusted; trailing_horizontal_whitespace.legacy.v1; observed=0.3; n=44)"
         ),
-        "legacy whitespace observations must render as untrusted investigation evidence"
+        "typed investigation rows must render their disposition from artifact fields"
     );
     assert!(
         !result.contains("whitespace_invariance_rate=0.3"),
@@ -412,8 +427,29 @@ fn test_read_parser_accuracy_artifact_loads_target_metrics() -> Result<()> {
       "reason": "line-level gold scorer is not wired yet",
       "sample_count": 0,
       "confidence": "low"
+    },
+    {
+      "state": "investigation_only",
+      "metric": "whitespace_invariance_rate",
+      "value": 0.0,
+      "sample_count": 1,
+      "transformation_profile": "trailing_horizontal_whitespace.legacy.v1",
+      "evidence_class": "investigation_only",
+      "terminal_disposition": "not_proven",
+      "reason": "legacy_hash_oracle_untrusted",
+      "packet_policy": "none",
+      "floor_eligible": false
     }
   ],
+  "legacy_population": {
+    "transformation_profile": "trailing_horizontal_whitespace.legacy.v1",
+    "population_identity": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "aggregate_metric": "whitespace_invariance_rate",
+    "population_total_count": 2,
+    "population_applied_count": 1,
+    "population_unclassified_count": 1,
+    "manifest_schema_version": 1
+  },
   "failure_packets": [],
   "gold_drift": {},
   "metric_runtime": {}
@@ -423,7 +459,53 @@ fn test_read_parser_accuracy_artifact_loads_target_metrics() -> Result<()> {
     let artifact = read_parser_accuracy_artifact(tmp.path())
         .ok_or_else(|| color_eyre::eyre::eyre!("valid parser accuracy artifact should load"))?;
     assert_eq!(artifact.denominator.fixture_count, 2);
-    assert_eq!(artifact.metrics.len(), 1);
+    assert_eq!(artifact.metrics.len(), 2);
+    assert_eq!(artifact.legacy_population.population_applied_count, 1);
+    Ok(())
+}
+
+#[test]
+fn test_read_parser_accuracy_artifact_rejects_missing_population_evidence() -> Result<()> {
+    let tmp = tempfile::tempdir()?;
+    let metrics_dir = tmp.path().join("target").join("metrics");
+    std::fs::create_dir_all(&metrics_dir)?;
+    // A pre-typing artifact without retained population evidence must not be
+    // silently consumed as current status input.
+    std::fs::write(
+        metrics_dir.join("parser_accuracy.json"),
+        r#"{
+  "schema_version": 1,
+  "subsystem": "parser_accuracy",
+  "generated_at": "2026-05-02T15:00:00Z",
+  "commit": "abc123",
+  "cadence": "pr",
+  "denominator": {
+    "fixture_count": 2,
+    "fixture_family_count": 2,
+    "scored_line_count": 3,
+    "scored_symbol_count": 2,
+    "fully_labeled_region_count": 1,
+    "partial_labeled_region_count": 1,
+    "unknown_region_count": 1,
+    "negative_region_count": 1,
+    "dynamic_boundary_case_count": 1,
+    "unsupported_construct_case_count": 0,
+    "real_project_file_count": 0,
+    "generated_fixture_count": 0,
+    "hand_labeled_fixture_count": 2
+  },
+  "families": [],
+  "metrics": [],
+  "failure_packets": [],
+  "gold_drift": {},
+  "metric_runtime": {}
+}"#,
+    )?;
+
+    assert!(
+        read_parser_accuracy_artifact(tmp.path()).is_none(),
+        "artifact without legacy population evidence must fail closed"
+    );
     Ok(())
 }
 
