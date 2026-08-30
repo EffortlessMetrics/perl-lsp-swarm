@@ -216,25 +216,60 @@ fn zero_budget_refuses_the_first_collection_without_claiming_a_syntax_error() {
     assert_eq!(cause.as_str(), "heredoc_budget_exhausted");
 }
 
-/// The exact at/above pair on the real production drain path.
+/// The below/at/above triple on the real production drain path.
 ///
-/// The total charge for the source is measured under an unlimited budget, then
-/// used as the threshold: at exactly that limit the parse is reported as
-/// exhausted (the charge reaches the limit), and one byte above it the parse is
-/// ordinary and complete.
+/// The total charge for the source is measured under an unlimited budget and
+/// used as the boundary. One byte *below* it the collection genuinely overruns
+/// and must report; exactly at it, and one byte above it, the parse completes
+/// and must present as ordinary.
+///
+/// The below case is what makes this discriminating. An earlier revision
+/// reported exhaustion at the threshold too, so both remaining cases were
+/// "clean" and nothing here could fail — a boundary test with no failing side
+/// proves nothing about the boundary.
 #[test]
-fn total_charge_is_exhausted_at_the_threshold_and_clean_one_byte_above() {
+fn total_charge_reports_only_below_the_threshold_and_is_clean_at_and_above_it() {
     let source = two_heredoc_statements();
 
     let measured = parse_with_budget(&source, unlimited_budget());
     let total_charge = measured.budget_usage.heredoc_scan_bytes;
-    assert!(total_charge > 0, "the fixture must actually charge collection work");
+    assert!(total_charge > 1, "the fixture must charge enough to sit below the boundary");
 
-    let at_threshold = parse_with_budget(&source, heredoc_scan_budget(total_charge));
+    // One byte below the total: collection crosses the limit while running, so
+    // the after-work check must report it.
+    let below_threshold =
+        parse_with_budget(&source, heredoc_scan_budget(total_charge.saturating_sub(1)));
     assert!(
-        matches!(at_threshold.stop_cause(), Some(ParseStopCause::HeredocBudgetExhausted { .. })),
-        "at the threshold the parse must report exhaustion, got {:?}",
-        at_threshold.stop_cause()
+        matches!(below_threshold.stop_cause(), Some(ParseStopCause::HeredocBudgetExhausted { .. })),
+        "a charge that overruns the limit must report exhaustion, got {:?}",
+        below_threshold.stop_cause()
+    );
+
+    // Landing exactly on the limit truncated nothing: the drains completed and
+    // every body is attached, so the parse is complete and must present as one.
+    // An earlier revision reported exhaustion here, which put a blocking
+    // resource-limit diagnostic on source that parsed perfectly — the same false
+    // claim against valid code that the removed wall clock used to make. The
+    // budget is spent, so a *further* collection would be refused; nothing that
+    // already finished is retroactively a failure.
+    let at_threshold = parse_with_budget(&source, heredoc_scan_budget(total_charge));
+    assert_eq!(
+        at_threshold.stop_cause(),
+        None,
+        "landing exactly on the limit with every body collected must not report a terminal"
+    );
+    assert_eq!(
+        heredoc_contents(&at_threshold),
+        vec!["body a line one\nbody a line two".to_string(), "body b".to_string()],
+        "the at-threshold parse must attach both bodies, exactly as an unlimited one does"
+    );
+    assert!(
+        at_threshold
+            .diagnostics
+            .iter()
+            .all(|error| !matches!(error, ParseError::HeredocBudgetExhausted { .. })),
+        "a complete parse must not carry a heredoc-budget diagnostic: {:?}",
+        at_threshold.diagnostics
     );
 
     let above_threshold =

@@ -213,7 +213,14 @@ impl<'a> Parser<'a> {
         // whole budget and report nothing at all when no later drain follows.
         // The bodies this drain already collected are still attached below:
         // work that was actually done is not discarded, it is only accounted.
-        if self.operation.heredoc_scan_exhausted() {
+        //
+        // The test is a strict overrun, not the inclusive `heredoc_scan_exhausted`
+        // the pre-check uses. A drain that lands exactly on the limit truncated
+        // nothing — every body it collected is attached, and the parse is
+        // complete — so reporting a resource limit there would be a false claim
+        // against valid source. Exhausting the budget still refuses the *next*
+        // collection, at the pre-check above.
+        if self.operation.heredoc_scan_overrun() {
             let location = pending.first().map_or(scan_start, |decl| decl.decl_span.start);
             self.report_heredoc_budget_exhausted(location);
         }

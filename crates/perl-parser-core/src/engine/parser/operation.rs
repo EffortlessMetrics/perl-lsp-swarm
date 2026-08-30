@@ -206,6 +206,25 @@ impl ParserOperationContext {
         self.tracker.heredoc_scan_exhausted(&self.config.budget())
     }
 
+    /// Whether charged collection work has *overrun* the heredoc budget.
+    ///
+    /// This is the after-work half of the same rule, and it is deliberately
+    /// strict where [`ParserOperationContext::heredoc_scan_exhausted`] is
+    /// inclusive. Landing exactly on the limit means the budget is spent — no
+    /// further collection may begin — but nothing was truncated: the drain
+    /// finished and every body it collected is attached. Reporting that as a
+    /// resource limit would put a blocking diagnostic on a parse that lost
+    /// nothing, which is the same false claim against valid source that the
+    /// removed wall clock used to make. Only a drain that crossed the limit
+    /// while running has actually spent more than it was allowed.
+    ///
+    /// A file that lands on the boundary and then declares another heredoc is
+    /// still reported: the before-work check refuses that next collection.
+    pub(crate) fn heredoc_scan_overrun(&self) -> bool {
+        let (limit, usage) = self.heredoc_scan_state();
+        usage > limit
+    }
+
     /// Configured heredoc scan limit and the usage charged so far.
     pub(crate) fn heredoc_scan_state(&self) -> (usize, usize) {
         (self.config.budget().max_heredoc_scan_bytes, self.tracker.heredoc_scan_bytes)
