@@ -26,7 +26,9 @@
 //! mutation (line-local detection cannot separate a shared global from a
 //! test-local object). Attribute-on-same-line-as-fn forms are not scanned
 //! because the enforced `cargo fmt` gate normalizes attributes onto their own
-//! lines.
+//! lines. Bare free-function signal names remain a conservative heuristic: the
+//! source-only scan cannot distinguish an imported `std::env` function from an
+//! unrelated function with the same name. Method calls are excluded.
 
 use color_eyre::eyre::{Result, eyre};
 use regex::Regex;
@@ -103,6 +105,18 @@ fn walk_workspace_rust_files(repo_root: &Path) -> Vec<PathBuf> {
     files.into_iter().collect()
 }
 
+fn implicit_submodule_directory(path: &Path) -> PathBuf {
+    let is_module_root = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| matches!(name, "lib.rs" | "main.rs" | "mod.rs"));
+    if is_module_root {
+        path.parent().unwrap_or_else(|| Path::new("")).to_path_buf()
+    } else {
+        path.with_extension("")
+    }
+}
+
 fn external_test_module_files(path: &Path, lines: &[String]) -> Result<Vec<PathBuf>> {
     let Some(start_line) = first_cfg_test_line_number(path).ok().filter(|line| *line != usize::MAX)
     else {
@@ -114,16 +128,12 @@ fn external_test_module_files(path: &Path, lines: &[String]) -> Result<Vec<PathB
     let code_lines = code_only_lines(lines)?;
     let mut files = Vec::new();
     let mut explicit_path = None;
-    for (line, code_line) in lines
-        .iter()
-        .zip(&code_lines)
-        .skip(start_line.saturating_sub(1))
-    {
+    for (line, code_line) in lines.iter().zip(&code_lines).skip(start_line.saturating_sub(1)) {
         if code_line.trim_start().starts_with("#[")
             && let Some(value) = path_re
-            .captures(line)
-            .and_then(|captures| captures.get(1))
-            .map(|value| value.as_str().to_owned())
+                .captures(line)
+                .and_then(|captures| captures.get(1))
+                .map(|value| value.as_str().to_owned())
         {
             explicit_path = Some(value);
             continue;
@@ -145,8 +155,9 @@ fn external_test_module_files(path: &Path, lines: &[String]) -> Result<Vec<PathB
             }
             continue;
         }
-        let sibling = path.with_file_name(format!("{name}.rs"));
-        let nested = path.with_file_name(name).join("mod.rs");
+        let module_directory = implicit_submodule_directory(path);
+        let sibling = module_directory.join(format!("{name}.rs"));
+        let nested = module_directory.join(name).join("mod.rs");
         if sibling.is_file() {
             files.push(sibling);
         }
@@ -901,28 +912,64 @@ fn only_mentions_parallel_unsafe_tokens() {
     }
 
     #[test]
-    fn literal_braces_do_not_hide_a_later_real_signal() -> Result<()> {
+    fn every_lexical_class_preserves_a_later_real_signal() -> Result<()> {
         let repo = TempRepo::new("literal-true-positive")?;
         repo.write_test(
             r####"#[test]
-fn mutates_after_literal_braces() {
+fn mutates_after_every_lexical_class() {
     fn borrowed<'a>(value: &'a str) -> &'a str { value }
-    let _fixture = borrowed(r###"}}}"###);
-    let _character = '}';
+    let _normal = "\"} set_var(";
+    let _bytes = b"\"} remove_var(";
+    let _c_string = c"\"} set_current_dir(";
+    let _raw = borrowed(r###"}}} set_var("###);
+    let _raw_bytes = br###"}}} remove_var("###;
+    let _raw_c_string = cr###"}}} set_current_dir("###;
+    let _character = '\'';
+    let _byte_character = b'\'';
+    'scan: loop { break 'scan; }
+    // }} set_var(
+    /* outer }} remove_var( /* nested set_current_dir( */ still comment */
     std::env::set_var("A", "1");
 }
 "####,
         )?;
-        let path = repo.empty_registry()?;
-        assert_eq!(repo.check(&path)?, 1);
+        let sites = complete_serial_site_inventory(&repo.path)?;
+        assert_eq!(sites.len(), 1);
+        assert_eq!(sites[0].path, "crates/demo/tests/demo.rs");
+        assert_eq!(sites[0].test_function, "mutates_after_every_lexical_class");
+        assert_eq!(sites[0].signals, vec!["env_set"]);
         Ok(())
     }
 
     #[test]
-    fn multiline_and_comment_separated_attributes_are_attached() -> Result<()> {
-        let repo = TempRepo::new("multiline-attributes")?;
+    fn multiline_test_attribute_is_detected_without_a_guard() -> Result<()> {
+        let repo = TempRepo::new("multiline-test-attribute")?;
         repo.write_test(
-            "#[\n    test\n]\n/* policy explanation */\n#[serial_test::serial(\n)]\nfn guarded() {\n    std::env::set_var(\"A\", \"1\");\n}\n",
+            "#[\n    test\n]\n/* policy explanation */\nfn unguarded() {\n    std::env::set_var(\"A\", \"1\");\n}\n",
+        )?;
+        let sites = complete_serial_site_inventory(&repo.path)?;
+        assert_eq!(sites.len(), 1);
+        assert_eq!(sites[0].test_function, "unguarded");
+        assert_eq!(sites[0].signals, vec!["env_set"]);
+        Ok(())
+    }
+
+    #[test]
+    fn multiline_serial_attribute_guards_an_ordinary_test() -> Result<()> {
+        let repo = TempRepo::new("multiline-serial-attribute")?;
+        repo.write_test(
+            "#[test]\n/* policy explanation */\n#[serial_test::serial(\n)]\nfn guarded() {\n    std::env::set_var(\"A\", \"1\");\n}\n",
+        )?;
+        let path = repo.empty_registry()?;
+        assert_eq!(repo.check(&path)?, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn multiline_file_serial_attribute_guards_an_ordinary_test() -> Result<()> {
+        let repo = TempRepo::new("multiline-file-serial-attribute")?;
+        repo.write_test(
+            "#[test]\n/* policy explanation */\n#[serial_test::file_serial(\n)]\nfn guarded() {\n    std::env::set_var(\"A\", \"1\");\n}\n",
         )?;
         let path = repo.empty_registry()?;
         assert_eq!(repo.check(&path)?, 0);
@@ -1040,12 +1087,40 @@ fn mutates_after_literal_braces() {
             repo.path.join("crates/demo/src/lib.rs"),
             "#[cfg(test)]\n#[path = \"test_support/custom.rs\"]\nmod custom_tests;\n",
         )?;
-        fs::write(
-            repo.path.join("crates/demo/src/test_support/custom.rs"),
-            UNANNOTATED_ENV_TEST,
-        )?;
+        fs::write(repo.path.join("crates/demo/src/test_support/custom.rs"), UNANNOTATED_ENV_TEST)?;
         let path = repo.empty_registry()?;
         assert_eq!(repo.check(&path)?, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn crate_root_external_test_module_is_scanned() -> Result<()> {
+        let repo = TempRepo::new("crate-root-module")?;
+        fs::write(repo.path.join("crates/demo/src/lib.rs"), "#[cfg(test)]\nmod policy_fixture;\n")?;
+        fs::write(repo.path.join("crates/demo/src/policy_fixture.rs"), UNANNOTATED_ENV_TEST)?;
+        let sites = complete_serial_site_inventory(&repo.path)?;
+        assert_eq!(sites.len(), 1);
+        assert_eq!(sites[0].path, "crates/demo/src/policy_fixture.rs");
+        assert_eq!(sites[0].test_function, "flips_toolchain_env");
+        assert_eq!(sites[0].signals, vec!["env_set"]);
+        Ok(())
+    }
+
+    #[test]
+    fn non_root_external_test_module_uses_named_module_directory() -> Result<()> {
+        let repo = TempRepo::new("non-root-module")?;
+        fs::create_dir_all(repo.path.join("crates/demo/src/outer"))?;
+        fs::write(repo.path.join("crates/demo/src/lib.rs"), "mod outer;\n")?;
+        fs::write(
+            repo.path.join("crates/demo/src/outer.rs"),
+            "#[cfg(test)]\nmod policy_fixture;\n",
+        )?;
+        fs::write(repo.path.join("crates/demo/src/outer/policy_fixture.rs"), UNANNOTATED_ENV_TEST)?;
+        let sites = complete_serial_site_inventory(&repo.path)?;
+        assert_eq!(sites.len(), 1);
+        assert_eq!(sites[0].path, "crates/demo/src/outer/policy_fixture.rs");
+        assert_eq!(sites[0].test_function, "flips_toolchain_env");
+        assert_eq!(sites[0].signals, vec!["env_set"]);
         Ok(())
     }
 
@@ -1153,8 +1228,8 @@ fn mutates_after_literal_braces() {
         }))?;
         let unknown_err = read_identity_registry(&unknown)
             .err()
-            .map(|err| err.to_string())
-            .unwrap_or_default();
+            .ok_or_else(|| eyre!("registry with an unknown signal unexpectedly parsed"))?
+            .to_string();
         assert!(unknown_err.contains("unknown signal"));
 
         let noncanonical = repo.write_registry(serde_json::json!({
@@ -1169,8 +1244,8 @@ fn mutates_after_literal_braces() {
         }))?;
         let noncanonical_err = read_identity_registry(&noncanonical)
             .err()
-            .map(|err| err.to_string())
-            .unwrap_or_default();
+            .ok_or_else(|| eyre!("registry with noncanonical signals unexpectedly parsed"))?
+            .to_string();
         assert!(noncanonical_err.contains("sorted, unique canonical CSV"));
         Ok(())
     }
