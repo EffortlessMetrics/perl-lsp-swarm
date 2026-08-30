@@ -378,10 +378,10 @@ pub fn strip_pod_formatting(text: &str) -> String {
 
 /// Like [`strip_pod_formatting`], but renders `L<...>` links as their plain
 /// display text only — no markdown `[text](url)` wrapper, no percent-encoded
-/// target. Used for the NAME field (#12824): its sole consumer renders it as
-/// plain perldoc text, so link markup is noise, and the percent-encoding
-/// expansion made a cleaned NAME longer than its source, violating the
-/// extraction invariant the `pod_extraction` fuzz target asserts.
+/// target. Used for the NAME and SYNOPSIS fields (#12824, #14171): their
+/// consumers render them as plain perldoc text, so link markup is noise, and
+/// the percent-encoding expansion made a cleaned field longer than its source,
+/// violating the extraction invariant the `pod_extraction` fuzz target asserts.
 pub fn strip_pod_formatting_display_text(text: &str) -> String {
     strip_pod_formatting_depth_links(text, 0, LinkRendering::DisplayText)
 }
