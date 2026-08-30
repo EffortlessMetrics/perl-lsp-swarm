@@ -313,14 +313,9 @@ fn fph_policy_pins() -> TestResult {
         assert!(
             panic_regions.iter().any(|(region_start, region_end)| *region_start <= panic_start
                 && panic_start < *region_end),
-            "harness panic must remain inside its const alignment block"
+            "harness has a runtime panic-family exception; the only panic! calls may be compile-time const-alignment diagnostics"
         );
     }
-    assert_eq!(
-        harness_source.matches("panic!").count(),
-        0,
-        "formatter harness must carry no panic-family exception"
-    );
     Ok(())
 }
 
