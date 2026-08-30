@@ -33,7 +33,7 @@ use perl_ast::{
     geometry_disposition_for_classification, geometry_fields_for, geometry_shapes_in_use,
     node_kind_fixtures, observe_geometry_fields, reconcile_geometry_rows, reconcile_node_geometry,
 };
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Registry rows may only name kinds that exist, in canonical order.
 #[test]
@@ -231,7 +231,12 @@ const NEUTRAL_TYPES: &[&str] =
 /// something that is not a type at all. Stripping is deliberately narrow: it
 /// removes `'name`, so a genuine one-letter type or generic parameter is still
 /// reported.
-fn classify_type_words(ty: &str) -> (bool, Vec<String>) {
+/// Returns how many independent geometry members the type declares, not merely
+/// whether it declares any. A nested record can carry more than one span inside
+/// one declared field (`Vec<(Option<SourceLocation>, Option<SourceLocation>)>`),
+/// and a boolean answer cannot tell that apart from a single span — which would
+/// let a second nested span reach a coordinate remap unregistered.
+fn classify_type_words(ty: &str) -> (usize, Vec<String>) {
     // Remove `'lifetime` sequences: an apostrophe followed by an identifier.
     let mut without_lifetimes = String::with_capacity(ty.len());
     let mut chars = ty.chars().peekable();
@@ -247,27 +252,27 @@ fn classify_type_words(ty: &str) -> (bool, Vec<String>) {
         without_lifetimes.push(ch);
     }
 
-    let mut carries_span = false;
+    let mut geometry_members = 0usize;
     let mut unclassified = Vec::new();
     for word in without_lifetimes.split(|c: char| !c.is_alphanumeric() && c != '_') {
         if word.is_empty() {
             continue;
         }
         if GEOMETRY_TYPES.contains(&word) {
-            carries_span = true;
+            geometry_members += 1;
         } else if !NEUTRAL_TYPES.contains(&word) {
             unclassified.push(word.to_string());
         }
     }
-    (carries_span, unclassified)
+    (geometry_members, unclassified)
 }
 
 /// The lifetime carve-out must not weaken the allowlist.
 #[test]
 fn type_word_classification_ignores_lifetimes_but_not_types() {
     // A lifetime is not a type and must not be reported as an unclassified one.
-    let (carries, unknown) = classify_type_words("&'a SourceLocation");
-    assert!(carries, "a reference to a span still carries geometry");
+    let (members, unknown) = classify_type_words("&'a SourceLocation");
+    assert_eq!(members, 1, "a reference to a span still carries geometry");
     assert!(unknown.is_empty(), "a lifetime must not be reported as a type: {unknown:?}");
 
     let (_, unknown) = classify_type_words("Option<&'static Token>");
@@ -282,31 +287,49 @@ fn type_word_classification_ignores_lifetimes_but_not_types() {
     assert_eq!(unknown, vec!["T".to_string()], "a bare generic parameter must be classified");
 
     // The ordinary case is unaffected.
-    let (carries, unknown) = classify_type_words("Option<SourceLocation>");
-    assert!(carries);
+    let (members, unknown) = classify_type_words("Option<SourceLocation>");
+    assert_eq!(members, 1);
     assert!(unknown.is_empty());
 
-    let (carries, unknown) = classify_type_words("Vec<TokenKind>");
-    assert!(!carries, "TokenKind is a bare discriminant, not geometry");
+    let (members, unknown) = classify_type_words("Vec<TokenKind>");
+    assert_eq!(members, 0, "TokenKind is a bare discriminant, not geometry");
+    assert!(unknown.is_empty());
+
+    // The count, not merely the presence, is what the nested guard relies on.
+    let (members, unknown) =
+        classify_type_words("Vec<(Option<(String, SourceLocation)>, Option<SourceLocation>)>");
+    assert_eq!(members, 2, "two independent spans in one field must be counted as two");
     assert!(unknown.is_empty());
 }
 
 /// What the enum scan found: geometry fields, and any type it could not classify.
 struct DeclaredFields {
-    geometry: Vec<(String, String)>,
+    /// (variant, field, how many independent geometry members the field declares)
+    geometry: Vec<(String, String, usize)>,
     /// (variant, field, unrecognised type identifier)
     unknown: Vec<(String, String, String)>,
 }
 
 fn declared_geometry_fields() -> DeclaredFields {
-    const AST_SOURCE: &str = include_str!("../src/ast.rs");
+    scan_declared_fields(include_str!("../src/ast.rs"))
+}
+
+/// The scan itself, over arbitrary source.
+///
+/// Taking the source as a parameter is what lets the nested-escape control below
+/// exercise this exact code against a synthetic enum. Testing it only against the
+/// real `ast.rs` would mean the scanner's own blind spots could only be found by
+/// mutating the production AST, which is expensive enough that it would not be
+/// done routinely.
+fn scan_declared_fields(ast_source: &str) -> DeclaredFields {
+    let source = ast_source;
 
     // Isolate `pub enum NodeKind { .. }` by brace balance.
-    let start = AST_SOURCE.find("pub enum NodeKind {").unwrap_or(0);
-    let body_start = AST_SOURCE[start..].find('{').map_or(start, |i| start + i + 1);
+    let start = source.find("pub enum NodeKind {").unwrap_or(0);
+    let body_start = source[start..].find('{').map_or(start, |i| start + i + 1);
     let mut depth = 1usize;
     let mut end = body_start;
-    for (offset, ch) in AST_SOURCE[body_start..].char_indices() {
+    for (offset, ch) in source[body_start..].char_indices() {
         match ch {
             '{' => depth += 1,
             '}' => {
@@ -319,7 +342,7 @@ fn declared_geometry_fields() -> DeclaredFields {
             _ => {}
         }
     }
-    let body = &AST_SOURCE[body_start..end];
+    let body = &source[body_start..end];
 
     // Strip comments and attributes so doc prose cannot be read as a field.
     let cleaned: String = body
@@ -394,12 +417,12 @@ fn declared_geometry_fields() -> DeclaredFields {
                 continue;
             }
 
-            let (carries_span, unclassified) = classify_type_words(ty);
+            let (geometry_members, unclassified) = classify_type_words(ty);
             for word in unclassified {
                 unknown.push((name.clone(), field.to_string(), word));
             }
-            if carries_span {
-                declared.push((name.clone(), field.to_string()));
+            if geometry_members > 0 {
+                declared.push((name.clone(), field.to_string(), geometry_members));
             }
         }
     }
@@ -431,32 +454,160 @@ fn the_registry_covers_every_geometry_bearing_field_declared_in_the_enum() {
         declared.len()
     );
 
-    // Registry identities are dotted for nested records (`catch_blocks.variable`);
-    // compare against the declared field they live in.
-    let registered: BTreeSet<(String, String)> = AST_NODE_GEOMETRY_FIELDS
+    compare_declared_against_registry(&declared, AST_NODE_GEOMETRY_FIELDS);
+}
+
+/// Compare a declared-field scan against a registry, by member count.
+///
+/// Counting rather than testing set membership is what closes the nested-escape
+/// vector raised in review: registry identities are dotted for nested records
+/// (`catch_blocks.variable`), so collapsing them to their outer field made one
+/// span and two spans inside the same field indistinguishable. A second
+/// `SourceLocation` added to an already-registered nested field changed neither
+/// the declared set nor the registered set, and — because it introduces no new
+/// field *name* — did not break exhaustive destructuring either. It could reach
+/// a coordinate remap unregistered.
+///
+/// The number of rows whose base is a given field must now equal the number of
+/// geometry members that field's declared type carries.
+fn compare_declared_against_registry(
+    declared: &[(String, String, usize)],
+    registry: &[AstGeometryField],
+) {
+    let mut registered: BTreeMap<(String, String), usize> = BTreeMap::new();
+    for row in registry {
+        let base = row.field.split('.').next().unwrap_or(row.field);
+        *registered.entry((row.kind_name.to_string(), base.to_string())).or_default() += 1;
+    }
+
+    let mut declared_counts: BTreeMap<(String, String), usize> = BTreeMap::new();
+    for (variant, field, members) in declared {
+        *declared_counts.entry((variant.clone(), field.clone())).or_default() += members;
+    }
+
+    let unregistered: Vec<_> = declared_counts
+        .iter()
+        .filter(|(key, _)| !registered.contains_key(*key))
+        .map(|(key, count)| (key.clone(), *count))
+        .collect();
+    assert!(
+        unregistered.is_empty(),
+        "these NodeKind fields are declared with span-bearing types but have no row in the \
+         geometry registry: {unregistered:?}\nA coordinate remap would leave them at stale \
+         offsets. Binding such a field as `_` in observe_geometry_fields does not exempt it."
+    );
+
+    let phantom: Vec<_> =
+        registered.keys().filter(|key| !declared_counts.contains_key(*key)).cloned().collect();
+    assert!(
+        phantom.is_empty(),
+        "these geometry rows name fields the enum no longer declares with a span-bearing type: \
+         {phantom:?}"
+    );
+
+    let miscounted: Vec<_> = declared_counts
+        .iter()
+        .filter_map(|(key, declared_members)| {
+            let rows = registered.get(key).copied().unwrap_or(0);
+            (rows != *declared_members).then(|| (key.clone(), *declared_members, rows))
+        })
+        .collect();
+    assert!(
+        miscounted.is_empty(),
+        "these fields declare a different number of geometry members than the registry has rows \
+         for: {miscounted:?} (as (variant, field), declared members, registered rows)\nA nested \
+         field that gains a second span needs a second dotted row; without one it reaches a \
+         coordinate remap unregistered while the outer field still looks covered."
+    );
+}
+
+/// A second span inside an already-registered nested field must be demanded.
+///
+/// Raised in review, and it was a real hole: the coverage check compared
+/// *sets* of (variant, outer field). Extending `Try.catch_blocks` with another
+/// `SourceLocation` left the declared set and the registered set identical, so
+/// nothing required a second row. Exhaustive destructuring does not catch it
+/// either, because widening a tuple adds no new field name to bind.
+///
+/// This is the fourth escape of the same family found on this PR, so it is
+/// pinned against the scanner itself rather than argued about: the synthetic
+/// source below declares two spans in one nested field while the registry
+/// offers one row.
+#[test]
+#[should_panic(expected = "declare a different number of geometry members")]
+fn a_second_span_inside_one_nested_field_is_demanded() {
+    // Two independent SourceLocations inside a single declared field.
+    let synthetic = r#"
+        pub enum NodeKind {
+            Try {
+                body: Box<Node>,
+                catch_blocks: Vec<(Option<(String, SourceLocation)>, Option<SourceLocation>, Box<Node>)>,
+                finally_block: Option<Box<Node>>,
+            },
+        }
+    "#;
+
+    let scan = scan_declared_fields(synthetic);
+    assert!(scan.unknown.is_empty(), "synthetic source must classify cleanly: {:?}", scan.unknown);
+
+    // Exactly the registry this PR ships for that field: one dotted row.
+    let one_row = [AstGeometryField {
+        kind_name: "Try",
+        field: "catch_blocks.variable",
+        shape: AstGeometryShape::Nested,
+        mapping: AstGeometryMapping::MapRange,
+        disposition: AstGeometryDisposition::SourceExact,
+    }];
+
+    // First, demonstrate the escape rather than only the fix. The previous guard
+    // compared these two *sets*, and here they are equal — so it passed while a
+    // second span sat unregistered. The count comparison below is what fails.
+    let declared_bases: BTreeSet<(String, String)> =
+        scan.geometry.iter().map(|(variant, field, _)| (variant.clone(), field.clone())).collect();
+    let registered_bases: BTreeSet<(String, String)> = one_row
         .iter()
         .map(|row| {
             let base = row.field.split('.').next().unwrap_or(row.field);
             (row.kind_name.to_string(), base.to_string())
         })
         .collect();
-
-    let declared_set: BTreeSet<(String, String)> = declared.into_iter().collect();
-
-    let unregistered: Vec<&(String, String)> = declared_set.difference(&registered).collect();
-    assert!(
-        unregistered.is_empty(),
-        "these NodeKind fields are declared with span-bearing types but have no row in \
-         AST_NODE_GEOMETRY_FIELDS: {unregistered:?}\nA coordinate remap would leave them at stale \
-         offsets. Binding such a field as `_` in observe_geometry_fields does not exempt it."
+    assert_eq!(
+        declared_bases, registered_bases,
+        "the outer-field sets must match here; if they did not, this control would be proving \
+         something easier than the reported escape"
     );
 
-    let phantom: Vec<&(String, String)> = registered.difference(&declared_set).collect();
-    assert!(
-        phantom.is_empty(),
-        "these geometry rows name fields the enum no longer declares with a span-bearing type: \
-         {phantom:?}"
-    );
+    compare_declared_against_registry(&scan.geometry, &one_row);
+}
+
+/// The same comparison must accept the honest case, or it proves nothing.
+///
+/// Opposite-direction control for the test above: one declared span and one
+/// registered row is not drift.
+#[test]
+fn one_nested_span_with_one_row_is_accepted() {
+    let synthetic = r#"
+        pub enum NodeKind {
+            Try {
+                body: Box<Node>,
+                catch_blocks: Vec<(Option<(String, SourceLocation)>, Box<Node>)>,
+                finally_block: Option<Box<Node>>,
+            },
+        }
+    "#;
+
+    let scan = scan_declared_fields(synthetic);
+    assert!(scan.unknown.is_empty(), "synthetic source must classify cleanly: {:?}", scan.unknown);
+
+    let one_row = [AstGeometryField {
+        kind_name: "Try",
+        field: "catch_blocks.variable",
+        shape: AstGeometryShape::Nested,
+        mapping: AstGeometryMapping::MapRange,
+        disposition: AstGeometryDisposition::SourceExact,
+    }];
+
+    compare_declared_against_registry(&scan.geometry, &one_row);
 }
 
 /// Registry coherence is checked by production code, not only by this suite.

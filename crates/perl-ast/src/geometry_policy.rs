@@ -390,6 +390,19 @@ impl std::error::Error for AstGeometryDrift {}
 /// An unknown name fails closed with an empty slice view rather than inheriting
 /// a permissive default; [`reconcile_geometry_rows`] then reports any geometry
 /// the node actually carries as [`AstGeometryDrift::UnregisteredField`].
+///
+/// # Empty is not an answer about existence
+///
+/// An empty result means "this name has no geometry rows". It does **not**
+/// distinguish a real geometry-free variant such as `Number` from a misspelled
+/// or retired name, because this function is not the kind inventory and must not
+/// become a second one. A caller that needs to know whether a name is live
+/// should check [`NodeKind::ALL_KIND_NAMES`] — a typo is otherwise
+/// indistinguishable from a legitimately geometry-free node, and silently reads
+/// as "nothing to remap".
+///
+/// This is safe for the reconciliation path, which always derives the name from
+/// a real node rather than from caller-supplied text.
 #[must_use]
 pub fn geometry_fields_for(kind_name: &str) -> Vec<&'static AstGeometryField> {
     AST_NODE_GEOMETRY_FIELDS.iter().filter(|row| row.kind_name == kind_name).collect()
