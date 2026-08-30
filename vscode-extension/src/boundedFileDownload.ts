@@ -81,6 +81,12 @@ export function downloadBoundedFile(options: BoundedFileDownloadOptions): Promis
         file.destroy();
       }
       removePartialFile(dest);
+      // Callers may inject a best-effort callback-based removal seam. Preserve
+      // that seam for observation and platform wrappers, but do not let an
+      // early return weaken this function's post-rejection cleanup contract.
+      if (fs.existsSync(dest)) {
+        defaultRemovePartialFile(dest);
+      }
       reject(error);
     };
 
