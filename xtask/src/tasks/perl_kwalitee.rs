@@ -109,7 +109,16 @@ pub fn report(
     // Report is not strict — it records the state, it does not gate.
     let receipt = build_and_evaluate(&root, live, profile, dist, false)?;
 
-    write_file(&json, &receipt.to_json_pretty()?)?;
+    // The written file is the byte-level parity surface: emit the
+    // newline-terminated form the frozen corpus pins.
+    write_file(
+        &json,
+        &format!(
+            "{}
+",
+            receipt.to_json_pretty()?
+        ),
+    )?;
     write_file(&markdown, &receipt.to_markdown())?;
 
     println!(
