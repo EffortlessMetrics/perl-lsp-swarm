@@ -240,10 +240,48 @@ mod tests {
             enum Expected { Deferred }
             struct Item { code: Option<u8>, data: Option<u8> }
             fn tick() -> bool { true }
-            /// Historical example: assert!(value.is_some() || value.is_none());
+            // Historical example: assert!(value.is_some() || value.is_none());
         "#;
         let findings = scan_file("controls.rs", source).expect("parse");
         assert!(findings.is_empty(), "{findings:?}");
+    }
+
+    #[test]
+    fn compile_fail_fixture_trees_are_outside_the_executable_denominator() {
+        let tmp = TempDir::new().expect("tempdir");
+        write_rs(
+            tmp.path(),
+            "crates/demo/src/lib.rs",
+            "fn probe(value: Option<u8>) { assert!(value.is_some()); }\n",
+        );
+        write_rs(
+            tmp.path(),
+            "crates/demo/tests/fixtures/hist.rs",
+            "use Scalar::Util qw(looks_like_number);\nfn f(v: Option<u8>) { assert!(v.is_some() || v.is_none()); }\n",
+        );
+        let report = scan_root(tmp.path(), None, as_of()).expect("scan");
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        assert!(report.findings.is_empty(), "{:?}", report.findings);
+    }
+
+    #[test]
+    fn fixture_skip_does_not_hide_governed_src_findings() {
+        let tmp = TempDir::new().expect("tempdir");
+        write_rs(
+            tmp.path(),
+            "crates/demo/src/lib.rs",
+            "fn probe(value: Option<u8>) { assert!(value.is_some() || value.is_none()); }\n",
+        );
+        write_rs(
+            tmp.path(),
+            "crates/demo/tests/fixtures/hist.rs",
+            "use Scalar::Util qw(looks_like_number);\nfn f(v: Option<u8>) { assert!(v.is_some() || v.is_none()); }\n",
+        );
+        let report = scan_root(tmp.path(), None, as_of()).expect("scan");
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        assert_eq!(report.findings.len(), 1, "{:?}", report.findings);
+        assert_eq!(report.findings[0].path, "crates/demo/src/lib.rs");
+        assert_eq!(report.findings[0].rule, RuleId::OptionSomeOrNone);
     }
 
     #[test]
@@ -292,7 +330,8 @@ expires = "2026-01-02"
         .expect("ledger");
         let error = scan_root(tmp.path(), Some(&tmp.path().join("policy/ledger.toml")), as_of())
             .expect_err("expired ledger");
-        assert!(error.to_string().contains("expired"), "{error}");
+        let display = format!("{error:#}");
+        assert!(display.contains("expired"), "{display}");
     }
 
     #[test]
@@ -319,6 +358,7 @@ expires = "2026-11-30"
         .expect("ledger");
         let error = scan_root(tmp.path(), Some(&tmp.path().join("policy/ledger.toml")), as_of())
             .expect_err("ownerless ledger");
-        assert!(error.to_string().contains("ownerless"), "{error}");
+        let display = format!("{error:#}");
+        assert!(display.contains("ownerless"), "{display}");
     }
 }

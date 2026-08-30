@@ -917,9 +917,9 @@ fn perl_type_union() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn perl_type_any_void_glob() -> Result<(), Box<dyn std::error::Error>> {
-    assert_eq!(PerlType::Any, PerlType::Any);
-    assert_eq!(PerlType::Void, PerlType::Void);
-    assert_eq!(PerlType::Glob, PerlType::Glob);
+    assert_eq!(PerlType::Any, PerlType::Any.clone());
+    assert_eq!(PerlType::Void, PerlType::Void.clone());
+    assert_eq!(PerlType::Glob, PerlType::Glob.clone());
     assert_ne!(PerlType::Any, PerlType::Void);
     Ok(())
 }

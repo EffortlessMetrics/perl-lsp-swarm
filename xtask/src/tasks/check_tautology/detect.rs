@@ -62,10 +62,8 @@ pub fn classify_assert_condition(expr: &Expr) -> Option<Detection> {
 }
 
 pub fn classify_assert_eq(left: &Expr, right: &Expr) -> Option<Detection> {
-    let left = peel(left);
-    let right = peel(right);
-    if expr_eq(left, right) && is_side_effect_free(left) {
-        Some(Detection { rule: RuleId::AssertEqIdentical, line: line_of(left) })
+    if identical_side_effect_free(left, right) {
+        Some(Detection { rule: RuleId::AssertEqIdentical, line: line_of(peel(left)) })
     } else {
         None
     }
@@ -94,11 +92,17 @@ fn classify_or(expr: &Expr) -> Option<RuleId> {
         return Some(RuleId::PredicateOrNegation);
     }
 
-    if expr_eq(left, right) {
+    if identical_side_effect_free(left, right) {
         return Some(RuleId::IdenticalOrAlternatives);
     }
 
     None
+}
+
+fn identical_side_effect_free(left: &Expr, right: &Expr) -> bool {
+    let left = peel(left);
+    let right = peel(right);
+    expr_eq(left, right) && is_side_effect_free(left)
 }
 
 fn option_or_result_pair(left: &Expr, right: &Expr) -> Option<RuleId> {
@@ -146,6 +150,14 @@ fn is_side_effect_free(expr: &Expr) -> bool {
         Expr::Field(field) => is_side_effect_free(&field.base),
         Expr::Tuple(tuple) => tuple.elems.iter().all(is_side_effect_free),
         Expr::Array(array) => array.elems.iter().all(is_side_effect_free),
+        Expr::Struct(strct)
+            if strct.qself.is_none()
+                && strct.dot2_token.is_none()
+                && strct.rest.is_none()
+                && strct.fields.iter().all(|field| is_side_effect_free(&field.expr)) =>
+        {
+            true
+        }
         Expr::Cast(cast) => is_side_effect_free(&cast.expr),
         Expr::MethodCall(call)
             if call.args.is_empty()
@@ -247,6 +259,13 @@ mod tests {
             Some(RuleId::AssertEqIdentical)
         );
         assert_eq!(eq_rule("1", "1"), Some(RuleId::AssertEqIdentical));
+        assert_eq!(eq_rule("(value)", "value"), Some(RuleId::AssertEqIdentical));
+        assert_eq!(eq_rule("item.flag", "item.flag"), Some(RuleId::AssertEqIdentical));
+        assert_eq!(eq_rule("&value", "&value"), Some(RuleId::AssertEqIdentical));
+        assert_eq!(
+            eq_rule("TransportMode::Socket { port: 100 }", "TransportMode::Socket { port: 100 }"),
+            Some(RuleId::AssertEqIdentical)
+        );
     }
 
     #[test]
@@ -274,5 +293,14 @@ mod tests {
         assert_eq!(rule_of("ready && !ready"), None);
         assert_eq!(eq_rule("left", "right"), None);
         assert_eq!(eq_rule("site", "site.clone()"), None);
+        assert_eq!(eq_rule("SyncPoint::Semicolon", "SyncPoint::Semicolon.clone()"), None);
+        assert_eq!(
+            eq_rule(
+                "TransportMode::Socket { port: 100 }",
+                "TransportMode::Socket { port: 100 }.clone()"
+            ),
+            None
+        );
+        assert_eq!(eq_rule("kind", "other"), None);
     }
 }

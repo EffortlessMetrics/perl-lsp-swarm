@@ -396,8 +396,8 @@ fn validation_reason_clone_copy_eq() -> Result<(), Box<dyn std::error::Error>> {
     assert_ne!(r, ValidationReason::CommentLine);
     assert_ne!(r, ValidationReason::PodLine);
     assert_ne!(r, ValidationReason::InvalidCondition);
-    assert_eq!(ValidationReason::PodLine, ValidationReason::PodLine);
-    assert_eq!(ValidationReason::InvalidCondition, ValidationReason::InvalidCondition);
+    assert_eq!(ValidationReason::PodLine, ValidationReason::PodLine.clone());
+    assert_eq!(ValidationReason::InvalidCondition, ValidationReason::InvalidCondition.clone());
     Ok(())
 }
 

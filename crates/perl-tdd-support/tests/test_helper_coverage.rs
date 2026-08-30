@@ -1083,52 +1083,52 @@ fn test_validation_fails_without_issue_reference() -> Result<(), Box<dyn std::er
 
 #[test]
 fn test_trend_direction_equality() -> Result<(), Box<dyn std::error::Error>> {
-    assert_eq!(TrendDirection::Increasing, TrendDirection::Increasing);
-    assert_eq!(TrendDirection::Decreasing, TrendDirection::Decreasing);
-    assert_eq!(TrendDirection::Stable, TrendDirection::Stable);
-    assert_eq!(TrendDirection::Unknown, TrendDirection::Unknown);
+    assert_eq!(TrendDirection::Increasing, TrendDirection::Increasing.clone());
+    assert_eq!(TrendDirection::Decreasing, TrendDirection::Decreasing.clone());
+    assert_eq!(TrendDirection::Stable, TrendDirection::Stable.clone());
+    assert_eq!(TrendDirection::Unknown, TrendDirection::Unknown.clone());
     assert_ne!(TrendDirection::Increasing, TrendDirection::Decreasing);
     Ok(())
 }
 
 #[test]
 fn test_report_format_equality() -> Result<(), Box<dyn std::error::Error>> {
-    assert_eq!(ReportFormat::Json, ReportFormat::Json);
-    assert_eq!(ReportFormat::Markdown, ReportFormat::Markdown);
-    assert_eq!(ReportFormat::Html, ReportFormat::Html);
-    assert_eq!(ReportFormat::Csv, ReportFormat::Csv);
+    assert_eq!(ReportFormat::Json, ReportFormat::Json.clone());
+    assert_eq!(ReportFormat::Markdown, ReportFormat::Markdown.clone());
+    assert_eq!(ReportFormat::Html, ReportFormat::Html.clone());
+    assert_eq!(ReportFormat::Csv, ReportFormat::Csv.clone());
     assert_ne!(ReportFormat::Json, ReportFormat::Csv);
     Ok(())
 }
 
 #[test]
 fn test_complexity_level_equality() -> Result<(), Box<dyn std::error::Error>> {
-    assert_eq!(ComplexityLevel::Low, ComplexityLevel::Low);
-    assert_eq!(ComplexityLevel::Medium, ComplexityLevel::Medium);
-    assert_eq!(ComplexityLevel::High, ComplexityLevel::High);
-    assert_eq!(ComplexityLevel::Critical, ComplexityLevel::Critical);
+    assert_eq!(ComplexityLevel::Low, ComplexityLevel::Low.clone());
+    assert_eq!(ComplexityLevel::Medium, ComplexityLevel::Medium.clone());
+    assert_eq!(ComplexityLevel::High, ComplexityLevel::High.clone());
+    assert_eq!(ComplexityLevel::Critical, ComplexityLevel::Critical.clone());
     assert_ne!(ComplexityLevel::Low, ComplexityLevel::Critical);
     Ok(())
 }
 
 #[test]
 fn test_test_category_equality() -> Result<(), Box<dyn std::error::Error>> {
-    assert_eq!(TestCategory::CriticalLsp, TestCategory::CriticalLsp);
-    assert_eq!(TestCategory::Infrastructure, TestCategory::Infrastructure);
-    assert_eq!(TestCategory::AdvancedSyntax, TestCategory::AdvancedSyntax);
-    assert_eq!(TestCategory::EdgeCases, TestCategory::EdgeCases);
+    assert_eq!(TestCategory::CriticalLsp, TestCategory::CriticalLsp.clone());
+    assert_eq!(TestCategory::Infrastructure, TestCategory::Infrastructure.clone());
+    assert_eq!(TestCategory::AdvancedSyntax, TestCategory::AdvancedSyntax.clone());
+    assert_eq!(TestCategory::EdgeCases, TestCategory::EdgeCases.clone());
     assert_ne!(TestCategory::CriticalLsp, TestCategory::EdgeCases);
     Ok(())
 }
 
 #[test]
 fn test_lsp_workflow_stage_equality() -> Result<(), Box<dyn std::error::Error>> {
-    assert_eq!(LspWorkflowStage::Parse, LspWorkflowStage::Parse);
-    assert_eq!(LspWorkflowStage::Index, LspWorkflowStage::Index);
-    assert_eq!(LspWorkflowStage::Navigate, LspWorkflowStage::Navigate);
-    assert_eq!(LspWorkflowStage::Complete, LspWorkflowStage::Complete);
-    assert_eq!(LspWorkflowStage::Analyze, LspWorkflowStage::Analyze);
-    assert_eq!(LspWorkflowStage::CrossCutting, LspWorkflowStage::CrossCutting);
+    assert_eq!(LspWorkflowStage::Parse, LspWorkflowStage::Parse.clone());
+    assert_eq!(LspWorkflowStage::Index, LspWorkflowStage::Index.clone());
+    assert_eq!(LspWorkflowStage::Navigate, LspWorkflowStage::Navigate.clone());
+    assert_eq!(LspWorkflowStage::Complete, LspWorkflowStage::Complete.clone());
+    assert_eq!(LspWorkflowStage::Analyze, LspWorkflowStage::Analyze.clone());
+    assert_eq!(LspWorkflowStage::CrossCutting, LspWorkflowStage::CrossCutting.clone());
     assert_ne!(LspWorkflowStage::Parse, LspWorkflowStage::Analyze);
     Ok(())
 }
@@ -1167,8 +1167,8 @@ fn test_test_status_debug() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn test_test_status_equality() -> Result<(), Box<dyn std::error::Error>> {
-    assert_eq!(TestStatus::Passed, TestStatus::Passed);
-    assert_eq!(TestStatus::Failed, TestStatus::Failed);
+    assert_eq!(TestStatus::Passed, TestStatus::Passed.clone());
+    assert_eq!(TestStatus::Failed, TestStatus::Failed.clone());
     assert_ne!(TestStatus::Passed, TestStatus::Failed);
     assert_ne!(TestStatus::Skipped, TestStatus::Errored);
     Ok(())

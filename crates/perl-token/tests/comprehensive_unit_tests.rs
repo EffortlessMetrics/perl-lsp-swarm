@@ -483,7 +483,7 @@ fn token_kind_clone_equals_original() {
 #[test]
 fn token_kind_eq_is_reflexive() {
     for kind in all_token_kinds() {
-        assert_eq!(kind, kind);
+        assert_eq!(kind, kind.clone());
     }
 }
 

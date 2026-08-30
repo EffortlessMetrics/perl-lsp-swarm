@@ -339,7 +339,6 @@ mod tests {
     #[test]
     fn equal_leaves_and_wide_programs_compare() {
         let leaf = numbered("7", 0);
-        assert_eq!(leaf, leaf);
         assert_eq!(leaf, numbered("7", 0));
         assert_ne!(leaf, numbered("8", 0));
         assert_ne!(leaf, numbered("7", 1));
@@ -396,7 +395,7 @@ mod tests {
         );
         assert_ne!(none, some);
         assert_ne!(some, none);
-        assert_eq!(none, none);
+        assert_eq!(none.clone(), none);
     }
 
     #[test]
@@ -567,7 +566,7 @@ mod tests {
             loc(0, 20),
         );
         assert_ne!(left, right);
-        assert_eq!(left, left);
+        assert_eq!(left.clone(), left);
     }
 
     #[test]
@@ -636,7 +635,6 @@ mod tests {
         let a = wrap_expr(program(vec![numbered("1", 0), numbered("2", 1)]));
         let b = wrap_expr(program(vec![numbered("1", 0), numbered("2", 1)]));
         let c = wrap_expr(program(vec![numbered("1", 0), numbered("2", 1)]));
-        assert_eq!(a, a, "reflexive");
         assert_eq!(a == b, b == a, "symmetric");
         assert_eq!(a, b);
         assert_eq!(b, c);

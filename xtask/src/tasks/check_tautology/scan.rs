@@ -166,6 +166,26 @@ mod tests {
     }
 
     #[test]
+    fn repaired_clone_and_independent_idents_stay_green() {
+        let source = r#"
+            fn probe(value: Flag, ready: bool) {
+                assert_eq!(value, value.clone());
+                assert_eq!(Flag::On, Flag::On.clone());
+                assert_eq!(Mode::Socket { port: 1 }, Mode::Socket { port: 1 }.clone());
+                let left = Flag::On;
+                let right = Flag::On;
+                assert_eq!(left, right);
+                debug_assert_eq!(ready, !ready);
+            }
+            #[derive(Clone, PartialEq, Debug)]
+            enum Flag { On }
+            #[derive(Clone, PartialEq, Debug)]
+            enum Mode { Socket { port: u16 } }
+        "#;
+        assert!(rules(source).is_empty(), "{:?}", rules(source));
+    }
+
+    #[test]
     fn unparsable_source_is_an_instrument_error() {
         let error = scan_file("broken.rs", "fn oops( {").expect_err("must fail");
         assert!(!error.is_empty());

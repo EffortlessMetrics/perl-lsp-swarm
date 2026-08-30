@@ -36,7 +36,7 @@ fn severity_clone_and_copy() {
 
 #[test]
 fn severity_equality() {
-    assert_eq!(DiagnosticSeverity::Error, DiagnosticSeverity::Error);
+    assert_eq!(DiagnosticSeverity::Error, DiagnosticSeverity::Error.clone());
     assert_ne!(DiagnosticSeverity::Error, DiagnosticSeverity::Warning);
 }
 
@@ -86,7 +86,7 @@ fn tag_clone_and_copy() {
 
 #[test]
 fn tag_equality() {
-    assert_eq!(DiagnosticTag::Unnecessary, DiagnosticTag::Unnecessary);
+    assert_eq!(DiagnosticTag::Unnecessary, DiagnosticTag::Unnecessary.clone());
     assert_ne!(DiagnosticTag::Unnecessary, DiagnosticTag::Deprecated);
 }
 

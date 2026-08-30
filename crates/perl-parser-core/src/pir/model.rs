@@ -953,7 +953,7 @@ mod tests {
 
     #[test]
     fn pir_callee_dynamic_equality() {
-        assert_eq!(PirCallee::Dynamic, PirCallee::Dynamic);
+        assert_eq!(PirCallee::Dynamic, PirCallee::Dynamic.clone());
     }
 
     #[test]

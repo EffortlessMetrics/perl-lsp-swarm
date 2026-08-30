@@ -10,8 +10,16 @@ use walkdir::WalkDir;
 
 const SEARCH_ROOTS: &[&str] = &["crates", "xtask", "examples", "tests"];
 const SKIP_DIR_NAMES: &[&str] = &["target", "generated", "vendor", ".git"];
-const SKIP_PREFIXES: &[&str] =
-    &["archive/", "fuzz/", "tree-sitter-perl/", "test_corpus/", "vendor/"];
+const SKIP_PREFIXES: &[&str] = &[
+    "archive/",
+    "fuzz/",
+    "tree-sitter-perl/",
+    "test_corpus/",
+    "vendor/",
+    // Compile-fail / historical fixture trees are outside the executable
+    // denominator (#14061). False negatives here are accepted.
+    "tests/fixtures/",
+];
 
 pub fn collect_rust_files(root: &Path) -> Result<Vec<PathBuf>> {
     let mut files = Vec::new();
@@ -59,10 +67,16 @@ fn skip_dir(path: &Path) -> bool {
 }
 
 fn skip_relative(path: &Path) -> bool {
-    let rendered = path.to_string_lossy().replace('\\', "/");
-    SKIP_PREFIXES
-        .iter()
-        .any(|prefix| rendered.starts_with(prefix) || rendered.contains(&format!("/{prefix}")))
+    let rendered = normalize_relative(path);
+    SKIP_PREFIXES.iter().any(|prefix| matches_skip_prefix(&rendered, prefix))
+}
+
+fn normalize_relative(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
+fn matches_skip_prefix(rendered: &str, prefix: &str) -> bool {
+    rendered.starts_with(prefix) || rendered.contains(&format!("/{prefix}"))
 }
 
 #[cfg(test)]
@@ -81,9 +95,18 @@ mod tests {
         fs::create_dir_all(root.join("crates/demo/src")).expect("crates dir");
         fs::create_dir_all(root.join("crates/demo/generated")).expect("generated dir");
         fs::create_dir_all(root.join("archive/old")).expect("archive dir");
+        fs::create_dir_all(root.join("crates/demo/tests/fixtures")).expect("fixtures dir");
+        fs::create_dir_all(root.join("crates/demo/tests/common")).expect("common dir");
         fs::write(root.join("crates/demo/src/lib.rs"), "fn f() {}").expect("lib");
         fs::write(root.join("crates/demo/generated/out.rs"), "fn g() {}").expect("generated");
         fs::write(root.join("archive/old/legacy.rs"), "fn h() {}").expect("archive");
+        fs::write(
+            root.join("crates/demo/tests/fixtures/hist.rs"),
+            "use Scalar::Util qw(looks_like_number);\nfn f(v: Option<u8>) { assert!(v.is_some() || v.is_none()); }\n",
+        )
+        .expect("fixture");
+        fs::write(root.join("crates/demo/tests/common/mod.rs"), "fn helper() {}").expect("common");
+        fs::write(root.join("crates/demo/tests/sync.rs"), "fn t() {}").expect("test");
         fs::write(root.join("README.md"), "no").expect("readme");
 
         let files = collect_rust_files(root).expect("inventory");
@@ -93,13 +116,24 @@ mod tests {
                 path.strip_prefix(root).expect("prefix").to_string_lossy().replace('\\', "/")
             })
             .collect();
-        assert_eq!(relative, vec!["crates/demo/src/lib.rs".to_string()]);
+        assert_eq!(
+            relative,
+            vec![
+                "crates/demo/src/lib.rs".to_string(),
+                "crates/demo/tests/common/mod.rs".to_string(),
+                "crates/demo/tests/sync.rs".to_string(),
+            ]
+        );
     }
 
     #[test]
     fn skip_relative_covers_workspace_exclusions() {
         assert!(skip_relative(Path::new("archive/foo.rs")));
         assert!(skip_relative(Path::new("fuzz/target.rs")));
+        assert!(skip_relative(Path::new("tests/fixtures/hist.rs")));
+        assert!(skip_relative(Path::new("crates/perl-lsp-rs/tests/fixtures/parser/foo.rs")));
         assert!(!skip_relative(Path::new("crates/perl-parser/src/lib.rs")));
+        assert!(!skip_relative(Path::new("crates/perl-parser/tests/common/mod.rs")));
+        assert!(!skip_relative(Path::new("crates/perl-parser-core/tests/sync_point_tests.rs")));
     }
 }

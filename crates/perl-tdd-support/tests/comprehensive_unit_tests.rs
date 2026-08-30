@@ -432,10 +432,10 @@ fn refactoring_analyzer_default() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn diagnostic_severity_variants() -> Result<(), Box<dyn std::error::Error>> {
-    assert_eq!(DiagnosticSeverity::Error, DiagnosticSeverity::Error);
-    assert_eq!(DiagnosticSeverity::Warning, DiagnosticSeverity::Warning);
-    assert_eq!(DiagnosticSeverity::Information, DiagnosticSeverity::Information);
-    assert_eq!(DiagnosticSeverity::Hint, DiagnosticSeverity::Hint);
+    assert_eq!(DiagnosticSeverity::Error, DiagnosticSeverity::Error.clone());
+    assert_eq!(DiagnosticSeverity::Warning, DiagnosticSeverity::Warning.clone());
+    assert_eq!(DiagnosticSeverity::Information, DiagnosticSeverity::Information.clone());
+    assert_eq!(DiagnosticSeverity::Hint, DiagnosticSeverity::Hint.clone());
     Ok(())
 }
 
@@ -660,8 +660,8 @@ fn priority_ordering() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn test_framework_equality() -> Result<(), Box<dyn std::error::Error>> {
-    assert_eq!(TestFramework::TestMore, TestFramework::TestMore);
-    assert_eq!(TestFramework::Test2V0, TestFramework::Test2V0);
+    assert_eq!(TestFramework::TestMore, TestFramework::TestMore.clone());
+    assert_eq!(TestFramework::Test2V0, TestFramework::Test2V0.clone());
     assert_ne!(TestFramework::TestMore, TestFramework::TestSimple);
     Ok(())
 }
@@ -672,7 +672,10 @@ fn test_framework_equality() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn gen_refactoring_category_equality() -> Result<(), Box<dyn std::error::Error>> {
-    assert_eq!(GenRefactoringCategory::DuplicateCode, GenRefactoringCategory::DuplicateCode);
+    assert_eq!(
+        GenRefactoringCategory::DuplicateCode,
+        GenRefactoringCategory::DuplicateCode.clone()
+    );
     assert_ne!(GenRefactoringCategory::LongMethod, GenRefactoringCategory::DeadCode);
     Ok(())
 }
@@ -683,7 +686,7 @@ fn gen_refactoring_category_equality() -> Result<(), Box<dyn std::error::Error>>
 
 #[test]
 fn basic_refactoring_category_equality() -> Result<(), Box<dyn std::error::Error>> {
-    assert_eq!(RefactoringCategory::HighComplexity, RefactoringCategory::HighComplexity);
+    assert_eq!(RefactoringCategory::HighComplexity, RefactoringCategory::HighComplexity.clone());
     assert_ne!(RefactoringCategory::LongMethod, RefactoringCategory::TooManyParameters);
     Ok(())
 }
@@ -777,28 +780,28 @@ fn test_metadata_serde_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn report_format_equality() -> Result<(), Box<dyn std::error::Error>> {
-    assert_eq!(ReportFormat::Json, ReportFormat::Json);
+    assert_eq!(ReportFormat::Json, ReportFormat::Json.clone());
     assert_ne!(ReportFormat::Json, ReportFormat::Csv);
     Ok(())
 }
 
 #[test]
 fn test_category_equality() -> Result<(), Box<dyn std::error::Error>> {
-    assert_eq!(TestCategory::CriticalLsp, TestCategory::CriticalLsp);
+    assert_eq!(TestCategory::CriticalLsp, TestCategory::CriticalLsp.clone());
     assert_ne!(TestCategory::EdgeCases, TestCategory::Infrastructure);
     Ok(())
 }
 
 #[test]
 fn complexity_level_equality() -> Result<(), Box<dyn std::error::Error>> {
-    assert_eq!(ComplexityLevel::Low, ComplexityLevel::Low);
+    assert_eq!(ComplexityLevel::Low, ComplexityLevel::Low.clone());
     assert_ne!(ComplexityLevel::High, ComplexityLevel::Critical);
     Ok(())
 }
 
 #[test]
 fn lsp_workflow_stage_equality() -> Result<(), Box<dyn std::error::Error>> {
-    assert_eq!(LspWorkflowStage::Parse, LspWorkflowStage::Parse);
+    assert_eq!(LspWorkflowStage::Parse, LspWorkflowStage::Parse.clone());
     assert_ne!(LspWorkflowStage::Index, LspWorkflowStage::Complete);
     Ok(())
 }
@@ -982,10 +985,10 @@ fn guardian_trend_report_with_data() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn trend_direction_equality() -> Result<(), Box<dyn std::error::Error>> {
-    assert_eq!(TrendDirection::Increasing, TrendDirection::Increasing);
-    assert_eq!(TrendDirection::Decreasing, TrendDirection::Decreasing);
-    assert_eq!(TrendDirection::Stable, TrendDirection::Stable);
-    assert_eq!(TrendDirection::Unknown, TrendDirection::Unknown);
+    assert_eq!(TrendDirection::Increasing, TrendDirection::Increasing.clone());
+    assert_eq!(TrendDirection::Decreasing, TrendDirection::Decreasing.clone());
+    assert_eq!(TrendDirection::Stable, TrendDirection::Stable.clone());
+    assert_eq!(TrendDirection::Unknown, TrendDirection::Unknown.clone());
     assert_ne!(TrendDirection::Increasing, TrendDirection::Decreasing);
     Ok(())
 }
@@ -1060,9 +1063,9 @@ fn tdd_config_serde_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn test_kind_equality() -> Result<(), Box<dyn std::error::Error>> {
-    assert_eq!(TestKind::File, TestKind::File);
-    assert_eq!(TestKind::Suite, TestKind::Suite);
-    assert_eq!(TestKind::Test, TestKind::Test);
+    assert_eq!(TestKind::File, TestKind::File.clone());
+    assert_eq!(TestKind::Suite, TestKind::Suite.clone());
+    assert_eq!(TestKind::Test, TestKind::Test.clone());
     assert_ne!(TestKind::File, TestKind::Test);
     Ok(())
 }

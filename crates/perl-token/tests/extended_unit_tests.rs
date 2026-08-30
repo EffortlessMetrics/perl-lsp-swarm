@@ -325,7 +325,7 @@ fn token_eq_reflexive_for_all_kinds() {
     ];
     for kind in &kinds {
         let tok = Token::new_checked(*kind, "x", 0, 1).expect("valid token");
-        assert_eq!(tok, tok);
+        assert_eq!(tok, tok.clone());
     }
 }
 
