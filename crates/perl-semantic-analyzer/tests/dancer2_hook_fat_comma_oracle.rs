@@ -7,10 +7,15 @@
 //! cannot establish it. This file asks the real `perl` interpreter what each
 //! form means and requires the extractor's classification to agree.
 //!
-//! The oracle is bounded: two tiny programs, no network, no CPAN, no Dancer2.
-//! It runs `perl` only as a semantics reference — never to execute project
-//! code. When no interpreter is reachable the test reports the instrument
-//! failure and stops rather than converting a missing oracle into a pass.
+//! The oracle is bounded: a few tiny programs, no network, no CPAN, no
+//! Dancer2. It runs `perl` only as a semantics reference — never to execute
+//! project code.
+//!
+//! A missing interpreter must not quietly delete the proof. Under CI, where
+//! `perl` is part of the toolchain, an unreachable interpreter fails the test
+//! outright; only an interactive checkout without `perl` is allowed to skip,
+//! and even then the repository-side classification stays pinned
+//! unconditionally in `dancer2_hook_facts.rs`.
 
 use perl_semantic_analyzer::Parser;
 use perl_semantic_analyzer::analysis::dancer2_hooks::extract_dancer2_hook_declarations;
@@ -27,11 +32,35 @@ fn perl_first_argument(separator: &str) -> Option<String> {
         "sub before {{ return 'CALLED' }} sub probe {{ return $_[0] }} \
          print probe(before {separator} 1);"
     );
-    let output = Command::new("perl").arg("-e").arg(&program).output().ok()?;
+    run_perl(&program)
+}
+
+/// Run one bounded program and return its stdout, or `None` when the
+/// interpreter is unreachable or refuses the program.
+fn run_perl(program: &str) -> Option<String> {
+    let output = Command::new("perl").arg("-e").arg(program).output().ok()?;
     if !output.status.success() {
         return None;
     }
     Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// Whether a missing interpreter may skip, or must fail the test.
+///
+/// The oracle is the only thing binding this rule to Perl rather than to our
+/// own belief about Perl, so on CI its absence is a failure, not a pass. The
+/// escape hatch exists for interactive checkouts without `perl` installed.
+fn oracle_may_skip() -> bool {
+    std::env::var_os("CI").is_none()
+}
+
+/// Fail loudly when the interpreter is required but unreachable.
+fn require_oracle() {
+    assert!(
+        oracle_may_skip(),
+        "the fat-comma oracle requires a working `perl`; under CI an unreachable \
+         interpreter is an instrument failure, not a pass"
+    );
 }
 
 fn hook_name(code: &str) -> HookNameSelection {
@@ -51,6 +80,7 @@ fn the_extractor_agrees_with_perl_on_what_the_separator_means() {
     // here cannot leave the behaviour untested — only unbound to perl.
     let (Some(fat_comma), Some(comma)) = (perl_first_argument("=>"), perl_first_argument(","))
     else {
+        require_oracle();
         return;
     };
 
@@ -89,6 +119,7 @@ fn perl_decides_the_dunder_token_by_separator_too() {
         perl_first_argument_in_package("__PACKAGE__", "=>"),
         perl_first_argument_in_package("__PACKAGE__", ","),
     ) else {
+        require_oracle();
         return;
     };
     assert_eq!(fat_comma, "__PACKAGE__", "`=>` quotes the token rather than expanding it");
@@ -125,9 +156,36 @@ fn perl_first_argument_in_package(operand: &str, separator: &str) -> Option<Stri
     let program = format!(
         "package My::App; sub probe {{ return $_[0] }} print probe({operand} {separator} 1);"
     );
-    let output = Command::new("perl").arg("-e").arg(&program).output().ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    run_perl(&program)
+}
+
+/// Perl auto-quotes across trivia, so a comment between the bareword and the
+/// fat comma does not make the name computed. Skipping only whitespace would
+/// silently drop request-scoped completions from a commented hook.
+#[test]
+fn perl_auto_quotes_across_a_comment_before_the_fat_comma() {
+    let Some(commented) = run_perl(
+        "sub before { return 'CALLED' } sub probe { return $_[0] } \
+         print probe(before # a note\n => 1);",
+    ) else {
+        require_oracle();
+        return;
+    };
+    assert_eq!(commented, "before", "a comment does not stop `=>` auto-quoting");
+
+    let promoted = hook_name("package App;\nuse Dancer2;\nhook before # a note\n    => sub { 1 };");
+    let literal = must_some(match &promoted {
+        HookNameSelection::Literal(name) => Some(name.literal.clone()),
+        HookNameSelection::Dynamic { .. } => None,
+        _ => None,
+    });
+    assert_eq!(literal, commented, "the extractor must follow perl across the comment");
+
+    // The trivia skip must not swallow a real separator: a comment before an
+    // ordinary comma still leaves the operand computed.
+    let called = hook_name("package App;\nuse Dancer2;\nhook(before # a note\n    , sub { 1 });");
+    assert!(
+        matches!(called, HookNameSelection::Dynamic { .. }),
+        "a comment must not turn a comma into a fat comma: {called:?}"
+    );
 }

@@ -292,6 +292,23 @@ mod tests {
     }
 
     #[test]
+    fn a_comment_before_the_fat_comma_keeps_the_hook_request_context() {
+        // Perl auto-quotes across a comment, so this is still `hook 'before'`
+        // and its body is still a request context. Skipping only whitespace
+        // would silently withhold the helpers here.
+        let source = "use Dancer2;\nhook before # a note\n    => sub { my $r = request; };\n";
+        let (activations, facts) = setup(source);
+        let inside = source.find("my $r").expect("hook body offset");
+        let candidates =
+            keyword_completion_candidates(&activations, &facts, "main", inside, &none_declared);
+        let labels: Vec<&str> = candidates.iter().map(|c| c.label.as_str()).collect();
+        assert!(
+            labels.contains(&"request"),
+            "a commented fat comma still yields an admitted hook: {labels:?}"
+        );
+    }
+
+    #[test]
     fn a_comma_separated_bareword_hook_operand_establishes_no_request_context() {
         // `hook(before, sub {...})` calls `before()`; no fat comma, so no
         // auto-quoting and no proven hook identity. The body must not inherit

@@ -87,10 +87,11 @@ pub fn extract_dancer2_hook_declarations(
 /// ```
 ///
 /// The separator is the only thing that tells them apart, so the exact source
-/// text is the authority. Promotion requires both a plain bareword at the
-/// operand's own span and a `=>` immediately following it; anything else —
-/// a comma, a qualified or sigil-bearing name, a comment before the arrow,
-/// an interpolation — fails closed and stays a computed boundary.
+/// text is the authority. Promotion requires a plain bareword at the operand's
+/// own span followed by `=>`, with only whitespace and comments in between —
+/// Perl auto-quotes across those, so `hook before # note` / newline / `=> ...`
+/// is still a literal. Anything else — a comma, a qualified or sigil-bearing
+/// name, an interpolation — fails closed and stays a computed boundary.
 fn promote_fat_comma_barewords(name: &mut HookNameSelection, source: &str) {
     let HookNameSelection::Dynamic { anchor, .. } = name else {
         return;
@@ -112,7 +113,7 @@ fn promote_fat_comma_barewords(name: &mut HookNameSelection, source: &str) {
     let Some(rest) = source.get(end..) else {
         return;
     };
-    if !rest.trim_start().starts_with("=>") {
+    if !skip_separator_trivia(rest).starts_with("=>") {
         return;
     }
     *name = HookNameSelection::Literal(HookName {
@@ -120,6 +121,27 @@ fn promote_fat_comma_barewords(name: &mut HookNameSelection, source: &str) {
         literal: literal.to_string(),
         anchor: *anchor,
     });
+}
+
+/// Skip what Perl allows between a bareword and the fat comma that quotes it:
+/// whitespace and line comments, in any order.
+///
+/// Only these two forms are skipped. Anything else ends the scan, so the
+/// caller still sees the next real token and a non-`=>` separator keeps the
+/// operand computed.
+fn skip_separator_trivia(mut rest: &str) -> &str {
+    loop {
+        let trimmed = rest.trim_start();
+        let Some(after_hash) = trimmed.strip_prefix('#') else {
+            return trimmed;
+        };
+        // A line comment runs to the end of the line; an unterminated one runs
+        // to the end of the file, leaving nothing for the caller to match.
+        rest = match after_hash.find('\n') {
+            Some(newline) => &after_hash[newline + 1..],
+            None => "",
+        };
+    }
 }
 
 /// Whether `value` is a plain Perl bareword: the only shape `=>` auto-quotes
