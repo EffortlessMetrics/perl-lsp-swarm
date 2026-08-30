@@ -268,18 +268,33 @@ pub struct CatalogMetric {
     pub limitations: Vec<String>,
 }
 
+fn participation_mismatch_reason(class: MetricClass, participates: bool) -> String {
+    format!("class `{}` cannot set participates_in_core_score={participates}", class.as_str())
+}
+
+fn relationship_mismatch_reason(
+    class: MetricClass,
+    relationship: CompatibilityRelationship,
+) -> String {
+    format!(
+        "class `{}` is incompatible with relationship `{}`",
+        class.as_str(),
+        relationship.as_str()
+    )
+}
+
+fn score_class_contradiction(id: &str, reason: String) -> CatalogError {
+    CatalogError::ScoreClassContradiction { id: id.to_owned(), reason }
+}
+
 impl CatalogMetric {
     /// Reject class/score/relationship contradictions for one row.
     pub fn validate_score_class(&self) -> Result<(), CatalogError> {
         if self.participates_in_core_score != self.class.may_participate_in_core_score() {
-            return Err(CatalogError::ScoreClassContradiction {
-                id: self.id.clone(),
-                reason: format!(
-                    "class `{}` cannot set participates_in_core_score={}",
-                    self.class.as_str(),
-                    self.participates_in_core_score
-                ),
-            });
+            return Err(score_class_contradiction(
+                &self.id,
+                participation_mismatch_reason(self.class, self.participates_in_core_score),
+            ));
         }
         match (self.class, self.relationship) {
             (MetricClass::CpantsSiteAnalogue, CompatibilityRelationship::SiteAnalogue)
@@ -291,14 +306,10 @@ impl CatalogMetric {
                 | MetricClass::CpantsOfflineExperimental,
                 CompatibilityRelationship::Direct | CompatibilityRelationship::Adapted,
             ) => Ok(()),
-            (class, relationship) => Err(CatalogError::ScoreClassContradiction {
-                id: self.id.clone(),
-                reason: format!(
-                    "class `{}` is incompatible with relationship `{}`",
-                    class.as_str(),
-                    relationship.as_str()
-                ),
-            }),
+            (class, relationship) => Err(score_class_contradiction(
+                &self.id,
+                relationship_mismatch_reason(class, relationship),
+            )),
         }
     }
 }
@@ -373,43 +384,84 @@ mod tests {
         }
     }
 
-    fn contradiction_display(reason: &str) -> String {
-        format!("score/class contradiction for `cpants.probe`: {reason}")
+    fn score_class_fields(error: CatalogError) -> (String, String) {
+        match error {
+            CatalogError::ScoreClassContradiction { id, reason } => (id, reason),
+            other => panic!("expected ScoreClassContradiction, got {other}"),
+        }
+    }
+
+    #[test]
+    fn participation_mismatch_reason_names_class_and_flag() {
+        assert_eq!(
+            participation_mismatch_reason(MetricClass::CpantsOfflineExtra, true),
+            "class `cpants_offline_extra` cannot set participates_in_core_score=true"
+        );
+        assert_eq!(
+            participation_mismatch_reason(MetricClass::CpantsOfflineCore, false),
+            "class `cpants_offline_core` cannot set participates_in_core_score=false"
+        );
+    }
+
+    #[test]
+    fn relationship_mismatch_reason_names_class_and_relationship() {
+        assert_eq!(
+            relationship_mismatch_reason(
+                MetricClass::CpantsOfflineCore,
+                CompatibilityRelationship::SiteAnalogue
+            ),
+            "class `cpants_offline_core` is incompatible with relationship `site_analogue`"
+        );
     }
 
     #[test]
     fn extra_participating_in_core_score_is_exact_contradiction() {
-        let error =
+        let (id, reason) = score_class_fields(
             metric(MetricClass::CpantsOfflineExtra, CompatibilityRelationship::Direct, true)
                 .validate_score_class()
-                .expect_err("extra must not participate");
-        assert_eq!(
-            error.to_string(),
-            "score/class contradiction for `cpants.probe`: class `cpants_offline_extra` cannot set participates_in_core_score=true"
+                .expect_err("extra must not participate"),
         );
+        assert_eq!(id, "cpants.probe");
+        assert_eq!(
+            reason,
+            "class `cpants_offline_extra` cannot set participates_in_core_score=true"
+        );
+        assert_eq!(reason, participation_mismatch_reason(MetricClass::CpantsOfflineExtra, true));
     }
 
     #[test]
     fn core_dropping_core_participation_is_exact_contradiction() {
-        let error =
+        let (id, reason) = score_class_fields(
             metric(MetricClass::CpantsOfflineCore, CompatibilityRelationship::Direct, false)
                 .validate_score_class()
-                .expect_err("core must participate");
-        assert_eq!(
-            error.to_string(),
-            "score/class contradiction for `cpants.probe`: class `cpants_offline_core` cannot set participates_in_core_score=false"
+                .expect_err("core must participate"),
         );
+        assert_eq!(id, "cpants.probe");
+        assert_eq!(
+            reason,
+            "class `cpants_offline_core` cannot set participates_in_core_score=false"
+        );
+        assert_eq!(reason, participation_mismatch_reason(MetricClass::CpantsOfflineCore, false));
     }
 
     #[test]
     fn core_site_analogue_relationship_is_exact_contradiction() {
-        let error =
+        let (id, reason) = score_class_fields(
             metric(MetricClass::CpantsOfflineCore, CompatibilityRelationship::SiteAnalogue, true)
                 .validate_score_class()
-                .expect_err("mismatch");
+                .expect_err("mismatch"),
+        );
+        assert_eq!(id, "cpants.probe");
         assert_eq!(
-            error.to_string(),
-            "score/class contradiction for `cpants.probe`: class `cpants_offline_core` is incompatible with relationship `site_analogue`"
+            reason,
+            "class `cpants_offline_core` is incompatible with relationship `site_analogue`"
+        );
+        assert_eq!(
+            reason,
+            relationship_mismatch_reason(
+                MetricClass::CpantsOfflineCore,
+                CompatibilityRelationship::SiteAnalogue
+            )
         );
     }
 
@@ -423,17 +475,13 @@ mod tests {
             (MetricClass::UnsupportedOrDeferred, CompatibilityRelationship::Deferred),
         ];
         for (class, relationship) in cases {
-            let error = metric(class, relationship, true)
-                .validate_score_class()
-                .expect_err("non-core must not participate");
-            assert_eq!(
-                error.to_string(),
-                contradiction_display(&format!(
-                    "class `{}` cannot set participates_in_core_score=true",
-                    class.as_str()
-                )),
-                "{class:?}"
+            let (id, reason) = score_class_fields(
+                metric(class, relationship, true)
+                    .validate_score_class()
+                    .expect_err("non-core must not participate"),
             );
+            assert_eq!(id, "cpants.probe", "{class:?}");
+            assert_eq!(reason, participation_mismatch_reason(class, true), "{class:?}");
         }
     }
 
@@ -449,16 +497,15 @@ mod tests {
             (MetricClass::UnsupportedOrDeferred, CompatibilityRelationship::Direct, false),
         ];
         for (class, relationship, participates) in cases {
-            let error = metric(class, relationship, participates)
-                .validate_score_class()
-                .expect_err("mismatch");
+            let (id, reason) = score_class_fields(
+                metric(class, relationship, participates)
+                    .validate_score_class()
+                    .expect_err("mismatch"),
+            );
+            assert_eq!(id, "cpants.probe", "{class:?}/{relationship:?}");
             assert_eq!(
-                error.to_string(),
-                contradiction_display(&format!(
-                    "class `{}` is incompatible with relationship `{}`",
-                    class.as_str(),
-                    relationship.as_str()
-                )),
+                reason,
+                relationship_mismatch_reason(class, relationship),
                 "{class:?}/{relationship:?}"
             );
         }
