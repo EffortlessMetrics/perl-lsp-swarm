@@ -1592,6 +1592,16 @@ impl LspServer {
                 if let Err(e) = self.refresh_controller.refresh_all(self) {
                     tracing::warn!(error = %e, "Failed to refresh client after config change");
                 }
+
+                self.invalidate_workspace_identity();
+
+                let open_uris: Vec<String> = {
+                    let documents = self.documents.lock();
+                    documents.keys().cloned().collect()
+                };
+                for open_uri in open_uris {
+                    self.publish_diagnostics_debounced(&open_uri);
+                }
             }
         }
 
@@ -2194,6 +2204,8 @@ impl LspServer {
             if let Err(e) = self.refresh_controller.refresh_all(self) {
                 tracing::warn!(error = %e, "Failed to refresh client after workspace folder changes");
             }
+
+            self.invalidate_workspace_identity();
 
             // Legacy push clients never observe `workspace/diagnostic/refresh`
             // (the action above is pull-only), so their already-open documents
@@ -2967,6 +2979,7 @@ mod tests {
     use serde_json::{Value, json};
     use std::io::{self, Write};
     use std::sync::Arc;
+    use std::sync::atomic::Ordering;
 
     #[test]
     fn workspace_symbol_resolve_missing_params_name_method_and_field() {
@@ -3550,6 +3563,29 @@ mod tests {
         );
         assert_eq!(current_engine, perl_lsp_rs_core::config::CriticEngine::Native);
         Ok(())
+    }
+
+    #[test]
+    fn configuration_change_invalidates_identity_before_and_after_application() {
+        let server = LspServer::new();
+        let before = server.workspace_identity_generation.load(Ordering::SeqCst);
+
+        server.test_handle_did_change_configuration(Some(json!({
+            "settings": {
+                "perl": {
+                    "workspace": {
+                        "resolutionTimeout": 123
+                    }
+                }
+            }
+        })));
+
+        let after = server.workspace_identity_generation.load(Ordering::SeqCst);
+        assert!(
+            after >= before + 2,
+            "configuration changes must invalidate both before and after application: \
+             before={before}, after={after}"
+        );
     }
 
     #[test]

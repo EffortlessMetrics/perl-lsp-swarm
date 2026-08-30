@@ -496,6 +496,30 @@ mod tests {
     }
 
     #[test]
+    fn workspace_folder_change_rejects_pre_change_candidate() {
+        let (server, _buf) = make_server();
+        let identity = open_document(&server, "file:///sink_folder_change_test.pl", "my $x = 1;\n");
+
+        server
+            .handle_did_change_workspace_folders(Some(json!({
+                "event": {
+                    "added": [{ "uri": "file:///sink-folder-root/", "name": "root" }],
+                    "removed": []
+                }
+            })))
+            .expect("workspace folder change should succeed");
+
+        assert_eq!(
+            server.commit_push_diagnostics(
+                &identity,
+                json!({ "uri": identity.normalized_uri, "diagnostics": [] }),
+                PushDiagnosticsDisposition::Clear,
+            ),
+            PushDiagnosticsCommitOutcome::RejectedSupersededGeneration
+        );
+    }
+
+    #[test]
     fn folder_config_invalidation_rejects_only_owned_push_candidate() {
         let (server, _buf) = make_server();
         server.workspace_folders.lock().extend([

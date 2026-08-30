@@ -206,6 +206,9 @@ pub fn check_version_compat_with_project_version(
             let Some(project_version) = project_version else {
                 return;
             };
+            if contains_source_version_declaration(node) {
+                return;
+            }
             let Some(version) = parse_configured_project_version(project_version) else {
                 return;
             };
@@ -528,8 +531,28 @@ pub fn check_version_compat_with_project_version(
     if using_project_version {
         for diagnostic in &mut diagnostics[diagnostics_before_walk..] {
             diagnostic.message.push_str(" (target from project [perl].version)");
+            if let Some(suggestion) = diagnostic.suggestion.as_mut() {
+                suggestion.push_str(&format!(
+                    ". This file declares no `use VERSION`; the target came from the project \
+                     `[perl].version`, so add an explicit `use v{}.{}` to this file or raise \
+                     `[perl].version`",
+                    declared_version.major, declared_version.minor
+                ));
+            }
         }
     }
+}
+
+fn contains_source_version_declaration(node: &Node) -> bool {
+    let mut found = false;
+    walk_node(node, &mut |n| {
+        if let NodeKind::Use { module, .. } = &n.kind
+            && looks_like_source_version(module)
+        {
+            found = true;
+        }
+    });
+    found
 }
 
 fn looks_like_source_version(module: &str) -> bool {
@@ -983,6 +1006,66 @@ mod tests {
             diags.iter().any(|diagnostic| diagnostic.message.contains("requires Perl v5.36+")),
             "v5.20 project fallback must remain the effective PL900 target: {diags:?}"
         );
+    }
+
+    #[test]
+    fn nested_source_version_suppresses_project_fallback() {
+        let nested = version_compat_diags_with_project_version(
+            "{ use v5.36; sub f ($x) { return $x; } }\n",
+            Some("v5.20"),
+        );
+        assert!(
+            nested.iter().all(|diagnostic| !diagnostic
+                .message
+                .contains("target from project [perl].version")),
+            "nested source version must defeat the project fallback: {nested:?}"
+        );
+
+        let control =
+            version_compat_diags_with_project_version("sub f ($x) { return $x; }\n", Some("v5.20"));
+        assert!(
+            control.iter().any(|diagnostic| diagnostic
+                .message
+                .contains("target from project [perl].version")),
+            "a file without a source version must use the project fallback: {control:?}"
+        );
+    }
+
+    #[test]
+    fn project_fallback_suggestion_explains_missing_source_version() {
+        let project_diags =
+            version_compat_diags_with_project_version("sub f ($x) { return $x; }\n", Some("v5.20"));
+        let project_diagnostic = project_diags
+            .iter()
+            .find(|diagnostic| {
+                diagnostic.code.as_deref() == Some("PL900")
+                    && diagnostic.message.contains("subroutine signatures")
+            })
+            .expect("project fallback must emit a signatures diagnostic");
+        let project_suggestion = project_diagnostic
+            .suggestion
+            .as_deref()
+            .expect("project fallback diagnostic must have a suggestion");
+        assert!(project_suggestion.contains("This file declares no `use VERSION`"));
+        assert!(project_suggestion.contains("use v5.36"));
+        assert!(project_suggestion.contains("raise `[perl].version`"));
+
+        let source_diags = version_compat_diags_with_project_version(
+            "use v5.20;\nsub f ($x) { return $x; }\n",
+            Some("v5.40"),
+        );
+        let source_diagnostic = source_diags
+            .iter()
+            .find(|diagnostic| {
+                diagnostic.code.as_deref() == Some("PL900")
+                    && diagnostic.message.contains("subroutine signatures")
+            })
+            .expect("source version must emit a signatures diagnostic");
+        let source_suggestion = source_diagnostic
+            .suggestion
+            .as_deref()
+            .expect("source diagnostic must have a suggestion");
+        assert!(!source_suggestion.contains("This file declares no `use VERSION`"));
     }
 
     #[test]
