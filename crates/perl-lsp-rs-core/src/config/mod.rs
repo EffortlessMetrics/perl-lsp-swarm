@@ -5036,10 +5036,17 @@ profile = "recommended"
     }
 
     /// Regression guard for the unbounded `Command::output()` stall: a long-running
-    /// probe must be killed within roughly `timeout + poll_interval`. We use perl
-    /// itself (via the same toolchain resolver that `fetch_perl_inc` uses) to
+    /// probe must actually be killed at the deadline, not merely reported. We use
+    /// perl itself (via the same toolchain resolver that `fetch_perl_inc` uses) to
     /// guarantee an interpreter is present; the test skips when no perl is
     /// available.
+    ///
+    /// The kill claim is proven mechanically instead of with a fixed host-speed
+    /// ceiling (#13202): the child writes a sentinel file only if it survives its
+    /// sleep, so a "returns TimedOut but never kills" regression is observed
+    /// directly while load-induced scheduling delay cannot false-fail the test.
+    /// The fixed 3 s elapsed ceiling this replaces fired at 3.50 s and 5.65 s on
+    /// loaded CI hosts with correct behavior.
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn output_with_timeout_kills_long_running_subprocess() -> TestResult {
@@ -5048,11 +5055,24 @@ profile = "recommended"
             Err(_) => return Ok(()),
         };
 
+        let budget = Duration::from_millis(250);
+        let temp = tempfile::tempdir()?;
+        let sentinel = temp.path().join("not-killed.txt");
+        // The child writes the sentinel only if it is still alive after its
+        // sleep; a kill at the deadline means the file can never appear. The
+        // 1 s sleep keeps the child alive well past the 250 ms budget, and the
+        // `q{...}` quoting keeps Windows backslash paths literal.
         let mut command = Command::new(perl_path);
-        command.args(["-e", "sleep 10; print 'should not reach'"]);
+        command.args([
+            "-e",
+            &format!(
+                "sleep 1; open my $fh, '>', q{{{}}}; print $fh 'not killed'",
+                sentinel.display()
+            ),
+        ]);
 
         let start = Instant::now();
-        let result = output_with_timeout(command, Duration::from_millis(250));
+        let result = output_with_timeout(command, budget);
         let elapsed = start.elapsed();
 
         let err = match result {
@@ -5064,19 +5084,42 @@ profile = "recommended"
             std::io::ErrorKind::TimedOut,
             "expected ErrorKind::TimedOut, got {err:?}",
         );
-        // Allow generous overhead (slow CI cold start, antivirus, etc.).
+        // The deadline must be honored, not fired early.
+        assert!(elapsed >= budget, "timeout fired before its budget: {elapsed:?}");
+        // Load-robust stall ceiling: derived from the budget plus a documented
+        // host-stall allowance (#13202). Load-induced returns up to ~5.65 s were
+        // observed on loaded CI, so only a pathological stall may red here.
         assert!(
-            elapsed < Duration::from_secs(3),
-            "timeout should fire within reasonable overhead, took {elapsed:?}",
+            elapsed < budget + Duration::from_secs(30),
+            "timeout return must stay bounded, took {elapsed:?}",
         );
+
+        // Deterministic kill proof: if the kill regressed, the child finishes
+        // its sleep roughly 1 s after spawn and writes the sentinel. The
+        // observation window stays well past that write moment (interpreter
+        // boot is tens of milliseconds even on slow hosts), so any appearance
+        // is the regression; absence after the window is the proof.
+        let kill_proof_window = Duration::from_secs(4);
+        let proof_start = Instant::now();
+        while proof_start.elapsed() < kill_proof_window {
+            if sentinel.exists() {
+                return Err(format!(
+                    "child was not killed at the deadline; sentinel written: {}",
+                    sentinel.display()
+                )
+                .into());
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(!sentinel.exists(), "child must be killed at the deadline");
         Ok(())
     }
 
     /// `get_system_inc` must respect `SYSTEM_INC_PROBE_TIMEOUT` so a hung
     /// interpreter cannot block the LSP request thread. Verifies the full
-    /// path: `use_system_inc=true`, slow `perl_path`, the lazy probe lands
-    /// in a bounded failure outcome, the returned slice is empty, and the
-    /// typed cache holds that outcome for reuse.
+    /// path: `use_system_inc=true`, slow `perl_path`, the lazy probe reaches
+    /// the deadline and lands in the typed `TimedOut` outcome, the returned
+    /// slice is empty, and the typed cache holds that outcome for reuse.
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn get_system_inc_does_not_stall_on_slow_interpreter() -> TestResult {
@@ -5089,8 +5132,13 @@ profile = "recommended"
             use_system_inc: true,
             perl_path: Some(perl_path.to_string_lossy().into_owned()),
             // perl_args runs BEFORE -e 'print @INC', so we make perl sleep up front.
-            // The sleep is much longer than SYSTEM_INC_PROBE_TIMEOUT (1s).
-            perl_args: vec!["-e".into(), "sleep 10".into()],
+            // The trailing semicolon is load-bearing (#13200): perl concatenates
+            // the -e programs into ONE script, and without the separator the
+            // combined program failed to compile and the interpreter exited
+            // nonzero in milliseconds — the probe short-circuited before ever
+            // reaching the deadline. The sleep is much longer than
+            // SYSTEM_INC_PROBE_TIMEOUT (1s).
+            perl_args: vec!["-e".into(), "sleep 10;".into()],
             ..WorkspaceConfig::default()
         };
 
@@ -5099,29 +5147,32 @@ profile = "recommended"
         let paths = config.get_system_inc().to_vec();
         let elapsed = start.elapsed();
 
-        // The contract under test is bounded, empty, and cached — NOT which
-        // failure class the runner's perl produces. The resolved interpreter
-        // varies by environment (msys-vs-Strawberry on Windows, shimmed
-        // perls on CI) and a `-e "sleep 10"` program can exit nonzero or
-        // fail to spawn before the 1s timeout fires; both were observed
-        // (CI red with NonZeroExit where the author saw TimedOut locally).
+        // The sleeping program compiles and runs far past the probe deadline,
+        // so the typed outcome must be exactly TimedOut. NonZeroExit was only
+        // ever produced by the missing-separator compile failure this control
+        // used to have (#13200) — accepting it (or IoFailed/Unavailable) again
+        // would re-hide a deadline control that never reaches the deadline.
         // SuccessfulEmpty/Paths WOULD be failures here: the sleep program
         // must never produce paths.
-        assert!(
-            matches!(
-                outcome,
-                SystemIncProbeOutcome::TimedOut
-                    | SystemIncProbeOutcome::NonZeroExit
-                    | SystemIncProbeOutcome::IoFailed
-                    | SystemIncProbeOutcome::Unavailable
-            ),
-            "expected a bounded failure outcome, got {outcome:?}"
+        assert_eq!(
+            outcome,
+            SystemIncProbeOutcome::TimedOut,
+            "slow-interpreter probe must end in the typed timeout outcome, got {outcome:?}"
         );
         assert!(paths.is_empty(), "expected empty @INC on timeout, got {paths:?}");
-        // Generous bound: SYSTEM_INC_PROBE_TIMEOUT (1s) + spawn + poll overhead.
+        // The probe must actually reach its deadline, not short-circuit
+        // before it (#13200).
         assert!(
-            elapsed < Duration::from_secs(4),
-            "get_system_inc must return within timeout+overhead, took {elapsed:?}",
+            elapsed >= SYSTEM_INC_PROBE_TIMEOUT,
+            "probe returned before SYSTEM_INC_PROBE_TIMEOUT, took {elapsed:?}",
+        );
+        // Load-robust stall ceiling (#13202): the fixed 4 s ceiling this
+        // replaces fired at 4.32 s on loaded CI, so the bound is the 1 s
+        // budget plus a documented host-stall allowance. An unbounded probe
+        // is caught by the outcome and empty-slice assertions instead.
+        assert!(
+            elapsed < SYSTEM_INC_PROBE_TIMEOUT + Duration::from_secs(30),
+            "get_system_inc must stay bounded, took {elapsed:?}",
         );
 
         // Cached empty result — second call does not respawn perl.
@@ -5186,6 +5237,57 @@ profile = "recommended"
             let reused = config.get_system_inc_probe_outcome();
             assert_eq!(reused, cached, "second lookup must reuse the cached outcome");
             assert_eq!(config.get_system_inc().to_vec(), cached_paths);
+            Ok(())
+        })
+    }
+
+    /// `perl_args` supplied by the caller must reach the probe command: an
+    /// `-I dir` argument must surface in the probed startup `@INC` so
+    /// downstream module resolution can consume it. This is the live-probe
+    /// half of the trimmed `append_system_inc_paths` coverage in
+    /// `perl-lsp-rs` (#13201); the probe budget is widened through the
+    /// `PerlOracleEnv` seam so a cold interpreter start under parallel load
+    /// cannot race the 1 s default deadline.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn get_system_inc_probe_returns_perl_arg_include_paths() -> TestResult {
+        PerlOracleEnv::with_startup_inc_probe_timeout(Duration::from_secs(30), || {
+            let perl_path = match resolve_perl_path_with_toolchain() {
+                Ok(path) => path,
+                Err(_) => return Ok(()),
+            };
+            let temp = tempfile::tempdir()?;
+            let inc_path = temp.path().join("site_perl");
+            std::fs::create_dir_all(&inc_path)?;
+
+            // The duplicated `-I` (with and without the native separator)
+            // mirrors the normalized-variant shape a real interpreter yields;
+            // the strict dot-skip and dedupe semantics for these variants are
+            // owned by the synthetic `append_system_inc_paths_from` test in
+            // `perl-lsp-rs`.
+            let mut config = WorkspaceConfig {
+                use_system_inc: true,
+                perl_path: Some(perl_path.to_string_lossy().into_owned()),
+                perl_args: vec![
+                    "-I".into(),
+                    inc_path.to_string_lossy().into_owned(),
+                    "-I".into(),
+                    format!("{}{}", inc_path.to_string_lossy(), std::path::MAIN_SEPARATOR),
+                ],
+                ..WorkspaceConfig::default()
+            };
+
+            match config.get_system_inc_probe_outcome() {
+                SystemIncProbeOutcome::Paths(paths) => {
+                    assert!(
+                        paths.iter().any(|path| path == &inc_path),
+                        "probed @INC must contain the -I interpreter arg path, got {paths:?}"
+                    );
+                }
+                outcome => {
+                    return Err(format!("expected live probe Paths, got {outcome:?}").into());
+                }
+            }
             Ok(())
         })
     }
