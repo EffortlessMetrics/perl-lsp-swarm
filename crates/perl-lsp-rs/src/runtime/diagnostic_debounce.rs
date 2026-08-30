@@ -202,7 +202,7 @@ mod tests {
     use super::*;
     use parking_lot::Mutex;
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
     fn earliest_timeout_reports_none_for_empty_pending_set() {

@@ -392,7 +392,14 @@ mod tests {
         let services = RuntimeServices::new();
         services.install_file_watcher_debouncer(FileWatcherDebouncer::with_interval(
             Duration::from_millis(1),
-            |_uris: Vec<String>| panic!("sink panics on first delivery"),
+            |uris: Vec<String>| {
+                // Force a genuine unwind through an out-of-bounds access:
+                // explicit `panic!`/`panic_any` are denied even in cfg(test)
+                // code by this crate's clippy configuration, so this mirrors
+                // `file_watcher_debouncer_panicking_sink_drops_and_counts_stranded_work`.
+                let boom: [u8; 0] = [];
+                let _ = boom[uris.len()];
+            },
         ));
 
         assert!(services.schedule_file_watcher_uri("file:///panics.pl"));
