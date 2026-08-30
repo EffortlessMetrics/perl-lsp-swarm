@@ -667,6 +667,17 @@ impl FileWatcherDebouncer {
         snapshot
     }
 
+    /// Whether both worker threads have actually exited. Non-blocking, so a
+    /// settlement observer can distinguish "stop requested" from "stopped"
+    /// without joining (#10024). `true` once [`Self::shutdown_now`] has taken
+    /// and joined the handles, and also when neither thread ever spawned.
+    pub(crate) fn has_exited(&self) -> bool {
+        self.workers
+            .lock()
+            .as_ref()
+            .is_none_or(|handles| handles.intake.is_finished() && handles.dispatcher.is_finished())
+    }
+
     /// Stop intake and join both workers. Idempotent; invoked from `Drop`.
     ///
     /// Actual teardown policy: intake stops first; whatever is still pending

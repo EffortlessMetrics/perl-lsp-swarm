@@ -209,7 +209,11 @@ mod tests {
     }
 
     #[test]
-    fn request_cancel_stops_the_installed_worker_and_retains_cancelled() {
+    fn request_cancel_stops_the_worker_but_settles_nothing_by_itself() {
+        // A stop REQUEST is not a stop. `ParseWorker::request_shutdown` lets
+        // the current job finish and `DiagnosticDebouncer::shutdown_now`
+        // only posts a message, so recording a terminal here would let
+        // shutdown report Complete while a worker was still running.
         let services = RuntimeServices::new();
         services.install_file_watcher_debouncer(FileWatcherDebouncer::with_interval(
             Duration::from_mins(1),
@@ -220,38 +224,104 @@ mod tests {
             "an operational debouncer queues before cancellation"
         );
 
-        services.request_cancel(
-            ApplicationTaskClass::FileWatcherDebounce,
-            ShutdownReason::ClientShutdownRequest,
-        );
+        services.request_cancel(ApplicationTaskClass::FileWatcherDebounce);
 
-        // The worker really stopped: a post-cancel admission is refused,
-        // exactly as after `shutdown_now`.
+        // The worker really was signalled: a post-cancel admission is refused.
         assert!(
             !services.schedule_file_watcher_uri("file:///after-cancel.pl"),
-            "request_cancel must actually stop the worker, not just bookkeep"
+            "request_cancel must actually signal the worker, not just bookkeep"
         );
-        assert_eq!(
-            services.settlement_snapshot().settled,
-            vec![(
-                ApplicationTaskClass::FileWatcherDebounce,
-                TaskTerminal::Cancelled { reason: ShutdownReason::ClientShutdownRequest }
-            )]
+        // ...but signalling alone settles nothing.
+        let snapshot = services.settlement_snapshot();
+        assert!(
+            snapshot.settled.is_empty(),
+            "a stop request must not retain a terminal on its own"
         );
+        assert_eq!(snapshot.pending, vec![ApplicationTaskClass::FileWatcherDebounce]);
     }
 
     #[test]
     fn request_cancel_on_a_class_with_no_installed_worker_records_nothing() {
-        // Negative control for the falsifier above: an absent worker must
-        // not be read as an orderly stop, or a class whose handle was
-        // dropped would settle itself clean.
+        // Negative control: an absent worker must not be read as an orderly
+        // stop, or a class whose handle was dropped would settle itself clean.
         let services = RuntimeServices::new();
         services.register_task(ApplicationTaskClass::ParseWorker).expect("registration succeeds");
-        services.request_cancel(ApplicationTaskClass::ParseWorker, ShutdownReason::ServerDrop);
+        services.request_cancel(ApplicationTaskClass::ParseWorker);
 
         let snapshot = services.settlement_snapshot();
         assert!(snapshot.settled.is_empty(), "no worker was stopped, so nothing settled");
         assert_eq!(snapshot.pending, vec![ApplicationTaskClass::ParseWorker]);
+    }
+
+    #[test]
+    fn a_shutdown_timeout_is_persisted_so_a_retry_cannot_report_complete() {
+        // Without persisting the timeout, a later completion would replace
+        // the observed timeout and a second shutdown would report Complete,
+        // contradicting the sticky-fault rule.
+        let services = RuntimeServices::new();
+        services.register_task(ApplicationTaskClass::ParseWorker).expect("registration succeeds");
+
+        assert_eq!(
+            services.begin_application_shutdown(
+                ShutdownReason::ServerDrop,
+                Instant::now() + Duration::from_millis(30)
+            ),
+            ApplicationShutdown::TimedOut
+        );
+        assert_eq!(
+            services.settlement_snapshot().settled,
+            vec![(ApplicationTaskClass::ParseWorker, TaskTerminal::TimedOut)],
+            "the timeout must be retained, not left pending"
+        );
+
+        // A late completion cannot erase the observed timeout.
+        services
+            .record_terminal(ApplicationTaskClass::ParseWorker, TaskTerminal::Completed)
+            .expect("terminal accepted");
+        assert_eq!(
+            services.begin_application_shutdown(
+                ShutdownReason::ServerDrop,
+                Instant::now() + Duration::from_millis(30)
+            ),
+            ApplicationShutdown::TimedOut,
+            "a retry must not launder an observed timeout into Complete"
+        );
+    }
+
+    #[test]
+    fn a_replacement_worker_does_not_inherit_the_retired_worker_settlement() {
+        // Installing a new worker is a NEW execution lifetime. Inheriting the
+        // previous worker's terminal would let a live replacement present as
+        // already settled -- and a replacement for a worker that failed to
+        // spawn would be stuck reporting InstrumentFailed forever.
+        let services = RuntimeServices::new();
+        services.install_file_watcher_debouncer(FileWatcherDebouncer::unavailable_for_test());
+        assert_eq!(
+            services.settlement_snapshot().settled,
+            vec![(
+                ApplicationTaskClass::FileWatcherDebounce,
+                TaskTerminal::InstrumentFailed {
+                    reason: "file watcher debounce worker spawn failed".to_string()
+                }
+            )],
+            "a worker that never spawned is retained as instrument-failed"
+        );
+
+        services.install_file_watcher_debouncer(FileWatcherDebouncer::with_interval(
+            Duration::from_mins(1),
+            |_| {},
+        ));
+
+        let snapshot = services.settlement_snapshot();
+        assert!(
+            snapshot.settled.is_empty(),
+            "the replacement worker must start from a clean lifetime, not inherit the retired one"
+        );
+        assert_eq!(snapshot.pending, vec![ApplicationTaskClass::FileWatcherDebounce]);
+        assert!(
+            services.schedule_file_watcher_uri("file:///replacement.pl"),
+            "the replacement worker is genuinely operational"
+        );
     }
 
     #[test]
@@ -294,8 +364,7 @@ mod tests {
             )
             .expect("terminal accepted");
 
-        services
-            .request_cancel(ApplicationTaskClass::FileWatcherDebounce, ShutdownReason::ServerDrop);
+        services.request_cancel(ApplicationTaskClass::FileWatcherDebounce);
 
         assert_eq!(
             services.settlement_snapshot().settled,

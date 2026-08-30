@@ -58,6 +58,15 @@ impl DiagnosticDebouncer {
         self.operational
     }
 
+    /// Whether the worker loop has actually exited. Non-blocking, so a
+    /// settlement observer can distinguish "stop requested" from "stopped"
+    /// without joining (#10024). `false` while the worker is still draining;
+    /// `true` once its thread has run to completion, and also when no thread
+    /// ever spawned -- there is nothing left running either way.
+    pub(crate) fn has_exited(&self) -> bool {
+        self.worker.as_ref().is_none_or(std::thread::JoinHandle::is_finished)
+    }
+
     /// Ask the worker loop to stop, the same way [`Drop`] does. Idempotent:
     /// a second call (or the `Drop` that follows) finds the channel closed
     /// and logs at `debug` rather than failing. Mirrors

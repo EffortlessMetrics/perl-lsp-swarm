@@ -989,11 +989,21 @@ pub struct PullDiagnosticsOrchestrator {
 /// predates the #10024 ownership move.
 const TASK_HANDLE_STATE_FIELDS: &[&str] = &["runtime_services", "outbound_writer_handle"];
 
-/// True when a declaration's type is task-handle-shaped -- a raw
+/// True when a declaration's type TEXT is task-handle-shaped -- a raw
 /// `JoinHandle`/`AbortHandle`, or a bare application worker type such as
-/// `ParseWorker` or a `*Debouncer`. Name-independent: a renamed
+/// `ParseWorker` or a `*Debouncer`.
+///
+/// Independent of the FIELD name: a renamed
 /// `stray_worker: Mutex<Option<Arc<ParseWorker>>>` is still task-handle
 /// state (#10024).
+///
+/// Known limit: this is a type-text scan, not a resolved-type scan, so a
+/// type alias (`type OpaqueWorkerHandle = JoinHandle<()>;`) or a renamed
+/// import (`use ParseWorker as Wkr;`) evades it. Closing that would need
+/// real type resolution, which this contract deliberately does not attempt.
+/// The backstop is `ownership_map_covers_every_current_lsp_server_field`:
+/// an aliased handle field is still a NEW `LspServer` field and cannot land
+/// without an explicit #8383 ownership row naming its owner.
 fn is_task_handle_shaped(declaration: &str) -> bool {
     declaration_type(declaration).is_some_and(|ty| {
         ty.contains("JoinHandle")

@@ -104,10 +104,12 @@ pub(crate) enum ShutdownReason {
 /// [`TaskTerminal::Completed`] and [`TaskTerminal::Cancelled`] are accepted
 /// outcomes of a requested shutdown; the rest are faults and are sticky. See
 /// [`TaskTerminal::is_accepted`] and [`TaskTerminal::is_failure`].
-/// [`TaskTerminal::InstrumentFailed`] and [`TaskTerminal::Cancelled`] are
-/// constructed from production code today; the remainder await the #9508
-/// shutdown-request/completion-hook wiring and are exercised by this
-/// module's own falsifiers.
+/// [`TaskTerminal::InstrumentFailed`] is the only variant reachable from a
+/// running server today, via the three `install_*` methods that
+/// `Scheduler::new` calls. The rest are constructed only by
+/// [`RuntimeServices::begin_application_shutdown`] and by this module's own
+/// falsifiers; nothing in real server operation invokes that path until the
+/// #9508 shutdown-request wiring lands.
 #[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum TaskTerminal {
@@ -177,6 +179,12 @@ pub(crate) enum ApplicationShutdown {
 /// A second [`RuntimeServices::register_task`] call for an already
 /// registered class. The FIRST registration's identity is retained
 /// untouched.
+///
+/// Constructed only by the strict raw-API registration path, which the
+/// `install_*` methods deliberately do not use (a replacement worker is a
+/// new lifetime, not a duplicate). Awaits the #9508 wiring; exercised by
+/// this module's own falsifiers.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct DuplicateRegistration;
 
@@ -223,7 +231,7 @@ pub(crate) struct RuntimeServices {
     tasks: Mutex<HashMap<ApplicationTaskClass, TaskRecord>>,
     diagnostic_debouncer: Mutex<Option<DiagnosticDebouncer>>,
     parse_worker_handle: Mutex<Option<Arc<ParseWorker>>>,
-    file_watcher_debouncer: Mutex<Option<FileWatcherDebouncer>>,
+    file_watcher_debouncer: Mutex<Option<Arc<FileWatcherDebouncer>>>,
 }
 
 impl Default for RuntimeServices {
@@ -247,6 +255,7 @@ impl RuntimeServices {
     /// Rejects a second registration of the same class with
     /// [`DuplicateRegistration`]; the first registration's identity is left
     /// untouched (its retained terminal, if any, is not reset).
+    #[allow(dead_code)] // Strict raw-API registration; called once #9508 lands.
     pub(crate) fn register_task(
         &self,
         class: ApplicationTaskClass,
@@ -259,43 +268,91 @@ impl RuntimeServices {
         Ok(())
     }
 
-    /// Request cooperative cancellation of one task class by forwarding to
-    /// the installed worker's own stop path, then retain
-    /// [`TaskTerminal::Cancelled`].
+    /// Start a fresh task lifetime for `class`, discarding any settlement
+    /// retained from a previous worker in that slot.
     ///
-    /// A class whose worker slot is empty is NOT recorded as cancelled:
-    /// there is nothing to stop, so it stays pending and a shutdown that
-    /// waits on it resolves to [`ApplicationShutdown::TimedOut`] rather than
-    /// reading an absent worker as an orderly stop.
+    /// Installing a new worker IS a new execution lifetime. Without this, a
+    /// replacement worker would inherit the retired one's terminal and a
+    /// live worker could present as already settled -- or, worse, a
+    /// replacement for a worker that failed to spawn would be permanently
+    /// stuck reporting `InstrumentFailed`. This is distinct from
+    /// [`Self::register_task`], which is the strict raw-API registration
+    /// and still rejects a duplicate.
+    fn begin_task_lifetime(&self, class: ApplicationTaskClass) {
+        self.tasks.lock().insert(class, TaskRecord { terminal: None });
+    }
+
+    /// Ask one task class's installed worker to stop.
+    ///
+    /// This ONLY signals. It deliberately records no terminal, because a
+    /// stop request is not a stop: `ParseWorker::request_shutdown` lets the
+    /// current job finish, and `DiagnosticDebouncer::shutdown_now` only
+    /// posts a message to the worker loop. Recording
+    /// [`TaskTerminal::Cancelled`] here would let
+    /// [`Self::begin_application_shutdown`] report
+    /// [`ApplicationShutdown::Complete`] while a worker was still running --
+    /// exactly the false-clean settlement this component exists to prevent.
+    /// Exit is observed separately by [`Self::worker_has_exited`].
     ///
     /// Per-document parse cancellation is a different thing and stays on
     /// `LspServer` (`parse_cancel_flags`) under the #10024 hard boundary.
-    pub(crate) fn request_cancel(&self, class: ApplicationTaskClass, reason: ShutdownReason) {
-        let stopped = match class {
-            ApplicationTaskClass::ParseWorker => self
-                .parse_worker_handle
-                .lock()
-                .as_ref()
-                .map(|worker| worker.request_shutdown())
-                .is_some(),
+    pub(crate) fn request_cancel(&self, class: ApplicationTaskClass) {
+        // Each worker is cloned/taken out of its slot guard BEFORE the stop
+        // call, so no `RuntimeServices` lock is ever held across a blocking
+        // join. `FileWatcherDebouncer::shutdown_now` joins its own threads;
+        // holding a slot lock across that would block every concurrent
+        // reader of the same slot.
+        match class {
+            ApplicationTaskClass::ParseWorker => {
+                let worker = self.parse_worker_handle.lock().clone();
+                if let Some(worker) = worker {
+                    worker.request_shutdown();
+                }
+            }
+            ApplicationTaskClass::DiagnosticDebounce => {
+                let guard = self.diagnostic_debouncer.lock();
+                let Some(debouncer) = guard.as_ref() else {
+                    return;
+                };
+                // Sends one message; does not block on the worker.
+                debouncer.shutdown_now();
+            }
+            ApplicationTaskClass::FileWatcherDebounce => {
+                // `shutdown_now` JOINS both watcher threads after flushing a
+                // final batch. The slot is an `Arc` precisely so the handle
+                // can be cloned out and the guard released first: holding it
+                // across that join would stall every concurrent
+                // `schedule_file_watcher_uri` for the whole flush instead of
+                // giving it the fast shutting-down refusal that path
+                // promises (#8064).
+                let debouncer = self.file_watcher_debouncer.lock().clone();
+                if let Some(debouncer) = debouncer {
+                    debouncer.shutdown_now();
+                }
+            }
+        }
+    }
+
+    /// Whether the installed worker for `class` has actually exited.
+    ///
+    /// An empty slot reports `false`: nothing was ever installed, so nothing
+    /// can be observed to have settled, and a shutdown waiting on that class
+    /// must time out rather than read absence as success.
+    fn worker_has_exited(&self, class: ApplicationTaskClass) -> bool {
+        match class {
+            ApplicationTaskClass::ParseWorker => {
+                self.parse_worker_handle.lock().as_ref().is_some_and(|w| !w.is_operational())
+            }
             ApplicationTaskClass::DiagnosticDebounce => self
                 .diagnostic_debouncer
                 .lock()
                 .as_ref()
-                .map(DiagnosticDebouncer::shutdown_now)
-                .is_some(),
+                .is_some_and(DiagnosticDebouncer::has_exited),
             ApplicationTaskClass::FileWatcherDebounce => self
                 .file_watcher_debouncer
                 .lock()
                 .as_ref()
-                .map(FileWatcherDebouncer::shutdown_now)
-                .is_some(),
-        };
-        if stopped {
-            // `Err` here means the class was never registered, which cannot
-            // happen for an installed worker: every `install_*` registers
-            // before filling its slot.
-            let _ = self.record_terminal(class, TaskTerminal::Cancelled { reason });
+                .is_some_and(|debouncer| debouncer.has_exited()),
         }
     }
 
@@ -331,6 +388,10 @@ impl RuntimeServices {
                 None => snapshot.pending.push(*class),
             }
         }
+        // `tasks` is a `HashMap`, so iteration order is not stable. Sort by
+        // class so callers (and assertions) see a deterministic snapshot.
+        snapshot.settled.sort_by_key(|(class, _)| *class);
+        snapshot.pending.sort_unstable();
         snapshot
     }
 
@@ -351,15 +412,31 @@ impl RuntimeServices {
         deadline: Instant,
     ) -> ApplicationShutdown {
         let registered: Vec<ApplicationTaskClass> = self.tasks.lock().keys().copied().collect();
-        for class in registered {
-            self.request_cancel(class, reason);
+        for class in &registered {
+            self.request_cancel(*class);
         }
         loop {
+            // Promote each pending class whose worker is OBSERVED to have
+            // exited. A stop request alone never settles a class.
+            let snapshot = self.settlement_snapshot();
+            for class in &snapshot.pending {
+                if self.worker_has_exited(*class) {
+                    let _ = self.record_terminal(*class, TaskTerminal::Cancelled { reason });
+                }
+            }
+
             let snapshot = self.settlement_snapshot();
             if snapshot.pending.is_empty() {
                 return aggregate_settled_outcome(&snapshot);
             }
             if Instant::now() >= deadline {
+                // Persist the timeout against every class still pending, so
+                // the sticky-fault rule holds: a later completion cannot
+                // erase an observed timeout and let a retry report
+                // `Complete`.
+                for class in &snapshot.pending {
+                    let _ = self.record_terminal(*class, TaskTerminal::TimedOut);
+                }
                 return ApplicationShutdown::TimedOut;
             }
             std::thread::sleep(Duration::from_millis(1));
@@ -374,7 +451,7 @@ impl RuntimeServices {
     /// [`TaskTerminal::InstrumentFailed`] immediately if its worker thread
     /// never spawned.
     pub(crate) fn install_diagnostic_debouncer(&self, debouncer: DiagnosticDebouncer) {
-        let _ = self.register_task(ApplicationTaskClass::DiagnosticDebounce);
+        self.begin_task_lifetime(ApplicationTaskClass::DiagnosticDebounce);
         if !debouncer.is_operational() {
             let _ = self.record_terminal(
                 ApplicationTaskClass::DiagnosticDebounce,
@@ -412,7 +489,7 @@ impl RuntimeServices {
     /// as [`TaskTerminal::InstrumentFailed`] instead of only being logged.
     pub(crate) fn install_parse_worker(&self, worker: ParseWorker) -> bool {
         let operational = worker.is_operational();
-        let _ = self.register_task(ApplicationTaskClass::ParseWorker);
+        self.begin_task_lifetime(ApplicationTaskClass::ParseWorker);
         if operational {
             *self.parse_worker_handle.lock() = Some(Arc::new(worker));
         } else {
@@ -437,7 +514,7 @@ impl RuntimeServices {
     /// [`TaskTerminal::InstrumentFailed`] immediately if neither worker
     /// thread spawned.
     pub(crate) fn install_file_watcher_debouncer(&self, debouncer: FileWatcherDebouncer) {
-        let _ = self.register_task(ApplicationTaskClass::FileWatcherDebounce);
+        self.begin_task_lifetime(ApplicationTaskClass::FileWatcherDebounce);
         if !debouncer.is_operational() {
             let _ = self.record_terminal(
                 ApplicationTaskClass::FileWatcherDebounce,
@@ -446,7 +523,7 @@ impl RuntimeServices {
                 },
             );
         }
-        *self.file_watcher_debouncer.lock() = Some(debouncer);
+        *self.file_watcher_debouncer.lock() = Some(Arc::new(debouncer));
     }
 
     /// Schedule `uri` on the installed file watcher debouncer. Returns
@@ -468,7 +545,7 @@ impl RuntimeServices {
     pub(crate) fn file_watcher_pressure(
         &self,
     ) -> Option<super::file_watcher_debounce::WatcherPressureSnapshot> {
-        self.file_watcher_debouncer.lock().as_ref().map(FileWatcherDebouncer::pressure)
+        self.file_watcher_debouncer.lock().as_ref().map(|debouncer| debouncer.pressure())
     }
 
     #[cfg(test)]
@@ -480,7 +557,8 @@ impl RuntimeServices {
     /// standing in for the raw field access the pre-#10024 tests used.
     #[cfg(test)]
     pub(crate) fn shutdown_file_watcher_debouncer_for_test(&self) {
-        if let Some(debouncer) = self.file_watcher_debouncer.lock().as_ref() {
+        let debouncer = self.file_watcher_debouncer.lock().clone();
+        if let Some(debouncer) = debouncer {
             debouncer.shutdown_now();
         }
     }
