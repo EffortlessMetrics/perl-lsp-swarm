@@ -1277,11 +1277,16 @@ fn fingerprint_view(
         push_completeness(&mut buf, state);
     }
 
+    push_field(&mut buf, "unread");
+    push_u32(&mut buf, unread_discovered.len() as u32);
     for path in unread_discovered {
         push_field(&mut buf, path);
     }
+    push_field(&mut buf, "limitation-paths");
+    push_u32(&mut buf, limitation_paths.len() as u32);
     for (id, paths) in limitation_paths {
         push_field(&mut buf, id);
+        push_u32(&mut buf, paths.len() as u32);
         for path in paths {
             push_field(&mut buf, path);
         }
@@ -2013,6 +2018,59 @@ mod tests {
     }
 
     #[test]
+    fn view_fingerprint_separates_limitation_path_groups() {
+        let model_with_paths = |a: &[&str], b: &[&str]| {
+            let mut model = ProjectModel::empty("proj", FactClasses::all());
+            model.unread_discovered.extend(["p", "b", "q"].map(String::from));
+            model.limitations = vec![
+                ModelLimitation {
+                    id: "a".to_string(),
+                    kind: "producer_gap".to_string(),
+                    message: "first limitation".to_string(),
+                    paths: a.iter().map(|path| (*path).to_string()).collect(),
+                },
+                ModelLimitation {
+                    id: "b".to_string(),
+                    kind: "producer_gap".to_string(),
+                    message: "second limitation".to_string(),
+                    paths: b.iter().map(|path| (*path).to_string()).collect(),
+                },
+            ];
+            model
+        };
+        let model_a = model_with_paths(&["p", "b"], &["q"]);
+        let model_b = model_with_paths(&["p"], &["b", "q"]);
+
+        let view_a = SemanticQueryView::build(&model_a).unwrap();
+        let view_b = SemanticQueryView::build(&model_b).unwrap();
+        assert_ne!(view_a.fingerprint(), view_b.fingerprint());
+    }
+
+    #[test]
+    fn view_fingerprint_separates_unread_and_limitation_sections() {
+        let mut unread_model = ProjectModel::empty("proj", FactClasses::all());
+        unread_model.unread_discovered.insert("a".to_string());
+        unread_model.limitations.push(ModelLimitation {
+            id: "b".to_string(),
+            kind: "producer_gap".to_string(),
+            message: "limitation".to_string(),
+            paths: vec!["q".to_string()],
+        });
+
+        let mut limitation_model = ProjectModel::empty("proj", FactClasses::all());
+        limitation_model.limitations.push(ModelLimitation {
+            id: "a".to_string(),
+            kind: "producer_gap".to_string(),
+            message: "limitation".to_string(),
+            paths: vec!["b".to_string(), "q".to_string()],
+        });
+
+        let unread_view = SemanticQueryView::build(&unread_model).unwrap();
+        let limitation_view = SemanticQueryView::build(&limitation_model).unwrap();
+        assert_ne!(unread_view.fingerprint(), limitation_view.fingerprint());
+    }
+
+    #[test]
     fn shard_without_populated_symbols_cannot_claim_complete_denominator() {
         // Issue #13288 item 2: a shard that never populated the declarations
         // class cannot back a proven-empty answer for its file; extraction
@@ -2140,5 +2198,39 @@ mod tests {
 
         let view = SemanticQueryView::build(&model).unwrap();
         assert!(matches!(view.source_by_path("lib/A.pm"), IndexAnswer::Complete(_)));
+    }
+
+    #[test]
+    fn adoption_of_one_multi_path_read_failure_preserves_other_paths() {
+        let requested = FactClasses::FILES | FactClasses::SYMBOLS;
+        let mut model = ProjectModel::empty("proj", requested);
+        let limitation_id = "read-failed:shared".to_string();
+        model.limitations.push(ModelLimitation {
+            id: limitation_id.clone(),
+            kind: "read_failure".to_string(),
+            message: "shared read failure".to_string(),
+            paths: vec!["lib/A.pm".to_string(), "lib/B.pm".to_string()],
+        });
+        model.unread_discovered.extend(["lib/A.pm", "lib/B.pm"].map(String::from));
+
+        let mut shard =
+            ProjectFactShard::empty(file("lib/A.pm", "aaa"), 1, "test-producer", requested);
+        shard.populated |= FactClasses::SYMBOLS;
+        shard.source_len_bytes = 3;
+        model.insert_or_replace(shard).unwrap();
+
+        assert_eq!(model.limitations.len(), 1);
+        assert_eq!(model.limitations[0].paths, ["lib/B.pm"]);
+        let view = SemanticQueryView::build(&model).unwrap();
+        assert!(matches!(view.source_by_path("lib/A.pm"), IndexAnswer::Complete(_)));
+        match view.source_by_path("lib/B.pm") {
+            IndexAnswer::Partial { limitation_ids, .. } => {
+                assert_eq!(limitation_ids, [limitation_id]);
+            }
+            other => assert!(
+                matches!(other, IndexAnswer::Partial { .. }),
+                "expected partial answer for unread path, got {other:?}"
+            ),
+        }
     }
 }
