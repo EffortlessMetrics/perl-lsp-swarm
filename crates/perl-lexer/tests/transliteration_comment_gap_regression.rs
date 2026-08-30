@@ -28,13 +28,10 @@ fn assert_transliteration_then_after(source: &str, expected_text: &str) -> TestR
         "wrong transliteration text for {source:?}"
     );
     assert_eq!(transliteration.start, 0, "wrong start for {source:?}");
-    assert_eq!(
-        transliteration.end,
-        expected_text.len(),
-        "wrong end for {source:?}"
-    );
+    assert_eq!(transliteration.end, expected_text.len(), "wrong end for {source:?}");
 
-    let semicolon = next_non_trivia(&mut lexer).ok_or("expected semicolon after transliteration")?;
+    let semicolon =
+        next_non_trivia(&mut lexer).ok_or("expected semicolon after transliteration")?;
     assert_eq!(
         semicolon.token_type,
         TokenType::Semicolon,
@@ -91,10 +88,7 @@ fn comment_gap_between_paired_bodies_is_accepted_for_tr_and_y() -> TestResult {
 
 #[test]
 fn immediate_hash_remains_a_transliteration_delimiter() -> TestResult {
-    for (source, expected_text) in [
-        ("tr#a#b#; after", "tr#a#b#"),
-        ("y#a#b#; after", "y#a#b#"),
-    ] {
+    for (source, expected_text) in [("tr#a#b#; after", "tr#a#b#"), ("y#a#b#; after", "y#a#b#")] {
         assert_transliteration_then_after(source, expected_text)?;
     }
 

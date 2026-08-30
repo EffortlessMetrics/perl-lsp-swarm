@@ -3238,7 +3238,7 @@ impl<'a> PerlLexer<'a> {
 
         let pattern_is_paired = quote_handler::paired_close(delimiter).is_some();
         if pattern_is_paired {
-            self.skip_paired_substitution_replacement_gap();
+            self.skip_two_body_quote_like_gap();
 
             if let Some(repl_delim) = self.current_char()
                 && Self::is_quote_delim(repl_delim)
@@ -3278,7 +3278,7 @@ impl<'a> PerlLexer<'a> {
         Some(Token { token_type, text: Arc::from(text), start, end: self.position })
     }
 
-    fn skip_paired_substitution_replacement_gap(&mut self) {
+    fn skip_two_body_quote_like_gap(&mut self) {
         self.skip_comment_gap_after_whitespace();
     }
 
@@ -3479,9 +3479,7 @@ impl<'a> PerlLexer<'a> {
 
     fn parse_transliteration(&mut self, start: usize) -> Option<Token> {
         // We've already consumed 'tr' or 'y'
-        while self.current_char().is_some_and(char::is_whitespace) {
-            self.advance();
-        }
+        self.skip_quote_operator_delimiter_gap();
 
         let delimiter = self.current_char()?;
         self.advance(); // Skip delimiter
@@ -3498,9 +3496,7 @@ impl<'a> PerlLexer<'a> {
 
         let search_is_paired = quote_handler::paired_close(delimiter).is_some();
         if search_is_paired {
-            while self.current_char().is_some_and(char::is_whitespace) {
-                self.advance();
-            }
+            self.skip_two_body_quote_like_gap();
 
             if let Some(repl_delim) = self.current_char()
                 && Self::is_quote_delim(repl_delim)
