@@ -114,12 +114,14 @@ enum MarkupState {
 /// the document and permanently suppress completions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MasonBlockKind {
+    Args,
     Attr,
     Class,
     Cleanup,
     Def,
     Doc,
     Filter,
+    Flags,
     Init,
     Method,
     Once,
@@ -130,13 +132,15 @@ enum MasonBlockKind {
 }
 
 impl MasonBlockKind {
-    const ALL: [Self; 13] = [
+    const ALL: [Self; 15] = [
+        Self::Args,
         Self::Attr,
         Self::Class,
         Self::Cleanup,
         Self::Def,
         Self::Doc,
         Self::Filter,
+        Self::Flags,
         Self::Init,
         Self::Method,
         Self::Once,
@@ -148,12 +152,14 @@ impl MasonBlockKind {
 
     const fn name(self) -> &'static [u8] {
         match self {
+            Self::Args => b"args",
             Self::Attr => b"attr",
             Self::Class => b"class",
             Self::Cleanup => b"cleanup",
             Self::Def => b"def",
             Self::Doc => b"doc",
             Self::Filter => b"filter",
+            Self::Flags => b"flags",
             Self::Init => b"init",
             Self::Method => b"method",
             Self::Once => b"once",
@@ -238,7 +244,7 @@ fn template_closer_line(bytes: &[u8], start: usize, end: usize) -> bool {
 fn step_markup_state(bytes: &[u8], index: &mut usize, state: MarkupState) -> MarkupState {
     match state {
         MarkupState::Text => scan_text(bytes, index),
-        MarkupState::Comment => scan_delimited(bytes, index, b"-->", MarkupState::Comment),
+        MarkupState::Comment => scan_comment(bytes, index),
         MarkupState::TemplatePercent => {
             scan_delimited(bytes, index, b"%>", MarkupState::TemplatePercent)
         }
@@ -253,6 +259,21 @@ fn step_markup_state(bytes: &[u8], index: &mut usize, state: MarkupState) -> Mar
         MarkupState::IgnoredTag { quote } => scan_ignored_tag(bytes, index, quote),
         MarkupState::RawText(kind) => scan_raw_text(bytes, index, kind),
         MarkupState::InvalidTag { quote } => scan_invalid_tag(bytes, index, quote),
+    }
+}
+
+/// Close an HTML comment at the standard `-->` ending or HTML5's admitted
+/// `--!>` ending, so markup after either is reachable again.
+fn scan_comment(bytes: &[u8], index: &mut usize) -> MarkupState {
+    if starts_with(bytes, *index, b"-->") {
+        *index += 3;
+        MarkupState::Text
+    } else if starts_with(bytes, *index, b"--!>") {
+        *index += 4;
+        MarkupState::Text
+    } else {
+        *index += 1;
+        MarkupState::Comment
     }
 }
 
@@ -851,6 +872,17 @@ mod tests {
     }
 
     #[test]
+    fn html_comments_close_on_the_standard_and_the_incorrect_ending() {
+        for source in ["<!-- note --><div hx-", "<!-- note --!><div hx-"] {
+            assert!(
+                htmx_attribute_name_context(source, source.len())
+                    .is_some_and(|context| context.prefix == "hx-"),
+                "comment ending suppressed a valid slot for {source:?}"
+            );
+        }
+    }
+
+    #[test]
     fn template_code_lines_are_inert_inside_markup_states() {
         for source in [
             // A %-line cannot close a comment: it renders as nothing, so the
@@ -886,6 +918,18 @@ mod tests {
         assert!(
             htmx_attribute_name_context(def_block, def_block.len())
                 .is_some_and(|context| context.prefix == "hx-get")
+        );
+
+        let args_block = "<%args>\n  $x => 1\n</%args>\n<div hx-get";
+        assert!(
+            htmx_attribute_name_context(args_block, args_block.len())
+                .is_some_and(|context| context.prefix == "hx-get")
+        );
+
+        let flags_block = "<%flags>\n  inherit => 1\n</%flags>\n<button hx-";
+        assert!(
+            htmx_attribute_name_context(flags_block, flags_block.len())
+                .is_some_and(|context| context.prefix == "hx-")
         );
 
         let with_substitution = "<%attr>\n  id => 'x'\n</%attr>\n<% \"inline\" %>\n<button hx-post";
