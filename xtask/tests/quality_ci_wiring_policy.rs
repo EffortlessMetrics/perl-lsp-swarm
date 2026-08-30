@@ -450,6 +450,16 @@ fn coverage_workflow_is_manual_or_nightly_only_and_requires_receipts() {
             .is_err(),
         "coverage documentation contract must reject a wrapped required route"
     );
+    let wrapped_gated_route = "Coverage is advisory,\nbut gated for pull requests.";
+    assert!(
+        coverage_reference_rows_contract(wrapped_gated_route, "wrapped gated reference").is_err(),
+        "coverage documentation contract must reject a wrapped gated route"
+    );
+    let wrapped_gated_negative = "Coverage is advisory,\nbut not gated for pull requests.";
+    assert!(
+        coverage_reference_rows_contract(wrapped_gated_negative, "wrapped gated negative").is_ok(),
+        "coverage documentation contract must allow a wrapped negated gated route"
+    );
     let wrapped_connector_sentence_boundary = "Coverage is advisory.\nbut runs on pull requests.";
     assert!(
         coverage_reference_rows_contract(
@@ -545,6 +555,10 @@ fn coverage_workflow_is_manual_or_nightly_only_and_requires_receipts() {
     assert!(
         !has_positive_stale_route_claim("Coverage is advisory for PRs."),
         "a bare advisory `for PRs` phrase must not be classified as a route"
+    );
+    assert!(
+        !has_positive_stale_route_claim("Coverage is optional for PRs."),
+        "an optional `for PRs` phrase must not match the `on` route token"
     );
     assert!(
         !has_positive_stale_route_claim("Coverage for PRs."),
@@ -1358,20 +1372,43 @@ fn ensure_no_positive_stale_route_value(value: &TomlValue, context: &str) -> Res
 
 fn has_positive_stale_route_claim(text: &str) -> bool {
     let normalized = text.to_ascii_lowercase().replace(['_', '-', '\n', '\r'], " ");
-    let has_pr_token = normalized
-        .split(|character: char| !character.is_ascii_alphanumeric())
-        .any(|token| token == "pr" || token == "prs");
+    let has_pr_token = has_token(&normalized, "pr") || has_token(&normalized, "prs");
     route_prose_clauses(&normalized).iter().any(|clause| has_positive_stale_route_clause(clause))
-        || (normalized.contains("coverage")
-            && normalized.contains("full ci")
-            && (normalized.contains("deep lane") || normalized.contains("label"))
+        || (has_token(&normalized, "coverage")
+            && has_tokenized_phrase(&normalized, "full ci")
+            && (has_tokenized_phrase(&normalized, "deep lane") || has_token(&normalized, "label"))
             && !has_negative_route_prose(&normalized))
-        || (normalized.contains("coverage")
+        || (has_token(&normalized, "coverage")
             && has_pr_token
-            && (normalized.contains("deep lane")
-                || normalized.contains("risk pack")
-                || normalized.contains("pr smoke"))
+            && (has_tokenized_phrase(&normalized, "deep lane")
+                || has_tokenized_phrase(&normalized, "risk pack")
+                || has_tokenized_phrase(&normalized, "pr smoke"))
             && !has_negative_route_prose(&normalized))
+}
+
+fn has_token(normalized: &str, expected: &str) -> bool {
+    normalized
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .any(|token| token == expected)
+}
+
+fn has_tokenized_phrase(normalized: &str, phrase: &str) -> bool {
+    let expected = phrase
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .filter(|token| !token.is_empty())
+        .collect::<Vec<_>>();
+    if expected.is_empty() {
+        return false;
+    }
+    let tokens = normalized
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .filter(|token| !token.is_empty())
+        .collect::<Vec<_>>();
+    tokens.windows(expected.len()).any(|window| window == expected.as_slice())
+}
+
+fn is_direct_route_token(token: &str) -> bool {
+    matches!(token, "run" | "runs" | "required" | "gate" | "gated" | "trigger" | "on")
 }
 
 fn route_prose_clauses(normalized: &str) -> Vec<&str> {
@@ -1409,18 +1446,25 @@ fn has_positive_stale_route_clause(normalized: &str) -> bool {
     if has_negative_route_prose(normalized) {
         return false;
     }
-    let has_pr_token = normalized
-        .split(|character: char| !character.is_ascii_alphanumeric())
-        .any(|token| token == "pr" || token == "prs");
-    let has_route_term =
-        ["pull request", "merge queue", "merge group", "label", "full ci", "master"]
-            .iter()
-            .any(|marker| normalized.contains(marker))
-            || (has_pr_token
-                && ["run", "runs", "required", "gate", "gated", "trigger", "on"]
-                    .iter()
-                    .any(|marker| normalized.contains(marker)));
-    let has_coverage_term = normalized.contains("coverage") || normalized.contains("codecov");
+    let has_pr_token = has_token(normalized, "pr") || has_token(normalized, "prs");
+    let has_route_term = [
+        "pull request",
+        "pull requests",
+        "merge queue",
+        "merge queues",
+        "merge group",
+        "merge groups",
+        "label",
+        "full ci",
+        "master",
+    ]
+    .iter()
+    .any(|marker| has_tokenized_phrase(normalized, marker))
+        || (has_pr_token
+            && ["run", "runs", "required", "gate", "gated", "trigger", "on"]
+                .iter()
+                .any(|marker| has_token(normalized, marker)));
+    let has_coverage_term = has_token(normalized, "coverage") || has_token(normalized, "codecov");
     [
         "pull request coverage",
         "pull requests coverage",
@@ -1442,7 +1486,7 @@ fn has_positive_stale_route_clause(normalized: &str) -> bool {
         "coverage branch master",
     ]
     .iter()
-    .any(|marker| normalized.contains(marker))
+    .any(|marker| has_tokenized_phrase(normalized, marker))
         || (has_route_term && has_coverage_term)
 }
 
@@ -1486,14 +1530,17 @@ fn has_positive_stale_route_claim_in_context(text: &str, coverage_context: bool)
     if has_negative_route_prose(&normalized) {
         return false;
     }
-    (normalized.contains("full ci") && normalized.contains("label"))
-        || ((normalized.contains("pull request")
-            || normalized.contains("merge queue")
-            || normalized.contains("merge group")
-            || normalized.contains("label"))
+    (has_tokenized_phrase(&normalized, "full ci") && has_token(&normalized, "label"))
+        || ((has_tokenized_phrase(&normalized, "pull request")
+            || has_tokenized_phrase(&normalized, "pull requests")
+            || has_tokenized_phrase(&normalized, "merge queue")
+            || has_tokenized_phrase(&normalized, "merge queues")
+            || has_tokenized_phrase(&normalized, "merge group")
+            || has_tokenized_phrase(&normalized, "merge groups")
+            || has_token(&normalized, "label"))
             && ["run", "runs", "required", "select", "selected", "route", "trigger"]
                 .iter()
-                .any(|marker| normalized.contains(marker)))
+                .any(|marker| has_token(&normalized, marker)))
 }
 
 fn has_positive_stale_route_claim_across_wrap(lines: &[&str]) -> bool {
@@ -1512,7 +1559,7 @@ fn has_positive_stale_route_claim_across_wrap(lines: &[&str]) -> bool {
             continue;
         }
         for run_index in coverage_index + 1..tokens.len() {
-            if !matches!(tokens[run_index], "run" | "runs" | "required") {
+            if !is_direct_route_token(tokens[run_index]) {
                 continue;
             }
             if tokens[coverage_index + 1..run_index]
