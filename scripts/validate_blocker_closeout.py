@@ -60,6 +60,9 @@ PRIVATE_REF = re.compile(
     re.IGNORECASE,
 )
 GITHUB_REF = re.compile(r"^https://github\.com/EffortlessMetrics/perl-lsp-swarm/(?:issues|pull|actions/runs)/[0-9]+(?:[#/?].*)?$")
+ISSUE_REF = re.compile(r"^https://github\.com/EffortlessMetrics/perl-lsp-swarm/issues/([0-9]+)(?:[#/?].*)?$")
+PULL_REF = re.compile(r"^https://github\.com/EffortlessMetrics/perl-lsp-swarm/pull/([0-9]+)(?:[#/?].*)?$")
+PULL_REVIEW_REF = re.compile(r"^https://github\.com/EffortlessMetrics/perl-lsp-swarm/pull/([0-9]+)#pullrequestreview-[0-9]+$")
 REPOSITORY_REF = re.compile(r"^repo:[^@\s]+@[0-9a-f]{40}$")
 
 
@@ -201,9 +204,13 @@ class BlockerCloseoutV1:
     blocker_id: str
     controller_issue: int
     controller_claim_ids: tuple[str, ...]
+    controller_evidence: DurableEvidence
     status: str
     observed_main_sha: str
     contributions: tuple[ImplementationContribution, ...]
+    review_authority_kind: str
+    review_authority_number: int
+    review_evidence: DurableEvidence
     review_status: str
     reviewed_head: str
     unresolved_findings: int
@@ -260,7 +267,16 @@ def validate_blocker_closeout(packet_value: Any, is_ancestor: Callable[[str, str
     _exact_keys(controller, "semantic_controller", {"issue", "claim_ids", "evidence"})
     _require(_positive_int(controller["issue"], "semantic_controller.issue") == controller_issue, "controller_issue contradicts semantic_controller.issue")
     controller_claims = _unique_strings(controller["claim_ids"], "semantic_controller.claim_ids", nonempty=True, identifiers=True)
-    DurableEvidence.parse(controller["evidence"], "semantic_controller.evidence")
+    controller_evidence = DurableEvidence.parse(controller["evidence"], "semantic_controller.evidence")
+    _require(
+        controller_evidence.kind in {"github_issue", "github_issue_comment"},
+        "semantic_controller.evidence must be issue authority",
+    )
+    controller_match = ISSUE_REF.fullmatch(controller_evidence.ref)
+    _require(
+        controller_match is not None and int(controller_match.group(1)) == controller_issue,
+        "semantic_controller.evidence ref does not match controller_issue",
+    )
 
     raw_prs = packet["implementation_prs"]
     _require(isinstance(raw_prs, list), "implementation_prs must be an array")
@@ -284,6 +300,12 @@ def validate_blocker_closeout(packet_value: Any, is_ancestor: Callable[[str, str
     _require(tuple(sorted(contribution_shas)) == merged_shas, "merged_shas contradict implementation_contributions")
     for contribution in contributions:
         _require(set(contribution.claim_ids) <= set(controller_claims), "implementation contribution names a claim outside the semantic controller")
+        _require(contribution.evidence.kind == "github_pull", "implementation contribution evidence must be pull-request authority")
+        contribution_match = PULL_REF.fullmatch(contribution.evidence.ref)
+        _require(
+            contribution_match is not None and int(contribution_match.group(1)) == contribution.implementation_pr,
+            "implementation contribution evidence ref does not match implementation_pr",
+        )
         try:
             reachable = is_ancestor(contribution.merged_sha, observed_main_sha)
         except Exception as error:  # instrument failure must fail closed
@@ -291,8 +313,33 @@ def validate_blocker_closeout(packet_value: Any, is_ancestor: Callable[[str, str
         _require(reachable, f"merged SHA {contribution.merged_sha} is not reachable from observed_main_sha")
 
     review = _object(packet["review"], "review")
-    _exact_keys(review, "review", {"current_head_synthesis", "reviewed_head", "status", "unresolved_material_findings", "finding_refs"})
-    DurableEvidence.parse(review["current_head_synthesis"], "review.current_head_synthesis")
+    _exact_keys(
+        review,
+        "review",
+        {"authority_kind", "authority_number", "current_head_synthesis", "reviewed_head", "status", "unresolved_material_findings", "finding_refs"},
+    )
+    review_authority_kind = _string(review["authority_kind"], "review.authority_kind")
+    _require(review_authority_kind in {"implementation_pr", "semantic_controller"}, "review.authority_kind is invalid")
+    review_authority_number = _positive_int(review["authority_number"], "review.authority_number")
+    review_evidence = DurableEvidence.parse(review["current_head_synthesis"], "review.current_head_synthesis")
+    if review_authority_kind == "implementation_pr":
+        _require(review_authority_number in implementation_prs, "review authority is not a modeled implementation PR")
+        review_match = PULL_REVIEW_REF.fullmatch(review_evidence.ref)
+        _require(
+            review_evidence.kind == "github_review"
+            and review_match is not None
+            and int(review_match.group(1)) == review_authority_number,
+            "review synthesis evidence ref does not match implementation PR authority",
+        )
+    else:
+        _require(review_authority_number == controller_issue, "review authority is not the semantic controller")
+        review_match = ISSUE_REF.fullmatch(review_evidence.ref)
+        _require(
+            review_evidence.kind in {"github_issue", "github_issue_comment"}
+            and review_match is not None
+            and int(review_match.group(1)) == controller_issue,
+            "review synthesis evidence ref does not match semantic-controller authority",
+        )
     reviewed_head = _sha(review["reviewed_head"], "review.reviewed_head")
     review_status = _string(review["status"], "review.status")
     _require(review_status in {"current", "stale", "not_proven"}, "review.status is invalid")
@@ -330,20 +377,35 @@ def validate_blocker_closeout(packet_value: Any, is_ancestor: Callable[[str, str
     limitations = _unique_strings(claim_effect["limitations"], "claim_effect.limitations")
     _require(not (set(preserves) & set(narrows)), "claim_effect cannot both preserve and narrow one claim")
     _require(set(preserves) | set(narrows) <= set(controller_claims), "claim_effect names a claim outside the semantic controller")
+    passed_claim_coverage = {
+        claim_id
+        for observation in observations
+        if observation.status == "passed"
+        for claim_id in observation.claim_ids
+    }
     if status == "resolved":
+        _require(review_authority_kind == "implementation_pr", "resolved requires implementation-PR review authority")
         _require(review_status == "current", "resolved requires current review")
         _require(unresolved_findings == 0, "resolved cannot retain unresolved material findings")
         _require(not not_proven and all(item.status == "passed" for item in observations), "resolved requires every required proof to pass")
         _require(set(preserves) == set(controller_claims) and not narrows, "resolved must preserve every semantic-controller claim")
+        _require(set(preserves) <= passed_claim_coverage, "resolved preserved claim lacks observation proof coverage")
     elif status == "bounded_limitation":
+        _require(review_authority_kind == "implementation_pr", "bounded_limitation requires implementation-PR review authority")
         _require(review_status == "current", "bounded_limitation requires current review")
         _require(unresolved_findings == 0, "bounded_limitation cannot retain unresolved material findings")
         _require(all(item.status == "passed" for item in observations), "bounded_limitation requires every required proof to pass within its narrowed claim")
         _require(bool(narrows) and bool(limitations), "bounded_limitation requires exact narrowed claims and limitations")
         _require(set(preserves) | set(narrows) == set(controller_claims), "bounded_limitation must state the effect on every semantic-controller claim")
+        _require(set(preserves) <= passed_claim_coverage, "bounded_limitation preserved claim lacks observation proof coverage")
     elif status == "blocked":
+        # Blocked packets report a decisive failed observation or an unresolved
+        # finding. They do not claim terminal proof closure, so preserved-claim
+        # coverage is intentionally not promoted into a closure requirement.
         _require(any(item.status == "failed" for item in observations) or unresolved_findings > 0, "blocked requires a failed proof or unresolved material finding")
     else:
+        # NOT_PROVEN is epistemic: missing/currentness/instrument gaps stay
+        # explicit and are never converted into failed or closure evidence.
         _require(bool(not_proven) or review_status in {"stale", "not_proven"}, "not_proven requires explicit missing, stale, or instrument-failed evidence")
 
     _parse_evidence_array(packet["follow_ups"], "follow_ups")
@@ -375,9 +437,10 @@ def validate_blocker_closeout(packet_value: Any, is_ancestor: Callable[[str, str
         _require(previous == evidence.digest, f"contradictory digest for evidence ref {evidence.ref}")
 
     return BlockerCloseoutV1(
-        release, blocker_id, controller_issue, controller_claims, status,
-        observed_main_sha, contributions, review_status, reviewed_head,
-        unresolved_findings, observations,
+        release, blocker_id, controller_issue, controller_claims,
+        controller_evidence, status, observed_main_sha, contributions,
+        review_authority_kind, review_authority_number, review_evidence,
+        review_status, reviewed_head, unresolved_findings, observations,
     )
 
 
