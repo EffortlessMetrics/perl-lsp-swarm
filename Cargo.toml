@@ -348,6 +348,7 @@ tree-sitter = "0.26.9"
 ropey = "1.6.1"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
+sha1 = "0.11"
 sha2 = "0.11.0"
 strum = { version = "0.28", features = ["derive"] }
 regex = "1.12.2"

@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12435 |
-| Rust-family files | 3829 |
-| Non-Rust files | 8606 |
-| Allowlisted | 6369 |
+| Total tracked files | 12463 |
+| Rust-family files | 3836 |
+| Non-Rust files | 8627 |
+| Allowlisted | 6390 |
 | Unclassified | 2237 |
 
 ## Non-Rust files by category
@@ -17,10 +17,10 @@
 | Category | Count |
 |---|---|
 | config | 491 |
-| documentation | 2804 |
+| documentation | 2810 |
 | generated | 2 |
 | production | 348 |
-| test | 2057 |
+| test | 2072 |
 | tooling | 667 |
 | unclassified | 2237 |
 
@@ -3944,6 +3944,7 @@
 | `crates/perl-lsp-perltidy/tests/fixtures/native_formatter/substitution_literal_preserve.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `crates/perl-lsp-perltidy/tests/fixtures/native_formatter/transliteration_literal_preserve.expected.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `crates/perl-lsp-perltidy/tests/fixtures/native_formatter/transliteration_literal_preserve.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `crates/perl-lsp-perltidy/tests/inferred_line_ending_tests.proptest-regressions` | test | `non-rust-proptest-regressions` | parser/property-tests |
 | `crates/perl-lsp-rs-core/CLAUDE.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-lsp-rs-core/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-lsp-rs-core/features_sot.toml` | config | `non-rust-crate-features-sot` | lsp/features |
@@ -8215,6 +8216,26 @@
 | `test_corpus/workspaces/xlarge/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `test_corpus/xs_inline_ffi.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `test_print_indirect.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `testdata/ux/first_ten_minutes/README.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `testdata/ux/first_ten_minutes/conventional-modules-v1/README.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `testdata/ux/first_ten_minutes/conventional-modules-v1/bin/app.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `testdata/ux/first_ten_minutes/conventional-modules-v1/lib/App/Format.pm` | test | `non-rust-perl-modules` | parser/lsp-fixtures |
+| `testdata/ux/first_ten_minutes/conventional-modules-v1/lib/App/Registry.pm` | test | `non-rust-perl-modules` | parser/lsp-fixtures |
+| `testdata/ux/first_ten_minutes/conventional-modules-v1/t/registry.t` | test | `non-rust-perl-tests` | parser/lsp-fixtures |
+| `testdata/ux/first_ten_minutes/dynamic-boundary-v1/README.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `testdata/ux/first_ten_minutes/dynamic-boundary-v1/bin/drive.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `testdata/ux/first_ten_minutes/dynamic-boundary-v1/lib/Dispatch.pm` | test | `non-rust-perl-modules` | parser/lsp-fixtures |
+| `testdata/ux/first_ten_minutes/environment-sensitive-v1/README.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `testdata/ux/first_ten_minutes/environment-sensitive-v1/cpanfile` | test | `non-rust-first-ten-minutes-fixture-set` | release/ux-study |
+| `testdata/ux/first_ten_minutes/environment-sensitive-v1/lib/Local/Probe.pm` | test | `non-rust-perl-modules` | parser/lsp-fixtures |
+| `testdata/ux/first_ten_minutes/environment-sensitive-v1/script/report.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `testdata/ux/first_ten_minutes/framework-shaped-v1/README.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `testdata/ux/first_ten_minutes/framework-shaped-v1/app.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `testdata/ux/first_ten_minutes/manifest.json` | test | `non-rust-first-ten-minutes-fixture-set` | release/ux-study |
+| `testdata/ux/first_ten_minutes/test-heavy-v1/README.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `testdata/ux/first_ten_minutes/test-heavy-v1/lib/Inventory.pm` | test | `non-rust-perl-modules` | parser/lsp-fixtures |
+| `testdata/ux/first_ten_minutes/test-heavy-v1/t/inventory.t` | test | `non-rust-perl-tests` | parser/lsp-fixtures |
+| `testdata/ux/first_ten_minutes/test-heavy-v1/t/inventory_edges.t` | test | `non-rust-perl-tests` | parser/lsp-fixtures |
 | `testdata/ux/release_smoke/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `testdata/ux/release_smoke/crlf_links/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `testdata/ux/release_smoke/crlf_links/lib/Smoke/CRLF.pm` | test | `non-rust-perl-modules` | parser/lsp-fixtures |
