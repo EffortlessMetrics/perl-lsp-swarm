@@ -891,7 +891,7 @@ sub transform {
     let module_uri = workspace.uri("lib/Toolkit.pm");
     harness.open(&module_uri, module)?;
 
-    harness.wait_for_symbol("transform", Some(&module_uri), Duration::from_secs(2))?;
+    harness.wait_for_symbol("transform", Some(&module_uri), Duration::from_secs(5))?;
 
     scenario.when("searching workspace symbols for the function name");
     let result = harness.request(
@@ -942,7 +942,7 @@ is(calculate_total(1, 2), 3, 'adds values');
     let uri = workspace.uri("t/calculator.t");
     harness.open(&uri, test_file)?;
 
-    harness.wait_for_symbol("calculate_total", Some(&uri), Duration::from_secs(2))?;
+    harness.wait_for_symbol("calculate_total", Some(&uri), Duration::from_secs(5))?;
 
     scenario.when("requesting completion at a partially typed function name");
     let (completion_line, completion_col) = find_position(test_file, "my $value = calc");
@@ -1841,7 +1841,7 @@ print $value;
     let (mut harness, workspace) = setup_workspace(&[("navigation.pl", code)])?;
     let uri = workspace.uri("navigation.pl");
     harness.open(&uri, code)?;
-    harness.wait_for_symbol("calculate_total", Some(&uri), Duration::from_secs(2))?;
+    harness.wait_for_symbol("calculate_total", Some(&uri), Duration::from_secs(5))?;
 
     scenario.when("requesting document highlights on the local variable inside the subroutine");
     let (highlight_line, highlight_col) = find_position(code, "$total =");

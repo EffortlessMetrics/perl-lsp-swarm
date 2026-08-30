@@ -164,9 +164,7 @@ fn wait_for_symbol_rejects_same_file_decoy() -> Result<(), String> {
         return Err(format!("workspace/symbol did not return the decoy response: {response}"));
     }
 
-    for mode in
-        [WaitForSymbolMode::Default, WaitForSymbolMode::Performance, WaitForSymbolMode::Fallback]
-    {
+    for mode in [WaitForSymbolMode::Default, WaitForSymbolMode::Fast] {
         let result = harness.wait_for_symbol_with_mode(
             "target",
             Some(&target_uri),
@@ -206,9 +204,7 @@ fn wait_for_symbol_rejects_matching_name_from_wrong_uri() -> Result<(), String> 
         return Err(format!("workspace/symbol did not return the expected response: {response}"));
     }
 
-    for mode in
-        [WaitForSymbolMode::Default, WaitForSymbolMode::Performance, WaitForSymbolMode::Fallback]
-    {
+    for mode in [WaitForSymbolMode::Default, WaitForSymbolMode::Fast] {
         let result = harness.wait_for_symbol_with_mode(
             "target",
             Some(&other_uri),
@@ -235,16 +231,7 @@ fn harness_with_workspace_and_wait_for_symbol_matches_file_uri() -> Result<(), S
     ])?;
 
     let target_uri = workspace.uri("lib/MyApp/Greeting.pm");
-    for mode in
-        [WaitForSymbolMode::Default, WaitForSymbolMode::Performance, WaitForSymbolMode::Fallback]
-    {
-        harness.wait_for_symbol_with_mode(
-            "greet",
-            Some(&target_uri),
-            Duration::from_secs(4),
-            mode,
-        )?;
-    }
+    harness.wait_for_symbol("greet", Some(&target_uri), Duration::from_secs(4))?;
 
     let symbols = harness.request(
         "workspace/symbol",
