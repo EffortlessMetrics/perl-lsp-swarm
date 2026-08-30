@@ -6,11 +6,11 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12405 |
-| Rust-family files | 3815 |
-| Non-Rust files | 8590 |
-| Allowlisted | 6355 |
-| Unclassified | 2235 |
+| Total tracked files | 12426 |
+| Rust-family files | 3825 |
+| Non-Rust files | 8601 |
+| Allowlisted | 6364 |
+| Unclassified | 2237 |
 
 ## Non-Rust files by category
 
@@ -19,10 +19,10 @@
 | config | 490 |
 | documentation | 2804 |
 | generated | 2 |
-| production | 346 |
-| test | 2052 |
-| tooling | 661 |
-| unclassified | 2235 |
+| production | 348 |
+| test | 2057 |
+| tooling | 663 |
+| unclassified | 2237 |
 
 ## Unclassified files
 
@@ -1951,6 +1951,8 @@
 | `test_corpus/gold/completion_method_arrow/expected_completion.json` | `json` |
 | `test_corpus/gold/completion_package_colon/expected.json` | `json` |
 | `test_corpus/gold/completion_package_colon/expected_completion.json` | `json` |
+| `test_corpus/gold/completion_scope_ranking/expected_completion.json` | `json` |
+| `test_corpus/gold/completion_scope_sibling/expected_completion.json` | `json` |
 | `test_corpus/gold/eval_string_pragma/expected.json` | `json` |
 | `test_corpus/gold/goto_inherited_method/expected.json` | `json` |
 | `test_corpus/gold/goto_inherited_method/expected_goto.json` | `json` |
@@ -2344,6 +2346,7 @@
 | `.changes/unreleased/product-13169-Fixed-024536.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-13191-Fixed-062500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-13283-Fixed-122901.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-13796-Fixed-174500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3445-Added-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3765-Changed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3885-Added-120000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -3136,6 +3139,7 @@
 | `.spec/10918-emacs-train-graph/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/10918-emacs-train-graph/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/10918-emacs-train-graph/train.manifest.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/11036-lsp-runtime-train-schema/lsp_runtime_train.v1.json` | tooling | `non-rust-spec-tree` | developer-experience |
 | `.spec/11079-pl700-removal-containment/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11079-pl700-removal-containment/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11079-pl700-removal-containment/context.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -3738,6 +3742,7 @@
 | `crates/perl-corpus/concepts/positions.toml` | test | `non-rust-corpus-concepts` | parser/corpus |
 | `crates/perl-corpus/concepts/recovery.toml` | test | `non-rust-corpus-concepts` | parser/corpus |
 | `crates/perl-corpus/concepts/tree_sitter.toml` | test | `non-rust-corpus-concepts` | parser/corpus |
+| `crates/perl-corpus/fixtures/parser_accuracy/Accuracy/ImportsExports.pm` | test | `non-rust-perl-modules` | parser/lsp-fixtures |
 | `crates/perl-corpus/fixtures/parser_accuracy/autoload_boundary.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `crates/perl-corpus/fixtures/parser_accuracy/bad_heredoc_terminator.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `crates/perl-corpus/fixtures/parser_accuracy/control_do_until.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
@@ -6048,6 +6053,7 @@
 | `docs/specs/README.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/specs/RELEASE_CANDIDATE_BASELINE.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/specs/WORKTREE_FORENSIC_EVIDENCE_V1.md` | documentation | `non-rust-docs-tree` | docs |
+| `docs/specs/lsp-318-closure-ownership.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/specs/lsp-318-conformance-matrix.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/specs/lsp-final-surface-inventory.json` | documentation | `non-rust-docs-tree` | docs |
 | `docs/specs/protocol-type-substrate-matrix.json` | documentation | `non-rust-docs-tree` | docs |
@@ -6601,6 +6607,7 @@
 | `scripts/ci/test_ci_classify.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_codecov_test_results_workflows.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_docker_publish_metadata.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/ci/test_docker_publish_topology.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_droid_security_boundary.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_emit_ci_actuals.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_evaluate_ci_gate.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -6964,6 +6971,8 @@
 | `test_corpus/gold/completion_lexical_var/fixture.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `test_corpus/gold/completion_method_arrow/fixture.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `test_corpus/gold/completion_package_colon/fixture.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `test_corpus/gold/completion_scope_ranking/fixture.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `test_corpus/gold/completion_scope_sibling/fixture.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `test_corpus/gold/eval_string_pragma/fixture.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `test_corpus/gold/goto_inherited_method/fixture.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `test_corpus/gold/goto_local_sub/fixture.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
@@ -8383,6 +8392,7 @@
 | `vscode-extension/src/gherkinStepDefinitions.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/healthWidget.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/healthWidgetDataSource.ts` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/src/inlineCompletionRouting.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/languageClientConfiguration.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/languageClientDocumentSync.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/languageClientLifecycle.ts` | production | `non-rust-vscode-extension` | editor/vscode |
@@ -8470,6 +8480,7 @@
 | `vscode-extension/src/test/healthWidgetDataSource.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/healthWidgetExperience.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/healthWidgetWiring.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/src/test/inlineCompletionRouting.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/integration/firstHourReceipt.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/integration/managedBinarySmoke.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/integration/runTest.ts` | production | `non-rust-vscode-extension` | editor/vscode |
@@ -8607,8 +8618,8 @@
 | `xtask/tests/fixtures/dependency-hygiene/machete-malformed.json` | test | `non-rust-dependency-hygiene-machete-fixtures` | devex/dependency-hygiene |
 | `xtask/tests/fixtures/dependency-hygiene/machete-missing-ignored-used.json` | test | `non-rust-dependency-hygiene-machete-fixtures` | devex/dependency-hygiene |
 | `xtask/tests/fixtures/dependency-hygiene/machete-missing-unused.json` | test | `non-rust-dependency-hygiene-machete-fixtures` | devex/dependency-hygiene |
-| `xtask/tests/fixtures/lsp-318-changelog/PROVENANCE.md` | documentation | `non-rust-root-governance-docs` | docs |
-| `xtask/tests/fixtures/lsp-318-changelog/specification.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `xtask/tests/fixtures/lsp-318-changelog/PROVENANCE.md` | test | `non-rust-lsp-318-changelog-fixture` | protocol/lsp-318-claims |
+| `xtask/tests/fixtures/lsp-318-changelog/specification.md` | test | `non-rust-lsp-318-changelog-fixture` | protocol/lsp-318-claims |
 | `xtask/tests/fixtures/module-train-live/raw-clean-surface.json` | test | `non-rust-module-train-live-observation-fixtures` | devex/module-train |
 | `xtask/tests/fixtures/module-train-live/raw-corpus.json` | test | `non-rust-module-train-live-observation-fixtures` | devex/module-train |
 | `xtask/tests/fixtures/native-critic/false-positive/checked_io.pm` | test | `non-rust-perl-modules` | parser/lsp-fixtures |

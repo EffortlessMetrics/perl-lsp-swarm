@@ -58,6 +58,13 @@ its seed is exploratory output, not reproducible evidence.
   compatibility APIs. Their raw mutable paths are never authority.
 - `CorpusPaths::try_from_root`, `try_discover`, and `resolve_authoritative` return
   immutable `ResolvedCorpusPaths`; `into_paths()` is an explicit authority downgrade.
+- `ResolvedCorpusPaths` must not implement `Deref`, `AsRef<CorpusPaths>`,
+  `Borrow<CorpusPaths>`, or any other implicit conversion into `CorpusPaths`. The
+  downgrade is written down at the call site as `as_paths()` or `into_paths()`.
+  `tests/root_path_authority.rs` holds this boundary with `assert_does_not_implement!`,
+  which breaks that test target's build if such an impl reappears. Keep the enforcement
+  there, not only in a doctest: the gates run `cargo test --locked --tests` and never
+  `cargo test --doc`.
 - Component-by-component selected-member opening must consume the retained root
   capability. Do not add another root-opening path.
 - The published package ships APIs and deliberately included crate assets. Repository

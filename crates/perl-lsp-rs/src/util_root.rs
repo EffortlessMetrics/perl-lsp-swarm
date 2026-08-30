@@ -22,9 +22,7 @@ pub use legacy::{
 mod source_decoding;
 
 pub(crate) use source_decoding::{
-    DecodeFidelity, DecodeSelectionReason, DecodedText, OriginalByteMapping,
-    SOURCE_DECODE_POLICY_VERSION, SourceBomDisposition, SourceEncoding, decode_source_bytes,
-    read_source_file_with_encoding,
+    DecodedText, decode_source_bytes, read_source_file_with_encoding,
 };
 
 use std::io;
