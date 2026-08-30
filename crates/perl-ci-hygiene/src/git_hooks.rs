@@ -30,9 +30,9 @@ fi
 # additions, removals, or renames. The snapshot includes aggregate counts for
 # Rust-family files too, so filtering to non-Rust extensions would leave the
 # same drift path open. The generator reads the index through `git ls-files`,
-# preserving the exact tree that the commit gate will inspect. Refuse to
-# overwrite a separately edited snapshot; the contributor can stage or discard
-# that edit explicitly before retrying.
+# preserving the exact tree that the commit gate will inspect. Refuse to read a
+# separately edited allowlist or overwrite a separately edited snapshot; the
+# contributor can stage or discard those edits explicitly before retrying.
 STAGED_INVENTORY_CHANGE=0
 STAGED_INVENTORY_PATHS=()
 while IFS= read -r -d '' staged_path; do
@@ -47,6 +47,11 @@ while IFS= read -r -d '' staged_path; do
 done < <(git diff --cached --name-only -z --diff-filter=ADR)
 
 if [ "$STAGED_INVENTORY_CHANGE" -eq 1 ]; then
+    if ! git diff --quiet -- policy/non-rust-allowlist.toml; then
+        echo "❌ Cannot refresh non-Rust inventory: policy/non-rust-allowlist.toml has unstaged edits"
+        echo "   Stage or discard those allowlist edits, then retry the commit."
+        exit 1
+    fi
     if ! git diff --quiet -- docs/policy/NON_RUST_INVENTORY.md; then
         echo "❌ Cannot refresh non-Rust inventory: docs/policy/NON_RUST_INVENTORY.md has unstaged edits"
         echo "   Stage or discard those edits, then retry the commit."
@@ -537,6 +542,7 @@ mod tests {
         assert!(write < stage);
         assert!(stage < gate);
         assert!(hook.contains("has unstaged edits"));
+        assert!(hook.contains("policy/non-rust-allowlist.toml has unstaged edits"));
         assert!(hook.contains("read -r -d ''"));
         assert!(hook.contains("printf '   %q\\n'"));
         Ok(())
@@ -579,8 +585,11 @@ mod tests {
         fs::write(repo.join("README.md"), "baseline\n")?;
         fs::create_dir_all(repo.join("docs/policy"))?;
         fs::write(repo.join("docs/policy/NON_RUST_INVENTORY.md"), "# baseline inventory\n")?;
+        fs::create_dir_all(repo.join("policy"))?;
+        fs::write(repo.join("policy/non-rust-allowlist.toml"), "# baseline allowlist\n")?;
         run_git(&repo, &["add", "README.md"])?;
         run_git(&repo, &["add", "docs/policy/NON_RUST_INVENTORY.md"])?;
+        run_git(&repo, &["add", "policy/non-rust-allowlist.toml"])?;
         run_git(&repo, &["commit", "-qm", "baseline"])?;
 
         let bin = repo.join("fake-bin");
@@ -622,10 +631,10 @@ mod tests {
         } else {
             format!("{}:{}", bin.display(), std::env::var("PATH")?)
         };
-        let output = Command::new(bash)
+        let output = Command::new(&bash)
             .arg(&hook)
             .current_dir(&repo)
-            .env("PATH", path_var)
+            .env("PATH", &path_var)
             .env("FAKE_CARGO_LOG", &log)
             .output()?;
         ensure!(
@@ -655,6 +664,23 @@ mod tests {
             .trim(),
             "docs/policy/NON_RUST_INVENTORY.md"
         );
+
+        fs::write(repo.join("policy/non-rust-allowlist.toml"), "# unstaged allowlist edit\n")?;
+        fs::write(repo.join("second.json"), "{}\n")?;
+        run_git(&repo, &["add", "--", "second.json"])?;
+        let rejected = Command::new(&bash)
+            .arg(&hook)
+            .current_dir(&repo)
+            .env("PATH", &path_var)
+            .env("FAKE_CARGO_LOG", &log)
+            .output()?;
+        ensure!(!rejected.status.success(), "unstaged allowlist edit must block inventory refresh");
+        let rejection = format!(
+            "{}{}",
+            String::from_utf8_lossy(&rejected.stdout),
+            String::from_utf8_lossy(&rejected.stderr)
+        );
+        assert!(rejection.contains("policy/non-rust-allowlist.toml has unstaged edits"));
 
         Ok(())
     }
