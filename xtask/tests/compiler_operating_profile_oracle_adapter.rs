@@ -646,6 +646,43 @@ mod compiler_operating_profile_oracle_adapter {
     }
 
     #[test]
+    fn falsifier_09b_a_repeated_comparison_identity_fails_closed() -> Result<()> {
+        // The same law on the comparison side. Both the completeness
+        // denominator (a set of compared fact ids) and every disposition reason
+        // (which names the single fact its row ranges over) already assume one
+        // comparison per fact — an assumption that was documented in the
+        // adapter without being enforced.
+        let repeated = agreeing_with(|receipt| {
+            receipt["comparisons"] = json!([
+                comparison("oracle_agrees", "fact-isa-1", "supports_promotion"),
+                comparison("oracle_agrees", "fact-isa-1", "supports_promotion"),
+                comparison("oracle_agrees", "fact-isa-2", "supports_promotion")
+            ]);
+        });
+        assert_rejected(&repeated, "repeats fact identity")?;
+
+        // The dangerous shape is the self-contradicting one: two rows over one
+        // fact that disagree. Merging them would require inventing a precedence
+        // among result classes the source contract does not define, so this
+        // fails closed rather than resolving to whichever row is stronger.
+        let contradictory = agreeing_with(|receipt| {
+            receipt["comparisons"] = json!([
+                comparison("oracle_agrees", "fact-isa-1", "supports_promotion"),
+                comparison("compiler_missing", "fact-isa-1", "blocks_promotion"),
+                comparison("oracle_agrees", "fact-isa-2", "supports_promotion")
+            ]);
+        });
+        assert_rejected(&contradictory, "repeats fact identity")?;
+
+        // Negative control: distinct identities across the same classes are
+        // legitimate and must still reach the strongest ceiling, so the check
+        // cannot be satisfied by refusing comparison sets in general.
+        let distinct = adapt(&agreeing_receipt())?;
+        assert_eq!(distinct.ceiling.claim_ceiling(), ClaimCeiling::AcceptedCompatibility);
+        Ok(())
+    }
+
+    #[test]
     fn falsifier_02_no_field_value_can_forge_a_subject_delimiter() -> Result<()> {
         // The schema allows arbitrary strings in these fields, so a subject
         // built by plain delimiter joining would let one value impersonate the

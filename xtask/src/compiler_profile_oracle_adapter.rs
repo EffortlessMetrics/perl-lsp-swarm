@@ -785,6 +785,30 @@ pub fn ensure_adapter_invariants(receipt: &OracleReceiptV1) -> Result<()> {
     ensure_unique_fact_ids("rust", &receipt.normalized_facts.rust)?;
     ensure_unique_fact_ids("oracle", &receipt.normalized_facts.oracle)?;
 
+    // The same law on the comparison side, for the same reason. The
+    // completeness denominator reads compared facts as a set, and every
+    // disposition reason names the single fact its row ranges over, so both
+    // already assume one comparison per fact identity — an assumption that was
+    // documented here without being enforced.
+    //
+    // Rejection rather than aggregation is deliberate. Two rows over one fact
+    // that disagree (`oracle_agrees` beside `compiler_missing`) are a receipt
+    // contradicting itself, and merging them would require inventing a
+    // precedence among result classes that the source contract does not
+    // define. Manufacturing that meaning is exactly what this adapter must not
+    // do, so a repeated comparison identity fails closed instead.
+    let mut compared_once = BTreeSet::new();
+    for comparison in &receipt.comparisons {
+        if !compared_once.insert(comparison.fact_id.as_str()) {
+            bail!(
+                "the comparison set repeats fact identity {:?}; one identity names one \
+                 comparison, and merging two rows would invent a precedence the source \
+                 contract does not define",
+                comparison.fact_id
+            );
+        }
+    }
+
     // Identifiers reach envelope free text — subject dimensions and
     // disposition reasons — where #12188's private-safety contract applies and
     // cannot be weakened. The schema accepts any non-empty string, so a
