@@ -281,6 +281,7 @@
     "limitations": {
       "description": "What this receipt does not establish. Sorted and deduplicated.",
       "type": "array",
+      "uniqueItems": true,
       "items": {
         "type": "string",
         "minLength": 1
@@ -289,6 +290,7 @@
     "blockers": {
       "description": "Why the state is not available_exact. Sorted and deduplicated; empty exactly when the state is available_exact.",
       "type": "array",
+      "uniqueItems": true,
       "items": {
         "$ref": "#/$defs/blocker"
       }

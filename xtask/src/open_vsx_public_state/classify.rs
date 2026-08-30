@@ -152,6 +152,34 @@ pub(crate) fn invalidate(receipt: &mut Receipt, code: &str, message: impl Into<S
     receipt.state = PublicState::Invalid;
 }
 
+/// Whether the extension-level surfaces affirmatively report this identity live.
+///
+/// Deliberately strict: it takes the gallery listing answering, the extension
+/// record confirming the identity, and the versions endpoint publishing the
+/// subject version. Anything weaker — a bare `2xx`, an unparsed body — is not an
+/// affirmation and must not be able to override a namespace answer, or a
+/// provider hiccup on these surfaces would start masking real publisher
+/// problems. The point is to detect a genuine contradiction, not to outvote.
+fn extension_surfaces_affirm_presence(
+    observation: &Observation,
+    subject_version: Option<&str>,
+) -> bool {
+    let cells = &observation.cells;
+    let present =
+        |cell: Cell| observe(transport_for(observation, cell)) == CellObservation::Present;
+
+    let listing_live = present(Cell::Listing);
+    let record_live =
+        present(Cell::ExtensionMetadata) && cells.extension_metadata.identity_matches == Some(true);
+    let rows_live = present(Cell::VersionRows)
+        && match (&cells.version_rows.versions, subject_version) {
+            (Some(rows), Some(version)) => rows.iter().any(|row| row == version),
+            _ => false,
+        };
+
+    listing_live && record_live && rows_live
+}
+
 /// Surfaces whose transport reported an affirmative `404` while their own parsed
 /// payload affirms the thing that `404` denies, with what each one affirmed.
 ///
@@ -349,7 +377,10 @@ fn structural_findings(
                 format!(
                     "{} addressed {:?} instead of the planned {:?}",
                     cell.key(),
-                    transport.url,
+                    // The observed URL is producer-supplied and this blocker is
+                    // durable, so it goes through the same boundary as every
+                    // other free-text value. The planned URL is derived here.
+                    publishable_url(&transport.url),
                     planned.url
                 ),
             ));
@@ -515,9 +546,25 @@ fn classify_state(
     let version_rows = observe(&observation.cells.version_rows.transport);
     let versioned_file = observe(&observation.cells.versioned_file.transport);
 
+    // Raised in review: this diagnosis used to be returned on the namespace cell
+    // alone, before any cross-surface check ran. A namespace `404` beside a live
+    // listing, a matching extension record and a retrieved package was reported
+    // as a publisher problem while four surfaces said the opposite. A namespace
+    // that does not resolve cannot be serving its extension, so that combination
+    // is contradictory evidence, not a narrower diagnosis.
+    let extension_is_live = extension_surfaces_affirm_presence(observation, subject_version);
+
     // A namespace that is gone or renamed is the narrower diagnosis; reporting
     // it as a missing extension would send the incident down the wrong path.
     if namespace_metadata == CellObservation::ProvenAbsent {
+        if extension_is_live {
+            blockers.push(Blocker::new(
+                "contradictory_registry_scope",
+                "the namespace endpoint reports the namespace absent while the extension surfaces \
+                 report it live; the registry answers cannot both be true",
+            ));
+            return (PublicState::ProviderNotProven, blockers, limitations);
+        }
         blockers.push(Blocker::new(
             "namespace_absent",
             "the namespace itself does not resolve; extension-level absence is not the diagnosis",
@@ -527,6 +574,14 @@ fn classify_state(
     if namespace_metadata == CellObservation::Present {
         match observation.cells.namespace_metadata.namespace_present {
             Some(false) => {
+                if extension_is_live {
+                    blockers.push(Blocker::new(
+                        "contradictory_registry_scope",
+                        "the namespace endpoint did not confirm the namespace while the extension \
+                         surfaces report it live; the registry answers cannot both be true",
+                    ));
+                    return (PublicState::ProviderNotProven, blockers, limitations);
+                }
                 blockers.push(Blocker::new(
                     "namespace_not_confirmed",
                     "the namespace endpoint responded without confirming this namespace",
@@ -842,7 +897,7 @@ fn build_cells(observation: &Observation) -> Vec<CellResult> {
             let transport = transport_for(observation, cell);
             CellResult {
                 cell: cell.key(),
-                url: transport.url.clone(),
+                url: publishable_url(&transport.url),
                 method: "GET",
                 observation: observe(transport),
                 status: transport.status,
@@ -893,6 +948,21 @@ fn transport_for(observation: &Observation, cell: Cell) -> &Transport {
 
 /// Sentinel written in place of a value that must not be published.
 const REDACTED: &str = "<redacted>";
+
+/// A request URL, safe to write into a durable receipt.
+///
+/// Raised in review: `transport.url` is producer-supplied and was copied
+/// verbatim into both the receipt's per-surface record and the
+/// `unplanned_request_url` blocker, so the one field describing a request that
+/// left the sanctioned plan — exactly the case where the value is least
+/// trustworthy — was published unexamined. It now crosses the same boundary as
+/// `instrument` and `publication_refs`.
+fn publishable_url(url: &str) -> String {
+    match unsafe_reference(url) {
+        Some(_) => REDACTED.to_owned(),
+        None => url.to_owned(),
+    }
+}
 
 /// Strip unpublishable values from the instrument identity.
 ///

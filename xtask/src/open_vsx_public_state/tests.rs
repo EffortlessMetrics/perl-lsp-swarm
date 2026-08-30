@@ -732,6 +732,13 @@ fn path_and_credential_shaped_references_cannot_cross_the_publication_boundary()
         })?;
         expect_state(&via_instrument, PublicState::Invalid, value)?;
         expect_blocker(&via_instrument, "unsafe_reference_value")?;
+        // Raised in review: this path checked only the state and the blocker, so
+        // a regression that redacted `publication_refs` but copied
+        // `instrument.source_ref` through verbatim still passed — which is the
+        // precise failure the first round of this fix already made once.
+        if serde_json::to_string(&via_instrument)?.contains("hunter2") {
+            bail!("a credential-shaped instrument ref reached the receipt for {value:?}");
+        }
     }
 
     // An over-long reference is refused rather than retained.
@@ -849,7 +856,12 @@ fn only_an_affirmative_404_is_recorded_as_proven_absence() -> Result<()> {
 }
 
 #[test]
-fn blockers_are_present_exactly_when_the_state_is_not_exact() -> Result<()> {
+fn every_emittable_state_carries_a_blocker_explaining_it() -> Result<()> {
+    // Named for what it proves. The previous name claimed a biconditional, but
+    // no fixture can reach `available_exact` — `PublicState` does not model it —
+    // so the "empty exactly when" half is never exercised here. The receipt
+    // contract's `allOf` enforces that half structurally, and `schema_tests`
+    // exercises it against a constructed document.
     let cases = [
         AVAILABLE_EXACT,
         INCIDENT,
@@ -867,5 +879,69 @@ fn blockers_are_present_exactly_when_the_state_is_not_exact() -> Result<()> {
             bail!("state {} carries no blocker explaining it", receipt.state.key());
         }
     }
+    Ok(())
+}
+
+#[test]
+fn a_request_url_cannot_carry_a_credential_into_the_receipt() -> Result<()> {
+    // Raised in review: `transport.url` is producer-supplied and was copied
+    // verbatim into both the per-surface record and the `unplanned_request_url`
+    // blocker. The one field describing a request that left the sanctioned plan
+    // — where the value is least trustworthy — was the one published unexamined.
+    let smuggled = "https://user:hunter2@evil.example/vsix";
+    let smuggled_receipt = receipt_with(AVAILABLE_EXACT, |document| {
+        document["cells"]["listing"]["transport"]["url"] = json!(smuggled);
+    })?;
+
+    expect_state(&smuggled_receipt, PublicState::Invalid, "off-plan credential URL")?;
+    expect_blocker(&smuggled_receipt, "unplanned_request_url")?;
+    let serialized = serde_json::to_string(&smuggled_receipt)?;
+    if serialized.contains("hunter2") {
+        bail!("a credential-shaped request URL reached the durable receipt");
+    }
+
+    // The rule must not be "redact every URL": a planned, safe URL still travels
+    // so the receipt keeps describing the requests it is a receipt for.
+    let intact = receipt(AVAILABLE_EXACT)?;
+    if !serde_json::to_string(&intact)?.contains("https://open-vsx.org/") {
+        bail!("redaction swallowed the planned request URLs");
+    }
+    Ok(())
+}
+
+#[test]
+fn a_namespace_denial_beside_live_extension_surfaces_is_a_contradiction() -> Result<()> {
+    // Raised in review: this diagnosis was returned on the namespace cell alone,
+    // before any cross-surface check. A namespace that does not resolve cannot
+    // be serving its extension, so a namespace denial beside a live listing, a
+    // matching extension record and a published subject version is contradictory
+    // evidence — not the narrower publisher diagnosis it was reported as.
+    let denials: Vec<(&str, Box<dyn Fn(&mut Value)>)> = vec![
+        (
+            "namespace 404",
+            Box::new(|document: &mut Value| {
+                document["cells"]["namespace_metadata"]["transport"]["status"] = json!(404);
+                document["cells"]["namespace_metadata"]["namespace_present"] = Value::Null;
+            }),
+        ),
+        (
+            "namespace unconfirmed",
+            Box::new(|document: &mut Value| {
+                document["cells"]["namespace_metadata"]["namespace_present"] = json!(false);
+            }),
+        ),
+    ];
+
+    for (label, patch) in denials {
+        let denied = receipt_with(AVAILABLE_EXACT, |document| patch(document))?;
+        expect_state(&denied, PublicState::ProviderNotProven, label)?;
+        expect_blocker(&denied, "contradictory_registry_scope")?;
+    }
+
+    // Positive control: a namespace denial with nothing contradicting it is
+    // still the narrower diagnosis, which is the whole reason that state exists.
+    let uncontradicted = receipt(NAMESPACE_ABSENT)?;
+    expect_state(&uncontradicted, PublicState::NamespaceOrPublisherProblem, "clean denial")?;
+    expect_blocker(&uncontradicted, "namespace_absent")?;
     Ok(())
 }

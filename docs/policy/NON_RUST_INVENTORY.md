@@ -6241,7 +6241,7 @@
 | `fixtures/experience/standalone_candidate_selection/21_private_path_leakage.json` | test | `non-rust-standalone-candidate-selection-fixtures` | release/ci |
 | `fixtures/experience/standalone_candidate_selection/22_current_names_missing_candidate.json` | test | `non-rust-standalone-candidate-selection-fixtures` | release/ci |
 | `fixtures/open_vsx_public_state/README.md` | documentation | `non-rust-root-governance-docs` | docs |
-| `fixtures/open_vsx_public_state/incident_shape_listing_absent.json` | test | `non-rust-open-vsx-public-state-fixtures` | release/ci |
+| `fixtures/open_vsx_public_state/incident_shape_listing_absent.json` | test | `non-rust-open-vsx-public-state-incident-fixture` | release/ci |
 | `fixtures/open_vsx_public_state/synthetic_available_exact.json` | test | `non-rust-open-vsx-public-state-fixtures` | release/ci |
 | `fixtures/open_vsx_public_state/synthetic_instrument_incomplete.json` | test | `non-rust-open-vsx-public-state-fixtures` | release/ci |
 | `fixtures/open_vsx_public_state/synthetic_listing_missing_version_retrievable.json` | test | `non-rust-open-vsx-public-state-fixtures` | release/ci |

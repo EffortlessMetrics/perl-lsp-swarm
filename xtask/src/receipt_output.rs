@@ -34,6 +34,22 @@ pub fn ensure_safe_output(subject: &str, out: &Path, protected: &[&Path]) -> Res
     let output_identity = resolved_candidate_path(subject, out)?;
 
     for source in protected {
+        // Raised in review: resolving a source canonicalizes its parent, so a
+        // protected path under a directory that does not exist — `missing/
+        // authority.json`, the shape `publication-drift` passes when no
+        // authority was supplied — failed here and blocked the `not_proven`
+        // receipt it was trying to write. An absent source cannot be aliased,
+        // which is the rule this function already documents; it just was not
+        // applied before resolution. Every other inspection error still blocks.
+        match fs::symlink_metadata(source) {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(error).wrap_err_with(|| {
+                    format!("inspecting protected evidence source {}", source.display())
+                });
+            }
+        }
         let source_identity = resolved_candidate_path(subject, source)?;
         if output_identity == source_identity {
             bail!(
@@ -101,7 +117,7 @@ pub fn write_receipt<T: Serialize>(subject: &str, path: &Path, receipt: &T) -> R
     temporary.persist(path).map_err(|error| {
         eyre!("atomically persisting {subject} receipt {}: {}", path.display(), error.error)
     })?;
-    sync_directory(parent);
+    sync_directory(parent)?;
     Ok(())
 }
 
@@ -111,14 +127,17 @@ pub fn write_receipt<T: Serialize>(subject: &str, path: &Path, receipt: &T) -> R
 /// entry created by the rename is a separate write. Without this, power loss can
 /// leave a receipt whose data survived but whose name did not.
 ///
-/// Best-effort by design: some filesystems refuse `open`/`fsync` on a directory,
-/// and failing the whole publication over an unavailable durability upgrade
-/// would be worse than the exposure it closes. The receipt is already renamed
-/// into place when this runs.
-fn sync_directory(parent: &Path) {
-    if let Ok(handle) = fs::File::open(parent) {
-        let _ = handle.sync_all();
-    }
+/// Raised in review: this was best-effort, which meant a caller was told the
+/// receipt had been published durably when the durability step had failed. A
+/// receipt is evidence, so reporting a success the filesystem did not confirm is
+/// the one outcome worse than failing loudly.
+fn sync_directory(parent: &Path) -> Result<()> {
+    let handle = fs::File::open(parent)
+        .wrap_err_with(|| format!("opening receipt output directory {}", parent.display()))?;
+    handle
+        .sync_all()
+        .wrap_err_with(|| format!("syncing receipt output directory {}", parent.display()))?;
+    Ok(())
 }
 
 fn parent_or_current(path: &Path) -> &Path {
@@ -283,6 +302,22 @@ mod tests {
         fs::write(&input, "{}")?;
         fs::write(&out, "{}")?;
         ensure_safe_output(SUBJECT, &out, &[&input, &authority])
+    }
+
+    #[test]
+    fn a_protected_source_below_a_missing_directory_does_not_block_the_receipt() -> Result<()> {
+        // Raised in review: resolving a protected source canonicalizes its
+        // parent, so a path under a directory that does not exist errored here
+        // rather than being skipped — and that is exactly the shape
+        // `publication-drift` passes when no authority was supplied, so the run
+        // could not write the `not_proven` receipt saying so. An absent source
+        // cannot be aliased, which is the rule this function already documents.
+        let temp = TempDir::new()?;
+        let absent_authority = temp.path().join("missing/authority.json");
+        let out = temp.path().join("receipt.json");
+
+        ensure_safe_output(SUBJECT, &out, &[absent_authority.as_path()])?;
+        Ok(())
     }
 
     #[cfg(unix)]

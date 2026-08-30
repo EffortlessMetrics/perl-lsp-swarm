@@ -37,8 +37,6 @@ const PERMITTED_OBSERVATION_PROPERTIES: &[&str] = &[
     "expected",
     "versions",
     "publication_refs",
-    "authority",
-    "source",
     "vsix_sha256",
     "cells",
     "listing",
@@ -144,14 +142,16 @@ fn the_receipt_is_bound_to_the_plan_digest_for_its_subject() -> Result<()> {
 /// reviewed and found safe.
 ///
 /// The marker check is a deliberately blunt tripwire, so a name it catches is
-/// not automatically a defect — it is a prompt to look. Each entry here records
-/// that the look happened and what keeps the field safe.
+/// not automatically a defect — it is a prompt to look. Each entry here would
+/// record that the look happened and what keeps the field safe.
 ///
-/// - `authority`: names the source binding the expected byte identity. It holds
-///   a repository-relative path or release reference plus a SHA-256, both value
-///   validated by `classify::unsafe_reference` and `is_sha256`; it carries no
-///   credential and reaches nothing outside the repository.
-const MARKER_EXEMPT_PROPERTIES: &[&str] = &["authority"];
+/// Empty, and worth keeping empty. The one entry this ever held was `authority`,
+/// and that field was removed from both contracts when review showed nothing
+/// verified it. Raised in review: the exemption outlived the field, so
+/// reintroducing `authority` would have re-entered the schema with the tripwire
+/// already disarmed — a standing exemption for a field nobody was looking at any
+/// more.
+const MARKER_EXEMPT_PROPERTIES: &[&str] = &[];
 
 #[test]
 fn the_observation_contract_has_no_field_able_to_carry_a_secret() -> Result<()> {

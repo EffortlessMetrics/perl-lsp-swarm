@@ -267,7 +267,7 @@
           ]
         },
         "elapsed_ms": {
-          "description": "Wall-clock duration of the attempt in milliseconds. Required whenever a request was actually made, so the declared timeout budget is evidenced by the record rather than taken on faith like the byte and redirect budgets already are not.",
+          "description": "Wall-clock duration of the attempt in milliseconds. Null exactly when no request was made; an attempted request must report one, so the declared timeout budget is evidenced by the record rather than asserted by the plan alone.",
           "oneOf": [
             {
               "type": "null"
@@ -280,6 +280,33 @@
         }
       },
       "allOf": [
+        {
+          "description": "An attempted request has a measured duration; an unattempted one cannot. The classifier refuses an unmeasured attempt as invalid (unmeasured_duration), so the contract states the rule rather than leaving a producer to discover it after the fact.",
+          "if": {
+            "properties": {
+              "outcome": {
+                "const": "not_attempted"
+              }
+            },
+            "required": [
+              "outcome"
+            ]
+          },
+          "then": {
+            "properties": {
+              "elapsed_ms": {
+                "type": "null"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "elapsed_ms": {
+                "type": "integer"
+              }
+            }
+          }
+        },
         {
           "description": "An HTTP response carries a status; a transport error or an unattempted request cannot. The classifier refuses the other combinations as invalid, so the contract states them rather than leaving a producer to discover it.",
           "if": {
