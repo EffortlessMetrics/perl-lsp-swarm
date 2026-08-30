@@ -250,22 +250,38 @@ fn validate_workflow(source: &str) -> Result<()> {
         let expected_command = format!("$output = {command} 2>&1");
         let statements: Vec<_> =
             run.lines().map(str::trim).filter(|line| !line.is_empty()).collect();
+        let lower_statements: Vec<_> =
+            statements.iter().map(|line| line.to_ascii_lowercase()).collect();
+        let expected_command_lower = expected_command.to_ascii_lowercase();
         ensure!(
-            statements.first().copied() == Some(expected_command.as_str())
-                && statements.get(1).copied() == Some("$exitCode = $LASTEXITCODE")
-                && statements.get(2).copied() == Some("$output | ForEach-Object { $_ }"),
+            lower_statements.first().map(String::as_str) == Some(expected_command_lower.as_str())
+                && lower_statements.get(1).map(String::as_str) == Some("$exitcode = $lastexitcode")
+                && lower_statements.get(2).map(String::as_str)
+                    == Some("$output | foreach-object { $_ }"),
             "proof command must be the first top-level PowerShell statement: {name}"
         );
+        let exit_guard = "if ($exitcode -ne 0) { exit $exitcode }";
+        let exit_guard_index = lower_statements
+            .iter()
+            .position(|line| line == exit_guard)
+            .ok_or_else(|| anyhow!("proof command must have an exit-code guard: {name}"))?;
+        let running_count_index = lower_statements
+            .iter()
+            .position(|line| line.starts_with("$runningcount = @($output | select-string"))
+            .ok_or_else(|| anyhow!("proof command must count executed tests: {name}"))?;
+        let result_count_index = lower_statements
+            .iter()
+            .position(|line| line.starts_with("$resultcount = @($output | select-string"))
+            .ok_or_else(|| anyhow!("proof command must count passing tests: {name}"))?;
         ensure!(
-            run.contains("if ($exitCode -ne 0) { exit $exitCode }"),
+            exit_guard_index < running_count_index
+                && exit_guard_index < result_count_index
+                && lower_statements.iter().filter(|line| line.starts_with("$output =")).count()
+                    == 1
+                && !lower_statements.iter().any(|line| line.starts_with("$output +="))
+                && !run.to_ascii_lowercase().contains("return")
+                && !run.to_ascii_lowercase().contains("exit 0"),
             "proof command must fail before validating captured output: {name}"
-        );
-        ensure!(
-            run.matches("$output =").count() == 1
-                && !run.contains("$output +=")
-                && !run.contains("return")
-                && !run.contains("exit 0"),
-            "proof output must come from the real command without fabricated control flow: {name}"
         );
         ensure!(
             normalized(run).contains(&normalized(command)),
@@ -366,6 +382,13 @@ fn validate_workflow(source: &str) -> Result<()> {
         topology_raw.matches("selected_tests=(").count() == 1
             && !topology_raw.contains("selected_tests=()"),
         "topology proof must not clear its selected test population"
+    );
+    let after_selected_declaration = &topology_raw[selected_end + 2..];
+    ensure!(
+        !after_selected_declaration.lines().map(str::trim).any(|line| {
+            line.starts_with("selected_tests=") || line.starts_with("selected_tests+=")
+        }),
+        "topology proof must not mutate selected tests after declaration"
     );
     let selected: BTreeSet<_> = topology_raw
         [selected_start + "selected_tests=(".len()..selected_end]
@@ -529,6 +552,10 @@ fn static_contract_rejects_structural_proof_and_trigger_mutations() -> Result<()
         (
             "          )\n\n          test_list=\"$(mktemp)\"",
             "          )\n          unset selected_tests\n\n          test_list=\"$(mktemp)\"",
+        ),
+        (
+            "          )\n\n          test_list=\"$(mktemp)\"",
+            "          )\n          selected_tests+=(api::topology::tests::symlinked_entries_fail_closed)\n\n          test_list=\"$(mktemp)\"",
         ),
         (TOPOLOGY_EXECUTION_SOURCE_ANCHOR, ""),
     ] {
