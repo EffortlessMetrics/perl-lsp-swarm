@@ -1315,3 +1315,137 @@ fn reordering_an_input_enum_is_not_contract_drift() -> TestResult {
     result?;
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Fourth independent review pass (#13800): consequences the packet never
+// established
+// ---------------------------------------------------------------------------
+
+/// The first outstanding-work fix filtered on one terminality value. The honest
+/// predicate is "not terminal", so a deferred cleanup counts too — but it is
+/// awaited, not actionable, and must not be reported as work the user owes.
+#[test]
+fn deferred_cleanup_is_outstanding_without_being_called_actionable() -> TestResult {
+    let manifest = diagnostics::load_manifest(&repo_root())?;
+    let projection = diagnostics::project_packet(
+        &manifest,
+        &packet(
+            "selection_committed",
+            json!({
+                "product_units": "installed",
+                "cleanup": "deferred",
+                "process_startup": "verified",
+                "path_persistence": "persisted"
+            }),
+            "installed, cleanup deferred",
+        ),
+    )?;
+    assert_eq!(
+        projection.get("terminality").and_then(Value::as_str),
+        Some("nonterminal_awaiting_next_stage"),
+        "a deferred cleanup is outstanding, so the transaction is not finished"
+    );
+    assert_ne!(
+        projection.get("terminality").and_then(Value::as_str),
+        Some("nonterminal_actionable"),
+        "a deferred cleanup asks nothing of the user and must not be called actionable"
+    );
+    assert!(
+        projection.pointer("/render/outstanding").and_then(Value::as_array).is_some_and(|rows| {
+            rows.iter().any(|row| {
+                row.get("reason_id").and_then(Value::as_str) == Some("cleanup_deferred_pending")
+            })
+        }),
+        "the deferred cleanup must be readable, not just referenced"
+    );
+    Ok(())
+}
+
+/// The input contract permits verifying or publishing a candidate with no prior
+/// selection at all, so those outcomes cannot assert a retained known-good
+/// installation — there may be none.
+#[test]
+fn a_candidate_only_outcome_does_not_invent_a_known_good_installation() -> TestResult {
+    let manifest = diagnostics::load_manifest(&repo_root())?;
+    for disposition in ["candidate_verified", "candidate_published_unselected"] {
+        let projection = diagnostics::project_packet(
+            &manifest,
+            &packet(
+                disposition,
+                json!({
+                    "product_units": "not_applicable",
+                    "cleanup": "completed",
+                    "process_startup": "unproven",
+                    "path_persistence": "not_applicable"
+                }),
+                "candidate stage only; nothing installed before",
+            ),
+        )?;
+        assert_eq!(
+            projection.pointer("/consequences/known_good").and_then(Value::as_str),
+            Some("not_established_by_this_transaction"),
+            "`{disposition}` must not claim a retained known-good installation"
+        );
+    }
+
+    // Control: a preserved current genuinely does retain one.
+    let preserved = diagnostics::project_packet(
+        &manifest,
+        &packet(
+            "failed_preserved_current",
+            json!({
+                "product_units": "preserved_prior",
+                "cleanup": "completed",
+                "process_startup": "verified",
+                "path_persistence": "unchanged"
+            }),
+            "failed, prior installation preserved",
+        ),
+    )?;
+    assert_eq!(
+        preserved.pointer("/consequences/known_good").and_then(Value::as_str),
+        Some("retained")
+    );
+    Ok(())
+}
+
+/// "Rollback not required" is a claim about a forward operation. A rollback
+/// that did not commit is a rollback that failed to happen.
+#[test]
+fn a_rollback_that_did_not_commit_is_not_reported_as_unnecessary() -> TestResult {
+    let manifest = diagnostics::load_manifest(&repo_root())?;
+    for disposition in
+        ["failed_preserved_current", "cancelled_preserved_current", "not_proven_preserved_current"]
+    {
+        let subject = combination(
+            "rollback",
+            disposition,
+            "preserved_prior",
+            "completed",
+            "verified",
+            "unchanged",
+        );
+        let projection = diagnostics::project_combination(&manifest, &subject, None)?;
+        assert_eq!(
+            projection.pointer("/consequences/rollback").and_then(Value::as_str),
+            Some("attempted_and_not_committed"),
+            "a rollback operation ending in `{disposition}` was attempted, not unnecessary"
+        );
+    }
+
+    // Control: a forward operation that failed genuinely needed no rollback.
+    let forward = combination(
+        "install",
+        "failed_preserved_current",
+        "preserved_prior",
+        "completed",
+        "verified",
+        "unchanged",
+    );
+    let projection = diagnostics::project_combination(&manifest, &forward, None)?;
+    assert_eq!(
+        projection.pointer("/consequences/rollback").and_then(Value::as_str),
+        Some("not_required_current_preserved")
+    );
+    Ok(())
+}

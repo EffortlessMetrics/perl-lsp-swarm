@@ -1357,21 +1357,40 @@ fn current_consequence(side_effect: &str) -> &'static str {
     }
 }
 
+/// A known-good installation may only be reported where the packet actually
+/// establishes one. Verifying or publishing a candidate says nothing about a
+/// prior installation - the input contract permits both with no prior
+/// selection at all - so those outcomes must not manufacture a retained one.
 fn known_good_consequence(side_effect: &str) -> &'static str {
     match side_effect {
         "current_advanced" => "superseded_by_new_current",
         "current_restored" => "restored_as_current",
         "current_preserved_but_unproven" => "retained_but_startup_unproven",
-        _ => "retained",
+        "current_preserved_known_good" => "retained",
+        // no_side_effect, candidate_published_not_current, residue_present
+        _ => "not_established_by_this_transaction",
     }
 }
 
-fn rollback_consequence(disposition: &str) -> &'static str {
-    match disposition {
-        "rollback_committed" => "committed",
-        "failed_preserved_current"
-        | "cancelled_preserved_current"
-        | "not_proven_preserved_current" => "not_required_current_preserved",
+/// "Not required" is a claim about a forward operation that needed no
+/// compensating rollback. A rollback operation that did not commit is a
+/// rollback that failed to happen, which is the opposite claim.
+fn rollback_consequence(operation: &str, disposition: &str) -> &'static str {
+    match (operation, disposition) {
+        (_, "rollback_committed") => "committed",
+        (
+            "rollback",
+            "failed_preserved_current"
+            | "cancelled_preserved_current"
+            | "not_proven_preserved_current"
+            | "selection_unchanged",
+        ) => "attempted_and_not_committed",
+        (
+            _,
+            "failed_preserved_current"
+            | "cancelled_preserved_current"
+            | "not_proven_preserved_current",
+        ) => "not_required_current_preserved",
         _ => "not_applicable",
     }
 }
@@ -1495,7 +1514,11 @@ pub fn project_combination(
         .iter()
         .copied()
         .filter(|reason| {
-            reason.get("terminality").and_then(Value::as_str) == Some("nonterminal_actionable")
+            !reason
+                .get("terminality")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .starts_with("terminal_")
         })
         .collect();
 
@@ -1561,7 +1584,7 @@ pub fn project_combination(
     consequences.insert("known_good".to_string(), Value::from(known_good_consequence(side_effect)));
     consequences.insert(
         "rollback".to_string(),
-        Value::from(rollback_consequence(&combination.disposition)),
+        Value::from(rollback_consequence(&combination.operation, &combination.disposition)),
     );
     consequences.insert(
         "path".to_string(),
@@ -1602,11 +1625,19 @@ pub fn project_combination(
         primary.get("terminality").and_then(Value::as_str).unwrap_or_default();
     // A terminal success alongside outstanding actionable work is a
     // contradiction; report the work, not the success.
+    // Report the strongest outstanding obligation, not a blanket one: work the
+    // user must do is `actionable`, work the transaction still owes itself is
+    // `awaiting_next_stage`. Calling a deferred cleanup actionable would
+    // overclaim in the opposite direction.
     let reported_terminality =
         if outstanding.is_empty() || !primary_terminality.starts_with("terminal_") {
             primary_terminality.to_string()
-        } else {
+        } else if outstanding.iter().any(|reason| {
+            reason.get("terminality").and_then(Value::as_str) == Some("nonterminal_actionable")
+        }) {
             "nonterminal_actionable".to_string()
+        } else {
+            "nonterminal_awaiting_next_stage".to_string()
         };
     projection.insert("terminality".to_string(), Value::from(reported_terminality));
     projection.insert("primary_terminality".to_string(), Value::from(primary_terminality));
