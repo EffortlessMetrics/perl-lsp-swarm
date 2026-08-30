@@ -365,33 +365,43 @@ pub fn discover(root: &Path) -> Result<Discovered> {
     Ok(Discovered { exports, cargo_dependents, references, source_files, source_digest, fixtures })
 }
 
-/// `path::fn_name` for every function declared in the crate's own tracked Rust
+/// `path::fn_name` for every `#[test]` function in the crate's own tracked Rust
 /// sources.
 ///
-/// Requiring a ledger fixture to resolve here does two things: it catches a
-/// fixture naming a test that no longer exists, and it keeps proof inside the
-/// digested source, so a renamed test cannot quietly rot a
-/// `unique_and_required` row without also invalidating the audit.
+/// Requiring a ledger fixture to resolve here does three things: it catches a
+/// fixture naming a test that no longer exists, it keeps proof inside the
+/// digested source so a renamed test cannot quietly rot a
+/// `unique_and_required` row without also invalidating the audit, and — by
+/// admitting only `#[test]` functions — it stops a row citing a helper or an
+/// ordinary function as though it were proof.
 fn discover_fixtures(root: &Path, tracked: &[String]) -> Result<BTreeSet<String>> {
     let prefix = format!("{CRATE_DIR}/");
     let mut out = BTreeSet::new();
     for path in tracked.iter().filter(|p| p.starts_with(&prefix) && p.ends_with(".rs")) {
         let text = fs::read_to_string(root.join(path))
             .wrap_err_with(|| format!("failed to read {path}"))?;
+        let mut is_test = false;
         for line in text.lines() {
             let trimmed = line.trim();
-            let Some(rest) = trimmed
-                .strip_prefix("fn ")
-                .or_else(|| trimmed.strip_prefix("pub fn "))
-                .or_else(|| trimmed.strip_prefix("async fn "))
-            else {
+            if trimmed.is_empty() || trimmed.starts_with("//") {
                 continue;
-            };
-            let name: String =
-                rest.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
-            if !name.is_empty() {
-                out.insert(format!("{path}::{name}"));
             }
+            if trimmed.starts_with("#[") {
+                // `#[test]` and `#[tokio::test]` mark a test; `#[cfg(test)]`
+                // marks a module and must not.
+                is_test |= trimmed.contains("test]");
+                continue;
+            }
+            let after_qualifiers =
+                strip_fn_qualifiers(trimmed.strip_prefix("pub ").unwrap_or(trimmed));
+            if let Some(rest) = after_qualifiers.strip_prefix("fn ") {
+                let name: String =
+                    rest.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+                if is_test && !name.is_empty() {
+                    out.insert(format!("{path}::{name}"));
+                }
+            }
+            is_test = false;
         }
     }
     Ok(out)
@@ -625,12 +635,41 @@ fn inherent_impl_type(line: &str) -> Option<String> {
     if name.is_empty() { None } else { Some(name) }
 }
 
+/// Strip the qualifiers Rust allows between `pub` and `fn`.
+///
+/// `pub async fn`, `pub unsafe fn`, `pub const fn`, and `pub extern "C" fn` are
+/// all ordinary public functions; missing them would silently drop real public
+/// surface from the inventory.
+fn strip_fn_qualifiers(mut rest: &str) -> &str {
+    loop {
+        rest = rest.trim_start();
+        let trimmed = if let Some(after) = rest.strip_prefix("extern ") {
+            // `extern "C" fn` carries an ABI string, though `code_lines` has
+            // usually already blanked it; `extern fn` carries none.
+            match after.trim_start().strip_prefix('"').and_then(|abi| abi.split_once('"')) {
+                Some((_, tail)) => tail,
+                None => after,
+            }
+        } else if let Some(after) = rest
+            .strip_prefix("async ")
+            .or_else(|| rest.strip_prefix("unsafe "))
+            .or_else(|| rest.strip_prefix("const "))
+        {
+            after
+        } else {
+            return rest;
+        };
+        rest = trimmed;
+    }
+}
+
 fn parse_item(trimmed: &str) -> Option<(String, SymbolKind)> {
     let rest = trimmed.strip_prefix("pub ")?;
     // `pub(crate)` and friends are not part of the crate's public surface.
     if rest.starts_with('(') {
         return None;
     }
+    let rest = strip_fn_qualifiers(rest);
     let (kind, rest) = if let Some(r) = rest.strip_prefix("fn ") {
         (SymbolKind::Function, r)
     } else if let Some(r) = rest.strip_prefix("struct ") {
@@ -656,6 +695,7 @@ fn brace_delta(line: &str) -> i32 {
 /// manifest that declares the package without any source ever importing it is
 /// still found.
 fn discover_cargo_dependents(root: &Path, tracked: &[String]) -> Result<Vec<CargoDependent>> {
+    let aliases = workspace_dependency_aliases(root)?;
     let mut out = Vec::new();
     for path in tracked {
         if !path.ends_with("Cargo.toml") {
@@ -687,27 +727,58 @@ fn discover_cargo_dependents(root: &Path, tracked: &[String]) -> Result<Vec<Carg
             Err(_) => continue,
         };
 
-        collect_dependents(&value, path, None, &mut out);
+        collect_dependents(&value, path, None, &aliases, &mut out);
         // `[target.'cfg(...)'.dependencies]` links just as hard as a plain one.
         if let Some(targets) = value.get("target").and_then(toml::Value::as_table) {
             for (cfg, target_value) in targets {
-                collect_dependents(target_value, path, Some(cfg), &mut out);
+                collect_dependents(target_value, path, Some(cfg), &aliases, &mut out);
             }
         }
     }
     Ok(out)
 }
 
+/// Aliases in the root `[workspace.dependencies]` table that resolve to the
+/// package.
+///
+/// A member writing `tsc = { workspace = true }` names neither the package nor
+/// a `package` key of its own; the rename lives in the root manifest. Without
+/// this table such a member contributes no Cargo evidence at all.
+fn workspace_dependency_aliases(root: &Path) -> Result<BTreeSet<String>> {
+    let path = root.join("Cargo.toml");
+    let text = fs::read_to_string(&path).wrap_err("failed to read the workspace Cargo.toml")?;
+    let manifest: toml::Table =
+        toml::from_str(&text).wrap_err("failed to parse the workspace Cargo.toml")?;
+    let Some(entries) = manifest
+        .get("workspace")
+        .and_then(|w| w.get("dependencies"))
+        .and_then(toml::Value::as_table)
+    else {
+        return Ok(BTreeSet::new());
+    };
+    Ok(entries
+        .iter()
+        .filter(|(key, entry)| {
+            key.as_str() == PACKAGE
+                || entry.get("package").and_then(toml::Value::as_str) == Some(PACKAGE)
+        })
+        .map(|(key, _)| key.clone())
+        .collect())
+}
+
 /// Record every dependency table in `value` that resolves to the package.
 ///
-/// A dependency resolves either by table key or through a renamed entry —
-/// `tsc = { package = "perl-tree-sitter-compat" }` links against the crate
-/// while never spelling its name as a key, so matching keys alone would report
-/// zero dependents and wrongly permit `unused`.
+/// A dependency resolves by table key, through a renamed entry
+/// (`tsc = { package = "perl-tree-sitter-compat" }`), or through a workspace
+/// alias (`tsc = { workspace = true }` where the root renames `tsc`). Each form
+/// links against the crate while spelling its name differently or not at all,
+/// so matching keys alone would report zero dependents and wrongly permit
+/// `unused`.
 fn collect_dependents(
     value: &toml::Value,
     manifest: &str,
     cfg: Option<&str>,
+    aliases: &BTreeSet<String>,
     out: &mut Vec<CargoDependent>,
 ) {
     for (table, kind) in
@@ -719,6 +790,8 @@ fn collect_dependents(
         let declared = entries.iter().any(|(key, entry)| {
             key.as_str() == PACKAGE
                 || entry.get("package").and_then(toml::Value::as_str) == Some(PACKAGE)
+                || (entry.get("workspace").and_then(toml::Value::as_bool) == Some(true)
+                    && aliases.contains(key.as_str()))
         });
         if declared {
             let kind = match cfg {
@@ -1304,6 +1377,10 @@ mod tests {
     }
 
     fn dependents_of(text: &str) -> Vec<CargoDependent> {
+        dependents_with_aliases(text, &BTreeSet::new())
+    }
+
+    fn dependents_with_aliases(text: &str, aliases: &BTreeSet<String>) -> Vec<CargoDependent> {
         let Ok(table) = toml::from_str::<toml::Table>(text) else {
             return vec![CargoDependent {
                 manifest: "UNPARSEABLE TEST MANIFEST".to_string(),
@@ -1312,10 +1389,16 @@ mod tests {
         };
         let value = toml::Value::Table(table);
         let mut out = Vec::new();
-        collect_dependents(&value, "crates/other/Cargo.toml", None, &mut out);
+        collect_dependents(&value, "crates/other/Cargo.toml", None, aliases, &mut out);
         if let Some(targets) = value.get("target").and_then(toml::Value::as_table) {
             for (cfg, target_value) in targets {
-                collect_dependents(target_value, "crates/other/Cargo.toml", Some(cfg), &mut out);
+                collect_dependents(
+                    target_value,
+                    "crates/other/Cargo.toml",
+                    Some(cfg),
+                    aliases,
+                    &mut out,
+                );
             }
         }
         out
@@ -1435,6 +1518,58 @@ mod tests {
             "winapi = \"0.3\"\n",
         ));
         assert!(found.is_empty(), "unrelated dependencies must not count: {found:?}");
+        Ok(())
+    }
+
+    /// A member inheriting a renamed workspace dependency names the package
+    /// nowhere: the rename lives in the root manifest and the member writes
+    /// only `{ workspace = true }`. Without alias resolution it contributes no
+    /// Cargo evidence and the crate looks unused.
+    #[test]
+    fn a_workspace_inherited_rename_is_discovered() -> TestResult {
+        let aliases: BTreeSet<String> = ["tsc".to_string()].into_iter().collect();
+        let found =
+            dependents_with_aliases("[dependencies]\ntsc = { workspace = true }\n", &aliases);
+        assert_eq!(found.len(), 1, "workspace-inherited rename must be found: {found:?}");
+        Ok(())
+    }
+
+    /// The control: the same `{ workspace = true }` shape for an alias that
+    /// does NOT resolve to this package must not count.
+    #[test]
+    fn an_unrelated_workspace_inherited_dependency_is_not_discovered() -> TestResult {
+        let aliases: BTreeSet<String> = ["tsc".to_string()].into_iter().collect();
+        let found =
+            dependents_with_aliases("[dependencies]\nserde = { workspace = true }\n", &aliases);
+        assert!(found.is_empty(), "unrelated workspace alias must not count: {found:?}");
+        Ok(())
+    }
+
+    /// `pub async fn`, `pub unsafe fn`, `pub const fn` and `pub extern "C" fn`
+    /// are ordinary public functions; dropping them would silently shrink the
+    /// inventory's denominator.
+    #[test]
+    fn qualified_public_functions_are_discovered() -> TestResult {
+        let source = concat!(
+            "pub async fn a() {}\n",
+            "pub unsafe fn b() {}\n",
+            "pub const fn c() {}\n",
+            "pub extern \"C\" fn d() {}\n",
+            "pub unsafe extern \"C\" fn e() {}\n",
+            "pub const MAX: u32 = 1;\n",
+            "async fn private_f() {}\n",
+        );
+        assert_eq!(
+            parse_public_items(source),
+            vec![
+                ("a".to_string(), SymbolKind::Function),
+                ("b".to_string(), SymbolKind::Function),
+                ("c".to_string(), SymbolKind::Function),
+                ("d".to_string(), SymbolKind::Function),
+                ("e".to_string(), SymbolKind::Function),
+            ],
+            "qualified public fns count; a const item and a private fn do not"
+        );
         Ok(())
     }
 
