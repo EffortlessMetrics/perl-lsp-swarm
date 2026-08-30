@@ -23,11 +23,10 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-use perl_lexer::{PerlLexer, TokenType as LexerTokenType};
 use perl_parser_core::{
     BudgetTracker, Node, NodeKind, ParseError, ParseOutput, ParseStopCause, Parser, SourceLocation,
+    TokenKind, TokenStream,
 };
-use perl_token::{Token, TokenKind};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -525,23 +524,17 @@ fn nested_lexer_budget_exhaustion_preserves_typed_stop_cause() {
 #[test]
 fn unterminated_heredoc_unknown_rest_is_not_budget_exhaustion() {
     let source = "my $x = <<EOF;\nbody without a terminator\n";
-    let mut lexer = PerlLexer::new(source);
+    let mut stream = TokenStream::new(source);
     let heredoc = loop {
-        let token = lexer.next_token().expect("lexer should emit a token");
-        if matches!(token.token_type, LexerTokenType::UnknownRest) {
+        let token = stream.next().expect("token stream should emit a token");
+        if token.kind() == TokenKind::UnknownRest {
             break token;
         }
     };
     assert!(!heredoc.text.is_empty(), "unterminated heredoc must retain payload");
+    assert!(!heredoc.is_geometry_only(), "unterminated heredoc must retain its payload provenance");
 
-    let token = Token::new_checked(
-        TokenKind::UnknownRest,
-        heredoc.text.clone(),
-        heredoc.start,
-        heredoc.end,
-    )
-    .expect("lexer heredoc geometry and payload are width-valid");
-    let mut parser = Parser::from_tokens(vec![token], source);
+    let mut parser = Parser::from_tokens(vec![heredoc], source);
     let output = parser.parse_with_recovery();
 
     assert_eq!(output.stop_cause(), None);
