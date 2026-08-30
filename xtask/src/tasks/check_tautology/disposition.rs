@@ -217,6 +217,12 @@ expires = "{expires}"
     }
 
     #[test]
+    fn same_day_expiry_is_inclusive() {
+        DispositionLedger::parse(&valid_row("2026-08-30", "parser-core"), as_of())
+            .expect("expires on as_of remains active");
+    }
+
+    #[test]
     fn exact_disposition_suppresses_only_the_named_finding() {
         let ledger = DispositionLedger::parse(&valid_row("2026-11-30", "parser-core"), as_of())
             .expect("valid ledger");

@@ -14,6 +14,8 @@ pub enum RuleId {
     OptionSomeOrNone,
     ResultOkOrErr,
     PredicateOrNegation,
+    /// Retained for disposition compatibility. `expr || expr` is not emitted:
+    /// it is equivalent to `expr`, not to `true`.
     IdenticalOrAlternatives,
     AssertEqIdentical,
 }
@@ -92,10 +94,8 @@ fn classify_or(expr: &Expr) -> Option<RuleId> {
         return Some(RuleId::PredicateOrNegation);
     }
 
-    if identical_side_effect_free(left, right) {
-        return Some(RuleId::IdenticalOrAlternatives);
-    }
-
+    // `expr || expr` is equivalent to `expr`, not to `true`. Flagging it would
+    // reject discriminating assertions (#14061 forbids false positives).
     None
 }
 
@@ -111,11 +111,21 @@ fn option_or_result_pair(left: &Expr, right: &Expr) -> Option<RuleId> {
     if !expr_eq(left_recv, right_recv) {
         return None;
     }
+    // Identical method-call receivers (`iter.next()`) can yield different
+    // values. Function calls are still governed because the first known hit
+    // is `sanitize_completion_path_input(...).is_some() || ...is_none()`.
+    if !receiver_stable_enough(left_recv) {
+        return None;
+    }
     match (left_method.as_str(), right_method.as_str()) {
         ("is_some", "is_none") | ("is_none", "is_some") => Some(RuleId::OptionSomeOrNone),
         ("is_ok", "is_err") | ("is_err", "is_ok") => Some(RuleId::ResultOkOrErr),
         _ => None,
     }
+}
+
+fn receiver_stable_enough(recv: &Expr) -> bool {
+    is_side_effect_free(recv) || matches!(peel(recv), Expr::Call(_))
 }
 
 fn is_negation_pair(left: &Expr, right: &Expr) -> bool {
@@ -246,9 +256,9 @@ mod tests {
     }
 
     #[test]
-    fn flags_identical_side_effect_free_alternatives() {
-        assert_eq!(rule_of("ready || ready"), Some(RuleId::IdenticalOrAlternatives));
-        assert_eq!(rule_of("(flag) || flag"), Some(RuleId::IdenticalOrAlternatives));
+    fn identical_or_alternatives_are_not_tautologies() {
+        assert_eq!(rule_of("ready || ready"), None);
+        assert_eq!(rule_of("(flag) || flag"), None);
     }
 
     #[test]
@@ -272,6 +282,12 @@ mod tests {
     fn does_not_flag_different_fields_or_outcomes() {
         assert_eq!(rule_of("item.code.is_some() || item.data.is_none()"), None);
         assert_eq!(rule_of("result.is_ok() || matches!(result, Err(Expected::Deferred))"), None);
+    }
+
+    #[test]
+    fn does_not_flag_mutating_method_receivers() {
+        assert_eq!(rule_of("iter.next().is_some() || iter.next().is_none()"), None);
+        assert_eq!(rule_of("iter.next().is_ok() || iter.next().is_err()"), None);
     }
 
     #[test]
