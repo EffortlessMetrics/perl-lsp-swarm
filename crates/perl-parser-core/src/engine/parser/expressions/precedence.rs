@@ -27,7 +27,7 @@ impl<'a> Parser<'a> {
                     // elements before building the word-operator node.
                     // `goto LABEL` is a control-flow expression in this position, not
                     // a bare identifier followed by a separate statement.
-                    let mut right = if self.peek_kind() == Some(TokenKind::Goto) {
+                    let mut right = if self.goto_starts_control_flow() {
                         self.parse_goto()?
                     } else {
                         self.parse_assignment()?
@@ -69,7 +69,7 @@ impl<'a> Parser<'a> {
             // `$a and $x = 1, last` parses as `$a and ($x = 1, last)`.
             // After parsing the first assignment, collect trailing comma / fat-arrow
             // elements before building the word-operator node.
-            let mut right = if self.peek_kind() == Some(TokenKind::Goto) {
+            let mut right = if self.goto_starts_control_flow() {
                 self.parse_goto()?
             } else {
                 self.parse_word_not_expr()?
@@ -90,6 +90,17 @@ impl<'a> Parser<'a> {
         }
 
         Ok(expr)
+    }
+
+    /// `goto` is normally a control-flow keyword here, except when Perl uses
+    /// it as a bareword key in a fat-arrow pair such as `foo or goto => 1`.
+    fn goto_starts_control_flow(&mut self) -> bool {
+        self.peek_kind() == Some(TokenKind::Goto)
+            && self
+                .tokens
+                .peek_second()
+                .map(|token| token.kind() != TokenKind::FatArrow)
+                .unwrap_or(true)
     }
 
     /// Parse word not expression - handles 'not' operator
