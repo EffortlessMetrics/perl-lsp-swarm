@@ -227,6 +227,11 @@ claim_boundary = "DBIx::QuickORM has a parser-backed, non-published EntityKind::
 [[adapter]]
 framework = "DBIx::QuickORM"
 fact_class = "generated_member"
+# Bounded pilot: this row stays `planned` while
+# `policy/provider-promotion-ledger.toml` promotes only the Completion
+# `Source-backed generated/framework member` class. That ledger row governs the
+# completion surface only; the `workspace_symbols` surface named below is
+# admitted by `policy/workspace-symbol-classes.toml` and is not promoted by it.
 state = "planned"
 fact_provenance = "SourceBackedGenerated"
 source_anchor_required = true

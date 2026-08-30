@@ -186,3 +186,18 @@ That validator checks:
 This spec may claim that generated workspace symbols are governed by explicit
 label and source-anchor rules. It may not claim broad generated-symbol support,
 exact generated source locations, or edit authorization for generated members.
+
+## Revisions
+
+- Revision 2 (#13120): the confidence precondition was previously "the fact is
+  high confidence". This revision admits only the bounded `Confidence::Medium`
+  generated-member pilot band. The runtime gates in
+  `crates/perl-workspace/src/workspace/workspace_index.rs` remain Medium-only,
+  and `policy/workspace-symbol-classes.toml` sets
+  `requires_high_confidence = false` while keeping `low_confidence` in
+  `blocks`. That retained blocker is the guarantee: low-confidence and
+  dynamic-boundary candidates stay excluded from the live surface. Widening the
+  band, or dropping the `low_confidence` blocker, requires a new revision here
+  and the labeled generated-member rank/noise receipts that
+  `docs/project/status/provider_promotion_ledger.md` still lists as next proof.
+- Revision 1: original contract, high-confidence generated facts only.

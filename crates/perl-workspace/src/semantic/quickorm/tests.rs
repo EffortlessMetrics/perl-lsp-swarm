@@ -581,8 +581,7 @@ fn competing_table_import_invalidates_quickorm_authority() -> Result<(), Box<dyn
 }
 
 #[test]
-fn comment_separated_quickorm_import_retains_authority() -> Result<(), Box<dyn std::error::Error>>
-{
+fn comment_separated_quickorm_import_retains_authority() -> Result<(), Box<dyn std::error::Error>> {
     let facts = generated_facts_from_source(
         "package User; use# comment\nDBIx::QuickORM type => 'table'; table users => sub {};",
     )?;

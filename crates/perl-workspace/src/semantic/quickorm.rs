@@ -487,6 +487,10 @@ fn direct_table_or_view_builder_anchor<'a>(
     static_table_name_anchor(args.first()?, source)
 }
 
+/// Permissive argument-shape check, not a QuickORM grammar check: it decides
+/// only whether the call carries a direct package-level body to anchor to.
+/// `HashLiteral` is admitted for that reason alone and must not be used to
+/// distinguish a real builder body from arbitrary argument syntax.
 fn is_direct_builder_argument(node: &Node) -> bool {
     match &node.kind {
         NodeKind::Subroutine { .. } | NodeKind::Block { .. } | NodeKind::HashLiteral { .. } => true,
@@ -539,6 +543,14 @@ fn contains_unescaped_interpolation(value: &str) -> bool {
     false
 }
 
+/// Sigil-suffix characters that begin Perl special variables (perldata):
+/// `$^O`, `$::name`, `$&`, `$'`, `` $` ``, `$+`, `$-`, `$?`, `$!`, `$@`, `$#`,
+/// `$;`, `$=`, `$.`, `$~`, `$<`, `$>`, `$%`, `$(`, `$)`, `$|`, `$*`, `$$`,
+/// `$[`, `$]`.
+///
+/// The set is closed on purpose: anything outside it (including non-ASCII name
+/// starts) is treated as literal text, so admitting a new special form requires
+/// a falsifier test alongside the addition here.
 fn is_perl_interpolation_name_start(character: &char) -> bool {
     character.is_ascii_alphanumeric()
         || matches!(
@@ -650,8 +662,6 @@ fn classify_import_shape(args: &[String], source: Option<&str>) -> QuickOrmImpor
         // as additional raw args. Exactly two static atoms are therefore the
         // admitted parser-backed shape.
         [key, value] => (key.as_str(), value.as_str()),
-        // Preserve support for callers that provide source-level tokens.
-        [key, arrow, value] if arrow.trim() == "=>" => (key.as_str(), value.as_str()),
         _ => return QuickOrmImportShape::Dynamic,
     };
 
