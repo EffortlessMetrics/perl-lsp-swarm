@@ -810,6 +810,7 @@ fn fuzz_target_and_regression_pipeline_are_wired() -> TestResult {
 
     let regression_file = fs::read_to_string(REGRESSION_FILE)?;
     let mut committed_seeds: Vec<u64> = Vec::new();
+    let mut seen_cc_entries: Vec<&str> = Vec::new();
     let mut replay_controls: Vec<(u64, u8)> = Vec::new();
     for line in regression_file.lines() {
         if line.starts_with("cc") {
@@ -820,10 +821,13 @@ fn fuzz_target_and_regression_pipeline_are_wired() -> TestResult {
                 .split_whitespace()
                 .next()
                 .ok_or("cc regression entry must contain a 64-character seed")?;
-            assert_eq!(hex.len(), 64, "committed regression seed must be 64 hex chars");
-            if !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-                return Err("committed regression seed must contain only ASCII hex digits".into());
-            }
+            assert_eq!(hex.len(), 64, "cc token {hex:?} must be 64 hex chars");
+            assert!(
+                hex.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
+                "cc token {hex:?} must contain only lowercase ASCII hex"
+            );
+            assert!(!seen_cc_entries.contains(&hex), "duplicate cc token {hex:?}");
+            seen_cc_entries.push(hex);
             // The harness consumes the low 128 bits' leading word; the full
             // 256-bit entry stays wire-compatible with the lexer convention.
             committed_seeds.push(u64::from_str_radix(

@@ -831,12 +831,12 @@ fn compose_text(lines: &[String], ending: LineEndingKind) -> String {
 
 /// Check that emitted bytes contain the convention named by their profile.
 pub fn convention_present_in_bytes(kind: LineEndingKind, text: &str) -> bool {
+    let stripped = text.replace("\r\n", "");
     match kind {
-        LineEndingKind::Lf => text.contains('\n'),
+        LineEndingKind::Lf => stripped.contains('\n'),
         LineEndingKind::Crlf => text.contains("\r\n"),
         LineEndingKind::BareCr => text.contains('\r') && !text.contains('\n'),
         LineEndingKind::Mixed => {
-            let stripped = text.replace("\r\n", "");
             text.contains("\r\n") && stripped.contains('\n') && !stripped.contains('\r')
         }
     }
