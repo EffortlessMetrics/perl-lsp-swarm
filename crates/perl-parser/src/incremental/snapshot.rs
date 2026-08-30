@@ -2,6 +2,11 @@ use perl_parser_core::error::{ParseError, ParseOutput};
 use perl_source_identity::ContentDigest;
 use thiserror::Error;
 
+use super::geometry_attachment::{
+    SourceGeometryAttachment, SourceGeometryAttachmentState, SourceGeometrySubject,
+    SourceGeometryValidationError,
+};
+
 /// Monotonic identity for one committed parser generation.
 ///
 /// Advancement is checked: a generation must never silently stop advancing,
@@ -72,10 +77,10 @@ pub enum ParseSnapshotStrategy {
 /// One generation-bound parser result.
 ///
 /// This is the sole owned authority binding exact source identity, generation,
-/// terminal disposition, production strategy, and the native parser output.
-/// Construct it through [`ParseSnapshot::from_output`]; fields are private so
-/// no consumer can assemble an inconsistent `{source, generation, output}`
-/// combination directly.
+/// terminal disposition, production strategy, native parser output, and the
+/// source-geometry availability attachment. Construct it through
+/// [`ParseSnapshot::from_output`]; fields are private so no consumer can assemble
+/// an inconsistent `{source, generation, output, geometry}` combination directly.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct ParseSnapshot {
@@ -84,6 +89,7 @@ pub struct ParseSnapshot {
     source_len: usize,
     disposition: ParseTerminalDisposition,
     strategy: ParseSnapshotStrategy,
+    source_geometry: SourceGeometryAttachment,
     parse_output: ParseOutput,
 }
 
@@ -92,7 +98,9 @@ impl ParseSnapshot {
     ///
     /// The source identity is the canonical `source_identity.v1`
     /// [`ContentDigest`] (SHA-256, domain-separated), so a collision cannot
-    /// authorize cross-source reuse.
+    /// authorize cross-source reuse. Current constructors retain an explicit
+    /// geometry-unavailable attachment until the canonical same-operation
+    /// producer in #13978/#13980 is available.
     #[must_use]
     pub fn from_output(
         source: &str,
@@ -101,12 +109,23 @@ impl ParseSnapshot {
         parse_output: ParseOutput,
     ) -> Self {
         let disposition = classify_output(&parse_output);
-        Self {
+        let content_digest = ContentDigest::of_bytes(source.as_bytes());
+        let source_len = source.len();
+        let geometry_subject = SourceGeometrySubject::new(
             generation,
-            content_digest: ContentDigest::of_bytes(source.as_bytes()),
-            source_len: source.len(),
+            content_digest.clone(),
+            source_len,
             disposition,
             strategy,
+        );
+        let source_geometry = SourceGeometryAttachment::unavailable(geometry_subject);
+        Self {
+            generation,
+            content_digest,
+            source_len,
+            disposition,
+            strategy,
+            source_geometry,
             parse_output,
         }
     }
@@ -141,14 +160,21 @@ impl ParseSnapshot {
         self.strategy
     }
 
+    /// Source-geometry availability and exact snapshot subject.
+    #[must_use]
+    pub const fn source_geometry(&self) -> &SourceGeometryAttachment {
+        &self.source_geometry
+    }
+
     /// Native recovery-aware parser output for this generation.
     #[must_use]
     pub const fn parse_output(&self) -> &ParseOutput {
         &self.parse_output
     }
 
-    /// Validate that the snapshot still belongs to `source` and that its
-    /// terminal disposition agrees with the native parser output.
+    /// Validate that the snapshot still belongs to `source`, that its terminal
+    /// disposition agrees with the native parser output, and that its geometry
+    /// attachment belongs to this exact snapshot subject.
     pub fn validate_against(&self, source: &str) -> Result<(), ParseSnapshotValidationError> {
         if self.source_len != source.len() {
             return Err(ParseSnapshotValidationError::SourceLength {
@@ -173,11 +199,20 @@ impl ParseSnapshot {
             });
         }
 
+        let expected_geometry_subject = SourceGeometrySubject::new(
+            self.generation,
+            self.content_digest.clone(),
+            self.source_len,
+            self.disposition,
+            self.strategy,
+        );
+        self.source_geometry.validate_for(&expected_geometry_subject)?;
+
         Ok(())
     }
 }
 
-/// Snapshot/source identity or terminal-class mismatch.
+/// Snapshot/source identity, terminal-class, or geometry-attachment mismatch.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 #[non_exhaustive]
 pub enum ParseSnapshotValidationError {
@@ -205,6 +240,9 @@ pub enum ParseSnapshotValidationError {
         /// Disposition derived from the native output.
         observed: ParseTerminalDisposition,
     },
+    /// Source geometry is malformed or belongs to another snapshot subject.
+    #[error(transparent)]
+    SourceGeometry(#[from] SourceGeometryValidationError),
 }
 
 fn classify_output(output: &ParseOutput) -> ParseTerminalDisposition {
@@ -247,6 +285,13 @@ mod tests {
 
         assert_eq!(snapshot.disposition(), ParseTerminalDisposition::Clean);
         assert!(snapshot.validate_against(source).is_ok());
+        assert!(matches!(
+            snapshot.source_geometry().state(),
+            SourceGeometryAttachmentState::Unavailable { .. }
+        ));
+        assert_eq!(snapshot.source_geometry().subject().generation(), ParseGeneration::INITIAL);
+        assert_eq!(snapshot.source_geometry().subject().content_digest(), snapshot.content_digest());
+        assert_eq!(snapshot.source_geometry().subject().source_len(), source.len());
     }
 
     #[test]
@@ -260,6 +305,10 @@ mod tests {
         );
 
         assert_eq!(snapshot.disposition(), ParseTerminalDisposition::Recovered);
+        assert_eq!(
+            snapshot.source_geometry().subject().disposition(),
+            ParseTerminalDisposition::Recovered
+        );
     }
 
     #[test]
