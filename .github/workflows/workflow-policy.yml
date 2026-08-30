@@ -10,6 +10,7 @@ on:
       - 'xtask/src/tasks/mod.rs'
       - 'xtask/tests/ux_regression_gate_workflow_policy.rs'
       - 'xtask/tests/public_api_pr_gating_workflow.rs'
+      - 'xtask/tests/nightly_cache_writer_policy.rs'
       - '.github/ci-config.yml'
       - 'scripts/gh/ensure-labels.sh'
       - 'scripts/tests/test-public-api-ratchet.sh'
@@ -28,6 +29,7 @@ on:
       - 'xtask/src/tasks/mod.rs'
       - 'xtask/tests/ux_regression_gate_workflow_policy.rs'
       - 'xtask/tests/public_api_pr_gating_workflow.rs'
+      - 'xtask/tests/nightly_cache_writer_policy.rs'
       - '.github/ci-config.yml'
       - 'scripts/gh/ensure-labels.sh'
       - 'scripts/tests/test-public-api-ratchet.sh'
@@ -67,6 +69,8 @@ jobs:
         run: cargo test -p xtask --test ux_regression_gate_workflow_policy --locked
       - name: Public API trigger label contract
         run: cargo test -p xtask --test public_api_pr_gating_workflow --locked
+      - name: Nightly cache writer authority contract
+        run: cargo test -p xtask --test nightly_cache_writer_policy --locked
       - name: Public API label reconciliation stub proof
         run: bash scripts/tests/test-public-api-label.sh
       - name: Public API ratchet executable proof
