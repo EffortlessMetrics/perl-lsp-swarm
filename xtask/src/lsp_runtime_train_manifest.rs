@@ -467,8 +467,15 @@ impl LoadedManifest {
     }
 
     /// Every declared stable node id, in manifest order.
+    /// Ascending by stable id, never manifest order. The canonical digest is
+    /// order-insensitive, so two byte-orderings of one manifest share a digest;
+    /// returning manifest order here would hand content-addressed consumers
+    /// different sequences for the same digest.
     pub fn node_ids(&self) -> Vec<String> {
-        self.manifest.nodes.iter().map(|n| n.stable_node_id.clone()).collect()
+        let mut ids: Vec<String> =
+            self.manifest.nodes.iter().map(|n| n.stable_node_id.clone()).collect();
+        ids.sort();
+        ids
     }
 
     /// Ids of nodes whose role is selectable as work.
@@ -480,12 +487,15 @@ impl LoadedManifest {
             .filter(|r| r.selectable)
             .map(|r| r.role.as_str())
             .collect();
-        self.manifest
+        let mut ids: Vec<String> = self
+            .manifest
             .nodes
             .iter()
             .filter(|n| selectable.contains(n.role.as_str()))
             .map(|n| n.stable_node_id.clone())
-            .collect()
+            .collect();
+        ids.sort();
+        ids
     }
 
     /// The pinned canonical digest bound to these exact bytes.
@@ -664,6 +674,9 @@ fn validate_manifest(m: &Manifest) -> Result<()> {
     ensure_exact_vocabulary(&ceiling_values, &V1_CLAIM_CEILINGS, "claim_ceiling_ladder")?;
 
     let edge_kind_names: BTreeSet<&str> = m.edge_kinds.iter().map(|e| e.kind.as_str()).collect();
+    if edge_kind_names.len() != m.edge_kinds.len() {
+        bail!("edge_kinds declares a kind more than once");
+    }
     ensure_exact_vocabulary(&edge_kind_names, &V1_EDGE_KINDS, "edge_kinds")?;
     for edge in &m.edge_kinds {
         if edge.owns.trim().is_empty() {
@@ -684,8 +697,20 @@ fn validate_manifest(m: &Manifest) -> Result<()> {
         }
     }
 
-    let dispositions: BTreeMap<&str, bool> =
-        m.old_path_dispositions.iter().map(|d| (d.value.as_str(), d.requires_exit_owner)).collect();
+    // Collecting straight into a map would keep the last row for a repeated
+    // value. Two orderings of conflicting duplicates share one digest (arrays
+    // are sorted for canonicalization) while validating differently, so the
+    // duplicate must fail before the map exists.
+    let mut dispositions: BTreeMap<&str, bool> = BTreeMap::new();
+    for entry in &m.old_path_dispositions {
+        if dispositions.insert(entry.value.as_str(), entry.requires_exit_owner).is_some() {
+            bail!(
+                "old_path_dispositions declares '{}' more than once; a duplicate makes the exit \
+                 rule depend on input order",
+                entry.value
+            );
+        }
+    }
     let disposition_values: BTreeSet<&str> = dispositions.keys().copied().collect();
     ensure_exact_vocabulary(
         &disposition_values,
@@ -704,6 +729,12 @@ fn validate_manifest(m: &Manifest) -> Result<()> {
     let stack_values: BTreeSet<&str> = m.stack_relations.iter().map(|v| v.value.as_str()).collect();
     let parallel_values: BTreeSet<&str> =
         m.parallel_dispositions.iter().map(|v| v.value.as_str()).collect();
+    if stack_values.len() != m.stack_relations.len() {
+        bail!("stack_relations declares a value more than once");
+    }
+    if parallel_values.len() != m.parallel_dispositions.len() {
+        bail!("parallel_dispositions declares a value more than once");
+    }
     for entry in m.stack_relations.iter().chain(m.parallel_dispositions.iter()) {
         if entry.owns.trim().is_empty() {
             bail!("vocabulary entry {} carries an empty ownership law", entry.value);

@@ -648,6 +648,84 @@ fn lsp_runtime_train_proposition_prefix_is_matched_exactly() -> Result<()> {
 }
 
 #[test]
+fn lsp_runtime_train_duplicate_old_path_disposition_is_rejected_in_either_order() -> Result<()> {
+    // Same hazard as the duplicate role cap: collecting into a map keeps the
+    // last row, and both orderings share one digest.
+    for reversed in [false, true] {
+        let mut value = real_value()?;
+        let dispositions = value
+            .get_mut("old_path_dispositions")
+            .and_then(Value::as_array_mut)
+            .ok_or_else(|| color_eyre::eyre::eyre!("no old_path_dispositions"))?;
+        dispositions.push(serde_json::json!({
+            "value": "delete",
+            "owns": "a conflicting duplicate row",
+            "requires_exit_owner": false,
+        }));
+        if reversed {
+            dispositions.reverse();
+        }
+        assert_rejected(&value, "more than once")?;
+    }
+    Ok(())
+}
+
+#[test]
+fn lsp_runtime_train_duplicate_edge_kind_is_rejected() -> Result<()> {
+    let mut value = real_value()?;
+    value
+        .get_mut("edge_kinds")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| color_eyre::eyre::eyre!("no edge_kinds"))?
+        .push(serde_json::json!({
+            "kind": "hard",
+            "owns": "a conflicting duplicate row",
+            "serializes_implementation": true,
+        }));
+    assert_rejected(&value, "more than once")
+}
+
+/// One digest must not expose two different public views. A reordered manifest
+/// keeps the pinned digest, so it loads — and every accessor must then agree
+/// with the original, not just the digest.
+#[test]
+fn lsp_runtime_train_reordered_manifest_yields_identical_accessors() -> Result<()> {
+    let original = load_manifest()?;
+
+    let mut reordered = real_value()?;
+    if let Some(nodes) = reordered.get_mut("nodes").and_then(Value::as_array_mut) {
+        nodes.reverse();
+    }
+    let dir = tempfile::tempdir().map_err(|e| color_eyre::eyre::eyre!("tempdir: {e}"))?;
+    let path = dir.path().join("lsp_runtime_train.v1.json");
+    std::fs::write(&path, serde_json::to_vec_pretty(&reordered)?)
+        .map_err(|e| color_eyre::eyre::eyre!("write: {e}"))?;
+
+    // Reordering is semantically inert, so the pin still accepts the file.
+    let loaded = load_manifest_from(&path)?;
+
+    assert_eq!(loaded.canonical_digest(), original.canonical_digest());
+    assert_eq!(loaded.node_ids(), original.node_ids(), "node_ids exposed manifest order");
+    assert_eq!(
+        loaded.selectable_node_ids(),
+        original.selectable_node_ids(),
+        "selectable_node_ids exposed manifest order"
+    );
+    assert_eq!(loaded.node_count(), original.node_count());
+    assert_eq!(loaded.population_status(), original.population_status());
+    for id in original.node_ids() {
+        let a = original.node_static_fact(&id);
+        let b = loaded.node_static_fact(&id);
+        assert_eq!(
+            a.map(|f| format!("{f:?}")),
+            b.map(|f| format!("{f:?}")),
+            "node_static_fact differed for {id} under reordering"
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn lsp_runtime_train_self_supersession_is_rejected() -> Result<()> {
     // Self-reference satisfies reciprocity trivially, so it must fail earlier.
     let mut value = real_value()?;
