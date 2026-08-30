@@ -56,6 +56,49 @@ def _apply_case(base: dict, case: dict) -> dict:
     return packet
 
 
+def _multi_pr_packet(base: dict) -> dict:
+    packet = copy.deepcopy(base)
+    packet["implementation_prs"].append(90003)
+    packet["merged_shas"].append("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+    second_contribution = copy.deepcopy(packet["implementation_contributions"][0])
+    second_contribution.update(
+        {
+            "implementation_pr": 90003,
+            "candidate_head_sha": "cccccccccccccccccccccccccccccccccccccccc",
+            "merged_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        }
+    )
+    second_contribution["evidence"] = {
+        "kind": "github_pull",
+        "ref": "https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/90003",
+        "digest": "sha256:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+    }
+    packet["implementation_contributions"].append(second_contribution)
+    second_integration = copy.deepcopy(packet["landed_integrations"][0])
+    second_integration.update(
+        {
+            "implementation_pr": 90003,
+            "candidate_head_sha": "cccccccccccccccccccccccccccccccccccccccc",
+            "landed_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        }
+    )
+    second_integration["evidence"] = {
+        "kind": "repository_receipt",
+        "ref": "repo:receipts/example-integration-2.json@bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    }
+    packet["landed_integrations"].append(second_integration)
+    second_review = copy.deepcopy(packet["reviews"][0])
+    second_review.update({"authority_number": 90003, "reviewed_head": "cccccccccccccccccccccccccccccccccccccccc"})
+    second_review["current_head_synthesis"] = {
+        "kind": "github_review",
+        "ref": "https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/90003#pullrequestreview-2",
+        "digest": "sha256:efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef",
+    }
+    packet["reviews"].append(second_review)
+    return packet
+
+
 class BlockerCloseoutValidationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -78,8 +121,8 @@ class BlockerCloseoutValidationTests(unittest.TestCase):
         model = MODULE.validate_blocker_closeout(self.base, lambda _ancestor, _subject: True)
         self.assertEqual(model.status, "resolved")
         self.assertEqual(model.controller_evidence.ref, self.base["semantic_controller"]["evidence"]["ref"])
-        self.assertEqual(model.review_authority_number, 90002)
-        self.assertEqual(model.review_evidence.ref, self.base["review"]["current_head_synthesis"]["ref"])
+        self.assertEqual(model.reviews[0].authority_number, 90002)
+        self.assertEqual(model.reviews[0].evidence.ref, self.base["reviews"][0]["current_head_synthesis"]["ref"])
         for case in valid_cases:
             packet = _apply_case(self.base, case)
             model = MODULE.validate_blocker_closeout(packet, lambda _ancestor, _subject: True)
@@ -105,7 +148,7 @@ class BlockerCloseoutValidationTests(unittest.TestCase):
         controller_only["merged_shas"] = []
         controller_only["implementation_contributions"] = []
         controller_only["landed_integrations"] = []
-        controller_only["review"].update(
+        controller_only["reviews"][0].update(
             {
                 "authority_kind": "semantic_controller",
                 "authority_number": 90001,
@@ -117,7 +160,7 @@ class BlockerCloseoutValidationTests(unittest.TestCase):
 
     def test_landed_tree_review_can_bind_the_exact_observed_tree(self) -> None:
         packet = copy.deepcopy(self.base)
-        packet["review"].update(
+        packet["reviews"][0].update(
             {
                 "authority_kind": "landed_tree",
                 "authority_number": None,
@@ -130,12 +173,57 @@ class BlockerCloseoutValidationTests(unittest.TestCase):
             }
         )
         model = MODULE.validate_blocker_closeout(packet, lambda _ancestor, _subject: True)
-        self.assertEqual(model.review_authority_kind, "landed_tree")
-        self.assertIsNone(model.review_authority_number)
+        self.assertEqual(model.reviews[0].authority_kind, "landed_tree")
+        self.assertIsNone(model.reviews[0].authority_number)
+
+    def test_merge_integration_proves_candidate_ancestry_before_landed_reachability(self) -> None:
+        packet = copy.deepcopy(self.base)
+        packet["landed_integrations"][0]["kind"] = "merge"
+        calls: list[tuple[str, str]] = []
+
+        def ancestry(ancestor: str, descendant: str) -> bool:
+            calls.append((ancestor, descendant))
+            return True
+
+        MODULE.validate_blocker_closeout(packet, ancestry)
+        self.assertEqual(
+            calls,
+            [
+                (packet["landed_integrations"][0]["candidate_head_sha"], packet["landed_integrations"][0]["landed_sha"]),
+                (packet["landed_integrations"][0]["landed_sha"], packet["observed_main_sha"]),
+            ],
+        )
+
+    def test_multi_pr_closure_requires_every_candidate_or_one_landed_tree_review(self) -> None:
+        packet = _multi_pr_packet(self.base)
+        MODULE.validate_blocker_closeout(packet, lambda _ancestor, _subject: True)
+
+        missing_review = copy.deepcopy(packet)
+        missing_review["reviews"].pop()
+        with self.assertRaisesRegex(ValueError, "every candidate exact-head review"):
+            MODULE.validate_blocker_closeout(missing_review, lambda _ancestor, _subject: True)
+
+        cumulative_review = copy.deepcopy(packet)
+        cumulative_review["reviews"] = [
+            {
+                "authority_kind": "landed_tree",
+                "authority_number": None,
+                "current_head_synthesis": {
+                    "kind": "repository_receipt",
+                    "ref": f"repo:receipts/cumulative-landed-review.json@{packet['observed_main_sha']}",
+                    "digest": "sha256:acacacacacacacacacacacacacacacacacacacacacacacacacacacacacacacac",
+                },
+                "reviewed_head": packet["observed_main_sha"],
+                "status": "current",
+                "unresolved_material_findings": 0,
+                "finding_refs": [],
+            }
+        ]
+        MODULE.validate_blocker_closeout(cumulative_review, lambda _ancestor, _subject: True)
 
     def test_each_fail_closed_rule_has_a_focused_negative_fixture(self) -> None:
         negative_cases = [case for case in self.cases if case["name"].startswith("reject_")]
-        self.assertGreaterEqual(len(negative_cases), 38)
+        self.assertGreaterEqual(len(negative_cases), 41)
         for case in negative_cases:
             with self.subTest(case=case["name"]):
                 packet = _apply_case(self.base, case)

@@ -32,12 +32,12 @@
   },
   {
     "name": "reject_stale_review_for_resolved",
-    "updates": {"review.status": "stale"},
-    "error": "resolved requires current review"
+    "updates": {"reviews.0.status": "stale"},
+    "error": "resolved requires every candidate exact-head review"
   },
   {
     "name": "reject_superseded_review_head",
-    "updates": {"review.reviewed_head": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+    "updates": {"reviews.0.reviewed_head": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
     "error": "current PR review head does not match modeled candidate head"
   },
   {
@@ -91,10 +91,20 @@
     "error": "proof_class/claim_scope/evidence kind is not admitted"
   },
   {
+    "name": "reject_product_test_self_declared_for_installed_claim",
+    "updates": {
+      "proof.observations.0.proof_class": "product_test",
+      "proof.observations.0.claim_scope": "product_behavior",
+      "proof.observations.0.evidence.kind": "github_check",
+      "proof.observations.0.evidence.ref": "https://github.com/EffortlessMetrics/perl-lsp-swarm/actions/runs/90005/job/90006"
+    },
+    "error": "contradicts the semantic-controller claim contract"
+  },
+  {
     "name": "reject_unresolved_material_findings",
     "updates": {
-      "review.unresolved_material_findings": 1,
-      "review.finding_refs": [{"kind": "github_issue_comment", "ref": "https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/90001#issuecomment-2", "digest": "sha256:6666666666666666666666666666666666666666666666666666666666666666"}]
+      "reviews.0.unresolved_material_findings": 1,
+      "reviews.0.finding_refs": [{"kind": "github_issue_comment", "ref": "https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/90001#issuecomment-2", "digest": "sha256:6666666666666666666666666666666666666666666666666666666666666666"}]
     },
     "error": "resolved cannot retain unresolved material findings"
   },
@@ -105,7 +115,13 @@
   },
   {
     "name": "reject_resolved_preserved_claim_without_observation",
-    "updates": {"proof.observations.0.claim_ids": ["example.product"]},
+    "updates": {
+      "proof.observations.0.claim_ids": ["example.product"],
+      "proof.observations.0.proof_class": "product_test",
+      "proof.observations.0.claim_scope": "product_behavior",
+      "proof.observations.0.evidence.kind": "github_check",
+      "proof.observations.0.evidence.ref": "https://github.com/EffortlessMetrics/perl-lsp-swarm/actions/runs/90007/job/90008"
+    },
     "error": "resolved preserved claim lacks observation proof coverage"
   },
   {
@@ -116,6 +132,10 @@
       "claim_effect.narrows": ["example.product"],
       "claim_effect.limitations": ["Product behavior is explicitly narrowed."],
       "proof.observations.0.claim_ids": ["example.product"],
+      "proof.observations.0.proof_class": "product_test",
+      "proof.observations.0.claim_scope": "product_behavior",
+      "proof.observations.0.evidence.kind": "github_check",
+      "proof.observations.0.evidence.ref": "https://github.com/EffortlessMetrics/perl-lsp-swarm/actions/runs/90007/job/90008",
       "proof.observations.1.claim_ids": ["example.product"]
     },
     "error": "bounded_limitation preserved claim lacks observation proof coverage"
@@ -142,26 +162,26 @@
   },
   {
     "name": "reject_mismatched_review_synthesis_ref",
-    "updates": {"review.current_head_synthesis.ref": "https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/90009#pullrequestreview-1"},
+    "updates": {"reviews.0.current_head_synthesis.ref": "https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/90009#pullrequestreview-1"},
     "error": "review synthesis evidence ref does not match implementation PR authority"
   },
   {
     "name": "reject_pull_without_review_synthesis_identity",
-    "updates": {"review.current_head_synthesis.ref": "https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/90002"},
+    "updates": {"reviews.0.current_head_synthesis.ref": "https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/90002"},
     "error": "does not match exact grammar for github_review"
   },
   {
     "name": "reject_unmodeled_review_authority",
-    "updates": {"review.authority_number": 90009},
+    "updates": {"reviews.0.authority_number": 90009},
     "error": "review authority is not a modeled implementation PR"
   },
   {
     "name": "reject_mismatched_semantic_review_ref",
     "updates": {
-      "review.authority_kind": "semantic_controller",
-      "review.authority_number": 90001,
-      "review.current_head_synthesis.kind": "github_issue_comment",
-      "review.current_head_synthesis.ref": "https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/90009#issuecomment-4"
+      "reviews.0.authority_kind": "semantic_controller",
+      "reviews.0.authority_number": 90001,
+      "reviews.0.current_head_synthesis.kind": "github_issue_comment",
+      "reviews.0.current_head_synthesis.ref": "https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/90009#issuecomment-4"
     },
     "error": "review synthesis evidence ref does not match semantic-controller authority"
   },
@@ -193,13 +213,19 @@
   },
   {
     "name": "reject_false_squash_review_relabeling",
-    "updates": {"review.reviewed_head": "0d70248e3ec1ef90c6059f864b9a26fecad07db4"},
+    "updates": {"reviews.0.reviewed_head": "0d70248e3ec1ef90c6059f864b9a26fecad07db4"},
     "error": "current PR review head does not match modeled candidate head"
   },
   {
     "name": "reject_contradictory_integration_candidate",
     "updates": {"landed_integrations.0.candidate_head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
     "error": "landed integration candidate head contradicts implementation contribution"
+  },
+  {
+    "name": "reject_merge_without_candidate_to_landed_ancestry",
+    "ancestor_result": false,
+    "updates": {"landed_integrations.0.kind": "merge"},
+    "error": "merge candidate head"
   },
   {
     "name": "reject_squash_that_relabels_landed_sha_as_candidate",
@@ -240,13 +266,13 @@
   {
     "name": "reject_contradictory_evidence_digest",
     "updates": {
-      "review.finding_refs": [{"kind": "github_pull", "ref": "https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/90002", "digest": "sha256:7777777777777777777777777777777777777777777777777777777777777777"}]
+      "reviews.0.finding_refs": [{"kind": "github_pull", "ref": "https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/90002", "digest": "sha256:7777777777777777777777777777777777777777777777777777777777777777"}]
     },
     "error": "contradictory digest"
   },
   {
     "name": "reject_private_worktree_reference",
-    "updates": {"review.current_head_synthesis.ref": "repo:C:/Users/agent/.codex/worktrees/private/review.json@0d70248e3ec1ef90c6059f864b9a26fecad07db4"},
+    "updates": {"reviews.0.current_head_synthesis.ref": "repo:C:/Users/agent/.codex/worktrees/private/review.json@0d70248e3ec1ef90c6059f864b9a26fecad07db4"},
     "error": "private or worktree path"
   }
 ]

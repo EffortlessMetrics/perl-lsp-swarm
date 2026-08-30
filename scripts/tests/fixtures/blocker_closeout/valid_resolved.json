@@ -5,7 +5,10 @@
   "controller_issue": 90001,
   "semantic_controller": {
     "issue": 90001,
-    "claim_ids": ["example.installed", "example.product"],
+    "claims": [
+      {"id": "example.installed", "proof_class": "installed_acceptance", "claim_scope": "installed_user_behavior"},
+      {"id": "example.product", "proof_class": "product_test", "claim_scope": "product_behavior"}
+    ],
     "evidence": {
       "kind": "github_issue_comment",
       "ref": "https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/90001#issuecomment-1",
@@ -43,19 +46,21 @@
       }
     }
   ],
-  "review": {
-    "authority_kind": "implementation_pr",
-    "authority_number": 90002,
-    "current_head_synthesis": {
-      "kind": "github_review",
-      "ref": "https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/90002#pullrequestreview-1",
-      "digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
-    },
-    "reviewed_head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-    "status": "current",
-    "unresolved_material_findings": 0,
-    "finding_refs": []
-  },
+  "reviews": [
+    {
+      "authority_kind": "implementation_pr",
+      "authority_number": 90002,
+      "current_head_synthesis": {
+        "kind": "github_review",
+        "ref": "https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/90002#pullrequestreview-1",
+        "digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+      },
+      "reviewed_head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "status": "current",
+      "unresolved_material_findings": 0,
+      "finding_refs": []
+    }
+  ],
   "proof": {
     "required": ["installed.behavior", "product.behavior"],
     "passed": ["installed.behavior", "product.behavior"],
