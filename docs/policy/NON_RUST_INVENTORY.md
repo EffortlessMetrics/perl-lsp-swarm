@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12416 |
+| Total tracked files | 12417 |
 | Rust-family files | 3821 |
-| Non-Rust files | 8595 |
-| Allowlisted | 6360 |
+| Non-Rust files | 8596 |
+| Allowlisted | 6361 |
 | Unclassified | 2235 |
 
 ## Non-Rust files by category
@@ -21,7 +21,7 @@
 | generated | 2 |
 | production | 348 |
 | test | 2055 |
-| tooling | 662 |
+| tooling | 663 |
 | unclassified | 2235 |
 
 ## Unclassified files
@@ -6595,6 +6595,7 @@
 | `scripts/ci/security_reconciliation_io.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/security_reconciliation_model.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_aggregate_lane_history.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/ci/test_cache_writer_authority_13924.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_check_perl_lsp_rs_core_package.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_check_pr_semantic_review_currentness.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_check_publish_package_contents.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
