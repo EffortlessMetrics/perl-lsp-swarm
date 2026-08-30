@@ -51,7 +51,7 @@ pub struct ModelLimitation {
     /// scoping never has to be reconstructed from the id text. Empty means
     /// the association is only recoverable from the `<kind>:<path>` id
     /// convention (legacy producers).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub paths: Vec<String>,
 }
 
@@ -84,5 +84,17 @@ mod tests {
         let json = serde_json::to_string(&lim).unwrap();
         let back: ModelLimitation = serde_json::from_str(&json).unwrap();
         assert_eq!(lim, back);
+    }
+
+    #[test]
+    fn empty_limitation_paths_are_omitted() {
+        let lim = ModelLimitation {
+            id: "parse-failed:lib/App.pm".to_string(),
+            kind: "parse_failure".to_string(),
+            message: "could not parse".to_string(),
+            paths: Vec::new(),
+        };
+        let json = serde_json::to_string(&lim).unwrap();
+        assert!(!json.contains("paths"));
     }
 }

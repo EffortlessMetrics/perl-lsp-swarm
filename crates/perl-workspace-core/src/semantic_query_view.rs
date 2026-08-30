@@ -521,7 +521,14 @@ impl SemanticQueryView {
         let unread_discovered = model.unread_discovered.clone();
         let limitation_paths = structural_limitation_paths(model);
         let work = measure_work(&sources, &declarations_by_file, &symbols, &packages);
-        let fingerprint = fingerprint_view(model, &sources, &declarations_by_file, &completeness);
+        let fingerprint = fingerprint_view(
+            model,
+            &sources,
+            &declarations_by_file,
+            &completeness,
+            &unread_discovered,
+            &limitation_paths,
+        );
 
         Ok(Self {
             root: model.root.clone(),
@@ -617,6 +624,14 @@ impl SemanticQueryView {
                         limitation_ids.iter().map(String::as_str),
                         &entry.relative_path,
                     ));
+                }
+                for path in &self.unread_discovered {
+                    if FileRole::from_path(path) == role {
+                        ids.extend(self.limitations_bounding_path(
+                            limitation_ids.iter().map(String::as_str),
+                            path,
+                        ));
+                    }
                 }
                 if ids.is_empty() {
                     IndexAnswer::Complete(rows)
@@ -1030,11 +1045,15 @@ fn declarations_completeness(model: &ProjectModel) -> IndexCompleteness {
     if !model.requested.contains(FactClasses::SYMBOLS) {
         return IndexCompleteness::NotProven(NotProvenReason::FactClassNotAdmitted);
     }
-    // A shard that never populated the declarations class cannot back a
-    // proven-empty denominator for its file: extraction that never ran is
-    // not a proven zero. Builder-built models carry no shard states and stay
-    // bounded by file-level parse limitations instead.
-    if model.shard_states.values().any(|state| !state.populated.contains(FactClasses::SYMBOLS)) {
+    // A shard with explicit population evidence that never populated the
+    // declarations class cannot back a proven-empty denominator: extraction
+    // that never ran is not a proven zero. Legacy states without population
+    // evidence retain the pre-evidence behavior.
+    if model
+        .shard_states
+        .values()
+        .any(|state| matches!(state.populated, Some(populated) if !populated.contains(FactClasses::SYMBOLS)))
+    {
         return IndexCompleteness::NotProven(NotProvenReason::ShardClassNotPopulated {
             family: "declarations",
         });
@@ -1196,12 +1215,13 @@ fn fingerprint_view(
     sources: &BTreeMap<String, SourceEntry>,
     declarations_by_file: &BTreeMap<FileId, Vec<DeclarationRow>>,
     completeness: &BTreeMap<&'static str, IndexCompleteness>,
+    unread_discovered: &BTreeSet<String>,
+    limitation_paths: &BTreeMap<String, BTreeSet<String>>,
 ) -> String {
     let mut buf = Vec::new();
     push_field(&mut buf, "semantic-query-view");
-    // v2: declaration rows are fully encoded (end byte plus every
-    // distinguishing field), not just entity id and start byte.
-    push_field(&mut buf, "v2");
+    // v3: unread paths + structural limitation-path associations.
+    push_field(&mut buf, "v3");
     push_field(&mut buf, &model.root);
     push_u32(&mut buf, model.requested.bits());
 
@@ -1257,6 +1277,16 @@ fn fingerprint_view(
         push_completeness(&mut buf, state);
     }
 
+    for path in unread_discovered {
+        push_field(&mut buf, path);
+    }
+    for (id, paths) in limitation_paths {
+        push_field(&mut buf, id);
+        for path in paths {
+            push_field(&mut buf, path);
+        }
+    }
+
     format!("fnv64:{:016x}", fnv1a(&buf))
 }
 
@@ -1273,6 +1303,7 @@ mod tests {
     use crate::package::PackageRecord;
     use crate::symbol::SymbolRecord;
     use crate::{ProjectFactShard, ProjectModel};
+    use serde_json::Value;
 
     fn range(start: u32, end: u32) -> SourceRange {
         SourceRange {
@@ -1562,7 +1593,7 @@ mod tests {
                 schema_version: SCHEMA_VERSION - 1,
                 fingerprint: "fnv64:deadbeefdeadbeef".to_string(),
                 limitation_ids: Vec::new(),
-                populated: FactClasses::NONE,
+                populated: Some(FactClasses::NONE),
                 limitation_paths: BTreeMap::new(),
             },
         );
@@ -1584,7 +1615,7 @@ mod tests {
                 schema_version: SCHEMA_VERSION,
                 fingerprint: "fnv64:0000000000000001".to_string(),
                 limitation_ids: Vec::new(),
-                populated: FactClasses::NONE,
+                populated: Some(FactClasses::NONE),
                 limitation_paths: BTreeMap::new(),
             },
         );
@@ -1610,7 +1641,7 @@ mod tests {
                 schema_version: SCHEMA_VERSION,
                 fingerprint: "fnv64:0000000000000002".to_string(),
                 limitation_ids: Vec::new(),
-                populated: FactClasses::NONE,
+                populated: Some(FactClasses::NONE),
                 limitation_paths: BTreeMap::new(),
             },
         );
@@ -1946,6 +1977,39 @@ mod tests {
         }
         // A never-discovered path stays a legitimate exact empty.
         assert!(matches!(view.source_by_path("lib/NeverSeen.pm"), IndexAnswer::Complete(None)));
+        match view.sources_with_role(FileRole::Lib) {
+            IndexAnswer::Partial { rows, limitation_ids } => {
+                assert_eq!(rows.len(), 1);
+                assert_eq!(limitation_ids, ["read-failed:lib/Locked.pm"]);
+            }
+            other => assert!(
+                matches!(other, IndexAnswer::Partial { .. }),
+                "expected partial library sources, got {other:?}"
+            ),
+        }
+        assert!(matches!(
+            view.sources_with_role(FileRole::Test),
+            IndexAnswer::Complete(rows) if rows.is_empty()
+        ));
+    }
+
+    #[test]
+    fn view_fingerprint_includes_unread_paths() {
+        let mut model = ProjectModel::empty("proj", FactClasses::all());
+        model.files.push(file("lib/Good.pm", "good"));
+        model.limitations.push(ModelLimitation {
+            id: "read-failed:lib/Locked.pm".to_string(),
+            kind: "read_failure".to_string(),
+            message: "could not read `lib/Locked.pm`".to_string(),
+            paths: vec!["lib/Locked.pm".to_string()],
+        });
+        model.unread_discovered.insert("lib/Locked.pm".to_string());
+        let mut with_extra_unread = model.clone();
+        with_extra_unread.unread_discovered.insert("lib/Other.pm".to_string());
+
+        let base_view = SemanticQueryView::build(&model).unwrap();
+        let extra_view = SemanticQueryView::build(&with_extra_unread).unwrap();
+        assert_ne!(base_view.fingerprint(), extra_view.fingerprint());
     }
 
     #[test]
@@ -1981,6 +2045,32 @@ mod tests {
         shard.source_len_bytes = 5;
         model.insert_or_replace(shard).unwrap();
         let view = SemanticQueryView::build(&model).unwrap();
+        assert_eq!(view.family_completeness("declarations"), Some(&IndexCompleteness::Complete));
+    }
+
+    #[test]
+    fn legacy_persisted_shard_state_keeps_zero_rows_complete() {
+        let requested = FactClasses::FILES | FactClasses::SYMBOLS;
+        let mut model = ProjectModel::empty("proj", requested);
+        let shard =
+            ProjectFactShard::empty(file("lib/Empty.pm", "empty"), 1, "test-producer", requested);
+        model.insert_or_replace(shard).unwrap();
+
+        let state_json = serde_json::to_string(&model.shard_states["lib/Empty.pm"]).unwrap();
+        assert!(!state_json.contains("limitation_paths"));
+        let mut legacy_state = serde_json::to_value(&model.shard_states["lib/Empty.pm"]).unwrap();
+        legacy_state.as_object_mut().unwrap().remove("populated");
+        let decoded_state: crate::ProjectShardState = serde_json::from_value(legacy_state).unwrap();
+        assert_eq!(decoded_state.populated, None);
+
+        let mut persisted = serde_json::to_value(&model).unwrap();
+        let states = persisted.get_mut("shard_states").and_then(Value::as_object_mut).unwrap();
+        let state = states.get_mut("lib/Empty.pm").and_then(Value::as_object_mut).unwrap();
+        state.remove("populated");
+        let restored: ProjectModel = serde_json::from_value(persisted).unwrap();
+
+        assert_eq!(restored.shard_states["lib/Empty.pm"].populated, None);
+        let view = SemanticQueryView::build(&restored).unwrap();
         assert_eq!(view.family_completeness("declarations"), Some(&IndexCompleteness::Complete));
     }
 

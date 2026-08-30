@@ -275,7 +275,7 @@ impl ProjectModel {
                 schema_version: shard.schema_version,
                 fingerprint,
                 limitation_ids,
-                populated: shard.populated,
+                populated: Some(shard.populated),
                 limitation_paths,
             },
         );

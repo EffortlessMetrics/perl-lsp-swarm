@@ -156,6 +156,23 @@ fn fingerprint_and_snapshot_identity_are_deterministic() -> Result<(), Box<dyn E
 }
 
 #[test]
+fn legacy_shard_fingerprint_survives_serialize_round_trip() -> Result<(), Box<dyn Error>> {
+    let mut incoming = shard("lib/App.pm", "package App;\n", 7);
+    incoming.limitations.push(ModelLimitation {
+        id: "parse-failed:lib/App.pm".to_string(),
+        kind: "parse_failure".to_string(),
+        message: "could not parse".to_string(),
+        paths: Vec::new(),
+    });
+    let before = incoming.fingerprint()?;
+    let encoded = serde_json::to_string(&incoming)?;
+    require(!encoded.contains("\"paths\""), "empty limitation paths were serialized")?;
+    let decoded: ProjectFactShard = serde_json::from_str(&encoded)?;
+    require(decoded.fingerprint()? == before, "legacy shard fingerprint changed after round-trip")?;
+    Ok(())
+}
+
+#[test]
 fn remove_and_replace_invalidate_relation_dependents_by_package_name() -> Result<(), Box<dyn Error>>
 {
     let mut model = ProjectModel::empty(".", FactClasses::all());
