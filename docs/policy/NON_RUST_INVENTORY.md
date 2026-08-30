@@ -6,17 +6,17 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12464 |
+| Total tracked files | 12466 |
 | Rust-family files | 3852 |
-| Non-Rust files | 8612 |
-| Allowlisted | 6375 |
+| Non-Rust files | 8614 |
+| Allowlisted | 6377 |
 | Unclassified | 2237 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 491 |
+| config | 493 |
 | documentation | 2809 |
 | generated | 2 |
 | production | 348 |
@@ -2877,6 +2877,8 @@
 | `.github/actions/setup-rust/action.yml` | config | `non-rust-github-actions` | release/ci |
 | `.github/actions/setup-vscode-toolchain/action.yml` | config | `non-rust-github-actions` | release/ci |
 | `.github/actions/upload-receipt/action.yml` | config | `non-rust-github-actions` | release/ci |
+| `.github/actions/upload-receipt/render_summary.py` | config | `non-rust-github-actions` | release/ci |
+| `.github/actions/upload-receipt/test_render_summary.py` | config | `non-rust-github-actions` | release/ci |
 | `.github/actions/upload-receipt/test_validate_paths.py` | config | `non-rust-github-actions` | release/ci |
 | `.github/actions/upload-receipt/validate_paths.py` | config | `non-rust-github-actions` | release/ci |
 | `.github/ci-config.yml` | config | `non-rust-github-policy` | release/ci |
