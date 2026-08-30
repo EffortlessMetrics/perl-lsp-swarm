@@ -4,6 +4,32 @@ Use this directory as the short docs front door. It tells you where to go next
 without making you learn the workspace layout first. For the full Diataxis-style
 map of the docs tree, use [INDEX.md](INDEX.md).
 
+## Repository context
+
+This docs tree is checked in with the active development repository,
+`EffortlessMetrics/perl-lsp-swarm` on `main`.
+
+- Clone `perl-lsp-swarm`, open ordinary development issues here, and target pull
+  requests here.
+- `EffortlessMetrics/perl-lsp` on `master` owns public release lineage and
+  published artifacts, so installation and release links may point there
+  intentionally.
+- A merge to `perl-lsp-swarm/main` is development state. It does not prove that
+  the change has completed publication, entered a release, or reached any
+  package or editor channel.
+
+The current distinction is defined by
+[product identity](reference/product-identity.md) and the
+[publication sync protocol](swarm/sync-protocol.md). The landed
+contributor-topology projection derives the repository, branch, and publication
+relationships from local authorities without requiring network access. The bare
+command intentionally leaves live stage and channel status `NOT_PROVEN`; a captured
+`--observation` is required to project observed status:
+
+```bash
+cargo run --locked -p xtask --bin contributor-topology
+```
+
 ## Diataxis in This Repository
 
 When adding or moving docs, choose the content type first, then the file:
