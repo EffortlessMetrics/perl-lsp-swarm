@@ -7,9 +7,9 @@
 
 use super::check::check;
 use super::discover::{parse_direction_registry, parse_feature_catalog, scan_emission};
-use super::model::{Discovered, Matrix, Meta, RegistryKind, RequestRow};
+use super::model::{CatalogRow, Discovered, Matrix, Meta, RegistryKind, RequestRow};
 use super::{evaluate, fingerprint, load, render};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 fn repo_root() -> PathBuf {
@@ -78,8 +78,12 @@ fn agreeing_discovery() -> Discovered {
         ],
     );
     let mut catalog_rows = BTreeMap::new();
-    catalog_rows.insert("lsp.code_lens_refresh".to_string(), "LSP 3.16".to_string());
-    Discovered { registry, emitted, catalog_rows }
+    catalog_rows.insert("lsp.code_lens_refresh".to_string(), catalog("LSP 3.16", "workspace"));
+    Discovered { registry, emitted, catalog_rows, ambiguous_symbols: BTreeSet::new() }
+}
+
+fn catalog(spec: &str, area: &str) -> CatalogRow {
+    CatalogRow { spec: spec.to_string(), area: area.to_string() }
 }
 
 fn matrix_of(rows: Vec<RequestRow>) -> Matrix {
@@ -320,7 +324,9 @@ fn a_selected_318_surface_may_not_claim_stable_317() {
     discovered
         .registry
         .insert("workspace/foldingRange/refresh".to_string(), RegistryKind::ServerToClientRequest);
-    discovered.catalog_rows.insert("lsp.folding_range_refresh".to_string(), "LSP 3.18".to_string());
+    discovered
+        .catalog_rows
+        .insert("lsp.folding_range_refresh".to_string(), catalog("LSP 3.18", "workspace"));
     discovered.emitted.insert(
         "workspace/foldingRange/refresh".to_string(),
         vec![
@@ -354,7 +360,9 @@ fn demoting_a_318_surface_on_the_matrix_side_alone_fails() {
     discovered
         .registry
         .insert("workspace/foldingRange/refresh".to_string(), RegistryKind::ServerToClientRequest);
-    discovered.catalog_rows.insert("lsp.folding_range_refresh".to_string(), "LSP 3.18".to_string());
+    discovered
+        .catalog_rows
+        .insert("lsp.folding_range_refresh".to_string(), catalog("LSP 3.18", "workspace"));
     discovered.emitted.insert(
         "workspace/foldingRange/refresh".to_string(),
         vec![
@@ -390,7 +398,9 @@ fn demoting_a_318_surface_on_the_matrix_side_alone_fails() {
 #[test]
 fn citing_an_unrelated_catalog_row_fails() {
     let mut discovered = agreeing_discovery();
-    discovered.catalog_rows.insert("lsp.inlay_hint_refresh".to_string(), "LSP 3.17".to_string());
+    discovered
+        .catalog_rows
+        .insert("lsp.inlay_hint_refresh".to_string(), catalog("LSP 3.17", "workspace"));
     let mut row = passing_row();
     row.feature_catalog_row = "lsp.inlay_hint_refresh".to_string();
     assert!(rules(vec![row], &discovered).contains(&"catalog-spec-mismatch"));
@@ -421,6 +431,61 @@ fn an_unknown_catalog_row_fails() {
     let mut row = passing_row();
     row.feature_catalog_row = "lsp.invented_row".to_string();
     assert!(rules(vec![row], &agreeing_discovery()).contains(&"catalog-row-unknown"));
+}
+
+/// The matrix must not define its own vocabulary. Widening the meta allow-list
+/// and using the invented value in a row has to fail on the allow-list itself,
+/// otherwise the file under validation validates itself.
+#[test]
+fn a_matrix_that_widens_its_own_vocabulary_fails() {
+    let mut row = passing_row();
+    row.disposition = "definitely_fine".to_string();
+    let mut matrix = matrix_of(vec![row]);
+    matrix.meta.allowed_dispositions.push("definitely_fine".to_string());
+
+    let found: Vec<&str> = check(&repo_root(), &matrix, &agreeing_discovery(), Vec::new())
+        .into_iter()
+        .map(|violation| violation.rule)
+        .collect();
+
+    assert!(
+        found.contains(&"vocabulary-not-authoritative"),
+        "an extended allow-list must be rejected: {found:?}"
+    );
+    assert!(
+        found.contains(&"value-not-allowed"),
+        "the invented value must still fail against the schema: {found:?}"
+    );
+}
+
+/// Spec equality alone would accept a swap between two catalog rows sharing a
+/// version, so the catalog's area must own the method's wire segment.
+#[test]
+fn citing_a_catalog_row_from_another_area_fails() {
+    let mut discovered = agreeing_discovery();
+    // `lsp.show_message_request` is a real server-to-client row that shares no
+    // area with a `workspace/` method.
+    discovered
+        .catalog_rows
+        .insert("lsp.show_message_request".to_string(), catalog("LSP 3.16", "window"));
+    let mut row = passing_row();
+    row.feature_catalog_row = "lsp.show_message_request".to_string();
+
+    assert!(
+        rules(vec![row], &discovered).contains(&"catalog-area-mismatch"),
+        "a workspace method may not claim a window catalog row"
+    );
+}
+
+/// `path#symbol` cannot distinguish two same-named functions in one file, so an
+/// ambiguous attribution is refused rather than standing for both.
+#[test]
+fn an_ambiguous_emitter_symbol_fails() {
+    let mut discovered = agreeing_discovery();
+    discovered.ambiguous_symbols.insert(
+        "crates/perl-lsp-rs/src/runtime/client_requests.rs#request_code_lens_refresh".to_string(),
+    );
+    assert!(rules(vec![passing_row()], &discovered).contains(&"emitter-ambiguous"));
 }
 
 // ── Negative controls: instrument failure ───────────────────────────────
@@ -497,7 +562,8 @@ fn emission_discovery_resolves_constants_and_ignores_test_modules()
         constants.insert(name.trim().to_string(), value.to_string());
     }
 
-    let (emitted, findings) = scan_emission(&root, "crates/perl-lsp-rs/src/runtime", &constants)?;
+    let (emitted, _ambiguous, findings) =
+        scan_emission(&root, "crates/perl-lsp-rs/src/runtime", &constants)?;
 
     assert!(findings.is_empty(), "unresolved emission sites: {findings:?}");
     assert!(
@@ -524,7 +590,7 @@ fn scan_synthetic(
     let mut constants = BTreeMap::new();
     constants.insert("WORKSPACE_APPLY_EDIT".to_string(), "workspace/applyEdit".to_string());
 
-    let (emitted, findings) = scan_emission(dir.path(), "src/runtime", &constants)?;
+    let (emitted, _ambiguous, findings) = scan_emission(dir.path(), "src/runtime", &constants)?;
     Ok((emitted, findings.into_iter().map(|finding| finding.rule.to_string()).collect()))
 }
 
@@ -556,6 +622,45 @@ impl Server {
     );
     assert!(findings.is_empty(), "a resolvable wrapped call is not a finding: {findings:?}");
     Ok(())
+}
+
+/// Rust allows whitespace between a callee and its argument list. The trigger
+/// match must tolerate it, or valid source disappears from the denominator
+/// without a finding.
+#[test]
+fn whitespace_before_the_argument_list_is_still_discovered()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (emitted, findings) = scan_synthetic(
+        r#"
+impl Server {
+    pub fn emit_spaced(&self) {
+        self.send_request ("workspace/codeLens/refresh", json!(null));
+    }
+}
+"#,
+    )?;
+
+    assert_eq!(
+        emitted.get("workspace/codeLens/refresh").map(Vec::as_slice),
+        Some(["src/runtime/synthetic.rs#emit_spaced".to_string()].as_slice()),
+        "a space before `(` must not hide a send site"
+    );
+    assert!(findings.is_empty(), "{findings:?}");
+    Ok(())
+}
+
+/// The same tolerance in the registry parser: `s2c ("m", ..)` is valid Rust and
+/// must not drop a classified method.
+#[test]
+fn the_registry_parser_tolerates_whitespace_before_the_argument_list() {
+    let parsed = parse_direction_registry(
+        r#"
+        pub(crate) const REGISTRY: &[MethodDescriptor] = &[
+            s2c ("workspace/applyEdit", EnvelopeKind::Request),
+        ];
+    "#,
+    );
+    assert_eq!(parsed.get("workspace/applyEdit"), Some(&RegistryKind::ServerToClientRequest));
 }
 
 /// A send whose method cannot be resolved fails closed unless the enclosing
@@ -654,7 +759,7 @@ fn the_feature_catalog_parser_selects_only_server_rows() -> Result<(), Box<dyn s
     let source = std::fs::read_to_string(repo_root().join("features.toml"))?;
     let rows = parse_feature_catalog(&source)?;
     assert!(rows.contains_key("lsp.code_lens_refresh"));
-    assert_eq!(rows.get("lsp.code_lens_refresh").map(String::as_str), Some("LSP 3.16"));
+    assert_eq!(rows.get("lsp.code_lens_refresh").map(|row| row.spec.as_str()), Some("LSP 3.16"));
     assert!(
         !rows.contains_key("lsp.hover"),
         "client-to-server rows must not enter the server-request catalog view"
@@ -686,7 +791,7 @@ direction="server_to_client"
         "a description quoting the direction key must not create a server row"
     );
     assert_eq!(
-        rows.get("lsp.oddly_spaced").map(String::as_str),
+        rows.get("lsp.oddly_spaced").map(|row| row.spec.as_str()),
         Some("LSP 3.17"),
         "a real server row must survive different spacing and quoting"
     );

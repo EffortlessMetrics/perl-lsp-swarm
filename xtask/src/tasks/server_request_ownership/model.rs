@@ -6,7 +6,7 @@
 //! two instead.
 
 use serde::Deserialize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Sentinel prefix marking a cell whose owner is known but whose evidence does
 /// not exist yet. Rendered as `missing:#NNNN`.
@@ -104,14 +104,26 @@ pub(super) enum RegistryKind {
     ClientToServer,
 }
 
+/// One `features.toml` row this join consumes.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(super) struct CatalogRow {
+    /// Declared LSP specification version.
+    pub(super) spec: String,
+    /// Declared protocol area (`workspace`, `window`, `protocol`, …).
+    pub(super) area: String,
+}
+
 /// The joined view of the three discovered surfaces.
 #[derive(Debug, Clone, Default)]
 pub(super) struct Discovered {
     /// Every method classified by the direction registry.
     pub(super) registry: BTreeMap<String, RegistryKind>,
-    /// Methods observed at a production emission call site, mapped to the
-    /// relative source paths that emit them.
+    /// Methods observed at a production emission call site, mapped to
+    /// `path#symbol` references for the functions that emit them.
     pub(super) emitted: BTreeMap<String, Vec<String>>,
-    /// Feature-catalog row ids declaring `direction = "server_to_client"`.
-    pub(super) catalog_rows: BTreeMap<String, String>,
+    /// Feature-catalog rows declaring `direction = "server_to_client"`.
+    pub(super) catalog_rows: BTreeMap<String, CatalogRow>,
+    /// `path#symbol` references whose symbol name is declared more than once in
+    /// its file, so attribution to it is ambiguous.
+    pub(super) ambiguous_symbols: BTreeSet<String>,
 }

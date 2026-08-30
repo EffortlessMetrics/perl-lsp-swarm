@@ -18,6 +18,27 @@ const REGISTRATION_PAIR: [&str; 2] = ["client/registerCapability", "client/unreg
 /// Dispositions that assert the method is carrying real product weight.
 const CREDIT_BEARING: [&str; 2] = ["supported", "advertised_not_proven"];
 
+/// The schema vocabulary, owned here rather than by the file under validation.
+///
+/// The matrix restates these lists so a reader sees them beside the rows, but
+/// they are not authority: a matrix that extends its own allow-list to admit an
+/// invented state would otherwise validate itself.
+const SCHEMA_PROTOCOL_BASELINES: [&str; 2] = ["stable_3_17", "selected_3_18"];
+const SCHEMA_EMISSION_STATES: [&str; 2] = ["emitted", "not_emitted"];
+const SCHEMA_RESPONSE_DECODERS: [&str; 2] = ["generic_shape", "per_method"];
+const SCHEMA_DISPOSITIONS: [&str; 4] =
+    ["supported", "advertised_not_proven", "helper_only_unadvertised", "not_proven"];
+
+/// The catalog `area` that owns a method's first wire segment.
+fn expected_catalog_area(method: &str) -> Option<&'static str> {
+    match method.split('/').next() {
+        Some("workspace") => Some("workspace"),
+        Some("window") => Some("window"),
+        Some("client") => Some("protocol"),
+        _ => None,
+    }
+}
+
 fn missing(cell: &str) -> bool {
     RequestRow::is_missing(cell)
 }
@@ -58,6 +79,34 @@ pub(super) fn check(
             "<matrix>",
             format!("unexpected schema `{}`", meta.schema),
         ));
+    }
+
+    // The vocabulary is owned by this checker. A matrix that widened its own
+    // allow-list could otherwise admit an invented state and validate itself.
+    for (field, declared, schema) in [
+        (
+            "allowed_protocol_baselines",
+            &meta.allowed_protocol_baselines,
+            &SCHEMA_PROTOCOL_BASELINES[..],
+        ),
+        ("allowed_emission_states", &meta.allowed_emission_states, &SCHEMA_EMISSION_STATES[..]),
+        (
+            "allowed_response_decoders",
+            &meta.allowed_response_decoders,
+            &SCHEMA_RESPONSE_DECODERS[..],
+        ),
+        ("allowed_dispositions", &meta.allowed_dispositions, &SCHEMA_DISPOSITIONS[..]),
+    ] {
+        if declared.as_slice() != schema {
+            violations.push(Violation::new(
+                "vocabulary-not-authoritative",
+                "<matrix>",
+                format!(
+                    "`{field}` is {declared:?} but the schema owns {schema:?}; the file under \
+                     validation does not define its own vocabulary"
+                ),
+            ));
+        }
     }
 
     // ── Instrument guards ────────────────────────────────────────────────
@@ -162,12 +211,12 @@ fn check_row(
     // ── Closed vocabulary ────────────────────────────────────────────────
     // An unlisted value is a hard failure so an invented state cannot pass.
     for (field, value, allowed) in [
-        ("protocol_baseline", &row.protocol_baseline, &meta.allowed_protocol_baselines),
-        ("emission", &row.emission, &meta.allowed_emission_states),
-        ("response_decoder", &row.response_decoder, &meta.allowed_response_decoders),
-        ("disposition", &row.disposition, &meta.allowed_dispositions),
+        ("protocol_baseline", &row.protocol_baseline, &SCHEMA_PROTOCOL_BASELINES[..]),
+        ("emission", &row.emission, &SCHEMA_EMISSION_STATES[..]),
+        ("response_decoder", &row.response_decoder, &SCHEMA_RESPONSE_DECODERS[..]),
+        ("disposition", &row.disposition, &SCHEMA_DISPOSITIONS[..]),
     ] {
-        if !allowed.contains(value) {
+        if !allowed.contains(&value.as_str()) {
             violations.push(Violation::new(
                 "value-not-allowed",
                 &row.id,
@@ -312,6 +361,21 @@ fn check_row(
             ));
         }
     }
+    // `path#symbol` cannot distinguish two same-named functions in one file, so
+    // an ambiguous name is refused rather than silently standing for both.
+    for cited in &row.emitters {
+        if discovered.ambiguous_symbols.contains(cited) {
+            violations.push(Violation::new(
+                "emitter-ambiguous",
+                &row.id,
+                format!(
+                    "`{cited}` names a symbol declared more than once in that file; attribution \
+                     cannot express which one emits `{}`",
+                    row.method
+                ),
+            ));
+        }
+    }
 
     // ── Feature catalog join ─────────────────────────────────────────────
     // The catalog's own spec is consumed, not merely its key: a row may not
@@ -327,17 +391,38 @@ fn check_row(
                     row.feature_catalog_row, meta.feature_catalog
                 ),
             )),
-            Some(spec) if !spec.is_empty() && spec != &row.spec => {
-                violations.push(Violation::new(
-                    "catalog-spec-mismatch",
-                    &row.id,
-                    format!(
-                        "the row claims spec `{}` but `{}` records `{spec}` for `{}`",
-                        row.spec, meta.feature_catalog, row.feature_catalog_row
-                    ),
-                ));
+            Some(catalog) => {
+                if !catalog.spec.is_empty() && catalog.spec != row.spec {
+                    violations.push(Violation::new(
+                        "catalog-spec-mismatch",
+                        &row.id,
+                        format!(
+                            "the row claims spec `{}` but `{}` records `{}` for `{}`",
+                            row.spec, meta.feature_catalog, catalog.spec, row.feature_catalog_row
+                        ),
+                    ));
+                }
+                // Spec equality alone would accept a swap between two rows that
+                // share a version, so the catalog's area must also own this
+                // method's wire segment.
+                if let Some(expected) = expected_catalog_area(&row.method)
+                    && !catalog.area.is_empty()
+                    && catalog.area != expected
+                {
+                    violations.push(Violation::new(
+                        "catalog-area-mismatch",
+                        &row.id,
+                        format!(
+                            "`{}` is a `{}` method but `{}` files `{}` under area `{}`",
+                            row.method,
+                            expected,
+                            meta.feature_catalog,
+                            row.feature_catalog_row,
+                            catalog.area
+                        ),
+                    ));
+                }
             }
-            Some(_) => {}
         }
     }
 
@@ -345,8 +430,11 @@ fn check_row(
     // A selected 3.18 surface may never inherit stable-3.17 status. The
     // catalog's spec is authoritative where it exists, so editing only the
     // matrix side cannot demote a 3.18 surface.
-    let authoritative_spec =
-        catalog_spec.filter(|spec| !spec.is_empty()).unwrap_or(&row.spec).clone();
+    let authoritative_spec = catalog_spec
+        .map(|catalog| &catalog.spec)
+        .filter(|spec| !spec.is_empty())
+        .unwrap_or(&row.spec)
+        .clone();
     let spec_is_318 = declares_selected_318(&authoritative_spec);
     if spec_is_318 && row.protocol_baseline != "selected_3_18" {
         violations.push(Violation::new(

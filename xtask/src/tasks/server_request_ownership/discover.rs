@@ -8,14 +8,14 @@
 //! forwarding site it cannot attribute to a declared forwarding signature, and
 //! a catalog it cannot deserialize are all findings — never silent skips.
 
-use super::model::{Discovered, RegistryKind, Violation};
+use super::model::{CatalogRow, Discovered, RegistryKind, Violation};
 use color_eyre::eyre::{Result, WrapErr};
 use serde::Deserialize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-/// Call shapes that emit a server-initiated request.
-const REQUEST_TRIGGERS: &[&str] = &[".send_request(", ".send_request_internal("];
+/// Method names whose call emits a server-initiated request.
+const REQUEST_SENDERS: &[&str] = &["send_request", "send_request_internal"];
 
 /// A function whose signature takes the method from its caller is the only
 /// admitted forwarding shape. Anything else that fails to resolve is a finding.
@@ -70,6 +70,24 @@ fn string_literal(arg: &str) -> Option<String> {
     if inner.contains('"') { None } else { Some(inner.to_string()) }
 }
 
+/// The identifier starting at `from`, if any.
+fn identifier_at(source: &str, from: usize) -> &str {
+    let rest = &source[from..];
+    let end = rest.find(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).unwrap_or(rest.len());
+    &rest[..end]
+}
+
+/// Byte index just past the `(` that opens a call whose callee ends at `from`.
+///
+/// Rust permits whitespace and comments between a callee and its argument list.
+/// Requiring the `(` to be adjacent let `self.send_request ("m", p)` — valid
+/// source — slip past discovery silently.
+fn call_open_paren(source: &str, from: usize) -> Option<usize> {
+    let rest = &source[from..];
+    let offset = rest.find(|c: char| !c.is_whitespace())?;
+    if rest[offset..].starts_with('(') { Some(from + offset + 1) } else { None }
+}
+
 /// Leading identifier of an argument, when the argument is exactly one.
 fn plain_identifier(arg: &str) -> Option<&str> {
     let trimmed = arg.trim();
@@ -83,14 +101,21 @@ fn plain_identifier(arg: &str) -> Option<&str> {
     }
 }
 
-/// Remove test-only modules so their sends are never reported as production
-/// emission.
+/// Remove every `#[cfg(test)]`-gated item so test-only sends are never reported
+/// as production emission.
 ///
-/// Both `#[cfg(test)] mod name { .. }` and the brace-less `#[cfg(test)] mod
-/// name;` form are handled. The brace-less form is the common one here — the
-/// scan root carries 18 of them — and jumping to the next `{` anywhere later
-/// in the file would delete unrelated production code along with it.
-fn strip_test_modules(source: &str) -> String {
+/// The contract is deliberately broader than modules: any item behind the
+/// attribute is test-only and must not count, whether it is a `mod`, a helper
+/// `fn`, or an `impl`. Both the block form `#[cfg(test)] item { .. }` and the
+/// brace-less form `#[cfg(test)] mod name;` are handled — the brace-less one is
+/// the common case here, with 18 in the scan root, and jumping to the next `{`
+/// anywhere later in the file would delete unrelated production code with it.
+///
+/// This is a bounded reader, not a Rust parser: an attribute appearing inside a
+/// string literal would be treated as real. Nothing in the scan root does that,
+/// and the failure direction is over-stripping, which shows up as a missing
+/// emitter rather than a silent pass.
+fn strip_test_gated_items(source: &str) -> String {
     let mut out = String::with_capacity(source.len());
     let mut rest = source;
 
@@ -242,16 +267,21 @@ pub(super) fn parse_direction_registry(source: &str) -> BTreeMap<String, Registr
     }
     let body = &source[open..end];
 
-    for (name, implied) in [("s2c(", Some(false)), ("c2s(", Some(true)), ("ext(", None)] {
+    for (name, implied) in [("s2c", Some(false)), ("c2s", Some(true)), ("ext", None)] {
         let mut from = 0usize;
         while let Some(offset) = body[from..].find(name) {
-            let call_open = from + offset + name.len();
-            let preceding = body[..from + offset].chars().next_back();
-            if preceding.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_') {
-                from = call_open;
+            let start = from + offset;
+            let after_name = start + name.len();
+            from = after_name;
+
+            // Reject a match inside a longer identifier in either direction.
+            let preceding = body[..start].chars().next_back();
+            if preceding.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
+                || !identifier_at(body, after_name).is_empty()
+            {
                 continue;
             }
-            from = call_open;
+            let Some(call_open) = call_open_paren(body, after_name) else { continue };
             let Some(args) = top_level_args(&body[call_open..]) else { continue };
             let Some(method) = args.first().and_then(|arg| string_literal(arg)) else { continue };
 
@@ -284,8 +314,9 @@ pub(super) fn scan_emission(
     repo_root: &Path,
     scan_root: &str,
     constants: &BTreeMap<String, String>,
-) -> Result<(BTreeMap<String, Vec<String>>, Vec<Violation>)> {
+) -> Result<(BTreeMap<String, Vec<String>>, BTreeSet<String>, Vec<Violation>)> {
     let mut emitted: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut ambiguous: BTreeSet<String> = BTreeSet::new();
     let mut violations = Vec::new();
 
     let root = repo_root.join(scan_root);
@@ -310,13 +341,28 @@ pub(super) fn scan_emission(
             .map_or_else(|_| path.display().to_string(), |p| p.display().to_string());
         let source = std::fs::read_to_string(&path)
             .wrap_err_with(|| format!("reading emission source {relative}"))?;
-        let stripped = blank_line_comments(&strip_test_modules(&source));
+        let stripped = blank_line_comments(&strip_test_gated_items(&source));
         let decls = fn_declarations(&stripped);
 
-        for trigger in REQUEST_TRIGGERS {
+        // Record symbol names declared more than once in this file; attributing
+        // an emitter to such a name cannot express distinct ownership.
+        let mut seen_names: BTreeSet<&str> = BTreeSet::new();
+        for decl in &decls {
+            if !seen_names.insert(decl.name.as_str()) {
+                ambiguous.insert(format!("{relative}#{}", decl.name));
+            }
+        }
+
+        {
             let mut from = 0usize;
-            while let Some(offset) = stripped[from..].find(trigger) {
-                let open = from + offset + trigger.len();
+            while let Some(offset) = stripped[from..].find(".send_request") {
+                let dot = from + offset;
+                let name = identifier_at(&stripped, dot + 1);
+                from = dot + 1 + name.len().max(1);
+                if !REQUEST_SENDERS.contains(&name) {
+                    continue;
+                }
+                let Some(open) = call_open_paren(&stripped, dot + 1 + name.len()) else { continue };
                 from = open;
 
                 // Parse to the matching `)` over the whole remaining source, so
@@ -375,7 +421,7 @@ pub(super) fn scan_emission(
         paths.sort();
         paths.dedup();
     }
-    Ok((emitted, violations))
+    Ok((emitted, ambiguous, violations))
 }
 
 /// Minimal typed view of `features.toml`. Unknown fields are ignored; the
@@ -392,23 +438,25 @@ struct FeatureRow {
     #[serde(default)]
     spec: String,
     #[serde(default)]
+    area: String,
+    #[serde(default)]
     direction: String,
 }
 
 /// Collect `features.toml` rows declaring `direction = "server_to_client"`,
-/// mapped to their declared `spec`.
+/// mapped to the fields this join consumes.
 ///
 /// Parsed as real TOML: a substring scan would classify a row whose prose
 /// merely quotes the direction key, and would drop a real row whose spelling or
 /// spacing differs.
-pub(super) fn parse_feature_catalog(source: &str) -> Result<BTreeMap<String, String>> {
+pub(super) fn parse_feature_catalog(source: &str) -> Result<BTreeMap<String, CatalogRow>> {
     let catalog: FeatureCatalog =
         toml::from_str(source).wrap_err("parsing the feature catalog as TOML")?;
     Ok(catalog
         .feature
         .into_iter()
         .filter(|row| row.direction == "server_to_client")
-        .map(|row| (row.id, row.spec))
+        .map(|row| (row.id, CatalogRow { spec: row.spec, area: row.area }))
         .collect())
 }
 
@@ -428,13 +476,15 @@ pub(super) fn discover(
             .wrap_err("reading protocol method constants")?;
 
     let constants = method_constants(&constants_source);
-    let (emitted, violations) = scan_emission(repo_root, emission_scan_root, &constants)?;
+    let (emitted, ambiguous_symbols, violations) =
+        scan_emission(repo_root, emission_scan_root, &constants)?;
 
     Ok((
         Discovered {
             registry: parse_direction_registry(&registry_source),
             emitted,
             catalog_rows: parse_feature_catalog(&catalog_source)?,
+            ambiguous_symbols,
         },
         violations,
     ))

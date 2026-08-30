@@ -1434,6 +1434,7 @@ ci-policy:
     @python3 scripts/ci/validate_cargo_lock_conflict_policy.py --repo-root .
     @cargo xtask check-from-raw
     @cargo xtask check-memory-lifecycle-policy
+    @cargo xtask server-request-ownership check
     just version-check
     just ci-doc-claims
 
