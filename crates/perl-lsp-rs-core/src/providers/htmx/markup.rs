@@ -117,6 +117,7 @@ enum MasonBlockKind {
     Attr,
     Class,
     Cleanup,
+    Def,
     Doc,
     Filter,
     Init,
@@ -124,14 +125,16 @@ enum MasonBlockKind {
     Once,
     Perl,
     Shared,
+    Sub,
     Text,
 }
 
 impl MasonBlockKind {
-    const ALL: [Self; 11] = [
+    const ALL: [Self; 13] = [
         Self::Attr,
         Self::Class,
         Self::Cleanup,
+        Self::Def,
         Self::Doc,
         Self::Filter,
         Self::Init,
@@ -139,6 +142,7 @@ impl MasonBlockKind {
         Self::Once,
         Self::Perl,
         Self::Shared,
+        Self::Sub,
         Self::Text,
     ];
 
@@ -147,6 +151,7 @@ impl MasonBlockKind {
             Self::Attr => b"attr",
             Self::Class => b"class",
             Self::Cleanup => b"cleanup",
+            Self::Def => b"def",
             Self::Doc => b"doc",
             Self::Filter => b"filter",
             Self::Init => b"init",
@@ -154,6 +159,7 @@ impl MasonBlockKind {
             Self::Once => b"once",
             Self::Perl => b"perl",
             Self::Shared => b"shared",
+            Self::Sub => b"sub",
             Self::Text => b"text",
         }
     }
@@ -183,17 +189,23 @@ fn open_start_tag_offset(source_prefix: &str) -> Option<usize> {
 /// Advance markup state across `[start, end)`, which never contains a newline.
 ///
 /// Mojolicious- and Mason-style template-code lines whose first
-/// non-whitespace byte is `%` are not markup at all, so their bytes are
-/// excluded from the scan instead of being interpreted as document text.
-/// Earlier `%` lines containing HTML-like strings therefore cannot push the
-/// scanner into a false start-tag or invalid-tag state.
+/// non-whitespace byte is `%` are not markup, so while the scanner is in
+/// plain text their bytes are excluded from the scan instead of being
+/// interpreted as document text. Earlier `%` lines containing HTML-like
+/// strings therefore cannot push the scanner into a false start-tag or
+/// invalid-tag state.
+///
+/// Inside any other state the line is that state's content, so its bytes are
+/// always scanned: a `%` line may carry the very delimiter that closes the
+/// enclosing region (`%>` starting a line, `-->` inside a comment), and
+/// skipping it would trap the scanner and suppress all later completions.
 fn scan_markup_segment(
     bytes: &[u8],
     start: usize,
     end: usize,
     mut state: MarkupState,
 ) -> MarkupState {
-    if template_code_line(bytes, start, end) {
+    if state == MarkupState::Text && template_code_line(bytes, start, end) {
         return state;
     }
 
@@ -810,11 +822,35 @@ mod tests {
     }
 
     #[test]
+    fn a_percent_line_carrying_a_region_closer_is_still_scanned() {
+        for source in
+            ["<% if ($x) {\n%>\n<div hx-", "[% IF x\n%]\n<div hx-", "<!--\n% note -->\n<div hx-"]
+        {
+            assert!(
+                htmx_attribute_name_context(source, source.len()).is_some(),
+                "closer on a %-line was skipped for {source:?}"
+            );
+        }
+    }
+
+    #[test]
     fn named_mason_blocks_do_not_suppress_later_markup() {
         let source = "<%method greet>\n<p>hello</p>\n</%method>\n<div hx-";
         assert!(
             htmx_attribute_name_context(source, source.len())
                 .is_some_and(|context| context.prefix == "hx-")
+        );
+
+        let sub_block = "<%sub render>\n<p>x</p>\n</%sub>\n<button hx-post";
+        assert!(
+            htmx_attribute_name_context(sub_block, sub_block.len())
+                .is_some_and(|context| context.prefix == "hx-post")
+        );
+
+        let def_block = "<%def footer>\n<span>x</span>\n</%def>\n<div hx-get";
+        assert!(
+            htmx_attribute_name_context(def_block, def_block.len())
+                .is_some_and(|context| context.prefix == "hx-get")
         );
 
         let with_substitution = "<%attr>\n  id => 'x'\n</%attr>\n<% \"inline\" %>\n<button hx-post";
