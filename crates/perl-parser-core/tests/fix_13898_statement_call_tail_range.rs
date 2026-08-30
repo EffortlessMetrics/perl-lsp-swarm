@@ -1,3 +1,5 @@
+#![allow(clippy::panic)] // Shape assertions report the actual AST kind on mismatch.
+
 mod cpan_test_helpers;
 use cpan_test_helpers::*;
 use perl_parser_core::{Node, NodeKind};
