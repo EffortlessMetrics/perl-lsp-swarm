@@ -31,7 +31,7 @@ fn assert_function_call(node: &Node, name: &str, args_len: usize, context: &str)
 
 fn assert_range_with_nested_symbolic(
     source: &str,
-    builtin: Option<(&str, usize)>,
+    builtin: (&str, usize),
     nested_side: &str,
     nested_op: &str,
 ) {
@@ -52,14 +52,50 @@ fn assert_range_with_nested_symbolic(
         panic!("expected nested {nested_op} for `{source}`, got {:?}", nested.kind);
     };
     assert_eq!(op, nested_op, "unexpected nested operator for `{source}`:\n{}", ast.to_sexp());
-    if let Some((builtin, args_len)) = builtin {
-        assert_function_call(
-            if nested_side == "left" { nested_left } else { left },
-            builtin,
-            args_len,
-            source,
-        );
-    }
+    let (name, args_len) = builtin;
+    assert_function_call(
+        if nested_side == "left" { nested_left } else { left },
+        name,
+        args_len,
+        source,
+    );
+}
+
+fn assert_variable(node: &Node, name: &str, context: &str) {
+    assert!(
+        matches!(&node.kind, NodeKind::Variable { sigil, name: actual } if sigil == "$" && actual == name),
+        "expected ${name} for {context}, got {:?}",
+        node.kind
+    );
+}
+
+fn assert_indirect_call_route() {
+    let source = "close FH || $b .. $c;";
+    assert_clean_parse(source);
+    let ast = parse(source);
+    let expression = expression_statement(&ast);
+    let NodeKind::Binary { op, left, right } = &expression.kind else {
+        panic!("expected outer range for `{source}`, got {:?}", expression.kind);
+    };
+    assert_eq!(op, "..", "expected range outer for `{source}`:\n{}", ast.to_sexp());
+    assert_variable(right, "c", source);
+
+    let NodeKind::Binary { op, left: call, right: rhs } = &left.kind else {
+        panic!("expected nested || for `{source}`, got {:?}", left.kind);
+    };
+    assert_eq!(op, "||", "unexpected nested operator for `{source}`:\n{}", ast.to_sexp());
+    assert_variable(rhs, "b", source);
+    assert!(
+        matches!(
+            &call.kind,
+            NodeKind::IndirectCall { method, object, args }
+                if method == "close"
+                    && args.is_empty()
+                    && matches!(&object.kind, NodeKind::Identifier { name } if name == "FH")
+        ),
+        "expected `close FH` indirect call for {source}, got {:?}",
+        call.kind
+    );
 }
 
 #[test]
@@ -73,7 +109,7 @@ fn statement_call_tail_range_is_outside_all_symbolic_operators() {
         ("time // $b .. $c;", "//"),
     ] {
         let builtin = if nested_op == "||" { "shift" } else { "time" };
-        assert_range_with_nested_symbolic(source, Some((builtin, 0)), "left", nested_op);
+        assert_range_with_nested_symbolic(source, (builtin, 0), "left", nested_op);
     }
 
     for (source, nested_op) in [
@@ -84,16 +120,16 @@ fn statement_call_tail_range_is_outside_all_symbolic_operators() {
         ("time .. $b || $c;", "||"),
         ("time .. $b // $c;", "//"),
     ] {
-        assert_range_with_nested_symbolic(source, Some(("time", 0)), "right", nested_op);
+        assert_range_with_nested_symbolic(source, ("time", 0), "right", nested_op);
     }
 }
 
 #[test]
 fn statement_call_tail_range_reaches_each_call_site() {
-    assert_range_with_nested_symbolic("ref $x || $b .. $c;", Some(("ref", 1)), "left", "||");
-    assert_range_with_nested_symbolic("ref $x .. $b && $c;", Some(("ref", 1)), "right", "&&");
-    assert_range_with_nested_symbolic("lc $x | $b .. $c;", Some(("lc", 1)), "left", "|");
-    assert_range_with_nested_symbolic("close FH || $b .. $c;", None, "left", "||");
+    assert_range_with_nested_symbolic("ref $x || $b .. $c;", ("ref", 1), "left", "||");
+    assert_range_with_nested_symbolic("ref $x .. $b && $c;", ("ref", 1), "right", "&&");
+    assert_range_with_nested_symbolic("lc $x | $b .. $c;", ("lc", 1), "left", "|");
+    assert_indirect_call_route();
 }
 
 #[test]
@@ -137,7 +173,7 @@ fn statement_call_tail_word_operators_stay_outside_range() {
 
 #[test]
 fn statement_call_tail_range_preserves_adjacent_boundaries() {
-    assert_range_with_nested_symbolic("time == 1 .. 2;", Some(("time", 0)), "left", "==");
+    assert_range_with_nested_symbolic("time == 1 .. 2;", ("time", 0), "left", "==");
 
     let source = "time .. $b, $c;";
     assert_clean_parse(source);
