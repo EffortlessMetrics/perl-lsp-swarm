@@ -356,8 +356,16 @@ class ContractBindingTests(unittest.TestCase):
             match, "could not locate is_blocking_gate_status in gates.rs"
         )
         assert match is not None
-        body = re.sub(r"//[^\n]*", "", match.group(1))
-        declared = sorted(set(re.findall(r'"([a-z_]+)"', body)))
+        body = re.sub(r"/\*.*?\*/", "", match.group(1), flags=re.DOTALL)
+        body = re.sub(r"//[^\n]*", "", body)
+        # Ask only which *contract* statuses the function names. Collecting
+        # every literal instead would make an added log line or diagnostic
+        # string read as a status and fail CI without any policy change.
+        declared = sorted(
+            status
+            for status in render_summary.RECOGNIZED_STATUSES
+            if f'"{status}"' in body
+        )
         self.assertEqual(
             sorted(render_summary.BLOCKING_STATUSES),
             declared,
