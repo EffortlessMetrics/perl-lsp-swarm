@@ -389,7 +389,7 @@
           "rolled_back"
         ]
       },
-      "side_effect_disposition": "current_preserved_but_unproven",
+      "side_effect_disposition": "current_unknown_after_contradiction",
       "summary_template_id": "t_packet_inconsistent",
       "terminality": "nonterminal_actionable"
     },
@@ -421,7 +421,7 @@
           "not_applicable"
         ]
       },
-      "side_effect_disposition": "current_preserved_but_unproven",
+      "side_effect_disposition": "current_unknown_after_contradiction",
       "summary_template_id": "t_packet_inconsistent",
       "terminality": "nonterminal_actionable"
     },
@@ -450,7 +450,7 @@
           "update"
         ]
       },
-      "side_effect_disposition": "current_preserved_but_unproven",
+      "side_effect_disposition": "current_unknown_after_contradiction",
       "summary_template_id": "t_packet_inconsistent",
       "terminality": "nonterminal_actionable"
     },
@@ -480,7 +480,7 @@
           "not_applicable"
         ]
       },
-      "side_effect_disposition": "current_preserved_but_unproven",
+      "side_effect_disposition": "current_unknown_after_contradiction",
       "summary_template_id": "t_packet_inconsistent",
       "terminality": "nonterminal_actionable"
     },
@@ -536,7 +536,7 @@
           "rollback"
         ]
       },
-      "side_effect_disposition": "current_preserved_but_unproven",
+      "side_effect_disposition": "current_unknown_after_contradiction",
       "summary_template_id": "t_packet_inconsistent",
       "terminality": "nonterminal_actionable"
     },
@@ -1400,12 +1400,13 @@
       "retry_forbidden_requires_replan"
     ],
     "side_effect_disposition": [
-      "no_side_effect",
-      "current_advanced",
-      "current_restored",
-      "current_preserved_known_good",
-      "current_preserved_but_unproven",
       "candidate_published_not_current",
+      "current_advanced",
+      "current_preserved_but_unproven",
+      "current_preserved_known_good",
+      "current_restored",
+      "current_unknown_after_contradiction",
+      "no_side_effect",
       "residue_present"
     ],
     "terminality": [
