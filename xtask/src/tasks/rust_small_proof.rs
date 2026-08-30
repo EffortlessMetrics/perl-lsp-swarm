@@ -1432,6 +1432,101 @@ tests::gamma: test
         let _ = fs::remove_dir_all(&dir);
     }
 
+    /// Scratch directory for tests that exercise real receipt files.
+    fn scratch_dir(label: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("rsp-{label}-{}", std::process::id()));
+        let Ok(()) = fs::create_dir_all(&dir) else {
+            panic!("temp dir must be creatable");
+        };
+        dir
+    }
+
+    #[test]
+    fn the_failure_emission_path_writes_a_complete_verifiable_receipt() {
+        // Emission itself was only covered end-to-end through the CLI. This
+        // pins the same code path permanently: `fail_closed` must write a
+        // receipt describing the whole lane *and* propagate the original
+        // failure rather than masking it with an emission problem.
+        let dir = scratch_dir("emit-failure");
+        let path = dir.join("emitted.json");
+
+        let mut recorder = Recorder::new();
+        recorder.record(
+            "fetch locked inputs",
+            argv("cargo", &["fetch", "--locked"]),
+            StepOutcome::Ok,
+            Some(0),
+        );
+        recorder.record(
+            "workspace compile check",
+            argv("cargo", &["check", "--workspace", "--locked"]),
+            StepOutcome::ProductFailure,
+            Some(101),
+        );
+
+        let emitted = fail_closed(
+            &path,
+            &sample_subject(),
+            recorder,
+            None,
+            ProofResult::ProductFailure,
+            eyre!("step 'workspace compile check' failed: product/test failure (exit code 101)"),
+        );
+
+        let Err(error) = emitted else {
+            panic!("a failed lane must still propagate its failure");
+        };
+        assert!(
+            format!("{error:#}").contains("product/test failure (exit code 101)"),
+            "receipt emission must not replace the original failure: {error:#}"
+        );
+
+        let Ok(text) = fs::read_to_string(&path) else {
+            panic!("a failed lane must leave a receipt on disk");
+        };
+        let Ok(receipt) = serde_json::from_str::<RustSmallProofReceipt>(&text) else {
+            panic!("the emitted receipt must be readable");
+        };
+        assert_eq!(receipt.result, ProofResult::ProductFailure);
+        assert_eq!(receipt.scorecard_census, None);
+        assert_eq!(receipt.steps.len(), expected_steps().len());
+        assert_eq!(receipt.steps[1].outcome, StepOutcome::ProductFailure);
+        assert_eq!(receipt.steps[1].exit_code, Some(101));
+        assert!(
+            receipt.steps.iter().skip(2).all(|step| step.outcome == StepOutcome::NotRun),
+            "the unreached remainder must be recorded as not_run"
+        );
+        assert!(
+            verify_receipt(&receipt, Some(&sample_subject())).is_ok(),
+            "the receipt this command emits must pass its own verifier"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_success_emission_path_round_trips_through_a_real_file() {
+        // The success path writes and then re-reads nothing, so pin that what
+        // `write_receipt` puts on disk is what `--verify-receipt` accepts.
+        let dir = scratch_dir("emit-success");
+        let path = dir.join("nested").join("emitted.json");
+        let receipt = success_receipt();
+
+        let Ok(()) = write_receipt(&path, &receipt) else {
+            panic!("write_receipt must create missing parents and write");
+        };
+        let Ok(text) = fs::read_to_string(&path) else {
+            panic!("the receipt must exist on disk");
+        };
+        let Ok(parsed) = serde_json::from_str::<RustSmallProofReceipt>(&text) else {
+            panic!("the emitted receipt must be readable");
+        };
+        assert_eq!(parsed, receipt, "the written receipt must round-trip exactly");
+        assert!(verify_receipt(&parsed, Some(&sample_subject())).is_ok());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn every_step_position_is_checked_not_just_the_ones_the_point_tests_pick() {
         // The point-tests above mutate fixed indices, so a regression that only
