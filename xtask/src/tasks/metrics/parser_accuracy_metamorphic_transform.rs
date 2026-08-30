@@ -293,20 +293,20 @@ impl CoordinateMap {
             return PositionRelation::Invalid;
         }
 
+        if let Some(relation) = edit_boundary_relation(
+            offset,
+            self.segments.iter().filter_map(|segment| match segment {
+                CoordinateSegment::Edit { removed_base, inserted_transformed, .. } => {
+                    Some((*removed_base, *inserted_transformed))
+                }
+                CoordinateSegment::Unchanged { .. } => None,
+            }),
+        ) {
+            return relation;
+        }
+
         for segment in &self.segments {
             if let CoordinateSegment::Edit { removed_base, inserted_transformed, .. } = segment {
-                if removed_base.is_empty() && offset == removed_base.start {
-                    return PositionRelation::Ambiguous {
-                        lower: inserted_transformed.start,
-                        upper: inserted_transformed.end,
-                    };
-                }
-                if offset == removed_base.start {
-                    return point_relation(offset, inserted_transformed.start);
-                }
-                if offset == removed_base.end {
-                    return point_relation(offset, inserted_transformed.end);
-                }
                 if removed_base.start < offset && offset < removed_base.end {
                     return PositionRelation::RemovedOnly {
                         base_offset: offset,
@@ -338,20 +338,20 @@ impl CoordinateMap {
             return PositionRelation::Invalid;
         }
 
+        if let Some(relation) = edit_boundary_relation(
+            offset,
+            self.segments.iter().filter_map(|segment| match segment {
+                CoordinateSegment::Edit { removed_base, inserted_transformed, .. } => {
+                    Some((*inserted_transformed, *removed_base))
+                }
+                CoordinateSegment::Unchanged { .. } => None,
+            }),
+        ) {
+            return relation;
+        }
+
         for segment in &self.segments {
             if let CoordinateSegment::Edit { removed_base, inserted_transformed, .. } = segment {
-                if inserted_transformed.is_empty() && offset == inserted_transformed.start {
-                    return PositionRelation::Ambiguous {
-                        lower: removed_base.start,
-                        upper: removed_base.end,
-                    };
-                }
-                if offset == inserted_transformed.start {
-                    return point_relation(offset, removed_base.start);
-                }
-                if offset == inserted_transformed.end {
-                    return point_relation(offset, removed_base.end);
-                }
                 if inserted_transformed.start < offset && offset < inserted_transformed.end {
                     return PositionRelation::InsertedOnly {
                         transformed_offset: offset,
@@ -938,6 +938,36 @@ fn point_relation(source_offset: usize, target_offset: usize) -> PositionRelatio
     }
 }
 
+fn edit_boundary_relation(
+    offset: usize,
+    relations: impl Iterator<Item = (ByteRange, ByteRange)>,
+) -> Option<PositionRelation> {
+    let mut bounds: Option<(usize, usize)> = None;
+
+    for (source, target) in relations {
+        for candidate in [
+            (offset == source.start).then_some(target.start),
+            (offset == source.end).then_some(target.end),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            bounds = Some(match bounds {
+                Some((lower, upper)) => (lower.min(candidate), upper.max(candidate)),
+                None => (candidate, candidate),
+            });
+        }
+    }
+
+    bounds.map(|(lower, upper)| {
+        if lower == upper {
+            point_relation(offset, lower)
+        } else {
+            PositionRelation::Ambiguous { lower, upper }
+        }
+    })
+}
+
 fn range_relation(source: ByteRange, target: ByteRange) -> RangeRelation {
     if source == target {
         RangeRelation::Exact { range: target }
@@ -1139,6 +1169,77 @@ mod tests {
         assert_eq!(
             transformed.coordinate_map.map_transformed_position(5),
             PositionRelation::Ambiguous { lower: 3, upper: 5 }
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn adjacent_deletions_aggregate_the_complete_collapsed_boundary() -> TestResult {
+        let two_deletions = apply_exact_edits(
+            &subject("abc")?,
+            "test.profile.v1",
+            vec![edit("delete-a", 0, 1, "a", ""), edit("delete-b", 1, 2, "b", "")],
+        )?;
+        assert_eq!(two_deletions.final_bytes, b"c");
+        assert_eq!(
+            two_deletions.coordinate_map.map_transformed_position(0),
+            PositionRelation::Ambiguous { lower: 0, upper: 2 }
+        );
+        assert_eq!(
+            two_deletions.coordinate_map.map_transformed_range(ByteRange::new(0, 0)),
+            RangeRelation::Ambiguous
+        );
+
+        let source = subject("abcd")?;
+        let transformed = apply_exact_edits(
+            &source,
+            "test.profile.v1",
+            vec![
+                edit("delete-a", 0, 1, "a", ""),
+                edit("delete-b", 1, 2, "b", ""),
+                edit("delete-c", 2, 3, "c", ""),
+            ],
+        )?;
+
+        assert_eq!(transformed.final_bytes, b"d");
+        assert_eq!(
+            transformed.coordinate_map.map_transformed_position(0),
+            PositionRelation::Ambiguous { lower: 0, upper: 3 }
+        );
+        assert_eq!(
+            transformed.coordinate_map.map_transformed_range(ByteRange::new(0, 0)),
+            RangeRelation::Ambiguous
+        );
+        assert_eq!(
+            transformed.coordinate_map.map_base_position(1),
+            PositionRelation::Mapped { offset: 0 }
+        );
+        assert_eq!(
+            transformed.coordinate_map.map_base_position(2),
+            PositionRelation::Mapped { offset: 0 }
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn adjacent_replacement_and_deletion_keep_the_full_reverse_boundary() -> TestResult {
+        let source = subject("abc")?;
+        let transformed = apply_exact_edits(
+            &source,
+            "test.profile.v1",
+            vec![edit("expand-a", 0, 1, "a", "XX"), edit("delete-b", 1, 2, "b", "")],
+        )?;
+
+        assert_eq!(transformed.final_bytes, b"XXc");
+        assert_eq!(
+            transformed.coordinate_map.map_transformed_position(2),
+            PositionRelation::Ambiguous { lower: 1, upper: 2 }
+        );
+        assert_eq!(
+            transformed.coordinate_map.map_transformed_range(ByteRange::new(2, 2)),
+            RangeRelation::Ambiguous
         );
 
         Ok(())
