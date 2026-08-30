@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import unittest
 from pathlib import Path
 
@@ -17,45 +18,53 @@ BUILD_SKILLS = (
 )
 WORKFLOW = ".github/workflows/active-authority-contract.yml"
 SELF_TEST = "tests/test_writer_authority_transfer_contract.py"
+HEADING = re.compile(r"^(#{1,6})\s+")
 
-TRANSFER_REQUIREMENTS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("typed return", ("typed return",)),
-    ("explicit uncertainty", ("`not_proven`",)),
-    ("silence is not transfer", ("silence does not transfer ownership",)),
-    (
-        "silence does not free the candidate",
-        ("does not make a claim available to a second writer",),
-    ),
-    (
-        "artifact and mutation-state inspection",
-        ("inspect the durable artifact and local mutation state",),
-    ),
-    ("prior-writer resumability", ("prior writer can resume",)),
-    ("process stop state", ("process has stopped",)),
-    ("unique local work", ("uncommitted/unpushed work exists",)),
-    ("salvage before replacement", ("salvage useful work before replacing a writer",)),
+TRANSFER_REQUIREMENTS = (
+    ("typed return", "typed return"),
+    ("explicit uncertainty", "`not_proven`"),
+    ("silence is not transfer", "silence does not transfer ownership"),
+    ("silence does not free the candidate", "does not make a claim available to a second writer"),
+    ("artifact and mutation-state inspection", "inspect the durable artifact and local mutation state"),
+    ("prior-writer resumability", "prior writer can resume"),
+    ("process stop state", "process has stopped"),
+    ("unique local work", "uncommitted/unpushed work exists"),
+    ("salvage before replacement", "salvage useful work before replacing a writer"),
     (
         "inspection is not authority transfer",
-        ("establishing those facts alone does not transfer mutation authority",),
+        "establishing those facts alone does not transfer mutation authority",
     ),
-    ("revoke before reassign", ("reassign only after",)),
-    ("non-resumable path", ("provably unable to resume",)),
-    (
-        "acknowledged stopped-or-revoked path",
-        ("acknowledged handoff has stopped or revoked it",),
-    ),
-    (
-        "one retained writer",
-        ("two writers never mutate the same candidate concurrently",),
-    ),
+    ("revoke before reassign", "reassign only after"),
+    ("non-resumable path", "provably unable to resume"),
+    ("acknowledged stopped-or-revoked path", "acknowledged handoff has stopped or revoked it"),
+    ("one retained writer", "two writers never mutate the same candidate concurrently"),
 )
-
 TRANSFER_ORDER = (
     "prior writer can resume",
     "salvage useful work before replacing a writer",
     "establishing those facts alone does not transfer mutation authority",
     "reassign only after",
     "two writers never mutate the same candidate concurrently",
+)
+MUTATION_OWNER_REQUIREMENTS = (
+    (
+        "one candidate writer",
+        ("one writer mutates the candidate branch/worktree at a time",),
+    ),
+    (
+        "explicit reviewer reassignment",
+        (
+            "a reviewer may become the writer only through an explicit reassignment",
+            "a reviewer may become writer only through an explicit reassignment",
+        ),
+    ),
+    (
+        "affected proof and review",
+        (
+            "the resulting mutation still returns through affected proof and review",
+            "resulting mutation still returns through affected proof/review",
+        ),
+    ),
 )
 
 
@@ -67,86 +76,88 @@ def normalize(text: str) -> str:
     return " ".join(text.split()).lower()
 
 
-def h2_section(text: str, heading: str) -> str | None:
-    in_section = False
-    lines: list[str] = []
+def section(text: str, heading: str) -> tuple[str | None, str | None]:
+    matches = [
+        index
+        for index, line in enumerate(text.splitlines())
+        if line.strip().casefold() == heading.casefold()
+    ]
+    if not matches:
+        return None, f"missing section {heading!r}"
+    if len(matches) != 1:
+        return None, f"section {heading!r} occurs {len(matches)} times"
 
-    for line in text.splitlines():
-        if line.strip().casefold() == heading.casefold():
-            in_section = True
-            continue
-        if in_section and line.lstrip().startswith("## ") and not line.lstrip().startswith("### "):
+    lines = text.splitlines()
+    target_level = len(heading) - len(heading.lstrip("#"))
+    body: list[str] = []
+    for line in lines[matches[0] + 1 :]:
+        found = HEADING.match(line.lstrip())
+        if found is not None and len(found.group(1)) <= target_level:
             break
-        if in_section:
-            lines.append(line)
-
-    return "\n".join(lines) if in_section else None
+        body.append(line)
+    return "\n".join(body), None
 
 
-def h3_section(text: str, heading: str) -> str | None:
-    in_section = False
-    lines: list[str] = []
+def transfer_errors(text: str, heading: str) -> list[str]:
+    body, error = section(text, heading)
+    if error is not None:
+        return [error]
 
-    for line in text.splitlines():
-        if line.strip().casefold() == heading.casefold():
-            in_section = True
-            continue
-        if in_section and line.lstrip().startswith("#"):
-            break
-        if in_section:
-            lines.append(line)
-
-    return "\n".join(lines) if in_section else None
-
-
-def validate_transfer(text: str, heading: str) -> list[str]:
-    section = h2_section(text, heading)
-    if section is None:
-        return [f"missing section {heading!r}"]
-
-    normalized = prose_text(section, is_text=True).lower()
-    failures: list[str] = []
-
-    for label, alternatives in TRANSFER_REQUIREMENTS:
-        if not any(term in normalized for term in alternatives):
-            failures.append(f"missing {label}")
-
-    positions = [normalized.find(marker) for marker in TRANSFER_ORDER]
+    visible = prose_text(body or "", is_text=True).lower()
+    failures = [
+        f"missing {label}"
+        for label, phrase in TRANSFER_REQUIREMENTS
+        if phrase not in visible
+    ]
+    positions = [visible.find(phrase) for phrase in TRANSFER_ORDER]
     if all(position >= 0 for position in positions) and positions != sorted(positions):
         failures.append("transfer obligations are out of order")
-
     return failures
 
 
-def validate_reviewer_reassignment(text: str) -> list[str]:
-    section = h3_section(text, "### Mutation owner")
-    if section is None:
-        return ["missing section '### Mutation owner'"]
+def mutation_owner_errors(text: str) -> list[str]:
+    body, error = section(text, "### Mutation owner")
+    if error is not None:
+        return [error]
 
-    normalized = prose_text(section, is_text=True).lower()
-    requirements = (
-        ("one candidate writer", ("one writer mutates the candidate branch/worktree at a time",)),
-        (
-            "explicit reviewer reassignment",
-            (
-                "a reviewer may become the writer only through an explicit reassignment",
-                "a reviewer may become writer only through an explicit reassignment",
-            ),
-        ),
-        (
-            "affected proof and review",
-            (
-                "the resulting mutation still returns through affected proof and review",
-                "resulting mutation still returns through affected proof/review",
-            ),
-        ),
-    )
-
+    visible = prose_text(body or "", is_text=True).lower()
     return [
         f"missing {label}"
-        for label, alternatives in requirements
-        if not any(term in normalized for term in alternatives)
+        for label, alternatives in MUTATION_OWNER_REQUIREMENTS
+        if not any(phrase in visible for phrase in alternatives)
     ]
+
+
+def workflow_run_commands(text: str) -> tuple[str, ...]:
+    lines = text.splitlines()
+    commands: list[str] = []
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        active = line.strip().removeprefix("- ").lstrip()
+        if line.lstrip().startswith("#") or not active.startswith("run:"):
+            index += 1
+            continue
+
+        indent = len(line) - len(line.lstrip(" "))
+        value = active.removeprefix("run:").strip()
+        if value not in {"|", "|-", ">", ">-"}:
+            commands.append(normalize(value))
+            index += 1
+            continue
+
+        block: list[str] = []
+        index += 1
+        while index < len(lines):
+            candidate = lines[index]
+            stripped = candidate.strip()
+            if stripped and len(candidate) - len(candidate.lstrip(" ")) <= indent:
+                break
+            if stripped and not stripped.startswith("#"):
+                block.append(stripped)
+            index += 1
+        commands.append(normalize(" ".join(block)))
+    return tuple(commands)
 
 
 def transfer_fixture() -> str:
@@ -171,98 +182,123 @@ candidate concurrently.
 
 
 class WriterAuthorityTransferContractTests(unittest.TestCase):
-    def test_provider_orchestration_skills_require_revoke_before_reassign(self) -> None:
+    def test_live_provider_contracts(self) -> None:
         for provider, path, heading in ORCHESTRATION_SKILLS:
-            failures = validate_transfer(read(path), heading)
-            self.assertFalse(
-                failures,
-                f"{provider} ({path}) violates writer transfer contract: {failures}",
-            )
+            with self.subTest(provider=provider, surface="orchestration"):
+                self.assertEqual(transfer_errors(read(path), heading), [])
+            with self.subTest(provider=provider, surface="candidate-local"):
+                self.assertIn(
+                    "separate specified claims may use separate writers/worktrees; "
+                    "one candidate still has exactly one writer",
+                    prose_text(read(path), is_text=True).lower(),
+                )
 
-    def test_provider_builders_require_explicit_reviewer_reassignment(self) -> None:
         for provider, path in BUILD_SKILLS:
-            failures = validate_reviewer_reassignment(read(path))
-            self.assertFalse(
-                failures,
-                f"{provider} ({path}) violates reviewer-to-writer transfer: {failures}",
-            )
+            with self.subTest(provider=provider, surface="reviewer-reassignment"):
+                self.assertEqual(mutation_owner_errors(read(path)), [])
 
-    def test_transfer_is_candidate_local_not_global(self) -> None:
-        for provider, path, _ in ORCHESTRATION_SKILLS:
-            text = prose_text(read(path), is_text=True).lower()
-            self.assertIn(
-                "separate specified claims may use separate writers/worktrees; "
-                "one candidate still has exactly one writer",
-                text,
-                f"{provider} ({path}) no longer keeps writer authority candidate-local",
-            )
-
-    def test_workflow_runs_and_triggers_this_contract(self) -> None:
+    def test_workflow_wiring(self) -> None:
         workflow = read(WORKFLOW)
         for event in ("pull_request", "push"):
-            self.assertIn(
-                SELF_TEST,
-                workflow_event_paths(workflow, event),
-                f"writer-transfer contract is missing from on.{event}.paths",
-            )
-        self.assertIn(
+            with self.subTest(event=event):
+                self.assertIn(SELF_TEST, workflow_event_paths(workflow, event))
+
+        expected = normalize(
             "python3 -m unittest "
             "tests/test_active_authority_contract.py "
-            "tests/test_writer_authority_transfer_contract.py",
-            normalize(workflow),
+            "tests/test_writer_authority_transfer_contract.py"
         )
+        self.assertIn(expected, workflow_run_commands(workflow))
 
-    def test_silence_cannot_become_transfer_authority(self) -> None:
-        text = transfer_fixture().replace(
-            "Silence does not transfer ownership and does not make a claim available to\n"
-            "a second writer.",
-            "Silence transfers ownership and makes the claim available to a second writer.",
+    def test_transfer_mutations_fail_closed(self) -> None:
+        source = transfer_fixture()
+        active_body = source.split("## A quiet worker is not a result\n\n", 1)[1].split(
+            "\n## Root-held claim frames",
+            1,
+        )[0]
+        cases = (
+            (
+                "silence transfers",
+                source.replace(
+                    "Silence does not transfer ownership and does not make a claim available to\n"
+                    "a second writer.",
+                    "Silence transfers ownership and frees the claim for a second writer.",
+                ),
+                "missing silence is not transfer",
+            ),
+            (
+                "unique work skipped",
+                source.replace(
+                    "whether uncommitted/unpushed work exists",
+                    "whether the worktree exists",
+                ),
+                "missing unique local work",
+            ),
+            (
+                "salvage skipped",
+                source.replace(
+                    "Salvage useful work before\nreplacing a writer.",
+                    "Replace the writer.",
+                ),
+                "missing salvage before replacement",
+            ),
+            (
+                "inspection becomes transfer",
+                source.replace(
+                    "Establishing those facts alone does not transfer mutation authority:",
+                    "Those facts transfer mutation authority:",
+                ),
+                "missing inspection is not authority transfer",
+            ),
+            (
+                "grant before revoke",
+                source.replace("reassign only after", "reassign before"),
+                "missing revoke before reassign",
+            ),
+            (
+                "idle substitutes for revocation",
+                source.replace(
+                    "the prior writer is provably unable to resume, or after an\n"
+                    "acknowledged handoff has stopped or revoked it",
+                    "the prior writer appears idle",
+                ),
+                "missing non-resumable path",
+            ),
+            (
+                "requirements only in fence",
+                "## A quiet worker is not a result\n\n```text\n"
+                + active_body
+                + "\n```\n\nSilence does not transfer ownership.\n## Root-held claim frames\n",
+                "missing prior-writer resumability",
+            ),
+            (
+                "requirements only in comment",
+                "## A quiet worker is not a result\n\n<!--\n"
+                + active_body
+                + "\n-->\n\nSilence does not transfer ownership.\n## Root-held claim frames\n",
+                "missing prior-writer resumability",
+            ),
+            (
+                "requirements outside active section",
+                source.replace("## A quiet worker is not a result", "## Retired example", 1)
+                + "\n## A quiet worker is not a result\nSilence does not transfer ownership.\n",
+                "missing prior-writer resumability",
+            ),
+            (
+                "duplicate transfer section",
+                source + "\n" + source,
+                "section '## A quiet worker is not a result' occurs 2 times",
+            ),
         )
-        failures = validate_transfer(text, "## A quiet worker is not a result")
-        self.assertIn("missing silence is not transfer", failures)
-        self.assertIn("missing silence does not free the candidate", failures)
+        for name, text, expected in cases:
+            with self.subTest(name=name):
+                self.assertIn(
+                    expected,
+                    transfer_errors(text, "## A quiet worker is not a result"),
+                )
 
-    def test_unique_work_cannot_be_skipped(self) -> None:
-        text = (
-            transfer_fixture()
-            .replace(
-                "whether uncommitted/unpushed work exists",
-                "whether the worktree exists",
-            )
-            .replace(
-                "Salvage useful work before\nreplacing a writer.",
-                "Replace the writer.",
-            )
-        )
-        failures = validate_transfer(text, "## A quiet worker is not a result")
-        self.assertIn("missing unique local work", failures)
-        self.assertIn("missing salvage before replacement", failures)
-
-    def test_grant_before_revocation_fails_closed(self) -> None:
-        text = transfer_fixture().replace("reassign only after", "reassign before")
-        failures = validate_transfer(text, "## A quiet worker is not a result")
-        self.assertIn("missing revoke before reassign", failures)
-
-    def test_inspection_alone_cannot_transfer_authority(self) -> None:
-        text = transfer_fixture().replace(
-            "Establishing those facts alone does not transfer mutation authority:",
-            "Those facts transfer mutation authority:",
-        )
-        failures = validate_transfer(text, "## A quiet worker is not a result")
-        self.assertIn("missing inspection is not authority transfer", failures)
-
-    def test_unknown_non_resumability_cannot_be_treated_as_revoked(self) -> None:
-        text = transfer_fixture().replace(
-            "the prior writer is provably unable to resume, or after an\n"
-            "acknowledged handoff has stopped or revoked it",
-            "the prior writer appears idle",
-        )
-        failures = validate_transfer(text, "## A quiet worker is not a result")
-        self.assertIn("missing non-resumable path", failures)
-        self.assertIn("missing acknowledged stopped-or-revoked path", failures)
-
-    def test_transfer_obligations_cannot_be_reordered(self) -> None:
-        text = transfer_fixture()
+    def test_transfer_order_is_load_bearing(self) -> None:
+        source = transfer_fixture()
         inspection = (
             "Before reassignment, establish whether the prior writer can resume, whether its process\n"
             "has stopped, and whether uncommitted/unpushed work exists. "
@@ -271,60 +307,45 @@ class WriterAuthorityTransferContractTests(unittest.TestCase):
             "reassign only after the prior writer is provably unable to resume, or after an\n"
             "acknowledged handoff has stopped or revoked it, "
         )
-        text = text.replace(inspection, "").replace(reassign, "")
+        text = source.replace(inspection, "").replace(reassign, "")
         text = text.replace(
             "When a worker goes quiet, inspect the durable artifact and local mutation state.",
             "When a worker goes quiet, inspect the durable artifact and local mutation state.\n\n"
             + reassign
             + inspection,
         )
-        failures = validate_transfer(text, "## A quiet worker is not a result")
-        self.assertIn("transfer obligations are out of order", failures)
-
-    def test_fenced_example_does_not_satisfy_transfer_requirements(self) -> None:
-        required = transfer_fixture().split(
-            "## A quiet worker is not a result\n\n",
-            1,
-        )[1].split("\n## Root-held claim frames", 1)[0]
-        text = (
-            "## A quiet worker is not a result\n\n"
-            "```text\n"
-            + required
-            + "\n```\n\n"
-            "Silence does not transfer ownership.\n"
-            "## Root-held claim frames\n"
+        self.assertIn(
+            "transfer obligations are out of order",
+            transfer_errors(text, "## A quiet worker is not a result"),
         )
-        failures = validate_transfer(text, "## A quiet worker is not a result")
-        self.assertIn("missing prior-writer resumability", failures)
-        self.assertIn("missing revoke before reassign", failures)
 
-    def test_html_comment_does_not_satisfy_transfer_requirements(self) -> None:
-        required = transfer_fixture().split(
-            "## A quiet worker is not a result\n\n",
-            1,
-        )[1].split("\n## Root-held claim frames", 1)[0]
-        text = (
-            "## A quiet worker is not a result\n\n"
-            "<!--\n"
-            + required
-            + "\n-->\n\n"
-            "Silence does not transfer ownership.\n"
-            "## Root-held claim frames\n"
-        )
-        failures = validate_transfer(text, "## A quiet worker is not a result")
-        self.assertIn("missing prior-writer resumability", failures)
-        self.assertIn("missing revoke before reassign", failures)
+    def test_duplicate_reviewer_transfer_section_fails_closed(self) -> None:
+        section_text = """\
+### Mutation owner
 
-    def test_matching_words_outside_the_transfer_section_do_not_count(self) -> None:
-        text = transfer_fixture().replace(
-            "## A quiet worker is not a result",
-            "## Retired example",
-            1,
+One writer mutates the candidate branch/worktree at a time. A reviewer may become
+writer only through an explicit reassignment; resulting mutation still returns through
+affected proof/review.
+"""
+        self.assertEqual(
+            mutation_owner_errors(section_text + "\n" + section_text),
+            ["section '### Mutation owner' occurs 2 times"],
         )
-        text += "\n## A quiet worker is not a result\nSilence does not transfer ownership.\n"
-        failures = validate_transfer(text, "## A quiet worker is not a result")
-        self.assertIn("missing prior-writer resumability", failures)
-        self.assertIn("missing revoke before reassign", failures)
+
+    def test_commented_workflow_command_does_not_count(self) -> None:
+        expected = normalize(
+            "python3 -m unittest "
+            "tests/test_active_authority_contract.py "
+            "tests/test_writer_authority_transfer_contract.py"
+        )
+        workflow = (
+            f"# run: {expected}\n"
+            "jobs:\n"
+            "  check:\n"
+            "    steps:\n"
+            "      - run: echo not-the-contract\n"
+        )
+        self.assertNotIn(expected, workflow_run_commands(workflow))
 
 
 if __name__ == "__main__":
