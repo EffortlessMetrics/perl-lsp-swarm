@@ -91,12 +91,16 @@ consumers this type exists for; rewiring them is #11089's claim, not this one.
   - *v-string* — a leading `v` and at least **three** dot-separated
     components. Perl rejects both `v5` (too few parts) and a bare `1.2.3` (no
     `v`), so both are rejected here. The no-leading-zero rule applies to the
-    first component only: `v01.2.3` is rejected, `v1.02.3` is accepted.
+    first component only (`v01.2.3` rejected, `v1.02.3` accepted), and every
+    component *after* the first is capped at three digits — Perl's "maximum 3
+    digits between decimals". So `v1.2.1000` is rejected, and so is
+    `v1.2.0999`, on its four characters rather than its value; `v1000.2.3` is
+    accepted because the first component carries no cap.
 
   `RecoveredOrUnknown` is the only escape and admits anything. Without this
   check the exact/recovered distinction would be a caller's assertion rather
   than a property of the value. See `acceptance.md` for the oracle table and
-  the 36-spelling differential against the interpreter.
+  the 44-spelling differential against the interpreter.
 - **Absence is owner-level `Option::None`.** A version that was present but
   unreadable is `Some(RecoveredOrUnknown)` and keeps whatever text and
   geometry the parser observed. Unknown is not absent.
@@ -139,5 +143,5 @@ consumers this type exists for; rewiring them is #11089's claim, not this one.
 
 ## Proof
 
-`crates/perl-ast/tests/declaration_version_syntax.rs`, rows DVS-001..DVS-013 in
+`crates/perl-ast/tests/declaration_version_syntax.rs`, rows DVS-001..DVS-015 in
 `acceptance.md`.

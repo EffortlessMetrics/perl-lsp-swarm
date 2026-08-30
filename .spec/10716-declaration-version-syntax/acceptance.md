@@ -20,7 +20,7 @@ Proof: `crates/perl-ast/tests/declaration_version_syntax.rs`
 | DVS-012 | Rejection diagnostics name the offending geometry, by full message not digit co-occurrence | `rejection_diagnostics_are_actionable` |
 | DVS-013 | A caller cannot substitute a spelling for the one the range covers | `a_caller_cannot_substitute_a_spelling_for_the_covered_source` |
 | DVS-014 | An exact form admits exactly what Perl admits; recovery is the only escape | `exact_forms_reject_cross_tag_and_malformed_spellings` |
-| DVS-015 | The one-line projection survives control characters in recovered text | `display_projection_escapes_control_characters_in_recovered_text` |
+| DVS-015 | The one-line projection survives control characters *and* Unicode line/paragraph separators in recovered text | `display_projection_escapes_control_characters_in_recovered_text` |
 
 ## External oracle — Perl 5.38.2
 
