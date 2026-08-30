@@ -22,7 +22,7 @@ If a doc starts mixing multiple intents, split it and cross-link the parts.
 | Topic | Source | Verified By |
 | --- | --- | --- |
 | Current release line | [`../Cargo.toml`](../Cargo.toml) | Workspace manifest |
-| Status overview and subsystem map | [project/status/index.md](project/status/index.md) and its owner-designated subsystem links | Human review for human-owned pages; `cargo xtask update-status --check` for generated files |
+| Status overview and subsystem map | [project/status/index.md](project/status/index.md) and its owner-designated subsystem links | Human review for human-owned pages; each generated page's declared generator and check, when provided |
 | Roadmap and active milestone | [project/ROADMAP.md](project/ROADMAP.md) | Human review |
 | Distribution and install-channel matrix | [project/DISTRIBUTION_MATRIX.md](project/DISTRIBUTION_MATRIX.md) | Release status + channel receipts |
 | Capability catalog | [`../features.toml`](../features.toml) | `just ci-gate` |
@@ -30,9 +30,10 @@ If a doc starts mixing multiple intents, split it and cross-link the parts.
 
 Rule: keep the project overview narrative in
 [project/status/index.md](project/status/index.md), and follow its owner column for
-human-owned subsystem status. Computed metrics belong only in the files or sections
-selected by `cargo xtask update-status`; verify them with `--check` rather than
-copying them into the index.
+human-owned subsystem status. Computed metrics belong only in owner-designated
+generated pages or sections; use the generator and any check declared by the owning
+page. For targets selected by `cargo xtask update-status`, verify them with `--check`
+rather than copying them into the index.
 
 ## Compatibility posture
 
@@ -107,9 +108,9 @@ just status-check
 ```
 
 - Keep overview narrative in [project/status/index.md](project/status/index.md) and
-  other human-owned status in the owner-designated subsystem pages; regenerate
-  computed metrics in the selected files or sections with
-  `cargo xtask update-status --write`, then verify them with `--check`.
+  other human-owned status in the owner-designated subsystem pages. For generated
+  pages, run the generator and any check declared by that page; for targets selected
+  by `cargo xtask update-status`, regenerate with `--write`, then verify with `--check`.
 - Update [project/ROADMAP.md](project/ROADMAP.md) when the active milestone or release framing changes.
 - Keep top-level summary docs short and link back to the canonical project docs.
 - Keep each doc in the correct Diataxis category; prefer cross-links over hybrid docs that try to do everything.
