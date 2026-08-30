@@ -9,6 +9,10 @@
 //!   acyclic hard edges, and a pinned canonical digest;
 //! * the twelve structural laws #11036 names as falsifiers, each rejecting with
 //!   a distinct reason so the focused proof can discriminate them;
+//! * mutable-state containment in two halves: a forbidden-key scan, and the
+//!   load-bearing value scan that rejects commit-shaped ids, live check and
+//!   review verdicts, readiness claims, and writer assignments smuggled through
+//!   accepted prose fields;
 //! * bounded read accessors for the later control-plane slices (#11037
 //!   population, #11072 artifact map, #11033 proof profiles, #11038 probes,
 //!   #11306 frontier, #11040 observation, #11042 packets, #11044 closeout).
@@ -48,7 +52,7 @@ pub const SCHEMA_VERSION: u64 = 1;
 /// together with the manifest bytes; patching around it silently is exactly
 /// what the pin exists to prevent.
 pub const PINNED_CANONICAL_DIGEST: &str =
-    "D209A802F9C3CBA572E6FD7F65B3C8F434DAC716A4066392D4E2D9E0EB434542";
+    "C5BC5B670FE674865023FA05C1683CB13324713C66DFE4873A71414E98C40B63";
 
 /// The only population status `v1` may claim. Completing the graph is #11037's
 /// authority, so a manifest that calls itself complete fails closed here.
@@ -79,6 +83,7 @@ struct Manifest {
     generic_mechanics_boundary: GenericMechanicsBoundary,
     forbidden_mutable_fields: Vec<String>,
     global_conflict_key_sentinels: Vec<String>,
+    forbidden_value_patterns: Vec<ForbiddenValuePattern>,
     schema_evolution: SchemaEvolution,
     determinism: Determinism,
     shared_mechanics_ruling: SharedMechanicsRuling,
@@ -166,6 +171,13 @@ struct GenericMechanicsBoundary {
     note: String,
     generic_mechanics_sections: Vec<String>,
     forbidden_type_substrings: Vec<String>,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+struct ForbiddenValuePattern {
+    pattern: String,
+    owns: String,
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -279,6 +291,12 @@ fn canonical_walk(value: &Value, out: &mut String) -> Result<()> {
                 bail!("manifest canonicalization defines integers only; found {number}");
             }
         }
+        // Escaping bound: only the backslash and the semicolon that terminates a
+        // scalar token are escaped, matching the landed cleanup-train walk. The
+        // container delimiters are not escaped inside string content; that stays
+        // unambiguous because every scalar token is self-terminating and object
+        // keys come from the strict field set rather than from input, but it is a
+        // property of this schema rather than a general guarantee.
         Value::String(text) => {
             out.push_str("s:");
             for ch in text.chars() {
@@ -456,6 +474,9 @@ pub fn load_manifest_from(path: &Path) -> Result<LoadedManifest> {
     validate_no_mutable_live_facts(&value, &manifest).with_context(|| {
         format!("manifest at {} smuggles a mutable live fact into stable truth", path.display())
     })?;
+    validate_no_mutable_live_values(&value, &manifest).with_context(|| {
+        format!("manifest at {} smuggles mutable state through a prose value", path.display())
+    })?;
     Ok(LoadedManifest { manifest, canonical_digest_hex: digest })
 }
 
@@ -624,7 +645,18 @@ fn validate_manifest(m: &Manifest) -> Result<()> {
     for cap in &m.role_claim_caps {
         match claim_rank.get(cap.max_claim.as_str()) {
             Some(rank) => {
-                cap_rank.insert(cap.role.as_str(), *rank);
+                // A duplicate row would survive the set-coverage check above and
+                // silently keep whichever copy is inserted last. Because
+                // canonicalization sorts arrays, two orderings of the same
+                // conflicting rows share a digest while validating differently:
+                // validation must not depend on incidental input order.
+                if cap_rank.insert(cap.role.as_str(), *rank).is_some() {
+                    bail!(
+                        "role_claim_caps declares role '{}' more than once; a duplicate cap makes \
+                         the effective ceiling depend on input order",
+                        cap.role
+                    );
+                }
             }
             None => bail!(
                 "role_claim_caps entry '{}' invents max_claim '{}' outside the reviewed ladder",
@@ -996,10 +1028,16 @@ fn validate_nodes(
                 Some(_) => {}
             }
         }
-        if let Some(duplicate) = &node.duplicate_of
-            && !ids.contains(duplicate.as_str())
-        {
-            bail!("node {id} names unknown duplicate_of '{duplicate}'");
+        if let Some(duplicate) = &node.duplicate_of {
+            if !ids.contains(duplicate.as_str()) {
+                bail!("node {id} names unknown duplicate_of '{duplicate}'");
+            }
+            if duplicate == id {
+                bail!(
+                    "node {id} declares itself its own duplicate; a duplicate relation names a \
+                     different node or is absent"
+                );
+            }
         }
 
         // Law 4: an external action names its authorization class; nothing else
@@ -1219,6 +1257,23 @@ fn validate_nodes(
                 );
             }
         }
+        // The reverse direction needs its own check: referential integrity only
+        // proves the id resolves, so a `superseded_by` entry whose alleged
+        // successor does not record the transition would otherwise load as a
+        // valid symmetric edge.
+        for successor in &node.superseded_by {
+            let target =
+                m.nodes.iter().find(|n| &n.stable_node_id == successor).ok_or_else(|| {
+                    color_eyre::eyre::eyre!("unresolved superseded_by {successor}")
+                })?;
+            if !target.supersedes.contains(&node.stable_node_id) {
+                bail!(
+                    "node {} claims to be superseded by '{successor}', but '{successor}' does not \
+                     supersede it; a stale supersession half-edge is rejected",
+                    node.stable_node_id
+                );
+            }
+        }
     }
 
     // Law 6: two exclusive writers of one key are never both parallel-safe, and
@@ -1255,12 +1310,53 @@ fn validate_nodes(
                 );
             }
         }
+        // A disposition only *claims* an ordering. Every pair of exclusive
+        // writers must actually be ordered by a hard-dependency path, or the
+        // manifest hands consumers two concurrent writers of one key while
+        // asserting they are serialized.
+        for (index, first) in holders.iter().enumerate() {
+            for second in holders.iter().skip(index + 1) {
+                if hard_reaches(m, &first.stable_node_id, &second.stable_node_id)
+                    || hard_reaches(m, &second.stable_node_id, &first.stable_node_id)
+                {
+                    continue;
+                }
+                bail!(
+                    "nodes {} and {} both write the exclusive key '{key}' but no hard-dependency \
+                     path orders them; a serialized disposition must be backed by a real edge",
+                    first.stable_node_id,
+                    second.stable_node_id
+                );
+            }
+        }
     }
 
     // Hard edges must be acyclic: a cycle would make the spine unbuildable.
     detect_hard_cycle(m)?;
 
     Ok(())
+}
+
+/// Does `from` reach `to` through hard dependencies? Cycle-safe: this runs
+/// before `detect_hard_cycle`, so a malformed manifest must not spin here.
+fn hard_reaches(m: &Manifest, from: &str, to: &str) -> bool {
+    let mut seen: BTreeSet<&str> = BTreeSet::new();
+    let mut stack: Vec<&str> = vec![from];
+    while let Some(current) = stack.pop() {
+        if !seen.insert(current) {
+            continue;
+        }
+        let Some(node) = m.nodes.iter().find(|n| n.stable_node_id == current) else {
+            continue;
+        };
+        for target in &node.hard_dependencies {
+            if target == to {
+                return true;
+            }
+            stack.push(target.as_str());
+        }
+    }
+    false
 }
 
 fn detect_hard_cycle(m: &Manifest) -> Result<()> {
@@ -1329,6 +1425,26 @@ fn validate_coverage(
         bail!("no fixture node exercises these old-path dispositions: {missing:?}");
     }
 
+    // #11036 requires the fixtures to exercise stack and parallel dispositions
+    // too. Declaring a value no fixture uses leaves that distinction unproven,
+    // so the vocabulary carries only what the fixtures actually demonstrate.
+    let declared_stacks: BTreeSet<&str> =
+        m.stack_relations.iter().map(|s| s.value.as_str()).collect();
+    let used_stacks: BTreeSet<&str> = m.nodes.iter().map(|n| n.stack_relation.as_str()).collect();
+    let missing: Vec<&&str> = declared_stacks.difference(&used_stacks).collect();
+    if !missing.is_empty() {
+        bail!("no fixture node exercises these stack relations: {missing:?}");
+    }
+
+    let declared_parallel: BTreeSet<&str> =
+        m.parallel_dispositions.iter().map(|p| p.value.as_str()).collect();
+    let used_parallel: BTreeSet<&str> =
+        m.nodes.iter().map(|n| n.parallel_disposition.as_str()).collect();
+    let missing: Vec<&&str> = declared_parallel.difference(&used_parallel).collect();
+    if !missing.is_empty() {
+        bail!("no fixture node exercises these parallel dispositions: {missing:?}");
+    }
+
     // Every edge class must be exercised somewhere, or the distinctions the
     // contract draws are untested by its own fixtures.
     if !m.nodes.iter().any(|n| !n.hard_dependencies.is_empty()) {
@@ -1359,6 +1475,80 @@ fn validate_no_mutable_live_facts(value: &Value, m: &Manifest) -> Result<()> {
              graph truth"
         ),
         None => Ok(()),
+    }
+}
+
+/// Law 7, value half: a forbidden *key* scan only closes the obvious door.
+/// Mutable state is just as representable inside an accepted prose field, so
+/// every string value is checked against the declared patterns too. The key
+/// scan stays as defense in depth; this is the load-bearing half.
+fn validate_no_mutable_live_values(value: &Value, m: &Manifest) -> Result<()> {
+    if m.forbidden_value_patterns.is_empty() {
+        bail!(
+            "forbidden_value_patterns must name the mutable claims prose fields may not carry; \
+             a key-name scan alone leaves state freely representable in accepted strings"
+        );
+    }
+    let mut compiled: Vec<(regex::Regex, &str)> = Vec::new();
+    for entry in &m.forbidden_value_patterns {
+        if entry.owns.trim().is_empty() {
+            bail!("forbidden value pattern '{}' carries an empty ownership law", entry.pattern);
+        }
+        let re = regex::Regex::new(&entry.pattern).map_err(|e| {
+            color_eyre::eyre::eyre!("forbidden value pattern '{}' is invalid: {e}", entry.pattern)
+        })?;
+        compiled.push((re, entry.owns.as_str()));
+    }
+
+    let mut offender: Option<(String, String)> = None;
+    scan_values(value, &compiled, &mut offender);
+    match offender {
+        Some((text, owns)) => bail!(
+            "stable manifest carries {owns} in a prose value: \"{text}\"; a stable node describes \
+             intent, never the state of a tree, candidate, check, or writer"
+        ),
+        None => Ok(()),
+    }
+}
+
+fn scan_values(
+    value: &Value,
+    patterns: &[(regex::Regex, &str)],
+    offender: &mut Option<(String, String)>,
+) {
+    if offender.is_some() {
+        return;
+    }
+    match value {
+        Value::String(text) => {
+            for (re, owns) in patterns {
+                if let Some(found) = re.find(text) {
+                    let mut excerpt = found.as_str().to_string();
+                    if excerpt.len() > 80 {
+                        excerpt.truncate(80);
+                    }
+                    *offender = Some((excerpt, (*owns).to_string()));
+                    return;
+                }
+            }
+        }
+        Value::Object(map) => {
+            for child in map.values() {
+                scan_values(child, patterns, offender);
+                if offender.is_some() {
+                    return;
+                }
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                scan_values(item, patterns, offender);
+                if offender.is_some() {
+                    return;
+                }
+            }
+        }
+        _ => {}
     }
 }
 

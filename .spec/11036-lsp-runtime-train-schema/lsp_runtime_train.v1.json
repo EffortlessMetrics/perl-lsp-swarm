@@ -190,8 +190,7 @@
   ],
   "stack_relations": [
     { "value": "independent", "owns": "the node stands on integrated authority only" },
-    { "value": "stacked_on", "owns": "the node is built on a named unintegrated candidate and names it exactly" },
-    { "value": "restacked_from", "owns": "the node was rebased off a withdrawn candidate onto a named current base" }
+    { "value": "stacked_on", "owns": "the node is built on a named unintegrated candidate and names it exactly" }
   ],
   "parallel_dispositions": [
     { "value": "parallel_safe", "owns": "no exclusive writer key is shared with a concurrently selectable node" },
@@ -242,6 +241,14 @@
     "release_verdict"
   ],
   "global_conflict_key_sentinels": ["*", "global", "all", "repository", "workspace"],
+  "forbidden_value_patterns": [
+    { "pattern": "\\b[0-9a-f]{7,40}\\b", "owns": "a commit-shaped identifier: a stable node never names a tree it was true on" },
+    { "pattern": "(?i)\\b(pr|issue)\\s*#\\s*\\d+\\s+(is|was|has)\\b", "owns": "a verdict about a live pull request or issue" },
+    { "pattern": "(?i)\\b(is|are|was|were)\\s+(green|red|merged|approved|passing|failing)\\b", "owns": "a check, review, or merge verdict" },
+    { "pattern": "(?i)\\bready\\s*=\\s*(true|false)\\b", "owns": "a readiness verdict, which the offline frontier owns and this contract never records" },
+    { "pattern": "(?i)\\bassigned\\s+to\\b", "owns": "a writer or agent assignment" },
+    { "pattern": "(?i)\\b(current|latest)\\s+(main|head|sha|commit)\\b", "owns": "a claim about the current tree" }
+  ],
   "schema_evolution": {
     "unknown_version_policy": "reject: an unrecognized schema_version fails closed rather than being read under v1 semantics",
     "unknown_field_policy": "reject: deserialization denies unknown fields so an execution-significant field can never be silently dropped",
@@ -835,6 +842,8 @@
   "limitations": [
     "This revision is a schema fixture subset: it proves the contract can express every role, horizon, edge kind, and old-path disposition, and it does not represent the runtime programme graph.",
     "No node here asserts that its proposition is implemented on any tree.",
-    "No current, live, observed, or released fact is representable in this contract by construction."
+    "No current, live, observed, or released fact is representable in this contract by construction.",
+    "The stack vocabulary carries only the relations the fixtures actually exercise. A restack relation describes candidate history, which belongs to the live-collaboration plane; it is added here only if the stable graph is ever shown to need it.",
+    "The canonical digest escapes the backslash and semicolon that terminate its own scalar tokens. Container delimiters are not escaped inside string content; that is safe here because every scalar token is self-terminating and object keys are fixed by the strict field set, but it is a bound of this canonicalization rather than a general guarantee."
   ]
 }

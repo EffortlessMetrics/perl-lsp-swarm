@@ -36,7 +36,8 @@ fn parse_strict(value: &Value) -> Result<Manifest> {
 fn validate(value: &Value) -> Result<()> {
     let manifest = parse_strict(value)?;
     validate_manifest(&manifest)?;
-    validate_no_mutable_live_facts(value, &manifest)
+    validate_no_mutable_live_facts(value, &manifest)?;
+    validate_no_mutable_live_values(value, &manifest)
 }
 
 fn assert_rejected(value: &Value, needle: &str) -> Result<()> {
@@ -460,6 +461,126 @@ fn lsp_runtime_train_claiming_a_complete_population_is_rejected() -> Result<()> 
 }
 
 // ---------------------------------------------------------------------------
+// Gaps found by independent review on PR #13869 (Codex, three P2 findings).
+// Each was confirmed against the law order before it was closed, so these are
+// the controls proving the hole is actually shut.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn lsp_runtime_train_duplicate_role_claim_cap_is_rejected() -> Result<()> {
+    let mut value = real_value()?;
+    // A duplicate row survives the set-coverage check, and because
+    // canonicalization sorts arrays the two orderings share one digest while
+    // validating differently. Validation must not depend on input order.
+    let caps = value
+        .get_mut("role_claim_caps")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| color_eyre::eyre::eyre!("no role_claim_caps"))?;
+    caps.push(serde_json::json!({ "role": "implementation", "max_claim": "programme" }));
+    assert_rejected(&value, "more than once")
+}
+
+#[test]
+fn lsp_runtime_train_duplicate_role_claim_cap_is_rejected_in_either_order() -> Result<()> {
+    // The reviewer's control: canonicalization sorts arrays, so the two
+    // orderings of a conflicting duplicate share one digest. Both must be
+    // rejected, or the effective cap depends on incidental input order.
+    for reversed in [false, true] {
+        let mut value = real_value()?;
+        let caps = value
+            .get_mut("role_claim_caps")
+            .and_then(Value::as_array_mut)
+            .ok_or_else(|| color_eyre::eyre::eyre!("no role_claim_caps"))?;
+        caps.push(serde_json::json!({ "role": "implementation", "max_claim": "programme" }));
+        if reversed {
+            caps.reverse();
+        }
+        assert_rejected(&value, "more than once")?;
+    }
+    Ok(())
+}
+
+#[test]
+fn lsp_runtime_train_commit_sha_in_prose_is_rejected() -> Result<()> {
+    let mut value = real_value()?;
+    set_node_field(
+        &mut value,
+        "SCHEMA11036",
+        "one_pr_proposition",
+        Value::String("define the contract, implemented on main at 0c07a9841c34ff3e".into()),
+    )?;
+    assert_rejected(&value, "a commit-shaped identifier")
+}
+
+#[test]
+fn lsp_runtime_train_live_check_verdict_in_prose_is_rejected() -> Result<()> {
+    let mut value = real_value()?;
+    set_node_field(
+        &mut value,
+        "GRAPH11037",
+        "limitations",
+        Value::Array(vec![Value::String("PR #13869 is green, so this is settled".into())]),
+    )?;
+    assert_rejected(&value, "a verdict about a live pull request or issue")
+}
+
+#[test]
+fn lsp_runtime_train_writer_assignment_in_prose_is_rejected() -> Result<()> {
+    let mut value = real_value()?;
+    set_node_field(
+        &mut value,
+        "PROBE11038",
+        "rollback_boundary",
+        Value::String("revert the probe module; assigned to the runtime lane writer".into()),
+    )?;
+    assert_rejected(&value, "a writer or agent assignment")
+}
+
+#[test]
+fn lsp_runtime_train_readiness_verdict_in_prose_is_rejected() -> Result<()> {
+    let mut value = real_value()?;
+    // Append rather than replace: clearing authority_after would trip the
+    // consumed-authority law first and leave the value scan unexercised.
+    push_node_string(&mut value, "FRONTIER11306", "authority_after", "ready = true")?;
+    assert_rejected(&value, "a readiness verdict")
+}
+
+#[test]
+fn lsp_runtime_train_value_scan_requires_declared_patterns() -> Result<()> {
+    let mut value = real_value()?;
+    *value
+        .get_mut("forbidden_value_patterns")
+        .ok_or_else(|| color_eyre::eyre::eyre!("no forbidden_value_patterns"))? =
+        Value::Array(vec![]);
+    assert_rejected(&value, "leaves state freely representable")
+}
+
+#[test]
+fn lsp_runtime_train_reverse_supersession_half_edge_is_rejected() -> Result<()> {
+    let mut value = real_value()?;
+    // The forward direction was already checked; drop the forward edge and keep
+    // the reverse one, which referential integrity alone would accept.
+    set_node_field(&mut value, "CUTOVER7384", "supersedes", Value::Array(vec![]))?;
+    assert_rejected(&value, "claims to be superseded by")
+}
+
+#[test]
+fn lsp_runtime_train_conflicting_writers_without_a_hard_path_are_rejected() -> Result<()> {
+    let mut value = real_value()?;
+    // Both nodes claim a serialized disposition, but removing the hard edge
+    // leaves nothing that actually orders them. A label is not an ordering.
+    set_node_field(
+        &mut value,
+        "CUTOVER7384",
+        "parallel_disposition",
+        Value::String("serialized_by_hard_dependency".into()),
+    )?;
+    set_node_field(&mut value, "CUTOVER7384", "hard_dependencies", Value::Array(vec![]))?;
+    set_node_field(&mut value, "CUTOVER7384", "consumed_authorities", Value::Array(vec![]))?;
+    assert_rejected(&value, "must be backed by a real edge")
+}
+
+// ---------------------------------------------------------------------------
 // Authority, artifact, and obligation laws.
 // ---------------------------------------------------------------------------
 
@@ -482,7 +603,11 @@ fn lsp_runtime_train_consuming_authority_from_a_dropped_dependency_is_rejected()
     // its consumers, so dropping the edge reaches the consumed-authority law
     // instead of the consumer-reciprocity law.
     set_node_field(&mut value, "CUTOVER7384", "hard_dependencies", Value::Array(vec![]))?;
-    assert_rejected(&value, "no hard or evidence")
+    // Assert on wording unique to the consumed-authority law: the shorter
+    // "no hard or evidence" prefix is shared with the consumer-reciprocity law,
+    // so it would stop discriminating if CUTOVER7384 ever became a listed
+    // consumer of FRONTIER11306.
+    assert_rejected(&value, "dependency produces")
 }
 
 #[test]
@@ -669,20 +794,105 @@ fn lsp_runtime_train_node_static_fact_is_bounded() -> Result<()> {
 #[test]
 fn no_state_or_command_surface_is_added() -> Result<()> {
     let source = include_str!("lsp_runtime_train_manifest.rs");
-    for forbidden in [
-        "std::process::Command",
-        "reqwest",
-        "octocrab",
-        "ureq",
-        "Command::new",
-        "clap::",
-        "fn readiness",
-        "fn frontier",
-    ] {
+
+    // Substrings for surfaces that cannot be spelled around: any subprocess or
+    // network use has to name one of these.
+    for forbidden in ["std::process", "Command::new", "reqwest", "octocrab", "ureq", "clap::"] {
         assert!(
             !source.contains(forbidden),
-            "#11036 stops before state, readiness, commands, and remote access; found '{forbidden}'"
+            "#11036 stops before commands and remote access; found '{forbidden}'"
+        );
+    }
+
+    // Function names are matched by pattern, not by exact spelling: a literal
+    // "fn readiness" scan is defeated by `fn compute_readiness`, so the guard
+    // would bind a naming convention rather than the claim ceiling.
+    let banned_fn = regex::Regex::new(r"fn\s+\w*(readiness|frontier|observe|probe|packet)\w*")
+        .map_err(|e| color_eyre::eyre::eyre!("guard regex failed to compile: {e}"))?;
+    if let Some(found) = banned_fn.find(source) {
+        bail!(
+            "#11036 stops before readiness, frontier, observation, probe, and packet surfaces; \
+             found '{}'",
+            found.as_str()
         );
     }
     Ok(())
+}
+
+/// The digest pin's rejection branch, which every mutation test deliberately
+/// skips: without this, inverting or misrouting the comparison would go unseen.
+#[test]
+fn lsp_runtime_train_digest_drift_is_rejected() -> Result<()> {
+    let mut value = real_value()?;
+    set_node_field(&mut value, "SCHEMA11036", "lane", Value::String("tampered_lane".into()))?;
+
+    let dir = tempfile::tempdir().map_err(|e| color_eyre::eyre::eyre!("tempdir: {e}"))?;
+    let path = dir.path().join("lsp_runtime_train.v1.json");
+    std::fs::write(&path, serde_json::to_vec_pretty(&value)?)
+        .map_err(|e| color_eyre::eyre::eyre!("write: {e}"))?;
+
+    match load_manifest_from(&path) {
+        Ok(_) => bail!("a tampered manifest loaded despite the pinned digest"),
+        Err(err) => {
+            let rendered = format!("{err:#}");
+            assert!(
+                rendered.contains("digest drift"),
+                "expected a digest-drift rejection, got: {rendered}"
+            );
+            Ok(())
+        }
+    }
+}
+
+/// The pin's accept branch must also be exercised against an on-disk copy, so
+/// the drift test above cannot pass merely because loading always fails.
+#[test]
+fn lsp_runtime_train_untampered_copy_loads_from_an_explicit_path() -> Result<()> {
+    let dir = tempfile::tempdir().map_err(|e| color_eyre::eyre::eyre!("tempdir: {e}"))?;
+    let path = dir.path().join("lsp_runtime_train.v1.json");
+    std::fs::copy(repo_manifest_path()?, &path)
+        .map_err(|e| color_eyre::eyre::eyre!("copy: {e}"))?;
+    let loaded = load_manifest_from(&path)?;
+    assert_eq!(loaded.canonical_digest(), PINNED_CANONICAL_DIGEST);
+    Ok(())
+}
+
+#[test]
+fn lsp_runtime_train_self_duplicate_is_rejected() -> Result<()> {
+    let mut value = real_value()?;
+    set_node_field(
+        &mut value,
+        "HISTORICAL9799",
+        "duplicate_of",
+        Value::String("HISTORICAL9799".into()),
+    )?;
+    assert_rejected(&value, "its own duplicate")
+}
+
+#[test]
+fn lsp_runtime_train_unexercised_stack_relation_is_rejected() -> Result<()> {
+    let mut value = real_value()?;
+    value
+        .get_mut("stack_relations")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| color_eyre::eyre::eyre!("no stack_relations"))?
+        .push(serde_json::json!({
+            "value": "restacked_from",
+            "owns": "declared but exercised by no fixture",
+        }));
+    assert_rejected(&value, "no fixture node exercises these stack relations")
+}
+
+#[test]
+fn lsp_runtime_train_unexercised_parallel_disposition_is_rejected() -> Result<()> {
+    let mut value = real_value()?;
+    value
+        .get_mut("parallel_dispositions")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| color_eyre::eyre::eyre!("no parallel_dispositions"))?
+        .push(serde_json::json!({
+            "value": "serialized_by_authorization",
+            "owns": "declared but exercised by no fixture",
+        }));
+    assert_rejected(&value, "no fixture node exercises these parallel dispositions")
 }
