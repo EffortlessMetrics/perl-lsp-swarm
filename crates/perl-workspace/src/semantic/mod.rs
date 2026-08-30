@@ -38,7 +38,16 @@ pub mod queries;
 /// Literal-eval sub extractor for dynamic boundary evidence.
 pub mod eval_sub_extractor;
 
-/// Production framework generated-member extraction.
+/// Historical generated-member extractor retained as a comparison oracle.
+///
+/// Its DBIx::Class branch is raw-spelling compatibility behavior, not canonical
+/// publication authority. #13979 owns its terminal disposition after the
+/// registered adapter cutover.
+#[path = "generated_member_extractor.rs"]
+pub(crate) mod legacy_generated_member_extractor;
+
+/// Production generated-member extraction with framework-admission quarantine.
+#[path = "generated_member_extractor_admitted.rs"]
 pub mod generated_member_extractor;
 
 /// Non-published DBIx::QuickORM table-column field candidates.
