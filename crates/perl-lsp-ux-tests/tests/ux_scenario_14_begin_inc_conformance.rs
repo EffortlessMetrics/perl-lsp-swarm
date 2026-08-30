@@ -78,8 +78,6 @@ fn scenario_14_begin_scoped_use_lib_consumer_consistency() -> Result<(), String>
     .expect("Failed to create UX harness");
 
     harness.open_file("fixture.pl", EXACT_SOURCE).expect("didOpen should succeed");
-    std::thread::sleep(Duration::from_millis(500));
-
     let diags = harness.wait_for_diagnostics("fixture.pl", Duration::from_secs(5));
     assert!(
         !has_pl701(&diags),
@@ -106,7 +104,7 @@ fn scenario_14_begin_scoped_use_lib_consumer_consistency() -> Result<(), String>
     harness
         .change_file_full("fixture.pl", COMPLETION_SOURCE)
         .expect("didChange to completion fixture should succeed");
-    std::thread::sleep(Duration::from_millis(500));
+    let _ = harness.wait_for_diagnostics("fixture.pl", Duration::from_secs(5));
 
     // `use Beg` is at zero-based line 5, cursor column 7.
     let completions = harness.completion("fixture.pl", 5, 7).expect("completion must not error");

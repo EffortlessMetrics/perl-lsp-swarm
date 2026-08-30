@@ -1,8 +1,8 @@
 use std::path::Path;
 
 use perl_module::{
-    UseLibAction, UseLibPath, extract_use_lib_operations, no_lib_cancelled_paths_at_offset,
-    resolve_use_lib_paths_from_source_at_offset,
+    UseLibAction, UseLibPath, extract_use_lib_operations, extract_use_lib_operations_with_offsets,
+    no_lib_cancelled_paths_at_offset, resolve_use_lib_paths_from_source_at_offset,
 };
 
 #[test]
@@ -50,6 +50,23 @@ fn begin_block_unterminated_use_lib_remains_active_while_editing() {
         resolve_use_lib_paths_from_source_at_offset(source, offset, Path::new("/workspace"), None);
 
     assert_eq!(paths, vec!["local/lib".to_string()]);
+}
+
+#[test]
+fn begin_block_use_lib_preserves_inner_statement_end_offset() {
+    let source = "BEGIN { use lib 'x'; }\n";
+    let operations = extract_use_lib_operations_with_offsets(source);
+
+    assert_eq!(operations.len(), 1);
+    let inner_statement_end = source.find(';').map_or(0, |offset| offset + 1);
+    assert_eq!(operations[0].end_offset, inner_statement_end);
+}
+
+#[test]
+fn begin_nested_block_does_not_unwrap_inner_pragma() {
+    let source = "BEGIN { BEGIN { use lib 'x'; } }\n";
+
+    assert!(extract_use_lib_operations(source).is_empty());
 }
 
 #[test]

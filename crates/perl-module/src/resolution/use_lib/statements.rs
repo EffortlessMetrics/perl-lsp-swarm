@@ -102,7 +102,9 @@ fn push_statement<'a>(statements: &mut Vec<&'a str>, statement: &'a str) {
 /// This is intentionally narrower than Perl block parsing: it only removes the
 /// phase keyword, optional line comments, and the opening brace before the
 /// first semicolon-delimited statement. The returned value remains a subslice
-/// of the original source so activation offsets stay exact.
+/// of the original source, so the statement end (the activation rail used by
+/// `activation_offset`) is preserved while the slice start moves past the
+/// `BEGIN` prefix.
 fn strip_leading_begin_block_prefix(trimmed: &str) -> Option<&str> {
     let rest = trimmed.strip_prefix("BEGIN")?;
     if !rest.starts_with(|c: char| c.is_whitespace() || c == '{' || c == '#') {

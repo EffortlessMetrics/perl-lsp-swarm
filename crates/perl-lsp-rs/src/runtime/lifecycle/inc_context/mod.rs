@@ -462,7 +462,7 @@ mod tests {
         ];
         *server.root_path.lock() = Some(workspace);
 
-        let source = "BEGIN { use lib 'hir-only'; }\nuse lib 'source';\nuse Recovered;\n";
+        let source = "if (1) {\n    use lib 'hir-only';\n}\nuse lib 'source';\nuse Recovered;\n";
         let offset = source.rfind("use Recovered").ok_or("offset not found")?;
         let context = server
             .effective_inc_context_for_doc(Some(&script_uri), Some(source), Some(offset))

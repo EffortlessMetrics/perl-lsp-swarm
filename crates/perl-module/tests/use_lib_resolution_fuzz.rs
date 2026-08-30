@@ -101,10 +101,12 @@ fn fuzz_leading_begin_wrapper_preserves_static_pragma_operations() {
         let first = fuzz_path(&mut seed);
         let second = fuzz_path(&mut seed);
         let selector = seed;
-        let pragma = match selector % 3 {
+        let pragma = match selector % 5 {
             0 => format!("use lib '{first}';"),
             1 => format!("use lib qw({first} {second});"),
-            _ => format!("no lib '{first}';"),
+            2 => format!("no lib '{first}';"),
+            3 => format!("use lib \"{first}\";"),
+            _ => format!("no lib \"{first}\";"),
         };
         let wrapped = match (selector >> 2) % 4 {
             0 => format!("BEGIN {{ {pragma}\n}}\n"),
