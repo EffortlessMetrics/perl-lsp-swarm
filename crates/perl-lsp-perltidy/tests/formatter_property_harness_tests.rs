@@ -21,7 +21,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use proptest::prelude::*;
-use proptest::test_runner::{Config as ProptestConfig, FileFailurePersistence};
+use proptest::test_runner::{Config as ProptestConfig, FileFailurePersistence, RngAlgorithm};
 
 #[path = "support/formatter_property_harness/mod.rs"]
 mod formatter_property_harness;
@@ -111,6 +111,7 @@ fn harness_proptest_config() -> ProptestConfig {
     ProptestConfig {
         cases: std::env::var("PROPTEST_CASES").ok().and_then(|v| v.parse().ok()).unwrap_or(48),
         failure_persistence: Some(Box::new(FileFailurePersistence::Direct(REGRESSION_FILE))),
+        rng_algorithm: RngAlgorithm::ChaCha,
         ..ProptestConfig::default()
     }
 }
@@ -537,6 +538,37 @@ fn generator_and_mutator_dispositions_are_observable() -> TestResult {
                 _ => {}
             }
         }
+    }
+    Ok(())
+}
+
+#[test]
+fn proptest_rng_algorithm_is_pinned() {
+    assert_eq!(harness_proptest_config().rng_algorithm, RngAlgorithm::ChaCha);
+}
+
+#[test]
+fn fuzz_decoder_covers_entire_generated_index_space() -> TestResult {
+    let seed = 0x0123_4567_89ab_cdef_u64;
+    for selector in 0x00_u8..=0x3f {
+        let mut data = seed.to_le_bytes().to_vec();
+        data.push(selector);
+        let decoded = case_from_fuzz_input(&data).ok_or("valid fuzz input must decode")?;
+        assert_eq!(
+            decoded,
+            generate_case(seed, usize::from(selector)),
+            "valid selector {selector:#04x} was truncated or remapped"
+        );
+    }
+    for selector in 0x80_u8..=0xbf {
+        let mut data = seed.to_le_bytes().to_vec();
+        data.push(selector);
+        let decoded = case_from_fuzz_input(&data).ok_or("invalidation fuzz input must decode")?;
+        assert_eq!(
+            decoded,
+            generate_invalidation_case(seed, usize::from(selector & 0x3f)),
+            "invalidation selector {selector:#04x} was truncated or remapped"
+        );
     }
     Ok(())
 }
