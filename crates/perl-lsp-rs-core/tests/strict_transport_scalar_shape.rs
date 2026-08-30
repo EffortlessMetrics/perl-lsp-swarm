@@ -18,7 +18,9 @@ fn required_error(
             format!("expected scalar rejection, got request method {}", request.method),
         )
         .into()),
-        None => Err(io::Error::new(io::ErrorKind::UnexpectedEof, "expected scalar rejection").into()),
+        None => {
+            Err(io::Error::new(io::ErrorKind::UnexpectedEof, "expected scalar rejection").into())
+        }
     }
 }
 
@@ -35,12 +37,7 @@ fn required_request(
 
 #[test]
 fn scalar_json_fails_message_shape_before_jsonrpc_member_lookup() -> TestResult {
-    let scalar_bodies: &[&[u8]] = &[
-        b"true",
-        b"42",
-        br#""private-scalar-token""#,
-        b"null",
-    ];
+    let scalar_bodies: &[&[u8]] = &[b"true", b"42", br#""private-scalar-token""#, b"null"];
 
     for body in scalar_bodies {
         let mut input = Cursor::new(frame(body));
@@ -50,9 +47,7 @@ fn scalar_json_fails_message_shape_before_jsonrpc_member_lookup() -> TestResult 
         if !matches!(&error, IncomingMessageError::InvalidMessageShape { .. }) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!(
-                    "scalar JSON must fail the top-level message-shape stage, got {error:?}"
-                ),
+                format!("scalar JSON must fail the top-level message-shape stage, got {error:?}"),
             )
             .into());
         }
