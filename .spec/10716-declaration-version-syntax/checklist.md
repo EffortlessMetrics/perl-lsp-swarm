@@ -43,7 +43,8 @@
 - [x] An exact form admits exactly the spellings Perl admits; recovery is the
       only escape
 - [x] The one-line `Display` contract holds for recovered text containing
-      control characters
+      control characters *and* Unicode line/paragraph separators, asserted
+      against a break-character predicate rather than `str::lines()`
 - [x] No normalized value, ordering, comparison, or activation semantics
 - [x] No second raw/normalized or compatibility-string authority
 - [x] Equality, `Debug`, and the `Display` projection are deterministic
@@ -51,7 +52,7 @@
 ## Verification
 
 - [x] `cargo test -p perl-ast --test declaration_version_syntax --locked` (15 rows)
-- [x] Twelve mutation controls applied, caught, and reverted (see `acceptance.md`)
+- [x] Thirteen mutation controls applied, caught, and reverted (see `acceptance.md`)
 - [x] Grammar differentialled against Perl 5.38.2 over 44 spellings: 44 agree,
       0 disagreements
 - [x] `cargo xtask non-rust inventory --check`

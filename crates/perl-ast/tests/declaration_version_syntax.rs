@@ -28,6 +28,12 @@ fn from(
     DeclarationVersionSyntax::from_source(form, source, SourceLocation { start, end })
 }
 
+/// Mirrors `declaration_version::is_line_breaking`. Kept test-local rather
+/// than widening the crate's public API for an assertion helper.
+fn is_line_breaking(character: char) -> bool {
+    character.is_control() || matches!(character, '\u{2028}' | '\u{2029}')
+}
+
 fn raw_of(
     value: &Result<DeclarationVersionSyntax, DeclarationVersionSyntaxError>,
 ) -> Result<String, DeclarationVersionSyntaxError> {
@@ -488,8 +494,10 @@ fn display_projection_escapes_control_characters_in_recovered_text() {
 
     let rendered = value.as_ref().map(ToString::to_string);
     assert_eq!(rendered, Ok("recovered:1\\n2\\t3\\r4@10..17".to_string()));
-    // The whole projection really is one line.
-    assert_eq!(rendered.as_ref().map(|text| text.lines().count()), Ok(1));
+    // "One line" is asserted against what a consumer would break on, not
+    // against `str::lines()` — Rust does not split on U+2028/U+2029, so a
+    // `lines().count()` oracle would pass while a log viewer split the record.
+    assert_eq!(rendered.as_ref().map(|text| text.chars().any(is_line_breaking)), Ok(false));
 
     // Other control characters get a deterministic escape too.
     let nul_source = "package A a\u{0}b;";
@@ -510,8 +518,33 @@ fn display_projection_escapes_control_characters_in_recovered_text() {
         Ok("recovered:a\\\\nb@10..14".to_string())
     );
 
+    // Unicode line and paragraph separators are not `char::is_control`, so a
+    // control-only escape set would emit them literally.
+    for (separator, escape) in [('\u{2028}', "\\u{2028}"), ('\u{2029}', "\\u{2029}")] {
+        let separator_source = format!("package A a{separator}b;");
+        let end = 10 + format!("a{separator}b").len();
+        let separator_value =
+            from(DeclarationVersionForm::RecoveredOrUnknown, &separator_source, 10, end);
+        let rendered_separator = separator_value.as_ref().map(ToString::to_string);
+        assert_eq!(
+            rendered_separator,
+            Ok(format!("recovered:a{escape}b@10..{end}")),
+            "U+{:04X} must be escaped, not emitted literally",
+            separator as u32
+        );
+        assert_eq!(rendered_separator.as_ref().map(|text| text.contains(separator)), Ok(false));
+    }
+
     // `raw()` keeps the real bytes; only the projection escapes.
     assert_eq!(value.as_ref().map(|v| v.raw().contains('\n')), Ok(true));
+    let separator_source = "package A a\u{2028}b;";
+    let separator_end = 10 + "a\u{2028}b".len();
+    assert_eq!(
+        from(DeclarationVersionForm::RecoveredOrUnknown, separator_source, 10, separator_end)
+            .as_ref()
+            .map(|v| v.raw().contains('\u{2028}')),
+        Ok(true)
+    );
 
     // Ordinary version spellings are untouched by the escaping.
     assert_eq!(

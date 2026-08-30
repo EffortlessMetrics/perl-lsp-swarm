@@ -109,9 +109,12 @@ consumers this type exists for; rewiring them is #11089's claim, not this one.
 - `Display` is one deterministic form-tagged projection
   (`<form>:<raw>@<start>..<end>`). It is a diagnostic/receipt rendering, not
   machine identity, and never renders a normalized interpretation. Because a
-  recovered reading may cover arbitrary source, control characters and the
-  escape character itself are escaped so the projection is genuinely one line;
-  ordinary version spellings contain none of them and render unchanged.
+  recovered reading may cover arbitrary source, control characters, the escape
+  character itself, and `U+2028`/`U+2029` are escaped so the projection is
+  genuinely one line. The last two are not `char::is_control` and `str::lines()`
+  does not split on them, so neither the naive escape set nor the naive oracle
+  caught them; ordinary version spellings contain none of them and render
+  unchanged.
 - The three public enums are `#[non_exhaustive]`, matching this crate's
   convention for public enums (`GotoTargetForm` at `ast.rs:155`,
   `AstInvariantCode` at `invariants.rs:13`, and 12 further occurrences).

@@ -325,6 +325,19 @@ impl DeclarationVersionSyntax {
     }
 }
 
+/// Whether a character would break the one-line [`Display`] projection.
+///
+/// Rust's `char::is_control` covers the `Cc` category, which misses `U+2028`
+/// LINE SEPARATOR (`Zl`) and `U+2029` PARAGRAPH SEPARATOR (`Zp`). Rust's own
+/// `str::lines` does not split on those either, so they slip past a naive
+/// "is it one line?" check while log viewers, JSON consumers and
+/// JavaScript-based tooling do treat them as breaks.
+///
+/// [`Display`]: std::fmt::Display
+fn is_line_breaking(character: char) -> bool {
+    character.is_control() || matches!(character, '\u{2028}' | '\u{2029}')
+}
+
 /// Deterministic one-line projection: `<form-tag>:<raw>@<start>..<end>`.
 ///
 /// This is a stable diagnostic and receipt rendering. It never renders a
@@ -344,7 +357,7 @@ impl fmt::Display for DeclarationVersionSyntax {
                 '\n' => f.write_str("\\n")?,
                 '\r' => f.write_str("\\r")?,
                 '\t' => f.write_str("\\t")?,
-                other if other.is_control() => write!(f, "\\u{{{:x}}}", other as u32)?,
+                other if is_line_breaking(other) => write!(f, "\\u{{{:x}}}", other as u32)?,
                 other => write!(f, "{other}")?,
             }
         }

@@ -87,6 +87,15 @@ DVS-014 exists because an earlier revision derived exactness from the enum tag
 alone, so `Decimal` over `v1.2.3` and `VString` over `garbage` were both
 recorded as exact readings.
 
+DVS-015's "one line" claim is asserted against a predicate for characters a
+consumer would break on, **not** against `str::lines()`. That distinction is
+load-bearing: Rust's `char::is_control` covers only the `Cc` category, so
+`U+2028` LINE SEPARATOR (`Zl`) and `U+2029` PARAGRAPH SEPARATOR (`Zp`) passed
+through literally — and because `str::lines()` does not split on them either,
+a `lines().count() == 1` oracle reported success on the broken output. Log
+viewers, JSON consumers and JavaScript tooling do treat them as breaks. The
+oracle was replaced along with the escape set.
+
 DVS-001 deliberately pairs `1.002003` (decimal) with `v1.2.3` (v-string) —
 spellings a later semantic layer may well call equal. Their inequality here is
 the claim that this type carries source form, not version meaning.
@@ -114,6 +123,7 @@ named rows failed and the suite returned to 15/15 green afterwards.
 | leading-zero rule dropped (`is_leading_zero_free_digits` → `is_plain_digits`) | DVS-014 |
 | v-string minimum component count lowered from three to one | DVS-014 |
 | `Display` writes the raw spelling unescaped | DVS-015 |
+| escape set narrowed to `char::is_control` only (drops U+2028/U+2029) | DVS-015 |
 | v-string three-digit component cap dropped | DVS-014 |
 
 Two of these are worth naming because they initially *survived* and forced a
