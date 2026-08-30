@@ -482,6 +482,61 @@ fn declared_qualified_global_carries_canonical_identity() {
     }
 }
 
+/// A *localized* qualified global (`local $Carp::CarpLevel`) is the second
+/// declaration form that mints a qualified binding, under `LocalizedPackage`
+/// rather than `PackageOur`. It is pinned separately because the Claim Boundary
+/// asserts `local` storage stays separable behind these identities, and because
+/// `kind_for` reaches `Package` for it by the qualified-name check *before*
+/// consulting storage — so a regression in the storage arm would not show up in
+/// the `our` fixture above.
+///
+/// Note the occurrence shape differs from `our`: `local` emits only the
+/// trailing read, with no separate declaration write-place. That is existing
+/// lowering behavior, not something this slice changes.
+#[test]
+fn localized_qualified_global_carries_canonical_identity() {
+    let source = "local $Carp::CarpLevel = 1;\nprint $Carp::CarpLevel;\n";
+    let file = lower(source);
+
+    let declared =
+        must_some(file.scope_graph.bindings.iter().find(|b| b.name == "Carp::CarpLevel"));
+    assert_eq!(
+        declared.storage,
+        StorageClass::LocalizedPackage,
+        "`local` on a qualified global must be recorded as LocalizedPackage"
+    );
+
+    let decl = must_some(declarations(&file).into_iter().find(|d| d.name == "Carp::CarpLevel"));
+    assert_eq!(
+        decl.binding,
+        Some(declared.id),
+        "a localized qualified global must carry its recorded binding"
+    );
+
+    let qualified: Vec<Occurrence> =
+        occurrences(&file).into_iter().filter(|o| o.name == "Carp::CarpLevel").collect();
+    assert_eq!(
+        qualified.len(),
+        1,
+        "expected the trailing read of `$Carp::CarpLevel`, got {qualified:?}"
+    );
+    assert_eq!(
+        qualified[0].binding,
+        Some(declared.id),
+        "the localized read must join the declared binding"
+    );
+    assert_eq!(
+        qualified[0].kind,
+        VariableKind::Package,
+        "a localized qualified global stays Package"
+    );
+    assert_eq!(
+        storage_of(&file, must_some(qualified[0].binding)),
+        StorageClass::LocalizedPackage,
+        "the identity behind the read must lead back to the localized storage class"
+    );
+}
+
 /// Attributed declarations (`my $x :shared`) anchor on the inner variable
 /// token, not the attribute wrapper, so they resolve to their recorded binding
 /// with and without an initializer.
