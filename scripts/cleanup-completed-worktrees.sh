@@ -20,10 +20,11 @@
 # branch is restored with one `git worktree add`; the branch, the PR, and the
 # review all survive removal. Keeping it only preserves a build cache.
 #
-# Branch deletion is separate and strictly narrower: a local branch is deleted
-# only when it is contained in the base branch. Squash merges are detected via
-# the merged PR, not by ancestry, because a squashed branch is never an ancestor
-# of its base.
+# This sweep does not delete local branches. If a branch-deletion action is
+# added, it must call scripts/branch-deletion-admission (plan --pr <number>)
+# after the worktree is gone and treat every non-zero result as retention.
+# The shared admission is bound to the exact parent PR, repository, branch tip,
+# live child graph, and #3957 worktree ownership.
 #
 # --dry-run is an inspection front door and is strictly read-only: it performs no
 # fetch, no `git worktree prune`, no worktree removal, no branch deletion, and no
@@ -138,17 +139,94 @@ remove_worktree() {
     git_out git -C "$REPO_ROOT" worktree remove "$path"
 }
 
+# Canonical `owner/name` for the repository origin points at.
+#
+# Without it, `gh` infers the repository from the working directory, so a
+# branch can be matched against a pull request in a different repository. An
+# underivable origin is a fail-closed refusal, not a fallback to inference.
+origin_repo_slug() {
+    git -C "$REPO_ROOT" remote get-url origin 2>/dev/null \
+        | sed -E 's#\.git$##; s#^.*[:/]([^/]+/[^/]+)$#\1#'
+}
+
+# Succeed only when the local branch tip is the tip the admission was granted
+# for. The admission reasons about the REMOTE branch; deleting the local ref is
+# a separate act, and a local tip carrying commits that never reached the
+# remote is unsalvaged work no admission covered.
+local_tip_is_admitted() {
+    local branch="$1" local_sha remote_sha
+
+    local_sha="$(git -C "$REPO_ROOT" rev-parse --verify --quiet "refs/heads/$branch" 2>/dev/null)" \
+        || return 1
+    [[ -n "$local_sha" ]] || return 1
+
+    remote_sha="$(git -C "$REPO_ROOT" ls-remote origin "refs/heads/$branch" 2>/dev/null \
+        | awk 'NR==1{print $1}')"
+    if [[ -z "$remote_sha" ]]; then
+        remote_sha="$(git -C "$REPO_ROOT" rev-parse --verify --quiet \
+            "refs/remotes/origin/$branch" 2>/dev/null)"
+    fi
+    [[ -n "$remote_sha" ]] || return 1
+
+    [[ "$local_sha" == "$remote_sha" ]] || return 1
+    # Emit the proven oid: the deletion must use THIS value, not a fresh read.
+    printf '%s\n' "$local_sha"
+}
+
+# Ask the shared live admission before deleting a local branch (#12885). No gh,
+# an underivable origin, a failed lookup, a non-numeric result, a retaining
+# admission, or a local tip that is not the admitted remote tip all retain.
+branch_deletion_admitted() {
+    local branch="$1" pr_number repo_slug admission
+
+    command -v gh >/dev/null 2>&1 || return 1
+    repo_slug="$(origin_repo_slug)" || return 1
+    [[ -n "$repo_slug" && "$repo_slug" == */* ]] || return 1
+
+    pr_number="$(gh pr list --repo "$repo_slug" --head "$branch" --state merged \
+        --json number --jq '.[0].number' 2>/dev/null)" || return 1
+    [[ "$pr_number" =~ ^[0-9]+$ ]] || return 1
+
+    admission="$(cd "$REPO_ROOT" && pwd)/scripts/branch-deletion-admission"
+    [[ -f "$admission" ]] || return 1
+    bash "$admission" plan --pr "$pr_number" --remote origin >/dev/null 2>&1 || return 1
+
+    local_tip_is_admitted "$branch"
+}
+
+
 delete_branch() {
-    local branch="$1"
+    local branch="$1" admitted_tip
     $DRY_RUN && return 0
-    git_out git -C "$REPO_ROOT" branch -D "$branch" || true
+    if ! admitted_tip="$(branch_deletion_admitted "$branch")"; then
+        printf '    -> retaining local branch %s: branch-deletion admission refused\n' \
+            "$branch" >&2
+        return 0
+    fi
+    # The oid comes from the admission check, not a fresh read. Re-reading would
+    # make the CAS atomic only against its own read: a ref that advanced after
+    # the equality check would become the new expected value and be deleted.
+    local expected="$admitted_tip"
+    if [[ -z "$expected" ]]; then
+        printf '    -> retaining local branch %s: no admitted tip was carried\n' "$branch" >&2
+        return 0
+    fi
+    # Atomic compare-and-delete on the admitted tip: a ref that advanced between
+    # the check above and this deletion is preserved, not discarded.
+    if ! git_out git -C "$REPO_ROOT" update-ref -d "refs/heads/$branch" "$expected"; then
+        printf '    -> retaining local branch %s: it moved between admission and deletion\n' \
+            "$branch" >&2
+    fi
 }
 
 branch_landed_via_pr() {
-    local branch="$1"
+    local branch="$1" repo_slug
     [[ -n "$branch" ]] || return 1
     command -v gh >/dev/null 2>&1 || return 1
-    gh pr list --head "$branch" --state merged --json number 2>/dev/null | grep -q '"number"'
+    repo_slug="$(origin_repo_slug)" || return 1
+    [[ -n "$repo_slug" && "$repo_slug" == */* ]] || return 1
+    gh pr list --repo "$repo_slug" --head "$branch" --state merged --json number 2>/dev/null \
+        | grep -q '"number"'
 }
 
 # Stale origin refs make "unpushed" wrong in the dangerous direction, so refresh

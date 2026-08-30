@@ -58,10 +58,18 @@ def validate_workflow_contract(text: str) -> None:
         "source_sha: description:",
         "required: true type: string",
         "github.event_name == 'workflow_dispatch' && inputs.source_sha == github.sha",
-        "ref: ${{ github.sha }}",
+        "workflow_run",
+        "github.event.workflow_run.conclusion == 'success'",
+        "github.event.workflow_run.event == 'push'",
+        "github.event.workflow_run.repository.full_name == github.repository",
+        "ref: ${{ env.SOURCE_SHA }}",
         "timeout-minutes: 20",
-        "run: python3 scripts/generate-badges.py",
-        "permissions: contents: read",
+        "python3 scripts/generate-badges.py",
+        "permissions: actions: read contents: read",
+        "--ripr-receipt",
+        "--producer-receipt",
+        "receipts/quality/ripr-plus.json",
+        "receipts/quality/ripr-badge-producer.json",
     ]
     for fragment in required:
         if fragment not in compact:
@@ -69,8 +77,10 @@ def validate_workflow_contract(text: str) -> None:
     if "cargo xtask badges" in text:
         raise ValueError("the displaced Rust badge mapper remains in workflow guidance")
     writer_required = [
-        "github.event_name == 'push'",
-        "github.ref == 'refs/heads/main'",
+        "github.event_name == 'workflow_run'",
+        "github.event.workflow_run.head_branch == github.event.repository.default_branch",
+        "github.event.workflow_run.event == 'push'",
+        "github.event.workflow_run.repository.full_name == github.repository",
         "contents: write",
         "pull-requests: write",
     ]
@@ -102,10 +112,10 @@ class GenerateBadgesTests(unittest.TestCase):
         text = WORKFLOW.read_text(encoding="utf-8")
         mutations = [
             text.replace("inputs.source_sha == github.sha", "inputs.source_sha != github.sha", 1),
-            text.replace("ref: ${{ github.sha }}", "ref: ${{ github.ref }}", 1),
+            text.replace("ref: ${{ env.SOURCE_SHA }}", "ref: ${{ github.ref }}", 1),
             text.replace(
-                "github.event_name == 'push' &&\n      (github.ref == 'refs/heads/main'",
-                "github.event_name == 'workflow_dispatch' &&\n      (github.ref == 'refs/heads/main'",
+                "github.event.workflow_run.conclusion == 'success'",
+                "github.event.workflow_run.conclusion != 'success'",
                 1,
             ),
         ]
@@ -215,6 +225,47 @@ class GenerateBadgesTests(unittest.TestCase):
         for payload in invalid_payloads:
             with self.subTest(payload=payload):
                 self.assertNotEqual(self.run_generator(payload)[0].returncode, 0)
+
+    def test_exact_receipt_reuse_is_bound_to_source_and_reviewed_producer(self):
+        source_sha = "a" * 40
+        receipt = {
+            "schema_version": 2,
+            "kind": "ripr_plus_baseline",
+            "head": source_sha,
+            "root": ".",
+            "source_format": "ripr check --format repo-badge-json (counts)",
+            "counts": VALID_COUNTS,
+        }
+        producer = {
+            "schema_version": 1,
+            "kind": "ripr_badge_producer",
+            "head": source_sha,
+            "root": ".",
+            "source_format": "ripr-plus repo-badge-json",
+            "ripr_version": generator.EXPECTED_RIPR_VERSION,
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            receipt_path = Path(directory) / "ripr-plus.json"
+            producer_path = Path(directory) / "producer.json"
+            receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+            producer_path.write_text(json.dumps(producer), encoding="utf-8")
+            badge = generator.badge_from_receipt(receipt_path, producer_path, source_sha)
+            self.assertEqual((badge["message"], badge["color"]), ("0", "brightgreen"))
+
+            for mutation in (
+                {**receipt, "head": "b" * 40},
+                {**producer, "ripr_version": "0.0.0"},
+                {**receipt, "counts": {"unsuppressed_exposure_gaps": True}},
+            ):
+                with self.subTest(mutation=mutation):
+                    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+                    producer_path.write_text(json.dumps(producer), encoding="utf-8")
+                    if "kind" in mutation and mutation["kind"] == "ripr_badge_producer":
+                        producer_path.write_text(json.dumps(mutation), encoding="utf-8")
+                    else:
+                        receipt_path.write_text(json.dumps(mutation), encoding="utf-8")
+                    with self.assertRaises(ValueError):
+                        generator.badge_from_receipt(receipt_path, producer_path, source_sha)
 
     def test_process_failure_has_bounded_stderr(self):
         result, _ = self.run_generator(
