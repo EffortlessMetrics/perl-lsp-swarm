@@ -88,6 +88,47 @@ describe('BinaryDownloader partial-file cleanup ordering', () => {
     await new Promise<void>((resolve) => setImmediate(resolve));
   }
 
+  function observeRealManagedCleanup(downloader: DownloaderSeams): {
+    delayedCleanup: Array<() => void>;
+    removePartialFile: jest.SpiedFunction<DownloaderSeams['removePartialFile']>;
+    stagingDestination: () => string;
+    quarantinedArtifactsAtRemoval: () => string[];
+  } {
+    const delayedCleanup: Array<() => void> = [];
+    jest.spyOn(global, 'setImmediate').mockImplementation((callback: () => void) => {
+      delayedCleanup.push(callback);
+      return {} as NodeJS.Immediate;
+    });
+
+    let stagingPath = '';
+    let quarantinedArtifacts: string[] = [];
+    const originalRemove = BinaryDownloader.prototype['removePartialFile'].bind(downloader);
+    const removePartialFile = jest
+      .spyOn(downloader, 'removePartialFile')
+      .mockImplementation((failedStagingPath) => {
+        stagingPath = failedStagingPath;
+        if (!fs.existsSync(failedStagingPath)) {
+          fs.writeFileSync(failedStagingPath, 'failed-generation');
+        }
+        expect(fs.existsSync(failedStagingPath)).toBe(true);
+
+        originalRemove(failedStagingPath);
+
+        quarantinedArtifacts = managedCleanupArtifacts().filter((entry) =>
+          entry.startsWith('.partial-cleanup-'),
+        );
+        expect(fs.existsSync(failedStagingPath)).toBe(false);
+        expect(quarantinedArtifacts).toHaveLength(1);
+      });
+
+    return {
+      delayedCleanup,
+      removePartialFile,
+      stagingDestination: () => stagingPath,
+      quarantinedArtifactsAtRemoval: () => quarantinedArtifacts,
+    };
+  }
+
   test.each([
     ['non-2xx response', 404, {}],
     ['declared oversize response', 200, { 'content-length': '11' }],
@@ -244,10 +285,7 @@ describe('BinaryDownloader partial-file cleanup ordering', () => {
     ) as unknown as DownloaderSeams;
     const request = new EventEmitter() as TestRequest;
     request.destroy = jest.fn();
-    let stagingDestination = '';
-    jest.spyOn(downloader, 'removePartialFile').mockImplementation((stagingPath) => {
-      stagingDestination = stagingPath;
-    });
+    const cleanup = observeRealManagedCleanup(downloader);
     jest.spyOn(downloader, 'httpGet').mockReturnValue(request);
 
     await expect(
@@ -256,8 +294,17 @@ describe('BinaryDownloader partial-file cleanup ordering', () => {
 
     expect(request.destroy).toHaveBeenCalled();
     expect(fs.readFileSync(destination, 'utf8')).toBe('existing');
-    expect(stagingDestination).not.toBe('');
-    expect(fs.existsSync(stagingDestination)).toBe(false);
+    expect(cleanup.removePartialFile).toHaveBeenCalledTimes(1);
+    expect(cleanup.stagingDestination()).not.toBe('');
+    expect(cleanup.quarantinedArtifactsAtRemoval()).toHaveLength(1);
+    expect(cleanup.delayedCleanup).toHaveLength(1);
+    expect(managedCleanupArtifacts()).toHaveLength(1);
+
+    for (const callback of [...cleanup.delayedCleanup]) {
+      callback();
+    }
+    expect(managedCleanupArtifacts()).toEqual([]);
+    expect(fs.readFileSync(destination, 'utf8')).toBe('existing');
   });
 
   test('preserves the existing destination after cancellation', async () => {
@@ -280,10 +327,7 @@ describe('BinaryDownloader partial-file cleanup ordering', () => {
     ) as unknown as DownloaderSeams;
     const request = new EventEmitter() as TestRequest;
     request.destroy = jest.fn();
-    let stagingDestination = '';
-    jest.spyOn(downloader, 'removePartialFile').mockImplementation((stagingPath) => {
-      stagingDestination = stagingPath;
-    });
+    const cleanup = observeRealManagedCleanup(downloader);
     jest.spyOn(downloader, 'httpGet').mockImplementation(() => {
       process.nextTick(() => {
         cancelled = true;
@@ -307,8 +351,17 @@ describe('BinaryDownloader partial-file cleanup ordering', () => {
 
     expect(request.destroy).toHaveBeenCalled();
     expect(fs.readFileSync(destination, 'utf8')).toBe('existing');
-    expect(stagingDestination).not.toBe('');
-    expect(fs.existsSync(stagingDestination)).toBe(false);
+    expect(cleanup.removePartialFile).toHaveBeenCalledTimes(1);
+    expect(cleanup.stagingDestination()).not.toBe('');
+    expect(cleanup.quarantinedArtifactsAtRemoval()).toHaveLength(1);
+    expect(cleanup.delayedCleanup.length).toBeGreaterThanOrEqual(1);
+    expect(managedCleanupArtifacts()).toHaveLength(1);
+
+    for (const callback of [...cleanup.delayedCleanup]) {
+      callback();
+    }
+    expect(managedCleanupArtifacts()).toEqual([]);
+    expect(fs.readFileSync(destination, 'utf8')).toBe('existing');
   });
 
   test('preserves the existing destination after a response stream error', async () => {
@@ -320,10 +373,7 @@ describe('BinaryDownloader partial-file cleanup ordering', () => {
     ) as unknown as DownloaderSeams;
     const request = new EventEmitter() as TestRequest;
     request.destroy = jest.fn();
-    let stagingDestination = '';
-    jest.spyOn(downloader, 'removePartialFile').mockImplementation((stagingPath) => {
-      stagingDestination = stagingPath;
-    });
+    const cleanup = observeRealManagedCleanup(downloader);
     const response = makeResponse(200);
     const streamError = new Error('stream failed');
     jest.spyOn(downloader, 'httpGet').mockImplementation((_https, _url, _options, callback) => {
@@ -341,8 +391,17 @@ describe('BinaryDownloader partial-file cleanup ordering', () => {
 
     expect(request.destroy).toHaveBeenCalled();
     expect(fs.readFileSync(destination, 'utf8')).toBe('existing');
-    expect(stagingDestination).not.toBe('');
-    expect(fs.existsSync(stagingDestination)).toBe(false);
+    expect(cleanup.removePartialFile).toHaveBeenCalledTimes(1);
+    expect(cleanup.stagingDestination()).not.toBe('');
+    expect(cleanup.quarantinedArtifactsAtRemoval()).toHaveLength(1);
+    expect(cleanup.delayedCleanup.length).toBeGreaterThanOrEqual(1);
+    expect(managedCleanupArtifacts()).toHaveLength(1);
+
+    for (const callback of [...cleanup.delayedCleanup]) {
+      callback();
+    }
+    expect(managedCleanupArtifacts()).toEqual([]);
+    expect(fs.readFileSync(destination, 'utf8')).toBe('existing');
   });
 
   test('does not quarantine a replacement installed before the failed generation is renamed', async () => {
