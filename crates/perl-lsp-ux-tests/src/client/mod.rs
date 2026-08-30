@@ -12,11 +12,16 @@ use crate::observation::{Inbox, StreamEnd, WaitEnd};
 use crate::{ChildExit, FakeWorkspace, ScenarioConfig, poll_child_exit};
 use anyhow::{Context, Result, anyhow};
 use serde_json::{Value, json};
+use server_request_script::{
+    ObservedServerRequest, ScriptedServerRequest, ServerRequestObserver, ServerRequestScript,
+};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+
+pub mod server_request_script;
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(100);
 const SHUTDOWN_RUNNING: u8 = 0;
@@ -135,7 +140,7 @@ pub struct UxGracefulShutdown {
 /// A lightweight LSP client that speaks directly to a spawned perl-lsp process.
 pub struct UxClient {
     child: Mutex<Child>,
-    stdin: Mutex<ChildStdin>,
+    stdin: Arc<Mutex<Option<ChildStdin>>>,
     initialize_result: Value,
     /// The single observation substrate: buffered events, buffered responses,
     /// and the typed reason the server's output stream ended. Every wait in the
@@ -143,6 +148,7 @@ pub struct UxClient {
     inbox: Inbox,
     /// Stderr lines captured from the server process.
     stderr_lines: Arc<Mutex<Vec<String>>>,
+    script: Option<ServerRequestScript>,
     shutdown_state: AtomicU8,
     _stdout_thread: std::thread::JoinHandle<()>,
     _stderr_thread: std::thread::JoinHandle<()>,
@@ -155,6 +161,30 @@ impl UxClient {
         binary_path: &str,
         workspace: &FakeWorkspace,
         config: &ScenarioConfig,
+    ) -> Result<Self> {
+        let mut client = Self::spawn_process(binary_path, config, None)?;
+        client.initialize_result = client.handshake(workspace, config, config.timeout)?;
+        Ok(client)
+    }
+
+    /// Spawn the fixture binary and install scripted responses for its
+    /// server-initiated requests.
+    pub fn spawn_scripted(
+        binary_path: &str,
+        root_uri: &str,
+        script: Vec<ScriptedServerRequest>,
+        timeout: Duration,
+    ) -> Result<Self> {
+        let config = ScenarioConfig::default();
+        let mut client = Self::spawn_process(binary_path, &config, Some(script))?;
+        client.initialize_result = client.scripted_handshake(root_uri, timeout)?;
+        Ok(client)
+    }
+
+    fn spawn_process(
+        binary_path: &str,
+        config: &ScenarioConfig,
+        scripted_requests: Option<Vec<ScriptedServerRequest>>,
     ) -> Result<Self> {
         let mut cmd = build_command(binary_path, config)?;
 
@@ -169,6 +199,7 @@ impl UxClient {
             .stdin
             .take()
             .ok_or_else(|| anyhow!("perl-lsp stdin not available after spawn"))?;
+        let stdin = Arc::new(Mutex::new(Some(stdin)));
         let stdout = child
             .stdout
             .take()
@@ -180,6 +211,13 @@ impl UxClient {
 
         let inbox = Inbox::new();
         let stderr_lines: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let (script, observer) = match scripted_requests {
+            Some(script) => {
+                let (script, observer) = ServerRequestScript::new(stdin.clone(), script)?;
+                (Some(script), Some(observer))
+            }
+            None => (None, None),
+        };
 
         // ── stdout reader thread ──────────────────────────────────────────────
         // Publishes into the inbox and, on exit, records *why* the stream ended
@@ -194,9 +232,13 @@ impl UxClient {
                 // from a merely silent server.
                 let mut exit = ReaderExit::new(reader_inbox.clone());
                 let mut reader = BufReader::new(stdout);
+                let observer: Option<ServerRequestObserver> = observer;
                 loop {
                     match read_one_frame(&mut reader) {
                         FrameRead::Message(msg) => {
+                            if let Some(observer) = &observer {
+                                observer.observe(&msg);
+                            }
                             let has_id = msg.get("id").is_some() && !msg["id"].is_null();
                             let is_response = has_id
                                 && (msg.get("result").is_some() || msg.get("error").is_some());
@@ -240,19 +282,34 @@ impl UxClient {
         // signal rather than a guess about process startup latency.
         let mut client = Self {
             child: Mutex::new(child),
-            stdin: Mutex::new(stdin),
+            stdin,
             initialize_result: Value::Null,
             inbox,
             stderr_lines,
+            script,
             shutdown_state: AtomicU8::new(SHUTDOWN_RUNNING),
             _stdout_thread,
             _stderr_thread,
         };
 
-        // ── LSP handshake ─────────────────────────────────────────────────────
-        client.initialize_result = client.handshake(workspace, config, config.timeout)?;
-
         Ok(client)
+    }
+
+    fn scripted_handshake(&self, root_uri: &str, timeout: Duration) -> Result<Value> {
+        let init_resp = self.request(
+            "initialize",
+            json!({
+                "processId": null,
+                "rootUri": root_uri,
+                "capabilities": {}
+            }),
+            timeout,
+        )?;
+        if let Some(err) = init_resp.get("error") {
+            return Err(anyhow!("LSP initialize returned error: {}", err));
+        }
+        self.notify("initialized", json!({}))?;
+        Ok(init_resp)
     }
 
     fn handshake(
@@ -440,6 +497,22 @@ impl UxClient {
         self.stderr_lines.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
+    /// Wait for all scripted server requests to be observed and answered.
+    pub fn wait_for_script(&self, timeout: Duration) -> Result<Vec<ObservedServerRequest>> {
+        self.script
+            .as_ref()
+            .ok_or_else(|| anyhow!("client has no scripted server-request script"))?
+            .wait(timeout)
+    }
+
+    /// Fail if the server sent a server-initiated request not in the script.
+    pub fn assert_no_unscripted_requests(&self) -> Result<()> {
+        self.script
+            .as_ref()
+            .ok_or_else(|| anyhow!("client has no scripted server-request script"))?
+            .assert_no_unscripted()
+    }
+
     /// Complete the legal LSP lifecycle and prove a zero-status process exit.
     ///
     /// A successful result requires a matching JSON-RPC shutdown response with
@@ -571,6 +644,9 @@ impl UxClient {
         let body = msg.to_string();
         let header = format!("Content-Length: {}\r\n\r\n", body.len());
         let mut stdin = self.stdin.lock().unwrap_or_else(|e| e.into_inner());
+        let stdin = stdin
+            .as_mut()
+            .ok_or_else(|| anyhow!("LSP client stdin is already closed"))?;
         stdin.write_all(header.as_bytes()).context("Failed to write LSP header to stdin")?;
         stdin.write_all(body.as_bytes()).context("Failed to write LSP body to stdin")?;
         stdin.flush().context("Failed to flush LSP stdin")?;
@@ -663,6 +739,13 @@ fn merge_json(target: &mut Value, overlay: &Value) {
 
 impl Drop for UxClient {
     fn drop(&mut self) {
+        if let Some(script) = self.script.take() {
+            script.settle();
+        }
+        if let Ok(mut stdin) = self.stdin.lock() {
+            stdin.take();
+        }
+
         let shutdown_state = self.shutdown_state.load(Ordering::SeqCst);
         if shutdown_state == SHUTDOWN_COMPLETE {
             return;
@@ -674,7 +757,9 @@ impl Drop for UxClient {
         if shutdown_state == SHUTDOWN_RUNNING {
             let shutdown = r#"{"jsonrpc":"2.0","id":999998,"method":"shutdown","params":{}}"#;
             let exit = r#"{"jsonrpc":"2.0","method":"exit"}"#;
-            if let Ok(mut stdin) = self.stdin.lock() {
+            if let Ok(mut stdin) = self.stdin.lock()
+                && let Some(stdin) = stdin.as_mut()
+            {
                 for body in [shutdown, exit] {
                     let hdr = format!("Content-Length: {}\r\n\r\n", body.len());
                     let _ = stdin.write_all(hdr.as_bytes());

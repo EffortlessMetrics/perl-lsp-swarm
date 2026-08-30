@@ -1,12 +1,10 @@
-mod support;
-
 use anyhow::{Result, anyhow, ensure};
+use perl_lsp_ux_tests::{
+    ObservedServerRequest, ScriptedServerRequest, ScriptedServerResponse, ServerRequestDelivery,
+    UxClient,
+};
 use serde_json::{Value, json};
 use std::time::{Duration, Instant};
-use support::{
-    ObservedServerRequest, ScriptedClient, ScriptedServerRequest, ScriptedServerResponse,
-    ServerRequestDelivery,
-};
 
 const CONFIGURATION_ID: &str = "fixture-configuration";
 const REGISTRATION_ID: u64 = 41;
@@ -34,7 +32,7 @@ fn scripted_client_completes_success_error_delay_and_timeout_outcomes() -> Resul
         ScriptedServerRequest::success("window/workDoneProgress/create", Value::Null),
         ScriptedServerRequest::no_response("window/showDocument"),
     ];
-    let client = ScriptedClient::spawn(binary, "file:///fixture", script, timeout)?;
+    let client = UxClient::spawn_scripted(binary, "file:///fixture", script, timeout)?;
     let observed = client.wait_for_script(timeout)?;
     ensure!(observed.len() == 4, "expected four server requests, got {observed:#?}");
     client.assert_no_unscripted_requests()?;
@@ -102,10 +100,10 @@ fn request_by_method<'a>(
         .ok_or_else(|| anyhow!("server request {method} was not observed: {observed:#?}"))
 }
 
-fn wait_for_event(client: &ScriptedClient, method: &str, timeout: Duration) -> Result<Value> {
+fn wait_for_event(client: &UxClient, method: &str, timeout: Duration) -> Result<Value> {
     let deadline = Instant::now() + timeout;
     loop {
-        for event in client.peek_events() {
+        for event in client.peek_raw_events() {
             if event.get("method").and_then(Value::as_str) == Some(method) {
                 return Ok(event.get("params").cloned().unwrap_or(Value::Null));
             }
@@ -114,7 +112,7 @@ fn wait_for_event(client: &ScriptedClient, method: &str, timeout: Duration) -> R
             return Err(anyhow!(
                 "timed out after {}ms waiting for {method}; stderr={:#?}",
                 timeout.as_millis(),
-                client.stderr_lines()
+                client.peek_stderr_lines()
             ));
         }
         std::thread::sleep(Duration::from_millis(10));
