@@ -78,6 +78,16 @@ git diff --check -> clean
    bounded window; merged-candidate facts degrade to a recorded limitation
    (honest bound, not a completeness claim).
 
+## Schema evolution
+
+`module_train_live.v1` became **v2** in #14237: `PrFacts` gained review-thread
+facts, per-review commit binding and review-page truncation, which changes the
+canonical semantic representation and therefore the digest. Snapshots are
+ephemeral observations, so the remedy for a stored v1 file is to re-run
+`module-train live refresh`, not to migrate it. The version check runs before
+the digest check so a superseded snapshot reports `schema_version mismatch`
+rather than coming out of the tamper-detection path.
+
 ## Adoption / rollback
 
 Adopt via the four `module-train live` subcommands (`refresh` is the only

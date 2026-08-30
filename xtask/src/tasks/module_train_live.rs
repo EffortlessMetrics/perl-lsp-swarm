@@ -50,7 +50,21 @@ mod tests;
 /// Snapshot schema identity produced by this tool.
 pub const LIVE_SCHEMA_NAME: &str = "module_train_live.v1";
 /// Snapshot schema version.
-pub const LIVE_SCHEMA_VERSION: u64 = 1;
+/// Bumped to 2 by #14237: `PrFacts` gained review-thread facts, per-review
+/// commit binding and review-page truncation, which changes the canonical
+/// semantic representation and therefore the digest.
+///
+/// The `#[serde(default)]` on those fields lets a version-1 snapshot
+/// deserialize, but its stored digest was computed over the old
+/// representation, so recomputing it after load necessarily disagrees. Left at
+/// 1, that disagreement surfaced through the *tamper-detection* path — an
+/// honest older snapshot was reported as if it had been altered. A version
+/// bump makes the same situation report what it actually is, and the version
+/// check runs before the digest check so that is the error operators see.
+///
+/// Snapshots are ephemeral observations: the remedy is to re-run
+/// `module-train live refresh`, not to migrate a stored file.
+pub const LIVE_SCHEMA_VERSION: u64 = 2;
 /// Raw observation schema identity (adapter output / fixture input).
 pub const RAW_SCHEMA_NAME: &str = "module_train_live_raw.v1";
 /// The module train authority issue referenced by the identity block.
@@ -1673,15 +1687,23 @@ fn observe_github(root: &Path) -> (RawGithub, InstrumentRecord) {
             match gh_review_facts(root, raw.number, owner, name) {
                 // The head must agree with the one `gh pr list` reported. A
                 // push between the two observations makes the listed head
-                // stale, and comparing reviews against a stale head would
-                // report a superseded review as current. Disagreement leaves
-                // both facts unobserved rather than wrong.
+                // stale, and this candidate's facts are then a mix of two
+                // commits: list-time head and mergeability, view-time checks.
+                // Dropping only the review facts would leave that mixture
+                // looking healthy enough to recommend an action from, so the
+                // detected race degrades the whole GitHub instrument exactly
+                // as a failed detail read does — the projection gates to
+                // NOT_PROVEN rather than acting on cross-commit facts.
                 Ok(facts) if !review_facts_bind_to_listed_head(&raw.head_oid, &facts.head_oid) => {
+                    state = InstrumentState::Failed;
                     let _ = write!(
                         detail,
-                        "PR {} head moved between list and review observation; \
-                         review facts left unobserved; ",
-                        raw.number
+                        "PR {} head moved between list and review observation \
+                         (listed {}, observed {}); cross-commit facts are not \
+                         actionable; ",
+                        raw.number,
+                        &raw.head_oid[..raw.head_oid.len().min(8)],
+                        &facts.head_oid[..facts.head_oid.len().min(8)]
                     );
                 }
                 Ok(facts) => {

@@ -940,6 +940,42 @@ fn normalization_is_deterministic_and_observed_at_stays_outside_the_digest() -> 
 }
 
 #[test]
+/// A snapshot written before #14237 must be rejected as an *older schema*,
+/// never as a tampered one.
+///
+/// Those fields are `#[serde(default)]`, so a version-1 file still
+/// deserializes — but its stored digest was computed over the old canonical
+/// representation, so recomputing it after load necessarily disagrees. Left at
+/// version 1 that disagreement came out of the tamper-detection path, which
+/// accuses an honest operator of altering their snapshot and hides the real
+/// remedy (re-run `refresh`). The version check must run first and own it.
+#[test]
+fn a_pre_change_snapshot_is_rejected_as_older_schema_not_as_tampering() -> Result<()> {
+    let snapshot = normalize_text(CORPUS_FIXTURE)?;
+    assert_eq!(snapshot.schema_version, LIVE_SCHEMA_VERSION);
+    assert!(LIVE_SCHEMA_VERSION > 1, "the representation changed, so the version must too");
+
+    // Stand in for a file written by the previous schema: same schema name,
+    // the version it carried, and a digest that cannot match the new
+    // representation.
+    let mut legacy = snapshot.clone();
+    legacy.schema_version = 1;
+    let temp = std::env::temp_dir().join("module-train-live-legacy-v1.json");
+    std::fs::write(&temp, serde_json::to_vec(&legacy)?)?;
+
+    let error = load_snapshot(&temp)
+        .err()
+        .ok_or_else(|| color_eyre::eyre::eyre!("a superseded schema version must fail closed"))?;
+    let text = error.to_string();
+    assert!(text.contains("schema_version mismatch"), "got: {text}");
+    assert!(
+        !text.contains("digest drift"),
+        "an older snapshot is not tampering, and must not be reported as it: {text}"
+    );
+    Ok(())
+}
+
+#[test]
 fn snapshot_validation_detects_tampering() -> Result<()> {
     let snapshot = normalize_text(CORPUS_FIXTURE)?;
     let manifest = loaded()?;
