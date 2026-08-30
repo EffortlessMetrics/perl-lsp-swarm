@@ -229,7 +229,8 @@ impl IncrementalState {
         if raw_relexed.last().is_some_and(|token| token.end > new_relex_end) {
             return self.full_reparse(new_source, Some(FallbackReason::CacheBoundaryUnavailable));
         }
-        let reparsed = TokenStream::lexer_tokens_to_parser_tokens(raw_relexed);
+        let reparsed =
+            TokenStream::lexer_tokens_to_parser_tokens_from_source(raw_relexed, new_source);
         if replay_crosses_cached_suffix(&reparsed, &suffix) {
             return self.full_reparse(new_source, Some(FallbackReason::CacheBoundaryUnavailable));
         }
@@ -404,7 +405,7 @@ fn lex_full(source: &str) -> (Vec<Token>, Vec<LexerCheckpoint>) {
         }
     }
 
-    (TokenStream::lexer_tokens_to_parser_tokens(raw_tokens), checkpoints)
+    (TokenStream::lexer_tokens_to_parser_tokens_from_source(raw_tokens, source), checkpoints)
 }
 
 fn merge_checkpoints(

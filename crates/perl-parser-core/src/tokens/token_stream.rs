@@ -45,6 +45,7 @@ use perl_lexer::{LexerMode, PerlLexer, Token as LexerToken, TokenType as LexerTo
 use perl_token::TokenSpanError;
 pub use perl_token::{Token, TokenKind};
 use std::collections::VecDeque;
+use std::sync::Arc;
 
 /// Backing source for the token stream â€” either a live lexer or pre-lexed tokens.
 enum TokenStreamInner<'a> {
@@ -63,6 +64,10 @@ enum TokenStreamInner<'a> {
 /// Provides three-token lookahead, transparent trivia skipping (in lexer mode),
 /// and statement-boundary state management used by the recursive-descent parser.
 pub struct TokenStream<'a> {
+    /// Source text the live-lexer path lexes. Used only to reconstruct the
+    /// payload of budget-degraded `UnknownRest` tokens (see
+    /// [`Self::convert_lexer_token`]); buffered mode never consults it.
+    input: &'a str,
     inner: TokenStreamInner<'a>,
     buffered_eof_pos: usize,
     peeked: Option<Token>,
@@ -74,6 +79,7 @@ impl<'a> TokenStream<'a> {
     /// Create a new token stream from source code.
     pub fn new(input: &'a str) -> Self {
         TokenStream {
+            input,
             inner: TokenStreamInner::Lexer(Box::new(PerlLexer::new(input))),
             buffered_eof_pos: input.len(),
             peeked: None,
@@ -120,6 +126,8 @@ impl<'a> TokenStream<'a> {
             .unwrap_or(0);
 
         TokenStream {
+            // Buffered tokens are already converted; `input` is never consulted.
+            input: "",
             inner: TokenStreamInner::Buffered(VecDeque::from(tokens)),
             buffered_eof_pos,
             peeked: None,
@@ -158,6 +166,20 @@ impl<'a> TokenStream<'a> {
     /// assert!(matches!(stream.peek(), Ok(t) if t.kind() == TokenKind::My));
     /// ```
     pub fn lexer_tokens_to_parser_tokens(tokens: Vec<LexerToken>) -> Vec<Token> {
+        Self::lexer_tokens_to_parser_tokens_from_source(tokens, "")
+    }
+
+    /// Source-aware conversion of raw [`LexerToken`]s to parser [`Token`]s.
+    ///
+    /// Identical to [`Self::lexer_tokens_to_parser_tokens`] except that
+    /// budget-degraded `UnknownRest` tokens (geometry-only, empty text) have
+    /// their covered bytes reconstructed from `source`, so the typed token —
+    /// and the `lexer_budget_exhausted` stop cause downstream — survives
+    /// conversion in pre-lexed (incremental) pipelines too (#14158).
+    pub fn lexer_tokens_to_parser_tokens_from_source(
+        tokens: Vec<LexerToken>,
+        source: &str,
+    ) -> Vec<Token> {
         tokens
             .into_iter()
             .filter(|t| {
@@ -166,7 +188,7 @@ impl<'a> TokenStream<'a> {
                     LexerTokenType::Whitespace | LexerTokenType::Newline | LexerTokenType::EOF
                 ) && !matches!(t.token_type, LexerTokenType::Comment(_))
             })
-            .map(Self::convert_lexer_token)
+            .map(|t| Self::convert_lexer_token(t, source))
             .collect()
     }
 
@@ -310,7 +332,12 @@ impl<'a> TokenStream<'a> {
     /// Get the next token from the backing source.
     fn next_token(&mut self) -> ParseResult<Token> {
         match &mut self.inner {
-            TokenStreamInner::Lexer(lexer) => Self::next_token_from_lexer(lexer),
+            TokenStreamInner::Lexer(lexer) => {
+                // Copy the source reference first: it outlives the `self.inner`
+                // borrow and feeds budget-token payload reconstruction.
+                let input = self.input;
+                Self::next_token_from_lexer(lexer, input)
+            }
             TokenStreamInner::Buffered(buf) => {
                 Self::next_token_from_buf(buf, &mut self.buffered_eof_pos)
             }
@@ -318,7 +345,7 @@ impl<'a> TokenStream<'a> {
     }
 
     /// Drain the next non-trivia token from the live lexer.
-    fn next_token_from_lexer(lexer: &mut PerlLexer<'_>) -> ParseResult<Token> {
+    fn next_token_from_lexer(lexer: &mut PerlLexer<'_>, source: &str) -> ParseResult<Token> {
         // Skip whitespace and comments
         loop {
             let lexer_token = lexer.next_token().ok_or(ParseError::UnexpectedEof)?;
@@ -335,7 +362,7 @@ impl<'a> TokenStream<'a> {
                     ));
                 }
                 _ => {
-                    return Ok(Self::convert_lexer_token(lexer_token));
+                    return Ok(Self::convert_lexer_token(lexer_token, source));
                 }
             }
         }
@@ -360,7 +387,11 @@ impl<'a> TokenStream<'a> {
     /// Convert a raw lexer token to the parser `Token` type.
     ///
     /// Extracted from `next_token_from_lexer` to keep the match arm readable.
-    fn convert_lexer_token(token: LexerToken) -> Token {
+    ///
+    /// `source` is the text the live lexer is consuming; it reconstructs the
+    /// payload of budget-degraded `UnknownRest` tokens (see the tail of this
+    /// function). Pass `""` when no source is available (legacy conversion).
+    fn convert_lexer_token(token: LexerToken, source: &str) -> Token {
         let kind = match &token.token_type {
             // Keywords
             LexerTokenType::Keyword(kw) => match kw.as_ref() {
@@ -483,7 +514,25 @@ impl<'a> TokenStream<'a> {
             _ => TokenKind::Unknown,
         };
 
-        token_from_lexer_parts(kind, token.text, token.start, token.end)
+        let start = token.start;
+        let end = token.end;
+        // Budget-degraded tokens (#14158): the lexer emits `UnknownRest` as a
+        // geometry-only event — empty text over the remaining source span — to
+        // keep recovery payload-free (#6717). The parser `Token` invariant
+        // requires text == span, so reconstruct the covered bytes from the
+        // source this stream already owns. Without the reconstruction the
+        // typed token cannot be constructed and silently degrades to `Eof`,
+        // erasing the `lexer_budget_exhausted` stop cause downstream.
+        let text = if matches!(kind, TokenKind::UnknownRest)
+            && token.text.is_empty()
+            && start < end
+            && let Some(covered) = source.get(start..end)
+        {
+            Arc::from(covered)
+        } else {
+            token.text
+        };
+        token_from_lexer_parts(kind, text, start, end)
     }
 }
 
