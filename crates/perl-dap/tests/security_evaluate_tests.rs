@@ -225,6 +225,11 @@ fn test_evaluate_blocks_dangerous_operations() -> TestResult {
 }
 
 /// Test that dangerous operations ARE allowed when allowSideEffects is true
+/// in the explicit `repl` context.
+///
+/// #9385 narrowed `allowSideEffects` to the interactive REPL, so this test now
+/// states the context it always implicitly meant. The companion tests below
+/// prove every other context refuses the same expressions.
 #[test]
 fn test_evaluate_allows_dangerous_ops_with_side_effects_enabled() -> TestResult {
     let mut adapter = DebugAdapter::new();
@@ -236,6 +241,7 @@ fn test_evaluate_allows_dangerous_ops_with_side_effects_enabled() -> TestResult 
     for expression in ops_to_test {
         let args = json!({
             "expression": expression,
+            "context": "repl",
             "allowSideEffects": true
         });
 
@@ -253,6 +259,193 @@ fn test_evaluate_allows_dangerous_ops_with_side_effects_enabled() -> TestResult 
         }
         // Events are fine, just checking we don't get safe-mode rejection
     }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// #9385: side-effectful evaluation is confined to the explicit REPL boundary.
+//
+// The custom `allowSideEffects` flag must not widen a read-oriented evaluate
+// context into arbitrary Perl execution. Watch expressions re-evaluate on every
+// stop and hovers fire from mouse movement, so admitting side effects there
+// would let passive inspection mutate the debuggee.
+// ---------------------------------------------------------------------------
+
+/// Expressions that mutate state, spawn processes, or execute code.
+const SIDE_EFFECTFUL_EXPRESSIONS: [&str; 4] =
+    ["system('ls')", "eval('1')", "print 'test'", "$x = 1"];
+
+/// Every evaluate context that must never carry side-effect authority.
+const NON_REPL_CONTEXTS: [&str; 5] =
+    ["watch", "hover", "variables", "clipboard", "totally-unknown"];
+
+fn refusal_message(response: DapMessage) -> String {
+    match response {
+        DapMessage::Response { command, success, message, .. } => {
+            assert_eq!(command, "evaluate");
+            assert!(!success, "a refused evaluate must not report success");
+            message.unwrap_or_default()
+        }
+        other => panic!("expected Response, got {other:?}"),
+    }
+}
+
+#[test]
+fn side_effects_are_refused_in_every_non_repl_context() -> TestResult {
+    let mut adapter = DebugAdapter::new();
+
+    for context in NON_REPL_CONTEXTS {
+        for expression in SIDE_EFFECTFUL_EXPRESSIONS {
+            let response = adapter.handle_request(
+                1,
+                "evaluate",
+                Some(json!({
+                    "expression": expression,
+                    "context": context,
+                    "allowSideEffects": true
+                })),
+            );
+
+            let message = refusal_message(response);
+            assert!(
+                message.contains("only honored for the 'repl' evaluation context"),
+                "context {context:?} must refuse '{expression}' with the trust-boundary \
+                 message, but got: {message}"
+            );
+        }
+    }
+
+    Ok(())
+}
+
+#[test]
+fn side_effects_are_refused_when_the_context_is_absent() -> TestResult {
+    // Fail-closed default: `context` is optional in the DAP schema, so a client
+    // that omits it must not inherit REPL authority.
+    let mut adapter = DebugAdapter::new();
+
+    for expression in SIDE_EFFECTFUL_EXPRESSIONS {
+        let response = adapter.handle_request(
+            1,
+            "evaluate",
+            Some(json!({ "expression": expression, "allowSideEffects": true })),
+        );
+
+        let message = refusal_message(response);
+        assert!(
+            message.contains("only honored for the 'repl' evaluation context"),
+            "an absent context must refuse '{expression}', but got: {message}"
+        );
+    }
+
+    Ok(())
+}
+
+#[test]
+fn repl_context_is_matched_exactly_and_not_by_case_or_prefix() -> TestResult {
+    // Negative control: the boundary is an exact label match, so a client
+    // cannot reach execution authority with a near-miss label.
+    let mut adapter = DebugAdapter::new();
+
+    for context in ["REPL", "Repl", "repl ", "repl-console", "myrepl"] {
+        let response = adapter.handle_request(
+            1,
+            "evaluate",
+            Some(json!({
+                "expression": "system('ls')",
+                "context": context,
+                "allowSideEffects": true
+            })),
+        );
+
+        let message = refusal_message(response);
+        assert!(
+            message.contains("only honored for the 'repl' evaluation context"),
+            "near-miss context {context:?} must not be treated as the REPL, got: {message}"
+        );
+    }
+
+    Ok(())
+}
+
+#[test]
+fn read_oriented_contexts_still_evaluate_safe_expressions() -> TestResult {
+    // The boundary must confine side effects without breaking ordinary
+    // inspection: a safe watch/hover expression is still admitted for
+    // evaluation (it fails later only because no debug session is active).
+    let mut adapter = DebugAdapter::new();
+
+    for context in NON_REPL_CONTEXTS {
+        let response = adapter.handle_request(
+            1,
+            "evaluate",
+            Some(json!({ "expression": "$my_scalar", "context": context })),
+        );
+
+        if let DapMessage::Response { message, .. } = response {
+            let message = message.unwrap_or_default();
+            assert!(
+                !message.contains("only honored for the 'repl' evaluation context")
+                    && !message.contains("Safe evaluation mode"),
+                "safe expression in context {context:?} must not be refused, got: {message}"
+            );
+        }
+    }
+
+    Ok(())
+}
+
+#[test]
+fn screening_still_blocks_dangerous_expressions_without_the_flag() -> TestResult {
+    // The pre-existing admission control must survive the new boundary: a
+    // dangerous expression with no `allowSideEffects` is still screened, and is
+    // refused for being dangerous rather than for the context.
+    let mut adapter = DebugAdapter::new();
+
+    for context in ["repl", "watch"] {
+        let response = adapter.handle_request(
+            1,
+            "evaluate",
+            Some(json!({ "expression": "system('ls')", "context": context })),
+        );
+
+        let message = refusal_message(response);
+        assert!(
+            !message.contains("only honored for the 'repl' evaluation context"),
+            "context {context:?} without the flag must be screened, not refused for context"
+        );
+        assert!(
+            !message.is_empty(),
+            "context {context:?} must refuse a dangerous screened expression"
+        );
+    }
+
+    Ok(())
+}
+
+#[test]
+fn repl_side_effects_are_refused_when_trusted_repl_is_disabled() -> TestResult {
+    // Product policy can withdraw the REPL execution surface entirely, and the
+    // refusal happens before any debugger command is constructed.
+    let mut adapter =
+        DebugAdapter::new().with_repl_trust(perl_dap::eval::ReplTrustPolicy::ReplDisabled);
+
+    let response = adapter.handle_request(
+        1,
+        "evaluate",
+        Some(json!({
+            "expression": "system('ls')",
+            "context": "repl",
+            "allowSideEffects": true
+        })),
+    );
+
+    let message = refusal_message(response);
+    assert!(
+        message.contains("disabled by policy"),
+        "REPL-disabled policy must refuse before debugger write, got: {message}"
+    );
 
     Ok(())
 }

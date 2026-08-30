@@ -189,6 +189,29 @@ pub enum EvaluateContext {
     Other(String),
 }
 
+impl EvaluateContext {
+    /// Map a DAP `evaluate` `context` label to its typed context.
+    ///
+    /// This is the single authority for that mapping. The trust boundary in
+    /// [`crate::eval::trust`] keys off the resulting variant, so the native
+    /// adapter and the external-peer bridges must not disagree about what
+    /// `"repl"` means (#9385).
+    ///
+    /// Matching is exact and case-sensitive, per the DAP specification's
+    /// lowercase labels. An unrecognized label stays `Other`, which carries no
+    /// side-effect authority.
+    #[must_use]
+    pub fn from_dap_label(label: &str) -> Self {
+        match label {
+            "watch" => Self::Watch,
+            "repl" => Self::Repl,
+            "hover" => Self::Hover,
+            "variables" => Self::Variables,
+            other => Self::Other(other.to_string()),
+        }
+    }
+}
+
 /// Parameters for [`DebugBackend::evaluate`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EvaluateParams {

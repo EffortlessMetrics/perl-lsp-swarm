@@ -801,13 +801,7 @@ fn category_str(c: OutputCategory) -> &'static str {
 }
 
 fn evaluate_context(c: &str) -> EvaluateContext {
-    match c {
-        "watch" => EvaluateContext::Watch,
-        "repl" => EvaluateContext::Repl,
-        "hover" => EvaluateContext::Hover,
-        "variables" => EvaluateContext::Variables,
-        other => EvaluateContext::Other(other.to_string()),
-    }
+    EvaluateContext::from_dap_label(c)
 }
 
 #[cfg(test)]

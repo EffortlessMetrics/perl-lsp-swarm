@@ -7,6 +7,8 @@ use super::{
     SetExpressionResponseBody, Value, Variable, VariableCacheKind, lock_or_recover,
     module_path_to_name, parse_dap_arguments, validate_safe_expression,
 };
+use crate::backend::EvaluateContext;
+use crate::eval::{EvaluateAdmission, admit};
 use crate::parse_origin::{DebuggerOutputOrigin, ParseIdentity};
 use crate::value::PerlValue;
 use crate::value_format::ValueFormatPolicy;
@@ -72,10 +74,31 @@ impl DebugAdapter {
 
             // AC10.2: Policy validation for a non-mutating subset by default.
             // This is admission control, not a real sandbox.
+            //
+            // #9385: the custom `allowSideEffects` flag is only honored for the
+            // explicit `repl` context. Watch, hover, variables, an unrecognized
+            // label, and an absent context are read-oriented paths the editor
+            // drives without a deliberate user action, so they can never be
+            // widened into arbitrary Perl execution by the flag. The decision is
+            // taken here, before any debugger command is constructed, so a
+            // refusal is never preceded by a debugger write.
             let allow_side_effects = args.allow_side_effects.unwrap_or(false);
+            let context = args.context.as_deref().map(EvaluateContext::from_dap_label);
+            let admission = admit(context.as_ref(), allow_side_effects, self.repl_trust());
 
-            // Validate expression safety if side effects are not allowed
-            if !allow_side_effects {
+            if let Some(refusal) = admission.refusal_message() {
+                return DapMessage::Response {
+                    seq,
+                    request_seq,
+                    success: false,
+                    command: "evaluate".to_string(),
+                    body: None,
+                    message: Some(refusal),
+                };
+            }
+
+            // Screen the expression unless the trusted REPL boundary admitted it.
+            if admission == EvaluateAdmission::Screened {
                 if let Some(error) = validate_safe_expression(expression) {
                     return DapMessage::Response {
                         seq,

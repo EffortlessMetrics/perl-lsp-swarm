@@ -181,9 +181,36 @@ sent to the debugger:
    the shared DAP security logic.
 
 When `allowSideEffects` is `false` (the default), the handler rejects the
-request if **either** validator returns an error. When `allowSideEffects` is
-`true`, both validators are skipped and the expression is evaluated in the
-debugger context.
+request if **either** validator returns an error.
+
+`allowSideEffects: true` is honored **only** for the explicit `repl` evaluation
+context. In every other context — `watch`, `hover`, `variables`, an unrecognized
+label, or an absent `context` field — the request is refused outright rather
+than silently downgraded to a screened evaluation, so a client cannot believe it
+received side-effect authority it never had.
+
+That boundary exists because the read-oriented contexts are driven by the editor
+rather than by a deliberate user action: a hover fires on mouse movement and
+watch expressions re-evaluate on every stop. Only the `repl` context represents
+a user typing an expression they intend to run.
+
+The decision is taken before any debugger command is constructed, so a refusal
+is never preceded by a debugger write. It is owned by
+`crates/perl-dap/src/eval/trust.rs`, which keys off the typed
+`EvaluateContext` produced by the single label-mapping authority
+`EvaluateContext::from_dap_label` — the native adapter and the external-peer
+bridges cannot disagree about what `"repl"` means. Label matching is exact, so a
+near-miss such as `"REPL"` or `"repl-console"` carries no side-effect authority.
+
+Trusted REPL execution is additionally gated on a process-owned
+`ReplTrustPolicy`. It is deliberately not derived from project or workspace
+configuration, so a checked-in project file cannot grant broader execution
+authority to whoever opens the folder.
+
+Admitting an expression through the REPL boundary is **not** sandboxing. The
+expression runs with the debuggee's full authority. The guarantee is only that
+side-effectful evaluation is confined to the one context where the user
+explicitly asked for it.
 
 #### 2.2.1 What the validators block
 
@@ -244,7 +271,9 @@ it reaches `eval`. This is explicitly documented in
 
 > Current behavior is policy validation plus timeout framing, **not** a
 > sandboxed interpreter boundary. `allowSideEffects: true` skips the safe-mode
-> validators and evaluates in the debugger context.
+> validators and evaluates in the debugger context — and is honored only for the
+> explicit `repl` context, having no effect on `watch`, `hover`, `variables`, an
+> unrecognized label, or an absent context, which are refused instead.
 
 Relevant test files in `crates/perl-dap/tests/`:
 

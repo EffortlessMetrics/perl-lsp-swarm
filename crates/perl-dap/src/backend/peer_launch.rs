@@ -1292,13 +1292,7 @@ fn thread_id_arg(args: Option<&Value>) -> ThreadId {
 }
 
 fn evaluate_context(c: &str) -> EvaluateContext {
-    match c {
-        "watch" => EvaluateContext::Watch,
-        "repl" => EvaluateContext::Repl,
-        "hover" => EvaluateContext::Hover,
-        "variables" => EvaluateContext::Variables,
-        other => EvaluateContext::Other(other.to_string()),
-    }
+    EvaluateContext::from_dap_label(c)
 }
 
 fn dap_stop_reason(reason: &StopReason) -> String {

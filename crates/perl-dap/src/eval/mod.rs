@@ -39,8 +39,10 @@
 //! - **Mutation**: Assignment operators, ++/--, regex mutation (s///)
 
 mod patterns;
+pub mod trust;
 mod validator;
 
+pub use trust::{EvaluateAdmission, ReplTrustPolicy, admit};
 pub use validator::{SafeEvaluator, ValidationError, ValidationResult};
 
 // Re-export pattern constants for testing/extension

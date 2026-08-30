@@ -380,16 +380,24 @@ fn test_live_session_evaluate_timeout_and_error_message_shape() -> TestResult {
 
     let timeout_response = session.request(
         "evaluate",
-        Some(json!({"expression":"sleep(6)","frameId":frame_id,"allowSideEffects":true})),
+        Some(json!({
+            "expression":"sleep(6)",
+            "frameId":frame_id,
+            "context":"repl",
+            "allowSideEffects":true
+        })),
     );
     match timeout_response {
         DapMessage::Response { success, message, .. } => {
             if success {
                 let (result, _) = assert_evaluate_succeeded(session.request(
                     "evaluate",
-                    Some(
-                        json!({"expression":"sleep(0)","frameId":frame_id,"allowSideEffects":true}),
-                    ),
+                    Some(json!({
+                        "expression":"sleep(0)",
+                        "frameId":frame_id,
+                        "context":"repl",
+                        "allowSideEffects":true
+                    })),
                 ))?;
                 assert!(!result.is_empty());
             } else {
@@ -405,7 +413,12 @@ fn test_live_session_evaluate_timeout_and_error_message_shape() -> TestResult {
 
     let syntax_error_response = session.request(
         "evaluate",
-        Some(json!({"expression":")","frameId":frame_id,"allowSideEffects":true})),
+        Some(json!({
+            "expression":")",
+            "frameId":frame_id,
+            "context":"repl",
+            "allowSideEffects":true
+        })),
     );
     assert_evaluate_blocked(syntax_error_response, "evaluate failed:")?;
 
@@ -457,7 +470,11 @@ fn test_evaluate_method_calls_allowed_with_side_effects() -> TestResult {
     let response = adapter.handle_request(
         1,
         "evaluate",
-        Some(json!({ "expression": "$obj->some_method()", "allowSideEffects": true })),
+        Some(json!({
+            "expression": "$obj->some_method()",
+            "context": "repl",
+            "allowSideEffects": true
+        })),
     );
     assert_evaluate_not_safe_blocked(response, "Safe evaluation mode")
 }
@@ -858,7 +875,12 @@ fn test_evaluate_stopped_session_frame_not_found_returns_error() -> TestResult {
     let response = adapter.handle_request(
         1,
         "evaluate",
-        Some(json!({ "expression": "$x", "frameId": 999, "allowSideEffects": true })),
+        Some(json!({
+            "expression": "$x",
+            "frameId": 999,
+            "context": "repl",
+            "allowSideEffects": true
+        })),
     );
     match response {
         DapMessage::Response { success, command, message, .. } => {
@@ -907,7 +929,12 @@ fn test_evaluate_stopped_session_frame_found_passes_validation() -> TestResult {
     let response = adapter.handle_request(
         1,
         "evaluate",
-        Some(json!({ "expression": "$x", "frameId": 1, "allowSideEffects": true })),
+        Some(json!({
+            "expression": "$x",
+            "frameId": 1,
+            "context": "repl",
+            "allowSideEffects": true
+        })),
     );
     match response {
         DapMessage::Response { command, message, .. } => {
@@ -965,7 +992,12 @@ fn test_evaluate_stale_frameid_after_resume_rejected() -> TestResult {
     let response = adapter.handle_request(
         1,
         "evaluate",
-        Some(json!({ "expression": "$x", "frameId": 42, "allowSideEffects": true })),
+        Some(json!({
+            "expression": "$x",
+            "frameId": 42,
+            "context": "repl",
+            "allowSideEffects": true
+        })),
     );
     match response {
         DapMessage::Response { success, command, message, .. } => {
