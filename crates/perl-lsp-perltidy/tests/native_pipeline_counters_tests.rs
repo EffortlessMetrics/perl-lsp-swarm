@@ -774,6 +774,34 @@ fn criterion_timing_invokes_native_formatter_production_path()
 }
 
 #[test]
+fn sidecar_run_id_uses_single_derivation_for_envelope_and_rows()
+-> Result<(), Box<dyn std::error::Error>> {
+    let benchmark = std::fs::read_to_string(
+        repo_root().join("crates/perl-lsp-perltidy/benches/native_pipeline_benchmark.rs"),
+    )?;
+    let invariant = "the envelope and every row must carry an identical run id, which the nightly validator requires";
+    assert_eq!(
+        benchmark.matches("std::env::var(\"NATIVE_PIPELINE_RUN_ID\")").count(),
+        1,
+        "{invariant}; derive NATIVE_PIPELINE_RUN_ID exactly once"
+    );
+    assert!(
+        benchmark.contains("fn build_subject_identities(toolchain: &str, run_id: &str)"),
+        "{invariant}; build_subject_identities must receive the shared run id"
+    );
+    assert!(
+        benchmark
+            .contains("identity_row_with_counters(spec, &typed, toolchain, run_id, &counters)"),
+        "{invariant}; every row must use the shared run id parameter"
+    );
+    assert!(
+        benchmark.contains("\"run_id\": run_id"),
+        "{invariant}; the sidecar envelope must use the shared run id parameter"
+    );
+    Ok(())
+}
+
+#[test]
 fn elapsed_measurement_wraps_classification_for_document_and_range()
 -> Result<(), Box<dyn std::error::Error>> {
     let source = std::fs::read_to_string(

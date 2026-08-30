@@ -40,10 +40,20 @@ use perl_lsp_perltidy::native::{
     FormatConfig, FormatContext, NativeFormatter, NativePipelineCounters,
 };
 
+/// The one run identity carried by both the sidecar envelope and every enrolled
+/// row. The nightly validator requires the two to be equal, so the fallback used
+/// when `NATIVE_PIPELINE_RUN_ID` is absent must be derived exactly once.
+fn run_id(toolchain: &str) -> String {
+    std::env::var("NATIVE_PIPELINE_RUN_ID")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| format!("local-{toolchain}"))
+}
+
 /// Fail closed when the receipt identity file cannot be written: a bench run
 /// without per-subject identity rows is exactly the aggregate-only evidence
 /// NPC-008 forbids.
-fn write_subject_identities(rows: &[serde_json::Value]) {
+fn write_subject_identities(rows: &[serde_json::Value], run_id: &str) {
     let output = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../target/criterion/native-pipeline-measurements.v1.json");
     if let Some(parent) = output.parent() {
@@ -52,10 +62,6 @@ fn write_subject_identities(rows: &[serde_json::Value]) {
             std::process::exit(2);
         });
     }
-    let run_id = std::env::var("NATIVE_PIPELINE_RUN_ID")
-        .ok()
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| "local-unknown".to_string());
     let payload = serde_json::json!({
         "schema": "native-pipeline-measurements-v1",
         "run_id": run_id,
@@ -71,12 +77,7 @@ fn write_subject_identities(rows: &[serde_json::Value]) {
     });
 }
 
-fn build_subject_identities() -> Vec<serde_json::Value> {
-    let toolchain = toolchain_tag();
-    let run_id = std::env::var("NATIVE_PIPELINE_RUN_ID")
-        .ok()
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| format!("local-{toolchain}"));
+fn build_subject_identities(toolchain: &str, run_id: &str) -> Vec<serde_json::Value> {
     bench_rows()
         .iter()
         .map(|spec| {
@@ -88,14 +89,16 @@ fn build_subject_identities() -> Vec<serde_json::Value> {
                 &FormatContext::default(),
                 &mut counters,
             );
-            identity_row_with_counters(spec, &typed, &toolchain, &run_id, &counters)
+            identity_row_with_counters(spec, &typed, toolchain, run_id, &counters)
         })
         .collect()
 }
 
 fn native_pipeline_document(c: &mut Criterion) {
-    let identities = build_subject_identities();
-    write_subject_identities(&identities);
+    let toolchain = toolchain_tag();
+    let run_id = run_id(&toolchain);
+    let identities = build_subject_identities(&toolchain, &run_id);
+    write_subject_identities(&identities, &run_id);
 
     let mut group = c.benchmark_group(BENCH_GROUP);
     for spec in bench_rows() {

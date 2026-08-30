@@ -19,6 +19,7 @@ use crate::tooling::perltidy::native::{
     FormatChangeSummary, FormatContext, FormatDisposition, FormatEngine, FormatEvidenceState,
     FormatIdentity, FormatLineEndingDisposition, FormatOutcome, FormatReasonCode,
     FormatRequestTarget, FormatSafetyEvidence, NativePipelineCounters, TypedFormatResult,
+    inferred_line_ending,
 };
 use crate::tooling::perltidy::{
     BracePlacement, ElsePlacement, FinalNewline, FormatConfig, FormatterMode, KeywordSpacing,
@@ -851,15 +852,6 @@ fn apply_lsp_whitespace_options_with_eof(
     }
 
     output
-}
-
-fn inferred_line_ending(content: &str) -> &'static str {
-    let bytes = content.as_bytes();
-    let Some(last_lf) = bytes.iter().rposition(|byte| *byte == b'\n') else {
-        return "\n";
-    };
-
-    if last_lf > 0 && bytes[last_lf - 1] == b'\r' { "\r\n" } else { "\n" }
 }
 
 /// Whether the document tail is already line-terminated after projection.
