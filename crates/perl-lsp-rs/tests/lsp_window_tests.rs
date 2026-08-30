@@ -88,12 +88,34 @@ fn wait_for_method(output: &OutputCapture, method: &str) -> Option<Value> {
 /// APIs must deliver the `initialized` notification first, exactly like real
 /// clients do.
 fn complete_initialization(server: &LspServer) {
-    let _ = server.handle_request(perl_lsp::JsonRpcRequest {
+    let response = server.handle_request(perl_lsp::JsonRpcRequest {
         _jsonrpc: "2.0".to_string(),
         id: None,
         method: "initialized".to_string(),
         params: Some(json!({})),
     });
+    assert!(
+        response.is_none(),
+        "initialized notification must not produce a response: {response:?}"
+    );
+    assert!(
+        server.is_initialized(),
+        "initialized notification must be accepted during the handshake"
+    );
+}
+
+fn initialize_for_window_test(server: &LspServer, init_params: Value) {
+    let response = server.handle_request(perl_lsp::JsonRpcRequest {
+        _jsonrpc: "2.0".to_string(),
+        id: Some(perl_lsp::protocol::JsonRpcId::Integer(1_i64)),
+        method: "initialize".to_string(),
+        params: Some(init_params),
+    });
+    match response {
+        Some(response) if response.error.is_none() => {}
+        other => panic!("initialize request must succeed: {other:?}"),
+    }
+    complete_initialization(server);
 }
 
 impl Write for OutputCapture {
@@ -130,13 +152,7 @@ fn lsp_window_show_message_request_format() -> Result<(), Box<dyn std::error::Er
         }
     });
 
-    let _ = server.handle_request(perl_lsp::JsonRpcRequest {
-        _jsonrpc: "2.0".to_string(),
-        id: Some(perl_lsp::protocol::JsonRpcId::Integer(1_i64)),
-        method: "initialize".to_string(),
-        params: Some(init_params),
-    });
-    complete_initialization(&server);
+    initialize_for_window_test(&server, init_params);
 
     let _ = wait_for_messages(&output, 1);
     output.clear();
@@ -202,13 +218,7 @@ fn lsp_window_show_document_with_capability() {
         }
     });
 
-    let _ = server.handle_request(perl_lsp::JsonRpcRequest {
-        _jsonrpc: "2.0".to_string(),
-        id: Some(perl_lsp::protocol::JsonRpcId::Integer(1_i64)),
-        method: "initialize".to_string(),
-        params: Some(init_params),
-    });
-    complete_initialization(&server);
+    initialize_for_window_test(&server, init_params);
 
     let _ = wait_for_messages(&output, 1);
     output.clear();
@@ -250,13 +260,7 @@ fn lsp_window_progress_lifecycle() {
         }
     });
 
-    let _ = server.handle_request(perl_lsp::JsonRpcRequest {
-        _jsonrpc: "2.0".to_string(),
-        id: Some(perl_lsp::protocol::JsonRpcId::Integer(1_i64)),
-        method: "initialize".to_string(),
-        params: Some(init_params),
-    });
-    complete_initialization(&server);
+    initialize_for_window_test(&server, init_params);
 
     let _ = wait_for_messages(&output, 1);
     output.clear();
@@ -329,13 +333,7 @@ fn lsp_window_progress_duplicate_token_fails() -> Result<(), Box<dyn std::error:
         }
     });
 
-    let _ = server.handle_request(perl_lsp::JsonRpcRequest {
-        _jsonrpc: "2.0".to_string(),
-        id: Some(perl_lsp::protocol::JsonRpcId::Integer(1_i64)),
-        method: "initialize".to_string(),
-        params: Some(init_params),
-    });
-    complete_initialization(&server);
+    initialize_for_window_test(&server, init_params);
 
     // Create first token
     let token = "duplicate-token";
@@ -477,13 +475,7 @@ fn lsp_window_message_types() {
 
     // Server-to-client requests are deferred until the handshake completes
     // (#7708), so complete initialization before driving showMessageRequest.
-    let _ = server.handle_request(perl_lsp::JsonRpcRequest {
-        _jsonrpc: "2.0".to_string(),
-        id: Some(perl_lsp::protocol::JsonRpcId::Integer(1_i64)),
-        method: "initialize".to_string(),
-        params: Some(json!({ "capabilities": {} })),
-    });
-    complete_initialization(&server);
+    initialize_for_window_test(&server, json!({ "capabilities": {} }));
 
     // Test all message types
     let types = [
@@ -514,13 +506,7 @@ fn lsp_window_debug_message_type_serializes_to_five() -> Result<(), Box<dyn std:
 
     // The final leg sends a server-to-client window/showMessageRequest, which
     // is deferred until the handshake completes (#7708); initialize first.
-    let _ = server.handle_request(perl_lsp::JsonRpcRequest {
-        _jsonrpc: "2.0".to_string(),
-        id: Some(perl_lsp::protocol::JsonRpcId::Integer(1_i64)),
-        method: "initialize".to_string(),
-        params: Some(json!({ "capabilities": {} })),
-    });
-    complete_initialization(&server);
+    initialize_for_window_test(&server, json!({ "capabilities": {} }));
 
     server.log_message(MessageType::Debug, "debug log")?;
     let log_message = wait_for_method(&output, "window/logMessage")
@@ -582,13 +568,7 @@ fn lsp_window_show_document_external_flag() {
         }
     });
 
-    let _ = server.handle_request(perl_lsp::JsonRpcRequest {
-        _jsonrpc: "2.0".to_string(),
-        id: Some(perl_lsp::protocol::JsonRpcId::Integer(1_i64)),
-        method: "initialize".to_string(),
-        params: Some(init_params),
-    });
-    complete_initialization(&server);
+    initialize_for_window_test(&server, init_params);
 
     let _ = wait_for_messages(&output, 1);
     output.clear();
