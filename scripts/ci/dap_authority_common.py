@@ -57,17 +57,26 @@ FORBIDDEN_DISPATCH_BODY_KEYWORDS = ("if", "else", "return", "while", "loop", "fo
 # The `command` identifier, ignoring `$command` (the macro row capture) and
 # any longer identifier that merely contains the word.
 COMMAND_IDENT_RE = re.compile(r"(?<![\w$])command(?!\w)")
-# The only places the command value may appear in the generated body. Pinning
-# the body's shape is not enough on its own: a fallback such as
-# `_ => self.route_unknown(seq, request_seq, command)` keeps the arm count and
-# every keyword rule intact while handing the command to a helper that can
-# route it outside the table. Command-dependent routing must not be able to
-# leave the match at all, so every use is allow-listed.
-PERMITTED_COMMAND_USES = (
-    re.compile(r"match\s+command\s*\{"),
-    re.compile(r"command\s*:\s*command\s*\.\s*to_string\s*\(\s*\)"),
-    re.compile(r"unknown_command_message\s*\(\s*command\s*\)"),
+# The generated match must scrutinise the command itself, never a value
+# derived from it: `match self.normalize(command)` would keep every
+# structural rule while remapping wire names away from the rows.
+EXPECTED_SCRUTINEE = "command"
+# The unknown-command arm is pinned by exact normalised text rather than by
+# an allow-list of sub-expressions. Allow-listing sub-expressions is
+# position-blind: `_ => self.route_unknown(Self::unknown_command_message(
+# command))` contains only permitted fragments yet still hands
+# command-derived data to a helper that can route outside the table. The
+# fallback is small and fully owned by this macro, so equality is the honest
+# check — changing it is a deliberate edit that updates this constant too.
+EXPECTED_FALLBACK = (
+    "_ => DapMessage::Response { seq, request_seq, success: false, "
+    "command: command.to_string(), body: None, "
+    "message: Some(Self::unknown_command_message(command)), },"
 )
+
+
+def _normalise_tokens(text: str) -> str:
+    return " ".join(text.split())
 
 
 STRING_CONTENT_MASK = "\x01"
@@ -275,19 +284,45 @@ def validate_generated_dispatch(text: str, masked: str) -> None:
             "only come from request-table rows"
         )
 
-    # The command value must not escape the match. Strike out every permitted
-    # use; anything left is a path by which routing could be delegated to code
-    # the table does not generate.
-    residue = body
-    for permitted in PERMITTED_COMMAND_USES:
-        residue = permitted.sub(" ", residue)
+    # The command value must not escape the match. Both permitted regions are
+    # located by position and pinned by exact text, then excised; any
+    # remaining `command` is a path that could delegate routing to code the
+    # table does not generate.
+    match_keyword = re.search(r"\bmatch\b", body)
+    if match_keyword is None:
+        raise AuthorityError("generated dispatch body has no match on the command")
+    scrutinee_open = body.index("{", match_keyword.end())
+    scrutinee = _normalise_tokens(body[match_keyword.end() : scrutinee_open])
+    if scrutinee != EXPECTED_SCRUTINEE:
+        raise AuthorityError(
+            f"generated dispatch matches on {scrutinee!r}, not the command itself; "
+            "a derived scrutinee could remap wire names away from the table rows"
+        )
+    match_close = _balanced(body, scrutinee_open)
+    arms = body[scrutinee_open + 1 : match_close]
+
+    fallback_start = arms.find("_ =>")
+    if fallback_start == -1:
+        raise AuthorityError("generated dispatch body has no unknown-command fallback")
+    fallback = _normalise_tokens(arms[fallback_start:])
+    if fallback != EXPECTED_FALLBACK:
+        raise AuthorityError(
+            "generated unknown-command fallback does not match the pinned "
+            f"response; got {fallback[:120]!r}. The fallback must not delegate "
+            "command-dependent work outside the table"
+        )
+
+    residue = (
+        body[: match_keyword.start()]
+        + arms[:fallback_start]
+        + body[match_close + 1 :]
+    )
     escaped = COMMAND_IDENT_RE.search(residue)
     if escaped is not None:
-        line = body.count("\n", 0, escaped.start()) + 1
         raise AuthorityError(
-            "generated dispatch body passes `command` somewhere other than the "
-            f"match scrutinee and the unknown-command response (body line {line}); "
-            "command-dependent routing must not be delegated outside the table"
+            "generated dispatch body uses `command` outside the match scrutinee "
+            "and the pinned fallback; command-dependent routing must not be "
+            "delegated outside the table"
         )
 
 

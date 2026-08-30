@@ -790,6 +790,28 @@ class DapProtocolAuthorityTests(unittest.TestCase):
                 "match command {",
                 "match self.normalize(command) {",
             ),
+            # Contains only allow-listed sub-expressions, yet still hands
+            # command-derived data to a helper — which is why the fallback is
+            # pinned by position and exact text rather than by fragments.
+            "fallback_wraps_permitted_expression": (
+                fallback,
+                "                    _ => self.route_unknown("
+                "Self::unknown_command_message(command)),",
+            ),
+            "fallback_fields_reordered": (
+                fallback,
+                "                    _ => DapMessage::Response { request_seq, seq, "
+                "success: false, command: command.to_string(), body: None, "
+                "message: Some(Self::unknown_command_message(command)), },",
+            ),
+            # Handing the command to a helper *before* the match clears the
+            # scrutinee and fallback pins and uses no forbidden keyword; only
+            # the residual command-escape rule catches it.
+            "command_handed_out_before_the_match": (
+                "                let seq = self.next_seq();",
+                "                let seq = self.next_seq();\n"
+                "                let _ = self.audit(command);",
+            ),
         }
         for label, (anchor, replacement) in delegations.items():
             with self.subTest(delegation=label):
