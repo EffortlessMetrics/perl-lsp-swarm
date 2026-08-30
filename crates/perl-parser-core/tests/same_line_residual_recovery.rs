@@ -38,13 +38,39 @@ fn contains_goto(node: &Node) -> bool {
     matches!(node.kind, NodeKind::Goto { .. }) || node.children().into_iter().any(contains_goto)
 }
 
-fn contains_word_operator_with_goto(node: &Node, expected_op: &str) -> bool {
-    if let NodeKind::Binary { op, left, right } = &node.kind {
-        if op == expected_op && (contains_goto(left) || contains_goto(right)) {
-            return true;
-        }
-    }
-    node.children().into_iter().any(|child| contains_word_operator_with_goto(child, expected_op))
+fn first_expression(ast: &Node) -> Option<&Node> {
+    let NodeKind::Program { statements } = &ast.kind else {
+        return None;
+    };
+    let statement = statements.first()?;
+    let NodeKind::ExpressionStatement { expression } = &statement.kind else {
+        return None;
+    };
+    Some(expression)
+}
+
+fn first_expression_has_direct_word_operator_goto_rhs(ast: &Node, expected_op: &str) -> bool {
+    matches!(
+        first_expression(ast),
+        Some(expression)
+            if matches!(&expression.kind, NodeKind::Binary { op, right, .. }
+                if op == expected_op && matches!(right.kind, NodeKind::Goto { .. }))
+    )
+}
+
+fn first_expression_has_direct_word_operator_unary_goto_rhs(
+    ast: &Node,
+    expected_op: &str,
+    unary_op: &str,
+) -> bool {
+    matches!(
+        first_expression(ast),
+        Some(expression)
+            if matches!(&expression.kind, NodeKind::Binary { op, right, .. }
+                if op == expected_op
+                    && matches!(&right.kind, NodeKind::Unary { op, operand }
+                        if op == unary_op && matches!(operand.kind, NodeKind::Goto { .. })))
+    )
 }
 
 fn is_postfix_goto(node: &Node) -> bool {
@@ -228,7 +254,9 @@ fn cross_line_or_goto_stays_one_control_flow_expression() -> Result<(), String> 
                 output.ast.to_sexp()
             ));
         }
-        if statements.len() != 2 || !contains_word_operator_with_goto(&statements[0], operator) {
+        if statements.len() != 2
+            || !first_expression_has_direct_word_operator_goto_rhs(&output.ast, operator)
+        {
             return Err(format!(
                 "{operator}/goto must remain one binary control-flow expression with a later print statement:\n{}",
                 output.ast.to_sexp()
@@ -261,7 +289,9 @@ fn same_line_word_operator_goto_variants_keep_their_control_flow_rhs() -> Result
                 output.ast.to_sexp()
             ));
         }
-        if statements.len() != 2 || !contains_word_operator_with_goto(&statements[0], operator) {
+        if statements.len() != 2
+            || !first_expression_has_direct_word_operator_goto_rhs(&output.ast, operator)
+        {
             return Err(format!(
                 "same-line {operator} goto {target} must keep its Goto RHS and later print statement:\n{}",
                 output.ast.to_sexp()
@@ -286,17 +316,21 @@ fn bare_and_unary_word_goto_forms_match_perl_boundaries() -> Result<(), String> 
         }
     }
 
-    for (source, operator) in [
-        ("foo or not goto fail;", "or"),
-        ("foo or !goto fail;", "or"),
-        ("foo or +goto fail;", "or"),
+    for (source, operator, unary_op) in [
+        ("foo or not goto fail;", "or", "not"),
+        ("foo or !goto fail;", "or", "!"),
+        ("foo or +goto fail;", "or", "+"),
     ] {
         if !perl_compile_accepts(source)? {
             return Err(format!("real Perl rejected valid unary goto form: {source:?}"));
         }
         let output = Parser::new(source).parse_with_recovery();
         if output.diagnostics.iter().any(ParseError::blocks_clean_parse)
-            || !contains_word_operator_with_goto(&output.ast, operator)
+            || !first_expression_has_direct_word_operator_unary_goto_rhs(
+                &output.ast,
+                operator,
+                unary_op,
+            )
         {
             return Err(format!(
                 "unary goto must remain one clean word-operator control-flow expression:\nsource={source:?}\ndiagnostics={:?}\nast={}",
@@ -313,7 +347,7 @@ fn bare_and_unary_word_goto_forms_match_perl_boundaries() -> Result<(), String> 
         }
         let output = Parser::new(&source).parse_with_recovery();
         if output.diagnostics.iter().any(ParseError::blocks_clean_parse)
-            || !contains_word_operator_with_goto(&output.ast, operator)
+            || !first_expression_has_direct_word_operator_unary_goto_rhs(&output.ast, operator, "-")
         {
             return Err(format!(
                 "unary-minus goto must remain one clean word-operator control-flow expression:\nsource={source:?}\ndiagnostics={:?}\nast={}",
@@ -450,8 +484,8 @@ fn unary_word_goto_forms_do_not_hide_trailing_residue() -> Result<(), String> {
 }
 
 #[test]
-fn valid_low_precedence_and_directive_continuations_do_not_gain_residual_errors(
-) -> Result<(), String> {
+fn valid_low_precedence_and_directive_continuations_do_not_gain_residual_errors()
+-> Result<(), String> {
     for source in [
         "no warnings qw(uninitialized numeric); my $x = 1;",
         "open my $fh, '<', $path or die $!;",
@@ -512,7 +546,15 @@ fn real_perl_oracle_agrees_on_supported_continuations_and_residue() -> Result<()
                 output.ast.to_sexp()
             ));
         }
-        let has_control_flow_goto = contains_word_operator_with_goto(&statements[0], operator);
+        let has_control_flow_goto =
+            first_expression_has_direct_word_operator_goto_rhs(&output.ast, operator)
+                || ["not", "!", "+"].into_iter().any(|unary_op| {
+                    first_expression_has_direct_word_operator_unary_goto_rhs(
+                        &output.ast,
+                        operator,
+                        unary_op,
+                    )
+                });
         if has_control_flow_goto != contains_control_flow_goto {
             return Err(format!(
                 "{operator} fat-arrow/control-flow classification disagreed with the expected AST:\n{}",
