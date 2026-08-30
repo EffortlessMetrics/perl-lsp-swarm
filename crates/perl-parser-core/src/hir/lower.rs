@@ -3242,11 +3242,6 @@ impl<'a> BodyBuilder2<'a> {
         None
     }
 
-    /// Canonical binding identity for an occurrence, when one is visible.
-    fn resolve_binding_id(&self, sigil: &str, name: &str) -> Option<HirBindingId> {
-        self.resolve_visible_binding(sigil, name).map(|binding| binding.id)
-    }
-
     /// Canonical identity for the binding introduced *at* `range`.
     ///
     /// A declaration must name the binding it introduces, which ordinary
@@ -3256,9 +3251,12 @@ impl<'a> BodyBuilder2<'a> {
     /// the second binding. `Binding::range` is the declaration token's own
     /// span, so matching on it selects the exact binding.
     ///
-    /// Falls back to visibility resolution when no binding was recorded at this
-    /// range, so declaration forms the scope graph does not record behave as
-    /// before rather than losing identity entirely.
+    /// Returns `None` when the scope graph recorded no binding at this range.
+    /// It deliberately does *not* fall back to visibility resolution: that would
+    /// attach some *other* visible declaration's identity to this declaration,
+    /// which is exactly the fabricated stand-in that `HirVariable::binding` and
+    /// `HirStmt::Let::binding` promise never to carry. An unrecorded declaration
+    /// form is unresolved, not mis-resolved.
     fn binding_declared_at(
         &self,
         sigil: &str,
@@ -3275,7 +3273,6 @@ impl<'a> BodyBuilder2<'a> {
                     && binding.name == name
             })
             .map(|binding| binding.id)
-            .or_else(|| self.resolve_binding_id(sigil, name))
     }
 
     /// Coarse lexical/package classification for an occurrence.
