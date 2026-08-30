@@ -1,0 +1,51 @@
+name: Normalize parser helper layout for issue 13900
+
+on:
+  push:
+    branches:
+      - codex/13900-keyword-hash-keys
+
+permissions:
+  contents: write
+
+jobs:
+  normalize:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Normalize and verify
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("crates/perl-parser-core/src/engine/parser/expressions/postfix.rs")
+          text = path.read_text(encoding="utf-8")
+          start = text.index("    fn peek_is_keyword_bareword_key(&mut self) -> bool {")
+          end = text.index("    fn consume_as_bareword_identifier", start)
+          block = text[start:end]
+          lines = block.splitlines()
+          normalized = [lines[0]]
+          for line in lines[1:]:
+              normalized.append(("    " + line) if line else line)
+          replacement = "\n".join(normalized) + "\n\n"
+          path.write_text(text[:start] + replacement + text[end:], encoding="utf-8")
+          PY
+          cargo fmt --all -- --check
+          cargo test -p perl-parser-core --test keyword_hash_subscript_keys --locked
+          cargo test -p perl-semantic-analyzer --test linked_list_receiver_facts --locked
+          git diff --check
+      - name: Publish product-only head
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm .github/workflows/codex-13900-format.yml
+          git config user.name 'EffortlessSteven'
+          git config user.email 'git@effortlesssteven.com'
+          git add -A
+          git commit -m 'style(parser): normalize keyword-key helper layout'
+          git push origin HEAD:codex/13900-keyword-hash-keys
