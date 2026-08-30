@@ -86,16 +86,14 @@ cutover, which owns FND-10's allowlist), and any doc rewrite (FND-11 belongs to
 
 ## 1. What the inventory says the classifier must honor
 
-The generated inventory delta is part of this plan only because adding the
-tracked plan file `plans/install-route-classification/implementation-plan.md`
-requires regenerating its report. The two `generate-badges` rows also
-added by that regeneration describe `scripts/generate-badges.py` and
-`scripts/tests/test-generate-badges.py`, which already exist on `origin/main` and
-were absent from the base report; this PR does not add or modify those sources.
-The inventory's +2 Rust-family entries likewise describe the pre-existing
-`xtask/src/tasks/ci_route.rs` and `xtask/tests/ci_route_cli.rs` files, not files
-introduced by this PR. The count changes therefore reconcile a stale generated
-report rather than expand the implementation scope.
+The candidate's own inventory effect is exactly one added documentation row for
+`plans/install-route-classification/implementation-plan.md`: `+1` total,
+`+1` non-Rust, `+1` allowlisted, `+1` documentation, and `+0` Rust-family,
+measured against a freshly regenerated current-`main` baseline at this refresh.
+Any other row or count difference visible in the diff is the regeneration
+correcting a stale checked-in report on `main`, not scope added by this PR.
+The comparison is bounded to that current-`main` baseline, and the report is
+regenerated with `cargo xtask non-rust inventory --write`.
 
 Derived from `docs/distribution/INSTALL_CLAIM_SURFACES.md`
 (`git show origin/main:docs/distribution/INSTALL_CLAIM_SURFACES.md`):
@@ -677,6 +675,13 @@ def assert_disposition_rejected(row):
         return True
     raise AssertionError(f"{row['id']}: incompatible claim disposition was accepted")
 
+def assert_finding_route_binding_rejected(row):
+    try:
+        require_finding_route_binding(row)
+    except ValueError:
+        return True
+    raise AssertionError("finding route/context binding was accepted")
+
 def fixture_ledger():
     rows = []
     for item_id in EXPECTED_CLAIMS:
@@ -836,7 +841,7 @@ MISSING_FAMILY_PARENT_CATALOG = tuple(
 )
 require_true(
     assert_closure_rejected(MISSING_FAMILY_PARENT_CATALOG),
-    "route family with a missing parent was accepted",
+    "missing-parent catalog resolution guard accepted a tampered ledger row",
 )
 MISSING_FAMILY_CHILD_DECLARATION = {
     "fixture-route-VS_Code_extension": (
@@ -970,7 +975,7 @@ COLLAPSED_ROUTE_FAMILY = [
 ]
 require_true(
     assert_ledger_rejected(COLLAPSED_ROUTE_FAMILY),
-    "registry-specific child route was collapsed onto the family route ID",
+    "route/context compatibility guard accepted a collapsed-family ledger row",
 )
 
 ROUTE_CLAIM_EXCLUDED = [
@@ -1002,7 +1007,34 @@ require_true(
     assert_ledger_rejected(FINDING_DISPOSITION_TAMPER),
     "finding-specific disposition tamper was accepted",
 )
+
+FINDING_ROUTE_BINDING_TAMPER = next(
+    {
+        **row,
+        "exact_catalog_route_id": FINDING_DISPOSITION_RULES["FND-1"][
+            "exact_catalog_route_id"
+        ],
+        "exact_projection_context": FINDING_DISPOSITION_RULES["FND-1"][
+            "exact_projection_context"
+        ],
+    }
+    for row in fixture_ledger()
+    if row["id"] == "FND-4"
+)
+require_true(
+    assert_finding_route_binding_rejected(FINDING_ROUTE_BINDING_TAMPER),
+    "finding route/context binding was accepted",
+)
 ```
+
+The missing-parent control exercises the catalog-resolution guard on a tampered
+ledger row; the collapsed-family control exercises the route/context
+compatibility guard on a tampered ledger row. Neither is a family-declaration
+proof. The family declaration and registry-role invariants are instead proven by
+the five direct controls for the injectable `require_route_family_bindings`
+path: a no-op of that function must fail exactly the missing-child,
+non-distinct-declaration, registry-specific-parent, registry-unspecified-child,
+and registry/context-collision controls before the restored fixture returns 0.
 
 For family validation, each child row contributes one
 `(target_registry, projection_context)` pair per existing projection context;
