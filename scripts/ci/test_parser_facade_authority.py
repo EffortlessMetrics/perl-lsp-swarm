@@ -398,19 +398,68 @@ class ParserFacadeAuthorityTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "pending.resolves_when must be a non-empty string"):
             check(self.root, self.ledger_path)
 
-    def test_pending_owner_must_be_an_issue_reference(self) -> None:
+    def test_pending_rejects_fields_the_row_already_carries(self) -> None:
+        """`owner`/`target_owner` already name the owner and predecessor."""
         row = next(r for r in self.ledger["features"] if r["disposition"] == "review")
-        row["pending"]["owner"] = "the parser team"
+        row["pending"]["owner"] = "#7063"
         self.write_ledger(self.ledger)
-        with self.assertRaisesRegex(ValueError, "pending.owner must be a GitHub issue reference"):
+        with self.assertRaisesRegex(ValueError, "pending has unsupported fields: owner"):
             check(self.root, self.ledger_path)
 
-    def test_pending_predecessor_must_be_an_issue_reference_or_none(self) -> None:
-        row = next(r for r in self.ledger["features"] if r["disposition"] == "review")
-        row["pending"]["predecessor"] = "later"
+    # --- target-gating features ---------------------------------------------
+
+    def test_feature_required_by_a_target_is_not_taxonomy(self) -> None:
+        """`required-features` gates whether a binary is built at all."""
+        gating = next(
+            row["required_features"][0]
+            for row in self.ledger["targets"] if row["required_features"]
+        )
+        self.feature_row(gating)["isolation"] = "taxonomy_only"
         self.write_ledger(self.ledger)
-        with self.assertRaisesRegex(ValueError, "pending.predecessor must be a GitHub issue reference"):
+        with self.assertRaisesRegex(ValueError, f"feature {gating} claims isolation taxonomy_only"):
             check(self.root, self.ledger_path)
+
+    def test_dropping_a_target_required_feature_downgrades_isolation(self) -> None:
+        row = next(r for r in self.ledger["features"] if r["isolation"] == "target_only")
+        self.manifest_path.write_text(
+            self.manifest_path.read_text().replace(
+                f'required-features = ["{row["name"]}"]\n', "", 1
+            )
+        )
+        with self.assertRaisesRegex(ValueError, f'feature {row["name"]} claims isolation target_only'):
+            check(self.root, self.ledger_path)
+
+    # --- production source proxy --------------------------------------------
+
+    def test_feature_gated_only_inside_a_cfg_test_module_is_not_a_source_boundary(self) -> None:
+        """A gate inside `#[cfg(test)] mod tests` gates test code, not production."""
+        row = next(r for r in self.ledger["features"] if r["isolation"] == "source_only")
+        self.write_feature_gates(
+            [name for name in self.gated_features if name != row["name"]],
+            self.test_gated_features,
+        )
+        self.write(
+            "crates/perl-parser/src/inline_tests.rs",
+            "#[cfg(test)]\nmod tests {\n"
+            f'    #[cfg(feature = "{row["name"]}")]\n    #[test]\n    fn gated() {{}}\n'
+            "}\n",
+        )
+        with self.assertRaisesRegex(ValueError, f'feature {row["name"]} claims isolation source_only'):
+            check(self.root, self.ledger_path)
+
+    def test_production_gate_outside_a_test_module_still_counts(self) -> None:
+        """Negative control: the cfg(test) strip must not swallow real gates."""
+        row = next(r for r in self.ledger["features"] if r["isolation"] == "source_only")
+        self.write_feature_gates(
+            [name for name in self.gated_features if name != row["name"]],
+            self.test_gated_features,
+        )
+        self.write(
+            "crates/perl-parser/src/inline_tests.rs",
+            "#[cfg(test)]\nmod tests {\n    fn helper() {}\n}\n"
+            f'#[cfg(feature = "{row["name"]}")]\nfn real() {{}}\n',
+        )
+        check(self.root, self.ledger_path)
 
     def test_settled_row_cannot_carry_pending_evidence(self) -> None:
         row = next(r for r in self.ledger["features"] if r["disposition"] != "review")

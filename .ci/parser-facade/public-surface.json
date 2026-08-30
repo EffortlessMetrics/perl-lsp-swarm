@@ -25,8 +25,6 @@
       "target_owner": "#7063",
       "exit_condition": "Retain only parser-owned builtin syntax data; move semantic/provider metadata above the parser.",
       "pending": {
-        "owner": "#7063",
-        "predecessor": "#2477",
         "reason": "PF01 is inventory-only and cannot change the facade boundary; the staged compatibility decision belongs to the #7063 migration leaves.",
         "resolves_when": "A #7063 migration leaf lands the recorded exit condition for this row."
       }
@@ -55,8 +53,6 @@
       "target_owner": "#7063",
       "exit_condition": "Restrict to canonical parser contracts and remove product composition.",
       "pending": {
-        "owner": "#7063",
-        "predecessor": "#2477",
         "reason": "PF01 is inventory-only and cannot change the facade boundary; the staged compatibility decision belongs to the #7063 migration leaves.",
         "resolves_when": "A #7063 migration leaf lands the recorded exit condition for this row."
       }
@@ -85,8 +81,6 @@
       "target_owner": "#7063",
       "exit_condition": "Retain only parser-owned token/trivia compatibility and canonical ownership.",
       "pending": {
-        "owner": "#7063",
-        "predecessor": "#2477",
         "reason": "PF01 is inventory-only and cannot change the facade boundary; the staged compatibility decision belongs to the #7063 migration leaves.",
         "resolves_when": "A #7063 migration leaf lands the recorded exit condition for this row."
       }
@@ -153,8 +147,6 @@
       "target_owner": "#7063",
       "exit_condition": "Retain only types/functions that belong to the minimal parser contract; move product helpers to their owners.",
       "pending": {
-        "owner": "#7063",
-        "predecessor": "#2477",
         "reason": "PF01 is inventory-only and cannot change the facade boundary; the staged compatibility decision belongs to the #7063 migration leaves.",
         "resolves_when": "A #7063 migration leaf lands the recorded exit condition for this row."
       },
@@ -177,8 +169,6 @@
       "target_owner": "#7063",
       "exit_condition": "Converge on canonical parser-core token/trivia ownership and exact compatibility paths.",
       "pending": {
-        "owner": "#7063",
-        "predecessor": "#2477",
         "reason": "PF01 is inventory-only and cannot change the facade boundary; the staged compatibility decision belongs to the #7063 migration leaves.",
         "resolves_when": "A #7063 migration leaf lands the recorded exit condition for this row."
       },
@@ -365,8 +355,6 @@
       "target_owner": "#7063",
       "exit_condition": "Keep only if parser CLI ownership remains an intentional facade responsibility.",
       "pending": {
-        "owner": "#7063",
-        "predecessor": "#2477",
         "reason": "PF01 is inventory-only and cannot change the facade boundary; the staged compatibility decision belongs to the #7063 migration leaves.",
         "resolves_when": "A #7063 migration leaf lands the recorded exit condition for this row."
       },
@@ -393,8 +381,6 @@
       "target_owner": "#7099",
       "exit_condition": "Retain only with truthful strategy/work receipt taxonomy.",
       "pending": {
-        "owner": "#7099",
-        "predecessor": "#6707",
         "reason": "Benchmark ownership depends on the reviewed parser validation surface rather than the facade inventory.",
         "resolves_when": "#7099 settles benchmark target ownership."
       },
@@ -421,8 +407,6 @@
       "target_owner": "#7099",
       "exit_condition": "Bind to governed corpus identities and an exact parser regime or retire.",
       "pending": {
-        "owner": "#7099",
-        "predecessor": "#6696",
         "reason": "Benchmark ownership depends on the reviewed parser validation surface rather than the facade inventory.",
         "resolves_when": "#7099 settles benchmark target ownership."
       },

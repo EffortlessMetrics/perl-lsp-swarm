@@ -13,8 +13,6 @@
       "optional": true,
       "exit_condition": "Replace broad errors with parser-owned types where the canonical incremental API crosses public boundaries.",
       "pending": {
-        "owner": "#6975",
-        "predecessor": "#6701",
         "reason": "The canonical incremental API is still converging, so the parser-owned error and index surface cannot be settled from PF01.",
         "resolves_when": "#6975 lands the canonical incremental contract."
       }
@@ -67,8 +65,6 @@
       "optional": false,
       "exit_condition": "Retain only where the facade requires the v2 compatibility surface; otherwise consume parser-core AST authority.",
       "pending": {
-        "owner": "#7063",
-        "predecessor": "#2477",
         "reason": "PF01 is inventory-only and cannot change the facade boundary; the staged compatibility decision belongs to the #7063 migration leaves.",
         "resolves_when": "A #7063 migration leaf lands the recorded exit condition for this row."
       }
@@ -121,8 +117,6 @@
       "optional": false,
       "exit_condition": "Break the facade test-surface dependency on the LSP product crate or record it as an accepted bounded cycle owned by the parser LSP inventory.",
       "pending": {
-        "owner": "#9875",
-        "predecessor": "#11373",
         "reason": "perl-parser test-depends on the perl-lsp-rs-core product crate while that crate depends on perl-parser, so the facade's own test surface closes an LSP/provider dependency cycle that the parser LSP inventory owns.",
         "resolves_when": "#9875 inventories the parser LSP/provider edges and names this cycle's owner."
       }
@@ -248,8 +242,6 @@
       "optional": false,
       "exit_condition": "Move product helpers out or document the exact parser-owned use.",
       "pending": {
-        "owner": "#7063",
-        "predecessor": "#2477",
         "reason": "PF01 is inventory-only and cannot change the facade boundary; the staged compatibility decision belongs to the #7063 migration leaves.",
         "resolves_when": "A #7063 migration leaf lands the recorded exit condition for this row."
       }
@@ -266,8 +258,6 @@
       "optional": false,
       "exit_condition": "Retain only if canonical parser/edit contracts require it; otherwise move to document adapters.",
       "pending": {
-        "owner": "#7063",
-        "predecessor": "#2477",
         "reason": "PF01 is inventory-only and cannot change the facade boundary; the staged compatibility decision belongs to the #7063 migration leaves.",
         "resolves_when": "A #7063 migration leaf lands the recorded exit condition for this row."
       }
@@ -320,8 +310,6 @@
       "optional": false,
       "exit_condition": "Keep only where parser-owned public contracts require JSON rather than product adapters.",
       "pending": {
-        "owner": "#7063",
-        "predecessor": "#2477",
         "reason": "PF01 is inventory-only and cannot change the facade boundary; the staged compatibility decision belongs to the #7063 migration leaves.",
         "resolves_when": "A #7063 migration leaf lands the recorded exit condition for this row."
       }
@@ -374,8 +362,6 @@
       "optional": true,
       "exit_condition": "Remain optional and avoid making instrumentation part of parser result semantics.",
       "pending": {
-        "owner": "#6975",
-        "predecessor": "#6701",
         "reason": "The canonical incremental API is still converging, so the parser-owned error and index surface cannot be settled from PF01.",
         "resolves_when": "#6975 lands the canonical incremental contract."
       }

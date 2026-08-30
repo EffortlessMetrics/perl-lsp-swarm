@@ -22,8 +22,6 @@
       "usage": "production",
       "exit_condition": "Retain explicit benchmark and fuzz consumers without granting them parser facade authority.",
       "pending": {
-        "owner": "#7065",
-        "predecessor": "#6698",
         "reason": "The supported parser feature/API/downstream matrix does not yet exist, so no evidence can currently retire or confirm this row.",
         "resolves_when": "#7065 publishes the supported feature/API/downstream matrix covering this row."
       },
@@ -42,8 +40,6 @@
       "usage": "production",
       "exit_condition": "Keep the archived Tree-sitter consumer visibly non-authoritative or remove its workspace dependency.",
       "pending": {
-        "owner": "#7065",
-        "predecessor": "#4752",
         "reason": "The supported parser feature/API/downstream matrix does not yet exist, so no evidence can currently retire or confirm this row.",
         "resolves_when": "#7065 publishes the supported feature/API/downstream matrix covering this row."
       },
@@ -74,8 +70,6 @@
       "usage": "production",
       "exit_condition": "Retain repository automation as an external consumer of the documented parser facade.",
       "pending": {
-        "owner": "#7065",
-        "predecessor": "#2477",
         "reason": "The supported parser feature/API/downstream matrix does not yet exist, so no evidence can currently retire or confirm this row.",
         "resolves_when": "#7065 publishes the supported feature/API/downstream matrix covering this row."
       },

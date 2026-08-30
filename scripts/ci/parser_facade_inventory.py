@@ -22,6 +22,10 @@ FEATURE_TEST_DIRECTORIES = ("tests", "benches", "examples")
 
 FEATURE_GATE_PATTERN = re.compile(r"feature\s*=\s*\"([A-Za-z0-9_.+-]+)\"")
 
+CFG_TEST_MODULE_PATTERN = re.compile(
+    r"#\[cfg\(test\)\]\s*(?:pub\s+(?:\([^)]*\)\s*)?)?mod\s+[A-Za-z_][A-Za-z0-9_]*\s*\{"
+)
+
 
 @dataclass(frozen=True)
 class CargoTarget:
@@ -186,7 +190,35 @@ def dependency_universe(manifest: dict[str, Any]) -> dict[str, DependencyFact]:
     return facts
 
 
-def feature_source_gates(crate_root: Path, directories: Iterable[str]) -> set[str]:
+def strip_cfg_test_modules(source: str) -> str:
+    """Remove `#[cfg(test)] mod ... { ... }` blocks from Rust source.
+
+    A feature gated only inside a test module gates test code, not production
+    code, so `src/` alone is not a sound production proxy without this.
+    """
+    parts: list[str] = []
+    index = 0
+    while True:
+        match = CFG_TEST_MODULE_PATTERN.search(source, index)
+        if match is None:
+            parts.append(source[index:])
+            return "".join(parts)
+        parts.append(source[index : match.start()])
+        depth = 1
+        cursor = match.end()
+        while cursor < len(source) and depth:
+            character = source[cursor]
+            if character == "{":
+                depth += 1
+            elif character == "}":
+                depth -= 1
+            cursor += 1
+        index = cursor
+
+
+def feature_source_gates(
+    crate_root: Path, directories: Iterable[str], skip_test_modules: bool = False
+) -> set[str]:
     """Collect every feature name reached by a `feature = "..."` cfg predicate."""
     gates: set[str] = set()
     for directory in directories:
@@ -194,25 +226,44 @@ def feature_source_gates(crate_root: Path, directories: Iterable[str]) -> set[st
         if not base.is_dir():
             continue
         for path in sorted(base.rglob("*.rs")):
-            gates.update(FEATURE_GATE_PATTERN.findall(path.read_text(encoding="utf-8", errors="replace")))
+            source = path.read_text(encoding="utf-8", errors="replace")
+            if skip_test_modules:
+                source = strip_cfg_test_modules(source)
+            gates.update(FEATURE_GATE_PATTERN.findall(source))
     return gates
+
+
+def target_required_features(manifest: dict[str, Any]) -> set[str]:
+    """Features that gate whether a Cargo bin/bench/example target is built at all."""
+    return {
+        feature
+        for target in cargo_targets(manifest)
+        for feature in target.required_features
+    }
 
 
 def feature_isolation(manifest: dict[str, Any], crate_root: Path) -> dict[str, str]:
     """Classify what each declared feature actually isolates.
 
-    A feature name is a production boundary only when it selects dependencies or
-    gates `src/`. A feature that gates only test, bench, or example source is a test
-    profile, and a feature that gates nothing is taxonomy; neither may be presented
-    as an architectural boundary.
+    A feature name is a production boundary only when it selects dependencies,
+    gates `src/`, or gates whether a Cargo target is built at all through
+    `required-features`. A feature that gates only test, bench, or example source is
+    a test profile, and a feature that gates nothing is taxonomy; neither may be
+    presented as an architectural boundary.
     """
     features = manifest.get("features")
     if not isinstance(features, dict):
         raise ValueError("perl-parser manifest has no [features] table")
     declared = set(features)
     packages = set(dependency_universe(manifest))
-    gated = feature_source_gates(crate_root, FEATURE_PRODUCTION_DIRECTORIES)
+    gated = feature_source_gates(
+        crate_root, FEATURE_PRODUCTION_DIRECTORIES, skip_test_modules=True
+    )
     test_gated = feature_source_gates(crate_root, FEATURE_TEST_DIRECTORIES)
+    test_gated |= feature_source_gates(
+        crate_root, FEATURE_PRODUCTION_DIRECTORIES
+    ) - gated
+    target_gated = target_required_features(manifest)
     result: dict[str, str] = {}
     for name, entries in features.items():
         if not isinstance(entries, list) or any(not isinstance(entry, str) for entry in entries):
@@ -235,6 +286,8 @@ def feature_isolation(manifest: dict[str, Any], crate_root: Path) -> dict[str, s
             result[name] = "dependencies_only"
         elif name in gated:
             result[name] = "source_only"
+        elif name in target_gated:
+            result[name] = "target_only"
         elif name in test_gated:
             result[name] = "test_source_only"
         elif selects_feature:

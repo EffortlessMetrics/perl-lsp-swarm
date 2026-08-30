@@ -83,8 +83,6 @@
       "target_owner": "#6982",
       "exit_condition": "Retain behind the canonical restart contract once generation identity is complete.",
       "pending": {
-        "owner": "#6982",
-        "predecessor": "#6704",
         "reason": "Lexer checkpoint and restart reporting remain historical generations awaiting their incremental disposition.",
         "resolves_when": "#6982 dispositions the historical lexer checkpoint generation."
       },
@@ -116,8 +114,6 @@
       "target_owner": "#6982",
       "exit_condition": "Retain as the diagnostics component of the canonical ReparseResult contract.",
       "pending": {
-        "owner": "#6982",
-        "predecessor": "#6704",
         "reason": "Lexer checkpoint and restart reporting remain historical generations awaiting their incremental disposition.",
         "resolves_when": "#6982 dispositions the historical lexer checkpoint generation."
       },
@@ -131,8 +127,6 @@
       "target_owner": "#6982",
       "exit_condition": "Retain as the strategy component of the canonical ReparseResult contract.",
       "pending": {
-        "owner": "#6982",
-        "predecessor": "#6704",
         "reason": "Lexer checkpoint and restart reporting remain historical generations awaiting their incremental disposition.",
         "resolves_when": "#6982 dispositions the historical lexer checkpoint generation."
       },
@@ -164,8 +158,6 @@
       "target_owner": "#6982",
       "exit_condition": "Replace the public tuning constant with typed strategy policy or make private once #6982 lands.",
       "pending": {
-        "owner": "#6982",
-        "predecessor": "#6704",
         "reason": "Lexer checkpoint and restart reporting remain historical generations awaiting their incremental disposition.",
         "resolves_when": "#6982 dispositions the historical lexer checkpoint generation."
       },
@@ -179,8 +171,6 @@
       "target_owner": "#6975",
       "exit_condition": "Keep only if downstream consumers require this exact re-export.",
       "pending": {
-        "owner": "#6975",
-        "predecessor": "#6701",
         "reason": "The canonical incremental API is still converging, so the parser-owned error and index surface cannot be settled from PF01.",
         "resolves_when": "#6975 lands the canonical incremental contract."
       },
@@ -248,8 +238,6 @@
       "target_owner": "#7072",
       "exit_condition": "Replace public heuristic constants with typed strategy policy or make private.",
       "pending": {
-        "owner": "#7072",
-        "predecessor": "#6707",
         "reason": "The edit-size strategy bound is still an implementation detail pending its incremental strategy owner.",
         "resolves_when": "#7072 settles the incremental edit-size strategy bound."
       },

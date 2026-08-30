@@ -33,14 +33,17 @@ ALLOWED_DEPENDENCY_CONTEXTS = {
 }
 PRODUCTION_DEPENDENCY_CONTEXTS = {"normal", "build", "target:normal", "target:build"}
 ALLOWED_FEATURE_ISOLATIONS = {
-    "dependencies_and_source", "dependencies_only", "source_only",
+    "dependencies_and_source", "dependencies_only", "source_only", "target_only",
     "test_source_only", "feature_aggregate", "taxonomy_only",
 }
 PRODUCTION_FEATURE_ISOLATIONS = {
-    "dependencies_and_source", "dependencies_only", "source_only",
+    "dependencies_and_source", "dependencies_only", "source_only", "target_only",
 }
 ALLOWED_CONSUMER_USAGES = {"production", "dev_only", "mixed"}
-PENDING_FIELDS = ("owner", "predecessor", "reason", "resolves_when")
+# The row's own `owner`/`target_owner` already name the predecessor and the exact
+# implementation owner, so a pending block only has to add what they cannot: why the
+# row cannot close now and which event resolves it.
+PENDING_FIELDS = ("reason", "resolves_when")
 LEDGER_FILES = (
     "ruling.json", "features.json", "dependencies.json", "public-surface.json",
     "incremental.json", "consumers.json",
@@ -94,10 +97,12 @@ def require_issue_reference(value: str, context: str) -> None:
 
 
 def validate_pending(item: dict[str, Any], disposition: str, context: str) -> None:
-    """A pending row must name its owner, predecessor, reason, and resolving event.
+    """A pending row must state why it cannot close and what resolves it.
 
-    Without all four a `review` row is an ownerless bucket that no later leaf can
-    mechanically consume, so the ledger rejects it.
+    Combined with the row's mandatory `owner` and `target_owner`, this supplies the
+    four things #11373 requires of a pending row: exact implementation owner,
+    evidence predecessor, current reason, and resolving event. A `review` row
+    without them is an ownerless bucket, so the ledger rejects it.
     """
     pending = item.get("pending")
     if disposition != "review":
@@ -111,10 +116,6 @@ def validate_pending(item: dict[str, Any], disposition: str, context: str) -> No
         raise ValueError(f"{context}.pending has unsupported fields: {','.join(unknown)}")
     for field in PENDING_FIELDS:
         require_string(pending, field, f"{context}.pending")
-    require_issue_reference(pending["owner"], f"{context}.pending.owner")
-    predecessor = pending["predecessor"]
-    if predecessor != "none":
-        require_issue_reference(predecessor, f"{context}.pending.predecessor")
 
 
 def validate_row(item: Any, context: str) -> dict[str, Any]:
