@@ -443,6 +443,18 @@
       "target_owner": "perl-parser",
       "exit_condition": "Declare harness mode so nightly --noplot invocation stays valid; bind to an exact parser regime evidence subject.",
       "required_features": []
+    },
+    {
+      "name": "incremental_parse_snapshot",
+      "kind": "test",
+      "classification": "incremental_parser",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [
+        "incremental"
+      ],
+      "exit_condition": "Remain a feature-gated snapshot test target that does not widen the production surface."
     }
   ]
 }
