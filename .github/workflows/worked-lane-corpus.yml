@@ -4,7 +4,9 @@ name: Worked Lane Corpus
 # category ledger in `docs/agents/examples/README.md` (issue #5247). The paths
 # below are every file that can make that ledger false: the corpus itself, the
 # front door that links it, and this check's own files.
-# `test_workflow_triggers_on_every_constrained_path` enforces the equality.
+# `test_workflow_triggers_on_every_constrained_path` enforces that none of them
+# is missing. It does not forbid additional paths: a path added here only makes
+# the check run more often, which cannot let the ledger go stale.
 
 on:
   pull_request:
