@@ -15,6 +15,10 @@ use super::test_support::{
 use color_eyre::eyre::{Result, bail};
 use serde_json::{Value, json};
 
+/// One named mutation of a fixture document, for tests that sweep several
+/// shapes of the same defect and need each failure to name which shape it was.
+type LabelledPatch = (&'static str, Box<dyn Fn(&mut Value)>);
+
 // ---------------------------------------------------------------------------
 // The seven states
 // ---------------------------------------------------------------------------
@@ -283,7 +287,7 @@ fn a_404_that_carries_affirmative_content_is_refused_rather_than_read_as_absence
     // while its own payload names it is describing two different worlds; that is
     // an untrustworthy instrument, and resolving it toward absence is the exact
     // failure this module exists to prevent.
-    let contradictions: Vec<(&str, Box<dyn Fn(&mut Value)>)> = vec![
+    let contradictions: Vec<LabelledPatch> = vec![
         (
             "extension metadata affirms the identity",
             Box::new(|document: &mut Value| {
@@ -916,7 +920,7 @@ fn a_namespace_denial_beside_live_extension_surfaces_is_a_contradiction() -> Res
     // be serving its extension, so a namespace denial beside a live listing, a
     // matching extension record and a published subject version is contradictory
     // evidence — not the narrower publisher diagnosis it was reported as.
-    let denials: Vec<(&str, Box<dyn Fn(&mut Value)>)> = vec![
+    let denials: Vec<LabelledPatch> = vec![
         (
             "namespace 404",
             Box::new(|document: &mut Value| {

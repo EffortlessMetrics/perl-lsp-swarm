@@ -84,10 +84,9 @@ pub(crate) fn classify(observation: Observation) -> Receipt {
     }
 
     let state = if structural.is_empty() {
-        let (state, mut state_blockers, mut state_limitations) =
+        let (state, mut state_blockers) =
             classify_state(&observation, subject_version.as_deref(), public_bytes.as_ref());
         blockers.append(&mut state_blockers);
-        limitations.append(&mut state_limitations);
         state
     } else {
         blockers.append(&mut structural);
@@ -560,9 +559,11 @@ fn classify_state(
     observation: &Observation,
     subject_version: Option<&str>,
     public_bytes: Option<&PublicBytes>,
-) -> (PublicState, Vec<Blocker>, Vec<String>) {
+) -> (PublicState, Vec<Blocker>) {
+    // No limitations are produced here. Every limitation this receipt can carry
+    // is unconditional and stated in `classify`, so returning a third value that
+    // is provably always empty would promise a capability this function lacks.
     let mut blockers = Vec::new();
-    let mut limitations = Vec::new();
 
     let listing = observe(&observation.cells.listing.transport);
     // The search cell is deliberately absent from this function: discoverability
@@ -589,13 +590,13 @@ fn classify_state(
                 "the namespace endpoint reports the namespace absent while the extension surfaces \
                  report it live; the registry answers cannot both be true",
             ));
-            return (PublicState::ProviderNotProven, blockers, limitations);
+            return (PublicState::ProviderNotProven, blockers);
         }
         blockers.push(Blocker::new(
             "namespace_absent",
             "the namespace itself does not resolve; extension-level absence is not the diagnosis",
         ));
-        return (PublicState::NamespaceOrPublisherProblem, blockers, limitations);
+        return (PublicState::NamespaceOrPublisherProblem, blockers);
     }
     if namespace_metadata == CellObservation::Present {
         match observation.cells.namespace_metadata.namespace_present {
@@ -606,13 +607,13 @@ fn classify_state(
                         "the namespace endpoint did not confirm the namespace while the extension \
                          surfaces report it live; the registry answers cannot both be true",
                     ));
-                    return (PublicState::ProviderNotProven, blockers, limitations);
+                    return (PublicState::ProviderNotProven, blockers);
                 }
                 blockers.push(Blocker::new(
                     "namespace_not_confirmed",
                     "the namespace endpoint responded without confirming this namespace",
                 ));
-                return (PublicState::NamespaceOrPublisherProblem, blockers, limitations);
+                return (PublicState::NamespaceOrPublisherProblem, blockers);
             }
             None => {
                 // A 2xx whose body was never parsed into an identity claim is
@@ -624,7 +625,7 @@ fn classify_state(
                     "the namespace endpoint responded but no namespace identity was parsed from \
                      it, so namespace resolution is unproven",
                 ));
-                return (PublicState::ProviderNotProven, blockers, limitations);
+                return (PublicState::ProviderNotProven, blockers);
             }
             Some(true) => {}
         }
@@ -663,7 +664,7 @@ fn classify_state(
         }
     }
     if unresolved {
-        return (PublicState::ProviderNotProven, blockers, limitations);
+        return (PublicState::ProviderNotProven, blockers);
     }
 
     // Every decisive surface now holds an affirmative present-or-absent answer.
@@ -676,7 +677,7 @@ fn classify_state(
                 "metadata_identity_mismatch",
                 "the extension record did not affirm this exact namespace and name",
             ));
-            return (PublicState::AvailableIdentityNotProven, blockers, limitations);
+            return (PublicState::AvailableIdentityNotProven, blockers);
         }
 
         // A versions endpoint that flatly denies any published rows, beside a
@@ -689,7 +690,7 @@ fn classify_state(
                 "the listing and extension record resolve while the versions endpoint reports \
                  none; no single availability conclusion is supported",
             ));
-            return (PublicState::ProviderNotProven, blockers, limitations);
+            return (PublicState::ProviderNotProven, blockers);
         }
         // The extension record publishes versions too. Review showed only the
         // versions endpoint was being checked, so an extension record listing a
@@ -706,7 +707,7 @@ fn classify_state(
                      its published versions"
                 ),
             ));
-            return (PublicState::AvailableIdentityNotProven, blockers, limitations);
+            return (PublicState::AvailableIdentityNotProven, blockers);
         }
 
         if version_rows == CellObservation::Present {
@@ -720,7 +721,7 @@ fn classify_state(
                     "the versions endpoint responded but no version rows were parsed from it, so \
                      publication of the subject version is unproven",
                 ));
-                return (PublicState::AvailableIdentityNotProven, blockers, limitations);
+                return (PublicState::AvailableIdentityNotProven, blockers);
             };
             if let Some(subject) = subject_version
                 && !rows.iter().any(|row| row == subject)
@@ -731,7 +732,7 @@ fn classify_state(
                         "the published version rows do not list the subject version {subject:?}"
                     ),
                 ));
-                return (PublicState::AvailableIdentityNotProven, blockers, limitations);
+                return (PublicState::AvailableIdentityNotProven, blockers);
             }
         }
 
@@ -741,7 +742,7 @@ fn classify_state(
                 "the listing resolves but the versioned package was not retrieved, so exact \
                  public bytes are unproven",
             ));
-            return (PublicState::AvailableIdentityNotProven, blockers, limitations);
+            return (PublicState::AvailableIdentityNotProven, blockers);
         };
 
         let Some(subject) = subject_version else {
@@ -749,7 +750,7 @@ fn classify_state(
                 "missing_expected_version",
                 "no subject version to compare public bytes against",
             ));
-            return (PublicState::AvailableIdentityNotProven, blockers, limitations);
+            return (PublicState::AvailableIdentityNotProven, blockers);
         };
         if bytes.version != subject {
             blockers.push(Blocker::new(
@@ -759,7 +760,7 @@ fn classify_state(
                     bytes.version
                 ),
             ));
-            return (PublicState::AvailableIdentityNotProven, blockers, limitations);
+            return (PublicState::AvailableIdentityNotProven, blockers);
         }
 
         let expected_digest = observation
@@ -775,7 +776,7 @@ fn classify_state(
                     "no expected package digest was supplied, so the public bytes cannot be \
                      proven to be the approved ones",
                 ));
-                (PublicState::AvailableIdentityNotProven, blockers, limitations)
+                (PublicState::AvailableIdentityNotProven, blockers)
             }
             Some(expected) if expected == bytes.sha256 => {
                 // The observed digest and the expected digest arrive through the
@@ -798,7 +799,7 @@ fn classify_state(
                      observation and nothing here verifies the expected digest against a \
                      resolved candidate authority; observed identity is not proven approval",
                 ));
-                (PublicState::AvailableIdentityNotProven, blockers, limitations)
+                (PublicState::AvailableIdentityNotProven, blockers)
             }
             Some(expected) => {
                 blockers.push(Blocker::new(
@@ -808,7 +809,7 @@ fn classify_state(
                         bytes.sha256
                     ),
                 ));
-                (PublicState::AvailableIdentityNotProven, blockers, limitations)
+                (PublicState::AvailableIdentityNotProven, blockers)
             }
         }
     } else if listing == CellObservation::ProvenAbsent {
@@ -823,7 +824,7 @@ fn classify_state(
                     "the versioned package endpoint responded but no package identity was parsed \
                      from it, so retrievability is unproven",
                 ));
-                return (PublicState::ProviderNotProven, blockers, limitations);
+                return (PublicState::ProviderNotProven, blockers);
             };
             if subject_version.is_some_and(|subject| subject != bytes.version) {
                 blockers.push(Blocker::new(
@@ -833,13 +834,13 @@ fn classify_state(
                         bytes.version
                     ),
                 ));
-                return (PublicState::AvailableIdentityNotProven, blockers, limitations);
+                return (PublicState::AvailableIdentityNotProven, blockers);
             }
             blockers.push(Blocker::new(
                 "listing_absent_with_retrievable_package",
                 "the gallery listing does not resolve while the versioned package still does",
             ));
-            return (PublicState::ListingMissingVersionRetrievable, blockers, limitations);
+            return (PublicState::ListingMissingVersionRetrievable, blockers);
         }
         if metadata_reachable {
             blockers.push(Blocker::new(
@@ -847,7 +848,7 @@ fn classify_state(
                 "the gallery listing does not resolve while extension metadata still does; the \
                  object is reachable but not publicly presented",
             ));
-            return (PublicState::AvailableIdentityNotProven, blockers, limitations);
+            return (PublicState::AvailableIdentityNotProven, blockers);
         }
         if extension_metadata == CellObservation::ProvenAbsent
             && versioned_file == CellObservation::ProvenAbsent
@@ -857,21 +858,21 @@ fn classify_state(
                 "listing, extension metadata and the versioned package are each independently \
                  absent while the namespace still resolves",
             ));
-            return (PublicState::ExtensionMissing, blockers, limitations);
+            return (PublicState::ExtensionMissing, blockers);
         }
         blockers.push(Blocker::new(
             "contradictory_registry_evidence",
             "the registry returned definite but mutually inconsistent answers; no single \
              availability conclusion is supported",
         ));
-        (PublicState::ProviderNotProven, blockers, limitations)
+        (PublicState::ProviderNotProven, blockers)
     } else {
         blockers.push(Blocker::new(
             "contradictory_registry_evidence",
             "the registry returned definite but mutually inconsistent answers; no single \
              availability conclusion is supported",
         ));
-        (PublicState::ProviderNotProven, blockers, limitations)
+        (PublicState::ProviderNotProven, blockers)
     }
 }
 
