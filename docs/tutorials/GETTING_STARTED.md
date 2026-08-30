@@ -407,49 +407,28 @@ The editor must be able to find and launch the `perllsp` binary. Symptoms includ
    - Neovim: `:LspLog`
    - Emacs: `*eglot stderr*` buffer
 
-3. **Test JSON-RPC communication** manually. LSP stdio requires a
-   `Content-Length` header followed by a blank line and the UTF-8 JSON payload;
-   sending bare JSON with `echo` is not a valid LSP probe.
-
-   In Bash, Git Bash, or WSL:
+3. **Ask the binary about itself.** These checks are the supported way to tell a
+   broken installation from an editor that cannot find or launch the server, and
+   they work the same in every shell:
 
    ```bash
-   payload='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}'
-   printf 'Content-Length: %s\r\n\r\n%s' "$(printf '%s' "$payload" | wc -c)" "$payload" | perllsp --stdio
+   perllsp --version   # version, git commit, and parser in use
+   perllsp --health    # prints "ok <version>"
+   perllsp --doctor .  # Perl path, project config, and effective @INC roots
    ```
 
-   In PowerShell, write the same UTF-8 frame to the server's standard input:
+   If all three succeed, the binary itself is fine and the problem is in the
+   editor's configuration or environment -- return to the binary path in step 1
+   and the client logs in step 2.
 
-   ```powershell
-   $payload = '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}'
-   $payloadBytes = [Text.Encoding]::UTF8.GetBytes($payload)
-   $headerBytes = [Text.Encoding]::ASCII.GetBytes("Content-Length: $($payloadBytes.Length)`r`n`r`n")
-   $frame = [byte[]]($headerBytes + $payloadBytes)
-
-   $startInfo = New-Object Diagnostics.ProcessStartInfo
-   $startInfo.FileName = 'perllsp'
-   $startInfo.Arguments = '--stdio'
-   $startInfo.UseShellExecute = $false
-   $startInfo.RedirectStandardInput = $true
-   $startInfo.RedirectStandardOutput = $true
-   $process = New-Object Diagnostics.Process
-   $process.StartInfo = $startInfo
-   [void]$process.Start()
-   $process.StandardInput.BaseStream.Write($frame, 0, $frame.Length)
-   $process.StandardInput.Close()
-   $response = $process.StandardOutput.ReadToEnd()
-   $process.WaitForExit()
-   $response
-   ```
-
-   With either command, verify that the response is framed with
-   `Content-Length: ...`, contains valid JSON-RPC, and has `"id":1`. The
-   response length and capabilities are version-dependent, so do not expect a
-   fixed byte count. The server also writes its startup banner and log lines to
-   standard error; those lines are not the response, and only the framed
-   JSON-RPC frame on standard output counts. If standard output carries no
-   valid framed response, the binary itself may have a problem -- try
-   reinstalling.
+   Do not test the server by piping bare JSON into `perllsp --stdio`. LSP stdio
+   requires every message to carry a `Content-Length` header followed by a blank
+   line and the UTF-8 JSON payload, so an unframed line is never read as a
+   request: the server waits, prints nothing on standard output, and exits when
+   its input closes. That silence is a property of the protocol, not evidence of
+   a bad install. Hand-framing a request is protocol debugging rather than an
+   installation check; if you need it, use the framed example in
+   [COMMANDS_REFERENCE.md](../reference/COMMANDS_REFERENCE.md).
 
 4. **VS Code specific**: ensure the extension is installed and enabled:
    ```bash
