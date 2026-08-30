@@ -11,8 +11,6 @@
       "default": false,
       "exit_condition": "Replace the broad default bundle with the reviewed staged facade defaults.",
       "pending": {
-        "owner": "#7063",
-        "predecessor": "#7058",
         "reason": "PF01 is inventory-only and cannot change the facade boundary; the staged compatibility decision belongs to the #7063 migration leaves.",
         "resolves_when": "A #7063 migration leaf lands the recorded exit condition for this row."
       }
@@ -23,7 +21,7 @@
       "disposition": "gate",
       "owner": "#2477",
       "target_owner": "#7063",
-      "isolation": "taxonomy_only",
+      "isolation": "target_only",
       "default": false,
       "exit_condition": "Keep only if the parser facade remains the reviewed owner of perl-parse."
     },
@@ -97,8 +95,6 @@
       "default": false,
       "exit_condition": "Retain only with a named parser concept and supported feature-matrix row.",
       "pending": {
-        "owner": "#7065",
-        "predecessor": "#6663",
         "reason": "The supported parser feature/API/downstream matrix does not yet exist, so no evidence can currently retire or confirm this row.",
         "resolves_when": "#7065 publishes the supported feature/API/downstream matrix covering this row."
       }
@@ -113,8 +109,6 @@
       "default": false,
       "exit_condition": "Retain only with a named parser concept and supported feature-matrix row.",
       "pending": {
-        "owner": "#7065",
-        "predecessor": "#6663",
         "reason": "The supported parser feature/API/downstream matrix does not yet exist, so no evidence can currently retire or confirm this row.",
         "resolves_when": "#7065 publishes the supported feature/API/downstream matrix covering this row."
       }
@@ -129,8 +123,6 @@
       "default": false,
       "exit_condition": "Retain only with a named parser concept and supported feature-matrix row.",
       "pending": {
-        "owner": "#7065",
-        "predecessor": "#6663",
         "reason": "The supported parser feature/API/downstream matrix does not yet exist, so no evidence can currently retire or confirm this row.",
         "resolves_when": "#7065 publishes the supported feature/API/downstream matrix covering this row."
       }
@@ -145,8 +137,6 @@
       "default": false,
       "exit_condition": "Retain only while an executable migration contract names its consumer.",
       "pending": {
-        "owner": "#7065",
-        "predecessor": "#6597",
         "reason": "The supported parser feature/API/downstream matrix does not yet exist, so no evidence can currently retire or confirm this row.",
         "resolves_when": "#7065 publishes the supported feature/API/downstream matrix covering this row."
       }
@@ -201,8 +191,6 @@
       "default": false,
       "exit_condition": "Retain only with a named parser concept and supported feature-matrix row.",
       "pending": {
-        "owner": "#7065",
-        "predecessor": "#6663",
         "reason": "The supported parser feature/API/downstream matrix does not yet exist, so no evidence can currently retire or confirm this row.",
         "resolves_when": "#7065 publishes the supported feature/API/downstream matrix covering this row."
       }
@@ -237,8 +225,6 @@
       "default": false,
       "exit_condition": "Replace the generic feature with named supported combinations or retire it.",
       "pending": {
-        "owner": "#7065",
-        "predecessor": "#2477",
         "reason": "The supported parser feature/API/downstream matrix does not yet exist, so no evidence can currently retire or confirm this row.",
         "resolves_when": "#7065 publishes the supported feature/API/downstream matrix covering this row."
       }
