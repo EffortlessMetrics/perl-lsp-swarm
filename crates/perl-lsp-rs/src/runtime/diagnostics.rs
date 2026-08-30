@@ -3932,6 +3932,150 @@ system($path);
         );
     }
 
+    /// The finalization law, pinned directly (#12067 review).
+    ///
+    /// This is the cheapest proof of the transaction; the transport tests then
+    /// prove the transports actually route through it. It replaces the semantic
+    /// distinctions the retired `NativeCriticContribution` enum used to carry.
+    #[test]
+    fn finalize_pending_critic_matrix() {
+        // `system($path)` gives a core PL603 security row that also declares a
+        // critic overlap observation, so carrier survival is observable.
+        const SOURCE: &str = "my $path = 'f.txt';
+system($path);
+";
+
+        fn core_rows(server: &LspServer, uri: &str) -> Vec<InternalDiagnostic> {
+            let documents = server.documents_guard();
+            let doc = server.get_document(&documents, uri).expect("open document");
+            let parsed = doc.current_parsed().expect("parsed");
+            let ast = parsed.ast().expect("ast");
+            DiagnosticsProvider::new().get_diagnostics(
+                ast,
+                &parsed.parse_errors_arc(),
+                &doc.text,
+                None,
+            )
+        }
+
+        fn evaluate_with(
+            server: &LspServer,
+            uri: &str,
+            diagnostics: &[InternalDiagnostic],
+            snapshot: AcceptedCriticSnapshot,
+        ) -> PendingCriticContribution {
+            let documents = server.documents_guard();
+            let doc = server.get_document(&documents, uri).expect("open document");
+            let parsed = doc.current_parsed().expect("parsed");
+            let ast = std::sync::Arc::clone(parsed.ast().expect("ast"));
+            let text = doc.text.clone();
+            let generation = doc.current_generation();
+            drop(documents);
+            server.evaluate_native_critic(
+                &ast,
+                &text,
+                uri,
+                critic_source_identity_for(uri, generation),
+                snapshot,
+                diagnostics,
+            )
+        }
+
+        fn evaluate(
+            server: &LspServer,
+            uri: &str,
+            diagnostics: &[InternalDiagnostic],
+        ) -> PendingCriticContribution {
+            evaluate_with(server, uri, diagnostics, server.capture_accepted_critic(uri))
+        }
+
+        fn open(uri: &str, enabled: bool) -> LspServer {
+            let (server, _buf) = make_server_with_capture();
+            server.test_configure_critic_engine(perl_lsp_rs_core::config::CriticEngine::Native);
+            server.test_configure_native_critic_profile("strict");
+            server.test_configure_perlcritic(enabled, 3, None);
+            server
+                .test_handle_did_open(Some(json!({
+                    "textDocument": {
+                        "uri": uri, "languageId": "perl", "version": 1, "text": SOURCE
+                    }
+                })))
+                .expect("did_open");
+            server
+        }
+
+        let has_native = |rows: &[InternalDiagnostic]| {
+            rows.iter().any(|d| d.code.as_deref().is_some_and(|c| c.starts_with("native.")))
+        };
+        let has_pl603 =
+            |rows: &[InternalDiagnostic]| rows.iter().any(|d| d.code.as_deref() == Some("PL603"));
+
+        // Row 1: publishable native + current subject -> commit.
+        let server = open("file:///fin_a.pl", true);
+        let mut rows = core_rows(&server, "file:///fin_a.pl");
+        assert!(has_pl603(&rows), "fixture must emit the core PL603 carrier");
+        let pending = evaluate(&server, "file:///fin_a.pl", &rows);
+        assert!(server.finalize_pending_critic(&mut rows, pending), "current subject is reusable");
+        assert!(has_native(&rows), "a current publishable run must commit its rows");
+
+        // Row 2: publishable native, subject moves before the boundary -> withhold.
+        let server = open("file:///fin_b.pl", true);
+        let mut rows = core_rows(&server, "file:///fin_b.pl");
+        let pending = evaluate(&server, "file:///fin_b.pl", &rows);
+        server.test_configure_perlcritic(true, 5, None);
+        assert!(
+            !server.finalize_pending_critic(&mut rows, pending),
+            "a moved subject must not be reusable"
+        );
+        assert!(!has_native(&rows), "a moved subject must commit no native rows");
+        assert!(has_pl603(&rows), "core rows must survive a moved subject");
+
+        // Row 3: disabled accepted state, current -> commits nothing, keeps core
+        // rows, and remains a reusable subject. This is the PL603 regression row.
+        let server = open("file:///fin_c.pl", false);
+        let mut rows = core_rows(&server, "file:///fin_c.pl");
+        let pending = evaluate(&server, "file:///fin_c.pl", &rows);
+        assert!(
+            server.finalize_pending_critic(&mut rows, pending),
+            "a current disabled subject is still a current subject"
+        );
+        assert!(!has_native(&rows), "a disabled run evaluates nothing");
+        assert!(has_pl603(&rows), "a disabled critic must not delete core security rows");
+
+        // Row 4: disabled, then the subject moves -> not reusable, core intact.
+        let server = open("file:///fin_d.pl", false);
+        let mut rows = core_rows(&server, "file:///fin_d.pl");
+        let pending = evaluate(&server, "file:///fin_d.pl", &rows);
+        server.test_configure_perlcritic(true, 3, None);
+        assert!(
+            !server.finalize_pending_critic(&mut rows, pending),
+            "enabling the critic must invalidate a disabled subject"
+        );
+        assert!(has_pl603(&rows), "core rows must survive a moved disabled subject");
+
+        // Row 5: the subject is current at the boundary, but the run itself is
+        // unpublishable. Arranged without touching production: move the policy
+        // so the service settles the run Stale, then restore it so finalization
+        // sees a current subject. This proves the run disposition is consulted
+        // independently of the final snapshot gate.
+        let server = open("file:///fin_e.pl", true);
+        let mut rows = core_rows(&server, "file:///fin_e.pl");
+        let snapshot = server.capture_accepted_critic("file:///fin_e.pl");
+        server.test_configure_perlcritic(true, 5, None);
+        let pending = evaluate_with(&server, "file:///fin_e.pl", &rows, snapshot);
+        assert!(
+            !pending.run.is_publishable(),
+            "moving the policy during evaluation must settle the run unpublishable"
+        );
+        server.test_configure_perlcritic(true, 3, None);
+        assert!(
+            !server.finalize_pending_critic(&mut rows, pending),
+            "a current subject cannot make an unpublishable run reusable"
+        );
+        assert!(!has_native(&rows), "an unpublishable run must commit no native rows");
+        assert!(has_pl603(&rows), "an unpublishable run must surrender no core carriers");
+    }
+
     /// Full-range code-action params for a freshly opened perl document.
     fn code_action_params(uri: &str) -> Value {
         json!({
