@@ -880,9 +880,14 @@ impl CurrentVersusAccepted {
                 transition: self.transition,
             });
         }
+        // NoChange asserts equality with the accepted state, which is as much a
+        // comparison as improvement or regression; only a historical record or
+        // an unproven one has nothing to compare against.
         if matches!(
             self.transition,
-            CompatibilityTransition::ImprovementCandidate | CompatibilityTransition::Regression
+            CompatibilityTransition::ImprovementCandidate
+                | CompatibilityTransition::Regression
+                | CompatibilityTransition::NoChange
         ) && self.accepted_baseline_digest.is_none()
         {
             return Err(ResultReportViolation::ComparisonWithoutBaseline {
@@ -977,6 +982,11 @@ pub enum ResultReportViolation {
     },
     /// A complete measurement claimed valid evidence while observing nothing.
     CompleteMeasurementObservedNothing,
+    /// The same file/mode or invocation identity appeared twice.
+    DuplicateDetailRecord {
+        /// The repeated identity.
+        identity: String,
+    },
     /// A clean aggregate contradicted a detail record that observed failures.
     CleanAggregateOverFailingDetail,
     /// An aggregate claimed support that no rail in the report backs.
@@ -1087,6 +1097,9 @@ impl fmt::Display for ResultReportViolation {
                 "the {axis} distribution uses category '{category}', which is not part of that \
                  axis vocabulary"
             ),
+            Self::DuplicateDetailRecord { identity } => {
+                write!(f, "detail record '{identity}' appears more than once")
+            }
             Self::CleanAggregateOverFailingDetail => f.write_str(
                 "the aggregate observation is 'clean' while a file or invocation record \
                  observed failures",
@@ -1179,6 +1192,18 @@ pub struct FileModeAxesResult {
 }
 
 /// A complete v2 result report for one measured series.
+///
+/// Unlike [`ResultAxes`], this envelope deserializes without running
+/// [`RunAxesReport::validate`]. That is deliberate: a malformed historical
+/// report must stay readable so it can be inspected and diagnosed, and
+/// validation is the gate applied when a report is *admitted* rather than when
+/// it is read. Anything trusting report-level invariants must call `validate`
+/// or [`RunAxesReport::admissible_as_current_authority`] first.
+///
+/// `files` and `invocations` are samples, not necessarily complete coverage of
+/// the denominator: a report may carry every file record or only the
+/// interesting ones. They must be individually unique and consistent with the
+/// aggregate, but their count is not required to equal `subject.denominator`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct RunAxesReport {
@@ -1253,6 +1278,24 @@ impl RunAxesReport {
             require_non_blank("invocation_identity", &invocation.invocation_identity)?;
             for limitation in &invocation.limitations {
                 require_non_blank("limitations", limitation)?;
+            }
+        }
+        // v1 `validate_report` rejects duplicate file results; the same record
+        // twice would double-count against the denominator here too.
+        let mut seen_paths = std::collections::BTreeSet::new();
+        for file in &self.files {
+            if !seen_paths.insert((file.path.as_str(), file.mode.as_str())) {
+                return Err(ResultReportViolation::DuplicateDetailRecord {
+                    identity: file.path.clone(),
+                });
+            }
+        }
+        let mut seen_invocations = std::collections::BTreeSet::new();
+        for invocation in &self.invocations {
+            if !seen_invocations.insert(invocation.invocation_identity.as_str()) {
+                return Err(ResultReportViolation::DuplicateDetailRecord {
+                    identity: invocation.invocation_identity.clone(),
+                });
             }
         }
         for (rail, summary) in &self.correctness_rails {
@@ -2428,6 +2471,64 @@ mod tests {
         ]
     }
 
+    /// Every value each axis can take, for an exhaustive sweep.
+    const ALL_EVIDENCE: [&str; 5] = ["valid", "not_proven", "invalid", "stale", "cancelled"];
+    const ALL_OBSERVATION: [&str; 4] =
+        ["clean", "failures_observed", "process_or_protocol_failed", "not_assessed"];
+    const ALL_ADMISSION: [&str; 5] = ADMISSION_CATEGORIES;
+    const ALL_SUPPORT: [&str; 5] = SUPPORT_CATEGORIES;
+    const ALL_MECHANISM: [&str; 5] =
+        ["none", "fixture_replay", "eir_execution", "real_perl_oracle", "curated_gold"];
+
+    /// The complete 5x4x5x5x5 axis product.
+    ///
+    /// A sampled fixture table can only catch drift in the cases someone thought
+    /// to list; this decides every representable combination, so the Rust
+    /// constructor and the published schema cannot disagree anywhere at all.
+    #[test]
+    fn published_schema_decides_every_axis_combination_as_the_constructor()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let axes_schema = axes_schema()?;
+        let mut checked = 0usize;
+        let mut mismatches: Vec<String> = Vec::new();
+
+        for evidence in ALL_EVIDENCE {
+            for observation in ALL_OBSERVATION {
+                for admission in ALL_ADMISSION {
+                    for support in ALL_SUPPORT {
+                        for mechanism in ALL_MECHANISM {
+                            let value = serde_json::json!({
+                                "evidence": evidence,
+                                "observation": observation,
+                                "admission": admission,
+                                "support": support,
+                                "mechanism": mechanism,
+                            });
+                            let rust = serde_json::from_value::<ResultAxes>(value.clone()).is_ok();
+                            let schema = axes_schema.is_valid(&value);
+                            checked += 1;
+                            if rust != schema {
+                                mismatches.push(format!(
+                                    "{evidence}/{observation}/{admission}/{support}/{mechanism}: \
+                                     rust={rust} schema={schema}"
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        assert_eq!(checked, 2500, "the sweep must cover the whole axis product");
+        assert!(
+            mismatches.is_empty(),
+            "the constructor and the published schema disagree on {} combination(s):\n{}",
+            mismatches.len(),
+            mismatches.join("\n")
+        );
+        Ok(())
+    }
+
     #[test]
     fn published_schema_decides_axes_exactly_as_the_constructor()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -2837,6 +2938,56 @@ mod tests {
                 "a {weak:?} rail cannot carry a general claim across the whole denominator"
             );
         }
+        Ok(())
+    }
+
+    #[test]
+    fn no_change_needs_a_baseline_to_be_unchanged_from() {
+        let baseless = CurrentVersusAccepted {
+            transition: CompatibilityTransition::NoChange,
+            requires_acceptance: false,
+            accepted_baseline_digest: None,
+            reason: "claims equality with nothing".to_string(),
+        };
+        assert_eq!(
+            baseless.validate(),
+            Err(ResultReportViolation::ComparisonWithoutBaseline {
+                transition: CompatibilityTransition::NoChange,
+            }),
+            "equality with the accepted state is still a comparison"
+        );
+    }
+
+    #[test]
+    fn duplicate_detail_records_are_rejected() -> Result<(), Box<dyn std::error::Error>> {
+        let mut candidate = valid_report()?;
+        let detail = FileModeAxesResult {
+            path: "base/ok.t".to_string(),
+            mode: HarnessMode::Compile,
+            axes: candidate.axes,
+            bucket: None,
+        };
+        candidate.files.push(detail.clone());
+        candidate.files.push(detail);
+        assert_eq!(
+            candidate.validate(),
+            Err(ResultReportViolation::DuplicateDetailRecord { identity: "base/ok.t".to_string() })
+        );
+
+        let mut twice = valid_report()?;
+        let invocation = InvocationAxesResult {
+            invocation_identity: "invocation-1".to_string(),
+            axes: twice.axes,
+            limitations: Vec::new(),
+        };
+        twice.invocations.push(invocation.clone());
+        twice.invocations.push(invocation);
+        assert_eq!(
+            twice.validate(),
+            Err(ResultReportViolation::DuplicateDetailRecord {
+                identity: "invocation-1".to_string(),
+            })
+        );
         Ok(())
     }
 

@@ -295,9 +295,12 @@
           "else": {"properties": {"requires_acceptance": {"const": false}}}
         },
         {
-          "$comment": "Improvement and regression are claims relative to an actual accepted baseline.",
+          "$comment": "Improvement, regression and no-change are all claims relative to an actual accepted baseline; only a historical or unproven record has nothing to compare against.",
           "if": {
-            "properties": {"transition": {"enum": ["improvement_candidate", "regression"]}}
+            "properties": {
+              "transition": {"enum": ["improvement_candidate", "regression", "no_change"]}
+            },
+            "required": ["transition"]
           },
           "then": {"properties": {"accepted_baseline_digest": {"type": "string"}}}
         }
