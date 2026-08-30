@@ -72,7 +72,9 @@ pub fn inferred_line_ending_at(source: &str, offset: usize) -> &'static str {
         return inferred_line_ending(source);
     };
     if let Some(first_lf) = suffix.as_bytes().iter().position(|byte| *byte == b'\n') {
-        return if first_lf > 0 && suffix.as_bytes()[first_lf - 1] == b'\r' {
+        return if (first_lf > 0 && suffix.as_bytes()[first_lf - 1] == b'\r')
+            || (first_lf == 0 && offset > 0 && source.as_bytes()[offset - 1] == b'\r')
+        {
             "\r\n"
         } else {
             "\n"
@@ -142,5 +144,10 @@ mod tests {
     fn beginning_insertion_uses_first_line_convention() {
         assert_eq!(inferred_line_ending_at("package Demo;\r\n", 0), "\r\n");
         assert_eq!(inferred_line_ending_at("package Demo;\n", 0), "\n");
+    }
+
+    #[test]
+    fn an_offset_between_crlf_bytes_keeps_the_pair_together() {
+        assert_eq!(inferred_line_ending_at("a\r\n", 2), "\r\n");
     }
 }
