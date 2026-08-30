@@ -156,6 +156,19 @@ pub struct AstGeometryField {
     pub shape: AstGeometryShape,
     /// Transformation rule a mapping consumer must apply.
     pub mapping: AstGeometryMapping,
+    /// Which of the owning variant's declared payload policies this field realizes.
+    ///
+    /// `None` when the owning variant declares no payload policy, in which case
+    /// the disposition falls back to the variant's classification.
+    ///
+    /// This exists because a variant's classification is not always the right
+    /// authority for one of its fields. `Format` is classified `SourceBoundary`
+    /// and declares `[DeclarationNameAnchor, OpaqueSourceRegion]`: its `body` is
+    /// the opaque region that earns the classification, but its `name_span` is a
+    /// declaration-name anchor exactly like `Package.name_span`. Deriving from
+    /// the classification alone would record the name as boundary geometry and
+    /// discard a distinction the policy registry already makes.
+    pub payload_role: Option<crate::AstPayloadPolicy>,
     /// Relationship to source truth.
     pub disposition: AstGeometryDisposition,
 }
@@ -173,6 +186,7 @@ pub const AST_NODE_GEOMETRY_FIELDS: &[AstGeometryField] = &[
         field: "body_span",
         shape: AstGeometryShape::Optional,
         mapping: AstGeometryMapping::MapRange,
+        payload_role: Some(crate::AstPayloadPolicy::OpaqueSourceRegion),
         disposition: AstGeometryDisposition::SourceBoundary,
     },
     AstGeometryField {
@@ -180,6 +194,7 @@ pub const AST_NODE_GEOMETRY_FIELDS: &[AstGeometryField] = &[
         field: "catch_blocks.variable",
         shape: AstGeometryShape::Nested,
         mapping: AstGeometryMapping::MapRange,
+        payload_role: None,
         disposition: AstGeometryDisposition::SourceExact,
     },
     AstGeometryField {
@@ -187,6 +202,7 @@ pub const AST_NODE_GEOMETRY_FIELDS: &[AstGeometryField] = &[
         field: "name_span",
         shape: AstGeometryShape::Optional,
         mapping: AstGeometryMapping::MapRange,
+        payload_role: Some(crate::AstPayloadPolicy::DeclarationNameAnchor),
         disposition: AstGeometryDisposition::SourceExact,
     },
     AstGeometryField {
@@ -194,6 +210,7 @@ pub const AST_NODE_GEOMETRY_FIELDS: &[AstGeometryField] = &[
         field: "name_span",
         shape: AstGeometryShape::Optional,
         mapping: AstGeometryMapping::MapRange,
+        payload_role: Some(crate::AstPayloadPolicy::DeclarationNameAnchor),
         disposition: AstGeometryDisposition::SourceExact,
     },
     AstGeometryField {
@@ -201,6 +218,7 @@ pub const AST_NODE_GEOMETRY_FIELDS: &[AstGeometryField] = &[
         field: "name_span",
         shape: AstGeometryShape::Direct,
         mapping: AstGeometryMapping::MapRange,
+        payload_role: Some(crate::AstPayloadPolicy::DeclarationNameAnchor),
         disposition: AstGeometryDisposition::SourceExact,
     },
     AstGeometryField {
@@ -208,6 +226,7 @@ pub const AST_NODE_GEOMETRY_FIELDS: &[AstGeometryField] = &[
         field: "phase_span",
         shape: AstGeometryShape::Optional,
         mapping: AstGeometryMapping::MapRange,
+        payload_role: Some(crate::AstPayloadPolicy::DeclarationNameAnchor),
         disposition: AstGeometryDisposition::SourceExact,
     },
     AstGeometryField {
@@ -215,6 +234,7 @@ pub const AST_NODE_GEOMETRY_FIELDS: &[AstGeometryField] = &[
         field: "name_span",
         shape: AstGeometryShape::Optional,
         mapping: AstGeometryMapping::MapRange,
+        payload_role: Some(crate::AstPayloadPolicy::DeclarationNameAnchor),
         disposition: AstGeometryDisposition::SourceExact,
     },
     AstGeometryField {
@@ -222,13 +242,15 @@ pub const AST_NODE_GEOMETRY_FIELDS: &[AstGeometryField] = &[
         field: "name_span",
         shape: AstGeometryShape::Optional,
         mapping: AstGeometryMapping::MapRange,
-        disposition: AstGeometryDisposition::SourceBoundary,
+        payload_role: Some(crate::AstPayloadPolicy::DeclarationNameAnchor),
+        disposition: AstGeometryDisposition::SourceExact,
     },
     AstGeometryField {
         kind_name: "Error",
         field: "found",
         shape: AstGeometryShape::Token,
         mapping: AstGeometryMapping::MapStartPreserveWidth,
+        payload_role: Some(crate::AstPayloadPolicy::RecoverySynthetic),
         disposition: AstGeometryDisposition::Recovery,
     },
 ];
@@ -324,6 +346,18 @@ pub enum AstGeometryDrift {
         /// Field identity.
         field: String,
     },
+    /// A geometry row names a payload role its owning variant does not declare.
+    ///
+    /// The role must come from the variant's own `payload_policies`, so a row
+    /// cannot invent a friendlier role to obtain a friendlier disposition.
+    PayloadRoleNotDeclaredByVariant {
+        /// Owning `NodeKind`.
+        kind_name: String,
+        /// Field identity.
+        field: String,
+        /// Role the row claimed.
+        role: crate::AstPayloadPolicy,
+    },
     /// A row's disposition disagrees with its owning variant's classification.
     DispositionMismatch {
         /// Owning `NodeKind`.
@@ -384,6 +418,11 @@ impl std::fmt::Display for AstGeometryDrift {
                 f,
                 "{kind_name}.{field} registers geometry but {kind_name} has no invariant-policy \
                  row, so its disposition cannot be derived"
+            ),
+            Self::PayloadRoleNotDeclaredByVariant { kind_name, field, role } => write!(
+                f,
+                "{kind_name}.{field} claims payload role {role:?}, which {kind_name} does not \
+                 declare in its invariant policy"
             ),
             Self::DispositionMismatch { kind_name, field, registered, required } => write!(
                 f,
@@ -448,6 +487,40 @@ pub const fn geometry_disposition_for_classification(
         crate::AstNodeClassification::Leaf
         | crate::AstNodeClassification::ChildBearing
         | crate::AstNodeClassification::Wrapper => AstGeometryDisposition::SourceExact,
+    }
+}
+
+/// Required disposition for one geometry field, given its payload role.
+///
+/// The variant's classification remains the floor: a `Recovery` node's geometry
+/// is recovery geometry whatever role the field plays. Above that floor the
+/// field's own declared role decides, because a variant classification is a
+/// statement about the *node*, and a node may carry fields with different
+/// relationships to source.
+///
+/// `DeclarationNameAnchor` is the case that matters today: a declaration name is
+/// exact source text even when it sits on a node whose body is opaque. Without
+/// this, `Format.name_span` would be recorded as boundary geometry while the
+/// identical `Package.name_span` is exact — a difference with no basis in what
+/// either span actually anchors.
+#[must_use]
+pub const fn geometry_disposition_for_role(
+    role: Option<crate::AstPayloadPolicy>,
+    classification: crate::AstNodeClassification,
+) -> AstGeometryDisposition {
+    // Recovery is a property of the whole node and cannot be escaped per field.
+    if matches!(classification, crate::AstNodeClassification::Recovery) {
+        return AstGeometryDisposition::Recovery;
+    }
+
+    match role {
+        Some(crate::AstPayloadPolicy::DeclarationNameAnchor) => AstGeometryDisposition::SourceExact,
+        Some(crate::AstPayloadPolicy::RecoverySynthetic) => AstGeometryDisposition::Recovery,
+        Some(crate::AstPayloadPolicy::OpaqueSourceRegion)
+        | Some(crate::AstPayloadPolicy::HeredocLabelAndIndent) => {
+            AstGeometryDisposition::SourceBoundary
+        }
+        _ => geometry_disposition_for_classification(classification),
     }
 }
 
@@ -574,7 +647,17 @@ pub fn validate_geometry_registry() -> Result<(), AstGeometryDrift> {
             });
         };
 
-        let required = geometry_disposition_for_classification(policy.classification);
+        if let Some(role) = row.payload_role
+            && !policy.payload_policies.contains(&role)
+        {
+            return Err(AstGeometryDrift::PayloadRoleNotDeclaredByVariant {
+                kind_name: row.kind_name.to_string(),
+                field: row.field.to_string(),
+                role,
+            });
+        }
+
+        let required = geometry_disposition_for_role(row.payload_role, policy.classification);
         if row.disposition != required {
             return Err(AstGeometryDrift::DispositionMismatch {
                 kind_name: row.kind_name.to_string(),

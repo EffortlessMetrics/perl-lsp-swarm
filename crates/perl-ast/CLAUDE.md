@@ -107,6 +107,13 @@ match &node.kind {
   Adding a *variant* is not the only mutation that matters here: a new geometry
   field on an existing variant is what would otherwise stay in an old source
   generation during a coordinate remap
+- A geometry row also names the `AstPayloadPolicy` role it realizes, and that
+  role must be one the owning variant declares in `invariant_policy.rs`. The
+  disposition is derived from the role with the variant's classification as a
+  floor, so a declaration name stays `SourceExact` even on a boundary-classified
+  node such as `Format`, whose `body` is what makes the *node* a boundary. Do not
+  re-derive disposition from the classification alone: that collapses fields with
+  genuinely different relationships to source
 - Adding a new `NodeKind` variant also requires adding a representative instance to every all-variant test fixture: `classification.rs`'s `all_variants()`/`all_variants_maximal()`, `tests/helpers.rs`'s `all_nodekind_instances()`, `tests/nodekind_coverage_tests.rs`'s `build_cases()`, and `ast.rs`'s `all_node_kinds()`. Each is guarded by a name-set comparison against `ALL_KIND_NAMES`, so an omission fails a test rather than silently narrowing coverage
 - Adding new `NodeKind` variants require updating `to_sexp()` payload disposition,
   `kind_name()`, and the structural registry row in `kind_schema/registry.rs`. Child

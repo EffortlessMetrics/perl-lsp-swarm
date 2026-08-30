@@ -112,8 +112,8 @@ pub use ast::{
 pub use geometry_policy::{
     AST_GEOMETRY_SCHEMA_VERSION, AST_NODE_GEOMETRY_FIELDS, AstGeometryDisposition,
     AstGeometryDrift, AstGeometryField, AstGeometryMapping, AstGeometryShape,
-    ObservedGeometryField, geometry_disposition_for_classification, geometry_fields_for,
-    geometry_shapes_in_use, observe_geometry_fields, reconcile_geometry_rows,
+    ObservedGeometryField, geometry_disposition_for_classification, geometry_disposition_for_role,
+    geometry_fields_for, geometry_shapes_in_use, observe_geometry_fields, reconcile_geometry_rows,
     reconcile_node_geometry, validate_geometry_registry,
 };
 /// Exhaustive AST invariant policy types and registry.

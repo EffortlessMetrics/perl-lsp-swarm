@@ -30,8 +30,8 @@ use perl_ast::{
     AST_GEOMETRY_SCHEMA_VERSION, AST_NODE_GEOMETRY_FIELDS, AstGeometryDisposition,
     AstGeometryDrift, AstGeometryField, AstGeometryMapping, AstGeometryShape,
     AstNodeClassification, NodeKind, ObservedGeometryField, SourceLocation, ast_node_policy,
-    geometry_disposition_for_classification, geometry_fields_for, geometry_shapes_in_use,
-    node_kind_fixtures, observe_geometry_fields, reconcile_geometry_rows, reconcile_node_geometry,
+    geometry_disposition_for_role, geometry_fields_for, geometry_shapes_in_use, node_kind_fixtures,
+    observe_geometry_fields, reconcile_geometry_rows, reconcile_node_geometry,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -131,25 +131,104 @@ fn the_populated_fixture_observes_every_registered_field() -> Result<(), Box<dyn
     Ok(())
 }
 
-/// A field cannot claim a friendlier source relationship than its owning node.
+/// Dispositions are derived from the field's role, floored by its owning node.
+///
+/// A row cannot choose its disposition, and it cannot name a role its owning
+/// variant does not declare, so it cannot reach a friendlier disposition by
+/// inventing a role.
 #[test]
-fn dispositions_are_derived_from_the_owning_variant_classification()
+fn dispositions_are_derived_from_the_field_role_and_owning_classification()
 -> Result<(), Box<dyn std::error::Error>> {
     for row in AST_NODE_GEOMETRY_FIELDS {
         let policy = ast_node_policy(row.kind_name)
             .ok_or_else(|| format!("{} has geometry rows but no policy row", row.kind_name))?;
-        let expected = geometry_disposition_for_classification(policy.classification);
+
+        if let Some(role) = row.payload_role {
+            assert!(
+                policy.payload_policies.contains(&role),
+                "{}.{}: claims payload role {role:?}, which {} does not declare",
+                row.kind_name,
+                row.field,
+                row.kind_name
+            );
+        }
+
+        let expected = geometry_disposition_for_role(row.payload_role, policy.classification);
         assert_eq!(
             row.disposition,
             expected,
-            "{}.{}: classification {:?} requires disposition {} but the row registers {}",
+            "{}.{}: role {:?} under classification {:?} requires disposition {} but the row \
+             registers {}",
             row.kind_name,
             row.field,
+            row.payload_role,
             policy.classification,
             expected.token(),
             row.disposition.token()
         );
     }
+    Ok(())
+}
+
+/// A declaration name is exact source even on a boundary-classified node.
+///
+/// Raised in review. `Format` is classified `SourceBoundary` because its `body`
+/// is an opaque source region, and deriving every field's disposition from the
+/// classification alone recorded `Format.name_span` as boundary geometry. It is
+/// a `DeclarationNameAnchor`, identical in kind to `Package.name_span`, and the
+/// invariant policy already says so — the derivation was discarding a
+/// distinction the registry had.
+///
+/// This pins the corrected rule in both directions on the same node, so a
+/// future simplification back to classification-only derivation fails here.
+#[test]
+fn a_declaration_name_stays_exact_on_a_boundary_classified_node()
+-> Result<(), Box<dyn std::error::Error>> {
+    let policy = ast_node_policy("Format").ok_or("Format policy must exist")?;
+    assert_eq!(
+        policy.classification,
+        AstNodeClassification::SourceBoundary,
+        "this control is only meaningful while Format is boundary-classified"
+    );
+
+    let rows = geometry_fields_for("Format");
+    let name_span = rows
+        .iter()
+        .find(|row| row.field == "name_span")
+        .ok_or("Format.name_span must be registered")?;
+
+    assert_eq!(
+        name_span.payload_role,
+        Some(perl_ast::AstPayloadPolicy::DeclarationNameAnchor),
+        "Format.name_span realizes the declaration-name anchor Format declares"
+    );
+    assert_eq!(
+        name_span.disposition,
+        AstGeometryDisposition::SourceExact,
+        "a declaration name anchors exact source text even when the node's body is opaque"
+    );
+
+    // The opposite direction on a node of the same classification: Heredoc's
+    // body span really is boundary geometry and must not drift to exact.
+    let heredoc = geometry_fields_for("Heredoc");
+    let body_span = heredoc
+        .iter()
+        .find(|row| row.field == "body_span")
+        .ok_or("Heredoc.body_span must be registered")?;
+    assert_eq!(
+        body_span.disposition,
+        AstGeometryDisposition::SourceBoundary,
+        "an opaque source region stays boundary geometry"
+    );
+
+    // And the classification floor still wins for recovery material.
+    let error_rows = geometry_fields_for("Error");
+    let found = error_rows.iter().find(|row| row.field == "found").ok_or("Error.found")?;
+    assert_eq!(
+        found.disposition,
+        AstGeometryDisposition::Recovery,
+        "a Recovery node's geometry stays recovery geometry whatever role the field plays"
+    );
     Ok(())
 }
 
@@ -776,6 +855,7 @@ fn a_second_span_inside_one_nested_field_is_demanded() {
         field: "catch_blocks.variable",
         shape: AstGeometryShape::Nested,
         mapping: AstGeometryMapping::MapRange,
+        payload_role: None,
         disposition: AstGeometryDisposition::SourceExact,
     }];
 
@@ -824,6 +904,7 @@ fn one_nested_span_with_one_row_is_accepted() {
         field: "catch_blocks.variable",
         shape: AstGeometryShape::Nested,
         mapping: AstGeometryMapping::MapRange,
+        payload_role: None,
         disposition: AstGeometryDisposition::SourceExact,
     }];
 
@@ -1053,6 +1134,7 @@ fn a_token_registered_as_a_resizable_range_is_rejected() -> Result<(), Box<dyn s
         field: "found",
         shape: AstGeometryShape::Token,
         mapping: AstGeometryMapping::MapRange,
+        payload_role: Some(perl_ast::AstPayloadPolicy::RecoverySynthetic),
         disposition: AstGeometryDisposition::Recovery,
     }];
 
@@ -1085,6 +1167,7 @@ fn a_non_token_claiming_width_preservation_is_rejected() -> Result<(), Box<dyn s
         field: "name_span",
         shape: AstGeometryShape::Direct,
         mapping: AstGeometryMapping::MapStartPreserveWidth,
+        payload_role: Some(perl_ast::AstPayloadPolicy::DeclarationNameAnchor),
         disposition: AstGeometryDisposition::SourceExact,
     }];
 
@@ -1122,6 +1205,7 @@ fn a_payload_row_claiming_caller_owned_boundary_is_rejected()
         field: "name_span",
         shape: AstGeometryShape::Direct,
         mapping: AstGeometryMapping::CallerOwnedBoundary,
+        payload_role: Some(perl_ast::AstPayloadPolicy::DeclarationNameAnchor),
         disposition: AstGeometryDisposition::SourceExact,
     }];
 
@@ -1153,7 +1237,7 @@ fn a_wrong_disposition_is_rejected_by_the_registry_validator() {
     let policy = ast_node_policy("Error");
     assert!(policy.is_some(), "Error must have a policy row");
 
-    let required = geometry_disposition_for_classification(AstNodeClassification::Recovery);
+    let required = geometry_disposition_for_role(None, AstNodeClassification::Recovery);
     assert_eq!(
         required,
         AstGeometryDisposition::Recovery,
@@ -1165,10 +1249,39 @@ fn a_wrong_disposition_is_rejected_by_the_registry_validator() {
         "source-exact must not satisfy a recovery variant, or the derivation proves nothing"
     );
 
+    // Recovery is a floor: no field role can escape it. Without this, adding the
+    // role dimension would have opened a way to launder recovery geometry into
+    // exact geometry by naming a declaration-name role.
+    assert_eq!(
+        geometry_disposition_for_role(
+            Some(perl_ast::AstPayloadPolicy::DeclarationNameAnchor),
+            AstNodeClassification::Recovery
+        ),
+        AstGeometryDisposition::Recovery,
+        "the recovery classification must outrank any field role"
+    );
+
     // A source-boundary variant must not be satisfied by the source-exact default.
     assert_eq!(
-        geometry_disposition_for_classification(AstNodeClassification::SourceBoundary),
+        geometry_disposition_for_role(None, AstNodeClassification::SourceBoundary),
         AstGeometryDisposition::SourceBoundary
+    );
+
+    // But an opaque region on that same classification stays boundary, while a
+    // declaration name on it is exact -- the distinction this dimension exists for.
+    assert_eq!(
+        geometry_disposition_for_role(
+            Some(perl_ast::AstPayloadPolicy::OpaqueSourceRegion),
+            AstNodeClassification::SourceBoundary
+        ),
+        AstGeometryDisposition::SourceBoundary
+    );
+    assert_eq!(
+        geometry_disposition_for_role(
+            Some(perl_ast::AstPayloadPolicy::DeclarationNameAnchor),
+            AstNodeClassification::SourceBoundary
+        ),
+        AstGeometryDisposition::SourceExact
     );
 }
 
@@ -1181,6 +1294,7 @@ fn a_duplicate_registry_row_is_rejected() -> Result<(), Box<dyn std::error::Erro
             field: "name_span",
             shape: AstGeometryShape::Direct,
             mapping: AstGeometryMapping::MapRange,
+            payload_role: Some(perl_ast::AstPayloadPolicy::DeclarationNameAnchor),
             disposition: AstGeometryDisposition::SourceExact,
         },
         AstGeometryField {
@@ -1188,6 +1302,7 @@ fn a_duplicate_registry_row_is_rejected() -> Result<(), Box<dyn std::error::Erro
             field: "name_span",
             shape: AstGeometryShape::Optional,
             mapping: AstGeometryMapping::MapRange,
+            payload_role: Some(perl_ast::AstPayloadPolicy::DeclarationNameAnchor),
             disposition: AstGeometryDisposition::SourceExact,
         },
     ];
@@ -1233,6 +1348,7 @@ fn a_second_dotted_row_on_the_same_base_is_rejected() -> Result<(), Box<dyn std:
             field: "catch_blocks.variable",
             shape: AstGeometryShape::Nested,
             mapping: AstGeometryMapping::MapRange,
+            payload_role: None,
             disposition: AstGeometryDisposition::SourceExact,
         },
         AstGeometryField {
@@ -1240,6 +1356,7 @@ fn a_second_dotted_row_on_the_same_base_is_rejected() -> Result<(), Box<dyn std:
             field: "catch_blocks.var",
             shape: AstGeometryShape::Nested,
             mapping: AstGeometryMapping::MapRange,
+            payload_role: None,
             disposition: AstGeometryDisposition::SourceExact,
         },
     ];
