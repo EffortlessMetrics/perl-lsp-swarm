@@ -311,6 +311,13 @@ pub enum ResultAxisViolation {
     },
     /// A process or protocol failure was recorded as valid evidence.
     ProcessFailureClaimedAsValidEvidence,
+    /// A compiler admission was recorded without valid evidence to draw it from.
+    AdmissionWithoutValidEvidence {
+        /// The admission that was recorded.
+        admission: CompatibilityAdmission,
+        /// The evidence axis that cannot support it.
+        evidence: EvidenceValidity,
+    },
     /// A positive support claim was made without valid evidence.
     PositiveSupportWithoutValidEvidence {
         /// The support claim that lacks valid evidence.
@@ -357,6 +364,11 @@ impl fmt::Display for ResultAxisViolation {
             Self::ProcessFailureClaimedAsValidEvidence => f.write_str(
                 "observation 'process_or_protocol_failed' cannot carry evidence 'valid'; \
                  an instrument failure is not_proven, not a product result",
+            ),
+            Self::AdmissionWithoutValidEvidence { admission, evidence } => write!(
+                f,
+                "admission '{admission}' is a conclusion about the subject, but evidence is \
+                 '{evidence}'; admission is decided from evidence, not alongside it"
             ),
             Self::PositiveSupportWithoutValidEvidence { support, evidence } => {
                 write!(f, "support '{support}' is a positive claim but evidence is '{evidence}'")
@@ -452,6 +464,11 @@ impl ResultAxes {
             && evidence.supports_domain_conclusion()
         {
             return Err(ResultAxisViolation::ProcessFailureClaimedAsValidEvidence);
+        }
+        if admission != CompatibilityAdmission::NotAssessed
+            && !evidence.supports_domain_conclusion()
+        {
+            return Err(ResultAxisViolation::AdmissionWithoutValidEvidence { admission, evidence });
         }
         if support.is_positive_claim() {
             if !evidence.supports_domain_conclusion() {
@@ -1001,6 +1018,20 @@ pub enum ResultReportViolation {
         /// The evidence axis that disqualifies the report.
         evidence: EvidenceValidity,
     },
+    /// The parse rail reported a clean observation while some subjects failed.
+    CleanParseRailWithFailures {
+        /// Subjects the parse rail accepted.
+        passed: usize,
+        /// Subjects it covered.
+        total: usize,
+    },
+    /// A general aggregate claim contradicted its own support distribution.
+    AggregateSupportOverstatesDistribution {
+        /// Subjects distributed as generally supported.
+        general: usize,
+        /// Declared denominator.
+        denominator: usize,
+    },
     /// The parse rail reported more passes than subjects.
     ParsePassedExceedsTotal,
     /// The parse rail denominator disagrees with the aggregate denominator.
@@ -1126,6 +1157,15 @@ impl fmt::Display for ResultReportViolation {
                     "rail '{rail}' reported one of files_total/files_passed without the other"
                 )
             }
+            Self::CleanParseRailWithFailures { passed, total } => write!(
+                f,
+                "the parse rail reports a clean observation but accepted only {passed} of {total}"
+            ),
+            Self::AggregateSupportOverstatesDistribution { general, denominator } => write!(
+                f,
+                "the aggregate claims general support while only {general} of {denominator} \
+                 subjects are distributed as generally supported"
+            ),
             Self::ParsePassedExceedsTotal => {
                 f.write_str("parse rail passed more subjects than it covered")
             }
@@ -1255,6 +1295,28 @@ impl RunAxesReport {
         self.admission.validate(self.subject.denominator)?;
         self.current_versus_accepted.validate()?;
 
+        if self.parse.axes.observation() == ObservedOutcome::Clean
+            && self.parse.files_passed != self.parse.files_total
+        {
+            return Err(ResultReportViolation::CleanParseRailWithFailures {
+                passed: self.parse.files_passed,
+                total: self.parse.files_total,
+            });
+        }
+        if self.axes.support() == SemanticSupport::General {
+            let general = self
+                .admission
+                .by_support
+                .get(SemanticSupport::General.as_str())
+                .copied()
+                .unwrap_or(0);
+            if general != self.subject.denominator {
+                return Err(ResultReportViolation::AggregateSupportOverstatesDistribution {
+                    general,
+                    denominator: self.subject.denominator,
+                });
+            }
+        }
         if self.parse.files_passed > self.parse.files_total {
             return Err(ResultReportViolation::ParsePassedExceedsTotal);
         }
@@ -1341,14 +1403,16 @@ impl RunAxesReport {
             }
         }
         if self.axes.observation() == ObservedOutcome::Clean {
-            let failing_detail = self
-                .files
-                .iter()
-                .any(|file| file.axes.observation() == ObservedOutcome::FailuresObserved)
-                || self
-                    .invocations
-                    .iter()
-                    .any(|run| run.axes.observation() == ObservedOutcome::FailuresObserved);
+            // A clean rollup must not swallow a detail that failed *or* one whose
+            // instrument broke: both mean this run did not come back clean.
+            let unclean = |observed: ObservedOutcome| {
+                matches!(
+                    observed,
+                    ObservedOutcome::FailuresObserved | ObservedOutcome::ProcessOrProtocolFailed
+                )
+            };
+            let failing_detail = self.files.iter().any(|file| unclean(file.axes.observation()))
+                || self.invocations.iter().any(|run| unclean(run.axes.observation()));
             if failing_detail {
                 return Err(ResultReportViolation::CleanAggregateOverFailingDetail);
             }
@@ -2744,6 +2808,43 @@ mod tests {
             SchemaAgreement::Same,
         ));
 
+        let mut broken_detail = valid_report()?;
+        broken_detail.invocations.push(InvocationAxesResult {
+            invocation_identity: "invocation-broken".to_string(),
+            axes: ResultAxes::new(
+                EvidenceValidity::NotProven,
+                ObservedOutcome::ProcessOrProtocolFailed,
+                CompatibilityAdmission::NotAssessed,
+                SemanticSupport::NotAssessed,
+                CorrectnessMechanism::None,
+            )?,
+            limitations: Vec::new(),
+        });
+        fixtures.push((
+            "clean rollup hiding a broken instrument",
+            serde_json::to_value(broken_detail)?,
+            false,
+            SchemaAgreement::Same,
+        ));
+
+        let mut short_parse = valid_report()?;
+        short_parse.parse.files_passed = 3;
+        fixtures.push((
+            "clean parse rail with failed subjects",
+            serde_json::to_value(short_parse)?,
+            false,
+            SchemaAgreement::RustStricter,
+        ));
+
+        let mut overstated = valid_report()?;
+        overstated.admission.by_support = distribution(&[("general", 3), ("blocked", 1)]);
+        fixtures.push((
+            "general rollup over a distribution containing blocked subjects",
+            serde_json::to_value(overstated)?,
+            false,
+            SchemaAgreement::RustStricter,
+        ));
+
         let mut blank_boundary = valid_report()?;
         blank_boundary.claim_boundary = "   ".to_string();
         fixtures.push((
@@ -2938,6 +3039,81 @@ mod tests {
                 "a {weak:?} rail cannot carry a general claim across the whole denominator"
             );
         }
+        Ok(())
+    }
+
+    #[test]
+    fn an_admission_needs_valid_evidence_to_be_drawn_from() {
+        for evidence in [
+            EvidenceValidity::NotProven,
+            EvidenceValidity::Invalid,
+            EvidenceValidity::Stale,
+            EvidenceValidity::Cancelled,
+        ] {
+            let rejected = axes(
+                evidence,
+                ObservedOutcome::NotAssessed,
+                CompatibilityAdmission::Implemented,
+                SemanticSupport::NotAssessed,
+                CorrectnessMechanism::None,
+            );
+            assert_eq!(
+                rejected,
+                Err(ResultAxisViolation::AdmissionWithoutValidEvidence {
+                    admission: CompatibilityAdmission::Implemented,
+                    evidence,
+                }),
+                "unusable evidence cannot carry a compiler conclusion"
+            );
+        }
+    }
+
+    #[test]
+    fn a_clean_parse_rail_cannot_have_failed_subjects() -> Result<(), Box<dyn std::error::Error>> {
+        let mut candidate = valid_report()?;
+        candidate.parse.files_passed = 3;
+        assert_eq!(
+            candidate.validate(),
+            Err(ResultReportViolation::CleanParseRailWithFailures { passed: 3, total: 4 })
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn general_aggregate_support_must_match_its_distribution()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut candidate = valid_report()?;
+        candidate.admission.by_support = distribution(&[("general", 3), ("blocked", 1)]);
+        assert_eq!(
+            candidate.validate(),
+            Err(ResultReportViolation::AggregateSupportOverstatesDistribution {
+                general: 3,
+                denominator: 4,
+            }),
+            "a rollup cannot read general while a subject is blocked"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_clean_rollup_cannot_hide_a_broken_instrument() -> Result<(), Box<dyn std::error::Error>> {
+        let mut candidate = valid_report()?;
+        candidate.invocations.push(InvocationAxesResult {
+            invocation_identity: "invocation-broken".to_string(),
+            axes: ResultAxes::new(
+                EvidenceValidity::NotProven,
+                ObservedOutcome::ProcessOrProtocolFailed,
+                CompatibilityAdmission::NotAssessed,
+                SemanticSupport::NotAssessed,
+                CorrectnessMechanism::None,
+            )?,
+            limitations: Vec::new(),
+        });
+        assert_eq!(
+            candidate.validate(),
+            Err(ResultReportViolation::CleanAggregateOverFailingDetail),
+            "an instrument failure must not vanish under a clean rollup"
+        );
         Ok(())
     }
 

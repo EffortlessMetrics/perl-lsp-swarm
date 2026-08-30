@@ -97,6 +97,19 @@
       }
     },
     {
+      "$comment": "A clean rollup cannot sit over a detail record that observed failures or whose instrument failed; either means the run did not come back clean.",
+      "if": {
+        "properties": {"axes": {"properties": {"observation": {"const": "clean"}}, "required": ["observation"]}},
+        "required": ["axes"]
+      },
+      "then": {
+        "properties": {
+          "files": {"not": {"contains": {"type": "object", "required": ["axes"], "properties": {"axes": {"type": "object", "required": ["observation"], "properties": {"observation": {"enum": ["failures_observed", "process_or_protocol_failed"]}}}}}}},
+          "invocations": {"not": {"contains": {"type": "object", "required": ["axes"], "properties": {"axes": {"type": "object", "required": ["observation"], "properties": {"observation": {"enum": ["failures_observed", "process_or_protocol_failed"]}}}}}}}
+        }
+      }
+    },
+    {
       "$comment": "Legacy-adapted evidence stays historical. Without this a schema-only consumer would accept a v1 record promoted to a candidate or no-change transition, which the Rust validator rejects.",
       "if": {
         "properties": {"origin": {"const": "legacy_adapted"}},
@@ -165,6 +178,14 @@
           "$comment": "An instrument failure is not_proven, not a product result.",
           "if": {"properties": {"observation": {"const": "process_or_protocol_failed"}}},
           "then": {"properties": {"evidence": {"not": {"const": "valid"}}}}
+        },
+        {
+          "$comment": "An admission is a conclusion drawn from the evidence, so any admission other than not_assessed requires valid evidence.",
+          "if": {
+            "properties": {"admission": {"not": {"const": "not_assessed"}}},
+            "required": ["admission"]
+          },
+          "then": {"properties": {"evidence": {"const": "valid"}}}
         },
         {
           "$comment": "A positive support claim needs valid evidence, an observed product outcome, an admission that can carry it, and a real mechanism. A subject recorded as not observed cannot also be reported as supported.",
