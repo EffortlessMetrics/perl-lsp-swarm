@@ -6,21 +6,21 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12467 |
-| Rust-family files | 3849 |
-| Non-Rust files | 8618 |
-| Allowlisted | 6381 |
+| Total tracked files | 12486 |
+| Rust-family files | 3856 |
+| Non-Rust files | 8630 |
+| Allowlisted | 6393 |
 | Unclassified | 2237 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 494 |
-| documentation | 2812 |
+| config | 496 |
+| documentation | 2813 |
 | generated | 2 |
 | production | 348 |
-| test | 2058 |
+| test | 2067 |
 | tooling | 667 |
 | unclassified | 2237 |
 
@@ -3857,6 +3857,17 @@
 | `crates/perl-incremental-parsing/behavior_disposition.json` | tooling | `non-rust-behavior-disposition-ledger` | parser/incremental |
 | `crates/perl-incremental-parsing/benches/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-kwalitee/README.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `crates/perl-kwalitee/distribution_kwalitee_catalog.v1.toml` | config | `non-rust-distribution-kwalitee-catalog-v1` | distribution/kwalitee |
+| `crates/perl-kwalitee/distribution_kwalitee_fixtures.v1.toml` | config | `non-rust-distribution-kwalitee-fixture-contract-v1` | distribution/kwalitee |
+| `crates/perl-kwalitee/fixtures/distribution/Acme-CatalogFreeze/Changes` | test | `non-rust-distribution-kwalitee-fixture-trees` | distribution/kwalitee |
+| `crates/perl-kwalitee/fixtures/distribution/Acme-CatalogFreeze/LICENSE` | test | `non-rust-distribution-kwalitee-fixture-trees` | distribution/kwalitee |
+| `crates/perl-kwalitee/fixtures/distribution/Acme-CatalogFreeze/MANIFEST` | test | `non-rust-distribution-kwalitee-fixture-trees` | distribution/kwalitee |
+| `crates/perl-kwalitee/fixtures/distribution/Acme-CatalogFreeze/META.json` | test | `non-rust-distribution-kwalitee-fixture-trees` | distribution/kwalitee |
+| `crates/perl-kwalitee/fixtures/distribution/Acme-CatalogFreeze/META.yml` | test | `non-rust-distribution-kwalitee-fixture-trees` | distribution/kwalitee |
+| `crates/perl-kwalitee/fixtures/distribution/Acme-CatalogFreeze/Makefile.PL` | test | `non-rust-distribution-kwalitee-fixture-trees` | distribution/kwalitee |
+| `crates/perl-kwalitee/fixtures/distribution/Acme-CatalogFreeze/README` | test | `non-rust-distribution-kwalitee-fixture-trees` | distribution/kwalitee |
+| `crates/perl-kwalitee/fixtures/distribution/Acme-CatalogFreeze/lib/Acme/CatalogFreeze.pm` | test | `non-rust-perl-modules` | parser/lsp-fixtures |
+| `crates/perl-kwalitee/fixtures/distribution/Acme-CatalogFreeze/t/00-load.t` | test | `non-rust-perl-tests` | parser/lsp-fixtures |
 | `crates/perl-lexer/CLAUDE.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-lexer/LICENSE-APACHE` | documentation | `non-rust-license-files` | release/legal |
 | `crates/perl-lexer/LICENSE-MIT` | documentation | `non-rust-license-files` | release/legal |
@@ -5291,6 +5302,7 @@
 | `docs/reference/DAP_PROTOCOL_SCHEMA.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/reference/DIATAXIS_GUIDE.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/reference/DISTRIBUTED_ENGINEERING_LINEAGE.md` | documentation | `non-rust-docs-tree` | docs |
+| `docs/reference/DISTRIBUTION_KWALITEE_CATALOG.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/reference/DOCUMENTATION_GUIDE.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/reference/DOWNSTREAM_DAP_INTEGRATIONS.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/reference/EDGE_CASES.md` | documentation | `non-rust-docs-tree` | docs |
