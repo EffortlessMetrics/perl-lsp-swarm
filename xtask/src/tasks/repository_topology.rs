@@ -673,7 +673,13 @@ fn reconcile_with_manifests(topology: &Topology, manifests: &[ManifestPackage]) 
     errors
 }
 
-/// Whether this package's current owner still holds embedded workspace source.
+/// Whether this package is still built from embedded workspace source.
+///
+/// The package's own integration mode decides this, not only its owner's state.
+/// `extracting` deliberately permits both `workspace_path` and `exact_git_bridge`
+/// so a repository can migrate package by package; judging membership from the
+/// owner's state alone would demand that a package which has already crossed the
+/// bridge still be a workspace member, which is exactly what crossing it undoes.
 /// `None` when the owner or its migration state is unknown — both are reported
 /// separately, so membership is not judged on a broken reference.
 fn expects_embedded_source(
@@ -682,7 +688,13 @@ fn expects_embedded_source(
     embedded_states: &BTreeMap<&str, bool>,
 ) -> Option<bool> {
     let state = owner_states.get(package.current_owner.as_str())?;
-    embedded_states.get(state).copied()
+    let owner_holds_source = embedded_states.get(state).copied()?;
+    // An immutable mode means the consumer takes a published/pinned artifact, so
+    // the package is not workspace source regardless of what its owner still holds.
+    if IMMUTABLE_MODES.contains(&package.current_integration_mode.as_str()) {
+        return Some(false);
+    }
+    Some(owner_holds_source)
 }
 
 /// Read the root workspace members and classify each one from its own manifest.
@@ -1530,6 +1542,44 @@ metadata_authority = "workspace_inherited"
         let topology = parse(&fixture())?;
         assert_eq!(render(&topology), render(&topology));
         Ok(())
+    }
+
+    #[test]
+    fn accepts_a_bridged_package_under_an_owner_that_still_holds_source() -> TestResult {
+        // `extracting` permits both `workspace_path` and `exact_git_bridge` so a
+        // repository can migrate package by package. Judging membership from the
+        // owner's state alone would demand that a package which has already crossed
+        // the bridge still be a workspace member — the state would be a trap, the
+        // same shape as the earlier unreachable `external` and `retired` states.
+        let source = fixture()
+            .replacen(
+                "state = \"embedded\"\ndescription = \"Source lives here.\"\nlegal_integration_modes = [\"workspace_path\"]",
+                "state = \"embedded\"\ndescription = \"Source lives here.\"\nlegal_integration_modes = [\"workspace_path\", \"exact_git_bridge\"]",
+                1,
+            )
+;
+        // `beta` crosses the bridge while its owner still holds `alpha` as source.
+        let source = swap_beta_to_bridge(&source);
+        let topology = parse(&source)?;
+        let only_alpha = vec![manifests()[0].clone()];
+        validate(&topology, &only_alpha, &excludes())?;
+        Ok(())
+    }
+
+    /// Point `beta`'s integration mode at the immutable bridge, leaving `alpha` alone.
+    fn swap_beta_to_bridge(source: &str) -> String {
+        let Some(beta_at) = source.find("name = \"beta\"") else {
+            return source.to_owned();
+        };
+        let (head, tail) = source.split_at(beta_at);
+        format!(
+            "{head}{}",
+            tail.replacen(
+                "current_integration_mode = \"workspace_path\"",
+                "current_integration_mode = \"exact_git_bridge\"",
+                1,
+            )
+        )
     }
 
     #[test]
