@@ -139,7 +139,7 @@ impl<'a> Parser<'a> {
 
                             if self.peek_kind() == Some(TokenKind::Star) {
                                 // ->@*
-                                let star = self.tokens.next()?; // consume *
+                                let star = self.consume_token()?; // consume *
                                 let start = expr.location.start;
                                 let end = star.end();
 
@@ -196,7 +196,7 @@ impl<'a> Parser<'a> {
 
                             if self.peek_kind() == Some(TokenKind::Star) {
                                 // ->%*
-                                let star = self.tokens.next()?; // consume *
+                                let star = self.consume_token()?; // consume *
                                 let start = expr.location.start;
                                 let end = star.end();
 
@@ -235,7 +235,7 @@ impl<'a> Parser<'a> {
                             self.tokens.next()?; // consume $
 
                             if self.peek_kind() == Some(TokenKind::Star) {
-                                let star = self.tokens.next()?; // consume *
+                                let star = self.consume_token()?; // consume *
                                 let start = expr.location.start;
                                 let end = star.end();
 
@@ -255,7 +255,7 @@ impl<'a> Parser<'a> {
                             self.tokens.next()?; // consume &
 
                             if self.peek_kind() == Some(TokenKind::Star) {
-                                let star = self.tokens.next()?; // consume *
+                                let star = self.consume_token()?; // consume *
                                 let start = expr.location.start;
                                 let end = star.end();
 
@@ -275,7 +275,7 @@ impl<'a> Parser<'a> {
                             self.tokens.next()?; // consume first *
 
                             if self.peek_kind() == Some(TokenKind::Star) {
-                                let star = self.tokens.next()?; // consume second *
+                                let star = self.consume_token()?; // consume second *
                                 let start = expr.location.start;
                                 let end = star.end();
 
@@ -301,7 +301,7 @@ impl<'a> Parser<'a> {
                                     .is_ok_and(|t| t.kind() == TokenKind::Star)
                             {
                                 self.tokens.next()?; // consume $#
-                                let star = self.tokens.next()?; // consume *
+                                let star = self.consume_token()?; // consume *
                                 let start = expr.location.start;
                                 let end = star.end();
                                 record_postfix_layer()?;
