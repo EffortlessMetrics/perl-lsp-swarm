@@ -129,6 +129,9 @@ def validate_pending(item: dict[str, Any], disposition: str, context: str) -> No
         return
     if not isinstance(pending, dict):
         raise ValueError(f"{context}.pending must be an object for a review disposition")
+    # A settled row may name a crate as its destination, but a pending row's owner has
+    # to be something a later leaf can actually act on.
+    require_issue_reference(item["target_owner"], f"{context}.target_owner")
     unknown = sorted(set(pending) - set(PENDING_FIELDS))
     if unknown:
         raise ValueError(f"{context}.pending has unsupported fields: {','.join(unknown)}")

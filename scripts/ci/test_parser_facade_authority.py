@@ -288,6 +288,9 @@ class ParserFacadeAuthorityTests(unittest.TestCase):
     def dependency_row(self, name: str) -> dict:
         return next(row for row in self.ledger["dependencies"] if row["name"] == name)
 
+    def append_target(self, text: str) -> None:
+        self.manifest_path.write_text(self.manifest_path.read_text() + "\n" + text)
+
     def ledger_row_contexts(self, name: str, contexts: list[str]) -> None:
         self.dependency_row(name)["contexts"] = contexts
         self.write_ledger(self.ledger)
@@ -457,6 +460,62 @@ class ParserFacadeAuthorityTests(unittest.TestCase):
             check(self.root, self.ledger_path)
 
     # --- target-gating features ---------------------------------------------
+
+    def test_bench_only_target_gate_is_a_test_profile_not_a_production_boundary(self) -> None:
+        """Gating a bench is a development surface; gating a binary ships."""
+        self.append_target('[[bench]]\nname = "probe_bench"\nrequired-features = ["utf16-complete"]\n')
+        self.feature_row("utf16-complete")["isolation"] = "target_only"
+        self.write_ledger(self.ledger)
+        with self.assertRaisesRegex(
+            ValueError, "feature utf16-complete claims isolation target_only but selects test_source_only"
+        ):
+            check(self.root, self.ledger_path)
+
+    def test_bin_target_gate_remains_a_production_boundary(self) -> None:
+        """Negative control for the bench/bin split."""
+        self.append_target('[[bin]]\nname = "probe_bin"\nrequired-features = ["utf16-complete"]\n')
+        self.feature_row("utf16-complete")["isolation"] = "target_only"
+        self.ledger["targets"].append({
+            "name": "probe_bin", "kind": "bin", "required_features": ["utf16-complete"],
+            "classification": "product_composition", "disposition": "retain",
+            "owner": "#11373", "target_owner": "perl-parser",
+            "exit_condition": "fixture-only probe target.",
+        })
+        self.write_ledger(self.ledger)
+        check(self.root, self.ledger_path)
+
+    def test_review_row_target_owner_must_be_actionable(self) -> None:
+        row = next(r for r in self.ledger["features"] if r["disposition"] == "review")
+        row["target_owner"] = "the parser team"
+        self.write_ledger(self.ledger)
+        with self.assertRaisesRegex(ValueError, "target_owner must be a GitHub issue reference"):
+            check(self.root, self.ledger_path)
+
+    def test_settled_row_may_name_a_crate_as_destination(self) -> None:
+        """Negative control: crate destinations stay valid for non-pending rows."""
+        row = next(
+            r for r in self.ledger["dependencies"]
+            if r["disposition"] != "review" and r["target_owner"].startswith("#")
+        )
+        row["target_owner"] = "perl-parser-core"
+        self.write_ledger(self.ledger)
+        check(self.root, self.ledger_path)
+
+    def test_renamed_dependency_feature_edge_is_recognized(self) -> None:
+        """Feature entries name the manifest key, not the package identity."""
+        row = self.dependency_row("perl-lexer")
+        self.manifest_path.write_text(self.manifest_path.read_text().replace(
+            'perl-lexer = "1"',
+            'lexer_alias = { package = "perl-lexer", version = "1" }',
+            1,
+        ))
+        self.manifest_path.write_text(self.manifest_path.read_text().replace(
+            '"cli" = []', '"cli" = ["lexer_alias/flag"]', 1
+        ))
+        self.feature_row("cli")["isolation"] = "dependencies_only"
+        self.write_ledger(self.ledger)
+        check(self.root, self.ledger_path)
+        del row
 
     def test_feature_required_by_a_target_is_not_taxonomy(self) -> None:
         """`required-features` gates whether a binary is built at all."""

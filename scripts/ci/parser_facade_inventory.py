@@ -248,12 +248,30 @@ def feature_source_gates(
     return gates
 
 
-def target_required_features(manifest: dict[str, Any]) -> set[str]:
-    """Features that gate whether a Cargo bin/bench/example target is built at all."""
+PRODUCTION_TARGET_KINDS = {"bin"}
+
+
+def target_required_features(manifest: dict[str, Any], kinds: set[str]) -> set[str]:
+    """Features that gate whether a Cargo target of the given kinds is built at all.
+
+    A binary is a shipped deliverable, so gating one is a production boundary. A
+    bench or example is a development surface, matching how `benches/` and
+    `examples/` source is treated.
+    """
     return {
         feature
         for target in cargo_targets(manifest)
+        if target.kind in kinds
         for feature in target.required_features
+    }
+
+
+def dependency_aliases(manifest: dict[str, Any]) -> set[str]:
+    """Manifest keys for dependencies, which differ from package identity when renamed."""
+    return {
+        alias
+        for _, table in contextual_dependency_tables(manifest)
+        for alias in table
     }
 
 
@@ -270,7 +288,9 @@ def feature_isolation(manifest: dict[str, Any], crate_root: Path) -> dict[str, s
     if not isinstance(features, dict):
         raise ValueError("perl-parser manifest has no [features] table")
     declared = set(features)
-    packages = set(dependency_universe(manifest))
+    # Feature entries name the manifest key, which differs from package identity
+    # when a dependency is renamed, so both forms must resolve.
+    packages = set(dependency_universe(manifest)) | dependency_aliases(manifest)
     gated = feature_source_gates(
         crate_root, FEATURE_PRODUCTION_DIRECTORIES, skip_test_modules=True
     )
@@ -278,7 +298,10 @@ def feature_isolation(manifest: dict[str, Any], crate_root: Path) -> dict[str, s
     test_gated |= feature_source_gates(
         crate_root, FEATURE_PRODUCTION_DIRECTORIES
     ) - gated
-    target_gated = target_required_features(manifest)
+    target_gated = target_required_features(manifest, PRODUCTION_TARGET_KINDS)
+    test_gated |= target_required_features(
+        manifest, {target.kind for target in cargo_targets(manifest)} - PRODUCTION_TARGET_KINDS
+    )
 
     def closure(name: str) -> set[str]:
         """Every feature enabled by `name`, including itself.
