@@ -23,8 +23,8 @@
         "command": "PERL_LSP_UX_REQUIRE_BINARY=1 just ux-tests",
         "verification_state": "verified",
         "verification_pr": 13167,
-        "verified_sha": "65f34b9061c0aab996e7f48e0efba43186d7db96",
-        "verified_artifact_blob": "f3c571ac0c0c195ebf5c11a6d1b37480b761265c",
+        "verified_sha": "11bab6a47661ba5ad8811fea0ff58f3b6f8fa9c2",
+        "verified_artifact_blob": "5c81bf0fec3edac3492d82c00a6d694380504133",
         "unverified_reason": null,
         "replacement_tests": [
           "scenario_14_relative_include_path"
@@ -53,8 +53,8 @@
         "command": "PERL_LSP_UX_REQUIRE_BINARY=1 just ux-tests",
         "verification_state": "verified",
         "verification_pr": 13167,
-        "verified_sha": "65f34b9061c0aab996e7f48e0efba43186d7db96",
-        "verified_artifact_blob": "f3c571ac0c0c195ebf5c11a6d1b37480b761265c",
+        "verified_sha": "11bab6a47661ba5ad8811fea0ff58f3b6f8fa9c2",
+        "verified_artifact_blob": "5c81bf0fec3edac3492d82c00a6d694380504133",
         "unverified_reason": null,
         "replacement_tests": [
           "scenario_14_relative_include_path",
@@ -84,8 +84,8 @@
         "command": "PERL_LSP_UX_REQUIRE_BINARY=1 just ux-tests",
         "verification_state": "verified",
         "verification_pr": 13167,
-        "verified_sha": "65f34b9061c0aab996e7f48e0efba43186d7db96",
-        "verified_artifact_blob": "f3c571ac0c0c195ebf5c11a6d1b37480b761265c",
+        "verified_sha": "11bab6a47661ba5ad8811fea0ff58f3b6f8fa9c2",
+        "verified_artifact_blob": "5c81bf0fec3edac3492d82c00a6d694380504133",
         "unverified_reason": null,
         "replacement_tests": [
           "scenario_14_use_lib_lexical"
@@ -114,8 +114,8 @@
         "command": "PERL_LSP_UX_REQUIRE_BINARY=1 just ux-tests",
         "verification_state": "verified",
         "verification_pr": 13167,
-        "verified_sha": "65f34b9061c0aab996e7f48e0efba43186d7db96",
-        "verified_artifact_blob": "f3c571ac0c0c195ebf5c11a6d1b37480b761265c",
+        "verified_sha": "11bab6a47661ba5ad8811fea0ff58f3b6f8fa9c2",
+        "verified_artifact_blob": "5c81bf0fec3edac3492d82c00a6d694380504133",
         "unverified_reason": null,
         "replacement_tests": [
           "scenario_14_external_include_paths_unauthorized_zero_visibility"
@@ -144,8 +144,8 @@
         "command": "PERL_LSP_UX_REQUIRE_BINARY=1 just ux-tests",
         "verification_state": "verified",
         "verification_pr": 13167,
-        "verified_sha": "65f34b9061c0aab996e7f48e0efba43186d7db96",
-        "verified_artifact_blob": "f3c571ac0c0c195ebf5c11a6d1b37480b761265c",
+        "verified_sha": "11bab6a47661ba5ad8811fea0ff58f3b6f8fa9c2",
+        "verified_artifact_blob": "5c81bf0fec3edac3492d82c00a6d694380504133",
         "unverified_reason": null,
         "replacement_tests": [
           "scenario_14_no_lib_cancellation",
@@ -205,8 +205,8 @@
         "command": "PERL_LSP_UX_REQUIRE_BINARY=1 just ux-tests",
         "verification_state": "verified",
         "verification_pr": 13167,
-        "verified_sha": "65f34b9061c0aab996e7f48e0efba43186d7db96",
-        "verified_artifact_blob": "f3c571ac0c0c195ebf5c11a6d1b37480b761265c",
+        "verified_sha": "11bab6a47661ba5ad8811fea0ff58f3b6f8fa9c2",
+        "verified_artifact_blob": "5c81bf0fec3edac3492d82c00a6d694380504133",
         "unverified_reason": null,
         "replacement_tests": [
           "scenario_14_perl5lib_env"
@@ -235,8 +235,8 @@
         "command": "PERL_LSP_UX_REQUIRE_BINARY=1 just ux-tests",
         "verification_state": "verified",
         "verification_pr": 13167,
-        "verified_sha": "65f34b9061c0aab996e7f48e0efba43186d7db96",
-        "verified_artifact_blob": "f3c571ac0c0c195ebf5c11a6d1b37480b761265c",
+        "verified_sha": "11bab6a47661ba5ad8811fea0ff58f3b6f8fa9c2",
+        "verified_artifact_blob": "5c81bf0fec3edac3492d82c00a6d694380504133",
         "unverified_reason": null,
         "replacement_tests": [
           "scenario_14_nested_module_relative_include_path"
@@ -265,8 +265,8 @@
         "command": "PERL_LSP_UX_REQUIRE_BINARY=1 just ux-tests",
         "verification_state": "verified",
         "verification_pr": 13167,
-        "verified_sha": "65f34b9061c0aab996e7f48e0efba43186d7db96",
-        "verified_artifact_blob": "f3c571ac0c0c195ebf5c11a6d1b37480b761265c",
+        "verified_sha": "11bab6a47661ba5ad8811fea0ff58f3b6f8fa9c2",
+        "verified_artifact_blob": "5c81bf0fec3edac3492d82c00a6d694380504133",
         "unverified_reason": null,
         "replacement_tests": [
           "scenario_14_include_path_missing_module_consistency"
@@ -295,8 +295,8 @@
         "command": "PERL_LSP_UX_REQUIRE_BINARY=1 just ux-tests",
         "verification_state": "verified",
         "verification_pr": 13167,
-        "verified_sha": "65f34b9061c0aab996e7f48e0efba43186d7db96",
-        "verified_artifact_blob": "f3c571ac0c0c195ebf5c11a6d1b37480b761265c",
+        "verified_sha": "11bab6a47661ba5ad8811fea0ff58f3b6f8fa9c2",
+        "verified_artifact_blob": "5c81bf0fec3edac3492d82c00a6d694380504133",
         "unverified_reason": null,
         "replacement_tests": [
           "scenario_14_include_path_missing_module_completion_consistency"
@@ -325,8 +325,8 @@
         "command": "PERL_LSP_UX_REQUIRE_BINARY=1 just ux-tests",
         "verification_state": "verified",
         "verification_pr": 13167,
-        "verified_sha": "65f34b9061c0aab996e7f48e0efba43186d7db96",
-        "verified_artifact_blob": "f3c571ac0c0c195ebf5c11a6d1b37480b761265c",
+        "verified_sha": "11bab6a47661ba5ad8811fea0ff58f3b6f8fa9c2",
+        "verified_artifact_blob": "5c81bf0fec3edac3492d82c00a6d694380504133",
         "unverified_reason": null,
         "replacement_tests": [
           "scenario_14_perl5lib_completion_gating_matrix",
