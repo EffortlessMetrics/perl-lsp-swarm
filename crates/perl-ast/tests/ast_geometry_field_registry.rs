@@ -453,8 +453,26 @@ fn declared_geometry_fields() -> DeclaredFields {
 /// Remove Rust comments, leaving code and whitespace positions intact.
 ///
 /// Handles line comments, **nested** block comments (Rust permits nesting), and
-/// string literals — including raw strings — so that a `"/*"` inside a literal
-/// cannot open a comment and swallow the enum.
+/// string literals including raw strings. Literal *contents* are neutralized to
+/// spaces (newlines preserved) rather than copied through, which does two jobs
+/// at once: a `"/*"` inside a literal cannot open a comment, and a `"}"` inside
+/// one cannot count toward the enum's brace balance.
+///
+/// The second job was missing until human review found it. Preserving literal
+/// text stopped the comment vector but kept the braces, and a multiline
+/// attribute is enough to deliver one: the line filter drops only lines that
+/// *start* with `#`, so the continuation of
+///
+/// ```text
+/// #[cfg_attr(
+///     feature = "x",
+///     doc = "}"
+/// )]
+/// ```
+///
+/// survives with a live `}` in it. Reproduced against this scanner: the enum
+/// body truncated and the declared fields were lost from the denominator
+/// entirely.
 ///
 /// Raised in review after the line-comment fix: stripping only `//` left `/* */`
 /// braces counting toward the enum's brace balance. That is worse than the
@@ -536,7 +554,9 @@ fn strip_comments(source: &str) -> String {
                             }
                         }
                         Some(&other) => {
-                            out.push(other);
+                            // Neutralize, do not copy: a `}` in here would
+                            // otherwise count toward the enum's brace balance.
+                            out.push(if other == '\n' { '\n' } else { ' ' });
                             index += 1;
                         }
                     }
@@ -550,17 +570,21 @@ fn strip_comments(source: &str) -> String {
             index += 1;
             while index < chars.len() {
                 let inner = chars[index];
-                out.push(inner);
                 index += 1;
-                if inner == '\\' {
-                    if let Some(&escaped) = chars.get(index) {
-                        out.push(escaped);
-                        index += 1;
-                    }
-                    continue;
-                }
                 if inner == '"' {
+                    out.push('"');
                     break;
+                }
+                // Neutralize the contents rather than copying them. Preserving
+                // the text kept a `"/*"` from opening a comment, but it also
+                // kept the literal's braces, which then counted toward the enum
+                // boundary. Newlines are kept so line structure is unchanged.
+                out.push(if inner == '\n' { '\n' } else { ' ' });
+                if inner == '\\'
+                    && let Some(&escaped) = chars.get(index)
+                {
+                    out.push(if escaped == '\n' { '\n' } else { ' ' });
+                    index += 1;
                 }
             }
             continue;
@@ -790,6 +814,70 @@ fn compare_declared_against_registry(
          for: {miscounted:?} (as (variant, field), declared members, registered rows)\nA nested \
          field that gains a second span needs a second dotted row; without one it reaches a \
          coordinate remap unregistered while the outer field still looks covered."
+    );
+}
+
+/// A brace inside a string literal must not move the enum boundary.
+///
+/// Raised in human review, and the reported vector is a multiline attribute:
+/// the line filter drops only lines *starting* with `#`, so the continuation
+/// lines of
+///
+/// ```text
+/// #[cfg_attr(
+///     feature = "x",
+///     doc = "}"
+/// )]
+/// ```
+///
+/// survive, and the `}` inside that string counted toward the enum's brace
+/// balance. Reproduced: the body truncated at `doc = "` and `name_span` was
+/// lost from the denominator entirely.
+///
+/// The earlier string handling preserved literal contents so a `"/*"` could not
+/// open a comment. That was necessary but not sufficient — preserving the text
+/// also preserved its braces. Contents are now neutralized instead: the quotes
+/// and newlines stay so structure is unchanged, the characters between them do
+/// not.
+#[test]
+fn a_brace_inside_a_string_literal_does_not_move_the_enum_boundary() {
+    let synthetic = r####"
+        pub enum NodeKind {
+            #[cfg_attr(
+                feature = "x",
+                doc = "}"
+            )]
+            Package {
+                name: String,
+                name_span: SourceLocation,
+            },
+            #[cfg_attr(
+                feature = "y",
+                doc = r#"unbalanced } in a raw string"#
+            )]
+            Class {
+                name: String,
+                name_span: SourceLocation,
+            },
+        }
+    "####;
+
+    let scan = scan_declared_fields(synthetic);
+    assert!(scan.unknown.is_empty(), "synthetic source must classify cleanly: {:?}", scan.unknown);
+
+    let found: BTreeSet<(String, String)> =
+        scan.geometry.iter().map(|(v, f, _)| (v.clone(), f.clone())).collect();
+    let expected: BTreeSet<(String, String)> = [
+        ("Package".to_string(), "name_span".to_string()),
+        ("Class".to_string(), "name_span".to_string()),
+    ]
+    .into_iter()
+    .collect();
+
+    assert_eq!(
+        found, expected,
+        "a brace inside an ordinary or raw string literal must not truncate the enum scan; \
+         losing a field here silently shrinks the denominator the whole gate depends on"
     );
 }
 
