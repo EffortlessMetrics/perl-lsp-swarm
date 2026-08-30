@@ -142,8 +142,10 @@ fn command_line_ne_wrapper_is_not_same_line_residue() -> Result<(), String> {
 
 #[test]
 fn command_line_ne_wrapper_does_not_hide_following_residue() -> Result<(), String> {
-    let source = "-ne print 1 2;";
-    assert_same_line_residual_at(source, "2")
+    for (source, token) in [("-ne print 1 2;", "2"), ("-ne foo 1;", "foo")] {
+        assert_same_line_residual_at(source, token)?;
+    }
+    Ok(())
 }
 
 #[test]
