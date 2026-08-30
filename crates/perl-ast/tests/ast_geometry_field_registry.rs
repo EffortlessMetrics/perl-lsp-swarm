@@ -206,7 +206,25 @@ fn shape_coverage_is_an_explicit_denominator() {
 /// classified it. Reading `ast.rs` directly is what makes this independent of
 /// the observer: a new span bound as `field: _` is invisible to every other
 /// guard here, but not to this one.
-fn declared_geometry_fields() -> Vec<(String, String)> {
+/// Type identifiers that carry source offsets of their own.
+const GEOMETRY_TYPES: &[&str] = &["SourceLocation", "Token"];
+
+/// Type identifiers known to carry no source offsets.
+///
+/// `TokenKind` is here deliberately: it is a bare discriminant, unlike `Token`.
+/// `Node` is here because child locations belong to structural traversal, not
+/// to this registry.
+const NEUTRAL_TYPES: &[&str] =
+    &["Box", "GotoTargetForm", "Node", "Option", "String", "TokenKind", "Vec", "bool"];
+
+/// What the enum scan found: geometry fields, and any type it could not classify.
+struct DeclaredFields {
+    geometry: Vec<(String, String)>,
+    /// (variant, field, unrecognised type identifier)
+    unknown: Vec<(String, String, String)>,
+}
+
+fn declared_geometry_fields() -> DeclaredFields {
     const AST_SOURCE: &str = include_str!("../src/ast.rs");
 
     // Isolate `pub enum NodeKind { .. }` by brace balance.
@@ -238,6 +256,7 @@ fn declared_geometry_fields() -> Vec<(String, String)> {
         .join("\n");
 
     let mut declared = Vec::new();
+    let mut unknown = Vec::new();
     let chars: Vec<char> = cleaned.chars().collect();
     let mut index = 0usize;
 
@@ -300,21 +319,49 @@ fn declared_geometry_fields() -> Vec<(String, String)> {
             if field.is_empty() {
                 continue;
             }
-            // `Token` carries a span; `TokenKind` is a bare discriminant.
-            let carries_span = ty.contains("SourceLocation")
-                || ty.split(|c: char| !c.is_alphanumeric() && c != '_').any(|word| word == "Token");
+
+            // Classify by allowlist, not by looking for known geometry names.
+            // A denylist silently accepts anything it does not recognise — a
+            // `type Span = SourceLocation` alias would read as neutral and the
+            // field would escape. Requiring every type identifier to be known
+            // inverts that: an unrecognised name fails closed and forces a
+            // deliberate classification.
+            let mut carries_span = false;
+            for word in ty.split(|c: char| !c.is_alphanumeric() && c != '_') {
+                if word.is_empty() {
+                    continue;
+                }
+                if GEOMETRY_TYPES.contains(&word) {
+                    carries_span = true;
+                } else if !NEUTRAL_TYPES.contains(&word) {
+                    unknown.push((name.clone(), field.to_string(), word.to_string()));
+                }
+            }
             if carries_span {
                 declared.push((name.clone(), field.to_string()));
             }
         }
     }
 
-    declared
+    DeclaredFields { geometry: declared, unknown }
 }
 
 #[test]
 fn the_registry_covers_every_geometry_bearing_field_declared_in_the_enum() {
-    let declared = declared_geometry_fields();
+    let scan = declared_geometry_fields();
+
+    // Fail closed on any type the scan cannot classify. This is what closes the
+    // alias vector: `type Span = SourceLocation` would arrive here as an
+    // unrecognised identifier rather than being silently treated as neutral.
+    assert!(
+        scan.unknown.is_empty(),
+        "these NodeKind field types use identifiers this scan cannot classify: {:?}\nAdd each to \
+         GEOMETRY_TYPES (it carries source offsets) or NEUTRAL_TYPES (it does not). An alias for a \
+         span type must go in GEOMETRY_TYPES, or geometry will escape the registry through it.",
+        scan.unknown
+    );
+
+    let declared = scan.geometry;
 
     assert!(
         declared.len() >= 9,
