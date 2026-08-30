@@ -22,9 +22,10 @@
 //!    edits are visible and second-run output is byte-stable.
 
 use anyhow::{Result, bail, ensure};
+use xtask::editor_client_compat::EvidenceStage;
 use xtask::emacs_host_journeys::{
     self, DepthClass, DiagnosticCohort, EvidenceKind, ExpectationRef, HostSurface, JourneyCell,
-    RootReference,
+    ROOT_ROLE_TOKENS, RootReference,
 };
 
 fn compiled() -> Vec<JourneyCell> {
@@ -136,6 +137,115 @@ fn protocol_membership_can_never_present_host_visible_semantics() -> Result<()> 
         error.contains("requires at least one host-visible surface"),
         "unexpected rejection for protocol-only host-visible row: {error}"
     );
+    Ok(())
+}
+
+#[test]
+fn protocol_membership_rejects_host_visible_surface() -> Result<()> {
+    let mut cells = compiled();
+    let poll_cell_id = "emacs.diagnostics_pull_protocol.final_clear";
+    let position = cells
+        .iter()
+        .position(|cell| cell.cell_id == poll_cell_id)
+        .ok_or_else(|| anyhow::anyhow!("final-clear cell vanished from the registry"))?;
+    cells[position].host_surfaces.push(HostSurface::EldocHoverObservation);
+    let error = match emacs_host_journeys::validate_registry(&cells) {
+        Err(error) => error.to_string(),
+        Ok(_) => bail!("protocol-membership cell accepted a host-visible surface"),
+    };
+    ensure!(
+        error.contains("must not expose host-visible surfaces"),
+        "unexpected rejection for host-visible protocol surface: {error}"
+    );
+    Ok(())
+}
+
+#[test]
+fn claim_ceiling_must_match_registered_depth_and_evidence_kind() -> Result<()> {
+    let cells = compiled();
+    let core_position = cells
+        .iter()
+        .position(|cell| cell.depth == DepthClass::Core)
+        .ok_or_else(|| anyhow::anyhow!("core cell vanished from the registry"))?;
+    let optional_ceiling = cells
+        .iter()
+        .find(|cell| cell.depth == DepthClass::Optional)
+        .map(|cell| cell.claim_ceiling.clone())
+        .ok_or_else(|| anyhow::anyhow!("optional cell vanished from the registry"))?;
+
+    let mut cells = cells;
+    cells[core_position].claim_ceiling =
+        "registration only: plausible but unregistered ceiling".to_string();
+    let error = match emacs_host_journeys::validate_registry(&cells) {
+        Err(error) => error.to_string(),
+        Ok(_) => bail!("core cell accepted an unregistered claim ceiling"),
+    };
+    ensure!(
+        error.contains("not the registered ceiling for its depth/evidence kind"),
+        "unexpected rejection for an unregistered claim ceiling: {error}"
+    );
+
+    let mut cells = compiled();
+    let core_position = cells
+        .iter()
+        .position(|cell| cell.depth == DepthClass::Core)
+        .ok_or_else(|| anyhow::anyhow!("core cell vanished from the registry"))?;
+    cells[core_position].claim_ceiling = optional_ceiling;
+    let error = match emacs_host_journeys::validate_registry(&cells) {
+        Err(error) => error.to_string(),
+        Ok(_) => bail!("core cell accepted an optional claim ceiling"),
+    };
+    ensure!(
+        error.contains("not the registered ceiling for its depth/evidence kind"),
+        "unexpected rejection for an optional claim ceiling on a core cell: {error}"
+    );
+    Ok(())
+}
+
+#[test]
+fn public_artifact_evidence_is_not_admitted() -> Result<()> {
+    let mut cells = compiled();
+    cells[0].max_stage = EvidenceStage::PublicArtifact;
+    let error = match emacs_host_journeys::validate_registry(&cells) {
+        Err(error) => error.to_string(),
+        Ok(_) => bail!("cell accepted public-artifact evidence"),
+    };
+    ensure!(
+        error.contains("may not claim public-artifact evidence"),
+        "unexpected rejection for public-artifact evidence: {error}"
+    );
+    Ok(())
+}
+
+#[test]
+fn root_roles_are_closed_and_registered_roles_are_accepted() -> Result<()> {
+    let mut cells = compiled();
+    let position = cells
+        .iter()
+        .position(|cell| cell.root_reference.is_some())
+        .ok_or_else(|| anyhow::anyhow!("root-sensitive cell vanished from the registry"))?;
+    cells[position].root_reference =
+        Some(RootReference { role_token: "root_11366.stok_project".to_string() });
+    let error = match emacs_host_journeys::validate_registry(&cells) {
+        Err(error) => error.to_string(),
+        Ok(_) => bail!("misspelled root role passed validation"),
+    };
+    ensure!(
+        error.contains("unregistered root_11366 role stok_project"),
+        "unexpected rejection for a misspelled root role: {error}"
+    );
+
+    ensure!(ROOT_ROLE_TOKENS.len() == 2, "root role vocabulary changed unexpectedly");
+    for role in ROOT_ROLE_TOKENS {
+        let mut cells = compiled();
+        let position = cells
+            .iter()
+            .position(|cell| cell.root_reference.is_some())
+            .ok_or_else(|| anyhow::anyhow!("root-sensitive cell vanished from the registry"))?;
+        cells[position].root_reference =
+            Some(RootReference { role_token: format!("root_11366.{role}") });
+        emacs_host_journeys::validate_registry(&cells)?;
+    }
     Ok(())
 }
 

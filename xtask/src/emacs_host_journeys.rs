@@ -127,6 +127,11 @@ pub const GENERATION_DIMENSIONS: &[&str] = &[
     "session.generation",
 ];
 
+/// The #11366 root-fixture roles this manifest cites. #11366 remains the
+/// fixture authority; this closed list only keeps a cited role from being a
+/// silent typo or an unowned invention.
+pub const ROOT_ROLE_TOKENS: &[&str] = &["stock_project", "stock_discovery"];
+
 /// Coordinate applicability grammar: newline domains and Unicode position
 /// discriminators a cell exercises. An adjacent-coordinate control rides on
 /// [`CONTROL_VOCABULARY`].
@@ -361,6 +366,16 @@ const OPTIONAL_CLAIM_CEILING: &str = "registration only: binds one #9413 documen
                                       depth cell, additive by construction; its existence \
                                       never strengthens the bounded core profile";
 
+fn claim_ceiling_for(depth: DepthClass, evidence_kind: EvidenceKind) -> &'static str {
+    match depth {
+        DepthClass::Optional => OPTIONAL_CLAIM_CEILING,
+        DepthClass::Core if evidence_kind == EvidenceKind::ProtocolMembershipOnly => {
+            PROTOCOL_CLAIM_CEILING
+        }
+        DepthClass::Core => CORE_CLAIM_CEILING,
+    }
+}
+
 /// Declaration shape for one row; [`registry`] fills the shared bindings
 /// every row carries so rows stay reviewable as diffs.
 struct CellSpec<'a> {
@@ -392,13 +407,7 @@ impl<'a> CellSpec<'a> {
             EvidenceKind::ProtocolMembershipOnly => &["protocol_membership_not_host_visible"],
             EvidenceKind::HostVisibleObservation => &["capability_not_advertised"],
         };
-        let ceiling = match self.depth {
-            DepthClass::Optional => OPTIONAL_CLAIM_CEILING,
-            DepthClass::Core if self.evidence_kind == EvidenceKind::ProtocolMembershipOnly => {
-                PROTOCOL_CLAIM_CEILING
-            }
-            DepthClass::Core => CORE_CLAIM_CEILING,
-        };
+        let ceiling = claim_ceiling_for(self.depth, self.evidence_kind);
         JourneyCell {
             cell_id: self.cell_id.to_string(),
             cell_version: 1,
@@ -901,8 +910,10 @@ pub fn registry() -> Vec<JourneyCell> {
 /// registry-level coverage laws (baseline classes covered by core cells only,
 /// optional cells confined to optional classes).
 ///
-/// The advertised fail-closed command also resolves the landed subject
-/// authority from disk before emitting the summary: a deleted, malformed, or
+/// The advertised fail-closed command resolves the landed subject authority
+/// from disk and certifies the exact governed client denominator before
+/// emitting the summary: cohort counts are meaningful only when that
+/// denominator is complete and current. A deleted, malformed, or
 /// sparse-checkout-omitted `.ci/editor-clients/emacs-subjects.v1.json` must
 /// fail here, not only in a contract test.
 pub fn validate_compiled_registry() -> Result<RegistrySummary> {
@@ -916,7 +927,11 @@ pub fn validate_compiled_registry() -> Result<RegistrySummary> {
 /// fail-closed subject-authority path is executable-proof without mutating the
 /// real checkout.
 pub fn validate_compiled_registry_against(repo_root: &Path) -> Result<RegistrySummary> {
-    crate::emacs_subject_manifest::SubjectManifest::load(repo_root)?;
+    let manifest = crate::emacs_subject_manifest::SubjectManifest::load(repo_root)?;
+    if let Err(failure) = crate::emacs_subject_fan_in::validate_subject_lane_denominator(&manifest)
+    {
+        bail!("emacs subject denominator does not certify the governed client set: {failure}");
+    }
     for fixture in SUBJECT_FIXTURE_SUBSTRATE {
         let path = repo_root.join(".ci/editor-clients").join(format!("{fixture}.json"));
         ensure!(
@@ -934,11 +949,6 @@ pub fn validate_registry(cells: &[JourneyCell]) -> Result<RegistrySummary> {
     ensure!(!cells.is_empty(), "a journey registry requires at least one cell");
     let classes = registered_classes();
     let mut seen_ids = BTreeSet::new();
-    for cell in cells {
-        validate_cell(cell, &classes)?;
-        ensure!(seen_ids.insert(cell.cell_id.as_str()), "duplicate cell id: {}", cell.cell_id);
-    }
-
     // Depth containment: a core-coverage cell can never sit in an optional
     // class and an optional-depth cell can never cover a baseline class.
     for cell in cells {
@@ -950,6 +960,10 @@ pub fn validate_registry(cells: &[JourneyCell]) -> Result<RegistrySummary> {
             cell.depth,
             cell.journey_class
         );
+    }
+    for cell in cells {
+        validate_cell(cell, &classes)?;
+        ensure!(seen_ids.insert(cell.cell_id.as_str()), "duplicate cell id: {}", cell.cell_id);
     }
 
     // Baseline coverage: every baseline class owns at least one core cell,
@@ -1032,6 +1046,11 @@ fn validate_cell(cell: &JourneyCell, classes: &[&str]) -> Result<()> {
             ensure!(
                 pull_surface,
                 "protocol-membership cell {} must expose DiagnosticsPollProtocol",
+                cell.cell_id
+            );
+            ensure!(
+                cell.host_surfaces.iter().all(|surface| !surface.is_host_visible()),
+                "protocol-membership cell {} must not expose host-visible surfaces",
                 cell.cell_id
             );
             ensure!(
@@ -1143,6 +1162,11 @@ fn validate_cell(cell: &JourneyCell, classes: &[&str]) -> Result<()> {
             !role.contains('/') && !role.contains('\\') && is_reason_token(role),
             "root role token must be a stable reason token with no path structure: {role}"
         );
+        ensure!(
+            ROOT_ROLE_TOKENS.contains(&role),
+            "cell {} cites unregistered root_11366 role {role}",
+            cell.cell_id
+        );
     }
 
     // Dimensions, controls, coordinates: bounded vocabularies, non-empty.
@@ -1235,8 +1259,13 @@ fn validate_cell(cell: &JourneyCell, classes: &[&str]) -> Result<()> {
         cell.cell_id
     );
     ensure!(
-        !cell.claim_ceiling.trim().is_empty(),
-        "cell {} must record a claim ceiling",
+        cell.claim_ceiling == claim_ceiling_for(cell.depth, cell.evidence_kind),
+        "cell {} claim ceiling is not the registered ceiling for its depth/evidence kind",
+        cell.cell_id
+    );
+    ensure!(
+        !matches!(cell.max_stage, EvidenceStage::PublicArtifact),
+        "cell {} may not claim public-artifact evidence in {MANIFEST_SCHEMA_VERSION}",
         cell.cell_id
     );
     let Some(producer) = cell.producer_mapping.strip_prefix(PRODUCER_MAPPING_PREFIX) else {
