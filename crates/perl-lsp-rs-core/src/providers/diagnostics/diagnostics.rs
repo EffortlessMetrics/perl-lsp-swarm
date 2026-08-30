@@ -30,10 +30,10 @@ use super::lints::printf_format::check_printf_format;
 use super::lints::role_conflicts::check_role_conflicts;
 use super::lints::security::check_security;
 use super::lints::source_filter::check_source_filter_risk;
-use super::lints::strict_warnings::check_strict_warnings;
+use super::lints::strict_warnings::check_strict_warnings_with_pragma_map;
 use super::lints::unreachable_code::check_unreachable_code;
 use super::lints::unused_imports::check_unused_imports;
-use super::lints::version_compat::check_version_compat;
+use super::lints::version_compat::check_version_compat_with_pragma_map;
 use super::parse_errors::{parse_error_code, parse_error_severity};
 use super::scope::scope_issues_to_diagnostics_with_semantics;
 
@@ -528,7 +528,7 @@ impl DiagnosticsProvider {
             diagnostics.extend(heredoc_diags);
 
             // Run lint checks
-            check_strict_warnings(ast, analysis.pragma_map(), &mut diagnostics);
+            check_strict_warnings_with_pragma_map(ast, analysis.pragma_map(), &mut diagnostics);
             check_deprecated_syntax(ast, &mut diagnostics);
             let symbol_table = analysis.symbol_table();
             check_common_mistakes(ast, symbol_table, &mut diagnostics);
@@ -564,7 +564,7 @@ impl DiagnosticsProvider {
             check_pod_coverage(ast, source, &mut diagnostics);
 
             // Version compatibility lint (PL900)
-            check_version_compat(ast, analysis.pragma_map(), &mut diagnostics);
+            check_version_compat_with_pragma_map(ast, analysis.pragma_map(), &mut diagnostics);
 
             // Unreachable code detection (PL406)
             check_unreachable_code(ast, &mut diagnostics);

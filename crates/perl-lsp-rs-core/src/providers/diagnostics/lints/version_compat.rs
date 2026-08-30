@@ -124,9 +124,21 @@ const SMARTMATCH_FEATURE_GATE_VERSION: PerlVersion = PerlVersion::new(5, 42);
 ///
 /// Walks the AST looking for uses of version-gated features and emits
 /// `PL900` warnings when the declared version does not support them.
-/// `pragma_map` is the generation-owned pragma timeline (#7286); see
-/// `check_strict_warnings` for why it is passed in rather than rebuilt.
-pub fn check_version_compat(
+/// Public entry point: derives the pragma timeline from `node` itself. See
+/// `check_strict_warnings` for why the map-taking form is not public.
+pub fn check_version_compat(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
+    check_version_compat_with_pragma_map(
+        node,
+        &perl_pragma::PragmaTracker::build(node),
+        diagnostics,
+    );
+}
+
+/// Crate-internal variant taking a caller-supplied pragma timeline (#7286).
+///
+/// Deliberately not public, for the reason given on
+/// `check_strict_warnings_with_pragma_map`.
+pub(crate) fn check_version_compat_with_pragma_map(
     node: &Node,
     pragma_map: &[(std::ops::Range<usize>, PragmaState)],
     diagnostics: &mut Vec<Diagnostic>,
@@ -876,7 +888,7 @@ mod tests {
     fn version_compat_diags(source: &str) -> Vec<Diagnostic> {
         let ast = must(Parser::new(source).parse());
         let mut diags = Vec::new();
-        check_version_compat(&ast, &perl_pragma::PragmaTracker::build(&ast), &mut diags);
+        check_version_compat(&ast, &mut diags);
         diags
     }
 
