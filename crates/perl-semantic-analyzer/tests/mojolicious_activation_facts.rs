@@ -369,6 +369,36 @@ fn a_versioned_suppressed_import_owns_no_role_end_to_end() {
 }
 
 #[test]
+fn a_spaced_dot_argument_is_an_import_option_not_a_version_component() {
+    // `9.34.0` and `9.34 .0` reach the adapter as one identical token
+    // stream — module name `Mojolicious::Lite 9.34` plus tokens `.` and `0`.
+    // Only the statement's own source separates a three-part version from a
+    // two-part version followed by a separate dot-expression argument, and an
+    // unreviewed argument must refuse the role rather than vanish into the
+    // version requirement.
+    for code in ["use Mojolicious::Lite 9.34 .0;\n", "use Mojolicious::Lite 9.34 . 0;\n"] {
+        let facts = lite_facts(code, GENERATION);
+        assert_eq!(roles(&facts), vec![None], "{code}");
+        assert!(
+            matches!(
+                facts[0].outcome,
+                MojoliciousActivationOutcome::UnsupportedVersionOrProfile { .. }
+            ),
+            "{code}"
+        );
+    }
+}
+
+#[test]
+fn a_contiguous_multipart_version_requirement_owns_the_lite_role_end_to_end() {
+    // Negative control for the test above: the same token stream, spelled
+    // without the space, is one satisfied three-part version and no import
+    // argument at all. Only the spelling separates the two outcomes.
+    let facts = lite_facts("use Mojolicious::Lite 9.34.0;\n", GENERATION);
+    assert_eq!(roles(&facts), vec![Some(MojoliciousRole::LiteApplication)]);
+}
+
+#[test]
 fn the_two_profiles_never_answer_for_each_others_source() {
     // Containment: the Lite extractor sees no Mojo::Base site, and the
     // Mojo::Base extractor sees no Lite site.

@@ -302,6 +302,51 @@ pub enum MojoliciousLiteImportSelection {
     },
 }
 
+/// The version requirement one `use Mojolicious::Lite ...;` statement carries,
+/// recorded by where each part of it was recovered from.
+///
+/// The parser folds only the first numeric component of a `use MODULE VERSION`
+/// requirement into the module name and emits any continuation as ordinary
+/// argument tokens. `use Mojolicious::Lite 9.34.1;` and
+/// `use Mojolicious::Lite 9.34 .1;` therefore arrive identically — module name
+/// `Mojolicious::Lite 9.34`, tokens `.` and `1` — even though the first is one
+/// three-part version and the second is a two-part version followed by a
+/// separate import argument. Nothing in the token stream separates them, so
+/// the statement's own source text has to.
+///
+/// Both fields come from the extractor, which holds that source text:
+/// `folded_into_module` is the prefix the parser moved into the module name,
+/// and `as_spelled` is the complete contiguous requirement as actually
+/// written. A continuation token is a version component only while
+/// `as_spelled` accounts for it; anything beyond that is an import argument
+/// and is classified as one.
+///
+/// Both fields absent means the statement carries no numeric requirement — a
+/// v-string requirement reaches the argument list whole instead.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct MojoliciousLiteVersionRequirement {
+    /// The requirement prefix the parser folded into the module name.
+    pub folded_into_module: Option<String>,
+    /// The complete contiguous requirement as spelled in the source statement.
+    pub as_spelled: Option<String>,
+}
+
+impl MojoliciousLiteVersionRequirement {
+    /// A statement carrying no parser-folded numeric version requirement.
+    #[must_use]
+    pub fn none() -> Self {
+        Self::default()
+    }
+
+    /// The requirement recovered from a statement, given the prefix the parser
+    /// folded into the module name and the complete contiguous spelling.
+    #[must_use]
+    pub fn new(folded_into_module: Option<String>, as_spelled: Option<String>) -> Self {
+        Self { folded_into_module, as_spelled }
+    }
+}
+
 /// Import evidence extracted from the activating `use Mojolicious::Lite ...;`
 /// argument list, in parser token form.
 #[non_exhaustive]
@@ -334,7 +379,7 @@ pub struct MojoliciousLiteImportEvidence {
 /// normalized into a profile.
 #[must_use]
 pub fn parse_mojolicious_lite_import_args(args: &[String]) -> MojoliciousLiteImportEvidence {
-    mojolicious_lite_import_evidence(args, false, None)
+    mojolicious_lite_import_evidence(args, false, &MojoliciousLiteVersionRequirement::none())
 }
 
 /// Build Lite import evidence from parser argument tokens plus the source-level
@@ -348,19 +393,18 @@ pub fn parse_mojolicious_lite_import_args(args: &[String]) -> MojoliciousLiteImp
 ///
 /// A leading v-string (`use Mojolicious::Lite v9.34;`) is a version
 /// requirement, not an import option: Perl still calls `import` with no
-/// arguments, so it does not widen the reviewed profile. The numeric spelling
-/// (`use Mojolicious::Lite 9.34;`) never reaches here — the parser folds it
-/// into the module name instead.
+/// arguments, so it does not widen the reviewed profile. The parser keeps a
+/// v-string whole, so it arrives as a single token. The numeric spelling
+/// (`use Mojolicious::Lite 9.34;`) never reaches here as a token at all — the
+/// parser folds its first component into the module name — and `version`
+/// carries both that folded prefix and the statement as actually spelled.
 #[must_use]
 pub fn mojolicious_lite_import_evidence(
     args: &[String],
     explicit_empty_import: bool,
-    module_version_requirement: Option<&str>,
+    version: &MojoliciousLiteVersionRequirement,
 ) -> MojoliciousLiteImportEvidence {
-    let mut evidence = MojoliciousLiteImportEvidence {
-        source_version_requirement: module_version_requirement.map(normalize_version_requirement),
-        ..MojoliciousLiteImportEvidence::default()
-    };
+    let mut evidence = MojoliciousLiteImportEvidence::default();
     let mut tokens = normalize_import_tokens(args);
     // A v-string requirement reaches the argument list rather than the module
     // name; consume it before the import-option scan.
@@ -369,23 +413,30 @@ pub fn mojolicious_lite_import_evidence(
     {
         evidence.source_version_requirement = Some(normalize_version_requirement(first));
         tokens.remove(0);
-    }
-    // The parser folds only the FIRST numeric component into the module name,
-    // so `use Mojolicious::Lite 9.34.1;` leaves `.` and `1` behind. Left
-    // alone they would both widen the profile and — worse — leave the
-    // recorded requirement truncated to `9.34`, which a lower installed
-    // version could then satisfy. Rejoin the continuation onto the
-    // requirement instead of treating it as import options.
-    if let Some(required) = evidence.source_version_requirement.as_mut() {
-        while tokens.len() >= 2
-            && tokens[0] == "."
-            && !tokens[1].is_empty()
-            && tokens[1].chars().all(|c| c.is_ascii_digit() || c == '_')
-        {
-            required.push('.');
-            required.push_str(&tokens[1]);
-            tokens.drain(0..2);
+    } else if let Some(folded) = version.folded_into_module.as_deref() {
+        let mut required = normalize_version_requirement(folded);
+        // The parser folds only the FIRST numeric component into the module
+        // name and emits the rest as ordinary tokens, so `9.34.1` and
+        // `9.34 .1` arrive token-identical: a version continuation and a
+        // separate dot-expression import argument are indistinguishable here.
+        // Extend the requirement only as far as the statement as spelled
+        // actually accounts for, and leave every token it does not account
+        // for to the import-option scan, where an unreviewed argument refuses
+        // the exact role rather than being absorbed into the version.
+        if let Some(spelled) = version.as_spelled.as_deref().map(normalize_version_requirement) {
+            while tokens.len() >= 2 && tokens[0] == "." && is_version_component(&tokens[1]) {
+                let extended = format!("{required}.{}", tokens[1]);
+                // A bare prefix is not enough: `9.34.1` must not be read out
+                // of a spelled `9.34.12`. The spelling has to either end at
+                // the extension or continue at a component boundary.
+                if !accounts_for(&spelled, &extended) {
+                    break;
+                }
+                required = extended;
+                tokens.drain(0..2);
+            }
         }
+        evidence.source_version_requirement = Some(required);
     }
     // `use Mojolicious::Lite VERSION ();` reaches here as the parenthesis
     // tokens; the source-level check is authoritative either way.
@@ -455,6 +506,28 @@ fn dynamic_token_reason(token: &str) -> Option<String> {
 /// Strip a `v` prefix so numeric and v-string requirements compare alike.
 fn normalize_version_requirement(required: &str) -> String {
     required.strip_prefix('v').unwrap_or(required).to_string()
+}
+
+/// Whether a version requirement as spelled accounts for `extension` in full.
+///
+/// True when the spelling ends exactly at `extension`, or continues past it at
+/// a component boundary. A bare prefix test would read `9.34.1` out of a
+/// spelled `9.34.12`.
+fn accounts_for(spelled: &str, extension: &str) -> bool {
+    spelled == extension
+        || spelled.strip_prefix(extension).is_some_and(|rest| rest.starts_with('.'))
+}
+
+/// Whether one token is a numeric version component (`34`, `1_2`, `1.2`).
+///
+/// The parser can emit a multi-component continuation as one token
+/// (`9.34.1.2` leaves `.` and `1.2`), so a dot inside the component is
+/// ordinary. This is only a shape test: whether the component genuinely
+/// belongs to the version is decided against the statement as spelled.
+fn is_version_component(token: &str) -> bool {
+    !token.is_empty()
+        && token.starts_with(|c: char| c.is_ascii_digit())
+        && token.chars().all(|c| c.is_ascii_digit() || c == '_' || c == '.')
 }
 
 /// Whether one leading import token is a v-string version requirement.
@@ -1179,6 +1252,13 @@ mod tests {
     fn parse(args: &[&str]) -> MojoliciousLiteImportEvidence {
         let owned: Vec<String> = args.iter().map(ToString::to_string).collect();
         parse_mojolicious_lite_import_args(&owned)
+    }
+
+    /// A numeric requirement whose parser-folded prefix is `folded` and whose
+    /// contiguous source spelling is `spelled`. The two differ exactly when a
+    /// dot-expression import argument follows a shorter version.
+    fn version(folded: &str, spelled: &str) -> MojoliciousLiteVersionRequirement {
+        MojoliciousLiteVersionRequirement::new(Some(folded.to_string()), Some(spelled.to_string()))
     }
 
     #[test]
@@ -2077,7 +2157,8 @@ mod tests {
     fn a_vstring_requirement_is_captured_not_discarded() {
         assert_eq!(parse(&["v9.34"]).source_version_requirement, Some("9.34".to_string()));
         assert_eq!(
-            mojolicious_lite_import_evidence(&[], false, Some("9.34")).source_version_requirement,
+            mojolicious_lite_import_evidence(&[], false, &version("9.34", "9.34"))
+                .source_version_requirement,
             Some("9.34".to_string())
         );
     }
@@ -2204,7 +2285,7 @@ mod tests {
         let evidence = mojolicious_lite_import_evidence(
             &[".".to_string(), "9".to_string()],
             false,
-            Some("9.34"),
+            &version("9.34", "9.34.9"),
         );
         assert_eq!(evidence.source_version_requirement, Some("9.34.9".to_string()));
         assert!(
@@ -2226,7 +2307,7 @@ mod tests {
         let evidence = mojolicious_lite_import_evidence(
             &[".".to_string(), "0".to_string()],
             false,
-            Some("9.34"),
+            &version("9.34", "9.34.0"),
         );
         assert_eq!(evidence.source_version_requirement, Some("9.34.0".to_string()));
         let facts = mojolicious_lite_activation_facts(
@@ -2243,10 +2324,96 @@ mod tests {
         let evidence = mojolicious_lite_import_evidence(
             &[".".to_string(), "signatures".to_string()],
             false,
-            Some("9.34"),
+            &version("9.34", "9.34"),
         );
         assert_eq!(evidence.source_version_requirement, Some("9.34".to_string()));
         assert_eq!(evidence.unmodeled_options, vec![".".to_string(), "signatures".to_string()]);
+    }
+
+    #[test]
+    fn a_spaced_dot_argument_is_not_absorbed_into_the_version() {
+        // `use Mojolicious::Lite 9.34 .0;` reaches this function with exactly
+        // the same tokens as `use Mojolicious::Lite 9.34.0;`, but spells only
+        // `9.34`. The trailing `.0` is a separate import argument, and an
+        // unreviewed argument must refuse the exact role rather than
+        // disappear into the version requirement.
+        let evidence = mojolicious_lite_import_evidence(
+            &[".".to_string(), "0".to_string()],
+            false,
+            &version("9.34", "9.34"),
+        );
+        assert_eq!(
+            evidence.source_version_requirement,
+            Some("9.34".to_string()),
+            "the version is what the statement spells, not what the tokens allow"
+        );
+        assert_eq!(
+            evidence.unmodeled_options,
+            vec![".".to_string(), "0".to_string()],
+            "the spaced argument stays an unreviewed import option"
+        );
+
+        let facts = mojolicious_lite_activation_facts(
+            &detect_mojolicious_lite(&lite_input("gen-1")),
+            &lite_anchor("main", "gen-1"),
+            &evidence,
+        );
+        assert_eq!(facts.role(), None, "an unreviewed import argument refuses the exact role");
+    }
+
+    #[test]
+    fn a_contiguous_multipart_version_is_still_joined() {
+        // Negative control for the test above: the identical token stream,
+        // spelled contiguously, is one three-part version with no import
+        // argument at all, and still earns the role. The requirement it spells
+        // is satisfied, so only the spelling separates the two outcomes.
+        let evidence = mojolicious_lite_import_evidence(
+            &[".".to_string(), "0".to_string()],
+            false,
+            &version("9.34", "9.34.0"),
+        );
+        assert_eq!(evidence.source_version_requirement, Some("9.34.0".to_string()));
+        assert!(evidence.unmodeled_options.is_empty());
+
+        let facts = mojolicious_lite_activation_facts(
+            &detect_mojolicious_lite(&lite_input("gen-1")),
+            &lite_anchor("main", "gen-1"),
+            &evidence,
+        );
+        assert_eq!(facts.role(), Some(MojoliciousRole::LiteApplication));
+    }
+
+    #[test]
+    fn an_unspelled_version_consumes_no_continuation() {
+        // A statement whose own source interval could not be read proves
+        // nothing about its spelling, so no continuation is joined: the
+        // tokens stay import options and the role is refused. Truncating the
+        // requirement to `9.34` is harmless precisely because of that.
+        let evidence = mojolicious_lite_import_evidence(
+            &[".".to_string(), "1".to_string()],
+            false,
+            &MojoliciousLiteVersionRequirement::new(Some("9.34".to_string()), None),
+        );
+        assert_eq!(evidence.source_version_requirement, Some("9.34".to_string()));
+        assert_eq!(evidence.unmodeled_options, vec![".".to_string(), "1".to_string()]);
+
+        let facts = mojolicious_lite_activation_facts(
+            &detect_mojolicious_lite(&lite_input("gen-1")),
+            &lite_anchor("main", "gen-1"),
+            &evidence,
+        );
+        assert_eq!(facts.role(), None, "an unreadable statement never earns an exact role");
+    }
+
+    #[test]
+    fn a_component_is_not_read_out_of_a_longer_spelled_one() {
+        // Containment for the boundary rule: a spelled `9.34.12` must not
+        // account for an extension of `9.34.1`. The tokens cannot actually
+        // disagree with the spelling this way, so this pins the rule rather
+        // than a reachable parse.
+        assert!(accounts_for("9.34.1", "9.34.1"), "an exact spelling accounts for itself");
+        assert!(accounts_for("9.34.1.2", "9.34.1"), "and so does one continuing at a boundary");
+        assert!(!accounts_for("9.34.12", "9.34.1"), "but a longer component is a different one");
     }
 
     #[test]
@@ -2270,7 +2437,8 @@ mod tests {
     fn an_explicit_empty_import_list_suppresses_the_role() {
         // `use Mojolicious::Lite ();` loads the module but calls no `import`,
         // so the Lite DSL is never installed.
-        let evidence = mojolicious_lite_import_evidence(&[], true, None);
+        let evidence =
+            mojolicious_lite_import_evidence(&[], true, &MojoliciousLiteVersionRequirement::none());
         assert_eq!(evidence.selection, MojoliciousLiteImportSelection::ImportSuppressed);
         let facts = mojolicious_lite_activation_facts(
             &detect_mojolicious_lite(&lite_input("gen-1")),
@@ -2289,7 +2457,12 @@ mod tests {
         // Negative control for the suppression fix: the ordinary import must
         // keep its role.
         assert_eq!(
-            mojolicious_lite_import_evidence(&[], false, None).selection,
+            mojolicious_lite_import_evidence(
+                &[],
+                false,
+                &MojoliciousLiteVersionRequirement::none()
+            )
+            .selection,
             MojoliciousLiteImportSelection::Default
         );
     }

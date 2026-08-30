@@ -27,7 +27,8 @@
 use crate::ast::{Node, NodeKind};
 use perl_semantic_facts::framework_adapters::mojolicious::MOJOLICIOUS_LITE_MODULE;
 use perl_semantic_facts::framework_adapters::mojolicious::{
-    MojoliciousLiteImportEvidence, MojoliciousSiteAnchor, mojolicious_lite_import_evidence,
+    MojoliciousLiteImportEvidence, MojoliciousLiteVersionRequirement, MojoliciousSiteAnchor,
+    mojolicious_lite_import_evidence,
 };
 use perl_semantic_facts::{AnchorId, FileId, SourceGeneration};
 
@@ -139,6 +140,47 @@ fn module_version_requirement(module: &str) -> Option<&str> {
         .filter(|rest| !rest.is_empty())
 }
 
+/// The complete contiguous version requirement the statement actually spells,
+/// read from its own source interval.
+///
+/// The parser folds only the requirement's first numeric component into the
+/// module name, so `use Mojolicious::Lite 9.34.1;` and
+/// `use Mojolicious::Lite 9.34 .1;` are indistinguishable by token. Reading
+/// the contiguous run of version characters from the source separates them:
+/// the first spells `9.34.1`, the second only `9.34`, leaving `.1` an ordinary
+/// import argument. An unlocatable interval yields `None`, which consumes no
+/// continuation at all rather than fabricating one.
+fn spelled_version_requirement(source: &str, span_start: u32, span_end: u32) -> Option<String> {
+    let start = span_start as usize;
+    let end = (span_end as usize).min(source.len());
+    if start >= end {
+        return None;
+    }
+    let statement = source.get(start..end)?;
+    let module_at = statement.find(MOJOLICIOUS_LITE_MODULE)?;
+    let rest = statement[module_at + MOJOLICIOUS_LITE_MODULE.len()..].trim_start();
+    let body = rest.strip_prefix('v').unwrap_or(rest);
+    if !body.starts_with(|c: char| c.is_ascii_digit()) {
+        return None;
+    }
+    let taken = body.chars().take_while(|c| c.is_ascii_digit() || *c == '.' || *c == '_').count();
+    Some(rest[..(rest.len() - body.len()) + taken].to_string())
+}
+
+/// The version requirement one activation site carries, joining the prefix the
+/// parser folded into the module name with the statement as actually spelled.
+fn site_version_requirement(
+    module: &str,
+    source: &str,
+    span_start: u32,
+    span_end: u32,
+) -> MojoliciousLiteVersionRequirement {
+    MojoliciousLiteVersionRequirement::new(
+        module_version_requirement(module).map(str::to_string),
+        spelled_version_requirement(source, span_start, span_end),
+    )
+}
+
 fn walk_activation_sites(
     node: &Node,
     source: &str,
@@ -163,7 +205,7 @@ fn walk_activation_sites(
                 evidence: mojolicious_lite_import_evidence(
                     args,
                     has_explicit_empty_import(source, span_start, span_end),
-                    module_version_requirement(module),
+                    &site_version_requirement(module, source, span_start, span_end),
                 ),
             });
         }
