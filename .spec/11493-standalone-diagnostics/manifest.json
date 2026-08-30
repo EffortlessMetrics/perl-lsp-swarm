@@ -796,6 +796,36 @@
     },
     {
       "action_ids": [
+        "start_documented_new_session",
+        "inspect_exact_receipt"
+      ],
+      "claim_consequence": "command_available_after_new_session",
+      "classification": "product",
+      "owner": "#11493",
+      "reason_id": "rollback_committed_path_persisted_new_session_required",
+      "redaction_policy": "bounded_typed_fields_only",
+      "required_limitations": [
+        "fresh_process_visibility_unproven"
+      ],
+      "retryability": "not_retryable",
+      "selector": {
+        "disposition": [
+          "rollback_committed"
+        ],
+        "path_persistence": [
+          "persisted"
+        ],
+        "process_startup": [
+          "unproven",
+          "not_applicable"
+        ]
+      },
+      "side_effect_disposition": "current_restored",
+      "summary_template_id": "t_rollback_restored_new_session",
+      "terminality": "terminal_success_pending_user_step"
+    },
+    {
+      "action_ids": [
         "inspect_exact_receipt"
       ],
       "claim_consequence": "command_availability_unproven",
@@ -896,6 +926,36 @@
       "side_effect_disposition": "current_preserved_known_good",
       "summary_template_id": "t_no_selection_change",
       "terminality": "terminal_success"
+    },
+    {
+      "action_ids": [
+        "start_documented_new_session",
+        "inspect_exact_receipt"
+      ],
+      "claim_consequence": "command_available_after_new_session",
+      "classification": "product",
+      "owner": "#11493",
+      "reason_id": "sel_unchanged_path_persisted_new_session_required",
+      "redaction_policy": "bounded_typed_fields_only",
+      "required_limitations": [
+        "fresh_process_visibility_unproven"
+      ],
+      "retryability": "not_retryable",
+      "selector": {
+        "disposition": [
+          "selection_unchanged"
+        ],
+        "path_persistence": [
+          "persisted"
+        ],
+        "process_startup": [
+          "unproven",
+          "not_applicable"
+        ]
+      },
+      "side_effect_disposition": "current_preserved_known_good",
+      "summary_template_id": "t_no_selection_change_new_session",
+      "terminality": "terminal_success_pending_user_step"
     },
     {
       "action_ids": [
@@ -1230,8 +1290,16 @@
       "text": "The {operation} was rolled back and the previous installation is current again."
     },
     {
+      "template_id": "t_rollback_restored_new_session",
+      "text": "The {operation} was rolled back and the previous installation is current again. Start a new shell session before running the restored command."
+    },
+    {
       "template_id": "t_no_selection_change",
       "text": "The {operation} made no selection change."
+    },
+    {
+      "template_id": "t_no_selection_change_new_session",
+      "text": "The {operation} made no selection change. Start a new shell session before running the installed command."
     },
     {
       "template_id": "t_candidate_awaiting_publication",

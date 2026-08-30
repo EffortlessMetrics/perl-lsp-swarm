@@ -115,8 +115,8 @@ fn action_ids(projection: &Value) -> Vec<String> {
 fn committed_registry_validates() -> TestResult {
     let stats = diagnostics::validate_manifest_file(&repo_root())?;
     assert_eq!(stats.actions, 11);
-    assert_eq!(stats.summary_templates, 20);
-    assert_eq!(stats.primary_reasons, 30);
+    assert_eq!(stats.summary_templates, 22);
+    assert_eq!(stats.primary_reasons, 32);
     assert_eq!(stats.additional_reasons, 4);
     assert_eq!(stats.deferred_reason_domains, 7);
     // The closed cross-product of the typed transition contract.
@@ -147,7 +147,7 @@ fn every_typed_combination_projects() -> TestResult {
 fn list_and_explain_cover_the_registry() -> TestResult {
     let manifest = diagnostics::load_manifest(&repo_root())?;
     let ids = diagnostics::list_reason_ids(&manifest);
-    assert_eq!(ids.len(), 34);
+    assert_eq!(ids.len(), 36);
     assert!(ids.iter().any(|id| id == "sel_committed_path_persisted_new_session_required"));
     let explained = diagnostics::explain_reason(&manifest, "cleanup_incomplete_residue_retained")
         .ok_or("missing reason from explain")?;
@@ -1992,5 +1992,71 @@ fn a_committed_startup_failure_still_names_the_installed_command() -> TestResult
         "committed startup failure lost its wording: {text}"
     );
     assert!(action_ids(&projection).iter().any(|id| id == "run_explicit_repair"));
+    Ok(())
+}
+
+#[test]
+fn a_required_new_session_is_always_offered_as_an_action() -> TestResult {
+    // The rule existed for `selection_committed` only. `rollback_committed`
+    // and `selection_unchanged` reach the same PATH consequence through their
+    // broad fallback rows, which reported `terminal_success` and offered only
+    // receipt inspection — so the projection told the user a new session was
+    // required in `consequences.path` while its terminality said there was
+    // nothing left to do and no action named the session.
+    //
+    // Swept across all three dispositions rather than pinned for the two that
+    // were broken, so a fourth disposition reaching this consequence cannot
+    // repeat it.
+    let manifest = diagnostics::load_manifest(&repo_root())?;
+    let mut checked = 0usize;
+    for combination in diagnostics::all_combinations() {
+        let projection = diagnostics::project_combination(&manifest, &combination, None)?;
+        // The property is about the *claim*, not the PATH dimension alone.
+        // Writing it against `consequences.path` was too strong and produced
+        // two false positives worth recording: a contradictory packet, whose
+        // support claim is withheld precisely so nothing acts on its PATH
+        // report, and a failed attempt with a preserved prior installation,
+        // where "start a new session to use the command" would name the wrong
+        // command. Neither is a defect. The honest invariant is narrower and
+        // stronger: whenever the projection *promises* the command becomes
+        // available after a new session, it must say to start one.
+        if projection.get("claim_ceiling").and_then(Value::as_str)
+            != Some("command_available_after_new_session")
+        {
+            continue;
+        }
+        checked += 1;
+        let offered = action_ids(&projection);
+        assert!(
+            offered.iter().any(|id| id == "start_documented_new_session"),
+            "{combination:?} says a new session is required but offers {offered:?}"
+        );
+        assert_eq!(
+            projection.get("primary_terminality").and_then(Value::as_str),
+            Some("terminal_success_pending_user_step"),
+            "{combination:?} requires a user step, so its primary terminality must say so"
+        );
+    }
+    assert!(checked > 0, "no combination exercised the new-session consequence");
+    Ok(())
+}
+
+#[test]
+fn an_observed_fresh_process_never_asks_for_a_new_session() -> TestResult {
+    // Control in the opposite direction: the fix must not have widened the
+    // new-session claim onto outcomes that already proved visibility.
+    let manifest = diagnostics::load_manifest(&repo_root())?;
+    for combination in diagnostics::all_combinations() {
+        let projection = diagnostics::project_combination(&manifest, &combination, None)?;
+        if projection.pointer("/consequences/path").and_then(Value::as_str)
+            != Some("persisted_and_visible")
+        {
+            continue;
+        }
+        assert!(
+            !action_ids(&projection).iter().any(|id| id == "start_documented_new_session"),
+            "{combination:?} already observed a fresh process and must not ask for a new session"
+        );
+    }
     Ok(())
 }
