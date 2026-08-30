@@ -159,6 +159,7 @@ pub struct Census {
     by_name: BTreeMap<String, Vec<usize>>,
     ambiguous: BTreeSet<String>,
     methods: BTreeSet<String>,
+    unparsable: Vec<(String, String)>,
 }
 
 impl Census {
@@ -170,10 +171,21 @@ impl Census {
     pub fn from_sources(sources: &[(String, String)]) -> Self {
         let mut funcs: Vec<FunctionRecord> = Vec::new();
         let mut methods: BTreeSet<String> = BTreeSet::new();
+        let mut unparsable: Vec<(String, String)> = Vec::new();
+        let mut test_only_modules: BTreeSet<String> = BTreeSet::new();
+
         for (path, text) in sources {
-            let Ok(parsed) = syn::parse_file(text) else {
-                continue;
+            let parsed = match syn::parse_file(text) {
+                Ok(parsed) => parsed,
+                Err(error) => {
+                    // A source this census cannot read is a shrunken
+                    // denominator, not an absent one. Recording it lets the
+                    // checker fail closed instead of passing on a partial view.
+                    unparsable.push((path.clone(), error.to_string()));
+                    continue;
+                }
             };
+            collect_test_only_modules(&parsed, &mut test_only_modules);
             let mut collector = FnCollector { file: path.clone(), found: Vec::new() };
             collector.visit_file(&parsed);
             funcs.extend(collector.found);
@@ -181,6 +193,12 @@ impl Census {
             let mut literals = MethodLiteralCollector { found: &mut methods };
             literals.visit_file(&parsed);
         }
+
+        // A file reached only through a `#[cfg(test)] mod name;` declaration is
+        // test-only even though it parses as an ordinary module of its own.
+        // Keeping it would let a test helper's name suppress or redirect a real
+        // production edge.
+        funcs.retain(|record| !is_test_only_file(&record.file, &test_only_modules));
         funcs.sort_by(|left, right| (&left.file, &left.name).cmp(&(&right.file, &right.name)));
 
         let mut by_name: BTreeMap<String, Vec<usize>> = BTreeMap::new();
@@ -193,7 +211,7 @@ impl Census {
             .map(|(name, _)| name.clone())
             .collect();
 
-        Self { funcs, by_name, ambiguous, methods }
+        Self { funcs, by_name, ambiguous, methods, unparsable }
     }
 
     /// Build a census by reading the allowlisted crates under `workspace_root`.
@@ -239,12 +257,48 @@ impl Census {
     }
 
     /// Resolve an exact `(file, name)` citation.
+    ///
+    /// Returns `None` when the pair matches more than one definition. One file
+    /// can hold both a `&self` method and a free function of the same name —
+    /// `command_exists` does — and silently binding a row to whichever came
+    /// first would let it validate against, and derive exposure from, the wrong
+    /// definition.
     pub fn resolve(&self, file: &str, name: &str) -> Option<usize> {
-        self.by_name
+        let matches: Vec<usize> = self
+            .by_name
             .get(name)?
             .iter()
             .copied()
-            .find(|index| self.funcs.get(*index).is_some_and(|record| record.file == file))
+            .filter(|index| self.funcs.get(*index).is_some_and(|record| record.file == file))
+            .collect();
+        match matches.as_slice() {
+            [only] => Some(*only),
+            _ => None,
+        }
+    }
+
+    /// How many definitions a `(file, name)` citation matches.
+    pub fn citation_arity(&self, file: &str, name: &str) -> usize {
+        self.by_name
+            .get(name)
+            .map(|indices| {
+                indices
+                    .iter()
+                    .filter(|index| {
+                        self.funcs.get(**index).is_some_and(|record| record.file == file)
+                    })
+                    .count()
+            })
+            .unwrap_or(0)
+    }
+
+    /// Sources the census could not parse, as `(path, parse error)`.
+    ///
+    /// Never empty-and-ignored: [`super::ledger_errors`] turns each entry into a
+    /// finding, so a file that becomes unreadable shrinks the denominator
+    /// loudly rather than silently.
+    pub fn unparsable_sources(&self) -> &[(String, String)] {
+        &self.unparsable
     }
 
     /// Protocol method names appearing as string literals in scanned source.
@@ -469,7 +523,10 @@ fn collect_rust_sources(
     workspace_root: &Path,
     out: &mut Vec<(String, String)>,
 ) -> Result<(), CensusError> {
-    for entry in walkdir::WalkDir::new(dir).into_iter().filter_map(Result::ok) {
+    for entry in walkdir::WalkDir::new(dir) {
+        let entry = entry.map_err(|error| CensusError {
+            message: format!("failed to walk {}: {error}", dir.display()),
+        })?;
         let path = entry.path();
         if !path.is_file() || path.extension().is_none_or(|ext| ext != "rs") {
             continue;
@@ -702,6 +759,13 @@ struct MethodLiteralCollector<'a> {
 }
 
 impl<'ast> Visit<'ast> for MethodLiteralCollector<'_> {
+    fn visit_item_mod(&mut self, node: &'ast syn::ItemMod) {
+        if is_cfg_test(&node.attrs) {
+            return;
+        }
+        syn::visit::visit_item_mod(self, node);
+    }
+
     fn visit_lit_str(&mut self, node: &'ast syn::LitStr) {
         let value = node.value();
         if looks_like_protocol_method(&value) {
@@ -723,4 +787,28 @@ pub fn looks_like_protocol_method(value: &str) -> bool {
             && segment.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
     };
     segment_ok(head) && segment_ok(tail)
+}
+
+/// Collect names declared as `#[cfg(test)] mod name;` without a body.
+fn collect_test_only_modules(file: &syn::File, out: &mut BTreeSet<String>) {
+    for item in &file.items {
+        if let syn::Item::Mod(item_mod) = item
+            && item_mod.content.is_none()
+            && is_cfg_test(&item_mod.attrs)
+        {
+            out.insert(item_mod.ident.to_string());
+        }
+    }
+}
+
+/// Whether a file is reached only through a `#[cfg(test)] mod name;` declaration.
+fn is_test_only_file(file: &str, test_only_modules: &BTreeSet<String>) -> bool {
+    let Some(stem) = file.rsplit('/').next().and_then(|name| name.strip_suffix(".rs")) else {
+        return false;
+    };
+    if stem == "mod" {
+        // `foo/mod.rs` is named by its parent directory.
+        return file.rsplit('/').nth(1).is_some_and(|parent| test_only_modules.contains(parent));
+    }
+    test_only_modules.contains(stem)
 }

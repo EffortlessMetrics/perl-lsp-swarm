@@ -263,6 +263,96 @@ fn colliding_names_are_not_claimed_to_be_dropped_edges() {
 }
 
 // ---------------------------------------------------------------------------
+// Fail-closed admission
+// ---------------------------------------------------------------------------
+
+#[test]
+fn an_unparsable_source_is_reported_rather_than_silently_dropped() {
+    // A source the census cannot read shrinks the denominator. Skipping it
+    // quietly would let the ledger pass on a partial view of the tree.
+    let mut sources = indirect_process_sources();
+    sources.push((
+        "crates/perl-lsp-rs/src/broken.rs".to_string(),
+        "pub fn unreadable( { this is not rust".to_string(),
+    ));
+    let census = Census::from_sources(&sources);
+
+    assert_eq!(census.unparsable_sources().len(), 1, "the unreadable file must be recorded");
+
+    let errors = ledger_errors_with_roots(&[baseline_row()], &census, &synthetic_roots());
+    assert_reports(&errors, "instrument failure");
+    assert_reports(&errors, "crates/perl-lsp-rs/src/broken.rs");
+}
+
+#[test]
+fn an_ambiguous_citation_is_rejected() {
+    // One file can hold a `&self` method and a free function of the same name,
+    // as `command_exists` does. Binding a row to whichever came first would let
+    // it derive exposure from the wrong definition.
+    let sources = vec![(
+        SYNTHETIC_ROOT_FILE.to_string(),
+        r#"
+        impl Server { pub fn handle_initialize(&self) { probe(); } }
+        impl Server { pub fn probe(&self) {} }
+        pub fn probe() { let _ = std::process::Command::new("perl").output(); }
+        "#
+        .to_string(),
+    )];
+    let census = Census::from_sources(&sources);
+
+    assert_eq!(census.citation_arity(SYNTHETIC_ROOT_FILE, "probe"), 2);
+    assert!(
+        census.resolve(SYNTHETIC_ROOT_FILE, "probe").is_none(),
+        "an ambiguous citation must not bind arbitrarily"
+    );
+
+    let row =
+        InitOperationRow { operation_id: "synthetic.probe", function: "probe", ..baseline_row() };
+    let errors = ledger_errors_with_roots(&[row], &census, &synthetic_roots());
+    assert_reports(&errors, "ambiguous citation");
+}
+
+#[test]
+fn an_empty_ledger_is_rejected_structurally() {
+    let census = Census::from_sources(&indirect_process_sources());
+    let errors = ledger_errors_with_roots(&[], &census, &synthetic_roots());
+    assert_reports(&errors, "the ledger is empty");
+}
+
+#[test]
+fn a_file_declared_only_under_cfg_test_is_excluded() {
+    // `#[cfg(test)] mod helpers;` pulls in an external file that parses as an
+    // ordinary module. Its names must not suppress or redirect production edges.
+    let sources = vec![
+        (
+            SYNTHETIC_ROOT_FILE.to_string(),
+            r#"
+            #[cfg(test)]
+            mod helpers;
+
+            impl Server { pub fn handle_initialize(&self) {} }
+            "#
+            .to_string(),
+        ),
+        (
+            "crates/perl-lsp-rs/src/helpers.rs".to_string(),
+            r#"
+            pub fn spawn_for_tests() {
+                let _ = std::process::Command::new("perl").output();
+            }
+            "#
+            .to_string(),
+        ),
+    ];
+    let census = Census::from_sources(&sources);
+
+    assert!(
+        census.resolve("crates/perl-lsp-rs/src/helpers.rs", "spawn_for_tests").is_none(),
+        "a file declared only under #[cfg(test)] must not enter the production census"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Side effects are derived, not trusted
 // ---------------------------------------------------------------------------
 

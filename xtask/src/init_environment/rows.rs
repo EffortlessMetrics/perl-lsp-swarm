@@ -233,7 +233,7 @@ pub fn ledger_rows() -> Vec<InitOperationRow> {
                           or OS fallbacks, and its absence is reported once per session",
             side_effects: &[
                 "emits window/logMessage Info on fallback discovery",
-                "emits window/showMessage Error once per session when absent",
+                "emits window/showMessage Error once per process when absent",
             ],
             declared_exposure: &[Exposure::Filesystem, Exposure::PathLookup, Exposure::EnvRead],
             triggers: &[Trigger::Initialize],
@@ -252,7 +252,8 @@ pub fn ledger_rows() -> Vec<InitOperationRow> {
             target_owner: OWNER_ENVIRONMENT,
             proof_family: "initialize_interpreter_discovery",
             memoization: "calls the uncached find_perl_interpreter even though a cached variant \
-                          exists",
+                          exists; the not-found warning is gated by a module-static Once, so it \
+                          fires once per process, not once per session as its doc comment says",
             owns_exposure: true,
         },
         // The two `detect_tool` call sites at capabilities.rs:746-747 share one

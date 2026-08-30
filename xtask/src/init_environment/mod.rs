@@ -276,6 +276,22 @@ pub fn ledger_errors_with_roots(
 ) -> Vec<String> {
     let mut errors = Vec::new();
 
+    // An unreadable source shrinks the denominator. Report it rather than
+    // validating the ledger against a partial view of the tree.
+    for (path, parse_error) in census.unparsable_sources() {
+        errors.push(format!(
+            "instrument failure: {path} could not be parsed, so the denominator is incomplete: \
+             {parse_error}"
+        ));
+    }
+
+    if rows.is_empty() {
+        errors.push(
+            "the ledger is empty; an initialize path always has operations to account for"
+                .to_string(),
+        );
+    }
+
     errors.extend(structural_errors(rows));
     errors.extend(citation_errors(rows, census));
     errors.extend(side_effect_errors(rows, census));
@@ -348,6 +364,17 @@ fn citation_errors(rows: &[InitOperationRow], census: &Census) -> Vec<String> {
     let mut errors = Vec::new();
     for row in rows {
         if census.resolve(row.file, row.function).is_some() {
+            continue;
+        }
+        if census.citation_arity(row.file, row.function) > 1 {
+            errors.push(format!(
+                "ambiguous citation in row {}: `{}` has {} definitions in {}, so the row cannot \
+                 bind to one",
+                row.operation_id,
+                row.function,
+                census.citation_arity(row.file, row.function),
+                row.file
+            ));
             continue;
         }
         let files = census.files_for(row.function);
@@ -620,6 +647,7 @@ pub fn render_json(rows: &[InitOperationRow]) -> String {
                 "target_owner": row.target_owner,
                 "proof_family": row.proof_family,
                 "memoization": row.memoization,
+                "owns_exposure": row.owns_exposure,
             })
         })
         .collect();
