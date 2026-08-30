@@ -106,7 +106,14 @@ fn initialize_reports_configuration_done_and_evaluate_for_hovers() {
         body.get("supportsEvaluateForHovers").and_then(|v| v.as_bool()).unwrap_or(false);
 
     assert!(configuration_done, "supportsConfigurationDoneRequest must be true");
-    assert!(evaluate_for_hovers, "supportsEvaluateForHovers must be true");
+    // #9573: hover is deliberately advertised false. There is no pure
+    // selected-frame inspection path, so promising hover would route editor
+    // hover text into the raw perl5db evaluator. This assertion was inverted
+    // (not deleted) so the dispatcher regression still pins the wire value.
+    assert!(
+        !evaluate_for_hovers,
+        "supportsEvaluateForHovers must be false until #9573's pure inspection path lands"
+    );
 }
 
 /// Mirrors `dispatcher::tests::test_initialize_emits_initialized_event`: a

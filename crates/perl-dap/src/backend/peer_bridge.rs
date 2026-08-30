@@ -495,6 +495,16 @@ impl DapPeerBridge {
     }
 
     fn handle_evaluate(&mut self, args: Option<&Value>) -> super::BackendResult<Value> {
+        // #9573: `capabilities_body` advertises `supportsEvaluateForHovers` from
+        // the gated negotiation, which is false. Refuse hover before delegating
+        // to the peer backend so the advertised floor is actually enforced.
+        if crate::backend::capabilities::is_hover_evaluate_context(
+            args.and_then(|a| a.get("context")).and_then(Value::as_str),
+        ) {
+            return Err(super::BackendError::Unsupported(
+                crate::backend::capabilities::HOVER_UNSUPPORTED_MESSAGE.to_string(),
+            ));
+        }
         let expression = args
             .and_then(|a| a.get("expression"))
             .and_then(Value::as_str)

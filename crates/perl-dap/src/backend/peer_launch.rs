@@ -963,6 +963,21 @@ impl MirrorPeerBridge {
     }
 
     fn handle_evaluate(&mut self, request_seq: i64, args: Option<&Value>) -> DapMessage {
+        // #9573: this mode advertises `supportsEvaluateForHovers: false`
+        // (`static_mirror_capabilities`). Refuse hover before reaching the peer
+        // so the advertised floor and the actual behaviour agree, and so hover
+        // text never reaches an external debugger's evaluator.
+        if crate::backend::capabilities::is_hover_evaluate_context(
+            args.and_then(|a| a.get("context")).and_then(Value::as_str),
+        ) {
+            return self.response(
+                request_seq,
+                "evaluate",
+                false,
+                None,
+                Some(crate::backend::capabilities::HOVER_UNSUPPORTED_MESSAGE.to_string()),
+            );
+        }
         let Some(backend) = self.backend.as_mut() else {
             return self.error(request_seq, "evaluate", BackendError::NotConnected);
         };
