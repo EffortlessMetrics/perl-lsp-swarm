@@ -32,8 +32,6 @@ FORBIDDEN_DOC_PHRASES = (
 )
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
-RUST_STRING_RE = re.compile(r'"([A-Za-z][A-Za-z0-9]*)"')
-
 # The one executable request authority (#9527). Rows in this table expand
 # into both the typed inventory and the `dispatch_request` match arms, so a
 # row is production routing rather than a parallel list describing it.
@@ -43,42 +41,116 @@ REQUEST_TABLE_ROW_RE = re.compile(
     r'"(?P<command>[A-Za-z][A-Za-z0-9._/-]*)"\s*=>\s*'
     r"(?P<handler>[a-z_][a-z0-9_]*)\s*\(\s*(?:arguments\s*)?\)\s*,"
 )
-# A hand-written request arm anywhere in the dispatch source would be a
-# second executable authority the table cannot see.
-STRAY_DISPATCH_ARM_RE = re.compile(r'"[A-Za-z][A-Za-z0-9]*"\s*=>\s*self\s*\.\s*handle_')
+# Any string-literal match arm outside the table would be a second executable
+# authority. This is a breadth net over the rest of the file; the exclusivity
+# proof itself is structural — see `validate_generated_dispatch`.
+STRAY_MATCH_ARM_RE = re.compile(r'"(?P<name>[^"\n]*)"\s*(?:if\b[^=\n]*?)?=>')
 REQUEST_CLASSES = {"standard", "extension"}
 
+MACRO_DEFINITION_RE = re.compile(r"\bmacro_rules\s*!\s*dap_request_table\b")
+DISPATCH_FN_RE = re.compile(r"\bfn\s+dispatch_request\b")
+# Constructs that could introduce a route inside the generated dispatch body.
+# The body is a fixed, tiny shape, so this is an allow-list check rather than
+# a hunt for known-bad spellings: anything that can branch, return early, or
+# name a wire string is rejected outright.
+FORBIDDEN_DISPATCH_BODY_KEYWORDS = ("if", "else", "return", "while", "loop", "for")
 
-def strip_rust_comments(text: str) -> str:
-    """Remove Rust line and block comments, preserving string literals.
 
-    Comment and string content must never contribute request identities, so
-    the inventory is derived only from executable tokens.
+STRING_CONTENT_MASK = "\x01"
+
+
+def _raw_string_end(text: str, index: int) -> tuple[int, int] | None:
+    """If a raw string starts at `index`, return its (open_end, close_start).
+
+    Handles `r"..."` and `r#*"..."#*`. Raw strings have no escapes, so `//`
+    or `"` inside one must not be read as code.
     """
-    out: list[str] = []
+    if text[index] != "r":
+        return None
+    cursor = index + 1
+    hashes = 0
+    while cursor < len(text) and text[cursor] == "#":
+        hashes += 1
+        cursor += 1
+    if cursor >= len(text) or text[cursor] != '"':
+        return None
+    open_end = cursor + 1
+    terminator = '"' + "#" * hashes
+    close = text.find(terminator, open_end)
+    if close == -1:
+        raise AuthorityError("unterminated raw string in the DAP dispatch source")
+    return open_end, close
+
+
+def scan_rust_source(text: str) -> tuple[str, str]:
+    """Return `(stripped, masked)` views of Rust source, equal in length.
+
+    `stripped` has comments blanked but string contents intact, so wire names
+    stay readable. `masked` additionally replaces every string's *contents*
+    with a sentinel, so a brace, an arrow, or a nested quote inside a string
+    can never be read as code. Both views keep the original offsets of the
+    text they retain, so a match found in one can be sliced out of the other.
+    """
+    stripped: list[str] = []
+    masked: list[str] = []
     index = 0
     length = len(text)
+
+    def emit(chunk: str, mask: str | None = None) -> None:
+        stripped.append(chunk)
+        masked.append(chunk if mask is None else mask)
+
     while index < length:
         char = text[index]
+
+        raw = _raw_string_end(text, index) if char == "r" else None
+        if raw is not None:
+            open_end, close = raw
+            hashes = open_end - index - 2
+            emit(text[index:open_end])
+            emit(
+                text[open_end:close],
+                "".join(
+                    "\n" if c == "\n" else STRING_CONTENT_MASK for c in text[open_end:close]
+                ),
+            )
+            terminator_end = close + 1 + hashes
+            emit(text[close:terminator_end])
+            index = terminator_end
+            continue
+
         if char == '"':
-            out.append(char)
+            emit(char)
             index += 1
+            content_start = index
             while index < length:
                 current = text[index]
-                out.append(current)
-                index += 1
-                if current == "\\" and index < length:
-                    out.append(text[index])
-                    index += 1
-                elif current == '"':
+                if current == "\\" and index + 1 < length:
+                    index += 2
+                    continue
+                if current == '"':
                     break
+                index += 1
+            content = text[content_start:index]
+            emit(
+                content,
+                "".join("\n" if c == "\n" else STRING_CONTENT_MASK for c in content),
+            )
+            if index < length:
+                emit(text[index])
+                index += 1
             continue
+
         if text.startswith("//", index):
             end = text.find("\n", index)
-            index = length if end == -1 else end
+            end = length if end == -1 else end
+            emit(" " * (end - index))
+            index = end
             continue
+
         if text.startswith("/*", index):
             depth = 1
+            start = index
             index += 2
             while index < length and depth:
                 if text.startswith("/*", index):
@@ -89,36 +161,116 @@ def strip_rust_comments(text: str) -> str:
                     index += 2
                 else:
                     index += 1
-            out.append(" ")
+            comment = text[start:index]
+            # Preserve newlines so reported line numbers stay accurate.
+            emit("".join("\n" if c == "\n" else " " for c in comment))
             continue
-        out.append(char)
+
+        emit(char)
         index += 1
-    return "".join(out)
+
+    return "".join(stripped), "".join(masked)
 
 
-def _balanced_block(text: str, open_index: int) -> str:
-    """Return the body of the brace block whose `{` is at `open_index`."""
+def strip_rust_comments(text: str) -> str:
+    """Comment-free view of Rust source with string contents intact."""
+    return scan_rust_source(text)[0]
+
+
+def _balanced(masked: str, open_index: int, opener: str = "{", closer: str = "}") -> int:
+    """Return the index of the delimiter closing the one at `open_index`.
+
+    `masked` must be the string-masked view, so a delimiter inside a comment
+    or a string literal cannot unbalance the scan.
+    """
     depth = 0
-    for index in range(open_index, len(text)):
-        char = text[index]
-        if char == "{":
+    for index in range(open_index, len(masked)):
+        char = masked[index]
+        if char == opener:
             depth += 1
-        elif char == "}":
+        elif char == closer:
             depth -= 1
             if depth == 0:
-                return text[open_index + 1 : index]
-    raise AuthorityError("dap_request_table! invocation is not brace-balanced")
+                return index
+    raise AuthorityError(f"unbalanced {opener!r} in the DAP dispatch source")
+
+
+def _balanced_block(masked: str, open_index: int) -> int:
+    return _balanced(masked, open_index)
+
+
+def validate_generated_dispatch(text: str, masked: str) -> None:
+    """Prove the request table is the only syntax that can define routing.
+
+    A detector that recognises particular arm spellings can always be spelled
+    around — a braced arm, a match guard, a helper return, or a pre-match
+    `if command == "…"` are all routes with no common shape. So instead of
+    enumerating bad shapes, this pins the structure: `dispatch_request` must
+    be defined exactly once, only inside the `dap_request_table!` macro
+    definition, and its body must contain nothing capable of routing beyond
+    the row repetition and the unknown-command fallback.
+    """
+    definitions = list(MACRO_DEFINITION_RE.finditer(masked))
+    if len(definitions) != 1:
+        raise AuthorityError(
+            f"found {len(definitions)} dap_request_table macro definitions; "
+            "exactly one may define the dispatch body"
+        )
+    macro_open = masked.index("{", definitions[0].end())
+    macro_close = _balanced(masked, macro_open)
+
+    functions = list(DISPATCH_FN_RE.finditer(masked))
+    if len(functions) != 1:
+        raise AuthorityError(
+            f"found {len(functions)} dispatch_request definitions; the request "
+            "table must be the only syntax that defines the dispatch body"
+        )
+    function = functions[0]
+    if not macro_open < function.start() < macro_close:
+        raise AuthorityError(
+            "dispatch_request is defined outside the dap_request_table macro; "
+            "routing must be generated from the table, not written by hand"
+        )
+
+    params_open = masked.index("(", function.end())
+    params_close = _balanced(masked, params_open, "(", ")")
+    body_open = masked.index("{", params_close)
+    body_close = _balanced(masked, body_open)
+    body = masked[body_open + 1 : body_close]
+
+    # Exactly two arrows: the `$command` row repetition and the `_` fallback.
+    arrows = body.count("=>")
+    if arrows != 2:
+        raise AuthorityError(
+            f"generated dispatch body has {arrows} match arms; expected exactly "
+            "the row repetition and the unknown-command fallback"
+        )
+    if len(re.findall(r"\bmatch\b", body)) != 1:
+        raise AuthorityError(
+            "generated dispatch body must contain exactly one match on the command"
+        )
+    for keyword in FORBIDDEN_DISPATCH_BODY_KEYWORDS:
+        if re.search(rf"\b{keyword}\b", body):
+            raise AuthorityError(
+                f"generated dispatch body contains {keyword!r}; a route must not "
+                "be reachable by branching around the request table"
+            )
+    if '"' in body:
+        raise AuthorityError(
+            "generated dispatch body contains a string literal; wire names may "
+            "only come from request-table rows"
+        )
 
 
 def parse_request_table(source: str) -> list[dict[str, str]]:
     """Parse the executable request table into deterministic rows.
 
     Fails closed on a missing, duplicated, malformed, or partially parsed
-    table, and on any hand-written dispatch arm outside it.
+    table, and on any request route outside it.
     """
-    text = strip_rust_comments(source)
+    text, masked = scan_rust_source(source)
 
-    invocations = list(REQUEST_TABLE_INVOCATION_RE.finditer(text))
+    invocations = list(REQUEST_TABLE_INVOCATION_RE.finditer(masked))
     if not invocations:
         raise AuthorityError(
             "cannot locate the executable dap_request_table! invocation; "
@@ -130,15 +282,28 @@ def parse_request_table(source: str) -> list[dict[str, str]]:
             "exactly one executable request authority may exist"
         )
 
-    stray = STRAY_DISPATCH_ARM_RE.search(text)
-    if stray is not None:
-        line = text.count("\n", 0, stray.start()) + 1
-        raise AuthorityError(
-            f"hand-written request dispatch arm at {DISPATCH_PATH.as_posix()}:{line}; "
-            "every routed request must be a dap_request_table! row"
-        )
+    validate_generated_dispatch(text, masked)
 
-    body = _balanced_block(text, invocations[0].end() - 1)
+    open_index = invocations[0].end() - 1
+    close_index = _balanced_block(masked, open_index)
+    body = text[open_index + 1 : close_index]
+
+    # No string-literal match arm may exist outside the table. Scanning the
+    # masked view means an arm spelled inside a string literal is not code
+    # and cannot raise here, while a real arm in any Rust shape does.
+    outside_masked = (
+        masked[:open_index]
+        + "".join("\n" if c == "\n" else " " for c in masked[open_index : close_index + 1])
+        + masked[close_index + 1 :]
+    )
+    stray = STRAY_MATCH_ARM_RE.search(outside_masked)
+    if stray is not None:
+        line = outside_masked.count("\n", 0, stray.start()) + 1
+        name = text[stray.start("name") : stray.end("name")]
+        raise AuthorityError(
+            f"request route outside the table at {DISPATCH_PATH.as_posix()}:{line}: "
+            f"{name!r}; every routed request must be a dap_request_table! row"
+        )
 
     rows: list[dict[str, str]] = []
     consumed = 0

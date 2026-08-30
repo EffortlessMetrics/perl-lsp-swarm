@@ -230,6 +230,40 @@ class DapProtocolAuthorityTests(unittest.TestCase):
         kind = "standard" if command in standard else "extension"
         return f'    {kind} "{command}" => handle_{handler}(arguments),'
 
+    # The macro definition the gate structurally validates. Fixtures carry it
+    # verbatim so a test exercises the same exclusivity proof production does.
+    MACRO_DEFINITION = """macro_rules! dap_request_table {
+    ( $( $class:ident $command:literal => $handler:ident $arity:tt ),* $(,)? ) => {
+        impl DebugAdapter {
+            pub(super) fn dispatch_request(
+                &mut self,
+                request_seq: i64,
+                command: &str,
+                arguments: Option<Value>,
+            ) -> DapMessage {
+                let seq = self.next_seq();
+
+                match command {
+                    $(
+                        $command => dap_dispatch_call!(
+                            self, $handler, seq, request_seq, arguments, $arity
+                        ),
+                    )*
+                    _ => DapMessage::Response {
+                        seq,
+                        request_seq,
+                        success: false,
+                        command: command.to_string(),
+                        body: None,
+                        message: Some(Self::unknown_command_message(command)),
+                    },
+                }
+            }
+        }
+    };
+}
+"""
+
     @classmethod
     def _render_table(
         cls,
@@ -237,9 +271,11 @@ class DapProtocolAuthorityTests(unittest.TestCase):
         *,
         standard: tuple[str, ...] = ("initialize",),
         extra_body: str = "",
+        macro_definition: str | None = None,
     ) -> str:
         rows = "\n".join(cls._render_row(command, standard=standard) for command in commands)
-        return f"dap_request_table! {{\n{rows}\n{extra_body}}}\n"
+        definition = cls.MACRO_DEFINITION if macro_definition is None else macro_definition
+        return f"{definition}\ndap_request_table! {{\n{rows}\n{extra_body}}}\n"
 
     def _write_production(
         self,
@@ -542,15 +578,35 @@ class DapProtocolAuthorityTests(unittest.TestCase):
         self.assertAuthorityError(lambda: MODULE.validate_manifest(manifest, require_sha256=True))
 
     def test_family_dispatch_mismatch_fails(self) -> None:
-        # The registered family is deliberately not dispatched: adding a
-        # production route for it without flipping (and graduating) the
-        # record must fail closed.
+        # Adding a production route for a family recorded as `dispatched:
+        # false` must fail closed.
+        #
+        # This asserts only that the combination is rejected. It does not
+        # reach `validate_production_boundary`'s family-dispatch branch: the
+        # undeclared route trips the extension-inventory check first. The
+        # ordering is not incidental — `validate_manifest` refuses a family
+        # whose `request_name` also appears in `project_extensions`, so a
+        # dispatched-but-undeclared family request cannot be spelled in a way
+        # that reaches the later branch. `test_family_declared_dispatched_
+        # without_a_route_fails` covers that branch from the reachable side.
         self._write_production(commands=("initialize", "inlineValues", "perl-lsp/loadedModuleReload"))
         validated = MODULE.validate_manifest(self.manifest, require_sha256=True)
         observed = MODULE.validate_schema_bytes(self.data, validated, require_sha256=True)
         self.assertAuthorityError(
             lambda: MODULE.validate_production_boundary(self.root, validated, observed)
         )
+
+    def test_family_declared_dispatched_without_a_route_fails(self) -> None:
+        # The reachable half of the family-dispatch invariant, and the one
+        # that actually exercises the branch: the record claims a runtime
+        # route the executable table does not provide.
+        manifest = copy.deepcopy(self.manifest)
+        manifest["project_families"][0]["dispatched"] = True
+        validated = MODULE.validate_manifest(manifest, require_sha256=True)
+        observed = MODULE.validate_schema_bytes(self.data, validated, require_sha256=True)
+        with self.assertRaises(MODULE.AuthorityError) as raised:
+            MODULE.validate_production_boundary(self.root, validated, observed)
+        self.assertIn("dispatch mismatch", str(raised.exception))
 
     def test_family_emitted_event_fails(self) -> None:
         manifest = copy.deepcopy(self.manifest)
@@ -636,17 +692,120 @@ class DapProtocolAuthorityTests(unittest.TestCase):
         self._write_production(commands=("inlineValues", "initialize"))
         self.assertEqual(before, self._production_rows()["request_rows"])
 
-    def test_hand_written_dispatch_arm_is_a_second_authority_and_fails(self) -> None:
+    def test_out_of_table_routes_are_rejected_in_every_rust_arm_shape(self) -> None:
         # The realistic split-brain: a request routed outside the table is
-        # executable but invisible to the inventory.
+        # executable but invisible to the inventory. Keying the check on
+        # `=> self.handle_` would recognise only the first shape below, so
+        # every ordinary way to spell a match arm is covered.
+        arms = {
+            "plain": '"sneak" => self.handle_sneak(seq, request_seq, arguments),',
+            "braced": '"sneak" => { self.handle_sneak(seq, request_seq, arguments) }',
+            "guarded": '"sneak" if ready => self.handle_sneak(seq, request_seq, arguments),',
+            "helper_fn": '"sneak" => route_elsewhere(seq, request_seq),',
+            "assoc_fn": '"sneak" => Self::handle_sneak(seq, request_seq),',
+            "namespaced_name": '"perl-lsp/sneak" => self.handle_sneak(seq, request_seq, arguments),',
+            "underscored_name": '"sneak_route" => self.handle_sneak(seq, request_seq, arguments),',
+            "dotted_name": '"sneak.route" => self.handle_sneak(seq, request_seq, arguments),',
+        }
+        for label, arm in arms.items():
+            with self.subTest(arm=label):
+                source = self._render_table(("initialize", "inlineValues"))
+                source += (
+                    "impl DebugAdapter {\n"
+                    "    fn dispatch_extra(&mut self, command: &str) -> DapMessage {\n"
+                    "        match command {\n"
+                    f"            {arm}\n"
+                    "            _ => unknown(),\n"
+                    "        }\n"
+                    "    }\n"
+                    "}\n"
+                )
+                self._write_production(dispatch_source=source)
+                self.assertAuthorityError(self._production_rows)
+
+    def test_routes_cannot_escape_the_generated_dispatch_body(self) -> None:
+        # The exclusivity claim is structural, not shape-matching: these are
+        # routes with no arm shape in common, including a pre-match special
+        # case that contains no `=>` at all.
+        escapes = {
+            "pre_match_special_case": (
+                "                let seq = self.next_seq();",
+                "                let seq = self.next_seq();\n"
+                '                if command == "vendor/reload" {\n'
+                "                    return self.handle_vendor(seq, request_seq);\n"
+                "                }",
+            ),
+            "braced_arm": (
+                "                    _ => DapMessage::Response {",
+                '                    "vendor/reload" => { self.handle_vendor(seq, request_seq) }\n'
+                "                    _ => DapMessage::Response {",
+            ),
+            "guarded_arm": (
+                "                    _ => DapMessage::Response {",
+                '                    "vendor/reload" if ready => self.handle_vendor(seq),\n'
+                "                    _ => DapMessage::Response {",
+            ),
+            "early_return_helper": (
+                "                let seq = self.next_seq();",
+                "                let seq = self.next_seq();\n"
+                "                if let Some(r) = self.vendor_route(command) { return r; }",
+            ),
+        }
+        for label, (anchor, replacement) in escapes.items():
+            with self.subTest(escape=label):
+                self.assertIn(anchor, self.MACRO_DEFINITION)
+                definition = self.MACRO_DEFINITION.replace(anchor, replacement, 1)
+                self._write_production(
+                    dispatch_source=self._render_table(
+                        ("initialize", "inlineValues"), macro_definition=definition
+                    )
+                )
+                self.assertAuthorityError(self._production_rows)
+
+    def test_a_second_dispatch_definition_fails_closed(self) -> None:
         source = self._render_table(("initialize", "inlineValues"))
         source += (
             "impl DebugAdapter {\n"
-            "    fn dispatch_extra(&mut self, command: &str) -> DapMessage {\n"
-            "        match command {\n"
-            '            "sneak" => self.handle_sneak(seq, request_seq, arguments),\n'
-            "            _ => unknown(),\n"
-            "        }\n"
+            "    fn dispatch_request(&mut self, command: &str) -> DapMessage {\n"
+            "        self.vendor(command)\n"
+            "    }\n"
+            "}\n"
+        )
+        self._write_production(dispatch_source=source)
+        self.assertAuthorityError(self._production_rows)
+
+    def test_dispatch_defined_outside_the_macro_fails_closed(self) -> None:
+        # Hand-writing the body and leaving the table as decoration must not
+        # pass, even though the table itself still parses.
+        source = self._render_table(("initialize", "inlineValues"), macro_definition="")
+        source += (
+            "impl DebugAdapter {\n"
+            "    fn dispatch_request(&mut self, command: &str) -> DapMessage {\n"
+            "        self.vendor(command)\n"
+            "    }\n"
+            "}\n"
+        )
+        self._write_production(dispatch_source=source)
+        self.assertAuthorityError(self._production_rows)
+
+    def test_a_macro_that_does_not_define_dispatch_fails_closed(self) -> None:
+        # The sharpest version of the decoy: a real macro definition and a
+        # real table are present, but the routing body is hand-written
+        # outside them, so the table describes rather than generates.
+        hollow_macro = (
+            "macro_rules! dap_request_table {\n"
+            "    ( $( $class:ident $command:literal => $handler:ident $arity:tt ),* $(,)? ) => {\n"
+            "        pub(crate) const SUPPORTED_COMMANDS: [&str; 2] = [$($command),*];\n"
+            "    };\n"
+            "}\n"
+        )
+        source = self._render_table(
+            ("initialize", "inlineValues"), macro_definition=hollow_macro
+        )
+        source += (
+            "impl DebugAdapter {\n"
+            "    fn dispatch_request(&mut self, command: &str) -> DapMessage {\n"
+            "        self.vendor(command)\n"
             "    }\n"
             "}\n"
         )
@@ -678,6 +837,35 @@ class DapProtocolAuthorityTests(unittest.TestCase):
             "ghost", [row["command"] for row in self._production_rows()["request_rows"]]
         )
 
+    def test_raw_string_decoy_is_neither_a_row_nor_a_stray_route(self) -> None:
+        # A raw string has no escapes, so a naive scanner reads the quotes
+        # inside it as code and either invents a row or reports a false
+        # stray route.
+        source = self._render_table(("initialize", "inlineValues"))
+        source += 'const DECOY: &str = r#"  "ghost" => self.handle_ghost(x),  "#;\n'
+        self._write_production(dispatch_source=source)
+        self.assertNotIn(
+            "ghost", [row["command"] for row in self._production_rows()["request_rows"]]
+        )
+
+    def test_raw_string_containing_comment_marker_is_not_code(self) -> None:
+        source = self._render_table(("initialize", "inlineValues"))
+        source += 'const DECOY: &str = r"// not a comment";\n'
+        self._write_production(dispatch_source=source)
+        self.assertEqual(
+            ["initialize", "inlineValues"],
+            [row["command"] for row in self._production_rows()["request_rows"]],
+        )
+
+    def test_brace_inside_a_string_cannot_unbalance_the_table(self) -> None:
+        source = self._render_table(("initialize", "inlineValues"))
+        source += 'const DECOY: &str = "}";\n'
+        self._write_production(dispatch_source=source)
+        self.assertEqual(
+            ["initialize", "inlineValues"],
+            [row["command"] for row in self._production_rows()["request_rows"]],
+        )
+
     def test_two_request_tables_fail_closed(self) -> None:
         source = self._render_table(("initialize", "inlineValues"))
         source += self._render_table(("initialize",))
@@ -692,7 +880,8 @@ class DapProtocolAuthorityTests(unittest.TestCase):
         # Distinct handlers, so only the wire-name uniqueness rule can
         # reject this pair.
         source = (
-            "dap_request_table! {\n"
+            self.MACRO_DEFINITION
+            + "dap_request_table! {\n"
             '    standard "initialize" => handle_initialize(arguments),\n'
             '    standard "initialize" => handle_initialize_again(arguments),\n'
             '    extension "inlineValues" => handle_inline_values(arguments),\n'
@@ -703,7 +892,8 @@ class DapProtocolAuthorityTests(unittest.TestCase):
 
     def test_two_rows_sharing_one_handler_fail_closed(self) -> None:
         source = (
-            "dap_request_table! {\n"
+            self.MACRO_DEFINITION
+            + "dap_request_table! {\n"
             '    standard "initialize" => handle_shared(arguments),\n'
             '    extension "inlineValues" => handle_shared(arguments),\n'
             "}\n"
@@ -723,7 +913,8 @@ class DapProtocolAuthorityTests(unittest.TestCase):
         # Residue in the middle of the table must fail closed too; a
         # trailing-only check would let this through.
         source = (
-            "dap_request_table! {\n"
+            self.MACRO_DEFINITION
+            + "dap_request_table! {\n"
             '    standard "initialize" => handle_initialize(arguments),\n'
             "    if cfg!(feature = \"x\") { route_somewhere_else(); }\n"
             '    extension "inlineValues" => handle_inline_values(arguments),\n'

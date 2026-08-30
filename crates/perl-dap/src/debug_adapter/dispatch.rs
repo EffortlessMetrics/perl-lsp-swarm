@@ -55,6 +55,17 @@ macro_rules! dap_dispatch_call {
     ($adapter:expr, $handler:ident, $seq:expr, $request_seq:expr, $arguments:expr, ()) => {
         $adapter.$handler($seq, $request_seq)
     };
+    // A typo or a new arity shape names its own mistake here, rather than
+    // surfacing as an opaque "no rules expected this token" far from the row.
+    ($adapter:expr, $handler:ident, $seq:expr, $request_seq:expr, $arguments:expr, $other:tt) => {
+        compile_error!(concat!(
+            "dap_request_table row for `",
+            stringify!($handler),
+            "` has arity marker `",
+            stringify!($other),
+            "`; it must be `(arguments)` or `()`"
+        ))
+    };
 }
 
 /// The adapter's one executable request authority.
