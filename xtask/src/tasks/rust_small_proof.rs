@@ -94,6 +94,31 @@ const CARGO_STEPS: &[CargoStep] = &[
     ),
 ];
 
+/// Linked-list receiver census argv. The separate list and replay commands make
+/// assertion execution observable and fail closed if the target is renamed,
+/// filtered away, or reduced to an empty binary (#13920).
+const LINKED_LIST_CENSUS_ARGS: &[&str] = &[
+    "test",
+    "-p",
+    "perl-semantic-analyzer",
+    "--test",
+    "linked_list_receiver_facts",
+    "--locked",
+    "--",
+    "--list",
+];
+
+const LINKED_LIST_RUN_ARGS: &[&str] = &[
+    "test",
+    "-p",
+    "perl-semantic-analyzer",
+    "--test",
+    "linked_list_receiver_facts",
+    "--locked",
+    "--",
+    "--test-threads=1",
+];
+
 /// References scorecard census argv: replaces both old per-route counters with
 /// one strict suffix-parse performed by [`count_libtest_listed_tests`].
 const SCORECARD_CENSUS_ARGS: &[&str] = &[
@@ -133,40 +158,20 @@ const SCORECARD_RUN_ARGS: &[&str] = &[
 const SCORECARD_REPLAY_ENV: [(&str, &str); 1] = [("INSTA_UPDATE", "no")];
 
 pub fn run() -> Result<()> {
-    let total = CARGO_STEPS.len() + 3;
+    let total = CARGO_STEPS.len() + 5;
     let mut done = 0usize;
     for (name, args) in CARGO_STEPS {
         run_cargo(name, args)?;
         done += 1;
     }
 
-    let census_output =
-        Command::new("cargo").args(SCORECARD_CENSUS_ARGS).output().map_err(|error| {
-            eyre!(
-                "[{done}/{total}] references scorecard census instrument failure \
-                 (spawn): {error}"
-            )
-        })?;
-    if !census_output.status.success() {
-        // Nonzero census exit is a product/test failure (the scorecard target
-        // failed to build or run), kept distinct from the spawn-instrument
-        // failure above (#8407 acceptance: product vs instrument failure).
-        bail!(
-            "[{done}/{total}] references scorecard census product/test failure \
-             (exit {:?}): {}",
-            census_output.status.code(),
-            bounded_stderr(&census_output.stderr)
-        );
-    }
-    let stdout = String::from_utf8_lossy(&census_output.stdout);
-    let census = count_libtest_listed_tests(&stdout);
-    println!("[{done}/{total}] references scorecard census: {census} tests");
-    if census == 0 {
-        bail!(
-            "[{done}/{total}] references scorecard census is zero; the required \
-             proof vanished from the listing — refusing to pass an empty gate"
-        );
-    }
+    run_cargo_census("linked-list receiver census", LINKED_LIST_CENSUS_ARGS, done, total)?;
+    done += 1;
+
+    run_cargo("linked-list receiver replay", LINKED_LIST_RUN_ARGS)?;
+    done += 1;
+
+    run_cargo_census("references scorecard census", SCORECARD_CENSUS_ARGS, done, total)?;
     done += 1;
 
     run_step("cargo", "references scorecard replay", SCORECARD_RUN_ARGS, SCORECARD_REPLAY_ENV)?;
@@ -194,6 +199,32 @@ pub fn run() -> Result<()> {
 
 fn run_cargo(name: &str, args: &[&str]) -> Result<()> {
     run_step("cargo", name, args, [])
+}
+
+fn run_cargo_census(name: &str, args: &[&str], done: usize, total: usize) -> Result<usize> {
+    println!("[rust-small-proof] $ cargo {}", args.join(" "));
+    let output = Command::new("cargo")
+        .args(args)
+        .output()
+        .map_err(|error| eyre!("[{done}/{total}] {name} instrument failure (spawn): {error}"))?;
+    if !output.status.success() {
+        bail!(
+            "[{done}/{total}] {name} product/test failure (exit {:?}): {}",
+            output.status.code(),
+            bounded_stderr(&output.stderr)
+        );
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let census = count_libtest_listed_tests(&stdout);
+    println!("[{done}/{total}] {name}: {census} tests");
+    if census == 0 {
+        bail!(
+            "[{done}/{total}] {name} is zero; the required proof vanished from \
+             the listing — refusing to pass an empty gate"
+        );
+    }
+    Ok(census)
 }
 
 /// Run one lane step and classify every outcome: success, product/test
@@ -349,6 +380,39 @@ tests::gamma: test
                 ][..]
             )
         );
+    }
+
+    #[test]
+    fn linked_list_steps_pin_executed_target_and_census() {
+        assert_eq!(
+            LINKED_LIST_CENSUS_ARGS,
+            &[
+                "test",
+                "-p",
+                "perl-semantic-analyzer",
+                "--test",
+                "linked_list_receiver_facts",
+                "--locked",
+                "--",
+                "--list",
+            ]
+        );
+        assert_eq!(
+            LINKED_LIST_RUN_ARGS,
+            &[
+                "test",
+                "-p",
+                "perl-semantic-analyzer",
+                "--test",
+                "linked_list_receiver_facts",
+                "--locked",
+                "--",
+                "--test-threads=1",
+            ]
+        );
+        assert!(LINKED_LIST_CENSUS_ARGS.contains(&"--list"));
+        assert!(!LINKED_LIST_RUN_ARGS.contains(&"--list"));
+        assert!(!LINKED_LIST_RUN_ARGS.contains(&"--no-run"));
     }
 
     #[test]
