@@ -11,7 +11,7 @@ use perl_lsp_ux_tests::recorder::{OperationTiming, UxScenarioRunReceipt};
 use serde_json::Value;
 use std::collections::BTreeSet;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 pub use super::lsp_stats_admission::{
     LatencyMetric, MeasuredEditorUxScorecard, RateMetric, WorkflowResult,
@@ -205,6 +205,7 @@ fn validate_measurement(
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::path::PathBuf;
 
     fn receipt(
         duration_ms: f64,
@@ -393,15 +394,12 @@ mod tests {
         )?)?;
         assert!(validator.validate(&invalid).is_err());
 
-        let valid: Value = serde_json::to_value(receipt(
-            25.0,
-            None,
-            json!([{
-                "operation": "hover",
-                "time_to_first_useful_result_ms": null,
-                "timing_status": "missing_request_start"
-            }]),
-        )?)?;
+        let mut valid: Value = serde_json::to_value(receipt(25.0, None, json!([]))?)?;
+        valid["operation_timings"] = json!([{
+            "operation": "hover",
+            "time_to_first_useful_result_ms": null,
+            "timing_status": "missing_request_start"
+        }]);
         validator
             .validate(&valid)
             .map_err(|error| color_eyre::eyre::eyre!("valid missing-start receipt rejected: {error}"))?;
