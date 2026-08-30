@@ -51,6 +51,21 @@ fn externally_mutated_token_ref_text_cannot_create_invalid_owned_token() -> Test
 }
 
 #[test]
+fn externally_mutated_token_ref_equal_width_payload_stays_geometry_only() -> TestResult {
+    let equal_width_payload = "x".repeat(56);
+    let mut borrowed = TokenRef::new_checked(TokenKind::UnknownRest, "", 40, 96)?;
+    borrowed.text = &equal_width_payload;
+
+    let owned = borrowed.to_owned_token();
+
+    assert_eq!(owned.kind(), TokenKind::UnknownRest);
+    assert_eq!(owned.span(), ordered_span(40, 96));
+    assert!(owned.text.is_empty());
+    assert!(owned.is_geometry_only());
+    Ok(())
+}
+
+#[test]
 fn token_from_token_ref_matches_constructor() -> TestResult {
     let borrowed = TokenRef::new_checked(TokenKind::Number, "42", 20, 22)?;
     let from_impl: Token = borrowed.into();

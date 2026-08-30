@@ -126,11 +126,19 @@ impl<'src> TokenRef<'src> {
     /// Convert this borrowed token view into an owned [`Token`].
     ///
     /// The public `text` field can be changed after construction, so this
-    /// conversion revalidates its width. A mismatched non-empty span becomes a
-    /// payload-free `UnknownRest`; a mismatched empty span becomes EOF. This
-    /// preserves the infallible, compatibility-oriented API without allowing a
-    /// malformed `Token` to escape.
+    /// conversion preserves the payload for normal tokens only after revalidating
+    /// its width. Every `UnknownRest` becomes payload-free; a malformed
+    /// non-empty span becomes geometry-only `UnknownRest`, and a malformed empty
+    /// span becomes EOF. This preserves the infallible, compatibility-oriented
+    /// API without allowing a malformed `Token` to escape.
     pub fn to_owned_token(self) -> Token {
+        if self.kind == TokenKind::UnknownRest {
+            return match Token::unknown_rest_at(self.start, self.end) {
+                Ok(token) => token,
+                Err(_) => Token::eof_at(self.start),
+            };
+        }
+
         if self.text.len() == self.len() {
             return Token::from_valid_parts(self.kind, Arc::from(self.text), self.start, self.end);
         }
