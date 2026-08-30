@@ -129,7 +129,7 @@ fn command_exists_contract_child() -> TestResult {
         "false" => false,
         other => {
             return Err(
-                io::Error::other(format!("invalid {CHILD_EXPECTED_ENV} value: {other:?}")).into(),
+                io::Error::other(format!("invalid {CHILD_EXPECTED_ENV} value: {other:?}")).into()
             );
         }
     };
