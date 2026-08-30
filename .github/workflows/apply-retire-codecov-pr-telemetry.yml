@@ -6,6 +6,7 @@ on:
       - codex/retire-codecov-pr-telemetry
     paths:
       - scripts/ci/apply_retire_codecov_pr_telemetry.py
+      - scripts/ci/apply_retire_codecov_pr_telemetry_residue.py
       - .github/workflows/apply-retire-codecov-pr-telemetry.yml
 
 permissions:
@@ -34,7 +35,10 @@ jobs:
           components: rustfmt
 
       - name: Apply exact current-source migration
-        run: python3 scripts/ci/apply_retire_codecov_pr_telemetry.py
+        run: |
+          set -euo pipefail
+          python3 scripts/ci/apply_retire_codecov_pr_telemetry.py
+          python3 scripts/ci/apply_retire_codecov_pr_telemetry_residue.py
 
       - name: Format and run focused recurrence proof
         run: |
