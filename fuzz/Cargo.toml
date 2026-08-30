@@ -40,16 +40,6 @@ path = "../crates/perl-regex"
 [dependencies.perl-pod]
 path = "../crates/perl-pod"
 
-[dependencies.perl-lsp-perltidy]
-path = "../crates/perl-lsp-perltidy"
-
-[[bin]]
-name = "perl_tidy_formatter"
-path = "fuzz_targets/perl_tidy_formatter.rs"
-test = false
-doc = false
-bench = false
-
 [[bin]]
 name = "substitution_parsing"
 path = "fuzz_targets/substitution_parsing.rs"

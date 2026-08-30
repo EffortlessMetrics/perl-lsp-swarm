@@ -36,10 +36,11 @@
 //! compatibility adapter, never spawns processes, never reads a clock, and
 //! never applies expected bytes through production edit application.
 //!
-//! The cargo-fuzz target `fuzz/fuzz_targets/perl_tidy_formatter.rs` includes
-//! this file verbatim via `#[path]` and drives the same checker from
-//! structured byte mutations. The committed replay-control vectors are
-//! predetermined decoder controls, not crash-derived corpus evidence.
+//! The structured byte-input decoder below drives the property tier's
+//! predetermined replay controls. It is also the future cargo-fuzz adoption
+//! seam owned by #10301; no cargo-fuzz target is part of this claim. The
+//! committed replay-control vectors are predetermined decoder controls, not
+//! crash-derived corpus evidence.
 
 use std::collections::BTreeSet;
 
@@ -170,17 +171,11 @@ impl Family {
 const _: () = {
     let mut index = 0;
     while index < Family::ALL.len() {
-        if Family::ALL[index].pinned_index() != index {
-            panic!("Family::ALL order drifted from the exhaustive pinned_index enumeration");
-        }
-        if FAMILY_TABLE[index].family.pinned_index() != index {
-            panic!("FAMILY_TABLE order drifted from the exhaustive pinned_index enumeration");
-        }
+        [()][if Family::ALL[index].pinned_index() != index { 1 } else { 0 }];
+        [()][if FAMILY_TABLE[index].family.pinned_index() != index { 1 } else { 0 }];
         index += 1;
     }
-    if FAMILY_TABLE.len() != Family::ALL.len() {
-        panic!("FAMILY_TABLE row count drifted from the exhaustive pinned_index enumeration");
-    }
+    [()][if FAMILY_TABLE.len() != Family::ALL.len() { 1 } else { 0 }];
 };
 
 /// One registry row: an admitted family plus its generator/mutator
@@ -756,17 +751,18 @@ pub fn generate_invalidation_case(seed: u64, index: usize) -> GeneratedCase {
     }
 }
 
-/// Decode a cargo-fuzz input into exactly the case the fuzz target would run:
-/// the first eight little-endian bytes select the seed, the ninth byte selects
-/// the case index (low six bits) and the invalidation path (bit 7). Any bytes
-/// after the selector are folded into the seed with an FNV-1a-style update so
-/// mutations past byte nine can reach distinct cases; this is mutation reach,
-/// not cryptographic mixing.
+/// Decode structured byte input for the property tier's replay controls and
+/// the future cargo-fuzz adoption owned by #10301: the first eight
+/// little-endian bytes select the seed, the ninth byte selects the case index
+/// (low six bits) and the invalidation path (bit 7). Any bytes after the
+/// selector are folded into the seed with an FNV-1a-style update so mutations
+/// past byte nine can reach distinct cases; this is mutation reach, not
+/// cryptographic mixing.
 ///
-/// Both the fuzz target and the predetermined replay-control vectors in
-/// `fuzz_target_and_regression_pipeline_are_wired` call this one decoder, so
-/// each full `(seed, selector)` pair exercises the same valid or invalidation
-/// path, including an index >= 16 (FPH-010).
+/// The predetermined replay-control vectors call this decoder so each full
+/// `(seed, selector)` pair exercises the same valid or invalidation path,
+/// including an index >= 16 (FPH-010). No cargo-fuzz target is included in
+/// this claim.
 pub fn case_from_fuzz_input(data: &[u8]) -> Option<GeneratedCase> {
     if data.len() < 9 {
         return None;
