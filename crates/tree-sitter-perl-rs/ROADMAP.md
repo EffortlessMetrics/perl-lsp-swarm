@@ -23,6 +23,13 @@
 
 ## Phase 2
 
+### Semantic overlay (shipped behind `semantic-overlay`)
+
+The experimental file-local definition, visible-import, and pragma-state queries are opt-in.
+The default and `queries`-only feature graphs remain parser-only; enabling `semantic-overlay`
+adds the `perl-module`, `perl-pragma`, and `perl-semantic-analyzer` dependencies and exposes
+`Tree::semantic_overlay()`, `SemanticOverlay`, `OverlayDefinition`, and `VisibleImport`.
+
 ### Structural query subset (shipped behind `queries`)
 
 `Query` and `QueryCursor` support node kinds, wildcards, nested children, named fields,
