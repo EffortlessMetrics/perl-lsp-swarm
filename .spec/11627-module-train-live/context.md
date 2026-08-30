@@ -98,11 +98,18 @@ Load-bearing laws encoded and tested:
 * behavior receipts are **not observable** — an unconditional typed blocker
   that keeps `MERGE_READY_RECOMMENDATION` unreachable from live observation
   (the classifier branch exists and is exercised by synthetic-fact unit tests);
-* review-head currency and review threads **are** observable since #14237,
-  through one gated read-only GraphQL document, and fail closed: an unbound
-  review commit, a truncated review or thread page, a head that moved between
-  the list and the review read, or any GraphQL instrument failure leaves the
-  fact unprovable rather than current/resolved;
+* review threads **are** observable since #14237, through one gated read-only
+  GraphQL document, and fail closed: a truncated or unobserved thread page, a
+  head that moved between the list and the review read, or any GraphQL
+  instrument failure leaves resolution unprovable rather than resolved;
+* review-head **currency** remains unobservable, and deliberately so. #14237
+  observes whether each opinionated review was submitted against the head
+  commit, but reports it only as a diagnostic
+  (`reviewed_commit_differs_from_head`). `REVIEW_CURRENTNESS.md` ("Review is
+  semantic, not exact-head") and `AGENTS.md` ("head SHA change alone -> no
+  review invalidation") forbid treating a head SHA as a review-validity token;
+  materiality of later commits is a judgment this observation cannot make, so
+  `head_moved_after_review` is never raised from a commit delta;
 * merged PRs are `merged_current_tree` only when their merge commit is an
   ancestor of the locally observed HEAD (read-only `git merge-base
   --is-ancestor`); otherwise `merged_candidate_pending_current_tree_probe`;

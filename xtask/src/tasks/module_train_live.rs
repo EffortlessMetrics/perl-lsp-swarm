@@ -1334,6 +1334,7 @@ $threads: Int!, $reviews: Int!) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $pr) {
       headRefOid
+      reviewDecision
       reviewThreads(first: $threads) {
         totalCount
         nodes { isResolved }
@@ -1385,6 +1386,9 @@ fn review_facts_bind_to_listed_head(listed_head: &str, observed_head: &str) -> b
 struct GraphqlReviewFacts {
     /// The head this read actually observed, for agreement with the listed head.
     head_oid: String,
+    /// The aggregate decision from the *same* observation as the reviews, so
+    /// the verdict and the review list can never disagree.
+    review_decision: Option<String>,
     reviews: Vec<RawReview>,
     /// The opinionated-review page did not cover every review.
     reviews_truncated: bool,
@@ -1438,6 +1442,12 @@ fn gh_review_facts(
         .ok_or_else(|| failure("response carried no headRefOid".to_string()))?
         .to_string();
 
+    // Read from the same response as the reviews: taking the aggregate from
+    // the earlier `gh pr view` while taking the review list from here would
+    // let a decision that changed in between contradict the reviews it
+    // summarizes.
+    let review_decision = opt_string_field(pull, "reviewDecision");
+
     let review_nodes = pull
         .pointer("/latestOpinionatedReviews/nodes")
         .and_then(Value::as_array)
@@ -1466,7 +1476,7 @@ fn gh_review_facts(
         })
         .collect();
 
-    Ok(GraphqlReviewFacts { head_oid, reviews, reviews_truncated, threads })
+    Ok(GraphqlReviewFacts { head_oid, review_decision, reviews, reviews_truncated, threads })
 }
 
 fn gh_view_args(number: u64, repo: &str) -> Vec<String> {
@@ -1675,9 +1685,10 @@ fn observe_github(root: &Path) -> (RawGithub, InstrumentRecord) {
                     );
                 }
                 Ok(facts) => {
-                    if !facts.reviews.is_empty() {
-                        raw.reviews = Some(facts.reviews);
-                    }
+                    // Adopt the verdict and the review list together: they come
+                    // from one response bound to one head.
+                    raw.review_decision = facts.review_decision;
+                    raw.reviews = Some(facts.reviews);
                     raw.reviews_truncated = facts.reviews_truncated;
                     raw.review_threads = Some(facts.threads);
                 }
@@ -1944,8 +1955,14 @@ pub struct CandidateView {
     /// `Some(false)` = definitively not; `None` = probe unavailable.
     pub merged_in_local_head: Option<bool>,
     pub head_oid: String,
-    /// Observed live from review-to-commit binding (#14237). `None` = the
-    /// instrument could not bind currency, never "current".
+    /// Diagnostic only: whether every opinionated review was submitted against
+    /// the head commit. NOT a currency verdict — a SHA delta alone never
+    /// invalidates a review (`docs/agents/REVIEW_CURRENTNESS.md`). `None` =
+    /// the comparison could not be made.
+    pub reviewed_commit_is_head: Option<bool>,
+    /// Semantic review currency. Unobservable from this bounded observation:
+    /// materiality of later commits is a judgment, not an API field. Kept as a
+    /// classifier input so the merge-ready branch stays exercised by tests.
     pub review_on_head: Option<bool>,
     /// Observed live from bounded review-thread pages (#14237). `None` =
     /// unobserved or truncated, never "resolved".
@@ -2130,15 +2147,16 @@ pub fn classify(facts: &NodeFacts) -> ClassifiedNode {
                 return finish(Action::Resume, reasons, limitations, flags);
             }
             if candidate.review_decision == "APPROVED" {
-                // Merge-ready requires complete current facts. Review-head
-                // currency and thread resolution are observable (#14237) and
-                // only reported as blockers when the instrument actually
-                // failed to bind them. Behavior receipts still have no
-                // producer in this tree (#11619), so they remain an
-                // unconditional typed blocker: merge-ready stays unreachable
-                // from live observation, by one blocker instead of three.
-                if candidate.review_on_head.is_none() {
-                    limitations.insert("review_head_currency_not_observable".to_string());
+                // Merge-ready requires complete current facts. Thread
+                // resolution became observable in #14237 and is reported as a
+                // blocker only when the instrument failed to bind it.
+                // Review-head *currency* stays an unconditional blocker: the
+                // repository's currentness authority forbids deriving it from
+                // a head SHA, and materiality is not observable here. Behavior
+                // receipts likewise have no producer while #11619 is open.
+                limitations.insert("review_head_currency_not_observable".to_string());
+                if candidate.reviewed_commit_is_head == Some(false) {
+                    reasons.insert("reviewed_commit_differs_from_head".to_string());
                 }
                 if candidate.threads_resolved.is_none() {
                     limitations.insert("review_threads_not_observable".to_string());
@@ -2163,6 +2181,10 @@ pub fn classify(facts: &NodeFacts) -> ClassifiedNode {
                         flags.insert("not_proven".to_string());
                         reasons.insert("merge_ready_facts_incomplete".to_string());
                         if candidate.review_on_head == Some(false) {
+                            // Reachable only from a synthetic currency fact:
+                            // live observation never sets this (see
+                            // `candidate_view`), so the flag is never raised
+                            // from a bare SHA delta.
                             flags.insert("head_moved_after_review".to_string());
                             reasons.insert("review_not_on_current_head".to_string());
                         }
@@ -2191,18 +2213,15 @@ pub fn classify(facts: &NodeFacts) -> ClassifiedNode {
             // step. Proof currentness is the writer's local fact; this
             // recommendation records that limitation honestly.
             if candidate.has_reviews {
-                match candidate.review_on_head {
-                    Some(true) => {
-                        reasons.insert("review_on_current_head".to_string());
-                    }
-                    Some(false) => {
-                        flags.insert("head_moved_after_review".to_string());
-                        reasons.insert("review_not_on_current_head".to_string());
-                    }
-                    None => {
-                        limitations.insert("review_head_currency_not_observable".to_string());
-                        reasons.insert("review_head_currency_not_proven".to_string());
-                    }
+                // Semantic review currency is never derived from the head SHA:
+                // `head_moved_after_review` asserts a review was invalidated,
+                // and a commit delta alone cannot establish that. The commit
+                // comparison is reported as a diagnostic, and currency stays a
+                // typed blocker.
+                limitations.insert("review_head_currency_not_observable".to_string());
+                reasons.insert("review_head_currency_not_proven".to_string());
+                if candidate.reviewed_commit_is_head == Some(false) {
+                    reasons.insert("reviewed_commit_differs_from_head".to_string());
                 }
                 match candidate.threads_resolved {
                     // Resolved threads add no finding: the absence of a
@@ -2343,31 +2362,48 @@ fn finish(
     }
 }
 
-/// `Some(true)` only when every observed latest review is bound to the
+/// Whether every observed opinionated review was submitted against the
 /// observed head commit.
 ///
-/// A review with no observed commit binding leaves currency unprovable, which
-/// is `None` — deliberately not `Some(false)`: "we cannot tell" and "the head
-/// moved after review" are different facts and only the second one should
-/// raise `head_moved_after_review`.
-fn review_on_head(head_oid: &str, reviews: &[ReviewFacts], page_truncated: bool) -> Option<bool> {
+/// This is a **diagnostic, not a currency verdict**. `docs/agents/
+/// REVIEW_CURRENTNESS.md` ("Review is semantic, not exact-head") and
+/// `AGENTS.md` ("head SHA change alone → no review invalidation") are explicit
+/// that the head SHA is not a review-validity token: a later commit that only
+/// reformats or adds a test does not make an earlier review stale, and a SHA
+/// change by itself appears nowhere in that document's invalidation table.
+///
+/// So `Some(false)` means only "the reviewed commit is not the head commit".
+/// It does **not** license `head_moved_after_review`, which asserts that a
+/// review was actually invalidated — materiality is a semantic judgment about
+/// what the later commits changed, and nothing in this bounded observation can
+/// establish it. Review-head *currency* therefore stays unobservable here; see
+/// `candidate_view`.
+///
+/// `None` means the comparison itself could not be made (unbound review
+/// commit, empty head, or a truncated review page whose omitted entry is
+/// exactly the one that might differ).
+fn review_commit_matches_head(
+    head_oid: &str,
+    reviews: &[ReviewFacts],
+    page_truncated: bool,
+) -> Option<bool> {
     // An incomplete review page cannot prove currency: the review that was
     // left off the page is exactly the one that might be stale.
     if page_truncated || head_oid.is_empty() || reviews.is_empty() {
         return None;
     }
-    let mut every_review_current = true;
+    let mut every_review_on_head = true;
     for review in reviews {
         match review.commit_oid.as_deref() {
             Some(oid) if !oid.is_empty() => {
                 if oid != head_oid {
-                    every_review_current = false;
+                    every_review_on_head = false;
                 }
             }
             _ => return None,
         }
     }
-    Some(every_review_current)
+    Some(every_review_on_head)
 }
 
 /// `Some(true)` only when every thread was observed and none is unresolved.
@@ -2393,7 +2429,15 @@ fn candidate_view(pr: &PrFacts) -> CandidateView {
         checks_cancelled: pr.checks.cancelled > 0,
         merged_in_local_head: pr.merge_commit_in_local_head,
         head_oid: pr.head_oid.clone(),
-        review_on_head: review_on_head(&pr.head_oid, &pr.latest_reviews, pr.review_page_truncated),
+        reviewed_commit_is_head: review_commit_matches_head(
+            &pr.head_oid,
+            &pr.latest_reviews,
+            pr.review_page_truncated,
+        ),
+        // Deliberately not derived from the commit comparison above: the
+        // repository's currentness authority forbids treating a head SHA as a
+        // review-validity token, and materiality is not observable here.
+        review_on_head: None,
         threads_resolved: threads_resolved(&pr.review_threads),
         core_receipt_pass: None,
         edit_profile_pass: None,
@@ -3214,15 +3258,17 @@ pub fn render_explain(
             let _ = writeln!(out, "  latest_reviews: {}", reviews.join(","));
             let _ = writeln!(
                 out,
-                "  review_on_head: {}",
-                match review_on_head(
+                "  reviewed_commit_is_head: {}",
+                match review_commit_matches_head(
                     &candidate.head_oid,
                     &candidate.latest_reviews,
                     candidate.review_page_truncated,
                 ) {
                     Some(true) => "yes".to_string(),
-                    Some(false) => "no (head moved after review)".to_string(),
-                    None => "not observable".to_string(),
+                    // Diagnostic wording on purpose: a differing commit is not
+                    // an invalidated review.
+                    Some(false) => "no (semantic currency not derivable)".to_string(),
+                    None => "not comparable".to_string(),
                 }
             );
         }
@@ -3280,15 +3326,17 @@ pub fn render_explain(
     out.push_str("facts unavailable and their consequence:\n");
     let mut unavailable: Vec<&str> = Vec::new();
     if node.candidates.iter().any(|candidate| {
-        review_on_head(
+        review_commit_matches_head(
             &candidate.head_oid,
             &candidate.latest_reviews,
             candidate.review_page_truncated,
         )
         .is_none()
     }) {
-        unavailable.push("review-head currency");
+        unavailable.push("reviewed-commit comparison");
     }
+    // Semantic review currency is never derivable from this observation.
+    unavailable.push("review-head currency");
     if node.candidates.iter().any(|candidate| threads_resolved(&candidate.review_threads).is_none())
     {
         unavailable.push("review threads");

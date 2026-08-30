@@ -44,16 +44,23 @@ git diff --check -> clean
 
 ## Residuals (recorded on #11627; not proven here)
 
-1. ~~Review-thread observation (GraphQL) and review-head binding~~ — **closed by
-   #14237**. Both facts are now observed through one gated read-only
-   `gh api graphql` document: `review_on_head` from review-to-commit binding,
-   `threads_resolved` from a bounded thread page. Both fail closed: an unbound
-   review commit, a truncated review **or** thread page, a head that moved
-   between the list and the review read, or any GraphQL instrument failure
-   leaves the fact unprovable, never "current"/"resolved". Currency is computed
-   from `latestOpinionatedReviews`, so an advisory comment on an older commit
-   does not report a current approval as stale. MERGE_READY_RECOMMENDATION
-   remains unreachable from live observation, now on residual 2 alone.
+1. Review-thread observation — **closed by #14237**: `threads_resolved` is
+   observed through one gated read-only `gh api graphql` document and fails
+   closed (unobserved or truncated page, a head that moved between the list and
+   the review read, or any GraphQL instrument failure leaves it unprovable,
+   never "resolved").
+   Review-head binding — **partially closed, deliberately**: #14237 observes
+   whether each opinionated review sits on the head commit
+   (`reviewed_commit_is_head`, from `latestOpinionatedReviews` so advisory
+   comments do not distort it), but that comparison is a **diagnostic only**.
+   Semantic review currency is NOT derived from it: `REVIEW_CURRENTNESS.md`
+   ("Review is semantic, not exact-head") and `AGENTS.md` ("head SHA change
+   alone -> no review invalidation") make a head SHA an invalid review-validity
+   token, and materiality is not observable here. So
+   `review_head_currency_not_observable` remains a typed blocker and
+   `head_moved_after_review` is never raised from a commit delta.
+   MERGE_READY_RECOMMENDATION therefore stays unreachable on two blockers
+   (currency + receipts), not one.
 2. Behavior-receipt/profile observation: typed blocker for fan-in/claim starts
    and merge-ready. **Blocked by #11619** (P11A exact-process receipt
    substrate, open): this tree has no `module-process` task and no

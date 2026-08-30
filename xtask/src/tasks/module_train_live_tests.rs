@@ -210,16 +210,18 @@ fn explain_unavailable_summary_matches_the_observed_facts() -> Result<()> {
     // is truncated (resolution is genuinely unprovable). The summary must
     // separate the two rather than lumping both under "unavailable".
     let mixed = render_explain(&snapshot, &manifest, "E00A")?;
-    assert!(mixed.contains("review_on_head: no (head moved after review)"), "{mixed}");
+    assert!(mixed.contains("reviewed_commit_is_head: no"), "{mixed}");
     assert!(mixed.contains("truncated=true"), "{mixed}");
     assert!(
-        !mixed.contains("review-head currency"),
-        "currency is observed here and must not be summarized as unavailable: {mixed}"
+        !mixed.contains("reviewed-commit comparison"),
+        "the comparison succeeded here and must not be summarized as unavailable: {mixed}"
     );
     assert!(
         mixed.contains("review threads"),
         "a truncated thread page is genuinely unavailable and must be named: {mixed}"
     );
+    // Semantic currency is unconditionally unavailable, comparison or not.
+    assert!(mixed.contains("review-head currency"), "{mixed}");
     // Behavior receipts have no producer (#11619) and stay unconditional.
     assert!(mixed.contains("behavior receipts"), "{mixed}");
 
@@ -228,8 +230,8 @@ fn explain_unavailable_summary_matches_the_observed_facts() -> Result<()> {
     // both facts are named — conservative, and not a contradiction with 2004's
     // own observed lines above it.
     let mixed_candidates = render_explain(&snapshot, &manifest, "E00C")?;
-    assert!(mixed_candidates.contains("review_on_head: yes"), "{mixed_candidates}");
-    assert!(mixed_candidates.contains("review-head currency"), "{mixed_candidates}");
+    assert!(mixed_candidates.contains("reviewed_commit_is_head: yes"), "{mixed_candidates}");
+    assert!(mixed_candidates.contains("reviewed-commit comparison"), "{mixed_candidates}");
     assert!(mixed_candidates.contains("review threads"), "{mixed_candidates}");
     Ok(())
 }
@@ -257,13 +259,13 @@ fn truncated_review_page_cannot_prove_currency() {
     let head = "a".repeat(40);
     // Every *observed* review is on the head, but the page was incomplete.
     assert_eq!(
-        review_on_head(&head, &[review_at(Some(&head)), review_at(Some(&head))], true),
+        review_commit_matches_head(&head, &[review_at(Some(&head)), review_at(Some(&head))], true),
         None,
         "an incomplete review page must never report currency"
     );
     // The same observation with a complete page does prove it.
     assert_eq!(
-        review_on_head(&head, &[review_at(Some(&head)), review_at(Some(&head))], false),
+        review_commit_matches_head(&head, &[review_at(Some(&head)), review_at(Some(&head))], false),
         Some(true)
     );
 }
@@ -583,30 +585,35 @@ fn review_at(commit: Option<&str>) -> ReviewFacts {
     }
 }
 
-/// Head currency is proved by review-to-commit binding, and an unbindable
-/// review is unprovable rather than current.
+/// The commit comparison is exact and fail-closed. It is a diagnostic: the
+/// classifier must never turn it into a currency verdict (see
+/// `semantic_currency_is_never_derived_from_a_head_sha`).
 #[test]
-fn review_head_currency_is_bound_to_the_observed_commit() {
+fn reviewed_commit_comparison_is_bound_to_the_observed_commit() {
     let head = "a".repeat(40);
     let stale = "b".repeat(40);
 
-    assert_eq!(review_on_head(&head, &[review_at(Some(&head))], false), Some(true));
+    assert_eq!(review_commit_matches_head(&head, &[review_at(Some(&head))], false), Some(true));
     // The head moved after the review was submitted: definitively not current.
-    assert_eq!(review_on_head(&head, &[review_at(Some(&stale))], false), Some(false));
+    assert_eq!(review_commit_matches_head(&head, &[review_at(Some(&stale))], false), Some(false));
     // One stale review among current ones still blocks currency.
     assert_eq!(
-        review_on_head(&head, &[review_at(Some(&head)), review_at(Some(&stale))], false),
+        review_commit_matches_head(
+            &head,
+            &[review_at(Some(&head)), review_at(Some(&stale))],
+            false
+        ),
         Some(false)
     );
     // Unbindable inputs stay unprovable — never Some(true), and never
     // Some(false) either: "cannot tell" must not raise head_moved_after_review.
-    assert_eq!(review_on_head(&head, &[review_at(None)], false), None);
-    assert_eq!(review_on_head(&head, &[review_at(Some(""))], false), None);
-    assert_eq!(review_on_head("", &[review_at(Some(&head))], false), None);
-    assert_eq!(review_on_head(&head, &[], false), None);
+    assert_eq!(review_commit_matches_head(&head, &[review_at(None)], false), None);
+    assert_eq!(review_commit_matches_head(&head, &[review_at(Some(""))], false), None);
+    assert_eq!(review_commit_matches_head("", &[review_at(Some(&head))], false), None);
+    assert_eq!(review_commit_matches_head(&head, &[], false), None);
     // An incomplete review page cannot prove currency: the omitted review is
     // exactly the one that might be stale.
-    assert_eq!(review_on_head(&head, &[review_at(Some(&head))], true), None);
+    assert_eq!(review_commit_matches_head(&head, &[review_at(Some(&head))], true), None);
 }
 
 /// An unobserved or truncated thread page can never read as resolved.
@@ -631,15 +638,14 @@ fn thread_resolution_never_passes_on_partial_observation() {
 }
 
 /// The typed blockers must name only what is actually unobservable. Behavior
-/// receipts have no producer in this tree (#11619) and stay blocking; the two
-/// review facts stop being claimed as unobservable once they are observed.
+/// receipts have no producer in this tree (#11619) and stay blocking; thread
+/// resolution stops being claimed as unobservable once it is observed.
 #[test]
-fn observed_review_facts_stop_being_reported_as_blockers() {
+fn observed_thread_resolution_stops_being_reported_as_a_blocker() {
     let mut facts = facts_base();
     let mut candidate = open_candidate();
     candidate.review_decision = "APPROVED".to_string();
     candidate.has_reviews = true;
-    candidate.review_on_head = Some(true);
     candidate.threads_resolved = Some(true);
     facts.open_bound = vec![candidate.clone()];
 
@@ -650,37 +656,57 @@ fn observed_review_facts_stop_being_reported_as_blockers() {
         classified.limitations.contains(&"behavior_receipts_not_observable".to_string()),
         "receipts have no producer yet and must stay a typed blocker"
     );
-    // But the two now-observed facts must not be claimed unobservable.
-    assert!(!classified.limitations.contains(&"review_head_currency_not_observable".to_string()));
     assert!(!classified.limitations.contains(&"review_threads_not_observable".to_string()));
 
-    // Conversely, when the instrument genuinely could not bind them, the
-    // blockers come back.
-    candidate.review_on_head = None;
+    // When the thread instrument genuinely could not bind it, the blocker
+    // comes back.
     candidate.threads_resolved = None;
     facts.open_bound = vec![candidate];
     let classified = classify(&facts);
-    assert!(classified.limitations.contains(&"review_head_currency_not_observable".to_string()));
     assert!(classified.limitations.contains(&"review_threads_not_observable".to_string()));
 }
 
-/// A review bound to a superseded commit is a stale review, and the REVIEW
-/// route must say so rather than silently recommending review again.
+/// The repository's currentness authority is explicit that a head SHA is not a
+/// review-validity token: `docs/agents/REVIEW_CURRENTNESS.md` ("Review is
+/// semantic, not exact-head", "A SHA change by itself appears nowhere in this
+/// table") and `AGENTS.md` ("head SHA change alone -> no review invalidation").
+///
+/// So a differing reviewed commit is reported as a diagnostic and never as an
+/// invalidated review, and semantic currency stays a typed blocker.
 #[test]
-fn stale_review_on_the_review_route_flags_a_moved_head() {
+fn semantic_currency_is_never_derived_from_a_head_sha() {
     let mut facts = facts_base();
     let mut candidate = open_candidate();
-    // No decision yet, but reviews exist and were left on an older commit.
     candidate.has_reviews = true;
-    candidate.review_on_head = Some(false);
+    // The reviewed commit is not the head — e.g. a later formatting-only push.
+    candidate.reviewed_commit_is_head = Some(false);
     candidate.threads_resolved = Some(true);
-    facts.open_bound = vec![candidate];
+    facts.open_bound = vec![candidate.clone()];
 
     let classified = classify(&facts);
     assert_eq!(classified.action, Action::Review);
-    assert!(classified.flags.contains(&"head_moved_after_review".to_string()));
-    assert!(classified.reasons.contains(&"review_not_on_current_head".to_string()));
-    assert!(!classified.limitations.contains(&"review_head_currency_not_observable".to_string()));
+    // The diagnostic is reported...
+    assert!(classified.reasons.contains(&"reviewed_commit_differs_from_head".to_string()));
+    // ...but it must never assert that the review was invalidated.
+    assert!(
+        !classified.flags.contains(&"head_moved_after_review".to_string()),
+        "a SHA delta alone must not assert review invalidation: {:?}",
+        classified.flags
+    );
+    // Semantic currency remains unobservable regardless of the comparison.
+    assert!(classified.limitations.contains(&"review_head_currency_not_observable".to_string()));
+
+    // The same holds when the reviewed commit IS the head: matching SHAs do
+    // not prove the review is semantically current either.
+    candidate.reviewed_commit_is_head = Some(true);
+    facts.open_bound = vec![candidate];
+    let classified = classify(&facts);
+    assert!(
+        classified.limitations.contains(&"review_head_currency_not_observable".to_string()),
+        "a matching SHA must not manufacture currency: {:?}",
+        classified.limitations
+    );
+    assert!(!classified.reasons.contains(&"reviewed_commit_differs_from_head".to_string()));
 }
 
 /// End-to-end: the observed review facts survive raw -> snapshot normalization
@@ -704,7 +730,7 @@ fn corpus_carries_observed_review_facts_through_normalization() -> Result<()> {
     assert!(approved.review_threads.observed);
     assert!(!approved.review_threads.truncated);
     assert_eq!(
-        review_on_head(
+        review_commit_matches_head(
             &approved.head_oid,
             &approved.latest_reviews,
             approved.review_page_truncated
@@ -717,7 +743,11 @@ fn corpus_carries_observed_review_facts_through_normalization() -> Result<()> {
     let stale = pr(2002);
     assert_ne!(stale.latest_reviews[0].commit_oid.as_deref(), Some(stale.head_oid.as_str()));
     assert_eq!(
-        review_on_head(&stale.head_oid, &stale.latest_reviews, stale.review_page_truncated),
+        review_commit_matches_head(
+            &stale.head_oid,
+            &stale.latest_reviews,
+            stale.review_page_truncated
+        ),
         Some(false)
     );
     assert!(stale.review_threads.truncated);
@@ -727,23 +757,44 @@ fn corpus_carries_observed_review_facts_through_normalization() -> Result<()> {
         "a truncated thread page must never resolve"
     );
 
+    // The production constructor is where currency could most easily be
+    // re-derived from the commit comparison by accident, so pin it directly:
+    // #2001's review IS on its head, and the currency input must still be
+    // None. A matching SHA is not semantic currency.
+    let view = candidate_view(pr(2001));
+    assert_eq!(
+        view.reviewed_commit_is_head,
+        Some(true),
+        "the diagnostic comparison must still be reported"
+    );
+    assert_eq!(
+        view.review_on_head, None,
+        "candidate_view must never derive semantic currency from a head SHA"
+    );
+
     // The REVIEW route through the whole pipeline: M01's candidate #2001 has
-    // an opinionated review bound to its head and every thread resolved, so
-    // classification must report currency rather than claim it unobservable.
+    // an opinionated review bound to its head and every thread resolved. The
+    // observed thread resolution must reach the classifier, while review-head
+    // currency stays a typed blocker even though the SHAs match — matching
+    // commits do not manufacture semantic currency.
     let m01 = node(&snapshot, "M01")?;
     assert_eq!(m01.action, "REVIEW");
     assert!(
-        m01.action_reasons.iter().any(|reason| reason == "review_on_current_head"),
-        "observed currency must reach the classifier: {:?}",
-        m01.action_reasons
+        !m01.limitations.iter().any(|limitation| limitation == "review_threads_not_observable"),
+        "observed thread resolution must not be reported as a blocker: {:?}",
+        m01.limitations
     );
     assert!(
-        !m01.limitations
-            .iter()
-            .any(|limitation| limitation == "review_head_currency_not_observable"
-                || limitation == "review_threads_not_observable"),
-        "observed facts must not be reported as blockers: {:?}",
         m01.limitations
+            .iter()
+            .any(|limitation| limitation == "review_head_currency_not_observable"),
+        "semantic currency is never derivable from a head SHA: {:?}",
+        m01.limitations
+    );
+    assert!(
+        !m01.action_reasons.iter().any(|reason| reason == "reviewed_commit_differs_from_head"),
+        "this candidate's review IS on the head commit: {:?}",
+        m01.action_reasons
     );
 
     // A candidate with no review instrument at all keeps both facts unobserved.
@@ -751,7 +802,7 @@ fn corpus_carries_observed_review_facts_through_normalization() -> Result<()> {
     assert!(!unobserved.review_threads.observed);
     assert_eq!(threads_resolved(&unobserved.review_threads), None);
     assert_eq!(
-        review_on_head(
+        review_commit_matches_head(
             &unobserved.head_oid,
             &unobserved.latest_reviews,
             unobserved.review_page_truncated
@@ -791,7 +842,7 @@ fn corpus_classifies_every_expected_action() -> Result<()> {
         ("CTRL", "STOP", "controller_selected_as_implementation"),
         ("E00A", "REPAIR", "review_changes_requested"),
         ("E00C", "RECONCILE", "multiple_bound_candidates_need_bounded_ownership_decision"),
-        ("M01", "REVIEW", "review_on_current_head"),
+        ("M01", "REVIEW", "review_head_currency_not_proven"),
         ("M07A", "RECONCILE", "unique_work_surface:local_branch:wip/10573-context-contract"),
         ("M07B", "RECONCILE", "closed_candidate_unique_work_needs_salvage_decision"),
         ("M07C", "RECONCILE", "binding_agreement_failed_needs_bounded_ownership_decision"),
