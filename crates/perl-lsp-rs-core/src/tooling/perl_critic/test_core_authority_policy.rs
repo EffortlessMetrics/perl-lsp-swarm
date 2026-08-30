@@ -1,11 +1,13 @@
 //! Product-policy falsifiers for independently owned core/Critic overlap rows (#13798).
 //!
-//! These tests deliberately describe the adopted v0.18 behavior before the
-//! post-merge policy implementation changes: Critic severity/include/exclude
-//! may filter the Critic contribution, but cannot revoke an independently
-//! emitted core security proposition while that contributor remains present.
+//! These tests deliberately describe the adopted v0.18 behavior: Critic
+//! severity/include/exclude may filter the Critic contribution, but cannot
+//! revoke an independently emitted core security proposition while that
+//! contributor remains present. They live in the library test target because
+//! the required policy gate runs `cargo test --lib -p perl-lsp-rs-core`;
+//! integration targets are only compiled by the compile-all lane.
 
-use perl_lsp_rs_core::tooling::perl_critic::{
+use crate::tooling::perl_critic::{
     CriticFindingCandidate, CriticFindingOrigin, CriticObservedIdentity, CriticSourceIdentity,
     CriticSuppressionMap, NativeCriticPolicy, NormalizedCriticFinding, Severity,
     normalize_with_native_policy,
@@ -127,10 +129,10 @@ fn require_open_overlap_row(
     )
 }
 
-fn require_filtered_core_only_row(
-    rows: &[NormalizedCriticFinding],
+fn require_filtered_core_only_row<'a>(
+    rows: &'a [NormalizedCriticFinding],
     policy_case: &str,
-) -> Result<(), String> {
+) -> Result<&'a NormalizedCriticFinding, String> {
     let row = require_single_core_authority_row(rows, policy_case)?;
     require(
         row.contributors().len() == 1,
@@ -146,7 +148,8 @@ fn require_filtered_core_only_row(
         format!(
             "{policy_case}: Critic policy may not keep an active native contribution after filtering it"
         ),
-    )
+    )?;
+    Ok(row)
 }
 
 #[test]
@@ -171,11 +174,64 @@ fn core_security_authority_survives_critic_severity_thresholds() -> Result<(), S
 }
 
 #[test]
+fn below_threshold_critic_severity_cannot_ride_a_stricter_core_severity() -> Result<(), String> {
+    // The threshold is evaluated over the Critic-owned contributors' own
+    // severities: a stricter built-in severity must never admit a
+    // below-threshold Critic contribution (#13798).
+    let include = Vec::new();
+    let exclude = Vec::new();
+    let suppressions = CriticSuppressionMap::from_source("");
+    let policy = NativeCriticPolicy::new(4, &include, &exclude, &suppressions);
+    let candidates = vec![
+        CriticFindingCandidate::new(
+            CriticObservedIdentity::built_in_system_call(),
+            SOURCE_IDENTITY,
+            Severity::Gentle,
+            system_range(),
+            "system() executes a shell command.",
+            None,
+        ),
+        CriticFindingCandidate::new(
+            CriticObservedIdentity::native_system_call(),
+            SOURCE_IDENTITY,
+            Severity::Harsh,
+            system_range(),
+            "Avoid system() where a safer process API is available.",
+            None,
+        ),
+    ];
+    let rows = normalize_with_native_policy(candidates, &policy);
+    let row = require_single_core_authority_row(&rows, "below-threshold Critic severity")?;
+    require(
+        !row.has_severity_conflict(),
+        "the surviving core-only row reports only the built-in severity",
+    )?;
+    require(
+        row.severity() == Severity::Gentle,
+        "the surviving row severity comes from the retained built-in contributor",
+    )
+}
+
+#[test]
 fn core_security_authority_survives_critic_exclude() -> Result<(), String> {
     let include = Vec::new();
     let exclude = vec!["native.security.system_exec".to_string()];
     let rows = apply_policy(true, 1, &include, &exclude);
-    require_filtered_core_only_row(&rows, "native alias excluded")
+    require_filtered_core_only_row(&rows, "native alias excluded");
+    Ok(())
+}
+
+#[test]
+fn core_security_authority_survives_exclusion_by_the_pl603_selector() -> Result<(), String> {
+    // Production accepts the built-in compatibility code as a Critic-policy
+    // selector. Excluding `PL603` strips the Critic contribution but may not
+    // revoke the independently owned core proposition; removal of the core
+    // proposition itself is a built-in-policy decision (#13798).
+    let include = Vec::new();
+    let exclude = vec!["PL603".to_string()];
+    let rows = apply_policy(true, 1, &include, &exclude);
+    require_filtered_core_only_row(&rows, "PL603 selector excluded");
+    Ok(())
 }
 
 #[test]
@@ -183,7 +239,8 @@ fn core_security_authority_survives_nonmatching_critic_include() -> Result<(), S
     let include = vec!["native.testing.require_use_strict".to_string()];
     let exclude = Vec::new();
     let rows = apply_policy(true, 1, &include, &exclude);
-    require_filtered_core_only_row(&rows, "nonmatching include filter")
+    require_filtered_core_only_row(&rows, "nonmatching include filter");
+    Ok(())
 }
 
 #[test]
@@ -223,6 +280,42 @@ fn severity_conflict_is_flagged_and_resolves_to_the_more_severe_producer() -> Re
     require(
         row.severity() == Severity::Gentle,
         "conflicting severities must resolve to the more severe producer (Gentle = perlcritic 5)",
+    )
+}
+
+#[test]
+fn filtered_critic_fix_availability_is_not_advertised_on_the_core_row() -> Result<(), String> {
+    // A stripped Critic producer's fix advertisement must not survive on the
+    // core-only row: diagnostics advertise what the code-action path can
+    // actually provide (#13798).
+    let include = Vec::new();
+    let exclude = Vec::new();
+    let suppressions = CriticSuppressionMap::from_source("");
+    let policy = NativeCriticPolicy::new(5, &include, &exclude, &suppressions);
+    let candidates = vec![
+        CriticFindingCandidate::new(
+            CriticObservedIdentity::built_in_system_call(),
+            SOURCE_IDENTITY,
+            Severity::Harsh,
+            system_range(),
+            "system() executes a shell command.",
+            None,
+        ),
+        CriticFindingCandidate::with_fix_availability(
+            CriticObservedIdentity::native_system_call(),
+            SOURCE_IDENTITY,
+            Severity::Harsh,
+            system_range(),
+            "Avoid system() where a safer process API is available.",
+            None,
+            true,
+        ),
+    ];
+    let rows = normalize_with_native_policy(candidates, &policy);
+    let row = require_filtered_core_only_row(&rows, "fixable Critic contribution filtered")?;
+    require(
+        !row.has_available_fix(),
+        "a stripped Critic fix may not be advertised on the surviving core-only row",
     )
 }
 

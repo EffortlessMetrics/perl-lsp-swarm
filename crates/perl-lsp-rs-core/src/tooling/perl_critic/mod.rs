@@ -5,6 +5,8 @@
 
 mod analyzer;
 mod built_in;
+#[cfg(test)]
+mod test_core_authority_policy;
 mod identity;
 mod native;
 mod normalized;
