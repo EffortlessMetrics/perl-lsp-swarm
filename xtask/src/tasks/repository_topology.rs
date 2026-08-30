@@ -574,6 +574,12 @@ pub fn validate(
     let mut excluded_paths = BTreeSet::new();
     for tree in &topology.excluded_trees {
         let subject = format!("excluded tree {:?}", tree.path);
+        // Held to the same shape rule as a package path: this row asserts that a
+        // tree inside the repository is deliberately not a workspace member, and a
+        // path that escapes the tree would have the authority govern files that are
+        // not ours to govern.
+        check_relative_path(&mut errors, &subject, "path", &tree.path);
+        check_non_empty(&mut errors, &subject, "notes", &tree.notes);
         if !excluded_paths.insert(tree.path.as_str()) {
             errors.push(format!("duplicate excluded tree {:?}", tree.path));
         }
@@ -1523,6 +1529,46 @@ metadata_authority = "workspace_inherited"
     fn projection_is_deterministic() -> TestResult {
         let topology = parse(&fixture())?;
         assert_eq!(render(&topology), render(&topology));
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_an_excluded_tree_path_that_escapes_the_repository() -> TestResult {
+        // Held to the same shape rule as a package path: an escaping path would have
+        // this authority claim files outside the repository. The workspace exclude
+        // list is made to contain the same string, so staleness cannot be what
+        // rejects it — only the shape check can.
+        let source = format!(
+            "{}\n[[excluded_trees]]\npath = \"../vendor\"\nkind = \"vendored_upstream_source\"\nowner = \"#9\"\nnotes = \"n\"\n",
+            fixture()
+        );
+        let topology = parse(&source)?;
+        let excludes = BTreeSet::from(["../vendor".to_string()]);
+        let Err(error) = validate(&topology, &manifests(), &excludes) else {
+            bail!("an escaping excluded-tree path was accepted");
+        };
+        let message = format!("{error}");
+        if !message.contains("must be a repository-relative path inside the tree") {
+            bail!("unexpected rejection reason: {message}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_a_blank_excluded_tree_note() -> TestResult {
+        let source = format!(
+            "{}\n[[excluded_trees]]\npath = \"vendor\"\nkind = \"vendored_upstream_source\"\nowner = \"#9\"\nnotes = \"  \"\n",
+            fixture()
+        );
+        let topology = parse(&source)?;
+        let excludes = BTreeSet::from(["vendor".to_string()]);
+        let Err(error) = validate(&topology, &manifests(), &excludes) else {
+            bail!("a blank excluded-tree note was accepted");
+        };
+        let message = format!("{error}");
+        if !message.contains("notes is empty") {
+            bail!("unexpected rejection reason: {message}");
+        }
         Ok(())
     }
 
