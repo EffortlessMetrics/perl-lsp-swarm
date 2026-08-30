@@ -13,9 +13,12 @@
 //! - the family is namespaced and versioned, never colliding with a standard
 //!   DAP request name (pinned against the adapter's single supported-command
 //!   authority, `debug_adapter::SUPPORTED_COMMANDS`);
-//! - it is **not dispatched**: no route exists for the family request name,
-//!   and a request for it receives the adapter's ordinary unknown-command
-//!   response;
+//! - it is **not a standard command**: it stays absent from
+//!   `SUPPORTED_COMMANDS`, and its only route is the exact preview/test
+//!   profile that R03 (#10102) wires into the debug session lifecycle; a
+//!   request outside that profile receives the adapter's ordinary
+//!   unknown-command response, and no production construction enables the
+//!   profile;
 //! - it is **unadvertised**: no capability key mentions it until the R04
 //!   exact-proof leaf lands;
 //! - the wire request payload is the typed, adapter-issued opaque subject
@@ -488,8 +491,11 @@ pub struct WireGenerationWitness {
 }
 
 /// Reconciliation dispositions carried separately from the terminal
-/// outcome. Version 1 registers the surface with the `deferred`
-/// disposition; the real dispositions are #10102's (R03) to carry.
+/// outcome. R03 (#10102) fills the surface: the dispositions are derived
+/// from the terminal outcome by the reconciliation contract
+/// ([`crate::reload::reconciliation_dispositions_for`]); version 1 no
+/// longer carries a `deferred` placeholder because every routed terminal
+/// kind now has an honest disposition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WireReconciliation {
     /// Loaded-source refresh disposition.
@@ -506,21 +512,78 @@ pub struct WireReconciliation {
 
 impl Default for WireReconciliation {
     fn default() -> Self {
+        // Absence claims nothing: an absent reconciliation sub-object
+        // deserializes as `not_applicable` on every surface, never as a
+        // positive reconciliation claim.
+        WireReconciliation::all(WireReconciliationDisposition::NotApplicable)
+    }
+}
+
+impl WireReconciliation {
+    /// The same disposition on every surface.
+    pub const fn all(disposition: WireReconciliationDisposition) -> WireReconciliation {
         WireReconciliation {
-            loaded_source_refresh: WireReconciliationDisposition::Deferred,
-            inspection_invalidation: WireReconciliationDisposition::Deferred,
-            breakpoint_reconciliation: WireReconciliationDisposition::Deferred,
+            loaded_source_refresh: disposition,
+            inspection_invalidation: disposition,
+            breakpoint_reconciliation: disposition,
         }
     }
 }
 
-/// Closed v1 reconciliation disposition vocabulary.
+/// Closed v1 reconciliation disposition vocabulary, filled by R03
+/// (#10102). The frozen terminal vocabulary is untouched; these codes
+/// describe only what the session wiring did with invalidated state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WireReconciliationDisposition {
-    /// The disposition surface is registered; the real disposition arrives
-    /// with the R03 composition leaf (#10102).
-    #[serde(rename = "deferred")]
-    Deferred,
+    /// The outcome did not mutate runtime code: nothing was invalidated
+    /// and nothing needed reconciliation. The only clean disposition, and
+    /// never valid for `reloaded` or `indeterminate_possibly_applied`.
+    #[serde(rename = "not_applicable")]
+    NotApplicable,
+    /// Inspection state minted before the new runtime-module generation
+    /// was invalidated per the composed invalidation table (frames,
+    /// scopes, variables, evaluate results, exception/stop facts).
+    #[serde(rename = "invalidated")]
+    Invalidated,
+    /// Durable desired breakpoint configuration was preserved, applied
+    /// installation identities were invalidated, and the affected desired
+    /// breakpoints are marked pending/unverified until the canonical
+    /// engine path acknowledges them under the new runtime source
+    /// identity.
+    #[serde(rename = "pending")]
+    Pending,
+    /// The new exact state could not be reacquired or proven (for example
+    /// loaded-source refresh without a mechanism read-back); fail closed
+    /// rather than retaining or claiming the old exact row.
+    #[serde(rename = "unavailable")]
+    Unavailable,
+}
+
+impl WireReconciliationDisposition {
+    /// The closed v1 code set in frozen order.
+    pub const ALL: [WireReconciliationDisposition; 4] = [
+        WireReconciliationDisposition::NotApplicable,
+        WireReconciliationDisposition::Invalidated,
+        WireReconciliationDisposition::Pending,
+        WireReconciliationDisposition::Unavailable,
+    ];
+
+    /// Stable closed-vocabulary code.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            WireReconciliationDisposition::NotApplicable => "not_applicable",
+            WireReconciliationDisposition::Invalidated => "invalidated",
+            WireReconciliationDisposition::Pending => "pending",
+            WireReconciliationDisposition::Unavailable => "unavailable",
+        }
+    }
+
+    /// Parse the closed vocabulary; unknown spellings are refused.
+    pub fn parse(code: &str) -> Option<WireReconciliationDisposition> {
+        WireReconciliationDisposition::ALL
+            .into_iter()
+            .find(|disposition| disposition.as_str() == code)
+    }
 }
 
 /// The terminal transaction result body. Field names follow DAP camelCase;
@@ -707,6 +770,16 @@ impl ReloadFamilySession {
             backed,
             recent_operations: VecDeque::new(),
         }
+    }
+
+    /// The session epoch this family state is bound to.
+    pub fn epoch(&self) -> u64 {
+        self.epoch
+    }
+
+    /// Whether the session has reload mechanism backing.
+    pub fn is_backed(&self) -> bool {
+        self.backed
     }
 
     /// Negotiate the family against a client declaration, selecting the
@@ -953,7 +1026,7 @@ pub fn project_outcome(
         cause,
         possibly_applied,
         generation: Some(WireGenerationWitness { previous, current, advanced: advance.advanced() }),
-        reconciliation: WireReconciliation::default(),
+        reconciliation: crate::reload::reconciliation_dispositions_for(outcome),
         reasons: clamp_reasons(reasons),
         remediation: redact_remediation(remediation),
     };
@@ -1283,7 +1356,7 @@ mod tests {
         );
 
         // Operation identity.
-        let mut zero_operation = request_value(0, 7);
+        let zero_operation = request_value(0, 7);
         let mut session = negotiated_backed_session(7);
         assert_eq!(
             rejection_code_of(&session.evaluate(&zero_operation)),
@@ -1641,6 +1714,9 @@ mod tests {
     #[test]
     fn no_capability_advertises_the_family_before_r04() -> TestResult {
         let mut adapter = DebugAdapter::new();
+        // The R03 preview/test profile must not leak advertisement either:
+        // the advertiser is R04's claim, and routing is not advertising.
+        adapter.enable_loaded_module_reload_preview_profile(true);
         let init = adapter.handle_request(1, "initialize", None);
         let DapMessage::Response { success: true, command, body: Some(body), .. } = init else {
             return Err("expected a successful initialize response".into());
@@ -1663,22 +1739,59 @@ mod tests {
     }
 
     #[test]
-    fn the_family_request_is_not_dispatched_and_fails_closed() -> TestResult {
+    fn the_family_request_is_not_a_standard_command_and_is_unavailable_outside_the_profile()
+    -> TestResult {
         assert!(
             !SUPPORTED_COMMANDS.contains(&LOADED_MODULE_RELOAD_REQUEST),
-            "the custom family must not be a dispatched standard command"
+            "the custom family must never join the standard command authority"
         );
         assert!(!crate::debug_adapter::is_supported_dap_command(LOADED_MODULE_RELOAD_REQUEST));
+        // Outside the exact preview/test profile the family request is
+        // unavailable: the ordinary unknown-command failure, never a family
+        // response (no transport, no backend action, no advertisement).
         let mut adapter = DebugAdapter::new();
         let response = adapter.handle_request(2, LOADED_MODULE_RELOAD_REQUEST, None);
-        let DapMessage::Response { success, command, .. } = response else {
+        let DapMessage::Response { success, command, message, .. } = response else {
             return Err("expected a response".into());
         };
         assert_eq!(command, LOADED_MODULE_RELOAD_REQUEST);
+        assert!(!success, "an unavailable family request must fail closed");
         assert!(
-            !success,
-            "an undischarged family request must receive the ordinary unknown-command failure"
+            message.as_deref().unwrap_or_default().contains("Unknown command"),
+            "the unavailable shape is the ordinary unknown-command response, got {message:?}"
         );
+        // Under the profile the route exists but is still not a standard
+        // command: an unnegotiated request reaches the typed wire
+        // rejection, never a backend action.
+        let mut profiled = DebugAdapter::new();
+        profiled.enable_loaded_module_reload_preview_profile(false);
+        let response = profiled.handle_request(
+            3,
+            LOADED_MODULE_RELOAD_REQUEST,
+            Some(serde_json::json!({
+                "family": LOADED_MODULE_RELOAD_FAMILY,
+                "familyVersion": LOADED_MODULE_RELOAD_FAMILY_VERSION,
+                "sessionEpoch": 1,
+                "operationId": 1,
+                "subject": {
+                    "moduleIdentity": "opaque-module-token-1a2b",
+                    "savedSourceDigest": "sha256:0f12e4d6a9b8c7d5e3f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d",
+                    "logicalSourceUri": "perl-lsp-subject:epoch=1;observation=3",
+                    "observationGeneration": 3
+                }
+            })),
+        );
+        let DapMessage::Response { success, body, .. } = response else {
+            return Err("expected a response".into());
+        };
+        assert!(!success, "an unnegotiated request never succeeds");
+        let code = body
+            .as_ref()
+            .and_then(|body| body.get("body"))
+            .and_then(|body| body.get("code"))
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        assert_eq!(code, "family_not_negotiated", "the typed fail-closed code");
         Ok(())
     }
 
@@ -1782,6 +1895,16 @@ mod tests {
             rejection_codes
         );
 
+        let dispositions: BTreeSet<String> = WireReconciliationDisposition::ALL
+            .iter()
+            .map(|disposition| disposition.as_str().to_string())
+            .collect();
+        assert_eq!(
+            enum_codes(&defs, "reconciliationDisposition")?.into_iter().collect::<BTreeSet<_>>(),
+            dispositions,
+            "the R03 reconciliation disposition vocabulary, exactly"
+        );
+
         assert_eq!(defs["opaqueIdentity"]["maxLength"].as_u64(), Some(MAX_IDENTITY_CHARS as u64));
         assert_eq!(defs["digestToken"]["maxLength"].as_u64(), Some(MAX_DIGEST_CHARS as u64));
         assert_eq!(defs["reasonCode"]["maxLength"].as_u64(), Some(MAX_REASON_CHARS as u64));
@@ -1835,6 +1958,11 @@ mod tests {
             .extend(PreMutationFailureCause::ALL.iter().map(|cause| cause.as_str().to_string()));
         required.extend(IndeterminateCause::ALL.iter().map(|cause| cause.as_str().to_string()));
         required.extend(ALL_REJECTION_CODES.map(str::to_string));
+        required.extend(
+            WireReconciliationDisposition::ALL
+                .iter()
+                .map(|disposition| disposition.as_str().to_string()),
+        );
         for literal in required {
             let quoted_single = format!("'{literal}'");
             let quoted_double = format!("\"{literal}\"");

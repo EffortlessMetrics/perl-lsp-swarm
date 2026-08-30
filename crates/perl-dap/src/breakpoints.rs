@@ -638,6 +638,31 @@ impl BreakpointStore {
         outcome
     }
 
+    /// Mark every desired breakpoint of one source pending reconciliation
+    /// after a possibly applied loaded-module reload (#10102, R03).
+    ///
+    /// Durable desired client configuration is preserved — records are
+    /// never dropped here — but their applied engine installation identities
+    /// cannot survive the runtime-module generation: each record is marked
+    /// unverified with an explicit pending message until the canonical
+    /// breakpoint path acknowledges it under the new runtime source
+    /// identity. Returns the affected records in store order so callers can
+    /// emit generation-bound `breakpoint` changed events.
+    pub fn mark_breakpoints_pending_reconciliation(
+        &self,
+        source_path: &str,
+    ) -> Vec<BreakpointRecord> {
+        let mut breakpoints_map = self.breakpoints.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(records) = breakpoints_map.get_mut(source_path) else {
+            return Vec::new();
+        };
+        for record in records.iter_mut() {
+            record.verified = false;
+            record.message = Some("Pending reconciliation after module reload".to_string());
+        }
+        records.clone()
+    }
+
     /// AC7.4: Adjust breakpoints for a file edit
     ///
     /// This method shifts breakpoint lines based on content changes.
@@ -1649,5 +1674,53 @@ EOF
                 .contains("Conditional breakpoint expression is invalid"),
             "stored message must include condition-invalid note"
         );
+    }
+
+    /// #10102 (R03): pending reconciliation after a possibly applied
+    /// module reload preserves every desired record (durable client
+    /// configuration is never dropped), marks each unverified with the
+    /// explicit pending message, and leaves other sources untouched.
+    #[test]
+    fn test_mark_breakpoints_pending_reconciliation_preserves_and_marks() {
+        let (_file, source_path) = create_test_perl_file();
+        let store = BreakpointStore::new();
+        store.set_breakpoints(&SetBreakpointsArguments {
+            source: Source { path: Some(source_path.clone()), name: None },
+            breakpoints: Some(vec![
+                SourceBreakpoint {
+                    line: 5,
+                    column: None,
+                    condition: None,
+                    hit_condition: None,
+                    log_message: None,
+                },
+                SourceBreakpoint {
+                    line: 7,
+                    column: None,
+                    condition: None,
+                    hit_condition: None,
+                    log_message: None,
+                },
+            ]),
+            source_modified: None,
+        });
+        let before = store.get_breakpoints(&source_path);
+        assert_eq!(before.len(), 2);
+        assert!(before.iter().all(|record| record.verified));
+
+        let affected = store.mark_breakpoints_pending_reconciliation(&source_path);
+        assert_eq!(affected.len(), 2, "every affected record is returned for events");
+        let after = store.get_breakpoints(&source_path);
+        assert_eq!(after.len(), 2, "desired configuration is preserved, never dropped");
+        assert_eq!(after[0].id, before[0].id, "record identity is preserved");
+        assert_eq!(after[0].line, before[0].line, "location is preserved");
+        assert!(
+            after.iter().all(|record| !record.verified
+                && record.message.as_deref() == Some("Pending reconciliation after module reload")),
+            "affected records are explicitly pending: {after:?}"
+        );
+
+        // An unbound source reconciles nothing and clears nothing.
+        assert!(store.mark_breakpoints_pending_reconciliation("never_registered.pl").is_empty());
     }
 }

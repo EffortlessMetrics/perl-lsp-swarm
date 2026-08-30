@@ -12,6 +12,7 @@ mod logpoint;
 mod output;
 mod patterns;
 mod process;
+mod reload_route;
 mod variables;
 
 #[cfg(test)]
@@ -78,6 +79,8 @@ use crate::debug_adapter::variable_cache::CachedVariable;
 #[cfg(any(test, feature = "test-helpers"))]
 use crate::debug_adapter::variable_cache::VariableCache;
 use crate::debug_adapter::variable_cache::{VariableCacheKind, slice_variables};
+#[cfg(any(test, feature = "test-helpers"))]
+use crate::reload::RuntimeModuleGenerationClock;
 use crate::security;
 use patterns::{
     DEBUG_SESSION_TERMINATE_WAIT_MS, DEBUGGER_FRAME_POLL_MS, DEBUGGER_QUERY_WAIT_MS,
@@ -170,8 +173,17 @@ pub struct DebugAdapter {
     workspace_root: Arc<Mutex<Option<PathBuf>>>,
     /// Transport broken flag: set by event handler on persistent write failure
     transport_broken: Arc<AtomicBool>,
+    /// Events enqueued but not yet written by the transport's event
+    /// consumer; the request loop waits on it (bounded) before each
+    /// response so handler-emitted events precede the response on the wire.
+    event_drain: sync_utils::EventDrainLatch,
     /// Tracks whether initialize request has been received (state machine validation)
     initialized: Arc<AtomicBool>,
+    /// Reload-family route state (R03, #10102): the exact preview/test
+    /// profile gate, session epoch, negotiated family wiring, and
+    /// subject bindings. Absent behavior (the default) leaves the family
+    /// request unavailable.
+    reload_route: Arc<Mutex<reload_route::ReloadRouteState>>,
 }
 
 /// Represents a DAP message, which can be a request, response, or event.
@@ -259,7 +271,9 @@ impl DebugAdapter {
             next_goto_target_id: Arc::new(Mutex::new(1)),
             workspace_root: Arc::new(Mutex::new(None)),
             transport_broken: Arc::new(AtomicBool::new(false)),
+            event_drain: sync_utils::EventDrainLatch::default(),
             initialized: Arc::new(AtomicBool::new(false)),
+            reload_route: Arc::new(Mutex::new(reload_route::ReloadRouteState::default())),
         }
     }
 
@@ -399,7 +413,15 @@ impl DebugAdapter {
     /// when the queue is full); all other events apply backpressure.
     fn send_event(&self, event: &str, body: Option<Value>) {
         if let Some(ref sender) = self.event_sender {
-            dispatch_event(sender, &self.seq, event, body);
+            // Count only accepted messages: the transport's request loop
+            // waits on this latch before writing a response so accepted
+            // events are observed first (bounded, fail-open on timeout).
+            if matches!(
+                dispatch_event(sender, &self.seq, event, body),
+                crate::debug_adapter::sync_utils::EventDispatchResult::Sent
+            ) {
+                self.event_drain.enqueue(1);
+            }
         }
     }
 
@@ -618,6 +640,7 @@ impl DebugAdapter {
                 thread_id: 1,
                 last_resume_mode: ResumeMode::Continue,
                 stopped_generation: 0,
+                module_generation: RuntimeModuleGenerationClock::new(),
             });
         }
     }
@@ -649,6 +672,7 @@ impl DebugAdapter {
             thread_id: 1,
             last_resume_mode: ResumeMode::Unknown,
             stopped_generation: 0,
+            module_generation: RuntimeModuleGenerationClock::new(),
         });
         Ok(())
     }
@@ -754,6 +778,7 @@ impl DebugAdapter {
             thread_id: 1,
             last_resume_mode: ResumeMode::Unknown,
             stopped_generation: 0,
+            module_generation: RuntimeModuleGenerationClock::new(),
         });
     }
 

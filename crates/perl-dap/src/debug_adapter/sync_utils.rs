@@ -27,6 +27,75 @@ pub(crate) enum EventDispatchResult {
     Disconnected,
 }
 
+/// Bounded wait before a response write, used by the transport loop to
+/// let the event-consumer thread drain events that a command handler
+/// enqueued before the handler returned. Events accepted by
+/// [`dispatch_event`] increment the latch; the consumer decrements it
+/// after writing each accepted message. The transport waits (capped) on
+/// the latch before writing a response, so a client observes a command's
+/// events before the terminal response that can imply their effect
+/// (review finding on #12745: queueing alone does not order the wire).
+///
+/// Saturation semantics keep the latch fail-open: uncounted synthetic
+/// messages (the drop notice) or lost decrements can only open the
+/// barrier early, never hang it, and the bounded wait caps every
+/// response's added latency even when the consumer is stalled on a
+/// blocked wire.
+#[derive(Clone, Default)]
+pub(crate) struct EventDrainLatch {
+    pending: std::sync::Arc<(Mutex<usize>, std::sync::Condvar)>,
+}
+
+impl EventDrainLatch {
+    /// Record `count` messages accepted onto the outbound channel.
+    pub(crate) fn enqueue(&self, count: usize) {
+        if count == 0 {
+            return;
+        }
+        let (mutex, _) = &*self.pending;
+        *lock_or_recover(mutex, "event_drain_latch.enqueue") += count;
+    }
+
+    /// Record that the consumer wrote `count` previously counted messages.
+    pub(crate) fn complete(&self, count: usize) {
+        let (mutex, condvar) = &*self.pending;
+        let mut pending = lock_or_recover(mutex, "event_drain_latch.complete");
+        *pending = pending.saturating_sub(count);
+        condvar.notify_all();
+    }
+
+    /// Clear any residue (for example from a previous transport run whose
+    /// consumer terminated mid-batch).
+    pub(crate) fn reset(&self) {
+        let (mutex, condvar) = &*self.pending;
+        *lock_or_recover(mutex, "event_drain_latch.reset") = 0;
+        condvar.notify_all();
+    }
+
+    /// Wait until every counted message has been written, bounded by
+    /// `cap`. Returns `true` when fully drained, `false` on timeout.
+    pub(crate) fn wait_until_drained(&self, cap: std::time::Duration) -> bool {
+        let start = std::time::Instant::now();
+        let (mutex, condvar) = &*self.pending;
+        let mut pending = lock_or_recover(mutex, "event_drain_latch.wait");
+        while *pending > 0 {
+            let elapsed = start.elapsed();
+            if elapsed >= cap {
+                return false;
+            }
+            let (guard, timed_out) = match condvar.wait_timeout(pending, cap - elapsed) {
+                Ok(pair) => pair,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            pending = guard;
+            if timed_out.timed_out() && *pending > 0 && start.elapsed() >= cap {
+                return false;
+            }
+        }
+        true
+    }
+}
+
 /// Poison-safe mutex lock that recovers from poisoned state.
 pub(crate) fn lock_or_recover<'a, T>(mutex: &'a Mutex<T>, ctx: &'static str) -> MutexGuard<'a, T> {
     match mutex.lock() {

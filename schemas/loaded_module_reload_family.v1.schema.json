@@ -107,7 +107,7 @@
     },
     "reconciliationDisposition": {
       "type": "string",
-      "enum": ["deferred"]
+      "enum": ["not_applicable", "invalidated", "pending", "unavailable"]
     },
     "reconciliation": {
       "type": "object",
