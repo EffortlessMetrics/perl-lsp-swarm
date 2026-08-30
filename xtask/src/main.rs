@@ -36,32 +36,32 @@ use tasks::{
     active_goal_manifest, agent_capability_policy, agent_flow, agent_implementation_packet,
     agent_lease, agent_receipt, agent_review_packet, aggregate_receipts, badges, bench, benchmarks,
     build, build_timing, bump_version, change_set, check, check_agent_context, check_lint_policy,
-    check_test_wiring, check_toolchain, check_version_sync, ci, ci_audit_workflows, ci_contract,
-    ci_doctor, ci_explain, ci_hygiene, ci_measure, ci_metrics, ci_policy, ci_pr_summary, ci_route,
-    ci_scope, clean, clippy_cost_measure, command_evidence, compare, compat_inventory,
-    compiler_lexical_cutline, corpus_audit, count_ratchet, cpan_corpus, dead_code, debt_report,
-    dependency_hygiene, dev, devex_docs, devex_doctor, devex_plan, doc, doc_claims, e2e_validate,
-    edge_cases, emacs_train_context, emacs_train_specs, features, finalize_check, fix_forward, fmt,
-    forbid_fatal_constructs, forensics, gate_receipts, gates, generated_files, github,
-    github_preflight, github_review, goals, hardening, hook_checks, ignored_tests,
-    incremental_proof, inject_sha_assets, inline_completion_quality, inline_completion_smoke,
-    install_surface_check, integration_proof, intent_diff_gate, issue_plan, layer_check,
-    lsp_318_claims, lsp_318_matrix, lsp_ux_smoke, memory_trends, merge_ready, methodology_gate,
-    metrics, module_train, module_train_live, native_critic, native_format, native_neovim_train,
-    native_product_surface, native_tooling, oracle_fixture_manifest, oracle_receipt_schema,
-    oracle_runner, parse_rust, parser_corpus_sweep, parser_matrix, parser_ratchet,
-    perl_core_harness, perl_kwalitee, populate_book, pre_push_plan, prep_crates_io_launch,
-    product_health_rail_contract, product_health_status, protocol_type_substrate_matrix,
-    provider_confidence_matrix, provider_promotion_ledger, publication_facts, publish,
-    publish_closure, publish_manifest_check, publish_receipts, quality_baseline, quality_gate,
-    queue_health, queue_snapshot, receipts, release, release_artifact_check, release_evidence,
-    release_notes, release_turnkey, repo_hygiene, repository_topology, ripr_evidence,
-    rust_small_proof, seam_diff, semantic_inline_next_edit, semantic_inline_receipts,
-    semantic_scorecard, semantic_shadow_compare, semantic_token_classes, session_receipt,
-    shadow_parity, srp_microcrates, supported_editor_inline_smoke, swarm_agent_roster,
-    swarm_summary, sync_release_docs, targeted_checks, test, test_lsp, train_edge_contract,
-    unwired_scan, update_homebrew, update_status, ux_regression_receipt, ux_scorecard,
-    validate_workspace_exclusions, workflow_policy_lint, workflow_trigger_lint,
+    check_tautology, check_test_wiring, check_toolchain, check_version_sync, ci,
+    ci_audit_workflows, ci_contract, ci_doctor, ci_explain, ci_hygiene, ci_measure, ci_metrics,
+    ci_policy, ci_pr_summary, ci_route, ci_scope, clean, clippy_cost_measure, command_evidence,
+    compare, compat_inventory, compiler_lexical_cutline, corpus_audit, count_ratchet, cpan_corpus,
+    dead_code, debt_report, dependency_hygiene, dev, devex_docs, devex_doctor, devex_plan, doc,
+    doc_claims, e2e_validate, edge_cases, emacs_train_context, emacs_train_specs, features,
+    finalize_check, fix_forward, fmt, forbid_fatal_constructs, forensics, gate_receipts, gates,
+    generated_files, github, github_preflight, github_review, goals, hardening, hook_checks,
+    ignored_tests, incremental_proof, inject_sha_assets, inline_completion_quality,
+    inline_completion_smoke, install_surface_check, integration_proof, intent_diff_gate,
+    issue_plan, layer_check, lsp_318_claims, lsp_318_matrix, lsp_ux_smoke, memory_trends,
+    merge_ready, methodology_gate, metrics, module_train, module_train_live, native_critic,
+    native_format, native_neovim_train, native_product_surface, native_tooling,
+    oracle_fixture_manifest, oracle_receipt_schema, oracle_runner, parse_rust, parser_corpus_sweep,
+    parser_matrix, parser_ratchet, perl_core_harness, perl_kwalitee, populate_book, pre_push_plan,
+    prep_crates_io_launch, product_health_rail_contract, product_health_status,
+    protocol_type_substrate_matrix, provider_confidence_matrix, provider_promotion_ledger,
+    publication_facts, publish, publish_closure, publish_manifest_check, publish_receipts,
+    quality_baseline, quality_gate, queue_health, queue_snapshot, receipts, release,
+    release_artifact_check, release_evidence, release_notes, release_turnkey, repo_hygiene,
+    repository_topology, ripr_evidence, rust_small_proof, seam_diff, semantic_inline_next_edit,
+    semantic_inline_receipts, semantic_scorecard, semantic_shadow_compare, semantic_token_classes,
+    session_receipt, shadow_parity, srp_microcrates, supported_editor_inline_smoke,
+    swarm_agent_roster, swarm_summary, sync_release_docs, targeted_checks, test, test_lsp,
+    train_edge_contract, unwired_scan, update_homebrew, update_status, ux_regression_receipt,
+    ux_scorecard, validate_workspace_exclusions, workflow_policy_lint, workflow_trigger_lint,
     workspace_symbol_classes, worktree_allocator, worktrees, writer_admission,
 };
 #[cfg(feature = "parser-tasks")]
@@ -1451,6 +1451,22 @@ enum Commands {
 
     /// Check for disallowed direct `ExitStatus::from_raw()` usage.
     CheckFromRaw,
+
+    /// Reject provably tautological Rust assertions in governed source.
+    CheckTautology {
+        /// Fail when findings exist (CI mode). Instrument failures always fail.
+        #[arg(long)]
+        check: bool,
+        /// Repository root to scan (defaults to the workspace root).
+        #[arg(long)]
+        root: Option<PathBuf>,
+        /// Optional disposition ledger. Defaults to `policy/tautology-dispositions.toml` when present.
+        #[arg(long)]
+        policy: Option<PathBuf>,
+        /// Optional JSON receipt path.
+        #[arg(long)]
+        receipt: Option<PathBuf>,
+    },
 
     /// Enforce retained-state lifecycle and memory receipt invariants.
     CheckMemoryLifecyclePolicy,
@@ -5684,6 +5700,14 @@ fn run_cli(cli: Cli) -> Result<()> {
         }
         Commands::SyncReleaseDocs { write } => sync_release_docs::run(write),
         Commands::CheckFromRaw => ci_policy::check_from_raw(),
+        Commands::CheckTautology { check, root, policy, receipt } => {
+            check_tautology::run(check_tautology::CheckTautologyArgs {
+                check,
+                root,
+                policy,
+                receipt,
+            })
+        }
         Commands::CheckMemoryLifecyclePolicy => ci_policy::check_memory_lifecycle(),
         Commands::CheckMemoryRetainedOwnerDrift { base, report_only } => {
             ci_policy::check_memory_retained_owner_drift(ci_policy::RetainedOwnerDriftConfig {
