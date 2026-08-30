@@ -350,7 +350,7 @@ def parse_inventory(doc: str) -> dict[str, Any]:
                     surfaces.append(
                         {
                             "surface_id": cells[0],
-                            "path": resolve_link_label(cells[1]),
+                            "path": extract_cell_text(cells[1], f"{cells[0]}.path"),
                             "role": cells[2],
                             "claim_class": cells[3],
                             "registry_cross_ref": extract_cell_text(
@@ -423,18 +423,55 @@ def parse_inventory(doc: str) -> dict[str, Any]:
 
 def parse_receipt_manifest(raw: bytes) -> dict[str, Any]:
     manifest = json.loads(raw)
+    if not isinstance(manifest, dict):
+        raise ValidationError(f"{RECEIPT_MANIFEST_PATH}: root must be an object")
+    expected_keys = {"release", "source", "verified_date", "assets"}
+    unknown = sorted(set(manifest) - expected_keys)
+    if unknown:
+        raise ValidationError(f"{RECEIPT_MANIFEST_PATH}: unknown root key(s) {unknown}")
     release = manifest.get("release")
+    source = manifest.get("source")
     verified_date = manifest.get("verified_date")
     assets = manifest.get("assets")
     if not isinstance(release, str) or not release:
         raise ValidationError(f"{RECEIPT_MANIFEST_PATH}: release: missing")
+    release_parts = release[1:].split(".") if release.startswith("v") else []
+    if (
+        len(release_parts) != 3
+        or any(not part or not part.isascii() or not part.isdigit() for part in release_parts)
+    ):
+        raise ValidationError(
+            f"{RECEIPT_MANIFEST_PATH}: release `{release}` must match v<major>.<minor>.<patch>"
+        )
+    if not isinstance(source, str) or not source:
+        raise ValidationError(f"{RECEIPT_MANIFEST_PATH}: source: missing or empty")
     if not isinstance(verified_date, str) or not verified_date:
         raise ValidationError(f"{RECEIPT_MANIFEST_PATH}: verified_date: missing")
+    if (
+        len(verified_date) != 10
+        or verified_date[4] != "-"
+        or verified_date[7] != "-"
+        or any(
+            not character.isascii() or not character.isdigit()
+            for index, character in enumerate(verified_date)
+            if index not in (4, 7)
+        )
+    ):
+        raise ValidationError(
+            f"{RECEIPT_MANIFEST_PATH}: verified_date `{verified_date}` must match YYYY-MM-DD"
+        )
     if not isinstance(assets, list) or not assets:
         raise ValidationError(f"{RECEIPT_MANIFEST_PATH}: assets must be a non-empty array")
     names = []
     for asset in assets:
-        name = asset.get("name") if isinstance(asset, dict) else None
+        if not isinstance(asset, dict):
+            raise ValidationError(f"{RECEIPT_MANIFEST_PATH}: assets[]: expected object")
+        unknown_asset = sorted(set(asset) - {"name"})
+        if unknown_asset:
+            raise ValidationError(
+                f"{RECEIPT_MANIFEST_PATH}: assets[]: unknown key(s) {unknown_asset}"
+            )
+        name = asset.get("name")
         if not isinstance(name, str) or not name:
             raise ValidationError(f"{RECEIPT_MANIFEST_PATH}: assets[]: missing name")
         names.append(name)
@@ -442,7 +479,12 @@ def parse_receipt_manifest(raw: bytes) -> dict[str, Any]:
         raise ValidationError(
             f"{RECEIPT_MANIFEST_PATH}: asset names must be unique and stored in sorted order"
         )
-    return {"release": release, "verified_date": verified_date, "asset_names": names}
+    return {
+        "release": release,
+        "source": source,
+        "verified_date": verified_date,
+        "asset_names": names,
+    }
 
 
 def derive_windows_arm64_receipt(manifest: dict[str, Any]) -> str:
@@ -634,7 +676,7 @@ def compare_catalog(artifact: dict[str, Any], inventory: dict[str, Any], manifes
     receipts = artifact.get("release_receipts") or []
     expected_receipt = {
         "release": manifest["release"],
-        "source": f"https://github.com/EffortlessMetrics/perl-lsp/releases/tags/{manifest['release']}",
+        "source": manifest["source"],
         "verified_date": manifest["verified_date"],
         "assets": [{"name": name} for name in manifest["asset_names"]],
     }
@@ -904,6 +946,31 @@ def run_tamper_probes(
         results.append(("d1:manifest_release_mismatch", False,
                         "a successor manifest still derived the v0.17.0 receipt facts"))
         all_caught = False
+
+    def manifest_probe(name: str, mutate_fn) -> None:
+        nonlocal all_caught
+        copy = json.loads(manifest_raw)
+        mutate_fn(copy)
+        try:
+            parse_receipt_manifest(json.dumps(copy).encode())
+        except ValidationError as error:
+            results.append((name, True, str(error)))
+        else:
+            results.append((name, False, "tampered receipt manifest still parsed"))
+            all_caught = False
+
+    manifest_probe("d1:manifest_unknown_root_key",
+                   lambda copy: copy.update({"rogue": True}))
+    manifest_probe("d1:manifest_unknown_asset_key",
+                   lambda copy: copy["assets"][0].update({"rogue": True}))
+    manifest_probe("d1:manifest_source_missing",
+                   lambda copy: mutate(copy, ["source"], None))
+    manifest_probe("d1:manifest_source_empty",
+                   lambda copy: mutate(copy, ["source"], ""))
+    manifest_probe("d1:manifest_release_malformed",
+                   lambda copy: mutate(copy, ["release"], "0.17.0"))
+    manifest_probe("d1:manifest_verified_date_malformed",
+                   lambda copy: mutate(copy, ["verified_date"], "2026/08/28"))
 
     row_probes = [r for r in results if r[0].startswith("row:")]
     d1_probes = [r for r in results if r[0].startswith("d1:")]

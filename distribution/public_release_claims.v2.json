@@ -1896,21 +1896,21 @@
     },
     {
       "claim_class": "inputs + usage comment",
-      "path": "`.github/actions/setup-perl-lsp/action.yml`",
+      "path": ".github/actions/setup-perl-lsp/action.yml",
       "registry_cross_ref": "action.setup-perl-lsp",
       "role": "reusable composite action",
       "surface_id": "S04"
     },
     {
       "claim_class": "inputs + platform claims",
-      "path": "`.github/actions/README.md`",
+      "path": ".github/actions/README.md",
       "registry_cross_ref": "",
       "role": "actions catalog prose",
       "surface_id": "S05"
     },
     {
       "claim_class": "executable usage",
-      "path": "`docs/examples/github-actions/setup-perl-lsp-consumer.yml`",
+      "path": "docs/examples/github-actions/setup-perl-lsp-consumer.yml",
       "registry_cross_ref": "",
       "role": "maintained example",
       "surface_id": "S06"
@@ -1945,7 +1945,7 @@
     },
     {
       "claim_class": "identity fields",
-      "path": "`vscode-extension/package.json`",
+      "path": "vscode-extension/package.json",
       "registry_cross_ref": "package.vscode.manifest",
       "role": "extension manifest metadata",
       "surface_id": "S11"

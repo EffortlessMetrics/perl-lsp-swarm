@@ -14,8 +14,8 @@
 //! - D1: `dimensions.windows_arm64.published_receipt_v0_17_0` is derived from
 //!   the mirrored release-asset manifest
 //!   (`distribution/release_receipts/v0.17.0.assets.json`), never asserted
-//!   from prose; the validator cross-checks every receipt field against that
-//!   manifest.
+//!   from prose; the validator binds that manifest to the inventory release
+//!   anchor and cross-checks every receipt field against it.
 //! - D2: the crates.io four-name collision is a first-class closed-schema
 //!   `identity_anti_claims` record, not omission-caveat prose; rows whose raw
 //!   inventory text states the collision or asserts the crates.io registry
@@ -163,6 +163,7 @@ pub struct ParsedInventory {
 #[derive(Debug)]
 pub struct ParsedReceiptManifest {
     pub release: String,
+    pub source: String,
     pub verified_date: String,
     pub asset_names: Vec<String>,
 }
@@ -648,9 +649,10 @@ fn parse_surface_row(row: &str) -> Result<Option<ParsedSurface>, CatalogError> {
             .replace('\u{2014}', "")
             .trim()
             .to_string();
+    let path = extract_cell_text(&cells[1], &format!("{surface_id}.path"))?;
     Ok(Some(ParsedSurface {
         surface_id,
-        path: resolve_link_label(&cells[1]),
+        path,
         role: cells[2].clone(),
         claim_class: cells[3].clone(),
         registry_cross_ref,
@@ -699,10 +701,34 @@ pub fn parse_receipt_manifest(bytes: &[u8]) -> Result<ParsedReceiptManifest, Cat
     let value: Value = serde_json::from_slice(bytes).map_err(|error| {
         CatalogError::new(format!("{RECEIPT_MANIFEST_PATH}: invalid JSON: {error}"))
     })?;
+    let object = value.as_object().ok_or_else(|| {
+        CatalogError::new(format!("{RECEIPT_MANIFEST_PATH}: root must be an object"))
+    })?;
+    let expected_keys = ["release", "source", "verified_date", "assets"];
+    for key in object.keys() {
+        if !expected_keys.contains(&key.as_str()) {
+            return Err(CatalogError::new(format!(
+                "{RECEIPT_MANIFEST_PATH}: unknown root key `{key}`"
+            )));
+        }
+    }
     let release = value
         .get("release")
         .and_then(Value::as_str)
         .ok_or_else(|| CatalogError::new(format!("{RECEIPT_MANIFEST_PATH}: release: missing")))?
+        .to_string();
+    if !valid_release_shape(&release) {
+        return Err(CatalogError::new(format!(
+            "{RECEIPT_MANIFEST_PATH}: release `{release}` must match v<major>.<minor>.<patch>"
+        )));
+    }
+    let source = value
+        .get("source")
+        .and_then(Value::as_str)
+        .filter(|source| !source.is_empty())
+        .ok_or_else(|| {
+            CatalogError::new(format!("{RECEIPT_MANIFEST_PATH}: source: missing or empty"))
+        })?
         .to_string();
     let verified_date = value
         .get("verified_date")
@@ -711,11 +737,24 @@ pub fn parse_receipt_manifest(bytes: &[u8]) -> Result<ParsedReceiptManifest, Cat
             CatalogError::new(format!("{RECEIPT_MANIFEST_PATH}: verified_date: missing"))
         })?
         .to_string();
+    if !valid_date_shape(&verified_date) {
+        return Err(CatalogError::new(format!(
+            "{RECEIPT_MANIFEST_PATH}: verified_date `{verified_date}` must match YYYY-MM-DD"
+        )));
+    }
     let asset_objects = value.get("assets").and_then(Value::as_array).ok_or_else(|| {
         CatalogError::new(format!("{RECEIPT_MANIFEST_PATH}: assets: missing array"))
     })?;
     let mut assets: Vec<String> = Vec::new();
     for asset in asset_objects {
+        let object = asset.as_object().ok_or_else(|| {
+            CatalogError::new(format!("{RECEIPT_MANIFEST_PATH}: assets[]: expected object"))
+        })?;
+        if let Some(key) = object.keys().find(|key| key.as_str() != "name") {
+            return Err(CatalogError::new(format!(
+                "{RECEIPT_MANIFEST_PATH}: assets[]: unknown key `{key}`"
+            )));
+        }
         let name = asset
             .get("name")
             .and_then(Value::as_str)
@@ -738,7 +777,29 @@ pub fn parse_receipt_manifest(bytes: &[u8]) -> Result<ParsedReceiptManifest, Cat
             "{RECEIPT_MANIFEST_PATH}: asset names must be unique and stored in sorted order"
         )));
     }
-    Ok(ParsedReceiptManifest { release, verified_date, asset_names: assets })
+    Ok(ParsedReceiptManifest { release, source, verified_date, asset_names: assets })
+}
+
+fn valid_release_shape(release: &str) -> bool {
+    let Some(version) = release.strip_prefix('v') else {
+        return false;
+    };
+    let parts: Vec<&str> = version.split('.').collect();
+    parts.len() == 3
+        && parts.iter().all(|part| {
+            !part.is_empty() && part.chars().all(|character| character.is_ascii_digit())
+        })
+}
+
+fn valid_date_shape(date: &str) -> bool {
+    let bytes = date.as_bytes();
+    bytes.len() == 10
+        && bytes[4] == b'-'
+        && bytes[7] == b'-'
+        && bytes
+            .iter()
+            .enumerate()
+            .all(|(index, byte)| index == 4 || index == 7 || byte.is_ascii_digit())
 }
 
 /// D1 derivation: the receipt field is a fact about the published asset list,
@@ -966,10 +1027,7 @@ pub fn build_catalog_value(
         "input_digests": {},
         "release_receipts": [{
             "release": receipt_manifest.release,
-            "source": format!(
-                "https://github.com/EffortlessMetrics/perl-lsp/releases/tags/{}",
-                receipt_manifest.release
-            ),
+            "source": receipt_manifest.source,
             "verified_date": receipt_manifest.verified_date,
             "assets": assets,
         }],
@@ -1012,6 +1070,7 @@ pub fn generate_artifact_bytes(root: &Path) -> Result<Vec<u8>, CatalogError> {
     validate_denominator(&inventory)?;
 
     let manifest = parse_receipt_manifest(&manifest_bytes)?;
+    validate_receipt_manifest_anchor(&inventory, &manifest)?;
     let catalog = build_catalog_value(&inventory, &manifest);
     let catalog = with_input_digests(
         &catalog,
@@ -1464,9 +1523,23 @@ fn validate_catalog_value(value: &Value) -> Result<CatalogStats, CatalogError> {
     })
 }
 
-/// D1 cross-check: every committed receipt field must equal the value derived
-/// from the mirrored asset manifest — receipt authority, not the inventory
-/// digest.
+/// D1 checks: the mirrored manifest is bound to the inventory release anchor,
+/// and every committed receipt field equals the value derived from that
+/// manifest — receipt authority, not the inventory digest.
+fn validate_receipt_manifest_anchor(
+    inventory: &ParsedInventory,
+    manifest: &ParsedReceiptManifest,
+) -> Result<(), CatalogError> {
+    if manifest.release != inventory.release_anchor {
+        return Err(CatalogError::new(format!(
+            "{RECEIPT_MANIFEST_PATH}: release `{}` does not match the {DOC_PATH} drift anchor \
+             `{}` (D1 receipt binding)",
+            manifest.release, inventory.release_anchor
+        )));
+    }
+    Ok(())
+}
+
 fn validate_receipt_binding(
     catalog: &Value,
     manifest: &ParsedReceiptManifest,
@@ -1737,10 +1810,10 @@ mod tests {
         let doc = committed_doc();
         let inventory = parse_inventory(&doc).expect("inventory parses");
         let without_arm64 =
-            parse_receipt_manifest(br#"{"release":"v0.17.0","verified_date":"2026-08-28","assets":[{"name":"SHA256SUMS"},{"name":"perllsp-0.17.0-x86_64-pc-windows-msvc.zip"}]}"#)
+            parse_receipt_manifest(br#"{"release":"v0.17.0","source":"https://example.invalid/v0.17.0","verified_date":"2026-08-28","assets":[{"name":"SHA256SUMS"},{"name":"perllsp-0.17.0-x86_64-pc-windows-msvc.zip"}]}"#)
                 .expect("synthetic manifest parses");
         let with_arm64 =
-            parse_receipt_manifest(br#"{"release":"v0.18.0","verified_date":"2026-08-28","assets":[{"name":"SHA256SUMS"},{"name":"perllsp-0.18.0-aarch64-pc-windows-msvc.zip"}]}"#)
+            parse_receipt_manifest(br#"{"release":"v0.18.0","source":"https://example.invalid/v0.18.0","verified_date":"2026-08-28","assets":[{"name":"SHA256SUMS"},{"name":"perllsp-0.18.0-aarch64-pc-windows-msvc.zip"}]}"#)
                 .expect("synthetic manifest parses");
         assert_eq!(derive_windows_arm64_receipt(&without_arm64), "absent");
         assert_eq!(derive_windows_arm64_receipt(&with_arm64), "present");
@@ -1774,6 +1847,76 @@ mod tests {
         let manifest_bytes =
             read_repo_bytes(&repo_root(), RECEIPT_MANIFEST_PATH).expect("manifest readable");
         assert_eq!(digest, format!("sha256:{}", sha256_hex(&manifest_bytes)));
+    }
+
+    #[test]
+    fn d1_rust_manifest_release_mismatch_is_rejected() {
+        let root = repo_root();
+        let inventory = parse_inventory(&committed_doc()).expect("inventory parses");
+        let manifest_bytes =
+            read_repo_bytes(&root, RECEIPT_MANIFEST_PATH).expect("manifest readable");
+        let manifest = parse_receipt_manifest(&manifest_bytes).expect("manifest parses");
+        assert!(validate_receipt_manifest_anchor(&inventory, &manifest).is_ok());
+
+        let mut mismatched = manifest;
+        mismatched.release = "v9.9.9".to_string();
+        let error = validate_receipt_manifest_anchor(&inventory, &mismatched)
+            .expect_err("mismatched release must fail");
+        let message = format!("{error}");
+        assert!(message.contains("release `v9.9.9`"), "{message}");
+        assert!(message.contains(&inventory.release_anchor), "{message}");
+        assert!(message.contains(DOC_PATH), "{message}");
+
+        let temp = tempfile::tempdir().expect("temporary root");
+        for relative_path in [DOC_PATH, SCHEMA_PATH, RECEIPT_MANIFEST_PATH] {
+            let destination = temp.path().join(relative_path);
+            fs::create_dir_all(destination.parent().expect("input parent")).expect("input dirs");
+            fs::write(&destination, read_repo_bytes(&root, relative_path).expect("input readable"))
+                .expect("input copied");
+        }
+        assert!(generate_artifact_bytes(temp.path()).is_ok());
+        let manifest_path = temp.path().join(RECEIPT_MANIFEST_PATH);
+        let mut manifest_value: Value =
+            serde_json::from_slice(&fs::read(&manifest_path).expect("manifest copied"))
+                .expect("manifest JSON");
+        manifest_value["release"] = json!("v9.9.9");
+        fs::write(
+            &manifest_path,
+            serde_json::to_vec(&manifest_value).expect("manifest serialized"),
+        )
+        .expect("manifest mutated");
+        let error =
+            generate_artifact_bytes(temp.path()).expect_err("mismatched manifest must fail");
+        let message = format!("{error}");
+        assert!(message.contains("release `v9.9.9`"), "{message}");
+        assert!(message.contains(DOC_PATH), "{message}");
+    }
+
+    #[test]
+    fn d3_surface_paths_are_code_span_trimmed() {
+        let inventory = parse_inventory(&committed_doc()).expect("inventory parses");
+        for surface in &inventory.surfaces {
+            assert!(!surface.path.contains('`'), "backtick in {}", surface.surface_id);
+        }
+        for (surface_id, expected_path) in [
+            ("S04", ".github/actions/setup-perl-lsp/action.yml"),
+            ("S06", "docs/examples/github-actions/setup-perl-lsp-consumer.yml"),
+            ("S11", "vscode-extension/package.json"),
+        ] {
+            let surface = inventory
+                .surfaces
+                .iter()
+                .find(|surface| surface.surface_id == surface_id)
+                .expect("surface present");
+            assert_eq!(surface.path, expected_path);
+        }
+    }
+
+    #[test]
+    fn d3_unbalanced_surface_path_is_rejected() {
+        let error = parse_surface_row("| S04 | `foo/bar.yml | role | claims | — |")
+            .expect_err("unbalanced surface path must fail");
+        assert!(format!("{error}").contains("unbalanced"));
     }
 
     /// D2: the four receipt-named rows carry the first-class anti-claim, and
@@ -2420,21 +2563,28 @@ no anchors here",
         assert!(format!("{error}").contains("invalid JSON"));
         for (probe, fragment) in [
             (br#"{"verified_date":"2026-08-28","assets":[{"name":"a"}]}"#.as_slice(), "release: missing"),
-            (br#"{"release":"v0.17.0","assets":[{"name":"a"}]}"#.as_slice(), "verified_date: missing"),
-            (br#"{"release":"v0.17.0","verified_date":"2026-08-28"}"#.as_slice(), "assets: missing array"),
-            (br#"{"release":"v0.17.0","verified_date":"2026-08-28","assets":[]}"#.as_slice(), "assets must be non-empty"),
-            (br#"{"release":"v0.17.0","verified_date":"2026-08-28","assets":[{}]}"#.as_slice(), "missing name"),
-            (br#"{"release":"v0.17.0","verified_date":"2026-08-28","assets":[{"name":"b"},{"name":"a"}]}"#.as_slice(), "unique and stored in sorted order"),
-            (br#"{"release":"v0.17.0","verified_date":"2026-08-28","assets":[{"name":"a"},{"name":"a"}]}"#.as_slice(), "unique and stored in sorted order"),
+            (br#"{"release":"v0.17.0","assets":[{"name":"a"}]}"#.as_slice(), "source: missing"),
+            (br#"{"release":"v0.17.0","source":"","verified_date":"2026-08-28","assets":[{"name":"a"}]}"#.as_slice(), "source: missing or empty"),
+            (br#"{"release":"v0.17.0","source":"https://example.invalid/v0.17.0"}"#.as_slice(), "verified_date: missing"),
+            (br#"{"release":"v0.17.0","source":"https://example.invalid/v0.17.0","verified_date":"2026-08-28"}"#.as_slice(), "assets: missing array"),
+            (br#"{"release":"v0.17.0","source":"https://example.invalid/v0.17.0","verified_date":"2026-08-28","assets":[]}"#.as_slice(), "assets must be non-empty"),
+            (br#"{"release":"v0.17.0","source":"https://example.invalid/v0.17.0","verified_date":"2026-08-28","assets":[{}]}"#.as_slice(), "missing name"),
+            (br#"{"release":"v0.17.0","source":"https://example.invalid/v0.17.0","verified_date":"2026-08-28","assets":[{"name":"a","rogue":true}]}"#.as_slice(), "unknown key"),
+            (br#"{"release":"v0.17.0","source":"https://example.invalid/v0.17.0","verified_date":"2026-08-28","assets":[{"name":"b"},{"name":"a"}]}"#.as_slice(), "unique and stored in sorted order"),
+            (br#"{"release":"v0.17.0","source":"https://example.invalid/v0.17.0","verified_date":"2026-08-28","assets":[{"name":"a"},{"name":"a"}]}"#.as_slice(), "unique and stored in sorted order"),
+            (br#"{"release":"v0.17.0","source":"https://example.invalid/v0.17.0","verified_date":"2026-08-28","assets":[{"name":"a"}],"rogue":true}"#.as_slice(), "unknown root key"),
+            (br#"{"release":"0.17.0","source":"https://example.invalid/v0.17.0","verified_date":"2026-08-28","assets":[{"name":"a"}]}"#.as_slice(), "must match v<major>.<minor>.<patch>"),
+            (br#"{"release":"v0.17.0","source":"https://example.invalid/v0.17.0","verified_date":"2026/08/28","assets":[{"name":"a"}]}"#.as_slice(), "must match YYYY-MM-DD"),
         ] {
             let error = parse_receipt_manifest(probe).expect_err("malformed manifest must fail");
             assert!(format!("{error}").contains(fragment), "{error}");
         }
         let ok = parse_receipt_manifest(
-            br#"{"release":"v0.17.0","verified_date":"2026-08-28","assets":[{"name":"a"},{"name":"b"}]}"#,
+            br#"{"release":"v0.17.0","source":"https://example.invalid/v0.17.0","verified_date":"2026-08-28","assets":[{"name":"a"},{"name":"b"}]}"#,
         )
         .expect("sorted manifest parses");
         assert_eq!(ok.asset_names, vec!["a", "b"]);
+        assert_eq!(ok.source, "https://example.invalid/v0.17.0");
     }
 
     /// Seam: validate_receipt_binding rejects a receipt field that contradicts
@@ -2442,7 +2592,7 @@ no anchors here",
     #[test]
     fn seam_validate_receipt_binding() {
         let manifest = parse_receipt_manifest(
-            br#"{"release":"v0.17.0","verified_date":"2026-08-28","assets":[{"name":"perllsp-0.17.0-x86_64-pc-windows-msvc.zip"}]}"#,
+            br#"{"release":"v0.17.0","source":"https://example.invalid/v0.17.0","verified_date":"2026-08-28","assets":[{"name":"perllsp-0.17.0-x86_64-pc-windows-msvc.zip"}]}"#,
         )
         .expect("manifest parses");
         let mut catalog = committed_catalog();
