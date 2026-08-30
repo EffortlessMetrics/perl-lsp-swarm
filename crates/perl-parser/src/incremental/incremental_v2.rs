@@ -76,7 +76,6 @@ use perl_parser_core::{
     edit::{Edit, EditSet},
     error::ParseResult,
     parser::Parser,
-    position::Range,
 };
 use std::collections::HashMap;
 
@@ -1030,10 +1029,17 @@ impl IncrementalParserV2 {
                 *value = text.to_string();
             }
             NodeKind::String { value, interpolated: _ } => {
-                // Keeping the first byte (the quote or quote-like prefix)
-                // keeps the parsed string shape — and with it the stored
-                // interpolation flag — honest.
-                if old_source.as_bytes().get(old_start).copied() != text.as_bytes().first().copied()
+                // The opening quote must survive unchanged: switching `'` to
+                // `"` flips the stored interpolation flag, which the patch
+                // cannot recompute. Inside the `q` operator family the second
+                // byte selects the operator (`q(` vs `qq(` vs `qw(`), so it
+                // must match there too; for plain quotes the second byte is
+                // string content and may change freely.
+                let old_bytes = old_source.as_bytes();
+                let old_first = old_bytes.get(old_start);
+                if old_first != text.as_bytes().first()
+                    || (old_first == Some(&b'q')
+                        && old_bytes.get(old_start + 1) != text.as_bytes().get(1))
                 {
                     return None;
                 }
@@ -1260,26 +1266,49 @@ impl IncrementalParserV2 {
         }
     }
 
+    /// Whether any pending edit touches the node's original span.
+    ///
+    /// Queued edits are expressed in the coordinates produced by the edits
+    /// before them, while `node` carries its coordinates in the tree's
+    /// original source, so every edit is mapped back by the cumulative shift
+    /// of the edits before it before any comparison. Comparing raw
+    /// coordinates lets an earlier length change displace a later edit
+    /// beyond its leaf, leaving that leaf's payload stale while the tree is
+    /// still accepted.
     fn is_node_affected(&self, node: &Node) -> bool {
-        let node_range = Range::from(node.location);
-        if self.pending_edits.affects_range(&node_range) {
-            return true;
+        let start = node.location.start;
+        let end = node.location.end;
+        let mut shift = 0isize;
+        for edit in self.pending_edits.edits() {
+            let original_start = isize_to_usize_clamped(edit.start_byte as isize - shift);
+            let original_old_end = isize_to_usize_clamped(edit.old_end_byte as isize - shift);
+
+            // `Edit::overlaps_range` requires a strict interior overlap
+            // (`start < old_end && old_end > start`); a pure insertion has an
+            // empty old range and never passes it.
+            if original_start < end && original_old_end > start {
+                return true;
+            }
+
+            // A pure insertion landing exactly on a node boundary reports no
+            // overlap even though the inserted text becomes part of that
+            // node's source text. Without this window a boundary insertion
+            // leaves the node's cached content stale (for example typing a
+            // digit at the end of a numeric literal), so the incremental tree
+            // diverges from a fresh parse. `EditSet::affected_ranges` already
+            // widens pure insertions for the same reason; this keeps the two
+            // invalidation paths consistent.
+            if edit.start_byte == edit.old_end_byte
+                && original_start >= start
+                && original_start <= end
+            {
+                return true;
+            }
+
+            shift += edit.byte_shift();
         }
 
-        // `Edit::overlaps_range` requires a strict interior overlap
-        // (`start < old_end_byte && end > start_byte`). A pure insertion has an
-        // empty old range, so an insertion landing exactly on a node boundary
-        // reports no overlap even though the inserted text becomes part of that
-        // node's source text. Without this window a boundary insertion leaves
-        // the node's cached content stale (for example typing a digit at the end of a
-        // numeric literal), so the incremental tree diverges from a fresh parse.
-        // `EditSet::affected_ranges` already widens pure insertions for the same
-        // reason; this keeps the two invalidation paths consistent.
-        self.pending_edits.edits().iter().any(|edit| {
-            edit.start_byte == edit.old_end_byte
-                && edit.start_byte >= node.location.start
-                && edit.start_byte <= node.location.end
-        })
+        false
     }
 
     /// Clone `node` with every position shifted by `shift`, in one pass.
@@ -2618,6 +2647,133 @@ if ($condition) {
         Ok(())
     }
 
+    /// A replacement that changes string syntax must decline: switching `'`
+    /// to `"` flips the stored interpolation flag, and switching `q(` to
+    /// `qq(` does the same inside the quote-operator family. The patch cannot
+    /// recompute those fields, so the whole incremental attempt falls back to
+    /// a full parse instead of accepting a stale-semantics tree.
+    #[test]
+    fn quote_syntax_changes_decline_incremental_path() -> ParseResult<()> {
+        // Single quotes to double quotes inside a method-call argument.
+        let mut parser = strict_fallback_parser();
+        parser.parse("$u->get('k');")?;
+        parser.edit(Edit::new(
+            8,
+            11,
+            11, // 'k' -> "k"
+            Position::new(8, 1, 9),
+            Position::new(11, 1, 12),
+            Position::new(11, 1, 12),
+        ));
+        let source2 = "$u->get(\"k\");";
+        let incremental = parser.parse(source2)?;
+        assert!(
+            !parser.used_incremental_path(),
+            "a quote-style change must decline the incremental path"
+        );
+        let fresh = Parser::new(source2).parse()?;
+        assert_eq!(incremental, fresh, "the fallback tree must match a fresh parse");
+
+        // Single-quote operator to double-quote operator: the first byte
+        // matches, so the operator family itself must be compared too.
+        let mut parser = strict_fallback_parser();
+        parser.parse("$u->get(q(k));")?;
+        parser.edit(Edit::new(
+            8,
+            9,
+            10, // q( -> qq(
+            Position::new(8, 1, 9),
+            Position::new(9, 1, 10),
+            Position::new(10, 1, 11),
+        ));
+        let source3 = "$u->get(qq(k));";
+        let incremental = parser.parse(source3)?;
+        assert!(
+            !parser.used_incremental_path(),
+            "a quote-operator change must decline the incremental path"
+        );
+        let fresh = Parser::new(source3).parse()?;
+        assert_eq!(incremental, fresh, "the fallback tree must match a fresh parse");
+        Ok(())
+    }
+
+    /// An earlier lengthening edit must not hide a later value edit: queued
+    /// edits are expressed in post-edit coordinates while the tree carries
+    /// original coordinates, so invalidation maps every edit back by the
+    /// cumulative shift before comparing. The previous raw-coordinate
+    /// comparison left the second leaf's payload stale while still accepting
+    /// the tree.
+    #[test]
+    fn lengthening_edit_before_second_value_edit_matches_a_fresh_parse() -> ParseResult<()> {
+        let mut parser = strict_fallback_parser();
+        parser.parse("my $a = 1; my $b = 2;")?;
+        // First edit: "1" -> "000000000000" (+11 bytes).
+        parser.edit(Edit::new(
+            8,
+            9,
+            20,
+            Position::new(8, 1, 9),
+            Position::new(9, 1, 10),
+            Position::new(20, 1, 21),
+        ));
+        // Second edit, in coordinates after the first: the trailing "2" moved
+        // from [19..20) to [30..31); change it to "9".
+        parser.edit(Edit::new(
+            30,
+            31,
+            31,
+            Position::new(30, 1, 31),
+            Position::new(31, 1, 32),
+            Position::new(31, 1, 32),
+        ));
+        let source2 = "my $a = 000000000000; my $b = 9;";
+        let incremental = parser.parse(source2)?;
+        assert!(
+            parser.used_incremental_path(),
+            "both edits sit inside admitted Number leaves and must stay incremental"
+        );
+        let fresh = Parser::new(source2).parse()?;
+        assert_eq!(incremental, fresh, "the later leaf's payload must be patched");
+        Ok(())
+    }
+
+    /// Several length-changing trivia edits compose: each node's span follows
+    /// the cumulative boundary mapping and the program span keeps hugging its
+    /// statements.
+    #[test]
+    fn multiple_trivia_edits_match_a_fresh_parse() -> ParseResult<()> {
+        let mut parser = strict_fallback_parser();
+        parser.parse("my $x = 42;my $y = 7;")?;
+        // Insert one space between the statements...
+        parser.edit(Edit::new(
+            11,
+            11,
+            12,
+            Position::new(11, 1, 12),
+            Position::new(11, 1, 12),
+            Position::new(12, 1, 13),
+        ));
+        // ...and, in the coordinates after that insertion, extend the trivia
+        // run with a comment and newline.
+        parser.edit(Edit::new(
+            12,
+            12,
+            22,
+            Position::new(12, 1, 13),
+            Position::new(12, 1, 13),
+            Position::new(22, 1, 13),
+        ));
+        let source2 = "my $x = 42;  # trivia\nmy $y = 7;";
+        let incremental = parser.parse(source2)?;
+        assert!(
+            parser.used_incremental_path(),
+            "trivia-only edits must take the trivia remap path"
+        );
+        let fresh = Parser::new(source2).parse()?;
+        assert_eq!(incremental, fresh, "combined trivia edits must match a fresh parse");
+        Ok(())
+    }
+
     /// Trailing trivia must not move any node. The previous trivia path
     /// shifted every span by the edit's byte delta, accepting a tree where
     /// every node was displaced by five bytes relative to a fresh parse.
@@ -2714,9 +2870,11 @@ if ($condition) {
             Position::new(total_end + 1, 1, 1),
         ));
 
-        // Production trees are bounded by the parser's own recursion depth,
-        // but the remap must stay stack-safe and linear on adversarially deep
-        // chains, so the fixture runs on a deliberately large stack.
+        // The remap walk is recursive, so adversarially deep chains need a
+        // large stack and this fixture provides one. The bound pinned here is
+        // time, not stack: one structural clone plus one in-place pass must
+        // stay linear in depth, where the previous per-level
+        // `node.kind.clone()` rebuild was quadratic.
         let work = std::thread::Builder::new()
             .stack_size(64 * 1024 * 1024)
             .spawn(move || {
