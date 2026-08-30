@@ -137,7 +137,8 @@ pub use syntax::regex_analysis::{
 };
 /// Generation-bound lexical source region index.
 pub use syntax::source_context::{
-    RangeClassification, SourceRegion, SourceRegionIndex, SourceRegionKind,
+    RangeClassification, SourceRangeClassification, SourceRegion, SourceRegionIndex,
+    SourceRegionKind,
 };
 /// Perl source-file classification helpers.
 pub use syntax::source_file;
