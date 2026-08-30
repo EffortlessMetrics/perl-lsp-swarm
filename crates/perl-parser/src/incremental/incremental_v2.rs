@@ -67,6 +67,30 @@ fn isize_to_usize_clamped(v: isize) -> usize {
     v.max(0) as usize
 }
 
+/// Largest char-boundary offset `<= index` (0 when none exists before it).
+fn floor_char_boundary(text: &str, index: usize) -> usize {
+    if index >= text.len() {
+        return text.len();
+    }
+    let mut index = index;
+    while index > 0 && !text.is_char_boundary(index) {
+        index -= 1;
+    }
+    index
+}
+
+/// Smallest char-boundary offset `>= index` (the length when none follows).
+fn ceil_char_boundary(text: &str, index: usize) -> usize {
+    if index >= text.len() {
+        return text.len();
+    }
+    let mut index = index;
+    while index < text.len() && !text.is_char_boundary(index) {
+        index += 1;
+    }
+    index
+}
+
 use super::incremental_advanced_reuse::{
     AdvancedReuseAnalyzer, ReuseAnalysisResult, ReuseConfig, ReuseStrategy, ReuseType,
 };
@@ -84,6 +108,10 @@ use std::collections::HashMap;
 fn is_variable_sigil_byte(byte: u8) -> bool {
     matches!(byte, b'$' | b'@' | b'%' | b'&' | b'*')
 }
+
+/// Bytes of surrounding source context each side of a trivia edit's window
+/// when proving the edit did not change tokenization.
+const TRIVIA_CONTEXT_BYTES: usize = 16;
 
 /// Shift `node`'s span and every descendant span by `shift` in place.
 fn shift_positions_in_place(node: &mut Node, shift: isize) {
@@ -608,6 +636,7 @@ impl IncrementalParserV2 {
 
     /// Check if all edits only affect whitespace or comments
     fn is_whitespace_or_comment_edit(&self, tree: &IncrementalTree, source: &str) -> bool {
+        let mut prior_shift = 0isize;
         for edit in self.pending_edits.edits() {
             // Validate both sides of the edit:
             // - old source text being replaced
@@ -622,8 +651,76 @@ impl IncrementalParserV2 {
             ) {
                 return false;
             }
+            // The trivia classification is local, but tokenization is not:
+            // trivia inserted inside a multi-character operator (`..` becomes
+            // `. .`) changes the surrounding token stream while still
+            // lexing as trivia in isolation. Require both sides to produce
+            // the same non-trivia token stream around the edit.
+            if !self.trivia_edit_preserves_tokens(&tree.source, source, edit, prior_shift) {
+                return false;
+            }
+            prior_shift += edit.byte_shift();
         }
         true
+    }
+
+    /// Require a trivia edit to leave the surrounding token stream unchanged.
+    ///
+    /// The window is cut around the edit's span in original coordinates
+    /// (queued edits are expressed in the coordinates produced by the edits
+    /// before them) and mapped through the full edit set: bytes before the
+    /// edit start and after the edit end are identical in either source, and
+    /// [`Self::calculate_shift_at`] positions the mapped window on exactly
+    /// that content. Any token-sequence difference therefore comes from the
+    /// edit changing tokenization (for example splitting an operator), and
+    /// the edit declines the trivia path in favor of a full parse.
+    fn trivia_edit_preserves_tokens(
+        &self,
+        old_source: &str,
+        new_source: &str,
+        edit: &Edit,
+        prior_shift: isize,
+    ) -> bool {
+        let original_start = isize_to_usize_clamped(edit.start_byte as isize - prior_shift);
+        let original_old_end = isize_to_usize_clamped(edit.old_end_byte as isize - prior_shift);
+
+        let old_left =
+            floor_char_boundary(old_source, original_start.saturating_sub(TRIVIA_CONTEXT_BYTES));
+        let old_right = ceil_char_boundary(
+            old_source,
+            (original_old_end + TRIVIA_CONTEXT_BYTES).min(old_source.len()),
+        );
+        let new_left = floor_char_boundary(
+            new_source,
+            isize_to_usize_clamped(old_left as isize + self.calculate_shift_at(old_left)),
+        );
+        let new_right = ceil_char_boundary(
+            new_source,
+            isize_to_usize_clamped(old_right as isize + self.calculate_shift_at(old_right)),
+        );
+
+        Self::non_trivia_tokens(old_source, old_left, old_right)
+            == Self::non_trivia_tokens(new_source, new_left, new_right)
+    }
+
+    /// Lex `source[left..right]` and collect the type and text of every
+    /// non-trivia token.
+    fn non_trivia_tokens(source: &str, left: usize, right: usize) -> Vec<(TokenType, String)> {
+        let mut lexer = PerlLexer::new(&source[left..right]);
+        let mut tokens = Vec::new();
+        loop {
+            let Some(token) = lexer.next_token() else {
+                break;
+            };
+            if token.token_type == TokenType::EOF {
+                break;
+            }
+            if token.token_type.is_trivia() {
+                continue;
+            }
+            tokens.push((token.token_type, token.text.to_string()));
+        }
+        tokens
     }
 
     fn is_edit_non_structural(
@@ -2771,6 +2868,34 @@ if ($condition) {
         );
         let fresh = Parser::new(source2).parse()?;
         assert_eq!(incremental, fresh, "combined trivia edits must match a fresh parse");
+        Ok(())
+    }
+
+    /// Trivia inserted inside a multi-character operator changes
+    /// tokenization: `1..3` becomes `1. .3`, which parses differently. The
+    /// inserted text lexes as trivia in isolation, so admission must also
+    /// require the surrounding token stream to be unchanged; otherwise the
+    /// trivia remap would accept the old operator.
+    #[test]
+    fn operator_splitting_trivia_declines_trivia_path() -> ParseResult<()> {
+        let mut parser = strict_fallback_parser();
+        parser.parse("my @r = 1..3;")?;
+        parser.edit(Edit::new(
+            10,
+            10,
+            11, // insert a space between the two dots of `..`
+            Position::new(10, 1, 11),
+            Position::new(10, 1, 11),
+            Position::new(11, 1, 12),
+        ));
+        let source2 = "my @r = 1. .3;";
+        let incremental = parser.parse(source2)?;
+        assert!(
+            !parser.used_incremental_path(),
+            "trivia that splits an operator must decline the trivia path"
+        );
+        let fresh = Parser::new(source2).parse()?;
+        assert_eq!(incremental, fresh, "the fallback tree must match a fresh parse");
         Ok(())
     }
 
