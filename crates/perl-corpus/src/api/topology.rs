@@ -5,6 +5,7 @@
 //! assets cannot disappear behind lossy names, filesystem errors, symlinks, or
 //! non-regular file types.
 
+use super::asset_path::{CorpusAssetPath, CorpusAssetPathError};
 use crate::files::{CorpusLayer, CorpusPaths};
 use serde::{Deserialize, Serialize};
 use std::ffi::OsStr;
@@ -74,6 +75,17 @@ pub struct CorpusAsset {
     pub relative_path: String,
     /// Whether absence of the asset is a topology error.
     pub requirement: AssetRequirement,
+}
+
+impl CorpusAsset {
+    /// Validate and return this record's portable member-path identity.
+    ///
+    /// This proves the record's path syntax, duplicated v1 identity fields,
+    /// and declared layer prefix. It does not prove membership in a
+    /// particular [`CorpusTopology`].
+    pub fn portable_path(&self) -> Result<CorpusAssetPath, CorpusTopologyError> {
+        validate_asset_identity(self)
+    }
 }
 
 /// Failure to discover, validate, or resolve a corpus topology asset.
@@ -343,10 +355,14 @@ impl CorpusTopology {
         self.root.as_deref()
     }
 
-    /// Resolve an exact topology member's checked-in path from its stable identity.
-    pub fn asset_path(&self, asset: &CorpusAsset) -> Result<PathBuf, CorpusTopologyError> {
+    /// Return one exact topology member's portable root-relative identity.
+    ///
+    /// A well-formed [`CorpusAssetPath`] alone is not membership evidence. This
+    /// method validates the topology and requires exact record equality before
+    /// returning the typed member identity used by later opening authorities.
+    pub fn member_path(&self, asset: &CorpusAsset) -> Result<CorpusAssetPath, CorpusTopologyError> {
         self.validate()?;
-        validate_asset_identity(asset)?;
+        let path = validate_asset_identity(asset)?;
 
         let member = self
             .assets
@@ -356,10 +372,18 @@ impl CorpusTopology {
         if member != Some(asset) {
             return Err(CorpusTopologyError::AssetNotInTopology { id: asset.id.clone() });
         }
+        Ok(path)
+    }
 
+    /// Resolve an exact topology member's checked-in host path from its stable identity.
+    pub fn asset_path(&self, asset: &CorpusAsset) -> Result<PathBuf, CorpusTopologyError> {
+        let member_path = self.member_path(asset)?;
         let root = self.root.as_deref().ok_or(CorpusTopologyError::RootNotBound)?;
-        let resolved = root.join(Path::new(&asset.relative_path));
-        validate_resolved_asset(root, asset, &resolved)?;
+        let host_relative = member_path
+            .to_host_path()
+            .map_err(|error| invalid_asset_path(&asset.relative_path, error))?;
+        let resolved = root.join(host_relative);
+        validate_resolved_asset(root, asset, &member_path, &resolved)?;
         Ok(resolved)
     }
 }
@@ -373,35 +397,32 @@ fn asset_from_path(
     let relative = path.strip_prefix(&paths.root).map_err(|_| {
         CorpusTopologyError::PathOutsideRoot { path: path.to_path_buf(), root: paths.root.clone() }
     })?;
-    let relative_path = canonical_relative_path(relative)?;
+    let relative_path = asset_path_from_host(relative)?;
+    let serialized = relative_path.as_str().to_owned();
 
     Ok(CorpusAsset {
-        id: relative_path.clone(),
+        id: serialized.clone(),
         layer,
         kind,
-        relative_path,
+        relative_path: serialized,
         requirement: AssetRequirement::Required,
     })
 }
 
-fn validate_asset_identity(asset: &CorpusAsset) -> Result<(), CorpusTopologyError> {
-    if asset.id != asset.relative_path {
+fn validate_asset_identity(asset: &CorpusAsset) -> Result<CorpusAssetPath, CorpusTopologyError> {
+    let id =
+        CorpusAssetPath::parse(&asset.id).map_err(|error| invalid_asset_path(&asset.id, error))?;
+    let relative_path = CorpusAssetPath::parse(&asset.relative_path)
+        .map_err(|error| invalid_asset_path(&asset.relative_path, error))?;
+    if id != relative_path {
         return Err(CorpusTopologyError::AssetIdentityMismatch {
             id: asset.id.clone(),
             relative_path: asset.relative_path.clone(),
         });
     }
 
-    let canonical = canonical_relative_path(Path::new(&asset.relative_path))?;
-    if canonical != asset.relative_path {
-        return Err(CorpusTopologyError::InvalidRelativePath {
-            path: asset.relative_path.clone(),
-            reason: "non_canonical",
-        });
-    }
-
     let required_prefix = layer_prefix(asset.layer);
-    if !Path::new(&asset.relative_path).starts_with(required_prefix) {
+    if !relative_path.starts_with_components(layer_prefix_components(asset.layer)) {
         return Err(CorpusTopologyError::LayerPathMismatch {
             id: asset.id.clone(),
             layer: asset.layer,
@@ -409,13 +430,36 @@ fn validate_asset_identity(asset: &CorpusAsset) -> Result<(), CorpusTopologyErro
         });
     }
 
-    Ok(())
+    Ok(relative_path)
+}
+
+fn invalid_asset_path(path: &str, error: CorpusAssetPathError) -> CorpusTopologyError {
+    CorpusTopologyError::InvalidRelativePath { path: path.to_owned(), reason: error.reason() }
+}
+
+fn asset_path_from_host(path: &Path) -> Result<CorpusAssetPath, CorpusTopologyError> {
+    CorpusAssetPath::from_host_path(path).map_err(|error| match error {
+        CorpusAssetPathError::NonUtf8Component { .. } => {
+            CorpusTopologyError::NonUtf8Path { path: path.to_path_buf() }
+        }
+        other => CorpusTopologyError::InvalidRelativePath {
+            path: path.to_string_lossy().into_owned(),
+            reason: other.reason(),
+        },
+    })
 }
 
 fn layer_prefix(layer: CorpusAssetLayer) -> &'static str {
     match layer {
         CorpusAssetLayer::TestCorpus => "test_corpus",
         CorpusAssetLayer::Fuzz => "crates/perl-corpus/fuzz",
+    }
+}
+
+fn layer_prefix_components(layer: CorpusAssetLayer) -> &'static [&'static str] {
+    match layer {
+        CorpusAssetLayer::TestCorpus => &["test_corpus"],
+        CorpusAssetLayer::Fuzz => &["crates", "perl-corpus", "fuzz"],
     }
 }
 
@@ -511,20 +555,15 @@ fn validate_runtime_directory(path: &Path) -> Result<(), CorpusTopologyError> {
 fn validate_resolved_asset(
     root: &Path,
     asset: &CorpusAsset,
+    member_path: &CorpusAssetPath,
     resolved: &Path,
 ) -> Result<(), CorpusTopologyError> {
     validate_runtime_root_components(root)?;
 
     let mut current = root.to_path_buf();
-    let mut components = Path::new(&asset.relative_path).components().peekable();
+    let mut components = member_path.components().peekable();
     while let Some(component) = components.next() {
-        let Component::Normal(value) = component else {
-            return Err(CorpusTopologyError::InvalidRelativePath {
-                path: asset.relative_path.clone(),
-                reason: "non_canonical",
-            });
-        };
-        current.push(value);
+        current.push(component);
         let is_final = components.peek().is_none();
 
         match fs::symlink_metadata(&current) {
@@ -558,54 +597,6 @@ fn validate_resolved_asset(
         path: asset.relative_path.clone(),
         reason: "empty_path",
     })
-}
-
-fn canonical_relative_path(path: &Path) -> Result<String, CorpusTopologyError> {
-    let mut parts = Vec::new();
-
-    for component in path.components() {
-        match component {
-            Component::Normal(value) => {
-                let value = value
-                    .to_str()
-                    .ok_or_else(|| CorpusTopologyError::NonUtf8Path { path: path.to_path_buf() })?;
-                parts.push(value);
-            }
-            Component::CurDir => {
-                return Err(CorpusTopologyError::InvalidRelativePath {
-                    path: path.to_string_lossy().into_owned(),
-                    reason: "current_directory_component",
-                });
-            }
-            Component::ParentDir => {
-                return Err(CorpusTopologyError::InvalidRelativePath {
-                    path: path.to_string_lossy().into_owned(),
-                    reason: "parent_directory_component",
-                });
-            }
-            Component::RootDir => {
-                return Err(CorpusTopologyError::InvalidRelativePath {
-                    path: path.to_string_lossy().into_owned(),
-                    reason: "absolute_path",
-                });
-            }
-            Component::Prefix(_) => {
-                return Err(CorpusTopologyError::InvalidRelativePath {
-                    path: path.to_string_lossy().into_owned(),
-                    reason: "path_prefix",
-                });
-            }
-        }
-    }
-
-    if parts.is_empty() {
-        return Err(CorpusTopologyError::InvalidRelativePath {
-            path: path.to_string_lossy().into_owned(),
-            reason: "empty_path",
-        });
-    }
-
-    Ok(parts.join("/"))
 }
 
 fn collect_layer_assets(
@@ -1492,7 +1483,7 @@ mod tests {
     fn component_ids_use_forward_slashes() {
         let path = Path::new("test_corpus").join("nested").join("case.pl");
         assert_eq!(
-            canonical_relative_path(&path).expect("canonical relative path"),
+            CorpusAssetPath::from_host_path(&path).expect("canonical relative path").as_str(),
             "test_corpus/nested/case.pl"
         );
     }

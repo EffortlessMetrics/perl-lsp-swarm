@@ -25,6 +25,7 @@ cargo build -p perl-corpus
 cargo test -p perl-corpus
 cargo test -p perl-corpus --features ci-fast
 cargo test -p perl-corpus --test root_path_authority
+cargo test -p perl-corpus --test corpus_asset_path
 cargo test -p perl-corpus --test distribution_contract
 cargo clippy -p perl-corpus --all-targets -- -D warnings -A missing_docs
 cargo package -p perl-corpus --allow-dirty --list
@@ -69,6 +70,22 @@ its seed is exploratory output, not reproducible evidence.
   capability. Do not add another root-opening path.
 - The published package ships APIs and deliberately included crate assets. Repository
   corpus data remains an external root.
+
+## Portable member identity
+
+- `CorpusAssetPath` alone proves one canonical root-relative component sequence. It
+  does not prove topology membership, existence, containment, opening, or bytes.
+- `/` is the sole portable serialization separator. A literal backslash is data;
+  durable parsing must never route through the host `Path` parser.
+- Host paths enter through actual host components. Host materialization pushes
+  validated components individually and must round-trip injectively or fail with
+  `unsupported_on_host`.
+- `CorpusAsset::portable_path()` validates the v1 duplicated identity fields and
+  layer prefix. `CorpusTopology::member_path()` adds exact topology membership.
+- Keep topology schema v1 serialized strings byte-compatible and deterministic. Do
+  not add a second component-array encoding.
+- #7693 must consume `CorpusTopology::member_path()` plus the retained `CorpusRoot`;
+  it must not reconstruct portable identity or reopen the root by pathname.
 
 ## Typed loading authority
 
