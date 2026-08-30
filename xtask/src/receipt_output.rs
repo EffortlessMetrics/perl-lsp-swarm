@@ -132,12 +132,34 @@ pub fn write_receipt<T: Serialize>(subject: &str, path: &Path, receipt: &T) -> R
 /// receipt is evidence, so reporting a success the filesystem did not confirm is
 /// the one outcome worse than failing loudly.
 fn sync_directory(parent: &Path) -> Result<()> {
-    let handle = fs::File::open(parent)
+    let handle = open_directory(parent)
         .wrap_err_with(|| format!("opening receipt output directory {}", parent.display()))?;
     handle
         .sync_all()
         .wrap_err_with(|| format!("syncing receipt output directory {}", parent.display()))?;
     Ok(())
+}
+
+/// Open a directory handle that may be `fsync`ed.
+#[cfg(not(windows))]
+fn open_directory(parent: &Path) -> std::io::Result<fs::File> {
+    fs::File::open(parent)
+}
+
+/// Open a directory handle that may be `fsync`ed.
+///
+/// Raised in review: a plain `File::open` on a directory fails on Windows, so
+/// making the sync fallible — correct in itself — would have turned every
+/// receipt write on Windows into an error. `CreateFile` only returns a directory
+/// handle when told to expect one, which is what this flag does.
+#[cfg(windows)]
+fn open_directory(parent: &Path) -> std::io::Result<fs::File> {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    /// `FILE_FLAG_BACKUP_SEMANTICS`, required to obtain a directory handle.
+    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+
+    fs::OpenOptions::new().read(true).custom_flags(FILE_FLAG_BACKUP_SEMANTICS).open(parent)
 }
 
 fn parent_or_current(path: &Path) -> &Path {

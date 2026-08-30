@@ -945,3 +945,44 @@ fn a_namespace_denial_beside_live_extension_surfaces_is_a_contradiction() -> Res
     expect_blocker(&uncontradicted, "namespace_absent")?;
     Ok(())
 }
+
+#[test]
+fn a_surface_that_was_never_attempted_still_blocks_absence_however_it_classifies() -> Result<()> {
+    // Raised in review, and it defeated the guard built for exactly this case.
+    // `observe` maps any reported `error_kind` to `ProviderFailed` before it
+    // reads the outcome, so a cell saying "not attempted" while carrying an
+    // error looked attempted-and-failed. `instrument_complete` stayed true and
+    // three 404s reached `extension_missing` from a run that skipped a surface.
+    let skipped = receipt_with(INCIDENT, |document| {
+        let transport = &mut document["cells"]["search"]["transport"];
+        transport["outcome"] = json!("not_attempted");
+        transport["status"] = Value::Null;
+        transport["response_bytes"] = Value::Null;
+        transport["elapsed_ms"] = Value::Null;
+        transport["error_kind"] = json!("timeout");
+        document["cells"]["search"]["matched_identity"] = Value::Null;
+    })?;
+
+    if skipped.instrument_complete {
+        bail!("a run that never attempted a surface reported a complete instrument");
+    }
+    if skipped.state == PublicState::ExtensionMissing {
+        bail!("absence was proven from a run that skipped a planned surface");
+    }
+    // The observation is also self-contradictory — it did not attempt the
+    // request and reports the error it got — so it is refused outright.
+    expect_state(&skipped, PublicState::Invalid, "unattempted cell reporting an error")?;
+    expect_blocker(&skipped, "unattempted_request_reports_activity")?;
+
+    // A cleanly unattempted cell stays a plain instrument gap, not a
+    // contradiction: the rule must reject the mismatch, not the skip.
+    let clean = receipt(INSTRUMENT_INCOMPLETE)?;
+    expect_state(&clean, PublicState::ProviderNotProven, "cleanly skipped cell")?;
+    if clean.instrument_complete {
+        bail!("a cleanly skipped cell must still report an incomplete instrument");
+    }
+    if clean.blockers.iter().any(|b| b.code == "unattempted_request_reports_activity") {
+        bail!("a cleanly skipped cell was wrongly reported as contradictory");
+    }
+    Ok(())
+}

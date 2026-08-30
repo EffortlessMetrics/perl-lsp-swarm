@@ -50,8 +50,16 @@ pub(crate) fn classify(observation: Observation) -> Receipt {
         structural_findings(&observation, plan.as_ref(), subject_version.as_deref());
 
     let cells = build_cells(&observation);
-    let instrument_complete =
-        cells.iter().all(|cell| cell.observation != CellObservation::NotAttempted);
+    // Raised in review: this was derived from the *classified* observation, and
+    // `observe` maps any reported `error_kind` to `ProviderFailed` before it
+    // looks at the outcome — so a cell saying "not attempted" while carrying an
+    // error read as attempted-and-failed, `instrument_complete` stayed true, and
+    // three 404s walked past the guard below into `extension_missing`. Whether a
+    // request was attempted is a fact about the transport, not about how the
+    // answer classifies, so it is read from the field that states it.
+    let instrument_complete = transports(&observation)
+        .iter()
+        .all(|(_, transport)| transport.outcome != TransportOutcome::NotAttempted);
     if !instrument_complete {
         limitations.push(
             "At least one planned registry surface was not attempted; absence cannot be proven \
@@ -401,6 +409,24 @@ fn structural_findings(
                 ));
             }
             _ => {}
+        }
+        // The other half of the same contradiction: a request that was never
+        // attempted cannot have produced an error, a redirect, or bytes. Raised
+        // in review through its consequence — such a cell classified as an
+        // attempted failure and stopped counting as an instrument gap.
+        if transport.outcome == TransportOutcome::NotAttempted
+            && (transport.error_kind.is_some()
+                || transport.truncated
+                || transport.redirects > 0
+                || transport.response_bytes.is_some())
+        {
+            findings.push(Blocker::new(
+                "unattempted_request_reports_activity",
+                format!(
+                    "{} reports an outcome it never attempted alongside evidence of an attempt",
+                    cell.key()
+                ),
+            ));
         }
         if transport.redirects > planned.max_redirects
             && transport.error_kind != Some(ErrorKind::RedirectLimitExceeded)
