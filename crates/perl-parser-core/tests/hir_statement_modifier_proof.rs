@@ -2,7 +2,9 @@
 //!
 //! This suite exercises the `control.postfix_modifier` concept at both HIR
 //! representations. It deliberately stops before PIR: postfix branch/loop edge
-//! semantics remain spec-gated and are not implied by these assertions.
+//! semantics remain spec-gated and are not implied by these assertions. The
+//! `$_` checks prove only source-level topic-variable HIR reachability; they do
+//! not claim implicit binding, iteration, or execution semantics.
 
 use std::{error::Error, fmt};
 
@@ -124,6 +126,9 @@ const CASES: &[ModifierCase] = &[
 ];
 
 fn lower_output(output: ParseOutput) -> Result<HirFile, ProofAdmissionError> {
+    // Recovered syntax is diagnostic-bearing input, not an admissible HIR
+    // candidate. Return the typed diagnostics before calling `lower_ast`, so
+    // partial postfix HIR cannot enter this proof path.
     if !output.diagnostics.is_empty() {
         return Err(ProofAdmissionError { diagnostics: output.diagnostics });
     }
@@ -275,6 +280,9 @@ fn postfix_modifiers_preserve_exact_body_hir_topology_and_sources() -> TestResul
         let root_stmt = body
             .stmt(root_stmt_id)
             .ok_or_else(|| format!("root statement is missing for {:?}", case.body_source))?;
+        // Body HIR deliberately has no label slot on `PostfixCondition`. The
+        // flat `StatementModifierShell` owns loop-target label disposition;
+        // this exhaustive shape is the body-model contract.
         let HirStmt::PostfixCondition { statement, condition, verb } = root_stmt else {
             return Err(format!(
                 "expected body-HIR postfix condition for {:?}, got {root_stmt:?}",
@@ -352,7 +360,7 @@ fn postfix_modifiers_preserve_exact_body_hir_topology_and_sources() -> TestResul
                     "postfix foreach topic variable",
                 )?,
                 "$_",
-                "postfix for/foreach must preserve the implicit per-iteration topic variable"
+                "postfix for/foreach must preserve the source-level topic variable"
             );
         }
 
@@ -408,31 +416,26 @@ fn postfix_modifiers_preserve_exact_body_hir_topology_and_sources() -> TestResul
 
 #[test]
 fn prefix_control_flow_does_not_mint_postfix_modifier_proof() -> TestResult {
-    let branch_file = lower("if ($enabled) { $result = $value; }\n")?;
-    assert!(
-        branch_file.items.iter().any(|item| matches!(&item.kind, HirKind::BranchShell(_))),
-        "prefix if control must retain its branch shell"
-    );
-    assert!(
-        !branch_file
-            .items
-            .iter()
-            .any(|item| matches!(&item.kind, HirKind::StatementModifierShell(_))),
-        "prefix if control must not be counted as postfix-modifier proof"
-    );
-
-    let loop_file = lower("while ($ready) { $result = $value; }\n")?;
-    assert!(
-        loop_file.items.iter().any(|item| matches!(&item.kind, HirKind::LoopShell(_))),
-        "prefix loop control must retain its loop shell"
-    );
-    assert!(
-        !loop_file
-            .items
-            .iter()
-            .any(|item| matches!(&item.kind, HirKind::StatementModifierShell(_))),
-        "prefix loop control must not be counted as postfix-modifier proof"
-    );
+    for (source, subject, shell) in [
+        ("if ($enabled) { $result = $value; }\n", "prefix if", "branch"),
+        ("unless ($disabled) { $result = $value; }\n", "prefix unless", "branch"),
+        ("while ($ready) { $result = $value; }\n", "prefix while", "loop"),
+        ("until ($done) { $result = $value; }\n", "prefix until", "loop"),
+        ("for (@items) { $result = $value; }\n", "prefix for", "loop"),
+        ("foreach (@items) { $result = $value; }\n", "prefix foreach", "loop"),
+    ] {
+        let file = lower(source)?;
+        let has_expected_shell = match shell {
+            "branch" => file.items.iter().any(|item| matches!(&item.kind, HirKind::BranchShell(_))),
+            "loop" => file.items.iter().any(|item| matches!(&item.kind, HirKind::LoopShell(_))),
+            _ => false,
+        };
+        assert!(has_expected_shell, "{subject} must retain its prefix {shell} shell");
+        assert!(
+            !file.items.iter().any(|item| matches!(&item.kind, HirKind::StatementModifierShell(_))),
+            "{subject} must not be counted as postfix-modifier proof"
+        );
+    }
 
     Ok(())
 }
@@ -455,6 +458,8 @@ fn malformed_and_chained_modifiers_are_rejected_before_hir_proof_admission() -> 
             "{subject} must produce a typed syntax/recovery diagnostic: {source:?}; diagnostics: {:?}",
             output.diagnostics
         );
+        // The error branch contains diagnostics but no HirFile, which is the
+        // no-partial-HIR admission contract for recovered syntax.
         let rejection = match lower_output(output) {
             Ok(_) => return Err(format!("{subject} was admitted as HIR: {source:?}").into()),
             Err(error) => error,
