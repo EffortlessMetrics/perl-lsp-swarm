@@ -24,7 +24,6 @@ const F_LIFECYCLE_WORKSPACE: &str = "crates/perl-lsp-rs/src/runtime/lifecycle/wo
 const F_TOOLS: &str = "crates/perl-lsp-rs/src/runtime/lifecycle/tools.rs";
 const F_RUNTIME: &str = "crates/perl-lsp-rs/src/runtime/mod.rs";
 const F_RUNTIME_WORKSPACE: &str = "crates/perl-lsp-rs/src/runtime/workspace.rs";
-const F_INC_CONTEXT: &str = "crates/perl-lsp-rs/src/runtime/lifecycle/inc_context/mod.rs";
 const F_TIMING: &str = "crates/perl-lsp-rs/src/runtime/timing.rs";
 
 // ---------------------------------------------------------------------------
@@ -94,7 +93,8 @@ pub fn ledger_rows() -> Vec<InitOperationRow> {
                 "emits queued window/logMessage",
                 "sends client/registerCapability for watchers and inline completion",
                 "starts workspace indexing",
-                "sends perl/workspaceReady",
+                "sends perl-lsp/index-ready",
+                "emits window/logMessage while the index is still building",
             ],
             declared_exposure: &[Exposure::Filesystem, Exposure::ProcessSpawn, Exposure::EnvRead],
             triggers: &[Trigger::Initialized, Trigger::AutoInitializeCompat],
@@ -255,21 +255,28 @@ pub fn ledger_rows() -> Vec<InitOperationRow> {
                           exists",
             owns_exposure: true,
         },
+        // The two `detect_tool` call sites at capabilities.rs:746-747 share one
+        // mechanism but carry different target dispositions, so they are two
+        // rows. #10040's role rulings separate them explicitly: perlcritic
+        // executable discovery leaves the product lifecycle, while perltidy
+        // discovery survives as post-init/lazy availability for a #7209
+        // authorized explicit adapter. Collapsing them would invite E02 to
+        // delete the perltidy probe outright instead of deferring it.
         InitOperationRow {
-            operation_id: "init.tools.executable_detection",
+            operation_id: "init.tools.perltidy_executable_detection",
             file: F_TOOLS,
             function: "detect_tool",
-            proposition: "an external tool's presence on PATH is observed for explicit-adapter \
-                          availability only",
+            proposition: "perltidy's presence on PATH is observed as advisory availability for an \
+                          explicitly authorized external adapter, never as automatic selection",
             side_effects: &[],
             declared_exposure: &[Exposure::PathLookup],
             triggers: &[Trigger::Initialize],
             exactly_once: false,
             current_point: ExecutionPoint::BeforeResponse,
-            // `runtime_flags` ignores its `has_perltidy` argument, so this
-            // result gates nothing that is advertised. Perl::Critic is narrower
-            // still: #7209 forbids product-runtime selection.
-            phase: PhaseDisposition::RemoveFromProductLifecycle,
+            // `runtime_flags(self, _has_perltidy: bool)` ignores its argument,
+            // so this result gates nothing that is advertised today. It remains
+            // advisory availability rather than product lifecycle work.
+            phase: PhaseDisposition::LazyOnFirstUse,
             migration_wave: MigrationWave::E02,
             affects_static_initialize_result: false,
             static_surface_join: "",
@@ -281,6 +288,34 @@ pub fn ledger_rows() -> Vec<InitOperationRow> {
             proof_family: "initialize_tool_detection_is_not_capability_authority",
             memoization: "result is discarded; recomputed on every initialize",
             owns_exposure: true,
+        },
+        InitOperationRow {
+            operation_id: "init.tools.perlcritic_executable_detection",
+            file: F_TOOLS,
+            function: "detect_tool",
+            proposition: "perlcritic's presence on PATH is observed with no current semantic \
+                          consumer beyond tracing at this call site",
+            side_effects: &[],
+            declared_exposure: &[Exposure::PathLookup],
+            triggers: &[Trigger::Initialize],
+            exactly_once: false,
+            current_point: ExecutionPoint::BeforeResponse,
+            // #7209 forbids Perl::Critic product-runtime selection outright, so
+            // unlike perltidy this probe has no post-init role to defer to.
+            phase: PhaseDisposition::RemoveFromProductLifecycle,
+            migration_wave: MigrationWave::E02,
+            affects_static_initialize_result: false,
+            static_surface_join: "",
+            affects_dynamic_registration_plan: false,
+            affects_negotiation: false,
+            affects_initial_native_semantics: false,
+            current_owner: OWNER_TOOL_ROLES,
+            target_owner: OWNER_TOOL_ROLES,
+            proof_family: "initialize_tool_detection_is_not_capability_authority",
+            memoization: "result is discarded; recomputed on every initialize",
+            // The sibling perltidy row already accounts for this shared
+            // mechanism's closure; both owning it would be redundant.
+            owns_exposure: false,
         },
         InitOperationRow {
             operation_id: "init.backend.ai_refresh",
@@ -305,33 +340,6 @@ pub fn ledger_rows() -> Vec<InitOperationRow> {
             proof_family: "initialize_optional_backend_is_runtime_readiness",
             memoization: "",
             owns_exposure: true,
-        },
-        InitOperationRow {
-            operation_id: "init.environment.inc_context_resolution",
-            file: F_INC_CONTEXT,
-            function: "effective_inc_context_for_doc",
-            proposition: "the effective include context for a document is resolved from \
-                          configuration and environment evidence",
-            side_effects: &[],
-            declared_exposure: &[Exposure::EnvRead],
-            triggers: &[Trigger::Initialize, Trigger::FirstUse],
-            exactly_once: false,
-            current_point: ExecutionPoint::BeforeResponse,
-            phase: PhaseDisposition::DeferToPostInitializeEnvironment,
-            migration_wave: MigrationWave::E02,
-            affects_static_initialize_result: false,
-            static_surface_join: "",
-            affects_dynamic_registration_plan: false,
-            affects_negotiation: false,
-            affects_initial_native_semantics: false,
-            current_owner: OWNER_ENVIRONMENT,
-            target_owner: OWNER_ENVIRONMENT,
-            proof_family: "initialize_inc_context_is_environment_evidence",
-            memoization: "",
-            // A shared leaf utility reached from several operations. It accounts
-            // for its own env read; making it own a closure would collide with
-            // every operation that reaches it.
-            owns_exposure: false,
         },
         InitOperationRow {
             operation_id: "init.workspace.indexing_start",

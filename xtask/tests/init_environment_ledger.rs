@@ -187,6 +187,130 @@ fn cfg_test_helpers_are_excluded_from_the_census() {
     );
 }
 
+#[test]
+fn a_generic_method_name_does_not_resolve_outside_the_calling_file() {
+    // `handle_initialize` calls `params.get("capabilities")` on a serde_json
+    // Value. That receiver type is not indexed, so a crate-wide fallback would
+    // resolve `get` to whichever single `get` method the crate defines and
+    // manufacture a path into unrelated per-request work.
+    let sources = vec![
+        (
+            SYNTHETIC_ROOT_FILE.to_string(),
+            r#"
+            impl Server {
+                pub fn handle_initialize(&self, params: &Value) {
+                    let _ = params.get("capabilities");
+                }
+            }
+            "#
+            .to_string(),
+        ),
+        (
+            "crates/perl-lsp-rs/src/unrelated.rs".to_string(),
+            r#"
+            impl RequestContext {
+                pub fn get(&self) -> Option<u8> {
+                    let _ = std::env::var("PERL_LSP_SOMETHING");
+                    None
+                }
+            }
+            "#
+            .to_string(),
+        ),
+        // A second definition, as in real source where `get` is everywhere.
+        // Without it the name would be globally unique and resolve on that
+        // branch, so the fixture would not exercise the locality rule at all.
+        (
+            "crates/perl-lsp-rs/src/other.rs".to_string(),
+            "impl Cache { pub fn get(&self) -> Option<u8> { None } }".to_string(),
+        ),
+    ];
+    let census = Census::from_sources(&sources);
+    let root =
+        census.resolve(SYNTHETIC_ROOT_FILE, "handle_initialize").expect("synthetic root resolves");
+
+    assert!(
+        census.transitive_exposures(root, census::MAX_DEPTH).is_empty(),
+        "a same-crate `get` in another file must not be reached from an unrelated receiver"
+    );
+}
+
+#[test]
+fn colliding_names_are_not_claimed_to_be_dropped_edges() {
+    // The collision set is a raw definition count. Resolution happens per call
+    // site, so a colliding name is often still traversed; reporting it as
+    // "edges not traversed" would overstate the blind spot.
+    let sources = vec![(
+        SYNTHETIC_ROOT_FILE.to_string(),
+        r#"
+        impl Server {
+            pub fn handle_initialize(&self) { probe(); }
+        }
+        pub fn probe() { let _ = which::which("perltidy"); }
+        impl Other { pub fn probe(&self) {} }
+        "#
+        .to_string(),
+    )];
+    let census = Census::from_sources(&sources);
+    let root =
+        census.resolve(SYNTHETIC_ROOT_FILE, "handle_initialize").expect("synthetic root resolves");
+
+    assert!(census.colliding_names().contains("probe"), "`probe` collides by name");
+    assert!(
+        census.transitive_exposures(root, census::MAX_DEPTH).contains_key(&Exposure::PathLookup),
+        "a colliding name still resolves per call site and must be traversed"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Side effects are derived, not trusted
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_side_effect_naming_an_unsent_method_is_rejected() {
+    let mut sources = indirect_process_sources();
+    sources.push((
+        "crates/perl-lsp-rs/src/notify.rs".to_string(),
+        r#"
+        pub fn send(server: &Server) {
+            server.notify("perl-lsp/index-ready", ());
+        }
+        "#
+        .to_string(),
+    ));
+    let census = Census::from_sources(&sources);
+
+    let mut row = baseline_row();
+    row.side_effects = &["sends perl/workspaceReady"];
+
+    let errors = ledger_errors_with_roots(&[row], &census, &synthetic_roots());
+    assert_reports(&errors, "no scanned source sends `perl/workspaceReady`");
+}
+
+#[test]
+fn a_side_effect_naming_a_real_method_is_accepted() {
+    let mut sources = indirect_process_sources();
+    sources.push((
+        "crates/perl-lsp-rs/src/notify.rs".to_string(),
+        r#"
+        pub fn send(server: &Server) {
+            server.notify("perl-lsp/index-ready", ());
+        }
+        "#
+        .to_string(),
+    ));
+    let census = Census::from_sources(&sources);
+
+    let mut row = baseline_row();
+    row.side_effects = &["sends perl-lsp/index-ready"];
+
+    let errors = ledger_errors_with_roots(&[row], &census, &synthetic_roots());
+    assert!(
+        !errors.iter().any(|error| error.contains("no scanned source sends")),
+        "a method that is genuinely sent must not be reported: {errors:#?}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Coverage: unregistered initialize work
 // ---------------------------------------------------------------------------

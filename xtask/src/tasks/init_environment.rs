@@ -69,7 +69,10 @@ pub fn run_census() -> Result<()> {
     let census = build_census()?;
 
     println!("indexed functions: {}", census.len());
-    println!("ambiguous names (edges not traversed): {}", census.ambiguous_names().len());
+    println!(
+        "names with more than one definition: {} (resolved per call site, not          automatically dropped)",
+        census.colliding_names().len()
+    );
 
     for (file, function) in CENSUS_ROOTS {
         println!("\n== {file}::{function} ==");

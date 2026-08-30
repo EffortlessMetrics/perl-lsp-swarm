@@ -278,6 +278,7 @@ pub fn ledger_errors_with_roots(
 
     errors.extend(structural_errors(rows));
     errors.extend(citation_errors(rows, census));
+    errors.extend(side_effect_errors(rows, census));
     errors.extend(exposure_errors(rows, census));
     errors.extend(phase_errors(rows, census));
     errors.extend(static_surface_errors(rows, census));
@@ -309,6 +310,35 @@ fn structural_errors(rows: &[InitOperationRow]) -> Vec<String> {
         }
         if row.current_owner.is_empty() || row.target_owner.is_empty() {
             errors.push(format!("row {} leaves an owner unnamed", row.operation_id));
+        }
+    }
+    errors
+}
+
+/// Fail when a row's side effects name a protocol method the source never sends.
+///
+/// `side_effects` was previously free prose that no rule inspected, and a row
+/// claiming `perl/workspaceReady` survived review even though the server sends
+/// `perl-lsp/index-ready` and no such method exists anywhere. That is exactly
+/// the stale-prose failure this module exists to catch, so the field is now
+/// derived against the literals present in scanned source.
+fn side_effect_errors(rows: &[InitOperationRow], census: &Census) -> Vec<String> {
+    let mut errors = Vec::new();
+    for row in rows {
+        for effect in row.side_effects {
+            for token in effect.split_whitespace() {
+                let candidate =
+                    token.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '/');
+                if !census::looks_like_protocol_method(candidate) {
+                    continue;
+                }
+                if !census.declares_method(candidate) {
+                    errors.push(format!(
+                        "row {} claims side effect `{}`, but no scanned source sends `{}`",
+                        row.operation_id, effect, candidate
+                    ));
+                }
+            }
         }
     }
     errors

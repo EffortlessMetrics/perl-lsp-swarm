@@ -12,15 +12,21 @@
 //! like `new` or `var` collide workspace-wide. Following those edges would
 //! attribute DAP TCP validation to the LSP initialize path.
 //!
-//! An edge is therefore followed only when it resolves *unambiguously*:
+//! An edge is therefore followed only when the call site resolves it
+//! unambiguously, narrowing by call syntax first, then locality:
 //!
 //! 1. a single definition of that name exists in the scanned crates; or
 //! 2. exactly one definition sits in the calling file; or
-//! 3. exactly one definition sits in the calling crate.
+//! 3. for a *path* call only, exactly one definition sits in the calling crate.
 //!
-//! Anything else is recorded in [`Census::ambiguous_names`] and not traversed.
-//! That makes the census an under-approximation of edges but a precise one, and
-//! the unresolved set is reported rather than hidden.
+//! A method call stops at the calling file. Its receiver's type is unknown, so a
+//! crate-wide fallback invents edges for receivers this census does not index —
+//! `params.get("capabilities")` on a `serde_json::Value` otherwise resolved to
+//! whichever single `get` method the crate defined.
+//!
+//! Resolution is per call site, so a name with several definitions is not
+//! automatically dropped: see [`Census::colliding_names`]. That makes the census
+//! an under-approximation of edges, and a deliberately precise one.
 //!
 //! Lock acquisition is intentionally *not* derived. Interior-mutability locks
 //! appear on essentially every server method, so a derived lock signal would be
@@ -152,6 +158,7 @@ pub struct Census {
     funcs: Vec<FunctionRecord>,
     by_name: BTreeMap<String, Vec<usize>>,
     ambiguous: BTreeSet<String>,
+    methods: BTreeSet<String>,
 }
 
 impl Census {
@@ -162,6 +169,7 @@ impl Census {
     /// still attributes it.
     pub fn from_sources(sources: &[(String, String)]) -> Self {
         let mut funcs: Vec<FunctionRecord> = Vec::new();
+        let mut methods: BTreeSet<String> = BTreeSet::new();
         for (path, text) in sources {
             let Ok(parsed) = syn::parse_file(text) else {
                 continue;
@@ -169,6 +177,9 @@ impl Census {
             let mut collector = FnCollector { file: path.clone(), found: Vec::new() };
             collector.visit_file(&parsed);
             funcs.extend(collector.found);
+
+            let mut literals = MethodLiteralCollector { found: &mut methods };
+            literals.visit_file(&parsed);
         }
         funcs.sort_by(|left, right| (&left.file, &left.name).cmp(&(&right.file, &right.name)));
 
@@ -182,7 +193,7 @@ impl Census {
             .map(|(name, _)| name.clone())
             .collect();
 
-        Self { funcs, by_name, ambiguous }
+        Self { funcs, by_name, ambiguous, methods }
     }
 
     /// Build a census by reading the allowlisted crates under `workspace_root`.
@@ -204,8 +215,16 @@ impl Census {
         Ok(Self::from_sources(&sources))
     }
 
-    /// Names with more than one definition; edges to these are not traversed.
-    pub fn ambiguous_names(&self) -> &BTreeSet<String> {
+    /// Names carrying more than one definition in the scanned set.
+    ///
+    /// This is a raw definition-collision count, **not** a count of dropped
+    /// edges. [`Census::resolve_edge`] never consults this set: it narrows each
+    /// call site independently by call kind, then by file, then (for path calls)
+    /// by crate, so a colliding name is often still resolved. `command_exists`
+    /// has two definitions in one file and appears here, yet `detect_tool`
+    /// resolves to the free function and its PATH lookup is attributed.
+    /// Reporting this as "edges not traversed" would overstate the blind spot.
+    pub fn colliding_names(&self) -> &BTreeSet<String> {
         &self.ambiguous
     }
 
@@ -226,6 +245,15 @@ impl Census {
             .iter()
             .copied()
             .find(|index| self.funcs.get(*index).is_some_and(|record| record.file == file))
+    }
+
+    /// Protocol method names appearing as string literals in scanned source.
+    ///
+    /// A ledger row's `side_effects` naming a notification it does not actually
+    /// send is the same stale-prose failure this module exists to catch, so the
+    /// names are derived rather than trusted.
+    pub fn declares_method(&self, method: &str) -> bool {
+        self.methods.contains(method)
     }
 
     /// Files a name was found in, sorted.
@@ -297,6 +325,18 @@ impl Census {
             .collect();
         if same_file.len() == 1 {
             return same_file.first().copied();
+        }
+
+        // A method call resolves no further than the calling file. The
+        // receiver's type is unknown, so a crate-wide fallback invents an edge
+        // whenever the real receiver belongs to a type this census does not
+        // index. `handle_initialize` calls `params.get("capabilities")` on a
+        // `serde_json::Value`; with a crate-wide fallback that resolved to
+        // whichever single `get` method the crate happened to define, and
+        // manufactured a path from initialize into per-request document work
+        // that initialize never performs.
+        if kind == CallKind::Method {
+            return None;
         }
 
         let origin_crate = crate_of(&origin.file);
@@ -537,6 +577,7 @@ const FS_FREE_FUNCTIONS: &[&str] = &[
     "create_dir_all",
     "canonicalize",
     "read_dir",
+    "metadata",
     "symlink_metadata",
 ];
 
@@ -626,6 +667,14 @@ impl BodyVisitor {
         if segments.iter().any(|seg| seg == "File") && (last == "open" || last == "create") {
             self.exposures.insert(Exposure::Filesystem);
         }
+        // `OpenOptions::new().append(true).open(path)` never names `File`, so
+        // the builder idiom needs its own marker.
+        if segments.iter().any(|seg| seg == "OpenOptions") {
+            self.exposures.insert(Exposure::Filesystem);
+        }
+        if segments.iter().any(|seg| seg == "env") && last == "current_dir" {
+            self.exposures.insert(Exposure::EnvRead);
+        }
         if segments.iter().any(|seg| seg == "env") && (last == "var" || last == "var_os") {
             // A `PATH` read is executable discovery, not ordinary configuration.
             if call_mentions_path_env(node) {
@@ -645,4 +694,33 @@ fn call_mentions_path_env(node: &syn::ExprCall) -> bool {
                 if text.value() == "PATH"
         )
     })
+}
+
+/// Collects LSP-style protocol method names from string literals.
+struct MethodLiteralCollector<'a> {
+    found: &'a mut BTreeSet<String>,
+}
+
+impl<'ast> Visit<'ast> for MethodLiteralCollector<'_> {
+    fn visit_lit_str(&mut self, node: &'ast syn::LitStr) {
+        let value = node.value();
+        if looks_like_protocol_method(&value) {
+            self.found.insert(value);
+        }
+    }
+}
+
+/// Whether a string literal looks like a protocol method name such as
+/// `window/showMessage` or `perl-lsp/index-ready`.
+pub fn looks_like_protocol_method(value: &str) -> bool {
+    let mut parts = value.split('/');
+    let (Some(head), Some(tail), None) = (parts.next(), parts.next(), parts.next()) else {
+        return false;
+    };
+    let segment_ok = |segment: &str| {
+        !segment.is_empty()
+            && segment.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+            && segment.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
+    };
+    segment_ok(head) && segment_ok(tail)
 }
