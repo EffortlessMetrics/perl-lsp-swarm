@@ -18,7 +18,7 @@
 use perl_tdd_support::{must, must_err};
 use serde_json::{Value, json};
 
-use super::capabilities::{CatalogDapFlags, DebugBackendCapabilities, intersect_dap_capabilities};
+use super::capabilities::{ControlMode, DebugBackendCapabilities};
 use super::{
     AttachBackendParams, AttachResult, BackendError, BackendResult, ContinueResult, DebugBackend,
     EvaluateParams, EvaluateResult, InitializeBackendParams, LaunchBackendParams, LaunchResult,
@@ -36,6 +36,98 @@ pub struct NativePerlDbBackend {
     seq: i64,
 }
 
+/// Evidence state for one native backend method or capability family.
+///
+/// `Implemented` is deliberately stronger than “there is a Rust method”: it is
+/// reserved for a method with qualifying positive behavior proof.  The other
+/// states preserve why a capability is currently absent so later evidence work
+/// can consume this projection without inventing a second feature catalog.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NativeMethodSupport {
+    Implemented,
+    Unsupported,
+    RuntimeUnavailable,
+    NotProven,
+}
+
+impl NativeMethodSupport {
+    #[must_use]
+    fn is_implemented(self) -> bool {
+        matches!(self, Self::Implemented)
+    }
+}
+
+/// The native backend's method-support inventory.
+///
+/// This is intentionally crate-private and capability-shaped.  It records the
+/// method/family evidence that this backend owns; #7363 can consume the same
+/// states when it adds runtime prerequisites and behavior receipts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct NativeMethodSupportProjection {
+    pub source_breakpoints: NativeMethodSupport,
+    pub conditional_breakpoints: NativeMethodSupport,
+    pub hit_conditions: NativeMethodSupport,
+    pub logpoints: NativeMethodSupport,
+    pub function_breakpoints: NativeMethodSupport,
+    pub data_breakpoints: NativeMethodSupport,
+    pub evaluate: NativeMethodSupport,
+    pub variables: NativeMethodSupport,
+    pub scopes: NativeMethodSupport,
+    pub stack_trace: NativeMethodSupport,
+    pub continue_execution: NativeMethodSupport,
+    pub stepping: NativeMethodSupport,
+    pub pause: NativeMethodSupport,
+    pub set_variable: NativeMethodSupport,
+}
+
+impl NativeMethodSupportProjection {
+    /// Current evidence snapshot for the partial native backend.
+    #[must_use]
+    pub(crate) fn current() -> Self {
+        Self {
+            // The AST-backed method exists, but the governing SOT entry
+            // (`dap.breakpoints.basic`) is not_proven until selected-backend
+            // runtime and public-transport proof exists.
+            source_breakpoints: NativeMethodSupport::NotProven,
+            conditional_breakpoints: NativeMethodSupport::NotProven,
+            hit_conditions: NativeMethodSupport::NotProven,
+            logpoints: NativeMethodSupport::NotProven,
+            function_breakpoints: NativeMethodSupport::NotProven,
+            data_breakpoints: NativeMethodSupport::Unsupported,
+            evaluate: NativeMethodSupport::Unsupported,
+            variables: NativeMethodSupport::Unsupported,
+            scopes: NativeMethodSupport::Unsupported,
+            stack_trace: NativeMethodSupport::Unsupported,
+            continue_execution: NativeMethodSupport::RuntimeUnavailable,
+            stepping: NativeMethodSupport::RuntimeUnavailable,
+            pause: NativeMethodSupport::RuntimeUnavailable,
+            set_variable: NativeMethodSupport::Unsupported,
+        }
+    }
+
+    /// Derive advertised capability bits only from positively proven methods.
+    #[must_use]
+    pub(crate) fn capabilities(self) -> DebugBackendCapabilities {
+        DebugBackendCapabilities {
+            source_breakpoints: self.source_breakpoints.is_implemented(),
+            conditional_breakpoints: self.conditional_breakpoints.is_implemented(),
+            hit_conditions: self.hit_conditions.is_implemented(),
+            logpoints: self.logpoints.is_implemented(),
+            function_breakpoints: self.function_breakpoints.is_implemented(),
+            data_breakpoints: self.data_breakpoints.is_implemented(),
+            evaluate: self.evaluate.is_implemented(),
+            variables: self.variables.is_implemented(),
+            scopes: self.scopes.is_implemented(),
+            stack_trace: self.stack_trace.is_implemented(),
+            continue_execution: self.continue_execution.is_implemented(),
+            stepping: self.stepping.is_implemented(),
+            pause: self.pause.is_implemented(),
+            set_variable: self.set_variable.is_implemented(),
+            control_mode: ControlMode::DapControlled,
+        }
+    }
+}
+
 impl NativePerlDbBackend {
     /// Create a native backend wrapping a fresh [`DebugAdapter`].
     #[must_use]
@@ -46,6 +138,12 @@ impl NativePerlDbBackend {
     /// Access the underlying adapter (e.g. to install an event sender).
     pub fn adapter_mut(&mut self) -> &mut DebugAdapter {
         &mut self.adapter
+    }
+
+    /// Capabilities backed by the native method-support evidence projection.
+    #[must_use]
+    pub(crate) fn proven_capabilities() -> DebugBackendCapabilities {
+        NativeMethodSupportProjection::current().capabilities()
     }
 
     fn next_seq(&mut self) -> i64 {
@@ -89,28 +187,7 @@ impl DebugBackend for NativePerlDbBackend {
     }
 
     fn capabilities(&self) -> DebugBackendCapabilities {
-        // The native engine can, in principle, do everything the catalog
-        // compiled in. Report the intersection so callers see an honest floor.
-        let catalog = CatalogDapFlags::from_catalog();
-        let engine = DebugBackendCapabilities::full();
-        let negotiated = intersect_dap_capabilities(&catalog, &engine);
-        DebugBackendCapabilities {
-            source_breakpoints: true,
-            conditional_breakpoints: negotiated.supports_conditional_breakpoints,
-            hit_conditions: negotiated.supports_hit_conditional_breakpoints,
-            logpoints: negotiated.supports_log_points,
-            function_breakpoints: negotiated.supports_function_breakpoints,
-            data_breakpoints: negotiated.supports_data_breakpoints,
-            evaluate: negotiated.supports_evaluate_for_hovers,
-            variables: true,
-            scopes: true,
-            stack_trace: true,
-            continue_execution: true,
-            stepping: true,
-            pause: true,
-            set_variable: negotiated.supports_set_variable,
-            control_mode: engine.control_mode,
-        }
+        Self::proven_capabilities()
     }
 
     fn initialize(&mut self, _params: InitializeBackendParams) -> BackendResult<()> {
@@ -293,16 +370,207 @@ impl SetFunctionBreakpointsParams {
 mod tests {
     use super::*;
     use crate::model::{DebugBreakpoint, DebugSource};
+    use anyhow::ensure;
     use std::io::Write;
 
     #[test]
-    fn capabilities_reflect_catalog_and_engine() {
-        let backend = NativePerlDbBackend::new();
-        let caps = backend.capabilities();
-        // The native engine always supports source breakpoints, stack, vars.
-        assert!(caps.source_breakpoints);
-        assert!(caps.stack_trace);
-        assert!(caps.variables);
+    fn capabilities_are_subset_of_authoritative_method_support() -> anyhow::Result<()> {
+        let support = NativeMethodSupportProjection::current();
+        let caps = support.capabilities();
+
+        ensure!(
+            support.source_breakpoints == NativeMethodSupport::NotProven,
+            "source breakpoint support must follow features_sot.toml until qualifying proof"
+        );
+        ensure!(!caps.source_breakpoints);
+        ensure!(!caps.stack_trace);
+        ensure!(!caps.scopes);
+        ensure!(!caps.variables);
+        ensure!(!caps.evaluate);
+        ensure!(caps.control_mode == ControlMode::DapControlled);
+        Ok(())
+    }
+
+    #[test]
+    fn replacing_proven_method_support_with_unsupported_removes_capability() -> anyhow::Result<()> {
+        let mut support = NativeMethodSupportProjection::current();
+        support.source_breakpoints = NativeMethodSupport::Implemented;
+        ensure!(support.capabilities().source_breakpoints);
+
+        support.source_breakpoints = NativeMethodSupport::Unsupported;
+        ensure!(!support.capabilities().source_breakpoints);
+
+        support.source_breakpoints = NativeMethodSupport::RuntimeUnavailable;
+        ensure!(!support.capabilities().source_breakpoints);
+        support.source_breakpoints = NativeMethodSupport::NotProven;
+        ensure!(!support.capabilities().source_breakpoints);
+        Ok(())
+    }
+
+    #[test]
+    fn capability_projection_matrix_is_fail_closed_for_every_field() -> anyhow::Result<()> {
+        type Setter = fn(&mut NativeMethodSupportProjection, NativeMethodSupport);
+        type Getter = fn(NativeMethodSupportProjection) -> NativeMethodSupport;
+        type Capability = fn(DebugBackendCapabilities) -> bool;
+
+        let fields: &[(&str, Setter, Getter, Capability)] = &[
+            (
+                "source_breakpoints",
+                |projection, state| projection.source_breakpoints = state,
+                |projection| projection.source_breakpoints,
+                |capabilities| capabilities.source_breakpoints,
+            ),
+            (
+                "conditional_breakpoints",
+                |projection, state| projection.conditional_breakpoints = state,
+                |projection| projection.conditional_breakpoints,
+                |capabilities| capabilities.conditional_breakpoints,
+            ),
+            (
+                "hit_conditions",
+                |projection, state| projection.hit_conditions = state,
+                |projection| projection.hit_conditions,
+                |capabilities| capabilities.hit_conditions,
+            ),
+            (
+                "logpoints",
+                |projection, state| projection.logpoints = state,
+                |projection| projection.logpoints,
+                |capabilities| capabilities.logpoints,
+            ),
+            (
+                "function_breakpoints",
+                |projection, state| projection.function_breakpoints = state,
+                |projection| projection.function_breakpoints,
+                |capabilities| capabilities.function_breakpoints,
+            ),
+            (
+                "data_breakpoints",
+                |projection, state| projection.data_breakpoints = state,
+                |projection| projection.data_breakpoints,
+                |capabilities| capabilities.data_breakpoints,
+            ),
+            (
+                "evaluate",
+                |projection, state| projection.evaluate = state,
+                |projection| projection.evaluate,
+                |capabilities| capabilities.evaluate,
+            ),
+            (
+                "variables",
+                |projection, state| projection.variables = state,
+                |projection| projection.variables,
+                |capabilities| capabilities.variables,
+            ),
+            (
+                "scopes",
+                |projection, state| projection.scopes = state,
+                |projection| projection.scopes,
+                |capabilities| capabilities.scopes,
+            ),
+            (
+                "stack_trace",
+                |projection, state| projection.stack_trace = state,
+                |projection| projection.stack_trace,
+                |capabilities| capabilities.stack_trace,
+            ),
+            (
+                "continue_execution",
+                |projection, state| projection.continue_execution = state,
+                |projection| projection.continue_execution,
+                |capabilities| capabilities.continue_execution,
+            ),
+            (
+                "stepping",
+                |projection, state| projection.stepping = state,
+                |projection| projection.stepping,
+                |capabilities| capabilities.stepping,
+            ),
+            (
+                "pause",
+                |projection, state| projection.pause = state,
+                |projection| projection.pause,
+                |capabilities| capabilities.pause,
+            ),
+            (
+                "set_variable",
+                |projection, state| projection.set_variable = state,
+                |projection| projection.set_variable,
+                |capabilities| capabilities.set_variable,
+            ),
+        ];
+
+        let non_implemented = [
+            NativeMethodSupport::Unsupported,
+            NativeMethodSupport::RuntimeUnavailable,
+            NativeMethodSupport::NotProven,
+        ];
+
+        for (name, set, get, capability) in fields {
+            for state in non_implemented {
+                let mut projection = NativeMethodSupportProjection::current();
+                set(&mut projection, state);
+                ensure!(get(projection) == state, "{name} test fixture did not install {state:?}");
+                ensure!(
+                    !capability(projection.capabilities()),
+                    "{name} advertised capability for {state:?}"
+                );
+            }
+
+            let mut projection = NativeMethodSupportProjection::current();
+            set(&mut projection, NativeMethodSupport::Implemented);
+            ensure!(
+                get(projection) == NativeMethodSupport::Implemented,
+                "{name} test fixture did not install Implemented"
+            );
+            ensure!(
+                capability(projection.capabilities()),
+                "{name} did not advertise its Implemented capability"
+            );
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn current_projection_matches_authoritative_method_support() -> anyhow::Result<()> {
+        let projection = NativeMethodSupportProjection::current();
+        let expected = [
+            ("source_breakpoints", projection.source_breakpoints, NativeMethodSupport::NotProven),
+            (
+                "conditional_breakpoints",
+                projection.conditional_breakpoints,
+                NativeMethodSupport::NotProven,
+            ),
+            ("hit_conditions", projection.hit_conditions, NativeMethodSupport::NotProven),
+            ("logpoints", projection.logpoints, NativeMethodSupport::NotProven),
+            (
+                "function_breakpoints",
+                projection.function_breakpoints,
+                NativeMethodSupport::NotProven,
+            ),
+            ("data_breakpoints", projection.data_breakpoints, NativeMethodSupport::Unsupported),
+            ("evaluate", projection.evaluate, NativeMethodSupport::Unsupported),
+            ("variables", projection.variables, NativeMethodSupport::Unsupported),
+            ("scopes", projection.scopes, NativeMethodSupport::Unsupported),
+            ("stack_trace", projection.stack_trace, NativeMethodSupport::Unsupported),
+            (
+                "continue_execution",
+                projection.continue_execution,
+                NativeMethodSupport::RuntimeUnavailable,
+            ),
+            ("stepping", projection.stepping, NativeMethodSupport::RuntimeUnavailable),
+            ("pause", projection.pause, NativeMethodSupport::RuntimeUnavailable),
+            ("set_variable", projection.set_variable, NativeMethodSupport::Unsupported),
+        ];
+
+        for (field, actual, expected) in expected {
+            ensure!(
+                actual == expected,
+                "{field} current support changed: {actual:?} != {expected:?}"
+            );
+        }
+        Ok(())
     }
 
     #[test]
