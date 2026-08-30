@@ -1114,7 +1114,7 @@ impl<'a> Parser<'a> {
                                 {
                                     // For `split /regex/, ...` and `grep /regex/, @list`,
                                     // re-lex `/` as regex delimiter
-                                    self.tokens.relex_as_term();
+                                    self.reclassify_head_as_term()?;
                                     args.push(self.parse_ternary()?);
 
                                     // Parse remaining arguments separated by commas or fat arrows

@@ -13,11 +13,19 @@ use cpan_test_helpers::*;
 
 use perl_parser_core::{ParseError, Parser};
 
+// The typed-stop split (#6682) made the expression-recursion guard emit
+// `RecursionDepthExhausted` while structural block nesting still emits
+// `NestingTooDeep`. Deep unary/`not`/power chains terminate through the
+// expression guard, so graceful failure is either typed termination — never a
+// crash, never a silent success.
 fn fails_gracefully(code: &str) -> bool {
     let mut parser = Parser::new(code);
     let result = parser.parse();
-    result.as_ref().err().is_some_and(|e| matches!(e, ParseError::NestingTooDeep { .. }))
-        || parser.errors().iter().any(|e| matches!(e, ParseError::NestingTooDeep { .. }))
+    result.as_ref().err().is_some_and(|e| {
+        matches!(e, ParseError::NestingTooDeep { .. } | ParseError::RecursionDepthExhausted { .. })
+    }) || parser.errors().iter().any(|e| {
+        matches!(e, ParseError::NestingTooDeep { .. } | ParseError::RecursionDepthExhausted { .. })
+    })
 }
 
 // --- parse_word_not_expr (precedence.rs) ---
@@ -92,13 +100,13 @@ fn power_chain_depth_hits_limit() {
 }
 
 #[test]
-fn deep_power_chain_recovery_surfaces_nesting_diagnostic() {
+fn deep_power_chain_recovery_surfaces_typed_depth_diagnostic() {
     let code = "1 ** ".repeat(2_000) + "1";
     let mut parser = Parser::new(&code);
     let output = parser.parse_with_recovery();
     assert!(
-        output.diagnostics.iter().any(|d| matches!(d, ParseError::NestingTooDeep { .. })),
-        "parse_with_recovery should surface NestingTooDeep for a deep power chain"
+        output.diagnostics.iter().any(|d| matches!(d, ParseError::RecursionDepthExhausted { .. })),
+        "parse_with_recovery should surface the typed recursion-depth diagnostic for a deep power chain"
     );
 }
 
@@ -156,15 +164,15 @@ fn mixed_not_and_bang_nesting_hits_limit() {
 // --- Test 2: LSP-facing path (parse_with_recovery) ---
 
 #[test]
-fn deep_nesting_recovers_with_nesting_diagnostic_on_lsp_path() {
+fn deep_nesting_recovers_with_typed_depth_diagnostic_on_lsp_path() {
     // LSP uses parse_with_recovery(): deep nesting must yield a (partial) tree
     // AND a NestingTooDeep diagnostic — not a crash, not a silent success.
     let code = "not ".repeat(300) + "1";
     let mut parser = Parser::new(&code);
     let output = parser.parse_with_recovery();
     assert!(
-        output.diagnostics.iter().any(|d| matches!(d, ParseError::NestingTooDeep { .. })),
-        "parse_with_recovery should surface a NestingTooDeep diagnostic for deep nesting"
+        output.diagnostics.iter().any(|d| matches!(d, ParseError::RecursionDepthExhausted { .. })),
+        "parse_with_recovery should surface a typed recursion-depth diagnostic for deep nesting"
     );
 }
 
