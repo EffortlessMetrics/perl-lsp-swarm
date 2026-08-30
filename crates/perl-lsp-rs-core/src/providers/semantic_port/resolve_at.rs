@@ -59,6 +59,22 @@ pub trait ResolveAtSource {
 /// An explicit adapter rather than a blanket impl over `SemanticQueries`: a
 /// blanket impl would own every type for this trait and leave no room for the
 /// stub sources the resolution rule is proven against.
+///
+/// # Reachability of the entity-less case
+///
+/// `WorkspaceSemanticQueries::symbol_at` resolves the entity itself and returns
+/// `None` when the covering occurrence carries no `entity_id`. Through *this*
+/// adapter an entity-less occurrence therefore arrives as "no occurrence", so
+/// the cursor reports [`ResolveAtOutcome::Unavailable`] and
+/// [`ResolveLimitation::OccurrenceWithoutEntity`] is not reachable.
+///
+/// That state is kept in the model deliberately rather than deleted: the
+/// distinction it draws — a producer published an occurrence but resolved no
+/// entity for it — is real, and collapsing it into "nothing is here" is exactly
+/// the conflation this layer exists to prevent. Exposing it through the
+/// workspace facade needs an occurrence-only lookup on `SemanticQueries`, which
+/// belongs to the producer, not to this layer. Until then it is modelled and
+/// proven against stub sources, but not observable through this adapter.
 #[derive(Debug, Clone, Copy)]
 pub struct SemanticQueriesResolveSource<'queries, Q: ?Sized>(&'queries Q);
 
@@ -98,28 +114,74 @@ where
 
 /// Build the generation basis for one request from the accepted workspace view.
 ///
-/// One constructor, shared by every navigation provider: two providers
-/// answering the same request cannot drift onto different bases if neither is
-/// allowed to assemble its own. Both components are the *accepted* view's
+/// The one constructor every navigation provider is expected to use, so two
+/// providers answering the same request do not drift onto different bases.
+/// [`ResolveGenerationBasis::new`] stays public for tests and for callers that
+/// genuinely hold their own generations, so this is a convention the callers
+/// keep rather than something the type enforces. Both components are the *accepted* view's
 /// identities, not the live document's — `indexed_generation` is the document
 /// generation the index was actually built from, so an exact identity resolved
 /// against it is honest about which snapshot it saw.
 ///
 /// A URI the index has never seen yields an explicit unknown document
 /// generation rather than a fabricated one.
+///
+/// The two halves are read under the index's documented torn-read protocol
+/// (`WorkspaceIndex::write_version`, #5116): capture the write version before
+/// and after reading the document generation and accept the pair only when it
+/// did not move. Without that guard an interleaved index write could pair a
+/// document generation from one snapshot with a workspace version from
+/// another, producing a basis describing a snapshot that never existed —
+/// which would silently defeat the drift detection this value exists for.
 #[must_use]
 pub fn accepted_generation_basis(
     index: &perl_workspace::workspace_index::WorkspaceIndex,
     uri: &str,
 ) -> ResolveGenerationBasis {
-    let document_generation =
-        index.indexed_generation(uri).map_or(SourceGeneration::Unknown, |generation| {
+    stable_generation_basis(
+        || index.write_version(),
+        || index.indexed_generation(uri),
+        uri,
+        STABLE_BASIS_ATTEMPTS,
+    )
+}
+
+/// Attempts allowed to observe a stable write version around the read.
+///
+/// A small bound: contention here is a brief index write, not a queue. When it
+/// is exceeded the basis is reported unknown rather than retried forever.
+const STABLE_BASIS_ATTEMPTS: u8 = 3;
+
+/// The torn-read protocol itself, over plain closures so it can be proven
+/// against a source that changes version mid-read without racing a real index.
+fn stable_generation_basis<Version, Document>(
+    write_version: Version,
+    indexed_generation: Document,
+    uri: &str,
+    attempts: u8,
+) -> ResolveGenerationBasis
+where
+    Version: Fn() -> u64,
+    Document: Fn() -> Option<u32>,
+{
+    for _ in 0..attempts {
+        let before = write_version();
+        let document = indexed_generation();
+        if write_version() != before {
+            continue;
+        }
+        let document_generation = document.map_or(SourceGeneration::Unknown, |generation| {
             SourceGeneration::known(format!("{uri}@{generation}"))
         });
-    ResolveGenerationBasis::new(
-        document_generation,
-        SourceGeneration::known(format!("workspace-index@{}", index.write_version())),
-    )
+        return ResolveGenerationBasis::new(
+            document_generation,
+            SourceGeneration::known(format!("workspace-index@{before}")),
+        );
+    }
+
+    // No stable pair was observable. Say so explicitly: an unknown generation
+    // is a state this type models, a fabricated one is not.
+    ResolveGenerationBasis::new(SourceGeneration::Unknown, SourceGeneration::Unknown)
 }
 
 /// Accepted generations one resolve result is bound to.
@@ -555,8 +617,9 @@ where
         };
     };
 
-    let resolved = build_resolved(&entity, &occurrence, entity_id, generation);
-
+    // Checked before building the resolved occurrence: this path discards it,
+    // and building it clones the canonical name and allocates the limitation
+    // vector.
     if occurrence.kind == OccurrenceKind::DynamicBoundary {
         return ResolveAtOutcome::Dynamic {
             boundary: ResolveLimitation::DynamicSelector,
@@ -565,6 +628,8 @@ where
             generation: generation.clone(),
         };
     }
+
+    let resolved = build_resolved(&entity, &occurrence, entity_id, generation);
 
     if resolved.is_exact_evidence() {
         ResolveAtOutcome::Exact(resolved)

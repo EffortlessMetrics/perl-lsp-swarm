@@ -9,7 +9,7 @@
 use super::{
     ResolveAtOutcome, ResolveAtSource, ResolveGenerationBasis, ResolveLimitation, ResolveNotReady,
     ResolveUnavailable, ResolvedOccurrence, resolve_at_position,
-    resolve_at_position_with_dynamic_boundary,
+    resolve_at_position_with_dynamic_boundary, stable_generation_basis,
 };
 use perl_semantic_facts::{
     AnchorId, Confidence, EntityFact, EntityId, EntityKind, FileId, OccurrenceFact, OccurrenceId,
@@ -581,6 +581,108 @@ fn states_without_a_basis_do_not_report_a_shared_generation() {
 
     assert!(!unavailable.shares_generation_with(&stale));
     assert!(!stale.shares_generation_with(&stale));
+}
+
+// ── Torn-read protocol around the generation basis ──
+
+/// A quiet index yields a known basis naming the observed write version.
+#[test]
+fn a_stable_write_version_yields_a_known_basis() {
+    let basis = stable_generation_basis(|| 7, || Some(3), "file:///a.pm", 3);
+
+    assert!(basis.is_known());
+    assert_eq!(basis.document_generation, SourceGeneration::known("file:///a.pm@3"));
+    assert_eq!(basis.workspace_generation, SourceGeneration::known("workspace-index@7"));
+}
+
+/// A write that lands between the two halves is retried, and the basis that
+/// survives names one snapshot — never a document generation from before the
+/// write paired with a workspace version from after it.
+#[test]
+fn a_write_landing_mid_read_is_retried_until_the_pair_is_stable() {
+    use std::cell::Cell;
+
+    // Version moves during the first attempt, then settles.
+    let reads = Cell::new(0u32);
+    let version = Cell::new(10u64);
+    let basis = stable_generation_basis(
+        || {
+            let seen = reads.get();
+            reads.set(seen + 1);
+            // Reads 0 and 1 straddle the first attempt: bump between them.
+            if seen == 1 {
+                version.set(11);
+            }
+            version.get()
+        },
+        || Some(4),
+        "file:///a.pm",
+        3,
+    );
+
+    assert!(basis.is_known(), "a settled index must still yield a usable basis");
+    assert_eq!(
+        basis.workspace_generation,
+        SourceGeneration::known("workspace-index@11"),
+        "the surviving basis must name the settled version, not the pre-write one"
+    );
+}
+
+/// An index that never settles yields an explicit unknown basis rather than a
+/// fabricated one. This is the control that matters: a torn read must never be
+/// laundered into a basis that looks exact.
+#[test]
+fn an_index_that_never_settles_yields_an_explicit_unknown_basis() {
+    use std::cell::Cell;
+
+    let version = Cell::new(0u64);
+    let basis = stable_generation_basis(
+        || {
+            // Every read observes a different version, so no pair is stable.
+            version.set(version.get() + 1);
+            version.get()
+        },
+        || Some(4),
+        "file:///a.pm",
+        3,
+    );
+
+    assert!(!basis.is_known(), "an unstable read must not claim a known basis");
+    assert_eq!(basis.document_generation, SourceGeneration::Unknown);
+    assert_eq!(basis.workspace_generation, SourceGeneration::Unknown);
+}
+
+/// The protocol is bounded: it does not spin forever on a busy index.
+#[test]
+fn the_torn_read_protocol_is_bounded() {
+    use std::cell::Cell;
+
+    let version = Cell::new(0u64);
+    let reads = Cell::new(0u32);
+    let _ = stable_generation_basis(
+        || {
+            reads.set(reads.get() + 1);
+            version.set(version.get() + 1);
+            version.get()
+        },
+        || Some(1),
+        "file:///a.pm",
+        3,
+    );
+
+    // Two version reads per attempt, three attempts.
+    assert_eq!(reads.get(), 6, "the protocol must stop after its attempt bound");
+}
+
+/// A uri the index has never seen still yields an explicit unknown document
+/// generation, while the workspace half stays known.
+#[test]
+fn an_unseen_uri_yields_an_unknown_document_generation_with_a_known_workspace() {
+    let basis = stable_generation_basis(|| 2, || None, "file:///absent.pm", 3);
+
+    assert!(!basis.is_known());
+    assert_eq!(basis.document_generation, SourceGeneration::Unknown);
+    assert_eq!(basis.workspace_generation, SourceGeneration::known("workspace-index@2"));
 }
 
 /// An unknown generation is explicit and never counts as a known basis.
