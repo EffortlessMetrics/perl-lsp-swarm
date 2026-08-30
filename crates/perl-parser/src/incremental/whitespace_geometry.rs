@@ -17,6 +17,31 @@ struct NormalizedEdit {
     byte_shift: isize,
 }
 
+/// Whether `[start, end)` is provably executable code.
+///
+/// Non-empty ranges delegate to [`SourceRegionIndex::range_fully_within`].
+/// An insertion has an empty range, and #14007 made empty-boundary queries
+/// explicit rather than guessing: the boundary's region is code only when
+/// both neighbors are code, with a missing neighbor at either end of the
+/// source counting as code. Without this, every zero-width insertion fails
+/// the region proof and the reuse path dead-falls back to parsing.
+fn range_is_code(regions: &SourceRegionIndex, start: usize, end: usize) -> bool {
+    if start < end {
+        return regions.range_fully_within(start, end, &[SourceRegionKind::Code]);
+    }
+    match regions.classify_range_checked(start, end) {
+        SourceRangeClassification::Proven { kind } => kind == SourceRegionKind::Code,
+        SourceRangeClassification::EmptyBoundary { left, right } => {
+            let left_is_code = left.is_none_or(|kind| kind == SourceRegionKind::Code);
+            let right_is_code = right.is_none_or(|kind| kind == SourceRegionKind::Code);
+            left_is_code && right_is_code
+        }
+        SourceRangeClassification::Ambiguous
+        | SourceRangeClassification::InvalidUtf8Boundary
+        | SourceRangeClassification::OutOfBounds => false,
+    }
+}
+
 #[derive(Debug)]
 pub(super) struct WhitespaceEditMap {
     edits: Vec<NormalizedEdit>,
@@ -115,9 +140,10 @@ impl WhitespaceEditMap {
     pub(super) fn clone_tree(&self, root: &Node) -> Option<Node> {
         let mut cloned =
             root.clone_with_mapped_locations(|location| self.map_location(location))?;
-        // Parser::parse always returns a Program rooted at the source origin.
-        // Leading trivia moves its first statement, not the Program anchor.
-        // `assert_leading_whitespace_reuse_matches_fresh` pins this invariant.
+        // Parser::parse anchors the Program at the source origin: leading
+        // trivia moves its first statement, not the Program anchor.
+        // `leading_trivia_insertion_matches_a_fresh_parse` (incremental_v2)
+        // pins start, end, and full-tree equality against `Parser::parse`.
         cloned.location.start = root.location.start;
         Some(cloned)
     }
