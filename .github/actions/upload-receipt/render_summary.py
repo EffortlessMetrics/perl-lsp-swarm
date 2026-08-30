@@ -41,6 +41,13 @@ SKIP_STATUS = "skip"
 BLOCKING_STATUSES: tuple[str, ...] = ("fail", "timeout", "error")
 RECOGNIZED_STATUSES: tuple[str, ...] = (PASS_STATUS, *BLOCKING_STATUSES, SKIP_STATUS)
 
+# Contract-required fields, from `.ci/receipt.schema.json`: `required` on the
+# root object and on `$defs.gate_result`. Presence is checked, not full schema
+# validation — a status word alone is not a gate, and a summary must not report
+# a pass for a receipt it cannot actually read.
+RECEIPT_REQUIRED_FIELDS: tuple[str, ...] = ("schema_version", "metadata", "gates", "summary")
+GATE_REQUIRED_FIELDS: tuple[str, ...] = ("gate_name", "tier", "status", "duration_ms", "command")
+
 # How a non-passing status reads in the status line.
 BLOCKING_LABELS: dict[str, str] = {
     "fail": "failed",
@@ -96,6 +103,32 @@ def format_exit_code(gate: dict) -> str:
     if exit_code is None:
         return MISSING
     return summary_text(exit_code)
+
+
+def missing_receipt_fields(data: dict) -> list[str]:
+    """Contract-required top-level fields absent from `data`."""
+    return [field for field in RECEIPT_REQUIRED_FIELDS if field not in data]
+
+
+def gate_is_complete(gate: dict) -> bool:
+    """Whether `gate` carries every contract-required field.
+
+    Presence only — this is not schema validation. The identity requirement
+    accepts the legacy `name` spelling that `gate_name` also honours; every
+    other required field must appear under its contract name.
+    """
+    for field in GATE_REQUIRED_FIELDS:
+        if field == "gate_name":
+            # Presence of an identity, not the sentinel `gate_name` falls back
+            # to: `unknown` is itself a legal gate name under the contract.
+            if not any(
+                isinstance(gate.get(key), str) and gate.get(key)
+                for key in ("gate_name", "name")
+            ):
+                return False
+        elif field not in gate:
+            return False
+    return True
 
 
 def count_statuses(gates: Sequence[dict]) -> dict[str, int]:
@@ -208,6 +241,25 @@ def render(data: object) -> str:
         return "\n".join(lines) + "\n"
     if not raw_gates:
         lines.append("**Status**: NOT_PROVEN — receipt reports no gates")
+        return "\n".join(lines) + "\n"
+
+    missing = missing_receipt_fields(data)
+    if missing:
+        lines.append(
+            "**Status**: NOT_PROVEN — receipt is missing contract-required fields "
+            f"({', '.join(summary_code(field) for field in missing)})"
+        )
+        return "\n".join(lines) + "\n"
+
+    incomplete = sum(1 for gate in raw_gates if not gate_is_complete(gate))
+    if incomplete:
+        lines.append(
+            f"**Status**: NOT_PROVEN — {incomplete}/{len(raw_gates)} gates are missing "
+            "contract-required fields "
+            f"({', '.join(summary_code(field) for field in GATE_REQUIRED_FIELDS)})"
+        )
+        lines.append("")
+        lines.extend(gate_table(raw_gates))
         return "\n".join(lines) + "\n"
 
     lines.append(status_line(raw_gates))

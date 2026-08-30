@@ -197,6 +197,51 @@ class NotProvenTests(unittest.TestCase):
         rendered = render_summary.render(receipt(broken))
         self.assertIn("NOT_PROVEN", rendered)
 
+    def test_a_bare_status_word_is_not_a_gate(self) -> None:
+        """A gate missing every other required field must not report a pass."""
+        rendered = render_summary.render({"gates": [{"status": "pass"}]})
+        self.assertIn("NOT_PROVEN", rendered)
+        self.assertNotIn("gates passed", rendered)
+
+    def test_each_contract_required_gate_field_is_load_bearing(self) -> None:
+        for field in render_summary.GATE_REQUIRED_FIELDS:
+            with self.subTest(missing=field):
+                broken = gate("fmt", "pass")
+                del broken[field]
+                rendered = render_summary.render(receipt(broken))
+                self.assertIn("NOT_PROVEN", rendered)
+                self.assertNotIn("gates passed", rendered)
+
+    def test_incomplete_gates_are_counted_in_the_status_line(self) -> None:
+        broken = gate("clippy", "pass")
+        del broken["command"]
+        rendered = render_summary.render(receipt(gate("fmt", "pass"), broken))
+        self.assertIn(
+            "**Status**: NOT_PROVEN — 1/2 gates are missing contract-required fields",
+            rendered,
+        )
+
+    def test_legacy_name_alone_still_satisfies_gate_identity(self) -> None:
+        """The `name` fallback the issue asks for is not defeated by this check."""
+        legacy = gate("fmt", "pass")
+        del legacy["gate_name"]
+        legacy["name"] = "fmt"
+        rendered = render_summary.render(receipt(legacy))
+        self.assertIn("**Status**: All 1/1 gates passed", rendered)
+
+    def test_a_gate_legitimately_named_unknown_is_still_complete(self) -> None:
+        """`unknown` matches the contract's gate-name pattern; it is not a sentinel."""
+        self.assertTrue(render_summary.gate_is_complete(gate("unknown", "pass")))
+
+    def test_each_contract_required_top_level_field_is_load_bearing(self) -> None:
+        for field in render_summary.RECEIPT_REQUIRED_FIELDS:
+            with self.subTest(missing=field):
+                data = receipt(gate("fmt", "pass"))
+                del data[field]
+                rendered = render_summary.render(data)
+                self.assertIn("NOT_PROVEN", rendered)
+                self.assertNotIn("gates passed", rendered)
+
     def test_non_object_receipt(self) -> None:
         rendered = render_summary.render(["not", "a", "receipt"])
         self.assertIn("NOT_PROVEN — receipt is not a JSON object", rendered)
@@ -284,6 +329,33 @@ class ContractBindingTests(unittest.TestCase):
             "renderer blocking statuses drifted from gates.rs",
         )
 
+    def test_required_field_sets_match_the_receipt_schema(self) -> None:
+        schema = json.loads(RECEIPT_SCHEMA.read_text(encoding="utf-8"))
+        self.assertEqual(
+            sorted(render_summary.RECEIPT_REQUIRED_FIELDS),
+            sorted(schema["required"]),
+            "renderer top-level required fields drifted from the schema",
+        )
+        self.assertEqual(
+            sorted(render_summary.GATE_REQUIRED_FIELDS),
+            sorted(schema["$defs"]["gate_result"]["required"]),
+            "renderer gate required fields drifted from the schema",
+        )
+
+    def test_the_contract_job_runs_when_either_authority_changes(self) -> None:
+        """The drift guard is only real if a change to an authority triggers it.
+
+        `test_status_vocabulary_matches_the_receipt_schema` and
+        `test_blocking_statuses_match_gates_rs` are the guard; they are inert
+        unless this workflow's path filters select the files they read.
+        """
+        workflow = (
+            REPO_ROOT / ".github" / "workflows" / "composite-action-contracts.yml"
+        ).read_text(encoding="utf-8")
+        for trigger_block in workflow.split("paths:")[1:3]:
+            for authority in (".ci/receipt.schema.json", "xtask/src/tasks/gates.rs"):
+                self.assertIn(authority, trigger_block)
+
     def test_blocking_statuses_are_part_of_the_vocabulary(self) -> None:
         for status in render_summary.BLOCKING_STATUSES:
             self.assertIn(status, render_summary.RECOGNIZED_STATUSES)
@@ -338,9 +410,10 @@ class ProvenanceTests(unittest.TestCase):
         self.assertIn("**Generated**: 2026-01-24T15:30:00Z", rendered)
         self.assertIn("<code>13c4d91c1234</code>", rendered)
 
-    def test_absent_metadata_reports_unknown(self) -> None:
+    def test_empty_metadata_reports_unknown_provenance(self) -> None:
+        """Present but uninformative metadata degrades; it does not block."""
         data = receipt(gate("fmt", "pass"))
-        del data["metadata"]
+        data["metadata"] = {}
         rendered = render_summary.render(data)
         self.assertIn("**Generated**: unknown", rendered)
         self.assertIn("<code>unknown</code>", rendered)
@@ -359,11 +432,11 @@ class ProvenanceTests(unittest.TestCase):
         self.assertIn(f"| {render_summary.MISSING} |", rendered)
         self.assertNotIn("None", rendered)
 
-    def test_absent_duration_is_rendered_as_missing(self) -> None:
-        broken = gate("fmt", "pass")
-        del broken["duration_ms"]
-        rendered = render_summary.render(receipt(broken))
+    def test_unusable_duration_is_rendered_as_missing(self) -> None:
+        """Present but non-numeric: the field is there, the value is not usable."""
+        rendered = render_summary.render(receipt(gate("fmt", "pass", duration_ms="soon")))
         self.assertIn(f"| {render_summary.MISSING} |", rendered)
+        self.assertNotIn("soon", rendered)
 
 
 class EscapingTests(unittest.TestCase):
