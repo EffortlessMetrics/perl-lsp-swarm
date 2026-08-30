@@ -244,10 +244,14 @@ fn method_constants(source: &str) -> BTreeMap<String, String> {
 /// server-to-client by construction and `ext` names its direction explicitly.
 /// Parsing stops at the table's closing `];` so a later test fixture in the
 /// same file cannot inject phantom rows.
-pub(super) fn parse_direction_registry(source: &str) -> BTreeMap<String, RegistryKind> {
+pub(super) fn parse_direction_registry(
+    source: &str,
+    constants: &BTreeMap<String, String>,
+) -> (BTreeMap<String, RegistryKind>, Vec<Violation>) {
     let mut out = BTreeMap::new();
+    let mut violations = Vec::new();
     let Some(start) = source.find("REGISTRY: &[MethodDescriptor] = &[") else {
-        return out;
+        return (out, violations);
     };
     let open = start + "REGISTRY: &[MethodDescriptor] = &[".len();
     // Bound the scan to the table literal itself.
@@ -282,8 +286,36 @@ pub(super) fn parse_direction_registry(source: &str) -> BTreeMap<String, Registr
                 continue;
             }
             let Some(call_open) = call_open_paren(body, after_name) else { continue };
-            let Some(args) = top_level_args(&body[call_open..]) else { continue };
-            let Some(method) = args.first().and_then(|arg| string_literal(arg)) else { continue };
+            let Some(args) = top_level_args(&body[call_open..]) else {
+                violations.push(Violation::new(
+                    "registry-entry-unresolved",
+                    "<registry>",
+                    format!("a `{name}(..)` registry entry has no matching `)`"),
+                ));
+                continue;
+            };
+
+            // A constant-named entry is resolved, not skipped: dropping it
+            // would quietly shrink the coverage denominator so a newly
+            // classified request would need no row.
+            let method = match args.first().and_then(|arg| {
+                string_literal(arg).or_else(|| {
+                    plain_identifier(arg).and_then(|ident| constants.get(ident).cloned())
+                })
+            }) {
+                Some(method) => method,
+                None => {
+                    violations.push(Violation::new(
+                        "registry-entry-unresolved",
+                        "<registry>",
+                        format!(
+                            "a `{name}(..)` registry entry names no resolvable method; the \
+                             classification denominator is incomplete"
+                        ),
+                    ));
+                    continue;
+                }
+            };
 
             let notification = args.iter().any(|arg| arg.contains("EnvelopeKind::Notification"));
             let client_to_server = match implied {
@@ -301,7 +333,7 @@ pub(super) fn parse_direction_registry(source: &str) -> BTreeMap<String, Registr
             out.insert(method, kind);
         }
     }
-    out
+    (out, violations)
 }
 
 /// Scan production runtime sources for server-request emission call sites.
@@ -353,13 +385,22 @@ pub(super) fn scan_emission(
             }
         }
 
-        {
+        // A helper that declares `method: &str` forwards a caller-supplied
+        // method, so its own callers are send sites too. Tracing one hop keeps
+        // a new wrapper from hiding a concrete method behind an exempt callee.
+        let mut senders: BTreeSet<&str> = REQUEST_SENDERS.iter().copied().collect();
+        for decl in decls.iter().filter(|decl| decl.forwards_method) {
+            senders.insert(decl.name.as_str());
+        }
+
+        for sender in &senders {
+            let needle = format!(".{sender}");
             let mut from = 0usize;
-            while let Some(offset) = stripped[from..].find(".send_request") {
+            while let Some(offset) = stripped[from..].find(&needle) {
                 let dot = from + offset;
                 let name = identifier_at(&stripped, dot + 1);
                 from = dot + 1 + name.len().max(1);
-                if !REQUEST_SENDERS.contains(&name) {
+                if name != *sender {
                     continue;
                 }
                 let Some(open) = call_open_paren(&stripped, dot + 1 + name.len()) else { continue };
@@ -479,13 +520,16 @@ pub(super) fn discover(
     let (emitted, ambiguous_symbols, violations) =
         scan_emission(repo_root, emission_scan_root, &constants)?;
 
+    let (registry, mut registry_findings) = parse_direction_registry(&registry_source, &constants);
+    registry_findings.extend(violations);
+
     Ok((
         Discovered {
-            registry: parse_direction_registry(&registry_source),
+            registry,
             emitted,
             catalog_rows: parse_feature_catalog(&catalog_source)?,
             ambiguous_symbols,
         },
-        violations,
+        registry_findings,
     ))
 }

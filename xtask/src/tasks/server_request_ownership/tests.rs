@@ -133,7 +133,7 @@ fn live_matrix_covers_exactly_the_registry_request_set() -> Result<(), Box<dyn s
     let root = repo_root();
     let matrix = load(&root, Path::new("policy/server-request-ownership.v1.toml"))?;
     let source = std::fs::read_to_string(root.join(&matrix.meta.direction_registry))?;
-    let registry = parse_direction_registry(&source);
+    let (registry, _findings) = parse_direction_registry(&source, &BTreeMap::new());
 
     let mut expected: Vec<&String> = registry
         .iter()
@@ -488,6 +488,105 @@ fn an_ambiguous_emitter_symbol_fails() {
     assert!(rules(vec![passing_row()], &discovered).contains(&"emitter-ambiguous"));
 }
 
+/// A registry entry naming its method by constant must be resolved, not
+/// skipped. Skipping shrank the coverage denominator, so a newly classified
+/// request would have needed no row.
+#[test]
+fn a_constant_named_registry_entry_is_resolved() {
+    let mut constants = BTreeMap::new();
+    constants.insert("WORKSPACE_APPLY_EDIT".to_string(), "workspace/applyEdit".to_string());
+    let (parsed, findings) = parse_direction_registry(
+        r"
+        pub(crate) const REGISTRY: &[MethodDescriptor] = &[
+            s2c(WORKSPACE_APPLY_EDIT, EnvelopeKind::Request),
+        ];
+    ",
+        &constants,
+    );
+    assert_eq!(parsed.get("workspace/applyEdit"), Some(&RegistryKind::ServerToClientRequest));
+    assert!(findings.is_empty(), "{findings:?}");
+}
+
+/// An unresolvable registry entry is an instrument finding, never a silent
+/// shrink of the denominator.
+#[test]
+fn an_unresolvable_registry_entry_fails_closed() {
+    let (parsed, findings) = parse_direction_registry(
+        r"
+        pub(crate) const REGISTRY: &[MethodDescriptor] = &[
+            s2c(compute_method(), EnvelopeKind::Request),
+        ];
+    ",
+        &BTreeMap::new(),
+    );
+    assert!(parsed.is_empty());
+    assert!(
+        findings.iter().any(|finding| finding.rule == "registry-entry-unresolved"),
+        "an unreadable classification entry must be a finding: {findings:?}"
+    );
+}
+
+/// Coverage must not rest on the registry parse alone: a method the emission
+/// scan found needs a row even if its classification entry was unreadable.
+#[test]
+fn an_emitted_method_with_no_row_fails() {
+    let mut discovered = agreeing_discovery();
+    discovered.emitted.insert(
+        "workspace/inlayHint/refresh".to_string(),
+        vec![
+            "crates/perl-lsp-rs/src/runtime/client_requests.rs#request_inlay_hint_refresh"
+                .to_string(),
+        ],
+    );
+    assert!(
+        rules(vec![passing_row()], &discovered).contains(&"emitted-without-row"),
+        "an emitted method absent from the matrix must fail even when unclassified"
+    );
+}
+
+/// Support credit requires a positively shaped owner reference. Rejecting only
+/// the `missing` sentinel would accept an empty cell, `none`, or a typo.
+#[test]
+fn support_credit_requires_a_shaped_owner_reference() {
+    for stand_in in ["", "none", "not_applicable_no_emitter", "issue 6724"] {
+        let mut row = passing_row();
+        row.disposition = "supported".to_string();
+        row.terminal_state_owner = stand_in.to_string();
+        row.exact_process_proof = "#7016".to_string();
+        assert!(
+            rules(vec![row], &agreeing_discovery()).contains(&"support-without-proof"),
+            "`{stand_in}` must not stand in for a terminal-state owner"
+        );
+    }
+}
+
+/// A one-hop forwarder must not hide a concrete method: a helper declaring
+/// `method: &str` is itself treated as a send site for its callers.
+#[test]
+fn a_call_through_a_local_forwarder_is_discovered() -> Result<(), Box<dyn std::error::Error>> {
+    let (emitted, findings) = scan_synthetic(
+        r#"
+impl Server {
+    fn issue(&self, method: &str, params: Value) -> io::Result<()> {
+        self.send_request(method, params).map(|_| ())
+    }
+
+    pub fn unregister(&self) {
+        self.issue("client/unregisterCapability", json!(null));
+    }
+}
+"#,
+    )?;
+
+    assert_eq!(
+        emitted.get("client/unregisterCapability").map(Vec::as_slice),
+        Some(["src/runtime/synthetic.rs#unregister".to_string()].as_slice()),
+        "a concrete method passed to a declared forwarder must still be discovered"
+    );
+    assert!(findings.is_empty(), "{findings:?}");
+    Ok(())
+}
+
 // ── Negative controls: instrument failure ───────────────────────────────
 
 #[test]
@@ -520,7 +619,7 @@ fn the_registry_parser_separates_direction_and_envelope() {
             ),
         ];
     "#;
-    let parsed = parse_direction_registry(source);
+    let (parsed, _findings) = parse_direction_registry(source, &BTreeMap::new());
     assert_eq!(parsed.get("workspace/applyEdit"), Some(&RegistryKind::ServerToClientRequest));
     assert_eq!(parsed.get("window/logMessage"), Some(&RegistryKind::ServerToClientNotification));
     assert_eq!(parsed.get("textDocument/hover"), Some(&RegistryKind::ClientToServer));
@@ -534,7 +633,7 @@ fn the_live_registry_parses() -> Result<(), Box<dyn std::error::Error>> {
     let source = std::fs::read_to_string(
         repo_root().join("crates/perl-lsp-rs/src/protocol/method_direction.rs"),
     )?;
-    let parsed = parse_direction_registry(&source);
+    let (parsed, _findings) = parse_direction_registry(&source, &BTreeMap::new());
     assert_eq!(parsed.get("workspace/applyEdit"), Some(&RegistryKind::ServerToClientRequest));
     assert_eq!(parsed.get("window/logMessage"), Some(&RegistryKind::ServerToClientNotification));
     assert_eq!(
@@ -653,12 +752,13 @@ impl Server {
 /// must not drop a classified method.
 #[test]
 fn the_registry_parser_tolerates_whitespace_before_the_argument_list() {
-    let parsed = parse_direction_registry(
+    let (parsed, _findings) = parse_direction_registry(
         r#"
         pub(crate) const REGISTRY: &[MethodDescriptor] = &[
             s2c ("workspace/applyEdit", EnvelopeKind::Request),
         ];
     "#,
+        &BTreeMap::new(),
     );
     assert_eq!(parsed.get("workspace/applyEdit"), Some(&RegistryKind::ServerToClientRequest));
 }

@@ -43,6 +43,19 @@ fn missing(cell: &str) -> bool {
     RequestRow::is_missing(cell)
 }
 
+/// Whether a cell positively names an owning issue as `#NNNN`.
+///
+/// Support credit is granted only against this shape. Testing for the absence
+/// of `missing` would accept an empty cell, `none`, a not-applicable sentinel,
+/// or a typo as though it were evidence.
+fn names_an_owner(cell: &str) -> bool {
+    let trimmed = cell.trim();
+    !missing(trimmed)
+        && trimmed
+            .strip_prefix('#')
+            .is_some_and(|digits| !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()))
+}
+
 /// The version a spec string declares: its first `<major>.<minor>` token.
 ///
 /// Anchoring on the leading token keeps prose from deciding a baseline. A spec
@@ -174,6 +187,18 @@ pub(super) fn check(
                 method.as_str(),
                 "the direction registry classifies this as a server-to-client request but the \
                  matrix has no row for it",
+            ));
+        }
+    }
+    // Coverage must not depend on the registry parse alone: a method the
+    // emission scan found must have a row even if its classification entry
+    // could not be read.
+    for method in discovered.emitted.keys() {
+        if !by_method.contains_key(method.as_str()) {
+            violations.push(Violation::new(
+                "emitted-without-row",
+                method.as_str(),
+                "a production call site emits this method but the matrix has no row for it",
             ));
         }
     }
@@ -480,13 +505,16 @@ fn check_row(
             ("terminal_state_owner", &row.terminal_state_owner),
             ("exact_process_proof", &row.exact_process_proof),
         ] {
-            if missing(value) {
+            // Rejecting only `missing` would let an empty cell, `none`, a
+            // not-applicable sentinel, or a typo stand in for real evidence.
+            // Support credit requires a positively shaped owner reference.
+            if !names_an_owner(value) {
                 violations.push(Violation::new(
                     "support-without-proof",
                     &row.id,
                     format!(
-                        "disposition `supported` requires `{field}`, which is `{value}`; missing \
-                         evidence is never support credit"
+                        "disposition `supported` requires `{field}` to name an owner as `#NNNN`, \
+                         but it is `{value}`; absent evidence is never support credit"
                     ),
                 ));
             }
