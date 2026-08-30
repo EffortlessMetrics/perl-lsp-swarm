@@ -235,6 +235,43 @@ fn shadow_lane_isolates_the_safe_icf_flags_to_the_candidate() -> Result<()> {
         }
     }
 
+    // `product_identity.rs::embedded_build_input` compiles these values in via
+    // `option_env!`. Without them the measured binaries are not the release
+    // configuration, so safe ICF folds a different program than the one that
+    // ships and an `adopt` would not describe the shipped artifacts. They must
+    // be prepared exactly once, before the baseline, so both variants inherit
+    // one identical identity and the A/B still isolates the link flags.
+    let (identity_index, identity) = step_named(&steps, "Prepare identity-bearing build inputs")?;
+    let identity_body = run_body(identity);
+    for key in [
+        "PERL_LSP_BUILD_REVISION",
+        "PERL_LSP_SOURCE_TREE_DIGEST",
+        "PERL_LSP_TARGET_TRIPLE",
+        "PERL_LSP_BUILD_PROFILE",
+        "PERL_LSP_ARTIFACT_ROLE",
+        "PERL_LSP_CANDIDATE_ID",
+    ] {
+        ensure!(
+            identity_body.contains(key),
+            "the measured binaries must carry the release build input `{key}`"
+        );
+    }
+    ensure!(
+        identity_body.contains("$GITHUB_ENV"),
+        "the identity must reach both builds through the job environment, not one step"
+    );
+    ensure!(
+        identity_index < baseline_index,
+        "identity must be prepared before the baseline, or the two variants differ by more \
+         than the link flags"
+    );
+    for (label, step) in [("baseline", baseline), ("candidate", candidate)] {
+        ensure!(
+            !run_body(step).contains("PERL_LSP_"),
+            "the {label} build must inherit the shared identity rather than declaring its own"
+        );
+    }
+
     // A candidate linked from a surviving baseline artifact was never relinked.
     let (discard_index, discard) = step_named(&steps, "Discard the baseline build directory")?;
     ensure!(
@@ -308,6 +345,35 @@ fn shadow_lane_compares_per_variant_smoke_receipts() -> Result<()> {
     }
 
     ensure!(!content.contains("ubuntu-latest"), "the lane must not use a floating runner image");
+
+    Ok(())
+}
+
+#[test]
+fn shadow_lane_shell_survives_the_runner_bash() -> Result<()> {
+    let (content, workflow) = workflow()?;
+
+    // GitHub's macOS images still ship Bash 3.2, where expanding a
+    // zero-element array under `set -u` is a fatal "unbound variable". This
+    // repository's own CI runs Bash 5, which tolerates it, so the defect is
+    // invisible to every local and Linux-hosted check and would only surface
+    // on a real dispatch — after both release builds had been paid for.
+    ensure!(
+        !content.contains("=()"),
+        "an empty array literal aborts this lane under the runner's Bash 3.2; build one \
+         always-non-empty argv array instead"
+    );
+
+    for step in steps(&workflow)? {
+        let body = run_body(step);
+        if body.is_empty() {
+            continue;
+        }
+        ensure!(
+            body.contains("set -euo pipefail"),
+            "every shell step must fail closed; a silent step yields a partial measurement"
+        );
+    }
 
     Ok(())
 }

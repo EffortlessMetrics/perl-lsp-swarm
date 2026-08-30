@@ -71,8 +71,9 @@ fn stub_cargo(root: &Path, lsp_receipt: Option<&str>, dap_receipt: bool) -> Resu
     fs::write(
         &path,
         format!(
-            "#!/usr/bin/env bash\nset -euo pipefail\ncase \"$1\" in\n  run)\n{lsp_line}    ;;\n  \
-             test)\n{dap_line}    ;;\nesac\n"
+            "#!/usr/bin/env bash\nset -euo pipefail\nprintf '%s\\n' \"$*\" >> \"{root}/stub-cargo.argv\"\ncase \"$1\" in\n  run)\n{lsp_line}    ;;\n  \
+             test)\n{dap_line}    ;;\nesac\n",
+            root = root.display(),
         ),
     )?;
     fs::set_permissions(&path, fs::Permissions::from_mode(0o755))?;
@@ -106,6 +107,29 @@ fn smoke_retains_each_variant_receipt_under_its_own_directory() -> Result<()> {
     ensure!(
         !fixed_lsp_receipt(root.path()).exists(),
         "the shared receipt path must be emptied so the next variant cannot inherit it"
+    );
+
+    // `measure::load_smoke` accepts a receipt only when its `binary` field
+    // normalizes to the measured binary. Both smoke tools echo back the path
+    // they were handed, so that comparison holds only while the adapter passes
+    // an absolute path inside the measured tree. Assert what the adapter
+    // actually passed rather than trusting the chain by inspection.
+    let argv = fs::read_to_string(root.path().join("stub-cargo.argv"))
+        .context("the stub cargo recorded no invocation")?;
+    let lsp_binary = argv
+        .lines()
+        .find_map(|line| line.split("--binary ").nth(1))
+        .and_then(|rest| rest.split_whitespace().next())
+        .context("the LSP smoke was invoked without an explicit --binary")?;
+    let expected = package_dir(root.path(), "candidate").join("perllsp");
+    ensure!(
+        Path::new(lsp_binary) == expected,
+        "the LSP smoke must be pointed at the exact packaged binary; expected {}, got {lsp_binary}",
+        expected.display()
+    );
+    ensure!(
+        argv.lines().any(|line| line.starts_with("test ")),
+        "the DAP smoke must run the packaged-binary transport test"
     );
     Ok(())
 }

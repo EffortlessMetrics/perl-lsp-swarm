@@ -105,8 +105,11 @@ fn staging_packages_stripped_binaries_whose_archive_matches_the_directory() -> R
             "`{binary}` differs between the staged directory and the archive"
         );
     }
+    // Strictly smaller, not `<=`: `strip` can only shrink or leave a file
+    // alone, so `<=` would hold for an implementation that dropped the `strip`
+    // call entirely and could not discriminate one.
     ensure!(
-        fs::metadata(package_dir.join(BINARIES[0]))?.len() <= unstripped,
+        fs::metadata(package_dir.join(BINARIES[0]))?.len() < unstripped,
         "the staged binary was not stripped, so the post-strip claim would be false"
     );
 

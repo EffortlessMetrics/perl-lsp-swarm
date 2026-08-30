@@ -78,14 +78,60 @@ jobs:
             echo "runner host $HOST cannot measure $TARGET natively" >&2
             exit 1
           fi
-          VERSION="$(cargo metadata --no-deps --format-version 1 \
-            | python3 -c 'import json,sys; print(json.load(sys.stdin)["packages"][0]["version"])')"
+          # `source_identity_bound` compares the SHA declared for both variants
+          # against the checkout the instrument measures, so a disagreement here
+          # would only surface as `not_proven` after two release builds.
+          HEAD_SHA="$(git rev-parse HEAD)"
+          if [ "$HEAD_SHA" != "$GITHUB_SHA" ]; then
+            echo "checkout $HEAD_SHA is not the dispatched commit $GITHUB_SHA" >&2
+            exit 1
+          fi
+          # Select `perllsp` by name: `cargo metadata` package order is an
+          # unspecified internal detail, and `packages[0]` is `perl-ast` today.
+          # The archive is named for `perllsp`, so its version is the one that
+          # belongs in the package name.
+          VERSION="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json, sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"] == "perllsp"))')"
           printf 'host=%s\n' "$HOST" >> "$GITHUB_OUTPUT"
           printf 'version=%s\n' "$VERSION" >> "$GITHUB_OUTPUT"
           printf 'source_sha=%s\n' "$GITHUB_SHA" >> "$GITHUB_OUTPUT"
           # `subject_complete` requires a clean tree, so every staging path this
           # lane writes stays under the gitignored `target/` directory.
           mkdir -p target/shadow/baseline target/shadow/candidate target/shadow/receipts
+
+      - name: Prepare identity-bearing build inputs
+        shell: bash
+        env:
+          TARGET: ${{ inputs.target }}
+          VERSION: ${{ steps.subject.outputs.version }}
+          SOURCE_SHA: ${{ steps.subject.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          # `product_identity.rs::embedded_build_input` compiles these values in
+          # through `option_env!`. A build without them is not the release
+          # configuration: the embedded strings are absent, the identity
+          # normalization takes its not-embedded path, and safe ICF is therefore
+          # folding a different program than the one that ships. Deriving them
+          # once and exporting to the job environment gives both variants the
+          # identical release-shaped identity, so the A/B still differs only by
+          # the link flags.
+          #
+          # This reproduces release.yml's identity-bearing build inputs; it
+          # deliberately does not run `scripts/release_build_identity.py
+          # prepare`, which additionally validates release-topology and
+          # product-identity contracts scoped to an actual tagged release. A
+          # measurement lane has no release candidate and must not mint one.
+          #
+          # The digest derivation matches that script's `canonical_tree_digest`:
+          # SHA-256 over the raw `git ls-tree -r -z --full-tree` inventory.
+          TREE_DIGEST="$(git ls-tree -r -z --full-tree "$SOURCE_SHA" | shasum -a 256 | awk '{print $1}')"
+          {
+            printf 'PERL_LSP_BUILD_REVISION=%s\n' "$SOURCE_SHA"
+            printf 'PERL_LSP_SOURCE_TREE_DIGEST=%s\n' "$TREE_DIGEST"
+            printf 'PERL_LSP_TARGET_TRIPLE=%s\n' "$TARGET"
+            printf 'PERL_LSP_BUILD_PROFILE=release\n'
+            printf 'PERL_LSP_ARTIFACT_ROLE=archive\n'
+            printf 'PERL_LSP_CANDIDATE_ID=v%s-shadow\n' "$VERSION"
+          } >> "$GITHUB_ENV"
 
       - name: Build baseline
         shell: bash
@@ -164,27 +210,32 @@ jobs:
         run: |
           set -euo pipefail
           PKG="perllsp-${VERSION}-${TARGET}"
-          REPEAT_FLAG=()
-          if [ "$REPEAT_CONFIRMED" = "true" ]; then
-            REPEAT_FLAG=(--repeat-confirmed)
-          fi
-          cargo run --locked -p xtask --example release_artifact_size -- \
-            --target "$TARGET" \
-            --baseline-dir "target/shadow/baseline/${PKG}" \
-            --candidate-dir "target/shadow/candidate/${PKG}" \
-            --baseline-archive "target/shadow/baseline/${PKG}.tar.gz" \
-            --candidate-archive "target/shadow/candidate/${PKG}.tar.gz" \
-            --baseline-lsp-smoke target/shadow/baseline/lsp-smoke.json \
-            --candidate-lsp-smoke target/shadow/candidate/lsp-smoke.json \
-            --baseline-dap-smoke target/shadow/baseline/dap-smoke.json \
-            --candidate-dap-smoke target/shadow/candidate/dap-smoke.json \
-            --baseline-source-sha "$SOURCE_SHA" \
-            --candidate-source-sha "$SOURCE_SHA" \
-            --baseline-rustflags '' \
-            --candidate-rustflags "$SAFE_ICF_RUSTFLAGS" \
-            "${REPEAT_FLAG[@]}" \
-            --json "target/shadow/receipts/release-artifact-size-${TARGET}.json" \
+          # One always-non-empty argv array. GitHub's macOS runners still ship
+          # Bash 3.2, where expanding a *zero-element* array under `set -u` is a
+          # fatal "unbound variable" — so a separate, conditionally-empty flag
+          # array would abort this step on every ordinary (non-repeat) dispatch,
+          # after both release builds had already been paid for.
+          ARGS=(
+            --target "$TARGET"
+            --baseline-dir "target/shadow/baseline/${PKG}"
+            --candidate-dir "target/shadow/candidate/${PKG}"
+            --baseline-archive "target/shadow/baseline/${PKG}.tar.gz"
+            --candidate-archive "target/shadow/candidate/${PKG}.tar.gz"
+            --baseline-lsp-smoke target/shadow/baseline/lsp-smoke.json
+            --candidate-lsp-smoke target/shadow/candidate/lsp-smoke.json
+            --baseline-dap-smoke target/shadow/baseline/dap-smoke.json
+            --candidate-dap-smoke target/shadow/candidate/dap-smoke.json
+            --baseline-source-sha "$SOURCE_SHA"
+            --candidate-source-sha "$SOURCE_SHA"
+            --baseline-rustflags ''
+            --candidate-rustflags "$SAFE_ICF_RUSTFLAGS"
+            --json "target/shadow/receipts/release-artifact-size-${TARGET}.json"
             --markdown "target/shadow/receipts/release-artifact-size-${TARGET}.md"
+          )
+          if [ "$REPEAT_CONFIRMED" = "true" ]; then
+            ARGS+=(--repeat-confirmed)
+          fi
+          cargo run --locked -p xtask --example release_artifact_size -- "${ARGS[@]}"
 
       - name: Summarize the measurement
         if: always()
