@@ -164,11 +164,13 @@ impl NativeFormatter {
     /// Apply the configured final-newline policy.
     ///
     /// The argument is [`Self::format_safe_subset`]'s output, not the caller's
-    /// original document, so [`inferred_line_ending`] is answering "what does
-    /// the *formatted* text end with". That agrees with the document's own
-    /// convention only because `format_safe_subset` preserves each line's
-    /// existing terminator; it is not independently guaranteed. Hence
-    /// `formatted` rather than `source`.
+    /// original document, so the terminator appended here is the line-ending
+    /// convention [`inferred_line_ending`] infers from the *formatted* text's
+    /// last LF — not what that text happens to end with, which may be an
+    /// unterminated final line. That convention matches the caller's document
+    /// only because `format_safe_subset` preserves each line's existing
+    /// terminator; it is not independently guaranteed. Hence `formatted`
+    /// rather than `source`.
     fn apply_final_newline(formatted: &str, config: &FormatConfig) -> String {
         match config.final_newline {
             FinalNewline::Preserve => formatted.to_string(),
