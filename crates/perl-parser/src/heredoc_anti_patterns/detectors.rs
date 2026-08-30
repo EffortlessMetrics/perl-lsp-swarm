@@ -228,11 +228,13 @@ struct DynamicDelimiterDetector;
 
 /// Pattern for identifying dynamic heredoc delimiters.
 ///
-/// Each negated class excludes its own terminator (`}` or `` ` ``), which bounds
-/// the scan without a newline horizon. See the module docs for the measurement
-/// that rejected both the `\n`-excluded and `{0,N}`-bounded forms (#3597).
+/// Deliberately keeps the newline horizon that #3597 removed from the regex
+/// code block and eval patterns. Those two constructs must span newlines to
+/// reach a terminator; a dynamic delimiter has no such need, so widening this
+/// one would only add false positives on multi-line left shifts such as
+/// `1 << ${\nfoo}` without recovering any real detection.
 static DYNAMIC_DELIMITER_PATTERN: LazyLock<Regex> =
-    LazyLock::new(|| match Regex::new(r"<<\s*\$\{[^}]+\}|<<\s*\$\w+|<<\s*`[^`]+`") {
+    LazyLock::new(|| match Regex::new(r"<<\s*\$\{[^}\n]+\}|<<\s*\$\w+|<<\s*`[^`\n]+`") {
         Ok(re) => re,
         Err(_) => unreachable!("DYNAMIC_DELIMITER_PATTERN regex failed to compile"),
     });
@@ -390,6 +392,10 @@ impl PatternDetector for RegexHeredocDetector {
 // Eval heredoc detector
 struct EvalHeredocDetector;
 
+/// The keyword every [`EVAL_HEREDOC_PATTERN`] match starts with, used to check a
+/// match origin against the masked view of the source.
+const EVAL_KEYWORD: &str = "eval";
+
 /// Pattern for identifying heredocs inside eval strings.
 ///
 /// An `eval` string that declares a heredoc must span newlines to reach its
@@ -410,9 +416,20 @@ impl PatternDetector for EvalHeredocDetector {
     ) -> Vec<(AntiPattern, Location)> {
         let mut results = Vec::new();
 
+        // This detector must scan raw source: masking blanks the contents of
+        // the very quoted string it needs to look inside. So the mask is used
+        // only to reject matches that *begin* in a comment or string literal.
+        // `mask_non_code_regions` substitutes byte-for-byte, so offsets align.
+        let scan_code = mask_non_code_regions(code);
+
         for cap in EVAL_HEREDOC_PATTERN.captures_iter(code) {
             if let Some(match_pos) = cap.get(0) {
-                let location = location_from_start(line_starts, offset, match_pos.start());
+                let start = match_pos.start();
+                if scan_code.get(start..start + EVAL_KEYWORD.len()) != Some(EVAL_KEYWORD) {
+                    continue;
+                }
+
+                let location = location_from_start(line_starts, offset, start);
 
                 results.push((
                     AntiPattern::EvalStringHeredoc { location: location.clone() },

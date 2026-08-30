@@ -85,12 +85,16 @@ fn antip_detects_multiline_eval_string_heredoc() {
 }
 
 #[test]
-fn antip_detects_multiline_dynamic_delimiter() {
+fn antip_dynamic_delimiter_keeps_its_newline_horizon() {
+    // Deliberately NOT widened. A dynamic delimiter has no reason to span
+    // newlines, so crossing them would only add false positives on multi-line
+    // left shifts (see `antip_multiline_left_shift_is_not_a_dynamic_delimiter`)
+    // without recovering any real detection.
     let code = "my $content = <<${\nVARNAME};\n";
 
     assert!(
-        has_dynamic_delimiter(code),
-        "dynamic delimiter spanning a newline must be reported; got {:?}",
+        !has_dynamic_delimiter(code),
+        "dynamic delimiter must not cross a newline; got {:?}",
         detect(code).iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
@@ -136,6 +140,41 @@ fn antip_ignores_constructs_inside_comments_and_strings() {
         found.is_empty(),
         "commented and quoted constructs must not be reported; got {:?}",
         found.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn antip_eval_fragment_in_a_comment_does_not_seed_a_match() {
+    // The eval detector must scan raw source, because masking would blank the
+    // contents of the very quoted string it needs to look inside. It therefore
+    // checks each match origin against the masked view instead. Without that
+    // check, an `eval '` fragment in a comment joins unrelated later lines.
+    let code = "# eval '\nmy $x = 1 << 2;\nmy $s = 'ok';\n";
+
+    assert!(
+        !has_eval_string(code),
+        "an eval fragment inside a comment must not be reported; got {:?}",
+        detect(code).iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    // Same origin check on one line, and inside a string literal.
+    assert!(!has_eval_string("# eval 'x<<y';\n"), "commented eval must not be reported");
+    assert!(
+        !has_eval_string("my $s = \"eval 'x<<y'\";\n"),
+        "an eval fragment inside a string literal must not be reported"
+    );
+}
+
+#[test]
+fn antip_multiline_left_shift_is_not_a_dynamic_delimiter() {
+    // `1 << ${...}` is a left shift of a scalar dereference, not a heredoc.
+    // Keeping the dynamic-delimiter newline horizon keeps this out.
+    let code = "my $x = 1 << ${\nfoo};\n";
+
+    assert!(
+        !has_dynamic_delimiter(code),
+        "a multi-line left shift must not be reported as a dynamic delimiter; got {:?}",
+        detect(code).iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
 

@@ -10,11 +10,16 @@
 //!
 //! # Scan-bound decision (#3597, supersedes the #3568 tradeoff)
 //!
-//! Three detector patterns — dynamic delimiter, regex code block, and eval
-//! string — describe constructs that legitimately span newlines in real Perl.
-//! #3568 excluded `\n` from their character classes to bound scan work, which
-//! silently dropped every multi-line occurrence. #3597 asked whether that
-//! coverage loss actually buys anything.
+//! Two detector patterns — regex code block and eval string — describe
+//! constructs that *must* span newlines in real Perl: the heredoc body has to
+//! reach its terminator. #3568 excluded `\n` from their character classes to
+//! bound scan work, which silently dropped every multi-line occurrence — that
+//! is, essentially every true positive. #3597 asked whether that coverage loss
+//! actually buys anything.
+//!
+//! The dynamic-delimiter pattern deliberately keeps its newline horizon. It
+//! describes no construct that needs to cross a line, so widening it would only
+//! admit false positives on multi-line left shifts such as `1 << ${\nfoo}`.
 //!
 //! Measured through [`AntiPatternDetector::detect_all`] (see
 //! `tests/heredoc_antip_redos_guardrail.rs`, which owns the executable form of
@@ -36,14 +41,20 @@
 //! inflating `m` in `O(m·n)` by three to four orders of magnitude, and it still
 //! truncates detection past its horizon. It is rejected on measurement.
 //!
-//! These patterns therefore use unbounded negated classes. They remain bounded
-//! in practice because each class excludes its own terminator (`}`, `'`, `"`,
-//! `` ` ``), so a scan cannot run past the construct it is matching.
+//! Those two patterns therefore use unbounded negated classes. They remain
+//! bounded in practice because each class excludes its own terminator (`}`,
+//! `'`, `"`), so a scan cannot run past the construct it is matching.
 //!
-//! Known residual, unchanged by this decision: the regex-code-block and eval
-//! patterns treat a left-shift `<<` as a heredoc marker. That imprecision is
-//! pre-existing on single lines and is tracked separately, not by the newline
-//! horizon.
+//! Removing the horizon exposed a latent defect in `EvalHeredocDetector`: alone
+//! among the detectors it scans raw source, because masking would blank the
+//! contents of the very quoted string it must look inside. An `eval '` fragment
+//! in a comment could therefore seed a match. It now checks each match origin
+//! against the masked view, which also fixes the pre-existing single-line form
+//! of that false positive.
+//!
+//! Known residual, unchanged by this decision: these patterns treat a left-shift
+//! `<<` as a heredoc marker. That imprecision is pre-existing on single lines
+//! and is a property of the `<<` token test, not of the newline horizon.
 
 mod detectors;
 mod model;
