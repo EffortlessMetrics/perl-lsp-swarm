@@ -32,6 +32,17 @@ pub struct ProjectShardState {
     /// Limitation ids owned by the shard and removed with it.
     #[serde(default)]
     pub limitation_ids: Vec<String>,
+    /// Fact classes the adopted shard actually populated. `None` means the
+    /// snapshot predates population evidence, so the pre-evidence behavior is
+    /// retained; `Some` records the producer's population evidence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub populated: Option<FactClasses>,
+    /// Structural limitation-to-path association retained from the adopted
+    /// shard (limitation id -> relative paths it bounds). Limitations that
+    /// declare no paths are associated with the shard's own file, so path
+    /// scoping never has to be reconstructed from id text.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub limitation_paths: std::collections::BTreeMap<String, Vec<String>>,
 }
 
 /// All facts owned by one file at one producer generation.

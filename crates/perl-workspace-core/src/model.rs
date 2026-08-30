@@ -58,6 +58,12 @@ pub struct ProjectModel {
     /// Generation and fingerprint metadata for shards adopted through the ingestion API.
     #[serde(default)]
     pub shard_states: BTreeMap<String, ProjectShardState>,
+    /// Discovered-but-unread relative paths (walk saw them; the read failed).
+    /// They stay in the source denominator so a known-unread source can never
+    /// answer as a legitimate empty; adoption of a readable shard for the
+    /// path retires the entry.
+    #[serde(default)]
+    pub unread_discovered: BTreeSet<String>,
 }
 
 impl ProjectModel {
@@ -80,6 +86,7 @@ impl ProjectModel {
             dynamic_boundaries: Vec::new(),
             limitations: Vec::new(),
             shard_states: BTreeMap::new(),
+            unread_discovered: BTreeSet::new(),
         }
     }
 
@@ -224,6 +231,39 @@ impl ProjectModel {
             self.remove_owned_facts(&previous_file_id, &relative_path);
         }
         let limitation_ids = shard.limitations.iter().map(|item| item.id.clone()).collect();
+        // Structural limitation-to-path association: a shard owns exactly one
+        // file, so a limitation that declares no paths bounds that file. This
+        // is ownership, not id-text reconstruction.
+        let shard_path = relative_path.clone();
+        let limitation_paths = shard
+            .limitations
+            .iter()
+            .map(|item| {
+                let paths = if item.paths.is_empty() {
+                    vec![shard_path.clone()]
+                } else {
+                    item.paths.clone()
+                };
+                (item.id.clone(), paths)
+            })
+            .collect();
+        // A readable shard adopted for this path supersedes the walk-time
+        // discovered-but-unread marker. Remove only the adopted path from
+        // structural read-failure limitations; other unread paths remain
+        // bounded by the same limitation.
+        if self.unread_discovered.remove(relative_path.as_str()) {
+            let legacy_suffix = format!(":{relative_path}");
+            self.limitations.retain_mut(|limitation| {
+                if limitation.kind != "read_failure" {
+                    return true;
+                }
+                if limitation.paths.is_empty() {
+                    return !limitation.id.ends_with(&legacy_suffix);
+                }
+                limitation.paths.retain(|path| path != &relative_path);
+                !limitation.paths.is_empty()
+            });
+        }
         self.files.push(shard.file);
         self.packages.extend(shard.packages);
         self.symbols.extend(shard.symbols);
@@ -244,6 +284,8 @@ impl ProjectModel {
                 schema_version: shard.schema_version,
                 fingerprint,
                 limitation_ids,
+                populated: Some(shard.populated),
+                limitation_paths,
             },
         );
         self.sort_for_determinism();
