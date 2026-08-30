@@ -354,8 +354,8 @@ pub fn discover(root: &Path) -> Result<Discovered> {
     let mut cargo_dependents = discover_cargo_dependents(root, &tracked)?;
     cargo_dependents.sort();
 
-    let mut references = discover_references(root, &tracked)?;
-    references.sort();
+    let references =
+        merge_reference_population(discover_references(root, &tracked)?, &cargo_dependents);
 
     let (source_files, source_digest) = digest_sources(root, &tracked)?;
     let fixtures = discover_fixtures(root, &tracked)?;
@@ -403,6 +403,25 @@ fn discover_fixtures(root: &Path, tracked: &[String]) -> Result<BTreeSet<String>
         }
     }
     Ok(out)
+}
+
+/// The reference population: tracked files whose text names the package, plus
+/// every manifest that declares a Cargo dependency on it.
+///
+/// The union is required, not cosmetic. A member inheriting a renamed workspace
+/// dependency (`tsc = { workspace = true }`) is a Cargo dependent whose manifest
+/// never spells the package name, so it would be absent from the text plane.
+/// `validate_consumers` demands a `cargo_dependency` row for every dependent and
+/// rejects any row whose path is not in this population — so without the union
+/// such a manifest could neither be recorded nor omitted, and no ledger could
+/// satisfy both rules.
+fn merge_reference_population(
+    text_hits: Vec<String>,
+    dependents: &[CargoDependent],
+) -> Vec<String> {
+    let mut references: BTreeSet<String> = text_hits.into_iter().collect();
+    references.extend(dependents.iter().map(|d| d.manifest.clone()));
+    references.into_iter().collect()
 }
 
 /// Root re-exports that no module actually defines.
@@ -1547,6 +1566,49 @@ mod tests {
         ));
         assert!(found.is_empty(), "unrelated dependencies must not count: {found:?}");
         Ok(())
+    }
+
+    /// A manifest that inherits a renamed workspace dependency is a Cargo
+    /// dependent whose text never names the package. Without the union it would
+    /// be simultaneously required as a consumer row (because it is a dependent)
+    /// and rejected as stale (because it is not in the reference population) —
+    /// a ledger that cannot be written either way.
+    #[test]
+    fn a_cargo_dependent_is_always_in_the_reference_population() -> TestResult {
+        let dependents = vec![CargoDependent {
+            manifest: "crates/silent/Cargo.toml".to_string(),
+            kind: "normal".to_string(),
+        }];
+        let references = merge_reference_population(vec!["docs/x.md".to_string()], &dependents);
+        assert_eq!(
+            references,
+            vec!["crates/silent/Cargo.toml".to_string(), "docs/x.md".to_string()],
+            "a dependent manifest must be referenceable even with no text hit"
+        );
+
+        // And a manifest already found by text must not be duplicated.
+        let both =
+            merge_reference_population(vec!["crates/silent/Cargo.toml".to_string()], &dependents);
+        assert_eq!(both, vec!["crates/silent/Cargo.toml".to_string()]);
+        Ok(())
+    }
+
+    /// The whole point of the union: such a ledger now validates.
+    #[test]
+    fn a_silent_cargo_dependent_can_be_reconciled() -> TestResult {
+        let l = ledger(
+            vec![symbol("parse_to_tree", Disposition::UniqueAndRequired)],
+            vec![consumer("crates/silent/Cargo.toml", ReferenceKind::CargoDependency)],
+        );
+        let dependents = vec![CargoDependent {
+            manifest: "crates/silent/Cargo.toml".to_string(),
+            kind: "normal".to_string(),
+        }];
+        let mut d = discovered(vec![export("parse_to_tree")], vec![]);
+        d.references = merge_reference_population(Vec::new(), &dependents);
+        d.cargo_dependents = dependents;
+
+        validate(&l, &d)
     }
 
     /// `lib.rs` and the module files must agree about the crate's surface.

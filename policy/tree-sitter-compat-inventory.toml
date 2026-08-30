@@ -38,6 +38,14 @@
 # `std::error::Error` on `TreeError` — and they are recorded on that type's row
 # so the migration owner still sees them.
 #
+# On #8880's "public/internal symbol": the internal population is empty, not
+# skipped. The crate declares no `pub(crate)`, `pub(super)`, or `pub(in ...)`
+# item in any of its four modules, so there is no crate-internal-but-shared
+# surface to disposition. What remains below `pub` is module-private, which by
+# construction cannot be consumed from outside the crate and therefore cannot
+# require migration — it is deleted with the crate under #8890. If a
+# restricted-visibility item is ever added, it will need a row and a rule here.
+#
 # A row's disposition is about the BEHAVIOUR, not only the symbol. A symbol may
 # be obsolete as an authority while the behaviour it produces is still required
 # by another row; `pascal_to_snake` is exactly that case and carries a migration
