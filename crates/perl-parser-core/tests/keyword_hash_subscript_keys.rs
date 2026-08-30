@@ -24,61 +24,30 @@ fn contains_static_subscript(node: &Node, expected_op: &str, expected_key: &str)
     {
         return true;
     }
-    for child in node.children() {
-        if contains_static_subscript(child, expected_op, expected_key) {
-            return true;
-        }
-    }
-    false
+    node.children()
+        .into_iter()
+        .any(|child| contains_static_subscript(child, expected_op, expected_key))
 }
 
-fn contains_keyword_slice(node: &Node, expected_keys: &[&str]) -> bool {
-    if let NodeKind::HashSlice { keys, .. } = &node.kind
-        && let NodeKind::ArrayLiteral { elements } = &keys.kind
-        && elements.len() == expected_keys.len()
-        && elements.iter().zip(expected_keys).all(|(element, expected)| {
-            matches!(&element.kind, NodeKind::Identifier { name } if name == expected)
-        })
-    {
-        return true;
-    }
-    for child in node.children() {
-        if contains_keyword_slice(child, expected_keys) {
-            return true;
-        }
-    }
-    false
-}
-
-fn contains_loop_control(node: &Node, expected_op: &str, expected_label: &str) -> bool {
+fn contains_loop_control(node: &Node, expected_op: &str, expected_label: Option<&str>) -> bool {
     if let NodeKind::LoopControl { op, label } = &node.kind
         && op == expected_op
-        && label.as_deref() == Some(expected_label)
+        && label.as_deref() == expected_label
     {
         return true;
     }
-    for child in node.children() {
-        if contains_loop_control(child, expected_op, expected_label) {
-            return true;
-        }
-    }
-    false
+    node.children()
+        .into_iter()
+        .any(|child| contains_loop_control(child, expected_op, expected_label))
 }
 
 fn contains_return(node: &Node) -> bool {
-    if matches!(&node.kind, NodeKind::Return { .. }) {
-        return true;
-    }
-    for child in node.children() {
-        if contains_return(child) {
-            return true;
-        }
-    }
-    false
+    matches!(&node.kind, NodeKind::Return { .. })
+        || node.children().into_iter().any(contains_return)
 }
 
 #[test]
-fn boundary_delimited_control_words_are_static_arrow_hash_keys() -> TestResult {
+fn terminal_control_words_are_static_arrow_hash_keys() -> TestResult {
     for key in ["next", "last", "redo", "return"] {
         let source = format!("$hash->{{{key}}};");
         let ast = parse_clean(&source)?;
@@ -93,7 +62,7 @@ fn boundary_delimited_control_words_are_static_arrow_hash_keys() -> TestResult {
 }
 
 #[test]
-fn boundary_delimited_control_words_are_static_direct_hash_keys() -> TestResult {
+fn terminal_control_words_are_static_direct_hash_keys() -> TestResult {
     for key in ["next", "last", "redo", "return"] {
         let source = format!("$hash{{{key}}};");
         let ast = parse_clean(&source)?;
@@ -108,22 +77,33 @@ fn boundary_delimited_control_words_are_static_direct_hash_keys() -> TestResult 
 }
 
 #[test]
-fn comma_delimited_control_words_are_static_hash_slice_keys() -> TestResult {
-    let expected = ["next", "last", "redo", "return"];
-    let ast = parse_clean("@hash{next, last, redo, return};")?;
-    if !contains_keyword_slice(&ast, &expected) {
-        return Err(format!(
-            "control words were not retained as a static hash-slice key list: {}",
-            ast.to_sexp()
-        ));
+fn comma_followed_control_words_remain_executable_expressions() -> TestResult {
+    for (op, source) in [
+        ("next", "sub f { my %hash; my $value; while (1) { my $x = $hash{next, $value}; } }"),
+        ("last", "sub f { my %hash; my $value; while (1) { my $x = $hash{last, $value}; } }"),
+        ("redo", "sub f { my %hash; my $value; while (1) { my $x = $hash{redo, $value}; } }"),
+    ] {
+        let ast = parse_clean(source)?;
+        if !contains_loop_control(&ast, op, None) {
+            return Err(format!(
+                "comma-followed {op:?} stopped being executable loop control: {}",
+                ast.to_sexp()
+            ));
+        }
+    }
+
+    let source = "sub f { my %hash; my $value; my $x = $hash{return, $value}; return 99; }";
+    let ast = parse_clean(source)?;
+    if !contains_return(&ast) {
+        return Err(format!("comma-followed return stopped being executable: {}", ast.to_sexp()));
     }
     Ok(())
 }
 
 #[test]
-fn executable_loop_control_and_return_forms_keep_their_ast() -> TestResult {
+fn ordinary_executable_control_forms_keep_their_ast() -> TestResult {
     let next_ast = parse_clean("next OUTER;")?;
-    if !contains_loop_control(&next_ast, "next", "OUTER") {
+    if !contains_loop_control(&next_ast, "next", Some("OUTER")) {
         return Err(format!("labeled next stopped being loop control: {}", next_ast.to_sexp()));
     }
 

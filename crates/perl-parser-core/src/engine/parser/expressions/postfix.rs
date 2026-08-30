@@ -1504,12 +1504,18 @@ impl<'a> Parser<'a> {
     }
 
     fn peek_is_keyword_bareword_key(&mut self) -> bool {
-        let Ok(first) = self.tokens.peek() else {
-            return false;
-        };
+    let Ok(first) = self.tokens.peek() else {
+        return false;
+    };
 
-        let is_keyword_key = matches!(
-            first.kind(),
+    let kind = first.kind();
+    let is_terminal_control_key = matches!(
+        kind,
+        TokenKind::Return | TokenKind::Next | TokenKind::Last | TokenKind::Redo
+    );
+    let is_keyword_key = is_terminal_control_key
+        || matches!(
+            kind,
             TokenKind::WordNot
                 | TokenKind::WordAnd
                 | TokenKind::WordOr
@@ -1520,21 +1526,22 @@ impl<'a> Parser<'a> {
                 | TokenKind::Try
                 | TokenKind::Defer
                 | TokenKind::StringCompare
-                | TokenKind::Return
-                | TokenKind::Next
-                | TokenKind::Last
-                | TokenKind::Redo
-        ) || matches!(first.text.as_ref(), "tie" | "untie");
+        )
+        || matches!(first.text.as_ref(), "tie" | "untie");
 
-        if !is_keyword_key {
-            return false;
-        }
-
-        self.tokens
-            .peek_second()
-            .ok()
-            .is_some_and(|second| matches!(second.kind(), TokenKind::RightBrace | TokenKind::Comma))
+    if !is_keyword_key {
+        return false;
     }
+
+    let Ok(second) = self.tokens.peek_second() else {
+        return false;
+    };
+    if is_terminal_control_key {
+        second.kind() == TokenKind::RightBrace
+    } else {
+        matches!(second.kind(), TokenKind::RightBrace | TokenKind::Comma)
+    }
+}
 
     fn consume_as_bareword_identifier(&mut self) -> ParseResult<Node> {
         let token = self.tokens.next()?;
