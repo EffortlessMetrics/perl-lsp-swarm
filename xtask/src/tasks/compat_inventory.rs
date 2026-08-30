@@ -726,11 +726,16 @@ pub fn parse_declared_items(source: &str) -> Vec<(String, SymbolKind, Visibility
             }
         }
 
-        depth += brace_delta(trimmed);
-        if depth > 0 {
-            // The body is open, so the type is now anchored by depth alone.
+        // The body opens at the first `{` at or after the header, which is not
+        // the same as the depth going positive: `impl Foo {}` opens and closes
+        // on one line for a net delta of zero. Keying off depth would leave the
+        // header pending, swallow the *next* `impl`, and hand its methods the
+        // stale type.
+        if awaiting_impl_body && trimmed.contains('{') {
             awaiting_impl_body = false;
         }
+
+        depth += brace_delta(trimmed);
         if depth <= 0 {
             depth = 0;
             // Only a closed impl clears the type; a header still waiting for its
@@ -2194,6 +2199,60 @@ pub fn free(name: &str) -> String {
                 ("free".to_string(), SymbolKind::Function),
             ],
             "a wrapped impl header still qualifies its methods, and the impl still closes"
+        );
+        Ok(())
+    }
+
+    /// `impl Foo {}` opens and closes on one line, so its net brace delta is
+    /// zero. Treating "depth went positive" as the signal that the body opened
+    /// leaves the header pending forever, which swallows the *next* `impl` and
+    /// hands its methods the stale type. This is misattribution rather than
+    /// omission — the worse of the two, because the row looks plausible.
+    #[test]
+    fn an_empty_impl_does_not_capture_the_next_impls_methods() -> TestResult {
+        let source = "\
+pub struct Foo {}
+pub struct Bar {}
+
+impl Foo {}
+
+impl Bar {
+    pub fn only_on_bar(&self) -> usize {
+        0
+    }
+}
+";
+        assert_eq!(
+            parse_public_items(source),
+            vec![
+                ("Bar".to_string(), SymbolKind::Struct),
+                ("Bar::only_on_bar".to_string(), SymbolKind::Method),
+                ("Foo".to_string(), SymbolKind::Struct),
+            ],
+            "the method belongs to Bar, not to the empty Foo impl"
+        );
+        Ok(())
+    }
+
+    /// The same shape with an empty *trait* impl, which is what this crate
+    /// actually contains (`impl std::error::Error for TreeError {}`). Here the
+    /// pending type is `None`, so the failure is omission rather than
+    /// misattribution — the following inherent block loses its methods entirely.
+    #[test]
+    fn an_empty_trait_impl_does_not_suppress_the_next_impl() -> TestResult {
+        let source = "\
+impl std::error::Error for TreeError {}
+
+impl TsNode {
+    pub fn child_count(&self) -> usize {
+        0
+    }
+}
+";
+        assert_eq!(
+            parse_public_items(source),
+            vec![("TsNode::child_count".to_string(), SymbolKind::Method)],
+            "the inherent impl after an empty trait impl is still recognised"
         );
         Ok(())
     }
