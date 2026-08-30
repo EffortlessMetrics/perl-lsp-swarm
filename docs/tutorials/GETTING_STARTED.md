@@ -430,8 +430,8 @@ The editor must be able to find and launch the `perllsp` binary. Symptoms includ
    request: the server waits, prints nothing on standard output, and exits when
    its input closes. That silence is a property of the protocol, not evidence of
    a bad install. Hand-framing a request is protocol debugging rather than an
-   installation check; if you need it, use the framed example in
-   [COMMANDS_REFERENCE.md](../reference/COMMANDS_REFERENCE.md).
+   installation check. Use the repository's protocol harnesses when debugging
+   request framing instead of hand-constructing messages in this basic guide.
 
 4. **VS Code specific**: ensure the extension is installed and enabled:
    ```bash
