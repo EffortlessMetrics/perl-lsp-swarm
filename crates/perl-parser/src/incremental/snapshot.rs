@@ -3,9 +3,10 @@ use perl_source_identity::ContentDigest;
 use thiserror::Error;
 
 use super::geometry_attachment::{
-    SourceGeometryAttachment, SourceGeometryAttachmentState, SourceGeometrySubject,
-    SourceGeometryValidationError,
+    SourceGeometryAttachment, SourceGeometrySubject, SourceGeometryValidationError,
 };
+#[cfg(test)]
+use super::geometry_attachment::SourceGeometryAttachmentState;
 
 /// Monotonic identity for one committed parser generation.
 ///
