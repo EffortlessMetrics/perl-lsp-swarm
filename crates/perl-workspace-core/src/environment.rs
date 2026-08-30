@@ -1942,6 +1942,26 @@ mod tests {
     }
 
     #[test]
+    fn reconstructed_snapshot_with_empty_workspace_id_fails_closed()
+    -> Result<(), EnvironmentBuildError> {
+        let input = input(
+            "environment.configured",
+            EnvironmentInputAuthority::UserConfiguration,
+            "lib",
+            "client",
+        );
+        let mut snapshot =
+            ProjectEnvironmentSnapshotBuilder::new("workspace:fixture", 1, WorkspaceTrust::Trusted)
+                .with_input(input)
+                .build()?;
+
+        snapshot.workspace_id.clear();
+
+        assert!(matches!(snapshot.validate(), Err(EnvironmentBuildError::EmptyWorkspaceId)));
+        Ok(())
+    }
+
+    #[test]
     fn empty_input_fields_fail_closed() {
         for (semantic_key, source_id, explanation_code, field) in [
             ("", "source", "explanation", "semantic_key"),
