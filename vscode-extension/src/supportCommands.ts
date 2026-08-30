@@ -202,6 +202,14 @@ async function getServerVersionSafely(dependencies: SupportCommandDependencies):
  * The raw failure is deliberately dropped rather than surfaced: packet-validation
  * messages name the offending field contents, which is exactly the class of data the
  * packet exists to keep out of a public report.
+ *
+ * The catch is also deliberately silent rather than logging an error class. This
+ * extension emits no `console` output from production code — there are zero
+ * `console.*` calls outside tests and `.oxlintrc.json` sets `no-console`, against a
+ * 0/0 warning budget, so a `console.error` here fails `npm run lint` outright. The
+ * sanctioned diagnostic surface is an `OutputChannel` (see `diagnosticCommands.ts`),
+ * which this command does not take; wiring one is tracked separately rather than
+ * widened into this claim.
  */
 function renderSupportPacketSafely(
   dependencies: SupportCommandDependencies,
