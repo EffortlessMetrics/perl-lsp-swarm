@@ -84,10 +84,11 @@ pub fn find_occurrences_in_text(
             // identifier class. Inspecting adjacent bytes is incorrect for
             // UTF-8: a continuation byte can make a Unicode identifier look
             // like it has a boundary immediately before or after the match.
-            let before_ok = source[..absolute_pos]
-                .chars()
-                .next_back()
-                .is_none_or(|ch| !is_module_identifier_char(ch));
+            let before_ok = kind.sigil().is_some()
+                || source[..absolute_pos]
+                    .chars()
+                    .next_back()
+                    .is_none_or(|ch| !is_module_identifier_char(ch));
             let after_ok =
                 source[match_end..].chars().next().is_none_or(|ch| !is_module_identifier_char(ch));
 
@@ -196,7 +197,7 @@ mod tests {
 
     #[test]
     fn find_occurrences_rejects_unicode_identifier_neighbors() -> Result<(), Box<dyn Error>> {
-        let source = "# 語$x 語\n\"語$x 語\"\n";
+        let source = "# 語$x $x語\n\"語$x $x語\"\n";
         let options = RenameOptions {
             rename_in_comments: true,
             rename_in_strings: true,
@@ -210,10 +211,7 @@ mod tests {
             &options,
             source,
         );
-        assert!(
-            edits.is_empty(),
-            "Unicode identifier neighbors are not word boundaries: {edits:?}"
-        );
+        assert_eq!(edits.len(), 2, "Unicode prefixes do not join sigiled names: {edits:?}");
         Ok(())
     }
 
