@@ -297,21 +297,18 @@ impl<R: SubprocessRuntime> FormattingProvider<R> {
     ) -> Result<FormattingDecision, FormattingError> {
         let mut document =
             self.inner.format_document(content, options).map_err(FormattingError::from)?;
-        // The external adapter's rendered bytes are the authority here too: a
-        // returned edit that reproduces the source exactly is normalized away
-        // before the terminal decision is recorded (#7585).
-        if document.text == content {
-            document.edits.clear();
-        }
-        let disposition = if document.edits.is_empty() {
-            FormatDisposition::NoChange
-        } else {
-            FormatDisposition::Applied
-        };
-        let reason = if document.edits.is_empty() {
-            FormatReasonCode::AlreadyFormatted
-        } else {
-            FormatReasonCode::Applied
+        let (disposition, reason) = match classify_external_envelope(content, &mut document) {
+            ExternalEnvelope::NoChange => {
+                (FormatDisposition::NoChange, FormatReasonCode::AlreadyFormatted)
+            }
+            ExternalEnvelope::Applied => (FormatDisposition::Applied, FormatReasonCode::Applied),
+            ExternalEnvelope::Unaccounted => {
+                // Rendered bytes no returned edit accounts for. Retain the
+                // source and fail closed rather than reporting a legitimate
+                // no-change over a document that differs from it (#7585).
+                document = unchanged_document(content);
+                (FormatDisposition::FailedOrNotProven, FormatReasonCode::InstrumentFailure)
+            }
         };
         let outcome = provider_outcome(ProviderOutcomeInput {
             source: content,
@@ -446,6 +443,35 @@ fn unproven_range_projection(content: &str, mut outcome: FormatOutcome) -> Forma
     outcome.next_action =
         Some("retain the unchanged source and report the formatter evidence".to_string());
     withheld_decision(outcome, content)
+}
+
+/// Terminal shape of an externally rendered document, judged from the whole
+/// `(source, rendered, edits)` envelope.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExternalEnvelope {
+    /// The render reproduces the source; any returned edits were no-ops.
+    NoChange,
+    /// The render differs from the source and returned edits account for it.
+    Applied,
+    /// The render differs from the source but no edit accounts for it.
+    Unaccounted,
+}
+
+/// Validate an external adapter's envelope instead of trusting its edit list.
+///
+/// The adapter supplies both rendered bytes and edits, so the two are checked
+/// against each other: a render that reproduces the source carries no edits,
+/// and rendered bytes that no returned edit accounts for are reported as
+/// unaccounted rather than as a legitimate no-change (#7585).
+fn classify_external_envelope(content: &str, document: &mut FormattedDocument) -> ExternalEnvelope {
+    if document.text == content {
+        document.edits.clear();
+        return ExternalEnvelope::NoChange;
+    }
+    if document.edits.is_empty() {
+        return ExternalEnvelope::Unaccounted;
+    }
+    ExternalEnvelope::Applied
 }
 
 /// Retain the source and strip any intermediate change evidence.
@@ -1077,6 +1103,46 @@ mod decision_projection_tests {
             },
             next_action: None,
         }
+    }
+
+    /// The external adapter's envelope is validated, not trusted.
+    ///
+    /// The `Unaccounted` arm is the falsifier: rendered bytes with no edge to
+    /// account for them must fail closed instead of being reported as a
+    /// legitimate no-change. The bundled legacy adapter cannot currently
+    /// produce that shape, so it is exercised here directly (#7585).
+    #[test]
+    fn an_external_envelope_is_judged_from_source_rendered_and_edits() {
+        let source = "my $x = 1;\n";
+
+        // A render that reproduces the source drops its no-op edits.
+        let mut no_op = FormattedDocument {
+            text: source.to_string(),
+            edits: vec![FormatTextEdit {
+                range: FormatRange::whole_document(source),
+                new_text: source.to_string(),
+            }],
+        };
+        assert_eq!(classify_external_envelope(source, &mut no_op), ExternalEnvelope::NoChange);
+        assert!(no_op.edits.is_empty());
+
+        // A render backed by edits is applied.
+        let mut applied = FormattedDocument {
+            text: "my $x = 2;\n".to_string(),
+            edits: vec![FormatTextEdit {
+                range: FormatRange::whole_document(source),
+                new_text: "my $x = 2;\n".to_string(),
+            }],
+        };
+        assert_eq!(classify_external_envelope(source, &mut applied), ExternalEnvelope::Applied);
+
+        // Changed text with an empty edit list is unaccounted, never NoChange.
+        let mut unaccounted =
+            FormattedDocument { text: "my $x = 2;\n".to_string(), edits: Vec::new() };
+        assert_eq!(
+            classify_external_envelope(source, &mut unaccounted),
+            ExternalEnvelope::Unaccounted
+        );
     }
 
     /// Negative control for #7585: an edit set that reproduces the source is

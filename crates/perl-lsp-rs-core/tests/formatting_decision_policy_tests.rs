@@ -32,6 +32,29 @@ impl SubprocessRuntime for RecordingRuntime {
     }
 }
 
+/// A subprocess runtime whose rendered output is chosen by the test, so the
+/// external adapter path can be driven to a real change and to a byte-for-byte
+/// no-op.
+#[derive(Clone)]
+struct ScriptedRuntime {
+    stdout: String,
+}
+
+impl SubprocessRuntime for ScriptedRuntime {
+    fn run_command(
+        &self,
+        _program: &str,
+        _args: &[&str],
+        _stdin: Option<&[u8]>,
+    ) -> Result<SubprocessOutput, SubprocessError> {
+        Ok(SubprocessOutput {
+            stdout: self.stdout.clone().into_bytes(),
+            stderr: Vec::new(),
+            status_code: 0,
+        })
+    }
+}
+
 fn options() -> FormattingOptions {
     FormattingOptions {
         tab_size: 4,
@@ -610,6 +633,20 @@ fn every_terminal_decision_keeps_a_consistent_change_envelope()
     )?;
     assert_eq!(decision.outcome.disposition, FormatDisposition::FailedOrNotProven);
     assert_envelope_is_consistent("my$x=1;\n", &decision);
+
+    // The external adapter is the fourth terminal entry point. Drive it to a
+    // real change and to a byte-for-byte no-op so both arms of its envelope
+    // normalization are pinned by the same predicate.
+    let source = "my$x=1;\n";
+    for stdout in [source, "my $x = 1;\n"] {
+        let external = FormattingProvider::new(ScriptedRuntime { stdout: stdout.to_string() })
+            .with_formatter_mode(FormatterMode::ExternalLegacy);
+        let decision = external.format_document_decision(source, &options(), &context())?;
+        let expected =
+            if stdout == source { FormatDisposition::NoChange } else { FormatDisposition::Applied };
+        assert_eq!(decision.outcome.disposition, expected, "external stdout={stdout:?}");
+        assert_envelope_is_consistent(source, &decision);
+    }
     Ok(())
 }
 
