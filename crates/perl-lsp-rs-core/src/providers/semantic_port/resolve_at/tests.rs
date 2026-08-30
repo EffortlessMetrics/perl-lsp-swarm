@@ -685,6 +685,129 @@ fn an_unseen_uri_yields_an_unknown_document_generation_with_a_known_workspace() 
     assert_eq!(basis.workspace_generation, SourceGeneration::known("workspace-index@2"));
 }
 
+// ── Exactness depends on both halves of the identity, and on the basis ──
+
+/// The identity is occurrence *and* entity, so a weak entity cannot be laundered
+/// into an exact identity by a strong occurrence.
+#[test]
+fn a_weak_entity_is_not_an_exact_identity() {
+    for (provenance, confidence) in [
+        (Provenance::NameHeuristic, Confidence::High),
+        (Provenance::SearchFallback, Confidence::High),
+        (Provenance::ExactAst, Confidence::Low),
+    ] {
+        let mut weak = entity(1, EntityKind::Variable, "$value", Some(100));
+        weak.provenance = provenance;
+        weak.confidence = confidence;
+        // The occurrence itself is impeccable.
+        let source = StubSource::default().with_symbol(
+            10,
+            weak,
+            occurrence(50, OccurrenceKind::Read, Some(1), 101),
+        );
+
+        let outcome = resolve(&source, 10);
+
+        assert_eq!(
+            outcome.stage(),
+            "partial",
+            "entity evidence {provenance:?}/{confidence:?} must not be exact"
+        );
+        match outcome {
+            ResolveAtOutcome::Partial { limitations, .. } => assert!(
+                limitations.contains(&ResolveLimitation::NonExactEntityProvenance),
+                "the weak half must be named"
+            ),
+            other => panic!("expected Partial, got {other:?}"),
+        }
+    }
+}
+
+/// The two halves are reported separately, so a caller can tell which one is
+/// approximate rather than being told only that something is.
+#[test]
+fn weak_occurrence_and_weak_entity_are_named_separately() {
+    let mut weak_entity_fact = entity(1, EntityKind::Variable, "$value", Some(100));
+    weak_entity_fact.provenance = Provenance::NameHeuristic;
+    let mut weak_occurrence = occurrence(50, OccurrenceKind::Read, Some(1), 101);
+    weak_occurrence.provenance = Provenance::SearchFallback;
+
+    let entity_only = StubSource::default().with_symbol(
+        10,
+        weak_entity_fact,
+        occurrence(50, OccurrenceKind::Read, Some(1), 101),
+    );
+    let occurrence_only = StubSource::default().with_symbol(
+        10,
+        entity(1, EntityKind::Variable, "$value", Some(100)),
+        weak_occurrence,
+    );
+
+    match resolve(&entity_only, 10) {
+        ResolveAtOutcome::Partial { limitations, .. } => {
+            assert!(limitations.contains(&ResolveLimitation::NonExactEntityProvenance));
+            assert!(!limitations.contains(&ResolveLimitation::NonExactProvenance));
+        }
+        other => panic!("expected Partial, got {other:?}"),
+    }
+    match resolve(&occurrence_only, 10) {
+        ResolveAtOutcome::Partial { limitations, .. } => {
+            assert!(limitations.contains(&ResolveLimitation::NonExactProvenance));
+            assert!(!limitations.contains(&ResolveLimitation::NonExactEntityProvenance));
+        }
+        other => panic!("expected Partial, got {other:?}"),
+    }
+}
+
+/// An identity whose snapshot is unidentified is not exact, however strong the
+/// producer evidence. Without a known basis a caller cannot say which source the
+/// identity came from, nor detect drift by comparing bases.
+#[test]
+fn an_unknown_basis_cannot_produce_an_exact_identity() {
+    let source = StubSource::default().with_symbol(
+        10,
+        entity(1, EntityKind::Variable, "$value", Some(100)),
+        occurrence(50, OccurrenceKind::Read, Some(1), 101),
+    );
+
+    for basis in [
+        ResolveGenerationBasis::new(SourceGeneration::Unknown, SourceGeneration::Unknown),
+        ResolveGenerationBasis::new(SourceGeneration::Unknown, SourceGeneration::known("w")),
+        ResolveGenerationBasis::new(SourceGeneration::known("d"), SourceGeneration::Unknown),
+    ] {
+        let outcome = resolve_at_position(&source, FILE, 10, &basis, false);
+
+        assert_eq!(outcome.stage(), "partial", "unknown basis {basis:?} must not be exact");
+        assert!(outcome.exact().is_none());
+        match outcome {
+            ResolveAtOutcome::Partial { limitations, candidates, .. } => {
+                assert!(limitations.contains(&ResolveLimitation::UnknownGeneration));
+                // The identity is still carried, so a caller that already
+                // accepted sub-exact evidence keeps the same answer.
+                assert_eq!(candidates.first().map(|first| first.entity_id), Some(EntityId(1)));
+            }
+            other => panic!("expected Partial, got {other:?}"),
+        }
+    }
+}
+
+/// The degraded state stays usable: `bound_entity_id` still reports the entity,
+/// so references' acceptance is unchanged by the basis gate.
+#[test]
+fn an_unknown_basis_still_reports_the_bound_entity() {
+    let source = StubSource::default().with_symbol(
+        10,
+        entity(1, EntityKind::Variable, "$value", Some(100)),
+        occurrence(50, OccurrenceKind::Read, Some(1), 101),
+    );
+    let unknown = ResolveGenerationBasis::new(SourceGeneration::Unknown, SourceGeneration::Unknown);
+
+    let outcome = resolve_at_position(&source, FILE, 10, &unknown, false);
+
+    assert_eq!(outcome.bound_entity_id(), Some(EntityId(1)));
+    assert!(outcome.occurrence_was_published());
+}
+
 /// An unknown generation is explicit and never counts as a known basis.
 #[test]
 fn unknown_generation_is_not_a_known_basis() {

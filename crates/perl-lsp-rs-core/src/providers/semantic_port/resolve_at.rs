@@ -235,8 +235,12 @@ pub enum ResolveLimitation {
     UnresolvedAlias,
     /// Occurrence carries no canonical entity identity.
     OccurrenceWithoutEntity,
-    /// Producer published the fact below exact provenance.
+    /// Producer published the occurrence below exact provenance.
     NonExactProvenance,
+    /// Producer published the bound entity below exact provenance.
+    NonExactEntityProvenance,
+    /// The accepted view could not supply a stable generation basis.
+    UnknownGeneration,
 }
 
 impl ResolveLimitation {
@@ -251,6 +255,8 @@ impl ResolveLimitation {
             Self::UnresolvedAlias => "unresolved_alias",
             Self::OccurrenceWithoutEntity => "occurrence_without_entity",
             Self::NonExactProvenance => "non_exact_provenance",
+            Self::NonExactEntityProvenance => "non_exact_entity_provenance",
+            Self::UnknownGeneration => "unknown_generation",
         }
     }
 }
@@ -327,6 +333,10 @@ pub struct ResolvedOccurrence {
     pub provenance: Provenance,
     /// Producer confidence for the occurrence fact.
     pub confidence: Confidence,
+    /// Producer provenance for the bound entity fact.
+    pub entity_provenance: Provenance,
+    /// Producer confidence for the bound entity fact.
+    pub entity_confidence: Confidence,
     /// Generations this identity was resolved against.
     pub generation: ResolveGenerationBasis,
     /// Identity-affecting boundaries that remain after resolution.
@@ -335,17 +345,27 @@ pub struct ResolvedOccurrence {
 
 impl ResolvedOccurrence {
     /// Whether this identity rests on exact producer evidence.
+    ///
+    /// The identity is the occurrence *and* the entity it binds, so both sides
+    /// must be exact. An exact occurrence bound to a name-heuristic entity is
+    /// not an exact identity.
     #[must_use]
     pub fn is_exact_evidence(&self) -> bool {
-        self.confidence == Confidence::High
-            && matches!(
-                self.provenance,
-                Provenance::ExactAst
-                    | Provenance::DesugaredAst
-                    | Provenance::SemanticAnalyzer
-                    | Provenance::LiteralRequireImport
-            )
+        is_exact_producer_evidence(self.provenance, self.confidence)
+            && is_exact_producer_evidence(self.entity_provenance, self.entity_confidence)
     }
+}
+
+/// Whether one producer's provenance and confidence amount to exact evidence.
+fn is_exact_producer_evidence(provenance: Provenance, confidence: Confidence) -> bool {
+    confidence == Confidence::High
+        && matches!(
+            provenance,
+            Provenance::ExactAst
+                | Provenance::DesugaredAst
+                | Provenance::SemanticAnalyzer
+                | Provenance::LiteralRequireImport
+        )
 }
 
 /// Outcome of resolving one cursor to an occurrence identity.
@@ -553,13 +573,16 @@ fn build_resolved(
     if let Some(limitation) = limitations_for_entity(entity) {
         limitations.push(limitation);
     }
-    if occurrence.confidence != Confidence::High
-        || matches!(
-            occurrence.provenance,
-            Provenance::NameHeuristic | Provenance::SearchFallback | Provenance::DynamicBoundary
-        )
-    {
+    if !is_exact_producer_evidence(occurrence.provenance, occurrence.confidence) {
         limitations.push(ResolveLimitation::NonExactProvenance);
+    }
+    // The identity binds an entity too, so weak entity evidence is recorded
+    // separately: a caller must be able to tell which half is approximate.
+    if !is_exact_producer_evidence(entity.provenance, entity.confidence) {
+        limitations.push(ResolveLimitation::NonExactEntityProvenance);
+    }
+    if !generation.is_known() {
+        limitations.push(ResolveLimitation::UnknownGeneration);
     }
     limitations.sort_unstable();
     limitations.dedup();
@@ -575,6 +598,8 @@ fn build_resolved(
         scope_id: occurrence.scope_id.or(entity.scope_id),
         provenance: occurrence.provenance,
         confidence: occurrence.confidence,
+        entity_provenance: entity.provenance,
+        entity_confidence: entity.confidence,
         generation: generation.clone(),
         limitations,
     }
@@ -631,7 +656,11 @@ where
 
     let resolved = build_resolved(&entity, &occurrence, entity_id, generation);
 
-    if resolved.is_exact_evidence() {
+    // An identity is only exact if its snapshot is identified. Without a known
+    // basis there is nothing to say *which* source the identity came from, and
+    // a caller comparing bases could not detect drift — so strong occurrence
+    // evidence over an unknown generation stays `Partial`.
+    if resolved.is_exact_evidence() && generation.is_known() {
         ResolveAtOutcome::Exact(resolved)
     } else {
         let limitations = resolved.limitations.clone();
