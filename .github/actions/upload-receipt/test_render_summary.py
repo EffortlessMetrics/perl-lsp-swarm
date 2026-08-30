@@ -504,6 +504,31 @@ class FileEntryPointTests(unittest.TestCase):
             rendered = render_summary.render_receipt_file(str(path))
         self.assertIn("**Status**: NOT_PROVEN — receipt could not be read", rendered)
 
+    def test_an_unrepresentable_duration_degrades_instead_of_crashing(self) -> None:
+        """A schema-valid integer can exceed float range; `/` raises OverflowError.
+
+        `duration_ms` is bounded below but not above, and JSON integers are
+        unbounded, so this receipt is contract-valid. A crash here would publish
+        no verdict at all — the same failure as an unreadable receipt, reached
+        through the duration column.
+        """
+        huge = 10**400
+        rendered = render_summary.render(receipt(gate("fmt", "pass", duration_ms=huge)))
+        self.assertIn(f"| {render_summary.MISSING} |", rendered)
+        self.assertIn("**Status**: All 1/1 gates passed", rendered)
+
+    def test_an_unrepresentable_total_duration_is_omitted_not_fatal(self) -> None:
+        data = receipt(gate("fmt", "pass"))
+        data["summary"]["total_duration_ms"] = 10**400
+        rendered = render_summary.render(data)
+        self.assertNotIn("Total duration", rendered)
+        self.assertIn("**Status**: All 1/1 gates passed", rendered)
+
+    def test_non_finite_durations_are_unusable(self) -> None:
+        for value in (float("inf"), float("-inf"), float("nan")):
+            with self.subTest(value=value):
+                self.assertIsNone(render_summary.milliseconds_as_seconds(value))
+
     def test_every_rendering_carries_exactly_one_status_line(self) -> None:
         """The invariant behind the whole claim: no output is silent about its verdict.
 

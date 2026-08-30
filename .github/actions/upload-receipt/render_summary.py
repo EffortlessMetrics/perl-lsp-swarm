@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import html
 import json
+import math
 import os
 from pathlib import Path
 from typing import Sequence
@@ -109,12 +110,30 @@ def gate_status(gate: dict) -> str:
     return status if isinstance(status, str) else ""
 
 
+def milliseconds_as_seconds(value: object) -> str | None:
+    """`value` milliseconds as a seconds string, or `None` when unusable.
+
+    The schema bounds `duration_ms` below but not above, and JSON integers are
+    unbounded, so `value / 1000` can raise `OverflowError` on a perfectly valid
+    receipt. A duration the renderer cannot represent degrades to a missing
+    cell like any other unusable value — it must never abort the summary, since
+    a crashed step publishes no verdict at all.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        seconds = value / 1000
+    except (OverflowError, ValueError):
+        return None
+    if not math.isfinite(seconds):
+        return None
+    return f"{seconds:.1f}"
+
+
 def format_duration(gate: dict) -> str:
     """Render `duration_ms` (the contract field) as seconds."""
-    duration_ms = gate.get("duration_ms")
-    if isinstance(duration_ms, bool) or not isinstance(duration_ms, (int, float)):
-        return MISSING
-    return f"{duration_ms / 1000:.1f}s"
+    seconds = milliseconds_as_seconds(gate.get("duration_ms"))
+    return MISSING if seconds is None else f"{seconds}s"
 
 
 def format_exit_code(gate: dict) -> str:
@@ -231,10 +250,10 @@ def total_duration_lines(data: dict) -> list[str]:
     summary = data.get("summary")
     if not isinstance(summary, dict):
         return []
-    total_ms = summary.get("total_duration_ms")
-    if isinstance(total_ms, bool) or not isinstance(total_ms, (int, float)):
+    seconds = milliseconds_as_seconds(summary.get("total_duration_ms"))
+    if seconds is None:
         return []
-    return ["", f"**Total duration**: {total_ms / 1000:.1f}s"]
+    return ["", f"**Total duration**: {seconds}s"]
 
 
 def gate_table(gates: Sequence[dict]) -> list[str]:
