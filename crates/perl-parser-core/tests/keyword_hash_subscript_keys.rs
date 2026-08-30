@@ -32,6 +32,24 @@ fn contains_static_subscript(node: &Node, expected_op: &str, expected_key: &str)
     false
 }
 
+fn contains_keyword_slice(node: &Node, expected_keys: &[&str]) -> bool {
+    if let NodeKind::HashSlice { keys, .. } = &node.kind
+        && let NodeKind::ArrayLiteral { elements } = &keys.kind
+        && elements.len() == expected_keys.len()
+        && elements.iter().zip(expected_keys).all(|(element, expected)| {
+            matches!(&element.kind, NodeKind::Identifier { name } if name == expected)
+        })
+    {
+        return true;
+    }
+    for child in node.children() {
+        if contains_keyword_slice(child, expected_keys) {
+            return true;
+        }
+    }
+    false
+}
+
 fn contains_loop_control(node: &Node, expected_op: &str, expected_label: &str) -> bool {
     if let NodeKind::LoopControl { op, label } = &node.kind
         && op == expected_op
@@ -85,6 +103,19 @@ fn boundary_delimited_control_words_are_static_direct_hash_keys() -> TestResult 
                 ast.to_sexp()
             ));
         }
+    }
+    Ok(())
+}
+
+#[test]
+fn comma_delimited_control_words_are_static_hash_slice_keys() -> TestResult {
+    let expected = ["next", "last", "redo", "return"];
+    let ast = parse_clean("@hash{next, last, redo, return};")?;
+    if !contains_keyword_slice(&ast, &expected) {
+        return Err(format!(
+            "control words were not retained as a static hash-slice key list: {}",
+            ast.to_sexp()
+        ));
     }
     Ok(())
 }
