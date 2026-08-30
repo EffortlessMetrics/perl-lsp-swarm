@@ -637,6 +637,22 @@ fn coverage_workflow_is_manual_or_nightly_only_and_requires_receipts() {
         "wrapped post-run negation must not be classified as a positive coverage route"
     );
     assert!(
+        coverage_reference_rows_contract(
+            "Coverage runs, but\ndoesn't run on pull requests.",
+            "wrapped contraction negation"
+        )
+        .is_ok(),
+        "wrapped ASCII contraction negation must not be classified as a positive route"
+    );
+    assert!(
+        coverage_reference_rows_contract(
+            "Coverage runs, but\nthe coverage job is disabled on pull requests.",
+            "wrapped disabled negation"
+        )
+        .is_ok(),
+        "wrapped disabled negation must not be classified as a positive route"
+    );
+    assert!(
         has_positive_stale_route_claim(
             "Coverage does not run, but\ncoverage runs on pull requests."
         ),
@@ -1481,7 +1497,12 @@ fn has_positive_stale_route_claim_in_context(text: &str, coverage_context: bool)
 }
 
 fn has_positive_stale_route_claim_across_wrap(lines: &[&str]) -> bool {
-    let normalized = lines.join(" ").to_ascii_lowercase().replace(['_', '-'], " ");
+    let normalized = lines
+        .join(" ")
+        .to_ascii_lowercase()
+        .replace(['_', '-'], " ")
+        .replace("doesn't", "does not")
+        .replace("doesn’t", "does not");
     let tokens = normalized
         .split(|character: char| !character.is_ascii_alphanumeric())
         .filter(|token| !token.is_empty())
@@ -1496,7 +1517,7 @@ fn has_positive_stale_route_claim_across_wrap(lines: &[&str]) -> bool {
             }
             if tokens[coverage_index + 1..run_index]
                 .iter()
-                .any(|token| matches!(*token, "not" | "no" | "never" | "without"))
+                .any(|token| matches!(*token, "not" | "no" | "never" | "without" | "disabled"))
             {
                 continue;
             }
@@ -1519,7 +1540,7 @@ fn has_positive_stale_route_claim_across_wrap(lines: &[&str]) -> bool {
             };
             if following[..route_index]
                 .iter()
-                .any(|token| matches!(*token, "not" | "no" | "never" | "without"))
+                .any(|token| matches!(*token, "not" | "no" | "never" | "without" | "disabled"))
             {
                 continue;
             }
