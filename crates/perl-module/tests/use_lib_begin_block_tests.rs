@@ -70,6 +70,78 @@ fn begin_nested_block_does_not_unwrap_inner_pragma() {
 }
 
 #[test]
+fn heredoc_bodies_do_not_create_lib_operations() {
+    let sources = [
+        "my $s = <<'EOF';\nBEGIN { use lib 'phantom'; }\nEOF\n",
+        "my $s = <<\"EOF\";\nBEGIN { use lib 'phantom'; }\nEOF\n",
+        "my $s = <<~'EOF';\n    BEGIN { use lib 'phantom'; }\n    EOF\n",
+        "my $s = <<EOF;\nBEGIN { use lib 'phantom'; }\nEOF\n",
+        "my $a = <<A; my $b = <<B;\nBEGIN { use lib 'phantom'; }\nA\nBEGIN { use lib 'phantom'; }\nB\n",
+        "my $s = <<'EOF';\nuse lib 'x';\nEOF\n",
+    ];
+
+    for source in sources {
+        assert!(
+            extract_use_lib_operations(source).is_empty(),
+            "heredoc body created an operation: {source:?}"
+        );
+    }
+}
+
+#[test]
+fn pod_bodies_do_not_create_lib_operations() {
+    let source = "\
+use strict;\n\
+\n\
+=pod\n\
+\n\
+Example: use strict;\n\
+\n\
+BEGIN { use lib 'phantom_pod'; }\n\
+\n\
+=cut\n\
+\n\
+use Local::Thing;\n";
+
+    assert!(extract_use_lib_operations(source).is_empty());
+}
+
+#[test]
+fn code_after_closed_heredoc_and_pod_remains_scannable() {
+    let heredoc_source = "\
+my $s = <<'EOF';\n\
+body\n\
+EOF\n\
+use lib 'real';\n";
+    assert_eq!(
+        extract_use_lib_operations(heredoc_source),
+        vec![UseLibAction::Add(vec![UseLibPath { path: "real".to_string(), from_findbin: false }])]
+    );
+
+    let surrounding_source = "\
+BEGIN { use lib 'before'; }\n\
+my $s = <<'EOF';\n\
+BEGIN { use lib 'phantom'; }\n\
+EOF\n\
+BEGIN { use lib 'after'; };\n\
+=pod\n\
+BEGIN { use lib 'phantom_pod'; }\n\
+=cut\n\
+BEGIN { use lib 'after_pod'; }\n";
+    assert_eq!(
+        extract_use_lib_operations(surrounding_source),
+        vec![
+            UseLibAction::Add(vec![UseLibPath { path: "before".to_string(), from_findbin: false }]),
+            UseLibAction::Add(vec![UseLibPath { path: "after".to_string(), from_findbin: false }]),
+            UseLibAction::Add(vec![UseLibPath {
+                path: "after_pod".to_string(),
+                from_findbin: false,
+            }]),
+        ]
+    );
+}
+
+#[test]
 fn begin_lookalikes_do_not_create_lib_operations() {
     let identifier = "BEGINNER { use lib 'fake'; }\n";
     let quoted = "BEGIN { \"use lib 'also_fake';\"; }\n";

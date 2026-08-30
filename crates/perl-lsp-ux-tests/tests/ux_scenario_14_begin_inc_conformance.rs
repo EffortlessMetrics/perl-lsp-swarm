@@ -33,6 +33,14 @@ BEGIN {\n\
 use Beg\n\
 ";
 
+const CONTROL_SOURCE: &str = "\
+use strict;\n\
+use warnings;\n\
+use BeginIncModule;\n\
+\n\
+my $value = BeginIncModule::value();\n\
+";
+
 const MODULE_SOURCE: &str = "\
 package BeginIncModule;\n\
 \n\
@@ -73,12 +81,20 @@ fn scenario_14_begin_scoped_use_lib_consumer_consistency() -> Result<(), String>
     let harness = UxHarness::new(
         ScenarioConfig { timeout: Duration::from_secs(20), ..Default::default() }
             .with_file("fixture.pl", EXACT_SOURCE)
+            .with_file("control.pl", CONTROL_SOURCE)
             .with_file("lib/BeginIncModule.pm", MODULE_SOURCE),
     )
     .expect("Failed to create UX harness");
 
+    let diagnostics_seen_before_open = harness.diagnostics_event_count("fixture.pl");
     harness.open_file("fixture.pl", EXACT_SOURCE).expect("didOpen should succeed");
-    let diags = harness.wait_for_diagnostics("fixture.pl", Duration::from_secs(5));
+    let diags = harness
+        .wait_for_diagnostics_after_count(
+            "fixture.pl",
+            diagnostics_seen_before_open,
+            Duration::from_secs(5),
+        )
+        .expect("didOpen should publish diagnostics");
     assert!(
         !has_pl701(&diags),
         "Expected no PL701 when a block-leading BEGIN use lib exposes the module.\n\
@@ -93,18 +109,26 @@ fn scenario_14_begin_scoped_use_lib_consumer_consistency() -> Result<(), String>
          diagnostics: {diags:?}"
     );
 
-    let hover = harness.hover("fixture.pl", 5, 4).expect("hover must not error");
-    if let Some(hover) = hover {
-        assert!(
-            hover.get("contents").is_some(),
-            "Hover result must have a contents field: {hover:?}"
-        );
-    }
+    let hover = harness
+        .hover("fixture.pl", 5, 4)
+        .expect("hover must not error")
+        .expect("Expected hover for the exact resolved module fixture");
+    assert!(
+        hover.get("contents").is_some_and(|contents| !contents.is_null()),
+        "Hover result must have non-null contents: {hover:?}"
+    );
 
+    let diagnostics_seen_before_edit = harness.diagnostics_event_count("fixture.pl");
     harness
         .change_file_full("fixture.pl", COMPLETION_SOURCE)
         .expect("didChange to completion fixture should succeed");
-    let _ = harness.wait_for_diagnostics("fixture.pl", Duration::from_secs(5));
+    harness
+        .wait_for_diagnostics_after_count(
+            "fixture.pl",
+            diagnostics_seen_before_edit,
+            Duration::from_secs(5),
+        )
+        .expect("didChange should publish diagnostics after the edit");
 
     // `use Beg` is at zero-based line 5, cursor column 7.
     let completions = harness.completion("fixture.pl", 5, 7).expect("completion must not error");
@@ -112,6 +136,21 @@ fn scenario_14_begin_scoped_use_lib_consumer_consistency() -> Result<(), String>
         completion_has_module(&completions, "BeginIncModule"),
         "Expected completion to include BeginIncModule through BEGIN-scoped use lib; \
          completions: {completions:?}"
+    );
+
+    let control_diagnostics_seen_before_open = harness.diagnostics_event_count("control.pl");
+    harness.open_file("control.pl", CONTROL_SOURCE).expect("control didOpen should succeed");
+    let control_diags = harness
+        .wait_for_diagnostics_after_count(
+            "control.pl",
+            control_diagnostics_seen_before_open,
+            Duration::from_secs(5),
+        )
+        .expect("control didOpen should publish diagnostics");
+    assert!(
+        has_pl701(&control_diags),
+        "Expected PL701 without BEGIN use lib in the control fixture.\n\
+         diagnostics: {control_diags:?}"
     );
 
     harness.assert_no_crash();

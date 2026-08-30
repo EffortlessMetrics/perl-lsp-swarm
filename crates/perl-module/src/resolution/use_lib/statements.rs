@@ -1,13 +1,15 @@
 //! Statement splitting and `lib` pragma prefix recognition.
 
+use std::collections::VecDeque;
+
 /// Split Perl source into semicolon-terminated statements without treating
-/// semicolons inside simple quoted strings or line comments as terminators.
+/// semicolons inside simple quoted strings, line comments, POD, or heredoc
+/// bodies as terminators.
 ///
 /// The compatibility scanner also exposes the first statement inside a leading
 /// `BEGIN { ... }` block as a source subslice. Without that bounded prefix peel,
 /// the block opener hides an otherwise ordinary `use lib` or `no lib` pragma
-/// from the prefix recognizer. Later statements in the block already begin at
-/// their own semicolon boundary and need no special handling.
+/// from the prefix recognizer.
 pub(super) fn split_perl_statements(source: &str) -> Vec<&str> {
     let mut statements = Vec::new();
     let mut start = 0;
@@ -19,6 +21,7 @@ pub(super) fn split_perl_statements(source: &str) -> Vec<&str> {
     // can safely advance `start` past the comment so it doesn't pollute the
     // next statement slice.
     let mut has_content = false;
+    let mut pending_heredocs = VecDeque::new();
 
     let chars: Vec<(usize, char)> = source.char_indices().collect();
     let mut i = 0;
@@ -49,6 +52,40 @@ pub(super) fn split_perl_statements(source: &str) -> Vec<&str> {
             in_double = !in_double;
             has_content = true;
             i += 1;
+            continue;
+        }
+
+        if ch == '='
+            && !in_single
+            && !in_double
+            && (idx == 0 || source.as_bytes().get(idx - 1) == Some(&b'\n'))
+            && chars.get(i + 1).is_some_and(|(_, next)| next.is_ascii_alphabetic())
+        {
+            let pod_end = skip_pod_section(source, idx);
+            if !has_content {
+                start = pod_end;
+            }
+            i = advance_char_index(&chars, i, pod_end);
+            continue;
+        }
+
+        if ch == '<'
+            && !in_single
+            && !in_double
+            && let Some((heredoc_end, tag, strip_indent)) = parse_heredoc_opener(source, idx)
+        {
+            pending_heredocs.push_back((tag, strip_indent));
+            has_content = true;
+            i = advance_char_index(&chars, i, heredoc_end);
+            continue;
+        }
+
+        if ch == '\n' && !in_single && !in_double && !pending_heredocs.is_empty() {
+            let body_end = skip_heredoc_bodies(source, idx + 1, &mut pending_heredocs);
+            if !has_content {
+                start = body_end;
+            }
+            i = advance_char_index(&chars, i, body_end);
             continue;
         }
 
@@ -89,6 +126,102 @@ pub(super) fn split_perl_statements(source: &str) -> Vec<&str> {
     }
 
     statements
+}
+
+fn advance_char_index(chars: &[(usize, char)], mut index: usize, byte_end: usize) -> usize {
+    while index < chars.len() && chars[index].0 < byte_end {
+        index += 1;
+    }
+    index
+}
+
+fn skip_pod_section(source: &str, start: usize) -> usize {
+    let Some(first_newline) = source[start..].find('\n') else {
+        return source.len();
+    };
+
+    let mut line_start = start + first_newline + 1;
+    while line_start < source.len() {
+        let newline = source[line_start..].find('\n');
+        let line_end = newline.map_or(source.len(), |offset| line_start + offset);
+        if source[line_start..line_end].starts_with("=cut") {
+            return newline.map_or(source.len(), |_| line_end + 1);
+        }
+        let Some(_offset) = newline else {
+            return source.len();
+        };
+        line_start = line_end + 1;
+    }
+
+    source.len()
+}
+
+fn parse_heredoc_opener(source: &str, start: usize) -> Option<(usize, String, bool)> {
+    if source.get(start..start + 2)? != "<<" {
+        return None;
+    }
+
+    let mut tag_start = start + 2;
+    let strip_indent = source.as_bytes().get(tag_start) == Some(&b'~');
+    if strip_indent {
+        tag_start += 1;
+    }
+
+    let first = *source.as_bytes().get(tag_start)?;
+    if first == b'\'' || first == b'"' {
+        let quote = first as char;
+        let content_start = tag_start + 1;
+        let quote_offset = source[content_start..].find(quote)?;
+        let quote_end = content_start + quote_offset;
+        let tag = &source[content_start..quote_end];
+        if tag.is_empty() || tag.contains('\n') {
+            return None;
+        }
+        return Some((quote_end + 1, tag.to_string(), strip_indent));
+    }
+
+    if !(first.is_ascii_alphabetic() || first == b'_') {
+        return None;
+    }
+
+    let mut tag_end = tag_start + 1;
+    while let Some(byte) = source.as_bytes().get(tag_end) {
+        if !(byte.is_ascii_alphanumeric() || *byte == b'_') {
+            break;
+        }
+        tag_end += 1;
+    }
+
+    Some((tag_end, source[tag_start..tag_end].to_string(), strip_indent))
+}
+
+fn skip_heredoc_bodies(
+    source: &str,
+    mut line_start: usize,
+    pending: &mut VecDeque<(String, bool)>,
+) -> usize {
+    while !pending.is_empty() && line_start < source.len() {
+        let newline = source[line_start..].find('\n');
+        let line_end = newline.map_or(source.len(), |offset| line_start + offset);
+        let mut line = &source[line_start..line_end];
+        if line.ends_with('\r') {
+            line = &line[..line.len() - 1];
+        }
+        let closes_front = pending.front().is_some_and(|(tag, strip_indent)| {
+            let content = if *strip_indent { line.trim_start() } else { line };
+            content == tag
+        });
+        if closes_front {
+            pending.pop_front();
+        }
+
+        let Some(_offset) = newline else {
+            return source.len();
+        };
+        line_start = line_end + 1;
+    }
+
+    line_start
 }
 
 fn push_statement<'a>(statements: &mut Vec<&'a str>, statement: &'a str) {
