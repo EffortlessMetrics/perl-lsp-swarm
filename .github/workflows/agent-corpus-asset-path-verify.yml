@@ -1,0 +1,40 @@
+name: Agent corpus asset path verify
+
+on:
+  push:
+    branches:
+      - agent/corpus-asset-path-authority
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          ref: agent/corpus-asset-path-authority
+
+      - name: Run complete issue proof
+        run: |
+          cargo fmt -p perl-corpus
+          git diff --check
+          cargo check -p perl-corpus --all-targets --locked
+          cargo test -p perl-corpus --lib api::topology --locked
+          cargo test -p perl-corpus --test corpus_asset_path --locked
+          cargo clippy -p perl-corpus --all-targets --locked -- -D warnings -A missing_docs
+          cargo doc -p perl-corpus --no-deps --locked
+
+      - name: Publish exact verified tree and remove temporary workflow
+        run: |
+          rm .github/workflows/agent-corpus-asset-path-verify.yml
+          git config user.name EffortlessSteven
+          git config user.email git@effortlesssteven.com
+          git add -A
+          git commit -m 'test(corpus): verify portable asset path closure (#10555)'
+          git push origin HEAD:agent/corpus-asset-path-authority
