@@ -29,6 +29,7 @@ If a doc starts mixing multiple intents, split it and cross-link the parts.
 | Local validation flow | [project/CI_LOCAL_VALIDATION.md](project/CI_LOCAL_VALIDATION.md) | `just ci-gate` |
 
 Rule: if a project metric appears outside [project/status/index.md](project/status/index.md), treat it as stale until reverified.
+
 ## Compatibility posture
 
 The current product line is public beta, not stable or GA. Published crate compatibility follows [the stability policy](reference/STABILITY.md): patch releases preserve the public API, while pre-1.0 minor releases may contain intentional breaking changes with migration guidance. CLI flags, advertised LSP capabilities, DAP preview boundaries, and distribution-channel status are separate claims; verify each against its owning source before treating it as supported.
