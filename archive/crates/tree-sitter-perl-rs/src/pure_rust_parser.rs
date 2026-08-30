@@ -2790,7 +2790,28 @@ impl Default for PureRustPerlParser {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use perl_tdd_support::must;
+
+    /// Package-local assertion-boundary helper (`#8771`).
+    ///
+    /// Replaces the swarm-only `perl-tdd-support` dev-dependency so this file
+    /// — and its byte-identical v2 bundle twin — resolves without a
+    /// workspace-path dependency. Panics at the invocation site, naming the
+    /// error type and its `Debug` representation.
+    ///
+    /// Narrow documented exception to the package `panic` denial: this is a
+    /// test-only assertion boundary, and failing the branch the scenario says
+    /// is impossible is precisely the intended behavior. No production path
+    /// reaches it.
+    #[allow(clippy::panic, reason = "test-only assertion boundary (#8771)")]
+    #[track_caller]
+    fn must<T, E: std::fmt::Debug>(result: Result<T, E>) -> T {
+        match result {
+            Ok(value) => value,
+            Err(error) => {
+                panic!("must: unexpected Err<{}>: {error:?}", std::any::type_name::<E>())
+            }
+        }
+    }
 
     #[test]
     fn test_basic_parsing() {

@@ -82,3 +82,34 @@ product correctness.
 Changes here should improve comparison reliability, evidence honesty, legacy
 compatibility, or retirement readiness. Do not widen the crate into a competing
 production parser or infer production reachability from package-local green tests.
+
+## Self-description hazard
+
+This package describes itself. Its manifest carries literal identity, MSRV, and
+dependency versions instead of `*.workspace = true`, and no dependency or
+dev-dependency is path-only (#8771). Two edits would silently undo that:
+
+- reintroducing `workspace = true` for any key other than `[lints]`, and
+- adding a path dependency, including a shared test helper.
+
+`[lints] workspace = true` is the one deliberate exception and must stay. The required
+`cargo xtask check-lint-policy` gate enforces it on every workspace member with no
+exemption mechanism, so the lint half of #8771's standalone contract cannot land while
+this crate is a member; removing the marker to "finish" the decoupling turns that gate
+red. Whether the invariant grows an extraction exemption or the lint decoupling moves to
+the extraction PR is a separate decision.
+
+`tests/standalone_package.rs` fails closed on all of it: it asserts `[lints]` is the
+*only* inherited key so the exception cannot spread, that the marker is still present,
+and that no path dependency, falsely-external `repository`/`homepage`, or unpackaged
+load-bearing asset has appeared.
+
+Assertion-boundary helpers are package-local in `tests/support/assert.rs`; the unit
+tests inside `src/pure_rust_parser.rs` carry their own copy so that file stays
+byte-identical to its archived twin while `ci-v2-bundle-sync` remains active machinery.
+`examples/parse_basic.rs` is the compiled public example, because `[lib] doctest = false`
+leaves the README snippet unchecked.
+
+`repository` and `homepage` name the current lineage; the external repository does not
+exist yet, and the pending owner is recorded under `[package.metadata.extraction]`
+rather than as a future URL.
