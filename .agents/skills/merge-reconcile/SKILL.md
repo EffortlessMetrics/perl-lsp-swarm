@@ -115,6 +115,15 @@ Use the current head SHA only as compare-and-swap protection at the instant of m
 gh pr merge <n> --squash --match-head-commit <current-head-sha>
 ```
 
+When the required union is still pending, arm auto-merge with the current head SHA:
+
+```text
+gh pr merge <n> --auto --squash --match-head-commit <current-head-sha>
+```
+
+Arming auto-merge is the correct action in that state; it leaves `REVIEW_CURRENT` intact
+and returns `PR_IN_FLIGHT`.
+
 That prevents racing a moving branch. It does not make review currentness depend on the
 SHA.
 
