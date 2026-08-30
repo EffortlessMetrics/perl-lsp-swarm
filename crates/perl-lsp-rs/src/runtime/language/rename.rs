@@ -193,6 +193,10 @@ fn add_qualified_document_rename_edits<F>(
 ) where
     F: Fn(usize) -> (u32, u32),
 {
+    if !source.contains(qualified_name) {
+        return;
+    }
+
     // Generation-bound lexical evidence built from the same immutable source
     // string this scan reads (#5003/#4964): classification and text can never
     // come from different generations, for live, indexed, and disk documents
@@ -230,11 +234,10 @@ fn add_qualified_document_rename_edits<F>(
             .chars()
             .next_back()
             .is_none_or(|ch| !is_module_identifier_char(ch) && ch != ':' && ch != '\'');
-        let after_ok =
-            source[name_end..]
-                .chars()
-                .next()
-                .is_none_or(|ch| !is_module_identifier_char(ch) && ch != ':' && ch != '\'');
+        let after_ok = source[name_end..]
+            .chars()
+            .next()
+            .is_none_or(|ch| !is_module_identifier_char(ch) && ch != ':' && ch != '\'');
         if !before_ok || !after_ok {
             skipped_boundary += 1;
             continue;
