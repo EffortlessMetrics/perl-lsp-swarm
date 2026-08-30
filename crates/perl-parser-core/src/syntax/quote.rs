@@ -1261,7 +1261,17 @@ mod regex_family_geometry {
                 scan_second_body(text, pattern_scan, SecondBodyKind::Substitution)
             }
             RegexFamilyOperator::Transliteration | RegexFamilyOperator::TransliterationAlias => {
-                scan_second_body(text, pattern_scan, SecondBodyKind::Transliteration)
+                let replacement =
+                    scan_second_body(text, pattern_scan, SecondBodyKind::Transliteration);
+                if replacement.is_none()
+                    && text
+                        .get(pattern_scan.rest_offset..)
+                        .and_then(|rest| rest.chars().next())
+                        .is_some_and(|ch| ch.is_whitespace() && !ch.is_ascii_whitespace())
+                {
+                    return None;
+                }
+                replacement
             }
             RegexFamilyOperator::BareMatch
             | RegexFamilyOperator::Match
@@ -1323,7 +1333,7 @@ mod regex_family_geometry {
         loop {
             let before_whitespace = offset;
             while let Some(ch) = text.get(offset..).and_then(|rest| rest.chars().next()) {
-                if !ch.is_whitespace() {
+                if !ch.is_ascii_whitespace() {
                     break;
                 }
                 offset = offset.saturating_add(ch.len_utf8());
