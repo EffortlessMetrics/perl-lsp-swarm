@@ -1056,7 +1056,7 @@ fn parse_quoted_string(source: &str, start: usize) -> Option<(String, usize)> {
             escaped = true;
             continue;
         }
-        if ch as u8 == quote {
+        if ch == char::from(quote) {
             return Some((value, idx - start));
         }
         // Multiline strings are valid Perl: keep scanning so the whole
@@ -1381,8 +1381,8 @@ mod tests {
         );
         assert_eq!(
             parse_quoted_string("'line\nbreak'", 0),
-            None,
-            "input that hits the boundary: ch == '\\n'"
+            Some(("line\nbreak".to_string(), "'line\nbreak'".len())),
+            "multiline strings are valid Perl operands and stay opaque"
         );
         assert_eq!(
             parse_quoted_string("'unterminated", 0),

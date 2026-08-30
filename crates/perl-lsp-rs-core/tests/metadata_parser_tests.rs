@@ -948,9 +948,14 @@ fn cpanfile_multiline_string_payloads_stay_opaque() {
     // one opaque operand: only the real top-level dependency is emitted.
     let cpanfile = concat!(
         "my $doc = 'usage:\n",
-        "requires \"Fake::Dep\";\n",
+        // U+0127's low byte equals the apostrophe delimiter; the operand
+        // must not close there.
+        "h\u{127}ead requires \"Fake::Dep\";\n",
         "recommends \"Fake::Two\";\n",
         "';\n",
+        "my $doc2 = \"note\u{122}x\n",
+        "requires 'Fake::Three';\n",
+        "\";\n",
         "requires 'Real::One';",
     );
 
