@@ -1,6 +1,6 @@
 use perl_parser::incremental::{
-    Edit, IncrementalState, ParseGeneration, ParseTerminalDisposition, SourceGeometryAttachmentState,
-    SourceGeometryUnavailableReason, apply_edits,
+    Edit, IncrementalState, ParseGeneration, ParseTerminalDisposition,
+    SourceGeometryAttachmentState, SourceGeometryUnavailableReason, apply_edits,
 };
 
 fn assert_geometry_unavailable_for_current_snapshot(state: &IncrementalState) {
