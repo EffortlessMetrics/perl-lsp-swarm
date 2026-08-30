@@ -52,6 +52,9 @@ GATE_TO_LANE_MAP: dict[str, dict[str, Any]] = {
     "published_crate_count_pr_fast": {"lanes": ["pr_smoke"]},
     "release_history_check": {"lanes": ["pr_smoke"]},
     "source_commit_api_check": {"lanes": ["pr_smoke", "merge_gate_shards"]},
+    # The serialization ratchet runs in pr-fast and again in the required
+    # merge-gate policy shard, so both execution lanes own its economics.
+    "serial_test_ratchet": {"lanes": ["pr_smoke", "merge_gate_shards"]},
     # Arrived from the release lineage in the reconciliation merge (#4976). The
     # gate was defined in .ci/gate-policy.yaml there but never mapped here, so
     # this validator failed the moment both files met. tier: pr_fast, and it is

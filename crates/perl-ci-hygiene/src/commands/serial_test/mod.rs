@@ -24,10 +24,9 @@
 //! Deliberately out of scope (documented for #1269): TCP port binds (current
 //! main binds are ephemeral port 0 by construction) and `static` counter
 //! mutation (line-local detection cannot separate a shared global from a
-//! test-local object). The brace-matching body scan is a source-text heuristic
-//! biased toward under-detection; string literals and block comments are not
-//! parsed. Attribute-on-same-line-as-fn forms are not scanned because the
-//! enforced `cargo fmt` gate normalizes attributes onto their own lines.
+//! test-local object). Attribute-on-same-line-as-fn forms are not scanned
+//! because the enforced `cargo fmt` gate normalizes attributes onto their own
+//! lines.
 
 use color_eyre::eyre::{Result, eyre};
 use regex::Regex;
@@ -47,9 +46,10 @@ static SERIAL_ATTR_RE: LazyLock<Result<Regex, regex::Error>> =
     LazyLock::new(|| Regex::new(r"^#\[\s*(serial|serial_test::(serial|file_serial))\b"));
 static FN_RE: LazyLock<Result<Regex, regex::Error>> =
     LazyLock::new(|| Regex::new(r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn\s+(\w+)"));
-static COMMENT_RE: LazyLock<Result<Regex, regex::Error>> = LazyLock::new(|| Regex::new(r"^\s*//"));
 static EXTERNAL_TEST_MOD_RE: LazyLock<Result<Regex, regex::Error>> =
     LazyLock::new(|| Regex::new(r"^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+(\w+)\s*;"));
+static PATH_ATTR_RE: LazyLock<Result<Regex, regex::Error>> =
+    LazyLock::new(|| Regex::new(r#"^\s*#\[\s*path\s*=\s*\"([^\"]+)\"\s*\]"#));
 
 /// Test-support crates excluded from the scan, mirroring `panic_test`.
 const CI_REPORT_CRATES_EXCLUDE: [&str; 5] = [
@@ -61,6 +61,7 @@ const CI_REPORT_CRATES_EXCLUDE: [&str; 5] = [
 ];
 
 const DEFAULT_REGISTRY: &str = "ci/serial_test_identities.json";
+const SIGNAL_VOCABULARY: [&str; 3] = ["cwd", "env_remove", "env_set"];
 
 fn regex_from_static(
     regex: &'static LazyLock<Result<Regex, regex::Error>>,
@@ -109,13 +110,41 @@ fn external_test_module_files(path: &Path, lines: &[String]) -> Result<Vec<PathB
     };
 
     let mod_re = regex_from_static(&EXTERNAL_TEST_MOD_RE, "external test mod")?;
+    let path_re = regex_from_static(&PATH_ATTR_RE, "path attribute")?;
+    let code_lines = code_only_lines(lines)?;
     let mut files = Vec::new();
-    for line in lines.iter().skip(start_line.saturating_sub(1)) {
-        let Some(name) =
-            mod_re.captures(line).and_then(|caps| caps.get(1)).map(|name| name.as_str().to_owned())
+    let mut explicit_path = None;
+    for (line, code_line) in lines
+        .iter()
+        .zip(&code_lines)
+        .skip(start_line.saturating_sub(1))
+    {
+        if code_line.trim_start().starts_with("#[")
+            && let Some(value) = path_re
+            .captures(line)
+            .and_then(|captures| captures.get(1))
+            .map(|value| value.as_str().to_owned())
+        {
+            explicit_path = Some(value);
+            continue;
+        }
+        let Some(name) = mod_re
+            .captures(code_line)
+            .and_then(|caps| caps.get(1))
+            .map(|name| name.as_str().to_owned())
         else {
+            if !code_line.trim().is_empty() && !code_line.trim_start().starts_with("#[") {
+                explicit_path = None;
+            }
             continue;
         };
+        if let Some(custom) = explicit_path.take() {
+            let custom = path.parent().unwrap_or_else(|| Path::new("")).join(custom);
+            if custom.is_file() {
+                files.push(custom);
+            }
+            continue;
+        }
         let sibling = path.with_file_name(format!("{name}.rs"));
         let nested = path.with_file_name(name).join("mod.rs");
         if sibling.is_file() {
@@ -126,6 +155,173 @@ fn external_test_module_files(path: &Path, lines: &[String]) -> Result<Vec<PathB
         }
     }
     Ok(files)
+}
+
+/// Replace Rust comments and literal contents with spaces while preserving
+/// byte offsets and line boundaries. The policy remains source based, but the
+/// structural and signal scans consume only code bytes.
+fn code_only_lines(lines: &[String]) -> Result<Vec<String>> {
+    let source = lines.join("\n");
+    let bytes = source.as_bytes();
+    let mut masked = bytes.to_vec();
+    let mut index = 0usize;
+    let mut block_depth = 0usize;
+
+    while index < bytes.len() {
+        if block_depth > 0 {
+            if bytes.get(index..index + 2) == Some(b"/*") {
+                mask_non_newlines(&mut masked, index, index + 2)?;
+                block_depth += 1;
+                index += 2;
+            } else if bytes.get(index..index + 2) == Some(b"*/") {
+                mask_non_newlines(&mut masked, index, index + 2)?;
+                block_depth -= 1;
+                index += 2;
+            } else {
+                if bytes.get(index) != Some(&b'\n') {
+                    mask_non_newlines(&mut masked, index, index + 1)?;
+                }
+                index += 1;
+            }
+            continue;
+        }
+
+        if bytes.get(index..index + 2) == Some(b"//") {
+            while index < bytes.len() && bytes.get(index) != Some(&b'\n') {
+                mask_non_newlines(&mut masked, index, index + 1)?;
+                index += 1;
+            }
+            continue;
+        }
+        if bytes.get(index..index + 2) == Some(b"/*") {
+            mask_non_newlines(&mut masked, index, index + 2)?;
+            block_depth = 1;
+            index += 2;
+            continue;
+        }
+
+        let literal_end = raw_string_end(bytes, index)
+            .or_else(|| quoted_string_end(bytes, index))
+            .or_else(|| char_literal_end(bytes, index));
+        if let Some(end) = literal_end {
+            mask_non_newlines(&mut masked, index, end)?;
+            index = end;
+            continue;
+        }
+        index += 1;
+    }
+
+    let code = String::from_utf8(masked)
+        .map_err(|err| eyre!("lexically masked Rust source was not UTF-8: {err}"))?;
+    Ok(code.split('\n').map(str::to_owned).collect())
+}
+
+fn mask_non_newlines(bytes: &mut [u8], start: usize, end: usize) -> Result<()> {
+    let range = bytes
+        .get_mut(start..end)
+        .ok_or_else(|| eyre!("invalid Rust lexical mask range {start}..{end}"))?;
+    for byte in range {
+        if *byte != b'\n' {
+            *byte = b' ';
+        }
+    }
+    Ok(())
+}
+
+fn raw_string_end(bytes: &[u8], start: usize) -> Option<usize> {
+    let prefix_len = if bytes.get(start) == Some(&b'r') {
+        1
+    } else if bytes.get(start..start + 2) == Some(b"br")
+        || bytes.get(start..start + 2) == Some(b"cr")
+    {
+        2
+    } else {
+        return None;
+    };
+    let hash_start = start + prefix_len;
+    let mut quote = hash_start;
+    while bytes.get(quote) == Some(&b'#') {
+        quote += 1;
+    }
+    if bytes.get(quote) != Some(&b'"') {
+        return None;
+    }
+    let hash_count = quote - hash_start;
+    let mut cursor = quote + 1;
+    while cursor < bytes.len() {
+        if bytes.get(cursor) == Some(&b'"')
+            && (0..hash_count).all(|offset| bytes.get(cursor + 1 + offset) == Some(&b'#'))
+        {
+            return Some(cursor + 1 + hash_count);
+        }
+        cursor += 1;
+    }
+    None
+}
+
+fn quoted_string_end(bytes: &[u8], start: usize) -> Option<usize> {
+    let quote = if bytes.get(start) == Some(&b'"') {
+        start
+    } else if bytes.get(start..start + 2) == Some(b"b\"")
+        || bytes.get(start..start + 2) == Some(b"c\"")
+    {
+        start + 1
+    } else {
+        return None;
+    };
+    let mut cursor = quote + 1;
+    let mut escaped = false;
+    while cursor < bytes.len() {
+        let current = *bytes.get(cursor)?;
+        cursor += 1;
+        if escaped {
+            escaped = false;
+        } else if current == b'\\' {
+            escaped = true;
+        } else if current == b'"' {
+            return Some(cursor);
+        }
+    }
+    Some(bytes.len())
+}
+
+fn char_literal_end(bytes: &[u8], start: usize) -> Option<usize> {
+    let quote = if bytes.get(start) == Some(&b'\'') {
+        start
+    } else if bytes.get(start..start + 2) == Some(b"b'") {
+        start + 1
+    } else {
+        return None;
+    };
+    let content = quote + 1;
+    let content_end = match bytes.get(content)? {
+        b'\\' => escaped_char_end(bytes, content)?,
+        b'\n' | b'\r' | b'\'' => return None,
+        first => content + utf8_char_width(*first)?,
+    };
+    (bytes.get(content_end) == Some(&b'\'')).then_some(content_end + 1)
+}
+
+fn escaped_char_end(bytes: &[u8], slash: usize) -> Option<usize> {
+    match bytes.get(slash + 1)? {
+        b'x' => Some(slash + 4).filter(|end| *end <= bytes.len()),
+        b'u' if bytes.get(slash + 2) == Some(&b'{') => bytes
+            .get(slash + 3..)?
+            .iter()
+            .position(|byte| *byte == b'}')
+            .map(|offset| slash + 4 + offset),
+        _ => Some(slash + 2),
+    }
+}
+
+fn utf8_char_width(first: u8) -> Option<usize> {
+    match first {
+        0x00..=0x7f => Some(1),
+        0xc2..=0xdf => Some(2),
+        0xe0..=0xef => Some(3),
+        0xf0..=0xf4 => Some(4),
+        _ => None,
+    }
 }
 
 /// Signal category for a matched global-state call.
@@ -166,15 +362,33 @@ fn is_method_call(prefix: &str) -> bool {
 /// at the first other code line (typically the previous item's closing brace).
 fn attached_attributes(lines: &[String], line_index: usize) -> Vec<String> {
     let mut attrs = Vec::new();
-    for line in lines[..line_index].iter().rev() {
-        let trimmed = line.trim_start();
-        if trimmed.starts_with("#[") {
-            attrs.push(trimmed.to_owned());
-        } else if trimmed.is_empty() || trimmed.starts_with("//") {
-            continue;
-        } else {
+    let mut cursor = line_index;
+    while cursor > 0 {
+        while cursor > 0 && lines[cursor - 1].trim().is_empty() {
+            cursor -= 1;
+        }
+        if cursor == 0 {
             break;
         }
+        let end = cursor;
+        let mut bracket_depth = 0isize;
+        let mut found_start = None;
+        while cursor > 0 {
+            cursor -= 1;
+            let line = lines[cursor].trim();
+            bracket_depth += line.bytes().filter(|byte| *byte == b']').count() as isize;
+            bracket_depth -= line.bytes().filter(|byte| *byte == b'[').count() as isize;
+            if line.starts_with("#[") && bracket_depth == 0 {
+                found_start = Some(cursor);
+                break;
+            }
+            if bracket_depth <= 0 {
+                break;
+            }
+        }
+        let Some(start) = found_start else { break };
+        attrs.push(lines[start..end].join(" "));
+        cursor = start;
     }
     attrs
 }
@@ -188,9 +402,7 @@ fn has_serial_guard(attrs: &[String], fn_line: &str) -> Result<bool> {
 }
 
 /// Brace-matched body extent `[start, end]` for the function starting at
-/// `line_index`. Source-text heuristic: string literals containing unbalanced
-/// braces can skew the extent; the bias is under-detection, which the
-/// registry's NEW-identity check backstops for newly added sites.
+/// `line_index`. Callers provide lexically masked code-only lines.
 fn body_extent(lines: &[String], line_index: usize) -> usize {
     let mut depth = 0usize;
     let mut started = false;
@@ -214,12 +426,8 @@ fn body_extent(lines: &[String], line_index: usize) -> usize {
 
 fn detect_signals(lines: &[String], start: usize, end: usize) -> Result<Vec<&'static str>> {
     let signal_re = regex_from_static(&SIGNAL_RE, "global-state signal")?;
-    let comment_re = regex_from_static(&COMMENT_RE, "comment")?;
     let mut signals = BTreeSet::new();
     for line in lines.iter().take(end + 1).skip(start) {
-        if comment_re.is_match(line) {
-            continue;
-        }
         for hit in signal_re.captures_iter(line) {
             let Some(full) = hit.get(0) else { continue };
             if is_method_call(&line[..full.start()]) {
@@ -240,27 +448,28 @@ fn scan_file_for_unserialized_sites(
     let fn_re = regex_from_static(&FN_RE, "function")?;
     let test_attr_re = regex_from_static(&TEST_ATTR_RE, "test attribute")?;
     let lines = read_lines(path)?;
+    let code_lines = code_only_lines(&lines)?;
     let relative =
         path.strip_prefix(repo_root).unwrap_or(path).display().to_string().replace('\\', "/");
     let mut sites = Vec::new();
     let mut index = 0usize;
     while index < lines.len() {
         let Some(function_name) = fn_re
-            .captures(&lines[index])
+            .captures(&code_lines[index])
             .and_then(|caps| caps.get(1))
             .map(|name| name.as_str().to_owned())
         else {
             index += 1;
             continue;
         };
-        let attrs = attached_attributes(&lines, index);
+        let attrs = attached_attributes(&code_lines, index);
         if !attrs.iter().any(|attr| test_attr_re.is_match(attr)) {
             index += 1;
             continue;
         }
-        let end = body_extent(&lines, index);
-        let signals = detect_signals(&lines, index, end)?;
-        if !signals.is_empty() && !has_serial_guard(&attrs, &lines[index])? {
+        let end = body_extent(&code_lines, index);
+        let signals = detect_signals(&code_lines, index, end)?;
+        if !signals.is_empty() && !has_serial_guard(&attrs, &code_lines[index])? {
             sites.push(SerialSiteIdentity {
                 path: relative.clone(),
                 test_function: function_name,
@@ -345,6 +554,23 @@ struct SerialSiteRecord {
     state: RegistryState,
 }
 
+fn validate_registry_signals(entry: usize, signals: &str) -> Result<()> {
+    let tokens = signals.split(',').collect::<BTreeSet<_>>();
+    if let Some(unknown) = tokens.iter().find(|token| !SIGNAL_VOCABULARY.contains(*token)) {
+        return Err(eyre!(
+            "serial identity registry entry {entry} has unknown signal {unknown:?}; expected only {}",
+            SIGNAL_VOCABULARY.join(",")
+        ));
+    }
+    let canonical = tokens.iter().copied().collect::<Vec<_>>().join(",");
+    if signals != canonical {
+        return Err(eyre!(
+            "serial identity registry entry {entry} signals must be sorted, unique canonical CSV; expected {canonical:?}"
+        ));
+    }
+    Ok(())
+}
+
 impl SerialSiteRecord {
     fn key(&self) -> (String, String) {
         (self.path.clone(), self.test_function.clone())
@@ -410,6 +636,7 @@ fn read_identity_registry(path: &Path) -> Result<BTreeMap<(String, String), Seri
         if let Some((field, _)) = fields.iter().find(|(_, value)| value.is_empty()) {
             return Err(eyre!("serial identity registry entry {} has an empty {field}", index + 1));
         }
+        validate_registry_signals(index + 1, &record.signals)?;
         if records.insert(record.key(), record).is_some() {
             return Err(eyre!(
                 "serial identity registry entry {} duplicates a stable site identity",
@@ -467,7 +694,15 @@ pub(crate) fn check_serial_test_with_registry(repo_root: &Path, path: &Path) -> 
                 site.test_function,
                 site.signals.join(",")
             )),
-            Some(_) => {}
+            Some(record) => {
+                let current_signals = site.signals.join(",");
+                if record.signals != current_signals {
+                    failures.push(format!(
+                        "ACTIVE identity signals changed: {} {} registry=({}) current=({}) — adjudicate the registry row",
+                        site.path, site.test_function, record.signals, current_signals
+                    ));
+                }
+            }
         }
     }
     for (key, record) in &registry {
@@ -643,6 +878,58 @@ mod tests {
     }
 
     #[test]
+    fn literal_and_comment_signal_tokens_are_ignored() -> Result<()> {
+        let repo = TempRepo::new("literal-false-positive")?;
+        repo.write_test(
+            r####"#[test]
+fn only_mentions_parallel_unsafe_tokens() {
+    let normal = "} set_var(";
+    let bytes = b"} remove_var(";
+    let c_string = c"} set_current_dir(";
+    let raw = r###"} set_var("###;
+    let raw_bytes = br#"} remove_var("#;
+    let character = '}';
+    let byte_character = b'}';
+    // set_var(
+    /* outer remove_var( /* nested set_current_dir( */ still comment */
+}
+"####,
+        )?;
+        let path = repo.empty_registry()?;
+        assert_eq!(repo.check(&path)?, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn literal_braces_do_not_hide_a_later_real_signal() -> Result<()> {
+        let repo = TempRepo::new("literal-true-positive")?;
+        repo.write_test(
+            r####"#[test]
+fn mutates_after_literal_braces() {
+    fn borrowed<'a>(value: &'a str) -> &'a str { value }
+    let _fixture = borrowed(r###"}}}"###);
+    let _character = '}';
+    std::env::set_var("A", "1");
+}
+"####,
+        )?;
+        let path = repo.empty_registry()?;
+        assert_eq!(repo.check(&path)?, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn multiline_and_comment_separated_attributes_are_attached() -> Result<()> {
+        let repo = TempRepo::new("multiline-attributes")?;
+        repo.write_test(
+            "#[\n    test\n]\n/* policy explanation */\n#[serial_test::serial(\n)]\nfn guarded() {\n    std::env::set_var(\"A\", \"1\");\n}\n",
+        )?;
+        let path = repo.empty_registry()?;
+        assert_eq!(repo.check(&path)?, 0);
+        Ok(())
+    }
+
+    #[test]
     fn cwd_mutation_requires_serialization() -> Result<()> {
         let repo = TempRepo::new("cwd")?;
         repo.write_test(
@@ -746,6 +1033,23 @@ mod tests {
     }
 
     #[test]
+    fn explicit_path_test_module_is_scanned() -> Result<()> {
+        let repo = TempRepo::new("path-module")?;
+        fs::create_dir_all(repo.path.join("crates/demo/src/test_support"))?;
+        fs::write(
+            repo.path.join("crates/demo/src/lib.rs"),
+            "#[cfg(test)]\n#[path = \"test_support/custom.rs\"]\nmod custom_tests;\n",
+        )?;
+        fs::write(
+            repo.path.join("crates/demo/src/test_support/custom.rs"),
+            UNANNOTATED_ENV_TEST,
+        )?;
+        let path = repo.empty_registry()?;
+        assert_eq!(repo.check(&path)?, 1);
+        Ok(())
+    }
+
+    #[test]
     fn production_code_is_not_flagged() -> Result<()> {
         let repo = TempRepo::new("production")?;
         fs::write(
@@ -831,6 +1135,61 @@ mod tests {
             duplicate_err.contains("duplicates"),
             "expected duplicate-row error, got: {duplicate_err}"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn registry_signals_require_canonical_vocabulary() -> Result<()> {
+        let repo = TempRepo::new("invalid-signals")?;
+        let unknown = repo.write_registry(serde_json::json!({
+            "schema_version": 1,
+            "sites": [registry_row(
+                "crates/demo/tests/demo.rs",
+                "flips_toolchain_env",
+                "env_sets",
+                "typo",
+                "active"
+            )]
+        }))?;
+        let unknown_err = read_identity_registry(&unknown)
+            .err()
+            .map(|err| err.to_string())
+            .unwrap_or_default();
+        assert!(unknown_err.contains("unknown signal"));
+
+        let noncanonical = repo.write_registry(serde_json::json!({
+            "schema_version": 1,
+            "sites": [registry_row(
+                "crates/demo/tests/demo.rs",
+                "flips_toolchain_env",
+                "env_set,env_remove,env_set",
+                "not sorted and unique",
+                "active"
+            )]
+        }))?;
+        let noncanonical_err = read_identity_registry(&noncanonical)
+            .err()
+            .map(|err| err.to_string())
+            .unwrap_or_default();
+        assert!(noncanonical_err.contains("sorted, unique canonical CSV"));
+        Ok(())
+    }
+
+    #[test]
+    fn active_registry_signals_must_match_current_site() -> Result<()> {
+        let repo = TempRepo::new("signal-drift")?;
+        repo.write_test(UNANNOTATED_ENV_TEST)?;
+        let path = repo.write_registry(serde_json::json!({
+            "schema_version": 1,
+            "sites": [registry_row(
+                "crates/demo/tests/demo.rs",
+                "flips_toolchain_env",
+                "env_remove",
+                "stale signal census",
+                "active"
+            )]
+        }))?;
+        assert_eq!(repo.check(&path)?, 1);
         Ok(())
     }
 
