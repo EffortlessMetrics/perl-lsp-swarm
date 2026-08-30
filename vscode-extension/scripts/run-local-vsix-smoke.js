@@ -1023,9 +1023,21 @@ function concludeRun(
   try {
     publish(receipt);
   } catch (error) {
-    process.stderr.write(
-      `Unable to publish the smoke stage summary: ${error instanceof Error ? error.message : String(error)}\n`,
-    );
+    // Direct stderr on purpose, unlike `publishCheckSummary`'s injectable
+    // `writeDiagnostic`: the publisher that just threw may be the very thing
+    // that closed or replaced the injectable channel, so the last-resort report
+    // reaches for a fresh one. Do not "consistency-fix" this back to a
+    // callback.
+    try {
+      process.stderr.write(
+        `Unable to publish the smoke stage summary: ${error instanceof Error ? error.message : String(error)}\n`,
+      );
+    } catch {
+      // A failsafe that can throw is not one. If even stderr is gone there is
+      // nothing left to report through, and the exit code the receipt already
+      // decided still has to survive; the persisted receipt remains the
+      // evidence.
+    }
   }
   return exitCode;
 }

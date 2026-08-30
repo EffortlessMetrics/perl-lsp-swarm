@@ -1963,3 +1963,33 @@ void test('a journey that was declined stays out of the headline', () => {
   );
   assert.doesNotMatch(summary.headline, /journey/);
 });
+
+// The failsafe must itself be safe: if the projection throws and stderr is
+// gone too, the exit code the receipt decided still has to survive (#13816
+// review).
+void test('a throwing projection cannot change the exit code even with stderr closed', () => {
+  const originalWrite = process.stderr.write;
+  // Deliberately replacing the stream method to simulate a closed stderr.
+  process.stderr.write = () => {
+    throw new Error('EPIPE: broken pipe');
+  };
+
+  try {
+    for (const [overall, expected] of [
+      ['pass', 0],
+      ['failed', 1],
+      ['not_proven', 2],
+    ]) {
+      const receipt = checkReceipt({ overall });
+
+      const code = concludeRun(receipt, undefined, () => {
+        throw new Error('projection defect');
+      });
+
+      assert.equal(code, expected);
+      assert.equal(receipt.overall, overall);
+    }
+  } finally {
+    process.stderr.write = originalWrite;
+  }
+});
