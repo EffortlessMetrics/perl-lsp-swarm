@@ -11,6 +11,7 @@
 //! # Modules
 //!
 //! - [`ast`] -- The primary AST used by the current recursive-descent parser.
+//! - [`geometry_policy`] -- Field-level registry of independent source-geometry payload fields.
 //! - [`invariant_policy`] -- Exhaustive range, child, payload, and recovery policy.
 //! - [`invariants`] -- Bounded structural validation shared by parser paths.
 //! - [`kind_schema`] -- Structural `NodeKind` registry, field-aware traversal, schema identity, and NodeKind inventory.
@@ -73,6 +74,13 @@
 pub mod ast;
 /// Static classification metadata for [`NodeKind`] variants: categories and flags.
 pub mod classification;
+/// Field-level authority for independent source-geometry payload fields.
+///
+/// Registers which payload fields carry byte offsets of their own, what shape
+/// that geometry has, and how a coordinate-mapping consumer must transform it.
+/// Structural children remain owned by [`kind_schema`]; this is not a second
+/// child traversal.
+pub mod geometry_policy;
 /// Exhaustive invariant policy metadata for every [`NodeKind`] variant.
 pub mod invariant_policy;
 /// Bounded structural validation for parser-produced ASTs.
@@ -99,6 +107,14 @@ pub use ast::{
     NATIVE_DEBUG_SEXP_DEPTH_LIMIT_MARKER, NATIVE_DEBUG_SEXP_GRAMMAR,
     NativeDebugSexpInstrumentCause, NativeDebugSexpLimits, NativeDebugSexpOmitted,
     NativeDebugSexpResult, NativeDebugSexpTruncation, NativeDebugSexpWork, Node, NodeKind,
+};
+/// Field-level source-geometry registry types, observation, and reconciliation.
+pub use geometry_policy::{
+    AST_GEOMETRY_SCHEMA_VERSION, AST_NODE_GEOMETRY_FIELDS, AstGeometryDisposition,
+    AstGeometryDrift, AstGeometryField, AstGeometryMapping, AstGeometryShape,
+    ObservedGeometryField, geometry_disposition_for_classification, geometry_fields_for,
+    geometry_shapes_in_use, observe_geometry_fields, reconcile_geometry_rows,
+    reconcile_node_geometry,
 };
 /// Exhaustive AST invariant policy types and registry.
 pub use invariant_policy::{

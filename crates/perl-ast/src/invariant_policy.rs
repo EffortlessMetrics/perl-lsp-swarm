@@ -279,8 +279,13 @@ pub const fn policy_accepts_observed_children(
 ///   here;
 /// - `payload_fields`: source-derived data fields governed by
 ///   [`AstNodePolicy::payload_policies`];
-/// - `untracked_fields`: data fields deliberately outside payload governance
-///   (spans, booleans, cached metadata).
+/// - geometry fields: payload fields carrying byte offsets of their own, owned
+///   by [`crate::geometry_policy::AST_NODE_GEOMETRY_FIELDS`] and observed
+///   through [`crate::geometry_policy::observe_geometry_fields`]. They are not
+///   restated here, and they are **not** `untracked_fields`: a span that a
+///   coordinate remap must move is governed, not incidental;
+/// - `untracked_fields`: data fields deliberately outside both forms of
+///   governance (booleans, cached metadata, non-geometry lists).
 #[doc(hidden)]
 #[derive(Debug)]
 pub struct NodeKindFixture {
@@ -387,7 +392,7 @@ pub fn node_kind_fixtures() -> Vec<NodeKindFixture> {
                 body_span: Some(loc),
             },
             &["delimiter", "content"],
-            &["interpolated", "indented", "command", "body_span"]
+            &["interpolated", "indented", "command"]
         ),
         fixture!(NodeKind::ArrayLiteral { elements: vec![dummy(), dummy()] }, &[], &[]),
         fixture!(
@@ -406,7 +411,7 @@ pub fn node_kind_fixtures() -> Vec<NodeKindFixture> {
                 finally_block: Some(boxed()),
             },
             &[],
-            &["catch_blocks.variable"]
+            &[]
         ),
         fixture!(
             NodeKind::If {
@@ -480,7 +485,7 @@ pub fn node_kind_fixtures() -> Vec<NodeKindFixture> {
                 body: boxed(),
             },
             &["name", "declarator"],
-            &["name_span", "attributes"]
+            &["attributes"]
         ),
         fixture!(NodeKind::Prototype { content: text() }, &["content"], &[]),
         fixture!(NodeKind::Signature { parameters: vec![dummy(), dummy()] }, &[], &[]),
@@ -511,7 +516,7 @@ pub fn node_kind_fixtures() -> Vec<NodeKindFixture> {
                 body: boxed(),
             },
             &["name"],
-            &["name_span", "attributes"]
+            &["attributes"]
         ),
         fixture!(NodeKind::Return { value: Some(boxed()) }, &[], &[]),
         fixture!(NodeKind::LoopControl { op: text(), label: Some(text()) }, &["op", "label"], &[]),
@@ -587,7 +592,7 @@ pub fn node_kind_fixtures() -> Vec<NodeKindFixture> {
         fixture!(
             NodeKind::Package { name: text(), name_span: loc, block: Some(boxed()) },
             &["name"],
-            &["name_span"]
+            &[]
         ),
         fixture!(
             NodeKind::Use { module: text(), args: vec![text()], has_filter_risk: false },
@@ -602,7 +607,7 @@ pub fn node_kind_fixtures() -> Vec<NodeKindFixture> {
         fixture!(
             NodeKind::PhaseBlock { phase: text(), phase_span: Some(loc), block: boxed() },
             &["phase"],
-            &["phase_span"]
+            &[]
         ),
         fixture!(
             NodeKind::DataSection { marker: text(), body: Some(text()) },
@@ -617,23 +622,26 @@ pub fn node_kind_fixtures() -> Vec<NodeKindFixture> {
                 body: boxed(),
             },
             &["name"],
-            &["name_span", "parents"]
+            &["parents"]
         ),
         fixture!(
             NodeKind::Format { name: text(), name_span: Some(loc), body: text() },
             &["name", "body"],
-            &["name_span"]
+            &[]
         ),
         fixture!(NodeKind::Identifier { name: text() }, &["name"], &[]),
         fixture!(
             NodeKind::Error {
                 message: text(),
-                expected: vec![],
-                found: None,
+                expected: vec![crate::ast::TokenKind::Eof],
+                // Populated so the recovery-token geometry is observable: an
+                // absent token would let the geometry gate pass on a sample
+                // that never exercises the field.
+                found: Some(crate::ast::Token::eof_at(0)),
                 partial: Some(boxed()),
             },
             &["message"],
-            &["expected", "found"]
+            &["expected"]
         ),
         fixture!(NodeKind::MissingExpression, &[], &[]),
         fixture!(NodeKind::MissingStatement, &[], &[]),
