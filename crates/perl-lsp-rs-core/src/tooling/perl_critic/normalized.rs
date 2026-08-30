@@ -274,6 +274,21 @@ impl CriticFindingContributor {
     }
 }
 
+/// Outcome of evaluating critic-owned severity and include/exclude policy
+/// against one merged row (#13798).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CriticPolicyRetention {
+    /// The row is admitted; every contributor is retained.
+    Admitted,
+    /// The critic-side policy rejected the row without naming the built-in
+    /// core proposition: Critic contributors are stripped and an independently
+    /// owned built-in contributor survives.
+    StripCritic,
+    /// The policy names the built-in core proposition itself (exclude of its
+    /// own code) and revokes the whole row.
+    RemoveRow,
+}
+
 /// One normalized logical critic finding.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NormalizedCriticFinding {
@@ -540,6 +555,87 @@ impl NormalizedCriticFinding {
             }
             None => self.message().to_string(),
         }
+    }
+
+    /// Retain this row under critic-owned policy filtering (#13798).
+    ///
+    /// Critic severity thresholds and include/exclude filters own the Critic
+    /// producers' contributions only: they may remove those contributions from
+    /// a merged row, but they cannot revoke an independently emitted built-in
+    /// core proposition while that contributor remains present. A
+    /// [`CriticPolicyRetention::Admitted`] row is returned unchanged; a
+    /// [`CriticPolicyRetention::StripCritic`] row survives with only its
+    /// built-in contributors - recomputing severity, severity conflict,
+    /// explanation, and remediation from the retained provenance - or `None`
+    /// when the row carried no built-in contributor, so critic-owned rows
+    /// remain fully removable. [`CriticPolicyRetention::RemoveRow`] covers an
+    /// exclude that names the built-in code itself and revokes the whole row,
+    /// preserving the "one spelling removes the whole alias set" guarantee.
+    /// Presentation is unchanged because a built-in contributor always owns
+    /// the best presentation rank. Scoped `## no critic` suppression
+    /// deliberately keeps removing whole rows; the source-directive ruling is
+    /// deferred (#14021). Row-level `fix_available` is producer-declared and
+    /// informational, so it is left as merged rather than widened to a
+    /// per-contributor contract.
+    #[must_use]
+    pub fn retained_under_critic_policy(
+        mut self,
+        retention: CriticPolicyRetention,
+    ) -> Option<Self> {
+        match retention {
+            CriticPolicyRetention::Admitted => return Some(self),
+            CriticPolicyRetention::RemoveRow => return None,
+            CriticPolicyRetention::StripCritic => {}
+        }
+
+        let retains_core_authority = self.contributors.iter().any(|contributor| {
+            contributor.identity().origin() == CriticFindingOrigin::BuiltInDiagnostic
+        });
+        if !retains_core_authority {
+            return None;
+        }
+
+        self.contributors.retain(|contributor| {
+            contributor.identity().origin() == CriticFindingOrigin::BuiltInDiagnostic
+        });
+
+        let mut retained_severities =
+            self.contributors.iter().map(CriticFindingContributor::severity);
+        let strongest = retained_severities.next().unwrap_or(self.severity);
+        self.severity = retained_severities.fold(strongest, |best, severity| {
+            if severity_score(severity) > severity_score(best) { severity } else { best }
+        });
+        let distinct_retained = self
+            .contributors
+            .iter()
+            .map(|contributor| contributor.severity() as u8)
+            .collect::<std::collections::BTreeSet<u8>>();
+        self.severity_conflict = distinct_retained.len() > 1;
+
+        let retained_explanation = self.contributors.iter().filter_map(|contributor| {
+            contributor.explanation().map(|text| {
+                (
+                    explanation_rank(contributor.identity().origin()),
+                    text.to_owned(),
+                    contributor.identity().code().to_owned(),
+                )
+            })
+        });
+        match retained_explanation.min() {
+            Some((rank, text, code)) => {
+                self.explanation = Some(text);
+                self.explanation_rank = rank;
+                self.explanation_code = Some(code);
+            }
+            None => {
+                self.explanation = None;
+                self.explanation_rank = u8::MAX;
+                self.explanation_code = None;
+            }
+        }
+
+        self.reconcile_remediation();
+        Some(self)
     }
 }
 
