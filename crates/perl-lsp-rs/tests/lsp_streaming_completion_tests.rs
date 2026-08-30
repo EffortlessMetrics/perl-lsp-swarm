@@ -792,6 +792,32 @@ mod mock_streaming_completion_tests {
         }
     }
 
+    /// A backend that ignores `StreamControl::Stop` and keeps sending final
+    /// chunks. Real providers honour `Stop`, so only the handler's own
+    /// settled-guard stands between this and a second terminal value.
+    struct MockDoubleFinalBackend;
+
+    impl perl_lsp_rs_core::providers::inline_completion::InlineCompletionBackend
+        for MockDoubleFinalBackend
+    {
+        fn stream(
+            &self,
+            _req: &perl_lsp_rs_core::providers::inline_completion::BackendRequest,
+            sink: &mut dyn FnMut(
+                perl_lsp_rs_core::providers::inline_completion::StreamChunk,
+            )
+                -> perl_lsp_rs_core::providers::inline_completion::StreamControl,
+        ) -> Result<(), perl_lsp_rs_core::providers::inline_completion::BackendError> {
+            for _ in 0..3 {
+                let _ = sink(perl_lsp_rs_core::providers::inline_completion::StreamChunk {
+                    text: "1;".to_string(),
+                    is_final: true,
+                });
+            }
+            Ok(())
+        }
+    }
+
     struct MockAuthBackend;
 
     impl perl_lsp_rs_core::providers::inline_completion::InlineCompletionBackend for MockAuthBackend {
@@ -1002,7 +1028,7 @@ mod mock_streaming_completion_tests {
     }
 
     #[test]
-    fn completion_stream_cancel_storm_keeps_one_live_session() {
+    fn completion_stream_storm_retains_no_completed_sessions() {
         let (server, _capture) = create_server();
 
         let backend = MockChunkBackend {
@@ -1024,16 +1050,240 @@ mod mock_streaming_completion_tests {
             assert!(result.is_null(), "streaming completion should respond with null");
             assert_eq!(
                 server.memory_state_snapshot().stream_sessions,
-                1,
-                "same-key stream requests must replace the retained session instead of growing"
+                0,
+                "a completed stream must release its session rather than stay retained \
+                 until a later unrelated edit sweeps the URI"
             );
         }
 
         assert_eq!(
             server.memory_state_snapshot().stream_sessions,
-            1,
-            "a same-key cancel storm should converge to the latest live session only"
+            0,
+            "a request storm must leave the manager empty, not one retained entry"
         );
+    }
+
+    /// Every terminal disposition — accepted candidate, filtered-empty, and
+    /// backend failure — must release the manager entry. A retained
+    /// non-cancelled session was the leak this issue closes, so each path is
+    /// asserted separately rather than through one representative case.
+    #[test]
+    fn every_terminal_path_leaves_zero_retained_sessions() {
+        // Accepted candidate.
+        let (server, _capture) = create_server();
+        server.test_install_ai_backend(Some(Arc::new(MockChunkBackend {
+            chunks: vec!["1;"],
+            delays_ms: vec![0],
+        })));
+        let uri = "file:///streaming-terminal-accepted.pl";
+        open_doc(&server, uri, "my $value = ");
+        request_streaming_completion(&server, uri, 12, "terminal-accepted");
+        assert_eq!(
+            server.memory_state_snapshot().stream_sessions,
+            0,
+            "an accepted final must release the session"
+        );
+
+        // Filtered / empty final.
+        let (server, _capture) = create_server();
+        server.test_install_ai_backend(Some(Arc::new(MockChunkBackend {
+            chunks: vec!["my ("],
+            delays_ms: vec![0],
+        })));
+        let uri = "file:///streaming-terminal-filtered.pl";
+        open_doc(&server, uri, "my $value = ");
+        request_streaming_completion(&server, uri, 12, "terminal-filtered");
+        assert_eq!(
+            server.memory_state_snapshot().stream_sessions,
+            0,
+            "a filtered final must release the session"
+        );
+
+        // Backend failure.
+        let (server, _capture) = create_server();
+        server.test_install_ai_backend(Some(Arc::new(MockErrorChunkBackend)));
+        let uri = "file:///streaming-terminal-error.pl";
+        open_doc(&server, uri, "my $value = ");
+        request_streaming_completion(&server, uri, 12, "terminal-error");
+        assert_eq!(
+            server.memory_state_snapshot().stream_sessions,
+            0,
+            "a failed stream must release the session"
+        );
+    }
+
+    /// One document exposes one active ghost-text stream. A request at a new
+    /// cursor supersedes the earlier cursor's *in-flight* stream instead of
+    /// leaving independent backend work running at every position the user
+    /// visited.
+    ///
+    /// The two requests must genuinely overlap. Driven sequentially each one
+    /// completes and releases its own session before the next starts, so a
+    /// session count alone cannot tell document-scoped supersession from the
+    /// per-`SessionKey` behaviour it replaced — the discriminating observation
+    /// is that the earlier cursor's stream stops emitting.
+    #[test]
+    fn a_new_cursor_supersedes_the_prior_document_stream() {
+        let (server, capture) = create_server();
+        let server = Arc::new(server);
+
+        server.test_install_ai_backend(Some(Arc::new(MockChunkBackend {
+            chunks: vec!["fi", "find_", "find_user($id)"],
+            delays_ms: vec![0, 120, 120],
+        })));
+
+        let uri = "file:///streaming-supersede-cursor.pl";
+        open_doc(&server, uri, "my $obj = Package->");
+
+        let earlier = {
+            let server = Arc::clone(&server);
+            let uri = uri.to_string();
+            thread::spawn(move || {
+                request_streaming_completion(&server, &uri, 19, "supersede-earlier-cursor");
+            })
+        };
+
+        // Let the earlier cursor's stream emit its first chunk, then request at
+        // a *different* cursor in the same document.
+        thread::sleep(Duration::from_millis(30));
+        request_streaming_completion(&server, uri, 11, "supersede-later-cursor");
+
+        earlier.join().expect("earlier streaming request thread panicked");
+        thread::sleep(Duration::from_millis(250));
+
+        let earlier_progress = wait_for_progress_messages(
+            &capture,
+            "supersede-earlier-cursor",
+            Duration::from_millis(300),
+        );
+        let later_progress = wait_for_progress_messages(
+            &capture,
+            "supersede-later-cursor",
+            Duration::from_millis(300),
+        );
+
+        assert_eq!(
+            earlier_progress.len(),
+            1,
+            "the earlier cursor's stream must stop at the chunk it had already \
+             emitted; a per-session-key scope would let it run to completion \
+             alongside the new cursor"
+        );
+        assert!(!later_progress.is_empty(), "the current cursor's stream still runs");
+        assert_eq!(
+            server.memory_state_snapshot().stream_sessions,
+            0,
+            "neither cursor's session may survive"
+        );
+    }
+
+    /// Only frames the client actually observes may consume a sequence value.
+    /// Debounce coalescing previously allocated a sequence for a frame it then
+    /// suppressed, leaving an unexplained gap in the client's stream.
+    #[test]
+    fn coalesced_frames_consume_no_sequence_value() {
+        let (server, capture) = create_server();
+        set_streaming_debounce(&server, 1_000);
+
+        // The middle chunk is suppressed by the debounce interval.
+        let backend = MockChunkBackend { chunks: vec!["1", "1;", "1;"], delays_ms: vec![0, 0, 0] };
+        server.test_install_ai_backend(Some(Arc::new(backend)));
+
+        let uri = "file:///streaming-sequence-contiguous.pl";
+        open_doc(&server, uri, "my $value = ");
+        request_streaming_completion(&server, uri, 12, "stream-contiguous-1");
+
+        let progress =
+            wait_for_progress_messages(&capture, "stream-contiguous-1", Duration::from_millis(500));
+        assert_eq!(progress.len(), 2, "first and final updates should be emitted");
+
+        let sequences: Vec<u64> = progress
+            .iter()
+            .map(|frame| {
+                frame
+                    .pointer("/params/value/sequence")
+                    .and_then(Value::as_u64)
+                    .expect("every emitted frame carries a sequence")
+            })
+            .collect();
+        assert_eq!(
+            sequences,
+            vec![0, 1],
+            "emitted sequences must be contiguous: a suppressed frame consumed \
+             a sequence value the client never observed"
+        );
+    }
+
+    /// A backend that ignores `StreamControl::Stop` still cannot produce two
+    /// terminal values. This pins the settled-guard at the top of the chunk
+    /// sink, which is otherwise unreachable through the well-behaved mocks.
+    #[test]
+    fn a_stop_ignoring_backend_cannot_emit_a_second_final() {
+        let (server, capture) = create_server();
+        server.test_install_ai_backend(Some(Arc::new(MockDoubleFinalBackend)));
+
+        let uri = "file:///streaming-double-final.pl";
+        open_doc(&server, uri, "my $value = ");
+        request_streaming_completion(&server, uri, 12, "double-final");
+
+        let progress =
+            wait_for_progress_messages(&capture, "double-final", Duration::from_millis(500));
+        let finals = progress
+            .iter()
+            .filter(|frame| {
+                frame
+                    .pointer("/params/value/isFinal")
+                    .and_then(Value::as_bool)
+                    .is_some_and(|is_final| is_final)
+            })
+            .count();
+        assert_eq!(finals, 1, "a settled stream must refuse every later chunk");
+        assert_eq!(
+            server.memory_state_snapshot().stream_sessions,
+            0,
+            "the session is still released exactly once"
+        );
+    }
+
+    /// A stream emits exactly one terminal value, whatever the disposition.
+    #[test]
+    fn a_stream_emits_exactly_one_final_value() {
+        for (label, uri, backend) in [
+            (
+                "accepted",
+                "file:///streaming-one-final-accepted.pl",
+                Arc::new(MockChunkBackend { chunks: vec!["1", "1;"], delays_ms: vec![0, 0] })
+                    as Arc<
+                        dyn perl_lsp_rs_core::providers::inline_completion::InlineCompletionBackend,
+                    >,
+            ),
+            (
+                "backend error",
+                "file:///streaming-one-final-error.pl",
+                Arc::new(MockErrorChunkBackend)
+                    as Arc<
+                        dyn perl_lsp_rs_core::providers::inline_completion::InlineCompletionBackend,
+                    >,
+            ),
+        ] {
+            let (server, capture) = create_server();
+            server.test_install_ai_backend(Some(backend));
+            open_doc(&server, uri, "my $value = ");
+            let token = format!("one-final-{}", label.replace(' ', "-"));
+            request_streaming_completion(&server, uri, 12, &token);
+
+            let progress = wait_for_progress_messages(&capture, &token, Duration::from_millis(500));
+            let finals = progress
+                .iter()
+                .filter(|frame| {
+                    frame
+                        .pointer("/params/value/isFinal")
+                        .and_then(Value::as_bool)
+                        .is_some_and(|is_final| is_final)
+                })
+                .count();
+            assert_eq!(finals, 1, "{label}: exactly one final progress value must be emitted");
+        }
     }
 
     #[test]
@@ -1063,7 +1313,14 @@ mod mock_streaming_completion_tests {
             thread::sleep(Duration::from_millis(10));
         };
         assert!(!progress.is_empty());
+        // The intermediate frame legitimately carried the partial cumulative
+        // text: at that point the stream was still live.
         assert_eq!(progress[0]["params"]["value"]["items"][0]["insertText"], "1");
+        assert_eq!(
+            progress[0]["params"]["value"]["isFinal"], false,
+            "the partial frame is not the terminal value"
+        );
+
         let final_progress =
             progress.last().expect("error path should emit at least one progress frame");
         assert!(
@@ -1073,13 +1330,50 @@ mod mock_streaming_completion_tests {
                 .is_some_and(|is_final| is_final),
             "error path should emit a final progress frame"
         );
-        assert_eq!(
+        // The defect this closes: the failed stream's partial cumulative text
+        // was re-evaluated and emitted as the terminal value, so a backend
+        // failure was indistinguishable from a completed suggestion. A failure
+        // discards the partial candidate and lets the configured fallback
+        // policy own the final content.
+        assert_ne!(
             final_progress["params"]["value"]["items"][0]["insertText"], "1",
-            "error path should preserve final cumulative text"
+            "a backend failure must not promote its partial cumulative text \
+             to a successful final candidate"
         );
         assert!(
             final_progress["params"]["value"]["sequence"].as_u64().is_some(),
             "final progress frame should carry sequence"
+        );
+    }
+
+    /// Negative control for the fallback half of the error contract: with
+    /// fallback disabled a failed stream terminates empty rather than
+    /// presenting anything it managed to collect before failing.
+    #[test]
+    fn backend_error_without_fallback_terminates_empty() {
+        let (server, capture) = create_server();
+        server.test_configure_ai_completion(true, false);
+        server.test_install_ai_backend(Some(Arc::new(MockErrorChunkBackend)));
+
+        let uri = "file:///streaming-error-no-fallback.pl";
+        open_doc(&server, uri, "my $value = ");
+        request_streaming_completion(&server, uri, 12, "stream-error-no-fallback");
+
+        let progress = wait_for_progress_messages(
+            &capture,
+            "stream-error-no-fallback",
+            Duration::from_millis(500),
+        );
+        let final_progress =
+            progress.last().expect("error path should emit a terminal progress frame");
+        assert_eq!(
+            final_progress["params"]["value"]["isFinal"], true,
+            "the last frame must be the terminal value"
+        );
+        assert_eq!(
+            final_progress["params"]["value"]["items"],
+            json!([]),
+            "a failed stream without fallback must revoke, not present partial text"
         );
     }
 
