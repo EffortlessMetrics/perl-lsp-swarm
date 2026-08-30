@@ -32,12 +32,20 @@ pub(super) struct LintPolicy {
     pub(super) blanket_categories: bool,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub(super) enum ConfigurationState {
+    EmptyByDesign,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct LintEntry {
     pub(super) name: String,
     pub(super) level: String,
     pub(super) status: String,
+    #[serde(default)]
+    pub(super) configuration_state: Option<ConfigurationState>,
     pub(super) class: String,
     pub(super) reason: String,
 }

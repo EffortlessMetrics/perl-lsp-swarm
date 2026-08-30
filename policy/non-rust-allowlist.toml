@@ -169,6 +169,21 @@ created = "2026-08-24"
 review_after = "2026-11-24"
 
 [[allow]]
+id = "non-rust-lsp-318-changelog-fixture"
+glob = "xtask/tests/fixtures/lsp-318-changelog/*.md"
+kind = "test_fixture"
+language = "markdown"
+surface = "fixtures"
+classification = "test"
+owner = "protocol/lsp-318-claims"
+reason = "Byte-for-byte vendored official LSP 3.18 specification at a pinned upstream revision with recorded provenance; the changelog-totality test parses the 3.18.0 bullet inventory from it so handwritten classifications cannot invent, drop, or rename official additions (#13107). Declared before the broad root-governance *.md glob so the specific fixture rule wins (#13607)."
+covered_by = [
+  "cargo test -p xtask --test lsp_318_changelog_totality --locked",
+]
+created = "2026-08-28"
+review_after = "2027-02-28"
+
+[[allow]]
 id = "non-rust-root-governance-docs"
 glob = "*.md"
 kind = "documentation"
@@ -1827,21 +1842,6 @@ covered_by = [
 ]
 created = "2026-08-24"
 review_after = "2026-09-24"
-
-[[allow]]
-id = "non-rust-lsp-318-changelog-fixture"
-glob = "xtask/tests/fixtures/lsp-318-changelog/*.md"
-kind = "test_fixture"
-language = "markdown"
-surface = "fixtures"
-classification = "test"
-owner = "protocol/lsp-318-claims"
-reason = "Byte-for-byte vendored official LSP 3.18 specification at a pinned upstream revision with recorded provenance; the changelog-totality test parses the 3.18.0 bullet inventory from it so handwritten classifications cannot invent, drop, or rename official additions (#13107)."
-covered_by = [
-  "cargo test -p xtask --test lsp_318_changelog_totality --locked",
-]
-created = "2026-08-28"
-review_after = "2027-02-28"
 
 [[allow]]
 id = "non-rust-dependency-hygiene-machete-fixtures"
