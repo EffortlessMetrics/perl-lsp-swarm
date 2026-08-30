@@ -130,6 +130,50 @@ describe('BinaryDownloader partial-file cleanup ordering', () => {
     expect(fs.readFileSync(destination, 'utf8')).toBe('replacement');
     expect(path.dirname(stagingDestination)).toBe(tmpDir);
     expect(Buffer.byteLength(path.basename(stagingDestination), 'utf8')).toBeLessThanOrEqual(255);
+    expect(fs.existsSync(stagingDestination)).toBe(false);
+  });
+
+  test('preserves the existing destination when promotion fails', async () => {
+    const destination = path.join(tmpDir, 'promotion-failure-existing.bin');
+    fs.writeFileSync(destination, 'existing');
+    let stagingDestination = '';
+    const request = new EventEmitter() as TestRequest;
+    request.destroy = jest.fn();
+    const promotionError = new Error('promotion failed');
+    const downloader = new BinaryDownloader(
+      makeContext(tmpDir),
+      makeOutputChannel(),
+    ) as unknown as DownloaderSeams;
+    jest.spyOn(downloader, 'createWriteStream').mockImplementation((stagingPath) => {
+      stagingDestination = stagingPath;
+      return BinaryDownloader.prototype['createWriteStream'].call(downloader, stagingPath);
+    });
+    jest.spyOn(downloader, 'httpGet').mockImplementation((_https, _url, _options, callback) => {
+      process.nextTick(() => {
+        const response = makeResponse(200, { 'content-length': '10' });
+        (callback as (response: unknown) => void)(response);
+        response.emit('data', Buffer.from('new-bytes'));
+        response.emit('end');
+      });
+      return request;
+    });
+
+    await expect(
+      downloadBoundedFile({
+        requestFactory: (listener) => downloader.httpGet('', '', {}, listener) as never,
+        dest: destination,
+        timeoutMs: 1000,
+        maxBytes: 10,
+        createWriteStream: (stagingPath) => downloader.createWriteStream(stagingPath),
+        promoteFile: () => {
+          throw promotionError;
+        },
+      }),
+    ).rejects.toBe(promotionError);
+
+    expect(fs.readFileSync(destination, 'utf8')).toBe('existing');
+    expect(stagingDestination).not.toBe('');
+    expect(fs.existsSync(stagingDestination)).toBe(false);
   });
 
   test('preserves the existing destination after request failure', async () => {
@@ -176,6 +220,7 @@ describe('BinaryDownloader partial-file cleanup ordering', () => {
     expect(delayedCleanup).toHaveLength(1);
     delayedCleanup[0]?.();
     expect(fs.readFileSync(destination, 'utf8')).toBe('replacement');
+    expect(fs.existsSync(stagingDestination)).toBe(false);
   });
 
   test('preserves the existing destination after timeout', async () => {
@@ -187,6 +232,10 @@ describe('BinaryDownloader partial-file cleanup ordering', () => {
     ) as unknown as DownloaderSeams;
     const request = new EventEmitter() as TestRequest;
     request.destroy = jest.fn();
+    let stagingDestination = '';
+    jest.spyOn(downloader, 'removePartialFile').mockImplementation((stagingPath) => {
+      stagingDestination = stagingPath;
+    });
     jest.spyOn(downloader, 'httpGet').mockReturnValue(request);
 
     await expect(
@@ -195,6 +244,8 @@ describe('BinaryDownloader partial-file cleanup ordering', () => {
 
     expect(request.destroy).toHaveBeenCalled();
     expect(fs.readFileSync(destination, 'utf8')).toBe('existing');
+    expect(stagingDestination).not.toBe('');
+    expect(fs.existsSync(stagingDestination)).toBe(false);
   });
 
   test('preserves the existing destination after cancellation', async () => {
@@ -217,6 +268,10 @@ describe('BinaryDownloader partial-file cleanup ordering', () => {
     ) as unknown as DownloaderSeams;
     const request = new EventEmitter() as TestRequest;
     request.destroy = jest.fn();
+    let stagingDestination = '';
+    jest.spyOn(downloader, 'removePartialFile').mockImplementation((stagingPath) => {
+      stagingDestination = stagingPath;
+    });
     jest.spyOn(downloader, 'httpGet').mockImplementation(() => {
       process.nextTick(() => {
         cancelled = true;
@@ -240,6 +295,8 @@ describe('BinaryDownloader partial-file cleanup ordering', () => {
 
     expect(request.destroy).toHaveBeenCalled();
     expect(fs.readFileSync(destination, 'utf8')).toBe('existing');
+    expect(stagingDestination).not.toBe('');
+    expect(fs.existsSync(stagingDestination)).toBe(false);
   });
 
   test('preserves the existing destination after a response stream error', async () => {
@@ -251,6 +308,10 @@ describe('BinaryDownloader partial-file cleanup ordering', () => {
     ) as unknown as DownloaderSeams;
     const request = new EventEmitter() as TestRequest;
     request.destroy = jest.fn();
+    let stagingDestination = '';
+    jest.spyOn(downloader, 'removePartialFile').mockImplementation((stagingPath) => {
+      stagingDestination = stagingPath;
+    });
     const response = makeResponse(200);
     const streamError = new Error('stream failed');
     jest.spyOn(downloader, 'httpGet').mockImplementation((_https, _url, _options, callback) => {
@@ -268,6 +329,8 @@ describe('BinaryDownloader partial-file cleanup ordering', () => {
 
     expect(request.destroy).toHaveBeenCalled();
     expect(fs.readFileSync(destination, 'utf8')).toBe('existing');
+    expect(stagingDestination).not.toBe('');
+    expect(fs.existsSync(stagingDestination)).toBe(false);
   });
 
   test('does not quarantine a replacement installed before the failed generation is renamed', async () => {

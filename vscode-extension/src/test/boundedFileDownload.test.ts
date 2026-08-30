@@ -60,6 +60,13 @@ describe('downloadBoundedFile', () => {
     return path.join(tmpDir, 'payload.bin');
   }
 
+  function trackingCreateWriteStream(paths: string[]): (dest: string) => fs.WriteStream {
+    return (stagingDest) => {
+      paths.push(stagingDest);
+      return fs.createWriteStream(stagingDest);
+    };
+  }
+
   test('writes a successful body under the compressed ceiling', async () => {
     const dest = destPath();
     await withServer(
@@ -110,6 +117,7 @@ describe('downloadBoundedFile', () => {
 
   test('destroys a chunked response at the streaming ceiling and deletes the partial dest', async () => {
     const dest = destPath();
+    const stagingPaths: string[] = [];
     await expect(
       withServer(
         (_request, response) => {
@@ -124,14 +132,17 @@ describe('downloadBoundedFile', () => {
             timeoutMs: 1000,
             maxBytes: 12,
             operationName: 'Archive download',
+            createWriteStream: trackingCreateWriteStream(stagingPaths),
           }),
       ),
     ).rejects.toThrow('exceeded 12 compressed bytes');
     expect(fs.existsSync(dest)).toBe(false);
+    expect(stagingPaths.every((stagingPath) => !fs.existsSync(stagingPath))).toBe(true);
   });
 
   test('deletes a partial dest when cancellation is signalled during transfer', async () => {
     const dest = destPath();
+    const stagingPaths: string[] = [];
     const token = new TestCancellationToken();
     await expect(
       withServer(
@@ -148,14 +159,17 @@ describe('downloadBoundedFile', () => {
             maxBytes: 1024,
             cancellationToken: token,
             operationName: 'Archive download',
+            createWriteStream: trackingCreateWriteStream(stagingPaths),
           }),
       ),
     ).rejects.toThrow('cancelled');
     expect(fs.existsSync(dest)).toBe(false);
+    expect(stagingPaths.every((stagingPath) => !fs.existsSync(stagingPath))).toBe(true);
   });
 
   test('timeout is independent of the byte ceiling', async () => {
     const dest = destPath();
+    const stagingPaths: string[] = [];
     await expect(
       withServer(
         (_request, response) => {
@@ -169,9 +183,11 @@ describe('downloadBoundedFile', () => {
             timeoutMs: 25,
             maxBytes: 1024 * 1024,
             operationName: 'Archive download',
+            createWriteStream: trackingCreateWriteStream(stagingPaths),
           }),
       ),
     ).rejects.toThrow('Download timeout after 0.025 seconds');
     expect(fs.existsSync(dest)).toBe(false);
+    expect(stagingPaths.every((stagingPath) => !fs.existsSync(stagingPath))).toBe(true);
   });
 });

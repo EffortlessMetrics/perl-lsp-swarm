@@ -223,7 +223,6 @@ export function downloadBoundedFile(options: BoundedFileDownloadOptions): Promis
             try {
               // The response and byte ceiling are validated, and the staging
               // stream is complete, before replacing the caller-owned file.
-              defaultRemovePartialFile(dest);
               promoteFile(stagingDest, dest);
               succeed();
             } catch (error) {
