@@ -15,6 +15,8 @@
 //! - No runtime fuzzing campaign has been run; FPH-010 crash evidence is
 //!   decoder-replay only.
 //! - The FPH-009 index-safety clause is not mechanically scanned.
+//! - There is no runtime panic bridge or cargo-fuzz target in this claim; the
+//!   sole panic-family calls are compile-time const-alignment diagnostics.
 //! - FPH-006 checks body line-ending convention integrity, but does not pin
 //!   body separator counts or positions because formatter expansion may insert
 //!   separators within the declared convention.
@@ -171,11 +173,17 @@ impl Family {
 const _: () = {
     let mut index = 0;
     while index < Family::ALL.len() {
-        [()][if Family::ALL[index].pinned_index() != index { 1 } else { 0 }];
-        [()][if FAMILY_TABLE[index].family.pinned_index() != index { 1 } else { 0 }];
+        if Family::ALL[index].pinned_index() != index {
+            panic!("Family::ALL order drifted from the exhaustive pinned_index enumeration");
+        }
+        if FAMILY_TABLE[index].family.pinned_index() != index {
+            panic!("FAMILY_TABLE order drifted from the exhaustive pinned_index enumeration");
+        }
         index += 1;
     }
-    [()][if FAMILY_TABLE.len() != Family::ALL.len() { 1 } else { 0 }];
+    if FAMILY_TABLE.len() != Family::ALL.len() {
+        panic!("FAMILY_TABLE row count drifted from the exhaustive pinned_index enumeration");
+    }
 };
 
 /// One registry row: an admitted family plus its generator/mutator

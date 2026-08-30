@@ -296,11 +296,20 @@ fn fph_policy_pins() -> TestResult {
             "harness source contains forbidden token {token}"
         );
     }
-    assert_eq!(
-        harness_source.matches("panic!").count(),
-        0,
-        "formatter harness must carry no panic-family exception"
-    );
+    let panic_regions: Vec<(usize, usize)> = harness_source
+        .match_indices("const _: () = {")
+        .filter_map(|(start, _)| {
+            harness_source[start..].find("};").map(|end| (start, start + end + 2))
+        })
+        .collect();
+    assert_eq!(panic_regions.len(), 1, "harness must have one const alignment block");
+    for (panic_start, _) in harness_source.match_indices("panic!") {
+        assert!(
+            panic_regions.iter().any(|(region_start, region_end)| *region_start <= panic_start
+                && panic_start < *region_end),
+            "harness has a runtime panic-family exception; the only panic! calls may be compile-time const-alignment diagnostics"
+        );
+    }
     Ok(())
 }
 
