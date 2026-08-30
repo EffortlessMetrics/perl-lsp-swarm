@@ -206,6 +206,7 @@ const CI_POLICY_PACK: ProofPack = ProofPack {
     commands: &[
         "python -m unittest scripts/ci/test_ci_classify.py",
         "python -m unittest scripts/ci/test_docker_publish_metadata.py",
+        "python -m unittest scripts/ci/test_docker_publish_topology.py",
         "cargo xtask workflow-trigger-lint --policy .ci/policies/required-checks.toml --receipt target/receipts/workflow-trigger-lint.json",
         "cargo test -p xtask --test quality_ci_wiring_policy --profile agent --locked -- --nocapture",
     ],
@@ -727,6 +728,7 @@ fn route_file(file: &str, route: &mut RouteBuilder) {
         || file == "scripts/ci/test_ci_classify.py"
         || file == "scripts/ci/docker_publish_metadata.py"
         || file == "scripts/ci/test_docker_publish_metadata.py"
+        || file == "scripts/ci/test_docker_publish_topology.py"
         || matches!(
             file,
             "xtask/tests/codecov_patch_gate_policy.rs"
