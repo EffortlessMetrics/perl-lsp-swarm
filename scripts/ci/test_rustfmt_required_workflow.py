@@ -88,10 +88,22 @@ def load_triggers(source: str) -> dict[str, dict[str, Any]]:
         return {str(event): {} for event in node}
     if not isinstance(node, dict):
         raise AssertionError("workflow triggers are not a mapping")
-    return {
-        str(event): (body if isinstance(body, dict) else {})
-        for event, body in node.items()
-    }
+    triggers: dict[str, dict[str, Any]] = {}
+    for event, body in node.items():
+        if body is None:
+            # A bare `pull_request:` is valid and means every activity type.
+            triggers[str(event)] = {}
+        elif isinstance(body, dict):
+            triggers[str(event)] = body
+        else:
+            # Coercing an unsupported shape to {} would report an unconfigured
+            # event body and let the docs-only and required-trigger checks pass
+            # without the event configuration ever being valid.
+            raise AssertionError(
+                f"trigger {str(event)!r} has a {type(body).__name__} body; "
+                "expected a mapping or an empty body"
+            )
+    return triggers
 
 
 def load_workflow(text: str | None = None) -> dict[str, Any]:
@@ -517,6 +529,25 @@ class GovernedContextSourceMutationTests(unittest.TestCase):
         self.assertNotEqual(broken, self.workflow_text)
         with self.assertRaisesRegex(AssertionError, "terminal for docs-only"):
             self.validate_source(broken, self.policy_text)
+
+    def test_non_mapping_trigger_body_fails_closed(self) -> None:
+        # Regression: every non-mapping body was coerced to {}, so a workflow
+        # whose event configuration is not even valid reported an unconfigured
+        # event and satisfied both the required-trigger and docs-only checks.
+        for spelling in ("true", "[branches]", "'yes'", "42"):
+            broken = replace_pull_request_trigger(
+                self.workflow_text, f"  pull_request: {spelling}\n"
+            )
+            self.assertNotEqual(broken, self.workflow_text)
+            with self.assertRaisesRegex(AssertionError, "expected a mapping"):
+                self.validate_source(broken, self.policy_text)
+
+    def test_empty_trigger_body_is_accepted(self) -> None:
+        # Positive control for the check above: a bare `pull_request:` is legal
+        # GitHub Actions, so rejecting non-mappings must not reject null bodies.
+        relaxed = replace_pull_request_trigger(self.workflow_text, "  pull_request:\n")
+        self.assertEqual(load_triggers(relaxed)["pull_request"], {})
+        self.validate_source(relaxed, self.policy_text)
 
     def test_unparseable_workflow_source_fails_closed(self) -> None:
         # A corrupted or truncated ci.yml must red the gate with a named error,
