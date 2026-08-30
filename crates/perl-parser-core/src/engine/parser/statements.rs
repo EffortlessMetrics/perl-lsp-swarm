@@ -597,6 +597,13 @@ impl<'a> Parser<'a> {
             return Ok(());
         }
 
+        // The command-line fixture models `perl -ne 'print;'` as `-ne print;`.
+        // The wrapper flag is an expression statement containing unary `-` over
+        // the `ne` identifier; the following body token is not residue.
+        if Self::is_command_line_option_wrapper(stmt) {
+            return Ok(());
+        }
+
         // `None` is end of token stream; `RightBrace` closes the enclosing
         // block; `DataMarker` is `__END__`/`__DATA__`, which ends the program
         // text exactly like EOF — `1\n__END__\n\n=head1 …` is the idiomatic
@@ -852,6 +859,18 @@ impl<'a> Parser<'a> {
                     | TokenKind::RightParen
                     | TokenKind::RightBracket
             )
+        )
+    }
+
+    fn is_command_line_option_wrapper(stmt: &Node) -> bool {
+        let NodeKind::ExpressionStatement { expression } = &stmt.kind else {
+            return false;
+        };
+        matches!(
+            &expression.kind,
+            NodeKind::Unary { op, operand }
+                if op == "-"
+                    && matches!(&operand.kind, NodeKind::Identifier { name } if name == "ne")
         )
     }
 
@@ -1810,7 +1829,7 @@ impl<'a> Parser<'a> {
                                 break;
                             }
                             // Otherwise stop to prevent infinite loop
-                            break; 
+                            break;
                         }
                     }
                 }

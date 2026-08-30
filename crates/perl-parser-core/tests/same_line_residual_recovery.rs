@@ -134,6 +134,13 @@ fn invalid_same_line_residue_is_not_clean() -> Result<(), String> {
 }
 
 #[test]
+fn command_line_ne_wrapper_is_not_same_line_residue() -> Result<(), String> {
+    let source = "-ne print;";
+    assert_clean_parse(source);
+    assert_no_same_line_residual(source)
+}
+
+#[test]
 fn spaced_repetition_tokens_are_not_rewritten_to_x_assign() -> Result<(), String> {
     let source = "$value x = 3;";
     let output = Parser::new(source).parse_with_recovery();
