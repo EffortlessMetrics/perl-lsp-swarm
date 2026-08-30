@@ -1,0 +1,163 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/EffortlessMetrics/perl-lsp-swarm/schemas/blocker_closeout.v1.schema.json",
+  "title": "blocker_closeout.v1",
+  "description": "Release-scoped terminal blocker closeout. This packet does not select the blocker denominator or authorize freeze or publication.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "release",
+    "blocker_id",
+    "controller_issue",
+    "semantic_controller",
+    "status",
+    "observed_main_sha",
+    "implementation_prs",
+    "merged_shas",
+    "implementation_contributions",
+    "review",
+    "proof",
+    "claim_effect",
+    "follow_ups",
+    "invalidation_paths",
+    "shared_implementation_relations"
+  ],
+  "properties": {
+    "schema_version": {"const": "blocker_closeout.v1"},
+    "release": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?$"},
+    "blocker_id": {"type": "string", "pattern": "^[a-z0-9]+(?:[._-][a-z0-9]+)*$"},
+    "controller_issue": {"type": "integer", "minimum": 1},
+    "semantic_controller": {"$ref": "#/$defs/semantic_controller"},
+    "status": {"enum": ["resolved", "bounded_limitation", "blocked", "not_proven"]},
+    "observed_main_sha": {"$ref": "#/$defs/sha"},
+    "implementation_prs": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"type": "integer", "minimum": 1}
+    },
+    "merged_shas": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/sha"}
+    },
+    "implementation_contributions": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/implementation_contribution"}
+    },
+    "review": {"$ref": "#/$defs/review"},
+    "proof": {"$ref": "#/$defs/proof"},
+    "claim_effect": {"$ref": "#/$defs/claim_effect"},
+    "follow_ups": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/durable_evidence"}
+    },
+    "invalidation_paths": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "shared_implementation_relations": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/shared_relation"}
+    }
+  },
+  "$defs": {
+    "sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "claim_id": {"type": "string", "pattern": "^[a-z0-9]+(?:[._-][a-z0-9]+)*$"},
+    "durable_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "ref", "digest"],
+      "properties": {
+        "kind": {"enum": ["github_issue", "github_issue_comment", "github_pull", "github_review", "github_check", "repository_blob", "repository_receipt"]},
+        "ref": {"type": "string", "minLength": 1},
+        "digest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "semantic_controller": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["issue", "claim_ids", "evidence"],
+      "properties": {
+        "issue": {"type": "integer", "minimum": 1},
+        "claim_ids": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/claim_id"}},
+        "evidence": {"$ref": "#/$defs/durable_evidence"}
+      }
+    },
+    "implementation_contribution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["implementation_pr", "merged_sha", "claim_ids", "relation", "evidence"],
+      "properties": {
+        "implementation_pr": {"type": "integer", "minimum": 1},
+        "merged_sha": {"$ref": "#/$defs/sha"},
+        "claim_ids": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/claim_id"}},
+        "relation": {"enum": ["implements", "contributes", "supersedes", "absorbs"]},
+        "evidence": {"$ref": "#/$defs/durable_evidence"}
+      }
+    },
+    "review": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["current_head_synthesis", "reviewed_head", "status", "unresolved_material_findings", "finding_refs"],
+      "properties": {
+        "current_head_synthesis": {"$ref": "#/$defs/durable_evidence"},
+        "reviewed_head": {"$ref": "#/$defs/sha"},
+        "status": {"enum": ["current", "stale", "not_proven"]},
+        "unresolved_material_findings": {"type": "integer", "minimum": 0},
+        "finding_refs": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/durable_evidence"}}
+      }
+    },
+    "proof_observation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "claim_ids", "subject_sha", "status", "proof_class", "claim_scope", "evidence"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z0-9]+(?:[._-][a-z0-9]+)*$"},
+        "claim_ids": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/claim_id"}},
+        "subject_sha": {"$ref": "#/$defs/sha"},
+        "status": {"enum": ["passed", "failed", "not_proven", "stale", "skipped", "cancelled", "timed_out", "instrument_failed", "malformed"]},
+        "proof_class": {"enum": ["product_test", "installed_acceptance", "workflow", "review", "repository_receipt", "mechanism", "fixture"]},
+        "claim_scope": {"enum": ["repository_mechanism", "product_behavior", "installed_user_behavior"]},
+        "evidence": {"$ref": "#/$defs/durable_evidence"}
+      }
+    },
+    "proof": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["required", "passed", "not_proven", "observations"],
+      "properties": {
+        "required": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "passed": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "not_proven": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "observations": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/proof_observation"}}
+      }
+    },
+    "claim_effect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["preserves", "narrows", "limitations"],
+      "properties": {
+        "preserves": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/claim_id"}},
+        "narrows": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/claim_id"}},
+        "limitations": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}}
+      }
+    },
+    "shared_relation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["implementation_pr", "other_blocker_id", "relation", "claim_ids", "evidence"],
+      "properties": {
+        "implementation_pr": {"type": "integer", "minimum": 1},
+        "other_blocker_id": {"$ref": "#/$defs/claim_id"},
+        "relation": {"enum": ["shared", "absorbed_by", "supersedes", "dependency"]},
+        "claim_ids": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/claim_id"}},
+        "evidence": {"$ref": "#/$defs/durable_evidence"}
+      }
+    }
+  }
+}

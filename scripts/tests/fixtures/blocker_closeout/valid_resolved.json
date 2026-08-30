@@ -1,0 +1,84 @@
+{
+  "schema_version": "blocker_closeout.v1",
+  "release": "9.9.9-rc.1",
+  "blocker_id": "example.blocker",
+  "controller_issue": 90001,
+  "semantic_controller": {
+    "issue": 90001,
+    "claim_ids": ["example.installed", "example.product"],
+    "evidence": {
+      "kind": "github_issue_comment",
+      "ref": "https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/90001#issuecomment-1",
+      "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    }
+  },
+  "status": "resolved",
+  "observed_main_sha": "0d70248e3ec1ef90c6059f864b9a26fecad07db4",
+  "implementation_prs": [90002],
+  "merged_shas": ["0d70248e3ec1ef90c6059f864b9a26fecad07db4"],
+  "implementation_contributions": [
+    {
+      "implementation_pr": 90002,
+      "merged_sha": "0d70248e3ec1ef90c6059f864b9a26fecad07db4",
+      "claim_ids": ["example.installed", "example.product"],
+      "relation": "implements",
+      "evidence": {
+        "kind": "github_pull",
+        "ref": "https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/90002",
+        "digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+      }
+    }
+  ],
+  "review": {
+    "current_head_synthesis": {
+      "kind": "github_review",
+      "ref": "https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/90002#pullrequestreview-1",
+      "digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+    },
+    "reviewed_head": "0d70248e3ec1ef90c6059f864b9a26fecad07db4",
+    "status": "current",
+    "unresolved_material_findings": 0,
+    "finding_refs": []
+  },
+  "proof": {
+    "required": ["installed.behavior", "product.behavior"],
+    "passed": ["installed.behavior", "product.behavior"],
+    "not_proven": [],
+    "observations": [
+      {
+        "id": "installed.behavior",
+        "claim_ids": ["example.installed"],
+        "subject_sha": "0d70248e3ec1ef90c6059f864b9a26fecad07db4",
+        "status": "passed",
+        "proof_class": "installed_acceptance",
+        "claim_scope": "installed_user_behavior",
+        "evidence": {
+          "kind": "repository_receipt",
+          "ref": "repo:receipts/example-installed.json@0d70248e3ec1ef90c6059f864b9a26fecad07db4",
+          "digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444"
+        }
+      },
+      {
+        "id": "product.behavior",
+        "claim_ids": ["example.product"],
+        "subject_sha": "0d70248e3ec1ef90c6059f864b9a26fecad07db4",
+        "status": "passed",
+        "proof_class": "product_test",
+        "claim_scope": "product_behavior",
+        "evidence": {
+          "kind": "github_check",
+          "ref": "https://github.com/EffortlessMetrics/perl-lsp-swarm/actions/runs/90003",
+          "digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555"
+        }
+      }
+    ]
+  },
+  "claim_effect": {
+    "preserves": ["example.installed", "example.product"],
+    "narrows": [],
+    "limitations": []
+  },
+  "follow_ups": [],
+  "invalidation_paths": ["Any load-bearing subject, contribution, review, proof, or claim-effect identity changes."],
+  "shared_implementation_relations": []
+}
