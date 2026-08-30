@@ -8,7 +8,7 @@
 use super::*;
 use super::{
     Arc, DiagnosticsProvider, DocumentState, InternalDiagnosticSeverity, JsonRpcError, LspServer,
-    Mutex, Ordering, Value,
+    Ordering, Value,
     diagnostics_sink::{
         AcceptedCriticPolicy, PushDiagnosticIdentity, PushDiagnosticsCommitOutcome,
         PushDiagnosticsDisposition,
@@ -142,22 +142,14 @@ fn resolved_parse_diagnostic_offset(error: &crate::error::ParseError, text: &str
 /// Coordinates between LspServer state and the pure-logic PullDiagnosticsProvider.
 /// Handles:
 /// - Building context from server state (config, workspace index, capabilities)
-/// - Managing the cached CriticAnalyzer for external perlcritic integration
 /// - Emitting workspace-scoped warnings (with deduplication)
 /// - @INC path resolution for module diagnostics
-pub struct PullDiagnosticsOrchestrator {
-    /// Cached CriticAnalyzer for external perlcritic
-    #[cfg(not(target_arch = "wasm32"))]
-    critic_analyzer: Mutex<Option<perl_lsp_rs_core::tooling::perl_critic::CriticAnalyzer>>,
-}
+pub struct PullDiagnosticsOrchestrator {}
 
 impl PullDiagnosticsOrchestrator {
     /// Create a new orchestrator.
     pub fn new() -> Self {
-        Self {
-            #[cfg(not(target_arch = "wasm32"))]
-            critic_analyzer: Mutex::new(None),
-        }
+        Self {}
     }
 
     /// Build context from LspServer state.
@@ -298,34 +290,6 @@ impl PullDiagnosticsOrchestrator {
         _message: &str,
     ) {
     }
-
-    /// Reset the orchestrator state (e.g., on configuration change).
-    ///
-    /// Warning-dedup state is not held here anymore: the didChangeConfiguration
-    /// critic transition clears the shared critic family (#9769) immediately
-    /// before calling this reset, keeping the analyzer and warning lifecycles
-    /// aligned.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn reset(&self) {
-        *self.critic_analyzer.lock() = None;
-    }
-
-    /// No-op stub for WASM targets.
-    #[cfg(target_arch = "wasm32")]
-    pub fn reset(&self) {}
-
-    /// Invalidate cached perlcritic violations for a single file path.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn invalidate_file_cache(&self, file_path: &std::path::Path) {
-        let path_str = file_path.to_string_lossy().to_string();
-        if let Some(ref mut analyzer) = *self.critic_analyzer.lock() {
-            analyzer.invalidate_cache(&path_str);
-        }
-    }
-
-    /// No-op stub for WASM targets.
-    #[cfg(target_arch = "wasm32")]
-    pub fn invalidate_file_cache(&self, _file_path: &std::path::Path) {}
 }
 
 impl Default for PullDiagnosticsOrchestrator {

@@ -376,18 +376,6 @@ pub struct LspServer {
     /// process-level `Once`) so that each `LspServer` instance tracks its own
     /// session independently.
     pub(crate) root_undetected_shown: Arc<AtomicBool>,
-    /// Shared Perl::Critic analyzer for the diagnostic pipeline.
-    ///
-    /// Lazily initialized on first use and reused across diagnostic cycles so
-    /// the per-instance violation cache survives between `textDocument/didChange`
-    /// events.  `invalidate_cache` is called on `didChange`; the whole entry is
-    /// reset to `None` when `perlcritic_enabled`, `perlcritic_severity`, or
-    /// `perlcritic_profile` changes via `didChangeConfiguration`.
-    ///
-    /// Only present on non-WASM targets (subprocess execution is unavailable
-    /// on WASM).
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) critic_analyzer: Mutex<Option<crate::perl_critic::CriticAnalyzer>>,
     /// Test-only subprocess runtime override for formatter construction.
     #[cfg(any(test, feature = "expose_lsp_test_api"))]
     pub(crate) formatter_runtime_override:
@@ -911,9 +899,6 @@ impl LspServer {
         for key in &uri_keys {
             if let Some(path) = source_path_from_uri(key) {
                 self.pod_cache.lock().remove(&path);
-
-                #[cfg(not(target_arch = "wasm32"))]
-                self.pull_diagnostics_orchestrator.invalidate_file_cache(&path);
             }
         }
     }
@@ -941,9 +926,6 @@ impl LspServer {
             for key in &uri_keys {
                 if let Some(path) = source_path_from_uri(key) {
                     self.pod_cache.lock().remove(&path);
-
-                    #[cfg(not(target_arch = "wasm32"))]
-                    self.pull_diagnostics_orchestrator.invalidate_file_cache(&path);
                 }
             }
             tracing::debug!(
