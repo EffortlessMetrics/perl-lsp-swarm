@@ -303,6 +303,147 @@ impl CatalogMetric {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::panic)]
+
+    use super::*;
+
+    fn metric(
+        class: MetricClass,
+        relationship: CompatibilityRelationship,
+        participates: bool,
+    ) -> CatalogMetric {
+        CatalogMetric {
+            id: "cpants.probe".into(),
+            alias: "probe".into(),
+            title: "probe".into(),
+            class,
+            participates_in_core_score: participates,
+            relationship,
+            source_module: "probe".into(),
+            source_version: "1.03".into(),
+            behavior_ref: "probe".into(),
+            required_facts: vec!["probe".into()],
+            applicability: Applicability::AllDistributions,
+            pass_semantics: "pass".into(),
+            fail_semantics: "fail".into(),
+            not_applicable_semantics: "na".into(),
+            unverified_semantics: "unverified".into(),
+            depends_on: vec![],
+            remediation_owner: "distribution_author".into(),
+            implementation_owner: 7170,
+            fixture_ids: vec!["Acme-CatalogFreeze".into()],
+            known_differences: vec![],
+            limitations: vec![],
+        }
+    }
+
+    #[test]
+    fn only_offline_core_may_participate_in_core_score() {
+        assert!(MetricClass::CpantsOfflineCore.may_participate_in_core_score());
+        for class in [
+            MetricClass::CpantsOfflineExtra,
+            MetricClass::CpantsOfflineExperimental,
+            MetricClass::CpantsSiteAnalogue,
+            MetricClass::NativeExtension,
+            MetricClass::UnsupportedOrDeferred,
+        ] {
+            assert!(!class.may_participate_in_core_score());
+        }
+    }
+
+    #[test]
+    fn allowed_class_relationship_pairs_pass() {
+        let allowed = [
+            (MetricClass::CpantsOfflineCore, CompatibilityRelationship::Direct, true),
+            (MetricClass::CpantsOfflineCore, CompatibilityRelationship::Adapted, true),
+            (MetricClass::CpantsOfflineExtra, CompatibilityRelationship::Direct, false),
+            (MetricClass::CpantsOfflineExtra, CompatibilityRelationship::Adapted, false),
+            (MetricClass::CpantsOfflineExperimental, CompatibilityRelationship::Direct, false),
+            (MetricClass::CpantsOfflineExperimental, CompatibilityRelationship::Adapted, false),
+            (MetricClass::CpantsSiteAnalogue, CompatibilityRelationship::SiteAnalogue, false),
+            (MetricClass::NativeExtension, CompatibilityRelationship::NativeExtension, false),
+            (MetricClass::UnsupportedOrDeferred, CompatibilityRelationship::Deferred, false),
+        ];
+        for (class, relationship, participates) in allowed {
+            metric(class, relationship, participates).validate_score_class().unwrap_or_else(
+                |error| panic!("allowed pair {class:?}/{relationship:?} failed: {error}"),
+            );
+        }
+    }
+
+    #[test]
+    fn non_core_classes_cannot_participate_in_core_score() {
+        let cases = [
+            (MetricClass::CpantsOfflineExtra, CompatibilityRelationship::Direct),
+            (MetricClass::CpantsOfflineExperimental, CompatibilityRelationship::Adapted),
+            (MetricClass::CpantsSiteAnalogue, CompatibilityRelationship::SiteAnalogue),
+            (MetricClass::NativeExtension, CompatibilityRelationship::NativeExtension),
+            (MetricClass::UnsupportedOrDeferred, CompatibilityRelationship::Deferred),
+        ];
+        for (class, relationship) in cases {
+            let error = metric(class, relationship, true)
+                .validate_score_class()
+                .expect_err("non-core must not participate");
+            match error {
+                CatalogError::ScoreClassContradiction { id, reason } => {
+                    assert_eq!(id, "cpants.probe");
+                    assert!(
+                        reason.contains("cannot set participates_in_core_score=true"),
+                        "{reason}"
+                    );
+                    assert!(reason.contains(class.as_str()), "{reason}");
+                }
+                other => panic!("unexpected error for {class:?}: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn core_class_cannot_drop_core_participation() {
+        let error =
+            metric(MetricClass::CpantsOfflineCore, CompatibilityRelationship::Direct, false)
+                .validate_score_class()
+                .expect_err("core must participate");
+        match error {
+            CatalogError::ScoreClassContradiction { id, reason } => {
+                assert_eq!(id, "cpants.probe");
+                assert!(reason.contains("cannot set participates_in_core_score=false"), "{reason}");
+                assert!(reason.contains("cpants_offline_core"), "{reason}");
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mismatched_class_and_relationship_fail() {
+        let cases = [
+            (MetricClass::CpantsOfflineCore, CompatibilityRelationship::SiteAnalogue, true),
+            (MetricClass::CpantsOfflineCore, CompatibilityRelationship::NativeExtension, true),
+            (MetricClass::CpantsOfflineCore, CompatibilityRelationship::Deferred, true),
+            (MetricClass::CpantsOfflineExtra, CompatibilityRelationship::SiteAnalogue, false),
+            (MetricClass::CpantsSiteAnalogue, CompatibilityRelationship::Direct, false),
+            (MetricClass::NativeExtension, CompatibilityRelationship::Adapted, false),
+            (MetricClass::UnsupportedOrDeferred, CompatibilityRelationship::Direct, false),
+        ];
+        for (class, relationship, participates) in cases {
+            let error = metric(class, relationship, participates)
+                .validate_score_class()
+                .expect_err("mismatch");
+            match error {
+                CatalogError::ScoreClassContradiction { id, reason } => {
+                    assert_eq!(id, "cpants.probe");
+                    assert!(reason.contains("incompatible with relationship"), "{reason}");
+                    assert!(reason.contains(class.as_str()), "{reason}");
+                    assert!(reason.contains(relationship.as_str()), "{reason}");
+                }
+                other => panic!("unexpected error for {class:?}/{relationship:?}: {other:?}"),
+            }
+        }
+    }
+}
+
 /// Frozen catalog v1 envelope.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

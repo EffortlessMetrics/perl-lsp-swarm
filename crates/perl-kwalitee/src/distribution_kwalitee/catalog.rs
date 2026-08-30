@@ -438,7 +438,7 @@ limitations = []
     }
 
     #[test]
-    fn site_analogue_masquerading_as_core_fails() {
+    fn validate_catalog_invokes_score_class_checks() {
         let mut catalog =
             parse_catalog(&format!("{}{}", envelope(), one_core_metric("has_readme")))
                 .expect("base");
@@ -447,35 +447,9 @@ limitations = []
         catalog.metric[0].participates_in_core_score = true;
         assert!(matches!(
             validate_catalog(&catalog),
-            Err(CatalogError::ScoreClassContradiction { .. })
-        ));
-    }
-
-    #[test]
-    fn native_extension_cannot_participate_in_core_score() {
-        let mut catalog =
-            parse_catalog(&format!("{}{}", envelope(), one_core_metric("has_readme")))
-                .expect("base");
-        catalog.metric[0].id = "native.has_readme".into();
-        catalog.metric[0].class = MetricClass::NativeExtension;
-        catalog.metric[0].relationship = CompatibilityRelationship::NativeExtension;
-        catalog.metric[0].participates_in_core_score = true;
-        assert!(matches!(
-            validate_catalog(&catalog),
-            Err(CatalogError::ScoreClassContradiction { .. })
-        ));
-    }
-
-    #[test]
-    fn extra_metric_marked_core_fails() {
-        let mut catalog =
-            parse_catalog(&format!("{}{}", envelope(), one_core_metric("has_readme")))
-                .expect("base");
-        catalog.metric[0].class = MetricClass::CpantsOfflineExtra;
-        catalog.metric[0].participates_in_core_score = true;
-        assert!(matches!(
-            validate_catalog(&catalog),
-            Err(CatalogError::ScoreClassContradiction { .. })
+            Err(CatalogError::ScoreClassContradiction { id, reason })
+                if id == "cpants.has_readme"
+                    && reason.contains("cannot set participates_in_core_score=true")
         ));
     }
 
