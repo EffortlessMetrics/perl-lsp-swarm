@@ -1,0 +1,60 @@
+name: Apply bounded Codecov PR telemetry retirement
+
+on:
+  push:
+    branches:
+      - codex/retire-codecov-pr-telemetry
+    paths:
+      - scripts/ci/apply_retire_codecov_pr_telemetry.py
+      - .github/workflows/apply-retire-codecov-pr-telemetry.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apply-retire-codecov-pr-telemetry
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact migration branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: codex/retire-codecov-pr-telemetry
+          fetch-depth: 0
+
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: 1.95.0
+          components: rustfmt
+
+      - name: Apply exact current-source migration
+        run: python3 scripts/ci/apply_retire_codecov_pr_telemetry.py
+
+      - name: Format and run focused recurrence proof
+        run: |
+          set -euo pipefail
+          cargo fmt --all
+          python3 -m unittest scripts.ci.test_codecov_test_results_workflows
+          cargo test -p xtask --bin xtask --profile agent --locked ci_route -- --nocapture
+          cargo test -p xtask --test ci_route_cli --profile agent --locked -- --nocapture
+          git diff --check
+
+      - name: Commit bounded candidate
+        run: |
+          set -euo pipefail
+          git config user.name "EffortlessSteven"
+          git config user.email "git@effortlesssteven.com"
+          git add -A
+          git diff --cached --stat
+          git diff --cached --quiet && {
+            echo "::error::Migration produced no candidate diff"
+            exit 1
+          }
+          git commit -m "ci: retire Codecov and PR test-result uploads (#10060)"
+          git push origin HEAD:codex/retire-codecov-pr-telemetry
