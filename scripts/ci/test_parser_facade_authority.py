@@ -631,13 +631,53 @@ class ParserFacadeAuthorityTests(unittest.TestCase):
         guard = self.independent_source_only_feature()["name"]
         lib = self.root / "crates/perl-parser/src/lib.rs"
         lib.write_text(lib.read_text() + "\nmod outer_probe;\n")
-        # Private outer module, declared as a file, itself declaring a gated child file.
+        # Private outer module declared as a file. Rust resolves its children under
+        # `outer_probe/`, not beside `outer_probe.rs`.
         self.write(
             "crates/perl-parser/src/outer_probe.rs",
             f'#[cfg(feature = "{guard}")]\nmod inner_probe;\n',
         )
         self.write(
-            "crates/perl-parser/src/inner_probe.rs",
+            "crates/perl-parser/src/outer_probe/inner_probe.rs",
+            f'#[cfg(feature = "{taxonomy}")]\nfn probe() {{}}\n',
+        )
+        check(self.root, self.ledger_path)
+
+    def test_child_module_beside_a_file_owner_is_not_treated_as_its_child(self) -> None:
+        """`mod x;` in `outer.rs` resolves under `outer/`, so a sibling `x.rs` is unrelated."""
+        taxonomy = next(
+            r["name"] for r in self.ledger["features"] if r["isolation"] == "taxonomy_only"
+        )
+        guard = self.independent_source_only_feature()["name"]
+        lib = self.root / "crates/perl-parser/src/lib.rs"
+        lib.write_text(lib.read_text() + "\nmod owner_probe;\n")
+        self.write(
+            "crates/perl-parser/src/owner_probe.rs",
+            f'#[cfg(feature = "{guard}")]\nmod sibling_probe;\n',
+        )
+        # Unrelated file that merely shares the declared module's name.
+        self.write(
+            "crates/perl-parser/src/sibling_probe.rs",
+            f'#[cfg(feature = "{taxonomy}")]\nfn probe() {{}}\n',
+        )
+        with self.assertRaisesRegex(
+            ValueError, f"feature {taxonomy} claims isolation taxonomy_only but selects source_only"
+        ):
+            check(self.root, self.ledger_path)
+
+    def test_nested_all_predicate_still_proves_a_feature_requirement(self) -> None:
+        """`all(feature = "x", any(unix, windows))` genuinely requires `x`."""
+        taxonomy = next(
+            r["name"] for r in self.ledger["features"] if r["isolation"] == "taxonomy_only"
+        )
+        guard = self.independent_source_only_feature()["name"]
+        lib = self.root / "crates/perl-parser/src/lib.rs"
+        lib.write_text(
+            lib.read_text()
+            + f'\n#[cfg(all(feature = "{guard}", any(unix, windows)))]\nmod nested_probe;\n'
+        )
+        self.write(
+            "crates/perl-parser/src/nested_probe/mod.rs",
             f'#[cfg(feature = "{taxonomy}")]\nfn probe() {{}}\n',
         )
         check(self.root, self.ledger_path)
