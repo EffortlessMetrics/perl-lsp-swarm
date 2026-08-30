@@ -149,6 +149,8 @@ fn fph_policy_pins() -> TestResult {
     let mut rust_files = Vec::new();
     collect_files_recursively(&source_root, Some("rs"), &mut rust_files)?;
     collect_files_recursively(&tests_root, Some("rs"), &mut rust_files)?;
+    // Split these literals so this test file's own copies are not counted;
+    // joining them would break the exactly-once pin.
     let markers = [
         ["pub const ", "HARNESS_SCHEMA_VERSION"].concat(),
         ["pub fn ", "run_case("].concat(),
@@ -171,10 +173,6 @@ fn fph_policy_pins() -> TestResult {
         );
     }
 
-    let harness_path =
-        PathBuf::from(format!("{MANIFEST_DIR}/tests/support/formatter_property_harness/mod.rs"));
-    let fuzz_path =
-        PathBuf::from(format!("{MANIFEST_DIR}/../../fuzz/fuzz_targets/perl_tidy_formatter.rs"));
     let banned_tokens = [
         ".unwrap(",
         ".expect(",
@@ -187,8 +185,8 @@ fn fph_policy_pins() -> TestResult {
         "from_raw_parts",
     ];
     for (relative_path, expected_panics) in PINNED_PANIC_COUNTS {
-        let path = if relative_path.starts_with("tests/") { &harness_path } else { &fuzz_path };
-        let source = fs::read_to_string(path)?;
+        let path = PathBuf::from(format!("{MANIFEST_DIR}/{relative_path}"));
+        let source = fs::read_to_string(&path)?;
         for token in banned_tokens {
             assert!(
                 !source.contains(token),
