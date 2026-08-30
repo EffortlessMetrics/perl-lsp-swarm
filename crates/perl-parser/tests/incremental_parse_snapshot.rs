@@ -19,12 +19,31 @@ fn assert_geometry_unavailable_for_current_snapshot(state: &IncrementalState) {
 }
 
 #[test]
+fn independently_created_identical_states_have_distinct_geometry_instances() {
+    let first = IncrementalState::new("my $x = 1;".to_string());
+    let reopened = IncrementalState::new("my $x = 1;".to_string());
+
+    assert_eq!(first.generation(), reopened.generation());
+    assert_eq!(first.snapshot().content_digest(), reopened.snapshot().content_digest());
+    assert!(!first
+        .snapshot()
+        .source_geometry()
+        .subject()
+        .same_instance_as(reopened.snapshot().source_geometry().subject()));
+    assert_ne!(
+        first.snapshot().source_geometry().subject(),
+        reopened.snapshot().source_geometry().subject()
+    );
+}
+
+#[test]
 fn committed_edits_advance_one_generation_and_bind_exact_source() -> anyhow::Result<()> {
     let mut state = IncrementalState::new("my $x = 1;".to_string());
     assert_eq!(state.generation(), ParseGeneration::INITIAL);
     assert_eq!(state.snapshot().disposition(), ParseTerminalDisposition::Clean);
     state.snapshot().validate_against(state.source())?;
     assert_geometry_unavailable_for_current_snapshot(&state);
+    let initial_subject = state.snapshot().source_geometry().subject().clone();
 
     let result = apply_edits(
         &mut state,
@@ -38,6 +57,8 @@ fn committed_edits_advance_one_generation_and_bind_exact_source() -> anyhow::Res
         result.snapshot.parse_output().diagnostics.len(),
         result.parse_output().diagnostics.len()
     );
+    assert!(initial_subject.same_instance_as(state.snapshot().source_geometry().subject()));
+    assert_ne!(initial_subject, *state.snapshot().source_geometry().subject());
     state.snapshot().validate_against(state.source())?;
     assert_geometry_unavailable_for_current_snapshot(&state);
     Ok(())
@@ -118,6 +139,10 @@ fn a_stale_generation_snapshot_is_rejected_against_the_committed_source() -> any
     assert_eq!(state.generation().get(), 1);
     assert!(stale.generation() < state.generation());
     assert!(stale.validate_against(state.source()).is_err());
+    assert!(stale
+        .source_geometry()
+        .subject()
+        .same_instance_as(state.snapshot().source_geometry().subject()));
     assert_ne!(
         stale.source_geometry().subject().generation(),
         state.snapshot().source_geometry().subject().generation()
