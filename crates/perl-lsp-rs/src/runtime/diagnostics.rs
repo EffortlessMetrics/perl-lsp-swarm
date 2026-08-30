@@ -3182,6 +3182,31 @@ mod tests {
         Ok(())
     }
 
+    /// Push-coverage guard for the critic-reuse tests below.
+    ///
+    /// Those tests assert a rebuild count of *zero*, which is exactly what a
+    /// push that never ran would also produce: a `sleep` after
+    /// `publish_diagnostics` is not proof the publish happened, so a skipped
+    /// or raced push would leave them green while proving nothing about the
+    /// push route -- only about the pull that follows.
+    ///
+    /// The capture buffer is the instrument that can tell the difference,
+    /// because each test clears it after `didOpen` settles: a
+    /// `publishDiagnostics` frame naming this document can then only have come
+    /// from the explicit push under test. The snapshot's
+    /// `diagnostic_analysis_build_count` cannot substitute here -- `didOpen`
+    /// publishes too, so it has already warmed that cell to 1 before the push
+    /// runs, and the counter reads 1 whether or not the push happened.
+    fn assert_push_published(captured: &[u8], uri: &str) -> Result<(), Box<dyn std::error::Error>> {
+        let text = std::str::from_utf8(captured)?;
+        assert!(
+            latest_published_diagnostics(text, uri).is_some(),
+            "the push under test must have published diagnostics for {uri}; without a real \
+             push the rebuild count asserted below measures only the pull route"
+        );
+        Ok(())
+    }
+
     /// #7286 whole-evaluation contract: the native critic composition step is a
     /// *separate* evaluation stage from the core provider, and
     /// `NativeCriticRegistry::check_unfiltered` rebuilds both
@@ -3232,6 +3257,7 @@ mod tests {
 
         server.publish_diagnostics(uri);
         std::thread::sleep(Duration::from_millis(50));
+        assert_push_published(&buf.lock().clone(), uri)?;
         server.test_handle_document_diagnostic(Some(json!({
             "textDocument": {"uri": uri}
         })))?;
@@ -3315,6 +3341,7 @@ mod tests {
 
         server.publish_diagnostics(uri);
         std::thread::sleep(Duration::from_millis(50));
+        assert_push_published(&buf.lock().clone(), uri)?;
         server.test_handle_document_diagnostic(Some(json!({
             "textDocument": {"uri": uri}
         })))?;
@@ -5283,7 +5310,10 @@ print \"unreachable\\n\";\n";
         Ok(())
     }
 
-    #[cfg(feature = "workspace")]
+    /// Sole owner of the `publishDiagnostics` method literal in this test
+    /// module -- a call-site ratchet counts occurrences of it in this file, so
+    /// a test that needs to recognize a published frame calls this rather than
+    /// spelling the marker out again.
     fn latest_published_diagnostics<'a>(text: &'a str, uri: &str) -> Option<&'a str> {
         let marker = "\"method\":\"textDocument/publishDiagnostics\"";
         let uri_key = format!("\"uri\":\"{uri}\"");

@@ -17,67 +17,82 @@
 //! of the caller's transport.
 
 use std::ops::Range;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use perl_parser_core::Node;
-use perl_parser_core::error::ParseError;
 use perl_pragma::{PragmaState, PragmaTracker};
 use perl_semantic_analyzer::scope_analyzer::{ScopeAnalyzer, ScopeIssue};
 use perl_semantic_analyzer::symbol::{SymbolExtractor, SymbolTable};
 
-use crate::hashing::fnv1a64;
-
 /// Reusable, generation-scoped, source/AST-derived diagnostic facts for one
 /// document.
 ///
-/// Holds the exact outputs of the three passes that used to run inline in
+/// Owns the tree and source for one document generation and hands out the
+/// exact outputs of the three passes that used to run inline in
 /// `get_diagnostics_with_path_and_semantics_impl` on every diagnostic
 /// evaluation: the pragma-state map, the scope-analysis issues, and the
-/// extracted symbol table. Building this once per accepted document
-/// generation and sharing it across every diagnostic evaluation of that
-/// generation is the hard contract of #7286: one accepted generation, at most
-/// one `DocumentDiagnosticAnalysis` construction.
+/// extracted symbol table. Sharing one of these across every diagnostic
+/// evaluation of an accepted generation is the hard contract of #7286: one
+/// accepted generation, at most one run of each pass.
+///
+/// Each fact is computed on first request and never again -- construction
+/// itself runs no pass at all. That matters because the three facts do not
+/// share a consumer set: `DiagnosticsProvider` skips its whole
+/// pragma/scope/symbol block for a document with a blocking parse error,
+/// native critic composition consumes only the pragma map and scope issues,
+/// and the legacy (`BuiltInAnalyzer`) critic engine consumes none of them. If
+/// construction ran all three eagerly, a generation whose consumers want two
+/// of them -- or none -- would pay for passes nobody reads, which for a
+/// malformed mid-edit document is strictly *worse* than the per-evaluation
+/// rebuilding this type exists to remove. Deferring per fact makes the
+/// question "which consumer will run against this generation?" irrelevant at
+/// every call site, so no caller has to predict it.
 #[derive(Debug)]
 pub struct DocumentDiagnosticAnalysis {
-    /// The exact tree these facts were derived from, retained so
-    /// [`Self::matches`] can prove tree identity by pointer and so that
-    /// pointer can never be recycled by an unrelated later allocation while
-    /// this analysis is alive.
+    /// The exact tree these facts are derived from, retained both so
+    /// [`Self::matches`] can prove tree identity by pointer (the pointer can
+    /// never be recycled by an unrelated later allocation while this analysis
+    /// is alive) and so a deferred pass still has its input when first
+    /// requested.
     ast: Arc<Node>,
-    /// Non-cryptographic freshness fingerprint of the source this analysis
-    /// was built from. See [`Self::matches_source`].
-    source_fingerprint: u64,
-    /// Byte length of the source this analysis was built from, checked
-    /// alongside `source_fingerprint` in [`Self::matches_source`].
-    source_len: usize,
-    pragma_map: Vec<(Range<usize>, PragmaState)>,
-    scope_issues: Vec<ScopeIssue>,
-    symbol_table: SymbolTable,
+    /// The exact source `ast` was parsed against, retained for the same two
+    /// reasons: [`Self::matches_source`] compares against it, and the
+    /// deferred scope/symbol passes need it. Held as `Arc<str>` so a caller
+    /// that already owns the document text this way (`ParsedSnapshot`) shares
+    /// it rather than copying the whole document per generation.
+    source: Arc<str>,
+    pragma_map: OnceLock<Vec<(Range<usize>, PragmaState)>>,
+    scope_issues: OnceLock<Vec<ScopeIssue>>,
+    symbol_table: OnceLock<SymbolTable>,
 }
 
 impl DocumentDiagnosticAnalysis {
-    /// Build the analysis from `ast` and `source`.
+    /// Bind an analysis to `ast` and `source`.
     ///
-    /// Reproduces exactly the three passes previously inlined in
+    /// Runs no analysis pass: this is O(1) plus, for a `&str` argument, one
+    /// copy of the source. Each pass runs on its first accessor call and is
+    /// then cached -- see the type docs for why deferring is the point rather
+    /// than an optimization detail.
+    ///
+    /// The passes themselves reproduce exactly those previously inlined in
     /// `get_diagnostics_with_path_and_semantics_impl`'s
-    /// `!has_blocking_parse_error` block, in the same order and with the same
-    /// inputs, so the facts this produces are identical to what that inline
-    /// code produced. Callers must pass the exact source text `ast` was
-    /// parsed from -- see [`Self::matches`] for how a consumer verifies both
-    /// the tree and the source before trusting a prebuilt analysis.
+    /// `!has_blocking_parse_error` block, with the same inputs, so the facts
+    /// produced are identical to what that inline code produced. Callers must
+    /// pass the exact source text `ast` was parsed from -- see
+    /// [`Self::matches`] for how a consumer verifies both the tree and the
+    /// source before trusting a prebuilt analysis.
+    ///
+    /// Accepts anything convertible into `Arc<str>`, so a caller holding an
+    /// `Arc<str>` document source passes it without copying and a caller
+    /// holding a `&str` still works unchanged.
     #[must_use]
-    pub fn build(ast: &Arc<Node>, source: &str) -> Self {
-        let pragma_map = PragmaTracker::build(ast);
-        let scope_analyzer = ScopeAnalyzer::new();
-        let scope_issues = scope_analyzer.analyze(ast, source, &pragma_map);
-        let symbol_table = SymbolExtractor::new_with_source(source).extract(ast);
+    pub fn build(ast: &Arc<Node>, source: impl Into<Arc<str>>) -> Self {
         Self {
             ast: Arc::clone(ast),
-            source_fingerprint: fnv1a64(source.as_bytes()),
-            source_len: source.len(),
-            pragma_map,
-            scope_issues,
-            symbol_table,
+            source: source.into(),
+            pragma_map: OnceLock::new(),
+            scope_issues: OnceLock::new(),
+            symbol_table: OnceLock::new(),
         }
     }
 
@@ -98,67 +113,65 @@ impl DocumentDiagnosticAnalysis {
         Arc::ptr_eq(&self.ast, ast) && self.matches_source(source)
     }
 
-    /// Whether this analysis was built from exactly `source`.
+    /// Whether this analysis is bound to exactly `source`.
     ///
     /// Binds the source bytes only. Prefer [`Self::matches`], which also binds
     /// the tree; use this when the caller genuinely has no tree to compare.
     ///
-    /// This is a freshness guard, not a cryptographic identity check: it
-    /// compares an FNV-1a fingerprint of the bytes *and* the byte length, so
-    /// same-length-but-different-content and different-length sources are
-    /// both rejected. That is collision-resistant enough for the realistic
-    /// case a consumer needs to reject -- a stale or mismatched analysis from
-    /// a different generation -- but it is not adversarial-input-safe. A
-    /// consumer that needs a cryptographic identity guarantee should use
-    /// [`crate::hashing::sha256_hex`] instead; nothing in this crate
-    /// currently needs that stronger guarantee for this purpose.
+    /// Because the analysis retains its source (the deferred passes need it),
+    /// this is an exact byte comparison rather than a fingerprint: same cost
+    /// class as hashing the same bytes, with no collision to reason about, and
+    /// it short-circuits on differing length.
     #[must_use]
     pub fn matches_source(&self, source: &str) -> bool {
-        self.source_len == source.len() && self.source_fingerprint == fnv1a64(source.as_bytes())
+        &*self.source == source
     }
 
-    /// The pragma-state map built from this analysis's AST, keyed by byte
-    /// range. See `perl_pragma::PragmaTracker::build`.
+    /// The pragma-state map for this analysis's AST, keyed by byte range. See
+    /// `perl_pragma::PragmaTracker::build`.
+    ///
+    /// Runs `PragmaTracker::build` on first call and returns the cached map
+    /// thereafter.
     #[must_use]
     pub fn pragma_map(&self) -> &[(Range<usize>, PragmaState)] {
-        &self.pragma_map
+        self.pragma_map.get_or_init(|| PragmaTracker::build(&self.ast))
     }
 
     /// The scope-analysis issues (undeclared/unused/shadowed variables, etc.)
-    /// detected for this analysis's AST and source.
+    /// for this analysis's AST and source.
+    ///
+    /// Runs `ScopeAnalyzer::analyze` on first call and returns the cached
+    /// issues thereafter. Scope analysis consumes the pragma map, so this
+    /// materializes [`Self::pragma_map`] as well -- once, through the same
+    /// cell any other consumer reads.
     #[must_use]
     pub fn scope_issues(&self) -> &[ScopeIssue] {
-        &self.scope_issues
+        // Evaluate the dependency before entering this cell's initializer: a
+        // `OnceLock` initializer that re-enters its own cell deadlocks, and
+        // while these are two distinct cells today, keeping the ordering
+        // explicit rather than buried in the closure body keeps it that way.
+        let pragma_map = self.pragma_map();
+        self.scope_issues
+            .get_or_init(|| ScopeAnalyzer::new().analyze(&self.ast, &self.source, pragma_map))
     }
 
     /// The symbol table extracted from this analysis's AST and source.
+    ///
+    /// Runs `SymbolExtractor::extract` on first call and returns the cached
+    /// table thereafter. Nothing else materializes it: a consumer that reads
+    /// only the pragma map and scope issues (native critic composition) never
+    /// pays for this pass.
     #[must_use]
     pub fn symbol_table(&self) -> &SymbolTable {
-        &self.symbol_table
+        self.symbol_table
+            .get_or_init(|| SymbolExtractor::new_with_source(&self.source).extract(&self.ast))
     }
-}
-
-/// Whether these parse errors suppress the document-analysis / lint stack.
-///
-/// Shares the single existing authority for this rule
-/// (`super::diagnostics::suppresses_semantic_analysis`, the
-/// `has_blocking_parse_error` predicate) rather than duplicating it -- see
-/// that function's doc comment for the `Recovered`-structured-recovery
-/// carve-out rationale. A caller that owns a document generation (such as
-/// `ParsedSnapshot`) uses this to decide whether building a
-/// [`DocumentDiagnosticAnalysis`] would be wasted work, since production
-/// diagnostics skip the entire pragma/scope/symbol block under the same
-/// condition today.
-#[must_use]
-pub fn suppresses_document_analysis(parse_errors: &[ParseError]) -> bool {
-    parse_errors.iter().any(super::diagnostics::suppresses_semantic_analysis)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use perl_parser::Parser;
-    use perl_parser_core::error::{RecoveryKind, RecoverySite};
     use std::sync::Arc;
 
     fn parse(source: &str) -> Arc<Node> {
@@ -291,24 +304,139 @@ mod tests {
         assert!(!analysis.matches(&ast, "my $y = 2;\n"));
     }
 
+    /// #7286: construction must run no pass at all.
+    ///
+    /// The three facts have different consumer sets -- the legacy critic
+    /// engine reads none of them, and native critic composition reads two of
+    /// three -- so an eager constructor would make a generation pay for
+    /// passes nobody reads. Asserted on the cells directly rather than by
+    /// timing, which would be a flaky oracle.
     #[test]
-    fn suppresses_document_analysis_true_for_blocking_error() {
-        let errors = vec![ParseError::UnexpectedEof];
-        assert!(suppresses_document_analysis(&errors));
+    fn construction_runs_no_pass() {
+        let source = "use strict;\nsub f { my $unused = 1; print $undeclared; }\n";
+        let ast = parse(source);
+
+        let analysis = DocumentDiagnosticAnalysis::build(&ast, source);
+
+        assert!(analysis.pragma_map.get().is_none(), "construction must not build the pragma map");
+        assert!(analysis.scope_issues.get().is_none(), "construction must not run scope analysis");
+        assert!(
+            analysis.symbol_table.get().is_none(),
+            "construction must not run symbol extraction"
+        );
     }
 
+    /// #7286: reading the two facts native critic composition consumes must
+    /// not drag in the symbol-extraction pass it never reads.
+    ///
+    /// This is the regression that would make a malformed mid-edit document
+    /// *more* expensive than before the change: the provider skips its whole
+    /// block for a blocking parse error, so the critic's pragma+scope read is
+    /// the only consumer, and an eager constructor would add a
+    /// `SymbolExtractor` walk with no reader at all.
     #[test]
-    fn suppresses_document_analysis_false_for_recovered_error() {
-        let errors = vec![ParseError::Recovered {
-            site: RecoverySite::ArgList,
-            kind: RecoveryKind::InsertedCloser,
-            location: 0,
-        }];
-        assert!(!suppresses_document_analysis(&errors));
+    fn reading_critic_facts_does_not_materialize_the_symbol_table() {
+        let source = "use strict;\nsub f { my $unused = 1; print $undeclared; }\n";
+        let ast = parse(source);
+
+        let analysis = DocumentDiagnosticAnalysis::build(&ast, source);
+        let _ = analysis.pragma_map();
+        let _ = analysis.scope_issues();
+
+        assert!(
+            analysis.symbol_table.get().is_none(),
+            "a consumer that reads only the pragma map and scope issues must not pay for \
+             symbol extraction"
+        );
     }
 
+    /// Scope analysis consumes the pragma map, so requesting scope issues
+    /// alone must materialize the map -- through the same cell every other
+    /// consumer reads, not a private second copy.
     #[test]
-    fn suppresses_document_analysis_false_for_no_errors() {
-        assert!(!suppresses_document_analysis(&[]));
+    fn scope_issues_materialize_the_shared_pragma_map() {
+        let source = "use strict;\nsub f { my $unused = 1; }\n";
+        let ast = parse(source);
+
+        let analysis = DocumentDiagnosticAnalysis::build(&ast, source);
+        let _ = analysis.scope_issues();
+
+        let cached = perl_test_must::must_some_with(
+            analysis.pragma_map.get(),
+            "scope analysis must materialize the shared pragma-map cell",
+        );
+        assert!(
+            std::ptr::eq(cached.as_slice(), analysis.pragma_map()),
+            "a later pragma-map reader must get the very slice scope analysis used, not a \
+             rebuilt one"
+        );
+    }
+
+    /// #7286 composition proof at the provider seam: handing a prebuilt
+    /// analysis to an evaluation that cannot use it must cost nothing.
+    ///
+    /// `DiagnosticsProvider` skips its entire pragma/scope/symbol block for a
+    /// document with a blocking parse error, so every cell must still be cold
+    /// afterwards. This is the pairing that makes an eager constructor a
+    /// regression rather than a wash: `ParsedSnapshot` hands the analysis over
+    /// unconditionally, so "this consumer will not read it" has to be free.
+    #[test]
+    fn a_blocking_parse_error_evaluation_runs_no_pass() {
+        // Unbalanced brace: recovery still yields an AST, and the resulting
+        // errors are blocking.
+        let source = "sub f { my $unused = 1; print $undeclared;\n";
+        let output = Parser::new(source).parse_with_recovery();
+        let ast = Arc::new(output.ast);
+        let parse_errors = output.diagnostics;
+        assert!(
+            parse_errors.iter().any(super::super::diagnostics::suppresses_semantic_analysis),
+            "fixture invariant: the parse errors must be blocking, or the provider would run \
+             its block and this test would prove nothing"
+        );
+
+        let analysis = DocumentDiagnosticAnalysis::build(&ast, source);
+        let _ = super::super::DiagnosticsProvider::new().get_diagnostics_with_path_with_analysis(
+            &ast,
+            &parse_errors,
+            source,
+            None,
+            &[],
+            None,
+            Some(&analysis),
+        );
+
+        assert!(analysis.pragma_map.get().is_none(), "no pragma pass may run for this evaluation");
+        assert!(analysis.scope_issues.get().is_none(), "no scope pass may run for this evaluation");
+        assert!(
+            analysis.symbol_table.get().is_none(),
+            "no symbol-extraction pass may run for this evaluation"
+        );
+    }
+
+    /// #7286 hard contract at the fact level: each pass runs at most once,
+    /// however many times its fact is read. Proven by identity of the
+    /// returned references -- a rebuild would hand back a different
+    /// allocation. `assert_eq!` on the contents would pass against an
+    /// implementation that recomputes identical values on every call.
+    #[test]
+    fn each_fact_is_computed_at_most_once() {
+        let source = "use strict;\nsub f { my $unused = 1; print $undeclared; }\n";
+        let ast = parse(source);
+        let analysis = DocumentDiagnosticAnalysis::build(&ast, source);
+
+        assert!(std::ptr::eq(analysis.pragma_map(), analysis.pragma_map()));
+        assert!(std::ptr::eq(analysis.scope_issues(), analysis.scope_issues()));
+        assert!(std::ptr::eq(analysis.symbol_table(), analysis.symbol_table()));
+
+        assert!(
+            !analysis.pragma_map().is_empty(),
+            "fixture must produce a non-empty pragma map, or the pragma identity check is \
+             vacuous against two empty-slice dangling pointers"
+        );
+        assert!(
+            !analysis.scope_issues().is_empty(),
+            "fixture must produce at least one scope issue, or the scope identity check is \
+             vacuous"
+        );
     }
 }

@@ -55,7 +55,7 @@ pub mod scope;
 mod walker;
 
 pub use diagnostics::{DiagnosticsProvider, build_parse_error_hint};
-pub use document_analysis::{DocumentDiagnosticAnalysis, suppresses_document_analysis};
+pub use document_analysis::DocumentDiagnosticAnalysis;
 pub use heredoc_antipatterns::detect_heredoc_antipatterns;
 pub use internal_types::{
     Diagnostic, DiagnosticTag, RelatedInformation, take_critic_overlap_observations,

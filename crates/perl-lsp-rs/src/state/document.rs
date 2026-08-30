@@ -188,13 +188,16 @@ pub struct ParsedSnapshot {
     /// Lazily-built, generation-owned source region index for non-code
     /// classification evidence (comments, literals, POD, data sections).
     source_region_index: OnceLock<Arc<perl_parser_core::SourceRegionIndex>>,
-    /// Lazily-built, generation-owned document diagnostic analysis (pragma
+    /// Lazily-bound, generation-owned document diagnostic analysis (pragma
     /// map, scope issues, symbol table) shared by production push and pull
     /// diagnostics for this snapshot's generation (#7286). Empty until first
     /// requested via [`Self::diagnostic_analysis`]; never populated for a
-    /// `Minimal` (AST-less) snapshot or a snapshot whose parse errors
-    /// suppress the document-analysis / lint stack (see
-    /// `perl_lsp_rs_core::providers::diagnostics::suppresses_document_analysis`).
+    /// `Minimal` (AST-less) snapshot, which has nothing to analyze.
+    ///
+    /// Populating this cell runs no analysis pass:
+    /// `DocumentDiagnosticAnalysis` defers each of its three facts to its
+    /// first reader, so a generation only pays for the passes its consumers
+    /// actually read.
     diagnostic_analysis:
         OnceLock<Arc<perl_lsp_rs_core::providers::diagnostics::DocumentDiagnosticAnalysis>>,
     /// Test-only: counts how many times the [`Self::semantic_analyzer`]
@@ -437,11 +440,22 @@ impl ParsedSnapshot {
     /// cost this cell exists to remove, in the most latency-sensitive case
     /// there is.
     ///
-    /// So the analysis is now available whenever there is an AST. The provider
+    /// So the analysis is available whenever there is an AST. The provider
     /// still skips its block for a blocking parse error, unchanged; the critic
-    /// reuses instead of rebuilding. Building it for such a snapshot is not
-    /// wasted: the critic was already computing exactly these facts from
-    /// exactly this tree and source, just repeatedly.
+    /// reuses instead of rebuilding.
+    ///
+    /// Making it available costs nothing a consumer does not ask for.
+    /// `DocumentDiagnosticAnalysis` defers each of its three facts to its
+    /// first reader, so a blocking-parse-error generation runs the pragma and
+    /// scope passes the critic reads and does *not* run the symbol extraction
+    /// nobody reads -- and under the legacy critic engine, which reads none of
+    /// the three, it runs no pass at all. Returning the analysis is therefore
+    /// never worse than withholding it, which is what makes the unconditional
+    /// rule safe rather than merely simpler.
+    ///
+    /// The source is handed over as a shared `Arc<str>`, not copied: the
+    /// analysis retains it for its deferred passes, and a per-generation copy
+    /// of every open document's text would be a real cost.
     pub fn diagnostic_analysis(
         &self,
     ) -> Option<Arc<perl_lsp_rs_core::providers::diagnostics::DocumentDiagnosticAnalysis>> {
@@ -452,7 +466,7 @@ impl ParsedSnapshot {
                 .set(self.diagnostic_analysis_build_count.get() + 1);
             Arc::new(perl_lsp_rs_core::providers::diagnostics::DocumentDiagnosticAnalysis::build(
                 ast,
-                &self.source,
+                Arc::clone(&self.source),
             ))
         })))
     }
@@ -930,7 +944,7 @@ mod tests {
     /// Directly construct a `Partial`-tier snapshot (AST present, but a
     /// blocking parse error) at `generation`, bypassing the real parser.
     ///
-    /// Used to exercise the `suppresses_document_analysis` fail-safe on
+    /// Used to exercise the blocking-parse-error case of
     /// [`ParsedSnapshot::diagnostic_analysis`] without depending on the v3
     /// parser's error-recovery behavior to reliably pair a blocking error
     /// with a real AST -- same rationale as `minimal_snapshot_for`.
