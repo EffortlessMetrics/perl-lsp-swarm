@@ -7,7 +7,8 @@
 #
 # Read by `cargo xtask compat-inventory`, which reconciles every row against the
 # crate's real surface and fails closed on an unexplained reference, a missing
-# or stale row, a disagreeing item kind, or a changed source digest.
+# or stale row, a disagreeing item kind, a changed source digest, or a changed
+# authority digest.
 #
 # Dispositions
 #   already_equivalent             a canonical owner already provides the behavior
@@ -77,6 +78,16 @@ removal_owner = "#8890"
 # re-audited. Prose files are excluded so a README edit does not force a
 # re-audit.
 source_digest = "sha256:8808149a51e4a706dea655c3d7c4e015f3653746c3179d2777f62c68444d7590"
+
+# Digest of the external documents that ADJUDICATE these dispositions, as
+# distinct from the crate source they describe. `docs/explanation/
+# TREE_SITTER_COMPATIBILITY.md` names the Tier-A compatibility surface, and the
+# required/unused line below is drawn directly from that list. Editing the
+# Tier-A set changes the reasoning behind several rows while leaving the crate
+# source — and therefore `source_digest` — untouched, so that evidence is bound
+# separately and a change to it fails the task until the affected rows are
+# re-audited.
+authority_digest = "sha256:9f481f0dd02f7b88ec1853059d28eb1fd13033bc0691b56770b6fb50aea03c5a"
 
 # ---------------------------------------------------------------------------
 # Public symbols

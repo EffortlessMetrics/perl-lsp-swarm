@@ -52,6 +52,18 @@ const CRATE_DIR: &str = "crates/perl-tree-sitter-compat";
 /// inventory. Counting them as consumers would make the ledger self-feeding.
 const SELF_ARTIFACTS: &[&str] = &[LEDGER_PATH, PROJECTION_PATH];
 
+/// External documents that *adjudicate* dispositions rather than merely
+/// mentioning the crate.
+///
+/// `TREE_SITTER_COMPATIBILITY.md` names the Tier-A compatibility surface, and
+/// the ledger draws the `unique_and_required` / `unused` line directly from that
+/// list. It is therefore load-bearing evidence, and a row audited against it is
+/// only as current as the document is. `source_digest` cannot cover this: the
+/// document lives outside the crate, so editing the Tier-A set would leave both
+/// the source digest and the reference population valid while the reasoning
+/// behind several rows silently changed.
+const AUTHORITIES: &[&str] = &["docs/explanation/TREE_SITTER_COMPATIBILITY.md"];
+
 // ---------------------------------------------------------------------------
 // Ledger model
 // ---------------------------------------------------------------------------
@@ -72,6 +84,11 @@ pub struct Ledger {
     /// Digest of the crate's semantic source at the time the dispositions were
     /// audited. A source change invalidates the audit.
     pub source_digest: String,
+    /// Digest of the external documents in [`AUTHORITIES`] that adjudicate the
+    /// required/unused line. An edit there invalidates the audit just as a
+    /// source edit does, because the reasoning behind a row changed even though
+    /// the crate did not.
+    pub authority_digest: String,
     pub symbols: Vec<SymbolRow>,
     pub consumers: Vec<ConsumerRow>,
 }
@@ -291,6 +308,8 @@ pub struct Discovered {
     /// Crate source files the digest is computed over.
     pub source_files: Vec<String>,
     pub source_digest: String,
+    /// Digest of the external documents that adjudicate dispositions.
+    pub authority_digest: String,
     /// `path::fn_name` for every function declared in the crate's own tracked
     /// Rust sources. A ledger `fixture` must name one of these.
     pub fixtures: BTreeSet<String>,
@@ -425,9 +444,18 @@ pub fn discover(root: &Path) -> Result<Discovered> {
         merge_reference_population(discover_references(root, &tracked)?, &cargo_dependents);
 
     let (source_files, source_digest) = digest_sources(root, &tracked)?;
+    let authority_digest = digest_authorities(root)?;
     let fixtures = discover_fixtures(root, &tracked)?;
 
-    Ok(Discovered { exports, cargo_dependents, references, source_files, source_digest, fixtures })
+    Ok(Discovered {
+        exports,
+        cargo_dependents,
+        references,
+        source_files,
+        source_digest,
+        authority_digest,
+        fixtures,
+    })
 }
 
 /// `path::fn_name` for every `#[test]` function in the crate's own tracked Rust
@@ -1097,8 +1125,25 @@ fn digest_sources(root: &Path, tracked: &[String]) -> Result<(Vec<String>, Strin
         .collect();
     files.sort();
 
+    let digest = digest_files(root, &files)?;
+    Ok((files, digest))
+}
+
+/// Digest the external documents that adjudicate dispositions, so a row cannot
+/// outlive the authority it was audited against.
+///
+/// Every path in [`AUTHORITIES`] must exist: a missing one means the evidence a
+/// disposition rests on is gone, which must stop the audit rather than silently
+/// weaken the digest.
+fn digest_authorities(root: &Path) -> Result<String> {
+    let files: Vec<String> = AUTHORITIES.iter().map(|p| (*p).to_string()).collect();
+    digest_files(root, &files)
+}
+
+/// SHA-256 over an ordered file list, binding each path to its bytes.
+fn digest_files(root: &Path, files: &[String]) -> Result<String> {
     let mut hasher = Sha256::new();
-    for path in &files {
+    for path in files {
         let bytes = fs::read(root.join(path)).wrap_err_with(|| format!("failed to read {path}"))?;
         // Length-prefix each field so a rename cannot collide with a content
         // change that happens to shift bytes across the boundary.
@@ -1108,8 +1153,7 @@ fn digest_sources(root: &Path, tracked: &[String]) -> Result<(Vec<String>, Strin
         hasher.update(&bytes);
     }
     let hex: String = hasher.finalize().iter().map(|byte| format!("{byte:02x}")).collect();
-    let digest = format!("sha256:{hex}");
-    Ok((files, digest))
+    Ok(format!("sha256:{hex}"))
 }
 
 // ---------------------------------------------------------------------------
@@ -1149,6 +1193,22 @@ pub fn validate(ledger: &Ledger, discovered: &Discovered) -> Result<()> {
              `source_digest` in {LEDGER_PATH}.",
             ledger.source_digest,
             discovered.source_digest
+        );
+    }
+
+    if ledger.authority_digest != discovered.authority_digest {
+        bail!(
+            "an authority that adjudicates these dispositions changed since the inventory was \
+             audited.\n  \
+             ledger authority_digest:  {}\n  \
+             current authority_digest: {}\n\
+             Authorities: {}\n\
+             The crate's source may be unchanged, but the required/unused line is drawn from \
+             these documents, so the affected rows must be re-audited before `authority_digest` \
+             in {LEDGER_PATH} is updated.",
+            ledger.authority_digest,
+            discovered.authority_digest,
+            AUTHORITIES.join(", ")
         );
     }
 
@@ -1545,6 +1605,7 @@ pub fn render_markdown(ledger: &Ledger, discovered: &Discovered) -> String {
          listed here invalidates the audit and the task fails until the rows are re-checked.\n"
     );
     let _ = writeln!(out, "- Digest: `{}`", discovered.source_digest);
+    let _ = writeln!(out, "- Authority digest: `{}`", discovered.authority_digest);
     let _ = writeln!(out, "- Files ({}):", discovered.source_files.len());
     for file in &discovered.source_files {
         let _ = writeln!(out, "  - `{file}`");
@@ -1660,6 +1721,7 @@ pub fn render_json(ledger: &Ledger, discovered: &Discovered) -> Result<String> {
         "removal_owner": ledger.removal_owner,
         "source": {
             "digest": discovered.source_digest,
+            "authority_digest": discovered.authority_digest,
             "files": discovered.source_files,
         },
         "cargo_dependents": discovered.cargo_dependents,
@@ -1676,6 +1738,8 @@ pub fn render_json(ledger: &Ledger, discovered: &Discovered) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use color_eyre::eyre::eyre;
 
     type TestResult<T = ()> = Result<T>;
 
@@ -1724,6 +1788,7 @@ mod tests {
             migration_owner: "#8889".to_string(),
             removal_owner: "#8890".to_string(),
             source_digest: "sha256:abc".to_string(),
+            authority_digest: "sha256:auth".to_string(),
             symbols,
             consumers,
         }
@@ -1736,6 +1801,7 @@ mod tests {
             references: references.into_iter().map(str::to_string).collect(),
             source_files: vec![format!("{CRATE_DIR}/src/lib.rs")],
             source_digest: "sha256:abc".to_string(),
+            authority_digest: "sha256:auth".to_string(),
             fixtures: [format!("{CRATE_DIR}/tests/adapter.rs::t")].into_iter().collect(),
         }
     }
@@ -2025,6 +2091,48 @@ mod tests {
 
         let err = validate(&l, &d).unwrap_err().to_string();
         assert!(err.contains("does not explain it"), "unexpected error: {err}");
+        Ok(())
+    }
+
+    #[test]
+    fn an_authority_change_invalidates_the_inventory() -> TestResult {
+        // The crate's source is untouched, so `source_digest` still matches.
+        // Only the document that decides the Tier-A surface moved — and the
+        // required/unused line is drawn from it, so the audit is stale.
+        let l = ledger(vec![], vec![]);
+        let mut d = discovered(vec![], vec![]);
+        d.authority_digest = "sha256:the-tier-a-list-was-edited".to_string();
+
+        let err = validate(&l, &d).unwrap_err().to_string();
+        assert!(err.contains("authority"), "unexpected error: {err}");
+        assert_eq!(l.source_digest, d.source_digest, "source must be unchanged for this test");
+        Ok(())
+    }
+
+    #[test]
+    fn the_tier_a_authority_is_actually_bound() -> TestResult {
+        // A control against the rule being satisfied by an empty authority set:
+        // editing the real document must move the digest.
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join(AUTHORITIES[0]);
+        let parent = path.parent().ok_or_else(|| eyre!("authority path has no parent"))?;
+        fs::create_dir_all(parent)?;
+
+        fs::write(&path, "Tier-A: parse_to_tree, to_ts_node, highlights, to_sexp\n")?;
+        let before = digest_authorities(dir.path())?;
+        fs::write(&path, "Tier-A: parse_to_tree, to_ts_node, highlights, to_sexp_pretty\n")?;
+        let after = digest_authorities(dir.path())?;
+
+        assert_ne!(before, after, "editing the Tier-A declaration must change the digest");
+        Ok(())
+    }
+
+    #[test]
+    fn a_missing_authority_fails_closed() -> TestResult {
+        // Evidence a disposition rests on cannot simply vanish.
+        let dir = tempfile::tempdir()?;
+        let err = digest_authorities(dir.path()).unwrap_err().to_string();
+        assert!(err.contains("failed to read"), "unexpected error: {err}");
         Ok(())
     }
 
