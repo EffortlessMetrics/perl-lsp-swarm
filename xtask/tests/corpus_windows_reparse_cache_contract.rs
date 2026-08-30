@@ -14,6 +14,9 @@ use serde_yaml_ng::Value;
 const CACHE_ACTION: &str = "Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6";
 const CHECKOUT_ACTION: &str = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1";
 const TOOLCHAIN_ACTION: &str = "dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772";
+const CHECKOUT_REF: &str = "${{ github.event.pull_request.head.sha || github.sha }}";
+const CHECKOUT_REF_LINE: &str =
+    "          ref: ${{ github.event.pull_request.head.sha || github.sha }}\n";
 const SHARED_KEY: &str = "corpus-windows-reparse-proof-${{ hashFiles('Cargo.lock') }}";
 const TRUSTED_SAVE_IF: &str =
     "${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}";
@@ -212,6 +215,22 @@ fn validate_workflow(source: &str) -> Result<()> {
             "each approved action must occur exactly once: {action}"
         );
     }
+    let checkout_step = steps
+        .iter()
+        .find(|step| step.get("uses").and_then(Value::as_str) == Some(CHECKOUT_ACTION))
+        .ok_or_else(|| anyhow!("missing pinned checkout step"))?;
+    let checkout_with = checkout_step
+        .get("with")
+        .and_then(Value::as_mapping)
+        .ok_or_else(|| anyhow!("checkout must declare candidate inputs"))?;
+    ensure!(
+        checkout_with.get("ref").and_then(Value::as_str) == Some(CHECKOUT_REF),
+        "checkout must use the exact candidate ref expression"
+    );
+    ensure!(
+        checkout_with.get("persist-credentials") == Some(&Value::Bool(false)),
+        "checkout must disable persisted credentials"
+    );
     ensure!(cache_steps[0].get("if").is_none(), "cache restore must not be conditionally disabled");
     let cache_with = cache_steps[0]
         .get("with")
@@ -310,13 +329,23 @@ fn validate_workflow(source: &str) -> Result<()> {
         .iter()
         .position(|step| step.get("uses").and_then(Value::as_str) == Some(CACHE_ACTION))
         .ok_or_else(|| anyhow!("missing pinned cache step"))?;
-    for action in [CHECKOUT_ACTION, TOOLCHAIN_ACTION] {
-        let index = steps
-            .iter()
-            .position(|step| step.get("uses").and_then(Value::as_str) == Some(action))
-            .ok_or_else(|| anyhow!("missing setup action: {action}"))?;
-        ensure!(index < cache_index, "cache restore must follow setup: {action}");
-    }
+    let setup_indices: Vec<_> = [CHECKOUT_ACTION, TOOLCHAIN_ACTION]
+        .iter()
+        .map(|action| {
+            steps
+                .iter()
+                .position(|step| step.get("uses").and_then(Value::as_str) == Some(action))
+                .ok_or_else(|| anyhow!("missing setup action: {action}"))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let checkout_index =
+        *setup_indices.first().ok_or_else(|| anyhow!("missing checkout ordering index"))?;
+    let toolchain_index =
+        *setup_indices.get(1).ok_or_else(|| anyhow!("missing toolchain ordering index"))?;
+    ensure!(
+        checkout_index < toolchain_index && toolchain_index < cache_index,
+        "cache restore must follow checkout and toolchain in order"
+    );
     for name in [
         "Run non-skipping Windows reparse proof",
         "Run non-skipping xtask reparse proof",
@@ -459,6 +488,8 @@ fn static_contract_rejects_structural_cache_and_permission_mutations() -> Result
         (CHECKOUT_ACTION, "actions/checkout@v7"),
         (TOOLCHAIN_ACTION, "dtolnay/rust-toolchain@master"),
         (CHECKOUT_ACTION, "./.github/actions/cache-writer"),
+        (CHECKOUT_REF_LINE, "          ref: ${{ github.sha }}\n"),
+        ("persist-credentials: false", "persist-credentials: true"),
         (
             "save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}",
             "save-if: true",
@@ -556,6 +587,10 @@ fn static_contract_rejects_structural_proof_and_trigger_mutations() -> Result<()
         (
             "          )\n\n          test_list=\"$(mktemp)\"",
             "          )\n          selected_tests+=(api::topology::tests::symlinked_entries_fail_closed)\n\n          test_list=\"$(mktemp)\"",
+        ),
+        (
+            "          )\n\n          test_list=\"$(mktemp)\"",
+            "          )\n          selected_tests=(api::topology::tests::symlinked_entries_fail_closed)\n\n          test_list=\"$(mktemp)\"",
         ),
         (TOPOLOGY_EXECUTION_SOURCE_ANCHOR, ""),
     ] {
