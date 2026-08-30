@@ -417,9 +417,12 @@ The editor must be able to find and launch the `perllsp` binary. Symptoms includ
    perllsp --doctor .  # Perl path, project config, and effective @INC roots
    ```
 
-   If all three succeed, the binary itself is fine and the problem is in the
-   editor's configuration or environment -- return to the binary path in step 1
-   and the client logs in step 2.
+   These commands prove the binary is installed, runnable, and able to report its
+   own configuration. They do not start the language server: `--health` prints a
+   version string and `--doctor` is a read-only report, so neither exercises the
+   stdio transport or request handling. If all three succeed, rule out a missing
+   or unrunnable binary and move on to the editor's own logs in step 2 -- that is
+   the surface that shows a server which starts and then fails.
 
    Do not test the server by piping bare JSON into `perllsp --stdio`. LSP stdio
    requires every message to carry a `Content-Length` header followed by a blank

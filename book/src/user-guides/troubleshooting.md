@@ -11,8 +11,8 @@ which perllsp && perllsp --version
 # Health check
 perllsp --health
 
-# Perl path, project config, and effective @INC roots
-perllsp --doctor .
+# Test JSON-RPC communication
+echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}' | perllsp --stdio
 ```
 
 ## Build Issues

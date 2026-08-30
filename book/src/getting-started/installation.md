@@ -212,8 +212,7 @@ See [CONFIG.md](../reference/CONFIG.md) for all configuration options.
 
 ```bash
 # Test if the binary works
-perllsp --health    # prints "ok <version>"
-perllsp --doctor .  # Perl path, project config, and effective @INC roots
+echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}' | perllsp --stdio
 ```
 
 ### No Diagnostics Appearing
