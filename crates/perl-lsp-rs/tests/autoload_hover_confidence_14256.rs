@@ -334,6 +334,13 @@ sub caller_method {
         let content = hover_content(&response)
             .ok_or("expected hover content for the cross-file parent method")?;
 
+        // Positive assertion first: rejecting only the dynamic wording would also
+        // pass on the generic token-hover fallback, which would prove nothing
+        // about the parent method having resolved.
+        assert!(
+            content.contains("FarBase::far_method"),
+            "hover must resolve through the workspace to the parent's exact method, got: {content}"
+        );
         assert!(
             !content.contains("dynamic dispatch"),
             "a local AUTOLOAD must not label an exact cross-file parent method dynamic, got: {content}"

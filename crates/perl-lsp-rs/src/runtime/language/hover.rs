@@ -367,7 +367,19 @@ impl LspServer {
                     // The workspace lookup found nothing (or the index is stale).
                     // Fall back to the same-file dynamic-boundary card rather than
                     // dropping to generic token hover.
+                    //
+                    // This card reaches here from a path that previously returned
+                    // `Complete`, so it must still be offered to the live-compiler
+                    // cutover exactly as that arm does. Otherwise routing AUTOLOAD
+                    // through phase 2 would silently disable compiler-backed
+                    // provenance for the one case most likely to carry it.
                     if let Some(hover_value) = dynamic_fallback {
+                        if let Some(compiler_hover) = self.try_live_compiler_hover(
+                            Some(&hover_value),
+                            live_compiler_context.as_ref(),
+                        ) {
+                            return Self::inject_hover_range(compiler_hover, &hover_range);
+                        }
                         return Self::inject_hover_range(hover_value, &hover_range);
                     }
                 }
@@ -1751,8 +1763,12 @@ impl LspServer {
             }
         }
 
-        // Phase 2 — AUTOLOAD fallback, same order.
-        for package_name in &resolution_order {
+        // Phase 2 — AUTOLOAD fallback, same order, `UNIVERSAL` last.
+        //
+        // A user-defined `UNIVERSAL::AUTOLOAD` is Perl's last-resort handler for a
+        // call nothing else resolved, so it belongs at the end of this pass for the
+        // same reason `UNIVERSAL` belongs at the end of the exact pass.
+        for package_name in resolution_order.iter().chain(std::iter::once(&universal_pkg)) {
             if let Some(hover) = build_autoload_hover(package_name) {
                 return Some(hover);
             }
