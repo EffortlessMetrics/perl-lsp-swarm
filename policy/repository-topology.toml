@@ -191,6 +191,25 @@ notes = "#7652 selected `perl-source-identity` as the canonical lower source-ide
 # Packages. Exactly one row per root-workspace member, ordered by name.
 # `publish_disposition` and `metadata_authority` are cross-checked against each
 # package manifest by `cargo xtask repo-topology check`.
+#
+# PARSER DEV-DEPENDENCY RESIDUAL (#14259, inherited by #7683 and #7688). The nine
+# packages accepted to `perl-parser` are closed under NORMAL in-workspace
+# dependencies, which is the rule their acceptance rests on. Their DEV
+# dependencies still leave that set, on seven edges:
+#
+#   perl-lexer             -> perl-tdd-support      (accepted: swarm-product)
+#   perl-lexer             -> perl-parser-core      (pending)
+#   perl-pod               -> perl-test-must        (accepted: swarm-product)
+#   perl-position-tracking -> perl-tdd-support      (accepted: swarm-product)
+#   perl-position-tracking -> perl-test-generators  (pending)
+#   perl-regex             -> perl-test-must        (accepted: swarm-product)
+#   perl-token             -> perl-parser-core      (pending)
+#
+# Whether `forbidden_dependencies` binds dev-only edges is unresolved here on
+# purpose: this file declares the edges, #7683 owns the rule and its
+# enforcement, and #7688 owns making these test dependencies actually resolve
+# once the workspace splits. Recorded so neither has to rediscover it, and so a
+# later reader does not mistake normal-graph closure for whole-graph closure.
 # ---------------------------------------------------------------------------
 
 [[packages]]
