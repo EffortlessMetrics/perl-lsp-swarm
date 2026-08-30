@@ -62,7 +62,7 @@ def summary_code(value: object) -> str:
     return f"<code>{summary_text(value)}</code>"
 
 
-def gate_name(gate: dict) -> object:
+def gate_name(gate: dict) -> str:
     """The gate's identity.
 
     `gate_name` is the contract field; `name` is accepted as a fallback so a
@@ -104,7 +104,7 @@ def count_statuses(gates: Sequence[dict]) -> dict[str, int]:
     counts["unrecognized"] = 0
     for gate in gates:
         status = gate_status(gate)
-        if status in counts and status != "unrecognized":
+        if status in RECOGNIZED_STATUSES:
             counts[status] += 1
         else:
             counts["unrecognized"] += 1

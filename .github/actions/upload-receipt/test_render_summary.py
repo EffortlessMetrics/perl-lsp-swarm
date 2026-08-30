@@ -184,6 +184,13 @@ class NotProvenTests(unittest.TestCase):
         )
         self.assertIn("**Status**: NOT_PROVEN — 1/2 gates carry a status", rendered)
 
+    def test_a_gate_status_colliding_with_the_tally_key_is_not_proven(self) -> None:
+        """`unrecognized` is a tally key, not a gate status the contract allows."""
+        counts = render_summary.count_statuses([gate("fmt", "unrecognized")])
+        self.assertEqual(counts["unrecognized"], 1)
+        rendered = render_summary.render(receipt(gate("fmt", "unrecognized")))
+        self.assertIn("NOT_PROVEN", rendered)
+
     def test_missing_status_field_is_not_proven(self) -> None:
         broken = gate("fmt", "pass")
         del broken["status"]
