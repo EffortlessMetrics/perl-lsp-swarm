@@ -290,9 +290,57 @@ pub fn verify_receipt(
         }
     }
 
-    if receipt.result == ProofResult::Success {
-        for step in &receipt.steps {
-            if step.outcome != StepOutcome::Ok {
+    // Unreached steps must form a suffix: the lane stops at its first failure,
+    // so an `ok` step after a `not_run` one describes a run that cannot have
+    // happened.
+    if let Some(first_not_run) =
+        receipt.steps.iter().position(|step| step.outcome == StepOutcome::NotRun)
+        && let Some(later) = receipt
+            .steps
+            .iter()
+            .skip(first_not_run)
+            .find(|step| step.outcome != StepOutcome::NotRun)
+    {
+        bail!(
+            "receipt records step '{}' as {:?} after an earlier not_run step: unreached steps \
+             must form a suffix",
+            later.name,
+            later.outcome
+        );
+    }
+
+    // Outcome/exit-code coherence. A `product_failure` may legitimately carry
+    // exit code 0: the zero-census failure is exactly the product failure a
+    // process exit code cannot express, and the receipt records it truthfully.
+    for step in &receipt.steps {
+        match step.outcome {
+            StepOutcome::NotRun | StepOutcome::NotCompleted | StepOutcome::InstrumentFailure => {
+                if step.exit_code.is_some() {
+                    bail!(
+                        "receipt step '{}' recorded {:?} with exit code {:?}: that outcome has no \
+                         exit code",
+                        step.name,
+                        step.outcome,
+                        step.exit_code
+                    );
+                }
+            }
+            StepOutcome::Ok => {
+                if let Some(code) = step.exit_code
+                    && code != 0
+                {
+                    bail!("receipt step '{}' recorded ok with nonzero exit code {code}", step.name);
+                }
+            }
+            StepOutcome::ProductFailure => {}
+        }
+    }
+
+    // The terminal result must reconcile with the first step that did not pass.
+    let first_failure = receipt.steps.iter().find(|step| step.outcome != StepOutcome::Ok);
+    match receipt.result {
+        ProofResult::Success => {
+            if let Some(step) = first_failure {
                 bail!(
                     "receipt claims success while step '{}' recorded {:?}: a swallowed failure \
                      cannot be reported as green",
@@ -300,13 +348,54 @@ pub fn verify_receipt(
                     step.outcome
                 );
             }
+            match receipt.scorecard_census {
+                Some(0) | None => bail!(
+                    "receipt claims success without a nonzero references scorecard census: \
+                     refusing to accept an empty gate as proof"
+                ),
+                Some(_) => {}
+            }
         }
-        match receipt.scorecard_census {
-            Some(0) | None => bail!(
-                "receipt claims success without a nonzero references scorecard census: refusing \
-                 to accept an empty gate as proof"
-            ),
-            Some(_) => {}
+        result => {
+            let Some(step) = first_failure else {
+                bail!(
+                    "receipt claims {result:?} while every step recorded ok: a forged failure \
+                     result cannot describe this lane"
+                );
+            };
+            let implied = match step.outcome {
+                StepOutcome::ProductFailure => ProofResult::ProductFailure,
+                StepOutcome::NotCompleted => ProofResult::NotCompleted,
+                StepOutcome::InstrumentFailure => ProofResult::InstrumentFailure,
+                StepOutcome::NotRun => bail!(
+                    "receipt claims {result:?} but its first non-ok step '{}' is not_run: a lane \
+                     cannot stop before something failed",
+                    step.name
+                ),
+                StepOutcome::Ok => bail!(
+                    "receipt step '{}' classified as the first failure while recording ok",
+                    step.name
+                ),
+            };
+            if implied != result {
+                bail!(
+                    "receipt claims {result:?} but its first failing step '{}' recorded {:?}, \
+                     which implies {implied:?}",
+                    step.name,
+                    step.outcome
+                );
+            }
+            // A census the lane never reached cannot have produced a count.
+            if let Some(census_step) = receipt.steps.get(CARGO_STEPS.len())
+                && census_step.outcome == StepOutcome::NotRun
+                && receipt.scorecard_census.is_some()
+            {
+                bail!(
+                    "receipt reports a scorecard census of {:?} while the census step was never \
+                     run",
+                    receipt.scorecard_census
+                );
+            }
         }
     }
 
@@ -341,6 +430,21 @@ fn capture_stdout(program: &str, args: &[&str]) -> Result<String> {
 /// Capture the exact candidate/toolchain/profile subject *before* running the
 /// proof, so an identity problem fails in seconds rather than after the full
 /// lane has burned its runner minutes.
+///
+/// **This function is the trust root of the whole receipt claim.** A receipt
+/// certifies "this subject *as observed here*", and nothing downstream can
+/// re-derive that independently: the success-path self-check compares the
+/// receipt against the very value this returned, and `--verify-receipt` calls
+/// this same function, so producer and consumer would agree on an identical
+/// wrong answer. If this ever reported something other than the checkout the
+/// steps actually ran against — a `git rev-parse HEAD` racing a concurrent
+/// checkout, or a refactor that read identity from a different source —
+/// verification would still pass on a receipt that is wrong.
+///
+/// Closing that gap means recording raw command output and re-executing it at
+/// verification time to byte-compare, which is a design change rather than a
+/// tightening of this function. Until then, treat capture correctness as an
+/// assumption of the claim, not something the receipt proves.
 fn capture_subject() -> Result<ProofSubject> {
     let scorecard_profile = flag_value(SCORECARD_RUN_ARGS, "--profile").ok_or_else(|| {
         eyre!("scorecard argv lost its --profile pin; receipt cannot bind a profile")
@@ -356,6 +460,21 @@ fn capture_subject() -> Result<ProofSubject> {
         scorecard_features,
         locked: SCORECARD_RUN_ARGS.contains(&"--locked"),
     })
+}
+
+/// Remove a receipt left by an earlier run. A receipt that cannot be destroyed
+/// fails the lane immediately: continuing would risk leaving a stale artifact
+/// that outlives the run it claims to describe.
+fn invalidate_prior_receipt(path: &Path) -> Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(eyre!(
+            "could not invalidate the prior receipt at {}: {error}; refusing to run with a stale \
+             artifact in place",
+            path.display()
+        )),
+    }
 }
 
 fn write_receipt(path: &Path, receipt: &RustSmallProofReceipt) -> Result<()> {
@@ -432,7 +551,15 @@ impl Recorder {
 }
 
 fn run_proof(receipt_path: &Path) -> Result<()> {
-    // Bind the subject first: a candidate/toolchain identity problem should
+    // Destroy any prior receipt before the first fallible step. `target/` is
+    // reused across runs, so a receipt left by an earlier *successful* run of
+    // the same candidate and toolchain would still verify — and every failure
+    // below either returns before writing (subject capture) or tolerates a
+    // write failure (`fail_closed`). Without this, a failed rerun could leave
+    // a verifiable green artifact describing a run that did not happen.
+    invalidate_prior_receipt(receipt_path)?;
+
+    // Bind the subject next: a candidate/toolchain identity problem should
     // fail in seconds, not after the lane has burned its full runtime.
     let subject = capture_subject()?;
 
@@ -1056,9 +1183,15 @@ tests::gamma: test
     }
 
     #[test]
-    fn a_not_run_step_cannot_be_reported_as_success() {
+    fn a_not_run_tail_cannot_be_reported_as_success() {
+        // A success receipt whose tail never ran: the `not_run` steps form a
+        // valid suffix, so this reaches the success check rather than the
+        // suffix check.
         let mut receipt = success_receipt();
-        receipt.steps[5].outcome = StepOutcome::NotRun;
+        for step in receipt.steps.iter_mut().skip(5) {
+            step.outcome = StepOutcome::NotRun;
+            step.exit_code = None;
+        }
         let text = rejection(&receipt, None);
         assert!(text.contains("swallowed failure"), "{text}");
     }
@@ -1152,6 +1285,151 @@ tests::gamma: test
             result: ProofResult::ProductFailure,
         };
         assert!(verify_receipt(&receipt, Some(&sample_subject())).is_ok());
+    }
+
+    /// A receipt for a lane that failed at `fail_at` with `outcome`.
+    fn failure_receipt(
+        fail_at: usize,
+        outcome: StepOutcome,
+        result: ProofResult,
+    ) -> RustSmallProofReceipt {
+        let mut receipt = success_receipt();
+        receipt.result = result;
+        receipt.scorecard_census = None;
+        receipt.steps[fail_at].outcome = outcome;
+        receipt.steps[fail_at].exit_code = match outcome {
+            StepOutcome::ProductFailure => Some(101),
+            _ => None,
+        };
+        for step in receipt.steps.iter_mut().skip(fail_at + 1) {
+            step.outcome = StepOutcome::NotRun;
+            step.exit_code = None;
+        }
+        receipt
+    }
+
+    #[test]
+    fn a_forged_failure_result_over_all_ok_steps_is_refused() {
+        // Review #13882: internal consistency was previously checked only for
+        // success, so a failure result over nine ok steps verified.
+        let mut receipt = success_receipt();
+        receipt.result = ProofResult::ProductFailure;
+        let text = rejection(&receipt, None);
+        assert!(text.contains("forged failure result"), "{text}");
+    }
+
+    #[test]
+    fn a_terminal_result_that_contradicts_its_failing_step_is_refused() {
+        let mut receipt =
+            failure_receipt(2, StepOutcome::ProductFailure, ProofResult::ProductFailure);
+        receipt.result = ProofResult::InstrumentFailure;
+        let text = rejection(&receipt, None);
+        assert!(text.contains("implies ProductFailure"), "{text}");
+
+        let mut swapped =
+            failure_receipt(2, StepOutcome::InstrumentFailure, ProofResult::InstrumentFailure);
+        swapped.result = ProofResult::ProductFailure;
+        assert!(rejection(&swapped, None).contains("implies InstrumentFailure"));
+    }
+
+    #[test]
+    fn a_misplaced_not_run_step_is_refused() {
+        // `not_run` must be a suffix: an ok step after an unreached one
+        // describes a lane that resumed after stopping.
+        let mut receipt =
+            failure_receipt(4, StepOutcome::ProductFailure, ProofResult::ProductFailure);
+        receipt.steps[6].outcome = StepOutcome::Ok;
+        receipt.steps[6].exit_code = Some(0);
+        let text = rejection(&receipt, None);
+        assert!(text.contains("must form a suffix"), "{text}");
+    }
+
+    #[test]
+    fn a_failure_result_whose_first_non_ok_step_is_not_run_is_refused() {
+        let mut receipt = success_receipt();
+        receipt.result = ProofResult::ProductFailure;
+        receipt.scorecard_census = None;
+        for step in receipt.steps.iter_mut().skip(3) {
+            step.outcome = StepOutcome::NotRun;
+            step.exit_code = None;
+        }
+        let text = rejection(&receipt, None);
+        assert!(text.contains("cannot stop before something failed"), "{text}");
+    }
+
+    #[test]
+    fn incoherent_outcome_and_exit_code_combinations_are_refused() {
+        let mut not_run_with_code =
+            failure_receipt(1, StepOutcome::ProductFailure, ProofResult::ProductFailure);
+        not_run_with_code.steps[5].exit_code = Some(0);
+        let text = rejection(&not_run_with_code, None);
+        assert!(text.contains("that outcome has no exit code"), "{text}");
+
+        let mut instrument_with_code =
+            failure_receipt(1, StepOutcome::InstrumentFailure, ProofResult::InstrumentFailure);
+        instrument_with_code.steps[1].exit_code = Some(127);
+        let text = rejection(&instrument_with_code, None);
+        assert!(text.contains("that outcome has no exit code"), "{text}");
+
+        let mut ok_with_nonzero = success_receipt();
+        ok_with_nonzero.steps[0].exit_code = Some(101);
+        assert!(rejection(&ok_with_nonzero, None).contains("ok with nonzero exit code 101"));
+    }
+
+    #[test]
+    fn a_census_count_from_a_step_that_never_ran_is_refused() {
+        let mut receipt =
+            failure_receipt(1, StepOutcome::ProductFailure, ProofResult::ProductFailure);
+        receipt.scorecard_census = Some(42);
+        let text = rejection(&receipt, None);
+        assert!(text.contains("census step was never run"), "{text}");
+    }
+
+    #[test]
+    fn the_zero_census_product_failure_shape_this_lane_actually_emits_still_verifies() {
+        // Negative control for the exit-code rule: the census exits 0 while
+        // failing the gate, so `product_failure` with exit code 0 is the one
+        // truthful combination the runtime produces. Rejecting it would make
+        // the verifier refuse a receipt this command emits.
+        let mut receipt = failure_receipt(
+            CARGO_STEPS.len(),
+            StepOutcome::ProductFailure,
+            ProofResult::ProductFailure,
+        );
+        receipt.steps[CARGO_STEPS.len()].exit_code = Some(0);
+        receipt.scorecard_census = Some(0);
+        assert!(
+            verify_receipt(&receipt, Some(&sample_subject())).is_ok(),
+            "the emitted zero-census failure shape must verify"
+        );
+    }
+
+    #[test]
+    fn a_prior_receipt_is_destroyed_before_a_run_can_fail() {
+        // Review #13882: subject capture can fail before anything is written,
+        // and the failure path tolerates a write error, so a previously
+        // written *green* receipt for the same subject would otherwise survive
+        // and verify.
+        let dir = std::env::temp_dir().join(format!("rsp-invalidate-{}", std::process::id()));
+        let Ok(()) = fs::create_dir_all(&dir) else {
+            panic!("temp dir must be creatable");
+        };
+        let path = dir.join("rust-small-proof.json");
+
+        let Ok(json) = serde_json::to_string_pretty(&success_receipt()) else {
+            panic!("receipt must serialize");
+        };
+        let Ok(()) = fs::write(&path, json) else { panic!("seed receipt must be writable") };
+        assert!(path.exists(), "the stale receipt must exist before the run");
+
+        let Ok(()) = invalidate_prior_receipt(&path) else {
+            panic!("invalidation must succeed");
+        };
+        assert!(!path.exists(), "no prior receipt may survive into a run that can fail");
+
+        // Idempotent: a first run with no prior receipt is not an error.
+        assert!(invalidate_prior_receipt(&path).is_ok());
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

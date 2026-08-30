@@ -29,9 +29,28 @@ A failed lane still emits a complete receipt: the failing step keeps its
 classification and every step the lane never reached is recorded `not_run`, so
 an omitted step and an unreached step stay distinguishable.
 
+Any receipt left by an earlier run is destroyed before the first fallible step.
+`target/` is reused across runs, so without that a failed rerun of the same
+candidate could leave the previous run's green receipt in place, still
+verifying — an artifact describing a run that did not happen.
+
 `--verify-receipt <path>` re-reads a receipt against the current checkout and
-exits nonzero on a malformed or stale schema, a missing/extra/reordered step,
-argv that is not the pinned lane argv, a success claimed over a non-`ok` step
-or a zero census, or a subject that is not this candidate/toolchain/profile.
-It runs no proof steps, so it is the cheap consumer seam for asking whether an
-artifact actually certifies this candidate.
+runs no proof steps, so it is the cheap consumer seam for asking whether an
+artifact actually certifies this candidate. It exits nonzero on:
+
+- a malformed or stale schema version;
+- a missing, extra, renamed, or reordered step, or argv that is not the pinned
+  lane argv;
+- a success claimed over a non-`ok` step, or over a zero/absent census;
+- a failure result over steps that all recorded `ok`, a terminal result that
+  contradicts the first failing step, `not_run` steps that do not form a
+  suffix, a census count from a step that never ran, or an outcome and exit
+  code that cannot co-occur;
+- a subject that is not this candidate, toolchain, or scorecard profile.
+
+**Trust boundary.** The receipt certifies its subject *as observed at capture
+time*. Subject capture is the trust root: the producer's self-check and
+`--verify-receipt` both call the same capture code, so a capture that reported
+the wrong identity would be agreed on by both sides. Detecting that would mean
+recording raw command output and re-executing it to byte-compare at
+verification time — a design change, not a tightening of the current check.
