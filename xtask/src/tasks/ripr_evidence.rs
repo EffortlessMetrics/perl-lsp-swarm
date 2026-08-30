@@ -3691,9 +3691,20 @@ mod tests {
 
     #[test]
     fn lexically_join_refuses_paths_that_escape_the_root() {
-        // The issue falsifier: a repair that defaults an exhausted pop to the
-        // root would return Some(..) here. Every over-deep `..` must stay None.
+        // Only this assertion exercises the `components.pop()?` branch this
+        // leaf changed. Under a default-to-root repair
+        // (`let _ = components.pop();`) the exhausted pop is swallowed, the
+        // trailing segments repopulate `components`, and the join wrongly
+        // yields Some("etc/passwd"). Verified: that repair fails here and
+        // nowhere else in this test.
         assert_eq!(lexically_join("crates/a", "../../../etc/passwd"), None);
+
+        // The remaining three are refused by the post-loop
+        // `components.is_empty()` guard, not by the `..` branch: each ends the
+        // loop with nothing left, so they hold under both the original code
+        // and that broken repair. They are defense-in-depth for the
+        // root-escape contract, not falsifiers for this change (#13809
+        // review).
         assert_eq!(lexically_join("", ".."), None);
         assert_eq!(lexically_join("a", "../.."), None);
         // Popping exactly to empty is refusal too, not an empty join.
