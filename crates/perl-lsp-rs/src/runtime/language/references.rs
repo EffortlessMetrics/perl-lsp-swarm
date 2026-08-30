@@ -315,11 +315,23 @@ impl ReferencesAnsweringTier {
     /// distinction and is deliberately not attempted here.
     pub(crate) fn freshness(self, index_state: &str) -> &'static str {
         match self {
-            // These two read the live open buffer and the live parsed AST for the
-            // current file, so no cached index stands between the request and the
-            // source they answered from. They stay current whatever the workspace
-            // index is doing, including an edit that lands mid-request: the edit
-            // is to the very buffer they read.
+            // These two answer from the current file's own text and parsed AST
+            // rather than from the workspace index, so no cached index stands
+            // between the request and the source they answered from. Index
+            // staleness — the axis this derivation keys on — cannot make them
+            // wrong, which is why they do not consult `index_state`.
+            //
+            // They read a snapshot, though, not the live buffer:
+            // `handle_references_inner` clones the document under the documents
+            // lock and drops it, and `symbol_key`, `offset`, and `needle` all
+            // derive from that generation (see the consistency note at the
+            // `doc_owned` capture). A `didChange` racing in after the capture
+            // leaves the answer computed over generation N while the map moves
+            // to N+1, and this arm still reports `fresh`. That is the
+            // document-generation half of the same residual window #14320 covers
+            // for the index, and it needs the same remedy: the generation that
+            // actually answered carried to the receipt boundary. Do not read
+            // this arm as a claim that no mid-request edit can affect them.
             Self::OpenDocumentText | Self::SemanticAnalyzer => "fresh",
             // `WorkspaceExact`, `WorkspaceMixed`, and `PartialIndex` answer from
             // the workspace index, so they are only as current as it is. `Empty`
