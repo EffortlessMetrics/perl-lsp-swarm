@@ -115,7 +115,7 @@ fn action_ids(projection: &Value) -> Vec<String> {
 fn committed_registry_validates() -> TestResult {
     let stats = diagnostics::validate_manifest_file(&repo_root())?;
     assert_eq!(stats.actions, 11);
-    assert_eq!(stats.summary_templates, 18);
+    assert_eq!(stats.summary_templates, 20);
     assert_eq!(stats.primary_reasons, 30);
     assert_eq!(stats.additional_reasons, 4);
     assert_eq!(stats.deferred_reason_domains, 7);
@@ -1847,5 +1847,150 @@ fn an_absent_outcome_dimensions_is_still_reported_as_missing() -> TestResult {
         error.contains("transition packet is missing `outcome_dimensions`"),
         "expected a missing-key diagnostic, got:\n{error}"
     );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Fifth review pass: a widened domain the string comparison could not see, and
+// a candidate stage described as a completed installation.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_non_string_input_enum_member_is_contract_drift() -> TestResult {
+    // A JSON Schema enum may hold any JSON value, so a non-string member really
+    // does widen the admitted packet domain. Filtering to strings before the
+    // set comparison discarded it, leaving the sets equal and the drift silent
+    // — which is the one thing this check exists to prevent.
+    let root = staged_root("nonstring-enum")?;
+    let schema_path = root.join(diagnostics::INPUT_SCHEMA_PATH);
+    let mut schema: Value = serde_json::from_slice(&std::fs::read(&schema_path)?)?;
+    schema["properties"]["disposition"]["enum"]
+        .as_array_mut()
+        .ok_or("disposition enum missing")?
+        .push(json!(7));
+    std::fs::write(&schema_path, format!("{}\n", serde_json::to_string_pretty(&schema)?))?;
+
+    let result = diagnostics::validate_manifest_file(&root);
+    std::fs::remove_dir_all(&root).ok();
+    let error = validation_error(result);
+    assert!(
+        error.contains("non-string enum member"),
+        "expected non-string enum drift, got:\n{error}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_null_input_enum_member_is_contract_drift() -> TestResult {
+    // `null` is the member most likely to be added by accident, and the one a
+    // string filter is most likely to swallow.
+    let root = staged_root("null-enum")?;
+    let schema_path = root.join(diagnostics::INPUT_SCHEMA_PATH);
+    let mut schema: Value = serde_json::from_slice(&std::fs::read(&schema_path)?)?;
+    schema["properties"]["operation"]["enum"]
+        .as_array_mut()
+        .ok_or("operation enum missing")?
+        .push(Value::Null);
+    std::fs::write(&schema_path, format!("{}\n", serde_json::to_string_pretty(&schema)?))?;
+
+    let result = diagnostics::validate_manifest_file(&root);
+    std::fs::remove_dir_all(&root).ok();
+    let error = validation_error(result);
+    assert!(
+        error.contains("non-string enum member"),
+        "expected non-string enum drift, got:\n{error}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_candidate_stage_startup_failure_never_claims_an_installation() -> TestResult {
+    // `candidate_verified` and `candidate_published_unselected` precede
+    // selection by definition, so nothing is installed as current. Both reasons
+    // reused the committed-install template, whose text says the operation
+    // "finished" and refers to "the installed command", and both offered a
+    // repair action whose applicability requires an owned installation. The
+    // structured consequence was already honest; the rendered text and the
+    // offered action were not.
+    let manifest = diagnostics::load_manifest(&repo_root())?;
+    for (disposition, expected_template) in [
+        ("candidate_verified", "t_candidate_verified_startup_failed"),
+        ("candidate_published_unselected", "t_candidate_published_startup_failed"),
+    ] {
+        let mut subject = packet(
+            disposition,
+            json!({
+                "product_units": "not_applicable",
+                "cleanup": "completed",
+                "process_startup": "failed",
+                "path_persistence": "not_applicable"
+            }),
+            "candidate stage only",
+        );
+        if disposition == "candidate_published_unselected" {
+            subject["candidate_id"] = json!("c".repeat(64));
+        }
+        let projection = diagnostics::project_packet(&manifest, &subject)?;
+
+        let text = projection
+            .pointer("/render/text")
+            .and_then(Value::as_str)
+            .ok_or("missing rendered text")?;
+        assert!(
+            !text.contains("installed command"),
+            "`{disposition}` must not name an installed command: {text}"
+        );
+        assert!(
+            !text.contains("finished"),
+            "`{disposition}` must not report the operation as finished: {text}"
+        );
+        assert_eq!(
+            projection.pointer("/render/template_id").and_then(Value::as_str),
+            Some(expected_template)
+        );
+
+        let offered = action_ids(&projection);
+        assert!(
+            !offered.iter().any(|id| id == "run_explicit_repair"),
+            "`{disposition}` must not offer to repair an installation it never established, got {offered:?}"
+        );
+
+        // The consequence must stay withheld, which was already true and must
+        // not regress while the wording is corrected.
+        assert_eq!(
+            projection.pointer("/consequences/known_good").and_then(Value::as_str),
+            Some("not_established_by_this_transaction")
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn a_committed_startup_failure_still_names_the_installed_command() -> TestResult {
+    // Negative control. `t_startup_failed` is correct where an install really
+    // did commit, so the candidate-stage fix must not have blanked the wording
+    // for the case it was written for.
+    let manifest = diagnostics::load_manifest(&repo_root())?;
+    let projection = diagnostics::project_combination(
+        &manifest,
+        &combination(
+            "install",
+            "selection_committed",
+            "installed",
+            "completed",
+            "failed",
+            "persisted",
+        ),
+        None,
+    )?;
+    let text = projection
+        .pointer("/render/text")
+        .and_then(Value::as_str)
+        .ok_or("missing rendered text")?;
+    assert!(
+        text.contains("installed command"),
+        "committed startup failure lost its wording: {text}"
+    );
+    assert!(action_ids(&projection).iter().any(|id| id == "run_explicit_repair"));
     Ok(())
 }
