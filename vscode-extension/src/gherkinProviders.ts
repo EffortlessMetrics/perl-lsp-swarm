@@ -1,5 +1,10 @@
 import * as vscode from 'vscode';
 import { isPotentiallyExpensiveRegex } from './gherkinRedosGuard';
+import {
+  MAX_STEP_DEFINITION_FILE_BYTES,
+  MAX_STEP_DEFINITION_TOTAL_BYTES,
+  readBoundedFile,
+} from './gherkinStepDefinitions';
 
 type OutlineKind = 'feature' | 'rule' | 'background' | 'scenario' | 'examples' | 'step';
 type StepKeyword = 'Given' | 'When' | 'Then' | 'And' | 'But' | '*';
@@ -265,18 +270,45 @@ async function loadStepDefinitionDocuments(
     }
   }
 
+  return collectStepDefinitionDocuments(Array.from(seen.values()), token);
+}
+
+/**
+ * Read candidate step-definition files sequentially under the same envelope as
+ * the step-definition collector (#9773): a per-file byte cap, an aggregate
+ * byte cap, and regular-files only. The previous implementation opened each
+ * candidate through `openTextDocument` with no byte bound at all, so a
+ * workspace of 1000 large or special files could occupy the extension host.
+ *
+ * Exported for the containment proof in gherkinProviders.test.ts: the scan
+ * bounds are a security claim and need a direct seam, not one observed only
+ * through the definition provider.
+ */
+export async function collectStepDefinitionDocuments(
+  candidates: readonly vscode.Uri[],
+  token: vscode.CancellationToken,
+): Promise<StepDefinitionDocument[]> {
   const documents: StepDefinitionDocument[] = [];
-  for (const uri of seen.values()) {
+  let acceptedBytes = 0;
+
+  for (const uri of candidates) {
     if (token.isCancellationRequested) {
       break;
     }
-
-    try {
-      const document = await vscode.workspace.openTextDocument(uri);
-      documents.push({ uri, text: document.getText() });
-    } catch {
-      // Ignore unreadable files and continue.
+    if (acceptedBytes >= MAX_STEP_DEFINITION_TOTAL_BYTES) {
+      break;
     }
+
+    const read = await readBoundedFile(uri.fsPath, MAX_STEP_DEFINITION_FILE_BYTES);
+    if (!read) {
+      continue;
+    }
+    if (acceptedBytes + read.byteLength > MAX_STEP_DEFINITION_TOTAL_BYTES) {
+      break;
+    }
+
+    acceptedBytes += read.byteLength;
+    documents.push({ uri, text: read.text });
   }
 
   return documents;

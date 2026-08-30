@@ -12,8 +12,10 @@ const OUTLINE_PLACEHOLDER_RE = /<[^>\r\n]+>/y;
 const DEFAULT_STEP_DEFINITION_GLOB = '**/*.pm';
 const DEFAULT_EXCLUDE_GLOB = '{**/node_modules/**,**/blib/**}';
 const MAX_STEP_DEFINITION_FILES = 500;
-const MAX_STEP_DEFINITION_FILE_BYTES = 512 * 1024;
-const MAX_STEP_DEFINITION_TOTAL_BYTES = 16 * 1024 * 1024;
+// Exported so the provider workspace scan (#9773) shares one envelope
+// authority instead of restating these bounds in a second module.
+export const MAX_STEP_DEFINITION_FILE_BYTES = 512 * 1024;
+export const MAX_STEP_DEFINITION_TOTAL_BYTES = 16 * 1024 * 1024;
 const MAX_MATCH_REGEX_LENGTH = 256;
 const MAX_MATCH_STEP_TEXT_LENGTH = 512;
 // Rejecting ReDoS-shaped patterns bounds the cost of any single match, not the
@@ -412,8 +414,12 @@ export async function collectWorkspaceStepDefinitionSources(
  * from the already-open descriptor and enforced by the read itself. Returns
  * `null` for anything that is not a readable regular file within the limit,
  * including a symlink, which `O_NOFOLLOW` rejects.
+ *
+ * Exported for the provider workspace scan (#9773) and its containment proof:
+ * both step-definition readers must enforce the same per-file, regular-file,
+ * and symlink rules, so they share this one implementation.
  */
-async function readBoundedFile(
+export async function readBoundedFile(
   filePath: string,
   limit: number,
 ): Promise<{ text: string; byteLength: number } | null> {

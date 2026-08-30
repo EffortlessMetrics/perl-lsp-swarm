@@ -1,10 +1,22 @@
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import * as vscode from 'vscode';
 import {
+  collectStepDefinitionDocuments,
   provideGherkinDocumentSymbols,
   provideGherkinFoldingRanges,
   provideGherkinStepDefinitionLinks,
   registerGherkinProviders,
 } from '../gherkinProviders';
+
+function makeEnvelopeWorkspace(name: string): string {
+  return fs.mkdtempSync(path.join(os.tmpdir(), `gherkin-envelope-${name}-`));
+}
+
+function cancelled(isCancellationRequested: boolean): vscode.CancellationToken {
+  return { isCancellationRequested } as vscode.CancellationToken;
+}
 
 describe('gherkin outline providers', () => {
   beforeEach(() => {
@@ -357,38 +369,133 @@ describe('gherkin outline providers', () => {
     registerGherkinProviders();
 
     const provider = (vscode.languages.registerDefinitionProvider as jest.Mock).mock.calls[0][1];
+    const workspaceRoot = makeEnvelopeWorkspace('provider-scan');
+    const stepFile = path.join(workspaceRoot, 'features', 'step_definitions', 'login_steps.pm');
+    fs.mkdirSync(path.dirname(stepFile), { recursive: true });
+    fs.writeFileSync(
+      stepFile,
+      [
+        'use Test::BDD::Cucumber::StepFile;',
+        '',
+        'When qr/the user logs in with valid credentials/, sub {',
+        '};',
+      ].join('\n'),
+    );
     (vscode.workspace.findFiles as jest.Mock)
-      .mockResolvedValueOnce([vscode.Uri.file('/project/features/step_definitions/login_steps.pm')])
+      .mockResolvedValueOnce([vscode.Uri.file(stepFile)])
       .mockResolvedValue([]);
-    (vscode.workspace.openTextDocument as jest.Mock).mockResolvedValue({
-      uri: vscode.Uri.file('/project/features/step_definitions/login_steps.pm'),
-      getText: () =>
-        [
-          'use Test::BDD::Cucumber::StepFile;',
-          '',
-          'When qr/the user logs in with valid credentials/, sub {',
-          '};',
-        ].join('\n'),
+
+    try {
+      const links = await provider.provideDefinition(
+        {
+          getText: () =>
+            [
+              'Feature: Login',
+              '  Scenario: Happy path',
+              '    When the user logs in with valid credentials',
+            ].join('\n'),
+        } as vscode.TextDocument,
+        { line: 2, character: 12 } as vscode.Position,
+        { isCancellationRequested: false } as vscode.CancellationToken,
+      );
+
+      expect(vscode.workspace.findFiles).toHaveBeenCalled();
+      expect(links).toHaveLength(1);
+      expect(links[0].targetUri.fsPath).toBe(stepFile);
+    } finally {
+      fs.rmSync(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+/**
+ * The workspace scan bounds are a security claim (#9773), so they get a direct
+ * seam and real files: `openTextDocument` bounded nothing, and a mock cannot
+ * fail when the cap is removed.
+ */
+describe('gherkin step-definition workspace envelope', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  test('skips candidates over the per-file byte cap', async () => {
+    const root = makeEnvelopeWorkspace('per-file-cap');
+    const oversized = path.join(root, 'big.pm');
+    const small = path.join(root, 'small.pm');
+    fs.writeFileSync(oversized, Buffer.alloc(600 * 1024, 0x61));
+    fs.writeFileSync(small, 'Given qr/^ok$/, sub { return; };\n');
+
+    try {
+      const documents = await collectStepDefinitionDocuments(
+        [vscode.Uri.file(oversized), vscode.Uri.file(small)],
+        cancelled(false),
+      );
+
+      expect(documents.map((document) => document.uri.fsPath)).toEqual([small]);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('stops reading at the aggregate byte cap instead of reading everything', async () => {
+    const root = makeEnvelopeWorkspace('aggregate-cap');
+    // Each file is under the 512 KiB per-file cap, so only the aggregate cap
+    // can stop the scan: 42 x 400 KiB = 16.4 MiB > 16 MiB.
+    const chunk = Buffer.alloc(400 * 1024, 0x61);
+    const candidates = Array.from({ length: 42 }, (_unused, index) => {
+      const candidate = path.join(root, `part_${index}.pm`);
+      fs.writeFileSync(candidate, chunk);
+      return vscode.Uri.file(candidate);
     });
 
-    const links = await provider.provideDefinition(
-      {
-        getText: () =>
-          [
-            'Feature: Login',
-            '  Scenario: Happy path',
-            '    When the user logs in with valid credentials',
-          ].join('\n'),
-      } as vscode.TextDocument,
-      { line: 2, character: 12 } as vscode.Position,
-      { isCancellationRequested: false } as vscode.CancellationToken,
-    );
+    try {
+      const documents = await collectStepDefinitionDocuments(candidates, cancelled(false));
 
-    expect(vscode.workspace.findFiles).toHaveBeenCalled();
-    expect(vscode.workspace.openTextDocument).toHaveBeenCalledWith(
-      expect.objectContaining({ fsPath: '/project/features/step_definitions/login_steps.pm' }),
-    );
-    expect(links).toHaveLength(1);
-    expect(links[0].targetUri.fsPath).toBe('/project/features/step_definitions/login_steps.pm');
+      // 40 files fit under 16 MiB; the 41st would push past the cap, so the
+      // scan must stop rather than read the rest. Without the aggregate cap
+      // this scan would return all 42 documents.
+      expect(documents).toHaveLength(40);
+      const acceptedBytes = documents.reduce(
+        (total, document) => total + Buffer.byteLength(document.text, 'utf8'),
+        0,
+      );
+      expect(acceptedBytes).toBeLessThanOrEqual(16 * 1024 * 1024);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('honours an already-cancelled token before reading any file', async () => {
+    const root = makeEnvelopeWorkspace('cancelled');
+    const candidate = path.join(root, 'steps.pm');
+    fs.writeFileSync(candidate, 'Given qr/^ok$/, sub { return; };\n');
+
+    try {
+      const documents = await collectStepDefinitionDocuments(
+        [vscode.Uri.file(candidate)],
+        cancelled(true),
+      );
+
+      expect(documents).toHaveLength(0);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('skips candidates that are not regular files', async () => {
+    const root = makeEnvelopeWorkspace('missing-file');
+    const regular = path.join(root, 'steps.pm');
+    fs.writeFileSync(regular, 'Given qr/^ok$/, sub { return; };\n');
+
+    try {
+      const documents = await collectStepDefinitionDocuments(
+        [vscode.Uri.file(path.join(root, 'absent.pm')), vscode.Uri.file(regular)],
+        cancelled(false),
+      );
+
+      expect(documents.map((document) => document.uri.fsPath)).toEqual([regular]);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });
