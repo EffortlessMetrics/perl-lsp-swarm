@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12393 |
+| Total tracked files | 12395 |
 | Rust-family files | 3807 |
-| Non-Rust files | 8586 |
-| Allowlisted | 6351 |
+| Non-Rust files | 8588 |
+| Allowlisted | 6353 |
 | Unclassified | 2235 |
 
 ## Non-Rust files by category
@@ -17,7 +17,7 @@
 | Category | Count |
 |---|---|
 | config | 490 |
-| documentation | 2800 |
+| documentation | 2802 |
 | generated | 2 |
 | production | 346 |
 | test | 2052 |
@@ -5245,6 +5245,8 @@
 | `docs/proposals/PLSP-PROP-0002-compiler-program.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/proposals/PLSP-PROP-0003-spec-governance.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/proposals/README.md` | documentation | `non-rust-docs-tree` | docs |
+| `docs/receipts/lsp-clients/actual/vim-host-lifecycle-transcript.jsonl` | documentation | `non-rust-docs-tree` | docs |
+| `docs/receipts/lsp-clients/actual/vim.json` | documentation | `non-rust-docs-tree` | docs |
 | `docs/reference/1711-A-reextraction-workshape-receipt.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/reference/1711-B-coverage-delta.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/reference/AGENT_COORDINATION_HAZARDS.md` | documentation | `non-rust-docs-tree` | docs |
