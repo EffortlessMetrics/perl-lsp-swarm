@@ -300,7 +300,8 @@ impl ServerRequestScript {
 
 impl ServerRequestObserver {
     pub(crate) fn observe(&self, message: &Value) {
-        let Some(id) = message.get("id").filter(|id| !id.is_null()).cloned() else {
+        let Some(id) = message.get("id").filter(|id| id.is_number() || id.is_string()).cloned()
+        else {
             return;
         };
         let Some(method) = message.get("method").and_then(Value::as_str) else {
