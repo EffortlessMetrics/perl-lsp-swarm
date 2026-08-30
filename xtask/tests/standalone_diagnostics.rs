@@ -2060,3 +2060,146 @@ fn an_observed_fresh_process_never_asks_for_a_new_session() -> TestResult {
     }
     Ok(())
 }
+
+#[test]
+fn an_awaiting_stage_with_manual_cleanup_reports_the_manual_work() -> TestResult {
+    // `candidate_verified` awaits publication (`nonterminal_awaiting_next_stage`).
+    // A failed cleanup adds `cleanup_incomplete_residue_retained`, which is
+    // `nonterminal_actionable` and contributes `manual_owned_state_resolution`
+    // to the offered actions. Terminality must say so; reporting "awaiting"
+    // tells a consumer there is nothing for the user while the action list
+    // says otherwise.
+    let manifest = diagnostics::load_manifest(&repo_root())?;
+    let projected = diagnostics::project_combination(
+        &manifest,
+        &combination(
+            "install",
+            "candidate_verified",
+            "not_applicable",
+            "failed_preserved",
+            "unproven",
+            "not_applicable",
+        ),
+        None,
+    )?;
+    assert_eq!(projected["primary_terminality"], json!("nonterminal_awaiting_next_stage"));
+    assert_eq!(projected["terminality"], json!("nonterminal_actionable"));
+    assert!(action_ids(&projected).iter().any(|id| id == "manual_owned_state_resolution"));
+    Ok(())
+}
+
+#[test]
+fn an_awaiting_stage_with_unproven_cleanup_reports_the_instrument_work() -> TestResult {
+    let manifest = diagnostics::load_manifest(&repo_root())?;
+    let projected = diagnostics::project_combination(
+        &manifest,
+        &combination(
+            "install",
+            "candidate_published_unselected",
+            "not_applicable",
+            "not_proven",
+            "unproven",
+            "not_applicable",
+        ),
+        None,
+    )?;
+    assert_eq!(projected["primary_terminality"], json!("nonterminal_awaiting_next_stage"));
+    assert_eq!(projected["terminality"], json!("nonterminal_actionable"));
+    Ok(())
+}
+
+#[test]
+fn a_deferred_cleanup_does_not_invent_user_work_for_an_awaiting_stage() -> TestResult {
+    // Control in the opposite direction. `cleanup_deferred_pending` is
+    // `nonterminal_awaiting_next_stage`, so it must not promote an awaiting
+    // stage to actionable — there is nothing for the user to do yet.
+    let manifest = diagnostics::load_manifest(&repo_root())?;
+    let projected = diagnostics::project_combination(
+        &manifest,
+        &combination(
+            "install",
+            "candidate_verified",
+            "not_applicable",
+            "deferred",
+            "unproven",
+            "not_applicable",
+        ),
+        None,
+    )?;
+    assert_eq!(projected["terminality"], json!("nonterminal_awaiting_next_stage"));
+    Ok(())
+}
+
+#[test]
+fn every_offered_manual_action_is_reported_as_actionable() -> TestResult {
+    // Sweep the property rather than pin the two cases above: if the
+    // projection asks the user to do something manually, its terminality must
+    // not claim the work belongs to the next stage.
+    let manifest = diagnostics::load_manifest(&repo_root())?;
+    let mut checked = 0usize;
+    for combination in diagnostics::all_combinations() {
+        let projection = diagnostics::project_combination(&manifest, &combination, None)?;
+        let manual = action_ids(&projection).into_iter().any(|id| {
+            id == "manual_owned_state_resolution" || id == "manual_path_persistence_required"
+        });
+        if !manual {
+            continue;
+        }
+        checked += 1;
+        assert_ne!(
+            projection.get("terminality").and_then(Value::as_str),
+            Some("nonterminal_awaiting_next_stage"),
+            "{combination:?} asks the user to act manually but reports the work as awaiting the next stage"
+        );
+    }
+    assert!(checked > 0, "no combination offered a manual action");
+    Ok(())
+}
+
+#[test]
+fn a_deferred_cleanup_never_erases_a_pending_user_step() -> TestResult {
+    // `sel_committed_path_persistence_failed` is
+    // `terminal_success_pending_user_step` and offers
+    // `manual_path_persistence_required` — real user work. A *deferred*
+    // cleanup is `awaiting`, and degrading the primary to that value would
+    // drop the user step from terminality while the action stayed on offer.
+    let manifest = diagnostics::load_manifest(&repo_root())?;
+    let projected = diagnostics::project_combination(
+        &manifest,
+        &combination(
+            "install",
+            "selection_committed",
+            "installed",
+            "deferred",
+            "verified",
+            "failed",
+        ),
+        None,
+    )?;
+    assert_eq!(projected["primary_terminality"], json!("terminal_success_pending_user_step"));
+    assert_eq!(projected["terminality"], json!("terminal_success_pending_user_step"));
+    assert!(action_ids(&projected).iter().any(|id| id == "manual_path_persistence_required"));
+    Ok(())
+}
+
+#[test]
+fn a_failed_cleanup_still_outranks_a_pending_user_step() -> TestResult {
+    // Control: the pending-step rank must not become a ceiling. A cleanup that
+    // is actionable is the stronger obligation and still wins.
+    let manifest = diagnostics::load_manifest(&repo_root())?;
+    let projected = diagnostics::project_combination(
+        &manifest,
+        &combination(
+            "install",
+            "selection_committed",
+            "installed",
+            "failed_preserved",
+            "verified",
+            "failed",
+        ),
+        None,
+    )?;
+    assert_eq!(projected["primary_terminality"], json!("terminal_success_pending_user_step"));
+    assert_eq!(projected["terminality"], json!("nonterminal_actionable"));
+    Ok(())
+}

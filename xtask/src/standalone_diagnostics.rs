@@ -883,6 +883,56 @@ pub fn template_parameters(text: &str) -> Vec<String> {
     out
 }
 
+/// How much the reader still has to do, as a total order.
+///
+/// Every `terminal_*` state ranks lowest because nothing is outstanding in it;
+/// work the transaction still owes itself outranks that; work the *user* must
+/// perform outranks both.
+fn terminality_rank(terminality: &str) -> u8 {
+    match terminality {
+        "nonterminal_actionable" => 3,
+        // A pending user step is the user's move, so it outranks work the
+        // transaction still owes itself. Ranking it with the other terminal
+        // states let a *deferred* cleanup degrade it to
+        // `nonterminal_awaiting_next_stage` and erase the step, while
+        // `manual_path_persistence_required` stayed in the action list.
+        "terminal_success_pending_user_step" => 2,
+        "nonterminal_awaiting_next_stage" => 1,
+        // `terminal_success`, `terminal_failure`, `terminal_cancelled`: nothing
+        // is outstanding, so anything outstanding outranks them.
+        _ => 0,
+    }
+}
+
+/// Report the strongest obligation across the primary and every outstanding
+/// additional reason.
+///
+/// An earlier version passed the primary straight through whenever it was not
+/// `terminal_*`, which was the same mistake made once already for
+/// retryability: the rule was written for the case in hand — a terminal
+/// success hiding outstanding work — rather than as an ordering. So a
+/// `candidate_verified` awaiting publication whose cleanup had failed reported
+/// `nonterminal_awaiting_next_stage`, meaning "the transaction owes itself the
+/// next stage, nothing for you", while `manual_owned_state_resolution` sat in
+/// its own action list. A consumer keying on terminality to decide whether to
+/// prompt would not have prompted.
+///
+/// Ranking also keeps the opposite overclaim out: a *deferred* cleanup is
+/// `awaiting`, not `actionable`, so it degrades a terminal success without
+/// inventing a user obligation.
+fn reported_terminality(primary_terminality: &str, outstanding: &[&Value]) -> String {
+    let mut strongest = primary_terminality;
+    for reason in outstanding {
+        let Some(candidate) = reason.get("terminality").and_then(Value::as_str) else {
+            continue;
+        };
+        if terminality_rank(candidate) > terminality_rank(strongest) {
+            strongest = candidate;
+        }
+    }
+    strongest.to_string()
+}
+
 /// How much must happen before this subject can be retried.
 ///
 /// This orders *preconditions*, which is why `not_retryable` is absent: it does
@@ -1778,23 +1828,10 @@ pub fn project_combination(
     );
     let primary_terminality =
         primary.get("terminality").and_then(Value::as_str).unwrap_or_default();
-    // A terminal success alongside outstanding actionable work is a
-    // contradiction; report the work, not the success.
-    // Report the strongest outstanding obligation, not a blanket one: work the
-    // user must do is `actionable`, work the transaction still owes itself is
-    // `awaiting_next_stage`. Calling a deferred cleanup actionable would
-    // overclaim in the opposite direction.
-    let reported_terminality =
-        if outstanding.is_empty() || !primary_terminality.starts_with("terminal_") {
-            primary_terminality.to_string()
-        } else if outstanding.iter().any(|reason| {
-            reason.get("terminality").and_then(Value::as_str) == Some("nonterminal_actionable")
-        }) {
-            "nonterminal_actionable".to_string()
-        } else {
-            "nonterminal_awaiting_next_stage".to_string()
-        };
-    projection.insert("terminality".to_string(), Value::from(reported_terminality));
+    projection.insert(
+        "terminality".to_string(),
+        Value::from(reported_terminality(primary_terminality, &outstanding)),
+    );
     projection.insert("primary_terminality".to_string(), Value::from(primary_terminality));
     let primary_retryability =
         primary.get("retryability").and_then(Value::as_str).unwrap_or_default();
