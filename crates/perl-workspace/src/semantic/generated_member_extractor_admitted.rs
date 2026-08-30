@@ -86,7 +86,9 @@ fn collect_quarantined_dbix_ranges(
             ctx.dbix_class_active = false;
         }
         NodeKind::ExpressionStatement { expression } if ctx.dbix_class_active => {
-            if is_current_package_method_call(expression, ctx) {
+            if is_dbix_class_member_method(expression)
+                && is_current_package_method_call(expression, ctx)
+            {
                 out.push(QuarantinedRange {
                     start: expression.location.start,
                     end: expression.location.end,
@@ -100,6 +102,13 @@ fn collect_quarantined_dbix_ranges(
             }
         }
     }
+}
+
+fn is_dbix_class_member_method(expression: &Node) -> bool {
+    let NodeKind::MethodCall { method, .. } = &expression.kind else {
+        return false;
+    };
+    matches!(method.as_str(), "add_columns" | "has_many" | "belongs_to" | "has_one" | "might_have")
 }
 
 fn is_current_package_method_call(expression: &Node, ctx: &WalkCtx) -> bool {
@@ -230,6 +239,22 @@ has 'name' => (is => 'ro');
 
         let admitted = extract_generated_member_facts(&ast, FileId(1));
         assert!(names(&admitted).contains(&"MyApp::User::name"));
+    }
+
+    #[test]
+    fn supported_accessor_frameworks_remain_admitted() {
+        for (framework, source) in [
+            ("Moo", "package MyApp::Moo; use Moo; has 'name' => (is => 'ro'); 1;"),
+            ("Moose", "package MyApp::Moose; use Moose; has 'name' => (is => 'ro'); 1;"),
+            ("Mouse", "package MyApp::Mouse; use Mouse; has 'name' => (is => 'ro'); 1;"),
+            ("Class::Tiny", "package MyApp::ClassTiny; use Class::Tiny; has 'name'; 1;"),
+        ] {
+            let admitted = extract_generated_member_facts(&parse(source), FileId(1));
+            assert!(
+                names(&admitted).iter().any(|name| name.ends_with("::name")),
+                "{framework} generated member should remain admitted"
+            );
+        }
     }
 
     #[test]
