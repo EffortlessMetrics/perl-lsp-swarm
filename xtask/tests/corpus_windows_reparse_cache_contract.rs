@@ -12,13 +12,14 @@ const SHARED_KEY: &str = "corpus-windows-reparse-proof-${{ hashFiles('Cargo.lock
 const TRUSTED_SAVE_IF: &str =
     "${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}";
 const CORPUS_PROOF: &str = "cargo test --locked -p perl-corpus --test strict_sectioned_loading public_plain_loader_rejects_windows_reparse_point -- --exact --nocapture";
-const XTASK_PROOF: &str = "cargo test --locked -p xtask --lib dangling_protected_source_rejects_before_publication_write -- --nocapture";
-const CORPUS_PROOF_ANCHOR: &str = "        run: >-\n          cargo test --locked -p perl-corpus\n          --test strict_sectioned_loading\n          public_plain_loader_rejects_windows_reparse_point\n          -- --exact --nocapture";
-const XTASK_PROOF_ANCHOR: &str = "        run: >-\n          cargo test --locked -p xtask --lib\n          dangling_protected_source_rejects_before_publication_write\n          -- --nocapture";
+const XTASK_PROOF: &str = "cargo test --locked -p xtask --lib dangling_protected_source_rejects_before_publication_write -- --exact --nocapture";
+const CORPUS_PROOF_ANCHOR: &str = "          $output = cargo test --locked -p perl-corpus --test strict_sectioned_loading public_plain_loader_rejects_windows_reparse_point -- --exact --nocapture 2>&1\n";
+const XTASK_PROOF_ANCHOR: &str = "          $output = cargo test --locked -p xtask --lib dangling_protected_source_rejects_before_publication_write -- --exact --nocapture 2>&1\n";
 const TOPOLOGY_EXECUTION_ANCHOR: &str = "for test_name in \"${selected_tests[@]}\"; do\n  test_output=\"$(mktemp)\"\n  if ! cargo test --locked -p perl-corpus --lib \"$test_name\" \\\n    -- --exact --nocapture \\\n    2>&1 | sed 's/\\r$//' | tee \"$test_output\"; then";
 const TOPOLOGY_EXECUTION_SOURCE_ANCHOR: &str = "          for test_name in \"${selected_tests[@]}\"; do\n            test_output=\"$(mktemp)\"";
 const TOPOLOGY_EXECUTION_COMMAND_SOURCE_ANCHOR: &str =
     "            if ! cargo test --locked -p perl-corpus --lib \"$test_name\" \\\n";
+const TOPOLOGY_SHELL_SOURCE_ANCHOR: &str = "        shell: bash\n        run: |\n          set -euo pipefail\n\n          selected_tests=(";
 
 const EXPECTED_TOPOLOGY_TESTS: [&str; 10] = [
     "api::topology::tests::binding_rejects_intermediate_runtime_root_symlink",
@@ -156,6 +157,18 @@ fn validate_workflow(source: &str) -> Result<()> {
         "actions must use the approved immutable refs; alternate or local writers are not allowed"
     );
     ensure!(
+        all_steps.iter().all(|step| {
+            step.get("run").and_then(Value::as_str).is_none_or(|run| {
+                let run = run.to_ascii_lowercase();
+                !run.contains("actions/cache")
+                    && !run.contains("swatinem/rust-cache")
+                    && !run.contains("cache/save")
+                    && !run.contains("cache/restore")
+            })
+        }),
+        "shell bodies must not hide alternate cache writers"
+    );
+    ensure!(
         jobs.values()
             .filter_map(Value::as_mapping)
             .all(|candidate| candidate.get("permissions").is_none()),
@@ -170,6 +183,17 @@ fn validate_workflow(source: &str) -> Result<()> {
         cache_steps.len() == 1,
         "the Windows proof job must have exactly one pinned rust-cache step"
     );
+    for action in [CHECKOUT_ACTION, TOOLCHAIN_ACTION, CACHE_ACTION] {
+        ensure!(
+            all_steps
+                .iter()
+                .filter(|step| step.get("uses").and_then(Value::as_str) == Some(action))
+                .count()
+                == 1,
+            "each approved action must occur exactly once: {action}"
+        );
+    }
+    ensure!(cache_steps[0].get("if").is_none(), "cache restore must not be conditionally disabled");
     let cache_with = cache_steps[0]
         .get("with")
         .and_then(Value::as_mapping)
@@ -197,9 +221,20 @@ fn validate_workflow(source: &str) -> Result<()> {
         let step = named_step(name)?;
         ensure!(step.get("if").is_none(), "proof step must not be conditionally skipped: {name}");
         ensure!(
-            normalized(step.get("run").and_then(Value::as_str).unwrap_or_default())
-                == normalized(command),
+            step.get("continue-on-error").is_none()
+                || step.get("continue-on-error") == Some(&Value::Bool(false)),
+            "proof step must not continue on error: {name}"
+        );
+        let run = step.get("run").and_then(Value::as_str).unwrap_or_default();
+        ensure!(
+            normalized(run).contains(&normalized(command)),
             "proof step must run its exact production command: {name}"
+        );
+        ensure!(
+            run.contains("$runningCount = @($output | Select-String")
+                && run.contains("$resultCount = @($output | Select-String")
+                && run.contains("if ($runningCount -ne 1 -or $resultCount -ne 1)"),
+            "proof step must require one executed passing test: {name}"
         );
         ensure!(
             step.get("env")
@@ -218,12 +253,12 @@ fn validate_workflow(source: &str) -> Result<()> {
         .iter()
         .position(|step| step.get("uses").and_then(Value::as_str) == Some(CACHE_ACTION))
         .ok_or_else(|| anyhow!("missing pinned cache step"))?;
-    for name in ["Checkout exact candidate", "Install Rust toolchain"] {
+    for action in [CHECKOUT_ACTION, TOOLCHAIN_ACTION] {
         let index = steps
             .iter()
-            .position(|step| step.get("name").and_then(Value::as_str) == Some(name))
-            .ok_or_else(|| anyhow!("missing setup step: {name}"))?;
-        ensure!(index < cache_index, "cache restore must follow setup: {name}");
+            .position(|step| step.get("uses").and_then(Value::as_str) == Some(action))
+            .ok_or_else(|| anyhow!("missing setup action: {action}"))?;
+        ensure!(index < cache_index, "cache restore must follow setup: {action}");
     }
     for name in [
         "Run non-skipping Windows reparse proof",
@@ -239,8 +274,19 @@ fn validate_workflow(source: &str) -> Result<()> {
 
     let topology = named_step("Run exact non-skipping perl-corpus topology proofs")?;
     ensure!(topology.get("if").is_none(), "topology proof must not be conditionally skipped");
+    ensure!(
+        topology.get("continue-on-error").is_none()
+            || topology.get("continue-on-error") == Some(&Value::Bool(false)),
+        "topology proof must not continue on error"
+    );
     let topology_raw = topology.get("run").and_then(Value::as_str).unwrap_or_default();
     let topology_run = normalized(topology_raw);
+    ensure!(
+        !topology_raw.contains("continue")
+            && !topology_raw.contains("if false")
+            && !topology_raw.contains("if [[ false"),
+        "topology proof must not bypass execution with continue or false guards"
+    );
     for command in [
         "set -euo pipefail",
         "cargo test --locked -p perl-corpus --lib -- --list",
@@ -266,6 +312,11 @@ fn validate_workflow(source: &str) -> Result<()> {
         .find(")\n")
         .map(|offset| selected_start + offset)
         .ok_or_else(|| anyhow!("topology proof selected tests must be closed"))?;
+    ensure!(
+        topology_raw.matches("selected_tests=(").count() == 1
+            && !topology_raw.contains("selected_tests=()"),
+        "topology proof must not clear its selected test population"
+    );
     let selected: BTreeSet<_> = topology_raw
         [selected_start + "selected_tests=(".len()..selected_end]
         .lines()
@@ -334,6 +385,10 @@ fn contract_rejects_realistic_cache_and_permission_mutations() -> Result<()> {
             "save-if: true",
         ),
         (SHARED_KEY, "cross-branch-key"),
+        (
+            "      - name: Cache cargo dependencies\n",
+            "      - name: Cache cargo dependencies\n        if: ${{ github.ref == 'refs/heads/main' }}\n",
+        ),
         ("permissions:\n  contents: read", "permissions:\n  contents: read\n  actions: write"),
         (
             "      - name: Cache cargo dependencies",
@@ -363,6 +418,14 @@ fn contract_rejects_decoy_commands_and_trigger_mutations() -> Result<()> {
     for (from, to) in [
         (CORPUS_PROOF_ANCHOR, "        run: echo cargo test --locked -p perl-corpus"),
         (XTASK_PROOF_ANCHOR, "        run: echo cargo test --locked -p xtask"),
+        (
+            "      - name: Run non-skipping Windows reparse proof\n        shell: pwsh\n",
+            "      - name: Run non-skipping Windows reparse proof\n        shell: pwsh\n        continue-on-error: true\n",
+        ),
+        (
+            TOPOLOGY_SHELL_SOURCE_ANCHOR,
+            "        shell: bash\n        if: ${{ false }}\n        run: |\n          set -euo pipefail\n\n          selected_tests=(",
+        ),
         ("branches: [main, master]", "branches: [feature/cache]"),
         ("pull_request:", "pull_request_target:"),
         ("    branches: [main, master]\n", "    branches: [main, master]\n    types: [opened]\n"),
@@ -371,6 +434,18 @@ fn contract_rejects_decoy_commands_and_trigger_mutations() -> Result<()> {
         (
             "  workflow_dispatch:\n",
             "  workflow_dispatch:\n    inputs:\n      reason:\n        required: false\n",
+        ),
+        (
+            "          )\n\n          test_list=\"$(mktemp)\"",
+            "          )\n          selected_tests=()\n\n          test_list=\"$(mktemp)\"",
+        ),
+        (
+            "          cargo test --locked -p perl-corpus --lib -- --list \\\n",
+            "          continue\n          cargo test --locked -p perl-corpus --lib -- --list \\\n",
+        ),
+        (
+            TOPOLOGY_SHELL_SOURCE_ANCHOR,
+            "        shell: bash\n        run: |\n          set -euo pipefail\n          actions/cache/save\n\n          selected_tests=(",
         ),
         (
             "            api::topology::tests::binding_rejects_intermediate_runtime_root_symlink\n",
