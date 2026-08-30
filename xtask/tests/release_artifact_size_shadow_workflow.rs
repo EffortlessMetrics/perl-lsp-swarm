@@ -393,19 +393,36 @@ fn shadow_lane_names_a_dap_smoke_test_that_still_exists() -> Result<()> {
     // resulting failure reads as a broken test rather than a broken contract.
     // Bind the name to the target that must declare it, so a rename breaks this
     // proof instead of the first dispatch.
+    // Matched against code only: a rename that leaves the old name behind in a
+    // comment must not satisfy this, or the guard would certify a binding that
+    // no longer exists.
     let source = fs::read_to_string(project_root().join(DAP_SMOKE_SOURCE))
         .with_context(|| format!("reading {DAP_SMOKE_SOURCE}"))?;
+    let code: Vec<&str> = source
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.starts_with("//") && !line.starts_with('*'))
+        .collect();
+    let declaration =
+        code.iter().position(|line| line.starts_with(&format!("fn {name}("))).ok_or_else(|| {
+            anyhow!(
+                "`{DAP_SMOKE_SOURCE}` declares no test named `{name}`; the lane's DAP smoke \
+                 would match nothing"
+            )
+        })?;
+    // `--exact <name>` only selects a harness test, so the declaration must
+    // actually be one rather than a helper that happens to share the name.
     ensure!(
-        source.contains(&format!("fn {name}(")),
-        "`{DAP_SMOKE_SOURCE}` declares no test named `{name}`; the lane's DAP smoke would \
-         match nothing"
+        code[..declaration].iter().rev().take(3).any(|line| line.starts_with("#[test]")),
+        "`{name}` in `{DAP_SMOKE_SOURCE}` is not a `#[test]`, so `--exact` would select nothing"
     );
 
-    // The adapter repeats the name as its fallback default; the two must agree.
+    // The adapter repeats the name as its fallback default. Match the exact
+    // assignment rather than the bare name, which a comment could satisfy.
     let adapter = fs::read_to_string(project_root().join(SMOKE_ADAPTER))
         .with_context(|| format!("reading {SMOKE_ADAPTER}"))?;
     ensure!(
-        adapter.contains(name),
+        adapter.contains(&format!("DAP_SMOKE_TEST:-{name}}}")),
         "`{SMOKE_ADAPTER}` defaults to a different test than the lane declares"
     );
 
