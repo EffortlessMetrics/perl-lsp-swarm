@@ -563,6 +563,37 @@ fn production_check_fails_closed_without_landed_subject_authority() -> Result<()
         "unexpected rejection for a malformed subject manifest: {error}"
     );
 
+    // A structurally valid manifest that omits one governed subject must be
+    // rejected by the denominator gate rather than merely accepted as
+    // parseable subject authority.
+    let incomplete = tempfile::tempdir()?;
+    let clients = incomplete.path().join(".ci/editor-clients");
+    std::fs::create_dir_all(&clients)?;
+    let mut manifest: serde_json::Value = serde_json::from_slice(&manifest_bytes)?;
+    let subjects = manifest
+        .get_mut("subjects")
+        .and_then(serde_json::Value::as_array_mut)
+        .ok_or_else(|| anyhow::anyhow!("subject manifest has no subjects array"))?;
+    let missing_subject = "bundled_eglot_emacs_29_4";
+    let position = subjects
+        .iter()
+        .position(|subject| {
+            subject.get("subject_id").and_then(serde_json::Value::as_str) == Some(missing_subject)
+        })
+        .ok_or_else(|| anyhow::anyhow!("governed subject {missing_subject} vanished"))?;
+    subjects.remove(position);
+    std::fs::write(clients.join("emacs-subjects.v1.json"), serde_json::to_vec_pretty(&manifest)?)?;
+    let error = match validate_compiled_registry_against(incomplete.path()) {
+        Err(error) => error.to_string(),
+        Ok(_) => bail!("production check accepted an incomplete subject denominator"),
+    };
+    ensure!(
+        error.contains("does not certify the governed client set")
+            && !error.contains("missing or unreadable")
+            && !error.contains("not valid JSON"),
+        "unexpected rejection for an incomplete subject denominator: {error}"
+    );
+
     // The landed authority itself still validates end to end.
     let landed = tempfile::tempdir()?;
     let clients = landed.path().join(".ci/editor-clients");
