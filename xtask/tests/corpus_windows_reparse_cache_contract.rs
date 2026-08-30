@@ -421,6 +421,7 @@ fn validate_workflow(source: &str) -> Result<()> {
                 || line.contains("selected_tests[") && line.contains("]=")
                 || line.contains("unset selected_tests")
                 || line.contains("unset -v selected_tests")
+                || line.contains("unset -v \"selected_tests[@]\"")
                 || line.contains("unset 'selected_tests[")
                 || line.contains("unset \"selected_tests[")
                 || line.contains("declare selected_tests")
@@ -431,6 +432,8 @@ fn validate_workflow(source: &str) -> Result<()> {
                     && line.contains("selected_tests")
                 || line.contains("read -a selected_tests")
                 || line.contains("read -r -a selected_tests")
+                || line.contains("ifs= read -ra selected_tests")
+                || line.contains("ifs= read -r -a selected_tests")
         }),
         "topology proof must not mutate selected tests after declaration"
     );
@@ -658,6 +661,14 @@ fn static_contract_rejects_structural_proof_and_trigger_mutations() -> Result<()
         (
             "          )\n\n          test_list=\"$(mktemp)\"",
             "          )\n          read -r -a selected_tests <<< \"\"\n\n          test_list=\"$(mktemp)\"",
+        ),
+        (
+            "          )\n\n          test_list=\"$(mktemp)\"",
+            "          )\n          unset -v \"selected_tests[@]\"\n\n          test_list=\"$(mktemp)\"",
+        ),
+        (
+            "          )\n\n          test_list=\"$(mktemp)\"",
+            "          )\n          IFS= read -ra selected_tests <<< \"\"\n\n          test_list=\"$(mktemp)\"",
         ),
         (TOPOLOGY_EXECUTION_SOURCE_ANCHOR, ""),
     ] {
