@@ -136,8 +136,12 @@ fn print_report(report: &ScanReport) {
     }
 }
 
+fn receipt_parent_to_create(path: &Path) -> Option<&Path> {
+    path.parent().filter(|parent| !parent.as_os_str().is_empty())
+}
+
 fn write_receipt(path: &Path, report: &ScanReport) -> Result<()> {
-    if let Some(parent) = path.parent() {
+    if let Some(parent) = receipt_parent_to_create(path) {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create receipt dir {}", parent.display()))?;
     }
@@ -396,5 +400,23 @@ expires = "2026-11-30"
             .expect_err("ownerless ledger");
         let display = format!("{error:#}");
         assert!(display.contains("ownerless"), "{display}");
+    }
+
+    #[test]
+    fn bare_receipt_filename_has_no_directory_to_create() {
+        assert!(super::receipt_parent_to_create(Path::new("receipt.json")).is_none());
+        assert_eq!(
+            super::receipt_parent_to_create(Path::new("out/receipt.json")).map(Path::as_os_str),
+            Some(std::ffi::OsStr::new("out"))
+        );
+    }
+
+    #[test]
+    fn write_receipt_accepts_a_filename_in_an_existing_directory() {
+        let tmp = TempDir::new().expect("tempdir");
+        let path = tmp.path().join("receipt.json");
+        super::write_receipt(&path, &super::ScanReport::default()).expect("write receipt");
+        let body = fs::read_to_string(&path).expect("read receipt");
+        assert!(body.contains("check-tautology"), "{body}");
     }
 }

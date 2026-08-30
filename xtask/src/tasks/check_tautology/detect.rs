@@ -112,8 +112,10 @@ fn option_or_result_pair(left: &Expr, right: &Expr) -> Option<RuleId> {
         return None;
     }
     // Identical method-call receivers (`iter.next()`) can yield different
-    // values. Function calls are still governed because the first known hit
-    // is `sanitize_completion_path_input(...).is_some() || ...is_none()`.
+    // values. Identical function-call receivers remain governed because
+    // #14061 falsifier 5 is the `sanitize_completion_path_input(...)`
+    // option-pair. Impure-call residuals are accepted; a purity plugin is
+    // a non-goal.
     if !receiver_stable_enough(left_recv) {
         return None;
     }
