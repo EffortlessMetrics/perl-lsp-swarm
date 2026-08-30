@@ -208,6 +208,13 @@ impl DeclarationAttributeSyntax {
     }
 
     /// Construct and validate an owner-neutral source attribute.
+    ///
+    /// For [`DeclarationAttributeCompleteness::Exact`] the outer `range` is
+    /// pinned tight to the source components: it must start at the separator
+    /// start and end at the argument end (or the name end when no argument is
+    /// present). [`DeclarationAttributeCompleteness::Recovered`] permits the
+    /// outer range to extend past the last component to cover recovered
+    /// source.
     pub fn new(
         separator: DeclarationAttributeSeparator,
         name: String,
@@ -226,7 +233,7 @@ impl DeclarationAttributeSyntax {
         }
         validate_range(separator.range())?;
         if matches!(separator, DeclarationAttributeSeparator::Colon { .. })
-            && separator.range().end != separator.range().start + 1
+            && separator.range().end - separator.range().start != 1
         {
             return Err(DeclarationAttributeSyntaxError::InvalidAttributeGeometry);
         }
@@ -404,6 +411,24 @@ mod tests {
         assert_eq!(
             DeclarationAttributeSyntax::new(
                 DeclarationAttributeSeparator::WhitespaceContinuation { range: span(0, 0) },
+                "a".into(),
+                span(0, 1),
+                None,
+                span(0, 1),
+                DeclarationAttributeCompleteness::Exact,
+            ),
+            Err(DeclarationAttributeSyntaxError::InvalidAttributeGeometry)
+        );
+    }
+
+    #[test]
+    fn rejects_maximum_offset_colon_without_overflowing() {
+        // A zero-width colon at `usize::MAX` must return a validation error
+        // instead of overflowing the width arithmetic in debug builds.
+        let max = span(usize::MAX, usize::MAX);
+        assert_eq!(
+            DeclarationAttributeSyntax::new(
+                DeclarationAttributeSeparator::Colon { range: max },
                 "a".into(),
                 span(0, 1),
                 None,
@@ -667,7 +692,7 @@ mod tests {
             Err(DeclarationAttributeSyntaxError::InvalidDelimiters)
         );
 
-        let recovered_body_overlaps_delimiters = DeclarationAttributeArgumentSyntax {
+        let recovered_body_contains_delimiters = DeclarationAttributeArgumentSyntax {
             disposition: DeclarationAttributeArgumentDisposition::Recovered,
             delimiters: Some(DeclarationAttributeDelimiter::Parentheses {
                 opening: span(7, 8),
@@ -681,7 +706,7 @@ mod tests {
                 DeclarationAttributeSeparator::Colon { range: span(0, 1) },
                 "a".into(),
                 span(1, 2),
-                Some(recovered_body_overlaps_delimiters),
+                Some(recovered_body_contains_delimiters),
                 span(0, 12),
                 DeclarationAttributeCompleteness::Recovered,
             ),
