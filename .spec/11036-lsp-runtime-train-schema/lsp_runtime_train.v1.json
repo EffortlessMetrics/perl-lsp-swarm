@@ -842,7 +842,7 @@
   "limitations": [
     "This revision is a schema fixture subset: it proves the contract can express every role, horizon, edge kind, and old-path disposition, and it does not represent the runtime programme graph.",
     "No node here asserts that its proposition is implemented on any tree.",
-    "No current, live, observed, or released fact is representable in this contract by construction.",
+    "Mutable state is refused at two layers: a closed field set that forbids mutable field names, and a bounded value scan over every string. This is bounded rejection, not a structural impossibility proof — prose fields remain prose, so a sufficiently novel phrasing of live state would pass. Closing that further means replacing prose with typed vocabularies, which is a later revision, not a v1 claim.",
     "The stack vocabulary carries only the relations the fixtures actually exercise. A restack relation describes candidate history, which belongs to the live-collaboration plane; it is added here only if the stable graph is ever shown to need it.",
     "The canonical digest escapes the backslash and semicolon that terminate its own scalar tokens. Container delimiters are not escaped inside string content; that is safe here because every scalar token is self-terminating and object keys are fixed by the strict field set, but it is a bound of this canonicalization rather than a general guarantee."
   ]

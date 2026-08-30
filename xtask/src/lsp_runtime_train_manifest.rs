@@ -52,7 +52,7 @@ pub const SCHEMA_VERSION: u64 = 1;
 /// together with the manifest bytes; patching around it silently is exactly
 /// what the pin exists to prevent.
 pub const PINNED_CANONICAL_DIGEST: &str =
-    "C5BC5B670FE674865023FA05C1683CB13324713C66DFE4873A71414E98C40B63";
+    "5873E02BD8813E042CDA0657FF5F5EF2B18D5292247D29D35A0E8874A0E19749";
 
 /// The only population status `v1` may claim. Completing the graph is #11037's
 /// authority, so a manifest that calls itself complete fails closed here.
