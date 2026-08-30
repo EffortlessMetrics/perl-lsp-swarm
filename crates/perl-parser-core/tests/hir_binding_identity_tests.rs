@@ -482,6 +482,45 @@ fn declared_qualified_global_carries_canonical_identity() {
     }
 }
 
+/// Attributed declarations (`my $x :shared`) anchor on the inner variable
+/// token, not the attribute wrapper, so they resolve to their recorded binding
+/// with and without an initializer.
+///
+/// Pinned because `binding_declared_at` matches on the declaration span exactly
+/// and does not fall back: if the anchor ever moved to the wrapper node, these
+/// declarations would silently carry `None` instead.
+#[test]
+fn attributed_declarations_resolve_to_their_binding() {
+    for source in [
+        "sub f { my $x :shared = 1; return $x; }\n",
+        "sub f { my $x :shared; return $x; }\n",
+        "my $x :shared = 1;\nprint $x;\n",
+        "my $x :shared;\nprint $x;\n",
+    ] {
+        let file = lower(source);
+        let declared = must_some(file.scope_graph.bindings.iter().find(|b| b.name == "x"));
+
+        let decls = declarations(&file);
+        assert_eq!(decls.len(), 1, "expected one `my $x` declaration in {source:?}");
+        assert_eq!(
+            decls[0].binding,
+            Some(declared.id),
+            "attributed declaration in {source:?} must carry its recorded binding"
+        );
+
+        let reads: Vec<Occurrence> = occurrences(&file)
+            .into_iter()
+            .filter(|o| o.name == "x" && o.access == AccessMode::Read)
+            .collect();
+        assert_eq!(reads.len(), 1, "expected one read of `$x` in {source:?}");
+        assert_eq!(
+            reads[0].binding,
+            Some(declared.id),
+            "read of an attributed declaration in {source:?} must join the same binding"
+        );
+    }
+}
+
 /// An undeclared bare variable is also unresolved — `None`, never a stand-in.
 #[test]
 fn undeclared_variable_carries_no_identity() {
