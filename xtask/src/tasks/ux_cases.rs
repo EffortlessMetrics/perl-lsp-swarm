@@ -291,10 +291,14 @@ fn render(inventory: &UxCaseInventory) -> Result<String> {
 /// other's document or fail when their staging file vanished underneath them.
 fn write_atomic(path: &Path, body: &str) -> Result<()> {
     // `Path::parent` of a bare file name is `Some("")`, and `create_dir_all("")`
-    // fails — so `--out inventory.json` would never write anything.
-    if let Some(parent) = path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
-        fs::create_dir_all(parent)?;
-    }
+    // fails — so `--out inventory.json` would never write anything. Resolving
+    // the empty case to `.` also keeps the durability step below applicable to
+    // a bare output rather than silently skipped.
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent)?;
     let unique = format!(
         "{}.{}.{}.tmp",
         path.file_name().map_or_else(|| "inventory".into(), |name| name.to_string_lossy()),
@@ -311,13 +315,26 @@ fn write_atomic(path: &Path, body: &str) -> Result<()> {
         let _ = fs::remove_file(&staging);
         return Err(error.into());
     }
-    // Persist the directory entry too: without it a crash after a reported
-    // success can lose an inventory a downstream gate already believes exists.
-    if let Some(parent) = path.parent().filter(|parent| !parent.as_os_str().is_empty())
-        && let Ok(dir) = fs::File::open(parent)
-    {
-        let _ = dir.sync_all();
-    }
+    sync_directory(parent)?;
+    Ok(())
+}
+
+/// Flush a directory entry so a rename survives a crash.
+///
+/// Without this, `write_atomic` can report success before the new name is
+/// durable and a crash loses an inventory a downstream gate already believes
+/// exists. Failures propagate rather than being swallowed: a write reported as
+/// successful must actually be durable.
+#[cfg(unix)]
+fn sync_directory(parent: &Path) -> Result<()> {
+    fs::File::open(parent)?.sync_all()?;
+    Ok(())
+}
+
+/// Windows has no directory handle to fsync; `MoveFileEx` ordering is the
+/// platform's durability contract for the rename itself.
+#[cfg(not(unix))]
+fn sync_directory(_parent: &Path) -> Result<()> {
     Ok(())
 }
 

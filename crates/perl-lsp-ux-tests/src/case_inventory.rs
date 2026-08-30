@@ -465,10 +465,22 @@ impl<'de> Deserialize<'de> for UxCaseId {
         // A typed identity that cannot be decomposed is not an identity. B02
         // consumes these; rejecting here keeps a malformed id from travelling
         // any further than the document it arrived in.
-        if candidate.components().is_none() {
-            return Err(serde::de::Error::custom(format!(
+        let components = candidate.components().ok_or_else(|| {
+            serde::de::Error::custom(format!(
                 "`{}` is not a well-formed ux case id (expected four escaped `::`-joined components)",
                 candidate.encoded
+            ))
+        })?;
+        // Decomposable is not enough: `pkg::test::a:b::c` and
+        // `pkg::test::a%3Ab::c` decode to the same tuple, so accepting both
+        // would let one case carry two identities and defeat the deduplication
+        // the collision-free claim rests on. Round-tripping through `new`
+        // admits exactly the canonical spelling.
+        let canonical = Self::new(&components[0], &components[1], &components[2], &components[3]);
+        if canonical != candidate {
+            return Err(serde::de::Error::custom(format!(
+                "`{}` is not canonically encoded (canonical form is `{}`)",
+                candidate.encoded, canonical.encoded
             )));
         }
         Ok(candidate)

@@ -1105,3 +1105,19 @@ fn the_replay_placeholder_names_a_rule_that_always_resolves() {
     );
     assert_eq!(CARGO_TARGET_DIR_PLACEHOLDER, "{cargo:target_directory}");
 }
+
+#[test]
+fn a_noncanonical_case_id_encoding_is_rejected() -> TestResult {
+    // `pkg::test::a:b::c` and `pkg::test::a%3Ab::c` decode to the same tuple.
+    // Accepting both would let one case carry two identities, which is exactly
+    // what the collision-free claim rules out.
+    let canonical = UxCaseId::new("pkg", "test", "a:b", "c");
+    assert_eq!(canonical.as_str(), "pkg::test::a%3Ab::c");
+
+    let raw_colon = serde_json::from_str::<UxCaseId>(r#""pkg::test::a:b::c""#);
+    assert!(raw_colon.is_err(), "a raw colon inside a component must be rejected");
+
+    let round_tripped: UxCaseId = serde_json::from_str(&serde_json::to_string(&canonical)?)?;
+    assert_eq!(round_tripped, canonical, "the canonical spelling still round-trips");
+    Ok(())
+}
