@@ -12,10 +12,11 @@
 
 use perl_parser_core::{Node, Parser};
 use perl_workspace_core::{
-    CompatibilityMismatchKind, Confidence, FileRole, NamedSubroutinePolicy, ParseStatus,
-    SourceIdentityRef, TestFrameworkIdentity, TestItemDiscoveryRequest, TestItemKind, TestItemName,
-    TestItemPublicationError, TestItemSnapshot, compare_with_parser_backed,
-    discover_test_item_snapshot, parser_backed_subtests,
+    CompatibilityMismatchKind, Confidence, Digest, FileRole, NamedSubroutinePolicy, ParseStatus,
+    ParserBackedTree, SourceIdentityRef, SourceRange, TestFrameworkIdentity,
+    TestItemDiscoveryRequest, TestItemId, TestItemKind, TestItemName, TestItemPublicationError,
+    TestItemSnapshot, compare_with_parser_backed, discover_test_item_snapshot,
+    parser_backed_subtests,
 };
 
 fn source_ref(seed: u8) -> SourceIdentityRef {
@@ -197,6 +198,27 @@ fn conservative_named_subroutine_policy_keeps_ordinary_subs_out() {
 }
 
 #[test]
+fn conservative_named_subroutine_policy_rejects_vacuous_prefix_and_suffix() {
+    let source = "sub test_ { ok(1); }\nsub _test { ok(1); }\nsub test_foo { ok(1); }\nsub foo_test { ok(1); }\n";
+    let snapshot =
+        discover(source, 1, &source_ref(1), NamedSubroutinePolicy::ConservativeFileScope, None);
+    let file = snapshot.items.iter().find(|item| item.kind == TestItemKind::File).unwrap();
+    let named: Vec<_> = snapshot
+        .children_of(&file.id)
+        .into_iter()
+        .filter(|item| item.kind == TestItemKind::NamedSubroutine)
+        .map(|item| item.name.clone())
+        .collect();
+    assert_eq!(
+        named,
+        vec![
+            TestItemName::Named("test_foo".to_string()),
+            TestItemName::Named("foo_test".to_string())
+        ]
+    );
+}
+
+#[test]
 fn malformed_source_keeps_only_safe_items() {
     let source = "subtest 'kept' => sub { ok(1); };\nsubtest 'broken' => sub {\n";
     let ast = Parser::new(source).parse_with_recovery().ast;
@@ -337,12 +359,14 @@ fn parser_backed_comparison_classifies_file_item_as_extra() {
     let source = "subtest 'outer' => sub {\n    subtest 'inner' => sub { ok(1); };\n};\n";
     let snapshot = discover(source, 1, &source_ref(1), NamedSubroutinePolicy::Off, None);
     let ast = parse(source);
-    let mismatches = compare_with_parser_backed(&snapshot, &parser_backed_subtests(&ast, source));
+    let mismatches = compare_with_parser_backed(
+        &snapshot,
+        &parser_backed_subtests(&ast, source, snapshot.generation),
+    );
     assert!(mismatches.iter().all(|mismatch| {
         mismatch.kind != CompatibilityMismatchKind::MissingItem
             && mismatch.kind != CompatibilityMismatchKind::RangeMismatch
             && mismatch.kind != CompatibilityMismatchKind::NameStateMismatch
-            && mismatch.kind != CompatibilityMismatchKind::HierarchyMismatch
     }));
     assert_eq!(
         mismatches
@@ -362,12 +386,14 @@ fn qualified_test_more_subtest_is_discovered_local_package_is_not() {
     assert!(names.contains(&TestItemName::Named("qualified".to_string())));
     assert!(!names.contains(&TestItemName::Named("nope".to_string())));
     let ast = parse(source);
-    let extras: Vec<_> =
-        compare_with_parser_backed(&snapshot, &parser_backed_subtests(&ast, source))
-            .into_iter()
-            .filter(|mismatch| mismatch.kind == CompatibilityMismatchKind::ExtraItem)
-            .map(|mismatch| mismatch.detail)
-            .collect();
+    let extras: Vec<_> = compare_with_parser_backed(
+        &snapshot,
+        &parser_backed_subtests(&ast, source, snapshot.generation),
+    )
+    .into_iter()
+    .filter(|mismatch| mismatch.kind == CompatibilityMismatchKind::ExtraItem)
+    .map(|mismatch| mismatch.detail)
+    .collect();
     assert_eq!(extras, vec!["file_item".to_string(), "subtest".to_string()]);
 }
 
@@ -376,7 +402,10 @@ fn mixed_qualified_then_bare_pairs_by_range_not_sibling_index() {
     let source = "Test::More::subtest('a' => sub { ok(1); });\nsubtest 'b' => sub { ok(1); };\n";
     let snapshot = discover(source, 1, &source_ref(1), NamedSubroutinePolicy::Off, None);
     let ast = parse(source);
-    let mismatches = compare_with_parser_backed(&snapshot, &parser_backed_subtests(&ast, source));
+    let mismatches = compare_with_parser_backed(
+        &snapshot,
+        &parser_backed_subtests(&ast, source, snapshot.generation),
+    );
     assert!(mismatches.iter().all(|mismatch| {
         mismatch.kind != CompatibilityMismatchKind::NameStateMismatch
             && mismatch.kind != CompatibilityMismatchKind::RangeMismatch
@@ -397,6 +426,98 @@ fn mixed_qualified_then_bare_pairs_by_range_not_sibling_index() {
         .expect("qualified extra");
     let extra = snapshot.item(extra_id).expect("extra item");
     assert_eq!(extra.name, TestItemName::Named("a".to_string()));
+}
+
+#[test]
+fn parser_backed_instrument_failure_short_circuits_comparison() {
+    let source = "subtest 'bare' => sub { ok(1); };\n";
+    let snapshot = discover(source, 7, &source_ref(1), NamedSubroutinePolicy::Off, None);
+    let tree = ParserBackedTree {
+        generation: snapshot.generation,
+        source_digest: Digest::of(source),
+        roots: Vec::new(),
+        instrument_failure: Some("parser instrumentation failed".to_string()),
+    };
+
+    let mismatches = compare_with_parser_backed(&snapshot, &tree);
+    assert_eq!(mismatches.len(), 1);
+    assert_eq!(mismatches[0].kind, CompatibilityMismatchKind::InstrumentFailure);
+    assert_eq!(mismatches[0].snapshot_id, None);
+    assert_eq!(mismatches[0].detail, "parser instrumentation failed");
+}
+
+#[test]
+fn parser_backed_generation_mismatch_short_circuits_comparison() {
+    let source = "subtest 'bare' => sub { ok(1); };\n";
+    let snapshot = discover(source, 7, &source_ref(1), NamedSubroutinePolicy::Off, None);
+    let ast = parse(source);
+    let tree = parser_backed_subtests(&ast, source, snapshot.generation + 1);
+
+    let mismatches = compare_with_parser_backed(&snapshot, &tree);
+    assert_eq!(mismatches.len(), 1);
+    assert_eq!(mismatches[0].kind, CompatibilityMismatchKind::FreshnessMismatch);
+    assert_eq!(mismatches[0].snapshot_id, None);
+    assert!(mismatches[0].detail.contains("snapshot generation 7"));
+    assert!(mismatches[0].detail.contains("parser-backed generation 8"));
+}
+
+#[test]
+fn invalid_supplied_snapshot_short_circuits_comparison() {
+    let source = "subtest 'bare' => sub { ok(1); };\n";
+    let source_ref = source_ref(1);
+    let snapshot = discover(source, 7, &source_ref, NamedSubroutinePolicy::Off, None);
+    let ast = parse(source);
+    let tree = parser_backed_subtests(&ast, source, snapshot.generation);
+    let mut items = snapshot.items.clone();
+    let file_index = items.iter().position(|item| item.kind == TestItemKind::File).expect("file");
+    items[file_index].id = TestItemId::new(&source_ref, None, TestItemKind::File, "mutated");
+    let invalid = TestItemSnapshot::new(
+        source_ref,
+        snapshot.source_digest.clone(),
+        snapshot.generation,
+        snapshot.source_len,
+        items,
+    );
+
+    let mismatches = compare_with_parser_backed(&invalid, &tree);
+    assert_eq!(mismatches.len(), 1);
+    assert_eq!(mismatches[0].kind, CompatibilityMismatchKind::InstrumentFailure);
+    assert_eq!(mismatches[0].snapshot_id, None);
+    assert!(mismatches[0].detail.starts_with("supplied snapshot is invalid: "));
+}
+
+#[test]
+fn exact_range_pairing_beats_start_byte_fallback() {
+    let source = "subtest 'bare' => sub { ok(1); };\n";
+    let snapshot = discover(source, 7, &source_ref(1), NamedSubroutinePolicy::Off, None);
+    let ast = parse(source);
+    let mut tree = parser_backed_subtests(&ast, source, snapshot.generation);
+    let exact = tree.roots.pop().expect("bare subtest oracle root");
+    let mut decoy = exact.clone();
+    decoy.range = SourceRange { end_byte: exact.range.end_byte - 1, ..exact.range };
+    tree.roots = vec![decoy, exact];
+
+    let mismatches = compare_with_parser_backed(&snapshot, &tree);
+    assert_eq!(
+        mismatches
+            .iter()
+            .filter(|mismatch| mismatch.kind == CompatibilityMismatchKind::MissingItem)
+            .count(),
+        1
+    );
+    assert!(
+        !mismatches
+            .iter()
+            .any(|mismatch| { mismatch.kind == CompatibilityMismatchKind::RangeMismatch })
+    );
+    assert_eq!(
+        mismatches
+            .iter()
+            .filter(|mismatch| mismatch.kind == CompatibilityMismatchKind::ExtraItem)
+            .map(|mismatch| mismatch.detail.as_str())
+            .collect::<Vec<_>>(),
+        vec!["file_item"]
+    );
 }
 
 #[test]

@@ -116,6 +116,6 @@ pub use test_item::{
 };
 pub use test_item_discovery::{
     CompatibilityMismatch, CompatibilityMismatchKind, NamedSubroutinePolicy, ParserBackedSubtest,
-    TestItemDiscoveryError, TestItemDiscoveryRequest, compare_with_parser_backed,
+    ParserBackedTree, TestItemDiscoveryError, TestItemDiscoveryRequest, compare_with_parser_backed,
     discover_test_item_snapshot, parser_backed_subtests,
 };

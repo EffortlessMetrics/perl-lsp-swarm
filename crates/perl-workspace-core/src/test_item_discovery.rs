@@ -6,6 +6,8 @@
 //!
 //! Framework identity is an explicit input. Seeing a `subtest` call is a
 //! parser-backed compatibility fact, not canonical FrameworkAdapter proof.
+//! The file item and every `NamedSubroutine` are reported as `ExtraItem` by
+//! design because they have no parser-backed counterpart.
 
 use perl_parser_core::{Node, NodeKind};
 
@@ -83,30 +85,21 @@ impl std::fmt::Display for TestItemDiscoveryError {
 impl std::error::Error for TestItemDiscoveryError {}
 
 /// Compatibility mismatch between canonical snapshot and parser-backed subtests.
+///
+/// This vocabulary is exactly what `compare_with_parser_backed` can emit
+/// against the bare-name parser oracle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompatibilityMismatchKind {
     /// Parser-backed item has no snapshot counterpart.
     MissingItem,
     /// Snapshot item has no parser-backed counterpart.
     ExtraItem,
-    /// Stable identity fields disagree for a matched pair.
-    IdentityMismatch,
     /// Source ranges disagree for a matched pair.
     RangeMismatch,
-    /// Parent/child structure disagrees for a matched pair.
-    HierarchyMismatch,
     /// Static vs dynamic name state disagrees.
     NameStateMismatch,
-    /// Capability bits disagree for a matched pair.
-    CapabilityMismatch,
-    /// Framework or provenance fields disagree.
-    FrameworkOrProvenanceMismatch,
     /// Snapshot freshness disagrees with the compared generation.
     FreshnessMismatch,
-    /// Parser-backed result is a known false positive/negative.
-    LegacyKnownFalse,
-    /// Snapshot result is a known false positive/negative.
-    SnapshotKnownFalse,
     /// Comparison could not be completed.
     InstrumentFailure,
 }
@@ -133,6 +126,19 @@ pub struct ParserBackedSubtest {
     pub name_range: SourceRange,
     /// Nested parser-backed subtests.
     pub children: Vec<ParserBackedSubtest>,
+}
+
+/// Parser-backed comparison oracle output for exactly one source generation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParserBackedTree {
+    /// Generation the parser-backed facts were derived from.
+    pub generation: u64,
+    /// Digest of the source the parser-backed facts were derived from.
+    pub source_digest: Digest,
+    /// Top-level parser-backed subtests.
+    pub roots: Vec<ParserBackedSubtest>,
+    /// Set when the oracle could not be built for this source.
+    pub instrument_failure: Option<String>,
 }
 
 /// Discover a validated generation-bound [`TestItemSnapshot`].
@@ -193,29 +199,74 @@ pub fn discover_test_item_snapshot(
 /// This oracle matches the live `perl-lsp-rs-core` call-name set: bare
 /// `subtest` / `subtest_buffered` / `subtest_streamed` only. Qualified
 /// `Test::More::subtest` items are canonical extras, not legacy hits.
-pub fn parser_backed_subtests(ast: &Node, source: &str) -> Vec<ParserBackedSubtest> {
+pub fn parser_backed_subtests(ast: &Node, source: &str, generation: u64) -> ParserBackedTree {
+    let source_digest = Digest::of(source);
     let Ok(source_len) = u32::try_from(source.len()) else {
-        return Vec::new();
+        return ParserBackedTree {
+            generation,
+            source_digest,
+            roots: Vec::new(),
+            instrument_failure: Some(format!(
+                "source length {} exceeds u32 range bounds",
+                source.len()
+            )),
+        };
     };
     let index = Utf8LineIndex::new(source);
     let mut calls = Vec::new();
     collect_subtest_calls(ast, source, &index, source_len, SubtestNameSet::LegacyBare, &mut calls);
-    calls.into_iter().map(parser_backed_from_call).collect()
+    ParserBackedTree {
+        generation,
+        source_digest,
+        roots: calls.into_iter().map(parser_backed_from_call).collect(),
+        instrument_failure: None,
+    }
 }
 
 /// Classify differences between a snapshot and parser-backed subtests.
 pub fn compare_with_parser_backed(
     snapshot: &TestItemSnapshot,
-    legacy: &[ParserBackedSubtest],
+    legacy: &ParserBackedTree,
 ) -> Vec<CompatibilityMismatch> {
-    let mut mismatches = Vec::new();
-    let Some(file) = snapshot.items.iter().find(|item| item.kind == TestItemKind::File) else {
-        mismatches.push(CompatibilityMismatch {
+    if let Some(detail) = &legacy.instrument_failure {
+        return vec![CompatibilityMismatch {
             kind: CompatibilityMismatchKind::InstrumentFailure,
             snapshot_id: None,
-            detail: "snapshot has no file item".to_string(),
-        });
-        return mismatches;
+            detail: detail.clone(),
+        }];
+    }
+    if let Err(error) = snapshot.validate() {
+        return vec![CompatibilityMismatch {
+            kind: CompatibilityMismatchKind::InstrumentFailure,
+            snapshot_id: None,
+            detail: format!("supplied snapshot is invalid: {error}"),
+        }];
+    }
+    if snapshot.generation != legacy.generation || snapshot.source_digest != legacy.source_digest {
+        let detail = if snapshot.generation != legacy.generation {
+            format!(
+                "snapshot generation {} vs parser-backed generation {}",
+                snapshot.generation, legacy.generation
+            )
+        } else {
+            format!(
+                "snapshot source digest {} vs parser-backed source digest {}",
+                snapshot.source_digest, legacy.source_digest
+            )
+        };
+        return vec![CompatibilityMismatch {
+            kind: CompatibilityMismatchKind::FreshnessMismatch,
+            snapshot_id: None,
+            detail,
+        }];
+    }
+    let mut mismatches = Vec::new();
+    let Some(file) = snapshot.items.iter().find(|item| item.kind == TestItemKind::File) else {
+        return vec![CompatibilityMismatch {
+            kind: CompatibilityMismatchKind::InstrumentFailure,
+            snapshot_id: None,
+            detail: "validated snapshot has no file item".to_string(),
+        }];
     };
 
     mismatches.push(CompatibilityMismatch {
@@ -234,7 +285,7 @@ pub fn compare_with_parser_backed(
         }
     }
 
-    compare_trees(snapshot, snapshot.children_of(&file.id), legacy, &mut mismatches);
+    compare_trees(snapshot, snapshot.children_of(&file.id), &legacy.roots, &mut mismatches);
     mismatches
 }
 
@@ -246,11 +297,39 @@ fn compare_trees(
 ) {
     let snapshot_subtests: Vec<&TestItem> =
         snapshot_children.into_iter().filter(|item| item.kind == TestItemKind::Subtest).collect();
-    let mut unmatched_legacy: Vec<&ParserBackedSubtest> = legacy_children.iter().collect();
-    for item in snapshot_subtests {
-        let Some(legacy_index) = unmatched_legacy.iter().position(|legacy| {
-            item.range == legacy.range || item.range.start_byte == legacy.range.start_byte
-        }) else {
+    let mut matched_legacy = vec![None; snapshot_subtests.len()];
+    let mut legacy_used = vec![false; legacy_children.len()];
+
+    for (snapshot_index, item) in snapshot_subtests.iter().enumerate() {
+        if let Some(legacy_index) =
+            legacy_children.iter().enumerate().find_map(|(legacy_index, legacy)| {
+                (!legacy_used[legacy_index] && item.range == legacy.range).then_some(legacy_index)
+            })
+        {
+            matched_legacy[snapshot_index] = Some(legacy_index);
+            legacy_used[legacy_index] = true;
+        }
+    }
+    for (snapshot_index, item) in snapshot_subtests.iter().enumerate() {
+        if matched_legacy[snapshot_index].is_some() {
+            continue;
+        }
+        if let Some(legacy_index) = legacy_children
+            .iter()
+            .enumerate()
+            .filter(|(legacy_index, legacy)| {
+                !legacy_used[*legacy_index] && item.range.start_byte == legacy.range.start_byte
+            })
+            .min_by_key(|(_, legacy)| legacy.range.end_byte.abs_diff(item.range.end_byte))
+            .map(|(legacy_index, _)| legacy_index)
+        {
+            matched_legacy[snapshot_index] = Some(legacy_index);
+            legacy_used[legacy_index] = true;
+        }
+    }
+
+    for (snapshot_index, item) in snapshot_subtests.into_iter().enumerate() {
+        let Some(legacy_index) = matched_legacy[snapshot_index] else {
             mismatches.push(CompatibilityMismatch {
                 kind: CompatibilityMismatchKind::ExtraItem,
                 snapshot_id: Some(item.id.clone()),
@@ -258,7 +337,7 @@ fn compare_trees(
             });
             continue;
         };
-        let legacy = unmatched_legacy.remove(legacy_index);
+        let legacy = &legacy_children[legacy_index];
         if item.name != legacy.name {
             mismatches.push(CompatibilityMismatch {
                 kind: CompatibilityMismatchKind::NameStateMismatch,
@@ -273,21 +352,16 @@ fn compare_trees(
                 detail: format!("start_byte={}", item.range.start_byte),
             });
         }
-        if item.generation != snapshot.generation || item.source_digest != snapshot.source_digest {
-            mismatches.push(CompatibilityMismatch {
-                kind: CompatibilityMismatchKind::FreshnessMismatch,
-                snapshot_id: Some(item.id.clone()),
-                detail: format!("start_byte={}", item.range.start_byte),
-            });
-        }
         compare_trees(snapshot, snapshot.children_of(&item.id), &legacy.children, mismatches);
     }
-    for _legacy in unmatched_legacy {
-        mismatches.push(CompatibilityMismatch {
-            kind: CompatibilityMismatchKind::MissingItem,
-            snapshot_id: None,
-            detail: "subtest".to_string(),
-        });
+    for (legacy_index, _legacy) in legacy_children.iter().enumerate() {
+        if !legacy_used[legacy_index] {
+            mismatches.push(CompatibilityMismatch {
+                kind: CompatibilityMismatchKind::MissingItem,
+                snapshot_id: None,
+                detail: "subtest".to_string(),
+            });
+        }
     }
 }
 
@@ -639,7 +713,8 @@ fn is_conservative_test_sub_name(name: &str) -> bool {
     if name == "subtest" || !is_perl_identifier(name) {
         return false;
     }
-    name.starts_with("test_") || name.ends_with("_test")
+    name.strip_prefix("test_").is_some_and(|rest| !rest.is_empty())
+        || name.strip_suffix("_test").is_some_and(|rest| !rest.is_empty())
 }
 
 fn is_perl_identifier(name: &str) -> bool {
