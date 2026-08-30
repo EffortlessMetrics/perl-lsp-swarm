@@ -1050,3 +1050,43 @@ fn the_implicit_package_id_form_derives_its_name_from_the_directory() -> TestRes
     );
     Ok(())
 }
+
+#[test]
+fn unknown_subject_facts_are_declared_rather_than_passed_off_as_known() -> TestResult {
+    let executable = exe("ux_scenario_01_simple_file-3001");
+    let stdout =
+        artifact_line("perl-lsp-ux-tests", "test", "ux_scenario_01_simple_file", &executable, &[]);
+    let commands = FixtureCommands::new(stdout).listing(&executable, terse(&["opens_a_file"]));
+
+    // A request where every optional probe failed — the shape `xtask` produces
+    // when git, rustc, or the manifest reads are unavailable.
+    let bare = UxDiscoveryRequest::new(UxCiTier::Pr, PathBuf::from(WORKSPACE_ROOT));
+    let inventory = discover_cases(&commands, &bare)?;
+
+    for expected in [
+        UxInventoryLimitation::RepositoryShaUnknown,
+        UxInventoryLimitation::RepositoryDirtyStateUnknown,
+        UxInventoryLimitation::RustToolchainUnknown,
+        UxInventoryLimitation::HostTargetUnknown,
+        UxInventoryLimitation::CargoLockDigestUnknown,
+        UxInventoryLimitation::PackageManifestDigestUnknown,
+    ] {
+        assert!(
+            inventory.limitations.contains(&expected),
+            "{expected:?} must be declared; limitations were {:?}",
+            inventory.limitations
+        );
+    }
+
+    // A fully-probed subject declares none of them.
+    let complete = discover_cases(&commands, &request(UxCiTier::Pr))?;
+    for absent in [
+        UxInventoryLimitation::RustToolchainUnknown,
+        UxInventoryLimitation::HostTargetUnknown,
+        UxInventoryLimitation::CargoLockDigestUnknown,
+        UxInventoryLimitation::PackageManifestDigestUnknown,
+    ] {
+        assert!(!complete.limitations.contains(&absent), "{absent:?} must not be declared");
+    }
+    Ok(())
+}

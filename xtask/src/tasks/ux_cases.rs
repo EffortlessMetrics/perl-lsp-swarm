@@ -20,6 +20,7 @@ use perl_lsp_ux_tests::case_inventory::{
 use perl_lsp_ux_tests::taxonomy::UxCiTier;
 use sha2::{Digest, Sha256};
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -83,20 +84,25 @@ impl UxDiscoveryCommands for SystemDiscoveryCommands {
         executable: &Path,
         argv: &[String],
     ) -> Result<String, UxDiscoveryFailure> {
+        // `argv` on the failure is contractually the exact invoked command, so
+        // it must name the executable rather than only its arguments.
+        let invoked: Vec<String> = std::iter::once(executable.to_string_lossy().into_owned())
+            .chain(argv.iter().cloned())
+            .collect();
         let output = Command::new(executable)
             .args(argv)
             .current_dir(&self.workspace_root)
             .output()
             .map_err(|error| UxDiscoveryFailure::ListCommandFailed {
                 target: target_identity.to_string(),
-                argv: argv.to_vec(),
+                argv: invoked.clone(),
                 status: None,
                 detail: error.to_string(),
             })?;
         if !output.status.success() {
             return Err(UxDiscoveryFailure::ListCommandFailed {
                 target: target_identity.to_string(),
-                argv: argv.to_vec(),
+                argv: invoked,
                 status: output.status.code(),
                 detail: truncate(&String::from_utf8_lossy(&output.stderr)),
             });
@@ -205,6 +211,9 @@ fn build_request(root: &Path, tier: UxCiTier, include_local_execution: bool) -> 
     request.cargo_profile = "test".to_string();
 
     request.include_local_execution = include_local_execution;
+    // Every probe above can fail. `UxDiscoveryRequest` records `None`/`unknown`
+    // for those, and `discover_cases` turns each into a declared limitation, so
+    // a subject assembled from partial evidence never reads as fully known.
     request.generated_at = include_local_execution.then(|| chrono::Utc::now().to_rfc3339());
     request
 }
@@ -231,14 +240,29 @@ fn write_atomic(path: &Path, body: &str) -> Result<()> {
     );
     // Same directory, so the rename stays on one filesystem and is atomic.
     let staging = path.with_file_name(unique);
-    if let Err(error) = fs::write(&staging, body) {
+    if let Err(error) = write_and_sync(&staging, body) {
         let _ = fs::remove_file(&staging);
-        return Err(error.into());
+        return Err(error);
     }
     if let Err(error) = fs::rename(&staging, path) {
         let _ = fs::remove_file(&staging);
         return Err(error.into());
     }
+    // Persist the directory entry too: without it a crash after a reported
+    // success can lose an inventory a downstream gate already believes exists.
+    if let Some(parent) = path.parent()
+        && let Ok(dir) = fs::File::open(parent)
+    {
+        let _ = dir.sync_all();
+    }
+    Ok(())
+}
+
+/// Write `body` to `path` and flush it to stable storage before returning.
+fn write_and_sync(path: &Path, body: &str) -> Result<()> {
+    let mut file = fs::File::create(path)?;
+    file.write_all(body.as_bytes())?;
+    file.sync_all()?;
     Ok(())
 }
 
@@ -517,6 +541,29 @@ mod tests {
         let noisy = base.replace('\n', "\r\n").replace("binary: rustc", "binary: rustc   ");
         assert_eq!(normalize_rustc_identity(&noisy), left);
         assert_eq!(normalize_rustc_identity(""), "unknown");
+        Ok(())
+    }
+
+    #[test]
+    fn a_failed_listing_records_the_executable_it_invoked() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let missing = dir.path().join("not-a-real-test-binary");
+        let commands = SystemDiscoveryCommands { workspace_root: dir.path().to_path_buf() };
+
+        let failure = commands
+            .list_cases("pkg::test::t", &missing, &["--list".to_string()])
+            .expect_err("spawning a missing executable must fail");
+        match failure {
+            UxDiscoveryFailure::ListCommandFailed { argv, .. } => {
+                assert_eq!(
+                    argv.first().map(String::as_str),
+                    Some(missing.to_string_lossy().as_ref()),
+                    "argv must be the exact invoked command, executable first"
+                );
+                assert_eq!(argv.get(1).map(String::as_str), Some("--list"));
+            }
+            other => return Err(format!("unexpected failure: {other}").into()),
+        }
         Ok(())
     }
 

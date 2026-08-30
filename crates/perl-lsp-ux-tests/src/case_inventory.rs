@@ -1001,6 +1001,14 @@ pub enum UxInventoryLimitation {
     RepositoryShaUnknown,
     /// The subject's working-tree cleanliness could not be established.
     RepositoryDirtyStateUnknown,
+    /// The Rust toolchain identity could not be established.
+    RustToolchainUnknown,
+    /// The host target triple could not be established.
+    HostTargetUnknown,
+    /// The `Cargo.lock` digest could not be established.
+    CargoLockDigestUnknown,
+    /// The package manifest digest could not be established.
+    PackageManifestDigestUnknown,
     /// At least one executable lives outside both the workspace and the
     /// declared Cargo target directory.
     ///
@@ -1596,6 +1604,21 @@ pub fn discover_cases(
     }
     if replay_not_self_contained {
         limitations.insert(UxInventoryLimitation::ReplayNotSelfContained);
+    }
+    // A probe that could not run leaves the subject partially unknown. The
+    // document stays schema-valid — it is a true record of what was observable
+    // — but it must say so rather than let `"unknown"` pass for a fact.
+    if request.rust_toolchain.is_empty() || request.rust_toolchain == "unknown" {
+        limitations.insert(UxInventoryLimitation::RustToolchainUnknown);
+    }
+    if request.host_target.is_empty() || request.host_target == "unknown" {
+        limitations.insert(UxInventoryLimitation::HostTargetUnknown);
+    }
+    if request.cargo_lock_digest.is_none() {
+        limitations.insert(UxInventoryLimitation::CargoLockDigestUnknown);
+    }
+    if request.package_manifest_digest.is_none() {
+        limitations.insert(UxInventoryLimitation::PackageManifestDigestUnknown);
     }
 
     let cases_per_target: BTreeMap<String, usize> =
