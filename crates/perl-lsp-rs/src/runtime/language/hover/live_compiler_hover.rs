@@ -4,6 +4,7 @@ use crate::runtime::readiness::IndexReadinessPolicy;
 use perl_lsp_rs_core::providers::navigation::hover_shadow::{
     HoverCutoverOutcome, HoverCutoverResult, hover_cutover,
 };
+use perl_parser_core::syntax::source_context::SourceRegionIndex;
 use perl_semantic_facts::ProviderFactSourceKind;
 
 #[derive(Debug, Clone)]
@@ -11,7 +12,8 @@ pub(super) struct LiveHoverCompilerContext {
     uri: String,
     symbol: String,
     byte_offset: u32,
-    /// Trace-only metadata from [`perl_parser_core::SourceRegionIndex`]; routing in #4967.
+    /// Trace-only metadata from [`perl_parser_core::SourceRegionIndex`]; the
+    /// routing decision itself is made at context construction (#4967).
     #[expect(
         dead_code,
         reason = "policy:5003-pr1: trace substrate field for upcoming hover routing"
@@ -25,9 +27,17 @@ impl LspServer {
         text: &str,
         offset: usize,
         source_region_kind: Option<String>,
+        region_index: Option<&SourceRegionIndex>,
     ) -> Option<LiveHoverCompilerContext> {
         let symbol = Self::get_token_at_position_static(text, offset);
         if symbol.is_empty() {
+            return None;
+        }
+
+        // Semantic/index lookup is a proven-code route (#4967): the whole
+        // token candidate range must be classified `Code` by the
+        // generation-bound index, and missing evidence fails closed.
+        if !Self::token_fallback_is_proven_code(region_index, text, offset) {
             return None;
         }
 

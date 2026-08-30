@@ -13,6 +13,9 @@ use crate::protocol::{req_position, req_uri};
 use crate::runtime::readiness::IndexReadinessPolicy;
 use crate::state::ParsedSnapshot;
 use crate::util::escape_markdown_text;
+use perl_parser_core::syntax::source_context::{
+    RangeClassification, SourceRegionIndex, SourceRegionKind,
+};
 use std::sync::Arc;
 mod hover_cards;
 mod hover_extracted;
@@ -211,15 +214,23 @@ impl LspServer {
             let t_analyze_start = std::time::Instant::now();
             let (extracted, live_compiler_context, hover_range) = match locked {
                 Some((offset, parsed, text, range)) => {
-                    // Trace-only source-region classification (#5003). Recorded for the
-                    // dispatcher receipt in `runtime::language::misc`; it does not select
-                    // a hover branch and does not change the hover response payload.
-                    let source_region_kind = parsed.as_ref().map(|snapshot| {
-                        snapshot.source_region_index().kind_at_offset(offset).as_str().to_string()
-                    });
+                    // Generation-bound source-region evidence (#5003). Beyond the
+                    // dispatcher trace, it now routes the generic fallback paths:
+                    // semantic/index lookups and the token/builtin fallback only
+                    // fire in proven code (#4967).
+                    let source_region =
+                        parsed.as_ref().map(|snapshot| snapshot.source_region_index());
+                    let source_region_kind = source_region
+                        .as_ref()
+                        .map(|index| index.kind_at_offset(offset).as_str().to_string());
                     set_hover_trace_source_region_kind(source_region_kind.clone());
-                    let live_compiler_context =
-                        Self::live_hover_compiler_context(uri, &text, offset, source_region_kind);
+                    let live_compiler_context = Self::live_hover_compiler_context(
+                        uri,
+                        &text,
+                        offset,
+                        source_region_kind,
+                        source_region.as_deref(),
+                    );
                     if let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) {
                         // Canonical Dancer2 hover (#8928): one selected
                         // authority. Under exact activation the canonical
@@ -306,7 +317,7 @@ impl LspServer {
                         (extracted, live_compiler_context, range)
                     } else {
                         (
-                            Self::extract_token_hover(uri, &text, offset),
+                            Self::extract_token_hover(uri, &text, offset, source_region.as_deref()),
                             live_compiler_context,
                             range,
                         )
@@ -413,7 +424,14 @@ impl LspServer {
         offset: usize,
         parsed: &Option<Arc<ParsedSnapshot>>,
     ) -> HoverExtracted {
-        if let Some(xs_hover) = Self::extract_xs_api_hover(uri, text, offset) {
+        let source_region = parsed.as_ref().map(|snapshot| snapshot.source_region_index());
+        let source_region = source_region.as_deref();
+
+        // XS API names are claimed by raw token scan, so the claim is only
+        // allowed in proven code (#4967).
+        if Self::token_fallback_is_proven_code(source_region, text, offset)
+            && let Some(xs_hover) = Self::extract_xs_api_hover(uri, text, offset)
+        {
             return HoverExtracted::Complete(xs_hover);
         }
 
@@ -718,14 +736,52 @@ impl LspServer {
             }
         }
 
-        Self::extract_token_hover(uri, text, offset)
+        Self::extract_token_hover(uri, text, offset, source_region)
+    }
+
+    /// Whether the whole token candidate range at `offset` is proven
+    /// executable code by the generation-bound source-region index
+    /// (#5003/#4967).
+    ///
+    /// The whole candidate range — not just the cursor byte — must be proven:
+    /// a broad enclosing literal is not permission for generic identifier
+    /// fallback anywhere inside it. Missing evidence fails closed.
+    fn token_fallback_is_proven_code(
+        region_index: Option<&SourceRegionIndex>,
+        text: &str,
+        offset: usize,
+    ) -> bool {
+        let Some(index) = region_index else {
+            return false;
+        };
+        let (start, end) = Self::token_byte_bounds_of(text, offset);
+        matches!(
+            index.classify_range(start, end),
+            RangeClassification::Proven { kind: SourceRegionKind::Code }
+        )
     }
 
     /// Extract hover information from the token fallback path.
-    fn extract_token_hover(uri: &str, text: &str, offset: usize) -> HoverExtracted {
+    fn extract_token_hover(
+        uri: &str,
+        text: &str,
+        offset: usize,
+        region_index: Option<&SourceRegionIndex>,
+    ) -> HoverExtracted {
         // Check if the cursor is inside a regex literal and provide explanation.
+        //
+        // Semantic island: regex construct documentation is a dedicated
+        // provider claim on exact operator/flag/construct spans and stays
+        // possible inside regex bodies (#4967).
         if let Some(regex_hover) = Self::extract_regex_hover(text, offset) {
             return HoverExtracted::Complete(regex_hover);
+        }
+
+        // Generic symbol/token/builtin fallback: proven code only. Comments,
+        // POD, literals, quote-likes, regex bodies, heredocs, `__DATA__`, and
+        // recovery-ambiguous input fail closed to `None` (#4967).
+        if !Self::token_fallback_is_proven_code(region_index, text, offset) {
+            return HoverExtracted::None;
         }
 
         // Check for special/punctuation variables (e.g. $!, $/, $$, $^W)
