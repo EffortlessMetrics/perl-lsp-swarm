@@ -387,6 +387,17 @@ mod compiler_operating_profile_oracle_adapter {
         for observation in [&dynamic, &unsupported] {
             assert_eq!(observation.ceiling.claim_ceiling(), ClaimCeiling::ObservedEvidence);
         }
+
+        // The two arrays share a shape but not a meaning, and the axes they
+        // take are a deliberate choice rather than an accident: pin it so a
+        // later edit cannot silently swap them. A dynamic boundary is an
+        // incompleteness of this run; an unsupported effect is also a standing
+        // limitation on what the class can ever claim.
+        assert_eq!(
+            dynamic.limitation,
+            LimitationDisposition::None,
+            "a dynamic boundary is incompleteness now, not a standing limitation"
+        );
         Ok(())
     }
 
@@ -481,6 +492,110 @@ mod compiler_operating_profile_oracle_adapter {
             "an undifferentiated merge of the two fact sets would canonicalize to one digest"
         );
         assert_ne!(identity(&rust_side)?, identity(&oracle_side)?);
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------------------
+    // Falsifier 09b — a one-sided fact set still yields differential agreement
+    //
+    // Reported on the PR: `named` was the union of both sides, so a receipt
+    // whose oracle observed nothing could still reach Pass/AcceptedCompatibility
+    // on an `oracle_agrees` row it never gathered.
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn falsifier_09b_one_sided_evidence_cannot_satisfy_oracle_agreement() -> Result<()> {
+        for absent in ["rust", "oracle"] {
+            let observation = adapt(&agreeing_with(|receipt| {
+                receipt["normalized_facts"][absent] = json!([]);
+            }))?;
+
+            assert_eq!(
+                observation.disposition,
+                ObservationDisposition::NotProven,
+                "an oracle_agrees row with no {absent} fact is not differential agreement"
+            );
+            assert_eq!(observation.ceiling.claim_ceiling(), ClaimCeiling::ObservedEvidence);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn falsifier_09b_directional_results_need_the_side_they_name() -> Result<()> {
+        // `compiler_missing` says the oracle saw a fact the Rust set lacks; a
+        // receipt where the Rust set does carry it contradicts itself. The
+        // declared mismatch still stands — softening it to `not_proven` would
+        // erase what the receipt reported — but the incoherence has to remain
+        // visible, so it lands on the completeness axis.
+        let contradicting = adapt(&agreeing_with(|receipt| {
+            receipt["comparisons"][0]["result_class"] = json!("compiler_missing");
+        }))?;
+        assert_eq!(contradicting.disposition, ObservationDisposition::Failed);
+        assert!(
+            matches!(contradicting.completeness, CompletenessDisposition::Partial { .. }),
+            "an incoherent comparison is never silently complete: {:?}",
+            contradicting.completeness
+        );
+
+        // The coherent shape stays a plain contradiction, with nothing extra.
+        let coherent = adapt(&agreeing_with(|receipt| {
+            receipt["normalized_facts"]["rust"] = json!([fact("fact-isa-2", "Child::new")]);
+            receipt["comparisons"] = json!([
+                comparison("compiler_missing", "fact-isa-1", "blocks_promotion"),
+                comparison("oracle_agrees", "fact-isa-2", "supports_promotion")
+            ]);
+        }))?;
+        assert_eq!(coherent.disposition, ObservationDisposition::Failed);
+        Ok(())
+    }
+
+    #[test]
+    fn falsifier_09b_a_repeated_fact_identity_fails_closed() -> Result<()> {
+        for side in ["rust", "oracle"] {
+            let receipt = agreeing_with(|receipt| {
+                receipt["normalized_facts"][side] =
+                    json!([fact("fact-isa-1", "Child::ISA"), fact("fact-isa-1", "Child::ISA")]);
+            });
+
+            assert_rejected(&receipt, "repeats identity")?;
+        }
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------------------
+    // Falsifier 06b — silence about a closed startup input reads as hermetic
+    //
+    // Reported on the PR: the hermeticity check only intersected denied with
+    // declared, so omitting a dangerous key from both sets was accepted.
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn falsifier_06b_an_unaccounted_startup_input_is_not_hermetic() -> Result<()> {
+        let observation = adapt(&agreeing_with(|receipt| {
+            receipt["environment"]["denied"] = json!(["PERL5OPT", "local::lib"]);
+        }))?;
+
+        assert_eq!(
+            observation.disposition,
+            ObservationDisposition::NotProven,
+            "a receipt silent about PERL5LIB has not shown the run was hermetic"
+        );
+        assert_eq!(observation.currentness, CurrentnessDisposition::NotProven);
+        assert_eq!(observation.ceiling.claim_ceiling(), ClaimCeiling::ObservedEvidence);
+        Ok(())
+    }
+
+    #[test]
+    fn falsifier_06b_declared_without_denial_is_not_hermetic() -> Result<()> {
+        let observation = adapt(&agreeing_with(|receipt| {
+            receipt["environment"]["denied"] = json!(["PERL5OPT", "local::lib"]);
+            receipt["environment"]["declared"] = json!(["PATH", "PERL5LIB"]);
+        }))?;
+
+        // Admitting the ambient input is more honest than silence, but it is
+        // still an ambient input: the instrument did not fail, the claim did.
+        assert_eq!(observation.instrument.terminal, TerminalState::Completed);
+        assert_eq!(observation.disposition, ObservationDisposition::NotProven);
         Ok(())
     }
 
@@ -784,6 +899,25 @@ mod compiler_operating_profile_oracle_adapter {
             canonical.contains("roots_digest="),
             "the roots stay load-bearing through a digest"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn falsifier_17_the_module_root_digest_crosses_whole_not_truncated() -> Result<()> {
+        // A truncated digest is a hint, not the exact non-transferable identity
+        // this dimension claims: a 64-bit prefix can collide where the full
+        // digest cannot, and truncation buys no privacy the whole digest does
+        // not already give.
+        let observation = adapt(&agreeing_receipt())?;
+        let policy = dimension(&observation, SubjectDimensionKind::CompilerPolicy);
+
+        let digest = policy
+            .split("roots_digest=")
+            .nth(1)
+            .and_then(|rest| rest.split_whitespace().next())
+            .unwrap_or_default();
+        assert_eq!(digest.len(), 64, "the whole sha256 digest crosses: {policy}");
+        assert!(digest.chars().all(|c| c.is_ascii_hexdigit()));
         Ok(())
     }
 

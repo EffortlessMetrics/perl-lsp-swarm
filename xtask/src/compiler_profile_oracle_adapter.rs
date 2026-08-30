@@ -354,6 +354,11 @@ pub enum DeniedEnvironmentKey {
 }
 
 impl DeniedEnvironmentKey {
+    /// The closed set of startup inputs a hermetic oracle run must account
+    /// for.  Every key here is either denied or explicitly declared; silence
+    /// about one is not hermeticity.
+    pub const ALL: [Self; 3] = [Self::Perl5Lib, Self::Perl5Opt, Self::LocalLib];
+
     /// Stable source tag.
     pub fn tag(self) -> &'static str {
         match self {
@@ -740,6 +745,26 @@ pub fn ensure_adapter_invariants(receipt: &OracleReceiptV1) -> Result<()> {
             receipt.receipt_id
         );
     }
+    // A fact identity names one observation per side. The schema does not
+    // require uniqueness, but every downstream judgment — side-aware
+    // comparison coverage above all — reads facts by identity, and a repeated
+    // identity would silently collapse two distinct observations into one.
+    ensure_unique_fact_ids("rust", &receipt.normalized_facts.rust)?;
+    ensure_unique_fact_ids("oracle", &receipt.normalized_facts.oracle)?;
+    Ok(())
+}
+
+fn ensure_unique_fact_ids(side: &str, facts: &[NormalizedFact]) -> Result<()> {
+    let mut seen = BTreeSet::new();
+    for fact in facts {
+        if !seen.insert(fact.fact_id.as_str()) {
+            bail!(
+                "the {side} fact set repeats identity {:?}; one identity names one observation \
+                 per side",
+                fact.fact_id
+            );
+        }
+    }
     Ok(())
 }
 
@@ -1032,6 +1057,54 @@ fn count_by<T, F: Fn(&T) -> bool>(items: &[T], predicate: F) -> usize {
     items.iter().filter(|item| predicate(item)).count()
 }
 
+/// The distinct fact identities one side observed.  Identity uniqueness inside
+/// a side is an adapter invariant, so this set is never lossy.
+fn side_fact_ids(facts: &[NormalizedFact]) -> BTreeSet<&str> {
+    facts.iter().map(|fact| fact.fact_id.as_str()).collect()
+}
+
+/// Which side each result class needs evidence from, and why a receipt that
+/// does not carry it cannot be taken at its word.
+///
+/// The two fact sets are independent: `oracle_agrees` asserts that both the
+/// Rust extractor and the real-Perl oracle observed the same fact, so a
+/// one-sided receipt claims differential agreement it never gathered.
+/// `compiler_missing` and `compiler_extra` are directional by definition, and
+/// the three mismatch classes compare two observations that must both exist.
+fn evidence_incoherence(
+    result_class: ResultClass,
+    in_rust: bool,
+    in_oracle: bool,
+) -> Option<&'static str> {
+    match result_class {
+        ResultClass::OracleAgrees
+        | ResultClass::RangeMismatch
+        | ResultClass::ProvenanceMismatch
+        | ResultClass::ConfidenceOrFreshnessMismatch => match (in_rust, in_oracle) {
+            (true, true) => None,
+            (false, true) => Some("names no Rust fact to compare"),
+            (true, false) => Some("names no oracle fact to compare"),
+            (false, false) => Some("names neither a Rust nor an oracle fact"),
+        },
+        ResultClass::CompilerMissing => match (in_rust, in_oracle) {
+            (false, true) => None,
+            (true, _) => Some("names a fact the Rust set does carry"),
+            (false, false) => Some("names no oracle fact that could be missing"),
+        },
+        ResultClass::CompilerExtra => match (in_rust, in_oracle) {
+            (true, false) => None,
+            (_, true) => Some("names a fact the oracle set does carry"),
+            (false, false) => Some("names no Rust fact that could be extra"),
+        },
+        // These classes already land in the unproven bucket on their own; they
+        // report a boundary rather than a two-sided observation.
+        ResultClass::DynamicOrUnsupported
+        | ResultClass::OracleAmbientUnbounded
+        | ResultClass::StaleOrPartial
+        | ResultClass::Unknown => None,
+    }
+}
+
 fn boundary_provenance(provenance: FactProvenance) -> bool {
     matches!(
         provenance,
@@ -1073,9 +1146,64 @@ fn collect_findings(receipt: &OracleReceiptV1) -> Findings {
             .push(format!("{} denied environment key(s) are declared present", leaked.len()));
     }
 
+    // Each closed startup input must be positively accounted for. Silence is
+    // not hermeticity: a receipt that neither denies nor declares `PERL5LIB`
+    // has said nothing about it, and an absent entry can never read as
+    // support.  Declared-and-denied is a self-contradicting instrument;
+    // declared-without-denial is an admitted ambient input.
+    let declared: BTreeSet<&str> =
+        receipt.environment.declared.iter().map(String::as_str).collect();
+    let mut leaked = 0_usize;
+    let mut undenied = 0_usize;
+    let mut unaccounted = 0_usize;
+    for key in DeniedEnvironmentKey::ALL {
+        match (denied.contains(key.tag()), declared.contains(key.tag())) {
+            (true, true) => leaked += 1,
+            (false, true) => undenied += 1,
+            (false, false) => unaccounted += 1,
+            (true, false) => {}
+        }
+    }
+    if leaked > 0 {
+        findings
+            .instrument
+            .push(format!("{leaked} denied startup input(s) are also declared present"));
+    }
+    if undenied > 0 {
+        findings
+            .unproven
+            .push(format!("{undenied} closed startup input(s) are declared but not denied"));
+    }
+    if unaccounted > 0 {
+        findings
+            .unproven
+            .push(format!("{unaccounted} closed startup input(s) are neither denied nor declared"));
+    }
+
+    // Comparison results are read against the side that actually observed each
+    // fact.  The two fact sets are independent, so a result class that claims
+    // evidence from a side which named nothing cannot be taken at its word.
+    let rust_ids = side_fact_ids(&receipt.normalized_facts.rust);
+    let oracle_ids = side_fact_ids(&receipt.normalized_facts.oracle);
+
     // Typed comparison results stay distinct; one passing comparison can never
     // erase another selected mismatch or boundary.
     for comparison in &receipt.comparisons {
+        if let Some(incoherence) = evidence_incoherence(
+            comparison.result_class,
+            rust_ids.contains(comparison.fact_id.as_str()),
+            oracle_ids.contains(comparison.fact_id.as_str()),
+        ) {
+            let detail = format!("a {} comparison {incoherence}", comparison.result_class.tag());
+            // Both axes, deliberately. On the product axis an incoherent row
+            // proves nothing — but a declared mismatch outranks `not_proven`
+            // there, and softening a mismatch would erase exactly what the
+            // receipt reported. Recording the same finding as incompleteness
+            // keeps the incoherence visible in the envelope whichever product
+            // disposition wins.
+            findings.unproven.push(detail.clone());
+            findings.incomplete.push(detail);
+        }
         match comparison.promotion_effect {
             PromotionEffect::BlocksPromotion => findings.blocking.push(format!(
                 "a comparison in class {} blocks promotion",
@@ -1182,15 +1310,18 @@ fn collect_findings(receipt: &OracleReceiptV1) -> Findings {
             .incomplete
             .push(format!("{} dynamic boundary/boundaries", receipt.dynamic_boundaries.len()));
     }
+    // The two boundary arrays share a shape but not a meaning, so they take
+    // deliberately different axes.  A dynamic boundary is an incompleteness of
+    // this run: the oracle could not reach that construct here, and a later
+    // run with more information can. An unsupported effect is a durable
+    // statement about what this comparison class can never speak to, so it is
+    // both an incompleteness now and a standing limitation on the claim.
     if !receipt.unsupported_effects.is_empty() {
-        findings
-            .incomplete
-            .push(format!("{} unsupported effect(s)", receipt.unsupported_effects.len()));
-        findings
-            .limitations
-            .push(format!("{} unsupported effect(s)", receipt.unsupported_effects.len()));
+        let unsupported = format!("{} unsupported effect(s)", receipt.unsupported_effects.len());
+        findings.incomplete.push(unsupported.clone());
+        findings.limitations.push(unsupported);
     }
-    let named: BTreeSet<&str> = facts().map(|fact| fact.fact_id.as_str()).collect();
+    let named: BTreeSet<&str> = rust_ids.union(&oracle_ids).copied().collect();
     let compared: BTreeSet<&str> =
         receipt.comparisons.iter().map(|comparison| comparison.fact_id.as_str()).collect();
     let uncovered = compared.difference(&named).count();
@@ -1393,7 +1524,10 @@ fn subject_identity(receipt: &OracleReceiptV1) -> Result<CandidateSubjectIdentit
 
     // Declared module roots are host paths, so only their count and a stable
     // digest cross the boundary; the digest keeps the roots load-bearing
-    // without leaking them.
+    // without leaking them.  It is carried whole: a truncated prefix would be
+    // a hint rather than the exact, non-transferable identity this dimension
+    // claims, and truncation buys no privacy a full digest does not already
+    // give.
     let mut roots = receipt.module_path_authority.declared_roots.clone();
     roots.sort();
     let roots_digest = sha256_hex(roots.join("\u{1f}").as_bytes());
@@ -1405,7 +1539,7 @@ fn subject_identity(receipt: &OracleReceiptV1) -> Result<CandidateSubjectIdentit
             receipt.rust_extractor.fact_model,
             receipt.module_path_authority.authority.tag(),
             roots.len(),
-            &roots_digest[..16],
+            roots_digest,
             receipt.module_path_authority.ambient_roots_reported,
         ))?,
     );
