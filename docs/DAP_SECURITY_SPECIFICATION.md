@@ -204,9 +204,15 @@ debuggee outside a REPL. Two surfaces sit outside it:
   owns the decision. An absent `context` on that path is currently defaulted to
   `repl` when forwarding the label, which is the opposite of the native
   adapter's fail-closed default.
-- **Breakpoint conditions.** A breakpoint `condition` is sent to the debugger
-  after syntax validation only; the deny-list validators are not applied to it,
-  and it runs when the line is hit regardless of any evaluation context.
+- **Breakpoint conditions.** A breakpoint `condition` runs when the line is hit,
+  outside any evaluation context, so the REPL boundary does not apply to it. It
+  is not unscreened: `AstBreakpointValidator::validate_condition` rejects empty
+  conditions, applies its own dangerous-construct screen
+  (`system(`/`exec(`/`qx`, backticks, `unlink`/`rename`/`rmdir`/`mkdir`, and
+  string `eval`), and then requires the condition to parse as a Perl
+  expression. That screen is narrower than the evaluate deny-list in
+  `eval/patterns.rs` and is maintained separately, so the two are not
+  interchangeable.
 
 Neither surface is changed by this boundary, and neither should be read as
 covered by it.
