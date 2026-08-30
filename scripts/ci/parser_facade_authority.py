@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -28,10 +29,11 @@ ALLOWED_CLASSIFICATIONS = {
     "experimental", "retire", "test_dev_only",
 }
 ALLOWED_DISPOSITIONS = {"retain", "move", "gate", "deprecate", "remove", "review"}
-ALLOWED_DEPENDENCY_CONTEXTS = {
-    "normal", "dev", "build", "target:normal", "target:dev", "target:build",
-}
-PRODUCTION_DEPENDENCY_CONTEXTS = {"normal", "build", "target:normal", "target:build"}
+DEPENDENCY_CONTEXT_KINDS = {"normal", "dev", "build"}
+PRODUCTION_CONTEXT_KINDS = {"normal", "build"}
+# `target(<cfg expression>):<kind>` keeps each platform gate distinct, so moving a
+# dependency between cfg(unix) and cfg(windows) is a visible denominator change.
+TARGET_CONTEXT_PATTERN = re.compile(r"^target\((?P<spec>.+)\):(?P<kind>normal|dev|build)$")
 ALLOWED_FEATURE_ISOLATIONS = {
     "dependencies_and_source", "dependencies_only", "source_only", "target_only",
     "test_source_only", "feature_aggregate", "taxonomy_only",
@@ -44,6 +46,8 @@ ALLOWED_CONSUMER_USAGES = {"production", "dev_only", "mixed"}
 # implementation owner, so a pending block only has to add what they cannot: why the
 # row cannot close now and which event resolves it.
 PENDING_FIELDS = ("reason", "resolves_when")
+
+
 LEDGER_FILES = (
     "ruling.json", "features.json", "dependencies.json", "public-surface.json",
     "incremental.json", "consumers.json",
@@ -55,6 +59,20 @@ CANONICAL_SOURCE_PATHS = {
     "parser_core_manifest": "crates/perl-parser-core/Cargo.toml",
     "generated_doc": "docs/project/PARSER_FACADE_AUTHORITY.md",
 }
+
+
+def dependency_context_kind(context: str) -> str:
+    """Return the normal/dev/build kind of a context, rejecting unsupported shapes."""
+    if context in DEPENDENCY_CONTEXT_KINDS:
+        return context
+    match = TARGET_CONTEXT_PATTERN.match(context)
+    if match is None:
+        raise ValueError(f"unsupported dependency context: {context}")
+    return match.group("kind")
+
+
+def is_production_context(context: str) -> bool:
+    return dependency_context_kind(context) in PRODUCTION_CONTEXT_KINDS
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -230,9 +248,8 @@ def check(root: Path, ledger_path: Path) -> tuple[dict[str, Any], dict[str, Any]
         contexts = row.get("contexts")
         if not isinstance(contexts, list) or any(not isinstance(x, str) for x in contexts):
             raise ValueError(f"dependency {name} must record a contexts string list")
-        unsupported = sorted(set(contexts) - ALLOWED_DEPENDENCY_CONTEXTS)
-        if unsupported:
-            raise ValueError(f"dependency {name} has unsupported contexts: {','.join(unsupported)}")
+        for context in contexts:
+            dependency_context_kind(context)
         if contexts != sorted(set(contexts)):
             raise ValueError(f"dependency {name} contexts must be unique and sorted")
         if tuple(contexts) != fact.contexts:
@@ -241,7 +258,7 @@ def check(root: Path, ledger_path: Path) -> tuple[dict[str, Any], dict[str, Any]
                 f"{list(fact.contexts)}"
             )
         if row["classification"] == "test_dev_only" and (
-            set(contexts) & PRODUCTION_DEPENDENCY_CONTEXTS
+            any(is_production_context(context) for context in contexts)
         ):
             raise ValueError(
                 f"dependency {name} is classified test_dev_only but is reachable from "
@@ -302,7 +319,7 @@ def check(root: Path, ledger_path: Path) -> tuple[dict[str, Any], dict[str, Any]
         production = {
             member
             for member in group["members"]
-            if set(observed_consumers[member]) & PRODUCTION_DEPENDENCY_CONTEXTS
+            if any(is_production_context(c) for c in observed_consumers[member])
         }
         if production == set(group["members"]):
             observed_usage = "production"
@@ -334,11 +351,11 @@ def check(root: Path, ledger_path: Path) -> tuple[dict[str, Any], dict[str, Any]
         "consumers": len(consumers),
         "production_dependencies": sum(
             1 for fact in observed_dependencies.values()
-            if set(fact.contexts) & PRODUCTION_DEPENDENCY_CONTEXTS
+            if any(is_production_context(c) for c in fact.contexts)
         ),
         "dev_only_dependencies": sum(
             1 for fact in observed_dependencies.values()
-            if not set(fact.contexts) & PRODUCTION_DEPENDENCY_CONTEXTS
+            if not any(is_production_context(c) for c in fact.contexts)
         ),
         "test_profile_features": sorted(
             name for name, isolation in observed_isolation.items()
@@ -352,7 +369,7 @@ def check(root: Path, ledger_path: Path) -> tuple[dict[str, Any], dict[str, Any]
             name for name, isolation in observed_isolation.items()
             if isolation in PRODUCTION_FEATURE_ISOLATIONS
         ),
-        "pending_rows": sum(
+        "unresolved_review_rows": sum(
             1 for section in ledger.values() if isinstance(section, list)
             for row in section if isinstance(row, dict) and row.get("disposition") == "review"
         ),
@@ -378,7 +395,7 @@ def render_markdown(ledger: dict[str, Any], summary: dict[str, Any]) -> str:
         f"- Production-context dependencies: {summary['production_dependencies']}",
         f"- Development-only dependencies: {summary['dev_only_dependencies']}",
         f"- Workspace consumers: {summary['consumers']}",
-        f"- Pending rows awaiting a named owner: {summary['pending_rows']}", "",
+        f"- Unresolved review rows: {summary['unresolved_review_rows']}", "",
         "## Feature isolation", "",
         "A declared feature is a production boundary only when it selects dependencies or",
         "gates `src/`. A feature that gates only test, bench, or example source is a test",
