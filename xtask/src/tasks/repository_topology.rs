@@ -412,8 +412,14 @@ pub fn validate(
                 errors.push(format!("{subject}: must set target or target_decision_owner"))
             }
         }
-        // A repository that has actually left cannot still have an undecided identity.
-        if matches!(repo.migration_state.as_str(), "externalizing" | "external")
+        // A repository that has actually left cannot still have an undecided identity:
+        // consumers pin or publish against it, and neither can name a decision. Keyed on
+        // the state's declared requirement rather than a hard-coded list of state names,
+        // for the same reason that requirement is declared at all — a state added to the
+        // policy file must not quietly escape a rule by not being named in Rust.
+        if states
+            .get(repo.migration_state.as_str())
+            .is_some_and(|state| state.requires_immutable_consumption)
             && repo.target.is_none()
         {
             errors.push(format!(
@@ -1201,6 +1207,23 @@ metadata_authority = "workspace_inherited"
         let source = fixture().replace(
             "repository_id = \"library\"\ntarget = \"Org/library\"\nmigration_state = \"embedded\"",
             "repository_id = \"library\"\ntarget_decision_owner = \"#9\"\nmigration_state = \"external\"",
+        );
+        expect_rejected(&source, "requires a concrete target")
+    }
+
+    #[test]
+    fn rejects_a_targetless_repository_in_a_policy_declared_immutable_state() -> TestResult {
+        // The rule must follow the state's declared `requires_immutable_consumption`,
+        // not a list of state names written in Rust. A state added to the policy file
+        // that Rust has never heard of must not escape the requirement by not being
+        // named — which is the whole reason that flag is declared rather than inferred.
+        let source = format!(
+            "{}\n[[migration_states]]\nstate = \"published\"\ndescription = \"Consumed from a registry.\"\nlegal_integration_modes = [\"released_registry\"]\nallows_embedded_workspace_source = false\nrequires_immutable_consumption = true\naccepts_future_packages = false\n",
+            fixture()
+        )
+        .replace(
+            "repository_id = \"library\"\ntarget = \"Org/library\"\nmigration_state = \"embedded\"",
+            "repository_id = \"library\"\ntarget_decision_owner = \"#9\"\nmigration_state = \"published\"",
         );
         expect_rejected(&source, "requires a concrete target")
     }
