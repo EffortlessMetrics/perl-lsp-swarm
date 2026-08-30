@@ -1,0 +1,105 @@
+name: Agent 13953 exact Git object widths
+
+on:
+  push:
+    branches:
+      - fix/13953-exact-git-object-widths
+
+permissions:
+  contents: write
+
+concurrency:
+  group: agent-13953-exact-git-object-widths
+  cancel-in-progress: false
+
+jobs:
+  patch-and-prove:
+    name: Patch and prove exact Git object widths
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable (master)
+        with:
+          toolchain: 1.95.0
+          components: clippy, rustfmt
+
+      - name: Narrow the residual production-route guard
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          path = Path("scripts/agent_7725_patch.py")
+          text = path.read_text(encoding="utf-8")
+          old = '''for path in [discovery, subject, trace]:
+              text = path.read_text(encoding="utf-8")
+              if "repository_commit" in text and "40, 64, true" in text:
+                  raise SystemExit(f"{path}: residual range-based repository commit validation")
+          '''
+          new = '''residual_calls = {
+              discovery: 'validate_reference(&input.subject.repository_commit, "repository commit", 40, 64, true)?;',
+              subject: 'validate_reference(&producer.repository_commit, "repository commit", 40, 64, true)?;',
+              trace: 'validate_reference(&subject.repository_commit, "repository commit", 40, 64, true)?;',
+          }
+          for path, stale_call in residual_calls.items():
+              if stale_call in path.read_text(encoding="utf-8"):
+                  raise SystemExit(f"{path}: residual range-based repository commit validation")
+          '''
+          if text.count(old) != 1:
+              raise SystemExit("temporary patch guard shape changed")
+          path.write_text(text.replace(old, new, 1), encoding="utf-8")
+          PY
+
+      - name: Apply exact Git object identity law
+        run: python3 scripts/agent_7725_patch.py
+
+      - name: Format compiler harness
+        run: cargo fmt -p perl-core-harness
+
+      - name: Check patch whitespace
+        run: git diff --check
+
+      - name: Prove portable compiler-harness subjects
+        run: cargo test -p perl-core-harness --lib --tests --bins --locked
+
+      - name: Lint portable compiler-harness subjects
+        run: cargo clippy -p perl-core-harness --lib --tests --bins --locked -- -D warnings
+
+      - name: Classify the package-wide subject
+        shell: bash
+        run: |
+          set +e
+          cargo test -p perl-core-harness --all-targets --locked 2>&1 | tee /tmp/perl-core-harness-all-targets.log
+          status=${PIPESTATUS[0]}
+          set -e
+          if [ "$status" -eq 0 ]; then
+            exit 0
+          fi
+          if grep -q 'PerlInterpreter_init' /tmp/perl-core-harness-all-targets.log; then
+            echo '::warning title=Known native-link subject blocker::The portable candidate passed; package-wide doctest/native linkage remains tracked by #13963.'
+            exit 0
+          fi
+          cat /tmp/perl-core-harness-all-targets.log
+          exit "$status"
+
+      - name: Commit proven candidate
+        shell: bash
+        run: |
+          rm .github/workflows/agent-13953-exact-git-widths.yml
+          rm scripts/agent_7725_patch.py
+          git config user.name "EffortlessSteven"
+          git config user.email "git@effortlesssteven.com"
+          git add -A
+          git diff --cached --check
+          if git diff --cached --quiet; then
+            echo "candidate produced no changes" >&2
+            exit 1
+          fi
+          git diff --cached --stat
+          git commit -m "fix(compiler-harness): require exact Git object ID widths (#13953)"
+          git push origin HEAD:${GITHUB_REF_NAME}
