@@ -1025,10 +1025,8 @@ fn application_worker_handles_stay_inside_runtime_services() -> Result<()> {
     }
 
     ensure!(
-        declarations
-            .iter()
-            .any(|declaration| declaration
-                .starts_with("runtime_services: runtime_services::RuntimeServices")),
+        declarations.iter().any(|declaration| declaration
+            .starts_with("runtime_services: runtime_services::RuntimeServices")),
         "the governed #10024 RuntimeServices field must remain declared"
     );
 
