@@ -3,7 +3,9 @@
 //! The packet prepares one exact upstream source change. It performs no
 //! upstream write and proves no Emacs host behavior or released discovery.
 //! The declared subject carries the Perl contact at lines 347-348 of
-//! `lisp/progmodes/eglot.el` (blob `f2a9e369...`).
+//! `lisp/progmodes/eglot.el` (blob `f2a9e369...`). `UNIFIED_DIFF` carries the
+//! standard three lines of context around that contact, so the prepared
+//! artifact is applicable with ordinary `git apply` (no `--unidiff-zero`).
 
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
@@ -39,7 +41,10 @@ pub const AFTER_ANCHOR: &str = concat!(
 pub const UNIFIED_DIFF: &str = concat!(
     "--- a/lisp/progmodes/eglot.el\n",
     "+++ b/lisp/progmodes/eglot.el\n",
-    "@@ -347,2 +347,6 @@\n",
+    "@@ -344,8 +344,12 @@\n",
+    "            (\"OmniSharp\" \"-lsp\")\n",
+    "            (\"csharp-ls\"))))\n",
+    "     (purescript-mode . (\"purescript-language-server\" \"--stdio\"))\n",
     "-    ((perl-mode cperl-mode)\n",
     "-     . (\"perl\" \"-MPerl::LanguageServer\" \"-e\" ",
     "\"Perl::LanguageServer::run\"))\n",
@@ -49,6 +54,9 @@ pub const UNIFIED_DIFF: &str = concat!(
     "+         '((\"perllsp\" \"--stdio\")\n",
     "+           (\"perl\" \"-MPerl::LanguageServer\" \"-e\"\n",
     "+            \"Perl::LanguageServer::run\"))))\n",
+    "     (markdown-mode\n",
+    "      . ,(eglot-alternatives\n",
+    "          '((\"marksman\" \"server\")\n",
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

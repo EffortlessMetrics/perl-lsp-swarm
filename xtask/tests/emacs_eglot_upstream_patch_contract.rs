@@ -5,6 +5,9 @@
 
 #![expect(clippy::expect_used)]
 
+use std::fs;
+use std::process::Command;
+
 use xtask::emacs_eglot_upstream_patch::{
     AFTER_ANCHOR, BASE_BLOB_SHA1, BASE_COMMIT, BASE_PATH, BASE_TREE_SHA1, BEFORE_ANCHOR,
     UNIFIED_DIFF, checked_packet, render_checked_json,
@@ -14,6 +17,100 @@ fn source_fixture() -> String {
     format!(
         "(defcustom eglot-server-programs\n  '(\n{BEFORE_ANCHOR}    (markdown-mode . (\"marksman\")))\n  \"fixture\")\n"
     )
+}
+
+/// Declared and payload-derived shape of the single hunk in `UNIFIED_DIFF`.
+struct HunkShape {
+    start_old: u32,
+    old_count: u32,
+    start_new: u32,
+    new_count: u32,
+    context_before: u32,
+    context_after: u32,
+    removed: u32,
+    added: u32,
+}
+
+/// Parse the single hunk of a prepared unified diff into its declared header
+/// ranges and its actual payload line classes.
+fn hunk_shape(diff: &str) -> HunkShape {
+    let mut lines = diff.lines();
+    assert!(lines.next().expect("diff file header").starts_with("--- "));
+    assert!(lines.next().expect("diff file header").starts_with("+++ "));
+    let header = lines.next().expect("diff hunk header");
+    assert!(header.starts_with("@@ -") && header.ends_with(" @@"), "{header}");
+    let ranges = header.trim_start_matches("@@ -").trim_end_matches(" @@");
+    let (old_range, new_range) = ranges.split_once(' ').expect("hunk old/new ranges");
+    let (start_old, old_count) = old_range.split_once(',').expect("hunk old range");
+    let (start_new, new_count) = new_range.split_once(',').expect("hunk new range");
+    let mut shape = HunkShape {
+        start_old: start_old.parse().expect("hunk old start"),
+        old_count: old_count.parse().expect("hunk old count"),
+        start_new: start_new.parse().expect("hunk new start"),
+        new_count: new_count.parse().expect("hunk new count"),
+        context_before: 0,
+        context_after: 0,
+        removed: 0,
+        added: 0,
+    };
+    let mut payload_seen = false;
+    for line in lines {
+        match line.chars().next().expect("nonempty hunk payload line") {
+            '+' => {
+                payload_seen = true;
+                shape.added += 1;
+            }
+            '-' => {
+                payload_seen = true;
+                shape.removed += 1;
+            }
+            ' ' => {
+                if payload_seen {
+                    shape.context_after += 1;
+                } else {
+                    shape.context_before += 1;
+                }
+            }
+            other => unreachable!("unexpected unified-diff marker {other:?}"),
+        }
+    }
+    shape
+}
+
+/// Reconstruct the pre-image (context + removed lines) that `UNIFIED_DIFF`
+/// applies to, so the prepared artifact can be exercised offline.
+fn unified_diff_pre_image() -> String {
+    let mut pre_image = String::new();
+    for line in UNIFIED_DIFF.lines().skip(3) {
+        let marker = line.chars().next().expect("nonempty diff line");
+        if marker == '+' {
+            continue;
+        }
+        pre_image.push_str(&line[1..]);
+        pre_image.push('\n');
+    }
+    pre_image
+}
+
+/// Zero-context rendition of the same replacement: what `UNIFIED_DIFF` would
+/// be if the standard context were stripped.
+fn zero_context_rendition() -> String {
+    let shape = hunk_shape(UNIFIED_DIFF);
+    let old_start = shape.start_old + shape.context_before;
+    let new_start = shape.start_new + shape.context_before;
+    let mut rendition = format!(
+        "--- a/{BASE_PATH}\n+++ b/{BASE_PATH}\n@@ -{old_start},{} +{new_start},{} @@\n",
+        shape.removed, shape.added
+    );
+    for line in UNIFIED_DIFF.lines().skip(3) {
+        let marker = line.chars().next().expect("nonempty diff line");
+        if marker == ' ' {
+            continue;
+        }
+        rendition.push_str(line);
+        rendition.push('\n');
+    }
+    rendition
 }
 
 #[test]
@@ -197,4 +294,72 @@ fn verified_application_rejects_unaudited_bytes_before_anchoring() {
         .apply_to_verified_source(&tampered)
         .expect_err("verified application must reject unaudited bytes first");
     assert!(error.to_string().contains("Git blob"));
+}
+
+#[test]
+fn unified_diff_declares_standard_context_with_accurate_hunk_counts() {
+    let shape = hunk_shape(UNIFIED_DIFF);
+
+    // Plain `git apply` refuses zero-context hunks unless `--unidiff-zero` is
+    // passed; the prepared upstream artifact must carry the standard three
+    // lines of context on each side so consumers can apply it ordinarily.
+    assert_eq!(shape.context_before, 3, "context before the contact");
+    assert_eq!(shape.context_after, 3, "context after the contact");
+    let context = shape.context_before + shape.context_after;
+    assert_eq!(shape.old_count, context + shape.removed, "old hunk count");
+    assert_eq!(shape.new_count, context + shape.added, "new hunk count");
+    assert_eq!(shape.removed, 2, "the exact current Perl contact is two lines");
+    assert_eq!(shape.added, 6, "the reviewed replacement is six lines");
+    assert_eq!(shape.start_new, shape.start_old, "replacement stays at its position");
+    // The declared subject carries the Perl contact at lines 347-348; with
+    // three context lines the hunk must start at line 344.
+    assert_eq!(shape.start_old + shape.context_before, 347, "contact line position");
+
+    // The diff's old side must be the exact reviewed contact plus context,
+    // not an approximate paraphrase.
+    let pre_image = unified_diff_pre_image();
+    assert_eq!(pre_image.matches(BEFORE_ANCHOR).count(), 1);
+    assert!(!pre_image.contains(AFTER_ANCHOR));
+}
+
+#[test]
+fn unified_diff_applies_with_ordinary_git_apply_without_unidiff_zero() {
+    let workspace = tempfile::tempdir().expect("temporary workspace");
+    let repo = workspace.path().join("repo");
+    fs::create_dir_all(repo.join("lisp").join("progmodes")).expect("create package directory");
+    fs::write(repo.join("lisp").join("progmodes").join("eglot.el"), unified_diff_pre_image())
+        .expect("write pinned diff pre-image");
+    fs::write(repo.join("prepared.diff"), UNIFIED_DIFF).expect("write prepared diff");
+    fs::write(repo.join("zero-context.diff"), zero_context_rendition())
+        .expect("write zero-context control diff");
+
+    let run_git = |args: &[&str]| {
+        let output = Command::new("git")
+            .args(["-c", "core.autocrlf=false"])
+            .args(args)
+            .current_dir(&repo)
+            .output()
+            .expect("spawn git");
+        (output.status.success(), String::from_utf8_lossy(&output.stderr).into_owned())
+    };
+
+    let (init_ok, init_stderr) = run_git(&["init", "-q"]);
+    assert!(init_ok, "git init failed: {init_stderr}");
+
+    // Ordinary application must accept the prepared artifact...
+    let (apply_ok, apply_stderr) = run_git(&["apply", "--check", "prepared.diff"]);
+    assert!(apply_ok, "ordinary git apply --check must accept the prepared diff: {apply_stderr}");
+
+    // ...while the zero-context rendition of the same replacement must stay
+    // rejected, proving the assertion above is not vacuous.
+    let (control_ok, control_stderr) = run_git(&["apply", "--check", "zero-context.diff"]);
+    assert!(!control_ok, "zero-context hunks must still require --unidiff-zero: {control_stderr}");
+
+    // The real application produces exactly the reviewed replacement.
+    let (applied, applied_stderr) = run_git(&["apply", "prepared.diff"]);
+    assert!(applied, "prepared diff must apply: {applied_stderr}");
+    let patched = fs::read_to_string(repo.join("lisp").join("progmodes").join("eglot.el"))
+        .expect("read patched source");
+    assert_eq!(patched.matches(AFTER_ANCHOR).count(), 1);
+    assert!(!patched.contains(BEFORE_ANCHOR));
 }
