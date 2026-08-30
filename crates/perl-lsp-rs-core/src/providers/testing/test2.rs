@@ -806,12 +806,9 @@ fn quote_like_expression_end(raw: &str, start: usize) -> Option<usize> {
         return None;
     }
     let operators = [b"tr".as_slice(), b"qq", b"qx", b"qr", b"qw", b"q", b"m", b"s", b"y"];
-    let Some(operator) = operators
+    let operator = operators
         .iter()
-        .find(|operator| bytes.get(start..start + operator.len()) == Some(*operator))
-    else {
-        return None;
-    };
+        .find(|operator| bytes.get(start..start + operator.len()) == Some(*operator))?;
     let mut delimiter = start + operator.len();
     while bytes.get(delimiter).is_some_and(u8::is_ascii_whitespace) {
         delimiter += 1;
@@ -1132,9 +1129,7 @@ fn qw_is_target_value(raw: &str, index: usize) -> bool {
             depth = depth.saturating_add(1);
         } else if matches!(ch, ')' | '}' | ']') {
             depth = depth.saturating_sub(1);
-        } else if ch == ',' && depth == 0 {
-            return false;
-        } else if ch == ';' {
+        } else if (ch == ',' && depth == 0) || ch == ';' {
             return false;
         }
     }
@@ -1251,9 +1246,8 @@ fn consume_parenthesized_scalar(atoms: &[String], start: usize) -> Option<(usize
             ")" => {
                 depth = depth.checked_sub(1)?;
                 if depth == 0 {
-                    let truthy = !nested_expression
-                        && inner.len() == 1
-                        && scalar_target_is_truthy(&inner[0]);
+                    let truthy =
+                        !nested_expression && inner.len() == 1 && scalar_target_is_truthy(inner[0]);
                     return Some((index + 1, truthy));
                 }
             }
