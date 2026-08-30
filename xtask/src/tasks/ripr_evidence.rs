@@ -797,8 +797,8 @@ fn check_pr_evidence(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
 /// RIPR check output is unbounded — a 2.1GB payload killed a 16GB CI runner
 /// (#12860) — so this transport never holds the whole document: the child
 /// writes to the same regular temporary file [`run_output`] uses to keep large
-/// stdout writes off a Windows pipe (#12569), and the artifact is filled with
-/// a fixed-size copy loop.
+/// stdout writes off a Windows pipe (#12569), then atomically publishes that
+/// file by rename once the child succeeds.
 fn run_ripr_check(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
     let diff = repo.join(PR_DIFF).display().to_string();
     let root = command_root_arg(repo, &options.root)?;
@@ -816,14 +816,17 @@ fn run_ripr_check(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
     )
 }
 
-/// Runs RIPR, copying stdout into `out_path` with a fixed-size buffer. Stderr
-/// is captured in full (diagnostics are small); the stdout excerpt in a
-/// failure message is bounded because the payload itself is unbounded.
+/// Runs RIPR, streaming stdout into a same-directory temporary file and
+/// atomically publishing it at `out_path` after success. Stderr is captured in
+/// full (diagnostics are small); the stdout excerpt in a failure message is
+/// bounded because the payload itself is unbounded. Only one complete copy of
+/// the unbounded payload exists on disk, and any failure before the rename
+/// drops the temporary file without exposing a partial artifact at `out_path`.
 fn run_ripr_streaming_to_file(args: &[String], out_path: &Path) -> Result<()> {
     let binary = ripr_binary()?;
     // A failed rerun must not leave an older raw artifact available to the
-    // review-comments fallback.  The artifact is published only after the
-    // child succeeds and its complete stdout has been copied.
+    // review-comments fallback. The artifact is published only after the child
+    // succeeds and its complete stdout has been written.
     match fs::remove_file(out_path) {
         Ok(()) => {}
         Err(error) if error.kind() == ErrorKind::NotFound => {}
@@ -832,8 +835,13 @@ fn run_ripr_streaming_to_file(args: &[String], out_path: &Path) -> Result<()> {
                 .with_context(|| format!("failed to remove stale {}", out_path.display()));
         }
     }
+    let parent = match out_path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
+    };
+    fs::create_dir_all(parent).with_context(|| format!("failed to create {}", parent.display()))?;
     let stdout_file =
-        tempfile::NamedTempFile::new().context("failed to create RIPR stdout file")?;
+        tempfile::NamedTempFile::new_in(parent).context("failed to create RIPR stdout file")?;
     let mut child = Command::new(&binary)
         .args(args)
         .stdout(Stdio::from(stdout_file.reopen().context("failed to reopen RIPR stdout file")?))
@@ -859,24 +867,23 @@ fn run_ripr_streaming_to_file(args: &[String], out_path: &Path) -> Result<()> {
             String::from_utf8_lossy(&stderr_bytes).trim()
         );
     }
-    if let Some(parent) = out_path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create {}", parent.display()))?;
-    }
-    let mut source =
-        stdout_file.reopen().with_context(|| format!("failed to reopen {binary} stdout file"))?;
-    let mut destination = fs::File::create(out_path)
-        .with_context(|| format!("failed to write {}", out_path.display()))?;
-    std::io::copy(&mut source, &mut destination)
-        .with_context(|| format!("failed to stream {binary} stdout to {}", out_path.display()))?;
+    stdout_file
+        .persist(out_path)
+        .map_err(|error| error.error)
+        .with_context(|| format!("failed to publish {binary} stdout to {}", out_path.display()))?;
     Ok(())
 }
 
 /// Streamed ingestion of one `ripr check --format json` payload (#12860): the
 /// summary map plus the aggregate per-finding buckets. The findings array is
-/// never materialized — it is the unbounded surface (2.1GB observed) that
-/// killed evidence runners when the whole payload was buffered into a String
-/// and parsed into a full serde_json DOM.
+/// never materialized — it is the unbounded surface (2.1GB observed) that killed
+/// evidence runners when the whole payload was buffered into a String and
+/// parsed into a full serde_json DOM. Each finding is deserialized into one
+/// `serde_json::Value` at a time and dropped before the next, so peak ingestion
+/// memory is bounded by the largest single finding rather than the payload.
+/// A payload whose memory is concentrated in one huge finding is not bounded by
+/// this change; the observed #12860 shape is many findings carrying unconsumed
+/// blobs, which this does bound.
 #[derive(Debug)]
 struct RiprCheckIngestion {
     summary_counts: RiprPrSummaryCounts,
@@ -918,10 +925,13 @@ fn ripr_check_ingestion_from_file(
 }
 
 /// Streams one JSON document from `reader`, invoking `on_finding` for every
-/// element of the top-level `findings` array as it is parsed. Any other
-/// top-level shape (arrays, scalars) is still validated but carries no summary
-/// and no findings, which is what the previous DOM path saw through
-/// `Value::get`.
+/// element of the top-level `findings` array as it is parsed. The findings
+/// array is never materialized: each element becomes one
+/// `serde_json::Value` for the callback and is dropped before the next. Any
+/// other top-level shape (arrays, scalars) is still validated but carries no
+/// summary and no findings, which is what the previous DOM path saw through
+/// `Value::get`. A single huge finding can still dominate memory; this bounds
+/// the many-finding, unconsumed-blob shape observed in #12860.
 fn stream_ripr_check_payload<R, F>(
     reader: R,
     on_finding: &mut F,
@@ -1044,7 +1054,10 @@ where
 }
 
 /// [`DeserializeSeed`] streaming the elements of one `findings` value through
-/// the caller's callback.
+/// the caller's callback. The array itself is never materialized; one
+/// `serde_json::Value` is held for each callback and dropped before the next
+/// element is deserialized. This bounds many findings with unconsumed blobs,
+/// but not a single finding whose own value is huge.
 struct StreamFindingsSeed<'a, F> {
     on_event: &'a mut F,
 }
@@ -2910,12 +2923,9 @@ fn fallback_guidance_comments(
     if payload.base.as_ref().and_then(Value::as_str) != Some(options.base.as_str()) {
         return Ok(None);
     }
-    let (mut seams, suppressed) = accumulator.finish();
-
-    seams.sort_by(|left, right| (&left.0, left.1, &left.2).cmp(&(&right.0, right.1, &right.2)));
-    // The accumulator already keeps the smallest bounded set by path/line;
-    // retain this final dedup as a defensive guard for future callers.
-    seams.dedup_by(|next, previous| next.0 == previous.0 && next.1 == previous.1);
+    // `finish` already returns the bounded, sorted, path/line-unique set; no
+    // further sort or dedup is needed here.
+    let (seams, suppressed) = accumulator.finish();
     let comments = seams.into_iter().map(|(_, _, _, comment)| comment).collect::<Vec<_>>();
     if comments.is_empty() {
         return Ok(None);
@@ -2933,7 +2943,9 @@ enum FallbackSeamDecision {
 
 /// Keeps fallback guidance bounded while preserving the deterministic first
 /// `FALLBACK_GUIDANCE_LIMIT` path/line entries that the old sort/dedup/truncate
-/// implementation emitted. A later duplicate path/line replaces the retained
+/// implementation emitted. Its entries are always sorted by `(path, line, id)`,
+/// `(path, line)` keys are unique, and the result is bounded to
+/// `FALLBACK_GUIDANCE_LIMIT`. A later duplicate path/line replaces the retained
 /// entry only when its id sorts first, matching the old dedup order.
 #[derive(Default)]
 struct FallbackGuidanceAccumulator {
@@ -2983,6 +2995,8 @@ impl FallbackGuidanceAccumulator {
         }
     }
 
+    /// Returns entries sorted by `(path, line, id)`, with unique `(path, line)`
+    /// keys and at most `FALLBACK_GUIDANCE_LIMIT` entries.
     fn finish(self) -> (Vec<FallbackSeam>, usize) {
         (self.seams, self.suppressed)
     }
@@ -5785,6 +5799,169 @@ paths = ["archive/["]
         Ok(())
     }
 
+    /// The pre-streaming DOM pipeline: `fallback_seam_entries` followed by the
+    /// sort/dedup/truncate `fallback_guidance_comments` applied to its result.
+    /// This is the oracle the streaming accumulator must match exactly.
+    fn dom_fallback_pipeline(
+        findings: &[Value],
+        suppressions: &RiprSuppressionRules,
+        head_extents: Option<&HeadLineExtents>,
+        attribution: Option<&DependencyAttribution>,
+        production_surface: Option<&ProductionSurface>,
+    ) -> (Vec<FallbackSeam>, usize) {
+        let (mut seams, suppressed) = fallback_seam_entries(
+            findings,
+            suppressions,
+            head_extents,
+            attribution,
+            production_surface,
+        );
+        seams.sort_by(|left, right| (&left.0, left.1, &left.2).cmp(&(&right.0, right.1, &right.2)));
+        seams.dedup_by(|next, previous| next.0 == previous.0 && next.1 == previous.1);
+        seams.truncate(FALLBACK_GUIDANCE_LIMIT);
+        (seams, suppressed)
+    }
+
+    /// Falsifies a fallback accumulator that loses DOM ordering, deduplication, or the bound.
+    #[test]
+    fn fallback_streaming_matches_dom_oracle_over_a_wide_payload() -> Result<()> {
+        let mut findings = vec![
+            raw_check_finding(
+                "probe:suppressed",
+                "no_static_path",
+                "crates/suppressed/src/hidden.rs",
+                2,
+            ),
+            raw_check_finding("probe:archive", "reachable_unrevealed", "archive/old.rs", 3),
+        ];
+        for index in 0..(FALLBACK_GUIDANCE_LIMIT * 3) {
+            findings.push(raw_check_finding(
+                &format!("probe:{index:03}"),
+                if index % 2 == 0 { "no_static_path" } else { "reachable_unrevealed" },
+                &format!("crates/wide/src/file{:02}.rs", (index * 7) % 11),
+                ((index * 5) % 29 + 1) as u64,
+            ));
+        }
+        let suppressions = RiprSuppressionRules {
+            display_patterns: vec!["crates/suppressed/**".to_string()],
+            path_patterns: vec![Pattern::new("crates/suppressed/**")?],
+            classification_patterns: vec![Vec::new()],
+            invalid_patterns: Vec::new(),
+            suppression_reasons: Vec::new(),
+        };
+        let production_surface = ProductionSurface::from_parts("/ws", &[]);
+        let payload = json!({
+            "base": "origin/main",
+            "summary": {
+                "findings": findings.len(),
+                "reachable_unrevealed": findings.len(),
+                "no_static_path": findings.len()
+            },
+            "findings": findings
+        });
+        let payload_text = serde_json::to_string(&payload)?;
+        let expected = dom_fallback_pipeline(
+            payload
+                .get("findings")
+                .and_then(Value::as_array)
+                .ok_or_else(|| eyre!("findings missing"))?,
+            &suppressions,
+            None,
+            None,
+            Some(&production_surface),
+        );
+        let mut accumulator = FallbackGuidanceAccumulator::default();
+        stream_ripr_check_payload_with_events(
+            BufReader::with_capacity(64 * 1024, std::io::Cursor::new(payload_text.as_bytes())),
+            &mut |event| match event {
+                StreamFindingsEvent::Start => accumulator.reset(),
+                StreamFindingsEvent::Finding(finding) => accumulator.absorb(
+                    finding,
+                    &suppressions,
+                    None,
+                    None,
+                    Some(&production_surface),
+                ),
+            },
+        )?;
+        assert_eq!(accumulator.finish(), expected);
+        assert_eq!(
+            expected.0.len(),
+            FALLBACK_GUIDANCE_LIMIT,
+            "the wide payload must exercise the fallback guidance truncation bound"
+        );
+        assert_eq!(expected.1, 1, "the suppressed finding must exercise the policy counter");
+        assert!(
+            expected.0.iter().all(|(path, _, _, _)| !path.starts_with("archive/")),
+            "the non-production finding must not reach fallback guidance"
+        );
+        Ok(())
+    }
+
+    /// Falsifies a duplicate-key implementation that keeps a later, larger-id seam.
+    #[test]
+    fn fallback_streaming_keeps_smallest_id_for_duplicate_path_and_line() -> Result<()> {
+        let findings = vec![
+            raw_check_finding("probe:z", "no_static_path", "crates/x/src/lib.rs", 7),
+            raw_check_finding("probe:a", "no_static_path", "crates/x/src/lib.rs", 7),
+        ];
+        let expected = dom_fallback_pipeline(&findings, &no_suppressions(), None, None, None);
+        let mut accumulator = FallbackGuidanceAccumulator::default();
+        for finding in &findings {
+            accumulator.absorb(finding, &no_suppressions(), None, None, None);
+        }
+        let actual = accumulator.finish();
+        assert_eq!(actual, expected);
+        assert_eq!(actual.0.len(), 1);
+        assert_eq!(actual.0[0].2, "probe:a");
+        Ok(())
+    }
+
+    /// Falsifies a duplicate-findings implementation that accumulates the first array.
+    #[test]
+    fn fallback_streaming_duplicate_findings_uses_only_the_last_array() -> Result<()> {
+        let suppressions = RiprSuppressionRules {
+            display_patterns: vec!["crates/suppressed/**".to_string()],
+            path_patterns: vec![Pattern::new("crates/suppressed/**")?],
+            classification_patterns: vec![Vec::new()],
+            invalid_patterns: Vec::new(),
+            suppression_reasons: Vec::new(),
+        };
+        let first_findings = vec![raw_check_finding(
+            "probe:first",
+            "no_static_path",
+            "crates/suppressed/src/hidden.rs",
+            2,
+        )];
+        let second_findings = vec![raw_check_finding(
+            "probe:second",
+            "reachable_unrevealed",
+            "crates/x/src/lib.rs",
+            7,
+        )];
+        let first_text = serde_json::to_string(&first_findings)?;
+        let second_text = serde_json::to_string(&second_findings)?;
+        let payload_text = format!(
+            r#"{{"base":"origin/main","summary":{{}},"findings":{first_text},"findings":{second_text}}}"#
+        );
+        let expected = dom_fallback_pipeline(&second_findings, &suppressions, None, None, None);
+        let mut accumulator = FallbackGuidanceAccumulator::default();
+        stream_ripr_check_payload_with_events(
+            BufReader::with_capacity(64 * 1024, std::io::Cursor::new(payload_text.as_bytes())),
+            &mut |event| match event {
+                StreamFindingsEvent::Start => accumulator.reset(),
+                StreamFindingsEvent::Finding(finding) => {
+                    accumulator.absorb(finding, &suppressions, None, None, None)
+                }
+            },
+        )?;
+        let actual = accumulator.finish();
+        assert_eq!(actual, expected);
+        assert_eq!(actual.1, 0, "the first array's suppressed finding must be reset");
+        assert_eq!(actual.0[0].2, "probe:second");
+        Ok(())
+    }
+
     /// Fail closed: a finding with no resolvable path is never classified
     /// non-production, exactly like the #6260 head-range filter.
     #[test]
@@ -8065,6 +8242,14 @@ paths = ["archive/**"]
         let raw = fs::read(&raw_path)?;
         assert_eq!(raw, payload.as_bytes(), "raw artifact must carry stdout verbatim");
 
+        let Some(parent) = raw_path.parent() else {
+            bail!("raw artifact path has no parent");
+        };
+        let names = fs::read_dir(parent)?
+            .map(|entry| entry.map(|entry| entry.file_name().to_string_lossy().into_owned()))
+            .collect::<std::io::Result<BTreeSet<_>>>()?;
+        assert_eq!(names, BTreeSet::from(["raw-check.json".to_string()]));
+
         let suppressions = no_suppressions();
         let ingestion = ripr_check_ingestion_from_file(&raw_path, &suppressions, None, None, None)?;
         assert!(ingestion.check_summary_present);
@@ -8112,10 +8297,10 @@ paths = ["archive/**"]
     /// Lazily generates a `ripr check` payload whose findings[] is ~100MB —
     /// the shape that killed the evidence runner (#12860): few findings, each
     /// carrying a huge unconsumed blob. The generator yields chunk by chunk and
-    /// the streaming parser retains at most one finding, so this test
-    /// completing with correct buckets is the memory-safety shape assertion in
-    /// CI; the previous String-plus-DOM ingestion would have buffered all of
-    /// it before producing anything.
+    /// the streaming parser never materializes the findings array and retains
+    /// one finding at a time, so this test completing with correct buckets is
+    /// the memory-safety shape assertion in CI; the previous String-plus-DOM
+    /// ingestion would have buffered all of it before producing anything.
     struct SyntheticCheckStream {
         header: Vec<u8>,
         header_pos: usize,
