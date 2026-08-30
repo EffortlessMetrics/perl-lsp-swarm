@@ -239,20 +239,59 @@ def strip_cfg_test_modules(source: str) -> str:
         index = cursor
 
 
-def requires_feature(predicate: str) -> bool:
-    """Whether a cfg predicate proves the item requires a positive feature.
+def split_predicate_terms(value: str) -> list[str]:
+    """Split a cfg argument list on top-level commas."""
+    terms: list[str] = []
+    depth = 0
+    start = 0
+    for index, character in enumerate(value):
+        if character == "(":
+            depth += 1
+        elif character == ")":
+            depth -= 1
+        elif character == "," and depth == 0:
+            terms.append(value[start:index])
+            start = index + 1
+    terms.append(value[start:])
+    return [term.strip() for term in terms if term.strip()]
 
-    `feature = "x"` and `all(feature = "x", unix)` require the feature. Under
-    `not(...)` or `any(...)` the item can exist without it, so those must not be
-    treated as feature-guarded — excluding them would hide real source gates.
-    Anything not proven positive is treated as not requiring a feature, which
-    keeps the observation conservative.
+
+def requires_feature(predicate: str) -> bool:
+    """Whether a cfg predicate proves the item requires some positive feature.
+
+    Evaluated over the predicate tree rather than by substring:
+
+    - `feature = "x"` requires a feature;
+    - `all(..)` requires one when **any** child does, since every child must hold;
+    - `any(..)` requires one only when **every** child does, since one branch is
+      enough for the item to exist;
+    - `not(..)` never proves a positive requirement;
+    - anything else (`unix`, `test`, unrecognised) does not.
+
+    A predicate that does not *prove* a requirement is treated as unguarded, so
+    ambiguity over-counts isolation rather than hiding a real source gate.
     """
-    if "feature" not in predicate:
+    predicate = predicate.strip()
+    for operator, combine in (("all", any), ("any", all)):
+        prefix = f"{operator}("
+        if predicate.startswith(prefix) and predicate.endswith(")"):
+            terms = split_predicate_terms(predicate[len(prefix) : -1])
+            return bool(terms) and combine(requires_feature(term) for term in terms)
+    if predicate.startswith("not(") and predicate.endswith(")"):
         return False
-    if "not(" in predicate or "any(" in predicate:
-        return False
-    return bool(re.search(r"feature\s*=\s*\"[^\"]+\"", predicate))
+    return bool(re.fullmatch(r"feature\s*=\s*\"[^\"]+\"", predicate))
+
+
+def module_search_base(declaring: Path) -> Path:
+    """Where Rust resolves `mod x;` declared in `declaring`.
+
+    A crate or directory owner (`lib.rs`, `main.rs`, `mod.rs`) resolves children
+    beside itself; any other file owns a directory named after its own stem.
+    `#[path]` overrides this and is not modelled.
+    """
+    if declaring.name in ("lib.rs", "main.rs", "mod.rs"):
+        return declaring.parent
+    return declaring.parent / declaring.stem
 
 
 def conditional_module_roots(crate_root: Path) -> set[Path]:
@@ -276,9 +315,10 @@ def conditional_module_roots(crate_root: Path) -> set[Path]:
         for match in CONDITIONAL_MODULE_PATTERN.finditer(source):
             if not requires_feature(match.group("predicate")):
                 continue
+            base = module_search_base(path)
             name = match.group("name")
-            roots.add(path.parent / name)
-            roots.add(path.parent / f"{name}.rs")
+            roots.add(base / name)
+            roots.add(base / f"{name}.rs")
     return roots
 
 
