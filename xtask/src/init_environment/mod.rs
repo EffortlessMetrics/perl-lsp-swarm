@@ -44,6 +44,14 @@ pub const CENSUS_ROOTS: &[(&str, &str)] = &[
     ("crates/perl-lsp-rs/src/runtime/dispatch/preflight.rs", "auto_initialize_for_compat"),
 ];
 
+/// The root that commits the initialize response.
+///
+/// Operations reachable from here run before the response; the other roots are
+/// all reached after it. That distinction makes [`ExecutionPoint`] derivable
+/// rather than a self-validating assertion.
+pub const RESPONSE_COMMITTING_ROOT: (&str, &str) =
+    ("crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs", "handle_initialize");
+
 /// Exactly-one phase disposition for an initialize-reachable operation.
 ///
 /// The controlling issue forbids a `maybe`, `miscellaneous`, `keep_for_now`, or
@@ -307,6 +315,7 @@ pub fn ledger_errors_with_roots(
     errors.extend(static_surface_errors(rows, census));
     errors.extend(coverage_errors(rows, census, roots));
     errors.extend(call_site_errors(rows, census, roots));
+    errors.extend(execution_point_errors(rows, census, roots));
 
     errors.sort();
     errors.dedup();
@@ -725,6 +734,82 @@ fn call_site_errors(
                  that call",
                 row.operation_id, row.function, row.call_site_argument
             ));
+        }
+    }
+    errors
+}
+
+/// Fail when a row's declared execution point contradicts which root reaches it.
+///
+/// `current_point` was previously checked only against the row's own phase, so
+/// two declarations validated each other and a stale timing claim could assign
+/// work to the wrong migration wave. Timing is instead derived: an operation
+/// reachable from the response-committing root runs before the response, one
+/// reachable only from the post-response roots runs after it, and one that no
+/// lifecycle root reaches runs only when some later feature demands it.
+///
+/// All three variants are derived, so `on_demand` is not an escape hatch: a row
+/// whose function *is* on a lifecycle call graph runs unconditionally during
+/// initialize whatever the ledger prose says about laziness.
+fn execution_point_errors(
+    rows: &[InitOperationRow],
+    census: &Census,
+    roots: &[(&str, &str)],
+) -> Vec<String> {
+    let (pre_file, pre_function) = RESPONSE_COMMITTING_ROOT;
+    let Some(pre_root) = census.resolve(pre_file, pre_function) else {
+        // Without the response-committing root there is nothing to derive
+        // against; `coverage_errors` already reports the missing root.
+        return Vec::new();
+    };
+
+    let mut before: BTreeSet<usize> = BTreeSet::new();
+    before.insert(pre_root);
+    before.extend(census.reachable_from(pre_root, census::MAX_DEPTH).into_keys());
+
+    let mut after: BTreeSet<usize> = BTreeSet::new();
+    for (file, function) in roots {
+        if (*file, *function) == RESPONSE_COMMITTING_ROOT {
+            continue;
+        }
+        let Some(root) = census.resolve(file, function) else {
+            continue;
+        };
+        after.insert(root);
+        after.extend(census.reachable_from(root, census::MAX_DEPTH).into_keys());
+    }
+
+    let mut errors = Vec::new();
+    for row in rows {
+        let Some(index) = census.resolve(row.file, row.function) else {
+            continue;
+        };
+        match row.current_point {
+            ExecutionPoint::BeforeResponse if !before.contains(&index) => {
+                errors.push(format!(
+                    "row {} declares `before_response` but `{}` is not reachable from the \
+                     response-committing root",
+                    row.operation_id,
+                    census.qualified(index)
+                ));
+            }
+            ExecutionPoint::AfterResponse if before.contains(&index) && !after.contains(&index) => {
+                errors.push(format!(
+                    "row {} declares `after_response` but `{}` is reachable only from the \
+                     response-committing root",
+                    row.operation_id,
+                    census.qualified(index)
+                ));
+            }
+            ExecutionPoint::OnDemand if before.contains(&index) || after.contains(&index) => {
+                errors.push(format!(
+                    "row {} declares `on_demand` but `{}` is reachable from an initialize \
+                     lifecycle root, so it runs unconditionally",
+                    row.operation_id,
+                    census.qualified(index)
+                ));
+            }
+            _ => {}
         }
     }
     errors

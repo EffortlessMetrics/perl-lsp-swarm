@@ -8,8 +8,8 @@
 
 use xtask::init_environment::census::{Census, Exposure};
 use xtask::init_environment::{
-    ExecutionPoint, InitOperationRow, MigrationWave, PhaseDisposition, Trigger, census,
-    ledger_errors, ledger_errors_with_roots, ledger_rows, render_json,
+    ExecutionPoint, InitOperationRow, MigrationWave, PhaseDisposition, RESPONSE_COMMITTING_ROOT,
+    Trigger, census, ledger_errors, ledger_errors_with_roots, ledger_rows, render_json,
 };
 
 // ---------------------------------------------------------------------------
@@ -752,6 +752,188 @@ fn a_terminal_disposition_claiming_a_cutover_is_rejected() {
 
     let errors = ledger_errors_with_roots(&[row], &census, &synthetic_roots());
     assert_reports(&errors, "terminal disposition");
+}
+
+// ---------------------------------------------------------------------------
+// Execution point is derived from which root reaches the operation
+// ---------------------------------------------------------------------------
+//
+// `phase_errors` only ever compares two ledger declarations to each other, so a
+// stale `current_point` validated itself and could assign work to the wrong
+// migration wave. These falsifiers pin the derived rule: a synthetic codebase
+// that puts one operation behind the response-committing root and another
+// behind a post-response root, with a third that no root reaches at all.
+
+const POST_RESPONSE_ROOT_FILE: &str = "crates/perl-lsp-rs/src/runtime/dispatch/lifecycle.rs";
+
+fn lifecycle_timing_sources() -> Vec<(String, String)> {
+    vec![
+        (
+            RESPONSE_COMMITTING_ROOT.0.to_string(),
+            r#"
+            pub fn handle_initialize() {
+                normalize_capabilities();
+            }
+            fn normalize_capabilities() {
+                let _ = std::process::Command::new("perl").arg("--version").output();
+            }
+            "#
+            .to_string(),
+        ),
+        (
+            POST_RESPONSE_ROOT_FILE.to_string(),
+            r#"
+            pub fn complete_initialization() {
+                start_workspace_indexing();
+            }
+            fn start_workspace_indexing() {
+                let _ = std::fs::read_to_string("Makefile.PL");
+            }
+            "#
+            .to_string(),
+        ),
+        (
+            SYNTHETIC_HELPER_FILE.to_string(),
+            r#"
+            pub fn resolve_timing_mode() {
+                let _ = std::env::var("PERL_LSP_TIMING");
+            }
+            "#
+            .to_string(),
+        ),
+    ]
+}
+
+fn lifecycle_roots() -> Vec<(&'static str, &'static str)> {
+    vec![RESPONSE_COMMITTING_ROOT, (POST_RESPONSE_ROOT_FILE, "complete_initialization")]
+}
+
+/// The pre-response row: reached by the response-committing root only.
+fn pre_response_row() -> InitOperationRow {
+    InitOperationRow {
+        operation_id: "synthetic.pre",
+        file: RESPONSE_COMMITTING_ROOT.0,
+        function: RESPONSE_COMMITTING_ROOT.1,
+        declared_exposure: &[Exposure::ProcessSpawn],
+        current_point: ExecutionPoint::BeforeResponse,
+        phase: PhaseDisposition::ProtocolRequiredBeforeResponse,
+        migration_wave: MigrationWave::None,
+        ..baseline_row()
+    }
+}
+
+/// The post-response row: reached only by the `initialized` root.
+fn post_response_row() -> InitOperationRow {
+    InitOperationRow {
+        operation_id: "synthetic.post",
+        file: POST_RESPONSE_ROOT_FILE,
+        function: "complete_initialization",
+        declared_exposure: &[Exposure::Filesystem],
+        triggers: &[Trigger::Initialized],
+        current_point: ExecutionPoint::AfterResponse,
+        phase: PhaseDisposition::DeferToPostInitializeEnvironment,
+        migration_wave: MigrationWave::None,
+        ..baseline_row()
+    }
+}
+
+#[test]
+fn the_fixture_names_the_real_response_committing_root() {
+    // If the product renames its response-committing entry point, these
+    // falsifiers must stop compiling against a fiction rather than keep
+    // passing against one.
+    assert_eq!(RESPONSE_COMMITTING_ROOT.1, "handle_initialize");
+    let census = Census::from_sources(&lifecycle_timing_sources());
+    assert!(
+        census.resolve(RESPONSE_COMMITTING_ROOT.0, RESPONSE_COMMITTING_ROOT.1).is_some(),
+        "the synthetic fixture must define the response-committing root"
+    );
+}
+
+#[test]
+fn the_lifecycle_fixture_ledger_is_accepted() {
+    // Positive control: without this, every rejection below could be an
+    // artefact of the fixture rather than of the declared execution point.
+    let census = Census::from_sources(&lifecycle_timing_sources());
+    let errors = ledger_errors_with_roots(
+        &[pre_response_row(), post_response_row()],
+        &census,
+        &lifecycle_roots(),
+    );
+    assert!(errors.is_empty(), "the lifecycle fixture ledger must pass, got: {errors:#?}");
+}
+
+#[test]
+fn a_before_response_claim_the_response_root_cannot_reach_is_rejected() {
+    // The stale-timing case the phase rule could not see: post-response work
+    // still declaring that it blocks the response, and therefore claiming a
+    // cutover wave for a move that has already happened.
+    let census = Census::from_sources(&lifecycle_timing_sources());
+    let mut row = post_response_row();
+    row.current_point = ExecutionPoint::BeforeResponse;
+    row.migration_wave = MigrationWave::E02;
+
+    let errors = ledger_errors_with_roots(&[pre_response_row(), row], &census, &lifecycle_roots());
+    assert_reports(&errors, "declares `before_response`");
+    assert_reports(&errors, "not reachable from the response-committing root");
+}
+
+#[test]
+fn an_after_response_claim_over_blocking_work_is_rejected() {
+    // The dangerous direction: work that really does block the response
+    // describing itself as already deferred, so nobody schedules the move.
+    let census = Census::from_sources(&lifecycle_timing_sources());
+    let mut row = pre_response_row();
+    row.current_point = ExecutionPoint::AfterResponse;
+    row.phase = PhaseDisposition::DeferToPostInitializeEnvironment;
+
+    let errors = ledger_errors_with_roots(&[row, post_response_row()], &census, &lifecycle_roots());
+    assert_reports(&errors, "declares `after_response`");
+    assert_reports(&errors, "reachable only from the response-committing root");
+}
+
+#[test]
+fn an_on_demand_claim_over_lifecycle_reachable_work_is_rejected() {
+    // `on_demand` must not become the escape hatch that `before`/`after`
+    // derivation closed: a function on a lifecycle call graph runs whether or
+    // not the prose calls it lazy.
+    let census = Census::from_sources(&lifecycle_timing_sources());
+    let mut row = pre_response_row();
+    row.current_point = ExecutionPoint::OnDemand;
+    row.phase = PhaseDisposition::LazyOnFirstUse;
+
+    let errors = ledger_errors_with_roots(&[row, post_response_row()], &census, &lifecycle_roots());
+    assert_reports(&errors, "declares `on_demand`");
+    assert_reports(&errors, "runs unconditionally");
+}
+
+#[test]
+fn an_on_demand_row_no_root_reaches_is_accepted() {
+    // Negative control for the rule above: a genuinely lazy leaf, reached by no
+    // lifecycle root, must not be forced into a response-relative point.
+    let census = Census::from_sources(&lifecycle_timing_sources());
+    let lazy = InitOperationRow {
+        operation_id: "synthetic.lazy",
+        file: SYNTHETIC_HELPER_FILE,
+        function: "resolve_timing_mode",
+        declared_exposure: &[Exposure::EnvRead],
+        triggers: &[Trigger::FirstUse],
+        current_point: ExecutionPoint::OnDemand,
+        phase: PhaseDisposition::LazyOnFirstUse,
+        migration_wave: MigrationWave::None,
+        owns_exposure: false,
+        ..baseline_row()
+    };
+
+    let errors = ledger_errors_with_roots(
+        &[pre_response_row(), post_response_row(), lazy],
+        &census,
+        &lifecycle_roots(),
+    );
+    assert!(
+        !errors.iter().any(|error| error.contains("synthetic.lazy")),
+        "an unreachable lazy leaf must not be given a response-relative point, got: {errors:#?}"
+    );
 }
 
 // ---------------------------------------------------------------------------

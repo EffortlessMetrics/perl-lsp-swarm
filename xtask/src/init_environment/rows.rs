@@ -414,12 +414,16 @@ pub fn ledger_rows() -> Vec<InitOperationRow> {
             operation_id: "init.instrumentation.timing_mode",
             file: F_TIMING,
             function: "mode",
-            proposition: "startup timing instrumentation reads its mode from the environment",
+            proposition: "startup timing instrumentation resolves its mode from the environment \
+                          the first time any timed span runs",
             side_effects: &[],
             declared_exposure: &[Exposure::EnvRead],
-            triggers: &[Trigger::Initialize, Trigger::Initialized],
+            // Not tied to a lifecycle message: the `OnceLock` is filled by
+            // whichever timed span happens to run first, which may be an
+            // initialize span or a later request entirely.
+            triggers: &[Trigger::FirstUse],
             exactly_once: false,
-            current_point: ExecutionPoint::BeforeResponse,
+            current_point: ExecutionPoint::OnDemand,
             phase: PhaseDisposition::ExistingExternalOwnerNoMove,
             migration_wave: MigrationWave::None,
             affects_static_initialize_result: false,
