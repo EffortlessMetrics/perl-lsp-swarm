@@ -129,6 +129,14 @@ fn validate_timing_semantics(receipt: &UxScenarioRunReceipt, path: &Path) -> Res
                     receipt.test_name
                 );
             }
+            (Some(first), None) => {
+                bail!(
+                    "invalid UX timing receipt {} workflow `{}` test `{}`: first completed operation has TTFR {first} ms but the top-level TTFR is absent",
+                    path.display(),
+                    receipt.workflow_id,
+                    receipt.test_name
+                );
+            }
             (None, Some(top_level)) => {
                 bail!(
                     "invalid UX timing receipt {} workflow `{}` test `{}`: top-level TTFR {top_level} ms exists but populated operation rows contain no completed measurement",
@@ -350,6 +358,24 @@ mod tests {
             "mismatched top-level timing unexpectedly passed",
         )?;
         assert!(message.contains("disagrees with first completed operation"));
+        Ok(())
+    }
+
+    #[test]
+    fn completed_operation_requires_top_level_summary() -> Result<()> {
+        let receipt = receipt(
+            25.0,
+            None,
+            json!([{
+                "operation": "hover",
+                "time_to_first_useful_result_ms": 12.0
+            }]),
+        )?;
+        let message = error_message(
+            validate_timing_semantics(&receipt, Path::new("missing-summary.json")),
+            "completed operation without top-level timing unexpectedly passed",
+        )?;
+        assert!(message.contains("top-level TTFR is absent"));
         Ok(())
     }
 
