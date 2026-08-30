@@ -60,7 +60,7 @@ fn vimscript_has_forbidden_system_call(source: &str) -> bool {
                     escaped = true;
                     string.push(character);
                 } else if character == '"' {
-                    if executable_string && string.contains("system(") {
+                    if executable_string && executable_string_has_system_call(&string) {
                         return true;
                     }
                     in_string = false;
@@ -102,6 +102,34 @@ fn vimscript_has_forbidden_system_call(source: &str) -> bool {
                 {
                     return true;
                 }
+            }
+        }
+    }
+    false
+}
+
+fn executable_string_has_system_call(source: &str) -> bool {
+    let mut in_single_quote = false;
+    let mut escaped = false;
+    let mut code = String::new();
+
+    for character in source.chars() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if character == '\\' {
+            escaped = true;
+            continue;
+        }
+        if character == '\'' {
+            in_single_quote = !in_single_quote;
+            continue;
+        }
+        if !in_single_quote {
+            code.push(character);
+            if code.ends_with("system(") {
+                return true;
             }
         }
     }
@@ -312,6 +340,7 @@ fn vimscript_system_scanner_handles_strings_and_executable_commands() {
         r#"let s:msg = "text" | call system("forbidden")"#
     ));
     assert!(vimscript_has_forbidden_system_call(r#"execute "call system('forbidden')""#));
+    assert!(!vimscript_has_forbidden_system_call(r#"execute "echo 'system('""#));
     assert!(!vimscript_has_forbidden_system_call(r#"let s:msg = "system(forbidden)""#));
     assert!(!vimscript_has_forbidden_system_call(r#"" comment system(forbidden)"#));
 }
