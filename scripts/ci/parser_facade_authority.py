@@ -12,7 +12,9 @@ from parser_facade_inventory import (
     cargo_targets,
     default_features,
     dependency_rows,
-    discover_consumers,
+    dependency_universe,
+    discover_consumer_contexts,
+    feature_isolation,
     feature_names,
     incremental_surface,
     load_toml,
@@ -23,9 +25,22 @@ SCHEMA_VERSION = 1
 ALLOWED_CLASSIFICATIONS = {
     "parser_kernel", "parser_output_contract", "incremental_parser",
     "compatibility_reexport", "product_composition", "workspace_or_lsp_adapter",
-    "experimental", "retire",
+    "experimental", "retire", "test_dev_only",
 }
 ALLOWED_DISPOSITIONS = {"retain", "move", "gate", "deprecate", "remove", "review"}
+ALLOWED_DEPENDENCY_CONTEXTS = {
+    "normal", "dev", "build", "target:normal", "target:dev", "target:build",
+}
+PRODUCTION_DEPENDENCY_CONTEXTS = {"normal", "build", "target:normal", "target:build"}
+ALLOWED_FEATURE_ISOLATIONS = {
+    "dependencies_and_source", "dependencies_only", "source_only",
+    "test_source_only", "feature_aggregate", "taxonomy_only",
+}
+PRODUCTION_FEATURE_ISOLATIONS = {
+    "dependencies_and_source", "dependencies_only", "source_only",
+}
+ALLOWED_CONSUMER_USAGES = {"production", "dev_only", "mixed"}
+PENDING_FIELDS = ("owner", "predecessor", "reason", "resolves_when")
 LEDGER_FILES = (
     "ruling.json", "features.json", "dependencies.json", "public-surface.json",
     "incremental.json", "consumers.json",
@@ -73,6 +88,35 @@ def require_string(item: dict[str, Any], key: str, context: str) -> str:
     return value
 
 
+def require_issue_reference(value: str, context: str) -> None:
+    if not value.startswith("#") or not value[1:].isdigit():
+        raise ValueError(f"{context} must be a GitHub issue reference")
+
+
+def validate_pending(item: dict[str, Any], disposition: str, context: str) -> None:
+    """A pending row must name its owner, predecessor, reason, and resolving event.
+
+    Without all four a `review` row is an ownerless bucket that no later leaf can
+    mechanically consume, so the ledger rejects it.
+    """
+    pending = item.get("pending")
+    if disposition != "review":
+        if pending is not None:
+            raise ValueError(f"{context}.pending is only valid for a review disposition")
+        return
+    if not isinstance(pending, dict):
+        raise ValueError(f"{context}.pending must be an object for a review disposition")
+    unknown = sorted(set(pending) - set(PENDING_FIELDS))
+    if unknown:
+        raise ValueError(f"{context}.pending has unsupported fields: {','.join(unknown)}")
+    for field in PENDING_FIELDS:
+        require_string(pending, field, f"{context}.pending")
+    require_issue_reference(pending["owner"], f"{context}.pending.owner")
+    predecessor = pending["predecessor"]
+    if predecessor != "none":
+        require_issue_reference(predecessor, f"{context}.pending.predecessor")
+
+
 def validate_row(item: Any, context: str) -> dict[str, Any]:
     if not isinstance(item, dict):
         raise ValueError(f"{context} must be an object")
@@ -85,8 +129,8 @@ def validate_row(item: Any, context: str) -> dict[str, Any]:
         raise ValueError(f"{context}.classification is unsupported: {classification}")
     if disposition not in ALLOWED_DISPOSITIONS:
         raise ValueError(f"{context}.disposition is unsupported: {disposition}")
-    if not item["owner"].startswith("#") or not item["owner"][1:].isdigit():
-        raise ValueError(f"{context}.owner must be a GitHub issue reference")
+    require_issue_reference(item["owner"], f"{context}.owner")
+    validate_pending(item, disposition, context)
     return item
 
 
@@ -160,18 +204,48 @@ def check(root: Path, ledger_path: Path) -> tuple[dict[str, Any], dict[str, Any]
     expected_defaults = tuple(ledger.get("default_features", []))
     if default_features(manifest) != expected_defaults:
         raise ValueError("default feature order differs from authority ledger")
+    observed_isolation = feature_isolation(manifest, manifest_path.parent)
     for name, row in features.items():
         if bool(row.get("default")) != (name in expected_defaults):
             raise ValueError(f"feature {name} has inconsistent default disposition")
         if row["classification"] == "experimental" and name in expected_defaults:
             raise ValueError(f"experimental feature {name} cannot be a default")
+        isolation = require_string(row, "isolation", f"features[{name}]")
+        if isolation not in ALLOWED_FEATURE_ISOLATIONS:
+            raise ValueError(f"feature {name} isolation is unsupported: {isolation}")
+        if isolation != observed_isolation[name]:
+            raise ValueError(
+                f"feature {name} claims isolation {isolation} but selects "
+                f"{observed_isolation[name]} in current source and manifest"
+            )
 
     dependencies = table_by_name(ledger.get("dependencies"), "dependencies")
-    observed_dependencies = dependency_rows(manifest)
+    observed_dependencies = dependency_universe(manifest)
     validate_exact("Cargo dependencies", set(observed_dependencies), set(dependencies))
-    for name, optional in observed_dependencies.items():
-        if dependencies[name].get("optional") is not optional:
+    for name, fact in observed_dependencies.items():
+        row = dependencies[name]
+        if row.get("optional") is not fact.optional:
             raise ValueError(f"dependency {name} optionality differs from authority ledger")
+        contexts = row.get("contexts")
+        if not isinstance(contexts, list) or any(not isinstance(x, str) for x in contexts):
+            raise ValueError(f"dependency {name} must record a contexts string list")
+        unsupported = sorted(set(contexts) - ALLOWED_DEPENDENCY_CONTEXTS)
+        if unsupported:
+            raise ValueError(f"dependency {name} has unsupported contexts: {','.join(unsupported)}")
+        if contexts != sorted(set(contexts)):
+            raise ValueError(f"dependency {name} contexts must be unique and sorted")
+        if tuple(contexts) != fact.contexts:
+            raise ValueError(
+                f"dependency {name} claims contexts {contexts} but is declared in "
+                f"{list(fact.contexts)}"
+            )
+        if row["classification"] == "test_dev_only" and (
+            set(contexts) & PRODUCTION_DEPENDENCY_CONTEXTS
+        ):
+            raise ValueError(
+                f"dependency {name} is classified test_dev_only but is reachable from "
+                "a production dependency context"
+            )
 
     modules, exports = rust_public_surface(root / CANONICAL_SOURCE_PATHS["lib"])
     public_modules = table_by_name(ledger.get("public_modules"), "public_modules")
@@ -218,8 +292,28 @@ def check(root: Path, ledger_path: Path) -> tuple[dict[str, Any], dict[str, Any]
         raise ValueError("apply_edits must be the sole canonical public incremental function")
 
     consumers = member_table(ledger.get("consumer_groups"), "consumer_groups")
-    observed_consumers = discover_consumers(root, manifest_path)
-    validate_exact("workspace consumers", observed_consumers, set(consumers))
+    observed_consumers = discover_consumer_contexts(root, manifest_path)
+    validate_exact("workspace consumers", set(observed_consumers), set(consumers))
+    for group in ledger["consumer_groups"]:
+        usage = require_string(group, "usage", f"consumer_groups[{group['name']}]")
+        if usage not in ALLOWED_CONSUMER_USAGES:
+            raise ValueError(f"consumer group {group['name']} usage is unsupported: {usage}")
+        production = {
+            member
+            for member in group["members"]
+            if set(observed_consumers[member]) & PRODUCTION_DEPENDENCY_CONTEXTS
+        }
+        if production == set(group["members"]):
+            observed_usage = "production"
+        elif not production:
+            observed_usage = "dev_only"
+        else:
+            observed_usage = "mixed"
+        if usage != observed_usage:
+            raise ValueError(
+                f"consumer group {group['name']} claims {usage} usage but reaches the "
+                f"facade as {observed_usage}"
+            )
 
     parser_core = load_toml(root / CANONICAL_SOURCE_PATHS["parser_core_manifest"])
     forbidden = sorted(name for name in dependency_rows(parser_core) if any(token in name for token in FORBIDDEN_KERNEL_DEPENDENCY_TOKENS))
@@ -237,6 +331,30 @@ def check(root: Path, ledger_path: Path) -> tuple[dict[str, Any], dict[str, Any]
         "incremental_public_modules": len(module_rows),
         "incremental_public_exports": len(export_rows),
         "consumers": len(consumers),
+        "production_dependencies": sum(
+            1 for fact in observed_dependencies.values()
+            if set(fact.contexts) & PRODUCTION_DEPENDENCY_CONTEXTS
+        ),
+        "dev_only_dependencies": sum(
+            1 for fact in observed_dependencies.values()
+            if not set(fact.contexts) & PRODUCTION_DEPENDENCY_CONTEXTS
+        ),
+        "test_profile_features": sorted(
+            name for name, isolation in observed_isolation.items()
+            if isolation == "test_source_only"
+        ),
+        "taxonomy_only_features": sorted(
+            name for name, isolation in observed_isolation.items()
+            if isolation == "taxonomy_only"
+        ),
+        "production_boundary_features": sorted(
+            name for name, isolation in observed_isolation.items()
+            if isolation in PRODUCTION_FEATURE_ISOLATIONS
+        ),
+        "pending_rows": sum(
+            1 for section in ledger.values() if isinstance(section, list)
+            for row in section if isinstance(row, dict) and row.get("disposition") == "review"
+        ),
         "digest_scope": "full_normalized_ledger",
     }
     summary["authority_digest"] = hashlib.sha256(normalized_json(ledger)).hexdigest()
@@ -255,8 +373,22 @@ def render_markdown(ledger: dict[str, Any], summary: dict[str, Any]) -> str:
         f"- Public modules: {summary['public_modules']}",
         f"- Public re-exports: {summary['public_reexports']}",
         f"- Cargo features: {summary['features']}",
-        f"- Direct dependencies: {summary['dependencies']}",
-        f"- Workspace consumers: {summary['consumers']}", "",
+        f"- Declared dependencies: {summary['dependencies']}",
+        f"- Production-context dependencies: {summary['production_dependencies']}",
+        f"- Development-only dependencies: {summary['dev_only_dependencies']}",
+        f"- Workspace consumers: {summary['consumers']}",
+        f"- Pending rows awaiting a named owner: {summary['pending_rows']}", "",
+        "## Feature isolation", "",
+        "A declared feature is a production boundary only when it selects dependencies or",
+        "gates `src/`. A feature that gates only test, bench, or example source is a test",
+        "profile, and a feature that gates nothing is taxonomy. Neither may be presented as",
+        "an architectural boundary.", "",
+        f"Production boundaries ({len(summary['production_boundary_features'])}): "
+        + ", ".join(f"`{name}`" for name in summary["production_boundary_features"]) + ".", "",
+        f"Test profiles ({len(summary['test_profile_features'])}): "
+        + ", ".join(f"`{name}`" for name in summary["test_profile_features"]) + ".", "",
+        f"Taxonomy only, isolating nothing ({len(summary['taxonomy_only_features'])}): "
+        + ", ".join(f"`{name}`" for name in summary["taxonomy_only_features"]) + ".", "",
         "## Dependency direction", "", "```text", "perl-lexer", "    ↓",
         "perl-parser-core          canonical parser kernel", "    ↓",
         "perl-parser               parser facade + bounded compatibility", "    ↓",

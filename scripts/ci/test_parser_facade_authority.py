@@ -29,6 +29,36 @@ class ParserFacadeAuthorityTests(unittest.TestCase):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
 
+    DEPENDENCY_TABLES = {
+        "normal": "dependencies",
+        "dev": "dev-dependencies",
+        "build": "build-dependencies",
+    }
+
+    def dependency_section(self, context: str) -> str:
+        if context.startswith("target:"):
+            table = self.DEPENDENCY_TABLES[context.removeprefix("target:")]
+            return f"target.'cfg(unix)'.{table}"
+        return self.DEPENDENCY_TABLES[context]
+
+    def write_feature_gates(self, names: list[str], test_names: list[str] | None = None) -> None:
+        """Reproduce the cfg predicates that make a feature a real source boundary.
+
+        Production gates live under `src/`; test-profile gates live under `tests/`, so a
+        feature that only gates test source cannot be presented as a production boundary.
+        """
+        def body(values: list[str]) -> str:
+            return "".join(
+                f'#[cfg(feature = "{name}")]\nfn gate_{index}() {{}}\n'
+                for index, name in enumerate(values)
+            )
+
+        self.write("crates/perl-parser/src/feature_gates.rs", body(names))
+        self.write(
+            "crates/perl-parser/tests/feature_profiles.rs",
+            body(test_names if test_names is not None else self.test_gated_features),
+        )
+
     def write_ledger(self, ledger: dict[str, object]) -> None:
         mapping = {
             "ruling.json": ["schema_version", "ruling", "sources", "default_features"],
@@ -51,29 +81,44 @@ class ParserFacadeAuthorityTests(unittest.TestCase):
 
     def write_fixture(self) -> None:
         self.write_ledger(self.ledger)
+        optional_dependency = next(
+            row["name"] for row in self.ledger["dependencies"] if row["optional"]
+        )
         features = []
+        self.gated_features: list[str] = []
+        self.test_gated_features: list[str] = []
         for row in self.ledger["features"]:
-            value = json.dumps(self.ledger["default_features"]) if row["name"] == "default" else "[]"
-            features.append(f'{json.dumps(row["name"])} = {value}')
-        dependencies = []
+            isolation = row["isolation"]
+            if isolation == "feature_aggregate":
+                value = list(self.ledger["default_features"])
+            elif isolation in ("dependencies_and_source", "dependencies_only"):
+                value = [optional_dependency]
+            else:
+                value = []
+            if isolation in ("dependencies_and_source", "source_only"):
+                self.gated_features.append(row["name"])
+            elif isolation == "test_source_only":
+                self.test_gated_features.append(row["name"])
+            features.append(f'{json.dumps(row["name"])} = {json.dumps(value)}')
+        sections: dict[str, list[str]] = {}
         for row in self.ledger["dependencies"]:
             value = '{ version = "1", optional = true }' if row["optional"] else '"1"'
-            dependencies.append(f'{row["name"]} = {value}')
+            for context in row["contexts"]:
+                sections.setdefault(
+                    self.dependency_section(context), []
+                ).append(f'{row["name"]} = {value}')
         targets = []
         for row in self.ledger["targets"]:
             targets += [f'[[{row["kind"]}]]', f'name = {json.dumps(row["name"])}']
             if row["required_features"]:
                 targets.append("required-features = " + json.dumps(row["required_features"]))
-        self.write(
-            "crates/perl-parser/Cargo.toml",
-            '[package]\nname="perl-parser"\nversion="0.1.0"\n\n[dependencies]\n'
-            + "\n".join(dependencies)
-            + "\n\n[features]\n"
-            + "\n".join(features)
-            + "\n\n"
-            + "\n".join(targets)
-            + "\n",
-        )
+        manifest = ['[package]\nname="perl-parser"\nversion="0.1.0"\n']
+        for header, lines in sections.items():
+            manifest.append(f"[{header}]\n" + "\n".join(lines) + "\n")
+        manifest.append("[features]\n" + "\n".join(features) + "\n")
+        manifest.append("\n".join(targets) + "\n")
+        self.write("crates/perl-parser/Cargo.toml", "\n".join(manifest))
+        self.write_feature_gates(self.gated_features)
         modules = "\n".join(f'pub mod {row["name"]};' for row in self.ledger["public_modules"])
         exports = "\n".join(
             f"pub use {member};"
@@ -144,9 +189,28 @@ class ParserFacadeAuthorityTests(unittest.TestCase):
         path = self.root / self.ledger["consumer_groups"][0]["members"][0]
         path.write_text(path.read_text().replace(
             '[dependencies]\nperl-parser="1"',
-            '[dev-dependencies]\nparser_alias = { package = "perl-parser", version = "1" }',
+            '[dependencies]\nparser_alias = { package = "perl-parser", version = "1" }',
         ))
         check(self.root, self.ledger_path)
+
+    def test_dev_only_consumer_cannot_claim_production_usage(self) -> None:
+        path = self.root / self.ledger["consumer_groups"][0]["members"][0]
+        path.write_text(path.read_text().replace(
+            '[dependencies]\nperl-parser="1"',
+            '[dev-dependencies]\nperl-parser="1"',
+        ))
+        with self.assertRaisesRegex(ValueError, "claims production usage but reaches the facade as dev_only"):
+            check(self.root, self.ledger_path)
+
+    def test_partially_dev_consumer_group_must_declare_mixed_usage(self) -> None:
+        group = next(g for g in self.ledger["consumer_groups"] if len(g["members"]) > 1)
+        path = self.root / group["members"][0]
+        path.write_text(path.read_text().replace(
+            '[dependencies]\nperl-parser="1"',
+            '[dev-dependencies]\nperl-parser="1"',
+        ))
+        with self.assertRaisesRegex(ValueError, "reaches the facade as mixed"):
+            check(self.root, self.ledger_path)
 
     def test_ruling_cannot_repoint_governed_source(self) -> None:
         self.ledger["sources"]["manifest"] = "fixtures/alternate/Cargo.toml"
@@ -189,6 +253,173 @@ class ParserFacadeAuthorityTests(unittest.TestCase):
         path = self.root / "crates/perl-parser-core/Cargo.toml"
         path.write_text(path.read_text() + 'perl-workspace="1"\n')
         with self.assertRaisesRegex(ValueError, "forbidden product/transport"):
+            check(self.root, self.ledger_path)
+
+    @property
+    def manifest_path(self) -> Path:
+        return self.root / "crates/perl-parser/Cargo.toml"
+
+    def add_dependency(self, section: str, line: str) -> None:
+        """Insert a dependency into an existing table, or create the table once."""
+        text = self.manifest_path.read_text()
+        header = f"[{section}]"
+        if header in text:
+            text = text.replace(header, f"{header}\n{line}", 1)
+        else:
+            text = f"{text}\n{header}\n{line}\n"
+        self.manifest_path.write_text(text)
+
+    def move_dependency(self, name: str, source: str, destination: str) -> None:
+        text = self.manifest_path.read_text()
+        for candidate in (f'{name} = "1"', f'{name} = {{ version = "1", optional = true }}'):
+            if candidate in text:
+                text = text.replace(f"{candidate}\n", "", 1)
+                self.manifest_path.write_text(text)
+                self.add_dependency(destination, candidate)
+                return
+        raise AssertionError(f"fixture does not declare {name} in {source}")
+
+    def dependency_row(self, name: str) -> dict:
+        return next(row for row in self.ledger["dependencies"] if row["name"] == name)
+
+    def feature_row(self, name: str) -> dict:
+        return next(row for row in self.ledger["features"] if row["name"] == name)
+
+    # --- dependency universe -------------------------------------------------
+
+    def test_new_normal_dependency_without_a_row_fails(self) -> None:
+        self.add_dependency("dependencies", 'surprise = "1"')
+        with self.assertRaisesRegex(ValueError, "unclassified=surprise"):
+            check(self.root, self.ledger_path)
+
+    def test_new_dev_dependency_without_a_row_fails(self) -> None:
+        self.add_dependency("dev-dependencies", 'surprise = "1"')
+        with self.assertRaisesRegex(ValueError, "unclassified=surprise"):
+            check(self.root, self.ledger_path)
+
+    def test_new_build_dependency_without_a_row_fails(self) -> None:
+        self.add_dependency("build-dependencies", 'surprise = "1"')
+        with self.assertRaisesRegex(ValueError, "unclassified=surprise"):
+            check(self.root, self.ledger_path)
+
+    def test_new_target_dependency_without_a_row_fails(self) -> None:
+        self.add_dependency("target.'cfg(windows)'.dependencies", 'surprise = "1"')
+        with self.assertRaisesRegex(ValueError, "unclassified=surprise"):
+            check(self.root, self.ledger_path)
+
+    def test_dependency_context_drift_fails(self) -> None:
+        """A production dependency silently demoted to dev must not stay production."""
+        row = next(
+            row for row in self.ledger["dependencies"]
+            if row["contexts"] == ["normal"] and not row["optional"]
+        )
+        self.move_dependency(row["name"], "dependencies", "dev-dependencies")
+        with self.assertRaisesRegex(ValueError, f'dependency {row["name"]} claims contexts'):
+            check(self.root, self.ledger_path)
+
+    def test_target_dependency_context_is_distinguished_from_plain_normal(self) -> None:
+        """A target-qualified edge is not the same denominator row as an unconditional one."""
+        row = next(
+            row for row in self.ledger["dependencies"]
+            if row["contexts"] == ["normal"] and not row["optional"]
+        )
+        self.move_dependency(row["name"], "dependencies", "target.'cfg(unix)'.dependencies")
+        with self.assertRaisesRegex(ValueError, "claims contexts \\['normal'\\]"):
+            check(self.root, self.ledger_path)
+
+    def test_test_dev_only_cannot_cover_a_production_dependency(self) -> None:
+        row = self.dependency_row("perl-lexer")
+        row["classification"] = "test_dev_only"
+        self.write_ledger(self.ledger)
+        with self.assertRaisesRegex(ValueError, "reachable from a production dependency context"):
+            check(self.root, self.ledger_path)
+
+    # --- feature isolation truth --------------------------------------------
+
+    def test_taxonomy_feature_cannot_claim_source_isolation(self) -> None:
+        row = next(r for r in self.ledger["features"] if r["isolation"] == "taxonomy_only")
+        row["isolation"] = "source_only"
+        self.write_ledger(self.ledger)
+        with self.assertRaisesRegex(ValueError, "but selects taxonomy_only"):
+            check(self.root, self.ledger_path)
+
+    def test_removing_a_feature_cfg_gate_invalidates_source_isolation(self) -> None:
+        gated = [name for name in self.gated_features if self.feature_row(name)["isolation"] == "source_only"]
+        self.write_feature_gates([name for name in self.gated_features if name != gated[0]])
+        with self.assertRaisesRegex(ValueError, f"feature {gated[0]} claims isolation source_only"):
+            check(self.root, self.ledger_path)
+
+    def test_test_only_gate_cannot_claim_production_source_isolation(self) -> None:
+        """A feature gated only from tests is a test profile, not a source boundary."""
+        row = next(r for r in self.ledger["features"] if r["isolation"] == "test_source_only")
+        row["isolation"] = "source_only"
+        self.write_ledger(self.ledger)
+        with self.assertRaisesRegex(
+            ValueError, f'feature {row["name"]} claims isolation source_only but selects test_source_only'
+        ):
+            check(self.root, self.ledger_path)
+
+    def test_moving_a_gate_from_src_to_tests_downgrades_isolation(self) -> None:
+        gated = next(
+            r["name"] for r in self.ledger["features"] if r["isolation"] == "source_only"
+        )
+        self.write_feature_gates(
+            [name for name in self.gated_features if name != gated],
+            self.test_gated_features + [gated],
+        )
+        with self.assertRaisesRegex(ValueError, "but selects test_source_only"):
+            check(self.root, self.ledger_path)
+
+    def test_feature_isolation_value_must_be_supported(self) -> None:
+        self.feature_row("cli")["isolation"] = "architectural_boundary"
+        self.write_ledger(self.ledger)
+        with self.assertRaisesRegex(ValueError, "isolation is unsupported"):
+            check(self.root, self.ledger_path)
+
+    def test_missing_feature_isolation_fails(self) -> None:
+        del self.feature_row("cli")["isolation"]
+        self.write_ledger(self.ledger)
+        with self.assertRaisesRegex(ValueError, "isolation must be a non-empty string"):
+            check(self.root, self.ledger_path)
+
+    # --- pending evidence ----------------------------------------------------
+
+    def test_review_row_without_pending_evidence_fails(self) -> None:
+        row = next(r for r in self.ledger["features"] if r["disposition"] == "review")
+        del row["pending"]
+        self.write_ledger(self.ledger)
+        with self.assertRaisesRegex(ValueError, "pending must be an object for a review disposition"):
+            check(self.root, self.ledger_path)
+
+    def test_pending_requires_every_named_field(self) -> None:
+        row = next(r for r in self.ledger["features"] if r["disposition"] == "review")
+        del row["pending"]["resolves_when"]
+        self.write_ledger(self.ledger)
+        with self.assertRaisesRegex(ValueError, "pending.resolves_when must be a non-empty string"):
+            check(self.root, self.ledger_path)
+
+    def test_pending_owner_must_be_an_issue_reference(self) -> None:
+        row = next(r for r in self.ledger["features"] if r["disposition"] == "review")
+        row["pending"]["owner"] = "the parser team"
+        self.write_ledger(self.ledger)
+        with self.assertRaisesRegex(ValueError, "pending.owner must be a GitHub issue reference"):
+            check(self.root, self.ledger_path)
+
+    def test_pending_predecessor_must_be_an_issue_reference_or_none(self) -> None:
+        row = next(r for r in self.ledger["features"] if r["disposition"] == "review")
+        row["pending"]["predecessor"] = "later"
+        self.write_ledger(self.ledger)
+        with self.assertRaisesRegex(ValueError, "pending.predecessor must be a GitHub issue reference"):
+            check(self.root, self.ledger_path)
+
+    def test_settled_row_cannot_carry_pending_evidence(self) -> None:
+        row = next(r for r in self.ledger["features"] if r["disposition"] != "review")
+        row["pending"] = {
+            "owner": "#7063", "predecessor": "none",
+            "reason": "unsettled", "resolves_when": "later",
+        }
+        self.write_ledger(self.ledger)
+        with self.assertRaisesRegex(ValueError, "pending is only valid for a review disposition"):
             check(self.root, self.ledger_path)
 
     def test_incremental_generation_cannot_be_production(self) -> None:
