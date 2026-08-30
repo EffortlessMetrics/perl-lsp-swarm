@@ -67,6 +67,26 @@ jobs:
               raise SystemExit(f'expected to adjust two token role tables, adjusted {adjusted}')
           source = '\n'.join(lines) + '\n'
 
+          # The historical candidate treated every Some(TokenKind::...Assign)
+          # map as a generic assignment gateway. On current main the only such
+          # map is PPC0024 named-parameter default syntax, whose closed set is
+          # intentionally `=`, `//=`, and `||=`. Do not add `^^=` there.
+          optional_map_start = source.index(
+              "    optional_anchor = 'Some(TokenKind::LogicalOrAssign)"
+          )
+          optional_map_end = source.index(
+              "    text, count = re.subn(", optional_map_start
+          )
+          source = source[:optional_map_start] + source[optional_map_end:]
+
+          optional_guard_start = source.index(
+              'if parser_optional_map_count < 1:'
+          )
+          optional_guard_end = source.index(
+              'if parser_list_count < 1:', optional_guard_start
+          )
+          source = source[:optional_guard_start] + source[optional_guard_end:]
+
           token_tests_start = source.index('# Keep exhaustive/manual token test tables')
           token_tests_end = source.index(
               '# ---------------------------------------------------------------------------\n'
@@ -88,6 +108,18 @@ jobs:
           python3 /tmp/patch-13228-core.py
           python3 .github/patch-13228-token-tests.py
           python3 .github/patch-13228-grammars.py
+          cat >> crates/perl-parser-core/tests/perl_5_40_42_logical_xor.rs <<'RS'
+
+          #[test]
+          fn assigning_logical_xor_is_not_a_signature_default_operator() {
+              let mut parser = Parser::new("sub f (:$value ^^= 1) { $value }");
+              let output = parser.parse_with_recovery();
+              assert!(
+                  !output.diagnostics.is_empty(),
+                  "PPC0024 signature defaults are limited to =, //=, and ||=; ^^= must remain a normal assignment operator"
+              );
+          }
+          RS
           cargo fmt --all
           git diff --check
 
