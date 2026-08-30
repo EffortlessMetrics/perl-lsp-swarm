@@ -13,7 +13,7 @@
 
 use perl_diagnostics::codes::DiagnosticCode;
 use perl_parser_core::ast::{Node, NodeKind};
-use perl_pragma::PragmaTracker;
+use perl_pragma::{PragmaState, PragmaTracker};
 
 use super::super::internal_types::{Diagnostic, RelatedInformation};
 use super::super::walker::walk_node;
@@ -149,7 +149,14 @@ fn is_version_literal(arg: &str) -> bool {
 /// This function checks if 'use strict' and 'use warnings' pragmas are present
 /// in the code and generates warning diagnostics if they are missing.
 /// It also detects misspelled pragma names and provides "Did you mean?" suggestions.
-pub fn check_strict_warnings(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
+/// `pragma_map` is the generation-owned pragma timeline (#7286). Callers that
+/// already hold one for this exact tree pass it in rather than paying a second
+/// `PragmaTracker::build` walk per diagnostic evaluation.
+pub fn check_strict_warnings(
+    node: &Node,
+    pragma_map: &[(std::ops::Range<usize>, PragmaState)],
+    diagnostics: &mut Vec<Diagnostic>,
+) {
     // Do not suggest strict/warnings for empty, whitespace-only, comment-only,
     // or shebang-only files — the file has no executable content yet.
     if let NodeKind::Program { statements } = &node.kind
@@ -158,11 +165,10 @@ pub fn check_strict_warnings(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
         return;
     }
 
-    let pragma_map = PragmaTracker::build(node);
     // Query the top-level pragma state (after all scoped blocks have exited).
     // This avoids the false-negative from .any() which sees eval-interior ranges.
     // signatures_strict is included to honour `use feature 'signatures'` (#4038).
-    let top_level_state = PragmaTracker::final_state(&pragma_map);
+    let top_level_state = PragmaTracker::final_state(pragma_map);
     let mut has_strict = top_level_state.strict_vars
         || top_level_state.strict_subs
         || top_level_state.strict_refs
@@ -401,7 +407,7 @@ mod tests {
     fn strict_warnings_diags(source: &str) -> Vec<Diagnostic> {
         let ast = must(Parser::new(source).parse());
         let mut diags = vec![];
-        check_strict_warnings(&ast, &mut diags);
+        check_strict_warnings(&ast, &PragmaTracker::build(&ast), &mut diags);
         diags
     }
 

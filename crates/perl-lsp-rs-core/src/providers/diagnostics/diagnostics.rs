@@ -528,7 +528,7 @@ impl DiagnosticsProvider {
             diagnostics.extend(heredoc_diags);
 
             // Run lint checks
-            check_strict_warnings(ast, &mut diagnostics);
+            check_strict_warnings(ast, analysis.pragma_map(), &mut diagnostics);
             check_deprecated_syntax(ast, &mut diagnostics);
             let symbol_table = analysis.symbol_table();
             check_common_mistakes(ast, symbol_table, &mut diagnostics);
@@ -564,7 +564,7 @@ impl DiagnosticsProvider {
             check_pod_coverage(ast, source, &mut diagnostics);
 
             // Version compatibility lint (PL900)
-            check_version_compat(ast, &mut diagnostics);
+            check_version_compat(ast, analysis.pragma_map(), &mut diagnostics);
 
             // Unreachable code detection (PL406)
             check_unreachable_code(ast, &mut diagnostics);
