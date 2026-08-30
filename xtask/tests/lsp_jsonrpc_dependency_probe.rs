@@ -23,8 +23,7 @@ use std::{
 
 const JSONRPC_MODEL_PATH: &str = "crates/perl-lsp-rs-core/src/protocol/jsonrpc.rs";
 const PROBE_PACKAGE: &str = "lsp-jsonrpc-boundary-probe";
-const CRATES_IO_REGISTRY_SOURCE: &str =
-    "registry+https://github.com/rust-lang/crates.io-index";
+const CRATES_IO_REGISTRY_SOURCE: &str = "registry+https://github.com/rust-lang/crates.io-index";
 const PROBE_MANIFEST: &str = r#"[package]
 name = "lsp-jsonrpc-boundary-probe"
 version = "0.0.0"
