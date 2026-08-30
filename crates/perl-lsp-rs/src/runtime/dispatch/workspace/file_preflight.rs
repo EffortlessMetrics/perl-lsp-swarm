@@ -122,20 +122,33 @@ fn empty_workspace_edit() -> Value {
 /// Returns `true` when the renamed subject at `uri` is admitted Perl source
 /// under the runtime's single admission authority (#14186).
 ///
-/// Classification reads the authoritative source text — the open editor
-/// buffer when one exists, otherwise the bytes on disk — and hands it to the
-/// containing folder's `DiscoveryConfig`. Unreadable or non-filesystem
-/// subjects fail closed: a preflight that cannot prove the subject is Perl
-/// plans no edits rather than guessing a module identity.
+/// Classification reads only the two authoritative sources: the open editor
+/// buffer when one exists, otherwise the current filesystem object. The
+/// workspace-index copy is deliberately skipped — it can be stale (an
+/// indexed script whose shebang was since removed must classify as
+/// non-Perl), and only a live buffer outranks disk (#8041). Unreadable or
+/// non-filesystem subjects fail closed: a preflight that cannot prove the
+/// subject is Perl plans no edits rather than guessing a module identity.
 #[cfg(feature = "workspace")]
 fn rename_subject_admits_perl(server: &LspServer, uri: &str) -> bool {
     let Some(path) = perl_uri::uri_to_fs_path(uri) else {
         return false;
     };
-    let Some(text) = read_workspace_text(server, uri) else {
+    let admission = server.discovery_admission_config(&path);
+    if server.document_is_open(uri) {
+        let documents = server.documents.lock();
+        let Some(text) =
+            server.get_document(&documents, uri).map(|document| document.text_arc.to_string())
+        else {
+            return false;
+        };
+        drop(documents);
+        return admission.admits_bytes(&path, text.as_bytes());
+    }
+    let Ok(text) = crate::util::read_text_file_with_encoding(&path) else {
         return false;
     };
-    server.discovery_admission_config(&path).admits_bytes(&path, text.as_bytes())
+    admission.admits_bytes(&path, text.as_bytes())
 }
 
 #[cfg(feature = "workspace")]
@@ -511,6 +524,47 @@ mod tests {
         assert!(
             changes.is_empty(),
             "non-Perl rename subjects must plan no module rewrites, got {changes:?}"
+        );
+        Ok(())
+    }
+
+    /// #14186 review regression: classification of a closed subject must
+    /// come from disk, not the workspace-index copy. An indexed extensionless
+    /// Perl script that loses its shebang on disk is no longer Perl, so its
+    /// rename must plan no edits even though the index still holds the
+    /// shebang-era text.
+    #[test]
+    fn closed_rename_subject_classifies_from_disk_not_stale_index() -> TestResult {
+        let server = LspServer::new();
+        let directory = tempfile::tempdir()?;
+        let script_path = directory.path().join("deploy_hook");
+        let new_path = directory.path().join("retired_hook");
+        let shebang_source = "#!/usr/bin/env perl\npackage Hook;\nsub hook_symbol { 1 }\n1;\n";
+        std::fs::write(&script_path, shebang_source)?;
+        let old_uri =
+            Url::from_file_path(&script_path).map_err(|_| "invalid old path")?.to_string();
+        let new_uri = Url::from_file_path(&new_path).map_err(|_| "invalid new path")?.to_string();
+        server
+            .coordinator()
+            .ok_or("workspace coordinator unavailable")?
+            .index()
+            .index_file(Url::parse(&old_uri)?, shebang_source.to_string())?;
+        // The disk object loses its Perl shebang after the index snapshot.
+        std::fs::write(&script_path, "#!/bin/sh\npackage Hook;\nsub hook_symbol { 1 }\n1;\n")?;
+
+        let outcome = server.handle_will_rename_files_dispatch(Some(json!({
+            "files": [{ "oldUri": old_uri.clone(), "newUri": new_uri.clone() }]
+        })));
+        let edit =
+            outcome.map_err(|error| format!("stale-index rename preflight failed: {error}"))?;
+        let changes = edit
+            .as_ref()
+            .and_then(|value| value.get("changes"))
+            .and_then(Value::as_object)
+            .ok_or("stale-index preflight must return a WorkspaceEdit changes map")?;
+        assert!(
+            changes.is_empty(),
+            "stale indexed text must not admit a de-shebanged rename subject, got {changes:?}"
         );
         Ok(())
     }

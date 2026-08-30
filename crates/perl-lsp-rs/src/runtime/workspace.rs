@@ -166,6 +166,25 @@ pub(crate) fn read_perl_source_file(
     Ok(Some(decode_text_bytes(&bytes)))
 }
 
+/// Most-specific containing root's admission policy for `path` (#14186).
+///
+/// Overlapping (nested) roots resolve to the folder whose root contains the
+/// path with the most components, so a looser parent policy can never admit
+/// a file inside a stricter nested root. Paths outside every current root
+/// admit built-ins only.
+#[cfg(feature = "workspace")]
+fn most_specific_admission(
+    admission_roots: &[(std::path::PathBuf, super::file_discovery::DiscoveryConfig)],
+    path: &Path,
+) -> super::file_discovery::DiscoveryConfig {
+    admission_roots
+        .iter()
+        .filter(|(root, _)| path.starts_with(root))
+        .max_by_key(|(root, _)| root.components().count())
+        .map(|(_, admission)| admission.clone())
+        .unwrap_or_default()
+}
+
 /// Final-seam admission decision for the startup scan (#13308, #14186).
 ///
 /// One admission authority: the seam consults the same `DiscoveryConfig`
@@ -1751,34 +1770,27 @@ impl LspServer {
     ///
     /// The containing workspace folder's configured extras (normalized by
     /// [`super::file_discovery::DiscoveryConfig::new`]) layered over the
-    /// built-in admission set. Nested roots resolve to the most specific
-    /// containing folder; paths outside every folder admit built-ins only,
-    /// so runtime seams can never admit a file through another folder's
-    /// policy.
+    /// built-in admission set, resolved against the most specific containing
+    /// root; paths outside every folder admit built-ins only, so runtime
+    /// seams can never admit a file through another folder's policy.
     #[cfg(feature = "workspace")]
     pub(crate) fn discovery_admission_config(
         &self,
         path: &Path,
     ) -> super::file_discovery::DiscoveryConfig {
         let folders = self.workspace_folders.lock();
-        let mut best: Option<(usize, super::file_discovery::DiscoveryConfig)> = None;
-        for folder in folders.iter() {
-            let Some(root) = folder.path.clone().or_else(|| uri_to_fs_path(&folder.uri)) else {
-                continue;
-            };
-            if !path.starts_with(&root) {
-                continue;
-            }
-            let depth = root.components().count();
-            if best.as_ref().is_none_or(|(best_depth, _)| depth > *best_depth) {
+        let admission_roots = folders
+            .iter()
+            .filter_map(|folder| {
+                let root = folder.path.clone().or_else(|| uri_to_fs_path(&folder.uri))?;
                 let admission = super::file_discovery::DiscoveryConfig::new(
                     folder.effective_workspace_config.discovery_extra_extensions.clone(),
                     Vec::new(),
                 );
-                best = Some((depth, admission));
-            }
-        }
-        best.map(|(_, admission)| admission).unwrap_or_default()
+                Some((root, admission))
+            })
+            .collect::<Vec<_>>();
+        most_specific_admission(&admission_roots, path)
     }
 
     /// Re-index a single URI from the file system.
@@ -2457,27 +2469,31 @@ impl LspServer {
             }
 
             // One admission authority (#14186): each folder's configured
-            // extras are normalized through `DiscoveryConfig::new` and kept
-            // per folder. Paths carry their discovering folder's policy to
-            // the final seam, so a root's policy can never admit another
-            // root's files and raw config spellings (".FOO", " BAR ") admit
-            // exactly what discovery admitted.
-            let folder_admissions: Vec<super::file_discovery::DiscoveryConfig> = workspace_folders
-                .iter()
-                .map(|folder| {
-                    super::file_discovery::DiscoveryConfig::new(
-                        folder.effective_workspace_config.discovery_extra_extensions.clone(),
-                        Vec::new(),
-                    )
-                })
-                .collect();
+            // extras are normalized through `DiscoveryConfig::new` and paired
+            // with its root. The final seam resolves every path against the
+            // most-specific containing root, so nested roots are never
+            // over-admitted by a looser parent policy and raw config
+            // spellings (".FOO", " BAR ") admit exactly what discovery's
+            // authority admits.
+            let admission_roots: Vec<(std::path::PathBuf, super::file_discovery::DiscoveryConfig)> =
+                workspace_folders
+                    .iter()
+                    .filter_map(|folder| {
+                        let root = folder.path.clone().or_else(|| uri_to_fs_path(&folder.uri))?;
+                        let admission = super::file_discovery::DiscoveryConfig::new(
+                            folder.effective_workspace_config.discovery_extra_extensions.clone(),
+                            Vec::new(),
+                        );
+                        Some((root, admission))
+                    })
+                    .collect();
 
-            let mut files: Vec<(std::path::PathBuf, usize)> = Vec::new();
+            let mut files: Vec<std::path::PathBuf> = Vec::new();
             let mut early_exit: Option<(EarlyExitReason, u64, usize, usize)> = None;
             let mut indexing_receipt = WorkspaceIndexingReceipt::default();
             let discovery_started = Instant::now();
 
-            'scan: for (folder_idx, folder_state) in workspace_folders.into_iter().enumerate() {
+            'scan: for folder_state in workspace_folders {
                 if GLOBAL_CANCELLATION_REGISTRY.is_cancelled(&progress_request_id) {
                     let elapsed_ms = budget_start.elapsed().as_millis() as u64;
                     early_exit = Some((EarlyExitReason::Cancelled, elapsed_ms, 0, files.len()));
@@ -2520,7 +2536,7 @@ impl LspServer {
                         early_exit = Some((EarlyExitReason::Cancelled, elapsed_ms, 0, files.len()));
                         break 'scan;
                     }
-                    files.push((path, folder_idx));
+                    files.push(path);
                     let total_files = files.len();
 
                     if total_files.is_multiple_of(64) {
@@ -2553,7 +2569,7 @@ impl LspServer {
             // can batch updates every 50 files (avoid flooding small workspaces).
             let mut last_reported = 0usize;
 
-            for (path, folder_idx) in files {
+            for path in files {
                 if GLOBAL_CANCELLATION_REGISTRY.is_cancelled(&progress_request_id) {
                     let elapsed_ms = budget_start.elapsed().as_millis() as u64;
                     early_exit =
@@ -2639,17 +2655,12 @@ impl LspServer {
                     }
                 };
                 indexing_receipt.record_phase(IndexingPhase::Read, read_started.elapsed());
-                // The seam consults exactly the policy that discovered this
-                // path, so a discovered file can only be rejected when its
-                // content changed after discovery (reclassification).
-                let Some(admission) = folder_admissions.get(folder_idx) else {
-                    tracing::debug!(
-                        path = %path.display(),
-                        "Skipping file without folder admission provenance"
-                    );
-                    continue;
-                };
-                if !indexing_seam_admits_perl_source(&path, &source_bytes, admission) {
+                // The seam resolves the most-specific containing folder's
+                // policy, so a discovered file can only be rejected when its
+                // content changed after discovery (reclassification) or a
+                // stricter nested root owns the path.
+                let admission = most_specific_admission(&admission_roots, &path);
+                if !indexing_seam_admits_perl_source(&path, &source_bytes, &admission) {
                     tracing::debug!(
                         path = %path.display(),
                         "Startup scan skipped non-Perl content reclassified at the \
@@ -2691,14 +2702,34 @@ impl LspServer {
                     #[cfg(all(feature = "workspace", any(test, feature = "expose_lsp_test_api")))]
                     crate::runtime::readiness::notify_indexing_commit_gate(&indexing_commit_gate);
                     let current_folders = current_workspace_folders.lock();
-                    if path_is_in_current_workspace(&path, &current_folders) {
-                        Some(coordinator.index().index_file(url, content))
-                    } else {
+                    if !path_is_in_current_workspace(&path, &current_folders) {
                         tracing::debug!(
                             path = %path.display(),
                             "Skipping file from workspace folder removed during indexing"
                         );
                         None
+                    } else if open_documents.is_open(&indexed_uri) {
+                        // Open-buffer authority (#8041, #14186): didOpen can
+                        // insert during the read-to-lock window above. The
+                        // recheck and the commit share this critical section,
+                        // so a buffer inserted before the commit is seen here
+                        // and its disk re-index is skipped; a didOpen that
+                        // waits on this lock commits the buffer afterwards.
+                        // Either way the disk bytes read before the lock can
+                        // never replace live buffer facts.
+                        tracing::debug!(
+                            uri = %indexed_uri,
+                            "Open document inserted during startup scan — buffer \
+                             remains authoritative; disk re-index skipped"
+                        );
+                        // The disk was not indexed, but the URI's workspace
+                        // facts are current through buffer authority, so the
+                        // readiness receipt observes it as ready (the
+                        // buffer's own lifecycle owns those facts).
+                        readiness_receipt.lock().record_indexed_uri(&indexed_uri, Instant::now());
+                        None
+                    } else {
+                        Some(coordinator.index().index_file(url, content))
                     }
                 };
                 let Some(index_result) = index_result else {
@@ -4774,6 +4805,120 @@ mod tests {
         }
         if coordinator.index().find_definition("BControl::b_control_symbol").is_none() {
             return Err("folder B lost its ordinary .pm symbols".into());
+        }
+        Ok(())
+    }
+
+    /// #14186 review regression (nested roots): a parent folder's extra
+    /// extension must not admit files inside a stricter nested root. The
+    /// startup seam resolves every path against the most-specific containing
+    /// folder, not the folder whose scan happened to discover it.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn nested_root_extra_extension_wins_over_parent() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let nested = dir.path().join("nested");
+        std::fs::create_dir_all(&nested)?;
+        std::fs::write(dir.path().join("top.foo"), "package Top;\nsub top_symbol { 1 }\n1;\n")?;
+        std::fs::write(nested.join("inner.foo"), "package Inner;\nsub inner_symbol { 1 }\n1;\n")?;
+        std::fs::write(
+            nested.join("inner.pm"),
+            "package InnerCtl;\nsub inner_ctl_symbol { 1 }\n1;\n",
+        )?;
+
+        let mut parent_config = crate::state::WorkspaceConfig::default();
+        parent_config.discovery_extra_extensions = vec![".FOO".to_string()];
+        let mut server = LspServer::new();
+        server.index_coordinator = Some(Arc::new(IndexCoordinator::with_limits_and_caps(
+            IndexResourceLimits::default(),
+            IndexPerformanceCaps { initial_scan_budget_ms: 30_000, ..Default::default() },
+        )));
+        let parent_folder_uri = url::Url::from_directory_path(dir.path())
+            .map_err(|_| "invalid parent folder path")?
+            .to_string();
+        let nested_folder_uri = url::Url::from_directory_path(&nested)
+            .map_err(|_| "invalid nested folder path")?
+            .to_string();
+        server.workspace_folders.lock().push(
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(parent_folder_uri)
+                .with_path(dir.path().to_path_buf())
+                .with_effective_workspace_config(parent_config),
+        );
+        server.workspace_folders.lock().push(
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(nested_folder_uri)
+                .with_path(nested.clone()),
+        );
+
+        server.start_workspace_indexing();
+        wait_for_indexing_completion(&server)?;
+
+        let coordinator = server.coordinator().ok_or("missing workspace coordinator")?;
+        if coordinator.index().find_definition("Top::top_symbol").is_none() {
+            return Err("parent root's configured .foo policy lost its own files".into());
+        }
+        if coordinator.index().find_definition("Inner::inner_symbol").is_some() {
+            return Err(
+                "parent's .foo policy admitted a file inside the stricter nested root".into()
+            );
+        }
+        if coordinator.index().find_definition("InnerCtl::inner_ctl_symbol").is_none() {
+            return Err("nested root lost its ordinary .pm symbols".into());
+        }
+        Ok(())
+    }
+
+    /// #14186 review regression (open-buffer authority at the startup seam):
+    /// an admitted file whose editor buffer was open before the scan must
+    /// keep its live buffer facts — the scan's disk read can never replace
+    /// them, and the commit critical section rechecks openness before
+    /// committing.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn startup_scan_defers_to_open_buffer_for_admitted_file()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let control_path = dir.path().join("aaa_control.pl");
+        let subject_path = dir.path().join("subject.pl");
+        std::fs::write(&control_path, "package Control;\nsub control_symbol { 1 }\n1;\n")?;
+        std::fs::write(&subject_path, "package Disk;\nsub disk_symbol { 1 }\n1;\n")?;
+        let server = gated_scan_server(&dir)?;
+
+        let subject_uri =
+            url::Url::from_file_path(&subject_path).map_err(|_| "invalid subject uri")?.to_string();
+        server.did_open(json!({
+            "textDocument": {
+                "uri": subject_uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": "package Buffer;\nsub buffer_symbol { 1 }\n1;\n"
+            }
+        }))?;
+        // didOpen commits the buffer facts through its own lifecycle; wait
+        // for that fixture commit so the assertion below observes the scan's
+        // effect on live facts, not a race against didOpen's background task.
+        {
+            let coordinator = server.coordinator().ok_or("missing workspace coordinator")?;
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while coordinator.index().find_definition("Buffer::buffer_symbol").is_none() {
+                if std::time::Instant::now() >= deadline {
+                    return Err("fixture: didOpen never committed the buffer facts".into());
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
+
+        server.start_workspace_indexing();
+        wait_for_indexing_completion(&server)?;
+
+        let coordinator = server.coordinator().ok_or("missing workspace coordinator")?;
+        if coordinator.index().find_definition("Buffer::buffer_symbol").is_none() {
+            return Err("startup scan displaced the open buffer's live facts".into());
+        }
+        if coordinator.index().find_definition("Disk::disk_symbol").is_some() {
+            return Err("startup scan committed disk bytes behind an open document".into());
+        }
+        if coordinator.index().find_definition("Control::control_symbol").is_none() {
+            return Err("startup scan lost the closed control file's symbols".into());
         }
         Ok(())
     }
