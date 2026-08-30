@@ -496,10 +496,16 @@ fn compare_enum(
         violations.push(format!("`{INPUT_SCHEMA_PATH}` does not declare an enum for `{label}`"));
         return;
     };
-    let actual: Vec<&str> = actual.iter().filter_map(Value::as_str).collect();
+    // Domain agreement is about which values are admitted, not the order they
+    // are listed in. Reordering an unchanged enum leaves the accepted packet
+    // domain identical, so it must not read as drift.
+    let actual: BTreeSet<&str> = actual.iter().filter_map(Value::as_str).collect();
+    let expected: BTreeSet<&str> = expected.iter().copied().collect();
     if actual != expected {
+        let missing: Vec<&str> = expected.difference(&actual).copied().collect();
+        let unmapped: Vec<&str> = actual.difference(&expected).copied().collect();
         violations.push(format!(
-            "`{label}` domain drifted from `{INPUT_SCHEMA_PATH}`: registry knows {expected:?}, schema declares {actual:?}"
+            "`{label}` domain drifted from `{INPUT_SCHEMA_PATH}`: schema declares {unmapped:?} the registry does not map, and the registry knows {missing:?} the schema does not declare"
         ));
     }
 }
@@ -1399,6 +1405,17 @@ pub fn project_combination(
     combination: &Combination,
     route_mode: Option<&str>,
 ) -> Res<Value> {
+    // `Combination` is public with public fields, so a caller can hand this
+    // function a value `read_packet` would never have admitted. Every selector
+    // field is checked here, not just the rendered route.
+    for field in SELECTOR_FIELDS {
+        let value = combination.field(field).unwrap_or_default();
+        if !domain_for(field).is_some_and(|domain| domain.contains(&value)) {
+            return Err(StandaloneDiagnosticsError::new(format!(
+                "`{field}` value `{value}` is outside the typed domain"
+            )));
+        }
+    }
     if let Some(route_mode) = route_mode
         && !ROUTE_MODES.contains(&route_mode)
     {
@@ -1470,6 +1487,17 @@ pub fn project_combination(
             }
         }
     }
+
+    // An actionable additional reason must not be hidden behind an identifier
+    // while the primary reason's text reports a clean success. Outstanding work
+    // is surfaced in the rendered output and degrades the reported terminality.
+    let outstanding: Vec<&Value> = additional
+        .iter()
+        .copied()
+        .filter(|reason| {
+            reason.get("terminality").and_then(Value::as_str) == Some("nonterminal_actionable")
+        })
+        .collect();
 
     let template_id =
         primary.get("summary_template_id").and_then(Value::as_str).unwrap_or_default();
@@ -1570,10 +1598,18 @@ pub fn project_combination(
         "classification".to_string(),
         primary.get("classification").cloned().unwrap_or(Value::Null),
     );
-    projection.insert(
-        "terminality".to_string(),
-        primary.get("terminality").cloned().unwrap_or(Value::Null),
-    );
+    let primary_terminality =
+        primary.get("terminality").and_then(Value::as_str).unwrap_or_default();
+    // A terminal success alongside outstanding actionable work is a
+    // contradiction; report the work, not the success.
+    let reported_terminality =
+        if outstanding.is_empty() || !primary_terminality.starts_with("terminal_") {
+            primary_terminality.to_string()
+        } else {
+            "nonterminal_actionable".to_string()
+        };
+    projection.insert("terminality".to_string(), Value::from(reported_terminality));
+    projection.insert("primary_terminality".to_string(), Value::from(primary_terminality));
     projection.insert(
         "retryability".to_string(),
         primary.get("retryability").cloned().unwrap_or(Value::Null),
@@ -1589,6 +1625,27 @@ pub fn project_combination(
         "claim_ceiling".to_string(),
         primary.get("claim_consequence").cloned().unwrap_or(Value::Null),
     );
+    let outstanding_renders: Vec<Value> = outstanding
+        .iter()
+        .filter_map(|reason| {
+            let template_id = reason.get("summary_template_id").and_then(Value::as_str)?;
+            let text = manifest
+                .get("summary_templates")
+                .and_then(Value::as_array)?
+                .iter()
+                .find(|template| {
+                    template.get("template_id").and_then(Value::as_str) == Some(template_id)
+                })?
+                .get("text")
+                .and_then(Value::as_str)?;
+            let mut row = Map::new();
+            row.insert("reason_id".to_string(), reason.get("reason_id").cloned()?);
+            row.insert("template_id".to_string(), Value::from(template_id));
+            row.insert("text".to_string(), Value::from(text));
+            Some(Value::Object(row))
+        })
+        .collect();
+    render.insert("outstanding".to_string(), Value::from(outstanding_renders));
     projection.insert("render".to_string(), Value::Object(render));
 
     Ok(Value::Object(projection))

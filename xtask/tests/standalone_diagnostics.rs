@@ -1200,3 +1200,118 @@ fn a_registry_gap_reports_its_true_size_not_the_example_cap() -> TestResult {
     );
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Third independent review pass (#13800)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_public_projection_entry_point_rejects_an_untyped_combination() -> TestResult {
+    let manifest = diagnostics::load_manifest(&repo_root())?;
+    // `Combination` has public fields, so a caller can build one the packet
+    // admission path would never have produced.
+    let subject = combination(
+        "reinstall_everything",
+        "selection_committed",
+        "installed",
+        "completed",
+        "verified",
+        "persisted",
+    );
+    let error = match diagnostics::project_combination(&manifest, &subject, None) {
+        Ok(_) => "projection unexpectedly succeeded".to_string(),
+        Err(error) => error.to_string(),
+    };
+    assert!(error.contains("`operation` value"), "got: {error}");
+    assert!(error.contains("outside the typed domain"), "got: {error}");
+    Ok(())
+}
+
+/// A clean primary outcome must not present as finished while an additional
+/// reason still needs the user to do something. The residue was previously
+/// reported only as an identifier beside success text.
+#[test]
+fn outstanding_cleanup_is_not_hidden_behind_a_successful_install() -> TestResult {
+    let manifest = diagnostics::load_manifest(&repo_root())?;
+    let projection = diagnostics::project_packet(
+        &manifest,
+        &packet(
+            "selection_committed",
+            json!({
+                "product_units": "installed",
+                "cleanup": "failed_preserved",
+                "process_startup": "verified",
+                "path_persistence": "persisted"
+            }),
+            "installed, but cleanup left residue",
+        ),
+    )?;
+
+    // The primary outcome is still an honest terminal success on its own axis…
+    assert_eq!(
+        projection.get("primary_terminality").and_then(Value::as_str),
+        Some("terminal_success")
+    );
+    // …but the reported state must not claim the transaction is finished.
+    assert_eq!(
+        projection.get("terminality").and_then(Value::as_str),
+        Some("nonterminal_actionable"),
+        "outstanding actionable work must degrade the reported terminality"
+    );
+    // And the residue must be readable, not just referenced by id.
+    let outstanding = projection
+        .pointer("/render/outstanding")
+        .and_then(Value::as_array)
+        .ok_or("missing render.outstanding")?;
+    assert!(
+        outstanding.iter().any(|row| {
+            row.get("reason_id").and_then(Value::as_str)
+                == Some("cleanup_incomplete_residue_retained")
+                && row.get("text").and_then(Value::as_str).is_some_and(|text| !text.is_empty())
+        }),
+        "the outstanding cleanup must carry its own rendered text, got {outstanding:?}"
+    );
+    assert!(action_ids(&projection).iter().any(|id| id == "manual_owned_state_resolution"));
+
+    // Control: a clean cleanup leaves the terminal success intact and nothing
+    // outstanding, so the degradation above is not unconditional.
+    let clean = diagnostics::project_packet(
+        &manifest,
+        &packet(
+            "selection_committed",
+            json!({
+                "product_units": "installed",
+                "cleanup": "completed",
+                "process_startup": "verified",
+                "path_persistence": "persisted"
+            }),
+            "installed cleanly",
+        ),
+    )?;
+    assert_eq!(clean.get("terminality").and_then(Value::as_str), Some("terminal_success"));
+    assert_eq!(
+        clean.pointer("/render/outstanding").and_then(Value::as_array).map(Vec::len),
+        Some(0)
+    );
+    Ok(())
+}
+
+/// Domain agreement is about which values are admitted. Reordering an enum
+/// leaves the accepted packet domain identical and must not read as drift,
+/// while a genuinely widened contract still must.
+#[test]
+fn reordering_an_input_enum_is_not_contract_drift() -> TestResult {
+    let root = staged_root("reordered")?;
+    let schema_path = root.join(diagnostics::INPUT_SCHEMA_PATH);
+    let mut schema: Value = serde_json::from_slice(&std::fs::read(&schema_path)?)?;
+    let dispositions = schema["properties"]["disposition"]["enum"]
+        .as_array_mut()
+        .ok_or("disposition enum missing")?;
+    dispositions.reverse();
+    std::fs::write(&schema_path, format!("{}\n", serde_json::to_string_pretty(&schema)?))?;
+
+    let result = diagnostics::validate_manifest_file(&root);
+    std::fs::remove_dir_all(&root).ok();
+    result?;
+    Ok(())
+}
