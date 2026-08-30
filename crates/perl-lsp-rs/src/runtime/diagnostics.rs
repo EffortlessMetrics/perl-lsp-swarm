@@ -10,8 +10,7 @@ use super::{
     Arc, DiagnosticsProvider, DocumentState, InternalDiagnosticSeverity, JsonRpcError, LspServer,
     Ordering, Value,
     diagnostics_sink::{
-        AcceptedCriticPolicy, PushDiagnosticIdentity, PushDiagnosticsCommitOutcome,
-        PushDiagnosticsDisposition,
+        PushDiagnosticIdentity, PushDiagnosticsCommitOutcome, PushDiagnosticsDisposition,
     },
     json, source_path_from_uri,
     types::best_workspace_folder_for_doc,
@@ -431,7 +430,7 @@ impl LspServer {
         // Accepted native critic policy behind whatever critic rows this
         // publication ends up carrying (#13304). Stays `None` for the
         // parse-error-only branch, which depends on no critic configuration.
-        let mut accepted_critic_policy: Option<AcceptedCriticPolicy> = None;
+        let mut accepted_critic_snapshot: Option<AcceptedCriticSnapshot> = None;
         let lsp_diagnostics: Vec<Value> = if let Some(ast) = &ast_opt {
             // Get diagnostics (already includes unused variable detection).
             // resolver is called with the documents lock *released* — no reentrant deadlock.
@@ -626,10 +625,7 @@ impl LspServer {
             // contribution against its own accepted subject. Only a still-current
             // subject may bind a policy into the irreversible sink identity.
             if self.finalize_pending_critic(&mut diagnostics, pending_critic) {
-                accepted_critic_policy = Some(AcceptedCriticPolicy {
-                    owning_root: accepted_critic.owning_root().map(ToOwned::to_owned),
-                    fingerprint: accepted_critic.fingerprint(),
-                });
+                accepted_critic_snapshot = Some(accepted_critic);
             }
 
             dedup_overlapping_diagnostics(&mut diagnostics);
@@ -771,7 +767,7 @@ impl LspServer {
         // ABA) and left the send itself outside any currentness decision.
         let identity =
             PushDiagnosticIdentity::for_document(&normalized_uri, &generation, gen_at_snapshot)
-                .with_accepted_critic_policy(accepted_critic_policy);
+                .with_accepted_critic_snapshot(accepted_critic_snapshot);
         let disposition = if lsp_diagnostics.is_empty() {
             PushDiagnosticsDisposition::Clear
         } else {
