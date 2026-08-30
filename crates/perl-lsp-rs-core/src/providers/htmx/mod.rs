@@ -215,6 +215,18 @@ mod tests {
                         && item.text_edit_range == Some((11, 17))
                 })
         }));
+
+        let trigger = FileCompletionContext::new("HX-Trigger", 0, 10);
+        assert!(complete_header_names(&trigger).is_some_and(|items| {
+            items.iter().any(|item| {
+                item.label == "HX-Trigger"
+                    && item.documentation.as_deref()
+                        == Some(
+                            "Request: contains the `id` of the triggering element. Response: \
+                             triggers client-side events when the response is received.",
+                        )
+            })
+        }));
     }
 
     #[test]

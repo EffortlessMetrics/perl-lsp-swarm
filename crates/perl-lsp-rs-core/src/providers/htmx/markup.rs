@@ -201,13 +201,8 @@ fn open_start_tag_offset(window: &str) -> Option<usize> {
                 },
             },
             MarkupState::InvalidTag => {
-                if bytes.get(index) == Some(&b'>') {
-                    index += 1;
-                    MarkupState::Text
-                } else {
-                    index += 1;
-                    MarkupState::InvalidTag
-                }
+                index += 1;
+                MarkupState::InvalidTag
             }
         };
     }
@@ -392,6 +387,7 @@ mod tests {
             "<div title=\"value\"hx-",
             "<div foo=hx-",
             "<div <span hx-",
+            "<div <span title=\">\"> <button hx-",
             "<% my $x = '<div hx-'",
             "[% '<div hx-'",
             "<& component, value => '<div hx-'",
