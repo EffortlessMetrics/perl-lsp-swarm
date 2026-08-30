@@ -380,3 +380,52 @@ fn exhaustion_is_distinct_from_cancellation() {
     assert!(!cause.is_cancelled(), "budget exhaustion must not be reported as cancellation");
     assert_ne!(cause, ParseStopCause::Cancelled);
 }
+
+/// A refused collection must not turn later valid heredocs into syntax errors.
+///
+/// Refusal deliberately leaves the queued declarations in place so their
+/// placeholders stay visibly unresolved. Those entries must not keep occupying
+/// the depth-limited admission queue: `push_heredoc_decl` refuses past
+/// `MAX_HEREDOC_DEPTH` (100) with `ParseError::syntax("Heredoc depth limit
+/// exceeded")`, so a queue that only ever grows after exhaustion would blame
+/// the user's source for a resource limit — the exact misclassification this
+/// budget replaced. Exhaustion must stay a single typed resource-limit
+/// terminal no matter how many declarations follow it.
+#[test]
+fn exhaustion_does_not_turn_later_heredocs_into_depth_syntax_errors() {
+    // Comfortably past MAX_HEREDOC_DEPTH so the guard is reached if the queue
+    // is never released after refusal.
+    let mut source = String::new();
+    for index in 0..150 {
+        source.push_str(&format!("my $v{index} = <<EOF{index};\nbody {index}\nEOF{index}\n"));
+    }
+
+    let output = parse_with_budget(&source, heredoc_scan_budget(1));
+
+    let depth_errors: Vec<_> = output
+        .diagnostics
+        .iter()
+        .filter(|error| error.to_string().contains("depth limit"))
+        .collect();
+
+    assert!(
+        depth_errors.is_empty(),
+        "a refused heredoc collection must not produce depth-limit syntax errors, got {} of them: {:?}",
+        depth_errors.len(),
+        depth_errors.iter().map(std::string::ToString::to_string).collect::<Vec<_>>()
+    );
+
+    assert!(
+        matches!(output.stop_cause(), Some(ParseStopCause::HeredocBudgetExhausted { .. })),
+        "the operation must still terminate on the heredoc budget, got {:?}",
+        output.stop_cause()
+    );
+
+    for error in &output.diagnostics {
+        assert_ne!(
+            error.error_class(),
+            ErrorCategory::UserError,
+            "no diagnostic from a resource limit may be classified as a user syntax error: {error}"
+        );
+    }
+}

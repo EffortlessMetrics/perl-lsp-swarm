@@ -97,6 +97,18 @@ impl<'a> Parser<'a> {
         decl_start: usize,
         decl_end: usize,
     ) {
+        // Once the collection budget is spent, no further declaration can ever be
+        // drained: every later drain refuses at its pre-check. Admitting them anyway
+        // would grow a queue that is never released, and the depth guard below would
+        // then blame the user's source with `Heredoc depth limit exceeded` for what is
+        // really a resource limit — reintroducing, one guard over, exactly the
+        // misclassification this budget was written to remove. The placeholder node is
+        // already in the AST and stays visibly unresolved; the typed terminal recorded
+        // at refusal is what explains it.
+        if self.operation.heredoc_budget_terminal_recorded() {
+            return;
+        }
+
         if self.pending_heredocs.len() >= MAX_HEREDOC_DEPTH {
             self.errors.push(ParseError::syntax(
                 format!("Heredoc depth limit exceeded (max {})", MAX_HEREDOC_DEPTH),

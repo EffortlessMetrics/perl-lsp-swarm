@@ -150,6 +150,19 @@ impl ParserOperationContext {
         self.terminal.take()
     }
 
+    /// Whether this operation has already selected the heredoc-collection budget
+    /// as its terminal.
+    ///
+    /// Deliberately distinct from
+    /// [`ParserOperationContext::heredoc_scan_exhausted`], which is true as soon as
+    /// charged usage reaches the limit — including before any collection has been
+    /// attempted at all, when the configured budget is zero. Heredoc admission must
+    /// let that first declaration through so the drain can refuse it and report the
+    /// typed terminal; only once that report exists is further admission pointless.
+    pub(crate) fn heredoc_budget_terminal_recorded(&self) -> bool {
+        matches!(self.terminal, Some(ParseStopCause::HeredocBudgetExhausted { .. }))
+    }
+
     pub(crate) fn is_pre_cancelled(&self) -> bool {
         self.cancellation.as_ref().is_some_and(|flag| flag.load(Ordering::Relaxed))
     }
