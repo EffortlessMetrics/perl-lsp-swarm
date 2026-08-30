@@ -982,11 +982,22 @@ impl ParseWorker {
         handles.iter().any(|h| !h.is_finished())
     }
 
-    /// Ask every worker thread to stop after its current job, without
-    /// joining. Joining stays in [`Drop`], which owns the ordering hazards
-    /// (self-join, test-barrier release); this is the cooperative-stop half
-    /// that `RuntimeServices::request_cancel` forwards to so an application
-    /// shutdown can signal the pool before it waits on settlement (#10024).
+    /// Ask every worker thread to stop, without joining.
+    ///
+    /// Stopping means "stop once the ready queue is drained", NOT "stop after
+    /// the current job": `Coordinator::take_next` pops `ready` before it
+    /// consults the shutdown flag, so already-queued jobs still run. That
+    /// drain is the deliberate, tested contract -- see
+    /// `shutdown_drains_a_coalesced_job_never_itself_dequeued_before_the_request`
+    /// -- and this method does not change it.
+    ///
+    /// Joining stays in [`Drop`], which owns the ordering hazards (self-join,
+    /// test-barrier release). This is the cooperative-stop half that
+    /// `RuntimeServices::request_cancel` forwards to, so an application
+    /// shutdown can signal the pool before waiting on settlement; because the
+    /// drain can outlast a deadline, settlement observes real exit via
+    /// `is_operational` rather than assuming this call stopped anything
+    /// (#10024).
     pub(crate) fn request_shutdown(&self) {
         self.coordinator.request_shutdown();
     }
