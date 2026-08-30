@@ -91,6 +91,76 @@ pub enum UxComponent {
     AiCompletion,
 }
 
+impl UxComponent {
+    /// Every UX component in canonical taxonomy order.
+    ///
+    /// Kept adjacent to the enum so a new variant is registered here in the
+    /// same commit: [`UxComponent::exhaustiveness_witness`] stops compiling
+    /// until the variant is named, and the receipt schema lock test asserts
+    /// the checked-in `.ci/schemas/ux-scenario-run.schema.json` component
+    /// enum equals this list's serialized form.
+    pub const ALL: &'static [UxComponent] = &[
+        UxComponent::Completion,
+        UxComponent::Diagnostics,
+        UxComponent::ModuleResolution,
+        UxComponent::WorkspaceSymbols,
+        UxComponent::Rename,
+        UxComponent::SafeDelete,
+        UxComponent::Hover,
+        UxComponent::GotoDefinition,
+        UxComponent::SignatureHelp,
+        UxComponent::CodeLens,
+        UxComponent::FoldingRange,
+        UxComponent::SemanticTokens,
+        UxComponent::CodeActions,
+        UxComponent::Infra,
+        UxComponent::AiCompletion,
+    ];
+
+    /// Wildcard-free witness over the variant set, indexed in declaration
+    /// order. Adding a `UxComponent` variant breaks this match at compile
+    /// time until the variant is registered in [`UxComponent::ALL`].
+    #[cfg(test)]
+    const fn exhaustiveness_witness(component: Self) -> usize {
+        match component {
+            UxComponent::Completion => 0,
+            UxComponent::Diagnostics => 1,
+            UxComponent::ModuleResolution => 2,
+            UxComponent::WorkspaceSymbols => 3,
+            UxComponent::Rename => 4,
+            UxComponent::SafeDelete => 5,
+            UxComponent::Hover => 6,
+            UxComponent::GotoDefinition => 7,
+            UxComponent::SignatureHelp => 8,
+            UxComponent::CodeLens => 9,
+            UxComponent::FoldingRange => 10,
+            UxComponent::SemanticTokens => 11,
+            UxComponent::CodeActions => 12,
+            UxComponent::Infra => 13,
+            UxComponent::AiCompletion => 14,
+        }
+    }
+}
+
+#[cfg(test)]
+mod ux_component_all_tests {
+    use super::UxComponent;
+
+    /// `ALL` must list every variant exactly once, in canonical order. The
+    /// witness match is the compile-time enumeration of the variant set; the
+    /// contiguity assertion proves `ALL` carries each witness index exactly
+    /// once with no gaps.
+    #[test]
+    fn all_lists_every_variant_exactly_once_in_canonical_order() {
+        let indexes: Vec<usize> = UxComponent::ALL
+            .iter()
+            .map(|component| UxComponent::exhaustiveness_witness(*component))
+            .collect();
+        let expected: Vec<usize> = (0..UxComponent::ALL.len()).collect();
+        assert_eq!(indexes, expected, "UxComponent::ALL drifted from the UxComponent variant set");
+    }
+}
+
 /// Map a failure class to its semantic route.
 pub fn route_for_failure_class(class: UxFailureClass) -> UxRoute {
     match class {
