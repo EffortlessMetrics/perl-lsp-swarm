@@ -1403,9 +1403,16 @@ pub fn read_packet(packet: &Value) -> Res<TransitionPacket> {
         }
     }
 
+    // Same separation `typed_field` makes, for the container itself:
+    // `and_then(Value::as_object)` collapsed "absent" and "present but not an
+    // object", so `"outcome_dimensions": null` was reported as *missing*.
     let empty = Map::new();
-    let dimensions = match object.get("outcome_dimensions").and_then(Value::as_object) {
-        Some(dimensions) => dimensions,
+    let dimensions = match object.get("outcome_dimensions") {
+        Some(Value::Object(dimensions)) => dimensions,
+        Some(_) => {
+            violations.push("`outcome_dimensions` must be an object".to_string());
+            &empty
+        }
         None => {
             violations.push("transition packet is missing `outcome_dimensions`".to_string());
             &empty
