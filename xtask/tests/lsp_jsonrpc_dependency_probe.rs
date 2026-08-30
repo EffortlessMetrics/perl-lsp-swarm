@@ -5,7 +5,10 @@
 //! taxonomy. This test lets Rust compile the real `jsonrpc.rs` source in a
 //! standalone crate whose complete dependency set is `serde` and `serde_json`.
 //! The probe declares its own empty workspace so root workspace dependencies
-//! and package metadata cannot make the selected source appear neutral.
+//! and package metadata cannot make the selected source appear neutral. Its
+//! exact dependency versions match the repository lockfile, so `--offline`
+//! consumes artifacts already required to build this test rather than hidden
+//! cache-only versions.
 //! A second compile deliberately routes `ErrorClass` through a local
 //! `crate::protocol` re-export; that candidate must fail because the probe does
 //! not admit `perl-parser-core`.
@@ -28,8 +31,8 @@ publish = false
 [workspace]
 
 [dependencies]
-serde = { version = "=1.0.228", features = ["derive"] }
-serde_json = "=1.0.150"
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.151"
 "#;
 
 fn repo_root() -> PathBuf {
