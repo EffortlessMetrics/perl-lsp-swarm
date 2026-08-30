@@ -1,0 +1,31 @@
+name: Verify final parser candidate for issue 13900
+
+on:
+  push:
+    branches:
+      - codex/13900-keyword-hash-keys
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Execute final focused proof
+        run: |
+          cargo fmt --all -- --check
+          cargo test -p perl-parser-core --test keyword_hash_subscript_keys --locked
+          cargo test -p perl-semantic-analyzer --test linked_list_receiver_facts --locked
+      - name: Remove verification transport
+        run: |
+          rm .github/workflows/codex-13900-verify.yml
+          git config user.name 'EffortlessSteven'
+          git config user.email 'git@effortlesssteven.com'
+          git add -A
+          git commit -m 'chore(agent): remove #13900 verification transport'
+          git push origin HEAD:codex/13900-keyword-hash-keys
