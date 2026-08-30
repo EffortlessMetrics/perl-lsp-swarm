@@ -925,18 +925,44 @@ impl IncrementalParserV2 {
                 *value = text.to_string();
             }
             NodeKind::Variable { sigil, name } => {
-                // A rename must stay one sigil-prefixed identifier token with
-                // a non-empty name; sigil or token-structure changes fall
-                // back to parsing.
-                if !text.starts_with(sigil.as_str()) || text.len() <= sigil.len() {
-                    return None;
-                }
-                if !self
-                    .lexes_as_single_token(text, &|token| matches!(token, TokenType::Identifier(_)))
+                // A rename must stay one variable token with a non-empty
+                // name. Braced forms (`${foo}`, `${Foo::bar}`) span the
+                // braces while the stored name strips them, so a braced old
+                // form requires a closed braced new form and the name is the
+                // brace-enclosed inner text; a bare form keeps the name
+                // suffix after the sigil. Sigil, brace, or token-structure
+                // changes fall back to parsing.
+                let old_text = old_source.get(old_start..old_end)?;
+                let braced =
+                    old_text.strip_prefix(sigil.as_str()).is_some_and(|rest| rest.starts_with('{'));
+                let name_text = if braced {
+                    let inner_end = text.len().checked_sub(1)?;
+                    let opening = sigil.len() + 1;
+                    if !text.starts_with(sigil.as_str())
+                        || text.as_bytes().get(sigil.len()) != Some(&b'{')
+                        || !text.ends_with('}')
+                        || inner_end <= opening
+                        || !text[opening..inner_end]
+                            .chars()
+                            .all(|c| c.is_alphanumeric() || c == '_' || c == ':')
+                    {
+                        return None;
+                    }
+                    &text[opening..inner_end]
+                } else {
+                    if !text.starts_with(sigil.as_str()) || text.len() <= sigil.len() {
+                        return None;
+                    }
+                    &text[sigil.len()..]
+                };
+                if name_text.is_empty()
+                    || !self.lexes_as_single_token(text, &|token| {
+                        matches!(token, TokenType::Identifier(_))
+                    })
                 {
                     return None;
                 }
-                *name = text[sigil.len()..].to_string();
+                *name = name_text.to_string();
             }
             NodeKind::Identifier { name } => {
                 // A sigil-leading replacement would parse as a `Variable`
@@ -2493,6 +2519,49 @@ if ($condition) {
         assert!(parser.used_incremental_path(), "bareword rename must stay incremental");
         let fresh = Parser::new(source2).parse()?;
         assert_eq!(incremental, fresh, "renamed identifier payload must match a fresh parse");
+        Ok(())
+    }
+
+    /// Braced variable forms (`${foo}`, `${Foo::Bar}`) span the braces while
+    /// the stored name strips them. A rename inside the braces must store the
+    /// brace-stripped inner text — the previous suffix slice kept the closing
+    /// brace in the accepted payload.
+    #[test]
+    fn braced_variable_rename_matches_a_fresh_parse() -> ParseResult<()> {
+        let mut parser = strict_fallback_parser();
+        parser.parse("my ${foo} = 1;")?;
+        parser.edit(Edit::new(
+            5,
+            8,
+            8, // "foo" -> "bar" inside the braces
+            Position::new(5, 1, 6),
+            Position::new(8, 1, 9),
+            Position::new(8, 1, 9),
+        ));
+        let source2 = "my ${bar} = 1;";
+        let incremental = parser.parse(source2)?;
+        assert!(
+            parser.used_incremental_path(),
+            "a rename inside braced variables must stay incremental"
+        );
+        let fresh = Parser::new(source2).parse()?;
+        assert_eq!(incremental, fresh, "braced rename payload must match a fresh parse");
+
+        let mut parser = strict_fallback_parser();
+        parser.parse("my ${Foo::Bar} = 1;")?;
+        parser.edit(Edit::new(
+            11,
+            13,
+            13, // "Bar" -> "Baz" inside the qualified braced form
+            Position::new(11, 1, 12),
+            Position::new(13, 1, 14),
+            Position::new(13, 1, 14),
+        ));
+        let source3 = "my ${Foo::Baz} = 1;";
+        let incremental = parser.parse(source3)?;
+        assert!(parser.used_incremental_path(), "qualified braced rename must stay incremental");
+        let fresh = Parser::new(source3).parse()?;
+        assert_eq!(incremental, fresh, "qualified braced rename payload must match a fresh parse");
         Ok(())
     }
 
