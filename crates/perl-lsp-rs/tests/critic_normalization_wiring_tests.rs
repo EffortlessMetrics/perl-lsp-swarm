@@ -280,9 +280,7 @@ fn unaccounted_candidate_guard_checks_a_third_denominator_entry() -> Result<(), 
     if error.contains("future-command") {
         Ok(())
     } else {
-        Err(format!(
-            "the guard must identify the third denominator entry; got: {error}"
-        ))
+        Err(format!("the guard must identify the third denominator entry; got: {error}"))
     }
 }
 
