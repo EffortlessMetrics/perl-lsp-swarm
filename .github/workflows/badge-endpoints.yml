@@ -346,6 +346,8 @@ jobs:
           add-paths: badges
           title: "chore(badges): refresh public endpoints"
           commit-message: "chore(badges): refresh public endpoints"
+          # Body expressions below evaluate in this open-pr job's context (which
+          # inherits the workflow-level `env:` block), not the generate job.
           body: |
             Refreshes the exact generated Shields endpoint snapshot under `badges/`.
 
