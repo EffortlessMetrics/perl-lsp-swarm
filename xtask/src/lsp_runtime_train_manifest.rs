@@ -466,8 +466,9 @@ impl LoadedManifest {
         })
     }
 
-    /// Every declared stable node id, in manifest order.
-    /// Ascending by stable id, never manifest order. The canonical digest is
+    /// Every declared stable node id, ascending by id — never manifest order.
+    ///
+    /// The canonical digest is
     /// order-insensitive, so two byte-orderings of one manifest share a digest;
     /// returning manifest order here would hand content-addressed consumers
     /// different sequences for the same digest.
@@ -478,7 +479,8 @@ impl LoadedManifest {
         ids
     }
 
-    /// Ids of nodes whose role is selectable as work.
+    /// Ids of nodes whose role is selectable as work, ascending by id for the
+    /// same reason as [`LoadedManifest::node_ids`].
     pub fn selectable_node_ids(&self) -> Vec<String> {
         let selectable: BTreeSet<&str> = self
             .manifest
