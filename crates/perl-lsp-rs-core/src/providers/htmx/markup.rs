@@ -1,7 +1,11 @@
 //! Bounded raw-markup context recognition for htmx attribute names.
 
-/// Maximum number of source bytes inspected before the completion position.
-pub const MAX_MARKUP_LOOKBACK_BYTES: usize = 8 * 1024;
+/// Maximum source prefix scanned before a completion position.
+///
+/// Positions beyond this cap fail closed. Scanning from the document start
+/// preserves comment, template-block, and raw-text element state; clipping an
+/// arbitrary tail would make those states unknowable.
+pub const MAX_MARKUP_SCAN_BYTES: usize = 256 * 1024;
 
 /// Proven htmx attribute-name slot in raw markup.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -17,8 +21,9 @@ pub struct HtmxAttributeNameContext<'a> {
 /// Return an htmx attribute-name context when `position` is inside a proven
 /// open HTML start tag.
 ///
-/// The recognizer examines only a bounded suffix of the document. It rejects
-/// comments, closing and declaration tags, processing instructions, quoted and
+/// The recognizer scans a capped source prefix so lexical state is never
+/// invented at an arbitrary clipped boundary. It rejects comments, closing and
+/// declaration tags, processing instructions, raw-text elements, quoted and
 /// unquoted values, completed tags, common Perl-template code regions, and
 /// malformed start tags.
 #[must_use]
@@ -26,18 +31,20 @@ pub fn htmx_attribute_name_context(
     source: &str,
     position: usize,
 ) -> Option<HtmxAttributeNameContext<'_>> {
-    if position > source.len() || !source.is_char_boundary(position) {
+    if position > source.len()
+        || position > MAX_MARKUP_SCAN_BYTES
+        || !source.is_char_boundary(position)
+    {
         return None;
     }
 
-    let window_start = bounded_window_start(source, position);
-    let window = source.get(window_start..position)?;
-    if current_line_is_template_code(window) {
+    let source_prefix = source.get(..position)?;
+    if current_line_is_template_code(source_prefix) {
         return None;
     }
 
-    let tag_start = open_start_tag_offset(window)?;
-    let tag_body = window.get(tag_start + 1..)?;
+    let tag_start = open_start_tag_offset(source_prefix)?;
+    let tag_body = source_prefix.get(tag_start + 1..)?;
     let token_start = active_attribute_name_start(tag_body)?;
     let prefix = tag_body.get(token_start..)?;
     if !is_htmx_attribute_prefix(prefix) {
@@ -46,22 +53,45 @@ pub fn htmx_attribute_name_context(
 
     Some(HtmxAttributeNameContext {
         prefix,
-        prefix_start: window_start + tag_start + 1 + token_start,
+        prefix_start: tag_start + 1 + token_start,
         position,
     })
 }
 
-fn bounded_window_start(source: &str, position: usize) -> usize {
-    let mut start = position.saturating_sub(MAX_MARKUP_LOOKBACK_BYTES);
-    while start < position && !source.is_char_boundary(start) {
-        start += 1;
-    }
-    start
+fn current_line_is_template_code(source_prefix: &str) -> bool {
+    let line = source_prefix.rsplit_once('\n').map_or(source_prefix, |(_, suffix)| suffix);
+    line.trim_start_matches([' ', '\t']).starts_with('%')
 }
 
-fn current_line_is_template_code(window: &str) -> bool {
-    let line = window.rsplit_once('\n').map_or(window, |(_, suffix)| suffix);
-    line.trim_start_matches([' ', '\t']).starts_with('%')
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RawTextKind {
+    Script,
+    Style,
+    Title,
+    Textarea,
+    Xmp,
+    Iframe,
+    Noembed,
+    Noframes,
+    Noscript,
+    Plaintext,
+}
+
+impl RawTextKind {
+    const fn name(self) -> &'static [u8] {
+        match self {
+            Self::Script => b"script",
+            Self::Style => b"style",
+            Self::Title => b"title",
+            Self::Textarea => b"textarea",
+            Self::Xmp => b"xmp",
+            Self::Iframe => b"iframe",
+            Self::Noembed => b"noembed",
+            Self::Noframes => b"noframes",
+            Self::Noscript => b"noscript",
+            Self::Plaintext => b"plaintext",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,137 +103,34 @@ enum MarkupState {
     TemplatePercent,
     TemplateBracket,
     MasonComponent,
-    InvalidTag,
+    RawText(RawTextKind),
+    InvalidTag { quote: Option<u8> },
 }
 
-fn open_start_tag_offset(window: &str) -> Option<usize> {
-    let bytes = window.as_bytes();
+fn open_start_tag_offset(source_prefix: &str) -> Option<usize> {
+    let bytes = source_prefix.as_bytes();
     let mut state = MarkupState::Text;
     let mut index = 0usize;
 
     while index < bytes.len() {
         state = match state {
-            MarkupState::Text => {
-                if starts_with(bytes, index, b"<!--") {
-                    index += 4;
-                    MarkupState::Comment
-                } else if starts_with(bytes, index, b"<%") {
-                    index += 2;
-                    MarkupState::TemplatePercent
-                } else if starts_with(bytes, index, b"[%") {
-                    index += 2;
-                    MarkupState::TemplateBracket
-                } else if starts_with(bytes, index, b"<&") {
-                    index += 2;
-                    MarkupState::MasonComponent
-                } else if bytes.get(index) == Some(&b'<') {
-                    let next = bytes.get(index + 1).copied();
-                    index += 1;
-                    match next {
-                        Some(byte) if byte.is_ascii_alphabetic() => {
-                            MarkupState::StartTag { start: index - 1, quote: None }
-                        }
-                        Some(b'/' | b'!' | b'?') => MarkupState::IgnoredTag { quote: None },
-                        _ => MarkupState::Text,
-                    }
-                } else {
-                    index += 1;
-                    MarkupState::Text
-                }
-            }
-            MarkupState::Comment => {
-                if starts_with(bytes, index, b"-->") {
-                    index += 3;
-                    MarkupState::Text
-                } else {
-                    index += 1;
-                    MarkupState::Comment
-                }
-            }
+            MarkupState::Text => scan_text(bytes, &mut index),
+            MarkupState::Comment => scan_delimited(bytes, &mut index, b"-->", MarkupState::Comment),
             MarkupState::TemplatePercent => {
-                if starts_with(bytes, index, b"%>") {
-                    index += 2;
-                    MarkupState::Text
-                } else {
-                    index += 1;
-                    MarkupState::TemplatePercent
-                }
+                scan_delimited(bytes, &mut index, b"%>", MarkupState::TemplatePercent)
             }
             MarkupState::TemplateBracket => {
-                if starts_with(bytes, index, b"%]") {
-                    index += 2;
-                    MarkupState::Text
-                } else {
-                    index += 1;
-                    MarkupState::TemplateBracket
-                }
+                scan_delimited(bytes, &mut index, b"%]", MarkupState::TemplateBracket)
             }
             MarkupState::MasonComponent => {
-                if starts_with(bytes, index, b"&>") {
-                    index += 2;
-                    MarkupState::Text
-                } else {
-                    index += 1;
-                    MarkupState::MasonComponent
-                }
+                scan_delimited(bytes, &mut index, b"&>", MarkupState::MasonComponent)
             }
-            MarkupState::StartTag { start, quote } => match quote {
-                Some(delimiter) => {
-                    let closes_quote = bytes.get(index) == Some(&delimiter);
-                    index += 1;
-                    MarkupState::StartTag {
-                        start,
-                        quote: if closes_quote { None } else { Some(delimiter) },
-                    }
-                }
-                None => match bytes.get(index).copied() {
-                    Some(delimiter @ (b'"' | b'\'')) => {
-                        index += 1;
-                        MarkupState::StartTag { start, quote: Some(delimiter) }
-                    }
-                    Some(b'>') => {
-                        index += 1;
-                        MarkupState::Text
-                    }
-                    Some(b'<') => {
-                        index += 1;
-                        MarkupState::InvalidTag
-                    }
-                    Some(_) => {
-                        index += 1;
-                        MarkupState::StartTag { start, quote: None }
-                    }
-                    None => MarkupState::StartTag { start, quote: None },
-                },
-            },
-            MarkupState::IgnoredTag { quote } => match quote {
-                Some(delimiter) => {
-                    let closes_quote = bytes.get(index) == Some(&delimiter);
-                    index += 1;
-                    MarkupState::IgnoredTag {
-                        quote: if closes_quote { None } else { Some(delimiter) },
-                    }
-                }
-                None => match bytes.get(index).copied() {
-                    Some(delimiter @ (b'"' | b'\'')) => {
-                        index += 1;
-                        MarkupState::IgnoredTag { quote: Some(delimiter) }
-                    }
-                    Some(b'>') => {
-                        index += 1;
-                        MarkupState::Text
-                    }
-                    Some(_) => {
-                        index += 1;
-                        MarkupState::IgnoredTag { quote: None }
-                    }
-                    None => MarkupState::IgnoredTag { quote: None },
-                },
-            },
-            MarkupState::InvalidTag => {
-                index += 1;
-                MarkupState::InvalidTag
+            MarkupState::StartTag { start, quote } => {
+                scan_start_tag(bytes, &mut index, start, quote)
             }
+            MarkupState::IgnoredTag { quote } => scan_ignored_tag(bytes, &mut index, quote),
+            MarkupState::RawText(kind) => scan_raw_text(bytes, &mut index, kind),
+            MarkupState::InvalidTag { quote } => scan_invalid_tag(bytes, &mut index, quote),
         };
     }
 
@@ -213,8 +140,218 @@ fn open_start_tag_offset(window: &str) -> Option<usize> {
     }
 }
 
+fn scan_text(bytes: &[u8], index: &mut usize) -> MarkupState {
+    if starts_with(bytes, *index, b"<!--") {
+        *index += 4;
+        MarkupState::Comment
+    } else if starts_with(bytes, *index, b"<%") {
+        *index += 2;
+        MarkupState::TemplatePercent
+    } else if starts_with(bytes, *index, b"[%") {
+        *index += 2;
+        MarkupState::TemplateBracket
+    } else if starts_with(bytes, *index, b"<&") {
+        *index += 2;
+        MarkupState::MasonComponent
+    } else if bytes.get(*index) == Some(&b'<') {
+        let next = bytes.get(*index + 1).copied();
+        *index += 1;
+        match next {
+            Some(byte) if byte.is_ascii_alphabetic() => {
+                MarkupState::StartTag { start: *index - 1, quote: None }
+            }
+            Some(b'/' | b'!' | b'?') => MarkupState::IgnoredTag { quote: None },
+            _ => MarkupState::Text,
+        }
+    } else {
+        *index += 1;
+        MarkupState::Text
+    }
+}
+
+fn scan_delimited(
+    bytes: &[u8],
+    index: &mut usize,
+    delimiter: &[u8],
+    current: MarkupState,
+) -> MarkupState {
+    if starts_with(bytes, *index, delimiter) {
+        *index += delimiter.len();
+        MarkupState::Text
+    } else {
+        *index += 1;
+        current
+    }
+}
+
+fn scan_start_tag(
+    bytes: &[u8],
+    index: &mut usize,
+    start: usize,
+    quote: Option<u8>,
+) -> MarkupState {
+    if starts_template_region(bytes, *index) {
+        *index += 1;
+        return MarkupState::InvalidTag { quote };
+    }
+
+    match quote {
+        Some(delimiter) => {
+            let closes_quote = bytes.get(*index) == Some(&delimiter);
+            *index += 1;
+            MarkupState::StartTag {
+                start,
+                quote: if closes_quote { None } else { Some(delimiter) },
+            }
+        }
+        None => match bytes.get(*index).copied() {
+            Some(delimiter @ (b'"' | b'\'')) => {
+                *index += 1;
+                MarkupState::StartTag { start, quote: Some(delimiter) }
+            }
+            Some(b'>') => {
+                let raw_text = raw_text_kind_for_start_tag(bytes, start, *index);
+                *index += 1;
+                raw_text.map_or(MarkupState::Text, MarkupState::RawText)
+            }
+            Some(b'<') => {
+                *index += 1;
+                MarkupState::InvalidTag { quote: None }
+            }
+            Some(_) => {
+                *index += 1;
+                MarkupState::StartTag { start, quote: None }
+            }
+            None => MarkupState::StartTag { start, quote: None },
+        },
+    }
+}
+
+fn scan_ignored_tag(bytes: &[u8], index: &mut usize, quote: Option<u8>) -> MarkupState {
+    match quote {
+        Some(delimiter) => {
+            let closes_quote = bytes.get(*index) == Some(&delimiter);
+            *index += 1;
+            MarkupState::IgnoredTag {
+                quote: if closes_quote { None } else { Some(delimiter) },
+            }
+        }
+        None => match bytes.get(*index).copied() {
+            Some(delimiter @ (b'"' | b'\'')) => {
+                *index += 1;
+                MarkupState::IgnoredTag { quote: Some(delimiter) }
+            }
+            Some(b'>') => {
+                *index += 1;
+                MarkupState::Text
+            }
+            Some(_) => {
+                *index += 1;
+                MarkupState::IgnoredTag { quote: None }
+            }
+            None => MarkupState::IgnoredTag { quote: None },
+        },
+    }
+}
+
+fn scan_invalid_tag(bytes: &[u8], index: &mut usize, quote: Option<u8>) -> MarkupState {
+    match quote {
+        Some(delimiter) => {
+            let closes_quote = bytes.get(*index) == Some(&delimiter);
+            *index += 1;
+            MarkupState::InvalidTag {
+                quote: if closes_quote { None } else { Some(delimiter) },
+            }
+        }
+        None => match bytes.get(*index).copied() {
+            Some(delimiter @ (b'"' | b'\'')) => {
+                *index += 1;
+                MarkupState::InvalidTag { quote: Some(delimiter) }
+            }
+            Some(b'>') => {
+                *index += 1;
+                MarkupState::Text
+            }
+            Some(_) => {
+                *index += 1;
+                MarkupState::InvalidTag { quote: None }
+            }
+            None => MarkupState::InvalidTag { quote: None },
+        },
+    }
+}
+
+fn scan_raw_text(bytes: &[u8], index: &mut usize, kind: RawTextKind) -> MarkupState {
+    if kind != RawTextKind::Plaintext
+        && let Some(name_end) = raw_text_end_tag_name_end(bytes, *index, kind)
+    {
+        *index = name_end;
+        MarkupState::IgnoredTag { quote: None }
+    } else {
+        *index += 1;
+        MarkupState::RawText(kind)
+    }
+}
+
+fn starts_template_region(bytes: &[u8], index: usize) -> bool {
+    starts_with(bytes, index, b"<%")
+        || starts_with(bytes, index, b"[%")
+        || starts_with(bytes, index, b"<&")
+}
+
+fn raw_text_kind_for_start_tag(bytes: &[u8], start: usize, end: usize) -> Option<RawTextKind> {
+    let body = bytes.get(start + 1..end)?;
+    if body.iter().rev().copied().find(|byte| !is_html_space(*byte)) == Some(b'/') {
+        return None;
+    }
+
+    let name_end = body.iter().position(|byte| !is_tag_name_byte(*byte)).unwrap_or(body.len());
+    let name = body.get(..name_end)?;
+
+    [
+        RawTextKind::Script,
+        RawTextKind::Style,
+        RawTextKind::Title,
+        RawTextKind::Textarea,
+        RawTextKind::Xmp,
+        RawTextKind::Iframe,
+        RawTextKind::Noembed,
+        RawTextKind::Noframes,
+        RawTextKind::Noscript,
+        RawTextKind::Plaintext,
+    ]
+    .into_iter()
+    .find(|kind| bytes_eq_ignore_ascii_case(name, kind.name()))
+}
+
+fn raw_text_end_tag_name_end(
+    bytes: &[u8],
+    index: usize,
+    kind: RawTextKind,
+) -> Option<usize> {
+    if !starts_with(bytes, index, b"</") {
+        return None;
+    }
+
+    let name_start = index + 2;
+    let name_end = name_start.checked_add(kind.name().len())?;
+    let name = bytes.get(name_start..name_end)?;
+    if !bytes_eq_ignore_ascii_case(name, kind.name()) {
+        return None;
+    }
+
+    bytes
+        .get(name_end)
+        .is_some_and(|byte| is_html_space(*byte) || matches!(*byte, b'/' | b'>'))
+        .then_some(name_end)
+}
+
 fn starts_with(bytes: &[u8], index: usize, needle: &[u8]) -> bool {
     bytes.get(index..).is_some_and(|suffix| suffix.starts_with(needle))
+}
+
+fn bytes_eq_ignore_ascii_case(left: &[u8], right: &[u8]) -> bool {
+    left.eq_ignore_ascii_case(right)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -360,7 +497,7 @@ fn starts_with_ignore_ascii_case(value: &str, prefix: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_MARKUP_LOOKBACK_BYTES, htmx_attribute_name_context};
+    use super::{MAX_MARKUP_SCAN_BYTES, htmx_attribute_name_context};
 
     #[test]
     fn recognizes_multiline_attribute_name_and_exact_range() {
@@ -387,11 +524,12 @@ mod tests {
             "<div title=\"value\"hx-",
             "<div foo=hx-",
             "<div <span hx-",
-            "<div <span title=\">\"> <button hx-",
+            "<div <span title=\"> <button hx-",
             "<% my $x = '<div hx-'",
             "[% '<div hx-'",
             "<& component, value => '<div hx-'",
             "% my $x = '<div hx-'",
+            "<div [% IF enabled %] hx-",
         ] {
             assert!(
                 htmx_attribute_name_context(source, source.len()).is_none(),
@@ -401,7 +539,14 @@ mod tests {
     }
 
     #[test]
-    fn accepts_attribute_names_after_quoted_and_unquoted_values() {
+    fn recovers_after_a_closed_invalid_tag_without_using_a_quoted_gt() {
+        let source = "<div <span title=\">\"> <button hx-";
+
+        assert!(htmx_attribute_name_context(source, source.len()).is_some());
+    }
+
+    #[test]
+    fn accepts_attribute_names_after_static_values() {
         for source in [
             "<div title=\"x>y\" hx-",
             "<div title='x>y' hx-",
@@ -416,9 +561,54 @@ mod tests {
     }
 
     #[test]
-    fn rejects_start_tags_beyond_the_bounded_window() {
-        let source = format!("<div {} hx-", "a".repeat(MAX_MARKUP_LOOKBACK_BYTES));
+    fn rejects_html_like_text_inside_raw_text_elements() {
+        for source in [
+            "<script>const x = '<div hx-'",
+            "<style>.x::before { content: '<div hx-' }",
+            "<title><div hx-",
+            "<textarea><div hx-",
+            "<xmp><div hx-",
+            "<iframe><div hx-",
+            "<noembed><div hx-",
+            "<noframes><div hx-",
+            "<noscript><div hx-",
+            "<plaintext><div hx-",
+        ] {
+            assert!(
+                htmx_attribute_name_context(source, source.len()).is_none(),
+                "raw-text content admitted for {source:?}"
+            );
+        }
+    }
 
+    #[test]
+    fn resumes_markup_after_a_matching_raw_text_end_tag() {
+        let source = "<SCRIPT>const x = '<div hx-';</script><button hx-re";
+        let context = htmx_attribute_name_context(source, source.len());
+
+        assert!(context.is_some_and(|context| context.prefix == "hx-re"));
+    }
+
+    #[test]
+    fn preserves_long_comment_and_template_state_from_document_start() {
+        for source in [
+            format!("<!-- {} <div hx-", "comment".repeat(2_000)),
+            format!("<% {} <div hx-", "template".repeat(2_000)),
+            format!("<script>{}<div hx-", "script".repeat(2_000)),
+        ] {
+            assert!(source.len() < MAX_MARKUP_SCAN_BYTES);
+            assert!(
+                htmx_attribute_name_context(&source, source.len()).is_none(),
+                "clipped lexical state admitted markup"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_positions_beyond_the_bounded_scan_budget() {
+        let source = format!("{}<div hx-", "text".repeat(MAX_MARKUP_SCAN_BYTES / 4));
+
+        assert!(source.len() > MAX_MARKUP_SCAN_BYTES);
         assert!(htmx_attribute_name_context(&source, source.len()).is_none());
     }
 

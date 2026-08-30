@@ -8,7 +8,7 @@ pub use catalog::{
     HtmxHeaderDirection, HtmxHeaderSpec,
 };
 pub use markup::{
-    MAX_MARKUP_LOOKBACK_BYTES, HtmxAttributeNameContext, htmx_attribute_name_context,
+    MAX_MARKUP_SCAN_BYTES, HtmxAttributeNameContext, htmx_attribute_name_context,
 };
 
 use crate::providers::completion_item::{CompletionItem, CompletionItemKind, InsertTextFormat};
