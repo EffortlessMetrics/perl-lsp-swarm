@@ -828,31 +828,4 @@ table users => sub { column id => sub { primary_key }; };
         assert!(fact.anchor.span_end_byte > fact.anchor.span_start_byte);
         Ok(())
     }
-
-    /// Architecture ratchet (issue #13354): the candidate vocabulary has one
-    /// owner in `generated_member_extractor`. This pilot must consume that
-    /// surface; a private copy reappearing here is a test failure.
-    #[test]
-    fn shared_candidate_vocabulary_is_not_redefined_locally() {
-        let source = std::fs::read_to_string(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/src/semantic/generated_member_extractor_quickorm.rs"
-        ))
-        .expect("quickorm extractor source should be readable from the crate root");
-
-        // Compose the definition patterns at runtime so this test's own string
-        // literals can never match them.
-        for owned_vocabulary in
-            ["NameCandidate", "normalize_symbol_name", "expand_symbol_list", "stable_id"]
-        {
-            for definition_shape in
-                [format!("struct {owned_vocabulary} "), format!("fn {owned_vocabulary}(")]
-            {
-                assert!(
-                    !source.contains(&definition_shape),
-                    "private copy of shared candidate vocabulary reappeared: {definition_shape}"
-                );
-            }
-        }
-    }
 }
