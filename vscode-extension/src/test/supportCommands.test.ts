@@ -187,6 +187,11 @@ describe('support command implementations', () => {
     );
     expect(vscode.env.openExternal).not.toHaveBeenCalled();
     expect(vscode.workspace.openTextDocument).not.toHaveBeenCalled();
+    // Copy is now a dead end unless the user is told what to do next, so pin the
+    // confirmation itself: deleting it must not leave this test green.
+    expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(
+      expect.stringContaining('Support packet copied'),
+    );
   });
 
   test('shows the packet in a native inspectable document without copying or opening it', async () => {
@@ -210,7 +215,10 @@ describe('support command implementations', () => {
     expect(vscode.workspace.openTextDocument).toHaveBeenCalledWith(
       expect.objectContaining({ content: expectedPacket }),
     );
-    expect(vscode.window.showTextDocument).toHaveBeenCalledTimes(1);
+    // Pin that the document actually opened is the one just created, and that it
+    // opens as a preview tab — a call count alone would survive showing anything.
+    const opened = await (vscode.workspace.openTextDocument as jest.Mock).mock.results[0]?.value;
+    expect(vscode.window.showTextDocument).toHaveBeenCalledWith(opened, { preview: true });
     expect(vscode.env.clipboard.writeText).not.toHaveBeenCalled();
     expect(vscode.env.openExternal).not.toHaveBeenCalled();
   });
