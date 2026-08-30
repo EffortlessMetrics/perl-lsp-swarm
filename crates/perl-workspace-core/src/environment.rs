@@ -415,6 +415,11 @@ pub enum BuildSystemKind {
     DistZilla,
     /// Carton/cpanfile project management.
     Carton,
+    /// Carmel/cpanfile project management: dev-mode state under
+    /// `.carmel/MySetup.pm` or a `local/.carmel` rollout sentinel. Its lock
+    /// file (`cpanfile.snapshot`) alone cannot establish this identity — the
+    /// Carton-format snapshot header carries no producer field.
+    Carmel,
     /// Other reviewed build system.
     Other(String),
 }
@@ -426,6 +431,7 @@ impl BuildSystemKind {
             Self::ModuleBuild => "module_build".to_string(),
             Self::DistZilla => "dist_zilla".to_string(),
             Self::Carton => "carton".to_string(),
+            Self::Carmel => "carmel".to_string(),
             Self::Other(value) => format!("other:{value}"),
         }
     }

@@ -180,11 +180,17 @@ mod tests {
     }
 
     #[test]
+    /// Migrated Carmel detection (#13642 §2/§3): a rolled-out Carmel project
+    /// (discriminated by the `local/.carmel` sentinel) contributes the shared
+    /// install-base root `local/lib/perl5`. The previous `vendor/lib/perl5`
+    /// marker had no basis in Carmel source and is retired.
     fn refresh_workspace_metadata_adds_carmel_include_path()
     -> Result<(), Box<dyn std::error::Error>> {
         let temp = tempfile::tempdir()?;
         std::fs::write(temp.path().join("cpanfile"), "requires 'JSON';\n")?;
-        std::fs::create_dir_all(temp.path().join("vendor/lib/perl5"))?;
+        std::fs::create_dir_all(temp.path().join("local"))?;
+        std::fs::write(temp.path().join("local/.carmel"), "")?;
+        std::fs::create_dir_all(temp.path().join("local/lib/perl5"))?;
         let mut folder = WorkspaceFolderState::new("file:///workspace".to_string())
             .with_path(temp.path().to_path_buf());
 
@@ -194,7 +200,7 @@ mod tests {
             folder
                 .effective_workspace_config
                 .include_paths
-                .contains(&"vendor/lib/perl5".to_string())
+                .contains(&"local/lib/perl5".to_string())
         );
         Ok(())
     }
