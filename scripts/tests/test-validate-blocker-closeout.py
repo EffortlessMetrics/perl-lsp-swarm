@@ -77,14 +77,46 @@ class BlockerCloseoutValidationTests(unittest.TestCase):
         self.assertEqual([case["name"] for case in valid_cases], ["valid_bounded_limitation", "valid_blocked", "valid_not_proven"])
         model = MODULE.validate_blocker_closeout(self.base, lambda _ancestor, _subject: True)
         self.assertEqual(model.status, "resolved")
+        self.assertEqual(model.controller_evidence.ref, self.base["semantic_controller"]["evidence"]["ref"])
+        self.assertEqual(model.review_authority_number, 90002)
+        self.assertEqual(model.review_evidence.ref, self.base["review"]["current_head_synthesis"]["ref"])
         for case in valid_cases:
             packet = _apply_case(self.base, case)
             model = MODULE.validate_blocker_closeout(packet, lambda _ancestor, _subject: True)
             self.assertEqual(model.status, case["name"].removeprefix("valid_"))
 
+    def test_blocked_and_not_proven_do_not_claim_closure_proof_coverage(self) -> None:
+        cases = {case["name"]: case for case in self.cases}
+        for name in ("valid_blocked", "valid_not_proven"):
+            with self.subTest(case=name):
+                packet = _apply_case(self.base, cases[name])
+                passed_claims = {
+                    claim_id
+                    for observation in packet["proof"]["observations"]
+                    if observation["status"] == "passed"
+                    for claim_id in observation["claim_ids"]
+                }
+                self.assertNotIn("example.installed", passed_claims)
+                self.assertIn("example.installed", packet["claim_effect"]["preserves"])
+                MODULE.validate_blocker_closeout(packet, lambda _ancestor, _subject: True)
+
+        controller_only = _apply_case(self.base, cases["valid_not_proven"])
+        controller_only["implementation_prs"] = []
+        controller_only["merged_shas"] = []
+        controller_only["implementation_contributions"] = []
+        controller_only["review"].update(
+            {
+                "authority_kind": "semantic_controller",
+                "authority_number": 90001,
+                "current_head_synthesis": copy.deepcopy(controller_only["semantic_controller"]["evidence"]),
+                "status": "not_proven",
+            }
+        )
+        MODULE.validate_blocker_closeout(controller_only, lambda _ancestor, _subject: True)
+
     def test_each_fail_closed_rule_has_a_focused_negative_fixture(self) -> None:
         negative_cases = [case for case in self.cases if case["name"].startswith("reject_")]
-        self.assertGreaterEqual(len(negative_cases), 20)
+        self.assertGreaterEqual(len(negative_cases), 28)
         for case in negative_cases:
             with self.subTest(case=case["name"]):
                 packet = _apply_case(self.base, case)

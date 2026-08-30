@@ -104,14 +104,66 @@
     "error": "requires exact narrowed claims"
   },
   {
+    "name": "reject_resolved_preserved_claim_without_observation",
+    "updates": {"proof.observations.0.claim_ids": ["example.product"]},
+    "error": "resolved preserved claim lacks observation proof coverage"
+  },
+  {
+    "name": "reject_bounded_preserved_claim_without_observation",
+    "updates": {
+      "status": "bounded_limitation",
+      "claim_effect.preserves": ["example.installed"],
+      "claim_effect.narrows": ["example.product"],
+      "claim_effect.limitations": ["Product behavior is explicitly narrowed."],
+      "proof.observations.0.claim_ids": ["example.product"],
+      "proof.observations.1.claim_ids": ["example.product"]
+    },
+    "error": "bounded_limitation preserved claim lacks observation proof coverage"
+  },
+  {
     "name": "reject_contradictory_controller_identity",
     "updates": {"controller_issue": 90009},
     "error": "contradicts semantic_controller"
   },
   {
+    "name": "reject_mismatched_controller_issue_ref",
+    "updates": {"semantic_controller.evidence.ref": "https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/90009#issuecomment-1"},
+    "error": "semantic_controller.evidence ref does not match controller_issue"
+  },
+  {
     "name": "reject_contradictory_implementation_identity",
     "updates": {"implementation_prs": [90009]},
     "error": "implementation_prs contradict"
+  },
+  {
+    "name": "reject_mismatched_implementation_pull_ref",
+    "updates": {"implementation_contributions.0.evidence.ref": "https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/90009"},
+    "error": "implementation contribution evidence ref does not match implementation_pr"
+  },
+  {
+    "name": "reject_mismatched_review_synthesis_ref",
+    "updates": {"review.current_head_synthesis.ref": "https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/90009#pullrequestreview-1"},
+    "error": "review synthesis evidence ref does not match implementation PR authority"
+  },
+  {
+    "name": "reject_pull_without_review_synthesis_identity",
+    "updates": {"review.current_head_synthesis.ref": "https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/90002"},
+    "error": "review synthesis evidence ref does not match implementation PR authority"
+  },
+  {
+    "name": "reject_unmodeled_review_authority",
+    "updates": {"review.authority_number": 90009},
+    "error": "review authority is not a modeled implementation PR"
+  },
+  {
+    "name": "reject_mismatched_semantic_review_ref",
+    "updates": {
+      "review.authority_kind": "semantic_controller",
+      "review.authority_number": 90001,
+      "review.current_head_synthesis.kind": "github_issue_comment",
+      "review.current_head_synthesis.ref": "https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/90009#issuecomment-4"
+    },
+    "error": "review synthesis evidence ref does not match semantic-controller authority"
   },
   {
     "name": "reject_cross_subject_pass",

@@ -103,8 +103,10 @@
     "review": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["current_head_synthesis", "reviewed_head", "status", "unresolved_material_findings", "finding_refs"],
+      "required": ["authority_kind", "authority_number", "current_head_synthesis", "reviewed_head", "status", "unresolved_material_findings", "finding_refs"],
       "properties": {
+        "authority_kind": {"enum": ["implementation_pr", "semantic_controller"]},
+        "authority_number": {"type": "integer", "minimum": 1},
         "current_head_synthesis": {"$ref": "#/$defs/durable_evidence"},
         "reviewed_head": {"$ref": "#/$defs/sha"},
         "status": {"enum": ["current", "stale", "not_proven"]},

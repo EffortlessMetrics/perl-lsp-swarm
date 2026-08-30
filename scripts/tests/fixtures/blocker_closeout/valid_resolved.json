@@ -30,6 +30,8 @@
     }
   ],
   "review": {
+    "authority_kind": "implementation_pr",
+    "authority_number": 90002,
     "current_head_synthesis": {
       "kind": "github_review",
       "ref": "https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/90002#pullrequestreview-1",
