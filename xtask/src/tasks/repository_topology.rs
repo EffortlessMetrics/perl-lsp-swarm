@@ -12,7 +12,7 @@ use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::fs;
-use std::path::Path;
+use std::path::{Component, Path};
 use std::process::Command;
 
 pub const TOPOLOGY_PATH: &str = "policy/repository-topology.toml";
@@ -251,6 +251,30 @@ fn is_issue_ref(value: &str) -> bool {
         && digits.bytes().all(|byte| byte.is_ascii_digit())
 }
 
+/// A repository-relative package directory: non-empty, normalized, and inside
+/// the tree. Checked independently of workspace reconciliation, because a package
+/// whose owner has externalized is never reconciled against a manifest and would
+/// otherwise be free to carry a blank or escaping path.
+fn check_relative_path(errors: &mut Vec<String>, subject: &str, field: &str, value: &str) {
+    let path = Path::new(value);
+    if value.trim().is_empty() {
+        errors.push(format!("{subject}: {field} is empty"));
+    } else if value.contains('\\')
+        || path.is_absolute()
+        || path.components().any(|part| matches!(part, Component::ParentDir | Component::RootDir))
+    {
+        errors.push(format!(
+            "{subject}: {field} {value:?} must be a normalized repository-relative path"
+        ));
+    }
+}
+
+fn check_non_empty(errors: &mut Vec<String>, subject: &str, field: &str, value: &str) {
+    if value.trim().is_empty() {
+        errors.push(format!("{subject}: {field} is empty"));
+    }
+}
+
 fn check_issue_ref(errors: &mut Vec<String>, subject: &str, field: &str, value: &str) {
     if !is_issue_ref(value) {
         errors
@@ -333,6 +357,7 @@ pub fn validate(
     let mut repository_ids = BTreeSet::new();
     for repo in &topology.repositories {
         let subject = format!("repository {:?}", repo.repository_id);
+        check_non_empty(&mut errors, &subject, "repository_id", &repo.repository_id);
         if !repository_ids.insert(repo.repository_id.as_str()) {
             errors.push(format!("duplicate repository id {:?}", repo.repository_id));
         }
@@ -407,6 +432,11 @@ pub fn validate(
     let mut previous: Option<&str> = None;
     for package in &topology.packages {
         let subject = format!("package {:?}", package.name);
+        // Identity is checked here, not only through manifest reconciliation: a
+        // package owned by an externalized repository is never reconciled, so its
+        // row is the sole record of what it is and where it came from.
+        check_non_empty(&mut errors, &subject, "name", &package.name);
+        check_relative_path(&mut errors, &subject, "path", &package.path);
         if !package_names.insert(package.name.as_str()) {
             errors.push(format!("duplicate package row {:?}", package.name));
         }
@@ -1333,6 +1363,32 @@ metadata_authority = "workspace_inherited"
             1,
         );
         expect_rejected(&source, "which accepts no packages")
+    }
+
+    /// Identity must hold for an externalized package too: its row is never
+    /// reconciled against a manifest, so nothing else would catch a blank.
+    #[test]
+    fn rejects_a_blank_package_name() -> TestResult {
+        let source = fixture().replace("name = \"beta\"", "name = \"\"");
+        expect_rejected(&source, "name is empty")
+    }
+
+    #[test]
+    fn rejects_a_blank_package_path() -> TestResult {
+        let source = fixture().replace("path = \"crates/beta\"", "path = \"\"");
+        expect_rejected(&source, "path is empty")
+    }
+
+    #[test]
+    fn rejects_a_package_path_that_escapes_the_repository() -> TestResult {
+        let source = fixture().replace("path = \"crates/beta\"", "path = \"../outside\"");
+        expect_rejected(&source, "normalized repository-relative path")
+    }
+
+    #[test]
+    fn rejects_an_absolute_package_path() -> TestResult {
+        let source = fixture().replace("path = \"crates/beta\"", "path = \"/etc/beta\"");
+        expect_rejected(&source, "normalized repository-relative path")
     }
 
     #[test]
