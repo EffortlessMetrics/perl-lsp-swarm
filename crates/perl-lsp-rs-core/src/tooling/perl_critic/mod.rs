@@ -40,9 +40,8 @@ pub use quick_fix::{QuickFix, TextEdit};
 pub use remediation::{CriticRemediationClass, CriticRemediationEligibility};
 pub use result_identity::{
     AcceptedCriticPolicyIdentity, CriticPolicyIdentity, CriticPolicyIdentityError,
-    DIAGNOSTIC_RESULT_IDENTITY_SCHEMA_VERSION, DiagnosticFactIdentity,
-    DiagnosticResultIdentity, DiagnosticResultIdentityInput, DiagnosticResultSchemaVersions,
-    DiagnosticSourceIdentity,
+    DIAGNOSTIC_RESULT_IDENTITY_SCHEMA_VERSION, DiagnosticFactIdentity, DiagnosticResultIdentity,
+    DiagnosticResultIdentityInput, DiagnosticResultSchemaVersions, DiagnosticSourceIdentity,
 };
 pub use semantic::{
     BuiltInCriticObservation, NativeCriticPolicy, UnresolvedNativeFindingIdentity,

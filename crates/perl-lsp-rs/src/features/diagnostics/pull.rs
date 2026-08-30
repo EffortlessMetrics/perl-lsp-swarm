@@ -586,7 +586,6 @@ impl PullDiagnosticsProvider {
                     source_path.as_deref(),
                 );
 
-                let core_diagnostics = core_diagnostics;
                 // Critic composition runs over the producer-owned core rows so
                 // declared overlap observations can enter the normalized seam
                 // before LSP projection (#11918); surviving rows are mapped

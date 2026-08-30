@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: The navigation provider-decision receipts now tell the truth about how current their answer is. Goto-definition and type-definition `freshness` is derived from what those providers actually answered from (`ProviderDecisionFreshness` snake_case) instead of always reporting `fresh`. An empty goto-definition result over a stale workspace index reports `unknown`; a live-document answer and an empty result over a current index still report `fresh`. Type-definition continues to report `stale` for a request behind the live document version. Receipt/observability fields only; no change to navigation results.
+time: 2026-08-30T06:20:00Z
+custom:
+  PR: "14193"
+  Slug: navigation-receipt-freshness-derived-from-answering-source
+  Breaking: "no"
