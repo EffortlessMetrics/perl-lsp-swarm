@@ -31,3 +31,5 @@ cc 3fab19d6ccd9d14cd8f6dfdcacbef001e7b9cce5e4ad8b8af30025946b529f90 # shrinks to
 # fuzz-replay seed=0102030405060708 selector=a5
 # fuzz-replay seed=deadbeefcafebabe selector=80
 # fuzz-replay seed=0123456789abcdef selector=3f
+# fuzz-replay seed=00000000000000ff selector=32
+# fuzz-replay seed=fedcba9876543210 selector=b4

@@ -40,6 +40,10 @@ pub const MAX_PLAN_EDITS: usize = 64;
 /// Hard bound on composed source lines per generated subject.
 pub const MAX_SUBJECT_LINES: usize = 8;
 
+/// Single source of truth for the `(seed, index)` index axis shared by the
+/// property tier and the fuzz decoder.
+pub const GENERATED_INDEX_SPACE: usize = 64;
+
 /// Indentation prefixes used by the indent mutator.
 const INDENTS: [&str; 3] = ["", "  ", "\t"];
 
@@ -484,8 +488,11 @@ impl std::error::Error for Violation {}
 
 // ── Deterministic randomness ────────────────────────────────────────────────
 
-/// SplitMix64: a pure, platform-stable mixing function so `(seed, index)` is
-/// the only input to generation (FPH-007).
+/// SplitMix64 is a pure, platform-stable, versioned expansion function from
+/// the drawn `(seed, index)` pair to the case axes. ChaCha is the proptest
+/// draw source pinned by the spec; SplitMix64 expands those draws for the
+/// structured generator, and case identity is pinned by the FPH-002/FPH-007
+/// determinism tests and committed regression seeds.
 struct SplitMix64(u64);
 
 impl SplitMix64 {
@@ -587,6 +594,9 @@ fn generate_case_with_disposition(
     // interior separator (FPH-006).
     if matches!(line_ending, LineEndingKind::BareCr | LineEndingKind::Mixed) && line_count < 2 {
         line_count = 2;
+    }
+    if line_ending == LineEndingKind::Mixed && line_count < 3 {
+        line_count = 3;
     }
 
     let mut lines: Vec<String> = Vec::with_capacity(line_count);
@@ -740,7 +750,7 @@ pub fn case_from_fuzz_input(data: &[u8]) -> Option<GeneratedCase> {
     seed_bytes.copy_from_slice(&data[..8]);
     let seed = u64::from_le_bytes(seed_bytes);
     let selector = data[8];
-    let index = usize::from(selector & 0x3f) % 64;
+    let index = usize::from(selector & 0x3f) % GENERATED_INDEX_SPACE;
     Some(if selector & 0x80 != 0 {
         generate_invalidation_case(seed, index)
     } else {

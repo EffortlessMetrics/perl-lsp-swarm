@@ -13,19 +13,23 @@
 //! per case (`MAX_SUBJECT_BYTES`, `MAX_PLAN_EDITS`, `MAX_SUBJECT_LINES`).
 #![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
-use std::fs;
+use std::{
+    ffi::OsStr,
+    fs,
+    path::{Path, PathBuf},
+};
 
 use proptest::prelude::*;
-use proptest::test_runner::{Config as ProptestConfig, FileFailurePersistence};
+use proptest::test_runner::{Config as ProptestConfig, FileFailurePersistence, RngAlgorithm};
 
 #[path = "support/formatter_property_harness/mod.rs"]
 mod formatter_property_harness;
 
 use formatter_property_harness::{
-    DormantStatus, Family, GeneratedCase, HARNESS_SCHEMA_VERSION, LineEndingKind, MAX_PLAN_EDITS,
-    MAX_SUBJECT_BYTES, MAX_SUBJECT_LINES, case_from_fuzz_input, dormant_registry, family_registry,
-    generate_case, generate_case_neutral_control, generate_invalidation_case, record_for, run_case,
-    variants_for,
+    DormantStatus, Family, GENERATED_INDEX_SPACE, GeneratedCase, HARNESS_SCHEMA_VERSION,
+    LineEndingKind, MAX_PLAN_EDITS, MAX_SUBJECT_BYTES, MAX_SUBJECT_LINES, case_from_fuzz_input,
+    dormant_registry, family_registry, generate_case, generate_case_neutral_control,
+    generate_invalidation_case, record_for, run_case, variants_for,
 };
 use perl_lsp_perltidy::native::FinalNewline;
 
@@ -59,6 +63,13 @@ const PINNED_FAMILY_NAMES: [&str; PINNED_FAMILY_COUNT] = [
 /// 3 + 2 + 2 + 2 + 2 + 3 + 2 + 2 + 2 + 2 registered dispositions.
 const PINNED_DISPOSITION_TOTAL: usize = 22;
 
+const PINNED_HARNESS_SUPPORT_FILES: &[&str] = &["mod.rs"];
+
+const PINNED_PANIC_COUNTS: &[(&str, usize)] = &[
+    ("tests/support/formatter_property_harness/mod.rs", 3),
+    ("../../fuzz/fuzz_targets/perl_tidy_formatter.rs", 1),
+];
+
 /// Reason classes that legitimately carry no plan (every stable reason except
 /// the two success classes).
 const REFUSAL_REASON_CLASSES: [&str; 9] = [
@@ -77,17 +88,122 @@ fn harness_proptest_config() -> ProptestConfig {
     ProptestConfig {
         cases: std::env::var("PROPTEST_CASES").ok().and_then(|v| v.parse().ok()).unwrap_or(48),
         failure_persistence: Some(Box::new(FileFailurePersistence::Direct(REGRESSION_FILE))),
+        rng_algorithm: RngAlgorithm::ChaCha,
         ..ProptestConfig::default()
     }
 }
 
 fn arb_valid_case() -> impl Strategy<Value = GeneratedCase> {
-    (any::<u64>(), 0usize..48usize).prop_map(|(seed, index)| generate_case(seed, index))
+    (any::<u64>(), 0usize..GENERATED_INDEX_SPACE)
+        .prop_map(|(seed, index)| generate_case(seed, index))
 }
 
 fn arb_invalidation_case() -> impl Strategy<Value = GeneratedCase> {
-    (any::<u64>(), 0usize..16usize)
+    (any::<u64>(), 0usize..GENERATED_INDEX_SPACE)
         .prop_map(|(seed, index)| generate_invalidation_case(seed, index))
+}
+
+fn collect_files_recursively(
+    current: &Path,
+    extension: Option<&str>,
+    files: &mut Vec<PathBuf>,
+) -> std::io::Result<()> {
+    for entry in fs::read_dir(current)? {
+        let path = entry?.path();
+        if path.is_dir() {
+            collect_files_recursively(&path, extension, files)?;
+        } else if extension.is_none() || path.extension().and_then(OsStr::to_str) == extension {
+            files.push(path);
+        }
+    }
+    Ok(())
+}
+
+/// FPH policy pins: this scan is textual and deliberately scoped to the
+/// harness surface; unchecked indexing is covered by the
+/// `get_unchecked`/`from_raw_parts` tokens rather than a `[i]` heuristic.
+#[test]
+fn fph_policy_pins() -> TestResult {
+    let support_root =
+        PathBuf::from(format!("{MANIFEST_DIR}/tests/support/formatter_property_harness"));
+    let mut support_file_paths = Vec::new();
+    collect_files_recursively(&support_root, None, &mut support_file_paths)?;
+    let mut support_files = Vec::new();
+    for path in support_file_paths {
+        support_files.push(
+            path.strip_prefix(&support_root)
+                .map_err(|error| format!("support path is outside root: {error}"))?
+                .to_path_buf(),
+        );
+    }
+    support_files.sort();
+    let pinned_support_files: Vec<PathBuf> =
+        PINNED_HARNESS_SUPPORT_FILES.iter().map(PathBuf::from).collect();
+    assert_eq!(
+        support_files, pinned_support_files,
+        "harness support-tree inventory drifted: actual={support_files:?}, pinned={pinned_support_files:?}"
+    );
+
+    let source_root = PathBuf::from(format!("{MANIFEST_DIR}/src"));
+    let tests_root = PathBuf::from(format!("{MANIFEST_DIR}/tests"));
+    let mut rust_files = Vec::new();
+    collect_files_recursively(&source_root, Some("rs"), &mut rust_files)?;
+    collect_files_recursively(&tests_root, Some("rs"), &mut rust_files)?;
+    let markers = [
+        ["pub const ", "HARNESS_SCHEMA_VERSION"].concat(),
+        ["pub fn ", "run_case("].concat(),
+        format!("#[path = \"support/formatter_property_harness/{}\"]", "mod.rs"),
+    ];
+    for marker in markers {
+        let mut count = 0;
+        let mut locations = Vec::new();
+        for path in &rust_files {
+            let source = fs::read_to_string(path)?;
+            let occurrences = source.matches(&marker).count();
+            if occurrences > 0 {
+                locations.push((path.display().to_string(), occurrences));
+                count += occurrences;
+            }
+        }
+        assert_eq!(
+            count, 1,
+            "marker {marker:?} must occur exactly once across src/tests; locations={locations:?}"
+        );
+    }
+
+    let harness_path =
+        PathBuf::from(format!("{MANIFEST_DIR}/tests/support/formatter_property_harness/mod.rs"));
+    let fuzz_path =
+        PathBuf::from(format!("{MANIFEST_DIR}/../../fuzz/fuzz_targets/perl_tidy_formatter.rs"));
+    let banned_tokens = [
+        ".unwrap(",
+        ".expect(",
+        "todo!",
+        "unimplemented!",
+        "unreachable!",
+        "dbg!",
+        "unsafe ",
+        "get_unchecked",
+        "from_raw_parts",
+    ];
+    for (relative_path, expected_panics) in PINNED_PANIC_COUNTS {
+        let path = if relative_path.starts_with("tests/") { &harness_path } else { &fuzz_path };
+        let source = fs::read_to_string(path)?;
+        for token in banned_tokens {
+            assert!(
+                !source.contains(token),
+                "forbidden token {token:?} found in {}",
+                path.display()
+            );
+        }
+        assert_eq!(
+            source.matches("panic!").count(),
+            *expected_panics,
+            "panic! count drifted in {}",
+            path.display()
+        );
+    }
+    Ok(())
 }
 
 /// FPH-009 source pin: the harness module and the fuzz target must never
@@ -232,7 +348,7 @@ fn every_admitted_family_has_a_registered_disposition() -> TestResult {
     let mut covered_families: Vec<&'static str> = Vec::new();
     let mut covered_dispositions: Vec<&str> = Vec::new();
     for seed in 0..8_u64 {
-        for index in 0..48_usize {
+        for index in 0..GENERATED_INDEX_SPACE {
             let case = generate_case(seed, index);
             assert_eq!(case.schema_version, HARNESS_SCHEMA_VERSION);
             // The generated bytes must carry the selected line-ending
@@ -351,14 +467,46 @@ fn generator_and_mutator_dispositions_are_observable() -> TestResult {
 /// line-ending convention (bare CR and mixed separators exist only between
 /// lines, so the generator forces multi-line subjects for those variants).
 fn convention_present_in_bytes(kind: LineEndingKind, text: &str) -> bool {
+    let without_crlf = text.replace("\r\n", "");
     match kind {
-        LineEndingKind::Lf => text.contains('\n'),
+        LineEndingKind::Lf => without_crlf.contains('\n'),
         LineEndingKind::Crlf => text.contains("\r\n"),
         LineEndingKind::BareCr => text.contains('\r') && !text.contains('\n'),
         LineEndingKind::Mixed => {
-            text.contains("\r\n") && text.contains('\n') && !text.replace("\r\n", "").contains('\r')
+            text.contains("\r\n") && without_crlf.contains('\n') && !without_crlf.contains('\r')
         }
     }
+}
+
+#[test]
+fn proptest_rng_algorithm_is_pinned() {
+    assert_eq!(harness_proptest_config().rng_algorithm, RngAlgorithm::ChaCha);
+}
+
+#[test]
+fn fuzz_decoder_covers_entire_generated_index_space() -> TestResult {
+    let seed = 0x0123_4567_89ab_cdef_u64;
+    for selector in 0x00_u8..=0x3f {
+        let mut data = seed.to_le_bytes().to_vec();
+        data.push(selector);
+        let decoded = case_from_fuzz_input(&data).ok_or("valid fuzz input must decode")?;
+        assert_eq!(
+            decoded,
+            generate_case(seed, usize::from(selector)),
+            "valid selector {selector:#04x} was truncated or remapped"
+        );
+    }
+    for selector in 0x80_u8..=0xbf {
+        let mut data = seed.to_le_bytes().to_vec();
+        data.push(selector);
+        let decoded = case_from_fuzz_input(&data).ok_or("invalidation fuzz input must decode")?;
+        assert_eq!(
+            decoded,
+            generate_invalidation_case(seed, usize::from(selector & 0x3f)),
+            "invalidation selector {selector:#04x} was truncated or remapped"
+        );
+    }
+    Ok(())
 }
 
 /// FPH-002: two runs of the same seed/case through fresh formatter contexts
@@ -386,7 +534,7 @@ proptest! {
     /// FPH-002/FPH-007 over the drawn case space: identical inputs produce
     /// identical generated cases and identical normalized receipts.
     #[test]
-    fn generated_cases_are_reproducible(seed in any::<u64>(), index in 0usize..48usize) {
+    fn generated_cases_are_reproducible(seed in any::<u64>(), index in 0usize..GENERATED_INDEX_SPACE) {
         let case_a = generate_case(seed, index);
         let case_b = generate_case(seed, index);
         prop_assert_eq!(&case_a, &case_b);
@@ -500,7 +648,7 @@ proptest! {
     /// disposition, target, and line-ending identity and are identical for
     /// identical inputs.
     #[test]
-    fn generated_case_receipt_is_deterministic_and_bounded(seed in any::<u64>(), index in 0usize..48usize) {
+    fn generated_case_receipt_is_deterministic_and_bounded(seed in any::<u64>(), index in 0usize..GENERATED_INDEX_SPACE) {
         let case = generate_case(seed, index);
         prop_assert!(case.subject.text.len() <= MAX_SUBJECT_BYTES);
         prop_assert!(case.subject.text.lines().count() <= MAX_SUBJECT_LINES);
@@ -596,15 +744,30 @@ fn fuzz_target_and_regression_pipeline_are_wired() -> TestResult {
     );
 
     let regression_file = fs::read_to_string(REGRESSION_FILE)?;
-    let mut committed_seed: Option<u64> = None;
+    let mut committed_seeds = Vec::new();
     let mut fuzz_replays: Vec<(u64, u8)> = Vec::new();
     for line in regression_file.lines() {
         if let Some(rest) = line.strip_prefix("cc ") {
-            let hex = rest.split_whitespace().next().unwrap_or("");
-            assert_eq!(hex.len(), 64, "committed regression seed must be 64 hex chars");
+            let hex = rest
+                .split_whitespace()
+                .next()
+                .ok_or("cc regression entry must carry a seed token (FPH-010)")?;
+            assert_eq!(
+                hex.len(),
+                64,
+                "committed regression seed must be 64 lowercase hex chars: {hex:?}"
+            );
+            assert!(
+                hex.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
+                "committed regression seed must be 64 lowercase hex chars: {hex:?}"
+            );
+            assert!(
+                !committed_seeds.iter().any(|entry| entry == hex),
+                "duplicate committed regression seed entry: {hex:?}"
+            );
             // The harness consumes the low 128 bits' leading word; the full
             // 256-bit entry stays wire-compatible with the lexer convention.
-            committed_seed = Some(u64::from_str_radix(&hex[..16], 16)?);
+            committed_seeds.push(hex.to_string());
         }
         // Committed fuzz crash artifacts: `seed` is the little-endian seed
         // the cargo-fuzz input carries in its first eight bytes, `selector`
@@ -623,7 +786,12 @@ fn fuzz_target_and_regression_pipeline_are_wired() -> TestResult {
                 .push((u64::from_str_radix(seed_hex, 16)?, u8::from_str_radix(selector_part, 16)?));
         }
     }
-    let seed = committed_seed.ok_or("committed regression file must carry one cc seed entry")?;
+    assert!(
+        !committed_seeds.is_empty(),
+        "committed regression file must carry at least one cc seed entry"
+    );
+    // Use the first committed cc entry for the seeded 0..16 replay.
+    let seed = u64::from_str_radix(&committed_seeds[0][..16], 16)?;
 
     for index in 0..16_usize {
         run_case(&generate_case(seed, index))?;
