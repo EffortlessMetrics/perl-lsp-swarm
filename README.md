@@ -112,23 +112,25 @@ The tap is an independently versioned channel and can lag the GitHub release;
 check `brew info effortlessmetrics/tap/perllsp` to confirm the formula version
 matches the release you expect before installing.
 
-**Windows** (x86_64) — download
-`perllsp-<version>-x86_64-pc-windows-msvc.zip` from
+**Windows** (x86_64, plus Windows 11 ARM64 via x64 emulation) — on x86_64,
+download `perllsp-<version>-x86_64-pc-windows-msvc.zip` from
 [Releases](https://github.com/EffortlessMetrics/perl-lsp/releases), extract it,
 and put the folder containing `perllsp.exe` on your `PATH`.
 
 The published PowerShell installer is usable for x86_64 Windows and Windows 11
 ARM64 under x64 emulation. It selects the current
 `perllsp-<version>-x86_64-pc-windows-msvc.zip` release asset, installs
-`perllsp.exe`, and verifies its checksum when the release checksum file is
-available. Run it from PowerShell:
+`perllsp.exe`, and verifies the asset against the release `SHA256SUMS` file,
+aborting on a checksum mismatch; if the checksum file cannot be downloaded it
+prints a warning and continues without verification. Run it from PowerShell:
 
 ```powershell
 irm https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/install.ps1 | iex
 ```
 
-Windows 10 ARM64 and unsupported architectures must build from source; the
-manual archive remains available as an alternative.
+Windows 10 ARM64 and unsupported architectures must build from source. On
+x86_64 Windows the manual archive above remains available as an alternative to
+the installer.
 
 Then inspect the install before wiring it into an editor. `--doctor` reports
 the local Perl and workspace setup; it is a diagnostic report, not a CI gate.
