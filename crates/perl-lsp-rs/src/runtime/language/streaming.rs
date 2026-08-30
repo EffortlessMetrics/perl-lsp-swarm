@@ -209,24 +209,28 @@ impl LspServer {
                     return self.handle_inline_completion(Some(params));
                 }
                 // No backend and no fallback -- emit the one empty final.
-                if session.settle(StreamTerminalOutcome::CompletedEmptyOrFiltered) {
-                    let progress = stream_progress_payload(
-                        &token_clone,
-                        &session_id,
-                        session.next_sequence(),
-                        true,
-                        Vec::new(),
-                        line,
-                        character,
-                    );
-                    if let Err(e) = self.notify("$/progress", progress) {
+                let progress = stream_progress_payload(
+                    &token_clone,
+                    &session_id,
+                    session.pending_sequence(),
+                    true,
+                    Vec::new(),
+                    line,
+                    character,
+                );
+                match self.notify("$/progress", progress) {
+                    Ok(()) => {
+                        session.commit_sequence();
+                        session.settle(StreamTerminalOutcome::CompletedEmptyOrFiltered);
+                    }
+                    Err(e) => {
                         tracing::debug!(
                             "streaming inline completion: failed to send empty final: {}",
                             e
                         );
                     }
                 }
-                release(StreamTerminalOutcome::CompletedEmptyOrFiltered);
+                release(StreamTerminalOutcome::ProtocolEndedWithoutFinal);
                 return Ok(Some(json!(null)));
             }
         };
@@ -309,15 +313,6 @@ impl LspServer {
                     return perl_lsp_rs_core::providers::inline_completion::StreamControl::Continue;
                 }
 
-                if is_final {
-                    // Claim the one terminal transition. Losing it means another
-                    // owner already settled this stream; emit nothing further.
-                    if !session.settle(terminal) {
-                        return perl_lsp_rs_core::providers::inline_completion::StreamControl::Stop;
-                    }
-                    sent_final = true;
-                }
-
                 // Keep the first update responsive, then suppress intermediate
                 // chunks until the configured interval has elapsed. A final
                 // chunk always goes through so the client receives the complete
@@ -331,8 +326,10 @@ impl LspServer {
                     return perl_lsp_rs_core::providers::inline_completion::StreamControl::Continue;
                 }
 
-                // Allocated only now, immediately before the frame is sent.
-                let seq = session.next_sequence();
+                // Read, do not consume. The outbound channel is bounded, so this
+                // send can fail transiently under backpressure; a value consumed
+                // for a frame the client never received would be a permanent gap.
+                let seq = session.pending_sequence();
                 let progress = stream_progress_payload(
                     &token_clone,
                     &session_id,
@@ -345,11 +342,22 @@ impl LspServer {
 
                 if let Err(e) = self.notify("$/progress", progress) {
                     tracing::debug!("streaming inline completion: failed to send progress: {}", e);
+                    // Nothing reached the client: the sequence value stays
+                    // available and, for a final chunk, the stream has *not*
+                    // reached its terminal. Stop pulling from the backend and
+                    // let the tail owner below attempt the terminal once more.
                     return perl_lsp_rs_core::providers::inline_completion::StreamControl::Stop;
                 }
+                session.commit_sequence();
                 last_emitted_at = Some(Instant::now());
 
                 if is_final {
+                    // Settle only now that the terminal value is actually on the
+                    // wire. Recording it before the send would let a dropped
+                    // frame be remembered as a delivered candidate, and would
+                    // block the retry below.
+                    session.settle(terminal);
+                    sent_final = true;
                     perl_lsp_rs_core::providers::inline_completion::StreamControl::Stop
                 } else {
                     perl_lsp_rs_core::providers::inline_completion::StreamControl::Continue
@@ -444,21 +452,31 @@ impl LspServer {
                 }
             };
 
-            if session.settle(terminal) {
+            if !session.is_settled() {
                 let progress = stream_progress_payload(
                     &token_clone,
                     &session_id,
-                    session.next_sequence(),
+                    session.pending_sequence(),
                     true,
                     final_items,
                     line,
                     character,
                 );
-                if let Err(e) = self.notify("$/progress", progress) {
-                    tracing::debug!(
-                        "streaming inline completion: failed to send final progress: {}",
-                        e
-                    );
+                match self.notify("$/progress", progress) {
+                    Ok(()) => {
+                        session.commit_sequence();
+                        session.settle(terminal);
+                    }
+                    Err(e) => {
+                        // The terminal value never reached the client. Leaving
+                        // the session unsettled lets `release` below record the
+                        // honest `ProtocolEndedWithoutFinal` rather than a
+                        // success this stream did not achieve.
+                        tracing::debug!(
+                            "streaming inline completion: failed to send final progress: {}",
+                            e
+                        );
+                    }
                 }
             }
         }

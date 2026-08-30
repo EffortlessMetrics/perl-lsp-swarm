@@ -792,6 +792,32 @@ mod mock_streaming_completion_tests {
         }
     }
 
+    /// A backend that ignores `StreamControl::Stop` and keeps sending final
+    /// chunks. Real providers honour `Stop`, so only the handler's own
+    /// settled-guard stands between this and a second terminal value.
+    struct MockDoubleFinalBackend;
+
+    impl perl_lsp_rs_core::providers::inline_completion::InlineCompletionBackend
+        for MockDoubleFinalBackend
+    {
+        fn stream(
+            &self,
+            _req: &perl_lsp_rs_core::providers::inline_completion::BackendRequest,
+            sink: &mut dyn FnMut(
+                perl_lsp_rs_core::providers::inline_completion::StreamChunk,
+            )
+                -> perl_lsp_rs_core::providers::inline_completion::StreamControl,
+        ) -> Result<(), perl_lsp_rs_core::providers::inline_completion::BackendError> {
+            for _ in 0..3 {
+                let _ = sink(perl_lsp_rs_core::providers::inline_completion::StreamChunk {
+                    text: "1;".to_string(),
+                    is_final: true,
+                });
+            }
+            Ok(())
+        }
+    }
+
     struct MockAuthBackend;
 
     impl perl_lsp_rs_core::providers::inline_completion::InlineCompletionBackend for MockAuthBackend {
@@ -1087,28 +1113,67 @@ mod mock_streaming_completion_tests {
     }
 
     /// One document exposes one active ghost-text stream. A request at a new
-    /// cursor supersedes the earlier cursor's stream instead of leaving
-    /// independent backend work behind at every position the user visited.
+    /// cursor supersedes the earlier cursor's *in-flight* stream instead of
+    /// leaving independent backend work running at every position the user
+    /// visited.
+    ///
+    /// The two requests must genuinely overlap. Driven sequentially each one
+    /// completes and releases its own session before the next starts, so a
+    /// session count alone cannot tell document-scoped supersession from the
+    /// per-`SessionKey` behaviour it replaced — the discriminating observation
+    /// is that the earlier cursor's stream stops emitting.
     #[test]
     fn a_new_cursor_supersedes_the_prior_document_stream() {
-        let (server, _capture) = create_server();
+        let (server, capture) = create_server();
+        let server = Arc::new(server);
+
         server.test_install_ai_backend(Some(Arc::new(MockChunkBackend {
-            chunks: vec!["1;"],
-            delays_ms: vec![0],
+            chunks: vec!["fi", "find_", "find_user($id)"],
+            delays_ms: vec![0, 120, 120],
         })));
 
         let uri = "file:///streaming-supersede-cursor.pl";
-        open_doc(&server, uri, "my $value = ");
+        open_doc(&server, uri, "my $obj = Package->");
 
-        request_streaming_completion(&server, uri, 12, "supersede-first");
-        // A different cursor is a different session key; before supersession
-        // this left the first cursor's entry retained alongside the second.
-        request_streaming_completion(&server, uri, 11, "supersede-second");
+        let earlier = {
+            let server = Arc::clone(&server);
+            let uri = uri.to_string();
+            thread::spawn(move || {
+                request_streaming_completion(&server, &uri, 19, "supersede-earlier-cursor");
+            })
+        };
 
+        // Let the earlier cursor's stream emit its first chunk, then request at
+        // a *different* cursor in the same document.
+        thread::sleep(Duration::from_millis(30));
+        request_streaming_completion(&server, uri, 11, "supersede-later-cursor");
+
+        earlier.join().expect("earlier streaming request thread panicked");
+        thread::sleep(Duration::from_millis(250));
+
+        let earlier_progress = wait_for_progress_messages(
+            &capture,
+            "supersede-earlier-cursor",
+            Duration::from_millis(300),
+        );
+        let later_progress = wait_for_progress_messages(
+            &capture,
+            "supersede-later-cursor",
+            Duration::from_millis(300),
+        );
+
+        assert_eq!(
+            earlier_progress.len(),
+            1,
+            "the earlier cursor's stream must stop at the chunk it had already \
+             emitted; a per-session-key scope would let it run to completion \
+             alongside the new cursor"
+        );
+        assert!(!later_progress.is_empty(), "the current cursor's stream still runs");
         assert_eq!(
             server.memory_state_snapshot().stream_sessions,
             0,
-            "neither cursor's session may survive its own completion"
+            "neither cursor's session may survive"
         );
     }
 
@@ -1146,6 +1211,37 @@ mod mock_streaming_completion_tests {
             vec![0, 1],
             "emitted sequences must be contiguous: a suppressed frame consumed \
              a sequence value the client never observed"
+        );
+    }
+
+    /// A backend that ignores `StreamControl::Stop` still cannot produce two
+    /// terminal values. This pins the settled-guard at the top of the chunk
+    /// sink, which is otherwise unreachable through the well-behaved mocks.
+    #[test]
+    fn a_stop_ignoring_backend_cannot_emit_a_second_final() {
+        let (server, capture) = create_server();
+        server.test_install_ai_backend(Some(Arc::new(MockDoubleFinalBackend)));
+
+        let uri = "file:///streaming-double-final.pl";
+        open_doc(&server, uri, "my $value = ");
+        request_streaming_completion(&server, uri, 12, "double-final");
+
+        let progress =
+            wait_for_progress_messages(&capture, "double-final", Duration::from_millis(500));
+        let finals = progress
+            .iter()
+            .filter(|frame| {
+                frame
+                    .pointer("/params/value/isFinal")
+                    .and_then(Value::as_bool)
+                    .is_some_and(|is_final| is_final)
+            })
+            .count();
+        assert_eq!(finals, 1, "a settled stream must refuse every later chunk");
+        assert_eq!(
+            server.memory_state_snapshot().stream_sessions,
+            0,
+            "the session is still released exactly once"
         );
     }
 

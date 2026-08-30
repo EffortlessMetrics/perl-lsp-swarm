@@ -135,12 +135,25 @@ impl StreamSession {
         *self.terminal.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Atomically increment and return the next sequence number.
+    /// The sequence value the next delivered frame will carry.
     ///
-    /// Call this only immediately before a frame is actually emitted: an
-    /// allocation that is not followed by a notification leaves an observable
-    /// gap in the client's sequence stream.
-    pub fn next_sequence(&self) -> u64 {
+    /// Reading is deliberately separate from consuming. The outbound channel is
+    /// bounded, so a notification can fail transiently under backpressure
+    /// (`WouldBlock`); a value consumed for a frame that never reached the
+    /// client would leave a permanent gap in the sequence stream the client
+    /// observes. Build the payload with this value, attempt the send, and call
+    /// [`commit_sequence`] only once the send succeeded.
+    ///
+    /// [`commit_sequence`]: StreamSession::commit_sequence
+    pub fn pending_sequence(&self) -> u64 {
+        self.sequence.load(Ordering::Relaxed)
+    }
+
+    /// Consume the pending sequence value after a frame was actually delivered.
+    ///
+    /// One handler thread emits for one session, so read-then-commit needs no
+    /// stronger synchronization than the load and store themselves.
+    pub fn commit_sequence(&self) -> u64 {
         self.sequence.fetch_add(1, Ordering::Relaxed)
     }
 }
@@ -492,8 +505,19 @@ mod tests {
     #[test]
     fn sequence_increments() {
         let session = StreamSession::new("test".into(), 0, 0);
-        assert_eq!(session.next_sequence(), 0);
-        assert_eq!(session.next_sequence(), 1);
-        assert_eq!(session.next_sequence(), 2);
+        assert_eq!(session.commit_sequence(), 0);
+        assert_eq!(session.commit_sequence(), 1);
+        assert_eq!(session.commit_sequence(), 2);
+    }
+
+    #[test]
+    fn a_pending_sequence_is_reused_until_it_is_committed() {
+        let session = StreamSession::new("test".into(), 0, 0);
+        // A frame that fails to reach the client must not consume its value,
+        // or the client observes a gap it can never explain.
+        assert_eq!(session.pending_sequence(), 0);
+        assert_eq!(session.pending_sequence(), 0, "reading must not consume");
+        session.commit_sequence();
+        assert_eq!(session.pending_sequence(), 1);
     }
 }

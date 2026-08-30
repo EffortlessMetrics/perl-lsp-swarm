@@ -293,25 +293,48 @@ eviction of the manager entry are gated on that transition.
 
 **Invariants.**
 
-- **Exactly one final.** At most one `isFinal: true` progress value is emitted
-  per stream, on every path: accepted candidate, filtered/empty, deterministic
-  fallback, clean EOF without an explicit final chunk, and backend failure.
+- **Exactly one final.** At most one `isFinal: true` progress value is
+  *delivered* per stream, on every path: accepted candidate, filtered/empty,
+  deterministic fallback, clean EOF without an explicit final chunk, and backend
+  failure. A backend that ignores `StreamControl::Stop` and keeps sending final
+  chunks is refused by the settled-guard rather than producing a second one.
 - **No retained sessions.** Every terminal path evicts its entry through
   `finish_if_current(key, session_id, outcome)`. A completed stream is not left
   in the manager to be swept by a later unrelated edit. There is no housekeeping
-  `cleanup()` sweep.
+  `cleanup()` sweep. The bound is "one entry per document per request", not an
+  unconditional guarantee: `release` is an ordinary call, so a panic between
+  session start and release would leak one entry until the next request for that
+  URI or the next didChange/didClose sweep.
 - **Session identity is load-bearing.** `finish_if_current` removes an entry only
   while it is still the exact session that request started, so a stale task
   finishing late cannot evict the replacement that reused its display key.
-- **Contiguous observed sequences.** A sequence value is allocated only
-  immediately before a frame is actually sent. A frame suppressed by
-  `updateDebounceMs` pacing, or skipped because its cumulative text was filtered,
-  consumes no sequence — so the sequence stream the client observes has no gaps.
+- **Delivery, not intent, commits state.** The outbound channel is bounded, so a
+  `$/progress` notification can fail transiently under backpressure. Both the
+  sequence value and the terminal outcome are therefore committed *after* a
+  successful send: `pending_sequence` reads, `commit_sequence` consumes. A frame
+  that never reached the client consumes no sequence value and does not settle
+  the stream, so the terminal is attempted once more by the tail owner, and a
+  terminal that is never delivered is recorded as `ProtocolEndedWithoutFinal`
+  rather than as a success.
+- **Contiguous observed sequences.** Every sequence value the client observes is
+  consumed by a frame that was actually delivered to it. A frame suppressed by
+  `updateDebounceMs` pacing, skipped because its cumulative text was filtered, or
+  dropped by a failed send consumes none — so the observed sequence stream has no
+  gaps.
 - **A failure is never a completion.** When the backend returns an error, the
   partial cumulative text it produced is discarded rather than re-evaluated and
   emitted as the terminal candidate. The configured `fallback` policy owns the
   final content: deterministic items when `fallback` is true, an empty final
   otherwise — the same decision the buffered route applies to a failed AI call.
+
+**Supersession trade-off.** Because the scope is the document, a client showing
+one document in two views and requesting at both cursors gets one stream: the
+earlier cursor's in-flight stream is cancelled and receives no further frames,
+including no terminal one. Its request still resolves (`null`), which the client
+treats as a revocation, so no ghost text is stranded. Supersession matches the
+request URI as spelled — the same string that forms the `SessionKey` — so a
+client that spells one document two ways can hold one stream per spelling; those
+are reclaimed by the didChange/didClose sweeps, which do compare URI variants.
 
 **Client side.** `vscode-extension/src/streamingCompletion.ts` treats an empty
 terminal value as an authoritative **revocation**, not an ignorable frame: it
@@ -342,9 +365,12 @@ Route and wire shape —
 
 Terminal contract — same file:
 `a_stream_emits_exactly_one_final_value`,
+`a_stop_ignoring_backend_cannot_emit_a_second_final`,
 `every_terminal_path_leaves_zero_retained_sessions`,
 `completion_stream_storm_retains_no_completed_sessions`,
-`a_new_cursor_supersedes_the_prior_document_stream`,
+`a_new_cursor_supersedes_the_prior_document_stream` (concurrent; a sequential
+pair cannot distinguish document-scoped from per-key supersession, because each
+request releases its own session before the next starts),
 `coalesced_frames_consume_no_sequence_value`,
 `streaming_completion_sequence_starts_at_zero_after_filtered_prefix`,
 `streaming_completion_mock_backend_error_sends_final_progress`,
@@ -360,17 +386,25 @@ Session identity and eviction —
 `finish_if_current_removes_the_exact_session`,
 `a_stale_session_cannot_finish_its_replacement`,
 `settle_records_exactly_one_outcome`,
-`cancel_with_preserves_an_already_recorded_outcome`.
+`cancel_with_preserves_an_already_recorded_outcome`,
+`a_pending_sequence_is_reused_until_it_is_committed`.
 
 Client revocation —
 `vscode-extension/src/test/streamingCompletion.test.ts`:
 `an empty terminal value revokes ghost text it previously showed`,
 `revoking ghost text does not start another backend generation`,
-`an explicit re-invocation after a revocation can still retry`,
+`every re-query after a revocation is suppressed, not just the first`,
+`a revoked identity is released once the cursor moves`,
+`suppression is keyed to the cursor, not just the document`,
 `a non-empty terminal value keeps its candidate servable`,
+`the request resolving after a successful final does not revoke it`,
+`an empty intermediate frame is skipped, not treated as a revocation`,
+`an out-of-order terminal frame settles without installing its candidate`,
 `a frame arriving after the terminal value cannot reopen the stream`,
 `a request resolving without a terminal value revokes its partial text`,
-`a backend failure after partial text revokes it`.
+`a backend failure after partial text revokes it`,
+`a late rejection from a superseded stream cannot revoke its successor`,
+`a cancelled request settles quietly without arming suppression`.
 
 ### Invariant
 
