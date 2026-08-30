@@ -41,6 +41,25 @@ fn contains_word_operator_with_goto(node: &Node, expected_op: &str) -> bool {
     node.children().into_iter().any(|child| contains_word_operator_with_goto(child, expected_op))
 }
 
+fn is_postfix_goto(node: &Node) -> bool {
+    matches!(
+        &node.kind,
+        NodeKind::MethodCall { object, method, args }
+            if method == "foo"
+                && args.is_empty()
+                && matches!(&object.kind, NodeKind::Identifier { name } if name == "goto")
+    )
+}
+
+fn contains_unary_postfix_goto(node: &Node, expected_op: &str) -> bool {
+    if let NodeKind::Unary { op, operand } = &node.kind {
+        if op == expected_op && is_postfix_goto(operand) {
+            return true;
+        }
+    }
+    node.children().into_iter().any(|child| contains_unary_postfix_goto(child, expected_op))
+}
+
 fn assert_non_clean(source: &str) -> Result<(), String> {
     let output = Parser::new(source).parse_with_recovery();
     if output.diagnostics.is_empty() && !has_recovery_node(&output.ast) {
@@ -298,9 +317,12 @@ fn bare_and_unary_word_goto_forms_match_perl_boundaries() -> Result<(), String> 
 
 #[test]
 fn unary_goto_postfix_arrow_forms_match_perl_boundaries() -> Result<(), String> {
-    for source in
-        ["foo or +goto->foo;", "foo or !goto->foo;", "foo or not goto->foo;", "foo or -goto->foo;"]
-    {
+    for (source, unary_op) in [
+        ("foo or +goto->foo; print \"ok\";", "+"),
+        ("foo or !goto->foo; print \"ok\";", "!"),
+        ("foo or not goto->foo; print \"ok\";", "not"),
+        ("foo or -goto->foo; print \"ok\";", "-"),
+    ] {
         if !perl_compile_accepts(source)? {
             return Err(format!("real Perl rejected valid postfix-arrow form: {source:?}"));
         }
@@ -312,10 +334,40 @@ fn unary_goto_postfix_arrow_forms_match_perl_boundaries() -> Result<(), String> 
                 output.ast.to_sexp()
             ));
         }
-        let sexp = output.ast.to_sexp();
-        if !sexp.contains("method_call") || contains_goto(&output.ast) {
+        let statements = match &output.ast.kind {
+            NodeKind::Program { statements } => statements,
+            _ => {
+                return Err(format!("postfix-arrow source did not produce a program: {source:?}"));
+            }
+        };
+        let first_expression = match statements.first().map(|statement| &statement.kind) {
+            Some(NodeKind::ExpressionStatement { expression }) => expression,
+            _ => {
+                return Err(format!("postfix-arrow source lost its first expression: {source:?}"));
+            }
+        };
+        let second_expression = match statements.get(1).map(|statement| &statement.kind) {
+            Some(NodeKind::ExpressionStatement { expression }) => expression,
+            _ => {
+                return Err(format!("postfix-arrow source lost its trailing print: {source:?}"));
+            }
+        };
+        let first_is_or = matches!(
+            &first_expression.kind,
+            NodeKind::Binary { op, .. } if op == "or"
+        );
+        let second_is_print = matches!(
+            &second_expression.kind,
+            NodeKind::FunctionCall { name, args } if name == "print" && !args.is_empty()
+        );
+        if !first_is_or
+            || !contains_unary_postfix_goto(first_expression, unary_op)
+            || !second_is_print
+            || contains_goto(first_expression)
+        {
             return Err(format!(
-                "postfix-arrow goto form must remain a bareword postfix expression rather than control flow:\nsource={source:?}\nast={sexp}"
+                "postfix-arrow goto form must preserve the word operator, unary postfix call, and trailing statement:\nsource={source:?}\nast={}",
+                output.ast.to_sexp()
             ));
         }
     }
@@ -338,8 +390,8 @@ fn unary_word_goto_forms_do_not_hide_trailing_residue() -> Result<(), String> {
 }
 
 #[test]
-fn valid_low_precedence_and_directive_continuations_do_not_gain_residual_errors()
--> Result<(), String> {
+fn valid_low_precedence_and_directive_continuations_do_not_gain_residual_errors(
+) -> Result<(), String> {
     for source in [
         "no warnings qw(uninitialized numeric); my $x = 1;",
         "open my $fh, '<', $path or die $!;",
