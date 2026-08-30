@@ -83,6 +83,8 @@ export const INVALID_REASON_CODES = {
   ambiguous: 'legacy_registry_ambiguous',
   /** The registry row contains an unknown or malformed compatibility window. */
   registry_invalid: 'legacy_registry_invalid',
+  /** The running extension version is absent or malformed, so expiry cannot be established. */
+  extension_version_invalid: 'migration_extension_version_invalid',
 } as const;
 
 function result(
@@ -115,10 +117,12 @@ function result(
 }
 
 function isExpired(row: ConfigurationMigrationRow, extensionVersion: string): boolean {
-  if (row.compatibility_window.kind === 'no_expiry') return false;
   const current = parseMigrationVersion(extensionVersion);
-  const threshold = parseMigrationVersion(row.compatibility_window.version);
-  if (!current || !threshold) return true;
+  const threshold =
+    row.compatibility_window.kind === 'no_expiry'
+      ? null
+      : parseMigrationVersion(row.compatibility_window.version);
+  if (!current || !threshold) return false;
   const comparison = compareStrictSemver(current, threshold);
   return row.compatibility_window.kind === 'through_extension_version'
     ? comparison > 0
@@ -212,12 +216,30 @@ export function interpretLegacyConfiguration(
   }
   if (
     row.compatibility_window.kind !== 'no_expiry' &&
+    parseMigrationVersion(input.extension_version) === null
+  ) {
+    return result(
+      input,
+      row,
+      'invalid',
+      MISSING_VALUE,
+      true,
+      INVALID_REASON_CODES.extension_version_invalid,
+    );
+  }
+  if (
+    row.compatibility_window.kind !== 'no_expiry' &&
     isExpired(row, input.extension_version ?? '')
   ) {
     // Expiry revokes only legacy-derived authority. A value already present at
     // the current key remains canonical, so downstream consumers never have to
     // choose between reporting the expired legacy row and preserving user data.
-    const currentValue = input.current_value_present ? input.current_value : MISSING_VALUE;
+    const currentValue =
+      input.current_value_present &&
+      row.migration_disposition !== 'removed_inert' &&
+      row.migration_disposition !== 'unsupported_legacy_value'
+        ? input.current_value
+        : MISSING_VALUE;
     return result(input, row, 'expired', currentValue, true);
   }
   switch (row.migration_disposition) {

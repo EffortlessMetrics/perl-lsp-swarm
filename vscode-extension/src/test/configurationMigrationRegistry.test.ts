@@ -81,6 +81,30 @@ describe('public-beta configuration migration registry', () => {
     );
   });
 
+  test.each(['target_release', 'source_public_release'] as const)(
+    'rejects an envelope missing required release identity %s',
+    (field) => {
+      const registry = cloneRegistry() as unknown as Record<string, unknown>;
+      delete registry[field];
+
+      expect(
+        validateMigrationRegistry(registry as unknown as ConfigurationMigrationRegistry),
+      ).toEqual(['migration registry envelope is missing or unsupported']);
+    },
+  );
+
+  test.each(['target_release', 'source_public_release'] as const)(
+    'rejects an envelope with malformed release identity %s',
+    (field) => {
+      const registry = cloneRegistry() as unknown as Record<string, unknown>;
+      registry[field] = 'not-a-version';
+
+      expect(
+        validateMigrationRegistry(registry as unknown as ConfigurationMigrationRegistry),
+      ).toEqual(['migration registry envelope is missing or unsupported']);
+    },
+  );
+
   test('rejects read or write compatibility for removed inert settings', () => {
     const registry = cloneRegistry();
     registry.rows[0] = {

@@ -275,28 +275,35 @@ describe('configuration migration runtime', () => {
     });
   });
 
-  test('missing extension version fails closed only for expiry-bearing rows', () => {
-    const expired = interpretLegacyConfiguration(
-      expiringRegistry({
-        kind: 'through_extension_version',
-        version: '0.18.0',
+  test.each([undefined, 'not-a-version'])(
+    'unknown extension version %s fails closed without asserting expiry',
+    (extensionVersion) => {
+      const invalid = interpretLegacyConfiguration(
+        expiringRegistry({
+          kind: 'through_extension_version',
+          version: '0.18.0',
+          post_expiry_disposition: 'action_required',
+        }),
+        {
+          old_key: 'perl-lsp.oldSetting',
+          source_scope: 'resource',
+          legacy_value_present: true,
+          legacy_value: 'legacy',
+          current_value_present: false,
+          current_value: null,
+          ...(extensionVersion === undefined ? {} : { extension_version: extensionVersion }),
+        },
+      );
+      expect(invalid).toMatchObject({
+        status: 'invalid',
+        reason_code: 'migration_extension_version_invalid',
+        canonical_value_present: false,
         post_expiry_disposition: 'action_required',
-      }),
-      {
-        old_key: 'perl-lsp.oldSetting',
-        source_scope: 'resource',
-        legacy_value_present: true,
-        legacy_value: 'legacy',
-        current_value_present: false,
-        current_value: null,
-      },
-    );
-    expect(expired).toMatchObject({
-      status: 'expired',
-      canonical_value_present: false,
-      post_expiry_disposition: 'action_required',
-    });
+      });
+    },
+  );
 
+  test('missing extension version remains compatible for a row with no expiry', () => {
     expect(
       interpretLegacyConfiguration(compatibleRegistry(), {
         old_key: 'perl-lsp.oldSetting',
@@ -451,11 +458,16 @@ describe('configuration migration runtime', () => {
         source_scope: 'resource',
         legacy_value_present: true,
         legacy_value: 'secret',
-        current_value_present: false,
-        current_value: null,
+        current_value_present: true,
+        current_value: 'must-not-become-authoritative',
         extension_version: '0.18.0',
       }),
-    ).toMatchObject({ status: 'expired', post_expiry_disposition: 'inert' });
+    ).toMatchObject({
+      status: 'expired',
+      post_expiry_disposition: 'inert',
+      canonical_value_present: false,
+      canonical_value: null,
+    });
 
     const unsupported: ConfigurationMigrationRegistry = {
       ...inert,
@@ -477,11 +489,16 @@ describe('configuration migration runtime', () => {
         source_scope: 'resource',
         legacy_value_present: true,
         legacy_value: 'legacy',
-        current_value_present: false,
-        current_value: null,
+        current_value_present: true,
+        current_value: 'must-not-become-authoritative',
         extension_version: '0.18.0',
       }),
-    ).toMatchObject({ status: 'expired', post_expiry_disposition: 'invalid' });
+    ).toMatchObject({
+      status: 'expired',
+      post_expiry_disposition: 'invalid',
+      canonical_value_present: false,
+      canonical_value: null,
+    });
   });
 
   test('keeps removed MCP process-execution settings inert without carrying their value', () => {

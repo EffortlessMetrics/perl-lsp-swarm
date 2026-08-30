@@ -146,9 +146,17 @@ export function isSupportedMigrationRegistry(
   value: unknown,
 ): value is ConfigurationMigrationRegistry {
   if (typeof value !== 'object' || value === null) return false;
-  const registry = value as { schema_version?: unknown; rows?: unknown };
+  const registry = value as {
+    schema_version?: unknown;
+    target_release?: unknown;
+    source_public_release?: unknown;
+    rows?: unknown;
+  };
   return (
-    registry.schema_version === 'vscode_configuration_migration.v2' && Array.isArray(registry.rows)
+    registry.schema_version === 'vscode_configuration_migration.v2' &&
+    parseMigrationVersion(registry.target_release) !== null &&
+    parseMigrationVersion(registry.source_public_release) !== null &&
+    Array.isArray(registry.rows)
   );
 }
 
