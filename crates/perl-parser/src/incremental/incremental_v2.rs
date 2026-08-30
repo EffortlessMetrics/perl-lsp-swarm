@@ -19,8 +19,16 @@
 //!
 //! - **Simple value edits**: Number and string literal changes
 //! - **Variable name edits**: Identifier modifications within bounds
-//! - **Whitespace and comment edits**: Non-structural changes
+//! - **Whitespace edits**: Lexically stable, source-coherent trivia changes
 //! - **Multiple edits**: Batch processing with cumulative position tracking
+//!
+//! An admitted edit must produce exactly the tree a fresh parse would, in
+//! spans and payloads alike. Value-leaf patches are only accepted after the
+//! mapped replacement text is proven to still lex as a single token of the
+//! admitted kind; anything else — a replacement that splits or retypes the
+//! token — declines the incremental path and falls back to a full parse.
+//! The tree rebuilds are single-pass (one structural clone plus in-place
+//! updates), so cost stays linear in the number of nodes regardless of depth.
 //!
 //! ## Usage Example
 //!
@@ -59,17 +67,44 @@ fn isize_to_usize_clamped(v: isize) -> usize {
     v.max(0) as usize
 }
 
-use super::incremental_advanced_reuse::{
-    AdvancedReuseAnalyzer, ReuseAnalysisResult, ReuseConfig, ReuseStrategy, ReuseType,
+use super::{
+    MAX_INCREMENTAL_EDIT_BATCH,
+    incremental_advanced_reuse::{
+        AdvancedReuseAnalyzer, ReuseAnalysisResult, ReuseConfig, ReuseStrategy, ReuseType,
+    },
+    whitespace_geometry::WhitespaceEditMap,
 };
+use perl_lexer::{PerlLexer, TokenType};
 use perl_parser_core::{
     ast::{Node, NodeKind, SourceLocation},
     edit::{Edit, EditSet},
     error::ParseResult,
     parser::Parser,
-    position::Range,
 };
 use std::collections::HashMap;
+
+/// The byte is a variable sigil, so the text it starts cannot be a bare
+/// identifier token.
+fn is_variable_sigil_byte(byte: u8) -> bool {
+    matches!(byte, b'$' | b'@' | b'%' | b'&' | b'*')
+}
+
+/// Shift `node`'s span and every descendant span by `shift` in place.
+fn shift_positions_in_place(node: &mut Node, shift: isize) {
+    let location = if shift >= 0 {
+        SourceLocation {
+            start: node.location.start.saturating_add(shift as usize),
+            end: node.location.end.saturating_add(shift as usize),
+        }
+    } else {
+        SourceLocation {
+            start: node.location.start.saturating_sub((-shift) as usize),
+            end: node.location.end.saturating_sub((-shift) as usize),
+        }
+    };
+    node.location = location;
+    node.for_each_child_mut(|child| shift_positions_in_place(child, shift));
+}
 
 /// Comprehensive performance metrics for incremental parsing analysis
 ///
@@ -116,96 +151,89 @@ impl IncrementalMetrics {
     }
 }
 
-/// A parse tree with incremental parsing support and node mapping
+/// A parse tree retained for incremental parsing decisions.
 ///
-/// Maintains an AST along with efficient lookup structures for
-/// finding nodes by position, enabling fast incremental updates.
-/// The node_map provides O(1) access to nodes at specific byte positions.
+/// The tree stores only the root AST and its source text. Earlier versions
+/// also maintained a `node_map: HashMap<usize, Vec<Node>>` position index
+/// that owned-cloned every indexed subtree and descended into only a handful
+/// of structural families, so containment lookups under assignments, loops,
+/// method calls, and most other nodes returned an ancestor or `None` while
+/// deep trees retained quadratic cloned nodes. That index was retired
+/// (#13237): its single production caller performs at most one bounded
+/// lookup per pending edit, which on-demand canonical child traversal serves
+/// without retained entries, hidden construction work, or subtree
+/// duplication.
 #[derive(Debug, Clone)]
 pub struct IncrementalTree {
     pub root: Node,
     pub source: String,
-    /// Maps byte positions to nodes for efficient lookup
-    node_map: HashMap<usize, Vec<Node>>,
 }
 
 impl IncrementalTree {
-    /// Create a new incremental tree
+    /// Create a new incremental tree.
+    ///
+    /// Construction performs no indexing and no subtree duplication: the
+    /// root is stored as given.
     pub fn new(root: Node, source: String) -> Self {
-        let mut tree = IncrementalTree { root, source, node_map: HashMap::new() };
-        tree.build_node_map();
-        tree
+        IncrementalTree { root, source }
     }
 
-    /// Build a map of byte positions to nodes
-    fn build_node_map(&mut self) {
-        self.node_map.clear();
-        self.map_node(&self.root.clone());
-    }
-
-    fn map_node(&mut self, node: &Node) {
-        // Map start position to node
-        self.node_map.entry(node.location.start).or_default().push(node.clone());
-
-        // Recursively map child nodes
-        match &node.kind {
-            NodeKind::Program { statements } | NodeKind::Block { statements } => {
-                for stmt in statements {
-                    self.map_node(stmt);
-                }
-            }
-            NodeKind::VariableDeclaration { variable, initializer, .. } => {
-                self.map_node(variable);
-                if let Some(init) = initializer {
-                    self.map_node(init);
-                }
-            }
-            NodeKind::Binary { left, right, .. } => {
-                self.map_node(left);
-                self.map_node(right);
-            }
-            NodeKind::Unary { operand, .. } => {
-                self.map_node(operand);
-            }
-            NodeKind::FunctionCall { args, .. } => {
-                for arg in args {
-                    self.map_node(arg);
-                }
-            }
-            NodeKind::If { condition, then_branch, elsif_branches, else_branch, .. } => {
-                self.map_node(condition);
-                self.map_node(then_branch);
-                for (cond, branch) in elsif_branches {
-                    self.map_node(cond);
-                    self.map_node(branch);
-                }
-                if let Some(branch) = else_branch {
-                    self.map_node(branch);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    /// Find the smallest node containing the given byte range
+    /// Find the smallest node whose byte range contains `start..end`.
+    ///
+    /// Containment is the predicate `node.location.start <= start &&
+    /// node.location.end >= end` over the half-open query range, so a
+    /// zero-width query `p..p` matches every node spanning byte `p`,
+    /// including zero-width recovery nodes positioned there. A reversed
+    /// query (`start > end`) matches nothing.
+    ///
+    /// The lookup walks the canonical child traversal (`Node::for_each_child`,
+    /// the #8424 field order) with an explicit heap stack and descends only
+    /// into subtrees that contain the query. Among containing nodes it
+    /// selects the narrowest span; ties keep the canonical-first node at the
+    /// greatest visited depth, so the result never depends on hash order and
+    /// is stable across calls. Worst-case work is linear in the number of
+    /// nodes per query with no retained index; there is deliberately no O(1)
+    /// lookup surface.
+    ///
+    /// The explicit work stack keeps lookup stack-safe for adversarially
+    /// deep trees, and construction performs no traversal at all.
     pub fn find_containing_node(&self, start: usize, end: usize) -> Option<&Node> {
-        let mut smallest: Option<&Node> = None;
-        let mut smallest_size = usize::MAX;
+        if start > end {
+            return None;
+        }
+        let root = &self.root;
+        if !(root.location.start <= start && root.location.end >= end) {
+            return None;
+        }
 
-        // Check all nodes
-        for nodes in self.node_map.values() {
-            for node in nodes {
-                if node.location.start <= start && node.location.end >= end {
-                    let size = node.location.end - node.location.start;
-                    if size < smallest_size {
-                        smallest = Some(node);
-                        smallest_size = size;
-                    }
+        let mut best = root;
+        let mut best_width = root.location.end - root.location.start;
+        let mut best_depth = 0usize;
+        // Frames of containing nodes only, visited in canonical preorder:
+        // children are collected in field order and pushed reversed so the
+        // first child pops first.
+        let mut stack: Vec<(&Node, usize)> = vec![(root, 0)];
+        let mut children: Vec<&Node> = Vec::new();
+
+        while let Some((node, depth)) = stack.pop() {
+            let width = node.location.end - node.location.start;
+            if width < best_width || (width == best_width && depth > best_depth) {
+                best = node;
+                best_width = width;
+                best_depth = depth;
+            }
+            children.clear();
+            node.for_each_child(|child| {
+                if child.location.start <= start && child.location.end >= end {
+                    children.push(child);
                 }
+            });
+            for child in children.drain(..).rev() {
+                stack.push((child, depth + 1));
             }
         }
 
-        smallest
+        Some(best)
     }
 }
 
@@ -319,7 +347,7 @@ impl IncrementalParserV2 {
             // Check if this was a fallback due to too many edits, invalid conditions, or empty source
             // In such cases, we should report 0 reused nodes as it's truly a full reparse
             let should_skip_reuse = source.is_empty()
-                || self.pending_edits.len() > 10
+                || self.pending_edits.len() > MAX_INCREMENTAL_EDIT_BATCH
                 || self.last_tree.as_ref().is_none_or(|tree| !self.is_simple_value_edit(tree));
 
             if should_skip_reuse {
@@ -345,23 +373,26 @@ impl IncrementalParserV2 {
     }
 
     fn try_incremental_parse(&mut self, source: &str, last_tree: &IncrementalTree) -> Option<Node> {
-        // Try advanced reuse analysis first
+        // Exact, lexically stable whitespace edits can reuse the complete old
+        // tree. Select this before advanced analysis, which parses a fresh tree
+        // in order to estimate reuse and would otherwise shadow the fast path.
+        if let Some(edit_map) =
+            WhitespaceEditMap::try_new(&last_tree.source, source, &self.pending_edits)
+        {
+            return self.incremental_parse_whitespace(source, last_tree, &edit_map);
+        }
+
+        // Try advanced reuse analysis for edits that need structural comparison.
         if let Some(advanced_result) = self.try_advanced_reuse_parse(source, last_tree) {
             return Some(advanced_result);
         }
 
-        // Fall back to original strategies for compatibility
-        let is_simple = self.is_simple_value_edit(last_tree);
-        if is_simple {
+        // Fall back to original value-update strategy for compatibility.
+        if self.is_simple_value_edit(last_tree) {
             return self.incremental_parse_simple(source, last_tree);
         }
 
-        // Check for other incremental opportunities
-        if self.is_whitespace_or_comment_edit(last_tree, source) {
-            return self.incremental_parse_whitespace(source, last_tree);
-        }
-
-        // For complex structural changes, fall back to full parse
+        // For complex structural changes, fall back to full parse.
         None
     }
 
@@ -525,7 +556,7 @@ impl IncrementalParserV2 {
 
     fn is_simple_value_edit(&self, tree: &IncrementalTree) -> bool {
         // Don't attempt incremental parsing for too many edits at once
-        if self.pending_edits.len() > 10 {
+        if self.pending_edits.len() > MAX_INCREMENTAL_EDIT_BATCH {
             return false;
         }
 
@@ -582,105 +613,21 @@ impl IncrementalParserV2 {
         true
     }
 
-    /// Check if all edits only affect whitespace or comments
-    fn is_whitespace_or_comment_edit(&self, tree: &IncrementalTree, source: &str) -> bool {
-        for edit in self.pending_edits.edits() {
-            // Validate both sides of the edit:
-            // - old source text being replaced
-            // - new source text inserted by the edit
-            // If either side introduces structural tokens, fall back.
-            if !self.is_edit_non_structural(
-                tree,
-                source,
-                edit.start_byte,
-                edit.old_end_byte,
-                edit.new_end_byte,
-            ) {
-                return false;
-            }
-        }
-        true
-    }
-
-    fn is_edit_non_structural(
-        &self,
-        tree: &IncrementalTree,
-        source: &str,
-        start: usize,
-        old_end: usize,
-        new_end: usize,
-    ) -> bool {
-        if old_end > start && !self.is_in_non_structural_content(&tree.source, start, old_end) {
-            return false;
-        }
-
-        if new_end > start && !self.is_in_non_structural_content(source, start, new_end) {
-            return false;
-        }
-
-        true
-    }
-
-    /// Check if the given range only contains whitespace or comments
-    ///
-    /// Uses lexical analysis to determine if the edited range contains only
-    /// non-structural content (whitespace, comments) that doesn't affect AST structure.
-    fn is_in_non_structural_content(&self, text: &str, start: usize, end: usize) -> bool {
-        use perl_lexer::{PerlLexer, TokenType};
-
-        if start >= end || end > text.len() {
-            return false;
-        }
-
-        let affected_text = &text[start..end];
-
-        // Create a lexer to analyze the tokens in this range
-        let mut lexer = PerlLexer::new(affected_text);
-
-        // Analyze all tokens in the range
-        loop {
-            match lexer.next_token() {
-                Some(token) => {
-                    match token.token_type {
-                        // These token types are non-structural
-                        TokenType::Whitespace | TokenType::Newline | TokenType::Comment(_) => {
-                            // Continue checking
-                        }
-                        TokenType::EOF => {
-                            // Reached end - all tokens were non-structural
-                            return true;
-                        }
-                        _ => {
-                            // Found a structural token
-                            return false;
-                        }
-                    }
-                }
-                None => {
-                    // No more tokens - all were non-structural
-                    return true;
-                }
-            }
-        }
-    }
-
-    /// Parse with whitespace/comment optimizations
+    /// Reuse the complete prior tree for a validated whitespace-only edit batch.
     fn incremental_parse_whitespace(
         &mut self,
-        _source: &str,
+        source: &str,
         last_tree: &IncrementalTree,
+        edit_map: &WhitespaceEditMap,
     ) -> Option<Node> {
-        // For whitespace-only changes, we can often reuse the entire tree
-        // with just position adjustments
-        let shift = self.calculate_total_shift();
+        let new_root = edit_map.clone_tree(&last_tree.root)?;
+        if !self.validate_incremental_result(&new_root, source) {
+            return None;
+        }
+
         self.reused_nodes = self.count_nodes(&last_tree.root);
         self.reparsed_nodes = 0;
-        Some(self.clone_with_shifted_positions(&last_tree.root, shift))
-    }
-
-    /// Calculate the total byte shift from all edits
-    fn calculate_total_shift(&self) -> isize {
-        self.pending_edits.edits().iter().map(|edit| edit.byte_shift()).sum()
+        Some(new_root)
     }
 
     fn incremental_parse_simple(
@@ -693,8 +640,11 @@ impl IncrementalParserV2 {
             return None;
         }
 
-        // Reuse the previous tree by cloning nodes and applying the edits.
-        let new_root = self.clone_and_update_node(&last_tree.root, source, &last_tree.source);
+        // Reuse the previous tree by cloning it once and applying the edits
+        // in place. A declined edit (a replacement whose text no longer forms
+        // one token of the admitted kind) aborts the attempt; the caller then
+        // falls back to a full parse rather than accept a divergent tree.
+        let new_root = self.clone_and_update_tree(&last_tree.root, source, &last_tree.source)?;
 
         // Validate that the new tree makes sense
         if !self.validate_incremental_result(&new_root, source) {
@@ -833,136 +783,231 @@ impl IncrementalParserV2 {
         true
     }
 
-    fn clone_and_update_node(&self, node: &Node, new_source: &str, old_source: &str) -> Node {
-        // Calculate position shift for this node
-        let shift = self.calculate_shift_at(node.location.start);
+    /// Rebuild `root` with the admitted simple edits applied in one pass.
+    ///
+    /// The tree is cloned exactly once and then updated in place, so the work
+    /// is linear in the number of nodes regardless of depth. `None` declines
+    /// the incremental result — an affected value leaf's replacement no longer
+    /// forms a single token of the admitted kind — and the caller falls back
+    /// to a full parse instead of accepting a divergent tree.
+    fn clone_and_update_tree(
+        &self,
+        root: &Node,
+        new_source: &str,
+        old_source: &str,
+    ) -> Option<Node> {
+        let mut updated = root.clone();
+        self.update_subtree_in_place(&mut updated, new_source, old_source).then_some(updated)
+    }
 
-        // Check if this node is affected by any edit
-        let affected = self.is_node_affected(node);
-
-        // Handle container nodes that need recursive processing
-        match &node.kind {
-            NodeKind::Program { statements } => {
-                // Recursively update child nodes
-                let new_statements: Vec<Node> = statements
-                    .iter()
-                    .map(|stmt| self.clone_and_update_node(stmt, new_source, old_source))
-                    .collect();
-
-                let new_start = isize_to_usize_clamped(node.location.start as isize + shift);
-                let new_end = (node.location.end as isize
-                    + shift
-                    + self.calculate_content_delta(node)) as usize;
-
-                return Node::new(
-                    NodeKind::Program { statements: new_statements },
-                    SourceLocation { start: new_start, end: new_end },
-                );
-            }
-            NodeKind::VariableDeclaration { declarator, variable, initializer, attributes } => {
-                // Recursively update child nodes
-                let new_variable = self.clone_and_update_node(variable, new_source, old_source);
-                let new_initializer = initializer
-                    .as_ref()
-                    .map(|init| self.clone_and_update_node(init, new_source, old_source));
-
-                let new_start = isize_to_usize_clamped(node.location.start as isize + shift);
-                let new_end = (node.location.end as isize
-                    + shift
-                    + self.calculate_content_delta(node)) as usize;
-
-                return Node::new(
-                    NodeKind::VariableDeclaration {
-                        declarator: declarator.clone(),
-                        variable: Box::new(new_variable),
-                        initializer: new_initializer.map(Box::new),
-                        attributes: attributes.clone(),
-                    },
-                    SourceLocation { start: new_start, end: new_end },
-                );
-            }
-            _ => {}
+    /// Update one node and its subtree in place for the pending edits.
+    ///
+    /// Returns `false` when the node is an affected value leaf whose mapped
+    /// replacement text fails token validation; the partially updated tree is
+    /// then discarded by the caller.
+    fn update_subtree_in_place(&self, node: &mut Node, new_source: &str, old_source: &str) -> bool {
+        // Original geometry drives every mapping. Children are disjoint from
+        // this node's own `location` field, so updating them first cannot
+        // skew the coordinates read here.
+        let original_start = node.location.start;
+        let original_end = node.location.end;
+        let mut valid = true;
+        node.for_each_child_mut(|child| {
+            valid &= self.update_subtree_in_place(child, new_source, old_source);
+        });
+        if !valid {
+            return false;
         }
 
-        if affected {
-            // This node is affected - handle based on node type
-            match &node.kind {
-                // Direct value nodes - extract new value from source
-                NodeKind::Number { .. } => {
-                    // Extract the new value from source
-                    let new_start = isize_to_usize_clamped(node.location.start as isize + shift);
-                    let new_end =
-                        (node.location.end as isize + shift + self.calculate_content_delta(node))
-                            as usize;
-
-                    if new_start < new_source.len() && new_end <= new_source.len() {
-                        let new_value = &new_source[new_start..new_end];
-
-                        return Node::new(
-                            NodeKind::Number { value: new_value.to_string() },
-                            SourceLocation { start: new_start, end: new_end },
-                        );
-                    }
-                }
-                NodeKind::String { interpolated, .. } => {
-                    let new_start = isize_to_usize_clamped(node.location.start as isize + shift);
-                    let new_end =
-                        (node.location.end as isize + shift + self.calculate_content_delta(node))
-                            as usize;
-
-                    if new_start < new_source.len() && new_end <= new_source.len() {
-                        let new_value = &new_source[new_start..new_end];
-
-                        return Node::new(
-                            NodeKind::String {
-                                value: new_value.to_string(),
-                                interpolated: *interpolated,
-                            },
-                            SourceLocation { start: new_start, end: new_end },
-                        );
-                    }
-                }
-                // Container nodes - recursively process children
-                NodeKind::Program { statements } => {
-                    let new_statements = statements
-                        .iter()
-                        .map(|stmt| self.clone_and_update_node(stmt, new_source, old_source))
-                        .collect();
-                    let new_location = SourceLocation {
-                        start: isize_to_usize_clamped(node.location.start as isize + shift),
-                        end: isize_to_usize_clamped(node.location.end as isize + shift),
-                    };
-                    return Node::new(
-                        NodeKind::Program { statements: new_statements },
-                        new_location,
-                    );
-                }
-                NodeKind::VariableDeclaration { declarator, variable, attributes, initializer } => {
-                    let new_variable =
-                        Box::new(self.clone_and_update_node(variable, new_source, old_source));
-                    let new_initializer = initializer.as_ref().map(|init| {
-                        Box::new(self.clone_and_update_node(init, new_source, old_source))
-                    });
-                    let new_location = SourceLocation {
-                        start: isize_to_usize_clamped(node.location.start as isize + shift),
-                        end: isize_to_usize_clamped(node.location.end as isize + shift),
-                    };
-                    return Node::new(
-                        NodeKind::VariableDeclaration {
-                            declarator: declarator.clone(),
-                            variable: new_variable,
-                            attributes: attributes.clone(),
-                            initializer: new_initializer,
-                        },
-                        new_location,
-                    );
-                }
-                _ => {}
+        // Affected value leaves re-read their payload from the new source.
+        // Every other node keeps its payload and only remaps its span.
+        let patched_span = if self.is_node_affected(node)
+            && matches!(
+                node.kind,
+                NodeKind::Number { .. }
+                    | NodeKind::String { .. }
+                    | NodeKind::Variable { .. }
+                    | NodeKind::Identifier { .. }
+            ) {
+            match self.patch_leaf_payload(
+                &mut node.kind,
+                new_source,
+                old_source,
+                original_start,
+                original_end,
+            ) {
+                Some(span) => span,
+                None => return false,
             }
+        } else {
+            let new_start = isize_to_usize_clamped(
+                original_start as isize + self.calculate_shift_exclusive(original_start),
+            );
+            let new_end = isize_to_usize_clamped(
+                original_end as isize + self.calculate_shift_at(original_end),
+            );
+            (new_start, new_end)
+        };
+
+        node.location = SourceLocation { start: patched_span.0, end: patched_span.1 };
+        true
+    }
+
+    /// Map an admitted value leaf's old span to its span in the new source and
+    /// patch its payload from that text, or decline the edit.
+    ///
+    /// The span arithmetic decides which side of the leaf absorbs a zero-width
+    /// boundary insertion: text typed exactly at the leaf's start or end
+    /// becomes part of the literal, so the start counts only edits ending
+    /// strictly before it ([`Self::calculate_shift_exclusive`]) while the end
+    /// counts edits ending at or before it ([`Self::calculate_shift_at`]).
+    /// Counting one boundary twice — the previous behavior — produced spans
+    /// that no fresh parse could reproduce.
+    ///
+    /// The payload is only patched after the mapped text is proven to still
+    /// lex as one token of the admitted kind; renames must keep the sigil and
+    /// string edits must keep the quote. Anything else returns `None` so the
+    /// whole incremental build is abandoned in favor of a full parse.
+    fn patch_leaf_payload(
+        &self,
+        kind: &mut NodeKind,
+        new_source: &str,
+        old_source: &str,
+        old_start: usize,
+        old_end: usize,
+    ) -> Option<(usize, usize)> {
+        let new_start =
+            isize_to_usize_clamped(old_start as isize + self.calculate_shift_exclusive(old_start));
+        let new_end = isize_to_usize_clamped(old_end as isize + self.calculate_shift_at(old_end));
+        if new_start > new_end
+            || new_end > new_source.len()
+            || !new_source.is_char_boundary(new_start)
+            || !new_source.is_char_boundary(new_end)
+        {
+            return None;
+        }
+        let text = &new_source[new_start..new_end];
+
+        match kind {
+            NodeKind::Number { value } => {
+                if !self.lexes_as_single_token(text, &|token| matches!(token, TokenType::Number(_)))
+                {
+                    return None;
+                }
+                *value = text.to_string();
+            }
+            NodeKind::String { value, interpolated: _ } => {
+                // The opening quote must survive unchanged: switching `'` to
+                // `"` flips the stored interpolation flag, which the patch
+                // cannot recompute. Inside the `q` operator family the second
+                // byte selects the operator (`q(` vs `qq(` vs `qw(`), so it
+                // must match there too; for plain quotes the second byte is
+                // string content and may change freely.
+                let old_bytes = old_source.as_bytes();
+                let old_first = old_bytes.get(old_start);
+                if old_first != text.as_bytes().first()
+                    || (old_first == Some(&b'q')
+                        && old_bytes.get(old_start + 1) != text.as_bytes().get(1))
+                {
+                    return None;
+                }
+                if !self.lexes_as_single_token(text, &|token| {
+                    matches!(
+                        token,
+                        TokenType::StringLiteral
+                            | TokenType::InterpolatedString(_)
+                            | TokenType::QuoteSingle
+                            | TokenType::QuoteDouble
+                    )
+                }) {
+                    return None;
+                }
+                *value = text.to_string();
+            }
+            NodeKind::Variable { sigil, name } => {
+                // A rename must stay one variable token with a non-empty
+                // name. Braced forms (`${foo}`, `${Foo::bar}`) span the
+                // braces while the stored name strips them, so a braced old
+                // form requires a closed braced new form and the name is the
+                // brace-enclosed inner text; a bare form keeps the name
+                // suffix after the sigil. Sigil, brace, or token-structure
+                // changes fall back to parsing.
+                let old_text = old_source.get(old_start..old_end)?;
+                let braced =
+                    old_text.strip_prefix(sigil.as_str()).is_some_and(|rest| rest.starts_with('{'));
+                let name_text = if braced {
+                    let inner_end = text.len().checked_sub(1)?;
+                    let opening = sigil.len() + 1;
+                    if !text.starts_with(sigil.as_str())
+                        || text.as_bytes().get(sigil.len()) != Some(&b'{')
+                        || !text.ends_with('}')
+                        || inner_end <= opening
+                        || !text[opening..inner_end]
+                            .chars()
+                            .all(|c| c.is_alphanumeric() || c == '_' || c == ':')
+                    {
+                        return None;
+                    }
+                    &text[opening..inner_end]
+                } else {
+                    if !text.starts_with(sigil.as_str()) || text.len() <= sigil.len() {
+                        return None;
+                    }
+                    &text[sigil.len()..]
+                };
+                if name_text.is_empty()
+                    || !self.lexes_as_single_token(text, &|token| {
+                        matches!(token, TokenType::Identifier(_))
+                    })
+                {
+                    return None;
+                }
+                *name = name_text.to_string();
+            }
+            NodeKind::Identifier { name } => {
+                // A sigil-leading replacement would parse as a `Variable`
+                // node, not an `Identifier`, so it must not be patched.
+                if text.as_bytes().first().is_some_and(|&byte| is_variable_sigil_byte(byte)) {
+                    return None;
+                }
+                if !self
+                    .lexes_as_single_token(text, &|token| matches!(token, TokenType::Identifier(_)))
+                {
+                    return None;
+                }
+                *name = text.to_string();
+            }
+            _ => return None,
         }
 
-        // Node is not affected or cannot be updated - clone with shifted positions
-        self.clone_with_shifted_positions(node, shift)
+        Some((new_start, new_end))
+    }
+
+    /// Require `text` to lex as exactly one trivia-free token of an accepted
+    /// class whose span covers the whole text.
+    fn lexes_as_single_token(&self, text: &str, accepted: &dyn Fn(&TokenType) -> bool) -> bool {
+        if text.is_empty() {
+            return false;
+        }
+        let mut lexer = PerlLexer::new(text);
+        let mut seen_token = false;
+        loop {
+            let Some(token) = lexer.next_token() else {
+                break;
+            };
+            if token.token_type == TokenType::EOF {
+                break;
+            }
+            if token.token_type.is_trivia()
+                || token.start != 0
+                || token.end != text.len()
+                || !accepted(&token.token_type)
+            {
+                return false;
+            }
+            seen_token = true;
+        }
+        seen_token
     }
 
     /// Calculate cumulative byte shift at position with Unicode-safe handling
@@ -975,6 +1020,32 @@ impl IncrementalParserV2 {
             let original_old_end = isize_to_usize_clamped(edit.old_end_byte as isize - shift);
 
             if original_old_end <= position {
+                let edit_shift = edit.byte_shift();
+                shift += edit_shift;
+            } else {
+                break;
+            }
+        }
+
+        shift
+    }
+
+    /// Calculate the cumulative byte shift of edits ending strictly before
+    /// `position` (in original source coordinates).
+    ///
+    /// [`Self::calculate_shift_at`] counts an edit whose old end equals
+    /// `position`; this helper deliberately does not. The distinction keeps
+    /// zero-width boundary insertions from being counted twice: text inserted
+    /// exactly at a leaf's start or end merges into that leaf, so the leaf's
+    /// start uses this exclusive count while its end uses the inclusive one —
+    /// and an ancestor's start must not move for an insertion that merged
+    /// into a leaf anchored at the same byte.
+    fn calculate_shift_exclusive(&self, position: usize) -> isize {
+        let mut shift = 0;
+        for edit in self.pending_edits.edits() {
+            let original_old_end = isize_to_usize_clamped(edit.old_end_byte as isize - shift);
+
+            if original_old_end < position {
                 let edit_shift = edit.byte_shift();
                 shift += edit_shift;
             } else {
@@ -1089,120 +1160,62 @@ impl IncrementalParserV2 {
         }
     }
 
-    fn calculate_content_delta(&self, node: &Node) -> isize {
-        // Calculate how much the content of this node changed by examining
-        // edits that fall within the node's original range.
-        let mut delta = 0;
-        let mut shift = 0;
+    /// Whether any pending edit touches the node's original span.
+    ///
+    /// Queued edits are expressed in the coordinates produced by the edits
+    /// before them, while `node` carries its coordinates in the tree's
+    /// original source, so every edit is mapped back by the cumulative shift
+    /// of the edits before it before any comparison. Comparing raw
+    /// coordinates lets an earlier length change displace a later edit
+    /// beyond its leaf, leaving that leaf's payload stale while the tree is
+    /// still accepted.
+    fn is_node_affected(&self, node: &Node) -> bool {
+        let start = node.location.start;
+        let end = node.location.end;
+        let mut shift = 0isize;
         for edit in self.pending_edits.edits() {
-            let start = isize_to_usize_clamped(edit.start_byte as isize - shift);
-            let end = isize_to_usize_clamped(edit.old_end_byte as isize - shift);
-            if start >= node.location.start && end <= node.location.end {
-                delta += edit.byte_shift();
+            let original_start = isize_to_usize_clamped(edit.start_byte as isize - shift);
+            let original_old_end = isize_to_usize_clamped(edit.old_end_byte as isize - shift);
+
+            // `Edit::overlaps_range` requires a strict interior overlap
+            // (`start < old_end && old_end > start`); a pure insertion has an
+            // empty old range and never passes it.
+            if original_start < end && original_old_end > start {
+                return true;
             }
+
+            // A pure insertion landing exactly on a node boundary reports no
+            // overlap even though the inserted text becomes part of that
+            // node's source text. Without this window a boundary insertion
+            // leaves the node's cached content stale (for example typing a
+            // digit at the end of a numeric literal), so the incremental tree
+            // diverges from a fresh parse. `EditSet::affected_ranges` already
+            // widens pure insertions for the same reason; this keeps the two
+            // invalidation paths consistent.
+            if edit.start_byte == edit.old_end_byte
+                && original_start >= start
+                && original_start <= end
+            {
+                return true;
+            }
+
             shift += edit.byte_shift();
         }
-        delta
+
+        false
     }
 
-    fn is_node_affected(&self, node: &Node) -> bool {
-        let node_range = Range::from(node.location);
-        if self.pending_edits.affects_range(&node_range) {
-            return true;
-        }
-
-        // `Edit::overlaps_range` requires a strict interior overlap
-        // (`start < old_end_byte && end > start_byte`). A pure insertion has an
-        // empty old range, so an insertion landing exactly on a node boundary
-        // reports no overlap even though the inserted text becomes part of that
-        // node's source text. Without this window a boundary insertion leaves the
-        // node's cached content stale (for example typing a digit at the end of a
-        // numeric literal), so the incremental tree diverges from a fresh parse.
-        // `EditSet::affected_ranges` already widens pure insertions for the same
-        // reason; this keeps the two invalidation paths consistent.
-        self.pending_edits.edits().iter().any(|edit| {
-            edit.start_byte == edit.old_end_byte
-                && edit.start_byte >= node.location.start
-                && edit.start_byte <= node.location.end
-        })
-    }
-
+    /// Clone `node` with every position shifted by `shift`, in one pass.
+    ///
+    /// The single structural clone plus an in-place span walk keeps this
+    /// linear in the subtree size; the previous recursive form re-cloned the
+    /// entire remaining subtree at every depth. The uniform shift is the
+    /// intended semantics here: the result is compared against a freshly
+    /// parsed node and any mismatch simply skips the reuse candidate.
     fn clone_with_shifted_positions(&self, node: &Node, shift: isize) -> Node {
-        // Use Unicode-safe position calculation for multibyte character support
-        let new_start = if shift >= 0 {
-            node.location.start.saturating_add(shift as usize)
-        } else {
-            node.location.start.saturating_sub((-shift) as usize)
-        };
-
-        let new_end = if shift >= 0 {
-            node.location.end.saturating_add(shift as usize)
-        } else {
-            node.location.end.saturating_sub((-shift) as usize)
-        };
-
-        let new_location = SourceLocation { start: new_start, end: new_end };
-
-        let new_kind = match &node.kind {
-            NodeKind::Program { statements } => NodeKind::Program {
-                statements: statements
-                    .iter()
-                    .map(|s| self.clone_with_shifted_positions(s, shift))
-                    .collect(),
-            },
-            NodeKind::Block { statements } => NodeKind::Block {
-                statements: statements
-                    .iter()
-                    .map(|s| self.clone_with_shifted_positions(s, shift))
-                    .collect(),
-            },
-            NodeKind::VariableDeclaration { declarator, variable, attributes, initializer } => {
-                NodeKind::VariableDeclaration {
-                    declarator: declarator.clone(),
-                    variable: Box::new(self.clone_with_shifted_positions(variable, shift)),
-                    attributes: attributes.clone(),
-                    initializer: initializer
-                        .as_ref()
-                        .map(|i| Box::new(self.clone_with_shifted_positions(i, shift))),
-                }
-            }
-            NodeKind::Binary { op, left, right } => NodeKind::Binary {
-                op: op.clone(),
-                left: Box::new(self.clone_with_shifted_positions(left, shift)),
-                right: Box::new(self.clone_with_shifted_positions(right, shift)),
-            },
-            NodeKind::Unary { op, operand } => NodeKind::Unary {
-                op: op.clone(),
-                operand: Box::new(self.clone_with_shifted_positions(operand, shift)),
-            },
-            NodeKind::FunctionCall { name, args } => NodeKind::FunctionCall {
-                name: name.clone(),
-                args: args.iter().map(|a| self.clone_with_shifted_positions(a, shift)).collect(),
-            },
-            NodeKind::If {
-                condition, then_branch, elsif_branches, else_branch, keyword, ..
-            } => NodeKind::If {
-                condition: Box::new(self.clone_with_shifted_positions(condition, shift)),
-                then_branch: Box::new(self.clone_with_shifted_positions(then_branch, shift)),
-                elsif_branches: elsif_branches
-                    .iter()
-                    .map(|(c, b)| {
-                        (
-                            self.clone_with_shifted_positions(c, shift),
-                            self.clone_with_shifted_positions(b, shift),
-                        )
-                    })
-                    .map(|(c, b)| (Box::new(c), Box::new(b)))
-                    .collect(),
-                else_branch: else_branch
-                    .as_ref()
-                    .map(|b| Box::new(self.clone_with_shifted_positions(b, shift))),
-                keyword: keyword.clone(),
-            },
-            _ => node.kind.clone(), // For leaf nodes, just clone
-        };
-
-        Node::new(new_kind, new_location)
+        let mut shifted = node.clone();
+        shift_positions_in_place(&mut shifted, shift);
+        shifted
     }
 
     fn count_reuse_potential(&mut self, old_root: &Node, new_root: &Node) {
@@ -1375,16 +1388,14 @@ mod tests {
     }
 
     #[test]
-    fn clone_with_shifted_positions_preserves_if_keyword_metadata()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let parser = IncrementalParserV2::new();
+    fn whitespace_map_preserves_if_keyword_metadata() -> Result<(), Box<dyn std::error::Error>> {
         let loc = |start, end| perl_parser_core::ast::SourceLocation { start, end };
         let number =
             |start| Node::new(NodeKind::Number { value: "1".to_string() }, loc(start, start + 1));
         let block = |start, end| {
             Node::new(NodeKind::Block { statements: vec![number(start + 1)] }, loc(start, end))
         };
-        let node = Node::new(
+        let if_node = Node::new(
             NodeKind::If {
                 condition: Box::new(number(1)),
                 then_branch: Box::new(block(4, 10)),
@@ -1394,19 +1405,37 @@ mod tests {
             },
             loc(0, 29),
         );
+        let root = Node::new(NodeKind::Program { statements: vec![if_node] }, loc(0, 29));
 
-        let shifted = parser.clone_with_shifted_positions(&node, 3);
+        // One space inserted before the program: every statement-side span
+        // shifts by one and the mapped clone preserves the payload wholesale.
+        let mut edits = EditSet::new();
+        edits.add(Edit::new(
+            0,
+            0,
+            1,
+            Position::new(0, 1, 1),
+            Position::new(0, 1, 1),
+            Position::new(1, 1, 2),
+        ));
+        let edit_map =
+            WhitespaceEditMap::try_new(&"a".repeat(29), &format!(" {}", "a".repeat(29)), &edits)
+                .ok_or("whitespace insertion should be admitted")?;
+        let mapped = edit_map.clone_tree(&root).ok_or("location mapping failed")?;
 
-        assert_eq!(shifted.location.start, 3);
-        match shifted.into_parts() {
-            (NodeKind::If { keyword, else_branch, .. }, _) => {
-                assert_eq!(keyword.as_deref(), Some("unless"));
-                assert!(else_branch.is_some());
-            }
-            (other, _) => {
-                return Err(format!("expected If node, got {}", other.kind_name()).into());
-            }
-        }
+        assert_eq!(mapped.location, loc(0, 30));
+        let (kind, _) = mapped.into_parts();
+        let NodeKind::Program { statements } = kind else {
+            return Err("expected Program root".into());
+        };
+        let (if_kind, if_location) =
+            statements.into_iter().next().ok_or("expected one statement")?.into_parts();
+        assert_eq!(if_location, loc(1, 30));
+        let NodeKind::If { keyword, else_branch, .. } = if_kind else {
+            return Err("expected If statement".into());
+        };
+        assert_eq!(keyword.as_deref(), Some("unless"));
+        assert!(else_branch.is_some());
         Ok(())
     }
 
@@ -2045,6 +2074,18 @@ if ($condition) {
         Ok(())
     }
 
+    /// A digit edit inside a subroutine-local number literal is a simple
+    /// value edit and must be produced fresh-equivalently.
+    ///
+    /// This asserted `reparsed_nodes >= 1` while the retired position index
+    /// could not see inside subroutine bodies, so the edit fell back to a
+    /// full reparse and the assertion only ratified that fallback. With the
+    /// index retired (#13237), the smallest containing node is the number
+    /// literal itself and the simple-value path admits the edit. Assert the
+    /// discriminating properties instead — the same standard
+    /// `whitespace_before_operator_matches_a_fresh_parse` established: the
+    /// incremental result must equal a fresh parse, and the counters must
+    /// describe the tree they report on.
     #[test]
     fn test_edit_near_ast_node_boundaries() -> ParseResult<()> {
         let mut parser = IncrementalParserV2::new();
@@ -2055,20 +2096,22 @@ if ($condition) {
         parser.parse(source1)?;
 
         // Edit right at the boundary between number and semicolon
-        let number_end =
-            source1.find("123").ok_or(perl_parser_core::error::ParseError::UnexpectedEof)? + 3;
+        let number_start =
+            source1.find("123").ok_or(perl_parser_core::error::ParseError::UnexpectedEof)?;
+        let replacement = "456";
+        let number_end = number_start + 3;
         parser.edit(Edit::new(
             number_end - 1, // Edit last digit of number
             number_end,
-            number_end + 1, // "3" -> "456"
+            number_end - 1 + replacement.len(), // "3" -> "456"
             Position::new(number_end - 1, 1, 1),
             Position::new(number_end, 1, 2),
-            Position::new(number_end + 1, 1, 3),
+            Position::new(number_end - 1 + replacement.len(), 1, 4),
         ));
 
         let source2 = source1.replace("123", "12456");
         let start = Instant::now();
-        let _tree = parser.parse(&source2)?;
+        let incremental = parser.parse(&source2)?;
         let boundary_edit_time = start.elapsed();
 
         println!(
@@ -2086,31 +2129,45 @@ if ($condition) {
             boundary_budget_micros,
             boundary_edit_time.as_micros()
         );
-        assert!(parser.reparsed_nodes >= 1, "Should reparse at least the modified node");
+        let fresh = Parser::new(&source2).parse()?;
+        assert_eq!(
+            incremental, fresh,
+            "incremental result must equal a fresh parse in shape and span geometry"
+        );
+        let produced = parser.count_nodes(&incremental);
+        assert_eq!(
+            parser.reused_nodes + parser.reparsed_nodes,
+            produced,
+            "reuse accounting must reconcile to the produced node count"
+        );
 
         Ok(())
     }
 
     #[test]
-    fn test_whitespace_insertion_reuses_tree() -> ParseResult<()> {
+    fn whitespace_insertion_uses_fast_path_and_matches_fresh_parse() -> ParseResult<()> {
         let mut parser = IncrementalParserV2::new();
         let source1 = "my $x = 42;";
-        parser.parse(source1)?;
+        let old_tree = parser.parse(source1)?;
 
         parser.edit(Edit::new(
-            5,
-            5,
+            6,
+            6,
             7,
-            Position::new(5, 1, 6),
-            Position::new(5, 1, 6),
+            Position::new(6, 1, 7),
+            Position::new(6, 1, 7),
             Position::new(7, 1, 8),
         ));
 
         let source2 = "my $x  = 42;";
-        parser.parse(source2)?;
+        let incremental = parser.parse(source2)?;
+        let fresh = Parser::new(source2).parse()?;
 
-        assert!(parser.reused_nodes > 0, "Whitespace insertion should reuse prior tree");
-        assert!(parser.reparsed_nodes <= 1, "Whitespace insertion should avoid broad reparsing");
+        assert_eq!(incremental, fresh);
+        assert!(parser.used_incremental_path());
+        assert!(!parser.used_advanced_reuse());
+        assert_eq!(parser.reparsed_nodes, 0);
+        assert_eq!(parser.reused_nodes, parser.count_nodes(&old_tree));
         Ok(())
     }
 
@@ -2198,77 +2255,74 @@ if ($condition) {
         Ok(())
     }
 
-    /// Whitespace inserted before an operator must produce a fresh-parse tree.
-    ///
-    /// This asserted `reused_nodes > 0` until reuse counting was narrowed to
-    /// subtrees that are actually materializable. That assertion was vacuous:
-    /// no path reuses a tree for this edit. `is_simple_value_edit` and
-    /// `is_whitespace_or_comment_edit` both decline it, so the only reporter of
-    /// reuse was `try_advanced_reuse_parse`, which returns a *freshly parsed*
-    /// tree and attached the analyzer's estimate to it. The count was therefore
-    /// never evidence that anything was reused, and asserting it again would
-    /// re-pin an estimate to a tree that was parsed from scratch.
-    ///
-    /// Assert the properties that discriminate instead: the incremental result
-    /// must equal a fresh parse, and the counters must describe the tree they
-    /// report on. Reuse for whitespace edits is tracked separately — see the
-    /// two `..._reuses_tree` cases that still hold, which exercise the edits
-    /// the whitespace fast path does accept.
     #[test]
-    fn whitespace_before_operator_matches_a_fresh_parse() -> ParseResult<()> {
+    fn whitespace_before_operator_uses_fast_path_and_maps_selective_geometry() -> ParseResult<()> {
         let mut parser = IncrementalParserV2::new();
         let source1 = "my $x = 42;";
-        parser.parse(source1)?;
+        let old_tree = parser.parse(source1)?;
         parser.edit(Edit::new(
             6,
             6,
-            9,
+            8,
             Position::new(6, 1, 7),
             Position::new(6, 1, 7),
-            Position::new(9, 1, 10),
+            Position::new(8, 1, 9),
         ));
         let source2 = "my $x   = 42;";
         let incremental = parser.parse(source2)?;
-
         let fresh = Parser::new(source2).parse()?;
+
         assert_eq!(
             incremental, fresh,
             "incremental result must equal a fresh parse in shape and span geometry"
         );
+        assert!(parser.used_incremental_path());
+        assert!(!parser.used_advanced_reuse());
+        assert_eq!(parser.reparsed_nodes, 0);
+        assert_eq!(parser.reused_nodes, parser.count_nodes(&old_tree));
 
-        let produced = parser.count_nodes(&incremental);
-        assert_eq!(
-            parser.reused_nodes + parser.reparsed_nodes,
-            produced,
-            "reuse accounting must reconcile to the produced node count"
-        );
+        if let NodeKind::Program { statements } = &incremental.kind
+            && let NodeKind::VariableDeclaration {
+                variable, initializer: Some(initializer), ..
+            } = &statements[0].kind
+        {
+            assert_eq!(variable.location, SourceLocation { start: 3, end: 5 });
+            assert_eq!(initializer.location, SourceLocation { start: 10, end: 12 });
+        } else {
+            return Err(perl_parser_core::error::ParseError::UnexpectedEof);
+        }
         Ok(())
     }
 
     #[test]
-    fn test_comment_insertion_reuses_tree() -> ParseResult<()> {
-        let mut parser = IncrementalParserV2::new();
+    fn comment_insertion_is_not_admitted_as_whitespace_reuse() -> ParseResult<()> {
         let source1 = "my $x = 42;";
-        parser.parse(source1)?;
-        parser.edit(Edit::new(
-            10,
-            11,
-            24,
-            Position::new(10, 1, 11),
-            Position::new(11, 1, 12),
-            Position::new(24, 1, 25),
-        ));
         let source2 = "my $x = 42; # comment";
-        parser.parse(source2)?;
-        assert!(parser.reused_nodes > 0);
+        let edit = Edit::new(
+            11,
+            11,
+            21,
+            Position::new(11, 1, 12),
+            Position::new(11, 1, 12),
+            Position::new(21, 1, 22),
+        );
+        let mut edits = EditSet::new();
+        edits.add(edit.clone());
+        assert!(WhitespaceEditMap::try_new(source1, source2, &edits).is_none());
+
+        let mut parser = IncrementalParserV2::new();
+        parser.parse(source1)?;
+        parser.edit(edit);
+        let incremental = parser.parse(source2)?;
+        assert_eq!(incremental, Parser::new(source2).parse()?);
         Ok(())
     }
 
     #[test]
-    fn test_trailing_whitespace_reuses_tree() -> ParseResult<()> {
+    fn trailing_whitespace_uses_fast_path_without_expanding_program_span() -> ParseResult<()> {
         let mut parser = IncrementalParserV2::new();
         let source1 = "my $x = 42;";
-        parser.parse(source1)?;
+        let old_tree = parser.parse(source1)?;
         parser.edit(Edit::new(
             11,
             11,
@@ -2278,16 +2332,20 @@ if ($condition) {
             Position::new(16, 1, 17),
         ));
         let source2 = "my $x = 42;     ";
-        parser.parse(source2)?;
-        assert!(parser.reused_nodes > 0);
+        let incremental = parser.parse(source2)?;
+        assert_eq!(incremental, Parser::new(source2).parse()?);
+        assert_eq!(incremental.location, old_tree.location);
+        assert!(parser.used_incremental_path());
+        assert!(!parser.used_advanced_reuse());
+        assert_eq!(parser.reparsed_nodes, 0);
         Ok(())
     }
 
     #[test]
-    fn test_newline_insertion_reuses_tree() -> ParseResult<()> {
+    fn newline_insertion_uses_fast_path_without_expanding_program_span() -> ParseResult<()> {
         let mut parser = IncrementalParserV2::new();
         let source1 = "my $x = 42;";
-        parser.parse(source1)?;
+        let old_tree = parser.parse(source1)?;
         parser.edit(Edit::new(
             11,
             11,
@@ -2297,55 +2355,65 @@ if ($condition) {
             Position::new(12, 2, 1),
         ));
         let source2 = "my $x = 42;\n";
-        parser.parse(source2)?;
-        assert!(parser.reused_nodes > 0);
+        let incremental = parser.parse(source2)?;
+        assert_eq!(incremental, Parser::new(source2).parse()?);
+        assert_eq!(incremental.location, old_tree.location);
+        assert!(parser.used_incremental_path());
+        assert!(!parser.used_advanced_reuse());
+        assert_eq!(parser.reparsed_nodes, 0);
         Ok(())
     }
 
     #[test]
-    /// A pure whitespace deletion must produce a fresh-parse tree.
-    ///
-    /// See `whitespace_before_operator_matches_a_fresh_parse` for why the
-    /// previous `reused_nodes > 0` assertion did not discriminate: this edit is
-    /// declined by both `is_simple_value_edit` and
-    /// `is_whitespace_or_comment_edit`, so the tree is parsed from scratch and
-    /// the old count reported an analyzer estimate against it.
-    #[test]
-    fn whitespace_deletion_matches_a_fresh_parse() -> ParseResult<()> {
+    fn whitespace_deletion_uses_fast_path_and_maps_selective_geometry() -> ParseResult<()> {
         let mut parser = IncrementalParserV2::new();
         let source1 = "my  $x  =  42;";
-        parser.parse(source1)?;
+        let old_tree = parser.parse(source1)?;
         parser.edit(Edit::new(
             3,
-            5,
             4,
+            3,
             Position::new(3, 1, 4),
-            Position::new(5, 1, 6),
             Position::new(4, 1, 5),
+            Position::new(3, 1, 4),
         ));
         let source2 = "my $x  =  42;";
         let incremental = parser.parse(source2)?;
-
         let fresh = Parser::new(source2).parse()?;
+
         assert_eq!(
             incremental, fresh,
             "incremental result must equal a fresh parse in shape and span geometry"
         );
+        assert!(parser.used_incremental_path());
+        assert!(!parser.used_advanced_reuse());
+        assert_eq!(parser.reparsed_nodes, 0);
+        assert_eq!(parser.reused_nodes, parser.count_nodes(&old_tree));
 
-        let produced = parser.count_nodes(&incremental);
-        assert_eq!(
-            parser.reused_nodes + parser.reparsed_nodes,
-            produced,
-            "reuse accounting must reconcile to the produced node count"
-        );
+        if let NodeKind::Program { statements } = &incremental.kind
+            && let NodeKind::VariableDeclaration {
+                variable, initializer: Some(initializer), ..
+            } = &statements[0].kind
+        {
+            assert_eq!(variable.location, SourceLocation { start: 3, end: 5 });
+            assert_eq!(initializer.location, SourceLocation { start: 10, end: 12 });
+        } else {
+            return Err(perl_parser_core::error::ParseError::UnexpectedEof);
+        }
         Ok(())
     }
 
     #[test]
-    fn test_whitespace_at_statement_boundary() -> ParseResult<()> {
+    fn whitespace_at_statement_boundary_shifts_only_the_following_statement() -> ParseResult<()> {
         let mut parser = IncrementalParserV2::new();
         let source1 = "print 'hello';my $x = 42;";
-        parser.parse(source1)?;
+        let old_tree = parser.parse(source1)?;
+        let (old_first, old_second) = if let NodeKind::Program { statements } = &old_tree.kind {
+            (statements[0].location, statements[1].location)
+        } else {
+            return Err(perl_parser_core::error::ParseError::UnexpectedEof);
+        };
+
         parser.edit(Edit::new(
             14,
             14,
@@ -2355,27 +2423,539 @@ if ($condition) {
             Position::new(15, 1, 16),
         ));
         let source2 = "print 'hello'; my $x = 42;";
-        parser.parse(source2)?;
-        assert!(parser.reused_nodes > 0);
+        let incremental = parser.parse(source2)?;
+        assert_eq!(incremental, Parser::new(source2).parse()?);
+        assert!(parser.used_incremental_path());
+        assert!(!parser.used_advanced_reuse());
+
+        if let NodeKind::Program { statements } = &incremental.kind {
+            assert_eq!(statements[0].location, old_first);
+            assert_eq!(
+                statements[1].location,
+                SourceLocation { start: old_second.start + 1, end: old_second.end + 1 }
+            );
+        } else {
+            return Err(perl_parser_core::error::ParseError::UnexpectedEof);
+        }
         Ok(())
     }
 
     #[test]
-    fn test_whitespace_edit_checks_both_old_and_new() -> ParseResult<()> {
-        let mut parser = IncrementalParserV2::new();
+    fn structural_replacement_is_not_admitted_as_whitespace_reuse() -> ParseResult<()> {
         let source1 = "my $x = 42;";
-        parser.parse(source1)?;
-        parser.edit(Edit::new(
+        let source2 = "my $x += 42;";
+        let edit = Edit::new(
             6,
             7,
             8,
             Position::new(6, 1, 7),
             Position::new(7, 1, 8),
             Position::new(8, 1, 9),
-        ));
-        let source2 = "my $x=  42;";
-        parser.parse(source2)?;
-        assert!(parser.reused_nodes > 0);
+        );
+        let mut edits = EditSet::new();
+        edits.add(edit.clone());
+        assert!(WhitespaceEditMap::try_new(source1, source2, &edits).is_none());
+
+        let mut parser = IncrementalParserV2::new();
+        parser.parse(source1)?;
+        parser.edit(edit);
+        let incremental = parser.parse(source2)?;
+        assert_eq!(incremental, Parser::new(source2).parse()?);
         Ok(())
+    }
+
+    /// A parser whose advanced reuse is guaranteed to decline, so the simple
+    /// and trivia fallback paths execute deterministically.
+    fn strict_fallback_parser() -> IncrementalParserV2 {
+        IncrementalParserV2::with_reuse_config(ReuseConfig {
+            min_confidence: 1.0,
+            ..Default::default()
+        })
+    }
+
+    /// A variable rename admitted to the simple path must patch the Variable
+    /// payload, not just its span: the accepted AST must name `y`, exactly
+    /// like a fresh parse. The previous generic rebuild branch cloned the old
+    /// `Variable { name: "x" }` payload unchanged.
+    #[test]
+    fn variable_rename_matches_a_fresh_parse() -> ParseResult<()> {
+        let mut parser = strict_fallback_parser();
+        parser.parse("$x = 1;")?;
+        parser.edit(Edit::new(
+            1,
+            2,
+            2, // "x" -> "y"
+            Position::new(1, 1, 2),
+            Position::new(2, 1, 3),
+            Position::new(2, 1, 3),
+        ));
+        let source2 = "$y = 1;";
+        let incremental = parser.parse(source2)?;
+        assert!(
+            parser.used_incremental_path(),
+            "a rename inside an admitted Variable leaf must stay incremental"
+        );
+        let fresh = Parser::new(source2).parse()?;
+        assert_eq!(incremental, fresh, "renamed variable payload must match a fresh parse");
+        Ok(())
+    }
+
+    /// A bareword rename admitted through an Identifier leaf must patch the
+    /// identifier payload the same way.
+    #[test]
+    fn identifier_rename_matches_a_fresh_parse() -> ParseResult<()> {
+        let mut parser = strict_fallback_parser();
+        parser.parse("my $x = foo;")?;
+        parser.edit(Edit::new(
+            8,
+            11,
+            11, // "foo" -> "bar"
+            Position::new(8, 1, 9),
+            Position::new(11, 1, 12),
+            Position::new(11, 1, 12),
+        ));
+        let source2 = "my $x = bar;";
+        let incremental = parser.parse(source2)?;
+        assert!(parser.used_incremental_path(), "bareword rename must stay incremental");
+        let fresh = Parser::new(source2).parse()?;
+        assert_eq!(incremental, fresh, "renamed identifier payload must match a fresh parse");
+        Ok(())
+    }
+
+    /// Braced variable forms (`${foo}`, `${Foo::Bar}`) span the braces while
+    /// the stored name strips them. A rename inside the braces must store the
+    /// brace-stripped inner text — the previous suffix slice kept the closing
+    /// brace in the accepted payload.
+    #[test]
+    fn braced_variable_rename_matches_a_fresh_parse() -> ParseResult<()> {
+        let mut parser = strict_fallback_parser();
+        parser.parse("my ${foo} = 1;")?;
+        parser.edit(Edit::new(
+            5,
+            8,
+            8, // "foo" -> "bar" inside the braces
+            Position::new(5, 1, 6),
+            Position::new(8, 1, 9),
+            Position::new(8, 1, 9),
+        ));
+        let source2 = "my ${bar} = 1;";
+        let incremental = parser.parse(source2)?;
+        assert!(
+            parser.used_incremental_path(),
+            "a rename inside braced variables must stay incremental"
+        );
+        let fresh = Parser::new(source2).parse()?;
+        assert_eq!(incremental, fresh, "braced rename payload must match a fresh parse");
+
+        let mut parser = strict_fallback_parser();
+        parser.parse("my ${Foo::Bar} = 1;")?;
+        parser.edit(Edit::new(
+            11,
+            13,
+            13, // "Bar" -> "Baz" inside the qualified braced form
+            Position::new(11, 1, 12),
+            Position::new(13, 1, 14),
+            Position::new(13, 1, 14),
+        ));
+        let source3 = "my ${Foo::Baz} = 1;";
+        let incremental = parser.parse(source3)?;
+        assert!(parser.used_incremental_path(), "qualified braced rename must stay incremental");
+        let fresh = Parser::new(source3).parse()?;
+        assert_eq!(incremental, fresh, "qualified braced rename payload must match a fresh parse");
+        Ok(())
+    }
+
+    /// A zero-width insertion at a literal's start extends that literal: the
+    /// accepted Number must span [5..7] with value "21". The previous mapping
+    /// counted the boundary insertion in both the node shift and the content
+    /// delta, accepting `Number [6..8] "1;"`, which no fresh parse produces.
+    #[test]
+    fn leading_literal_insertion_matches_a_fresh_parse() -> ParseResult<()> {
+        let mut parser = strict_fallback_parser();
+        parser.parse("$x = 1;")?;
+        parser.edit(Edit::new(
+            5,
+            5,
+            6, // insert "2" at byte 5
+            Position::new(5, 1, 6),
+            Position::new(5, 1, 6),
+            Position::new(6, 1, 7),
+        ));
+        let source2 = "$x = 21;";
+        let incremental = parser.parse(source2)?;
+        assert!(
+            parser.used_incremental_path(),
+            "a boundary insertion into an admitted Number leaf must stay incremental"
+        );
+        let fresh = Parser::new(source2).parse()?;
+        assert_eq!(incremental, fresh, "extended literal must match a fresh parse");
+        Ok(())
+    }
+
+    /// Replacing `"k"` with `"j", 42` splits the token: the simple path must
+    /// decline and fall back to a full parse instead of accepting one String
+    /// spanning both arguments.
+    #[test]
+    fn token_splitting_string_replacement_falls_back_to_full_parse() -> ParseResult<()> {
+        let mut parser = strict_fallback_parser();
+        parser.parse("$u->get(\"k\");")?;
+        parser.edit(Edit::new(
+            8,
+            11,
+            15, // "\"k\"" -> "\"j\", 42"
+            Position::new(8, 1, 9),
+            Position::new(11, 1, 12),
+            Position::new(15, 1, 16),
+        ));
+        let source2 = "$u->get(\"j\", 42);";
+        let incremental = parser.parse(source2)?;
+        assert!(
+            !parser.used_incremental_path(),
+            "a replacement that splits the token must decline the incremental path"
+        );
+        let fresh = Parser::new(source2).parse()?;
+        assert_eq!(incremental, fresh, "the fallback tree must match a fresh parse");
+        Ok(())
+    }
+
+    /// A replacement that changes string syntax must decline: switching `'`
+    /// to `"` flips the stored interpolation flag, and switching `q(` to
+    /// `qq(` does the same inside the quote-operator family. The patch cannot
+    /// recompute those fields, so the whole incremental attempt falls back to
+    /// a full parse instead of accepting a stale-semantics tree.
+    #[test]
+    fn quote_syntax_changes_decline_incremental_path() -> ParseResult<()> {
+        // Single quotes to double quotes inside a method-call argument.
+        let mut parser = strict_fallback_parser();
+        parser.parse("$u->get('k');")?;
+        parser.edit(Edit::new(
+            8,
+            11,
+            11, // 'k' -> "k"
+            Position::new(8, 1, 9),
+            Position::new(11, 1, 12),
+            Position::new(11, 1, 12),
+        ));
+        let source2 = "$u->get(\"k\");";
+        let incremental = parser.parse(source2)?;
+        assert!(
+            !parser.used_incremental_path(),
+            "a quote-style change must decline the incremental path"
+        );
+        let fresh = Parser::new(source2).parse()?;
+        assert_eq!(incremental, fresh, "the fallback tree must match a fresh parse");
+
+        // Single-quote operator to double-quote operator: the first byte
+        // matches, so the operator family itself must be compared too.
+        let mut parser = strict_fallback_parser();
+        parser.parse("$u->get(q(k));")?;
+        parser.edit(Edit::new(
+            8,
+            9,
+            10, // q( -> qq(
+            Position::new(8, 1, 9),
+            Position::new(9, 1, 10),
+            Position::new(10, 1, 11),
+        ));
+        let source3 = "$u->get(qq(k));";
+        let incremental = parser.parse(source3)?;
+        assert!(
+            !parser.used_incremental_path(),
+            "a quote-operator change must decline the incremental path"
+        );
+        let fresh = Parser::new(source3).parse()?;
+        assert_eq!(incremental, fresh, "the fallback tree must match a fresh parse");
+        Ok(())
+    }
+
+    /// An earlier lengthening edit must not hide a later value edit: queued
+    /// edits are expressed in post-edit coordinates while the tree carries
+    /// original coordinates, so invalidation maps every edit back by the
+    /// cumulative shift before comparing. The previous raw-coordinate
+    /// comparison left the second leaf's payload stale while still accepting
+    /// the tree.
+    #[test]
+    fn lengthening_edit_before_second_value_edit_matches_a_fresh_parse() -> ParseResult<()> {
+        let mut parser = strict_fallback_parser();
+        parser.parse("my $a = 1; my $b = 2;")?;
+        // First edit: "1" -> "000000000000" (+11 bytes).
+        parser.edit(Edit::new(
+            8,
+            9,
+            20,
+            Position::new(8, 1, 9),
+            Position::new(9, 1, 10),
+            Position::new(20, 1, 21),
+        ));
+        // Second edit, in coordinates after the first: the trailing "2" moved
+        // from [19..20) to [30..31); change it to "9".
+        parser.edit(Edit::new(
+            30,
+            31,
+            31,
+            Position::new(30, 1, 31),
+            Position::new(31, 1, 32),
+            Position::new(31, 1, 32),
+        ));
+        let source2 = "my $a = 000000000000; my $b = 9;";
+        let incremental = parser.parse(source2)?;
+        assert!(
+            parser.used_incremental_path(),
+            "both edits sit inside admitted Number leaves and must stay incremental"
+        );
+        let fresh = Parser::new(source2).parse()?;
+        assert_eq!(incremental, fresh, "the later leaf's payload must be patched");
+        Ok(())
+    }
+
+    /// Several whitespace edits compose: each node's span follows the
+    /// cumulative boundary mapping and the program span keeps hugging its
+    /// statements.
+    #[test]
+    fn multiple_trivia_edits_match_a_fresh_parse() -> ParseResult<()> {
+        let mut parser = strict_fallback_parser();
+        parser.parse("my $x = 42;my $y = 7;")?;
+        // Insert one space between the statements...
+        parser.edit(Edit::new(
+            11,
+            11,
+            12,
+            Position::new(11, 1, 12),
+            Position::new(11, 1, 12),
+            Position::new(12, 1, 13),
+        ));
+        // ...and, in the coordinates after that insertion, widen the gap by
+        // two more spaces.
+        parser.edit(Edit::new(
+            12,
+            12,
+            14,
+            Position::new(12, 1, 13),
+            Position::new(12, 1, 13),
+            Position::new(14, 1, 15),
+        ));
+        let source2 = "my $x = 42;   my $y = 7;";
+        let incremental = parser.parse(source2)?;
+        assert!(
+            parser.used_incremental_path(),
+            "whitespace-only edits must take the whitespace reuse path"
+        );
+        let fresh = Parser::new(source2).parse()?;
+        assert_eq!(incremental, fresh, "combined whitespace edits must match a fresh parse");
+        Ok(())
+    }
+
+    /// Trivia inserted inside a multi-character operator changes
+    /// tokenization: `1..3` becomes `1. .3`, which parses differently. The
+    /// inserted text lexes as trivia in isolation, so admission must also
+    /// require the surrounding token stream to be unchanged; otherwise the
+    /// trivia remap would accept the old operator.
+    #[test]
+    fn operator_splitting_trivia_declines_trivia_path() -> ParseResult<()> {
+        let mut parser = strict_fallback_parser();
+        parser.parse("my @r = 1..3;")?;
+        parser.edit(Edit::new(
+            10,
+            10,
+            11, // insert a space between the two dots of `..`
+            Position::new(10, 1, 11),
+            Position::new(10, 1, 11),
+            Position::new(11, 1, 12),
+        ));
+        let source2 = "my @r = 1. .3;";
+        let incremental = parser.parse(source2)?;
+        assert!(
+            !parser.used_incremental_path(),
+            "trivia that splits an operator must decline the trivia path"
+        );
+        let fresh = Parser::new(source2).parse()?;
+        assert_eq!(incremental, fresh, "the fallback tree must match a fresh parse");
+        Ok(())
+    }
+
+    /// A `#` inserted more than a window away from code comments out
+    /// everything to end of line: the second statement disappears from a
+    /// fresh parse while both bounded windows would contain no non-trivia
+    /// tokens. The whole-stream comparison must catch it.
+    #[test]
+    fn comment_hiding_code_declines_trivia_path() -> ParseResult<()> {
+        let source1 = format!("my $a = 1;{}my $b = 2;", " ".repeat(20));
+        let mut parser = strict_fallback_parser();
+        parser.parse(&source1)?;
+        parser.edit(Edit::new(
+            10,
+            10,
+            11, // insert "#" right after the first semicolon
+            Position::new(10, 1, 11),
+            Position::new(10, 1, 11),
+            Position::new(11, 1, 12),
+        ));
+        let source2 = format!("my $a = 1;#{}my $b = 2;", " ".repeat(20));
+        let incremental = parser.parse(&source2)?;
+        assert!(
+            !parser.used_incremental_path(),
+            "a comment that hides a statement must decline the trivia path"
+        );
+        let fresh = Parser::new(&source2).parse()?;
+        assert_eq!(incremental, fresh, "the fallback tree must match a fresh parse");
+        Ok(())
+    }
+
+    /// A newline inserted inside a comment exposes the hidden code as
+    /// statements: the token stream gains tokens the old tree does not have.
+    #[test]
+    fn newline_exposing_commented_code_declines_trivia_path() -> ParseResult<()> {
+        let source1 = "my $a = 1; # my $b = 2;";
+        let mut parser = strict_fallback_parser();
+        parser.parse(source1)?;
+        parser.edit(Edit::new(
+            13,
+            13,
+            14, // insert a newline between "#" and the hidden statement
+            Position::new(13, 1, 14),
+            Position::new(13, 1, 14),
+            Position::new(14, 2, 1),
+        ));
+        let source2 = "my $a = 1; #\nmy $b = 2;";
+        let incremental = parser.parse(source2)?;
+        assert!(
+            !parser.used_incremental_path(),
+            "a newline exposing commented-out code must decline the trivia path"
+        );
+        let fresh = Parser::new(source2).parse()?;
+        assert_eq!(incremental, fresh, "the fallback tree must match a fresh parse");
+        Ok(())
+    }
+
+    /// Trailing trivia must not move any node. The previous trivia path
+    /// shifted every span by the edit's byte delta, accepting a tree where
+    /// every node was displaced by five bytes relative to a fresh parse.
+    #[test]
+    fn trailing_trivia_insertion_matches_a_fresh_parse() -> ParseResult<()> {
+        let mut parser = strict_fallback_parser();
+        parser.parse("my $x = 42;")?;
+        parser.edit(Edit::new(
+            11,
+            11,
+            16, // insert five trailing spaces
+            Position::new(11, 1, 12),
+            Position::new(11, 1, 12),
+            Position::new(16, 1, 17),
+        ));
+        let source2 = "my $x = 42;     ";
+        let incremental = parser.parse(source2)?;
+        assert!(parser.used_incremental_path(), "trailing trivia must take the trivia remap path");
+        let fresh = Parser::new(source2).parse()?;
+        assert_eq!(incremental, fresh, "trivia remap must match a fresh parse");
+        Ok(())
+    }
+
+    /// Trivia inserted before the first statement shifts that statement while
+    /// the program span stays anchored at byte zero and tracks its last child.
+    #[test]
+    fn leading_trivia_insertion_matches_a_fresh_parse() -> ParseResult<()> {
+        let mut parser = strict_fallback_parser();
+        parser.parse("my $x = 42;")?;
+        parser.edit(Edit::new(
+            0,
+            0,
+            1, // insert one leading space
+            Position::new(0, 1, 1),
+            Position::new(0, 1, 1),
+            Position::new(1, 1, 2),
+        ));
+        let source2 = " my $x = 42;";
+        let incremental = parser.parse(source2)?;
+        assert!(parser.used_incremental_path(), "leading trivia must take the trivia remap path");
+        let fresh = Parser::new(source2).parse()?;
+        assert_eq!(incremental, fresh, "leading trivia remap must match a fresh parse");
+        Ok(())
+    }
+
+    /// Every fixture node spans `[start..total_end]`; the chain descends one
+    /// start byte per level down to the number literal.
+    fn assert_chain_spans(node: &Node, start: usize, total_end: usize, visited: &mut usize) {
+        assert_eq!(node.location, SourceLocation { start, end: total_end }, "node span moved");
+        *visited += 1;
+        match &node.kind {
+            NodeKind::Program { statements } => {
+                assert_eq!(statements.len(), 1);
+                assert_chain_spans(&statements[0], start, total_end, visited);
+            }
+            NodeKind::Unary { operand, .. } => {
+                assert_chain_spans(operand, start + 1, total_end, visited);
+            }
+            NodeKind::Number { value } => {
+                assert_eq!(value, "1");
+                assert_eq!(start, total_end - 1);
+            }
+            other => panic!("unexpected fixture node {}", other.kind_name()),
+        }
+    }
+
+    /// The whitespace reuse must stay linear in tree depth: one structural
+    /// clone plus one mapped-location pass per node. A depth-20,000 chain
+    /// completes in milliseconds; the pre-#13917 recursive rebuild re-cloned
+    /// the entire remaining subtree at every level — quadratic work — and
+    /// cannot finish within this budget.
+    #[test]
+    fn whitespace_reuse_is_linear_in_tree_depth() {
+        const DEPTH: usize = 20_000;
+        let total_end = DEPTH + 1;
+        let loc = |start: usize, end: usize| SourceLocation { start, end };
+        let mut chain =
+            Node::new(NodeKind::Number { value: "1".to_string() }, loc(DEPTH, total_end));
+        for start in (0..DEPTH).rev() {
+            chain = Node::new(
+                NodeKind::Unary { op: "!".to_string(), operand: Box::new(chain) },
+                loc(start, total_end),
+            );
+        }
+        let root = Node::new(NodeKind::Program { statements: vec![chain] }, loc(0, total_end));
+        let old_source = format!("{}1", "!".repeat(DEPTH));
+        let new_source = format!("{}1 ", "!".repeat(DEPTH));
+        let mut edits = EditSet::new();
+        edits.add(Edit::new(
+            total_end,
+            total_end,
+            total_end + 1, // trailing space
+            Position::new(total_end, 1, 1),
+            Position::new(total_end, 1, 1),
+            Position::new(total_end + 1, 1, 1),
+        ));
+
+        // The mapped clone walks the canonical traversal once, so
+        // adversarially deep chains need a large stack and this fixture
+        // provides one. The bound pinned here is time, not stack: one
+        // structural clone plus one location-mapping pass must stay linear
+        // in depth, where the previous per-level `node.kind.clone()` rebuild
+        // was quadratic.
+        let work = std::thread::Builder::new()
+            .stack_size(64 * 1024 * 1024)
+            .spawn(move || {
+                let edit_map = WhitespaceEditMap::try_new(&old_source, &new_source, &edits)
+                    .expect("trailing whitespace insertion should be admitted");
+
+                let start = Instant::now();
+                let mapped = edit_map
+                    .clone_tree(&root)
+                    .expect("location mapping should succeed on the fixture");
+                let elapsed = start.elapsed();
+
+                let budget = adaptive_perf_budget_micros(2_000_000);
+                assert!(
+                    elapsed.as_micros() < budget,
+                    "whitespace reuse must stay linear in depth: {}µs (budget {}µs)",
+                    elapsed.as_micros(),
+                    budget
+                );
+
+                // Trailing trivia moves nothing.
+                let mut visited = 0usize;
+                assert_chain_spans(&mapped, 0, total_end, &mut visited);
+                assert_eq!(visited, DEPTH + 2, "every fixture node must be checked");
+            })
+            .expect("test worker thread");
+        work.join().expect("linear whitespace reuse worker panicked");
     }
 }
