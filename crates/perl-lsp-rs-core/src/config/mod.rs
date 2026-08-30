@@ -26,7 +26,7 @@ pub mod perl_oracle_env;
 pub mod toolchain_profile;
 
 pub(crate) use critic_state::CriticSettingsCandidate;
-pub use critic_state::{EffectiveCriticState, EffectiveNativeCriticConfig};
+pub use critic_state::{AcceptedCriticSnapshot, EffectiveCriticState, EffectiveNativeCriticConfig};
 pub use dependency_detection::detect_dependency_include_paths;
 pub use metadata_dependencies::{
     DeclaredDependency, DeclaredDependencySource, detect_declared_dependencies,

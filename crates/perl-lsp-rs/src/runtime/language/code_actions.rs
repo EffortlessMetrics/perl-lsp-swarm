@@ -1091,14 +1091,33 @@ impl LspServer {
         subject: NativeCriticActionSubject,
         cancellation: Option<&PerlLspCancellationToken>,
     ) -> Vec<Value> {
-        use perl_lsp_rs_core::tooling::perl_critic::{
-            NativeCriticService, NativeCriticSubject, RunGate,
-        };
+        use perl_lsp_rs_core::tooling::perl_critic::RunGate;
 
         // The service consults this at its pre-evaluation and settlement
         // barriers, so a cancellation arriving while rules run settles the run
         // Cancelled and nothing publishes.
         let not_cancelled = || cancellation.is_none_or(|token| !token.is_cancelled_relaxed());
+        self.native_critic_code_actions_with_gate(uri, subject, RunGate::new(&not_cancelled))
+    }
+
+    /// Native critic action evaluation under a caller-supplied cancellation
+    /// gate.
+    ///
+    /// The gate is a parameter so the consumer's cancellation wiring is
+    /// deterministically testable at exactly the seam the review is about: a
+    /// gate that reports open on its first consultation and closed on its
+    /// second proves this consumer preserves the service's two-barrier
+    /// semantics, without a production test hook and without racing a real
+    /// token through synchronous analysis.
+    fn native_critic_code_actions_with_gate(
+        &self,
+        uri: &str,
+        subject: NativeCriticActionSubject,
+        cancellation: perl_lsp_rs_core::tooling::perl_critic::RunGate<'_>,
+    ) -> Vec<Value> {
+        use perl_lsp_rs_core::tooling::perl_critic::{
+            NativeCriticService, NativeCriticSubject, RunGate,
+        };
 
         let expected_fingerprint = subject.accepted_state.fingerprint();
         let config = std::sync::Arc::clone(&self.config);
@@ -1120,7 +1139,7 @@ impl LspServer {
             &subject.text,
             subject.accepted_state.clone(),
             subject.overlap_observations.clone(),
-            RunGate::new(&not_cancelled),
+            cancellation,
             RunGate::new(&config_is_current),
         ));
 
@@ -1644,6 +1663,42 @@ print $x;
                 "refusal must use the protocol cancellation code"
             );
         }
+    }
+
+    /// Boundary 2, the exact scenario the review named: cancellation arriving
+    /// *during* native analysis.
+    ///
+    /// The gate reports open on its first consultation (the service's
+    /// pre-evaluation barrier) and closed on its second (the settlement barrier
+    /// after rules have run). Reaching a second consultation is itself the proof
+    /// that real native work occurred -- the service only consults again after
+    /// evaluation -- so this cannot be satisfied by a pre-cancellation, which
+    /// would short-circuit at the first consultation.
+    #[test]
+    fn cancellation_during_native_analysis_publishes_no_actions() {
+        use perl_lsp_rs_core::tooling::perl_critic::RunGate;
+
+        let uri = "file:///action_cancel_midflight.pl";
+        let server = server_with_document(uri);
+
+        let consultations = std::sync::atomic::AtomicUsize::new(0);
+        let open_then_cancelled =
+            || consultations.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0;
+        let actions = server.native_critic_code_actions_with_gate(
+            uri,
+            action_subject(&server, uri, false),
+            RunGate::new(&open_then_cancelled),
+        );
+
+        assert_eq!(
+            consultations.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "the service must consult cancellation again after evaluating; a single              consultation would mean no native work ran and the test would prove nothing"
+        );
+        assert!(
+            actions.is_empty(),
+            "a run cancelled at the settlement barrier must publish no actions; got: {actions:?}"
+        );
     }
 
     /// #12067 review: the request cancellation token reached only the wrapper,

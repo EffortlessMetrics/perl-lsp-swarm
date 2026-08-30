@@ -123,6 +123,65 @@ pub(crate) fn canonical_rule_ids(values: &[String]) -> Vec<String> {
     canonical
 }
 
+/// One accepted critic subject: the state, the root it was derived for, and the
+/// fingerprint that decides whether it is still current (#9062/#12067 review).
+///
+/// Before this type existed, a transport could sample the accepted state, the
+/// owning root and the raw identity fields at three different moments and then
+/// evaluate under one policy while composing a report identity from another.
+/// Bundling them makes that split unrepresentable: the same value is handed to
+/// the service, to the currentness check, and to the Critic portion of the
+/// report identity.
+///
+/// This deliberately does not redesign the broader result-ID model, which
+/// remains #7480's.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcceptedCriticSnapshot {
+    state: EffectiveCriticState,
+    owning_root: Option<String>,
+    fingerprint: String,
+}
+
+impl AcceptedCriticSnapshot {
+    /// Capture the accepted subject for one owning root, in a single read of
+    /// the accepted-state authority.
+    #[must_use]
+    pub fn capture(config: &ServerConfig, owning_root: Option<&str>) -> Self {
+        let state = config.effective_critic_state(owning_root);
+        let fingerprint = state.fingerprint();
+        Self { state, owning_root: owning_root.map(ToOwned::to_owned), fingerprint }
+    }
+
+    /// The accepted state this subject evaluates under.
+    #[must_use]
+    pub const fn state(&self) -> &EffectiveCriticState {
+        &self.state
+    }
+
+    /// The owning root the state was derived for.
+    #[must_use]
+    pub fn owning_root(&self) -> Option<&str> {
+        self.owning_root.as_deref()
+    }
+
+    /// Deterministic identity of the accepted state.
+    #[must_use]
+    pub fn fingerprint(&self) -> &str {
+        &self.fingerprint
+    }
+
+    /// Whether live configuration still accepts this exact subject.
+    ///
+    /// Compared against the same owning root the snapshot was captured for, so
+    /// a multi-root workspace cannot judge one root's subject against another
+    /// root's live policy.
+    #[must_use]
+    pub fn is_current(&self, config: &ServerConfig) -> bool {
+        config.effective_critic_state(self.owning_root.as_deref()).fingerprint()
+            == self.fingerprint
+    }
+}
+
 impl ServerConfig {
     /// Derive the accepted critic state for one owning subject (#8253).
     ///
