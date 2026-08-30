@@ -160,6 +160,27 @@ class DurableEvidence:
 
 
 @dataclass(frozen=True)
+class ControllerClaim:
+    id: str
+    proof_class: str
+    claim_scope: str
+
+    @classmethod
+    def parse(cls, value: Any, name: str) -> "ControllerClaim":
+        data = _object(value, name)
+        _exact_keys(data, name, {"id", "proof_class", "claim_scope"})
+        proof_class = _string(data["proof_class"], f"{name}.proof_class")
+        claim_scope = _string(data["claim_scope"], f"{name}.claim_scope")
+        _require(proof_class in PROOF_CLASSES, f"{name}.proof_class is invalid")
+        _require(claim_scope in CLAIM_SCOPES, f"{name}.claim_scope is invalid")
+        _require(
+            (proof_class, claim_scope) in PROOF_AUTHORITY_MATRIX,
+            f"{name} proof_class and claim_scope are not an admitted controller claim contract",
+        )
+        return cls(_identifier(data["id"], f"{name}.id"), proof_class, claim_scope)
+
+
+@dataclass(frozen=True)
 class ImplementationContribution:
     implementation_pr: int
     candidate_head_sha: str
@@ -252,22 +273,27 @@ class ProofObservation:
 
 
 @dataclass(frozen=True)
+class ReviewAuthority:
+    authority_kind: str
+    authority_number: int | None
+    evidence: DurableEvidence
+    reviewed_head: str
+    status: str
+    unresolved_findings: int
+
+
+@dataclass(frozen=True)
 class BlockerCloseoutV1:
     release: str
     blocker_id: str
     controller_issue: int
-    controller_claim_ids: tuple[str, ...]
+    controller_claims: tuple[ControllerClaim, ...]
     controller_evidence: DurableEvidence
     status: str
     observed_main_sha: str
     contributions: tuple[ImplementationContribution, ...]
     landed_integrations: tuple[LandedIntegration, ...]
-    review_authority_kind: str
-    review_authority_number: int | None
-    review_evidence: DurableEvidence
-    review_status: str
-    reviewed_head: str
-    unresolved_findings: int
+    reviews: tuple[ReviewAuthority, ...]
     observations: tuple[ProofObservation, ...]
 
 
@@ -283,9 +309,10 @@ def _all_evidence(packet: dict[str, Any]) -> Iterable[DurableEvidence]:
         yield DurableEvidence.parse(_object(item, f"implementation_contributions[{index}]")["evidence"], f"implementation_contributions[{index}].evidence")
     for index, item in enumerate(packet["landed_integrations"]):
         yield DurableEvidence.parse(_object(item, f"landed_integrations[{index}]")["evidence"], f"landed_integrations[{index}].evidence")
-    review = _object(packet["review"], "review")
-    yield DurableEvidence.parse(review["current_head_synthesis"], "review.current_head_synthesis")
-    yield from _parse_evidence_array(review["finding_refs"], "review.finding_refs")
+    for index, item in enumerate(packet["reviews"]):
+        review = _object(item, f"reviews[{index}]")
+        yield DurableEvidence.parse(review["current_head_synthesis"], f"reviews[{index}].current_head_synthesis")
+        yield from _parse_evidence_array(review["finding_refs"], f"reviews[{index}].finding_refs")
     proof = _object(packet["proof"], "proof")
     for index, item in enumerate(proof["observations"]):
         yield DurableEvidence.parse(_object(item, f"proof.observations[{index}]")["evidence"], f"proof.observations[{index}].evidence")
@@ -297,16 +324,17 @@ def _all_evidence(packet: dict[str, Any]) -> Iterable[DurableEvidence]:
 def validate_blocker_closeout(packet_value: Any, is_ancestor: Callable[[str, str], bool]) -> BlockerCloseoutV1:
     """Validate and return the normalized packet model.
 
-    ``is_ancestor(merged_sha, observed_main_sha)`` must answer from the exact
-    repository object graph. A false or instrument-failed answer rejects the
-    packet; reachability is never inferred from issue or PR lifecycle state.
+    ``is_ancestor(ancestor_sha, descendant_sha)`` must answer from the exact
+    repository object graph for merge integration and landed-main relations.
+    A false or instrument-failed answer rejects the packet; reachability is
+    never inferred from issue or PR lifecycle state.
     """
 
     packet = _object(packet_value, "packet")
     root_keys = {
         "schema_version", "release", "blocker_id", "controller_issue", "semantic_controller",
         "status", "observed_main_sha", "implementation_prs", "merged_shas",
-        "implementation_contributions", "landed_integrations", "review", "proof", "claim_effect", "follow_ups",
+        "implementation_contributions", "landed_integrations", "reviews", "proof", "claim_effect", "follow_ups",
         "invalidation_paths", "shared_implementation_relations",
     }
     _exact_keys(packet, "packet", root_keys)
@@ -320,9 +348,17 @@ def validate_blocker_closeout(packet_value: Any, is_ancestor: Callable[[str, str
     observed_main_sha = _sha(packet["observed_main_sha"], "observed_main_sha")
 
     controller = _object(packet["semantic_controller"], "semantic_controller")
-    _exact_keys(controller, "semantic_controller", {"issue", "claim_ids", "evidence"})
+    _exact_keys(controller, "semantic_controller", {"issue", "claims", "evidence"})
     _require(_positive_int(controller["issue"], "semantic_controller.issue") == controller_issue, "controller_issue contradicts semantic_controller.issue")
-    controller_claims = _unique_strings(controller["claim_ids"], "semantic_controller.claim_ids", nonempty=True, identifiers=True)
+    raw_controller_claims = controller["claims"]
+    _require(isinstance(raw_controller_claims, list) and raw_controller_claims, "semantic_controller.claims must be a non-empty array")
+    controller_claim_contracts = tuple(
+        ControllerClaim.parse(item, f"semantic_controller.claims[{index}]")
+        for index, item in enumerate(raw_controller_claims)
+    )
+    controller_claims = tuple(item.id for item in controller_claim_contracts)
+    _require(len(controller_claims) == len(set(controller_claims)), "semantic_controller claim ids must be unique")
+    _require(list(controller_claims) == sorted(controller_claims), "semantic_controller claims must be sorted by id")
     controller_evidence = DurableEvidence.parse(controller["evidence"], "semantic_controller.evidence")
     _require(
         controller_evidence.kind in {"github_issue", "github_issue_comment"},
@@ -389,6 +425,15 @@ def validate_blocker_closeout(packet_value: Any, is_ancestor: Callable[[str, str
         )
         if integration.kind == "squash":
             _require(integration.candidate_head_sha != integration.landed_sha, "squash integration must distinguish candidate head from landed SHA")
+        elif integration.kind == "merge":
+            try:
+                candidate_reachable = is_ancestor(integration.candidate_head_sha, integration.landed_sha)
+            except Exception as error:  # instrument failure must fail closed
+                raise ValueError(f"merge candidate ancestry is not proven: {error}") from error
+            _require(
+                candidate_reachable,
+                f"merge candidate head {integration.candidate_head_sha} is not reachable from landed SHA {integration.landed_sha}",
+            )
         elif integration.kind == "fast_forward":
             _require(integration.candidate_head_sha == integration.landed_sha, "fast-forward integration requires candidate head to equal landed SHA")
         try:
@@ -397,61 +442,79 @@ def validate_blocker_closeout(packet_value: Any, is_ancestor: Callable[[str, str
             raise ValueError(f"landed SHA reachability is not proven: {error}") from error
         _require(reachable, f"landed SHA {integration.landed_sha} is not reachable from observed_main_sha")
 
-    review = _object(packet["review"], "review")
-    _exact_keys(
-        review,
-        "review",
-        {"authority_kind", "authority_number", "current_head_synthesis", "reviewed_head", "status", "unresolved_material_findings", "finding_refs"},
-    )
-    review_authority_kind = _string(review["authority_kind"], "review.authority_kind")
-    _require(review_authority_kind in {"implementation_pr", "semantic_controller", "landed_tree"}, "review.authority_kind is invalid")
-    review_evidence = DurableEvidence.parse(review["current_head_synthesis"], "review.current_head_synthesis")
-    reviewed_head = _sha(review["reviewed_head"], "review.reviewed_head")
-    review_status = _string(review["status"], "review.status")
-    _require(review_status in {"current", "stale", "not_proven"}, "review.status is invalid")
-    if review_authority_kind == "implementation_pr":
-        review_authority_number = _positive_int(review["authority_number"], "review.authority_number")
-        _require(review_authority_number in implementation_prs, "review authority is not a modeled implementation PR")
-        review_match = PULL_REVIEW_REF.fullmatch(review_evidence.ref)
-        _require(
-            review_evidence.kind == "github_review"
-            and review_match is not None
-            and int(review_match.group(1)) == review_authority_number,
-            "review synthesis evidence ref does not match implementation PR authority",
+    raw_reviews = packet["reviews"]
+    _require(isinstance(raw_reviews, list) and raw_reviews, "reviews must be a non-empty array")
+    reviews: list[ReviewAuthority] = []
+    review_keys: list[tuple[str, int | None]] = []
+    for index, raw_review in enumerate(raw_reviews):
+        name = f"reviews[{index}]"
+        review = _object(raw_review, name)
+        _exact_keys(
+            review,
+            name,
+            {"authority_kind", "authority_number", "current_head_synthesis", "reviewed_head", "status", "unresolved_material_findings", "finding_refs"},
         )
-        if review_status == "current":
+        authority_kind = _string(review["authority_kind"], f"{name}.authority_kind")
+        _require(authority_kind in {"implementation_pr", "semantic_controller", "landed_tree"}, f"{name}.authority_kind is invalid")
+        evidence = DurableEvidence.parse(review["current_head_synthesis"], f"{name}.current_head_synthesis")
+        reviewed_head = _sha(review["reviewed_head"], f"{name}.reviewed_head")
+        review_status = _string(review["status"], f"{name}.status")
+        _require(review_status in {"current", "stale", "not_proven"}, f"{name}.status is invalid")
+        if authority_kind == "implementation_pr":
+            authority_number = _positive_int(review["authority_number"], f"{name}.authority_number")
+            _require(authority_number in implementation_prs, "review authority is not a modeled implementation PR")
+            review_match = PULL_REVIEW_REF.fullmatch(evidence.ref)
             _require(
-                reviewed_head == contributions_by_pr[review_authority_number].candidate_head_sha,
-                "current PR review head does not match modeled candidate head",
+                evidence.kind == "github_review"
+                and review_match is not None
+                and int(review_match.group(1)) == authority_number,
+                "review synthesis evidence ref does not match implementation PR authority",
             )
-    elif review_authority_kind == "semantic_controller":
-        review_authority_number = _positive_int(review["authority_number"], "review.authority_number")
-        _require(review_authority_number == controller_issue, "review authority is not the semantic controller")
-        review_pattern = ISSUE_REF if review_evidence.kind == "github_issue" else ISSUE_COMMENT_REF
-        review_match = review_pattern.fullmatch(review_evidence.ref)
-        _require(
-            review_evidence.kind in {"github_issue", "github_issue_comment"}
-            and review_match is not None
-            and int(review_match.group(1)) == controller_issue,
-            "review synthesis evidence ref does not match semantic-controller authority",
-        )
-        if review_status == "current":
-            _require(reviewed_head == observed_main_sha, "current semantic-controller review refers to a superseded landed head")
-    else:
-        _require(review["authority_number"] is None, "landed-tree review authority_number must be null")
-        review_authority_number = None
-        _require(review_evidence.kind == "repository_receipt", "landed-tree review requires repository-receipt authority")
-        receipt_match = REPOSITORY_REF.fullmatch(review_evidence.ref)
-        _require(
-            receipt_match is not None and receipt_match.group(1) == reviewed_head,
-            "landed-tree review receipt SHA does not match reviewed_head",
-        )
-        if review_status == "current":
-            _require(reviewed_head == observed_main_sha, "current landed-tree review refers to a superseded landed head")
-    unresolved_findings = review["unresolved_material_findings"]
-    _require(type(unresolved_findings) is int and unresolved_findings >= 0, "review.unresolved_material_findings must be a non-negative integer")
-    finding_refs = _parse_evidence_array(review["finding_refs"], "review.finding_refs")
-    _require(len(finding_refs) >= unresolved_findings, "unresolved material findings require durable finding references")
+            if review_status == "current":
+                _require(
+                    reviewed_head == contributions_by_pr[authority_number].candidate_head_sha,
+                    "current PR review head does not match modeled candidate head",
+                )
+        elif authority_kind == "semantic_controller":
+            authority_number = _positive_int(review["authority_number"], f"{name}.authority_number")
+            _require(authority_number == controller_issue, "review authority is not the semantic controller")
+            review_pattern = ISSUE_REF if evidence.kind == "github_issue" else ISSUE_COMMENT_REF
+            review_match = review_pattern.fullmatch(evidence.ref)
+            _require(
+                evidence.kind in {"github_issue", "github_issue_comment"}
+                and review_match is not None
+                and int(review_match.group(1)) == controller_issue,
+                "review synthesis evidence ref does not match semantic-controller authority",
+            )
+            if review_status == "current":
+                _require(reviewed_head == observed_main_sha, "current semantic-controller review refers to a superseded landed head")
+        else:
+            _require(review["authority_number"] is None, "landed-tree review authority_number must be null")
+            authority_number = None
+            _require(evidence.kind == "repository_receipt", "landed-tree review requires repository-receipt authority")
+            receipt_match = REPOSITORY_REF.fullmatch(evidence.ref)
+            _require(
+                receipt_match is not None and receipt_match.group(1) == reviewed_head,
+                "landed-tree review receipt SHA does not match reviewed_head",
+            )
+            if review_status == "current":
+                _require(reviewed_head == observed_main_sha, "current landed-tree review refers to a superseded landed head")
+        unresolved_findings = review["unresolved_material_findings"]
+        _require(type(unresolved_findings) is int and unresolved_findings >= 0, f"{name}.unresolved_material_findings must be a non-negative integer")
+        finding_refs = _parse_evidence_array(review["finding_refs"], f"{name}.finding_refs")
+        _require(len(finding_refs) >= unresolved_findings, "unresolved material findings require durable finding references")
+        reviews.append(ReviewAuthority(authority_kind, authority_number, evidence, reviewed_head, review_status, unresolved_findings))
+        review_keys.append((authority_kind, authority_number))
+    _require(len(review_keys) == len(set(review_keys)), "review authorities cannot be double-counted")
+    current_landed_review = any(item.authority_kind == "landed_tree" and item.status == "current" for item in reviews)
+    current_candidate_reviews = {
+        item.authority_number
+        for item in reviews
+        if item.authority_kind == "implementation_pr" and item.status == "current"
+    }
+    every_candidate_reviewed = bool(implementation_prs) and current_candidate_reviews == set(implementation_prs)
+    total_unresolved_findings = sum(item.unresolved_findings for item in reviews)
+    any_current_review = current_landed_review or every_candidate_reviewed
 
     proof = _object(packet["proof"], "proof")
     _exact_keys(proof, "proof", {"required", "passed", "not_proven", "observations"})
@@ -468,8 +531,15 @@ def validate_blocker_closeout(packet_value: Any, is_ancestor: Callable[[str, str
     expected_not_proven = tuple(sorted(item.id for item in observations if item.status in EPISTEMIC_GAPS))
     _require(passed == expected_passed, "proof.passed contradicts observation statuses")
     _require(not_proven == expected_not_proven, "proof.not_proven contradicts observation statuses")
+    claim_contract_by_id = {item.id: item for item in controller_claim_contracts}
     for observation in observations:
         _require(set(observation.claim_ids) <= set(controller_claims), "proof observation names a claim outside the semantic controller")
+        for claim_id in observation.claim_ids:
+            contract = claim_contract_by_id[claim_id]
+            _require(
+                observation.proof_class == contract.proof_class and observation.claim_scope == contract.claim_scope,
+                f"proof observation for {claim_id} contradicts the semantic-controller claim contract",
+            )
         if observation.status == "passed":
             _require(observation.subject_sha == observed_main_sha, "passed proof is cross-subject")
 
@@ -487,16 +557,14 @@ def validate_blocker_closeout(packet_value: Any, is_ancestor: Callable[[str, str
         for claim_id in observation.claim_ids
     }
     if status == "resolved":
-        _require(review_authority_kind in {"implementation_pr", "landed_tree"}, "resolved requires implementation-PR candidate or landed-tree review authority")
-        _require(review_status == "current", "resolved requires current review")
-        _require(unresolved_findings == 0, "resolved cannot retain unresolved material findings")
+        _require(any_current_review, "resolved requires every candidate exact-head review or one current landed-tree cumulative review")
+        _require(total_unresolved_findings == 0, "resolved cannot retain unresolved material findings")
         _require(not not_proven and all(item.status == "passed" for item in observations), "resolved requires every required proof to pass")
         _require(set(preserves) == set(controller_claims) and not narrows, "resolved must preserve every semantic-controller claim")
         _require(set(preserves) <= passed_claim_coverage, "resolved preserved claim lacks observation proof coverage")
     elif status == "bounded_limitation":
-        _require(review_authority_kind in {"implementation_pr", "landed_tree"}, "bounded_limitation requires implementation-PR candidate or landed-tree review authority")
-        _require(review_status == "current", "bounded_limitation requires current review")
-        _require(unresolved_findings == 0, "bounded_limitation cannot retain unresolved material findings")
+        _require(any_current_review, "bounded_limitation requires every candidate exact-head review or one current landed-tree cumulative review")
+        _require(total_unresolved_findings == 0, "bounded_limitation cannot retain unresolved material findings")
         _require(all(item.status == "passed" for item in observations), "bounded_limitation requires every required proof to pass within its narrowed claim")
         _require(bool(narrows) and bool(limitations), "bounded_limitation requires exact narrowed claims and limitations")
         _require(set(preserves) | set(narrows) == set(controller_claims), "bounded_limitation must state the effect on every semantic-controller claim")
@@ -505,11 +573,14 @@ def validate_blocker_closeout(packet_value: Any, is_ancestor: Callable[[str, str
         # Blocked packets report a decisive failed observation or an unresolved
         # finding. They do not claim terminal proof closure, so preserved-claim
         # coverage is intentionally not promoted into a closure requirement.
-        _require(any(item.status == "failed" for item in observations) or unresolved_findings > 0, "blocked requires a failed proof or unresolved material finding")
+        _require(any(item.status == "failed" for item in observations) or total_unresolved_findings > 0, "blocked requires a failed proof or unresolved material finding")
     else:
         # NOT_PROVEN is epistemic: missing/currentness/instrument gaps stay
         # explicit and are never converted into failed or closure evidence.
-        _require(bool(not_proven) or review_status in {"stale", "not_proven"}, "not_proven requires explicit missing, stale, or instrument-failed evidence")
+        _require(
+            bool(not_proven) or any(item.status in {"stale", "not_proven"} for item in reviews),
+            "not_proven requires explicit missing, stale, or instrument-failed evidence",
+        )
 
     _parse_evidence_array(packet["follow_ups"], "follow_ups")
     _unique_strings(packet["invalidation_paths"], "invalidation_paths", nonempty=True)
@@ -540,10 +611,9 @@ def validate_blocker_closeout(packet_value: Any, is_ancestor: Callable[[str, str
         _require(previous == evidence.digest, f"contradictory digest for evidence ref {evidence.ref}")
 
     return BlockerCloseoutV1(
-        release, blocker_id, controller_issue, controller_claims,
+        release, blocker_id, controller_issue, controller_claim_contracts,
         controller_evidence, status, observed_main_sha, contributions, integrations,
-        review_authority_kind, review_authority_number, review_evidence,
-        review_status, reviewed_head, unresolved_findings, observations,
+        tuple(reviews), observations,
     )
 
 

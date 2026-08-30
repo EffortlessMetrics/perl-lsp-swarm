@@ -17,7 +17,7 @@
     "merged_shas",
     "implementation_contributions",
     "landed_integrations",
-    "review",
+    "reviews",
     "proof",
     "claim_effect",
     "follow_ups",
@@ -50,7 +50,11 @@
       "type": "array",
       "items": {"$ref": "#/$defs/landed_integration"}
     },
-    "review": {"$ref": "#/$defs/review"},
+    "reviews": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/review"}
+    },
     "proof": {"$ref": "#/$defs/proof"},
     "claim_effect": {"$ref": "#/$defs/claim_effect"},
     "follow_ups": {
@@ -94,12 +98,27 @@
     "semantic_controller": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["issue", "claim_ids", "evidence"],
+      "required": ["issue", "claims", "evidence"],
       "properties": {
         "issue": {"type": "integer", "minimum": 1},
-        "claim_ids": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/claim_id"}},
+        "claims": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/controller_claim"}},
         "evidence": {"$ref": "#/$defs/durable_evidence"}
       }
+    },
+    "controller_claim": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "proof_class", "claim_scope"],
+      "properties": {
+        "id": {"$ref": "#/$defs/claim_id"},
+        "proof_class": {"enum": ["product_test", "installed_acceptance", "workflow", "review", "repository_receipt", "mechanism", "fixture"]},
+        "claim_scope": {"enum": ["repository_mechanism", "product_behavior", "installed_user_behavior"]}
+      },
+      "allOf": [
+        {"if": {"properties": {"proof_class": {"const": "product_test"}}, "required": ["proof_class"]}, "then": {"properties": {"claim_scope": {"const": "product_behavior"}}}},
+        {"if": {"properties": {"proof_class": {"const": "installed_acceptance"}}, "required": ["proof_class"]}, "then": {"properties": {"claim_scope": {"const": "installed_user_behavior"}}}},
+        {"if": {"properties": {"proof_class": {"enum": ["workflow", "review", "repository_receipt", "mechanism", "fixture"]}}, "required": ["proof_class"]}, "then": {"properties": {"claim_scope": {"const": "repository_mechanism"}}}}
+      ]
     },
     "implementation_contribution": {
       "type": "object",
