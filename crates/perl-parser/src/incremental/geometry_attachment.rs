@@ -325,7 +325,8 @@ mod tests {
             Err(SourceGeometryValidationError::PayloadSubject)
         );
         assert_eq!(
-            SourceGeometryAttachment::unavailable(later.clone()).validate_for(&different_same_length),
+            SourceGeometryAttachment::unavailable(later.clone())
+                .validate_for(&different_same_length),
             Err(SourceGeometryValidationError::AttachmentSubject)
         );
     }
