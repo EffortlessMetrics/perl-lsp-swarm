@@ -47,6 +47,16 @@ const LIFECYCLE_SCOPED_MODULES: &[&str] = &[
 const MIXED_MODULE: &str = "crates/perl-workspace/src/workspace/workspace_index.rs";
 const MIXED_MODULE_LIFECYCLE_TYPES: &[&str] = &["IndexState", "IndexCoordinator"];
 
+/// Types in the mixed module whose names read as lifecycle-adjacent but are
+/// symbol-storage, not lifecycle authority. Naming one here is a decision; the
+/// point is that a lifecycle-suggestive name cannot be silently absent from both
+/// lists, which is how a newly named lifecycle type would bypass the ratchet.
+const MIXED_MODULE_NON_LIFECYCLE_TYPES: &[&str] = &["FileIndex", "WorkspaceIndex"];
+
+/// Substrings that make a declaration in the mixed module require an explicit
+/// lifecycle / non-lifecycle classification.
+const LIFECYCLE_SUGGESTIVE: &[&str] = &["Index", "Lifecycle", "State", "Coordinator"];
+
 const MEMBER_LEDGER_PATH: &str = "policy/workspace-index-lifecycle-members.v1.tsv";
 const MEMBER_COLUMN_COUNT: usize = 8;
 
@@ -1116,12 +1126,25 @@ fn declared_members(module: &str, type_name: &str) -> Result<Vec<(String, String
 }
 
 fn validate_member_rows(rows: &[MemberRow], type_rows: &[PropositionRow]) -> Result<()> {
-    let known_type_rows: BTreeSet<&str> = type_rows.iter().map(|row| row.id.as_str()).collect();
+    let known_type_rows: BTreeMap<&str, &PropositionRow> =
+        type_rows.iter().map(|row| (row.id.as_str(), row)).collect();
     let mut ids = BTreeSet::new();
+    let mut logical_keys = BTreeSet::new();
 
     for row in rows {
         ensure!(row.id.starts_with("WSIM-"), "{}: invalid stable member row ID", row.id);
         ensure!(ids.insert(row.id.as_str()), "duplicate member row {}", row.id);
+        // A distinct WSIM id is not enough: two rows for the same declared member
+        // would silently collapse during coverage and could carry conflicting
+        // dispositions, breaking the one-disposition-per-member contract.
+        ensure!(
+            logical_keys.insert((row.module.as_str(), row.type_name.as_str(), row.member.as_str())),
+            "{}: duplicate disposition for member {}::{}::{}",
+            row.id,
+            row.module,
+            row.type_name,
+            row.member
+        );
         ensure!(
             ALLOWED_MEMBER_DISPOSITIONS.contains(&row.disposition.as_str()),
             "{}: unknown member disposition {:?}",
@@ -1134,11 +1157,29 @@ fn validate_member_rows(rows: &[MemberRow], type_rows: &[PropositionRow]) -> Res
             row.id,
             row.successor_issue
         );
+        let type_row = known_type_rows.get(row.type_row.as_str()).with_context(|| {
+            format!("{}: type_row {} does not exist in the type ledger", row.id, row.type_row)
+        })?;
+        // Existence is not enough: the referenced row must describe this member's
+        // own declaration, or the ledger could publish a false ownership and
+        // successor relationship for a member of a different type.
+        let expected_path = module_path(&row.module)
+            .with_context(|| format!("{}: unknown lifecycle module {}", row.id, row.module))?;
         ensure!(
-            known_type_rows.contains(row.type_row.as_str()),
-            "{}: type_row {} does not exist in the type ledger",
+            type_row.source_path == expected_path,
+            "{}: type_row {} describes {}, not {}",
             row.id,
-            row.type_row
+            row.type_row,
+            type_row.source_path,
+            expected_path
+        );
+        ensure!(
+            declared_type_name(&type_row.source_marker).as_deref() == Some(row.type_name.as_str()),
+            "{}: type_row {} declares {:?}, not {}",
+            row.id,
+            row.type_row,
+            type_row.source_marker,
+            row.type_name
         );
         ensure!(
             OVERLAPPING_TYPES.contains(&(row.module.as_str(), row.type_name.as_str())),
@@ -1289,4 +1330,167 @@ fn member_row_cannot_reference_a_missing_type_row() -> Result<()> {
         validate_member_rows(&rows, &type_rows),
         "does not exist in the type ledger",
     )
+}
+
+/// Lines inside a covered type's body that the member parser cannot classify.
+///
+/// The parser understands column-zero declarations, four-space variants or
+/// public struct fields, and eight-space variant fields. Anything else — a tuple
+/// variant, a macro-generated member, an unusual layout — must fail loudly here
+/// rather than silently shrink the member denominator.
+fn unclassified_body_lines(module: &str, type_name: &str) -> Result<Vec<String>> {
+    let root = repo_root()?;
+    let path = module_path(module).with_context(|| format!("unknown lifecycle module {module}"))?;
+    let source = fs::read_to_string(root.join(path)).with_context(|| format!("read {path}"))?;
+
+    let mut start = None;
+    let mut is_enum = false;
+    for (index, line) in source.lines().enumerate() {
+        let line_is_enum = if line.starts_with("pub enum ") {
+            true
+        } else if line.starts_with("pub struct ") {
+            false
+        } else {
+            continue;
+        };
+        if declared_type_name(line).as_deref() == Some(type_name) {
+            start = Some(index);
+            is_enum = line_is_enum;
+            break;
+        }
+    }
+    let start =
+        start.with_context(|| format!("{module}::{type_name} is not declared in {path}"))?;
+
+    let mut unclassified = Vec::new();
+    let mut depth: i32 = 0;
+    let mut opened = false;
+
+    for (offset, line) in source.lines().skip(start).enumerate() {
+        depth += line.matches('{').count() as i32;
+        depth -= line.matches('}').count() as i32;
+        if line.contains('{') {
+            opened = true;
+        }
+        if opened && depth == 0 {
+            break;
+        }
+        if offset == 0 {
+            continue;
+        }
+
+        let trimmed = line.trim();
+        if trimmed.is_empty()
+            || trimmed.starts_with("//")
+            || trimmed.starts_with("#[")
+            || trimmed == "{"
+            || trimmed == "}"
+            || trimmed == "},"
+        {
+            continue;
+        }
+
+        // A tuple variant carries positional members this parser cannot name, so
+        // it must be classified deliberately rather than silently under-covered.
+        if is_enum && variant_name(line).is_some() && trimmed.contains('(') {
+            unclassified.push(format!("tuple variant: {trimmed}"));
+            continue;
+        }
+
+        let classified = if is_enum {
+            variant_name(line).is_some() || field_name(line, "        ", None).is_some()
+        } else {
+            field_name(line, "    ", Some("pub ")).is_some()
+        };
+        if !classified {
+            unclassified.push(trimmed.to_string());
+        }
+    }
+    Ok(unclassified)
+}
+
+/// Every declaration in the mixed module whose name reads as lifecycle-adjacent
+/// must be explicitly classified as lifecycle or not. Without this, a newly named
+/// lifecycle type in `workspace_index.rs` would bypass the ratchet by simply not
+/// appearing in the hand-maintained list.
+fn validate_mixed_module_classification() -> Result<()> {
+    let root = repo_root()?;
+    let source = fs::read_to_string(root.join(MIXED_MODULE))
+        .with_context(|| format!("read {MIXED_MODULE}"))?;
+    let mut unclassified = Vec::new();
+    for line in source.lines() {
+        if !line.starts_with("pub enum ") && !line.starts_with("pub struct ") {
+            continue;
+        }
+        let Some(name) = declared_type_name(line) else {
+            continue;
+        };
+        if !LIFECYCLE_SUGGESTIVE.iter().any(|hint| name.contains(hint)) {
+            continue;
+        }
+        if MIXED_MODULE_LIFECYCLE_TYPES.contains(&name.as_str())
+            || MIXED_MODULE_NON_LIFECYCLE_TYPES.contains(&name.as_str())
+        {
+            continue;
+        }
+        unclassified.push(name);
+    }
+    ensure!(
+        unclassified.is_empty(),
+        "lifecycle-suggestive types in {MIXED_MODULE} are neither mapped nor explicitly excluded: {unclassified:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn member_parser_understands_every_covered_body() -> Result<()> {
+    for (module, type_name) in OVERLAPPING_TYPES {
+        let unclassified = unclassified_body_lines(module, type_name)?;
+        ensure!(
+            unclassified.is_empty(),
+            "{module}::{type_name} contains member forms this parser cannot classify, so the member denominator would silently shrink: {unclassified:?}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn lifecycle_suggestive_mixed_module_types_are_classified() -> Result<()> {
+    validate_mixed_module_classification()
+}
+
+#[test]
+fn duplicate_member_disposition_is_rejected() -> Result<()> {
+    let type_rows = load_rows()?;
+    let mut rows = load_member_rows()?;
+    let mut duplicate = rows.first().cloned().context("member ledger unexpectedly empty")?;
+    duplicate.id = "WSIM-DUPLICATE-001".to_string();
+    rows.push(duplicate);
+    assert_rejected_because(
+        validate_member_rows(&rows, &type_rows),
+        "duplicate disposition for member",
+    )
+}
+
+#[test]
+fn member_cannot_join_an_unrelated_type_row() -> Result<()> {
+    let type_rows = load_rows()?;
+
+    // Same file, different type: the type-name check must reject it.
+    let mut rows = load_member_rows()?;
+    let victim = rows
+        .iter_mut()
+        .find(|row| row.type_name == "IndexState" && row.module == "workspace_index")
+        .context("expected a live IndexState member row")?;
+    victim.type_row = "WSI-COORD-001".to_string();
+    assert_rejected_because(validate_member_rows(&rows, &type_rows), "declares")?;
+
+    // Different file entirely: the source-path check must reject it.
+    let mut rows = load_member_rows()?;
+    let victim = rows
+        .iter_mut()
+        .find(|row| row.type_name == "IndexState" && row.module == "workspace_index")
+        .context("expected a live IndexState member row")?;
+    victim.type_row = "WSI-DEG-001".to_string();
+    assert_rejected_because(validate_member_rows(&rows, &type_rows), "describes")
 }
