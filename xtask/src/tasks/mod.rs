@@ -17,6 +17,7 @@ pub mod bindings;
 pub mod build;
 pub mod build_timing;
 pub mod bump_version;
+pub mod candidate_security_contract;
 pub mod change_set;
 pub mod changelog;
 pub mod check;
