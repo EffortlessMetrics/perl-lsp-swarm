@@ -4,6 +4,8 @@
 //! but it cannot prove that an allowed local import does not re-export a Perl
 //! taxonomy. This test lets Rust compile the real `jsonrpc.rs` source in a
 //! standalone crate whose complete dependency set is `serde` and `serde_json`.
+//! The probe declares its own empty workspace so root workspace dependencies
+//! and package metadata cannot make the selected source appear neutral.
 //! A second compile deliberately routes `ErrorClass` through a local
 //! `crate::protocol` re-export; that candidate must fail because the probe does
 //! not admit `perl-parser-core`.
