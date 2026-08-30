@@ -9,23 +9,23 @@ fn expression_statement(ast: &Node) -> &Node {
     let Some(statement) = statements.first() else {
         panic!("expected one expression statement");
     };
-    let NodeKind::ExpressionStatement { expression } = &statement.kind else {
-        panic!("expected ExpressionStatement, got {:?}", statement.kind);
-    };
-    expression
+    match &statement.kind {
+        NodeKind::ExpressionStatement { expression } => expression,
+        _ => statement,
+    }
 }
 
-fn assert_function_call(node: &Node, name: &str, context: &str) {
+fn assert_function_call(node: &Node, name: &str, args_len: usize, context: &str) {
     assert!(
-        matches!(&node.kind, NodeKind::FunctionCall { name: actual, args } if actual == name && args.is_empty()),
-        "expected nullary {name} call for {context}, got {:?}",
+        matches!(&node.kind, NodeKind::FunctionCall { name: actual, args } if actual == name && args.len() == args_len),
+        "expected {name} call with {args_len} argument(s) for {context}, got {:?}",
         node.kind
     );
 }
 
 fn assert_range_with_nested_symbolic(
     source: &str,
-    builtin: &str,
+    builtin: Option<(&str, usize)>,
     nested_side: &str,
     nested_op: &str,
 ) {
@@ -46,7 +46,14 @@ fn assert_range_with_nested_symbolic(
         panic!("expected nested {nested_op} for `{source}`, got {:?}", nested.kind);
     };
     assert_eq!(op, nested_op, "unexpected nested operator for `{source}`:\n{}", ast.to_sexp());
-    assert_function_call(if nested_side == "left" { nested_left } else { left }, builtin, source);
+    if let Some((builtin, args_len)) = builtin {
+        assert_function_call(
+            if nested_side == "left" { nested_left } else { left },
+            builtin,
+            args_len,
+            source,
+        );
+    }
 }
 
 #[test]
@@ -60,7 +67,7 @@ fn statement_call_tail_range_is_outside_all_symbolic_operators() {
         ("time // $b .. $c;", "//"),
     ] {
         let builtin = if nested_op == "||" { "shift" } else { "time" };
-        assert_range_with_nested_symbolic(source, builtin, "left", nested_op);
+        assert_range_with_nested_symbolic(source, Some((builtin, 0)), "left", nested_op);
     }
 
     for (source, nested_op) in [
@@ -71,8 +78,16 @@ fn statement_call_tail_range_is_outside_all_symbolic_operators() {
         ("time .. $b || $c;", "||"),
         ("time .. $b // $c;", "//"),
     ] {
-        assert_range_with_nested_symbolic(source, "time", "right", nested_op);
+        assert_range_with_nested_symbolic(source, Some(("time", 0)), "right", nested_op);
     }
+}
+
+#[test]
+fn statement_call_tail_range_reaches_each_call_site() {
+    assert_range_with_nested_symbolic("ref $x || $b .. $c;", Some(("ref", 1)), "left", "||");
+    assert_range_with_nested_symbolic("ref $x .. $b && $c;", Some(("ref", 1)), "right", "&&");
+    assert_range_with_nested_symbolic("lc $x | $b .. $c;", Some(("lc", 1)), "left", "|");
+    assert_range_with_nested_symbolic("close FH || $b .. $c;", None, "left", "||");
 }
 
 #[test]
@@ -112,4 +127,47 @@ fn statement_call_tail_word_operators_stay_outside_range() {
             ast.to_sexp()
         );
     }
+}
+
+#[test]
+fn statement_call_tail_range_preserves_adjacent_boundaries() {
+    assert_range_with_nested_symbolic("time == 1 .. 2;", Some(("time", 0)), "left", "==");
+
+    let source = "time .. $b, $c;";
+    assert_clean_parse(source);
+    let ast = parse(source);
+    let expression = expression_statement(&ast);
+    let NodeKind::ArrayLiteral { elements } = &expression.kind else {
+        panic!("expected comma array for `{source}`, got {:?}", expression.kind);
+    };
+    assert_eq!(elements.len(), 2, "expected two comma elements for `{source}`:\n{}", ast.to_sexp());
+    assert!(
+        matches!(&elements[0].kind, NodeKind::Binary { op, .. } if op == ".."),
+        "expected range in comma operand for `{source}`:\n{}",
+        ast.to_sexp()
+    );
+    assert!(
+        matches!(&elements[1].kind, NodeKind::Variable { sigil, name } if sigil == "$" && name == "c"),
+        "expected `$c` after range comma for `{source}`:\n{}",
+        ast.to_sexp()
+    );
+
+    let source = "time & $b .. $c ^ $d;";
+    assert_clean_parse(source);
+    let ast = parse(source);
+    let expression = expression_statement(&ast);
+    let NodeKind::Binary { op, left, right } = &expression.kind else {
+        panic!("expected outer range for `{source}`, got {:?}", expression.kind);
+    };
+    assert_eq!(op, "..", "unexpected outer range for `{source}`:\n{}", ast.to_sexp());
+    assert!(
+        matches!(&left.kind, NodeKind::Binary { op, .. } if op == "&"),
+        "expected bitwise-and on range left for `{source}`:\n{}",
+        ast.to_sexp()
+    );
+    assert!(
+        matches!(&right.kind, NodeKind::Binary { op, .. } if op == "^"),
+        "expected bitwise-xor on range right for `{source}`:\n{}",
+        ast.to_sexp()
+    );
 }
