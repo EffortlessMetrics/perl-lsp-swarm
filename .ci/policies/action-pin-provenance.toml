@@ -352,6 +352,14 @@ sha = 'db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28'
 kind = 'release_tag'
 value = 'v4.37.8'
 
+# Verified against upstream on 2026-08-30:
+# github/codeql-action v4.37.9 -> cdf488f595d80d6e07e03d4674febd5ab45fa938
+[[pin]]
+action = 'github/codeql-action/upload-sarif'
+sha = 'cdf488f595d80d6e07e03d4674febd5ab45fa938'
+kind = 'release_tag'
+value = 'v4.37.9'
+
 # Verified against upstream on 2026-08-29:
 # docker/setup-buildx-action v4.3.0 -> 37fe631027851001ddb9b187196cc803df7f5f0e
 [[pin]]
