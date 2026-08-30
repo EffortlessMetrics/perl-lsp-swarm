@@ -60,7 +60,8 @@ must stop at `provisional(human-pending)` for the selection surface.
   #11548's v2 route catalog — was closed unmerged as superseded on
   2026-08-27 with an explicit do-not-pin/do-not-fixture disposition, and
   a scoped successor is now in flight: PR #13362
-  (`feat/11548-inventory-derivative`, open as of 2026-08-30) rebuilds the
+  (`feat/11548-inventory-derivative`, open as of 2026-08-30 as observed then;
+  GitHub remains authoritative for its current state) rebuilds the
   #12858 candidate as an explicitly **non-authoritative** #11575 inventory
   derivative — its rows carry no route IDs and no projection contexts, it claims
   no #10333/#10334 route-contract authority, and it does not close #11548 or
@@ -463,6 +464,12 @@ ROUTE_FAMILY_CHILDREN = {
         "r_4f8c2a",
     ),
 }
+ROUTE_FAMILY_REGISTRY_ROLES = {
+    "fixture-route-VS_Code_extension": None,
+    "fixture-route-C1202-marketplace": "fixture_marketplace",
+    "fixture-route-C1202-open-vsx": "fixture_open_vsx",
+    "r_4f8c2a": "open_vsx",
+}
 FINDING_DISPOSITION_RULES = {
     finding_id: {
         "kind": "project",
@@ -509,8 +516,10 @@ def fixture_catalog():
             context = projection["exact_projection_context"]
             rows.append({
                 "route_id": route_id,
-                "target_registry": "open_vsx" if item_id == "C1208"
-                else "fixture_registry",
+                "target_registry": ROUTE_FAMILY_REGISTRY_ROLES.get(
+                    route_id,
+                    "open_vsx" if item_id == "C1208" else "fixture_registry",
+                ),
                 "projection_contexts": (context,),
             })
     rows.extend({
@@ -563,6 +572,32 @@ def require_route_family_bindings(
                 "route family references unknown catalog route ID(s): "
                 + ", ".join(missing_route_ids)
             )
+        require_route_family_registries(
+            catalog_rows,
+            parent_route_id,
+            child_route_ids,
+        )
+
+def require_route_family_registries(
+    catalog_rows,
+    parent_route_id,
+    child_route_ids,
+):
+    parent_route = resolve_catalog_route(catalog_rows, parent_route_id)
+    if (
+        "target_registry" not in parent_route
+        or parent_route["target_registry"] is not None
+    ):
+        raise ValueError("route family parent must be registry-unspecified")
+    child_registries = []
+    for child_route_id in child_route_ids:
+        child_route = resolve_catalog_route(catalog_rows, child_route_id)
+        child_registry = child_route.get("target_registry")
+        if not isinstance(child_registry, str) or not child_registry:
+            raise ValueError("route family child must have a concrete registry")
+        if child_registry in child_registries:
+            raise ValueError("route family children must use distinct registries")
+        child_registries.append(child_registry)
 
 def require_open_vsx_route(catalog_rows, route_id, projection_context):
     route = require_catalog_projection(catalog_rows, route_id, projection_context)
@@ -815,6 +850,48 @@ require_true(
     ),
     "non-distinct route family declaration was accepted",
 )
+REGISTRY_SPECIFIC_PARENT_CATALOG = tuple(
+    {
+        **row,
+        "target_registry": "fixture_parent_registry",
+    } if row["route_id"] == "fixture-route-VS_Code_extension" else row
+    for row in FIXTURE_CATALOG
+)
+require_true(
+    assert_route_family_rejected(
+        REGISTRY_SPECIFIC_PARENT_CATALOG,
+        ROUTE_FAMILY_CHILDREN,
+    ),
+    "registry-specific family parent was accepted",
+)
+REGISTRY_UNSPECIFIED_CHILD_CATALOG = tuple(
+    {
+        **row,
+        "target_registry": None,
+    } if row["route_id"] == "fixture-route-C1202-marketplace" else row
+    for row in FIXTURE_CATALOG
+)
+require_true(
+    assert_route_family_rejected(
+        REGISTRY_UNSPECIFIED_CHILD_CATALOG,
+        ROUTE_FAMILY_CHILDREN,
+    ),
+    "registry-unspecified family child was accepted",
+)
+SHARED_CHILD_REGISTRY_CATALOG = tuple(
+    {
+        **row,
+        "target_registry": "fixture_open_vsx",
+    } if row["route_id"] == "fixture-route-C1202-marketplace" else row
+    for row in FIXTURE_CATALOG
+)
+require_true(
+    assert_route_family_rejected(
+        SHARED_CHILD_REGISTRY_CATALOG,
+        ROUTE_FAMILY_CHILDREN,
+    ),
+    "family children sharing a registry were accepted",
+)
 require_true(assert_rejected(
     WRONG_REGISTRY_CATALOG,
     "r_4f8c2a",
@@ -905,6 +982,11 @@ require_true(
     "finding-specific disposition tamper was accepted",
 )
 ```
+
+This closure fixture is executed manually against this document and is not wired
+to a repository check in this planning PR. Binding it to an owning package's
+test is an implementation-lane obligation; until then, fixture drift is caught
+only by re-running it.
 
 The fixture reads `docs/distribution/INSTALL_CLAIM_SURFACES.md` and rejects missing,
 duplicate, unknown, and incompatible IDs before
