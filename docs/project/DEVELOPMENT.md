@@ -126,12 +126,17 @@ lands — never widen a baseline to turn a red sweep green.
 
 ## Agent-driven development
 
-Much of this repository is developed by agents working one coherent claim at a time. The
-current contracts are the repository-root
-[AGENTS.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/AGENTS.md) and
-[CLAUDE.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/CLAUDE.md), with
-provider-native procedures under `.claude/skills/`. Agentic contributors should also read
-the
+Much of this repository is developed by agents working one coherent claim at a time. Each
+provider has its own route map at the repository root, paired with its own tree of
+executable provider-native procedures:
+
+| Provider | Route map | Procedures |
+| --- | --- | --- |
+| Codex | [AGENTS.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/AGENTS.md) | `.agents/skills/` |
+| Claude Code | [CLAUDE.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/CLAUDE.md) | `.claude/skills/` |
+
+Follow your own provider's pair; do not run the other provider's procedures. Agentic
+contributors should also read the
 [agent contributing guide](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/how-to/AGENT_CONTRIBUTING.md).
 
 Two invariants matter regardless of provider:
