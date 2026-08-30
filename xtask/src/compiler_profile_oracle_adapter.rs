@@ -1720,10 +1720,35 @@ fn normalize(receipt: &OracleReceiptV1) -> Result<CompilerProfileObservationV1> 
 }
 
 /// Bind the subject dimensions this adapter can prove.  Every bound dimension
-/// is exact and non-transferable: another comparison class, fixture, source
-/// snapshot, extractor, Perl oracle, or module-path authority produces a
-/// different subject, and the four dimensions the receipt cannot speak to stay
-/// explicitly not proven.
+/// is exact and non-transferable *with respect to what the receipt declares*:
+/// another declared comparison class, fixture, source snapshot, extractor,
+/// Perl oracle, or module-path authority produces a different subject, and the
+/// four dimensions the receipt cannot speak to stay explicitly not proven.
+///
+/// That qualifier is load-bearing, and two limits follow from it. Both are
+/// bounds on the source contract, not defects the adapter can close from here.
+///
+/// The adapter never reads the fixture and never computes a digest, so
+/// `source_snapshot.content_hash` is carried as the source declares it. The
+/// schema constrains it to a non-empty string and nothing more — this crate's
+/// own canonical fixture uses a truncated `sha256:2f1c9a` — so two genuinely
+/// different snapshots labelled with one hash bind to one subject. Requiring a
+/// full canonical digest here would reject that fixture and impose a contract
+/// `oracle_receipt.v1` does not state; the honest position is that snapshot
+/// identity is exactly as strong as the producer's labelling, and no stronger.
+///
+/// Likewise, `environment.declared` and `ambient_inputs` carry names and
+/// authorities but never values: the receipt requires `redacted_values`, so
+/// values are withheld by design and no value digest exists in the schema to
+/// bind instead. Two runs differing only in what `PATH` contained therefore
+/// share a subject. Refusing every receipt with a declared input would make
+/// `AcceptedCompatibility` unreachable for any non-empty environment, which
+/// trades a real bound for a useless one.
+///
+/// Both limits are stated rather than silently assumed away. Closing either
+/// needs the source contract to carry the missing identity — private-safe
+/// value digests, a declared digest algorithm — which is a change to
+/// `schemas/oracle_receipt.v1.schema.json` and belongs to whoever owns it.
 fn subject_identity(receipt: &OracleReceiptV1) -> Result<CandidateSubjectIdentity> {
     let mut subject = CandidateSubjectIdentity::not_proven();
 
