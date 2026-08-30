@@ -184,12 +184,11 @@ where
         NodeKind::Package { name_span, .. } => *name_span = map(*name_span),
         NodeKind::PhaseBlock { phase_span, .. } => map_optional_location(phase_span, map),
         NodeKind::Error { found, .. } => {
-            if map_recovery_tokens {
-                if let Some(found) = found {
-                    if !map_token_span(found, map) {
-                        return false;
-                    }
-                }
+            if map_recovery_tokens
+                && let Some(found) = found
+                && !map_token_span(found, map)
+            {
+                return false;
             }
         }
         NodeKind::Program { .. }

@@ -1,6 +1,7 @@
 use super::MAX_INCREMENTAL_EDIT_BATCH;
 use perl_lexer::{PerlLexer, TokenType};
 use perl_parser_core::{
+    SourceRegionIndex, SourceRegionKind,
     ast::{Node, SourceLocation},
     edit::EditSet,
 };
@@ -22,19 +23,27 @@ pub(super) struct WhitespaceEditMap {
 
 impl WhitespaceEditMap {
     /// Admit an edit batch only when the declared edits exactly explain the
-    /// old/new sources, every replacement is whitespace-only, and lexing the
-    /// two complete sources yields the same non-whitespace token fingerprint.
+    /// old/new sources, every replacement is whitespace-only and provably in
+    /// code regions, and lexing the two complete sources yields the same
+    /// non-whitespace token fingerprint.
     ///
     /// The full-source coherence check is deliberate. Incremental-v2's legacy
     /// `Edit` values carry positions but not replacement text, and stale or
     /// over-wide ranges previously made whitespace tests exercise structural
     /// bytes such as `$` and `=`. Reconstructing the unchanged segments keeps
     /// malformed edit authority out of the reuse path.
+    ///
+    /// The shared lexer drops comment tokens and does not surface heredoc
+    /// bodies without `with_body_tokens`, so its token fingerprint cannot prove
+    /// that non-code content is unchanged. The source region index supplies
+    /// that proof; anything not provably `Code` falls back conservatively.
     pub(super) fn try_new(old_source: &str, new_source: &str, edits: &EditSet) -> Option<Self> {
         if edits.is_empty() || edits.len() > MAX_INCREMENTAL_EDIT_BATCH {
             return None;
         }
 
+        let old_regions = SourceRegionIndex::build(old_source);
+        let new_regions = SourceRegionIndex::build(new_source);
         let mut normalized: Vec<NormalizedEdit> = Vec::with_capacity(edits.len());
         let mut old_cursor = 0usize;
         let mut new_cursor = 0usize;
@@ -79,6 +88,12 @@ impl WhitespaceEditMap {
                 return None;
             }
 
+            if !old_regions.range_fully_within(old_start, old_end, &[SourceRegionKind::Code])
+                || !new_regions.range_fully_within(new_start, new_end, &[SourceRegionKind::Code])
+            {
+                return None;
+            }
+
             let byte_shift = edit.byte_shift();
             normalized.push(NormalizedEdit { old_start, old_end, new_start, new_end, byte_shift });
             old_cursor = old_end;
@@ -101,6 +116,7 @@ impl WhitespaceEditMap {
             root.clone_with_mapped_locations(|location| self.map_location(location))?;
         // Parser::parse always returns a Program rooted at the source origin.
         // Leading trivia moves its first statement, not the Program anchor.
+        // `assert_leading_whitespace_reuse_matches_fresh` pins this invariant.
         cloned.location.start = root.location.start;
         Some(cloned)
     }
@@ -326,9 +342,24 @@ mod tests {
     }
 
     #[test]
-    fn admits_adjacent_progressive_deletions() {
+    fn admits_adjacent_progressive_deletions() -> TestResult {
         let edits = edit_set([edit(1, 2, 1), edit(1, 2, 1)]);
-        assert!(WhitespaceEditMap::try_new("a   b", "a b", &edits).is_some());
+        let map = WhitespaceEditMap::try_new("a   b", "a b", &edits)
+            .ok_or("adjacent progressive deletions should be admitted")?;
+        let root = Node::new(
+            NodeKind::Program { statements: vec![leaf("a", 0, 1), leaf("b", 4, 5)] },
+            loc(0, 5),
+        );
+
+        let mapped = map.clone_tree(&root).ok_or("location mapping unexpectedly failed")?;
+        let statements = match &mapped.kind {
+            NodeKind::Program { statements } => statements,
+            other => return Err(format!("expected Program, got {}", other.kind_name()).into()),
+        };
+        assert_eq!(mapped.location, loc(0, 3));
+        assert_eq!(statements[0].location, loc(0, 1));
+        assert_eq!(statements[1].location, loc(2, 3));
+        Ok(())
     }
 
     #[test]
@@ -410,6 +441,25 @@ mod tests {
         let insertion = old.find("b\nEOF").unwrap_or(old.len());
         let new = "my $s = <<'EOF';\na  b\nEOF\n";
         let edits = edit_set([edit(insertion, insertion, insertion + 1)]);
+        assert!(WhitespaceEditMap::try_new(old, new, &edits).is_none());
+    }
+
+    #[test]
+    fn rejects_whitespace_changes_inside_pod() {
+        let old = "=pod\nbody text\n=cut\nmy $x = 1;\n";
+        let insertion = old.find("body text").map_or(old.len(), |index| index + 4);
+        let new = "=pod\nbody  text\n=cut\nmy $x = 1;\n";
+        let edits = edit_set([edit(insertion, insertion, insertion + 1)]);
+        assert!(WhitespaceEditMap::try_new(old, new, &edits).is_none());
+    }
+
+    #[test]
+    fn rejects_insertion_at_a_comment_boundary() {
+        let old = "my $x = 1;# note\n";
+        let boundary = old.find('#').map_or(old.len(), |index| index);
+        let new = "my $x = 1; # note\n";
+        let edits = edit_set([edit(boundary, boundary, boundary + 1)]);
+        // This conservative boundary causes a correct-but-slower fallback.
         assert!(WhitespaceEditMap::try_new(old, new, &edits).is_none());
     }
 

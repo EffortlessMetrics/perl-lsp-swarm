@@ -205,6 +205,9 @@ fn mapped_statement_spans_are_safe_for_range_consumers() -> TestResult {
 
     let incremental = parser.parse(source2)?;
     assert_eq!(incremental, parse_fresh(source2)?);
+    assert!(parser.used_incremental_path());
+    assert!(!parser.used_advanced_reuse());
+    assert_eq!(parser.reparsed_nodes, 0);
     let statements = match &incremental.kind {
         NodeKind::Program { statements } => statements,
         other => return Err(format!("expected Program, got {}", other.kind_name()).into()),
