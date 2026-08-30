@@ -13,7 +13,8 @@ use xtask::parser_accuracy_legacy_population::{
 };
 
 const EXPECTED_APPLIED_CASE_COUNT: usize = 47;
-const EXPECTED_POPULATION_IDENTITY: &str = "sha256:pending-first-exact-run";
+const EXPECTED_POPULATION_IDENTITY: &str =
+    "sha256:47a8013e2b01ae7d48ed107076aea29d3fc1ac23c5d05a486f1100faf5ffb63c";
 
 type TestResult = Result<(), Box<dyn Error>>;
 
