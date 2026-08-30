@@ -974,6 +974,8 @@ jobs:
       - name: Check floor-metric ratchet (including fail-closed editor UX)
         # The editor_ux route always evaluates the committed baseline; missing or
         # invalid current metrics fail before any scorecard publication.
+        # bootstrap-safe behavior allows missing receipts while the baseline is
+        # being established; malformed or invalid receipts remain fail-closed.
         # See docs/project/metrics/RATCHET.md for the four-layer model and promotion workflow.
         run: just ci-metrics-ratchet
 

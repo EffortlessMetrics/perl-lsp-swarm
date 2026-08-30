@@ -56,7 +56,11 @@ fn ci_metrics_ratchet_recipe_checks_every_committed_baseline()
         if !baseline.scorecard_ratchet {
             continue;
         }
-        let command = format!("metrics ratchet-check {}", baseline.subsystem);
+        let command = if baseline.subsystem == "editor_ux" {
+            "ux-scorecard --format json --ratchet-check".to_string()
+        } else {
+            format!("metrics ratchet-check {}", baseline.subsystem)
+        };
         assert!(
             justfile.contains(&command),
             "just ci-metrics-ratchet must check committed baseline `{}`",
