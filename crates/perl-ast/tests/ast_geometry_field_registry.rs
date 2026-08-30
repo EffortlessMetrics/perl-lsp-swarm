@@ -1066,6 +1066,77 @@ fn one_nested_span_with_one_row_is_accepted() {
     compare_declared_against_registry(&scan.geometry, &one_row);
 }
 
+/// Every registered geometry occurrence must actually reach the coordinate mapper.
+///
+/// This is the seam the whole registry exists to serve, and until `main` gained
+/// `Node::clone_with_mapped_locations` there was nothing to connect it to. There
+/// is now, and review pointed out that registration alone proves nothing about
+/// it: every arm of `map_payload_locations_with_recovery` matches with `..`, so
+/// a field can be forced into this registry by its declared type, forced into
+/// `observe_geometry_fields` by exhaustive destructuring, validated in
+/// production — and still be silently skipped by the mapper, leaving a mapped
+/// clone holding stale offsets. That is precisely the failure this registry is
+/// supposed to make impossible.
+///
+/// The proof does not need the mapper to expose anything. The mapping closure is
+/// called once per location the mapper actually touches, so counting calls
+/// measures what it really did rather than what it claims:
+///
+/// ```text
+/// map calls == one per node location + one per registered geometry occurrence
+/// ```
+///
+/// A field the mapper ignores makes the count fall short, and the failure names
+/// the variant. This is a counting argument, not a value comparison, so it stays
+/// true for any mapping function and does not need the observer to surface span
+/// values.
+#[test]
+fn every_registered_geometry_occurrence_reaches_the_mapper()
+-> Result<(), Box<dyn std::error::Error>> {
+    for fixture in node_kind_fixtures() {
+        let sample = &fixture.sample;
+        let kind_name = sample.kind.kind_name();
+        if geometry_fields_for(kind_name).is_empty() {
+            continue;
+        }
+
+        // Sum geometry over the whole tree, not just the root: a fixture may
+        // nest a geometry-bearing child, and counting only the root would make
+        // this test fail for the wrong reason if one ever does.
+        let mut occurrences = 0usize;
+        let mut stack = vec![sample];
+        while let Some(node) = stack.pop() {
+            occurrences +=
+                observe_geometry_fields(&node.kind).iter().map(|e| e.occurrences).sum::<usize>();
+            node.for_each_child_with_field(|_, child| stack.push(child));
+        }
+
+        let calls = std::cell::Cell::new(0usize);
+        let mapped = sample.clone_with_mapped_locations(|location| {
+            calls.set(calls.get() + 1);
+            location
+        });
+        let mapped = mapped.ok_or_else(|| {
+            format!("{kind_name}: identity mapping must produce a clone, got None")
+        })?;
+        assert_eq!(mapped.kind.kind_name(), kind_name, "{kind_name}: mapped clone changed kind");
+
+        let expected = sample.count_nodes() + occurrences;
+        assert_eq!(
+            calls.get(),
+            expected,
+            "{kind_name}: the mapper touched {} locations but the registry accounts for {} \
+             ({} node locations + {occurrences} registered geometry occurrences). A shortfall \
+             means a registered geometry field is not being remapped, so a mapped clone keeps \
+             stale offsets for it.",
+            calls.get(),
+            expected,
+            sample.count_nodes()
+        );
+    }
+    Ok(())
+}
+
 /// Registry coherence is checked by production code, not only by this suite.
 #[test]
 fn the_canonical_registry_validates() -> Result<(), Box<dyn std::error::Error>> {
