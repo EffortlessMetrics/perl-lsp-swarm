@@ -22,16 +22,17 @@ If a doc starts mixing multiple intents, split it and cross-link the parts.
 | Topic | Source | Verified By |
 | --- | --- | --- |
 | Current release line | [`../Cargo.toml`](../Cargo.toml) | Workspace manifest |
-| Status narrative and subsystem metrics | [project/status/index.md](project/status/index.md) and its subsystem links | Human review for narrative; `cargo xtask update-status --check` for generated files |
+| Status overview and subsystem map | [project/status/index.md](project/status/index.md) and its owner-designated subsystem links | Human review for human-owned pages; `cargo xtask update-status --check` for generated files |
 | Roadmap and active milestone | [project/ROADMAP.md](project/ROADMAP.md) | Human review |
 | Distribution and install-channel matrix | [project/DISTRIBUTION_MATRIX.md](project/DISTRIBUTION_MATRIX.md) | Release status + channel receipts |
 | Capability catalog | [`../features.toml`](../features.toml) | `just ci-gate` |
 | Local validation flow | [project/CI_LOCAL_VALIDATION.md](project/CI_LOCAL_VALIDATION.md) | `just ci-gate` |
 
-Rule: keep human-owned project status narrative in
-[project/status/index.md](project/status/index.md). Computed metrics belong in the
-subsystem files selected by `cargo xtask update-status`; verify them with `--check`
-rather than copying them into the index.
+Rule: keep the project overview narrative in
+[project/status/index.md](project/status/index.md), and follow its owner column for
+human-owned subsystem status. Computed metrics belong only in the files or sections
+selected by `cargo xtask update-status`; verify them with `--check` rather than
+copying them into the index.
 
 ## Compatibility posture
 
@@ -105,8 +106,9 @@ just status-update
 just status-check
 ```
 
-- Keep human-owned narrative in [project/status/index.md](project/status/index.md);
-  regenerate computed metrics in the selected subsystem files with
+- Keep overview narrative in [project/status/index.md](project/status/index.md) and
+  other human-owned status in the owner-designated subsystem pages; regenerate
+  computed metrics in the selected files or sections with
   `cargo xtask update-status --write`, then verify them with `--check`.
 - Update [project/ROADMAP.md](project/ROADMAP.md) when the active milestone or release framing changes.
 - Keep top-level summary docs short and link back to the canonical project docs.
