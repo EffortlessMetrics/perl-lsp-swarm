@@ -258,6 +258,8 @@ fn successor_relinking_writes_only_terminal_slots() {
     assert_path_count(&paths, "$successor->{right}->{parent}", AccessMode::Write, 1);
     assert_path_count(&paths, "$successor->{left}->{parent}", AccessMode::Write, 1);
     assert_path_count(&paths, "$successor->{color}", AccessMode::Write, 1);
+    assert_path_count(&paths, "$successor->{right}", AccessMode::Write, 1);
+    assert_path_count(&paths, "$successor->{left}", AccessMode::Write, 1);
     assert_path_present(&paths, "$successor->{right}", AccessMode::Read);
     assert_path_present(&paths, "$successor->{left}", AccessMode::Read);
 
