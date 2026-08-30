@@ -873,7 +873,7 @@ mod tests {
             "time_to_first_useful_result_ms": null
         }, {
             "operation": "completion",
-            "time_to_first_useful_result_ms": 5.0,
+            "time_to_first_useful_result_ms": null,
             "timing_status": "missing_request_start"
         }]);
         fs::write(&path, serde_json::to_string_pretty(&value)?)?;
