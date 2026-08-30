@@ -25,11 +25,13 @@ fn independently_created_identical_states_have_distinct_geometry_instances() {
 
     assert_eq!(first.generation(), reopened.generation());
     assert_eq!(first.snapshot().content_digest(), reopened.snapshot().content_digest());
-    assert!(!first
-        .snapshot()
-        .source_geometry()
-        .subject()
-        .same_instance_as(reopened.snapshot().source_geometry().subject()));
+    assert!(
+        !first
+            .snapshot()
+            .source_geometry()
+            .subject()
+            .same_instance_as(reopened.snapshot().source_geometry().subject())
+    );
     assert_ne!(
         first.snapshot().source_geometry().subject(),
         reopened.snapshot().source_geometry().subject()
@@ -139,10 +141,12 @@ fn a_stale_generation_snapshot_is_rejected_against_the_committed_source() -> any
     assert_eq!(state.generation().get(), 1);
     assert!(stale.generation() < state.generation());
     assert!(stale.validate_against(state.source()).is_err());
-    assert!(stale
-        .source_geometry()
-        .subject()
-        .same_instance_as(state.snapshot().source_geometry().subject()));
+    assert!(
+        stale
+            .source_geometry()
+            .subject()
+            .same_instance_as(state.snapshot().source_geometry().subject())
+    );
     assert_ne!(
         stale.source_geometry().subject().generation(),
         state.snapshot().source_geometry().subject().generation()

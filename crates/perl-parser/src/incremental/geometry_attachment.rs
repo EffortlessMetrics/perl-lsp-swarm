@@ -50,6 +50,7 @@ impl Hash for SourceGeometryInstanceIdentity {
 
 /// Exact parser-snapshot subject to which source geometry belongs.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub struct SourceGeometrySubject {
     instance_identity: SourceGeometryInstanceIdentity,
     generation: ParseGeneration,
@@ -231,6 +232,7 @@ pub enum SourceGeometryAttachmentState {
 
 /// Snapshot-bound source-geometry attachment.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct SourceGeometryAttachment {
     schema_version: &'static str,
     subject: SourceGeometrySubject,

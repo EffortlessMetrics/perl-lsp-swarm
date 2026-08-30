@@ -237,6 +237,11 @@ impl ParseSnapshot {
             });
         }
 
+        // For Unavailable/InstrumentFailure attachments this subject compare
+        // is tautological (the attachment subject was built from these same
+        // fields); the discriminating payload check runs only for
+        // Partial/Complete states inside validate_for. The uniform call is
+        // deliberate defense in depth for the snapshot-bound identity.
         let expected_geometry_subject = SourceGeometrySubject::next_for_same_instance(
             self.source_geometry.subject(),
             self.generation,
@@ -352,10 +357,9 @@ mod tests {
             parse(source),
         );
 
-        assert!(!first
-            .source_geometry()
-            .subject()
-            .same_instance_as(second.source_geometry().subject()));
+        assert!(
+            !first.source_geometry().subject().same_instance_as(second.source_geometry().subject())
+        );
         assert_ne!(first.source_geometry().subject(), second.source_geometry().subject());
     }
 
