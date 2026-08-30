@@ -726,16 +726,12 @@ pub fn parse_declared_items(source: &str) -> Vec<(String, SymbolKind, Visibility
             }
         }
 
-        // The body opens at the first `{` at or after the header, which is not
-        // the same as the depth going positive: `impl Foo {}` opens and closes
-        // on one line for a net delta of zero. Keying off depth would leave the
-        // header pending, swallow the *next* `impl`, and hand its methods the
-        // stale type.
-        if awaiting_impl_body && trimmed.contains('{') {
+        let delta = brace_delta(trimmed);
+        if awaiting_impl_body && impl_body_opens(trimmed, delta) {
             awaiting_impl_body = false;
         }
 
-        depth += brace_delta(trimmed);
+        depth += delta;
         if depth <= 0 {
             depth = 0;
             // Only a closed impl clears the type; a header still waiting for its
@@ -749,6 +745,24 @@ pub fn parse_declared_items(source: &str) -> Vec<(String, SymbolKind, Visibility
     out.sort();
     out.dedup();
     out
+}
+
+/// Whether an `impl` body's opening brace is on this line.
+///
+/// Three shapes have to be told apart, and a bare `contains('{')` conflates the
+/// last two:
+///
+/// * `impl Foo {` — a brace is left open, so it can only be the body.
+/// * `impl Foo {}` — balanced, but the group *is* the body, opened and closed.
+/// * `impl Foo<{ N + 1 }>` — also balanced, but the group is a const-generic
+///   argument inside the type, and the body is still to come on a later line.
+///
+/// The discriminator is what the line ends on: a body that closes on its own
+/// line ends in `}`, whereas a braced type argument is always followed by the
+/// rest of the type. Literals and comments are already blanked by `code_lines`,
+/// so their braces cannot reach this.
+fn impl_body_opens(trimmed: &str, delta: i32) -> bool {
+    delta > 0 || (delta == 0 && trimmed.ends_with('}'))
 }
 
 /// The type an inherent `impl` block belongs to, or `None` for a trait impl.
@@ -2199,6 +2213,54 @@ pub fn free(name: &str) -> String {
                 ("free".to_string(), SymbolKind::Function),
             ],
             "a wrapped impl header still qualifies its methods, and the impl still closes"
+        );
+        Ok(())
+    }
+
+    /// A const-generic argument puts a *balanced* brace group in the header, so
+    /// "this line has a brace" is not the same as "the body opened here". The
+    /// body arrives on a later line, and the type has to survive to meet it.
+    #[test]
+    fn a_const_generic_impl_header_keeps_its_methods() -> TestResult {
+        let source = "\
+impl Grid<{ N + 1 }>
+{
+    pub fn cells(&self) -> usize {
+        0
+    }
+}
+
+pub fn free() -> usize {
+    0
+}
+";
+        assert_eq!(
+            parse_public_items(source),
+            vec![
+                ("Grid::cells".to_string(), SymbolKind::Method),
+                ("free".to_string(), SymbolKind::Function),
+            ],
+            "the braced const argument is part of the type, not the body"
+        );
+        Ok(())
+    }
+
+    /// The same header with its body opening on the same line must behave
+    /// identically. Without this, a rule that keyed off the *last* brace group
+    /// rather than the delta could pass the test above and fail here.
+    #[test]
+    fn a_const_generic_impl_header_with_an_inline_body_keeps_its_methods() -> TestResult {
+        let source = "\
+impl Grid<{ N + 1 }> {
+    pub fn cells(&self) -> usize {
+        0
+    }
+}
+";
+        assert_eq!(
+            parse_public_items(source),
+            vec![("Grid::cells".to_string(), SymbolKind::Method)],
+            "a const-generic header that opens its body inline still qualifies the method"
         );
         Ok(())
     }
