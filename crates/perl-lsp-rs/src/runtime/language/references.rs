@@ -301,8 +301,8 @@ impl ReferencesAnsweringTier {
     /// Written to the provider-decision receipt, so it must be derived rather than
     /// asserted: a receipt that always reports `fresh` cannot distinguish an answer
     /// computed over current source from one computed over a workspace index that
-    /// the handler already observed to be stale (#14156, integrity rule 1 of
-    /// `docs/reference/SCOREBOARD_DOCTRINE.md`).
+    /// the handler already observed to be stale (#14156; principle 2,
+    /// "Tamper-evident + fail-closed", of `docs/reference/SCOREBOARD_DOCTRINE.md`).
     ///
     /// `index_state` is the `"full" | "partial" | "none"` label captured at the
     /// branch point, which is downgraded to `"none"` when the workspace index is
@@ -319,9 +319,20 @@ impl ReferencesAnsweringTier {
             // cached index stands between the request and the source it answered
             // from. They are current whatever the workspace index is doing.
             Self::SemanticSourceBacked | Self::OpenDocumentText | Self::SemanticAnalyzer => "fresh",
-            // Every remaining tier answers out of the workspace index, and so does
-            // `Empty`: a "no references" claim is exactly as complete as the index
-            // coverage behind it, which is the case most worth not overstating.
+            // `WorkspaceExact`, `WorkspaceMixed`, and `PartialIndex` answer from
+            // the workspace index, so they are only as current as it is. `Empty`
+            // joins them because a "no references" claim is exactly as complete
+            // as the index coverage behind it.
+            //
+            // `WorkspaceText` is grouped here for reachability, not data source:
+            // its results come from `bounded_open_document_snapshot`, a scan of
+            // the live open buffers, so it is current in the same sense as
+            // `OpenDocumentText`. It is only ever reached from inside the
+            // `IndexAccessMode::Full` arm, where this branch yields `fresh`
+            // anyway, so the two groupings are indistinguishable today. If that
+            // path ever becomes reachable under a partial or absent index, move
+            // it to the live-source arm above rather than letting it report
+            // `unknown` for an answer read from live buffers.
             Self::WorkspaceExact
             | Self::WorkspaceMixed
             | Self::WorkspaceText
@@ -2144,10 +2155,13 @@ mod tests {
         Ok(())
     }
 
-    /// Counter-assertion for the freshness field (`SCOREBOARD_DOCTRINE.md`
-    /// integrity rule 3): the same tier must yield opposite values across index
-    /// states, and different tiers must disagree under one index state. A
-    /// hardcode of either polarity fails this test.
+    /// Counter-assertion for the freshness field, which is what
+    /// `docs/reference/SCOREBOARD_DOCTRINE.md` asks for under "Pitfalls"
+    /// ("Integrity is a discipline, not a system... one counter-assertion per
+    /// scoreboard — a fixture that must yield the opposite value, so a hardcode
+    /// fails"): the same tier must yield opposite values across index states,
+    /// and different tiers must disagree under one index state. A hardcode of
+    /// either polarity fails this test.
     #[test]
     fn answering_tier_freshness_is_not_a_constant() -> Result<(), Box<dyn Error>> {
         use ReferencesAnsweringTier as Tier;
@@ -2174,11 +2188,32 @@ mod tests {
     /// Every emitted value must belong to the canonical `ProviderDecisionFreshness`
     /// vocabulary (`perl-lsp-rs-core::providers::provider_decision`), so the receipt
     /// cannot drift into a private spelling.
+    ///
+    /// The permitted set is serialized from the real enum rather than restated
+    /// here: a hand-copied list would keep passing if the canonical serde
+    /// spelling were renamed, which is exactly the drift this test exists to
+    /// catch.
     #[test]
     fn answering_tier_freshness_stays_in_the_canonical_vocabulary() -> Result<(), Box<dyn Error>> {
         use ReferencesAnsweringTier as Tier;
+        use perl_lsp_rs_core::providers::provider_decision::ProviderDecisionFreshness;
 
-        const CANONICAL: [&str; 4] = ["fresh", "stale", "unknown", "not_applicable"];
+        let canonical: Vec<String> = [
+            ProviderDecisionFreshness::Fresh,
+            ProviderDecisionFreshness::Stale,
+            ProviderDecisionFreshness::Unknown,
+            ProviderDecisionFreshness::NotApplicable,
+        ]
+        .iter()
+        .map(|variant| {
+            serde_json::to_value(variant)
+                .ok()
+                .and_then(|value| value.as_str().map(str::to_owned))
+                .ok_or_else(|| format!("{variant:?} did not serialize to a JSON string"))
+        })
+        .collect::<Result<_, _>>()?;
+        let canonical: Vec<&str> = canonical.iter().map(String::as_str).collect();
+        let canonical = canonical.as_slice();
 
         for tier in [
             Tier::SemanticSourceBacked,
@@ -2193,7 +2228,7 @@ mod tests {
             for index_state in ["full", "partial", "none"] {
                 let value = tier.freshness(index_state);
                 assert!(
-                    CANONICAL.contains(&value),
+                    canonical.contains(&value),
                     "{tier:?}/{index_state} emitted {value:?}, outside ProviderDecisionFreshness"
                 );
             }

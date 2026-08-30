@@ -24,9 +24,12 @@
 //! | `"building"` | `"partial"` |
 //! | `"none"`     | `"none"`    |
 //!
-//! Exception: the `empty` tier hardcodes `index_state = "none"` in the handler
-//! regardless of the actual coordinator state (the index is irrelevant when no
-//! symbol exists under the cursor).  H-B is skipped for `empty` rows.
+//! The `empty` tier used to hardcode `index_state = "none"` in the handler
+//! regardless of the actual coordinator state. It no longer does (#14156): the
+//! terminal no-result return now reports the access mode actually observed, so
+//! an empty answer over a complete index is a fresh, trustworthy negative
+//! rather than one indistinguishable from an absent index. H-B is still skipped
+//! for `empty` rows because the tier is reached from several access modes.
 //!
 //! If the assertion fails the harness reports the discrepancy so the caller
 //! can fix `set_index_building` (or drop the "building" column and document why).
@@ -1524,12 +1527,14 @@ use warnings;
         receipt_fallback_state: String,
         /// Live receipt `confidence` (`"high"` | `"low"`).
         receipt_confidence: String,
-        /// Live receipt `freshness`. NOTE: production currently hardcodes this
-        /// to the constant `"fresh"` regardless of real document/index
-        /// generation state (see `references.rs::record_references_provider_decision_trace`)
-        /// — this replay reports the field as-is and does not claim it tracks
-        /// genuine staleness; see `references_representative_replay_genuine_stale_generation_downgrades_index_state`
-        /// for the real staleness proof, which uses `index_state` instead.
+        /// Live receipt `freshness`. Since #14156 this is derived from the
+        /// answering tier and the observed `index_state`, not a constant: tiers
+        /// reading live compiler facts or the live open buffer report `"fresh"`,
+        /// and index-backed tiers report `"fresh"` only under a full index. This
+        /// replay reports the field as-is; the discriminating proof for the
+        /// derivation lives in `references.rs`
+        /// (`handle_references_derives_receipt_freshness_from_the_answering_tier`
+        /// and `handle_references_preserves_full_index_state_through_the_empty_tier`).
         receipt_freshness: String,
         /// Live receipt `fact_source` (producer, e.g. `"semantic_fact"`, `"fallback"`).
         receipt_fact_source: String,
@@ -2866,12 +2871,12 @@ use warnings;
     /// (`test_index_file_in_building_state` -> `test_simulate_indexing_complete`
     /// -> `test_replace_document_without_index`), applied to real project
     /// content instead of a synthetic snippet. Confirms the live downgrade via
-    /// `index_state` (the receipt's `freshness` field is currently a
-    /// hardcoded `"fresh"` constant in production and does not vary with
-    /// staleness — see the `ReplayRow::receipt_freshness` doc comment; this
-    /// replay cannot and does not assert a freshness *value* change, only the
-    /// `index_state` downgrade and the resulting inability to reach
-    /// `semantic_source_backed`).
+    /// `index_state`. This replay asserts the `index_state` downgrade and the
+    /// resulting inability to reach `semantic_source_backed`; it deliberately
+    /// does not assert a `freshness` value, because a stale index alone does not
+    /// force a non-fresh receipt — the same-file semantic analyzer answers from
+    /// the live buffer and is genuinely fresh (#14156). The freshness derivation
+    /// is proven directly in `references.rs` instead.
     #[test]
     fn references_representative_replay_genuine_stale_generation_downgrades_index_state()
     -> Result<(), Box<dyn std::error::Error>> {
