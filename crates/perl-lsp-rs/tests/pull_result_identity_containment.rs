@@ -151,8 +151,8 @@ fn unchanged_fast_paths_revalidate_the_final_snapshot() -> TestResult<()> {
     )?;
     let workspace = source_between(
         &source,
-        "pub fn get_workspace_diagnostics_with_context(",
-        "pub fn get_workspace_diagnostics_partial_with_context(",
+        "pub fn get_workspace_diagnostics_with_context<F>(",
+        "pub fn get_workspace_diagnostics_partial_with_context<F>(",
     )?;
 
     require_contains(
@@ -164,6 +164,11 @@ fn unchanged_fast_paths_revalidate_the_final_snapshot() -> TestResult<()> {
         workspace,
         ".filter(|_| document_context.accepted_state_currentness.holds())",
         "workspace Unchanged must be guarded by final accepted-snapshot currentness",
+    )?;
+    require_contains(
+        workspace,
+        "let document_context = context_for_uri(uri_str);",
+        "workspace diagnostics must capture one sealed context per document URI",
     )
 }
 

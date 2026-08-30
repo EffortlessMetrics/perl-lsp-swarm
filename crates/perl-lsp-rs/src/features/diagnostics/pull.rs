@@ -361,22 +361,26 @@ impl PullDiagnosticsProvider {
         documents: &HashMap<String, DocumentState>,
         previous_result_ids: Vec<(Uri, String)>,
     ) -> WorkspaceDiagnosticReport {
-        let context = PullDiagnosticsContext::new();
-        self.get_workspace_diagnostics_with_context(documents, previous_result_ids, &context)
+        self.get_workspace_diagnostics_with_context(documents, previous_result_ids, &|_| {
+            PullDiagnosticsContext::new()
+        })
     }
 
-    /// Handle workspace/diagnostic request with full context.
-    pub fn get_workspace_diagnostics_with_context(
+    /// Handle workspace/diagnostic request with one sealed context per URI.
+    pub fn get_workspace_diagnostics_with_context<F>(
         &self,
         documents: &HashMap<String, DocumentState>,
         previous_result_ids: Vec<(Uri, String)>,
-        context: &PullDiagnosticsContext,
-    ) -> WorkspaceDiagnosticReport {
+        context_for_uri: &F,
+    ) -> WorkspaceDiagnosticReport
+    where
+        F: Fn(&str) -> PullDiagnosticsContext,
+    {
         let mut items = Vec::new();
         let prev_ids: HashMap<Uri, String> = previous_result_ids.into_iter().collect();
 
         for (uri_str, doc_state) in documents {
-            let document_context = context.clone();
+            let document_context = context_for_uri(uri_str);
             let uri = parse_uri(uri_str);
             let prev_id = prev_ids.get(&uri).cloned();
 
@@ -431,20 +435,25 @@ impl PullDiagnosticsProvider {
         WorkspaceDiagnosticReport { items }
     }
 
-    /// Handle workspace/diagnostic partial result with context.
-    pub fn get_workspace_diagnostics_partial_with_context(
+    /// Handle workspace/diagnostic partial result with one sealed context per
+    /// URI. A caller cannot accidentally reuse root A's accepted authority for
+    /// root B merely because both documents share one workspace request.
+    pub fn get_workspace_diagnostics_partial_with_context<F>(
         &self,
         documents: &[(String, String)],
         batch_size: usize,
-        context: &PullDiagnosticsContext,
-    ) -> Vec<WorkspaceDiagnosticReportPartialResult> {
+        context_for_uri: &F,
+    ) -> Vec<WorkspaceDiagnosticReportPartialResult>
+    where
+        F: Fn(&str) -> PullDiagnosticsContext,
+    {
         let mut results = Vec::new();
 
         for chunk in documents.chunks(batch_size) {
             let mut items = Vec::new();
 
             for (uri_str, content) in chunk {
-                let document_context = context.clone();
+                let document_context = context_for_uri(uri_str);
                 let uri = parse_uri(uri_str);
                 // Partial workspace progress items use the same per-document
                 // identity authority as document and full workspace reports.
@@ -1488,6 +1497,16 @@ mod tests {
         include: Vec<String>,
         exclude: Vec<String>,
     ) -> AcceptedCriticSnapshot {
+        accepted_state_at_root(profile, severity, include, exclude, PROVIDER_DEFAULT_ROOT_AUTHORITY)
+    }
+
+    fn accepted_state_at_root(
+        profile: &str,
+        severity: u8,
+        include: Vec<String>,
+        exclude: Vec<String>,
+        root: &str,
+    ) -> AcceptedCriticSnapshot {
         let config = perl_lsp_rs_core::config::ServerConfig {
             native_critic_profile: profile.to_string(),
             perlcritic_severity: severity,
@@ -1495,7 +1514,7 @@ mod tests {
             native_critic_exclude: exclude,
             ..perl_lsp_rs_core::config::ServerConfig::default()
         };
-        AcceptedCriticSnapshot::capture(&config, Some(PROVIDER_DEFAULT_ROOT_AUTHORITY))
+        AcceptedCriticSnapshot::capture(&config, Some(root))
     }
 
     fn strict_accepted_state(severity: u8) -> AcceptedCriticSnapshot {
@@ -3157,7 +3176,7 @@ system($path);
         let partial = provider.get_workspace_diagnostics_partial_with_context(
             &[(uri_str.into(), content.into())],
             8,
-            &context,
+            &|_| context.clone(),
         );
         let [chunk] = partial.as_slice() else {
             return Err("expected exactly one partial chunk".into());
@@ -3175,6 +3194,112 @@ system($path);
             "workspace partial items must reuse the document identity authority"
         );
 
+        Ok(())
+    }
+
+    /// A workspace request is a collection of document transactions, not one
+    /// root transaction cloned across every item. Root A is deliberately
+    /// Disabled while root B is strict-native; both full and partial APIs must
+    /// resolve the contradictory authority for each URI independently.
+    #[test]
+    fn workspace_full_and_partial_capture_a_sealed_context_per_document()
+    -> Result<(), Box<dyn std::error::Error>> {
+        const ROOT_A: &str = "file:///root-a";
+        const ROOT_B: &str = "file:///root-b";
+        const URI_A: &str = "file:///root-a/a.pl";
+        const URI_B: &str = "file:///root-b/b.pl";
+        const SOURCE: &str = "my $x = 1;\nprint $x;\n";
+
+        fn context_for(uri: &str) -> PullDiagnosticsContext {
+            let (root, enabled) =
+                if uri.starts_with(ROOT_A) { (ROOT_A, false) } else { (ROOT_B, true) };
+            let mut context = PullDiagnosticsContext::new();
+            context.identity_root_key = Some(root.to_string());
+            context.workspace_root = Some(PathBuf::from(root));
+            context.accepted_critic_snapshot = if enabled {
+                accepted_state_at_root("strict", 3, Vec::new(), Vec::new(), root)
+            } else {
+                AcceptedCriticSnapshot::capture(
+                    &ServerConfig { perlcritic_enabled: false, ..ServerConfig::default() },
+                    Some(root),
+                )
+            };
+            context
+        }
+
+        fn current_document() -> Result<DocumentState, Box<dyn std::error::Error>> {
+            let mut parser = Parser::new(SOURCE);
+            let ast = parser.parse().map_err(|error| error.to_string())?;
+            let errors = parser.errors().to_vec();
+            let mut document = DocumentState::new(SOURCE, 1);
+            let generation = document.current_generation();
+            let snapshot = crate::state::ParsedSnapshot::from_parse_result(
+                generation,
+                SOURCE,
+                Some(std::sync::Arc::new(ast)),
+                errors,
+            );
+            if !document.publish_parsed_if_current(generation, std::sync::Arc::new(snapshot)) {
+                return Err("current parse snapshot must publish".into());
+            }
+            Ok(document)
+        }
+
+        fn native_presence(
+            items: &[WorkspaceDocumentDiagnosticReport],
+            uri: &str,
+        ) -> Result<(bool, Option<String>), Box<dyn std::error::Error>> {
+            let item = items
+                .iter()
+                .find(|item| match item {
+                    WorkspaceDocumentDiagnosticReport::Full(full) => full.uri.to_string() == uri,
+                    WorkspaceDocumentDiagnosticReport::Unchanged(unchanged) => {
+                        unchanged.uri.to_string() == uri
+                    }
+                })
+                .ok_or_else(|| format!("missing workspace item for {uri}"))?;
+            let WorkspaceDocumentDiagnosticReport::Full(full) = item else {
+                return Err(format!("expected Full workspace item for {uri}").into());
+            };
+            Ok((
+                has_native_critic_row(&full.full_document_diagnostic_report.items),
+                full.full_document_diagnostic_report.result_id.clone(),
+            ))
+        }
+
+        let provider = PullDiagnosticsProvider::new();
+        let mut documents = HashMap::new();
+        documents.insert(URI_A.to_string(), current_document()?);
+        documents.insert(URI_B.to_string(), current_document()?);
+        let full =
+            provider.get_workspace_diagnostics_with_context(&documents, Vec::new(), &context_for);
+        let full_a = native_presence(&full.items, URI_A)?;
+        let full_b = native_presence(&full.items, URI_B)?;
+        if full_a.0 || !full_b.0 {
+            return Err("full workspace reused one root's Critic authority across documents".into());
+        }
+        if full_a.1.is_none() || full_b.1.is_none() || full_a.1 == full_b.1 {
+            return Err("full workspace identities must bind each document's distinct root".into());
+        }
+
+        let partial = provider.get_workspace_diagnostics_partial_with_context(
+            &[(URI_A.to_string(), SOURCE.to_string()), (URI_B.to_string(), SOURCE.to_string())],
+            8,
+            &context_for,
+        );
+        let partial_items = partial.first().ok_or("expected one partial workspace chunk")?;
+        let partial_a = native_presence(&partial_items.items, URI_A)?;
+        let partial_b = native_presence(&partial_items.items, URI_B)?;
+        if partial_a.0 || !partial_b.0 {
+            return Err(
+                "partial workspace reused one root's Critic authority across documents".into()
+            );
+        }
+        if partial_a.1.is_none() || partial_b.1.is_none() || partial_a.1 == partial_b.1 {
+            return Err(
+                "partial workspace identities must bind each document's distinct root".into()
+            );
+        }
         Ok(())
     }
 
@@ -3239,11 +3364,8 @@ system($path);
         let provider = PullDiagnosticsProvider::new();
         let mut documents = HashMap::new();
         documents.insert(URI.to_string(), current_document()?);
-        let full = provider.get_workspace_diagnostics_with_context(
-            &documents,
-            Vec::new(),
-            &moving_context(),
-        );
+        let full = provider
+            .get_workspace_diagnostics_with_context(&documents, Vec::new(), &|_| moving_context());
         let [full_item] = full.items.as_slice() else {
             return Err("expected one full-workspace item".into());
         };
@@ -3255,7 +3377,7 @@ system($path);
         let partial = provider.get_workspace_diagnostics_partial_with_context(
             &[(URI.to_string(), SOURCE.to_string())],
             8,
-            &moving_context(),
+            &|_| moving_context(),
         );
         let [chunk] = partial.as_slice() else {
             return Err("expected one partial-workspace chunk".into());

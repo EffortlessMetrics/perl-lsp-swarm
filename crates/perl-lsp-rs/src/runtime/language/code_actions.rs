@@ -37,6 +37,16 @@ struct NativeCriticActionSubject {
     overlap_observations: Vec<perl_lsp_rs_core::tooling::perl_critic::BuiltInCriticObservation>,
 }
 
+/// Native quick-fix effects staged from one sealed diagnostic subject. Nothing
+/// in this value is response authority until the handler commits it through
+/// the shared document/policy linearization boundary.
+struct StagedNativeCriticActions {
+    document_instance: std::sync::Arc<std::sync::atomic::AtomicU32>,
+    generation: u32,
+    accepted_snapshot: perl_lsp_rs_core::config::AcceptedCriticSnapshot,
+    actions: Vec<Value>,
+}
+
 /// Serialize a slice of typed values to a JSON array (#4995).
 fn to_json_array<T: serde::Serialize>(values: &[T]) -> Value {
     serde_json::to_value(values).unwrap_or(Value::Array(Vec::new()))
@@ -588,6 +598,49 @@ impl LspServer {
         enforce_code_action_tag_capability(code_actions, supports_llm_generated_tag);
     }
 
+    fn finalize_code_action_candidate(
+        &self,
+        code_actions: &mut Vec<Value>,
+        uri: &str,
+        doc_version: i32,
+        requested_kinds: &[&str],
+    ) {
+        dedupe_code_actions(code_actions);
+        if let Some(fix_all) = build_source_fix_all(code_actions, uri) {
+            code_actions.push(fix_all);
+        }
+        if self.supports_workspace_snippet_text_edits() {
+            convert_pragma_quickfix_edits_to_snippet_text_edits(code_actions, uri, doc_version);
+        }
+        self.enforce_code_action_tag_capabilities(code_actions);
+        retain_requested_code_action_kinds(code_actions, requested_kinds);
+    }
+
+    /// Choose the native-bearing staged response only while the accepted
+    /// document/root/policy subject is locked current. The supplied hook is a
+    /// deterministic test seam after all projection work and immediately
+    /// before the actual response linearization point.
+    fn commit_staged_native_code_action_response(
+        &self,
+        uri: &str,
+        staged: StagedNativeCriticActions,
+        with_native: Vec<Value>,
+        without_native: Vec<Value>,
+        after_staging: impl FnOnce(),
+    ) -> Value {
+        after_staging();
+        match self.commit_if_diagnostic_subject_current(
+            uri,
+            &staged.document_instance,
+            staged.generation,
+            Some(&staged.accepted_snapshot),
+            || to_json_array(&with_native),
+        ) {
+            Ok(response) => response,
+            Err(_) => to_json_array(&without_native),
+        }
+    }
+
     /// Handle textDocument/codeAction request
     pub(crate) fn handle_code_action(
         &self,
@@ -918,15 +971,9 @@ impl LspServer {
             // immutable and self-contained: the analysis, its range mapping and
             // its revalidation all read from it, never from live server state.
             drop(documents);
-            if let Some(subject) = native_critic_subject {
-                let native_actions = self.native_critic_code_actions(uri, subject, cancellation);
-                // Clamped: `Vec::splice` panics on an out-of-range range, and no
-                // production path may panic. Nothing between the capture above
-                // and here removes actions today, so the clamp is a no-op that
-                // keeps a later edit from turning a reordering into a crash.
-                let at = native_insert_at.min(code_actions.len());
-                code_actions.splice(at..at, native_actions);
-            }
+            let staged_native_actions = native_critic_subject.and_then(|subject| {
+                self.stage_native_critic_code_actions(uri, subject, cancellation)
+            });
 
             // Emit a disabled "Extract variable" placeholder when the selection
             // is zero-width (cursor-only) and the client declared
@@ -956,30 +1003,41 @@ impl LspServer {
                 }));
             }
 
-            // Multiple providers can emit the same fix for the same finding;
-            // collapse byte-identical actions before aggregating or returning so
-            // the lightbulb menu does not show repeated entries.
-            dedupe_code_actions(&mut code_actions);
-
-            // Aggregate all quick fixes collected so far into a single
-            // `source.fixAll` action (LSP 3.17) when there are two or more
-            // distinct edits. Editors use this to apply every safe fix with
-            // one keystroke.
-            if let Some(fix_all) = build_source_fix_all(&code_actions, uri) {
-                code_actions.push(fix_all);
-            }
-
-            if self.supports_workspace_snippet_text_edits() {
-                convert_pragma_quickfix_edits_to_snippet_text_edits(
+            if let Some(staged) = staged_native_actions {
+                let mut with_native = code_actions.clone();
+                // Clamped: `Vec::splice` panics on an out-of-range range, and no
+                // production path may panic. Staging can add later provider
+                // actions, but never invalidates the captured insertion point.
+                let at = native_insert_at.min(with_native.len());
+                with_native.splice(at..at, staged.actions.iter().cloned());
+                self.finalize_code_action_candidate(
+                    &mut with_native,
+                    uri,
+                    doc_version,
+                    &requested_kinds,
+                );
+                self.finalize_code_action_candidate(
                     &mut code_actions,
                     uri,
                     doc_version,
+                    &requested_kinds,
                 );
+                Ok(Some(self.commit_staged_native_code_action_response(
+                    uri,
+                    staged,
+                    with_native,
+                    code_actions,
+                    || {},
+                )))
+            } else {
+                self.finalize_code_action_candidate(
+                    &mut code_actions,
+                    uri,
+                    doc_version,
+                    &requested_kinds,
+                );
+                Ok(Some(to_json_array(&code_actions)))
             }
-
-            self.enforce_code_action_tag_capabilities(&mut code_actions);
-            retain_requested_code_action_kinds(&mut code_actions, &requested_kinds);
-            Ok(Some(to_json_array(&code_actions)))
         } else {
             // No AST (parse error), but we can still offer some actions
             let mut code_actions: Vec<Value> = Vec::new();
@@ -1068,8 +1126,9 @@ impl LspServer {
         }
     }
 
-    /// Evaluate native critic quick-fixes over one immutable accepted subject
-    /// with no document lock held (#9062), then revalidate before returning.
+    /// Stage native critic quick-fixes over one immutable accepted subject with
+    /// no document lock held (#9062). The handler owns the later response
+    /// commit boundary; this function cannot publish its staged effects.
     ///
     /// The action run consumes the same accepted overlap candidates as the
     /// diagnostic transports, so a reviewed core/native alias carries identical
@@ -1077,24 +1136,32 @@ impl LspServer {
     /// diagnostic is projected from the normalized finding — the public code,
     /// severity and message a client must match against the published
     /// diagnostic — not from producer-local fields.
-    fn native_critic_code_actions(
+    fn stage_native_critic_code_actions(
         &self,
         uri: &str,
         subject: NativeCriticActionSubject,
         cancellation: Option<&PerlLspCancellationToken>,
-    ) -> Vec<Value> {
+    ) -> Option<StagedNativeCriticActions> {
         use perl_lsp_rs_core::tooling::perl_critic::RunGate;
 
         // The service consults this at its pre-evaluation and settlement
         // barriers, so a cancellation arriving while rules run settles the run
         // Cancelled and nothing publishes.
         let not_cancelled = || cancellation.is_none_or(|token| !token.is_cancelled_relaxed());
-        self.native_critic_code_actions_with_gates(
-            uri,
-            subject,
-            RunGate::new(&not_cancelled),
-            RunGate::open(),
-        )
+        self.stage_native_critic_code_actions_with_gate(uri, subject, RunGate::new(&not_cancelled))
+    }
+
+    #[cfg(test)]
+    fn native_critic_code_actions(
+        &self,
+        uri: &str,
+        subject: NativeCriticActionSubject,
+        cancellation: Option<&PerlLspCancellationToken>,
+    ) -> Vec<Value> {
+        let Some(staged) = self.stage_native_critic_code_actions(uri, subject, cancellation) else {
+            return Vec::new();
+        };
+        self.commit_staged_native_actions_for_test(uri, staged, || {})
     }
 
     /// Native critic action evaluation under a caller-supplied cancellation
@@ -1113,15 +1180,16 @@ impl LspServer {
         subject: NativeCriticActionSubject,
         cancellation: perl_lsp_rs_core::tooling::perl_critic::RunGate<'_>,
     ) -> Vec<Value> {
-        use perl_lsp_rs_core::tooling::perl_critic::RunGate;
-
-        self.native_critic_code_actions_with_gates(uri, subject, cancellation, RunGate::open())
+        let Some(staged) =
+            self.stage_native_critic_code_actions_with_gate(uri, subject, cancellation)
+        else {
+            return Vec::new();
+        };
+        self.commit_staged_native_actions_for_test(uri, staged, || {})
     }
 
-    /// Native critic action evaluation with an explicit final publication
-    /// barrier. The extra gate is test-only authority injection: production
-    /// always passes an open gate, then the real sealed snapshot and document
-    /// identities are revalidated immediately before projection.
+    /// Test-only response-boundary mutation seam after staging.
+    #[cfg(test)]
     fn native_critic_code_actions_with_gates(
         &self,
         uri: &str,
@@ -1129,6 +1197,42 @@ impl LspServer {
         cancellation: perl_lsp_rs_core::tooling::perl_critic::RunGate<'_>,
         before_publication: perl_lsp_rs_core::tooling::perl_critic::RunGate<'_>,
     ) -> Vec<Value> {
+        let Some(staged) =
+            self.stage_native_critic_code_actions_with_gate(uri, subject, cancellation)
+        else {
+            return Vec::new();
+        };
+        self.commit_staged_native_actions_for_test(uri, staged, || {
+            let _ = before_publication.holds();
+        })
+    }
+
+    #[cfg(test)]
+    fn commit_staged_native_actions_for_test(
+        &self,
+        uri: &str,
+        staged: StagedNativeCriticActions,
+        after_staging: impl FnOnce(),
+    ) -> Vec<Value> {
+        after_staging();
+        match self.commit_if_diagnostic_subject_current(
+            uri,
+            &staged.document_instance,
+            staged.generation,
+            Some(&staged.accepted_snapshot),
+            || staged.actions,
+        ) {
+            Ok(actions) => actions,
+            Err(_) => Vec::new(),
+        }
+    }
+
+    fn stage_native_critic_code_actions_with_gate(
+        &self,
+        uri: &str,
+        subject: NativeCriticActionSubject,
+        cancellation: perl_lsp_rs_core::tooling::perl_critic::RunGate<'_>,
+    ) -> Option<StagedNativeCriticActions> {
         use perl_lsp_rs_core::tooling::perl_critic::{
             NativeCriticService, NativeCriticSubject, RunGate,
         };
@@ -1156,35 +1260,7 @@ impl LspServer {
         // re-snapshots current state (#9062). A disabled accepted state
         // contributes none by configuration (#8253).
         if !run.is_publishable() {
-            return Vec::new();
-        }
-
-        // Service settlement is not the irreversible boundary. Policy or URI
-        // ownership may move after the service's last currentness consultation
-        // and before the response leaves this handler, so force one final
-        // boundary and then compare the complete sealed snapshot again.
-        if !before_publication.holds()
-            || self.capture_accepted_critic(uri) != subject.accepted_snapshot
-        {
-            return Vec::new();
-        }
-
-        // Revalidate the document subject itself before returning actions: the
-        // guard was released for the duration of the run, so the edit the user
-        // is acting on may already be gone. Stale ranges must not be offered as
-        // applicable edits.
-        let still_current = {
-            let documents = self.documents_guard();
-            self.get_document(&documents, uri).is_some_and(|doc| {
-                // Instance first: a close/reopen can restore the same numeric
-                // generation on a different document, so the counter alone is
-                // not identity.
-                std::sync::Arc::ptr_eq(&doc.generation, &subject.document_instance)
-                    && doc.current_generation() == subject.generation
-            })
-        };
-        if !still_current || self.capture_accepted_critic(uri) != subject.accepted_snapshot {
-            return Vec::new();
+            return None;
         }
 
         let pos16 =
@@ -1258,7 +1334,12 @@ impl LspServer {
                 },
             }));
         }
-        actions
+        Some(StagedNativeCriticActions {
+            document_instance: subject.document_instance,
+            generation: subject.generation,
+            accepted_snapshot: subject.accepted_snapshot,
+            actions,
+        })
     }
 
     /// Cancellation-aware wrapper for `textDocument/codeAction`.
@@ -1721,6 +1802,61 @@ print $x;
         if !actions.is_empty() {
             return Err(format!(
                 "a workspace-root rebind after settlement must publish no native actions; got: {actions:?}"
+            ));
+        }
+        Ok(())
+    }
+
+    /// Projection and aggregation happen before response authority is granted.
+    /// If the document advances after that staging work, the entire
+    /// native-bearing candidate (including an effect derived from its rows) is
+    /// withheld and the independently staged base response survives.
+    #[test]
+    fn staged_native_response_is_withheld_when_document_moves_before_commit() -> Result<(), String>
+    {
+        let uri = "file:///action_generation_publication.pl";
+        let server = server_with_document(uri);
+        let base = vec![json!({ "title": "base action", "kind": "refactor" })];
+
+        let current_staged = server
+            .stage_native_critic_code_actions(uri, action_subject(&server, uri, false), None)
+            .ok_or_else(|| "current subject must stage native actions".to_string())?;
+        if current_staged.actions.is_empty() {
+            return Err("current subject must stage a non-empty native effect".to_string());
+        }
+        let mut current_candidate = base.clone();
+        current_candidate.extend(current_staged.actions.iter().cloned());
+        current_candidate.push(json!({ "title": "derived from native", "kind": "source.fixAll" }));
+        let current_expected = to_json_array(&current_candidate);
+        let current = server.commit_staged_native_code_action_response(
+            uri,
+            current_staged,
+            current_candidate,
+            base.clone(),
+            || {},
+        );
+        if current != current_expected {
+            return Err("a current staged subject must commit its native-bearing response".into());
+        }
+
+        let stale_staged = server
+            .stage_native_critic_code_actions(uri, action_subject(&server, uri, false), None)
+            .ok_or_else(|| "second current subject must stage native actions".to_string())?;
+        let live_generation = std::sync::Arc::clone(&stale_staged.document_instance);
+        let mut stale_candidate = base.clone();
+        stale_candidate.extend(stale_staged.actions.iter().cloned());
+        stale_candidate.push(json!({ "title": "derived from native", "kind": "source.fixAll" }));
+        let generation = stale_staged.generation;
+        let stale = server.commit_staged_native_code_action_response(
+            uri,
+            stale_staged,
+            stale_candidate,
+            base.clone(),
+            || live_generation.store(generation + 1, std::sync::atomic::Ordering::SeqCst),
+        );
+        if stale != to_json_array(&base) {
+            return Err(format!(
+                "a document moved after projection must expose only the base response; got: {stale:?}"
             ));
         }
         Ok(())
