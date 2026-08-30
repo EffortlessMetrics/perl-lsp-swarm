@@ -16,7 +16,11 @@ export interface BoundedFileDownloadOptions {
 }
 
 function defaultRemovePartialFile(dest: string): void {
-  fs.unlink(dest, () => {});
+  try {
+    fs.unlinkSync(dest);
+  } catch {
+    // Best effort: the partial file may never have been created.
+  }
 }
 
 /**
