@@ -679,7 +679,7 @@ impl LspServer {
         // emit InheritedMethod for Phase 2 (workspace index BFS).
         #[cfg(feature = "workspace")]
         {
-            use perl_semantic_facts::Confidence;
+            use perl_semantic_facts::Provenance;
 
             if let Some(raw_receiver) = Self::extract_arrow_receiver(text, offset) {
                 // Extract the method name token at the cursor
@@ -697,15 +697,21 @@ impl LspServer {
                             analyzer.resolve_inherited_method_hover(&receiver_pkg, &method_name)
                         {
                             let details = hover_info.details.join("\n");
-                            // Branch on the typed confidence, not on `details`
-                            // prose. A Low-confidence hover is a DynamicBoundary
-                            // (PLSP-SPEC-0017): the signature names the handler
-                            // that would run, not an exact definition of the
-                            // requested method, so the card must not read as a
-                            // plain `**Method**`.
-                            let heading = match hover_info.confidence {
-                                Confidence::Low => "**Method (dynamic dispatch)**",
-                                Confidence::Medium | Confidence::High => "**Method**",
+                            // Branch on the typed provenance, not on `details`
+                            // prose and not on confidence. PLSP-SPEC-0002 lists
+                            // "Low confidence" and "Dynamic boundary" as separate
+                            // states: a future heuristic hover could be Low
+                            // without being a boundary, and keying the card off
+                            // Low would then mislabel it. Only DynamicBoundary
+                            // means the signature is a handler rather than an
+                            // exact definition of the requested method.
+                            let heading = if matches!(
+                                hover_info.provenance,
+                                Some(Provenance::DynamicBoundary)
+                            ) {
+                                "**Method (dynamic dispatch)**"
+                            } else {
+                                "**Method**"
                             };
                             return HoverExtracted::Complete(json!({
                                 "contents": {
@@ -1574,7 +1580,13 @@ impl LspServer {
         let mut queue = VecDeque::new();
         let mut related_package_cache: HashMap<String, Vec<String>> = HashMap::new();
 
-        let build_package_hover = |package_name: &str| -> Option<Value> {
+        // Perl searches the whole resolution order for an exact method before
+        // consulting AUTOLOAD. Resolving per-package — exact-then-AUTOLOAD for each
+        // package in turn — would let a subclass AUTOLOAD pre-empt an ancestor's
+        // real method and report an exact call as a dynamic boundary. So the
+        // traversal below collects the order first, then runs these two passes over
+        // it in sequence. Mirrors `resolve_inherited_method_hover_ordered`.
+        let build_exact_hover = |package_name: &str| -> Option<Value> {
             let members = workspace_index.get_package_members(package_name);
             if members.iter().any(|symbol| symbol.name == method_name) {
                 let detail = if package_name == receiver_pkg {
@@ -1592,7 +1604,11 @@ impl LspServer {
                     },
                 }));
             }
+            None
+        };
 
+        let build_autoload_hover = |package_name: &str| -> Option<Value> {
+            let members = workspace_index.get_package_members(package_name);
             if members.iter().any(|symbol| symbol.name == "AUTOLOAD") {
                 let detail = if package_name == receiver_pkg {
                     format!("Resolved via `AUTOLOAD` in `{package_name}`")
@@ -1620,10 +1636,6 @@ impl LspServer {
 
             None
         };
-
-        if let Some(hover) = build_package_hover(receiver_pkg) {
-            return Some(hover);
-        }
 
         // Inner closure: enqueue parent and role packages not yet visited.
         // Mirrors the logic in `inherited_method_definition_location` (navigation.rs)
@@ -1685,6 +1697,9 @@ impl LspServer {
             }
         };
 
+        // Collect the full resolution order first, receiver included, so the exact
+        // and AUTOLOAD passes below both see every package.
+        let mut resolution_order = vec![receiver_pkg.to_string()];
         enqueue_related(receiver_pkg, &mut queue, &visited);
 
         while let Some(package_name) = queue.pop_front() {
@@ -1692,11 +1707,22 @@ impl LspServer {
                 continue;
             }
 
-            if let Some(hover) = build_package_hover(&package_name) {
+            enqueue_related(&package_name, &mut queue, &visited);
+            resolution_order.push(package_name);
+        }
+
+        // Phase 1 — exact method anywhere in the order.
+        for package_name in &resolution_order {
+            if let Some(hover) = build_exact_hover(package_name) {
                 return Some(hover);
             }
+        }
 
-            enqueue_related(&package_name, &mut queue, &visited);
+        // Phase 2 — AUTOLOAD fallback, same order.
+        for package_name in &resolution_order {
+            if let Some(hover) = build_autoload_hover(package_name) {
+                return Some(hover);
+            }
         }
 
         None

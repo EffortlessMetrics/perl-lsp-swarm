@@ -48,7 +48,7 @@ use crate::analysis::generated_member_extractor::GeneratedMemberExtractor;
 use crate::analysis::package_graph_extractor::PackageGraphExtractor;
 use crate::ast::Node;
 use crate::symbol::{Symbol, SymbolExtractor, SymbolTable, is_universal_method};
-use perl_semantic_facts::{Confidence, FileId, GeneratedMember, PackageEdge};
+use perl_semantic_facts::{Confidence, FileId, GeneratedMember, PackageEdge, Provenance};
 use std::collections::{HashMap, HashSet};
 
 const MAX_MRO_TRAVERSAL_DEPTH: usize = 1024;
@@ -385,107 +385,154 @@ impl SemanticAnalyzer {
             return self.resolve_plain_package_method_hover(receiver_class, method_name);
         };
 
-        if let Some(hover) =
-            self.hover_for_model_method(receiver_model, receiver_class, method_name)
-        {
-            return Some(hover);
-        }
-
         let ancestor_order = match receiver_model.mro {
             MethodResolutionOrder::Dfs => self.dfs_ancestor_order(receiver_class, &models_by_name),
             MethodResolutionOrder::C3 => self.c3_ancestor_order(receiver_class, &models_by_name),
         };
 
-        for ancestor in ancestor_order {
-            if let Some(model) = models_by_name.get(ancestor.as_str()).copied() {
-                if let Some(hover) = self.hover_for_model_method(model, receiver_class, method_name)
-                {
-                    return Some(hover);
+        // Perl dispatches in three phases: the whole resolution order is searched
+        // for an exact method, then UNIVERSAL, and only then AUTOLOAD. Resolving
+        // per-class instead — exact-then-AUTOLOAD for each class in turn — lets a
+        // subclass AUTOLOAD pre-empt an ancestor's real method, which would report
+        // an exact, source-backed call as a dynamic boundary.
+
+        // Phase 1 — exact method across the receiver and its full ancestor order.
+        if let Some(hover) =
+            self.exact_hover_for_model_method(receiver_model, receiver_class, method_name)
+        {
+            return Some(hover);
+        }
+        for ancestor in &ancestor_order {
+            let exact = match models_by_name.get(ancestor.as_str()).copied() {
+                Some(model) => {
+                    self.exact_hover_for_model_method(model, receiver_class, method_name)
                 }
-            } else if let Some(hover) =
-                self.resolve_plain_package_method_hover(&ancestor, method_name)
-            {
+                None => self.plain_package_exact_method_hover(ancestor, method_name),
+            };
+            if let Some(hover) = exact {
                 return Some(hover);
             }
         }
 
+        // Phase 2 — UNIVERSAL is exact and outranks AUTOLOAD.
         if is_universal_method(method_name) {
-            return Some(HoverInfo {
-                signature: format!("sub UNIVERSAL::{method_name}"),
-                documentation: None,
-                details: vec!["Defined in UNIVERSAL".to_string()],
-                // UNIVERSAL methods are exact: the name is statically known and
-                // always reaches the same builtin. Not a dynamic boundary.
-                confidence: Confidence::High,
-            });
+            return Some(Self::universal_method_hover(method_name));
+        }
+
+        // Phase 3 — AUTOLOAD fallback, in the same order.
+        if let Some(hover) =
+            self.autoload_hover_for_model(receiver_model, receiver_class, method_name)
+        {
+            return Some(hover);
+        }
+        for ancestor in &ancestor_order {
+            let autoload = match models_by_name.get(ancestor.as_str()).copied() {
+                Some(model) => self.autoload_hover_for_model(model, receiver_class, method_name),
+                None => self.plain_package_autoload_hover(ancestor, method_name),
+            };
+            if let Some(hover) = autoload {
+                return Some(hover);
+            }
         }
 
         None
     }
 
-    fn hover_for_model_method(
+    /// Exact-method half of model resolution.
+    ///
+    /// Kept separate from [`Self::autoload_hover_for_model`] so the caller can
+    /// exhaust every exact candidate in the resolution order before any AUTOLOAD
+    /// fallback is considered — see [`Self::resolve_inherited_method_hover_ordered`].
+    fn exact_hover_for_model_method(
         &self,
         model: &ClassModel,
         receiver_class: &str,
         method_name: &str,
     ) -> Option<HoverInfo> {
-        if model.methods.iter().any(|m| m.name == method_name) {
-            let is_direct = model.name == receiver_class;
-            let mut details = if is_direct {
-                vec![format!("Defined in {}", model.name)]
-            } else {
-                vec![format!("Inherited from {}", model.name)]
-            };
-            let modifier_names: Vec<&str> = model
-                .modifiers
-                .iter()
-                .filter(|modifier| modifier.method_name == method_name)
-                .map(|modifier| match modifier.kind {
-                    ModifierKind::Before => "before",
-                    ModifierKind::After => "after",
-                    ModifierKind::Around => "around",
-                    ModifierKind::Override => "override",
-                    ModifierKind::Augment => "augment",
-                })
-                .collect();
-            if !modifier_names.is_empty() {
-                details.push(format!("Decorated with: {}", modifier_names.join(", ")));
-            }
-            return Some(HoverInfo {
-                signature: format!("sub {}::{}", model.name, method_name),
-                documentation: None,
-                details,
-                // The class model names this exact method; the signature is the
-                // subroutine the call actually reaches.
-                confidence: Confidence::High,
-            });
+        if !model.methods.iter().any(|m| m.name == method_name) {
+            return None;
         }
-        if model.methods.iter().any(|m| m.name == "AUTOLOAD") {
-            let is_direct = model.name == receiver_class;
-            let mut details = if is_direct {
-                vec![
-                    format!("Resolved via AUTOLOAD in {}", model.name),
-                    format!("Requested method: {method_name}"),
-                ]
-            } else {
-                vec![
-                    format!("Resolved via inherited AUTOLOAD from {}", model.name),
-                    format!("Requested method: {method_name}"),
-                ]
-            };
-            details.push(AUTOLOAD_DYNAMIC_DISPATCH_DETAIL.to_string());
-            return Some(HoverInfo {
-                signature: format!("sub {}::AUTOLOAD", model.name),
-                documentation: None,
-                details,
-                // AUTOLOAD is a DynamicBoundary (PLSP-SPEC-0017): the requested
-                // method name is only known at runtime, so this signature is the
-                // handler that would be entered, not an exact definition of
-                // `method_name`.
-                confidence: Confidence::Low,
-            });
+        let is_direct = model.name == receiver_class;
+        let mut details = if is_direct {
+            vec![format!("Defined in {}", model.name)]
+        } else {
+            vec![format!("Inherited from {}", model.name)]
+        };
+        let modifier_names: Vec<&str> = model
+            .modifiers
+            .iter()
+            .filter(|modifier| modifier.method_name == method_name)
+            .map(|modifier| match modifier.kind {
+                ModifierKind::Before => "before",
+                ModifierKind::After => "after",
+                ModifierKind::Around => "around",
+                ModifierKind::Override => "override",
+                ModifierKind::Augment => "augment",
+            })
+            .collect();
+        if !modifier_names.is_empty() {
+            details.push(format!("Decorated with: {}", modifier_names.join(", ")));
         }
-        None
+        Some(HoverInfo {
+            signature: format!("sub {}::{}", model.name, method_name),
+            documentation: None,
+            details,
+            // The class model names this exact method; the signature is the
+            // subroutine the call actually reaches.
+            confidence: Confidence::High,
+            // Left unclassified: see `HoverInfo::provenance`.
+            provenance: None,
+        })
+    }
+
+    /// AUTOLOAD half of model resolution. Only reached once no exact method and
+    /// no UNIVERSAL method answers, matching Perl's dispatch order.
+    fn autoload_hover_for_model(
+        &self,
+        model: &ClassModel,
+        receiver_class: &str,
+        method_name: &str,
+    ) -> Option<HoverInfo> {
+        if !model.methods.iter().any(|m| m.name == "AUTOLOAD") {
+            return None;
+        }
+        let is_direct = model.name == receiver_class;
+        let mut details = if is_direct {
+            vec![
+                format!("Resolved via AUTOLOAD in {}", model.name),
+                format!("Requested method: {method_name}"),
+            ]
+        } else {
+            vec![
+                format!("Resolved via inherited AUTOLOAD from {}", model.name),
+                format!("Requested method: {method_name}"),
+            ]
+        };
+        details.push(AUTOLOAD_DYNAMIC_DISPATCH_DETAIL.to_string());
+        Some(HoverInfo {
+            signature: format!("sub {}::AUTOLOAD", model.name),
+            documentation: None,
+            details,
+            // AUTOLOAD is a DynamicBoundary (PLSP-SPEC-0017): the requested
+            // method name is only known at runtime, so this signature is the
+            // handler that would be entered, not an exact definition of
+            // `method_name`.
+            confidence: Confidence::Low,
+            provenance: Some(Provenance::DynamicBoundary),
+        })
+    }
+
+    /// Hover for a `UNIVERSAL` method such as `can`, `isa`, `DOES`, or `VERSION`.
+    fn universal_method_hover(method_name: &str) -> HoverInfo {
+        HoverInfo {
+            signature: format!("sub UNIVERSAL::{method_name}"),
+            documentation: None,
+            details: vec!["Defined in UNIVERSAL".to_string()],
+            // UNIVERSAL methods are exact: the name is statically known and
+            // always reaches the same builtin. Not a dynamic boundary.
+            confidence: Confidence::High,
+            provenance: None,
+        }
     }
 
     fn method_location_in_model(
@@ -501,7 +548,10 @@ impl SemanticAnalyzer {
             .map(|method| method.location)
     }
 
-    fn resolve_plain_package_method_hover(
+    /// Exact-method half of plain-package resolution, for a package that has no
+    /// `ClassModel`. Split from the AUTOLOAD half for the same ordering reason as
+    /// [`Self::exact_hover_for_model_method`].
+    fn plain_package_exact_method_hover(
         &self,
         package_name: &str,
         method_name: &str,
@@ -514,16 +564,24 @@ impl SemanticAnalyzer {
             })
         }) || self.symbol_table.symbols.contains_key(&qualified);
 
-        if found_in_table {
-            return Some(HoverInfo {
-                signature: format!("sub {}::{}", package_name, method_name),
-                documentation: None,
-                details: vec![format!("Inherited from {}", package_name)],
-                // The symbol table holds this exact qualified subroutine.
-                confidence: Confidence::High,
-            });
-        }
+        found_in_table.then(|| HoverInfo {
+            signature: format!("sub {}::{}", package_name, method_name),
+            documentation: None,
+            details: vec![format!("Inherited from {}", package_name)],
+            // The symbol table holds this exact qualified subroutine. Left
+            // unclassified: a framework-generated accessor also reaches the
+            // table here, and that is SourceBackedGenerated, not exact source.
+            confidence: Confidence::High,
+            provenance: None,
+        })
+    }
 
+    /// AUTOLOAD half of plain-package resolution.
+    fn plain_package_autoload_hover(
+        &self,
+        package_name: &str,
+        method_name: &str,
+    ) -> Option<HoverInfo> {
         let qualified_autoload = format!("{}::AUTOLOAD", package_name);
         let autoload_in_table = self.symbol_table.symbols.get("AUTOLOAD").is_some_and(|syms| {
             syms.iter().any(|s| {
@@ -532,32 +590,32 @@ impl SemanticAnalyzer {
             })
         }) || self.symbol_table.symbols.contains_key(&qualified_autoload);
 
-        if autoload_in_table {
-            return Some(HoverInfo {
-                signature: format!("sub {}::AUTOLOAD", package_name),
-                documentation: None,
-                details: vec![
-                    format!("Resolved via AUTOLOAD in {}", package_name),
-                    format!("Requested method: {}", method_name),
-                    AUTOLOAD_DYNAMIC_DISPATCH_DETAIL.to_string(),
-                ],
-                // Same DynamicBoundary rule as the class-model path above.
-                confidence: Confidence::Low,
-            });
-        }
+        autoload_in_table.then(|| HoverInfo {
+            signature: format!("sub {}::AUTOLOAD", package_name),
+            documentation: None,
+            details: vec![
+                format!("Resolved via AUTOLOAD in {}", package_name),
+                format!("Requested method: {}", method_name),
+                AUTOLOAD_DYNAMIC_DISPATCH_DETAIL.to_string(),
+            ],
+            // Same DynamicBoundary rule as the class-model path above.
+            confidence: Confidence::Low,
+            provenance: Some(Provenance::DynamicBoundary),
+        })
+    }
 
-        if is_universal_method(method_name) {
-            return Some(HoverInfo {
-                signature: format!("sub UNIVERSAL::{method_name}"),
-                documentation: None,
-                details: vec!["Defined in UNIVERSAL".to_string()],
-                // UNIVERSAL methods are exact: the name is statically known and
-                // always reaches the same builtin. Not a dynamic boundary.
-                confidence: Confidence::High,
-            });
-        }
-
-        None
+    fn resolve_plain_package_method_hover(
+        &self,
+        package_name: &str,
+        method_name: &str,
+    ) -> Option<HoverInfo> {
+        // Same exact → UNIVERSAL → AUTOLOAD order as the class-model resolver.
+        // A plain package has no recorded ancestors, so there is no chain to walk.
+        self.plain_package_exact_method_hover(package_name, method_name)
+            .or_else(|| {
+                is_universal_method(method_name).then(|| Self::universal_method_hover(method_name))
+            })
+            .or_else(|| self.plain_package_autoload_hover(package_name, method_name))
     }
 
     fn dfs_ancestor_order(
@@ -930,6 +988,56 @@ sub real_method { 2 }
             "expected the requested-method detail, got: {:?}",
             hover.details
         );
+        // PLSP-SPEC-0002 keeps "Low confidence" and "Dynamic boundary" as
+        // distinct states, so the boundary must be carried by provenance rather
+        // than inferred from Confidence::Low.
+        assert_eq!(
+            hover.provenance,
+            Some(Provenance::DynamicBoundary),
+            "AUTOLOAD dispatch must be classified as a dynamic boundary, got {:?}",
+            hover.provenance
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_exact_hovers_are_not_classified_as_dynamic_boundaries()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // The renderer keys the "dynamic dispatch" card off DynamicBoundary
+        // provenance. Any exact resolution that leaked that class would be
+        // mislabelled, so pin every exact path to "not a boundary".
+        let code = r#"
+package Base;
+sub inherited_method { 1 }
+
+package Child;
+our @ISA = ('Base');
+sub AUTOLOAD { 2 }
+sub real_method { 3 }
+"#;
+
+        let mut parser = Parser::new(code);
+        let ast = parser.parse()?;
+        let analyzer = SemanticAnalyzer::analyze_with_source(&ast, code);
+
+        for (receiver, method) in
+            [("Child", "real_method"), ("Child", "inherited_method"), ("Child", "can")]
+        {
+            let hover = analyzer
+                .resolve_inherited_method_hover(receiver, method)
+                .ok_or_else(|| format!("expected hover for {receiver}->{method}"))?;
+            assert_ne!(
+                hover.provenance,
+                Some(Provenance::DynamicBoundary),
+                "{receiver}->{method} is exact and must not be a dynamic boundary; got {:?}",
+                hover.details
+            );
+            assert_eq!(
+                hover.confidence,
+                Confidence::High,
+                "{receiver}->{method} is exact and must stay High",
+            );
+        }
         Ok(())
     }
 
@@ -1037,6 +1145,118 @@ sub real_method { 1 }
         assert!(
             hover.signature.contains("UNIVERSAL::can"),
             "expected the UNIVERSAL signature, got: {}",
+            hover.signature
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_ancestor_exact_method_beats_subclass_autoload() -> Result<(), Box<dyn std::error::Error>>
+    {
+        // Perl searches the whole MRO for an exact method before consulting
+        // AUTOLOAD, so `Child->inherited_method` reaches `Base::inherited_method`
+        // and never enters `Child::AUTOLOAD`. Reporting it as dynamic dispatch
+        // would be a false claim about an exact, source-backed call.
+        let code = r#"
+package Base;
+sub inherited_method { 1 }
+
+package Child;
+our @ISA = ('Base');
+sub AUTOLOAD { 2 }
+"#;
+
+        let mut parser = Parser::new(code);
+        let ast = parser.parse()?;
+        let analyzer = SemanticAnalyzer::analyze_with_source(&ast, code);
+
+        let hover = analyzer
+            .resolve_inherited_method_hover("Child", "inherited_method")
+            .ok_or("expected inherited exact-method hover")?;
+
+        assert_eq!(
+            hover.confidence,
+            Confidence::High,
+            "an exact inherited method must not be reported as dynamic dispatch; got {:?} for {:?}",
+            hover.confidence,
+            hover.details
+        );
+        assert!(
+            hover.signature.contains("Base::inherited_method"),
+            "expected the ancestor's exact method signature, got: {}",
+            hover.signature
+        );
+        assert!(
+            !hover.details.iter().any(|d| d == AUTOLOAD_DYNAMIC_DISPATCH_DETAIL),
+            "exact inherited resolution must not carry the dynamic-dispatch detail, got: {:?}",
+            hover.details
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_universal_method_beats_autoload() -> Result<(), Box<dyn std::error::Error>> {
+        // Perl resolves UNIVERSAL before AUTOLOAD: `Foo->can(...)` calls
+        // UNIVERSAL::can even when Foo declares AUTOLOAD (#14257).
+        let code = r#"
+package Foo;
+sub AUTOLOAD { 1 }
+"#;
+
+        let mut parser = Parser::new(code);
+        let ast = parser.parse()?;
+        let analyzer = SemanticAnalyzer::analyze_with_source(&ast, code);
+
+        let hover = analyzer
+            .resolve_inherited_method_hover("Foo", "can")
+            .ok_or("expected UNIVERSAL hover")?;
+
+        assert_eq!(
+            hover.confidence,
+            Confidence::High,
+            "UNIVERSAL::can is exact and must outrank AUTOLOAD; got {:?} for {:?}",
+            hover.confidence,
+            hover.details
+        );
+        assert!(
+            hover.signature.contains("UNIVERSAL::can"),
+            "expected the UNIVERSAL signature, got: {}",
+            hover.signature
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_autoload_still_wins_when_no_exact_method_exists()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Opposite-direction control for the two tests above: reordering must not
+        // disable the AUTOLOAD fallback for a name nothing in the chain defines.
+        let code = r#"
+package Base;
+sub inherited_method { 1 }
+
+package Child;
+our @ISA = ('Base');
+sub AUTOLOAD { 2 }
+"#;
+
+        let mut parser = Parser::new(code);
+        let ast = parser.parse()?;
+        let analyzer = SemanticAnalyzer::analyze_with_source(&ast, code);
+
+        let hover = analyzer
+            .resolve_inherited_method_hover("Child", "nothing_defines_this")
+            .ok_or("expected AUTOLOAD fallback after the exact pass finds nothing")?;
+
+        assert_eq!(
+            hover.confidence,
+            Confidence::Low,
+            "AUTOLOAD must still answer when no exact method exists; got {:?}",
+            hover.confidence
+        );
+        assert!(
+            hover.signature.contains("Child::AUTOLOAD"),
+            "expected the AUTOLOAD signature, got: {}",
             hover.signature
         );
         Ok(())

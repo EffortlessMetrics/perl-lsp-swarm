@@ -168,12 +168,20 @@ sub caller_method {
         let response = server.get_hover(uri, line, character);
         println!("NO-AUTOLOAD HOVER RESPONSE: {response:#}");
 
-        if let Some(content) = hover_content(&response) {
-            assert!(
-                !content.contains("dynamic dispatch"),
-                "a class without AUTOLOAD must never be marked dynamic, got: {content}"
-            );
-        }
+        // Require content rather than tolerating None: a hover that resolved
+        // nothing would satisfy the negative assertion vacuously, so a
+        // regression that broke plain-class hover entirely would stay green.
+        let content =
+            hover_content(&response).ok_or("expected hover content for the plain-class method")?;
+
+        assert!(
+            content.contains("only_method"),
+            "hover must resolve the plain-class method, got: {content}"
+        );
+        assert!(
+            !content.contains("dynamic dispatch"),
+            "a class without AUTOLOAD must never be marked dynamic, got: {content}"
+        );
         Ok(())
     }
 
@@ -220,6 +228,65 @@ sub caller_method {
         assert!(
             content.contains("resolved at runtime"),
             "cross-file AUTOLOAD hover must explain runtime resolution, got: {content}"
+        );
+        Ok(())
+    }
+
+    /// Ordering control for the cross-file path: Perl searches the whole
+    /// resolution order for an exact method before consulting AUTOLOAD, so a
+    /// subclass AUTOLOAD must not pre-empt an ancestor's real method. Resolving
+    /// exact-then-AUTOLOAD per package would report an exact, source-backed
+    /// inherited call as a dynamic boundary.
+    #[test]
+    fn cross_file_ancestor_exact_method_beats_subclass_autoload()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::fs;
+
+        let temp = tempfile::tempdir()?;
+        let workspace = temp.path().join("workspace");
+        let lib_dir = workspace.join("lib");
+        fs::create_dir_all(&lib_dir)?;
+        fs::write(
+            lib_dir.join("RemoteBase.pm"),
+            "package RemoteBase;\n\nsub inherited_method { return 1; }\n\n1;\n",
+        )?;
+        fs::write(
+            lib_dir.join("RemoteChild.pm"),
+            "package RemoteChild;\n\nour @ISA = ('RemoteBase');\n\n\
+             sub AUTOLOAD {\n    our $AUTOLOAD;\n    return 0;\n}\n\n1;\n",
+        )?;
+
+        let script = workspace.join("script.pl");
+        let code = "use lib 'lib';\nuse RemoteChild;\n\nRemoteChild->inherited_method();\n";
+        fs::write(&script, code)?;
+
+        let workspace_path = workspace.to_str().ok_or("non-UTF-8 workspace path")?;
+        let script_uri =
+            url::Url::from_file_path(&script).map_err(|_| "invalid script file path")?.to_string();
+
+        let server = TestServerBuilder::new().with_workspace(workspace_path).build();
+        server.open_document(&script_uri, code);
+
+        let (line, character) = find_pos(code, "inherited_method", 3)?;
+        let response = server.get_hover(&script_uri, line, character);
+        println!("CROSS-FILE INHERITED EXACT HOVER RESPONSE: {response:#}");
+
+        // Require content rather than tolerating None: a hover that resolved
+        // nothing would satisfy the negative assertions vacuously.
+        let content = hover_content(&response)
+            .ok_or("expected hover content for the inherited exact method")?;
+
+        assert!(
+            content.contains("RemoteBase::inherited_method"),
+            "hover must resolve through the ancestor to the exact method, got: {content}"
+        );
+        assert!(
+            !content.contains("dynamic dispatch"),
+            "an exact inherited method must not be marked dynamic, got: {content}"
+        );
+        assert!(
+            !content.contains("resolved at runtime"),
+            "an exact inherited method must not claim runtime resolution, got: {content}"
         );
         Ok(())
     }

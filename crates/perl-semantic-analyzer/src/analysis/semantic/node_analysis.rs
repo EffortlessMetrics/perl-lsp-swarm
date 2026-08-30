@@ -62,6 +62,7 @@ impl SemanticAnalyzer {
                         },
                         // Exact source-backed declaration at this location.
                         confidence: Confidence::High,
+                        provenance: None,
                     };
 
                     self.hover_info.insert(variable.location, hover);
@@ -118,6 +119,7 @@ impl SemanticAnalyzer {
                         )],
                         // Exact source-backed declaration at this location.
                         confidence: Confidence::High,
+                        provenance: None,
                     };
 
                     self.hover_info.insert(node.location, hover);
@@ -159,6 +161,7 @@ impl SemanticAnalyzer {
                         },
                         // Exact source-backed declaration at this location.
                         confidence: Confidence::High,
+                        provenance: None,
                     };
 
                     self.hover_info.insert(node.location, hover);
@@ -192,6 +195,7 @@ impl SemanticAnalyzer {
                         details,
                         // Exact source-backed declaration at this location.
                         confidence: Confidence::High,
+                        provenance: None,
                     };
 
                     self.hover_info.insert(node.location, hover);
@@ -230,6 +234,7 @@ impl SemanticAnalyzer {
                     },
                     // Exact source-backed declaration at this location.
                     confidence: Confidence::High,
+                    provenance: None,
                 };
                 self.hover_info.insert(node.location, hover);
 
@@ -290,6 +295,7 @@ impl SemanticAnalyzer {
                             details: vec![],
                             // Exact source-backed declaration at this location.
                             confidence: Confidence::High,
+                            provenance: None,
                         };
 
                         self.hover_info.insert(node.location, hover);
@@ -320,6 +326,7 @@ impl SemanticAnalyzer {
                     details: vec![],
                     // Exact source-backed declaration at this location.
                     confidence: Confidence::High,
+                    provenance: None,
                 };
 
                 self.hover_info.insert(node.location, hover);
@@ -513,6 +520,7 @@ impl SemanticAnalyzer {
                             },
                             // Exact source-backed declaration at this location.
                             confidence: Confidence::High,
+                            provenance: None,
                         };
 
                         self.hover_info.insert(var.location, hover);
@@ -673,6 +681,7 @@ impl SemanticAnalyzer {
                         details: vec![],
                         // Exact source-backed declaration at this location.
                         confidence: Confidence::High,
+                        provenance: None,
                     };
                     self.hover_info.insert(node.location, hover);
                 } else {
@@ -683,6 +692,7 @@ impl SemanticAnalyzer {
                         details: vec![],
                         // Exact source-backed declaration at this location.
                         confidence: Confidence::High,
+                        provenance: None,
                     };
                     self.hover_info.insert(node.location, hover);
                 }
@@ -978,6 +988,7 @@ impl SemanticAnalyzer {
                     details: vec![],
                     // Exact source-backed declaration at this location.
                     confidence: Confidence::High,
+                    provenance: None,
                 };
                 self.hover_info.insert(node.location, hover);
             }
@@ -1037,6 +1048,7 @@ impl SemanticAnalyzer {
                     },
                     // Exact source-backed declaration at this location.
                     confidence: Confidence::High,
+                    provenance: None,
                 };
                 self.hover_info.insert(node.location, hover);
             }
