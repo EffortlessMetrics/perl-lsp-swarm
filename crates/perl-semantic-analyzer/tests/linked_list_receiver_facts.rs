@@ -142,7 +142,7 @@ fn blessed_recursive_link_initializer_keeps_node_receiver_fact() -> Result<(), S
 
 #[test]
 fn post_construction_link_assignment_preserves_blessed_container_shape() -> Result<(), String> {
-    let code = "my $head = bless {}, 'LinkedList::Node'; my $tail = LinkedList::Node->new; $head->{child} = $tail; $head->{child}->value;";
+    let code = "my $head = bless { parent => LinkedList::Node->new }, 'LinkedList::Node'; my $tail = LinkedList::Node->new; $head->{child} = $tail; $head->{child}->value;";
     let ast = parse_ast(code)?;
     let mut engine = TypeInferenceEngine::new();
 
@@ -165,6 +165,8 @@ fn post_construction_link_assignment_preserves_blessed_container_shape() -> Resu
     else {
         return Err("head assignment replaced its object shape".to_string());
     };
+    assert_eq!(head_shape.package, "LinkedList::Node");
+    assert!(head_shape.fields.contains_key("parent"));
     let child =
         head_shape.fields.get("child").ok_or_else(|| "missing assigned child field".to_string())?;
     assert_eq!(child.ty, tail.ty);
@@ -184,6 +186,28 @@ fn post_construction_link_assignment_preserves_blessed_container_shape() -> Resu
     let receiver_fact = engine.infer_expr_fact(receiver);
     assert_eq!(receiver_fact.ty, PerlType::Object("LinkedList::Node".to_string()));
     assert_eq!(receiver_fact.confidence, tail.confidence);
+    Ok(())
+}
+
+#[test]
+fn dynamic_field_assignment_does_not_manufacture_a_static_object_field() -> Result<(), String> {
+    let code = "my $field = 'child'; my $head = bless {}, 'LinkedList::Node'; my $tail = LinkedList::Node->new; $head->{$field} = $tail; $head->{child}->value;";
+    let ast = parse_ast(code)?;
+    let mut engine = TypeInferenceEngine::new();
+
+    engine.infer(&ast).map_err(|err| format!("inference failed: {err:?}"))?;
+
+    let head = engine.get_fact_at("head").ok_or_else(|| "missing head fact".to_string())?;
+    let ShapeFact::Object(head_shape) =
+        head.shape.as_ref().ok_or_else(|| "missing head object shape".to_string())?
+    else {
+        return Err("dynamic field assignment replaced the object shape".to_string());
+    };
+    assert!(!head_shape.fields.contains_key("child"));
+
+    let receiver = method_receiver(&ast, "value")?;
+    let receiver_fact = engine.infer_expr_fact(receiver);
+    assert_eq!(receiver_fact.ty, PerlType::Any);
     Ok(())
 }
 

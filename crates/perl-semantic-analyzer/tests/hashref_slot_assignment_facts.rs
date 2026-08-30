@@ -1,8 +1,8 @@
 //! Negative controls for object-aware hashref-slot assignment.
 
+use perl_semantic_analyzer::Parser;
 use perl_semantic_analyzer::analysis::type_facts::{ShapeFact, TypeEvidence};
 use perl_semantic_analyzer::analysis::type_inference::{PerlType, TypeInferenceEngine};
-use perl_semantic_analyzer::Parser;
 
 #[test]
 fn ordinary_hashref_slot_assignment_remains_a_hash_shape() -> Result<(), String> {
@@ -19,8 +19,10 @@ fn ordinary_hashref_slot_assignment_remains_a_hash_shape() -> Result<(), String>
     else {
         return Err("ordinary hashref assignment stopped producing a hash shape".to_string());
     };
-    let child =
-        shape.slots.get("child").ok_or_else(|| "missing assigned hashref child slot".to_string())?;
+    let child = shape
+        .slots
+        .get("child")
+        .ok_or_else(|| "missing assigned hashref child slot".to_string())?;
     assert_eq!(child.ty, PerlType::Object("LinkedList::Node".to_string()));
     assert!(child.evidence.iter().any(|evidence| {
         matches!(
