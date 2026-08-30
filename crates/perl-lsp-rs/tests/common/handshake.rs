@@ -150,8 +150,7 @@ pub fn initialize_lsp_with_root_path(server: &LspServer, root_path: &str) -> Val
             "capabilities": {},
             "clientInfo": {"name":"perl-parser-tests","version":"0"},
             "rootPath": root_path,
-            "rootUri": null,
-            "workspaceFolders": null
+            "rootUri": null
         }),
     )
 }
