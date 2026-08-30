@@ -212,7 +212,10 @@ debuggee outside a REPL. Two surfaces sit outside it:
   string `eval`), and then requires the condition to parse as a Perl
   expression. That screen is narrower than the evaluate deny-list in
   `eval/patterns.rs` and is maintained separately, so the two are not
-  interchangeable.
+  interchangeable. A rejected condition leaves the breakpoint unverified, and
+  breakpoint synchronization writes `b {line} {condition}` only for verified
+  breakpoints, so a screened-out condition is never sent to the debugger at
+  all.
 
 Neither surface is changed by this boundary, and neither should be read as
 covered by it.
