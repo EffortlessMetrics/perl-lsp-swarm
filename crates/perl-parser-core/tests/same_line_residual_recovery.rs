@@ -23,7 +23,40 @@ fn has_recovery_node(node: &Node) -> bool {
 fn has_unrecovered_blocking_diagnostic(diagnostics: &[ParseError]) -> bool {
     diagnostics
         .iter()
-        .any(|error| error.blocks_clean_parse() && !matches!(error, ParseError::Recovered { .. }))
+        .any(|error| error.blocks_clean_parse() && !is_benign_bare_goto_recovery(error))
+}
+
+fn is_benign_bare_goto_recovery(error: &ParseError) -> bool {
+    matches!(
+        error,
+        ParseError::Recovered {
+            site: RecoverySite::InfixRhs,
+            kind: RecoveryKind::MissingOperand,
+            ..
+        }
+    )
+}
+
+#[test]
+fn unexpected_recovered_blocking_diagnostic_is_not_silenced() -> Result<(), String> {
+    let benign = ParseError::Recovered {
+        site: RecoverySite::InfixRhs,
+        kind: RecoveryKind::MissingOperand,
+        location: 0,
+    };
+    let unexpected = ParseError::Recovered {
+        site: RecoverySite::ArgList,
+        kind: RecoveryKind::InsertedCloser,
+        location: 0,
+    };
+
+    if has_unrecovered_blocking_diagnostic(&[benign]) {
+        return Err("the intended bare-goto recovery was treated as unexpected".to_string());
+    }
+    if !has_unrecovered_blocking_diagnostic(&[unexpected]) {
+        return Err("an unexpected recovered blocking diagnostic was silenced".to_string());
+    }
+    Ok(())
 }
 
 fn find_assignment<'a>(node: &'a Node, expected_op: &str) -> Option<&'a Node> {
