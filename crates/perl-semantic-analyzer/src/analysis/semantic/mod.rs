@@ -32,7 +32,7 @@ pub use builtins::{
     is_exception_function,
 };
 pub use exporter_metadata::{ExportedSubroutine, FileExportMetadata, PackageExportMetadata};
-pub use hover::HoverInfo;
+pub use hover::{AUTOLOAD_DYNAMIC_DISPATCH_DETAIL, HoverInfo};
 pub use model::SemanticModel;
 pub use query_facade::{
     DefinitionLocation, EffectivePragmaState, ParentChain, ResolvedSymbol, SemanticQueryFacade,
@@ -48,7 +48,7 @@ use crate::analysis::generated_member_extractor::GeneratedMemberExtractor;
 use crate::analysis::package_graph_extractor::PackageGraphExtractor;
 use crate::ast::Node;
 use crate::symbol::{Symbol, SymbolExtractor, SymbolTable, is_universal_method};
-use perl_semantic_facts::{FileId, GeneratedMember, PackageEdge};
+use perl_semantic_facts::{Confidence, FileId, GeneratedMember, PackageEdge};
 use std::collections::{HashMap, HashSet};
 
 const MAX_MRO_TRAVERSAL_DEPTH: usize = 1024;
@@ -414,6 +414,9 @@ impl SemanticAnalyzer {
                 signature: format!("sub UNIVERSAL::{method_name}"),
                 documentation: None,
                 details: vec!["Defined in UNIVERSAL".to_string()],
+                // UNIVERSAL methods are exact: the name is statically known and
+                // always reaches the same builtin. Not a dynamic boundary.
+                confidence: Confidence::High,
             });
         }
 
@@ -452,11 +455,14 @@ impl SemanticAnalyzer {
                 signature: format!("sub {}::{}", model.name, method_name),
                 documentation: None,
                 details,
+                // The class model names this exact method; the signature is the
+                // subroutine the call actually reaches.
+                confidence: Confidence::High,
             });
         }
         if model.methods.iter().any(|m| m.name == "AUTOLOAD") {
             let is_direct = model.name == receiver_class;
-            let details = if is_direct {
+            let mut details = if is_direct {
                 vec![
                     format!("Resolved via AUTOLOAD in {}", model.name),
                     format!("Requested method: {method_name}"),
@@ -467,10 +473,16 @@ impl SemanticAnalyzer {
                     format!("Requested method: {method_name}"),
                 ]
             };
+            details.push(AUTOLOAD_DYNAMIC_DISPATCH_DETAIL.to_string());
             return Some(HoverInfo {
                 signature: format!("sub {}::AUTOLOAD", model.name),
                 documentation: None,
                 details,
+                // AUTOLOAD is a DynamicBoundary (PLSP-SPEC-0017): the requested
+                // method name is only known at runtime, so this signature is the
+                // handler that would be entered, not an exact definition of
+                // `method_name`.
+                confidence: Confidence::Low,
             });
         }
         None
@@ -507,6 +519,8 @@ impl SemanticAnalyzer {
                 signature: format!("sub {}::{}", package_name, method_name),
                 documentation: None,
                 details: vec![format!("Inherited from {}", package_name)],
+                // The symbol table holds this exact qualified subroutine.
+                confidence: Confidence::High,
             });
         }
 
@@ -525,7 +539,10 @@ impl SemanticAnalyzer {
                 details: vec![
                     format!("Resolved via AUTOLOAD in {}", package_name),
                     format!("Requested method: {}", method_name),
+                    AUTOLOAD_DYNAMIC_DISPATCH_DETAIL.to_string(),
                 ],
+                // Same DynamicBoundary rule as the class-model path above.
+                confidence: Confidence::Low,
             });
         }
 
@@ -534,6 +551,9 @@ impl SemanticAnalyzer {
                 signature: format!("sub UNIVERSAL::{method_name}"),
                 documentation: None,
                 details: vec!["Defined in UNIVERSAL".to_string()],
+                // UNIVERSAL methods are exact: the name is statically known and
+                // always reaches the same builtin. Not a dynamic boundary.
+                confidence: Confidence::High,
             });
         }
 
@@ -858,6 +878,198 @@ sub AUTOLOAD { 1 }
             hover.details.iter().any(|detail| detail.contains("dynamic_method")),
             "expected requested method detail, got: {:?}",
             hover.details
+        );
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // #14256 — AUTOLOAD hover must not claim exact-method authority.
+    //
+    // AUTOLOAD is a DynamicBoundary under PLSP-SPEC-0017, so its hover
+    // carries Confidence::Low; every exact resolution stays High. The
+    // High-side assertions are the opposite-direction controls: an
+    // implementation that blanket-downgrades hovers fails them.
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn test_autoload_method_hover_is_low_confidence() -> Result<(), Box<dyn std::error::Error>> {
+        let code = r#"
+package Foo;
+sub AUTOLOAD { 1 }
+sub real_method { 2 }
+"#;
+
+        let mut parser = Parser::new(code);
+        let ast = parser.parse()?;
+        let analyzer = SemanticAnalyzer::analyze_with_source(&ast, code);
+
+        let hover = analyzer
+            .resolve_inherited_method_hover("Foo", "dynamic_method")
+            .ok_or("expected AUTOLOAD hover fallback")?;
+
+        assert_eq!(
+            hover.confidence,
+            Confidence::Low,
+            "AUTOLOAD dispatch is a dynamic boundary and must not claim exact authority; got {:?} for {:?}",
+            hover.confidence,
+            hover.details
+        );
+        assert!(
+            hover.details.iter().any(|d| d == AUTOLOAD_DYNAMIC_DISPATCH_DETAIL),
+            "expected the dynamic-dispatch detail line, got: {:?}",
+            hover.details
+        );
+        // The pre-existing explanation must survive (regression control).
+        assert!(
+            hover.details.iter().any(|d| d.contains("Resolved via AUTOLOAD in Foo")),
+            "expected the original AUTOLOAD provenance detail, got: {:?}",
+            hover.details
+        );
+        assert!(
+            hover.details.iter().any(|d| d.contains("dynamic_method")),
+            "expected the requested-method detail, got: {:?}",
+            hover.details
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_exact_method_hover_stays_high_confidence() -> Result<(), Box<dyn std::error::Error>> {
+        // Same class also declares AUTOLOAD, so a blanket downgrade keyed on
+        // "class has AUTOLOAD" rather than on the resolution actually taken
+        // would fail here.
+        let code = r#"
+package Foo;
+sub AUTOLOAD { 1 }
+sub real_method { 2 }
+"#;
+
+        let mut parser = Parser::new(code);
+        let ast = parser.parse()?;
+        let analyzer = SemanticAnalyzer::analyze_with_source(&ast, code);
+
+        let hover = analyzer
+            .resolve_inherited_method_hover("Foo", "real_method")
+            .ok_or("expected exact method hover")?;
+
+        assert_eq!(
+            hover.confidence,
+            Confidence::High,
+            "an exactly-resolved method must stay High; got {:?}",
+            hover.confidence
+        );
+        assert!(
+            hover.signature.contains("Foo::real_method"),
+            "expected the exact method signature, got: {}",
+            hover.signature
+        );
+        assert!(
+            !hover.details.iter().any(|d| d == AUTOLOAD_DYNAMIC_DISPATCH_DETAIL),
+            "exact resolution must not carry the dynamic-dispatch detail, got: {:?}",
+            hover.details
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_inherited_autoload_hover_is_low_confidence() -> Result<(), Box<dyn std::error::Error>> {
+        let code = r#"
+package Base;
+sub AUTOLOAD { 1 }
+
+package Child;
+our @ISA = ('Base');
+"#;
+
+        let mut parser = Parser::new(code);
+        let ast = parser.parse()?;
+        let analyzer = SemanticAnalyzer::analyze_with_source(&ast, code);
+
+        let hover = analyzer
+            .resolve_inherited_method_hover("Child", "dynamic_method")
+            .ok_or("expected inherited AUTOLOAD hover fallback")?;
+
+        assert_eq!(
+            hover.confidence,
+            Confidence::Low,
+            "inherited AUTOLOAD is still a dynamic boundary; got {:?} for {:?}",
+            hover.confidence,
+            hover.details
+        );
+        assert!(
+            hover.details.iter().any(|d| d == AUTOLOAD_DYNAMIC_DISPATCH_DETAIL),
+            "expected the dynamic-dispatch detail line, got: {:?}",
+            hover.details
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_universal_method_hover_stays_high_confidence() -> Result<(), Box<dyn std::error::Error>>
+    {
+        // UNIVERSAL methods are exact, not a dynamic boundary.
+        //
+        // This package deliberately declares no AUTOLOAD. Real Perl resolves
+        // UNIVERSAL before consulting AUTOLOAD, but this analyzer currently
+        // checks the class-model AUTOLOAD fallback first, so a class that has
+        // both would return the AUTOLOAD hover here. That precedence defect is
+        // separate from this claim and is tracked in #14257; pinning the
+        // current behaviour in a test would only make that fix harder.
+        let code = r#"
+package Foo;
+sub real_method { 1 }
+"#;
+
+        let mut parser = Parser::new(code);
+        let ast = parser.parse()?;
+        let analyzer = SemanticAnalyzer::analyze_with_source(&ast, code);
+
+        let hover = analyzer
+            .resolve_inherited_method_hover("Foo", "can")
+            .ok_or("expected UNIVERSAL hover")?;
+
+        assert_eq!(
+            hover.confidence,
+            Confidence::High,
+            "UNIVERSAL methods are exact, not a dynamic boundary; got {:?}",
+            hover.confidence
+        );
+        assert!(
+            hover.signature.contains("UNIVERSAL::can"),
+            "expected the UNIVERSAL signature, got: {}",
+            hover.signature
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_local_declaration_hover_is_high_confidence() -> Result<(), Box<dyn std::error::Error>> {
+        // Guards the bulk `node_analysis.rs` construction sites: an ordinary
+        // source-backed declaration must not be downgraded.
+        let code = r#"
+sub documented_sub {
+    return 1;
+}
+"#;
+
+        let mut parser = Parser::new(code);
+        let ast = parser.parse()?;
+        let analyzer = SemanticAnalyzer::analyze_with_source(&ast, code);
+
+        let sym = analyzer
+            .symbol_table()
+            .symbols
+            .get("documented_sub")
+            .and_then(|syms| syms.first())
+            .ok_or("symbol not found")?
+            .clone();
+        let hover = analyzer.hover_at(sym.location).ok_or("hover not found")?;
+
+        assert_eq!(
+            hover.confidence,
+            Confidence::High,
+            "an exact declaration hover must be High; got {:?}",
+            hover.confidence
         );
         Ok(())
     }

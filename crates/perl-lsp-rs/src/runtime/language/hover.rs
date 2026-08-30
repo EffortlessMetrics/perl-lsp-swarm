@@ -679,6 +679,8 @@ impl LspServer {
         // emit InheritedMethod for Phase 2 (workspace index BFS).
         #[cfg(feature = "workspace")]
         {
+            use perl_semantic_facts::Confidence;
+
             if let Some(raw_receiver) = Self::extract_arrow_receiver(text, offset) {
                 // Extract the method name token at the cursor
                 let method_name = Self::get_token_at_position_static(text, offset);
@@ -695,11 +697,22 @@ impl LspServer {
                             analyzer.resolve_inherited_method_hover(&receiver_pkg, &method_name)
                         {
                             let details = hover_info.details.join("\n");
+                            // Branch on the typed confidence, not on `details`
+                            // prose. A Low-confidence hover is a DynamicBoundary
+                            // (PLSP-SPEC-0017): the signature names the handler
+                            // that would run, not an exact definition of the
+                            // requested method, so the card must not read as a
+                            // plain `**Method**`.
+                            let heading = match hover_info.confidence {
+                                Confidence::Low => "**Method (dynamic dispatch)**",
+                                Confidence::Medium | Confidence::High => "**Method**",
+                            };
                             return HoverExtracted::Complete(json!({
                                 "contents": {
                                     "kind": "markdown",
                                     "value": format!(
-                                        "**Method**\n\n`{}`\n\n{}",
+                                        "{}\n\n`{}`\n\n{}",
+                                        heading,
                                         hover_info.signature,
                                         details
                                     ),
@@ -1586,12 +1599,20 @@ impl LspServer {
                 } else {
                     format!("Resolved via inherited `AUTOLOAD` in `{package_name}`")
                 };
+                // Same DynamicBoundary rule as the in-file path: this workspace
+                // hit is an AUTOLOAD handler, not an exact definition of
+                // `method_name`, so the card must not read as a plain method.
+                // The condition is the structural AUTOLOAD member match above,
+                // not a string match on rendered prose.
                 return Some(json!({
                     "contents": {
                         "kind": "markdown",
                         "value": format!(
-                            "**Method**\n\n`sub {}::AUTOLOAD`\n\n{}\n\nRequested method: `{}`",
-                            package_name, detail, method_name
+                            "**Method (dynamic dispatch)**\n\n`sub {}::AUTOLOAD`\n\n{}\n\nRequested method: `{}`\n\n{}",
+                            package_name,
+                            detail,
+                            method_name,
+                            crate::semantic::AUTOLOAD_DYNAMIC_DISPATCH_DETAIL
                         ),
                     },
                 }));
