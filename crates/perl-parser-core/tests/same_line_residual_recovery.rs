@@ -247,17 +247,18 @@ fn malformed_guard_boundaries_are_not_claimed_as_same_line_residue() -> Result<(
 #[test]
 fn real_perl_oracle_agrees_on_supported_continuations_and_residue() -> Result<(), String> {
     let valid_sources = [
-        "copy($from, $to) or goto fail; print \"ok\";",
-        "copy($from, $to)\nand goto fail;\nprint \"ok\";",
-        "copy($from, $to)\nxor goto &fail_sub;\nprint \"ok\";",
-        "foo or goto => 1; print \"ok\";",
-        "foo or (goto => 1); print \"ok\";",
-        "foo or (goto => 1, next => 2); print \"ok\";",
-        "foo or goto => 1, bar => 2; print \"ok\";",
-        "foo and (goto => 1); print \"ok\";",
-        "foo xor (goto => 1); print \"ok\";",
+        ("copy($from, $to) or goto fail; print \"ok\";", Some(("or", true))),
+        ("copy($from, $to) and goto fail; print \"ok\";", Some(("and", true))),
+        ("copy($from, $to) xor goto &fail_sub; print \"ok\";", Some(("xor", true))),
+        ("copy($from, $to) or goto $dynamic_target; print \"ok\";", Some(("or", true))),
+        ("foo or goto => 1; print \"ok\";", Some(("or", false))),
+        ("foo or (goto => 1); print \"ok\";", Some(("or", false))),
+        ("foo or (goto => 1, next => 2); print \"ok\";", Some(("or", false))),
+        ("foo or goto => 1, bar => 2; print \"ok\";", Some(("or", false))),
+        ("foo and (goto => 1); print \"ok\";", Some(("and", false))),
+        ("foo xor (goto => 1); print \"ok\";", Some(("xor", false))),
     ];
-    for source in valid_sources {
+    for (source, expected) in valid_sources {
         if !perl_compile_accepts(source)? {
             return Err(format!("real Perl rejected a supported continuation: {source:?}"));
         }
@@ -266,6 +267,26 @@ fn real_perl_oracle_agrees_on_supported_continuations_and_residue() -> Result<()
             return Err(format!(
                 "Rust parser rejected a real-Perl-supported continuation:\nsource={source:?}\ndiagnostics={:?}",
                 output.diagnostics
+            ));
+        }
+        let statements = match &output.ast.kind {
+            NodeKind::Program { statements } => statements,
+            kind => return Err(format!("expected a program, got {}", kind.kind_name())),
+        };
+        let Some((operator, contains_control_flow_goto)) = expected else {
+            continue;
+        };
+        if statements.len() != 2 {
+            return Err(format!(
+                "real-Perl-supported {operator} continuation must preserve the later statement:\n{}",
+                output.ast.to_sexp()
+            ));
+        }
+        let has_control_flow_goto = contains_word_operator_with_goto(&statements[0], operator);
+        if has_control_flow_goto != contains_control_flow_goto {
+            return Err(format!(
+                "{operator} fat-arrow/control-flow classification disagreed with the expected AST:\n{}",
+                output.ast.to_sexp()
             ));
         }
     }
