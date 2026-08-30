@@ -538,12 +538,17 @@ impl Drop for Node {
     }
 }
 
+mod declaration_version;
 mod node_clone;
 mod node_debug;
 mod node_eq;
 mod node_sexp;
 mod read_cursor;
 
+pub use declaration_version::{
+    DeclarationVersionDisposition, DeclarationVersionForm, DeclarationVersionSyntax,
+    DeclarationVersionSyntaxError,
+};
 pub use node_debug::{
     NODE_DEBUG_MAX_BYTES, NODE_DEBUG_MAX_CHILDREN, NODE_DEBUG_MAX_DEPTH, NODE_DEBUG_MAX_NODES,
     NODE_DEBUG_MAX_PAYLOAD_CHARS, NODE_DEBUG_TRUNCATION_MARKER,

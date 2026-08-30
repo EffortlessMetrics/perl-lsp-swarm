@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12438 |
-| Rust-family files | 3831 |
-| Non-Rust files | 8607 |
-| Allowlisted | 6370 |
+| Total tracked files | 12446 |
+| Rust-family files | 3836 |
+| Non-Rust files | 8610 |
+| Allowlisted | 6373 |
 | Unclassified | 2237 |
 
 ## Non-Rust files by category
@@ -17,7 +17,7 @@
 | Category | Count |
 |---|---|
 | config | 491 |
-| documentation | 2804 |
+| documentation | 2807 |
 | generated | 2 |
 | production | 348 |
 | test | 2058 |
@@ -3119,6 +3119,9 @@
 | `.spec/10690-missing-import-containment/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/10690-missing-import-containment/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/10690-missing-import-containment/context.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/10716-declaration-version-syntax/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/10716-declaration-version-syntax/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/10716-declaration-version-syntax/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/10794-workspace-symbol-query-profile-substrate/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/10794-workspace-symbol-query-profile-substrate/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/10794-workspace-symbol-query-profile-substrate/context.md` | documentation | `non-rust-root-governance-docs` | docs |
