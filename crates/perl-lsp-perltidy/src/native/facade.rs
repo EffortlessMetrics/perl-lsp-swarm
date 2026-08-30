@@ -10,11 +10,11 @@
 //!
 //! The claim covered here is the native provider API. Public LSP
 //! `rangeFormatting` reaches this facade through
-//! `runtime/language/formatting_policy/handlers.rs::handle_range_formatting_policy`
-//! → `FormattingProvider::format_range_decision`
-//! (`crates/perl-lsp-rs-core/src/providers/formatting/formatting.rs:201`)
-//! → `native_range_decision` (line 262) → this facade. The guard applies when
-//! the formatter mode selects the native engine. Incremental snapshot replay
+//! `perl_lsp_rs::runtime::language::formatting_policy::handle_range_formatting_policy`
+//! → `perl_lsp_rs_core::providers::formatting::FormattingProvider::format_range_decision`
+//! → `native_range_decision` → this facade, because `native.rs` re-exports it
+//! as the crate's public `NativeFormatter`. The guard applies when the
+//! formatter mode selects the native engine. Incremental snapshot replay
 //! remains out of scope.
 //!
 //! Every existing parse, literal-preservation, render, and post-parse gate still
@@ -76,7 +76,6 @@ impl NativeFormatter {
         context: &FormatContext,
     ) -> TypedFormatResult {
         let engine = implementation::NativeFormatter::new();
-        let lines = source_line_ranges(source);
         let baseline = engine.format_range_typed(source, range, config, context);
         if matches!(config.mode, FormatterMode::Off)
             || baseline.outcome.reason == FormatReasonCode::UnsafeRange
@@ -84,7 +83,7 @@ impl NativeFormatter {
             return baseline;
         }
 
-        if range_overlaps_completed_heredoc(source, range, &lines) {
+        if range_overlaps_completed_heredoc(source, range, &source_line_ranges(source)) {
             return typed_heredoc_range_refusal(
                 source,
                 range,
@@ -137,12 +136,12 @@ impl PerlFormatter for NativeFormatter {
 
     fn format_range(&self, source: &str, range: TextRange, config: &FormatConfig) -> FormatResult {
         let engine = implementation::NativeFormatter::new();
-        let lines = source_line_ranges(source);
         if matches!(config.mode, FormatterMode::Off) {
             return <implementation::NativeFormatter as PerlFormatter>::format_range(
                 &engine, source, range, config,
             );
         }
+        let lines = source_line_ranges(source);
         if valid_range(source, range, &lines)
             && range_overlaps_completed_heredoc(source, range, &lines)
         {
