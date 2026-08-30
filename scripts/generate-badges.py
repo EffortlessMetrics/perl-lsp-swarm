@@ -349,11 +349,14 @@ def run_ripr(root: Path, timeout_seconds: float = RIPR_TIMEOUT_SECONDS) -> str:
                 f"could not launch ripr badge producer: {error}{suffix}"
             ) from error
         if cleanup:
-            print(
-                "ripr launch cleanup incomplete after interrupt: "
-                + "; ".join(cleanup),
-                file=sys.stderr,
-            )
+            try:
+                print(
+                    "ripr launch cleanup incomplete after interrupt: "
+                    + "; ".join(cleanup),
+                    file=sys.stderr,
+                )
+            except BaseException:
+                pass  # never let a failed diagnostic replace the interrupt
         raise
     if windows_job is not None:
         try:
