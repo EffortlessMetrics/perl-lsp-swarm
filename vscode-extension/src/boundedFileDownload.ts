@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as crypto from 'crypto';
+import * as path from 'path';
 import type * as http from 'http';
 import type { CancellationTokenLike, DisposableLike } from './boundedHttpJson';
 
@@ -69,7 +70,7 @@ export function downloadBoundedFile(options: BoundedFileDownloadOptions): Promis
     // The generation owns this unique staging path. It does not claim the
     // caller-owned destination until the stream has completed successfully,
     // so cleanup can never quarantine a replacement that arrived at dest.
-    const stagingDest = `${dest}.partial-download-${crypto.randomUUID()}`;
+    const stagingDest = path.join(path.dirname(dest), `.partial-download-${crypto.randomUUID()}`);
 
     // Match the previous createWriteStream truncation behavior for an
     // existing destination, while leaving any later replacement independent

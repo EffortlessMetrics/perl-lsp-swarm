@@ -46,7 +46,9 @@ describe('BinaryDownloader partial-file cleanup ordering', () => {
   });
 
   test('rejects only after the partial destination is absent', async () => {
-    const destination = path.join(tmpDir, 'partial.bin');
+    // Exactly 255 UTF-8 bytes: valid as a single filesystem component while
+    // leaving no room for a destination-derived staging suffix.
+    const destination = path.join(tmpDir, `${'é'.repeat(125)}a.bin`);
     fs.writeFileSync(destination, 'partial');
 
     const downloader = new BinaryDownloader(
@@ -78,8 +80,10 @@ describe('BinaryDownloader partial-file cleanup ordering', () => {
     ).rejects.toBe(requestError);
 
     expect(removePartialFile).toHaveBeenCalledTimes(1);
-    const stagingDestination = removePartialFile.mock.calls[0]?.[0];
-    expect(stagingDestination).toContain(`${destination}.partial-download-`);
+    const stagingDestination = removePartialFile.mock.calls[0]?.[0] ?? '';
+    expect(path.dirname(stagingDestination)).toBe(tmpDir);
+    expect(stagingDestination).not.toBe(destination);
+    expect(Buffer.byteLength(path.basename(stagingDestination), 'utf8')).toBeLessThanOrEqual(255);
     fs.writeFileSync(destination, 'replacement');
 
     expect(delayedCleanup).toHaveLength(1);

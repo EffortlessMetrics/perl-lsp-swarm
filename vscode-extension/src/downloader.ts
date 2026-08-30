@@ -1452,7 +1452,7 @@ export class BinaryDownloader {
   }
 
   private removePartialFile(dest: string): void {
-    const cleanupPath = `${dest}.partial-cleanup-${crypto.randomUUID()}`;
+    const cleanupPath = path.join(path.dirname(dest), `.partial-cleanup-${crypto.randomUUID()}`);
     try {
       // Move the failed generation out of the caller-owned destination before
       // scheduling delayed deletion. The unique quarantine path is the
