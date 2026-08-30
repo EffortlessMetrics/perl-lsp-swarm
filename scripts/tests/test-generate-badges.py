@@ -83,7 +83,7 @@ def validate_workflow_contract(text: str) -> None:
         "github.event.workflow_run.repository.full_name == github.repository",
         "contents: write",
         "pull-requests: write",
-        'title: "chore(badges): refresh public endpoints"',
+        'title: "chore(badges): refresh public endpoints (#13694)"',
         'commit-message: "chore(badges): refresh public endpoints"',
         "Source SHA: `${{ env.SOURCE_SHA }}`",
         "RIPR producer run: `${{ github.event.workflow_run.id }}`",
@@ -159,8 +159,13 @@ class GenerateBadgesTests(unittest.TestCase):
                 1,
             ),
             text.replace(
-                'title: "chore(badges): refresh public endpoints"',
+                'title: "chore(badges): refresh public endpoints (#13694)"',
                 'title: "chore(badges): refresh public endpoints (#8820)"',
+                1,
+            ),
+            text.replace(
+                'title: "chore(badges): refresh public endpoints (#13694)"',
+                'title: "chore(badges): refresh public endpoints"',
                 1,
             ),
         ]
