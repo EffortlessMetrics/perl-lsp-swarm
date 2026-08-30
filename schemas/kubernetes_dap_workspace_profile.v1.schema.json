@@ -145,7 +145,7 @@
       "properties": {
         "equality": {
           "type": "string",
-          "pattern": "client == adapter == debuggee"
+          "const": "client == adapter == debuggee"
         },
         "canonicalization_authority": {
           "type": "string",
@@ -188,7 +188,8 @@
         "cleanup_ownership_missing",
         "security_context_missing",
         "service_account_token_forbidden",
-        "dap_cell_evidence_missing"
+        "dap_cell_evidence_missing",
+        "install_mode_identity_conflict"
       ]
     },
     "cell_family": {

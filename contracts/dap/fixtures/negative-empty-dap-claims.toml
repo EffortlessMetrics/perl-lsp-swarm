@@ -1,7 +1,7 @@
 schema_version = "kubernetes_dap_workspace_profile_fixture.v1"
-fixture_id = "negative-security-context-root"
+fixture_id = "negative-empty-dap-claims"
 expectation = "reject"
-expected_rejection = "security_context_missing"
+expected_rejection = "dap_cell_evidence_missing"
 
 [profile]
 profile_id = "acme-dev-project-image"
@@ -10,6 +10,7 @@ deployment_mode = "workspace_container_process"
 sharing_mode = "dedicated_workspace"
 resource_profile = "dap-subject-medium"
 cleanup_owner = "process-tree:adapter-parent/pod:kubelet"
+dap_claims = []
 
 [profile.transport]
 transport = "stdio"
@@ -50,7 +51,7 @@ architecture = "amd64"
 libc = "glibc"
 
 [profile.security]
-run_as_non_root = false
+run_as_non_root = true
 uid = 10001
 gid = 10001
 service_account_token = "absent"
@@ -59,43 +60,3 @@ network_listener = false
 writable_paths_declared = true
 secrets_redacted_from_receipts = true
 adapter_selection_isolation = true
-
-[[profile.dap_claims]]
-cell_id = "initialize"
-claimed_state = "evidence_backed"
-evidence = ["crates/perl-dap/tests/dap_capability_advertising_tests.rs"]
-
-[[profile.dap_claims]]
-cell_id = "launch"
-claimed_state = "evidence_backed"
-evidence = ["crates/perl-dap/tests/config_launch_config_tests.rs", "crates/perl-dap/tests/dap_smoke_e2e.rs"]
-
-[[profile.dap_claims]]
-cell_id = "configurationDone"
-claimed_state = "evidence_backed"
-evidence = ["crates/perl-dap/tests/dap_lifecycle_matrix_tests.rs"]
-
-[[profile.dap_claims]]
-cell_id = "source_breakpoint_install_exact_stop"
-claimed_state = "evidence_backed"
-evidence = ["crates/perl-dap/tests/dap_breakpoint_matrix_tests.rs"]
-
-[[profile.dap_claims]]
-cell_id = "threads_stack_source"
-claimed_state = "evidence_backed"
-evidence = ["crates/perl-dap/tests/dap_e2e_workflow_tests.rs"]
-
-[[profile.dap_claims]]
-cell_id = "bounded_current_frame_scopes_variables"
-claimed_state = "evidence_backed"
-evidence = ["crates/perl-dap/tests/dap_scope_filtering_tests.rs", "crates/perl-dap/tests/dap_variables_pagination_tests.rs"]
-
-[[profile.dap_claims]]
-cell_id = "one_continue_step"
-claimed_state = "evidence_backed"
-evidence = ["crates/perl-dap/tests/dap_step_through_tests.rs"]
-
-[[profile.dap_claims]]
-cell_id = "termination_disconnect_cleanup"
-claimed_state = "evidence_backed"
-evidence = ["crates/perl-dap/tests/dap_session_cleanup_e2e.rs"]

@@ -33,6 +33,7 @@
     "compiler_proof_policy": {"requires": ["compiler_concept_ledger"], "on_dependency_failure": "blocked_not_proven"},
     "compiler_concept_proof": {"requires": ["compiler_concept_ledger", "compiler_proof_policy"], "on_dependency_failure": "blocked_not_proven"},
     "docs_build": {"requires": [], "on_dependency_failure": "blocked_not_proven"},
+    "kubernetes_dap_profiles": {"requires": [], "on_dependency_failure": "blocked_not_proven"},
     "adr_link_check": {"requires": [], "on_dependency_failure": "blocked_not_proven"},
     "non_rust_inventory_check": {"requires": [], "on_dependency_failure": "blocked_not_proven"},
     "lint_policy": {"requires": [], "on_dependency_failure": "blocked_not_proven"},

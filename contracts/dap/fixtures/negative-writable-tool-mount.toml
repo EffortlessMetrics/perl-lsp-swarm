@@ -50,6 +50,7 @@ post_copy_verified = true
 exec_mode = "0555"
 tool_mount = "read_write"
 target_arch = "amd64"
+libc = "glibc"
 
 [profile.security]
 run_as_non_root = true

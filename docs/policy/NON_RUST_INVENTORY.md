@@ -6,21 +6,21 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12360 |
-| Rust-family files | 3797 |
-| Non-Rust files | 8563 |
-| Allowlisted | 6328 |
+| Total tracked files | 12444 |
+| Rust-family files | 3807 |
+| Non-Rust files | 8637 |
+| Allowlisted | 6402 |
 | Unclassified | 2235 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 490 |
-| documentation | 2796 |
+| config | 539 |
+| documentation | 2802 |
 | generated | 2 |
 | production | 346 |
-| test | 2033 |
+| test | 2052 |
 | tooling | 661 |
 | unclassified | 2235 |
 
@@ -2333,12 +2333,14 @@
 | `.changes/unreleased/product-12598-Changed-021722.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12639-Fixed-235500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12641-Security-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-12643-Added-120000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12648-Fixed-203303.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12725-Changed-092400.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12765-Changed-154500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12806-Added-213000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-13157-Fixed-023317.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-13159-Fixed-023400.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-13191-Fixed-062500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-13283-Fixed-122901.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3445-Added-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3765-Changed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -3370,6 +3372,9 @@
 | `.spec/8048-true-eof-final-newline-equivalence/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/8048-true-eof-final-newline-equivalence/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/8048-true-eof-final-newline-equivalence/context.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/8099-parser-metamorphic-oracles/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/8099-parser-metamorphic-oracles/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/8099-parser-metamorphic-oracles/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/8305-organize-imports-containment/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/8305-organize-imports-containment/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/8305-organize-imports-containment/context.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -3711,6 +3716,53 @@
 | `contracts/compiler/perl_compiler_concept_proof.v1.toml` | config | `non-rust-compiler-concept-proof-contract` | compiler |
 | `contracts/compiler/perl_compiler_concepts.v1.toml` | config | `non-rust-compiler-concepts-contract` | compiler |
 | `contracts/compiler/perl_compiler_proof_policy.v1.toml` | config | `non-rust-compiler-proof-policy-contract` | compiler |
+| `contracts/dap/fixtures/negative-adapter-kubectl-port-forward.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-adapter-selection-not-isolated.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-ambient-listener.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-artifact-arch-loader-mismatch.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-attach-process-id.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-baseline-perl-row.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-capability-catalog-claim.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-container-loader-mismatch.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-digest-mismatch-after-copy.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-downgraded-initial-dap-cell.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-editor-path-rewrite.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-empty-dap-claims.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-empty-workspace-paths.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-fabricated-dap-evidence.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-init-image-perl.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-injected-tool-with-image.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-kubernetes-api-rbac.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-lsp-profile-inheritance.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-missing-cleanup-owner.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-missing-resource-profile.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-musl-glibc-loader-mismatch.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-node-port-service.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-operator-crds.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-optional-cell-evidence-claim.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-post-copy-unverified.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-project-image-with-artifact.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-project-perl-plan-differs.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-secrets-unredacted.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-security-context-root.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-service-account-token-used.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-shared-multi-tenant.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-shell-transport.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-sidecar-other-perl.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-source-other-absolute-path.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-source-outside-workspace.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-source-parent-traversal.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-standalone-deployment.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-tag-only-image.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-unbound-injection-source.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-unrelated-injection-source.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-writable-paths-undisclosed.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-writable-tool-mount.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-wrong-architecture.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-wrong-executable-mode.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/positive-injected-tool.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/positive-project-image.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/kubernetes_dap_workspace_profile.v1.toml` | config | `non-rust-kubernetes-dap-profiles-contract` | dap |
 | `crates/perl-ast-v2/CLAUDE.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-ast-v2/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-ast/CLAUDE.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -5193,6 +5245,7 @@
 | `docs/project/status/generated-status-cells.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/project/status/hir_lowering.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/project/status/index.md` | documentation | `non-rust-docs-tree` | docs |
+| `docs/project/status/kubernetes_dap_workspace_profiles.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/project/status/lsp.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/project/status/lsp_clients.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/project/status/memory_plateau.md` | documentation | `non-rust-docs-tree` | docs |
@@ -6199,6 +6252,25 @@
 | `fixtures/experience/standalone_candidate_selection/20_previous_current_alias.json` | test | `non-rust-standalone-candidate-selection-fixtures` | release/ci |
 | `fixtures/experience/standalone_candidate_selection/21_private_path_leakage.json` | test | `non-rust-standalone-candidate-selection-fixtures` | release/ci |
 | `fixtures/experience/standalone_candidate_selection/22_current_names_missing_candidate.json` | test | `non-rust-standalone-candidate-selection-fixtures` | release/ci |
+| `fixtures/product_health_status/expected/status.json` | test | `non-rust-product-health-status-fixtures` | tooling/product-health |
+| `fixtures/product_health_status/registry.json` | test | `non-rust-product-health-status-fixtures` | tooling/product-health |
+| `fixtures/product_health_status/sources/chk-a.json` | test | `non-rust-product-health-status-fixtures` | tooling/product-health |
+| `fixtures/product_health_status/sources/chk-b.json` | test | `non-rust-product-health-status-fixtures` | tooling/product-health |
+| `fixtures/product_health_status/sources/client-wrong.json` | test | `non-rust-product-health-status-fixtures` | tooling/product-health |
+| `fixtures/product_health_status/sources/compiler-now.json` | test | `non-rust-product-health-status-fixtures` | tooling/product-health |
+| `fixtures/product_health_status/sources/compiler-old.json` | test | `non-rust-product-health-status-fixtures` | tooling/product-health |
+| `fixtures/product_health_status/sources/dap.json` | test | `non-rust-product-health-status-fixtures` | tooling/product-health |
+| `fixtures/product_health_status/sources/diag-a.json` | test | `non-rust-product-health-status-fixtures` | tooling/product-health |
+| `fixtures/product_health_status/sources/diag-b.json` | test | `non-rust-product-health-status-fixtures` | tooling/product-health |
+| `fixtures/product_health_status/sources/na.json` | test | `non-rust-product-health-status-fixtures` | tooling/product-health |
+| `fixtures/product_health_status/sources/parser-current.json` | test | `non-rust-product-health-status-fixtures` | tooling/product-health |
+| `fixtures/product_health_status/sources/parser-limited.json` | test | `non-rust-product-health-status-fixtures` | tooling/product-health |
+| `fixtures/product_health_status/sources/pkg-new.json` | test | `non-rust-product-health-status-fixtures` | tooling/product-health |
+| `fixtures/product_health_status/sources/pkg-old.json` | test | `non-rust-product-health-status-fixtures` | tooling/product-health |
+| `fixtures/product_health_status/sources/sec-a.json` | test | `non-rust-product-health-status-fixtures` | tooling/product-health |
+| `fixtures/product_health_status/sources/sec-b.json` | test | `non-rust-product-health-status-fixtures` | tooling/product-health |
+| `fixtures/product_health_status/sources/sec-ind.json` | test | `non-rust-product-health-status-fixtures` | tooling/product-health |
+| `fixtures/product_health_status/sources/unproven.json` | test | `non-rust-product-health-status-fixtures` | tooling/product-health |
 | `fixtures/train_edge_contract/external_stages.v1.json` | test | `non-rust-train-edge-contract-fixtures` | tooling/train-graph |
 | `fixtures/train_edge_contract/invalid/expected_errors.json` | test | `non-rust-train-edge-contract-fixtures` | tooling/train-graph |
 | `fixtures/train_edge_contract/invalid/external_stage_satisfied_internally.json` | test | `non-rust-train-edge-contract-fixtures` | tooling/train-graph |
@@ -6361,6 +6433,8 @@
 | `schemas/compiler_lexical_cutline_cases.v1.schema.json` | config | `non-rust-compiler-lexical-cutline-schema` | compiler |
 | `schemas/import_cleanup_train.v1.schema.json` | config | `non-rust-import-cleanup-train-schema` | tooling/train-graph |
 | `schemas/install_identity_verification.v1.schema.json` | documentation | `non-rust-install-identity-verification-schema` | release/ci |
+| `schemas/kubernetes_dap_workspace_profile.v1.schema.json` | config | `non-rust-kubernetes-dap-profiles-schema` | dap |
+| `schemas/kubernetes_dap_workspace_profile_fixture.v1.schema.json` | config | `non-rust-kubernetes-dap-profile-fixture-schema` | dap |
 | `schemas/loaded_module_reload_family.v1.schema.json` | config | `non-rust-loaded-module-reload-family-schema` | identity |
 | `schemas/native_neovim_train.v1.schema.json` | documentation | `non-rust-native-neovim-train-schema` | neovim-train |
 | `schemas/perl_builtin_semantics.v1.schema.json` | config | `non-rust-compiler-builtin-semantics-schema` | compiler |

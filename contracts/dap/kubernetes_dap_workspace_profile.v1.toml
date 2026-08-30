@@ -29,6 +29,7 @@ install_mode = "project_image"
 summary = "The exact project development image already contains perl-dap, the project Perl, declared dependencies, and the source under one workspace namespace; the parent owns stdio and Kubernetes owns isolation and lifecycle outside the adapter."
 required_facts = [
   "image_digest_and_build_identity",
+  "image_libc_identity",
   "adapter_binary_path_version_hash_target",
   "project_perl_path_version_environment",
   "exact_workspace_root_and_source_paths",
@@ -42,6 +43,7 @@ install_mode = "injected_tool"
 summary = "An init container copies one exact verified adapter artifact into an ephemeral shared tool volume mounted read-only into the project workspace container; the adapter executes with the project container's own Perl and dependencies, never the init image environment."
 required_facts = [
   "injection_source_artifact_digest_and_build_revision",
+  "injected_artifact_libc_identity",
   "copy_and_post_copy_digest_verification",
   "executable_mode",
   "host_container_os_libc_architecture_loader_compatibility",
@@ -251,3 +253,6 @@ statement = "Sidecar topologies are rejected here even when they share a pod; pr
 
 [[limitations]]
 statement = "DAP cell rows are evidence references into current perl-dap proof surfaces; this contract promotes no capability and creates no support row in #7122."
+
+[[limitations]]
+statement = "loader os is declared, not machine-compared against the subject identity"

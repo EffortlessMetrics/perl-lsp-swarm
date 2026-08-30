@@ -18,8 +18,8 @@ In-workspace Kubernetes DAP subject admission: one environment subject composed 
 
 | Profile | Install mode | Required facts |
 | --- | --- | ---: |
-| `project_image` | `project_image` | 6 |
-| `injected_tool` | `injected_tool` | 6 |
+| `project_image` | `project_image` | 7 |
+| `injected_tool` | `injected_tool` | 7 |
 
 ## Rejected topologies
 
@@ -74,22 +74,30 @@ In-workspace Kubernetes DAP subject admission: one environment subject composed 
 - No cluster, pod, or debug session is executed by this contract; kind execution, live probes, and manifests that run the adapter remain future work.
 - Sidecar topologies are rejected here even when they share a pod; proving identical source and project-Perl parity is a separate claim.
 - DAP cell rows are evidence references into current perl-dap proof surfaces; this contract promotes no capability and creates no support row in #7122.
+- loader os is declared, not machine-compared against the subject identity
 
 ## Fixture matrix
 
-2 positive and 31 negative deterministic fixtures.
+2 positive and 44 negative deterministic fixtures.
 
 | Fixture | Expectation | Typed outcome |
 | --- | --- | --- |
 | `negative-adapter-kubectl-port-forward` | `reject` | reject `adapter_owned_cluster_access_forbidden` |
+| `negative-adapter-selection-not-isolated` | `reject` | reject `security_context_missing` |
 | `negative-ambient-listener` | `reject` | reject `network_listener_forbidden` |
 | `negative-artifact-arch-loader-mismatch` | `reject` | reject `loader_contract_mismatch` |
 | `negative-attach-process-id` | `reject` | reject `attach_injection_unsupported` |
 | `negative-baseline-perl-row` | `reject` | reject `baseline_perl_substitution_forbidden` |
 | `negative-capability-catalog-claim` | `reject` | reject `capability_catalog_inheritance_forbidden` |
+| `negative-container-loader-mismatch` | `reject` | reject `loader_contract_mismatch` |
 | `negative-digest-mismatch-after-copy` | `reject` | reject `artifact_digest_unverified` |
+| `negative-downgraded-initial-dap-cell` | `reject` | reject `dap_cell_evidence_missing` |
 | `negative-editor-path-rewrite` | `reject` | reject `editor_path_translation_forbidden` |
+| `negative-empty-dap-claims` | `reject` | reject `dap_cell_evidence_missing` |
+| `negative-empty-workspace-paths` | `reject` | reject `source_namespace_mismatch` |
+| `negative-fabricated-dap-evidence` | `reject` | reject `dap_cell_evidence_missing` |
 | `negative-init-image-perl` | `reject` | reject `init_image_perl_substitution_forbidden` |
+| `negative-injected-tool-with-image` | `reject` | reject `install_mode_identity_conflict` |
 | `negative-kubernetes-api-rbac` | `reject` | reject `kubernetes_api_dependency_forbidden` |
 | `negative-lsp-profile-inheritance` | `reject` | reject `lsp_profile_projection_forbidden` |
 | `negative-missing-cleanup-owner` | `reject` | reject `cleanup_ownership_missing` |
@@ -99,21 +107,26 @@ In-workspace Kubernetes DAP subject admission: one environment subject composed 
 | `negative-operator-crds` | `reject` | reject `operator_controller_forbidden` |
 | `negative-optional-cell-evidence-claim` | `reject` | reject `dap_cell_evidence_missing` |
 | `negative-post-copy-unverified` | `reject` | reject `artifact_digest_unverified` |
+| `negative-project-image-with-artifact` | `reject` | reject `install_mode_identity_conflict` |
 | `negative-project-perl-plan-differs` | `reject` | reject `project_perl_identity_mismatch` |
+| `negative-secrets-unredacted` | `reject` | reject `security_context_missing` |
 | `negative-security-context-root` | `reject` | reject `security_context_missing` |
 | `negative-service-account-token-used` | `reject` | reject `service_account_token_forbidden` |
 | `negative-shared-multi-tenant` | `reject` | reject `shared_multi_tenant_adapter_forbidden` |
 | `negative-shell-transport` | `reject` | reject `transport_boundary_violation` |
 | `negative-sidecar-other-perl` | `reject` | reject `sidecar_environment_mismatch` |
 | `negative-source-other-absolute-path` | `reject` | reject `source_namespace_mismatch` |
+| `negative-source-outside-workspace` | `reject` | reject `source_namespace_mismatch` |
+| `negative-source-parent-traversal` | `reject` | reject `source_namespace_mismatch` |
 | `negative-standalone-deployment` | `reject` | reject `standalone_deployment_forbidden` |
 | `negative-tag-only-image` | `reject` | reject `image_identity_not_exact` |
 | `negative-unbound-injection-source` | `reject` | reject `injection_source_unbound` |
+| `negative-unrelated-injection-source` | `reject` | reject `artifact_digest_unverified` |
+| `negative-writable-paths-undisclosed` | `reject` | reject `security_context_missing` |
 | `negative-writable-tool-mount` | `reject` | reject `tool_mount_not_read_only` |
 | `negative-wrong-architecture` | `reject` | reject `loader_contract_mismatch` |
 | `negative-wrong-executable-mode` | `reject` | reject `executable_mode_invalid` |
 | `positive-injected-tool` | `admit` | admit |
 | `positive-project-image` | `admit` | admit |
 
-All 28 typed rejection reasons are exercised by at least one negative fixture.
-
+All 29 typed rejection reasons are exercised by at least one negative fixture.

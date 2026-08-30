@@ -1,7 +1,7 @@
 schema_version = "kubernetes_dap_workspace_profile_fixture.v1"
-fixture_id = "negative-security-context-root"
+fixture_id = "negative-container-loader-mismatch"
 expectation = "reject"
-expected_rejection = "security_context_missing"
+expected_rejection = "loader_contract_mismatch"
 
 [profile]
 profile_id = "acme-dev-project-image"
@@ -29,7 +29,7 @@ debuggee = "/workspace/src"
 os = "linux"
 libc = "glibc"
 architecture = "amd64"
-container_matches = true
+container_matches = false
 
 [profile.perl]
 authority = "project_container"
@@ -50,7 +50,7 @@ architecture = "amd64"
 libc = "glibc"
 
 [profile.security]
-run_as_non_root = false
+run_as_non_root = true
 uid = 10001
 gid = 10001
 service_account_token = "absent"

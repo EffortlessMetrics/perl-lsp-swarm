@@ -1,7 +1,7 @@
 schema_version = "kubernetes_dap_workspace_profile_fixture.v1"
-fixture_id = "negative-security-context-root"
+fixture_id = "negative-source-parent-traversal"
 expectation = "reject"
-expected_rejection = "security_context_missing"
+expected_rejection = "source_namespace_mismatch"
 
 [profile]
 profile_id = "acme-dev-project-image"
@@ -21,9 +21,9 @@ shell = false
 root = "/workspace"
 
 [profile.workspace.source_paths]
-client = "/workspace/src"
-adapter = "/workspace/src"
-debuggee = "/workspace/src"
+client = "/workspace/../src"
+adapter = "/workspace/../src"
+debuggee = "/workspace/../src"
 
 [profile.loader]
 os = "linux"
@@ -50,7 +50,7 @@ architecture = "amd64"
 libc = "glibc"
 
 [profile.security]
-run_as_non_root = false
+run_as_non_root = true
 uid = 10001
 gid = 10001
 service_account_token = "absent"

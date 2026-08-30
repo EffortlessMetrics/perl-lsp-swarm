@@ -29,7 +29,7 @@ debuggee = "/workspace/src"
 os = "linux"
 libc = "glibc"
 architecture = "amd64"
-container_matches = false
+container_matches = true
 
 [profile.perl]
 authority = "project_container"
@@ -47,6 +47,7 @@ repository = "registry.example/acme/dev"
 digest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 build_revision = "build-2026-08-25-a1b2c3"
 architecture = "amd64"
+libc = "musl"
 
 [profile.security]
 run_as_non_root = true

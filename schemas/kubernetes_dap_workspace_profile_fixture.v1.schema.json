@@ -10,6 +10,34 @@
     "expectation",
     "profile"
   ],
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "expectation": {
+            "const": "reject"
+          }
+        }
+      },
+      "then": {
+        "required": ["expected_rejection"]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "expectation": {
+            "const": "admit"
+          }
+        }
+      },
+      "then": {
+        "not": {
+          "required": ["expected_rejection"]
+        }
+      }
+    }
+  ],
   "properties": {
     "schema_version": {
       "const": "kubernetes_dap_workspace_profile_fixture.v1"
@@ -182,7 +210,7 @@
     "image_identity": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["repository", "digest", "build_revision", "architecture"],
+      "required": ["repository", "digest", "build_revision", "architecture", "libc"],
       "properties": {
         "repository": {
           "$ref": "#/$defs/non_empty_string"
@@ -194,6 +222,9 @@
           "$ref": "#/$defs/non_empty_string"
         },
         "architecture": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "libc": {
           "$ref": "#/$defs/non_empty_string"
         }
       }
@@ -208,7 +239,8 @@
         "post_copy_verified",
         "exec_mode",
         "tool_mount",
-        "target_arch"
+        "target_arch",
+        "libc"
       ],
       "properties": {
         "source_identity": {
@@ -230,6 +262,9 @@
           "$ref": "#/$defs/tool_mount"
         },
         "target_arch": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "libc": {
           "$ref": "#/$defs/non_empty_string"
         }
       }

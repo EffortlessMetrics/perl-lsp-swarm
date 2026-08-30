@@ -28,6 +28,9 @@ const FIXTURE_SCHEMA_VERSION: &str = "kubernetes_dap_workspace_profile_fixture.v
 const DEFAULT_CONTRACT: &str = "contracts/dap/kubernetes_dap_workspace_profile.v1.toml";
 const DEFAULT_FIXTURES_DIR: &str = "contracts/dap/fixtures";
 const DEFAULT_STATUS: &str = "docs/project/status/kubernetes_dap_workspace_profiles.md";
+const DEFAULT_PROFILE_SCHEMA: &str = "schemas/kubernetes_dap_workspace_profile.v1.schema.json";
+const DEFAULT_FIXTURE_SCHEMA: &str =
+    "schemas/kubernetes_dap_workspace_profile_fixture.v1.schema.json";
 
 /// Rejection classes that must stay registered as topology rows because the
 /// controlling issue (#10112) names them as unsupported topologies.
@@ -68,6 +71,14 @@ struct Cli {
     /// Generated Markdown status path.
     #[arg(long, default_value = DEFAULT_STATUS)]
     status: PathBuf,
+
+    /// Published profile JSON schema path.
+    #[arg(long, default_value = DEFAULT_PROFILE_SCHEMA)]
+    profile_schema: PathBuf,
+
+    /// Published fixture JSON schema path.
+    #[arg(long, default_value = DEFAULT_FIXTURE_SCHEMA)]
+    fixture_schema: PathBuf,
 
     /// Validate everything and fail when the committed status is stale.
     #[arg(long)]
@@ -113,6 +124,7 @@ enum RejectionReason {
     SecurityContextMissing,
     ServiceAccountTokenForbidden,
     DapCellEvidenceMissing,
+    InstallModeIdentityConflict,
 }
 
 impl RejectionReason {
@@ -145,6 +157,7 @@ impl RejectionReason {
         Self::SecurityContextMissing,
         Self::ServiceAccountTokenForbidden,
         Self::DapCellEvidenceMissing,
+        Self::InstallModeIdentityConflict,
     ];
 
     fn as_str(self) -> &'static str {
@@ -179,6 +192,7 @@ impl RejectionReason {
             Self::SecurityContextMissing => "security_context_missing",
             Self::ServiceAccountTokenForbidden => "service_account_token_forbidden",
             Self::DapCellEvidenceMissing => "dap_cell_evidence_missing",
+            Self::InstallModeIdentityConflict => "install_mode_identity_conflict",
         }
     }
 }
@@ -368,7 +382,9 @@ fn is_non_empty(value: &str) -> bool {
 }
 
 fn validate_issue_ref(name: &str, value: &str) -> Result<()> {
-    let digits = value.strip_prefix('#').unwrap_or_default();
+    let Some(digits) = value.strip_prefix('#') else {
+        bail!("{name} must be a GitHub issue reference like #10112; got {value:?}");
+    };
     if digits.is_empty()
         || digits.starts_with('0')
         || !digits.bytes().all(|byte| byte.is_ascii_digit())
@@ -442,7 +458,7 @@ impl ProfileContract {
             );
         }
 
-        if !self.source_namespace.equality.contains("client == adapter == debuggee") {
+        if self.source_namespace.equality != "client == adapter == debuggee" {
             bail!("source namespace equality must bind client, adapter, and debuggee paths");
         }
         if !is_non_empty(&self.source_namespace.canonicalization_authority)
@@ -704,6 +720,7 @@ struct ImageIdentity {
     digest: String,
     build_revision: String,
     architecture: String,
+    libc: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -716,6 +733,7 @@ struct InjectedArtifact {
     exec_mode: String,
     tool_mount: ToolMount,
     target_arch: String,
+    libc: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -842,7 +860,9 @@ struct ProfileDocument {
 }
 
 fn is_exact_digest(value: &str) -> bool {
-    let hex = value.strip_prefix("sha256:").unwrap_or_default();
+    let Some(hex) = value.strip_prefix("sha256:") else {
+        return false;
+    };
     hex.len() == 64 && hex.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
@@ -851,6 +871,22 @@ fn is_bound_source_identity(value: &str) -> bool {
         Some((_, digest)) => is_exact_digest(digest),
         None => false,
     }
+}
+
+fn source_identity_digest(value: &str) -> Option<&str> {
+    value.rsplit_once('@').map(|(_, digest)| digest)
+}
+
+fn is_normalized_workspace_path(value: &str) -> bool {
+    !value.trim().is_empty()
+        && value.starts_with('/')
+        && (value == "/" || !value.ends_with('/'))
+        && !value.contains("//")
+        && value.split('/').skip(1).all(|component| component != "." && component != "..")
+}
+
+fn is_contained_path(root: &str, path: &str) -> bool {
+    root == "/" || path == root || path.starts_with(&format!("{root}/"))
 }
 
 impl ProfileDocument {
@@ -955,33 +991,34 @@ impl ProfileDocument {
         }
 
         let paths = &self.workspace.source_paths;
+        if !is_normalized_workspace_path(&self.workspace.root)
+            || !is_normalized_workspace_path(&paths.client)
+            || !is_normalized_workspace_path(&paths.adapter)
+            || !is_normalized_workspace_path(&paths.debuggee)
+        {
+            return rejection(
+                RejectionReason::SourceNamespaceMismatch,
+                why("workspace root and source paths must be absolute normalized paths".into()),
+            );
+        }
+        if !is_contained_path(&self.workspace.root, &paths.client)
+            || !is_contained_path(&self.workspace.root, &paths.adapter)
+            || !is_contained_path(&self.workspace.root, &paths.debuggee)
+        {
+            return rejection(
+                RejectionReason::SourceNamespaceMismatch,
+                why(format!(
+                    "source paths must be contained by workspace root {:?}",
+                    self.workspace.root
+                )),
+            );
+        }
         if paths.client != paths.adapter || paths.adapter != paths.debuggee {
             return rejection(
                 RejectionReason::SourceNamespaceMismatch,
                 why(format!(
                     "client ({:?}), adapter ({:?}), and debuggee ({:?}) source namespaces differ",
                     paths.client, paths.adapter, paths.debuggee
-                )),
-            );
-        }
-
-        let subject_architecture = match (&self.image, &self.artifact) {
-            (Some(image), _) => image.architecture.as_str(),
-            (None, Some(artifact)) => artifact.target_arch.as_str(),
-            (None, None) => "",
-        };
-        if !self.loader.container_matches
-            || subject_architecture.is_empty()
-            || subject_architecture != self.loader.architecture
-        {
-            return rejection(
-                RejectionReason::LoaderContractMismatch,
-                why(format!(
-                    "loader contract does not cover subject architecture {:?} (os {:?}, libc {:?}, container_matches {})",
-                    subject_architecture,
-                    self.loader.os,
-                    self.loader.libc,
-                    self.loader.container_matches
                 )),
             );
         }
@@ -1036,10 +1073,18 @@ impl ProfileDocument {
                 if image.repository.trim().is_empty()
                     || !is_exact_digest(&image.digest)
                     || image.build_revision.trim().is_empty()
+                    || image.architecture.trim().is_empty()
+                    || image.libc.trim().is_empty()
                 {
                     return rejection(
                         RejectionReason::ImageIdentityNotExact,
-                        why("project image needs repository, sha256 digest, and build/source identity".into()),
+                        why("project image needs repository, sha256 digest, build/source identity, architecture, and libc".into()),
+                    );
+                }
+                if self.artifact.is_some() {
+                    return rejection(
+                        RejectionReason::InstallModeIdentityConflict,
+                        why("project_image cannot include injected-artifact identity".into()),
                     );
                 }
             }
@@ -1059,6 +1104,12 @@ impl ProfileDocument {
                         )),
                     );
                 }
+                if artifact.libc.trim().is_empty() {
+                    return rejection(
+                        RejectionReason::LoaderContractMismatch,
+                        why("injected artifact libc identity is empty".into()),
+                    );
+                }
                 if !is_exact_digest(&artifact.artifact_digest)
                     || !is_exact_digest(&artifact.copied_digest)
                     || artifact.artifact_digest != artifact.copied_digest
@@ -1070,6 +1121,21 @@ impl ProfileDocument {
                             "the injected artifact is not digest-identical after the verified copy"
                                 .into(),
                         ),
+                    );
+                }
+                let source_digest = match source_identity_digest(&artifact.source_identity) {
+                    Some(digest) => digest,
+                    None => "",
+                };
+                if source_digest != artifact.artifact_digest.as_str()
+                    || source_digest != artifact.copied_digest.as_str()
+                {
+                    return rejection(
+                        RejectionReason::ArtifactDigestUnverified,
+                        why(format!(
+                            "injection source digest {:?} does not match artifact digest {:?} and copied digest {:?}",
+                            source_digest, artifact.artifact_digest, artifact.copied_digest
+                        )),
                     );
                 }
                 if artifact.exec_mode != "0555" {
@@ -1087,7 +1153,58 @@ impl ProfileDocument {
                         why("the shared tool volume must mount read-only into the workspace container".into()),
                     );
                 }
+                if self.image.is_some() {
+                    return rejection(
+                        RejectionReason::InstallModeIdentityConflict,
+                        why("injected_tool cannot include image identity".into()),
+                    );
+                }
             }
+        }
+
+        let (subject_architecture, subject_libc) = match self.install_mode {
+            InstallMode::ProjectImage => {
+                let image = self.image.as_ref().ok_or_else(|| {
+                    Rejection::new(
+                        RejectionReason::ImageIdentityNotExact,
+                        why("project_image requires an exact project image identity".into()),
+                    )
+                })?;
+                (image.architecture.as_str(), image.libc.as_str())
+            }
+            InstallMode::InjectedTool => {
+                let artifact = self.artifact.as_ref().ok_or_else(|| {
+                    Rejection::new(
+                        RejectionReason::InjectionSourceUnbound,
+                        why("injected_tool requires an exact injected artifact description".into()),
+                    )
+                })?;
+                (artifact.target_arch.as_str(), artifact.libc.as_str())
+            }
+        };
+        if subject_architecture != self.loader.architecture {
+            return rejection(
+                RejectionReason::LoaderContractMismatch,
+                why(format!(
+                    "loader contract architecture {:?} does not match subject architecture {:?}",
+                    self.loader.architecture, subject_architecture
+                )),
+            );
+        }
+        if subject_libc != self.loader.libc {
+            return rejection(
+                RejectionReason::LoaderContractMismatch,
+                why(format!(
+                    "loader contract libc {:?} does not match subject libc {:?}",
+                    self.loader.libc, subject_libc
+                )),
+            );
+        }
+        if !self.loader.container_matches {
+            return rejection(
+                RejectionReason::LoaderContractMismatch,
+                why("loader contract does not match the subject container".into()),
+            );
         }
 
         match self.resource_profile.as_deref() {
@@ -1139,7 +1256,7 @@ impl ProfileDocument {
                     .into()),
             );
         }
-        if !security.run_as_non_root.unwrap_or(true)
+        if security.run_as_non_root != Some(true)
             || security.uid == Some(0)
             || security.gid == Some(0)
         {
@@ -1147,6 +1264,18 @@ impl ProfileDocument {
                 RejectionReason::SecurityContextMissing,
                 why("the subject must run as an explicit non-root UID/GID".into()),
             );
+        }
+        for (name, value) in [
+            ("writable_paths_declared", security.writable_paths_declared),
+            ("secrets_redacted_from_receipts", security.secrets_redacted_from_receipts),
+            ("adapter_selection_isolation", security.adapter_selection_isolation),
+        ] {
+            if value == Some(false) {
+                return rejection(
+                    RejectionReason::SecurityContextMissing,
+                    why(format!("security disposition {name} is explicitly false")),
+                );
+            }
         }
         if security.service_account_token == Some(ServiceAccountToken::MountedUsed) {
             return rejection(
@@ -1161,7 +1290,14 @@ impl ProfileDocument {
             );
         }
 
+        let mut claimed_ids = BTreeMap::new();
         for claim in &self.dap_claims {
+            if claimed_ids.insert(claim.cell_id.as_str(), ()).is_some() {
+                return rejection(
+                    RejectionReason::DapCellEvidenceMissing,
+                    why(format!("cell {:?} is claimed more than once", claim.cell_id)),
+                );
+            }
             let Some(row) = contract.dap_cells.iter().find(|row| row.cell_id == claim.cell_id)
             else {
                 return rejection(
@@ -1169,6 +1305,21 @@ impl ProfileDocument {
                     why(format!("claim references unknown DAP cell {:?}", claim.cell_id)),
                 );
             };
+            let mut claimed_evidence = BTreeMap::new();
+            for item in &claim.evidence {
+                if claimed_evidence.insert(item.as_str(), ()).is_some()
+                    || item.trim().is_empty()
+                    || !row.evidence.iter().any(|expected| expected == item)
+                {
+                    return rejection(
+                        RejectionReason::DapCellEvidenceMissing,
+                        why(format!(
+                            "cell {:?} cites unsupported, empty, or duplicate evidence {:?}",
+                            claim.cell_id, item
+                        )),
+                    );
+                }
+            }
             if claim.claimed_state == CellState::EvidenceBacked
                 && (row.family != CellFamily::InitialAdmitted
                     || row.state != CellState::EvidenceBacked
@@ -1180,6 +1331,29 @@ impl ProfileDocument {
                     why(format!(
                         "cell {:?} claims evidence-backed support outside the admitted family or without profile-specific evidence",
                         claim.cell_id
+                    )),
+                );
+            }
+        }
+        for row in contract.dap_cells.iter().filter(|row| {
+            row.family == CellFamily::InitialAdmitted && row.state == CellState::EvidenceBacked
+        }) {
+            let Some(claim) = self.dap_claims.iter().find(|claim| claim.cell_id == row.cell_id)
+            else {
+                return rejection(
+                    RejectionReason::DapCellEvidenceMissing,
+                    why(format!("required DAP cell {:?} is not claimed", row.cell_id)),
+                );
+            };
+            if claim.claimed_state != CellState::EvidenceBacked
+                || claim.evidence.is_empty()
+                || claim.evidence.iter().any(|item| item.trim().is_empty())
+            {
+                return rejection(
+                    RejectionReason::DapCellEvidenceMissing,
+                    why(format!(
+                        "required DAP cell {:?} must claim evidence_backed with non-empty evidence",
+                        row.cell_id
                     )),
                 );
             }
@@ -1462,7 +1636,91 @@ fn render_status(contract: &ProfileContract, fixtures: &[FixtureDocument]) -> Re
     )?;
     line(&mut output, "")?;
 
-    Ok(output)
+    Ok(output.trim_end_matches('\n').to_owned() + "\n")
+}
+
+fn validate_published_schema_values(
+    profile_schema: &serde_json::Value,
+    fixture_schema: &serde_json::Value,
+) -> Result<()> {
+    let expected_reasons = RejectionReason::ALL
+        .iter()
+        .map(|reason| serde_json::Value::String(reason.as_str().to_string()))
+        .collect::<Vec<_>>();
+    let published_reasons = profile_schema
+        .pointer("/$defs/reason_code/enum")
+        .and_then(serde_json::Value::as_array)
+        .context("profile schema must publish the reason_code enum")?;
+    if *published_reasons != expected_reasons {
+        bail!("profile schema reason_code enum diverges from typed rejection reasons");
+    }
+    if profile_schema
+        .pointer("/properties/schema_version/const")
+        .and_then(serde_json::Value::as_str)
+        != Some(CONTRACT_SCHEMA_VERSION)
+    {
+        bail!("profile schema schema_version const is incorrect");
+    }
+    if profile_schema
+        .pointer("/$defs/source_namespace/properties/equality/const")
+        .and_then(serde_json::Value::as_str)
+        != Some("client == adapter == debuggee")
+    {
+        bail!("profile schema source namespace equality must be an exact const");
+    }
+    for definition in ["image_identity", "injected_artifact"] {
+        let required = fixture_schema
+            .pointer(&format!("/$defs/{definition}/required"))
+            .and_then(serde_json::Value::as_array)
+            .context("fixture schema identity definition must list required fields")?;
+        if !required.iter().any(|value| value.as_str() == Some("libc")) {
+            bail!("fixture schema {definition} must require libc");
+        }
+    }
+    if fixture_schema
+        .pointer("/properties/schema_version/const")
+        .and_then(serde_json::Value::as_str)
+        != Some(FIXTURE_SCHEMA_VERSION)
+    {
+        bail!("fixture schema schema_version const is incorrect");
+    }
+    let expected_ref = fixture_schema
+        .pointer("/properties/expected_rejection/$ref")
+        .and_then(serde_json::Value::as_str)
+        .context("fixture schema expected_rejection must reference reason_code")?;
+    if expected_ref != "kubernetes_dap_workspace_profile.v1.schema.json#/$defs/reason_code"
+        || profile_schema.pointer("/$defs/reason_code").is_none()
+    {
+        bail!("fixture schema expected_rejection must resolve to profile reason_code");
+    }
+    let expected_conditional = serde_json::json!({
+        "allOf": [
+            {
+                "if": {"properties": {"expectation": {"const": "reject"}}},
+                "then": {"required": ["expected_rejection"]}
+            },
+            {
+                "if": {"properties": {"expectation": {"const": "admit"}}},
+                "then": {"not": {"required": ["expected_rejection"]}}
+            }
+        ]
+    });
+    if fixture_schema.get("allOf") != expected_conditional.get("allOf") {
+        bail!("fixture schema must publish the expectation/expected_rejection conditional");
+    }
+    Ok(())
+}
+
+fn validate_published_schemas(profile_path: &Path, fixture_path: &Path) -> Result<()> {
+    let profile_source = fs::read_to_string(profile_path)
+        .with_context(|| format!("read profile schema {}", profile_path.display()))?;
+    let fixture_source = fs::read_to_string(fixture_path)
+        .with_context(|| format!("read fixture schema {}", fixture_path.display()))?;
+    let profile_schema: serde_json::Value = serde_json::from_str(&profile_source)
+        .with_context(|| format!("parse profile schema {}", profile_path.display()))?;
+    let fixture_schema: serde_json::Value = serde_json::from_str(&fixture_source)
+        .with_context(|| format!("parse fixture schema {}", fixture_path.display()))?;
+    validate_published_schema_values(&profile_schema, &fixture_schema)
 }
 
 fn run(cli: &Cli) -> Result<()> {
@@ -1470,6 +1728,7 @@ fn run(cli: &Cli) -> Result<()> {
         .with_context(|| format!("read contract {}", cli.contract.display()))?;
     let contract = ProfileContract::from_str(&contract_source)?;
     contract.validate()?;
+    validate_published_schemas(&cli.profile_schema, &cli.fixture_schema)?;
     let fixtures = load_fixtures(&cli.fixtures_dir)?;
     for fixture in &fixtures {
         fixture.verify_against(&contract)?;
@@ -1529,6 +1788,8 @@ mod tests {
         include_str!("../../../docs/project/status/kubernetes_dap_workspace_profiles.md");
     const COMMITTED_SCHEMA: &str =
         include_str!("../../../schemas/kubernetes_dap_workspace_profile.v1.schema.json");
+    const COMMITTED_FIXTURE_SCHEMA: &str =
+        include_str!("../../../schemas/kubernetes_dap_workspace_profile_fixture.v1.schema.json");
 
     const POSITIVE_PROJECT_IMAGE: &str = "positive-project-image";
     const POSITIVE_INJECTED_TOOL: &str = "positive-injected-tool";
@@ -1813,23 +2074,40 @@ mod tests {
     fn published_schema_matches_typed_reason_codes() -> Result<()> {
         let schema: serde_json::Value =
             serde_json::from_str(COMMITTED_SCHEMA).context("parse committed schema")?;
-        let published = schema
-            .pointer("/$defs/reason_code/enum")
-            .and_then(|value| value.as_array())
-            .context("schema must publish the reason_code enum")?
-            .iter()
-            .filter_map(|value| value.as_str().map(str::to_string))
-            .collect::<std::collections::BTreeSet<_>>();
-        let typed = RejectionReason::ALL
-            .iter()
-            .map(|reason| reason.as_str().to_string())
-            .collect::<std::collections::BTreeSet<_>>();
-        assert_eq!(published, typed, "published schema and typed reasons diverged");
-        assert_eq!(
-            schema.pointer("/properties/schema_version/const").and_then(|value| value.as_str()),
-            Some(CONTRACT_SCHEMA_VERSION),
-        );
+        let fixture_schema: serde_json::Value = serde_json::from_str(COMMITTED_FIXTURE_SCHEMA)
+            .context("parse committed fixture schema")?;
+        validate_published_schema_values(&schema, &fixture_schema)?;
         Ok(())
+    }
+
+    #[test]
+    fn published_schema_missing_reason_is_rejected() -> Result<()> {
+        let mut schema: serde_json::Value = serde_json::from_str(COMMITTED_SCHEMA)?;
+        schema["$defs"]["reason_code"]["enum"]
+            .as_array_mut()
+            .context("reason enum must be an array")?
+            .pop();
+        let fixture_schema: serde_json::Value = serde_json::from_str(COMMITTED_FIXTURE_SCHEMA)?;
+        assert!(validate_published_schema_values(&schema, &fixture_schema).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn published_fixture_schema_missing_conditional_is_rejected() -> Result<()> {
+        let profile_schema: serde_json::Value = serde_json::from_str(COMMITTED_SCHEMA)?;
+        let mut fixture_schema: serde_json::Value = serde_json::from_str(COMMITTED_FIXTURE_SCHEMA)?;
+        fixture_schema.as_object_mut().context("fixture schema must be an object")?.remove("allOf");
+        assert!(validate_published_schema_values(&profile_schema, &fixture_schema).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn fabricated_dap_evidence_is_rejected() -> Result<()> {
+        let fixtures = committed_fixtures()?;
+        let base = find_fixture(&fixtures, POSITIVE_PROJECT_IMAGE)?;
+        let mut fabricated = base.profile.clone();
+        fabricated.dap_claims[0].evidence = vec!["fabricated capability evidence".into()];
+        assert_rejected_with(&fabricated, RejectionReason::DapCellEvidenceMissing)
     }
 
     #[test]

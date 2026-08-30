@@ -1,11 +1,11 @@
 schema_version = "kubernetes_dap_workspace_profile_fixture.v1"
-fixture_id = "negative-security-context-root"
+fixture_id = "negative-injected-tool-with-image"
 expectation = "reject"
-expected_rejection = "security_context_missing"
+expected_rejection = "install_mode_identity_conflict"
 
 [profile]
-profile_id = "acme-dev-project-image"
-install_mode = "project_image"
+profile_id = "acme-dev-injected-tool"
+install_mode = "injected_tool"
 deployment_mode = "workspace_container_process"
 sharing_mode = "dedicated_workspace"
 resource_profile = "dap-subject-medium"
@@ -42,6 +42,16 @@ dependency_authority = "carton.snapshot@sha256:ddddddddddddddddddddddddddddddddd
 authority = "#4841-launch-plan-v3"
 perl_identity = "/usr/local/bin/perl@5.38.2"
 
+[profile.artifact]
+source_identity = "release:perllsp@9.9.0@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+artifact_digest = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+copied_digest = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+post_copy_verified = true
+exec_mode = "0555"
+tool_mount = "read_only"
+target_arch = "amd64"
+libc = "glibc"
+
 [profile.image]
 repository = "registry.example/acme/dev"
 digest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -50,7 +60,7 @@ architecture = "amd64"
 libc = "glibc"
 
 [profile.security]
-run_as_non_root = false
+run_as_non_root = true
 uid = 10001
 gid = 10001
 service_account_token = "absent"

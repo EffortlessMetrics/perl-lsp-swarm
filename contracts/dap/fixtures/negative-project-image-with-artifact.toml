@@ -1,7 +1,7 @@
 schema_version = "kubernetes_dap_workspace_profile_fixture.v1"
-fixture_id = "negative-security-context-root"
+fixture_id = "negative-project-image-with-artifact"
 expectation = "reject"
-expected_rejection = "security_context_missing"
+expected_rejection = "install_mode_identity_conflict"
 
 [profile]
 profile_id = "acme-dev-project-image"
@@ -49,8 +49,18 @@ build_revision = "build-2026-08-25-a1b2c3"
 architecture = "amd64"
 libc = "glibc"
 
+[profile.artifact]
+source_identity = "release:perllsp@9.9.0@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+artifact_digest = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+copied_digest = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+post_copy_verified = true
+exec_mode = "0555"
+tool_mount = "read_only"
+target_arch = "amd64"
+libc = "glibc"
+
 [profile.security]
-run_as_non_root = false
+run_as_non_root = true
 uid = 10001
 gid = 10001
 service_account_token = "absent"

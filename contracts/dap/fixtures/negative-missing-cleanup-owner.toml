@@ -46,6 +46,7 @@ repository = "registry.example/acme/dev"
 digest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 build_revision = "build-2026-08-25-a1b2c3"
 architecture = "amd64"
+libc = "glibc"
 
 [profile.security]
 run_as_non_root = true
